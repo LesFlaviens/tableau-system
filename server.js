@@ -1,6 +1,7 @@
 const express = require('express');
 const http = require('http');
-const WebSocket = require('ws');
+const WebSocket = require('ws'); // Ancien moteur (Plan de table)
+const socketIo = require('socket.io'); // Nouveau moteur (Cuisine, Bar, WordPress)
 const cors = require('cors');
 const path = require('path');
 
@@ -8,56 +9,88 @@ const app = express();
 app.use(express.json());
 app.use(cors());
 
-// --- CRUCIAL : Cette ligne permet au serveur de trouver tes fichiers HTML ---
-app.use(express.static(__dirname));
+// Ton mot de passe "Maître" et le port Render
+const PORT = process.env.PORT || 3000;
+const SECRET_KEY = process.env.ADMIN_PASSWORD || "ICHEF2026";
+
+// --- 1. SÉCURITÉ : LE VERROU DES PAGES SENSIBLES ---
+const protectedPages = ['/finance.html', '/production.html', '/gestionnaire.html', '/bar.html'];
+
+app.use((req, res, next) => {
+    if (protectedPages.includes(req.path)) {
+        const pass = req.query.key;
+        if (pass === SECRET_KEY) {
+            next();
+        } else {
+            res.status(401).send("<h1>Accès Interdit</h1><p>La clé de sécurité de l'Empire est requise.</p>");
+        }
+    } else {
+        next();
+    }
+});
+
+// Distribution des fichiers HTML
+app.use(express.static(path.join(__dirname)));
 
 const server = http.createServer(app);
-const wss = new WebSocket.Server({ server });
 
-// Base de données temporaire des commandes actives
+// --- 2. ALLUMAGE DES DEUX MOTEURS DE COMMUNICATION ---
+const wss = new WebSocket.Server({ server }); // Moteur 1
+const io = socketIo(server); // Moteur 2
+
+// --- 3. LE PORTILLON WOOCOMMERCE (LE TRANSIT DE L'ARGENT) ---
+app.post('/api/nouvelle-commande', (req, res) => {
+    const order = req.body;
+    console.log("🔥 ALERTE RENTRÉE D'ARGENT : Commande reçue depuis WordPress !");
+    
+    // On tire instantanément la commande vers la Cuisine et le Bar
+    io.emit('order-received', order);
+    
+    // On valide la réception auprès de WordPress
+    res.status(200).send({ success: true });
+});
+
+// --- 4. GESTION DU PLAN DE TABLE (ANCIEN SYSTÈME CONSERVÉ) ---
 let activeOrders = {};
 
-// ROUTE : Réception d'une nouvelle commande ou mise à jour (Prêt/Encaissé)
 app.post('/update-order', (req, res) => {
     const { tableId, order } = req.body;
     
     if (!order) {
-        // Si l'ordre est null, on libère la table (Encaissement)
         delete activeOrders[tableId];
-        console.log(`Table ${tableId} libérée.`);
+        console.log(`Table ${tableId} encaissée et libérée.`);
     } else {
-        // Sinon on crée ou met à jour la commande
         activeOrders[tableId] = order;
-        console.log(`Mise à jour Table ${tableId} : ${order.status}`);
     }
 
-    // DIFFUSION : On envoie l'état des tables à TOUS les écrans connectés
-    broadcastOrders();
-    res.json({ success: true });
-});
-
-// FONCTION DE DIFFUSION (WebSocket)
-function broadcastOrders() {
+    // Mise à jour visuelle des tables
     const message = JSON.stringify({ type: 'ORDER_UPDATE', activeOrders });
     wss.clients.forEach(client => {
         if (client.readyState === WebSocket.OPEN) {
             client.send(message);
         }
     });
-}
+    res.json({ success: true });
+});
 
-// GESTION DES CONNEXIONS ENTRANTES (Salle, Cuisine, Bar)
 wss.on('connection', (ws) => {
-    console.log('🟢 Nouvel écran connecté au réseau Empire.');
-    // On envoie immédiatement les commandes en cours au nouvel arrivant
     ws.send(JSON.stringify({ type: 'ORDER_UPDATE', activeOrders }));
 });
 
-// LANCEMENT DU MOTEUR
-const PORT = 8080;
+// --- 5. GESTION DE LA CUISINE ET DU BAR (NOUVEAU SYSTÈME) ---
+io.on('connection', (socket) => {
+    console.log('🟢 Écran de production connecté.');
+    
+    // Si une commande est tapée manuellement depuis le plan de table
+    socket.on('new-order', (order) => {
+        io.emit('order-received', order);
+    });
+});
+
+// --- 6. DÉMARRAGE DE L'USINE ---
 server.listen(PORT, () => {
     console.log('========================================');
-    console.log(`🚀 EMPIRE ACTIF : http://localhost:${PORT}`);
-    console.log(`📂 Dossier racine : ${__dirname}`);
+    console.log(`🚀 EMPIRE COMMAND ACTIF SUR LE PORT : ${PORT}`);
+    console.log(`🔒 Clé de sécurité active : ${SECRET_KEY}`);
     console.log('========================================');
 });
