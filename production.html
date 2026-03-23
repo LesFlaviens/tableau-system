@@ -2,37 +2,148 @@
 <html lang="fr">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Écran Cuisine</title>
+    <title>Terminal Cuisine - Empire COMMAND</title>
     <style>
-        body { font-family: Arial, sans-serif; background-color: #1a1a1a; color: #ffffff; margin: 0; padding: 20px; }
-        h1 { text-align: center; color: #ff4757; text-transform: uppercase; letter-spacing: 2px; }
-        #zone-production { display: flex; flex-wrap: wrap; gap: 20px; margin-top: 30px; }
-        .ticket-cuisine { background-color: #2f3542; border-left: 6px solid #ff4757; padding: 20px; width: 300px; border-radius: 8px; box-shadow: 0 6px 10px rgba(0,0,0,0.4); }
-        .ticket-cuisine h3 { margin-top: 0; color: #ff4757; font-size: 1.5em; border-bottom: 1px solid #444; padding-bottom: 10px; }
-        .ticket-cuisine p { color: #a4b0be; font-size: 0.9em; margin-bottom: 15px; }
-        .ticket-cuisine ul { padding-left: 20px; font-size: 1.3em; margin: 0; font-weight: bold; }
-        .ticket-cuisine li { margin-bottom: 10px; }
+        :root { 
+            --bg-deep: #050505; 
+            --canvas-bg: #0d0d0d;
+            --table-ok: #00e676;
+            --table-alert: #ff4757; /* Rouge pour la Cuisine */
+            --zone-light: rgba(255, 255, 255, 0.2); 
+        }
+
+        body { font-family: 'Inter', sans-serif; background: var(--bg-deep); color: white; margin: 0; display: flex; height: 100vh; overflow: hidden; }
+        
+        /* SECTION PLAN (GAUCHE) */
+        .view-salle { width: 45%; border-right: 2px solid #222; display: flex; flex-direction: column; background: #000; }
+        .view-header { padding: 15px; font-weight: bold; background: #111; color: #666; font-size: 0.8rem; border-bottom: 1px solid #222; text-transform: uppercase; letter-spacing: 1px; }
+        #canvas-mirror { position: relative; flex: 1; background: var(--canvas-bg); background-image: radial-gradient(#1a1a1a 1px, transparent 1px); background-size: 30px 30px; overflow: hidden; }
+
+        /* SECTION COMMANDES (DROITE) */
+        .view-orders { flex: 1; padding: 20px; overflow-y: auto; background: #080808; }
+        .orders-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 15px; margin-top: 20px;}
+
+        /* RENDU DU PLAN DIRECTEUR */
+        .element { position: absolute; display: flex; align-items: center; justify-content: center; font-weight: 900; pointer-events: none; }
+        .zone { border: 2px dashed rgba(255, 255, 255, 0.3); color: rgba(255, 255, 255, 0.5); font-size: 1.2rem; text-transform: uppercase; letter-spacing: 4px; padding: 15px; align-items: flex-start; justify-content: flex-start; box-sizing: border-box; z-index: 1; }
+        .table { border: 2px solid #444; background-color: #1a1a1a; border-radius: 8px; font-size: 1.1rem; z-index: 10; transition: 0.4s; color: #fff;}
+        .circle { border-radius: 50% !important; }
+        
+        /* ETAT COMMANDEE EN CUISINE (PULSE ROUGE) */
+        .table.attente { background-color: #b71c1c !important; border-color: #ff1744; animation: pulseRouge 1.5s infinite; color: white; }
+
+        /* BONS DE COMMANDE */
+        .ticket { background: #1c1c1c; border-radius: 12px; border-left: 8px solid var(--table-alert); padding: 20px; box-shadow: 0 10px 20px rgba(0,0,0,0.5); animation: slide 0.3s cubic-bezier(0.18, 0.89, 0.32, 1.28); display: flex; flex-direction: column; }
+        .ticket h3 { margin: 0 0 10px 0; color: var(--table-alert); font-size: 1.8em; border-bottom: 1px solid #333; padding-bottom: 10px; text-transform: uppercase; }
+        .ticket p { color: #888; font-size: 0.9em; margin: 0 0 15px 0; font-weight: bold; }
+        .ticket ul { padding-left: 25px; font-size: 1.5em; margin: 0; font-weight: 900; flex: 1; margin-bottom: 20px; color: #eee; }
+        .ticket li { margin-bottom: 8px; }
+        
+        /* BOUTON D'ACTION CUISINE */
+        .btn-finish { background: var(--table-alert); color: #fff; border: none; width: 100%; padding: 18px; font-weight: 900; border-radius: 8px; cursor: pointer; text-transform: uppercase; font-size: 1rem; transition: 0.2s; }
+        .btn-finish:hover { filter: brightness(1.2); transform: scale(1.02); }
+
+        @keyframes pulseRouge { 0% { box-shadow: 0 0 0 0 rgba(255, 23, 68, 0.7); } 70% { box-shadow: 0 0 0 15px rgba(255, 23, 68, 0); } 100% { box-shadow: 0 0 0 0 rgba(255, 23, 68, 0); } }
+        @keyframes slide { from { opacity: 0; transform: translateX(30px); } to { opacity: 1; transform: translateX(0); } }
     </style>
 </head>
 <body>
-    <h1>🔥 Commandes Cuisine (Chaud)</h1>
-    <div id="zone-production"></div>
+
+    <div class="view-salle">
+        <div class="view-header">🔥 VISION SALLE (LECTURE SEULE - CHAUD)</div>
+        <div id="canvas-mirror"></div>
+    </div>
+
+    <div class="view-orders">
+        <h1 style="margin:0; border-bottom: 1px solid #333; padding-bottom: 15px; color: #ff4757; text-transform: uppercase; letter-spacing: 3px; font-size: 2.5rem;">Bons de Cuisine</h1>
+        <div class="orders-grid" id="zone-production"></div>
+    </div>
 
     <script src="/socket.io/socket.io.js"></script>
     <script>
         const socket = io(); 
+        const canvas = document.getElementById('canvas-mirror');
+        const SCALE = 50;
+
+        // --- 1. SYNC DU PLAN (Identique au Manager) ---
+        socket.on('layout-update', (layout) => {
+            renderMirror(layout);
+        });
+
+        // Chargement initial du plan
+        fetch('/get-layout')
+            .then(res => res.json())
+            .then(data => {
+                 if(data && Object.keys(data).length > 0) {
+                     const firstRoom = Object.keys(data)[0];
+                     renderMirror(data[firstRoom]);
+                 }
+            });
+
+        function renderMirror(layout) {
+            canvas.innerHTML = "";
+            if(!layout) return;
+
+            (layout.zones || []).forEach(z => {
+                const el = document.createElement('div');
+                el.className = 'element zone';
+                el.style.cssText = `left:${z.x}px; top:${z.y}px; width:${z.w * SCALE}px; height:${z.h * SCALE}px;`;
+                el.innerText = z.id;
+                canvas.appendChild(el);
+            });
+
+            (layout.tables || []).forEach(t => {
+                const el = document.createElement('div');
+                el.id = `table-mirror-${t.id}`;
+                el.className = `element table ${t.shape || 'square'}`;
+                el.style.cssText = `left:${t.x}px; top:${t.y}px; width:${t.w * SCALE}px; height:${t.h * SCALE}px;`;
+                el.innerHTML = `<div>${t.id}</div>`;
+                canvas.appendChild(el);
+            });
+        }
+
+        // --- 2. GESTION DU FLUX CUISINE (FILTRE PLAT) ---
         socket.on('order-received', (order) => {
+            // Filtrage chirurgical : Uniquement les Plats
             const plats = order.articles.filter(article => article.includes('[Plat]'));
+
             if (plats.length > 0) {
                 const zone = document.getElementById('zone-production');
                 const ticket = document.createElement('div');
-                ticket.className = 'ticket-cuisine';
-                const listePlats = plats.map(plat => `<li>${plat.replace('[Plat] ', '')}</li>`).join('');
-                ticket.innerHTML = `<h3>${order.table}</h3><p>Heure : ${order.heure}</p><ul>${listePlats}</ul>`;
+                ticket.className = 'ticket';
+                
+                // Nettoyage de l'étiquette [Plat]
+                const listeNettoyee = plats.map(p => `<li>${p.replace('[Plat] ', '')}</li>`).join('');
+
+                ticket.innerHTML = `
+                    <h3>${order.table}</h3>
+                    <p>REÇU À : ${order.heure}</p>
+                    <ul>${listeNettoyee}</ul>
+                    <button class="btn-finish" onclick="envoyerEnSalle(this, '${order.table}')">Prêt en Cuisine</button>
+                `;
                 zone.insertBefore(ticket, zone.firstChild);
+
+                // Feedback visuel sur le plan (Pulse Rouge)
+                const tableIdSafe = order.table.replace('Table ', '');
+                const tableDiv = document.getElementById(`table-mirror-${tableIdSafe}`);
+                if(tableDiv) tableDiv.classList.add('attente');
+                
+                // Optionnel : Jouer un son d'alerte cuisine
             }
         });
+
+        function envoyerEnSalle(btn, tableName) {
+            const ticket = btn.closest('.ticket');
+            ticket.style.opacity = "0.5";
+            ticket.style.transform = "scale(0.9)";
+            
+            setTimeout(() => {
+                ticket.remove();
+                const tableIdSafe = tableName.replace('Table ', '');
+                const tableDiv = document.getElementById(`table-mirror-${tableIdSafe}`);
+                if(tableDiv) tableDiv.classList.remove('attente');
+            }, 300);
+        }
     </script>
 </body>
 </html>
