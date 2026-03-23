@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <title>Terminal Bar - Empire COMMAND</title>
+    <style>
+        :root { 
+            --bg-deep: #050505; 
+            --canvas-bg: #0d0d0d;
+            --table-ok: #00e676;
+            --table-alert: #1e90ff; /* Bleu pour le Bar */
+            --zone-light: rgba(255, 255, 255, 0.25); 
+        }
+
+        body { font-family: 'Inter', sans-serif; background: var(--bg-deep); color: white; margin: 0; display: flex; height: 100vh; overflow: hidden; }
+        
+        /* SECTION PLAN (GAUCHE) */
+        .view-salle { width: 50%; border-right: 2px solid #222; display: flex; flex-direction: column; background: #000; }
+        .view-header { padding: 15px; font-weight: bold; background: #111; color: #666; font-size: 0.8rem; border-bottom: 1px solid #222; text-transform: uppercase; }
+        #canvas-mirror { position: relative; flex: 1; background: var(--canvas-bg); background-image: radial-gradient(#1a1a1a 1px, transparent 1px); background-size: 30px 30px; overflow: hidden; }
+
+        /* SECTION COMMANDES (DROITE) */
+        .view-orders { flex: 1; padding: 20px; overflow-y: auto; background: #080808; }
+        .orders-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 15px; margin-top: 20px;}
+
+        /* RENDU IDENTIQUE AU PLAN DIRECTEUR */
+        .element { position: absolute; display: flex; align-items: center; justify-content: center; font-weight: 900; pointer-events: none; }
+        .zone { border: 3px dashed rgba(255, 255, 255, 0.7); color: rgba(255, 255, 255, 0.9); font-size: 1.5rem; text-transform: uppercase; letter-spacing: 4px; padding: 15px; align-items: flex-start; justify-content: flex-start; box-sizing: border-box; z-index: 1; }
+        .table { border: 2px solid #555; background-color: #2a2a2a; border-radius: 8px; font-size: 1.1rem; z-index: 10; transition: 0.4s; color: #fff;}
+        .circle { border-radius: 50% !important; }
+        
+        /* ETAT COMMANDEE AU BAR */
+        .table.attente { background-color: #0d47a1 !important; border-color: #2196f3; animation: pulseBleu 1.5s infinite; }
+
+        /* BONS DE COMMANDE */
+        .ticket { background: #2f3542; border-radius: 8px; border-left: 6px solid var(--table-alert); padding: 20px; box-shadow: 0 6px 10px rgba(0,0,0,0.4); animation: slide 0.3s; display: flex; flex-direction: column; }
+        .ticket h3 { margin-top: 0; color: var(--table-alert); font-size: 1.5em; border-bottom: 1px solid #444; padding-bottom: 10px; }
+        .ticket p { color: #a4b0be; font-size: 0.9em; margin-bottom: 15px; }
+        .ticket ul { padding-left: 20px; font-size: 1.3em; margin: 0; font-weight: bold; flex: 1; margin-bottom: 15px;}
+        .ticket li { margin-bottom: 10px; }
+        
+        /* BOUTON POUR CLÔTURER LE BON */
+        .btn-finish { background: var(--table-alert); color: #fff; border: none; width: 100%; padding: 12px; font-weight: bold; border-radius: 6px; cursor: pointer; text-transform: uppercase;}
+        .btn-finish:hover { background: #4dabf7; }
+
+        @keyframes pulseBleu { 0% { box-shadow: 0 0 0 0 rgba(33, 150, 243, 0.7); } 70% { box-shadow: 0 0 0 15px rgba(33, 150, 243, 0); } 100% { box-shadow: 0 0 0 0 rgba(33, 150, 243, 0); } }
+        @keyframes slide { from { opacity: 0; transform: translateY(10px); } }
+    </style>
+</head>
+<body>
+
+    <div class="view-salle">
+        <div class="view-header">🧊 VISION SALLE (MIROIR LECTURE SEULE)</div>
+        <div id="canvas-mirror"></div>
+    </div>
+
+    <div class="view-orders">
+        <h1 style="margin:0; border-bottom: 1px solid #222; padding-bottom: 15px; color: #1e90ff; text-transform: uppercase; letter-spacing: 2px;">Bons de Boissons</h1>
+        <div class="orders-grid" id="zone-bar"></div>
+    </div>
+
+    <script src="/socket.io/socket.io.js"></script>
+    <script>
+        // On récupère le lien SocketIO de Render (pas localhost)
+        const socket = io(); 
+        
+        const canvas = document.getElementById('canvas-mirror');
+        const SCALE = 50; // Doit être identique au gestionnaire
+
+        // --- 1. GESTION DU PLAN MIROIR ---
+        socket.on('layout-update', (layout) => {
+            renderMirror(layout);
+        });
+
+        // Simule un appel API pour récupérer le plan à l'ouverture de la page
+        fetch('/get-layout')
+            .then(res => res.json())
+            .then(data => {
+                 if(data && Object.keys(data).length > 0) {
+                     // Par défaut on affiche la première salle (RESTAURANT)
+                     const firstRoom = Object.keys(data)[0];
+                     renderMirror(data[firstRoom]);
+                 }
+            })
+            .catch(err => console.log("Pas de plan initial trouvé."));
+
+        function renderMirror(layout) {
+            canvas.innerHTML = "";
+            if(!layout) return;
+
+            // Dessiner les Zones 
+            (layout.zones || []).forEach(z => {
+                const el = document.createElement('div');
+                el.className = 'element zone';
+                el.style.cssText = `left:${z.x}px; top:${z.y}px; width:${z.w * SCALE}px; height:${z.h * SCALE}px;`;
+                el.innerText = z.id;
+                canvas.appendChild(el);
+            });
+
+            // Dessiner les Tables
+            (layout.tables || []).forEach(t => {
+                const el = document.createElement('div');
+                el.id = `table-mirror-${t.id}`;
+                el.className = `element table ${t.shape || 'square'}`;
+                el.style.cssText = `left:${t.x}px; top:${t.y}px; width:${t.w * SCALE}px; height:${t.h * SCALE}px;`;
+                el.innerHTML = `<div style="font-size:1.2rem;">${t.id}</div>`;
+                canvas.appendChild(el);
+            });
+        }
+
+        // --- 2. GESTION DES COMMANDES (FILTRE BOISSON) ---
+        socket.on('order-received', (order) => {
+            // Filtrage chirurgical : Uniquement les Boissons
+            const boissons = order.articles.filter(article => article.includes('[Boisson]'));
+
+            if (boissons.length > 0) {
+                // 1. Ajouter le bon à droite
+                const zone = document.getElementById('zone-bar');
+                const ticket = document.createElement('div');
+                ticket.className = 'ticket';
+                
+                // Nettoyage de l'affichage "[Boisson]"
+                const listeBoissons = boissons.map(boisson => `<li>${boisson.replace('[Boisson] ', '')}</li>`).join('');
+
+                ticket.innerHTML = `
+                    <h3>${order.table}</h3>
+                    <p>Heure : ${order.heure}</p>
+                    <ul>${listeBoissons}</ul>
+                    <button class="btn-finish" onclick="terminerCommande(this, '${order.table}')">Prêt au Bar</button>
+                `;
+                zone.insertBefore(ticket, zone.firstChild);
+
+                // 2. Faire clignoter la table en bleu sur le plan à gauche
+                const tableIdSafe = order.table.replace('Table ', '');
+                const tableDiv = document.getElementById(`table-mirror-${tableIdSafe}`);
+                if(tableDiv) {
+                    tableDiv.classList.add('attente');
+                }
+            }
+        });
+
+        // Fonction pour le Barman : Retire le bon et arrête le clignotement
+        function terminerCommande(btn, tableName) {
+            // Supprimer le ticket
+            const ticket = btn.closest('.ticket');
+            ticket.remove();
+
+            // Arrêter le clignotement de la table correspondante
+            const tableIdSafe = tableName.replace('Table ', '');
+            const tableDiv = document.getElementById(`table-mirror-${tableIdSafe}`);
+            if(tableDiv) {
+                tableDiv.classList.remove('attente');
+            }
+        }
+    </script>
+</body>
+</html>
