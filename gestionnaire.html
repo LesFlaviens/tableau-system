@@ -1,74 +1,62 @@
-<!DOCTYPE html>
-<html lang="fr">
-<head>
-    <meta charset="UTF-8">
-    <title>Empire COMMAND - Système Intégral</title>
-    <style>
-        :root { --bg: #050505; --accent: #00e676; --text: #fff; --panel: #121212; --alert: #ff1744; }
-        body { font-family: 'Inter', sans-serif; background: var(--bg); color: var(--text); margin: 0; overflow: hidden; }
-        .header { background: #111; padding: 0 30px; display: flex; justify-content: space-between; border-bottom: 1px solid #333; height: 65px; align-items: center; z-index: 5000; position: relative; }
-        .logo { font-weight: 900; color: var(--accent); letter-spacing: 2px; text-transform: uppercase; }
-        .btn-chef { background: var(--accent); color: #000; border: none; padding: 10px 18px; border-radius: 6px; cursor: pointer; font-weight: 900; text-transform: uppercase; }
-        #viewport { width: 100vw; height: calc(100vh - 65px); overflow: auto; background: #000; position: relative; }
-        #canvas { width: 3000px; height: 3000px; position: relative; background: radial-gradient(#222 0.5px, transparent 0.5px); background-size: 50px 50px; transform-origin: 0 0; }
-        .table { position: absolute; border: 2px solid #444; display: flex; justify-content: center; align-items: center; font-weight: bold; cursor: pointer; border-radius: 8px; color: #fff; background: #2a2a2a; z-index: 10; }
-        #order-pad { position: fixed; right: 0; top: 0; width: 420px; height: 100vh; background: var(--panel); border-left: 2px solid #333; padding: 25px; z-index: 7000; transform: translateX(100%); transition: 0.3s; box-shadow: -10px 0 40px rgba(0,0,0,0.8); overflow-y: auto; }
-        #order-pad.open { transform: translateX(0); }
-        .menu-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 20px; }
-        .menu-item { background: #1a1a1a; border: 1px solid #333; color: #fff; padding: 15px; border-radius: 10px; cursor: pointer; text-align: left; transition: 0.2s; }
-        .menu-item:hover { border-color: var(--accent); background: #222; }
-    </style>
-</head>
-<body>
-    <div class="header">
-        <div class="logo">EMPIRE COMMAND</div>
-        <button class="btn-chef" onclick="toggleChefMode()">🔓 ACCÈS CHEF</button>
-    </div>
-    <div id="viewport"><div id="canvas"></div></div>
-    <div id="order-pad">
-        <button onclick="closePad()" style="float:right; background:none; border:none; color:#fff; font-size:2rem; cursor:pointer;">✕</button>
-        <h2 id="pad-title" style="color:var(--accent); font-size:2.5rem; margin-top:0;">Table --</h2>
-        <div class="menu-grid">
-            <div class="menu-item" onclick="addToBasket('Burger Empire', 19.50, 'Cuisine')">🍔 Burger Empire<br><b>19.50€</b></div>
-            <div class="menu-item" onclick="addToBasket('Mojito', 12.00, 'Bar')">🍹 Mojito<br><b>12.00€</b></div>
-            <div class="menu-item" onclick="addToBasket('Bière Mongy', 15.00, 'Bar')">🍺 Bière Mongy<br><b>15.00€</b></div>
-            <div class="menu-item" onclick="addToBasket('Gâteau Chef', 15.00, 'Cuisine')">🍰 Gâteau Chef<br><b>15.00€</b></div>
-        </div>
-        <div id="basket" style="margin-top:25px; background:#000; padding:20px; border-radius:12px; border:1px solid #222; min-height:150px;"></div>
-        <button class="btn-chef" style="width:100%; padding:20px; background:var(--accent); margin-top:20px; font-size:1.2rem;" onclick="submitOrder()">ENVOYER EN PRODUCTION</button>
-    </div>
+<script src="/socket.io/socket.io.js"></script>
+<script>
+    const socket = io(); // On utilise "socket" partout pour être cohérent
+    let currentTable = null;
+    let localBasket = [];
 
-    <script src="/socket.io/socket.io.js"></script>
-    <script>
-        const socketIO = io(); 
-        let layouts = { tables: [{id:"T1", x:150, y:150, w:2, h:2}, {id:"T2", x:350, y:150, w:2, h:2}] };
-        let currentTable = null; let localBasket = [];
+    // Indique visuellement si on est connecté
+    socket.on('connect', () => console.log("✅ Connecté au serveur Empire"));
 
-        function render() {
-            const canvas = document.getElementById('canvas'); canvas.innerHTML = "";
-            layouts.tables.forEach(t => {
-                const div = document.createElement('div'); div.className = "table";
-                div.style.left = t.x+'px'; div.style.top = t.y+'px'; div.style.width = (t.w*50)+'px'; div.style.height = (t.h*50)+'px';
-                div.innerHTML = t.id; div.onclick = () => openPad(t.id);
-                canvas.appendChild(div);
-            });
-        }
-        function openPad(id) { currentTable = id; document.getElementById('pad-title').textContent = "Table " + id; document.getElementById('order-pad').classList.add('open'); }
-        function closePad() { document.getElementById('order-pad').classList.remove('open'); }
-        function addToBasket(n, p, d) { localBasket.push({n, p, d}); updateBasket(); }
-        function updateBasket() { document.getElementById('basket').innerHTML = localBasket.map(i => `<div style="padding:8px 0; border-bottom:1px solid #111;">• ${i.n} (${i.d})</div>`).join(''); }
+    function openPad(id) {
+        currentTable = id;
+        document.getElementById('pad-title').innerText = "Table " + id;
+        document.getElementById('order-pad').classList.add('open');
+    }
+
+    function addToBasket(n, p, d) {
+        localBasket.push({n, p, d});
+        renderBasket();
+    }
+
+    function renderBasket() {
+        document.getElementById('basket').innerHTML = localBasket.map(i => 
+            `<div style="padding:10px; border-bottom:1px solid #222;">• ${i.n} (${i.d})</div>`
+        ).join('');
+    }
+
+    function submitOrder() {
+        if (localBasket.length === 0) return alert("Le panier est vide !");
+
+        const payload = {
+            table: "Table " + currentTable,
+            heure: new Date().toLocaleTimeString('fr-FR', {hour:'2-digit', minute:'2-digit'}),
+            articles: localBasket.map(i => `${i.d === 'Bar' ? '[Boisson]' : '[Plat]'} 1x ${i.n}`)
+        };
+
+        // ENVOI RADIAL
+        socket.emit('new-order', payload);
         
-        async function submitOrder() {
-            if (localBasket.length === 0) return;
-            socketIO.emit('new-order', {
-                table: "Table " + currentTable,
-                heure: new Date().toLocaleTimeString('fr-FR'),
-                articles: localBasket.map(i => `${i.d === 'Bar' ? '[Boisson]' : '[Plat]'} 1x ${i.n}`)
-            });
-            await fetch('/update-order', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ tableId: currentTable, order: {items: localBasket} }) });
-            localBasket = []; updateBasket(); closePad(); alert("ENVOYÉ !");
-        }
-        window.onload = render;
-    </script>
-</body>
-</html>
+        console.log("Ordre émis :", payload);
+        alert("COMMANDE ENVOYÉE EN SALLE !");
+        
+        localBasket = [];
+        renderBasket();
+        document.getElementById('order-pad').classList.remove('open');
+    }
+
+    function closePad() { document.getElementById('order-pad').classList.remove('open'); }
+    
+    // Initialisation rapide des tables pour le test
+    window.onload = () => {
+        const canvas = document.getElementById('canvas');
+        [1, 2, 3, 4, 5].forEach(num => {
+            const t = document.createElement('div');
+            t.className = "table";
+            t.style.left = (num * 120) + "px"; t.style.top = "150px";
+            t.style.width = "80px"; t.style.height = "80px";
+            t.innerText = "T" + num;
+            t.onclick = () => openPad(num);
+            canvas.appendChild(t);
+        });
+    };
+</script>
