@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+<<!DOCTYPE html>
 <html lang="fr">
 <head>
     <meta charset="UTF-8">
@@ -8,30 +8,49 @@
         .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 20px; }
         .ticket { background: #111; border-left: 10px solid #ff1744; padding: 20px; border-radius: 10px; }
         .btn { width: 100%; padding: 15px; background: #ff1744; border: none; color: white; font-weight: 900; cursor: pointer; margin-top: 15px; }
+        ul { padding-left: 20px; }
+        li { margin-bottom: 8px; font-size: 1.1rem; }
     </style>
 </head>
 <body>
     <h1 style="color:#ff1744;">🔥 CUISINE (PLATS)</h1>
     <div class="grid" id="container"></div>
 
-    <script src="/socket.io/socket.io.js"></script>
     <script>
-        const socket = io();
-        socket.on('order-received', (order) => {
-            const items = order.articles.filter(a => a.includes('[Plat]'));
-            if (items.length > 0) {
-                const div = document.createElement('div');
-                div.className = 'ticket';
-                div.innerHTML = `<h2>${order.table}</h2><ul>${items.map(i => `<li>${i.replace('[Plat] ', '')}</li>`).join('')}</ul>
-                <button class="btn" onclick="validerTicket(this, '${order.table}')">TERMINÉ</button>`;
-                document.getElementById('container').prepend(div);
-            }
-        });
+        const ws = new WebSocket(`ws://${window.location.host}`);
+        
+        ws.onmessage = (e) => {
+            const msg = JSON.parse(e.data);
+            if (msg.type === 'ORDER_UPDATE') renderCuisine(msg.activeOrders);
+        };
 
-        // 🚀 LE LANCEUR D'ALERTE VERS LA SALLE
-        function validerTicket(btn, tableId) {
-            socket.emit('order-ready', { table: tableId, poste: 'Cuisine' });
-            btn.parentElement.remove();
+        function renderCuisine(orders) {
+            const container = document.getElementById('container');
+            container.innerHTML = '';
+            for (const tableId in orders) {
+                const order = orders[tableId];
+                // On ne prend que les plats de Cuisine qui ne sont pas encore prêts
+                const plats = order.items.filter(i => i.dest === 'Cuisine' && !i.done);
+                
+                if (plats.length > 0) {
+                    const div = document.createElement('div');
+                    div.className = 'ticket';
+                    div.innerHTML = `
+                        <h2>${tableId.includes('WEB') ? tableId : 'Table ' + tableId.replace('T', '')}</h2>
+                        <ul>${plats.map(i => `<li>${i.n}</li>`).join('')}</ul>
+                        <button class="btn" onclick="validerTicket('${tableId}')">TERMINÉ</button>
+                    `;
+                    container.appendChild(div);
+                }
+            }
+        }
+
+        async function validerTicket(tableId) {
+            await fetch('/mark-ready', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ tableId: tableId, poste: 'Cuisine' })
+            });
         }
     </script>
 </body>
