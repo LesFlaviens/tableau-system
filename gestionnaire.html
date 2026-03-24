@@ -44,7 +44,7 @@
         .table.circle { border-radius: 50%; }
 
         .status-libre { background-color: #2a2a2a; border-color: #555; }
-        .status-reservee { background-color: #4a148c; border-color: #9c27b0; }
+        .status-reservee { background-color: #4a148c; border-color: #9c27b0; box-shadow: inset 0 0 15px rgba(0,0,0,0.5); }
         .status-occupee { background-color: #b71c1c; border-color: #f44336; }
         .status-prete { background-color: #0d47a1; border-color: #2196f3; animation: pulseBleu 1.5s infinite; }
         .status-addition { background-color: #1b5e20; border-color: #4caf50; animation: pulseVert 1.5s infinite; }
@@ -83,7 +83,7 @@
         .btn-del { color: var(--alert); cursor: pointer; font-weight: bold; margin-left: 10px; padding: 0 5px; }
         .item-encours { color: #ff9800; font-size: 0.65rem; text-transform: uppercase; font-weight: bold; border: 1px solid #ff9800; padding: 2px 6px; border-radius: 4px;}
         .btn-servir { background: var(--blue); color: #000; border: none; padding: 5px 12px; border-radius: 4px; font-weight: 900; cursor: pointer; font-size: 0.7rem; text-transform: uppercase; animation: pulseBleu 1.5s infinite; }
-        .btn-renvoyer { background: transparent; border: 1px solid var(--alert); color: var(--alert); padding: 4px 8px; border-radius: 4px; font-size: 0.6rem; cursor: pointer; margin-left: 5px; font-weight: bold; text-transform: uppercase;}
+        .btn-renvoyer { background: transparent; border: 1px solid var(--alert); color: var(--alert); padding: 4px 8px; border-radius: 4px; font-size: 0.6rem; cursor: pointer; margin-left: 10px; font-weight: bold; text-transform: uppercase;}
         .btn-renvoyer:hover { background: rgba(255, 23, 68, 0.1); }
 
         .action-btn { width: 100%; padding: 15px; color: white; border: none; font-weight: 900; cursor: pointer; border-radius: 8px; margin-bottom: 10px; text-transform: uppercase; }
@@ -136,6 +136,7 @@
             <h3 style="color:#888; text-transform:uppercase; font-size:0.8rem; margin:0 0 10px 0; border-bottom:1px solid #333; padding-bottom:10px;">🌐 RADAR WOOCOMMERCE</h3>
             <div id="web-orders-list"></div>
         </div>
+
         <div id="viewport"><div id="canvas"></div></div>
     </div>
 
@@ -179,8 +180,8 @@
             <hr style="border: 1px solid #333; margin: 20px 0;">
             <button id="btn-bill" class="action-btn btn-blue" onclick="demanderAddition()" style="display:none;">IMPRIMER ADDITION</button>
             <button id="btn-pay" class="action-btn btn-red" onclick="validerEncaissement()" style="display:none;">VALIDER L'ENCAISSEMENT</button>
-            <button id="btn-reserve" class="action-btn btn-purple" onclick="marquerReservee()">RÉSERVER TABLE</button>
-            <button id="btn-cancel-res" class="action-btn btn-gray" onclick="annulerReservation()" style="display:none;">ANNULER RÉSERVATION</button>
+            <button id="btn-reserve" class="action-btn btn-purple" onclick="marquerReservee()">RÉSERVER LA TABLE</button>
+            <button id="btn-cancel-res" class="action-btn btn-gray" onclick="annulerReservation()" style="display:none;">ANNULER LA RÉSERVATION</button>
         </div>
     </div>
 
@@ -267,7 +268,7 @@
                         localBasket.push(...unsentItems); updateBasket(); 
                     } else {
                         localBasket = localBasket.filter(i => !i.sent);
-                        if (localBasket.length === 0) closePad(); else updateBasket();
+                        if (localBasket.length === 0 && serverOrder === undefined) closePad(); else updateBasket();
                     }
                 }
             }
@@ -301,14 +302,23 @@
             if(isArchitect) { div.onmousedown = (e) => startDrag(e, z, 'zone'); if(selected === z) addResizeHandle(div, z, 'zone'); } canvas.appendChild(div);
         });
         (layouts[currentRoom].tables || []).forEach(t => {
-            const order = activeOrders[t.id]; const div = document.createElement('div'); let statusClass = 'status-libre'; 
-            if (tableStates[t.id]) statusClass = `status-${tableStates[t.id]}`; 
+            const order = activeOrders[t.id]; const div = document.createElement('div'); let statusClass = 'status-libre'; let subText = '';
+            
             if (order) { 
-                let hasReadyToServe = (order.items && order.items.some(i => i.done && !i.served));
-                if (tableStates[t.id] === 'addition') statusClass = 'status-addition'; else if (hasReadyToServe) statusClass = 'status-prete'; else statusClass = 'status-occupee';
+                if (order.status === 'reservee') {
+                    statusClass = 'status-reservee';
+                    subText = `<span style="color:#ea80fc; font-size:0.65rem; text-transform:uppercase;">${order.clientName}<br>${order.time}</span>`;
+                } else {
+                    let hasReadyToServe = (order.items && order.items.some(i => i.done && !i.served));
+                    if (tableStates[t.id] === 'addition') statusClass = 'status-addition'; else if (hasReadyToServe) statusClass = 'status-prete'; else statusClass = 'status-occupee';
+                    subText = `<span style="color:var(--blue);">${order.covers}p</span>`;
+                }
+            } else if (tableStates[t.id]) {
+                statusClass = `status-${tableStates[t.id]}`;
             }
+
             div.className = `table ${t.shape || 'square'} ${statusClass} ${selected === t ? 'selected' : ''}`; div.style.left = t.x+'px'; div.style.top = t.y+'px'; div.style.width = (t.w * SCALE)+'px'; div.style.height = (t.h * SCALE)+'px';
-            div.innerHTML = `<div style="font-size:1.2rem;">${t.id}</div><div style="font-size:0.7rem; color:var(--blue); margin-top:2px;">${order ? order.covers+'p' : ''}</div>`;
+            div.innerHTML = `<div style="font-size:1.2rem;">${t.id}</div><div style="text-align:center; margin-top:2px; line-height:1.1;">${subText}</div>`;
             if (isArchitect) { div.onmousedown = (e) => startDrag(e, t, 'table'); if(selected === t) addResizeHandle(div, t, 'table'); } else { div.onclick = () => openPad(t.id); } canvas.appendChild(div);
         });
     }
@@ -322,7 +332,7 @@
             if (isWeb || !isDrawn) {
                 count++; const order = activeOrders[tableId]; let hasReadyToServe = (order.items && order.items.some(i => i.done && !i.served));
                 const div = document.createElement('div'); div.className = `web-ticket ${hasReadyToServe ? 'ready' : ''}`; div.onclick = () => openPad(tableId);
-                div.innerHTML = `<h3>${tableId}</h3><div class="time">${order.time || '--:--'}</div><ul>${order.items.slice(0,3).map(i => `<li>${i.n.replace(' [WEB]','')}</li>`).join('')}${order.items.length > 3 ? `<li>... (+${order.items.length - 3})</li>` : ''}</ul>`;
+                div.innerHTML = `<h3>${tableId}</h3><div class="time">${order.time || '--:--'}</div><ul>${(order.items||[]).slice(0,3).map(i => `<li>${i.n.replace(' [WEB]','')}</li>`).join('')}${(order.items||[]).length > 3 ? `<li>... (+${order.items.length - 3})</li>` : ''}</ul>`;
                 container.appendChild(div);
             }
         }
@@ -336,13 +346,21 @@
     function setCategory(cat) { currentCategory = cat; renderMenu(); }
 
     function openPad(id) {
-        if (tableStates[id] === 'reservee' && !isChef) { if (!confirm(`La table ${id} est RÉSERVÉE. L'ouvrir ?`)) return; }
-        previousTableState = tableStates[id]; currentTable = id; const o = activeOrders[id];
-        localBasket = o ? JSON.parse(JSON.stringify(o.items)) : [];
+        const o = activeOrders[id];
+        const isReserved = o && o.status === 'reservee';
+
+        if (isReserved && !isChef) { 
+            if (!confirm(`La table ${id} est réservée pour ${o.clientName} à ${o.time}. L'ouvrir et annuler le statut réservation pour prendre la commande ?`)) return; 
+        }
+
+        previousTableState = tableStates[id]; currentTable = id; 
+        localBasket = (o && o.items) ? JSON.parse(JSON.stringify(o.items)) : [];
         document.getElementById('covers').value = o ? o.covers : 1; document.getElementById('pad-table-id').textContent = id; document.getElementById('order-pad').classList.add('open');
+        
         if (!o && tableStates[id] !== 'reservee') { tableStates[id] = 'commande'; render(); }
         renderMenu(); updateBasket();
     }
+    
     function closePad() { document.getElementById('order-pad').classList.remove('open'); if (!activeOrders[currentTable] && tableStates[currentTable] !== 'addition') { tableStates[currentTable] = (previousTableState === 'reservee') ? 'reservee' : 'libre'; render(); } }
 
     async function assignerTable() {
@@ -368,11 +386,11 @@
                 htmlPanier += `<div class="basket-row"><span>${nameClean} ${destBadge}</span><span>${i.p.toFixed(2)}€ <span class="btn-del" onclick="localBasket.splice(${originalIndex}, 1); updateBasket();">X</span></span></div>`; 
             } else if (i.sent && !i.served) {
                 let actionHtml = i.done 
-                    ? `<button class="btn-servir" onclick="marquerServi(${originalIndex})">🔔 SERVIR</button> <button class="btn-renvoyer" onclick="annulerPlat(${originalIndex})">❌</button>` 
-                    : `<span class="item-encours">⏳ EN COURS</span> <button class="btn-renvoyer" onclick="annulerPlat(${originalIndex})">❌</button>`;
+                    ? `<button class="btn-servir" onclick="marquerServi(${originalIndex})">🔔 SERVIR</button> <button class="btn-renvoyer" onclick="annulerPlat(${originalIndex})" title="Annuler le plat">❌</button>` 
+                    : `<span class="item-encours">⏳ EN COURS</span> <button class="btn-renvoyer" onclick="annulerPlat(${originalIndex})" title="Annuler le plat">❌</button>`;
                 htmlEnCours += `<div class="basket-row"><span>${nameClean} ${destBadge}</span><span>${actionHtml}</span></div>`;
             } else if (i.served) {
-                htmlHistorique += `<div class="basket-row" style="opacity: 0.5;"><span><span style="text-decoration: line-through;">${nameClean}</span> ${destBadge}</span><span>✔️ Servi <button class="btn-renvoyer" onclick="renvoyerProduction(${originalIndex})">↺ ERREUR</button> <button class="btn-renvoyer" onclick="annulerPlat(${originalIndex})">❌</button></span></div>`;
+                htmlHistorique += `<div class="basket-row" style="opacity: 0.5;"><span><span style="text-decoration: line-through;">${nameClean}</span> ${destBadge}</span><span>✔️ Servi <button class="btn-renvoyer" onclick="renvoyerProduction(${originalIndex})">↺ ERREUR</button> <button class="btn-renvoyer" onclick="annulerPlat(${originalIndex})" title="Annuler le plat">❌</button></span></div>`;
             }
         });
 
@@ -390,7 +408,7 @@
     // FONCTION D'ANNULATION AVEC JUSTIFICATION
     async function annulerPlat(index) {
         const item = localBasket[index];
-        const motif = prompt(`⚠️ ANNULATION: ${item.n}\nVeuillez saisir le motif obligatoire (ex: Client parti, Erreur de saisie, Refusé) :`);
+        const motif = prompt(`⚠️ ANNULATION: ${item.n.replace(' [WEB]','')}\nVeuillez saisir le motif obligatoire (ex: Client parti, Erreur de saisie, Refusé) :`);
         
         if (motif === null || motif.trim() === "") {
             alert("Opération refusée : Le motif d'annulation est obligatoire pour le registre d'audit.");
@@ -410,6 +428,36 @@
     async function marquerServi(index) { localBasket[index].served = true; updateBasket(); await syncOrder(); }
     async function renvoyerProduction(index) { if(confirm("Erreur signalée : Renvoyer ce plat en production ?")) { localBasket[index].served = false; localBasket[index].done = false; updateBasket(); await syncOrder(); } }
 
+    // LES RÉSERVATIONS
+    async function marquerReservee() {
+        const nom = prompt("Nom du client (Réservation) :");
+        if (!nom || nom.trim() === "") return;
+        const heure = prompt("Heure d'arrivée (ex: 20h30) :");
+        if (!heure || heure.trim() === "") return;
+
+        localBasket = []; 
+        const order = { tableId: currentTable, covers: document.getElementById('covers').value, items: [], time: heure, status: 'reservee', clientName: nom };
+        await fetch('/update-order', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ tableId: currentTable, order }) });
+        
+        logAudit('INFO', 'SALLE', 'Réservation', `[${currentTable}] ${nom} à ${heure}`);
+        document.getElementById('order-pad').classList.remove('open'); 
+    }
+
+    async function annulerReservation() {
+        const motif = prompt("⚠️ Motif de l'annulation (ex: No-show, Erreur) :");
+        if (!motif || motif.trim() === "") {
+            alert("Opération refusée : Le motif est obligatoire pour l'audit.");
+            return;
+        }
+        const o = activeOrders[currentTable];
+        const clientName = o && o.clientName ? o.clientName : "Inconnu";
+        
+        logAudit('CRITICAL', 'SALLE', 'Annul. Réservation', `[${currentTable}] ${clientName} annulé. Motif: ${motif}`);
+        
+        await fetch('/update-order', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ tableId: currentTable, order: null }) });
+        document.getElementById('order-pad').classList.remove('open'); 
+    }
+
     async function syncOrder() {
         const existingOrder = activeOrders[currentTable] || {}; let updatedReadyPostes = existingOrder.readyPostes || []; localBasket.forEach(i => { if (!i.done) updatedReadyPostes = updatedReadyPostes.filter(p => p !== i.dest); });
         let allDoneOrServed = localBasket.length > 0 && localBasket.every(i => i.done || i.served); let globalStatus = allDoneOrServed ? 'ready' : 'pending';
@@ -422,9 +470,13 @@
         let hasUnsent = localBasket.some(i => !i.sent); let hasSent = localBasket.some(i => i.sent);
         ['btn-order', 'btn-assign', 'btn-bill', 'btn-pay', 'btn-reserve', 'btn-cancel-res'].forEach(el => document.getElementById(el).style.display = 'none');
         if (currentTable && currentTable.includes('WEB')) document.getElementById('btn-assign').style.display = 'block';
+        
+        const o = activeOrders[currentTable];
+        const isReserved = o && o.status === 'reservee';
+
         if (hasUnsent) { document.getElementById('btn-order').style.display = 'block'; document.getElementById('btn-order').innerText = hasSent ? "ENVOYER LA SUITE" : "ENVOYER COMMANDE"; } 
         else if (hasSent) { if (tableStates[currentTable] === 'addition') document.getElementById('btn-pay').style.display = 'block'; else document.getElementById('btn-bill').style.display = 'block'; } 
-        else { if (tableStates[currentTable] === 'reservee') document.getElementById('btn-cancel-res').style.display = 'block'; else document.getElementById('btn-reserve').style.display = 'block'; }
+        else { if (isReserved) document.getElementById('btn-cancel-res').style.display = 'block'; else document.getElementById('btn-reserve').style.display = 'block'; }
     }
 
     async function submitOrder() { localBasket.forEach(i => i.sent = true); await syncOrder(); tableStates[currentTable] = 'occupee'; document.getElementById('order-pad').classList.remove('open'); }
