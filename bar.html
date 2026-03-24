@@ -8,30 +8,49 @@
         .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 20px; }
         .ticket { background: #111; border-left: 10px solid #00b0ff; padding: 20px; border-radius: 10px; }
         .btn { width: 100%; padding: 15px; background: #00b0ff; border: none; color: black; font-weight: 900; cursor: pointer; margin-top: 15px; }
+        ul { padding-left: 20px; }
+        li { margin-bottom: 8px; font-size: 1.1rem; }
     </style>
 </head>
 <body>
     <h1 style="color:#00b0ff;">🧊 BAR (BOISSONS)</h1>
     <div class="grid" id="container"></div>
 
-    <script src="/socket.io/socket.io.js"></script>
     <script>
-        const socket = io();
-        socket.on('order-received', (order) => {
-            const items = order.articles.filter(a => a.includes('[Boisson]'));
-            if (items.length > 0) {
-                const div = document.createElement('div');
-                div.className = 'ticket';
-                div.innerHTML = `<h2>${order.table}</h2><ul>${items.map(i => `<li>${i.replace('[Boisson] ', '')}</li>`).join('')}</ul>
-                <button class="btn" onclick="validerTicket(this, '${order.table}')">PRÊT</button>`;
-                document.getElementById('container').prepend(div);
-            }
-        });
+        const ws = new WebSocket(`ws://${window.location.host}`);
+        
+        ws.onmessage = (e) => {
+            const msg = JSON.parse(e.data);
+            if (msg.type === 'ORDER_UPDATE') renderBar(msg.activeOrders);
+        };
 
-        // 🚀 LE LANCEUR D'ALERTE VERS LA SALLE
-        function validerTicket(btn, tableId) {
-            socket.emit('order-ready', { table: tableId, poste: 'Bar' });
-            btn.parentElement.remove();
+        function renderBar(orders) {
+            const container = document.getElementById('container');
+            container.innerHTML = '';
+            for (const tableId in orders) {
+                const order = orders[tableId];
+                // On ne prend que les boissons du Bar qui ne sont pas encore prêtes
+                const boissons = order.items.filter(i => i.dest === 'Bar' && !i.done);
+                
+                if (boissons.length > 0) {
+                    const div = document.createElement('div');
+                    div.className = 'ticket';
+                    div.innerHTML = `
+                        <h2>${tableId.includes('WEB') ? tableId : 'Table ' + tableId.replace('T', '')}</h2>
+                        <ul>${boissons.map(i => `<li>${i.n}</li>`).join('')}</ul>
+                        <button class="btn" onclick="validerTicket('${tableId}')">PRÊT</button>
+                    `;
+                    container.appendChild(div);
+                }
+            }
+        }
+
+        async function validerTicket(tableId) {
+            await fetch('/mark-ready', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ tableId: tableId, poste: 'Bar' })
+            });
         }
     </script>
 </body>
