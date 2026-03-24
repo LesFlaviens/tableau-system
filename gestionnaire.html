@@ -220,12 +220,25 @@
     let lastClosedTableId = null; let lastClosedOrderData = null; let previousOrdersState = {}; let isFirstLoad = true;
     let audioCtx;
 
+    // PATCH DE DÉMARRAGE FORCÉ
     function initSystem() {
-        const AudioContext = window.AudioContext || window.webkitAudioContext;
-        audioCtx = new AudioContext();
-        audioCtx.resume();
-        document.getElementById('start-overlay').style.display = 'none';
-        renderTabs(); render(); renderWebOrders(); renderResDrawer();
+        try {
+            const AudioContext = window.AudioContext || window.webkitAudioContext;
+            if (AudioContext) {
+                audioCtx = new AudioContext();
+                audioCtx.resume();
+            }
+        } catch (error) {
+            console.warn("Audio bloqué, démarrage forcé de l'interface.");
+        }
+        
+        const overlay = document.getElementById('start-overlay');
+        if (overlay) overlay.style.display = 'none';
+        
+        try { renderTabs(); } catch(e) {}
+        try { render(); } catch(e) {}
+        try { renderWebOrders(); } catch(e) {}
+        try { renderResDrawer(); } catch(e) {}
     }
 
     function logAudit(level, source, action, detail) {
@@ -398,146 +411,3 @@
         
         const resBanner = document.getElementById('res-banner');
         if (o && o.resName) {
-            resBanner.innerHTML = `📅 RÉSERVÉE : ${o.resName} à ${o.resTime} - ${o.resCovers}p (${o.resPhone || 'Tel Inconnu'})`;
-            resBanner.style.display = 'block';
-        } else {
-            resBanner.style.display = 'none';
-        }
-
-        document.getElementById('order-pad').classList.add('open');
-        if (!o && tableStates[id] !== 'reservee') { tableStates[id] = 'commande'; render(); }
-        renderMenu(); updateBasket();
-    }
-    
-    function closePad() { document.getElementById('order-pad').classList.remove('open'); if (!activeOrders[currentTable] && tableStates[currentTable] !== 'addition') { tableStates[currentTable] = (previousTableState === 'reservee') ? 'reservee' : 'libre'; render(); } }
-
-    async function assignerTable() {
-        let num = prompt("Numéro de la table physique pour cette commande Web (ex: 3) :");
-        if (!num) return;
-        num = num.trim().toUpperCase(); if (!num.startsWith('T')) num = 'T' + num;
-        const orderToMove = activeOrders[currentTable]; orderToMove.tableId = num;
-        await fetch('/update-order', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ tableId: num, order: orderToMove }) });
-        await fetch('/update-order', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ tableId: currentTable, order: null }) });
-        closePad();
-    }
-
-    function addToBasket(n, dest, p, step) { localBasket.push({ n, dest: (dest === 'Dessert' && new Date().getHours() >= 18) ? 'Cuisine' : dest, p, sent: false, step: step, done: false, served: false }); updateBasket(); }
-
-    function updateBasket() {
-        let total = 0; let htmlPanier = ''; let htmlEnCours = ''; let htmlHistorique = '';
-
-        [...localBasket].forEach((i, originalIndex) => { 
-            total += i.p; const nameClean = i.n.replace(' [WEB]',''); const destBadge = `<span style="color:#666; font-size:0.6rem;">(${i.dest})</span>`;
-
-            if (!i.sent) {
-                htmlPanier += `<div class="basket-row"><span>${nameClean} ${destBadge}</span><span>${i.p.toFixed(2)}€ <span class="btn-del" onclick="localBasket.splice(${originalIndex}, 1); updateBasket();">X</span></span></div>`; 
-            } else if (i.sent && !i.served) {
-                let actionHtml = i.done 
-                    ? `<button class="btn-servir" onclick="marquerServi(${originalIndex})">🔔 SERVIR</button> <button class="btn-renvoyer" onclick="annulerPlat(${originalIndex})" title="Annuler le plat">❌</button>` 
-                    : `<span class="item-encours">⏳ EN COURS</span> <button class="btn-renvoyer" onclick="annulerPlat(${originalIndex})" title="Annuler le plat">❌</button>`;
-                htmlEnCours += `<div class="basket-row"><span>${nameClean} ${destBadge}</span><span>${actionHtml}</span></div>`;
-            } else if (i.served) {
-                htmlHistorique += `<div class="basket-row" style="opacity: 0.5;"><span><span style="text-decoration: line-through;">${nameClean}</span> ${destBadge}</span><span>✔️ Servi <button class="btn-renvoyer" onclick="renvoyerProduction(${originalIndex})">↺ ERREUR</button> <button class="btn-renvoyer" onclick="annulerPlat(${originalIndex})" title="Annuler le plat">❌</button></span></div>`;
-            }
-        });
-
-        let finalHtml = '';
-        if (htmlHistorique) finalHtml += `<div class="section-title">✔️ HISTORIQUE (SERVIS)</div>${htmlHistorique}`;
-        if (htmlEnCours) finalHtml += `<div class="section-title">🔥 EN PRODUCTION / PRÊTS</div>${htmlEnCours}`;
-        if (htmlPanier) finalHtml += `<div class="section-title">🛒 NOUVELLE COMMANDE</div>${htmlPanier}`;
-        if (!finalHtml) finalHtml = '<div style="color:#444; font-size:0.9rem; text-align:center; padding-top:20px;">Le tiroir est vide.</div>';
-
-        document.getElementById('basket-ui').innerHTML = finalHtml; 
-        document.getElementById('basket-total').textContent = total.toFixed(2) + " €"; 
-        updateActionButtons();
-    }
-
-    async function annulerPlat(index) {
-        const item = localBasket[index];
-        const motif = prompt(`⚠️ ANNULATION: ${item.n.replace(' [WEB]','')}\nVeuillez saisir le motif obligatoire (ex: Client parti, Erreur de saisie) :`);
-        if (motif === null || motif.trim() === "") { alert("Opération refusée : Le motif d'annulation est obligatoire pour l'audit."); return; }
-        localBasket.splice(index, 1);
-        logAudit('CRITICAL', 'SALLE', 'Annulation Plat', `[${currentTable}] ${item.n.replace(' [WEB]','')} annulé. Motif: ${motif}`);
-        updateBasket(); await syncOrder();
-    }
-
-    async function marquerServi(index) { localBasket[index].served = true; updateBasket(); await syncOrder(); }
-    async function renvoyerProduction(index) { if(confirm("Erreur signalée : Renvoyer ce plat en production ?")) { localBasket[index].served = false; localBasket[index].done = false; updateBasket(); await syncOrder(); } }
-
-    async function marquerReservee() {
-        const nom = prompt("Nom du client (Réservation) :"); if (!nom || nom.trim() === "") return;
-        const heure = prompt("Heure d'arrivée (ex: 20h30) :"); if (!heure || heure.trim() === "") return;
-        const covers = prompt("Nombre de personnes :", "2"); if (!covers || covers.trim() === "") return;
-        const tel = prompt("Numéro de téléphone :"); if (tel === null) return;
-        
-        let existingOrder = activeOrders[currentTable] || { items: [], status: 'libre' };
-        existingOrder.resName = nom; existingOrder.resTime = heure; existingOrder.resPhone = tel; existingOrder.resCovers = covers;
-        
-        await fetch('/update-order', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ tableId: currentTable, order: existingOrder }) });
-        logAudit('INFO', 'SALLE', 'Réservation', `[${currentTable}] ${nom} à ${heure} (${covers}p) Tel: ${tel}`);
-        closePad(); 
-    }
-
-    async function annulerReservation() {
-        const motif = prompt("⚠️ Motif de l'annulation (ex: No-show, Erreur) :");
-        if (!motif || motif.trim() === "") { alert("Opération refusée : Le motif est obligatoire."); return; }
-        
-        let existingOrder = activeOrders[currentTable];
-        if(!existingOrder) return;
-        logAudit('CRITICAL', 'SALLE', 'Annul. Réservation', `[${currentTable}] ${existingOrder.resName} annulé. Motif: ${motif}`);
-        
-        delete existingOrder.resName; delete existingOrder.resTime; delete existingOrder.resPhone; delete existingOrder.resCovers;
-        let newOrder = existingOrder; if(existingOrder.items && existingOrder.items.length === 0) newOrder = null;
-        
-        await fetch('/update-order', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ tableId: currentTable, order: newOrder }) });
-        closePad(); 
-    }
-
-    async function syncOrder() {
-        const existingOrder = activeOrders[currentTable] || {}; let updatedReadyPostes = existingOrder.readyPostes || []; localBasket.forEach(i => { if (!i.done) updatedReadyPostes = updatedReadyPostes.filter(p => p !== i.dest); });
-        let allDoneOrServed = localBasket.length > 0 && localBasket.every(i => i.done || i.served); let globalStatus = allDoneOrServed ? 'ready' : 'pending';
-        const order = { ...existingOrder, tableId: currentTable, covers: document.getElementById('covers').value, items: localBasket, time: new Date().toLocaleTimeString('fr-FR'), status: globalStatus, readyPostes: updatedReadyPostes };
-        await fetch('/update-order', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ tableId: currentTable, order: localBasket.length > 0 ? order : (order.resName ? order : null) }) });
-        render(); renderWebOrders(); renderResDrawer();
-    }
-
-    function updateActionButtons() {
-        let hasUnsent = localBasket.some(i => !i.sent); let hasSent = localBasket.some(i => i.sent);
-        ['btn-order', 'btn-assign', 'btn-bill', 'btn-pay', 'btn-reserve', 'btn-cancel-res'].forEach(el => document.getElementById(el).style.display = 'none');
-        if (currentTable && currentTable.includes('WEB')) document.getElementById('btn-assign').style.display = 'block';
-        
-        const o = activeOrders[currentTable];
-        if (hasUnsent) { document.getElementById('btn-order').style.display = 'block'; document.getElementById('btn-order').innerText = hasSent ? "ENVOYER LA SUITE" : "ENVOYER COMMANDE"; } 
-        else if (hasSent) { if (tableStates[currentTable] === 'addition') document.getElementById('btn-pay').style.display = 'block'; else document.getElementById('btn-bill').style.display = 'block'; } 
-        else { if (o && o.resName) document.getElementById('btn-cancel-res').style.display = 'block'; else document.getElementById('btn-reserve').style.display = 'block'; }
-    }
-
-    async function submitOrder() { localBasket.forEach(i => i.sent = true); await syncOrder(); tableStates[currentTable] = 'occupee'; document.getElementById('order-pad').classList.remove('open'); }
-    function demanderAddition() { tableStates[currentTable] = 'addition'; document.getElementById('order-pad').classList.remove('open'); render(); }
-    
-    async function validerEncaissement() {
-        if(confirm("Confirmer le paiement ?")) {
-            let existingOrder = activeOrders[currentTable];
-            let nextOrder = null;
-            if(existingOrder && existingOrder.resName) { nextOrder = { items: [], covers: existingOrder.resCovers || 1, status: 'libre', resName: existingOrder.resName, resTime: existingOrder.resTime, resPhone: existingOrder.resPhone, resCovers: existingOrder.resCovers }; }
-            await fetch('/update-order', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ tableId: currentTable, order: nextOrder }) });
-            tableStates[currentTable] = 'libre'; document.getElementById('order-pad').classList.remove('open'); render(); renderWebOrders(); renderResDrawer();
-        }
-    }
-    
-    // UTILS ARCHITECTURE
-    function toggleChefMode() { if (!isChef) { const currentPin = localStorage.getItem('tableau_manager_pin') || "8888"; if (prompt("CODE CHEF :") === currentPin) { isChef = true; document.getElementById('lock-status').textContent = "🔒 QUITTER SUPERVISION"; document.getElementById('architect-toggle').style.display = 'inline-block'; document.getElementById('btn-audit').style.display = 'inline-block'; logAudit('WARNING', 'SECURITE', 'Accès Chef Salle', 'Connexion réussie'); if(currentTable && document.getElementById('order-pad').classList.contains('open')) openPad(currentTable); } } else { isChef = false; isArchitect = false; selected = null; document.body.classList.remove('architect-mode'); document.getElementById('architect-btns').style.display = 'none'; document.getElementById('architect-toggle').style.display = 'none'; document.getElementById('btn-audit').style.display = 'none'; closeAuditDrawer(); document.getElementById('config-panel').style.display = 'none'; document.getElementById('lock-status').textContent = "🔓 ACCÈS CHEF"; if(currentTable && document.getElementById('order-pad').classList.contains('open')) openPad(currentTable); } renderTabs(); render(); }
-    function toggleArchitectMode() { isArchitect = !isArchitect; if (isArchitect) { document.body.classList.add('architect-mode'); document.getElementById('architect-btns').style.display = 'flex'; document.getElementById('architect-toggle').style.background = '#ff9800'; document.getElementById('architect-toggle').innerText = "❌ QUITTER ARCHITECTURE"; } else { document.body.classList.remove('architect-mode'); document.getElementById('architect-btns').style.display = 'none'; document.getElementById('config-panel').style.display = 'none'; document.getElementById('architect-toggle').style.background = 'var(--blue)'; document.getElementById('architect-toggle').innerText = "🛠️ MODE ARCHITECTURE"; selected = null; } renderTabs(); render(); }
-    function changeZoom(delta) { currentZoom = Math.min(Math.max(0.3, currentZoom + delta), 2.0); document.getElementById('canvas').style.transform = `scale(${currentZoom})`; document.getElementById('zoom-level').textContent = Math.round(currentZoom * 100) + "%"; }
-    function addResizeHandle(parentDiv, item, type) { const handle = document.createElement('div'); handle.className = 'resize-handle'; handle.onmousedown = (e) => startResize(e, item, type); parentDiv.appendChild(handle); }
-    function startResize(e, item, type) { e.stopPropagation(); let startX = e.clientX, startY = e.clientY; let startW = item.w, startH = item.h; document.onmousemove = (ev) => { let dx = (ev.clientX - startX) / currentZoom; let dy = (ev.clientY - startY) / currentZoom; item.w = Math.max(0.5, startW + (dx / SCALE)); item.h = Math.max(0.5, startH + (dy / SCALE)); document.getElementById('ed-w').value = item.w.toFixed(1); document.getElementById('ed-h').value = item.h.toFixed(1); render(); }; document.onmouseup = () => document.onmousemove = null; }
-    function startDrag(e, item, type) { if (!isArchitect) return; selected = item; selectedType = type; document.getElementById('config-panel').style.display = 'block'; document.getElementById('ed-id').value = item.id; document.getElementById('ed-w').value = item.w.toFixed(1); document.getElementById('ed-h').value = item.h.toFixed(1); document.getElementById('ed-shape').value = item.shape || 'square'; document.getElementById('ed-shape').disabled = (type === 'zone'); let startX = e.clientX, startY = e.clientY, origX = item.x, origY = item.y; document.onmousemove = (ev) => { item.x = origX + (ev.clientX - startX) / currentZoom; item.y = origY + (ev.clientY - startY) / currentZoom; render(); }; document.onmouseup = () => document.onmousemove = null; }
-    function applyChange() { if (!selected) return; selected.id = document.getElementById('ed-id').value; selected.w = parseFloat(document.getElementById('ed-w').value); selected.h = parseFloat(document.getElementById('ed-h').value); if(selectedType === 'table') selected.shape = document.getElementById('ed-shape').value; render(); }
-    function addItem(type) { if (type === 'table') { let maxNum = 0; Object.values(layouts).forEach(room => { room.tables.forEach(t => { let num = parseInt(t.id.replace(/[^0-9]/g, ''), 10); if (!isNaN(num) && num > maxNum) maxNum = num; }); }); layouts[currentRoom].tables.push({ id: "T" + (maxNum + 1), x: 150, y: 150, w: 1.5, h: 1.5, shape: 'square' }); } else { layouts[currentRoom].zones.push({ id: "ZONE", x: 100, y: 100, w: 4.0, h: 3.0, shape: 'square' }); } render(); }
-    function deleteItem() { if (!selected) return; if (selectedType === 'table') layouts[currentRoom].tables = layouts[currentRoom].tables.filter(t => t !== selected); else layouts[currentRoom].zones = layouts[currentRoom].zones.filter(z => z !== selected); selected = null; document.getElementById('config-panel').style.display = 'none'; render(); }
-    async function save() { await fetch('/save-full-layout', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(layouts) }); alert("ARCHITECTURE ENREGISTRÉE."); }
-    
-    setInterval(() => { document.getElementById('clock').textContent = new Date().toLocaleTimeString('fr-FR', {hour:'2-digit', minute:'2-digit'}); }, 1000);
-</script>
-</body>
-</html>
