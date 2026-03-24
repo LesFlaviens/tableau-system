@@ -1,0 +1,158 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <title>Empire - Direction RH</title>
+    <style>
+        :root { --bg: #050505; --hr: #2979ff; --alert: #ff1744; --text: #fff; --panel: #111; }
+        body { font-family: 'Inter', sans-serif; background: var(--bg); color: var(--text); margin: 0; padding: 40px; }
+        
+        header { border-bottom: 2px solid #333; padding-bottom: 20px; margin-bottom: 40px; display: flex; justify-content: space-between; align-items: center; }
+        h1 { font-size: 2rem; text-transform: uppercase; letter-spacing: 3px; margin: 0; color: var(--hr); }
+
+        .dashboard-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(400px, 1fr)); gap: 25px; }
+        
+        .card { background: var(--panel); border: 1px solid #333; border-top: 5px solid var(--hr); padding: 25px; border-radius: 12px; position: relative; transition: 0.3s; }
+        .card:hover { border-color: var(--hr); }
+        
+        .card-header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 15px; }
+        .staff-name { font-size: 1.4rem; font-weight: 900; text-transform: uppercase; }
+        .staff-info { color: #666; font-size: 0.9rem; margin-bottom: 20px; border-bottom: 1px solid #222; padding-bottom: 10px;}
+
+        .stat-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 15px; }
+        .stat-box { background: #0a0a0a; border: 1px solid #222; padding: 15px; border-radius: 8px; text-align: center; }
+        .stat-box label { display: block; font-size: 0.7rem; color: #888; text-transform: uppercase; margin-bottom: 8px; font-weight: bold; }
+        .stat-box input { width: 100%; background: transparent; border: none; color: #fff; font-size: 1.3rem; font-weight: 900; text-align: center; border-bottom: 1px dashed #444; }
+        .stat-box input:focus { outline: none; border-color: var(--hr); color: var(--hr); }
+
+        .btn-add { background: var(--hr); color: #fff; border: none; padding: 15px 30px; border-radius: 8px; font-weight: 900; cursor: pointer; text-transform: uppercase; transition: 0.2s; }
+        .btn-add:hover { transform: scale(1.05); filter: brightness(1.2); }
+        
+        .btn-delete { background: transparent; border: none; color: #444; font-weight: bold; cursor: pointer; transition: 0.2s; }
+        .btn-delete:hover { color: var(--alert); }
+
+        .cost-alert { margin-top: 20px; padding: 10px; background: rgba(255, 23, 68, 0.1); border-radius: 6px; color: var(--alert); font-weight: bold; font-size: 0.9rem; text-align: center; border: 1px solid rgba(255, 23, 68, 0.2); }
+        
+        .form-add { background: #111; border: 1px solid #333; padding: 25px; border-radius: 12px; margin-bottom: 40px; display: flex; gap: 20px; align-items: flex-end; flex-wrap: wrap; }
+        .input-group { display: flex; flex-direction: column; gap: 8px; }
+        .input-group label { font-size: 0.8rem; color: #aaa; font-weight: bold; text-transform: uppercase; }
+        .main-input { background: #000; border: 1px solid #444; color: #fff; padding: 12px; border-radius: 6px; font-size: 1rem; }
+    </style>
+</head>
+<body>
+
+    <header>
+        <div>
+            <h1>👔 EMPIRE RH</h1>
+            <p style="color: #666; margin: 5px 0 0 0;">CONTRÔLE DE LA MASSE SALARIALE & PLANNING</p>
+        </div>
+        <button class="btn-add" onclick="exportData()">📤 EXPORTER DATA</button>
+    </header>
+
+    <div class="form-add">
+        <div class="input-group">
+            <label>Nom du Salarié</label>
+            <input type="text" id="hr-name" class="main-input" placeholder="ex: Marc - Second de Cuisine">
+        </div>
+        <div class="input-group" style="width: 120px;">
+            <label>Contrat (h)</label>
+            <input type="number" id="hr-contract" class="main-input" value="39">
+        </div>
+        <div class="input-group" style="width: 120px;">
+            <label>Taux Horaire (€)</label>
+            <input type="number" id="hr-rate" class="main-input" value="12" step="0.1">
+        </div>
+        <button class="btn-add" onclick="addStaff()">EMBAUCHER</button>
+    </div>
+
+    <div id="hr-staff-container" class="dashboard-grid"></div>
+
+    <script>
+        function getStaff() { return JSON.parse(localStorage.getItem('kds_hr_staff_master')) || []; }
+        function saveStaff(s) { localStorage.setItem('kds_hr_staff_master', JSON.stringify(s)); renderStaff(); }
+
+        function addStaff() {
+            const name = document.getElementById('hr-name').value.trim();
+            const contract = parseFloat(document.getElementById('hr-contract').value) || 0;
+            const rate = parseFloat(document.getElementById('hr-rate').value) || 0;
+            
+            if(!name) return;
+            const s = getStaff();
+            s.push({ id: Date.now(), name, contract, rate, overtime: 0, cp: 0, jf: 0, planned: contract });
+            saveStaff(s);
+            document.getElementById('hr-name').value = '';
+        }
+
+        function updateValue(id, field, val) {
+            const s = getStaff();
+            const idx = s.findIndex(item => item.id === id);
+            const num = parseFloat(val) || 0;
+            
+            if(field === 'planned') {
+                const diff = num - s[idx].contract;
+                s[idx].overtime += diff;
+            }
+            
+            s[idx][field] = num;
+            saveStaff(s);
+        }
+
+        function deleteStaff(id) {
+            if(confirm("Confirmer le départ définitif du salarié ?")) {
+                const s = getStaff().filter(item => item.id !== id);
+                saveStaff(s);
+            }
+        }
+
+        function renderStaff() {
+            const staff = getStaff();
+            const container = document.getElementById('hr-staff-container');
+            container.innerHTML = staff.map(s => `
+                <div class="card">
+                    <div class="card-header">
+                        <div class="staff-name">${s.name}</div>
+                        <button class="btn-delete" onclick="deleteStaff(${s.id})">✕</button>
+                    </div>
+                    <div class="staff-info">CONTRAT BASE : ${s.contract}h | TAUX : ${s.rate}€/h</div>
+                    
+                    <div class="stat-grid">
+                        <div class="stat-box">
+                            <label>Heures Semaine</label>
+                            <input type="number" value="${s.planned}" onchange="updateValue(${s.id}, 'planned', this.value)">
+                        </div>
+                        <div class="stat-box">
+                            <label>Solde Heures +/-</label>
+                            <input type="number" step="0.5" value="${s.overtime}" onchange="updateValue(${s.id}, 'overtime', this.value)">
+                        </div>
+                        <div class="stat-box">
+                            <label>Congés (CP)</label>
+                            <input type="number" value="${s.cp}" onchange="updateValue(${s.id}, 'cp', this.value)">
+                        </div>
+                        <div class="stat-box">
+                            <label>Fériés (JF)</label>
+                            <input type="number" value="${s.jf}" onchange="updateValue(${s.id}, 'jf', this.value)">
+                        </div>
+                    </div>
+                    
+                    ${s.overtime > 0 ? `
+                        <div class="cost-alert">
+                            ⚠️ SURCOÛT MASSE SALARIALE : ${(s.overtime * s.rate).toFixed(2)} €
+                        </div>
+                    ` : ''}
+                </div>
+            `).join('');
+        }
+
+        function exportData() {
+            const data = JSON.stringify(getStaff(), null, 2);
+            const blob = new Blob([data], { type: 'application/json' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url; a.download = 'empire_rh_data.json';
+            a.click();
+        }
+
+        renderStaff();
+    </script>
+</body>
+</html>
