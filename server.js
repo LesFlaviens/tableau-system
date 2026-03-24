@@ -1,6 +1,6 @@
 const express = require('express');
 const http = require('http');
-const socketIo = require('socket.io'); 
+const socketIo = require('socket.io');
 const cors = require('cors');
 const path = require('path');
 
@@ -10,25 +10,35 @@ const io = socketIo(server, { cors: { origin: "*" } });
 
 app.use(express.json());
 app.use(cors());
+
+// Sécurité IChef
+const SECRET_KEY = "ICHEF2026";
+app.use((req, res, next) => {
+    const protected = ['/production.html', '/gestionnaire.html', '/bar.html', '/finance.html'];
+    if (protected.includes(req.path) && req.query.key !== SECRET_KEY) {
+        return res.status(401).send("Accès Interdit : Clé invalide.");
+    }
+    next();
+});
+
 app.use(express.static(path.join(__dirname)));
 
-// API WordPress & WooCommerce
+// Pont WooCommerce
 app.post('/api/nouvelle-commande', (req, res) => {
     const order = req.body;
-    console.log("📥 COMMANDE REÇUE DE WORDPRESS");
-    io.emit('order-received', order); // Diffusion immédiate
+    console.log("📥 Commande reçue de WordPress");
+    io.emit('order-received', order);
     res.status(200).json({ success: true });
 });
 
-// Liaison avec le Poste de Commandement
+// Liaison Temps Réel
 io.on('connection', (socket) => {
-    console.log('🟢 Appareil connecté au réseau');
-
+    console.log('🟢 Terminal connecté au réseau');
     socket.on('new-order', (order) => {
-        console.log("📤 ORDRE ENVOYÉ PAR LE GESTIONNAIRE");
-        io.emit('order-received', order); // On renvoie l'ordre à tous (Cuisine/Bar)
+        console.log("📤 Ordre manuel détecté");
+        io.emit('order-received', order);
     });
 });
 
 const PORT = process.env.PORT || 3000;
-server.listen(PORT, () => console.log(`🚀 EMPIRE ACTIF SUR PORT ${PORT}`));
+server.listen(PORT, () => console.log(`🚀 Empire en ligne sur port ${PORT}`));
