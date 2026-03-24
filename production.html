@@ -13,10 +13,13 @@
         @keyframes pulse { 0% { transform: scale(1); } 50% { transform: scale(1.05); } 100% { transform: scale(1); } }
 
         /* Colonne de Production (Gauche) */
-        #production-area { flex: 3; padding: 20px; overflow-y: auto; border-right: 2px solid #333; }
-        .header-title { color: var(--alert); text-transform: uppercase; letter-spacing: 2px; margin-top: 0; border-bottom: 2px solid #333; padding-bottom: 10px; display: flex; justify-content: space-between; }
+        #production-area { flex: 3; padding: 20px; overflow-y: auto; border-right: 2px solid #333; position: relative;}
+        .header-container { display: flex; justify-content: space-between; align-items: center; border-bottom: 2px solid #333; padding-bottom: 10px; margin-bottom: 20px; }
+        .header-title { color: var(--alert); text-transform: uppercase; letter-spacing: 2px; margin: 0; }
+        .btn-previsions { background: #1a1a1a; color: #fff; border: 1px solid var(--alert); padding: 10px 15px; border-radius: 6px; font-weight: bold; cursor: pointer; text-transform: uppercase; transition: 0.2s;}
+        .btn-previsions:hover { background: var(--alert); color: #fff;}
         
-        .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 20px; margin-top: 20px; }
+        .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 20px; }
         .ticket { background: var(--panel); border: 1px solid #333; border-top: 8px solid var(--alert); border-radius: 8px; box-shadow: 0 10px 30px rgba(0,0,0,0.5); display: flex; flex-direction: column; }
         .ticket-header { background: #1a1a1a; padding: 15px; font-size: 1.3rem; font-weight: 900; border-bottom: 1px solid #333; display: flex; justify-content: space-between; align-items: center;}
         .ticket-covers { background: #333; padding: 4px 10px; border-radius: 6px; font-size: 1rem; color: #fff; }
@@ -42,6 +45,19 @@
         .btn-undo:hover { background: rgba(255, 23, 68, 0.1); }
 
         .web-badge { background: var(--accent); color: #000; font-size: 0.7rem; padding: 2px 6px; border-radius: 4px; margin-left: 10px; font-weight: bold; text-decoration: none !important; display: inline-block;}
+
+        /* TIROIR DES RÉSERVATIONS (Cuisine) */
+        #res-drawer { position: absolute; left: 0; top: 0; width: 400px; height: 100%; background: #0a0a0a; border-right: 2px solid #333; padding: 25px; z-index: 8000; box-sizing: border-box; overflow-y: auto; transform: translateX(-100%); transition: transform 0.3s cubic-bezier(0.4, 0.0, 0.2, 1); box-shadow: 15px 0 50px rgba(0,0,0,0.9); }
+        #res-drawer.open { transform: translateX(0); }
+        .btn-close-drawer { position: absolute; top: 20px; right: 20px; background: transparent; border: none; color: #aaa; font-size: 1.5rem; font-weight: bold; cursor: pointer; transition: 0.2s; }
+        .btn-close-drawer:hover { color: var(--alert); transform: scale(1.2); }
+        
+        .res-card { background: #161616; border: 1px solid #333; border-left: 5px solid var(--alert); padding: 15px; margin-bottom: 12px; border-radius: 8px; }
+        .res-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
+        .res-name { color: #fff; font-weight: 900; font-size: 1.1rem; margin: 0; text-transform: uppercase;}
+        .res-time { background: var(--alert); color: #fff; padding: 4px 8px; border-radius: 4px; font-size: 0.8rem; font-weight: 900; }
+        .service-title { color: #888; border-bottom: 1px solid #333; padding-bottom: 5px; margin-top: 20px; margin-bottom: 15px; font-size: 0.9rem; text-transform: uppercase; letter-spacing: 1px;}
+        .res-details { color: #ccc; font-size: 0.9rem; margin: 0; line-height: 1.5;}
     </style>
 </head>
 <body>
@@ -52,12 +68,21 @@
     </div>
 
     <div id="production-area">
-        <h2 class="header-title">🔥 EN PRODUCTION <span id="pending-count" style="color:#fff;">0</span></h2>
+        <div id="res-drawer">
+            <button class="btn-close-drawer" onclick="closeResDrawer()">✕</button>
+            <h2 style="margin-top:30px; color:var(--alert); font-size: 1.4rem; border-bottom: 1px solid #333; padding-bottom: 10px; text-transform: uppercase;">Carnet de Bord</h2>
+            <div id="res-list-container"></div>
+        </div>
+
+        <div class="header-container">
+            <h2 class="header-title">🔥 EN PRODUCTION <span id="pending-count" style="color:#fff; margin-left: 10px;">0</span></h2>
+            <button class="btn-previsions" onclick="openResDrawer()">📅 PRÉVISIONS (RÉSERVATIONS)</button>
+        </div>
         <div class="grid" id="pending-container"></div>
     </div>
 
     <div id="history-area">
-        <h2 class="header-title" style="color:#888;">✔️ HISTORIQUE</h2>
+        <h2 class="header-title" style="color:#888; border-bottom: 2px solid #333; padding-bottom: 10px; margin-top:0;">✔️ HISTORIQUE</h2>
         <p style="color:#555; font-size:0.8rem;">Les plats envoyés apparaissent ici. En cas d'erreur, cliquez sur restaurer.</p>
         <div id="history-container"></div>
     </div>
@@ -111,8 +136,64 @@
             if (msg.type === 'ORDER_UPDATE') {
                 activeOrders = msg.activeOrders;
                 renderKDS();
+                renderResDrawer(); // Met à jour le placard s'il est ouvert
             }
         };
+
+        // GESTION DU TIROIR DE RÉSERVATIONS
+        function openResDrawer() { document.getElementById('res-drawer').classList.add('open'); renderResDrawer(); }
+        function closeResDrawer() { document.getElementById('res-drawer').classList.remove('open'); }
+
+        function renderResDrawer() {
+            const container = document.getElementById('res-list-container');
+            if (!container) return;
+            
+            let midiHtml = ''; let soirHtml = '';
+            let countMidi = 0; let countSoir = 0;
+            let coversMidi = 0; let coversSoir = 0;
+
+            let reservations = [];
+            for (const tableId in activeOrders) {
+                const order = activeOrders[tableId];
+                if (order && order.resName) { reservations.push({ tableId, ...order }); }
+            }
+            
+            // Tri par heure croissante
+            reservations.sort((a, b) => (a.resTime || "").localeCompare(b.resTime || ""));
+
+            reservations.forEach(order => {
+                let hour = 12; // Défaut
+                if (order.resTime) {
+                    const match = order.resTime.match(/\d+/);
+                    if (match) hour = parseInt(match[0], 10);
+                }
+                const isSoir = hour >= 17; // À partir de 17h = Soir
+                const nbCovers = parseInt(order.resCovers || order.covers || 1, 10);
+
+                const card = `
+                    <div class="res-card">
+                        <div class="res-header">
+                            <h3 class="res-name">${order.resName}</h3>
+                            <span class="res-time">${order.resTime}</span>
+                        </div>
+                        <div class="res-details">
+                            👥 ${nbCovers} couverts <br>
+                            📍 Table <span style="color:var(--alert); font-weight:bold;">${order.tableId.replace('T', '')}</span>
+                        </div>
+                    </div>
+                `;
+
+                if (isSoir) { soirHtml += card; countSoir++; coversSoir += nbCovers; } 
+                else { midiHtml += card; countMidi++; coversMidi += nbCovers; }
+            });
+
+            let finalHtml = '';
+            if (countMidi > 0) finalHtml += `<h3 class="service-title">☀️ Service de Midi (${coversMidi} couverts)</h3>${midiHtml}`;
+            if (countSoir > 0) finalHtml += `<h3 class="service-title">🌙 Service du Soir (${coversSoir} couverts)</h3>${soirHtml}`;
+            if (countMidi === 0 && countSoir === 0) finalHtml = '<div style="color:#555; text-align:center; padding-top:30px;">Aucune prévision.</div>';
+
+            container.innerHTML = finalHtml;
+        }
 
         function getCourseName(step) {
             if (step === 1) return "1. Entrées";
@@ -148,7 +229,7 @@
                     const ticketDiv = document.createElement('div');
                     ticketDiv.className = 'ticket';
                     
-                    // Groupement par étape (Entrée, Plat, Dessert)
+                    // Groupement par étape
                     const grouped = { 1: [], 2: [], 3: [], 0: [] };
                     pendingItems.forEach(i => { grouped[i.step || 0].push(i); });
 
@@ -219,13 +300,11 @@
                 }
             }
 
-            // Détection de nouveau bon pour le son
             if (currentPendingCount > previousPendingCount) { playSound('new'); }
             previousPendingCount = currentPendingCount;
             document.getElementById('pending-count').textContent = currentPendingCount + " Plats";
         }
 
-        // LA FONCTION CHIRURGICALE
         async function modifierStatutCours(tableId, step, isDone) {
             const order = activeOrders[tableId];
             if (!order) return;
@@ -235,11 +314,10 @@
             order.items.forEach(i => {
                 if ((i.dest === 'Cuisine' || i.dest === 'Dessert') && (i.step || 0) === step) {
                     i.done = isDone;
-                    if(!isDone) i.served = false; // Si on restaure l'erreur, le plat n'est plus servi
+                    if(!isDone) i.served = false; 
                 }
             });
 
-            // On recalcule si toute la table est prête
             const allDone = order.items.every(i => i.done || i.served);
             if (allDone) {
                 order.status = 'ready';
@@ -250,7 +328,6 @@
                 if (order.readyPostes) order.readyPostes = order.readyPostes.filter(p => p !== 'Cuisine');
             }
 
-            // On force la mise à jour globale
             await fetch('/update-order', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
