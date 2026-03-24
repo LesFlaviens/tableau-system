@@ -11,7 +11,6 @@ const io = socketIo(server, { cors: { origin: "*" } });
 app.use(express.json());
 app.use(cors());
 
-// Sécurité IChef
 const SECRET_KEY = "ICHEF2026";
 app.use((req, res, next) => {
     const protected = ['/production.html', '/gestionnaire.html', '/bar.html', '/finance.html'];
@@ -23,20 +22,47 @@ app.use((req, res, next) => {
 
 app.use(express.static(path.join(__dirname)));
 
-// Pont WooCommerce
-app.post('/api/nouvelle-commande', (req, res) => {
+// 1. LE NOUVEAU PONT WOOCOMMERCE OFFICIEL (WEBHOOK)
+app.post('/api/woo-webhook', (req, res) => {
+    console.log("🔥 WOOCOMMERCE : Nouvelle commande Webhook !");
     const order = req.body;
-    console.log("📥 Commande reçue de WordPress");
-    io.emit('order-received', order);
-    res.status(200).json({ success: true });
+    
+    // Si la commande est vide, on arrête
+    if (!order || !order.line_items) return res.status(200).send('OK');
+
+    let articlesFormates = [];
+    order.line_items.forEach(item => {
+        const nom = item.name.toLowerCase();
+        const qte = item.quantity;
+        // Tri automatique
+        let tag = '[Plat]';
+        if (nom.match(/biere|bière|mongy|mojito|champagne|verre|vin|cocktail/i)) tag = '[Boisson]';
+        articlesFormates.push(`${tag} ${qte}x ${item.name}`);
+    });
+
+    const payload = {
+        table: `WEB-${order.id}`,
+        heure: new Date().toLocaleTimeString('fr-FR'),
+        articles: articlesFormates
+    };
+
+    io.emit('order-received', payload);
+    res.status(200).send('Webhook traité avec succès');
 });
 
-// Liaison Temps Réel
+// 2. LIAISON DES ÉCRANS (Envoi et Retour)
 io.on('connection', (socket) => {
-    console.log('🟢 Terminal connecté au réseau');
+    console.log('🟢 Terminal connecté');
+    
+    // De la Salle vers Cuisine/Bar
     socket.on('new-order', (order) => {
-        console.log("📤 Ordre manuel détecté");
         io.emit('order-received', order);
+    });
+
+    // De la Cuisine/Bar vers la Salle (Le fameux retour)
+    socket.on('order-ready', (data) => {
+        console.log(`🔔 RETOUR SALLE : ${data.table} est prête au poste ${data.poste}`);
+        io.emit('notify-ready', data);
     });
 });
 
