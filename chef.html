@@ -42,6 +42,11 @@
         .data-title { font-size: 1.2rem; font-weight: 900; color: #fff; margin-bottom: 10px; display: block; text-transform: uppercase;}
         .data-detail { color: #ccc; font-size: 0.9rem; margin-bottom: 5px; }
         .data-detail b { color: var(--sub); font-size: 0.8rem; text-transform: uppercase;}
+
+        /* BOUTON MICROPHONE */
+        .btn-mic { background: #1a1a1a; border: 1px solid #444; color: #fff; padding: 10px 20px; border-radius: 6px; font-weight: bold; cursor: pointer; transition: 0.2s; display: flex; align-items: center; gap: 8px; font-size: 0.9rem;}
+        .btn-mic.recording { background: rgba(255, 23, 68, 0.2); border-color: var(--alert); color: var(--alert); animation: pulse-mic 1.5s infinite; }
+        @keyframes pulse-mic { 0% { transform: scale(1); } 50% { transform: scale(1.05); } 100% { transform: scale(1); } }
     </style>
 </head>
 <body>
@@ -83,7 +88,11 @@
             
             <button onclick="addIngredientLine()" style="width:100%; padding:15px; background:#111; border:1px dashed var(--mercuriale); color:var(--mercuriale); cursor:pointer; margin-bottom:20px; font-weight:bold; border-radius:6px; transition:0.2s;">+ AJOUTER UN INGRÉDIENT DE LA MERCURIALE</button>
             
-            <textarea id="recipe-instructions" class="input-base" style="height: 120px; margin-bottom: 20px;" placeholder="Instructions de préparation détaillées pour la cuisine..."></textarea>
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom: 10px;">
+                <label style="color:var(--sub); font-size:0.8rem; font-weight:bold; text-transform:uppercase;">Instructions de préparation</label>
+                <button id="btn-dictation" class="btn-mic" onclick="toggleDictation()">🎙️ COMMENCER LA DICTÉE</button>
+            </div>
+            <textarea id="recipe-instructions" class="input-base" style="height: 150px; margin-bottom: 20px; line-height: 1.5;" placeholder="Cliquez sur le micro et parlez, ou tapez vos instructions ici..."></textarea>
 
             <div style="background:#0a0a0a; padding:25px; border-radius:8px; display:flex; justify-content:space-between; align-items:center; border:1px solid #222;">
                 <div>
@@ -292,13 +301,10 @@
             `).join('');
         }
 
-        // --- IMPORT & EXPORT CSV ---
         function exportMercuriale() {
             const merc = getMercuriale();
-            let csv = "Nom,Fournisseur,Unite,Prix\n"; // En-têtes standards
-            merc.forEach(item => {
-                csv += `"${item.name}","${item.supplier}","${item.unit}","${item.price}"\n`;
-            });
+            let csv = "Nom,Fournisseur,Unite,Prix\n"; 
+            merc.forEach(item => { csv += `"${item.name}","${item.supplier}","${item.unit}","${item.price}"\n`; });
             
             const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
             const url = window.URL.createObjectURL(blob);
@@ -318,27 +324,23 @@
                 const text = e.target.result;
                 const lines = text.split('\n');
                 let merc = getMercuriale();
-                let added = 0;
-                let updated = 0;
+                let added = 0; let updated = 0;
 
-                for (let i = 1; i < lines.length; i++) { // Ignorer la ligne d'en-tête (index 0)
+                for (let i = 1; i < lines.length; i++) { 
                     const line = lines[i].trim();
                     if (!line) continue;
                     
-                    // Séparation basique des colonnes CSV (gère les virgules)
                     const parts = line.match(/(".*?"|[^",\s]+)(?=\s*,|\s*$)/g);
                     if(!parts || parts.length < 4) continue;
 
                     const name = parts[0].replace(/"/g, '').trim();
                     const supplier = parts[1].replace(/"/g, '').trim();
                     const unit = parts[2].replace(/"/g, '').trim();
-                    // On remplace les éventuelles virgules par des points pour la conversion numérique
                     const priceRaw = parts[3].replace(/"/g, '').replace(',', '.').trim();
                     const price = parseFloat(priceRaw);
 
                     if(isNaN(price) || !name) continue;
 
-                    // L'intelligence : on cherche si l'ingrédient existe déjà par son nom
                     const existingIndex = merc.findIndex(item => item.name.toLowerCase() === name.toLowerCase());
                     
                     if (existingIndex > -1) {
@@ -355,14 +357,14 @@
                 merc.sort((a, b) => a.name.localeCompare(b.name));
                 saveMercuriale(merc);
                 alert(`✅ IMPORT RÉUSSI :\n- ${added} nouveaux ingrédients ajoutés.\n- ${updated} prix mis à jour automatiquement.`);
-                updateAllRecipeDropdowns(); // Mise à jour instantanée du Food Cost !
+                updateAllRecipeDropdowns(); 
             };
             reader.readAsText(file);
-            event.target.value = ''; // Réinitialise l'input
+            event.target.value = ''; 
         }
 
         // ==========================================
-        // MODULE 3 : FOOD COST
+        // MODULE 3 : FOOD COST & DICTÉE VOCALE
         // ==========================================
         function getIngredientOptionsHTML() {
             const merc = getMercuriale();
@@ -381,7 +383,7 @@
                 const currentVal = select.value;
                 select.innerHTML = optionsHTML;
                 select.value = currentVal; 
-                updateLinePrice(select); // Force la mise à jour visuelle des prix
+                updateLinePrice(select); 
             });
             calculateFC();
         }
@@ -465,6 +467,84 @@
             document.getElementById('total-food-cost').textContent = total.toFixed(2);
         }
 
+        // --- DICTÉE VOCALE (WEB SPEECH API) ---
+        let recognition;
+        let isRecording = false;
+
+        function initSpeechRecognition() {
+            window.SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+            if (window.SpeechRecognition) {
+                recognition = new SpeechRecognition();
+                recognition.lang = 'fr-FR';
+                recognition.interimResults = true; // Permet de voir le texte s'écrire en direct
+                recognition.continuous = true; // Ne coupe pas la dictée aux pauses
+
+                recognition.onresult = function(event) {
+                    let finalTranscript = '';
+                    let interimTranscript = '';
+
+                    for (let i = event.resultIndex; i < event.results.length; ++i) {
+                        if (event.results[i].isFinal) {
+                            finalTranscript += event.results[i][0].transcript + '. ';
+                        } else {
+                            interimTranscript += event.results[i][0].transcript;
+                        }
+                    }
+
+                    const textArea = document.getElementById('recipe-instructions');
+                    // On ajoute le texte validé, et on montre le texte en cours d'écoute
+                    textArea.value = (textArea.getAttribute('data-base') || '') + finalTranscript + interimTranscript;
+                    
+                    if (finalTranscript !== '') {
+                        textArea.setAttribute('data-base', (textArea.getAttribute('data-base') || '') + finalTranscript);
+                    }
+                };
+
+                recognition.onerror = function(event) {
+                    console.error("Erreur de dictée: ", event.error);
+                    stopDictation();
+                };
+
+                recognition.onend = function() {
+                    // Si le micro se coupe tout seul, on relance s'il était censé enregistrer
+                    if(isRecording) recognition.start();
+                };
+            } else {
+                alert("Désolé, votre navigateur ne supporte pas la dictée vocale (utilisez Chrome, Edge ou Safari récent).");
+            }
+        }
+
+        function toggleDictation() {
+            if (!recognition) initSpeechRecognition();
+            if (!recognition) return;
+
+            const btn = document.getElementById('btn-dictation');
+            const textArea = document.getElementById('recipe-instructions');
+
+            if (isRecording) {
+                stopDictation();
+            } else {
+                // Démarrage
+                textArea.setAttribute('data-base', textArea.value + (textArea.value.endsWith(' ') ? '' : ' '));
+                recognition.start();
+                isRecording = true;
+                btn.innerHTML = '🛑 ARRÊTER LA DICTÉE';
+                btn.classList.add('recording');
+            }
+        }
+
+        function stopDictation() {
+            if(recognition) {
+                isRecording = false;
+                recognition.stop();
+                const btn = document.getElementById('btn-dictation');
+                btn.innerHTML = '🎙️ COMMENCER LA DICTÉE';
+                btn.classList.remove('recording');
+            }
+        }
+
+        // ---------------------------------------------
+
         function saveRecipeToEmpire() {
             const title = document.getElementById('recipe-title').value.trim();
             const instructions = document.getElementById('recipe-instructions').value.trim();
@@ -493,14 +573,5 @@
             
             document.getElementById('recipe-title').value = '';
             document.getElementById('recipe-instructions').value = '';
-            document.getElementById('ingredients-body').innerHTML = '';
-            addIngredientLine(); calculateFC();
-        }
-
-        // Init
-        renderSuppliers();
-        renderMercuriale();
-        addIngredientLine();
-    </script>
-</body>
-</html>
+            document.getElementById('recipe-instructions
+                                    *
