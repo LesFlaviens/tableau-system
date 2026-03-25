@@ -33,7 +33,6 @@
         .sa-title { margin: 0; color: var(--hr); text-transform: uppercase; font-size: 0.9rem; font-weight: 900; letter-spacing: 1px;}
         .stat-suggestion { font-size: 0.8rem; font-weight: bold; color: var(--accent); padding: 4px 12px; border-radius: 6px; background: rgba(0, 0, 0, 0.5); border: 1px solid #333; }
         
-        /* BADGES RÉSUMÉS (TOUJOURS VISIBLES) */
         .summary-badges { display: flex; gap: 8px; align-items: center; }
         .mini-badge { background: #111; border: 1px solid #333; padding: 4px 8px; border-radius: 4px; font-size: 0.65rem; color: var(--sub); font-weight: bold; text-transform: uppercase;}
         .mini-badge span { color: #fff; font-size: 0.95rem; margin-left: 6px; font-weight: 900;}
@@ -76,7 +75,7 @@
         .obs-inp:focus { outline: none; color: #fff; border-bottom-color: var(--hr); }
         .day-total { font-weight: 900; font-size: 0.9rem; }
 
-        /* VUE GLOBALE ÉQUIPE (ZEBRA) */
+        /* VUE GLOBALE ÉQUIPE (ZEBRA ÉPURÉ) */
         .global-table { min-width: 1500px; }
         .global-table th, .global-table td { border: 1px solid #333; text-align: center; padding: 2px; }
         .global-table th { z-index: 12; }
@@ -89,7 +88,7 @@
 
         .sticky-col { position: sticky; left: 0; z-index: 13; width: 120px; text-align: left; padding-left: 10px; font-weight: 900; color: var(--hr); border-right: 2px solid #444; text-transform: uppercase; font-size: 0.8rem;}
         
-        .status-micro { width: 100%; height: 100%; background: transparent; border: none; cursor: pointer; text-align: center; font-size: 1rem; font-weight: 900; padding: 6px 0; appearance: none; -webkit-appearance: none; -moz-appearance: none; transition: 0.2s;}
+        .status-micro { width: 100%; height: 100%; background: transparent; border: none; cursor: pointer; text-align: center; font-size: 1.1rem; padding: 6px 0; appearance: none; -webkit-appearance: none; -moz-appearance: none; transition: 0.2s;}
         .status-micro:focus { outline: none; background: rgba(255, 255, 255, 0.1); }
 
         /* MODAL */
@@ -180,6 +179,8 @@
                     <button id="btn-toggle-sidebar" class="btn-nav" style="border-color:#444; color:#aaa; padding: 6px 10px; font-size:0.75rem;" onclick="toggleSidebar()" title="Réduire/Agrandir">◀ MASQUER STAFF</button>
                     <input type="month" id="month-selector" class="month-selector" onchange="loadMonthData()">
                     <div id="active-staff-badge" style="font-size: 1rem; font-weight: 900; text-transform: uppercase; display: none; padding: 4px 10px; border-radius: 6px; background: #000; border: 1px solid #333; letter-spacing: 1px;"></div>
+                    
+                    <button class="btn-nav" style="border-color:#ff9800; color:#ff9800; padding: 6px 10px; font-size:0.75rem;" onclick="autoPlanMonth()" title="Générer un planning optimisé">⚡ AUTO-PLANNING</button>
                     <button id="btn-toggle-view" class="btn-nav" style="border-color:var(--accent); color:var(--accent); padding: 6px 10px; font-size:0.75rem;" onclick="toggleViewMode()">🌍 VUE GLOBALE</button>
                 </div>
                 
@@ -255,7 +256,6 @@
         let isForecastExpanded = true;
         const daysOfWeek = ["Dim", "Lun", "Mar", "Mer", "Jeu", "Ven", "Sam"];
         
-        // Palette sobre (Material Design Pastel/Muted)
         const staffColors = ['#64b5f6', '#81c784', '#ba68c8', '#ffb74d', '#e57373', '#4db6ac', '#f06292', '#fff176', '#7986cb', '#aed581'];
 
         function init() {
@@ -264,6 +264,7 @@
             renderStaffList();
         }
 
+        // --- GESTION DES AFFICHAGES ---
         function toggleSidebar() {
             isSidebarVisible = !isSidebarVisible;
             document.getElementById('staff-sidebar').style.display = isSidebarVisible ? 'flex' : 'none';
@@ -347,8 +348,6 @@
                 const color = staffColors[idx % staffColors.length];
                 const isActive = s.id === currentStaffId;
                 const activeStyle = isActive ? `border: 1px solid ${color}; border-left: 6px solid ${color}; background: ${color}15; box-shadow: inset 10px 0 20px ${color}20; transform: scale(1.02);` : `border-left: 4px solid ${color}66;`;
-                
-                // Retrait de l'effet neon text-shadow trop agressif
                 const glowText = isActive ? `color: ${color}; font-weight: 900;` : `color: ${color};`;
 
                 return `
@@ -444,6 +443,56 @@
             
             renderStaffList();
             updateGlobalModulation();
+        }
+
+        // --- MOTEUR IA : AUTO-PLANNING ---
+        function autoPlanMonth() {
+            if(!confirm("⚡ Lancer l'Auto-Planning ? L'assistant va attribuer 2 jours OFF consécutifs par semaine en roulement pour chaque employé. Les congés payés et arrêts maladie existants ne seront pas écrasés.")) return;
+            
+            const monthStr = document.getElementById('month-selector').value;
+            const [year, month] = monthStr.split('-');
+            const daysInMonth = new Date(year, month, 0).getDate();
+            const ts = getTimesheets();
+            const dir = getDirectory();
+
+            // Motifs de roulement des jours OFF (0=Dimanche, 1=Lundi, etc.)
+            // L'algo répartit les repos en début/milieu de semaine pour assurer les week-ends.
+            const offPatterns = [
+                [1, 2], // Lundi / Mardi
+                [2, 3], // Mardi / Mercredi
+                [3, 4], // Mercredi / Jeudi
+                [4, 5]  // Jeudi / Vendredi (Pour ceux qui ont le samedi/dimanche bossé)
+            ];
+
+            dir.forEach((staff, index) => {
+                // Assigne un motif de roulement différent à chaque membre du staff
+                const pattern = offPatterns[index % offPatterns.length];
+                
+                for(let d=1; d<=daysInMonth; d++) {
+                    const dateObj = new Date(year, month-1, d);
+                    const dayOfWeek = dateObj.getDay(); 
+                    const currentStatus = ts[monthStr][staff.id][d].status;
+
+                    // Sécurité : On n'écrase jamais un congé ou un arrêt maladie
+                    if(currentStatus !== 'conge' && currentStatus !== 'maladie') {
+                        if(pattern.includes(dayOfWeek)) {
+                            // C'est son jour de repos
+                            ts[monthStr][staff.id][d].status = 'off';
+                            ts[monthStr][staff.id][d].s1 = '';
+                            ts[monthStr][staff.id][d].s2 = '';
+                        } else {
+                            // C'est son jour de travail (horaires standards à affiner par le chef ensuite)
+                            ts[monthStr][staff.id][d].status = 'present';
+                            ts[monthStr][staff.id][d].s1 = '09:15-14:30';
+                            ts[monthStr][staff.id][d].s2 = '18:00-22:30';
+                        }
+                    }
+                }
+            });
+            
+            saveTimesheets(ts);
+            loadMonthData();
+            alert("✅ Auto-Planning terminé ! Les jours de repos ont été répartis intelligemment. Vérifiez le tableau de bord pour ajuster la couverture.");
         }
 
         function updateGlobalModulation() {
@@ -587,11 +636,11 @@
                     <td>
                         <select class="status-sel" style="border-color:${selBorder}; color:${selColor};" onchange="updateDay(${d}, 'status', this.value)">
                             <option value="present" ${data.status==='present'?'selected':''}>✔ PRÉSENT</option>
-                            <option value="off_matin" ${data.status==='off_matin'?'selected':''}>MATIN OFF</option>
-                            <option value="off_soir" ${data.status==='off_soir'?'selected':''}>SOIR OFF</option>
-                            <option value="off" ${data.status==='off'?'selected':''}>✖ OFF</option>
-                            <option value="conge" ${data.status==='conge'?'selected':''}>CP CONGÉ</option>
-                            <option value="maladie" ${data.status==='maladie'?'selected':''}>MALADIE</option>
+                            <option value="off_matin" ${data.status==='off_matin'?'selected':''}>☀️ MATIN OFF</option>
+                            <option value="off_soir" ${data.status==='off_soir'?'selected':''}>🌙 SOIR OFF</option>
+                            <option value="off" ${data.status==='off'?'selected':''}>💤 OFF</option>
+                            <option value="conge" ${data.status==='conge'?'selected':''}>🏖️ CONGÉ PAYÉ</option>
+                            <option value="maladie" ${data.status==='maladie'?'selected':''}>🤒 MALADIE</option>
                         </select>
                     </td>
                     <td><input type="text" class="shift-inp" value="${data.s1}" ${disableS1 ? 'disabled' : ''} onchange="updateDay(${d}, 's1', this.value)"></td>
@@ -637,24 +686,18 @@
                 for(let d=1; d<=daysInMonth; d++) {
                     const data = tsMonthData[staff.id][d];
                     
-                    let bgColor = 'transparent';
                     let textColor = '#555';
-                    
-                    if(data.status === 'present') { textColor = color; bgColor = color + '15'; }
-                    else if(data.status === 'off') { bgColor = 'rgba(255,23,68,0.15)'; textColor = '#ff1744'; }
-                    else if(data.status === 'off_matin') { bgColor = 'rgba(255,160,0,0.15)'; textColor = '#ffa000'; }
-                    else if(data.status === 'off_soir') { bgColor = 'rgba(255,160,0,0.15)'; textColor = '#ffa000'; }
-                    else if(data.status === 'conge') { bgColor = 'rgba(0,230,118,0.15)'; textColor = '#00e676'; }
-                    else if(data.status === 'maladie') { bgColor = 'rgba(255,23,68,0.3)'; textColor = '#ff1744'; }
+                    if(data.status === 'present') textColor = color; 
 
-                    bodyHtml += `<td style="background-color:${bgColor};">
+                    // FINI L'ARBRE DE NOËL : Juste des emojis discrets et sans gros fond flashy
+                    bodyHtml += `<td>
                         <select class="status-micro" style="color:${textColor};" onchange="updateDayGlobal(${staff.id}, ${d}, this.value)" title="${data.status}">
                             <option value="present" ${data.status==='present'?'selected':''}>✔</option>
-                            <option value="off" ${data.status==='off'?'selected':''}>OFF</option>
-                            <option value="off_matin" ${data.status==='off_matin'?'selected':''}>MAT</option>
-                            <option value="off_soir" ${data.status==='off_soir'?'selected':''}>SOIR</option>
-                            <option value="conge" ${data.status==='conge'?'selected':''}>CP</option>
-                            <option value="maladie" ${data.status==='maladie'?'selected':''}>MAL</option>
+                            <option value="off" ${data.status==='off'?'selected':''}>💤</option>
+                            <option value="off_matin" ${data.status==='off_matin'?'selected':''}>☀️</option>
+                            <option value="off_soir" ${data.status==='off_soir'?'selected':''}>🌙</option>
+                            <option value="conge" ${data.status==='conge'?'selected':''}>🏖️</option>
+                            <option value="maladie" ${data.status==='maladie'?'selected':''}>🤒</option>
                         </select>
                     </td>`;
                 }
