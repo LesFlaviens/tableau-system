@@ -97,9 +97,17 @@
 
     <div id="view-MERC" class="view-section" style="display: none;">
         <div class="module-container" style="border-top: 5px solid var(--mercuriale);">
+            
             <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:20px;">
-                <h2 style="color:var(--mercuriale); margin:0;">🥩 MERCURIALE DES INGRÉDIENTS</h2>
-                <span style="color:var(--sub); font-size:0.8rem;">La source de vérité de vos coûts.</span>
+                <div>
+                    <h2 style="color:var(--mercuriale); margin:0;">🥩 MERCURIALE DES INGRÉDIENTS</h2>
+                    <span style="color:var(--sub); font-size:0.8rem;">La source de vérité de vos coûts.</span>
+                </div>
+                <div style="display:flex; gap:10px;">
+                    <button class="btn-nav" style="border-color:#555; color:#aaa; font-size:0.8rem;" onclick="exportMercuriale()">📤 EXPORTER MODÈLE (CSV)</button>
+                    <button class="btn-nav" style="border-color:var(--mercuriale); color:var(--mercuriale); font-size:0.8rem;" onclick="document.getElementById('import-merc').click()">📥 ACTUALISER PRIX (IMPORT CSV)</button>
+                    <input type="file" id="import-merc" accept=".csv" style="display:none;" onchange="importMercuriale(event)">
+                </div>
             </div>
             
             <div class="form-add" style="border-color:var(--mercuriale);">
@@ -120,7 +128,7 @@
                     </select>
                 </div>
                 <div style="flex:1">
-                    <label style="font-size:0.7rem; color:var(--sub); text-transform:uppercase; font-weight:bold; display:block; margin-bottom:5px;">Prix Achat Unitaire (€)</label>
+                    <label style="font-size:0.7rem; color:var(--sub); text-transform:uppercase; font-weight:bold; display:block; margin-bottom:5px;">Prix Unitaire (€)</label>
                     <input type="number" id="merc-price" class="input-base" step="0.01" placeholder="25.90">
                 </div>
                 <button onclick="addMercurialeItem()" class="btn-nav" style="background:var(--mercuriale); color:#fff; border:none; height:45px; font-size:1rem;">+ AJOUTER</button>
@@ -178,12 +186,11 @@
             if(viewName === 'FC') {
                 document.getElementById('view-FC').style.display = 'block';
                 document.getElementById('btn-tab-FC').classList.add('active-fc');
-                // Rafraichit les listes déroulantes des recettes au cas où la mercuriale a changé
                 updateAllRecipeDropdowns();
             } else if(viewName === 'MERC') {
                 document.getElementById('view-MERC').style.display = 'block';
                 document.getElementById('btn-tab-MERC').classList.add('active-merc');
-                populateSupplierDropdown(); // Rafraichit la liste des fournisseurs dispo
+                populateSupplierDropdown(); 
             } else if(viewName === 'SUPP') {
                 document.getElementById('view-SUPP').style.display = 'block';
                 document.getElementById('btn-tab-SUPP').classList.add('active-supp');
@@ -232,7 +239,7 @@
         }
 
         // ==========================================
-        // MODULE 2 : LA MERCURIALE (INGRÉDIENTS)
+        // MODULE 2 : LA MERCURIALE & IMPORT/EXPORT
         // ==========================================
         function getMercuriale() { return JSON.parse(localStorage.getItem('kds_mercuriale_v1')) || []; }
         function saveMercuriale(merc) { localStorage.setItem('kds_mercuriale_v1', JSON.stringify(merc)); renderMercuriale(); }
@@ -254,10 +261,7 @@
 
             const merc = getMercuriale();
             merc.push({ id: Date.now(), name, supplier, unit, price });
-            
-            // Tri alphabétique pour faciliter la recherche dans les recettes
             merc.sort((a, b) => a.name.localeCompare(b.name));
-            
             saveMercuriale(merc);
 
             document.getElementById('merc-name').value = ''; document.getElementById('merc-price').value = '';
@@ -288,11 +292,78 @@
             `).join('');
         }
 
+        // --- IMPORT & EXPORT CSV ---
+        function exportMercuriale() {
+            const merc = getMercuriale();
+            let csv = "Nom,Fournisseur,Unite,Prix\n"; // En-têtes standards
+            merc.forEach(item => {
+                csv += `"${item.name}","${item.supplier}","${item.unit}","${item.price}"\n`;
+            });
+            
+            const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+            const url = window.URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = 'Modele_Mercuriale_Empire.csv';
+            a.click();
+            window.URL.revokeObjectURL(url);
+        }
+
+        function importMercuriale(event) {
+            const file = event.target.files[0];
+            if (!file) return;
+            
+            const reader = new FileReader();
+            reader.onload = function(e) {
+                const text = e.target.result;
+                const lines = text.split('\n');
+                let merc = getMercuriale();
+                let added = 0;
+                let updated = 0;
+
+                for (let i = 1; i < lines.length; i++) { // Ignorer la ligne d'en-tête (index 0)
+                    const line = lines[i].trim();
+                    if (!line) continue;
+                    
+                    // Séparation basique des colonnes CSV (gère les virgules)
+                    const parts = line.match(/(".*?"|[^",\s]+)(?=\s*,|\s*$)/g);
+                    if(!parts || parts.length < 4) continue;
+
+                    const name = parts[0].replace(/"/g, '').trim();
+                    const supplier = parts[1].replace(/"/g, '').trim();
+                    const unit = parts[2].replace(/"/g, '').trim();
+                    // On remplace les éventuelles virgules par des points pour la conversion numérique
+                    const priceRaw = parts[3].replace(/"/g, '').replace(',', '.').trim();
+                    const price = parseFloat(priceRaw);
+
+                    if(isNaN(price) || !name) continue;
+
+                    // L'intelligence : on cherche si l'ingrédient existe déjà par son nom
+                    const existingIndex = merc.findIndex(item => item.name.toLowerCase() === name.toLowerCase());
+                    
+                    if (existingIndex > -1) {
+                        merc[existingIndex].price = price;
+                        merc[existingIndex].supplier = supplier;
+                        merc[existingIndex].unit = unit;
+                        updated++;
+                    } else {
+                        merc.push({ id: Date.now() + Math.random(), name, supplier, unit, price });
+                        added++;
+                    }
+                }
+                
+                merc.sort((a, b) => a.name.localeCompare(b.name));
+                saveMercuriale(merc);
+                alert(`✅ IMPORT RÉUSSI :\n- ${added} nouveaux ingrédients ajoutés.\n- ${updated} prix mis à jour automatiquement.`);
+                updateAllRecipeDropdowns(); // Mise à jour instantanée du Food Cost !
+            };
+            reader.readAsText(file);
+            event.target.value = ''; // Réinitialise l'input
+        }
+
         // ==========================================
-        // MODULE 3 : FOOD COST (LIÉ À LA MERCURIALE)
+        // MODULE 3 : FOOD COST
         // ==========================================
-        
-        // Génère le code HTML de la liste déroulante des ingrédients
         function getIngredientOptionsHTML() {
             const merc = getMercuriale();
             if(merc.length === 0) return '<option value="">⚠️ Ajoutez des ingrédients dans la Mercuriale d\'abord</option>';
@@ -304,13 +375,13 @@
             return html;
         }
 
-        // Met à jour les listes déroulantes existantes si on switch de tab
         function updateAllRecipeDropdowns() {
             const optionsHTML = getIngredientOptionsHTML();
             document.querySelectorAll('.ing-select').forEach(select => {
                 const currentVal = select.value;
                 select.innerHTML = optionsHTML;
-                select.value = currentVal; // Tente de garder la sélection
+                select.value = currentVal; 
+                updateLinePrice(select); // Force la mise à jour visuelle des prix
             });
             calculateFC();
         }
@@ -343,7 +414,6 @@
             tbody.appendChild(tr);
         }
 
-        // Se déclenche quand le chef choisit un ingrédient
         function updateLinePrice(selectElem) {
             const tr = selectElem.parentElement.parentElement;
             const selectedOption = selectElem.options[selectElem.selectedIndex];
@@ -361,7 +431,6 @@
                 
                 priceInput.value = price;
                 
-                // Adapte le label de quantité (Si on achète au kg, la recette se fait en grammes)
                 if(unit === 'kg') { unitLabel.textContent = 'g'; qteInput.placeholder = 'en grammes'; }
                 else if(unit === 'L') { unitLabel.textContent = 'ml'; qteInput.placeholder = 'en ml'; }
                 else { unitLabel.textContent = 'pc'; qteInput.placeholder = 'nbre pièces'; }
@@ -384,11 +453,9 @@
                 let qte = parseFloat(row.querySelector('.ing-qte').value) || 0;
                 
                 let lineCost = 0;
-                // Calcul intelligent : Si la mercuriale est au kilo, la quantité tapée est en gramme.
                 if(unit === 'kg' || unit === 'L') {
                     lineCost = (qte / 1000) * pricePerUnit;
                 } else {
-                    // Si c'est à la pièce
                     lineCost = qte * pricePerUnit;
                 }
                 
@@ -405,7 +472,6 @@
             
             const cost = document.getElementById('total-food-cost').textContent;
             
-            // Construire le détail de la recette pour la cuisine
             let ingredientsText = "📋 INGRÉDIENTS :\n";
             document.querySelectorAll('#ingredients-body tr').forEach(row => {
                 const selectElem = row.querySelector('.ing-select');
@@ -425,7 +491,6 @@
             
             alert("✅ Fiche Technique validée ! Elle est synchronisée avec la tablette de la cuisine.");
             
-            // Reset
             document.getElementById('recipe-title').value = '';
             document.getElementById('recipe-instructions').value = '';
             document.getElementById('ingredients-body').innerHTML = '';
