@@ -6,7 +6,7 @@
     <title>Empire - Master Salle & Caisse</title>
     <style>
         :root { --bg: #050505; --accent: #00e676; --alert: #ff1744; --text: #fff; --panel: #111; --purple: #ea80fc; --blue: #00b0ff; --warning: #ffb300; --sub: #888; }
-        body { font-family: 'Inter', sans-serif; background: var(--bg); color: var(--text); margin: 0; display: flex; flex-direction: column; height: 100vh; overflow: hidden; user-select: none; touch-action: none; }
+        body { font-family: 'Inter', sans-serif; background: var(--bg); color: var(--text); margin: 0; display: flex; flex-direction: column; height: 100vh; overflow: hidden; user-select: none; touch-action: manipulation; }
         
         /* HEADER ÉPURÉ */
         header { border-bottom: 2px solid #333; padding: 15px 20px; background: #0a0a0a; display: flex; justify-content: space-between; align-items: center; flex-shrink: 0; }
@@ -320,9 +320,17 @@
             return (resas[today] || []).some(r => r.table === tableLabel);
         }
 
+        // CORRECTION DU CRASH HASACTIVEORDER : Gère l'ancienne méthode et la nouvelle méthode
         function hasActiveOrder(tableLabel) {
-            const ticket = JSON.parse(localStorage.getItem('empire_order_' + tableLabel)) || { entrees:[], plats:[], desserts:[], boissons:[] };
-            return (ticket.entrees.length + ticket.plats.length + ticket.desserts.length + ticket.boissons.length) > 0;
+            const ticket = JSON.parse(localStorage.getItem('empire_order_' + tableLabel));
+            if(!ticket) return false;
+            // Sécurité si l'ancien format (array vide) est en mémoire
+            if(Array.isArray(ticket)) return ticket.length > 0;
+            
+            return (ticket.entrees && ticket.entrees.length > 0) || 
+                   (ticket.plats && ticket.plats.length > 0) || 
+                   (ticket.desserts && ticket.desserts.length > 0) || 
+                   (ticket.boissons && ticket.boissons.length > 0);
         }
 
         function loadFloorPlan() {
@@ -339,9 +347,9 @@
                 div.style.width = d.w + 'px'; div.style.height = d.h + 'px';
                 div.style.top = d.t + 'px'; div.style.left = d.l + 'px';
                 
-                div.onmousedown = function(e) { if(isMaster) startDrag(e, this); };
-                div.ontouchstart = function(e) { if(isMaster) startDrag(e, this); };
-                if (isMaster) {
+                if(isMaster) {
+                    div.onmousedown = function(e) { startDrag(e, this); };
+                    div.ontouchstart = function(e) { startDrag(e, this); };
                     const handle = document.createElement('div'); handle.className = 'resize-handle';
                     handle.onmousedown = startResize; handle.ontouchstart = startResize;
                     div.appendChild(handle);
@@ -353,7 +361,6 @@
                 const label = t.label || t.id;
                 const div = document.createElement('div');
                 div.className = 'table-obj';
-                // UTILISATION D'UN ATTRIBUT DE DATA POUR ÉVITER LES EMOJIS DANS LE NOM
                 div.setAttribute('data-label', label);
                 div.setAttribute('data-id', t.id);
                 div.setAttribute('data-type', 'table');
@@ -368,14 +375,16 @@
                     div.innerHTML += `<div class="table-badge active-order">🍽️</div>`;
                 }
 
-                // GESTION DU CLIC / TOUCHER (Même pour le Master)
-                div.onmousedown = function(e) { startDrag(e, this); };
-                div.ontouchstart = function(e) { startDrag(e, this); };
-
-                if (isMaster) {
+                // GESTION INTELLIGENTE DU CLIC / DRAG
+                if(isMaster) {
+                    div.onmousedown = function(e) { startDrag(e, this); };
+                    div.ontouchstart = function(e) { startDrag(e, this); };
                     const handle = document.createElement('div'); handle.className = 'resize-handle';
                     handle.onmousedown = startResize; handle.ontouchstart = startResize;
                     div.appendChild(handle);
+                } else {
+                    // SERVEUR : Clic pur et dur. Pas de drag. 100% de fiabilité.
+                    div.onclick = function() { openOrderPad(label); };
                 }
 
                 floor.appendChild(div);
@@ -398,8 +407,13 @@
             document.getElementById('order-table-title').textContent = "TABLE " + tableName;
             
             let savedTicket = JSON.parse(localStorage.getItem('empire_order_' + tableName));
-            if(savedTicket) currentTicket = savedTicket;
-            else currentTicket = { entrees: [], plats: [], desserts: [], boissons: [] };
+            
+            // SÉCURITÉ ANTI-CRASH (Conversion de l'ancien système s'il en reste un)
+            if(savedTicket && !Array.isArray(savedTicket) && savedTicket.entrees) {
+                currentTicket = savedTicket;
+            } else {
+                currentTicket = { entrees: [], plats: [], desserts: [], boissons: [] };
+            }
             
             renderTicket();
             loadMenuCategory('Entrée');
@@ -460,7 +474,7 @@
             let total = 0; let html = '';
 
             const renderGroup = (title, itemsArray, arrayName) => {
-                if(itemsArray.length === 0) return '';
+                if(!itemsArray || itemsArray.length === 0) return '';
                 let groupHtml = `<div class="ticket-group"><div class="ticket-group-title">${title}</div>`;
                 itemsArray.forEach(item => {
                     total += item.price;
@@ -486,7 +500,7 @@
 
             let kdsQueue = JSON.parse(localStorage.getItem('empire_kds_queue')) || [];
             
-            // ANTI-DOUBLON : Si le serveur corrige une commande (ex: il retire un plat), on efface l'ancienne commande de la cuisine (si elle est encore pending) pour la remplacer par la nouvelle
+            // ANTI-DOUBLON : On écrase l'ancienne commande de cette table SI elle n'est pas encore partie
             kdsQueue = kdsQueue.filter(o => !(o.table === currentTableId && o.status === 'pending'));
 
             const orderData = {
@@ -575,7 +589,7 @@
         }
 
         // =================================================================
-        // 6. LOGIQUE DRAG AND DROP (TACTILE + ANTI-ERREUR)
+        // 6. LOGIQUE DRAG AND DROP (TACTILE + ANTI-ERREUR) - UNIQUEMENT MASTER
         // =================================================================
         let startClickX = 0, startClickY = 0;
 
@@ -586,11 +600,8 @@
             let clientX = e.type.includes('mouse') ? e.clientX : e.touches[0].clientX;
             let clientY = e.type.includes('mouse') ? e.clientY : e.touches[0].clientY;
             
-            startClickX = clientX;
-            startClickY = clientY;
-
-            startX = clientX - rect.left;
-            startY = clientY - rect.top;
+            startClickX = clientX; startClickY = clientY;
+            startX = clientX - rect.left; startY = clientY - rect.top;
             currentDrag.style.zIndex = 1000;
         }
 
@@ -612,10 +623,7 @@
             let clientX = e.type.includes('mouse') ? e.clientX : e.touches[0].clientX;
             let clientY = e.type.includes('mouse') ? e.clientY : e.touches[0].clientY;
             
-            // TOLÉRANCE TACTILE : Le doigt doit bouger de plus de 10px pour que ça soit considéré comme un "déplacement"
-            if (Math.abs(clientX - startClickX) > 10 || Math.abs(clientY - startClickY) > 10) {
-                hasMoved = true;
-            }
+            if (Math.abs(clientX - startClickX) > 10 || Math.abs(clientY - startClickY) > 10) { hasMoved = true; }
 
             if(isResizing) {
                 hasMoved = true;
@@ -638,20 +646,13 @@
             if(!currentDrag) return;
             
             const id = currentDrag.getAttribute('data-id');
-            const label = currentDrag.getAttribute('data-label'); // Extraction propre sans les emojis
+            const label = currentDrag.getAttribute('data-label'); 
             const isDecor = currentDrag.getAttribute('data-type') === 'decor';
 
-            // SI C'EST UN CLIC SIMPLE (PAS DE DÉPLACEMENT)
-            if(!hasMoved && !isResizing) {
-                if (isDecor && isMaster) {
-                    openDecorEdit(id);
-                } else if (!isDecor) {
-                    // On ouvre la caisse, que l'on soit Serveur ou Master
-                    openOrderPad(label);
-                }
-            } 
-            // SI C'ÉTAIT UN DÉPLACEMENT (UNIQUEMENT MASTER)
-            else if (isMaster && hasMoved) {
+            if(!hasMoved && !isResizing && isMaster) {
+                if (isDecor) openDecorEdit(id);
+                else openOrderPad(label);
+            } else if (isMaster && hasMoved) {
                 if (isDecor) {
                     let decors = getDecors();
                     const dIndex = decors.findIndex(d => d.id === id);
@@ -670,7 +671,6 @@
                     }
                 }
             }
-            
             currentDrag.style.zIndex = ''; currentDrag = null; isResizing = false;
         }
 
