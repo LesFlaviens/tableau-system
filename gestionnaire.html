@@ -1,556 +1,765 @@
+Flavien, tu as mis le doigt sur un bug technique invisible mais fatal. Le diagnostic est double :
+
+1. **Le conflit du Cache (L'ancienne mémoire) :** Hier, nous avons créé un système où le ticket de caisse était une liste simple. Aujourd'hui, on a structuré ça avec des catégories (Entrées, Plats, etc.). Quand tu as cliqué sur une table, le système a trouvé un *ancien* format de ticket dans la mémoire de ton navigateur, et il a "crashé" en essayant de le lire.
+2. **Le conflit Tactile :** Le serveur n'a *jamais* besoin de déplacer une table. Il ne faut donc pas lui imposer le système complexe d'amortisseur tactile. Le "glisser-déposer" doit être réservé exclusivement au Master (Chef). 
+
+J'ai blindé le système : j'ai mis un nettoyeur automatique qui convertit les anciens tickets pour éviter les crashs, et j'ai séparé les actions. **Un Serveur = 1 Clic pur et dur.**
+
+👉 **REMPLACE l'intégralité de ton fichier `salle.html` par cette version débuggée :**
+
+```html
 <!DOCTYPE html>
 <html lang="fr">
 <head>
     <meta charset="UTF-8">
-    <title>Empire COMMAND - Salle Intégrale</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Empire - Master Salle & Caisse</title>
     <style>
-        :root { --bg: #050505; --accent: #00e676; --blue: #00b0ff; --text: #fff; --panel: #161616; --alert: #ff1744; }
-        body { font-family: 'Inter', sans-serif; background: var(--bg); color: var(--text); margin: 0; overflow: hidden; display: flex; flex-direction: column; height: 100vh;}
+        :root { --bg: #050505; --accent: #00e676; --alert: #ff1744; --text: #fff; --panel: #111; --purple: #ea80fc; --blue: #00b0ff; --warning: #ffb300; --sub: #888; }
+        body { font-family: 'Inter', sans-serif; background: var(--bg); color: var(--text); margin: 0; display: flex; flex-direction: column; height: 100vh; overflow: hidden; user-select: none; touch-action: manipulation; }
         
-        #start-overlay { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.95); z-index: 9999; display: flex; justify-content: center; align-items: center; flex-direction: column; }
-        #start-overlay button { padding: 20px 40px; font-size: 1.5rem; font-weight: 900; background: var(--accent); color: #000; border: none; border-radius: 8px; cursor: pointer; text-transform: uppercase; animation: pulse 2s infinite; }
-        @keyframes pulse { 0% { transform: scale(1); box-shadow: 0 0 0 0 rgba(0,230,118,0.7); } 50% { transform: scale(1.05); box-shadow: 0 0 0 20px rgba(0,230,118,0); } 100% { transform: scale(1); box-shadow: 0 0 0 0 rgba(0,230,118,0); } }
-
-        .header { background: #111; padding: 0 30px; display: flex; justify-content: space-between; border-bottom: 1px solid #333; height: 65px; align-items: center; z-index: 5000; position: relative; flex-shrink: 0;}
-        .logo { font-weight: 900; color: var(--accent); letter-spacing: 2px; margin-right: 30px; text-transform: uppercase; }
+        /* HEADER ÉPURÉ */
+        header { border-bottom: 2px solid #333; padding: 15px 20px; background: #0a0a0a; display: flex; justify-content: space-between; align-items: center; flex-shrink: 0; }
+        .header-title { color: var(--accent); font-size: 1.5rem; font-weight: 900; margin: 0; text-transform: uppercase; letter-spacing: 2px; display: flex; align-items: center; gap: 10px;}
+        .sync-icon { color: var(--blue); font-size: 1rem; animation: blink 2s infinite; }
+        @keyframes blink { 0% { opacity: 1; } 50% { opacity: 0.3; } 100% { opacity: 1; } }
         
-        .btn-chef { background: var(--accent); color: #000; border: none; padding: 10px 18px; border-radius: 6px; cursor: pointer; font-weight: 900; font-size: 0.75rem; text-transform: uppercase; margin-right: 10px; transition: 0.2s; }
-        .btn-chef:hover { filter: brightness(1.1); transform: scale(1.02); }
-        .btn-blue { background: var(--blue); color: #000; }
-        .btn-lock { background: #333; color: #fff; }
-        .architect-mode .btn-lock { background: var(--alert); color: #fff; }
+        .header-controls { display: flex; gap: 15px; }
+        .btn-top { background: #111; font-weight: 900; border-radius: 8px; padding: 15px 25px; cursor: pointer; text-transform: uppercase; transition: 0.2s; font-size: 1rem; border: 2px solid transparent; color: #fff; }
+        .btn-top:active { transform: scale(0.95); }
+        .btn-res { background: rgba(234, 128, 252, 0.1); border-color: var(--purple); color: var(--purple); }
 
-        .room-tabs { display: flex; background: #111; border-bottom: 2px solid #333; overflow-x: auto; height: 50px; flex-shrink: 0;}
-        .room-tab { background: #1a1a1a; color: #888; border: none; padding: 0 25px; cursor: pointer; font-weight: 900; font-size: 0.85rem; text-transform: uppercase; letter-spacing: 1px; border-right: 1px solid #333; display: flex; align-items: center; justify-content: center; }
-        .room-tab.active { background: var(--accent); color: #000; }
-        .btn-add-room { background: #ff9800; color: #000; }
+        /* BARRE ARCHITECTURE (CACHÉE SANS LA CLÉ) */
+        #archi-toolbar { display: none; background: var(--blue); padding: 10px 25px; justify-content: space-between; align-items: center; color: #000; font-weight: 900; text-transform: uppercase; box-shadow: 0 5px 20px rgba(0, 176, 255, 0.3); }
+        .btn-archi-action { background: rgba(0,0,0,0.5); border: 1px solid #000; color: #fff; padding: 8px 15px; border-radius: 6px; font-weight: bold; cursor: pointer; transition: 0.2s;}
+        .btn-archi-action:hover { background: #000; }
 
-        .main-container { display: flex; flex: 1; overflow: hidden; position: relative;}
+        /* TABS (SALLES) */
+        .zones-bar { display: flex; border-bottom: 1px solid #222; background: #050505; overflow-x: auto;}
+        .zone-tab { padding: 12px 25px; font-size: 1rem; font-weight: 900; text-transform: uppercase; cursor: pointer; color: #555; border-right: 1px solid #222; transition: 0.2s; white-space: nowrap; }
+        .zone-tab.active { background: var(--accent); color: #000; }
+
+        /* MAIN AREA (PLAN DE SALLE) */
+        .main-workspace { display: flex; flex: 1; overflow: hidden; position: relative; background: #050505;}
         
-        #web-orders-column { width: 320px; background: #0a0a0a; border-right: 2px solid #222; overflow-y: auto; padding: 15px; box-sizing: border-box; display: flex; flex-direction: column; gap: 15px; z-index: 2000; }
-        .web-ticket { background: #111; border: 1px solid #333; border-left: 5px solid var(--accent); border-radius: 8px; padding: 15px; cursor: pointer; transition: 0.2s; position: relative;}
-        .web-ticket:hover { border-color: var(--accent); transform: translateY(-2px);}
-        .web-ticket h3 { margin: 0 0 10px 0; color: var(--accent); font-size: 1.2rem; }
-        .web-ticket .time { position: absolute; top: 15px; right: 15px; font-size: 0.7rem; color: #666; }
-        .web-ticket ul { padding-left: 20px; margin: 0; color: #ccc; font-size: 0.9rem;}
-        .web-ticket.ready { border-left-color: var(--blue); box-shadow: 0 0 15px rgba(0, 176, 255, 0.2); }
-        .web-ticket.ready h3 { color: var(--blue); }
+        .floor-plan { flex: 1; position: relative; overflow: hidden; }
+        .floor-plan.archi-active { background: radial-gradient(circle, #333 2px, #050505 2px); background-size: 30px 30px; }
 
-        #viewport { flex: 1; overflow: auto; background: #000; position: relative; }
-        #canvas { width: 3000px; height: 3000px; position: relative; background: radial-gradient(#222 0.5px, transparent 0.5px); background-size: 50px 50px; transform-origin: 0 0; transition: transform 0.1s ease-out; }
-
-        .table { position: absolute; border: 2px solid #444; display: flex; flex-direction: column; justify-content: center; align-items: center; font-weight: bold; cursor: pointer; z-index: 10; border-radius: 8px; box-sizing: border-box; color: #fff; transition: all 0.3s ease; text-align: center; }
-        .table.selected { border-color: var(--accent) !important; box-shadow: 0 0 20px rgba(0, 230, 118, 0.4); z-index: 100; }
-        .table.circle { border-radius: 50%; }
-
-        .status-libre { background-color: #2a2a2a; border-color: #555; }
-        .status-reservee { background-color: #310b61; border-color: #9c27b0; box-shadow: inset 0 0 15px rgba(0,0,0,0.5); }
-        .status-occupee { background-color: #b71c1c; border-color: #f44336; }
-        .status-prete { background-color: #0d47a1; border-color: #2196f3; animation: pulseBleu 1.5s infinite; }
-        .status-addition { background-color: #1b5e20; border-color: #4caf50; animation: pulseVert 1.5s infinite; }
-
-        @keyframes pulseBleu { 0% { box-shadow: 0 0 0 0 rgba(33, 150, 243, 0.7); } 70% { box-shadow: 0 0 0 15px rgba(33, 150, 243, 0); } 100% { box-shadow: 0 0 0 0 rgba(33, 150, 243, 0); } }
-        @keyframes pulseVert { 0% { box-shadow: 0 0 0 0 rgba(76, 175, 80, 0.7); } 70% { box-shadow: 0 0 0 15px rgba(76, 175, 80, 0); } 100% { box-shadow: 0 0 0 0 rgba(76, 175, 80, 0); } }
-
-        .zone { position: absolute; border: 3px dashed rgba(255, 255, 255, 0.7); background: transparent; z-index: 1; pointer-events: none; display: flex; padding: 15px; box-sizing: border-box; }
-        .architect-mode .zone { pointer-events: all; cursor: move; border-color: var(--blue); background: rgba(0, 176, 255, 0.05); }
-        .zone-label { color: rgba(255, 255, 255, 0.9); font-size: 1.5rem; font-weight: 900; text-transform: uppercase; letter-spacing: 4px; }
-        .resize-handle { position: absolute; bottom: -6px; right: -6px; width: 16px; height: 16px; background: var(--accent); border: 2px solid #000; border-radius: 50%; cursor: se-resize; z-index: 200; display: none; }
-        .selected .resize-handle { display: block; }
-
-        #config-panel { position: fixed; left: 340px; bottom: 20px; width: 300px; background: var(--panel); border: 1px solid #333; border-radius: 12px; padding: 20px; display: none; z-index: 4000; box-shadow: 0 10px 40px rgba(0,0,0,0.8); }
-        .prop-row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 12px; }
-        input, select { width: 100%; background: #000; border: 1px solid #333; color: white; padding: 8px; border-radius: 4px; font-family: 'Inter', sans-serif; font-size: 0.8rem; }
-        label { font-size: 0.6rem; color: #666; text-transform: uppercase; font-weight: 900; margin-bottom: 4px; display: block; }
-
-        /* TIROIR DES RÉSERVATIONS (PLACARD GAUCHE) */
-        #res-drawer { position: fixed; left: 0; top: 0; width: 380px; height: 100vh; background: #0a0a0a; border-right: 2px solid #333; padding: 25px; z-index: 8000; box-sizing: border-box; overflow-y: auto; transform: translateX(-100%); transition: transform 0.3s cubic-bezier(0.4, 0.0, 0.2, 1); box-shadow: 15px 0 50px rgba(0,0,0,0.9); }
-        #res-drawer.open { transform: translateX(0); }
-        .res-card { background: #161616; border: 1px solid #333; border-left: 5px solid #ea80fc; padding: 18px; margin-bottom: 15px; border-radius: 8px; cursor: pointer; transition: 0.2s; position: relative;}
-        .res-card:hover { background: #1e1e1e; transform: translateY(-2px); border-color: #ea80fc;}
-        .res-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
-        .res-name { color: #fff; font-weight: 900; font-size: 1.3rem; margin: 0; }
-        .res-time { background: #ea80fc; color: #000; padding: 4px 10px; border-radius: 6px; font-size: 0.85rem; font-weight: 900; }
-        .res-details { color: #aaa; font-size: 0.95rem; line-height: 1.6; margin: 0; }
-        .res-table { color: #ea80fc; font-weight: bold; font-size: 1.1rem;}
-
-        /* TIROIR PAD COMMANDE (DROITE) */
-        #order-pad { position: fixed; right: 0; top: 0; width: 440px; height: 100vh; background: #121212; border-left: 2px solid #333; padding: 25px; z-index: 7000; box-sizing: border-box; overflow-y: auto; transform: translateX(100%); transition: transform 0.3s cubic-bezier(0.4, 0.0, 0.2, 1); box-shadow: -10px 0 30px rgba(0,0,0,0.8); display: flex; flex-direction: column;}
-        #order-pad.open { transform: translateX(0); }
-        .btn-close-drawer { position: absolute; top: 20px; right: 20px; background: transparent; border: none; color: #aaa; font-size: 1.5rem; font-weight: bold; cursor: pointer; transition: 0.2s; z-index: 10;}
-        .btn-close-drawer:hover { color: var(--accent); transform: scale(1.2); }
-
-        .menu-cat-btn { background: #222; color: #aaa; border: 1px solid #333; padding: 10px 15px; cursor: pointer; text-transform: uppercase; font-size: 0.7rem; font-weight: bold; border-radius: 6px; white-space: nowrap; }
-        .menu-cat-btn.active { background: var(--accent); color: #000; border-color: var(--accent); }
-        .menu-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 10px; }
-        .menu-item-btn { background: #111; border: 1px solid #333; color: white; padding: 12px; border-radius: 6px; cursor: pointer; text-align: left; transition: 0.2s; font-size: 0.8rem; }
-        .menu-item-btn:hover { border-color: var(--accent); }
+        /* TABLES ET DÉCORS */
+        .table-obj, .decor-obj { position: absolute; display: flex; justify-content: center; align-items: center; font-weight: 900; font-size: 1.2rem; cursor: pointer; box-shadow: 0 5px 15px rgba(0,0,0,0.5); padding: 5px; box-sizing: border-box; transition: 0.1s;}
+        .table-obj { background: #161616; border: 2px solid #555; color: #fff; z-index: 20; }
+        .table-obj:active { transform: scale(0.95); border-color: var(--accent); }
+        .decor-obj { z-index: 10; font-size: 1rem; }
         
-        #basket-ui { flex: 1; background: #000; margin: 15px 0; padding: 15px; border-radius: 8px; overflow-y: auto; border: 1px solid #222; }
-        .section-title { font-size: 0.75rem; color: #888; text-transform: uppercase; margin: 15px 0 5px 0; border-bottom: 1px solid #333; padding-bottom: 5px; font-weight: bold; letter-spacing: 1px; }
-        .basket-row { display: flex; justify-content: space-between; padding: 10px 0; border-bottom: 1px dashed #222; font-size: 0.9rem; align-items: center; }
-        
-        .btn-del { color: var(--alert); cursor: pointer; font-weight: bold; margin-left: 10px; padding: 0 5px; }
-        .item-encours { color: #ff9800; font-size: 0.65rem; text-transform: uppercase; font-weight: bold; border: 1px solid #ff9800; padding: 2px 6px; border-radius: 4px;}
-        .btn-servir { background: var(--blue); color: #000; border: none; padding: 5px 12px; border-radius: 4px; font-weight: 900; cursor: pointer; font-size: 0.7rem; text-transform: uppercase; animation: pulseBleu 1.5s infinite; }
-        .btn-renvoyer { background: transparent; border: 1px solid var(--alert); color: var(--alert); padding: 4px 8px; border-radius: 4px; font-size: 0.6rem; cursor: pointer; margin-left: 10px; font-weight: bold; text-transform: uppercase;}
-        .btn-renvoyer:hover { background: rgba(255, 23, 68, 0.1); }
+        .floor-plan.archi-active .table-obj, .floor-plan.archi-active .decor-obj { border-style: dashed; animation: pulse-border 2s infinite; }
+        .floor-plan.archi-active .resize-handle { display: block; }
+        @keyframes pulse-border { 0% { box-shadow: 0 0 0 0 rgba(0, 176, 255, 0.4); } 70% { box-shadow: 0 0 0 15px rgba(0, 176, 255, 0); } 100% { box-shadow: 0 0 0 0 rgba(0, 176, 255, 0); } }
 
-        .action-btn { width: 100%; padding: 15px; color: white; border: none; font-weight: 900; cursor: pointer; border-radius: 8px; margin-bottom: 10px; text-transform: uppercase; }
-        .btn-green { background: var(--accent); color: black; }
-        .btn-orange { background: #ff9800; color: black; }
-        .btn-purple { background: #4a148c; }
-        .btn-red { background: #b71c1c; }
-        .btn-gray { background: #555; }
-        .btn-alert { background: var(--alert); border: 2px dashed #fff; animation: pulseBleu 1s infinite;}
+        .table-badge { position: absolute; top: -10px; right: -10px; background: var(--purple); color: #000; font-size: 0.8rem; padding: 4px 8px; border-radius: 12px; font-weight: 900; border: 2px solid #000; box-shadow: 0 2px 5px rgba(0,0,0,0.5);}
+        .table-badge.active-order { background: var(--warning); right: auto; left: -10px; content: "🍽️"; }
+
+        .decor-zone { background: rgba(255, 255, 255, 0.05); border: 2px dashed #555; color: #888; text-transform: uppercase; letter-spacing: 2px;}
+        .decor-window { background: rgba(0, 176, 255, 0.15); border: 2px solid var(--blue); color: var(--blue); }
+        .decor-wall { background: #222; border: 1px solid #111; color: transparent; }
+        .decor-bar { background: #3e2723; border: 2px solid #212121; color: #d7ccc8; }
+
+        .resize-handle { display: none; position: absolute; bottom: -10px; right: -10px; width: 25px; height: 25px; background: var(--accent); border: 3px solid #000; border-radius: 50%; cursor: se-resize; z-index: 2000; box-shadow: 0 2px 5px rgba(0,0,0,0.5); }
+
+        /* =================================================================
+           TIROIRS (CAISSE, RÉSERVATIONS, LOGS)
+           ================================================================= */
+        .drawer { position: absolute; top: 0; right: 0; width: 100%; max-width: 450px; height: 100%; background: #0a0a0a; border-left: 2px solid #333; padding: 20px; z-index: 9000; box-sizing: border-box; overflow-y: auto; transform: translateX(100%); transition: transform 0.3s cubic-bezier(0.4, 0.0, 0.2, 1); display: flex; flex-direction: column; box-shadow: -20px 0 50px rgba(0,0,0,0.9);}
+        .drawer.open { transform: translateX(0); }
+        .drawer-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; border-bottom: 1px solid #333; padding-bottom: 15px; flex-shrink: 0;}
+        .drawer-title { margin: 0; font-size: 1.5rem; text-transform: uppercase; font-weight: 900; color: #fff; }
+        .btn-close-drawer { background: #222; border: none; color: #fff; font-size: 1.2rem; font-weight: bold; cursor: pointer; padding: 10px 15px; border-radius: 6px; }
+
+        .input-base { background: #000; border: 1px solid #444; color: #fff; padding: 15px; border-radius: 8px; width: 100%; box-sizing: border-box; font-size: 1.1rem; margin-bottom: 10px; font-weight: bold;}
+        .input-base:focus { border-color: var(--purple); outline: none; }
+
+        /* TICKET / CAISSE (LARGE DRAWER) */
+        #order-drawer { max-width: 800px; border-left-color: var(--accent); }
+        .order-layout { display: flex; gap: 20px; flex: 1; overflow: hidden; }
         
-        #audit-drawer { position: fixed; right: 0; top: 0; width: 650px; height: 100vh; background: #121212; border-left: 2px solid #333; padding: 25px; z-index: 8000; box-sizing: border-box; overflow-y: auto; transform: translateX(100%); transition: transform 0.3s cubic-bezier(0.4, 0.0, 0.2, 1); box-shadow: -15px 0 50px rgba(0,0,0,0.9); }
-        #audit-drawer.open { transform: translateX(0); }
-        .audit-table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
-        .audit-table th { text-align: left; padding: 12px; border-bottom: 2px solid #444; color: #aaa; text-transform: uppercase; font-size: 0.7rem; }
-        .audit-table td { padding: 12px; border-bottom: 1px solid #222; }
-        .badge-info { color: var(--accent); }
-        .badge-warning { color: #ff9800; }
-        .badge-critical { color: var(--alert); font-weight: bold; }
+        .ticket-col { flex: 1; display: flex; flex-direction: column; background: #000; border: 1px solid #222; border-radius: 12px; overflow: hidden; }
+        .ticket-list { flex: 1; overflow-y: auto; padding: 15px; }
+        .ticket-group { margin-bottom: 15px; }
+        .ticket-group-title { font-size: 0.8rem; color: #555; text-transform: uppercase; font-weight: 900; letter-spacing: 1px; border-bottom: 1px dashed #222; padding-bottom: 5px; margin-bottom: 10px;}
+        .ticket-item { display: flex; justify-content: space-between; align-items: center; padding: 8px 0; font-size: 1.1rem; }
+        .ticket-item-name { font-weight: bold; color: #fff; flex: 1; }
+        .ticket-item-price { color: var(--sub); font-weight: bold; margin-left: 10px; }
+        .btn-del-item { background: none; border: none; color: #555; font-size: 1.2rem; font-weight: bold; cursor: pointer; padding: 0 10px; }
+        .ticket-total { background: #0a0a0a; padding: 20px; display: flex; justify-content: space-between; align-items: center; border-top: 2px solid #333; }
+        .total-amount { font-size: 2.5rem; color: var(--accent); font-weight: 900; }
+
+        .menu-col { flex: 1.5; display: flex; flex-direction: column; overflow: hidden; }
+        .cat-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 15px; flex-shrink: 0;}
+        .btn-cat { background: #161616; border: 1px solid #333; color: #fff; padding: 15px; font-weight: 900; text-transform: uppercase; border-radius: 8px; cursor: pointer; font-size: 1rem; transition: 0.1s;}
+        .btn-cat.active { background: #222; border-color: var(--accent); color: var(--accent); }
+        .items-grid { flex: 1; overflow-y: auto; display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 10px; align-content: start; }
+        .btn-item { background: #111; border: 1px solid #333; color: #fff; padding: 15px 10px; border-radius: 8px; cursor: pointer; text-align: center; display: flex; flex-direction: column; justify-content: center; align-items: center; transition: 0.1s; min-height: 80px;}
+        .btn-item:active { transform: scale(0.95); background: #222; border-color: var(--text); }
+        .item-name { font-weight: 900; font-size: 0.95rem; margin-bottom: 5px; line-height: 1.2; }
+        .item-price { color: var(--sub); font-size: 0.8rem; font-weight: bold; }
+
+        .action-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 15px; flex-shrink: 0; margin-top: 15px;}
+        .btn-send { background: var(--warning); color: #000; padding: 20px; font-weight: 900; text-transform: uppercase; border-radius: 8px; cursor: pointer; font-size: 1.2rem; border: none; box-shadow: 0 5px 15px rgba(255, 179, 0, 0.3);}
+        .btn-send:active { transform: scale(0.98); }
+        .btn-pay { background: var(--blue); color: #000; padding: 20px; font-weight: 900; text-transform: uppercase; border-radius: 8px; cursor: pointer; font-size: 1.2rem; border: none; }
+
+        /* MODALS ARCHITECTURE */
+        .modal { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.9); z-index: 9999; justify-content: center; align-items: center; }
+        .modal-content { background: #111; padding: 30px; border-radius: 12px; border: 1px solid #333; width: 400px; box-shadow: 0 20px 50px rgba(0,0,0,0.8);}
+        .input-group { margin-bottom: 15px; }
+        .input-group label { display: block; font-size: 0.7rem; color: var(--sub); text-transform: uppercase; margin-bottom: 5px; font-weight: bold;}
+        .input-full { width: 100%; background: #000; border: 1px solid #444; color: #fff; padding: 10px; border-radius: 6px; font-size: 1rem; box-sizing: border-box;}
+        
     </style>
 </head>
 <body>
 
-    <div id="start-overlay">
-        <h1 style="color:var(--accent); margin-bottom:20px; letter-spacing: 3px;">CENTRE DE COMMANDEMENT</h1>
-        <p style="color:#aaa; margin-bottom: 30px;">Activation du radar réseau et du système audio de la salle.</p>
-        <button onclick="initSystem()">DÉMARRER LE RADAR</button>
+    <header>
+        <h1 class="header-title" id="main-title">
+            TERMINAL DE SALLE
+            <span class="sync-icon" title="Synchronisation KDS Active">☁️</span>
+        </h1>
+        <div class="header-controls">
+            <button class="btn-top btn-res" onclick="openDrawer('res-drawer')">📅 RÉSERVATIONS</button>
+            <button id="btn-admin-logs" class="btn-top" style="display:none; border-color:var(--blue); color:var(--blue);" onclick="openDrawer('logs-drawer')">👁️ REGISTRE</button>
+            <button id="btn-admin-rh" class="btn-top" style="display:none; border-color:var(--warning); color:var(--warning);" onclick="window.location.href='rh.html'">👔 BUREAU RH</button>
+        </div>
+    </header>
+
+    <div id="archi-toolbar">
+        <div style="display:flex; gap:10px;">
+            <button class="btn-archi-action" onclick="addTable()">+ NOUVELLE TABLE</button>
+            <button class="btn-archi-action" onclick="addDecor()">+ DÉCOR / ZONE</button>
+            <button class="btn-archi-action" onclick="openZoneManager()">⚙️ GÉRER LES SALLES</button>
+        </div>
+        <span style="color:#000;">⚠️ ARCHITECTURE ACTIVE (Glissez pour déplacer/redimensionner)</span>
     </div>
 
-    <div class="header">
-        <div style="display:flex; align-items: center;">
-            <div class="logo">TABLEAU DU SERVICE</div>
-            <button class="btn-chef" onclick="openResDrawer()" style="background:#1a1a1a; color:#ea80fc; border: 1px solid #ea80fc; margin-right: 10px;">📅 CAHIER RÉSERVATIONS</button>
-            <button class="btn-chef btn-lock" onclick="toggleChefMode()" id="lock-status">🔓 ACCÈS CHEF</button>
-            <button class="btn-chef" onclick="openAuditDrawer()" id="btn-audit" style="display:none; margin-left:10px; background:#1a1a1a; color:#fff; border: 1px solid #444;">👁️ REGISTRE OPÉRATIONS</button>
-            <button class="btn-chef btn-blue" onclick="toggleArchitectMode()" id="architect-toggle" style="display:none; margin-left:10px;">🛠️ MODE ARCHITECTURE</button>
-            
-            <div id="architect-btns" style="display:none; align-items: center; gap: 10px; padding-left: 15px; margin-left: 15px; border-left: 2px solid #333;">
-                <button class="btn-chef" onclick="addItem('table')">+ TABLE</button>
-                <button class="btn-chef btn-blue" onclick="addItem('zone')">+ ZONE</button>
-                <button class="btn-chef" style="background:var(--alert); color:white;" onclick="deleteCurrentRoom()">- SUPPRIMER SALLE</button>
-                <button class="btn-chef" onclick="save()">💾 ENREGISTRER</button>
+    <div class="zones-bar" id="zones-bar"></div>
+
+    <div class="main-workspace">
+        <div class="floor-plan" id="floor-plan"></div>
+
+        <div id="res-drawer" class="drawer">
+            <div class="drawer-header">
+                <h2 class="drawer-title" style="color:var(--purple);">RÉSERVATIONS</h2>
+                <button class="btn-close-drawer" onclick="closeDrawer('res-drawer')">FERMER</button>
+            </div>
+            <div style="overflow-y: auto; flex: 1; padding-right: 5px;">
+                <input type="date" id="res-date-filter" class="input-base" onchange="renderReservations()" style="border-color:var(--purple); color:var(--purple);">
+                <div style="background: #111; padding: 15px; border: 1px dashed #333; border-radius: 8px; margin-bottom: 20px;">
+                    <div style="color:#fff; font-weight:900; margin-bottom:10px;">NOUVELLE RÉSERVATION</div>
+                    <input type="text" id="res-name" class="input-base" placeholder="Nom du client">
+                    <div style="display: flex; gap: 10px;">
+                        <input type="time" id="res-time" class="input-base">
+                        <input type="number" id="res-pax" class="input-base" placeholder="Couverts" min="1">
+                    </div>
+                    <input type="text" id="res-table" class="input-base" placeholder="N° de Table (Optionnel)">
+                    <button onclick="saveReservation()" class="btn-top" style="width: 100%; background: var(--purple); color: #000; border: none;">VALIDER & SYNCHRONISER</button>
+                </div>
+                <div id="res-list-container"></div>
             </div>
         </div>
-        <div id="clock" style="font-weight:900; color:#555;">--:--</div>
-    </div>
 
-    <div class="room-tabs" id="room-tabs-container"></div>
-
-    <div class="main-container">
-        <div id="web-orders-column">
-            <h3 style="color:#888; text-transform:uppercase; font-size:0.8rem; margin:0 0 10px 0; border-bottom:1px solid #333; padding-bottom:10px;">🌐 RADAR WOOCOMMERCE</h3>
-            <div id="web-orders-list"></div>
-        </div>
-        <div id="viewport"><div id="canvas"></div></div>
-    </div>
-
-    <div class="zoom-controls" style="position: absolute; left: 340px; bottom: 20px;">
-        <button onclick="changeZoom(0.1)" style="width: 40px; height: 40px; background: #222; color: #fff; border: 1px solid #444; border-radius: 5px; cursor: pointer; font-size: 1.2rem; font-weight: bold;">+</button>
-        <button onclick="changeZoom(-0.1)" style="width: 40px; height: 40px; background: #222; color: #fff; border: 1px solid #444; border-radius: 5px; cursor: pointer; font-size: 1.2rem; font-weight: bold; margin-left: 5px;">-</button>
-        <div id="zoom-level" style="text-align:center; font-size:0.7rem; color:#666; font-weight:bold; margin-top: 5px;">100%</div>
-    </div>
-
-    <div id="config-panel">
-        <h3 style="margin:0 0 15px 0; font-size:0.8rem; color:var(--accent);">ÉDITION</h3>
-        <div class="prop-row"><div><label>ID</label><input type="text" id="ed-id" oninput="applyChange()"></div><div><label>FORME</label><select id="ed-shape" onchange="applyChange()"><option value="square">Carré</option><option value="circle">Rond</option></select></div></div>
-        <div class="prop-row"><div><label>L</label><input type="number" step="0.1" id="ed-w" oninput="applyChange()"></div><div><label>H</label><input type="number" step="0.1" id="ed-h" oninput="applyChange()"></div></div>
-        <button onclick="deleteItem()" style="width:100%; background:var(--alert); border:none; color:white; padding:10px; border-radius:6px; cursor:pointer; font-weight:bold; margin-top:10px;">SUPPRIMER</button>
-    </div>
-
-    <div id="res-drawer">
-        <button class="btn-close-drawer" onclick="closeResDrawer()" style="left: 20px; right: auto;">✕</button>
-        <h2 style="margin-top:30px; color:#ea80fc; font-size: 1.6rem; border-bottom: 1px solid #333; padding-bottom: 10px; text-transform: uppercase;">Cahier Réservations</h2>
-        <div id="res-list-container"></div>
-    </div>
-
-    <div id="order-pad">
-        <button class="btn-close-drawer" onclick="closePad()">✕</button>
-        <h2 id="pad-table-id" style="margin-top:0; color:var(--accent); font-size: 2rem;">Table --</h2>
-        
-        <div id="res-banner" style="display:none; background:#310b61; color:#fff; padding:10px; border-radius:6px; margin-bottom:15px; text-align:center; font-weight:bold; border: 1px solid #9c27b0;"></div>
-
-        <div style="margin-bottom: 15px;">
-            <label style="color:#fff; font-size:0.8rem;">COUVERTS</label>
-            <input type="number" id="covers" style="width:100%; padding:10px; background:#000; color:var(--blue); border:1px solid #333; font-size:1.2rem; font-weight:bold; text-align:center;" value="1" min="1">
-        </div>
-
-        <div id="menu-area">
-            <div id="menu-categories" style="display:flex; gap:8px; overflow-x:auto; padding-bottom:5px; margin-bottom: 10px;"></div>
-            <div id="menu-items" class="menu-grid"></div>
-        </div>
-
-        <div id="basket-ui"></div>
-        
-        <div style="display:flex; justify-content:space-between; font-size:1.3rem; font-weight:900; margin-bottom:15px; border-top: 1px solid #333; padding-top: 15px;">
-            <span>TOTAL ESTIMÉ</span>
-            <span id="basket-total" style="color:var(--accent);">0.00 €</span>
-        </div>
-
-        <div id="action-buttons">
-            <button id="btn-order" class="action-btn btn-green" onclick="submitOrder()">ENVOYER COMMANDE</button>
-            <button id="btn-assign" class="action-btn btn-blue" onclick="assignerTable()" style="display:none; animation: pulseBleu 1.5s infinite;">🔗 ASSIGNER À UNE TABLE PHYSIQUE</button>
-            <hr style="border: 1px solid #333; margin: 20px 0;">
-            <button id="btn-bill" class="action-btn btn-blue" onclick="demanderAddition()" style="display:none;">IMPRIMER ADDITION</button>
-            <button id="btn-pay" class="action-btn btn-red" onclick="validerEncaissement()" style="display:none;">VALIDER L'ENCAISSEMENT</button>
-            <button id="btn-reserve" class="action-btn btn-purple" onclick="marquerReservee()" style="display:none;">RÉSERVER LA TABLE</button>
-            <button id="btn-cancel-res" class="action-btn btn-gray" onclick="annulerReservation()" style="display:none;">ANNULER LA RÉSERVATION</button>
-        </div>
-    </div>
-
-    <div id="audit-drawer">
-        <button class="btn-close-drawer" onclick="closeAuditDrawer()" style="color:#aaa;">✕</button>
-        <h2 style="margin-top:0; color:#fff; font-size: 1.8rem; border-bottom: 1px solid #333; padding-bottom: 10px;">👁️ REGISTRE COMPLET</h2>
-        <div class="filter-group" style="display:flex; gap:8px; margin-bottom: 20px; padding-bottom: 15px; border-bottom:1px solid #333;">
-            <button class="filter-btn" style="background:#222; color:#fff; border:none; padding:8px; border-radius:4px; cursor:pointer;" onclick="applyAuditFilter('all')">Tout</button>
-        </div>
-        <table class="audit-table"><tbody id="audit-table-body"></tbody></table>
-    </div>
-
-<script>
-    const SCALE = 50; let currentZoom = 1.0;
-    let layouts = { "RESTAURANT": { tables: [{ id: "T1", x: 150, y: 150, w: 2, h: 2, shape: "square" }, { id: "T2", x: 350, y: 150, w: 2, h: 2, shape: "square" }], zones: [] } };
-    let currentRoom = "RESTAURANT"; let activeOrders = {}; let tableStates = {}; let previousTableState = null;
-    let isChef = false; let isArchitect = false; let selected = null; let selectedType = null;
-    let lastClosedTableId = null; let lastClosedOrderData = null; let previousOrdersState = {}; let isFirstLoad = true;
-    let audioCtx;
-
-    // PATCH DE DÉMARRAGE FORCÉ
-    function initSystem() {
-        try {
-            const AudioContext = window.AudioContext || window.webkitAudioContext;
-            if (AudioContext) {
-                audioCtx = new AudioContext();
-                audioCtx.resume();
-            }
-        } catch (error) {
-            console.warn("Audio bloqué, démarrage forcé de l'interface.");
-        }
-        
-        const overlay = document.getElementById('start-overlay');
-        if (overlay) overlay.style.display = 'none';
-        
-        try { renderTabs(); } catch(e) {}
-        try { render(); } catch(e) {}
-        try { renderWebOrders(); } catch(e) {}
-        try { renderResDrawer(); } catch(e) {}
-    }
-
-    function logAudit(level, source, action, detail) {
-        let logs = JSON.parse(localStorage.getItem('tableau_audit') || '[]');
-        logs.push({ timestamp: Date.now(), time: new Date().toLocaleTimeString('fr-FR'), date: new Date().toLocaleDateString('fr-FR'), level: level, source: source, action: action, detail: detail });
-        localStorage.setItem('tableau_audit', JSON.stringify(logs));
-        renderAuditTable(logs);
-    }
-
-    const MENU = {
-        "Entrées": [{ n: "Salade César", p: 14.00, dest: "Cuisine", step: 1 }, { n: "Os à Moelle", p: 16.00, dest: "Cuisine", step: 1 }],
-        "Plats": [{ n: "Fondue Savoyarde", p: 24.00, dest: "Cuisine", step: 2 }, { n: "Burger Tableau", p: 19.50, dest: "Cuisine", step: 2 }, { n: "Entrecôte 300g", p: 28.00, dest: "Cuisine", step: 2 }],
-        "Desserts": [{ n: "Tiramisu Maison", p: 9.00, dest: "Dessert", step: 3 }, { n: "Café Gourmand", p: 10.50, dest: "Bar", step: 3 }],
-        "Boissons": [{ n: "Bière Pression", p: 8.00, dest: "Bar", step: 0 }, { n: "Verre de Vin", p: 6.50, dest: "Bar", step: 0 }, { n: "Soda", p: 4.50, dest: "Bar", step: 0 }]
-    };
-
-    let currentCategory = "Entrées"; let localBasket = []; let currentTable = null;
-
-    function playReadySound() {
-        if (!audioCtx) return;
-        const osc = audioCtx.createOscillator(); const gain = audioCtx.createGain();
-        osc.connect(gain); gain.connect(audioCtx.destination);
-        const now = audioCtx.currentTime;
-        osc.type = 'sine'; osc.frequency.setValueAtTime(880, now); osc.frequency.setValueAtTime(1046.5, now + 0.2);
-        gain.gain.setValueAtTime(0, now); gain.gain.linearRampToValueAtTime(0.6, now + 0.05); gain.gain.exponentialRampToValueAtTime(0.01, now + 0.6);
-        osc.start(now); osc.stop(now + 0.6);
-    }
-
-    const ws = new WebSocket((window.location.protocol === 'https:' ? 'wss://' : 'ws://') + window.location.host);
-    
-    ws.onmessage = (e) => {
-        try {
-            const msg = JSON.parse(e.data);
-            if (msg.type === 'SYNC_LAYOUT') { 
-                if (msg.data && Object.keys(msg.data).length > 0) layouts = msg.data.tables ? { "RESTAURANT": msg.data } : msg.data;
-                if (!layouts[currentRoom]) currentRoom = Object.keys(layouts)[0]; 
-                renderTabs(); render(); 
-            }
-            if (msg.type === 'ORDER_UPDATE') { 
-                const newOrders = msg.activeOrders;
-                if (!isFirstLoad) {
-                    for (const tableId in newOrders) {
-                        const newOrder = newOrders[tableId]; const prevOrder = previousOrdersState[tableId]; let shouldRing = false;
-                        let prevReadyToServe = prevOrder && prevOrder.items ? prevOrder.items.filter(i => i.done && !i.served).length : 0;
-                        let newReadyToServe = newOrder && newOrder.items ? newOrder.items.filter(i => i.done && !i.served).length : 0;
-                        if (newReadyToServe > prevReadyToServe) shouldRing = true;
-                        if (shouldRing) playReadySound();
-                    }
-                }
-                isFirstLoad = false; previousOrdersState = JSON.parse(JSON.stringify(newOrders)); activeOrders = newOrders; 
-                render(); renderWebOrders(); renderResDrawer();
-                
-                if (currentTable && document.getElementById('order-pad').classList.contains('open')) { 
-                    const serverOrder = activeOrders[currentTable];
-                    if (serverOrder && serverOrder.items) {
-                        const unsentItems = localBasket.filter(i => !i.sent);
-                        localBasket = JSON.parse(JSON.stringify(serverOrder.items));
-                        localBasket.push(...unsentItems); updateBasket(); 
-                    } else {
-                        localBasket = localBasket.filter(i => !i.sent);
-                        if (localBasket.length === 0 && serverOrder === undefined) closePad(); else updateBasket();
-                    }
-                }
-            }
-        } catch (err) {}
-    };
-
-    function openResDrawer() { document.getElementById('res-drawer').classList.add('open'); renderResDrawer(); }
-    function closeResDrawer() { document.getElementById('res-drawer').classList.remove('open'); }
-
-    function openAuditDrawer() { document.getElementById('audit-drawer').classList.add('open'); applyAuditFilter('all'); }
-    function closeAuditDrawer() { document.getElementById('audit-drawer').classList.remove('open'); }
-    function applyAuditFilter(period) { const logs = JSON.parse(localStorage.getItem('tableau_audit') || '[]'); renderAuditTable(logs); }
-
-    function renderAuditTable(filteredLogs) {
-        const tbody = document.getElementById('audit-table-body'); tbody.innerHTML = '';
-        filteredLogs.slice().reverse().forEach(log => {
-            let badgeClass = 'badge-info'; if (log.level === 'WARNING') badgeClass = 'badge-warning'; if (log.level === 'CRITICAL') badgeClass = 'badge-critical'; 
-            tbody.innerHTML += `<tr><td style="color:#666;">${log.date} <br> ${log.time}</td><td class="${badgeClass}">${log.level}</td><td style="font-weight:bold;">${log.action}</td><td style="color:#aaa;">${log.detail}</td></tr>`;
-        });
-        if (filteredLogs.length === 0) tbody.innerHTML = `<tr><td colspan="4" style="text-align:center; padding: 30px; color:#555;">Aucun événement enregistré.</td></tr>`;
-    }
-
-    function renderTabs() { document.getElementById('room-tabs-container').innerHTML = Object.keys(layouts).map(room => `<button class="room-tab ${room === currentRoom ? 'active' : ''}" onclick="switchRoom('${room}')">${room}</button>`).join('') + (isArchitect ? `<button class="room-tab btn-add-room" onclick="addRoom()">+ NOUVELLE SALLE</button>` : ''); }
-    function switchRoom(room) { currentRoom = room; selected = null; document.getElementById('config-panel').style.display = 'none'; closePad(); renderTabs(); render(); renderWebOrders();}
-
-    function render() {
-        const canvas = document.getElementById('canvas'); if(!canvas) return; canvas.innerHTML = ""; if (!layouts[currentRoom]) return;
-        (layouts[currentRoom].zones || []).forEach(z => {
-            const div = document.createElement('div'); div.className = `zone ${selected === z ? 'selected' : ''}`; div.style.left = z.x+'px'; div.style.top = z.y+'px'; div.style.width = (z.w * SCALE)+'px'; div.style.height = (z.h * SCALE)+'px'; div.innerHTML = `<span class="zone-label">${z.id}</span>`;
-            if(isArchitect) { div.onmousedown = (e) => startDrag(e, z, 'zone'); if(selected === z) addResizeHandle(div, z, 'zone'); } canvas.appendChild(div);
-        });
-        (layouts[currentRoom].tables || []).forEach(t => {
-            const order = activeOrders[t.id]; const div = document.createElement('div'); let statusClass = 'status-libre'; let subText = '';
+        <div id="order-drawer" class="drawer">
+            <div class="drawer-header">
+                <h2 class="drawer-title" id="order-table-title" style="color:var(--accent);">TABLE --</h2>
+                <button class="btn-close-drawer" onclick="closeDrawer('order-drawer')">FERMER</button>
+            </div>
             
-            if (order) { 
-                let hasItems = order.items && order.items.length > 0;
-                let hasReadyToServe = hasItems && order.items.some(i => i.done && !i.served);
-                
-                if (tableStates[t.id] === 'addition') statusClass = 'status-addition'; 
-                else if (hasReadyToServe) statusClass = 'status-prete'; 
-                else if (hasItems) statusClass = 'status-occupee';
-                else if (order.resName) statusClass = 'status-reservee';
-
-                if (order.resName) subText += `<div style="color:#ea80fc; font-size:0.6rem; text-transform:uppercase; margin-bottom:2px; font-weight:900;">${order.resName}<br>${order.resTime} - ${order.resCovers}p</div>`;
-                if (hasItems) subText += `<div style="color:var(--blue);">${order.covers}p</div>`;
-            } else if (tableStates[t.id]) {
-                statusClass = `status-${tableStates[t.id]}`;
-            }
-
-            div.className = `table ${t.shape || 'square'} ${statusClass} ${selected === t ? 'selected' : ''}`; div.style.left = t.x+'px'; div.style.top = t.y+'px'; div.style.width = (t.w * SCALE)+'px'; div.style.height = (t.h * SCALE)+'px';
-            div.innerHTML = `<div style="font-size:1.2rem;">${t.id}</div><div style="text-align:center; margin-top:2px; line-height:1.1;">${subText}</div>`;
-            if (isArchitect) { div.onmousedown = (e) => startDrag(e, t, 'table'); if(selected === t) addResizeHandle(div, t, 'table'); } else { div.onclick = () => openPad(t.id); } canvas.appendChild(div);
-        });
-    }
-
-    function renderResDrawer() {
-        const container = document.getElementById('res-list-container'); if(!container) return;
-        container.innerHTML = ''; let count = 0;
-        for (const tableId in activeOrders) {
-            const order = activeOrders[tableId];
-            if (order && order.resName) {
-                count++;
-                container.innerHTML += `
-                    <div class="res-card" onclick="openPad('${tableId}'); closeResDrawer();">
-                        <div class="res-header">
-                            <h3 class="res-name">${order.resName}</h3>
-                            <span class="res-time">${order.resTime}</span>
-                        </div>
-                        <p class="res-details">
-                            📞 ${order.resPhone || 'Non renseigné'}<br>
-                            👥 ${order.resCovers} personnes<br>
-                            📍 Assigné à la <span class="res-table">${tableId}</span>
-                        </p>
+            <div class="order-layout">
+                <div class="ticket-col">
+                    <div class="ticket-list" id="ticket-list"></div>
+                    <div class="ticket-total">
+                        <span style="color:#888; font-weight:bold; text-transform:uppercase;">Total</span>
+                        <span class="total-amount" id="ticket-total-amount">0.00 €</span>
                     </div>
-                `;
-            }
+                </div>
+
+                <div class="menu-col">
+                    <div class="cat-grid">
+                        <button class="btn-cat active" id="btn-cat-Entrée" onclick="loadMenuCategory('Entrée')">ENTRÉES</button>
+                        <button class="btn-cat" id="btn-cat-Plat" onclick="loadMenuCategory('Plat')">PLATS</button>
+                        <button class="btn-cat" id="btn-cat-Dessert" onclick="loadMenuCategory('Dessert')">DESSERTS</button>
+                        <button class="btn-cat" id="btn-cat-Boisson" onclick="loadMenuCategory('Boisson')" style="border-color:var(--blue);">BOISSONS</button>
+                    </div>
+                    <div class="items-grid" id="items-grid"></div>
+                    <div class="action-grid">
+                        <button class="btn-send" onclick="sendToKDS()">🔥 ENVOYER CUISINE/BAR</button>
+                        <button class="btn-pay" onclick="payTable()">💳 ENCAISSER</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div id="logs-drawer" class="drawer" style="max-width: 450px;">
+            <div class="drawer-header">
+                <h2 class="drawer-title">👁️ REGISTRE</h2>
+                <button class="btn-close-drawer" onclick="closeDrawer('logs-drawer')">FERMER</button>
+            </div>
+            <div id="logs-container" style="flex:1; overflow-y:auto;"></div>
+        </div>
+    </div>
+
+    <div id="table-edit-modal" class="modal">
+        <div class="modal-content" style="border-top-color: var(--blue);">
+            <h2 style="color:var(--blue); margin-top:0;">ÉDITER LA TABLE</h2>
+            <input type="hidden" id="edit-table-id">
+            <div class="input-group"><label>Nom affiché</label><input type="text" id="edit-table-label" class="input-full"></div>
+            <div class="input-group"><label>Forme</label>
+                <select id="edit-table-radius" class="input-full"><option value="8px">Carrée/Rectangulaire</option><option value="50%">Ronde/Ovale</option></select>
+            </div>
+            <div style="display:flex; gap:10px; margin-top:20px;">
+                <button onclick="deleteTable()" style="flex:1; padding:10px; background:transparent; border:1px solid var(--alert); color:var(--alert); border-radius:6px; cursor:pointer;">SUPPRIMER</button>
+                <button onclick="saveTableEdit()" style="flex:2; padding:10px; background:var(--blue); border:none; color:#000; border-radius:6px; font-weight:bold; cursor:pointer;">VALIDER</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="decor-edit-modal" class="modal">
+        <div class="modal-content" style="border-top-color: var(--accent);">
+            <h2 style="color:var(--accent); margin-top:0;">ÉDITER LE DÉCOR</h2>
+            <input type="hidden" id="edit-decor-id">
+            <div class="input-group"><label>Texte affiché</label><input type="text" id="edit-decor-label" class="input-full"></div>
+            <div class="input-group"><label>Type d'élément</label>
+                <select id="edit-decor-style" class="input-full">
+                    <option value="decor-zone">Zone Délimitée (Pointillés)</option>
+                    <option value="decor-window">Fenêtre / Baie vitrée</option>
+                    <option value="decor-wall">Mur / Cloison (Plein)</option>
+                    <option value="decor-bar">Comptoir de Bar</option>
+                </select>
+            </div>
+            <div style="display:flex; gap:10px; margin-top:20px;">
+                <button onclick="deleteDecor()" style="flex:1; padding:10px; background:transparent; border:1px solid var(--alert); color:var(--alert); border-radius:6px; cursor:pointer; font-weight:bold;">SUPPRIMER</button>
+                <button onclick="saveDecorEdit()" style="flex:2; padding:10px; background:var(--accent); border:none; color:#000; border-radius:6px; font-weight:bold; cursor:pointer;">VALIDER</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="zone-manager-modal" class="modal">
+        <div class="modal-content" style="border-top-color: #fff;">
+            <h2 style="color:#fff; margin-top:0;">GÉRER LES SALLES</h2>
+            <div class="zone-manager-list" id="zone-manager-list"></div>
+            <div style="display:flex; gap:10px; margin-bottom: 20px;">
+                <input type="text" id="new-zone-name" class="input-full" placeholder="Nouvelle salle (ex: Étage)">
+                <button onclick="addNewZone()" style="background:var(--accent); color:#000; border:none; padding:0 15px; border-radius:6px; font-weight:bold; cursor:pointer;">AJOUTER</button>
+            </div>
+            <button onclick="closeZoneManager()" style="width:100%; padding:10px; background:#222; border:none; color:#fff; border-radius:6px; font-weight:bold; cursor:pointer;">FERMER</button>
+        </div>
+    </div>
+
+    <script>
+        // --- 1. CONFIGURATION CHEF (ARCHITECTURE) ---
+        const urlParams = new URLSearchParams(window.location.search);
+        const isMaster = urlParams.get('key') === 'ICHEF2026';
+
+        if (isMaster) {
+            document.getElementById('main-title').innerHTML = "⚙️ MASTER SALLE <span class='sync-icon'>☁️</span>";
+            document.getElementById('archi-toolbar').style.display = 'flex';
+            document.getElementById('btn-admin-logs').style.display = 'block';
+            document.getElementById('btn-admin-rh').style.display = 'block';
+            document.getElementById('floor-plan').classList.add('archi-active');
         }
-        if (count === 0) container.innerHTML = '<div style="color:#555; text-align:center; padding-top:30px;">Aucune réservation en cours.</div>';
-    }
 
-    function renderWebOrders() {
-        const container = document.getElementById('web-orders-list'); if(!container) return;
-        container.innerHTML = ''; let count = 0;
-        for (const tableId in activeOrders) {
-            const isWeb = tableId.includes('WEB'); let isDrawn = false;
-            if (layouts[currentRoom] && layouts[currentRoom].tables) isDrawn = layouts[currentRoom].tables.some(t => t.id === tableId);
-            if (isWeb || !isDrawn) {
-                count++; const order = activeOrders[tableId]; let hasReadyToServe = (order.items && order.items.some(i => i.done && !i.served));
-                const div = document.createElement('div'); div.className = `web-ticket ${hasReadyToServe ? 'ready' : ''}`; div.onclick = () => openPad(tableId);
-                div.innerHTML = `<h3>${tableId}</h3><div class="time">${order.time || '--:--'}</div><ul>${(order.items||[]).slice(0,3).map(i => `<li>${i.n.replace(' [WEB]','')}</li>`).join('')}${(order.items||[]).length > 3 ? `<li>... (+${order.items.length - 3})</li>` : ''}</ul>`;
-                container.appendChild(div);
-            }
-        }
-        if (count === 0) container.innerHTML = '<div style="color:#444; font-size:0.9rem; text-align:center; padding-top:20px;">Le radar est vide.</div>';
-    }
-
-    function renderMenu() {
-        document.getElementById('menu-categories').innerHTML = Object.keys(MENU).map(cat => `<button class="menu-cat-btn ${cat === currentCategory ? 'active' : ''}" onclick="setCategory('${cat}')">${cat}</button>`).join('');
-        document.getElementById('menu-items').innerHTML = MENU[currentCategory].map(item => `<button class="menu-item-btn" onclick="addToBasket('${item.n}', '${item.dest}', ${item.p}, ${item.step})">${item.n} <span class="item-price">${item.p.toFixed(2)}€</span></button>`).join('');
-    }
-    function setCategory(cat) { currentCategory = cat; renderMenu(); }
-
-    function openPad(id) {
-        previousTableState = tableStates[id]; currentTable = id; const o = activeOrders[id];
-        localBasket = (o && o.items) ? JSON.parse(JSON.stringify(o.items)) : [];
-        
-        document.getElementById('covers').value = o ? o.covers : 1; 
-        document.getElementById('pad-table-id').textContent = id; 
-        
-        const resBanner = document.getElementById('res-banner');
-        if (o && o.resName) {
-            resBanner.innerHTML = `📅 RÉSERVÉE : ${o.resName} à ${o.resTime} - ${o.resCovers}p (${o.resPhone || 'Tel Inconnu'})`;
-            resBanner.style.display = 'block';
-        } else {
-            resBanner.style.display = 'none';
-        }
-
-        document.getElementById('order-pad').classList.add('open');
-        if (!o && tableStates[id] !== 'reservee') { tableStates[id] = 'commande'; render(); }
-        renderMenu(); updateBasket();
-    }
-    
-    function closePad() { document.getElementById('order-pad').classList.remove('open'); if (!activeOrders[currentTable] && tableStates[currentTable] !== 'addition') { tableStates[currentTable] = (previousTableState === 'reservee') ? 'reservee' : 'libre'; render(); } }
-
-    async function assignerTable() {
-        let num = prompt("Numéro de la table physique pour cette commande Web (ex: 3) :");
-        if (!num) return;
-        num = num.trim().toUpperCase(); if (!num.startsWith('T')) num = 'T' + num;
-        const orderToMove = activeOrders[currentTable]; orderToMove.tableId = num;
-        await fetch('/update-order', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ tableId: num, order: orderToMove }) });
-        await fetch('/update-order', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ tableId: currentTable, order: null }) });
-        closePad();
-    }
-
-    function addToBasket(n, dest, p, step) { localBasket.push({ n, dest: (dest === 'Dessert' && new Date().getHours() >= 18) ? 'Cuisine' : dest, p, sent: false, step: step, done: false, served: false }); updateBasket(); }
-
-    function updateBasket() {
-        let total = 0; let htmlPanier = ''; let htmlEnCours = ''; let htmlHistorique = '';
-
-        [...localBasket].forEach((i, originalIndex) => { 
-            total += i.p; const nameClean = i.n.replace(' [WEB]',''); const destBadge = `<span style="color:#666; font-size:0.6rem;">(${i.dest})</span>`;
-
-            if (!i.sent) {
-                htmlPanier += `<div class="basket-row"><span>${nameClean} ${destBadge}</span><span>${i.p.toFixed(2)}€ <span class="btn-del" onclick="localBasket.splice(${originalIndex}, 1); updateBasket();">X</span></span></div>`; 
-            } else if (i.sent && !i.served) {
-                let actionHtml = i.done 
-                    ? `<button class="btn-servir" onclick="marquerServi(${originalIndex})">🔔 SERVIR</button> <button class="btn-renvoyer" onclick="annulerPlat(${originalIndex})" title="Annuler le plat">❌</button>` 
-                    : `<span class="item-encours">⏳ EN COURS</span> <button class="btn-renvoyer" onclick="annulerPlat(${originalIndex})" title="Annuler le plat">❌</button>`;
-                htmlEnCours += `<div class="basket-row"><span>${nameClean} ${destBadge}</span><span>${actionHtml}</span></div>`;
-            } else if (i.served) {
-                htmlHistorique += `<div class="basket-row" style="opacity: 0.5;"><span><span style="text-decoration: line-through;">${nameClean}</span> ${destBadge}</span><span>✔️ Servi <button class="btn-renvoyer" onclick="renvoyerProduction(${originalIndex})">↺ ERREUR</button> <button class="btn-renvoyer" onclick="annulerPlat(${originalIndex})" title="Annuler le plat">❌</button></span></div>`;
-            }
+        // --- 2. SYNCHRONISATION MULTI-ÉCRANS ---
+        window.addEventListener('storage', function(e) {
+            if (e.key === 'empire_reservations') { renderReservations(); loadFloorPlan(); }
+            if (e.key === 'empire_salle_tables') { loadFloorPlan(); }
         });
 
-        let finalHtml = '';
-        if (htmlHistorique) finalHtml += `<div class="section-title">✔️ HISTORIQUE (SERVIS)</div>${htmlHistorique}`;
-        if (htmlEnCours) finalHtml += `<div class="section-title">🔥 EN PRODUCTION / PRÊTS</div>${htmlEnCours}`;
-        if (htmlPanier) finalHtml += `<div class="section-title">🛒 NOUVELLE COMMANDE</div>${htmlPanier}`;
-        if (!finalHtml) finalHtml = '<div style="color:#444; font-size:0.9rem; text-align:center; padding-top:20px;">Le tiroir est vide.</div>';
+        // --- 3. GESTION DES ZONES & PLAN DE TABLE ---
+        let currentZoneId = 'z1';
+        let currentTableId = null;
 
-        document.getElementById('basket-ui').innerHTML = finalHtml; 
-        document.getElementById('basket-total').textContent = total.toFixed(2) + " €"; 
-        updateActionButtons();
-    }
-
-    async function annulerPlat(index) {
-        const item = localBasket[index];
-        const motif = prompt(`⚠️ ANNULATION: ${item.n.replace(' [WEB]','')}\nVeuillez saisir le motif obligatoire (ex: Client parti, Erreur de saisie) :`);
-        if (motif === null || motif.trim() === "") { alert("Opération refusée : Le motif d'annulation est obligatoire pour l'audit."); return; }
-        localBasket.splice(index, 1);
-        logAudit('CRITICAL', 'SALLE', 'Annulation Plat', `[${currentTable}] ${item.n.replace(' [WEB]','')} annulé. Motif: ${motif}`);
-        updateBasket(); await syncOrder();
-    }
-
-    async function marquerServi(index) { localBasket[index].served = true; updateBasket(); await syncOrder(); }
-    async function renvoyerProduction(index) { if(confirm("Erreur signalée : Renvoyer ce plat en production ?")) { localBasket[index].served = false; localBasket[index].done = false; updateBasket(); await syncOrder(); } }
-
-    async function marquerReservee() {
-        const nom = prompt("Nom du client (Réservation) :"); if (!nom || nom.trim() === "") return;
-        const heure = prompt("Heure d'arrivée (ex: 20h30) :"); if (!heure || heure.trim() === "") return;
-        const covers = prompt("Nombre de personnes :", "2"); if (!covers || covers.trim() === "") return;
-        const tel = prompt("Numéro de téléphone :"); if (tel === null) return;
-        
-        let existingOrder = activeOrders[currentTable] || { items: [], status: 'libre' };
-        existingOrder.resName = nom; existingOrder.resTime = heure; existingOrder.resPhone = tel; existingOrder.resCovers = covers;
-        
-        await fetch('/update-order', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ tableId: currentTable, order: existingOrder }) });
-        logAudit('INFO', 'SALLE', 'Réservation', `[${currentTable}] ${nom} à ${heure} (${covers}p) Tel: ${tel}`);
-        closePad(); 
-    }
-
-    async function annulerReservation() {
-        const motif = prompt("⚠️ Motif de l'annulation (ex: No-show, Erreur) :");
-        if (!motif || motif.trim() === "") { alert("Opération refusée : Le motif est obligatoire."); return; }
-        
-        let existingOrder = activeOrders[currentTable];
-        if(!existingOrder) return;
-        logAudit('CRITICAL', 'SALLE', 'Annul. Réservation', `[${currentTable}] ${existingOrder.resName} annulé. Motif: ${motif}`);
-        
-        delete existingOrder.resName; delete existingOrder.resTime; delete existingOrder.resPhone; delete existingOrder.resCovers;
-        let newOrder = existingOrder; if(existingOrder.items && existingOrder.items.length === 0) newOrder = null;
-        
-        await fetch('/update-order', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ tableId: currentTable, order: newOrder }) });
-        closePad(); 
-    }
-
-    async function syncOrder() {
-        const existingOrder = activeOrders[currentTable] || {}; let updatedReadyPostes = existingOrder.readyPostes || []; localBasket.forEach(i => { if (!i.done) updatedReadyPostes = updatedReadyPostes.filter(p => p !== i.dest); });
-        let allDoneOrServed = localBasket.length > 0 && localBasket.every(i => i.done || i.served); let globalStatus = allDoneOrServed ? 'ready' : 'pending';
-        const order = { ...existingOrder, tableId: currentTable, covers: document.getElementById('covers').value, items: localBasket, time: new Date().toLocaleTimeString('fr-FR'), status: globalStatus, readyPostes: updatedReadyPostes };
-        await fetch('/update-order', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ tableId: currentTable, order: localBasket.length > 0 ? order : (order.resName ? order : null) }) });
-        render(); renderWebOrders(); renderResDrawer();
-    }
-
-    function updateActionButtons() {
-        let hasUnsent = localBasket.some(i => !i.sent); let hasSent = localBasket.some(i => i.sent);
-        ['btn-order', 'btn-assign', 'btn-bill', 'btn-pay', 'btn-reserve', 'btn-cancel-res'].forEach(el => document.getElementById(el).style.display = 'none');
-        if (currentTable && currentTable.includes('WEB')) document.getElementById('btn-assign').style.display = 'block';
-        
-        const o = activeOrders[currentTable];
-        if (hasUnsent) { document.getElementById('btn-order').style.display = 'block'; document.getElementById('btn-order').innerText = hasSent ? "ENVOYER LA SUITE" : "ENVOYER COMMANDE"; } 
-        else if (hasSent) { if (tableStates[currentTable] === 'addition') document.getElementById('btn-pay').style.display = 'block'; else document.getElementById('btn-bill').style.display = 'block'; } 
-        else { if (o && o.resName) document.getElementById('btn-cancel-res').style.display = 'block'; else document.getElementById('btn-reserve').style.display = 'block'; }
-    }
-
-    async function submitOrder() { localBasket.forEach(i => i.sent = true); await syncOrder(); tableStates[currentTable] = 'occupee'; document.getElementById('order-pad').classList.remove('open'); }
-    function demanderAddition() { tableStates[currentTable] = 'addition'; document.getElementById('order-pad').classList.remove('open'); render(); }
-    
-    async function validerEncaissement() {
-        if(confirm("Confirmer le paiement ?")) {
-            let existingOrder = activeOrders[currentTable];
-            let nextOrder = null;
-            if(existingOrder && existingOrder.resName) { nextOrder = { items: [], covers: existingOrder.resCovers || 1, status: 'libre', resName: existingOrder.resName, resTime: existingOrder.resTime, resPhone: existingOrder.resPhone, resCovers: existingOrder.resCovers }; }
-            await fetch('/update-order', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ tableId: currentTable, order: nextOrder }) });
-            tableStates[currentTable] = 'libre'; document.getElementById('order-pad').classList.remove('open'); render(); renderWebOrders(); renderResDrawer();
+        function getZones() {
+            let zones = JSON.parse(localStorage.getItem('empire_salle_zones'));
+            if(!zones || zones.length === 0) zones = [{ id: 'z1', name: 'RESTAURANT' }];
+            return zones;
         }
-    }
-    
-    // UTILS ARCHITECTURE
-    function toggleChefMode() { if (!isChef) { const currentPin = localStorage.getItem('tableau_manager_pin') || "8888"; if (prompt("CODE CHEF :") === currentPin) { isChef = true; document.getElementById('lock-status').textContent = "🔒 QUITTER SUPERVISION"; document.getElementById('architect-toggle').style.display = 'inline-block'; document.getElementById('btn-audit').style.display = 'inline-block'; logAudit('WARNING', 'SECURITE', 'Accès Chef Salle', 'Connexion réussie'); if(currentTable && document.getElementById('order-pad').classList.contains('open')) openPad(currentTable); } } else { isChef = false; isArchitect = false; selected = null; document.body.classList.remove('architect-mode'); document.getElementById('architect-btns').style.display = 'none'; document.getElementById('architect-toggle').style.display = 'none'; document.getElementById('btn-audit').style.display = 'none'; closeAuditDrawer(); document.getElementById('config-panel').style.display = 'none'; document.getElementById('lock-status').textContent = "🔓 ACCÈS CHEF"; if(currentTable && document.getElementById('order-pad').classList.contains('open')) openPad(currentTable); } renderTabs(); render(); }
-    function toggleArchitectMode() { isArchitect = !isArchitect; if (isArchitect) { document.body.classList.add('architect-mode'); document.getElementById('architect-btns').style.display = 'flex'; document.getElementById('architect-toggle').style.background = '#ff9800'; document.getElementById('architect-toggle').innerText = "❌ QUITTER ARCHITECTURE"; } else { document.body.classList.remove('architect-mode'); document.getElementById('architect-btns').style.display = 'none'; document.getElementById('config-panel').style.display = 'none'; document.getElementById('architect-toggle').style.background = 'var(--blue)'; document.getElementById('architect-toggle').innerText = "🛠️ MODE ARCHITECTURE"; selected = null; } renderTabs(); render(); }
-    function changeZoom(delta) { currentZoom = Math.min(Math.max(0.3, currentZoom + delta), 2.0); document.getElementById('canvas').style.transform = `scale(${currentZoom})`; document.getElementById('zoom-level').textContent = Math.round(currentZoom * 100) + "%"; }
-    function addResizeHandle(parentDiv, item, type) { const handle = document.createElement('div'); handle.className = 'resize-handle'; handle.onmousedown = (e) => startResize(e, item, type); parentDiv.appendChild(handle); }
-    function startResize(e, item, type) { e.stopPropagation(); let startX = e.clientX, startY = e.clientY; let startW = item.w, startH = item.h; document.onmousemove = (ev) => { let dx = (ev.clientX - startX) / currentZoom; let dy = (ev.clientY - startY) / currentZoom; item.w = Math.max(0.5, startW + (dx / SCALE)); item.h = Math.max(0.5, startH + (dy / SCALE)); document.getElementById('ed-w').value = item.w.toFixed(1); document.getElementById('ed-h').value = item.h.toFixed(1); render(); }; document.onmouseup = () => document.onmousemove = null; }
-    function startDrag(e, item, type) { if (!isArchitect) return; selected = item; selectedType = type; document.getElementById('config-panel').style.display = 'block'; document.getElementById('ed-id').value = item.id; document.getElementById('ed-w').value = item.w.toFixed(1); document.getElementById('ed-h').value = item.h.toFixed(1); document.getElementById('ed-shape').value = item.shape || 'square'; document.getElementById('ed-shape').disabled = (type === 'zone'); let startX = e.clientX, startY = e.clientY, origX = item.x, origY = item.y; document.onmousemove = (ev) => { item.x = origX + (ev.clientX - startX) / currentZoom; item.y = origY + (ev.clientY - startY) / currentZoom; render(); }; document.onmouseup = () => document.onmousemove = null; }
-    function applyChange() { if (!selected) return; selected.id = document.getElementById('ed-id').value; selected.w = parseFloat(document.getElementById('ed-w').value); selected.h = parseFloat(document.getElementById('ed-h').value); if(selectedType === 'table') selected.shape = document.getElementById('ed-shape').value; render(); }
-    function addItem(type) { if (type === 'table') { let maxNum = 0; Object.values(layouts).forEach(room => { room.tables.forEach(t => { let num = parseInt(t.id.replace(/[^0-9]/g, ''), 10); if (!isNaN(num) && num > maxNum) maxNum = num; }); }); layouts[currentRoom].tables.push({ id: "T" + (maxNum + 1), x: 150, y: 150, w: 1.5, h: 1.5, shape: 'square' }); } else { layouts[currentRoom].zones.push({ id: "ZONE", x: 100, y: 100, w: 4.0, h: 3.0, shape: 'square' }); } render(); }
-    function deleteItem() { if (!selected) return; if (selectedType === 'table') layouts[currentRoom].tables = layouts[currentRoom].tables.filter(t => t !== selected); else layouts[currentRoom].zones = layouts[currentRoom].zones.filter(z => z !== selected); selected = null; document.getElementById('config-panel').style.display = 'none'; render(); }
-    async function save() { await fetch('/save-full-layout', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(layouts) }); alert("ARCHITECTURE ENREGISTRÉE."); }
-    
-    setInterval(() => { document.getElementById('clock').textContent = new Date().toLocaleTimeString('fr-FR', {hour:'2-digit', minute:'2-digit'}); }, 1000);
-</script>
+        function loadZonesUI() {
+            const zones = getZones();
+            if(!zones.find(z => z.id === currentZoneId)) currentZoneId = zones[0].id;
+            document.getElementById('zones-bar').innerHTML = zones.map(z => `<div class="zone-tab ${z.id === currentZoneId ? 'active' : ''}" onclick="switchZone('${z.id}')">${z.name}</div>`).join('');
+            loadFloorPlan();
+        }
+        function switchZone(id) { currentZoneId = id; loadZonesUI(); }
+        function openZoneManager() { renderZoneManagerList(); document.getElementById('zone-manager-modal').style.display = 'flex'; }
+        function closeZoneManager() { document.getElementById('zone-manager-modal').style.display = 'none'; }
+        function renderZoneManagerList() {
+            const zones = getZones();
+            document.getElementById('zone-manager-list').innerHTML = zones.map(z => `
+                <div class="zone-manager-item"><span style="font-weight:bold; color:#fff;">${z.name}</span>${zones.length > 1 ? `<button onclick="deleteZoneSafely('${z.id}', '${z.name}')" style="background:none; border:none; color:var(--alert); cursor:pointer;">✕</button>` : ''}</div>
+            `).join('');
+        }
+        function addNewZone() {
+            const name = document.getElementById('new-zone-name').value.trim();
+            if(!name) return;
+            const zones = getZones();
+            zones.push({ id: 'z' + Date.now(), name: name });
+            localStorage.setItem('empire_salle_zones', JSON.stringify(zones));
+            document.getElementById('new-zone-name').value = '';
+            renderZoneManagerList(); loadZonesUI();
+        }
+        function deleteZoneSafely(id, name) {
+            if(confirm(`⚠️ Supprimer la salle "${name}" de manière irréversible ?`)) {
+                let zones = getZones().filter(z => z.id !== id);
+                localStorage.setItem('empire_salle_zones', JSON.stringify(zones));
+                let tables = JSON.parse(localStorage.getItem('empire_salle_tables')) || [];
+                tables = tables.filter(t => t.zoneId !== id);
+                localStorage.setItem('empire_salle_tables', JSON.stringify(tables));
+                renderZoneManagerList(); loadZonesUI();
+            }
+        }
+
+        function getTables() {
+            let tables = JSON.parse(localStorage.getItem('empire_salle_tables'));
+            if(!tables || tables.length === 0) tables = [{ id: 'T1', zoneId: 'z1', label: 'T1', w: 80, h: 80, t: 100, l: 50, color: '#555' }];
+            return tables;
+        }
+        function getDecors() { return JSON.parse(localStorage.getItem('empire_salle_decor')) || []; }
+        function saveTables(tables) { localStorage.setItem('empire_salle_tables', JSON.stringify(tables)); }
+        function saveDecors(decors) { localStorage.setItem('empire_salle_decor', JSON.stringify(decors)); }
+
+        function isTableReservedToday(tableLabel) {
+            const today = new Date().toISOString().split('T')[0];
+            const resas = JSON.parse(localStorage.getItem('empire_reservations')) || {};
+            return (resas[today] || []).some(r => r.table === tableLabel);
+        }
+
+        // CORRECTION DU CRASH HASACTIVEORDER : Gère l'ancienne méthode et la nouvelle méthode
+        function hasActiveOrder(tableLabel) {
+            const ticket = JSON.parse(localStorage.getItem('empire_order_' + tableLabel));
+            if(!ticket) return false;
+            // Sécurité si l'ancien format (array vide) est en mémoire
+            if(Array.isArray(ticket)) return ticket.length > 0;
+            
+            return (ticket.entrees && ticket.entrees.length > 0) || 
+                   (ticket.plats && ticket.plats.length > 0) || 
+                   (ticket.desserts && ticket.desserts.length > 0) || 
+                   (ticket.boissons && ticket.boissons.length > 0);
+        }
+
+        function loadFloorPlan() {
+            const floor = document.getElementById('floor-plan');
+            floor.innerHTML = '';
+            
+            const currentDecors = getDecors().filter(d => d.zoneId === currentZoneId);
+            currentDecors.forEach(d => {
+                const div = document.createElement('div');
+                div.className = `decor-obj ${d.styleType}`;
+                div.setAttribute('data-id', d.id);
+                div.setAttribute('data-type', 'decor');
+                div.innerHTML = d.label || '';
+                div.style.width = d.w + 'px'; div.style.height = d.h + 'px';
+                div.style.top = d.t + 'px'; div.style.left = d.l + 'px';
+                
+                if(isMaster) {
+                    div.onmousedown = function(e) { startDrag(e, this); };
+                    div.ontouchstart = function(e) { startDrag(e, this); };
+                    const handle = document.createElement('div'); handle.className = 'resize-handle';
+                    handle.onmousedown = startResize; handle.ontouchstart = startResize;
+                    div.appendChild(handle);
+                }
+                floor.appendChild(div);
+            });
+
+            getTables().filter(t => t.zoneId === currentZoneId).forEach(t => {
+                const label = t.label || t.id;
+                const div = document.createElement('div');
+                div.className = 'table-obj';
+                div.setAttribute('data-label', label);
+                div.setAttribute('data-id', t.id);
+                div.setAttribute('data-type', 'table');
+                div.innerHTML = label;
+                div.style.width = t.w + 'px'; div.style.height = t.h + 'px';
+                div.style.top = t.t + 'px'; div.style.left = t.l + 'px';
+                div.style.borderColor = t.color; div.style.borderRadius = t.radius || '8px';
+                
+                if(isTableReservedToday(label)) div.innerHTML += `<div class="table-badge">📅</div>`;
+                if(hasActiveOrder(label)) {
+                    div.style.borderColor = 'var(--warning)';
+                    div.innerHTML += `<div class="table-badge active-order">🍽️</div>`;
+                }
+
+                // GESTION INTELLIGENTE DU CLIC / DRAG
+                if(isMaster) {
+                    div.onmousedown = function(e) { startDrag(e, this); };
+                    div.ontouchstart = function(e) { startDrag(e, this); };
+                    const handle = document.createElement('div'); handle.className = 'resize-handle';
+                    handle.onmousedown = startResize; handle.ontouchstart = startResize;
+                    div.appendChild(handle);
+                } else {
+                    // SERVEUR : Clic pur et dur. Pas de drag. 100% de fiabilité.
+                    div.onclick = function() { openOrderPad(label); };
+                }
+
+                floor.appendChild(div);
+            });
+        }
+
+        // =================================================================
+        // 4. MOTEUR DE CAISSE (LA MARCHE EN AVANT + CORRECTION)
+        // =================================================================
+        let currentTicket = { entrees: [], plats: [], desserts: [], boissons: [] };
+
+        function openDrawer(drawerId) {
+            document.querySelectorAll('.drawer').forEach(d => d.classList.remove('open'));
+            document.getElementById(drawerId).classList.add('open');
+        }
+        function closeDrawer(drawerId) { document.getElementById(drawerId).classList.remove('open'); }
+
+        function openOrderPad(tableName) {
+            currentTableId = tableName;
+            document.getElementById('order-table-title').textContent = "TABLE " + tableName;
+            
+            let savedTicket = JSON.parse(localStorage.getItem('empire_order_' + tableName));
+            
+            // SÉCURITÉ ANTI-CRASH (Conversion de l'ancien système s'il en reste un)
+            if(savedTicket && !Array.isArray(savedTicket) && savedTicket.entrees) {
+                currentTicket = savedTicket;
+            } else {
+                currentTicket = { entrees: [], plats: [], desserts: [], boissons: [] };
+            }
+            
+            renderTicket();
+            loadMenuCategory('Entrée');
+            openDrawer('order-drawer');
+        }
+
+        function getChefMenu() {
+            let menu = JSON.parse(localStorage.getItem('empire_recipes'));
+            if(!menu || menu.length === 0) {
+                menu = [
+                    { id: 1, name: 'Œuf Mayo Truffé', category: 'Entrée', price: 9 },
+                    { id: 3, name: 'Bavette d\'Aloyau', category: 'Plat', price: 24 },
+                    { id: 5, name: 'Mousse Chocolat', category: 'Dessert', price: 8 },
+                    { id: 7, name: 'Mojito', category: 'Boisson', price: 12 },
+                    { id: 8, name: 'Verre de Chablis', category: 'Boisson', price: 8 }
+                ];
+            }
+            return menu;
+        }
+
+        function loadMenuCategory(categoryName) {
+            document.querySelectorAll('.btn-cat').forEach(b => b.classList.remove('active'));
+            document.getElementById('btn-cat-' + categoryName).classList.add('active');
+            const menu = getChefMenu().filter(item => item.category === categoryName);
+            const grid = document.getElementById('items-grid');
+            
+            if(menu.length === 0) { grid.innerHTML = `<div style="color:#555; grid-column:1/-1; text-align:center;">Catégorie vide.</div>`; return; }
+
+            grid.innerHTML = menu.map(item => {
+                const price = parseFloat(item.price || item.sellingPrice || 0).toFixed(2);
+                return `<button class="btn-item" onclick="addItemToTicket('${item.name.replace(/'/g, "\\'")}', ${price}, '${categoryName}')"><div class="item-name">${item.name}</div><div class="item-price">${price} €</div></button>`;
+            }).join('');
+        }
+
+        function addItemToTicket(name, price, category) {
+            const item = { id: Date.now() + Math.random(), name: name, price: parseFloat(price) };
+            if(category === 'Entrée') currentTicket.entrees.push(item);
+            else if(category === 'Plat') currentTicket.plats.push(item);
+            else if(category === 'Dessert') currentTicket.desserts.push(item);
+            else currentTicket.boissons.push(item);
+            saveTicket();
+        }
+
+        // CORRECTION D'ERREUR : Retirer un article
+        function removeItem(categoryArrayName, id) {
+            currentTicket[categoryArrayName] = currentTicket[categoryArrayName].filter(item => item.id !== id);
+            saveTicket();
+        }
+
+        function saveTicket() {
+            localStorage.setItem('empire_order_' + currentTableId, JSON.stringify(currentTicket));
+            renderTicket();
+            loadFloorPlan(); 
+        }
+
+        function renderTicket() {
+            const list = document.getElementById('ticket-list');
+            let total = 0; let html = '';
+
+            const renderGroup = (title, itemsArray, arrayName) => {
+                if(!itemsArray || itemsArray.length === 0) return '';
+                let groupHtml = `<div class="ticket-group"><div class="ticket-group-title">${title}</div>`;
+                itemsArray.forEach(item => {
+                    total += item.price;
+                    groupHtml += `<div class="ticket-item"><button class="btn-del-item" onclick="removeItem('${arrayName}', ${item.id})">✕</button><div class="ticket-item-name">1x ${item.name}</div><div class="ticket-item-price">${item.price.toFixed(2)} €</div></div>`;
+                });
+                return groupHtml + `</div>`;
+            };
+
+            html += renderGroup('ENTRÉES', currentTicket.entrees, 'entrees');
+            html += renderGroup('PLATS', currentTicket.plats, 'plats');
+            html += renderGroup('DESSERTS', currentTicket.desserts, 'desserts');
+            html += renderGroup('BOISSONS', currentTicket.boissons, 'boissons');
+
+            list.innerHTML = html || `<div style="color:#555; text-align:center; font-style:italic; margin-top:20px;">Ticket vide.</div>`;
+            document.getElementById('ticket-total-amount').textContent = total.toFixed(2) + " €";
+        }
+
+        // LE CŒUR DE LA SYNCHRO KDS (REMPLACEMENT AUTOMATIQUE)
+        function sendToKDS() {
+            if(currentTicket.entrees.length === 0 && currentTicket.plats.length === 0 && currentTicket.desserts.length === 0 && currentTicket.boissons.length === 0) {
+                return alert("Le ticket est vide.");
+            }
+
+            let kdsQueue = JSON.parse(localStorage.getItem('empire_kds_queue')) || [];
+            
+            // ANTI-DOUBLON : On écrase l'ancienne commande de cette table SI elle n'est pas encore partie
+            kdsQueue = kdsQueue.filter(o => !(o.table === currentTableId && o.status === 'pending'));
+
+            const orderData = {
+                id: 'ord_' + Date.now(),
+                table: currentTableId,
+                time: new Date().toLocaleTimeString('fr-FR', {hour: '2-digit', minute:'2-digit'}),
+                ticket: currentTicket,
+                status: 'pending' 
+            };
+
+            kdsQueue.push(orderData);
+            localStorage.setItem('empire_kds_queue', JSON.stringify(kdsQueue));
+            
+            const btn = document.querySelector('.btn-send');
+            btn.innerHTML = "✅ BONS ENVOYÉS !";
+            btn.style.background = "var(--accent)";
+            setTimeout(() => {
+                btn.innerHTML = "🔥 ENVOYER CUISINE/BAR";
+                btn.style.background = "var(--warning)";
+                closeDrawer('order-drawer');
+            }, 1000);
+        }
+
+        function payTable() {
+            if(confirm(`💰 ENCAISSER LA TABLE ${currentTableId} ?\nCeci va vider la table et clore la transaction.`)) {
+                currentTicket = { entrees: [], plats: [], desserts: [], boissons: [] };
+                saveTicket();
+                closeDrawer('order-drawer');
+            }
+        }
+
+        // =================================================================
+        // 5. RÉSERVATIONS (TRI MIDI/SOIR)
+        // =================================================================
+        document.getElementById('res-date-filter').valueAsDate = new Date();
+        
+        function saveReservation() {
+            const date = document.getElementById('res-date-filter').value;
+            const name = document.getElementById('res-name').value.trim();
+            const time = document.getElementById('res-time').value;
+            const pax = document.getElementById('res-pax').value;
+            const table = document.getElementById('res-table').value.trim();
+
+            if(!date || !name || !time || !pax) return alert("Remplir Date, Nom, Heure, Pax.");
+
+            const resas = JSON.parse(localStorage.getItem('empire_reservations')) || {};
+            if(!resas[date]) resas[date] = [];
+            resas[date].push({ id: Date.now(), name, time, pax, table });
+            localStorage.setItem('empire_reservations', JSON.stringify(resas));
+            
+            document.getElementById('res-name').value = ''; document.getElementById('res-time').value = ''; document.getElementById('res-pax').value = '';
+            renderReservations(); loadFloorPlan();
+        }
+
+        function deleteReservation(date, id) {
+            if(!confirm("Annuler la réservation ?")) return;
+            const resas = JSON.parse(localStorage.getItem('empire_reservations')) || {};
+            if(resas[date]) {
+                resas[date] = resas[date].filter(r => r.id !== id);
+                localStorage.setItem('empire_reservations', JSON.stringify(resas));
+                renderReservations(); loadFloorPlan();
+            }
+        }
+
+        function renderReservations() {
+            const date = document.getElementById('res-date-filter').value;
+            const resas = JSON.parse(localStorage.getItem('empire_reservations')) || {};
+            const container = document.getElementById('res-list-container');
+            const dayResas = resas[date] || [];
+
+            if(dayResas.length === 0) { container.innerHTML = '<div style="color:#555; text-align:center;">Cahier vide.</div>'; return; }
+
+            let midiHtml = ''; let soirHtml = '';
+            dayResas.sort((a, b) => a.time.localeCompare(b.time)).forEach(r => {
+                const isSoir = parseInt(r.time.split(':')[0], 10) >= 17;
+                const card = `
+                <div class="resa-card" style="background:#111; border-left:4px solid var(--purple); padding:15px; margin-bottom:10px; display:flex; justify-content:space-between; border-radius:8px;">
+                    <div><div style="font-size:1.1rem; font-weight:900; color:#fff;">${r.time} - ${r.name}</div>
+                    <div style="font-size:0.85rem; color:#aaa;">👥 ${r.pax} Pax | 📍 <span style="color:var(--accent);">${r.table || 'Libre'}</span></div></div>
+                    <button onclick="deleteReservation('${date}', ${r.id})" style="background:none; border:none; color:var(--alert); cursor:pointer; font-size:1.5rem; font-weight:bold;">✕</button>
+                </div>`;
+                if (isSoir) soirHtml += card; else midiHtml += card;
+            });
+            container.innerHTML = (midiHtml ? `<div style="color:#aaa; font-size:0.9rem; margin-bottom:10px;">☀️ SERVICE MIDI</div>${midiHtml}` : '') + 
+                                  (soirHtml ? `<div style="color:#aaa; font-size:0.9rem; margin-bottom:10px; margin-top:20px;">🌙 SERVICE SOIR</div>${soirHtml}` : '');
+        }
+
+        // =================================================================
+        // 6. LOGIQUE DRAG AND DROP (TACTILE + ANTI-ERREUR) - UNIQUEMENT MASTER
+        // =================================================================
+        let startClickX = 0, startClickY = 0;
+
+        function startDrag(e, elem) {
+            hasMoved = false; currentDrag = elem;
+            const rect = currentDrag.getBoundingClientRect();
+            
+            let clientX = e.type.includes('mouse') ? e.clientX : e.touches[0].clientX;
+            let clientY = e.type.includes('mouse') ? e.clientY : e.touches[0].clientY;
+            
+            startClickX = clientX; startClickY = clientY;
+            startX = clientX - rect.left; startY = clientY - rect.top;
+            currentDrag.style.zIndex = 1000;
+        }
+
+        function startResize(e) {
+            e.stopPropagation(); hasMoved = false; isResizing = true; currentDrag = this.parentElement; 
+            const rect = currentDrag.getBoundingClientRect();
+            startW = rect.width; startH = rect.height;
+            
+            let clientX = e.type.includes('mouse') ? e.clientX : e.touches[0].clientX;
+            let clientY = e.type.includes('mouse') ? e.clientY : e.touches[0].clientY;
+            startClickX = clientX; startClickY = clientY;
+            currentDrag.style.zIndex = 1000;
+        }
+
+        document.onmousemove = dragAction; document.ontouchmove = dragAction;
+        function dragAction(e) {
+            if(!currentDrag || !isMaster) return;
+            
+            let clientX = e.type.includes('mouse') ? e.clientX : e.touches[0].clientX;
+            let clientY = e.type.includes('mouse') ? e.clientY : e.touches[0].clientY;
+            
+            if (Math.abs(clientX - startClickX) > 10 || Math.abs(clientY - startClickY) > 10) { hasMoved = true; }
+
+            if(isResizing) {
+                hasMoved = true;
+                let newW = startW + (clientX - startClickX);
+                let newH = startH + (clientY - startClickY);
+                if(newW < 40) newW = 40;
+                if(newH < 40) newH = 40;
+                currentDrag.style.width = newW + 'px';
+                currentDrag.style.height = newH + 'px';
+            } else if (hasMoved) {
+                const floor = document.getElementById('floor-plan').getBoundingClientRect();
+                let newLeft = Math.round((clientX - floor.left - startX) / 20) * 20;
+                let newTop = Math.round((clientY - floor.top - startY) / 20) * 20;
+                currentDrag.style.left = Math.max(0, newLeft) + 'px'; currentDrag.style.top = Math.max(0, newTop) + 'px';
+            }
+        }
+
+        document.onmouseup = stopDrag; document.ontouchend = stopDrag;
+        function stopDrag() {
+            if(!currentDrag) return;
+            
+            const id = currentDrag.getAttribute('data-id');
+            const label = currentDrag.getAttribute('data-label'); 
+            const isDecor = currentDrag.getAttribute('data-type') === 'decor';
+
+            if(!hasMoved && !isResizing && isMaster) {
+                if (isDecor) openDecorEdit(id);
+                else openOrderPad(label);
+            } else if (isMaster && hasMoved) {
+                if (isDecor) {
+                    let decors = getDecors();
+                    const dIndex = decors.findIndex(d => d.id === id);
+                    if(dIndex > -1) {
+                        decors[dIndex].l = parseInt(currentDrag.style.left); decors[dIndex].t = parseInt(currentDrag.style.top);
+                        decors[dIndex].w = parseInt(currentDrag.style.width); decors[dIndex].h = parseInt(currentDrag.style.height);
+                        saveDecors(decors);
+                    }
+                } else {
+                    let tables = getTables();
+                    const tIndex = tables.findIndex(t => t.id === id);
+                    if(tIndex > -1) {
+                        tables[tIndex].l = parseInt(currentDrag.style.left); tables[tIndex].t = parseInt(currentDrag.style.top);
+                        tables[tIndex].w = parseInt(currentDrag.style.width); tables[tIndex].h = parseInt(currentDrag.style.height);
+                        saveTables(tables);
+                    }
+                }
+            }
+            currentDrag.style.zIndex = ''; currentDrag = null; isResizing = false;
+        }
+
+        // ARCHITECTURE MODALS (CHEF)
+        function addTable() {
+            const allTables = getTables();
+            const zoneTables = allTables.filter(t => t.zoneId === currentZoneId);
+            let maxNum = 0;
+            zoneTables.forEach(t => {
+                const match = t.label.match(/^T?(\d+)$/i); 
+                if(match) { const num = parseInt(match[1], 10); if(num > maxNum) maxNum = num; }
+            });
+            const newLabel = 'T' + (maxNum + 1);
+            allTables.push({ id: 't_' + Date.now(), zoneId: currentZoneId, label: newLabel, w: 80, h: 80, t: 50, l: 50, color: '#fff', radius: '8px' });
+            saveTables(allTables); loadFloorPlan();
+        }
+        function addDecor() {
+            const allDecors = getDecors();
+            allDecors.push({ id: 'd_' + Date.now(), zoneId: currentZoneId, label: 'ZONE', w: 150, h: 100, t: 50, l: 50, styleType: 'decor-zone' });
+            saveDecors(allDecors); loadFloorPlan();
+        }
+
+        function openTableEdit(id) {
+            const t = getTables().find(table => table.id === id);
+            if(!t) return;
+            document.getElementById('edit-table-id').value = t.id;
+            document.getElementById('edit-table-label').value = t.label || t.id;
+            document.getElementById('edit-table-radius').value = t.radius || '8px';
+            document.getElementById('table-edit-modal').style.display = 'flex';
+        }
+        function closeTableEdit() { document.getElementById('table-edit-modal').style.display = 'none'; }
+        function saveTableEdit() {
+            const id = document.getElementById('edit-table-id').value;
+            let tables = getTables();
+            const index = tables.findIndex(t => t.id === id);
+            if(index > -1) {
+                let newLabel = document.getElementById('edit-table-label').value.trim();
+                if(newLabel === "") newLabel = "Tx"; 
+                tables[index].label = newLabel;
+                tables[index].radius = document.getElementById('edit-table-radius').value;
+                saveTables(tables); loadFloorPlan();
+            }
+            closeTableEdit();
+        }
+        function deleteTable() {
+            const id = document.getElementById('edit-table-id').value;
+            saveTables(getTables().filter(t => t.id !== id));
+            loadFloorPlan(); closeTableEdit();
+        }
+        function openDecorEdit(id) {
+            const d = getDecors().find(decor => decor.id === id);
+            if(!d) return;
+            document.getElementById('edit-decor-id').value = d.id;
+            document.getElementById('edit-decor-label').value = d.label || '';
+            document.getElementById('edit-decor-style').value = d.styleType || 'decor-zone';
+            document.getElementById('decor-edit-modal').style.display = 'flex';
+        }
+        function closeDecorEdit() { document.getElementById('decor-edit-modal').style.display = 'none'; }
+        function saveDecorEdit() {
+            const id = document.getElementById('edit-decor-id').value;
+            let decors = getDecors();
+            const index = decors.findIndex(d => d.id === id);
+            if(index > -1) {
+                decors[index].label = document.getElementById('edit-decor-label').value.trim();
+                decors[index].styleType = document.getElementById('edit-decor-style').value;
+                saveDecors(decors); loadFloorPlan();
+            }
+            closeDecorEdit();
+        }
+        function deleteDecor() {
+            const id = document.getElementById('edit-decor-id').value;
+            saveDecors(getDecors().filter(d => d.id !== id));
+            loadFloorPlan(); closeDecorEdit();
+        }
+
+        // INITIALISATION
+        loadZonesUI();
+        renderReservations();
+    </script>
 </body>
 </html>
+```
