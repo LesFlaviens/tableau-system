@@ -27,7 +27,7 @@
         .counter-val.positive { color: var(--accent); font-weight: bold; }
         .counter-val.negative { color: var(--alert); font-weight: bold; }
 
-        /* ASSISTANT DE MODULATION (RÉTRACTABLE) */
+        /* ASSISTANT DE MODULATION */
         .smart-assistant { background: #0a0a0a; border-bottom: 1px solid #333; padding: 10px 20px; display: flex; flex-direction: column; }
         .sa-header { display: flex; justify-content: space-between; align-items: center; padding-bottom: 5px; }
         .sa-title { margin: 0; color: var(--hr); text-transform: uppercase; font-size: 0.9rem; font-weight: 900; letter-spacing: 1px;}
@@ -75,7 +75,7 @@
         .obs-inp:focus { outline: none; color: #fff; border-bottom-color: var(--hr); }
         .day-total { font-weight: 900; font-size: 0.9rem; }
 
-        /* VUE GLOBALE ÉQUIPE (ZEBRA ÉPURÉ) */
+        /* VUE GLOBALE ÉQUIPE */
         .global-table { min-width: 1500px; }
         .global-table th, .global-table td { border: 1px solid #333; text-align: center; padding: 2px; }
         .global-table th { z-index: 12; }
@@ -256,6 +256,7 @@
         let isForecastExpanded = true;
         const daysOfWeek = ["Dim", "Lun", "Mar", "Mer", "Jeu", "Ven", "Sam"];
         
+        // Couleurs Pastel Mates
         const staffColors = ['#64b5f6', '#81c784', '#ba68c8', '#ffb74d', '#e57373', '#4db6ac', '#f06292', '#fff176', '#7986cb', '#aed581'];
 
         function init() {
@@ -284,29 +285,43 @@
 
         function toggleViewMode() {
             isGlobalView = !isGlobalView;
+            
             document.getElementById('table-container-individual').style.display = isGlobalView ? 'none' : 'block';
             document.getElementById('global-view-container').style.display = isGlobalView ? 'block' : 'none';
             document.getElementById('btn-toggle-view').innerHTML = isGlobalView ? '👤 VUE DÉTAILLÉE' : '🌍 VUE GLOBALE';
             document.getElementById('individual-stats').style.display = isGlobalView ? 'none' : 'flex';
-            document.getElementById('active-staff-badge').style.display = isGlobalView ? 'none' : (currentStaffId ? 'block' : 'none');
-            
+
             if(isGlobalView) {
                 document.getElementById('empty-state').style.display = 'none';
                 document.getElementById('month-view-container').style.display = 'flex';
+                document.getElementById('active-staff-badge').style.display = 'none';
+                
                 document.querySelectorAll('.staff-card').forEach(c => {
                     c.style.transform = 'scale(1)'; c.style.boxShadow = 'none'; c.style.background = '#161616'; c.style.border = '1px solid #222';
                 });
-                currentStaffId = null;
                 toggleForecast(true); 
                 loadMonthData();
             } else {
-                if(!currentStaffId) {
+                // CORRECTION DU BUG DE RETOUR : On rattrape le premier salarié si aucun n'est sélectionné
+                const dir = getDirectory();
+                if(!currentStaffId && dir.length > 0) {
+                    currentStaffId = dir[0].id;
+                }
+                
+                if(currentStaffId) {
+                    document.getElementById('empty-state').style.display = 'none';
+                    document.getElementById('month-view-container').style.display = 'flex';
+                    toggleForecast(false); 
+                    renderStaffList(); 
+                    loadMonthData();
+                } else {
                     document.getElementById('empty-state').style.display = 'flex';
                     document.getElementById('month-view-container').style.display = 'none';
                 }
             }
         }
 
+        // --- GESTION DU DIRECTOIRE ---
         function getDirectory() { return JSON.parse(localStorage.getItem('empire_hr_directory')) || []; }
         function saveDirectory(dir) { localStorage.setItem('empire_hr_directory', JSON.stringify(dir)); renderStaffList(); }
 
@@ -346,7 +361,8 @@
                 const balClass = s.balanceHours >= 0 ? 'positive' : 'negative';
                 const balSign = s.balanceHours > 0 ? '+' : '';
                 const color = staffColors[idx % staffColors.length];
-                const isActive = s.id === currentStaffId;
+                const isActive = s.id === currentStaffId && !isGlobalView;
+                
                 const activeStyle = isActive ? `border: 1px solid ${color}; border-left: 6px solid ${color}; background: ${color}15; box-shadow: inset 10px 0 20px ${color}20; transform: scale(1.02);` : `border-left: 4px solid ${color}66;`;
                 const glowText = isActive ? `color: ${color}; font-weight: 900;` : `color: ${color};`;
 
@@ -387,6 +403,7 @@
             loadMonthData();
         }
 
+        // --- GESTION DES TEMPS ---
         function getTimesheets() { return JSON.parse(localStorage.getItem('empire_hr_timesheets')) || {}; }
         function saveTimesheets(ts) { localStorage.setItem('empire_hr_timesheets', JSON.stringify(ts)); }
 
@@ -445,9 +462,9 @@
             updateGlobalModulation();
         }
 
-        // --- MOTEUR IA : AUTO-PLANNING ---
+        // --- AUTO-PLANNING ---
         function autoPlanMonth() {
-            if(!confirm("⚡ Lancer l'Auto-Planning ? L'assistant va attribuer 2 jours OFF consécutifs par semaine en roulement pour chaque employé. Les congés payés et arrêts maladie existants ne seront pas écrasés.")) return;
+            if(!confirm("⚡ Lancer l'Auto-Planning ? L'assistant va attribuer 2 jours OFF consécutifs en roulement. Les jours déjà posés (Congés, Maladie) ne seront pas écrasés.")) return;
             
             const monthStr = document.getElementById('month-selector').value;
             const [year, month] = monthStr.split('-');
@@ -455,33 +472,19 @@
             const ts = getTimesheets();
             const dir = getDirectory();
 
-            // Motifs de roulement des jours OFF (0=Dimanche, 1=Lundi, etc.)
-            // L'algo répartit les repos en début/milieu de semaine pour assurer les week-ends.
-            const offPatterns = [
-                [1, 2], // Lundi / Mardi
-                [2, 3], // Mardi / Mercredi
-                [3, 4], // Mercredi / Jeudi
-                [4, 5]  // Jeudi / Vendredi (Pour ceux qui ont le samedi/dimanche bossé)
-            ];
+            const offPatterns = [ [1, 2], [2, 3], [3, 4], [4, 5] ];
 
             dir.forEach((staff, index) => {
-                // Assigne un motif de roulement différent à chaque membre du staff
                 const pattern = offPatterns[index % offPatterns.length];
-                
                 for(let d=1; d<=daysInMonth; d++) {
                     const dateObj = new Date(year, month-1, d);
                     const dayOfWeek = dateObj.getDay(); 
                     const currentStatus = ts[monthStr][staff.id][d].status;
 
-                    // Sécurité : On n'écrase jamais un congé ou un arrêt maladie
                     if(currentStatus !== 'conge' && currentStatus !== 'maladie') {
                         if(pattern.includes(dayOfWeek)) {
-                            // C'est son jour de repos
                             ts[monthStr][staff.id][d].status = 'off';
-                            ts[monthStr][staff.id][d].s1 = '';
-                            ts[monthStr][staff.id][d].s2 = '';
                         } else {
-                            // C'est son jour de travail (horaires standards à affiner par le chef ensuite)
                             ts[monthStr][staff.id][d].status = 'present';
                             ts[monthStr][staff.id][d].s1 = '09:15-14:30';
                             ts[monthStr][staff.id][d].s2 = '18:00-22:30';
@@ -492,7 +495,7 @@
             
             saveTimesheets(ts);
             loadMonthData();
-            alert("✅ Auto-Planning terminé ! Les jours de repos ont été répartis intelligemment. Vérifiez le tableau de bord pour ajuster la couverture.");
+            alert("✅ Planning généré.");
         }
 
         function updateGlobalModulation() {
@@ -593,6 +596,7 @@
             }
         }
 
+        // --- VUE INDIVIDUELLE ---
         function updateDay(day, field, val) {
             const monthStr = document.getElementById('month-selector').value;
             const ts = getTimesheets();
@@ -663,6 +667,7 @@
             diffEl.style.color = diff > 0 ? 'var(--alert)' : (diff < -5 ? 'var(--warning)' : 'var(--accent)');
         }
 
+        // --- VUE GLOBALE AVEC EMOJIS SEULS ---
         function renderGlobalView(year, month, daysInMonth, tsMonthData) {
             const dir = getDirectory();
             const thead = document.getElementById('global-thead');
@@ -685,11 +690,9 @@
                 
                 for(let d=1; d<=daysInMonth; d++) {
                     const data = tsMonthData[staff.id][d];
-                    
                     let textColor = '#555';
                     if(data.status === 'present') textColor = color; 
 
-                    // FINI L'ARBRE DE NOËL : Juste des emojis discrets et sans gros fond flashy
                     bodyHtml += `<td>
                         <select class="status-micro" style="color:${textColor};" onchange="updateDayGlobal(${staff.id}, ${d}, this.value)" title="${data.status}">
                             <option value="present" ${data.status==='present'?'selected':''}>✔</option>
