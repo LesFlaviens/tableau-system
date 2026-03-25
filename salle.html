@@ -6,7 +6,7 @@
     <title>Empire - Master Salle & Caisse</title>
     <style>
         :root { --bg: #050505; --accent: #00e676; --alert: #ff1744; --text: #fff; --panel: #111; --purple: #ea80fc; --blue: #00b0ff; --warning: #ffb300; --sub: #888; }
-        body { font-family: 'Inter', sans-serif; background: var(--bg); color: var(--text); margin: 0; display: flex; flex-direction: column; height: 100vh; overflow: hidden; user-select: none; touch-action: manipulation; }
+        body { font-family: 'Inter', sans-serif; background: var(--bg); color: var(--text); margin: 0; display: flex; flex-direction: column; height: 100vh; overflow: hidden; user-select: none; touch-action: none; }
         
         /* HEADER ÉPURÉ */
         header { border-bottom: 2px solid #333; padding: 15px 20px; background: #0a0a0a; display: flex; justify-content: space-between; align-items: center; flex-shrink: 0; }
@@ -210,6 +210,38 @@
         </div>
     </div>
 
+    <div id="decor-edit-modal" class="modal">
+        <div class="modal-content" style="border-top-color: var(--accent);">
+            <h2 style="color:var(--accent); margin-top:0;">ÉDITER LE DÉCOR</h2>
+            <input type="hidden" id="edit-decor-id">
+            <div class="input-group"><label>Texte affiché</label><input type="text" id="edit-decor-label" class="input-full"></div>
+            <div class="input-group"><label>Type d'élément</label>
+                <select id="edit-decor-style" class="input-full">
+                    <option value="decor-zone">Zone Délimitée (Pointillés)</option>
+                    <option value="decor-window">Fenêtre / Baie vitrée</option>
+                    <option value="decor-wall">Mur / Cloison (Plein)</option>
+                    <option value="decor-bar">Comptoir de Bar</option>
+                </select>
+            </div>
+            <div style="display:flex; gap:10px; margin-top:20px;">
+                <button onclick="deleteDecor()" style="flex:1; padding:10px; background:transparent; border:1px solid var(--alert); color:var(--alert); border-radius:6px; cursor:pointer; font-weight:bold;">SUPPRIMER</button>
+                <button onclick="saveDecorEdit()" style="flex:2; padding:10px; background:var(--accent); border:none; color:#000; border-radius:6px; font-weight:bold; cursor:pointer;">VALIDER</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="zone-manager-modal" class="modal">
+        <div class="modal-content" style="border-top-color: #fff;">
+            <h2 style="color:#fff; margin-top:0;">GÉRER LES SALLES</h2>
+            <div class="zone-manager-list" id="zone-manager-list"></div>
+            <div style="display:flex; gap:10px; margin-bottom: 20px;">
+                <input type="text" id="new-zone-name" class="input-full" placeholder="Nouvelle salle (ex: Étage)">
+                <button onclick="addNewZone()" style="background:var(--accent); color:#000; border:none; padding:0 15px; border-radius:6px; font-weight:bold; cursor:pointer;">AJOUTER</button>
+            </div>
+            <button onclick="closeZoneManager()" style="width:100%; padding:10px; background:#222; border:none; color:#fff; border-radius:6px; font-weight:bold; cursor:pointer;">FERMER</button>
+        </div>
+    </div>
+
     <script>
         // --- 1. CONFIGURATION CHEF (ARCHITECTURE) ---
         const urlParams = new URLSearchParams(window.location.search);
@@ -245,12 +277,42 @@
             loadFloorPlan();
         }
         function switchZone(id) { currentZoneId = id; loadZonesUI(); }
+        function openZoneManager() { renderZoneManagerList(); document.getElementById('zone-manager-modal').style.display = 'flex'; }
+        function closeZoneManager() { document.getElementById('zone-manager-modal').style.display = 'none'; }
+        function renderZoneManagerList() {
+            const zones = getZones();
+            document.getElementById('zone-manager-list').innerHTML = zones.map(z => `
+                <div class="zone-manager-item"><span style="font-weight:bold; color:#fff;">${z.name}</span>${zones.length > 1 ? `<button onclick="deleteZoneSafely('${z.id}', '${z.name}')" style="background:none; border:none; color:var(--alert); cursor:pointer;">✕</button>` : ''}</div>
+            `).join('');
+        }
+        function addNewZone() {
+            const name = document.getElementById('new-zone-name').value.trim();
+            if(!name) return;
+            const zones = getZones();
+            zones.push({ id: 'z' + Date.now(), name: name });
+            localStorage.setItem('empire_salle_zones', JSON.stringify(zones));
+            document.getElementById('new-zone-name').value = '';
+            renderZoneManagerList(); loadZonesUI();
+        }
+        function deleteZoneSafely(id, name) {
+            if(confirm(`⚠️ Supprimer la salle "${name}" de manière irréversible ?`)) {
+                let zones = getZones().filter(z => z.id !== id);
+                localStorage.setItem('empire_salle_zones', JSON.stringify(zones));
+                let tables = JSON.parse(localStorage.getItem('empire_salle_tables')) || [];
+                tables = tables.filter(t => t.zoneId !== id);
+                localStorage.setItem('empire_salle_tables', JSON.stringify(tables));
+                renderZoneManagerList(); loadZonesUI();
+            }
+        }
 
         function getTables() {
             let tables = JSON.parse(localStorage.getItem('empire_salle_tables'));
             if(!tables || tables.length === 0) tables = [{ id: 'T1', zoneId: 'z1', label: 'T1', w: 80, h: 80, t: 100, l: 50, color: '#555' }];
             return tables;
         }
+        function getDecors() { return JSON.parse(localStorage.getItem('empire_salle_decor')) || []; }
+        function saveTables(tables) { localStorage.setItem('empire_salle_tables', JSON.stringify(tables)); }
+        function saveDecors(decors) { localStorage.setItem('empire_salle_decor', JSON.stringify(decors)); }
 
         function isTableReservedToday(tableLabel) {
             const today = new Date().toISOString().split('T')[0];
@@ -267,15 +329,38 @@
             const floor = document.getElementById('floor-plan');
             floor.innerHTML = '';
             
+            const currentDecors = getDecors().filter(d => d.zoneId === currentZoneId);
+            currentDecors.forEach(d => {
+                const div = document.createElement('div');
+                div.className = `decor-obj ${d.styleType}`;
+                div.setAttribute('data-id', d.id);
+                div.setAttribute('data-type', 'decor');
+                div.innerHTML = d.label || '';
+                div.style.width = d.w + 'px'; div.style.height = d.h + 'px';
+                div.style.top = d.t + 'px'; div.style.left = d.l + 'px';
+                
+                div.onmousedown = function(e) { if(isMaster) startDrag(e, this); };
+                div.ontouchstart = function(e) { if(isMaster) startDrag(e, this); };
+                if (isMaster) {
+                    const handle = document.createElement('div'); handle.className = 'resize-handle';
+                    handle.onmousedown = startResize; handle.ontouchstart = startResize;
+                    div.appendChild(handle);
+                }
+                floor.appendChild(div);
+            });
+
             getTables().filter(t => t.zoneId === currentZoneId).forEach(t => {
                 const label = t.label || t.id;
                 const div = document.createElement('div');
                 div.className = 'table-obj';
+                // UTILISATION D'UN ATTRIBUT DE DATA POUR ÉVITER LES EMOJIS DANS LE NOM
+                div.setAttribute('data-label', label);
+                div.setAttribute('data-id', t.id);
+                div.setAttribute('data-type', 'table');
                 div.innerHTML = label;
                 div.style.width = t.w + 'px'; div.style.height = t.h + 'px';
                 div.style.top = t.t + 'px'; div.style.left = t.l + 'px';
                 div.style.borderColor = t.color; div.style.borderRadius = t.radius || '8px';
-                div.setAttribute('data-id', t.id);
                 
                 if(isTableReservedToday(label)) div.innerHTML += `<div class="table-badge">📅</div>`;
                 if(hasActiveOrder(label)) {
@@ -283,17 +368,10 @@
                     div.innerHTML += `<div class="table-badge active-order">🍽️</div>`;
                 }
 
-                // Logique de clic : Architecture vs Commande
-                div.onmousedown = function(e) {
-                    if (isMaster) { startDrag(e, this); } // Si master, on peut drag
-                    else { openOrderPad(label); } // Sinon, mode serveur strict
-                };
-                div.ontouchstart = function(e) {
-                    if (isMaster) { startDrag(e, this); } 
-                    else { openOrderPad(label); }
-                };
+                // GESTION DU CLIC / TOUCHER (Même pour le Master)
+                div.onmousedown = function(e) { startDrag(e, this); };
+                div.ontouchstart = function(e) { startDrag(e, this); };
 
-                // Poignée de resize (visible qu'en Master)
                 if (isMaster) {
                     const handle = document.createElement('div'); handle.className = 'resize-handle';
                     handle.onmousedown = startResize; handle.ontouchstart = startResize;
@@ -315,7 +393,6 @@
         }
         function closeDrawer(drawerId) { document.getElementById(drawerId).classList.remove('open'); }
 
-        // Si le Chef clique sans bouger la souris en mode Master, ça ouvre la commande.
         function openOrderPad(tableName) {
             currentTableId = tableName;
             document.getElementById('order-table-title').textContent = "TABLE " + tableName;
@@ -336,7 +413,8 @@
                     { id: 1, name: 'Œuf Mayo Truffé', category: 'Entrée', price: 9 },
                     { id: 3, name: 'Bavette d\'Aloyau', category: 'Plat', price: 24 },
                     { id: 5, name: 'Mousse Chocolat', category: 'Dessert', price: 8 },
-                    { id: 7, name: 'Coca-Cola', category: 'Boisson', price: 4.5 }
+                    { id: 7, name: 'Mojito', category: 'Boisson', price: 12 },
+                    { id: 8, name: 'Verre de Chablis', category: 'Boisson', price: 8 }
                 ];
             }
             return menu;
@@ -369,7 +447,6 @@
         function removeItem(categoryArrayName, id) {
             currentTicket[categoryArrayName] = currentTicket[categoryArrayName].filter(item => item.id !== id);
             saveTicket();
-            // L'utilisateur doit recliquer sur ENVOYER pour mettre à jour la cuisine
         }
 
         function saveTicket() {
@@ -397,20 +474,19 @@
             html += renderGroup('DESSERTS', currentTicket.desserts, 'desserts');
             html += renderGroup('BOISSONS', currentTicket.boissons, 'boissons');
 
-            list.innerHTML = html || `<div style="color:#555; text-align:center; font-style:italic;">Ticket vide.</div>`;
+            list.innerHTML = html || `<div style="color:#555; text-align:center; font-style:italic; margin-top:20px;">Ticket vide.</div>`;
             document.getElementById('ticket-total-amount').textContent = total.toFixed(2) + " €";
         }
 
-        // LE CŒUR DE LA SYNCHRO KDS (Avec remplacement de l'ancien bon)
+        // LE CŒUR DE LA SYNCHRO KDS (REMPLACEMENT AUTOMATIQUE)
         function sendToKDS() {
             if(currentTicket.entrees.length === 0 && currentTicket.plats.length === 0 && currentTicket.desserts.length === 0 && currentTicket.boissons.length === 0) {
-                return alert("Rien à envoyer.");
+                return alert("Le ticket est vide.");
             }
 
             let kdsQueue = JSON.parse(localStorage.getItem('empire_kds_queue')) || [];
             
-            // ANTI-ERREUR : Si un bon pour cette table est déjà "en attente" en cuisine, on le remplace.
-            // Ça permet au serveur de corriger une erreur de frappe.
+            // ANTI-DOUBLON : Si le serveur corrige une commande (ex: il retire un plat), on efface l'ancienne commande de la cuisine (si elle est encore pending) pour la remplacer par la nouvelle
             kdsQueue = kdsQueue.filter(o => !(o.table === currentTableId && o.status === 'pending'));
 
             const orderData = {
@@ -425,7 +501,7 @@
             localStorage.setItem('empire_kds_queue', JSON.stringify(kdsQueue));
             
             const btn = document.querySelector('.btn-send');
-            btn.innerHTML = "✅ ENVOYÉ KDS !";
+            btn.innerHTML = "✅ BONS ENVOYÉS !";
             btn.style.background = "var(--accent)";
             setTimeout(() => {
                 btn.innerHTML = "🔥 ENVOYER CUISINE/BAR";
@@ -499,13 +575,22 @@
         }
 
         // =================================================================
-        // 6. LOGIQUE DRAG AND DROP (UNIQUEMENT POUR LE MASTER)
+        // 6. LOGIQUE DRAG AND DROP (TACTILE + ANTI-ERREUR)
         // =================================================================
+        let startClickX = 0, startClickY = 0;
+
         function startDrag(e, elem) {
             hasMoved = false; currentDrag = elem;
             const rect = currentDrag.getBoundingClientRect();
-            startX = (e.type.includes('mouse') ? e.clientX : e.touches[0].clientX) - rect.left;
-            startY = (e.type.includes('mouse') ? e.clientY : e.touches[0].clientY) - rect.top;
+            
+            let clientX = e.type.includes('mouse') ? e.clientX : e.touches[0].clientX;
+            let clientY = e.type.includes('mouse') ? e.clientY : e.touches[0].clientY;
+            
+            startClickX = clientX;
+            startClickY = clientY;
+
+            startX = clientX - rect.left;
+            startY = clientY - rect.top;
             currentDrag.style.zIndex = 1000;
         }
 
@@ -513,22 +598,34 @@
             e.stopPropagation(); hasMoved = false; isResizing = true; currentDrag = this.parentElement; 
             const rect = currentDrag.getBoundingClientRect();
             startW = rect.width; startH = rect.height;
-            startX = e.type.includes('mouse') ? e.clientX : e.touches[0].clientX;
-            startY = e.type.includes('mouse') ? e.clientY : e.touches[0].clientY;
+            
+            let clientX = e.type.includes('mouse') ? e.clientX : e.touches[0].clientX;
+            let clientY = e.type.includes('mouse') ? e.clientY : e.touches[0].clientY;
+            startClickX = clientX; startClickY = clientY;
             currentDrag.style.zIndex = 1000;
         }
 
         document.onmousemove = dragAction; document.ontouchmove = dragAction;
         function dragAction(e) {
             if(!currentDrag || !isMaster) return;
-            hasMoved = true;
+            
             let clientX = e.type.includes('mouse') ? e.clientX : e.touches[0].clientX;
             let clientY = e.type.includes('mouse') ? e.clientY : e.touches[0].clientY;
             
+            // TOLÉRANCE TACTILE : Le doigt doit bouger de plus de 10px pour que ça soit considéré comme un "déplacement"
+            if (Math.abs(clientX - startClickX) > 10 || Math.abs(clientY - startClickY) > 10) {
+                hasMoved = true;
+            }
+
             if(isResizing) {
-                currentDrag.style.width = Math.max(40, startW + (clientX - startX)) + 'px';
-                currentDrag.style.height = Math.max(40, startH + (clientY - startY)) + 'px';
-            } else {
+                hasMoved = true;
+                let newW = startW + (clientX - startClickX);
+                let newH = startH + (clientY - startClickY);
+                if(newW < 40) newW = 40;
+                if(newH < 40) newH = 40;
+                currentDrag.style.width = newW + 'px';
+                currentDrag.style.height = newH + 'px';
+            } else if (hasMoved) {
                 const floor = document.getElementById('floor-plan').getBoundingClientRect();
                 let newLeft = Math.round((clientX - floor.left - startX) / 20) * 20;
                 let newTop = Math.round((clientY - floor.top - startY) / 20) * 20;
@@ -539,22 +636,114 @@
         document.onmouseup = stopDrag; document.ontouchend = stopDrag;
         function stopDrag() {
             if(!currentDrag) return;
+            
             const id = currentDrag.getAttribute('data-id');
+            const label = currentDrag.getAttribute('data-label'); // Extraction propre sans les emojis
             const isDecor = currentDrag.getAttribute('data-type') === 'decor';
 
-            if(!hasMoved && !isResizing && isMaster) {
-                // En master, clic sans bouger ouvre quand même la caisse pour le chef
-                openOrderPad(currentDrag.innerText);
-            } else if (isMaster) {
-                let tables = getTables();
-                const tIndex = tables.findIndex(t => t.id === id);
-                if(tIndex > -1) {
-                    tables[tIndex].l = parseInt(currentDrag.style.left); tables[tIndex].t = parseInt(currentDrag.style.top);
-                    tables[tIndex].w = parseInt(currentDrag.style.width); tables[tIndex].h = parseInt(currentDrag.style.height);
-                    saveTables(tables);
+            // SI C'EST UN CLIC SIMPLE (PAS DE DÉPLACEMENT)
+            if(!hasMoved && !isResizing) {
+                if (isDecor && isMaster) {
+                    openDecorEdit(id);
+                } else if (!isDecor) {
+                    // On ouvre la caisse, que l'on soit Serveur ou Master
+                    openOrderPad(label);
+                }
+            } 
+            // SI C'ÉTAIT UN DÉPLACEMENT (UNIQUEMENT MASTER)
+            else if (isMaster && hasMoved) {
+                if (isDecor) {
+                    let decors = getDecors();
+                    const dIndex = decors.findIndex(d => d.id === id);
+                    if(dIndex > -1) {
+                        decors[dIndex].l = parseInt(currentDrag.style.left); decors[dIndex].t = parseInt(currentDrag.style.top);
+                        decors[dIndex].w = parseInt(currentDrag.style.width); decors[dIndex].h = parseInt(currentDrag.style.height);
+                        saveDecors(decors);
+                    }
+                } else {
+                    let tables = getTables();
+                    const tIndex = tables.findIndex(t => t.id === id);
+                    if(tIndex > -1) {
+                        tables[tIndex].l = parseInt(currentDrag.style.left); tables[tIndex].t = parseInt(currentDrag.style.top);
+                        tables[tIndex].w = parseInt(currentDrag.style.width); tables[tIndex].h = parseInt(currentDrag.style.height);
+                        saveTables(tables);
+                    }
                 }
             }
+            
             currentDrag.style.zIndex = ''; currentDrag = null; isResizing = false;
+        }
+
+        // ARCHITECTURE MODALS (CHEF)
+        function addTable() {
+            const allTables = getTables();
+            const zoneTables = allTables.filter(t => t.zoneId === currentZoneId);
+            let maxNum = 0;
+            zoneTables.forEach(t => {
+                const match = t.label.match(/^T?(\d+)$/i); 
+                if(match) { const num = parseInt(match[1], 10); if(num > maxNum) maxNum = num; }
+            });
+            const newLabel = 'T' + (maxNum + 1);
+            allTables.push({ id: 't_' + Date.now(), zoneId: currentZoneId, label: newLabel, w: 80, h: 80, t: 50, l: 50, color: '#fff', radius: '8px' });
+            saveTables(allTables); loadFloorPlan();
+        }
+        function addDecor() {
+            const allDecors = getDecors();
+            allDecors.push({ id: 'd_' + Date.now(), zoneId: currentZoneId, label: 'ZONE', w: 150, h: 100, t: 50, l: 50, styleType: 'decor-zone' });
+            saveDecors(allDecors); loadFloorPlan();
+        }
+
+        function openTableEdit(id) {
+            const t = getTables().find(table => table.id === id);
+            if(!t) return;
+            document.getElementById('edit-table-id').value = t.id;
+            document.getElementById('edit-table-label').value = t.label || t.id;
+            document.getElementById('edit-table-radius').value = t.radius || '8px';
+            document.getElementById('table-edit-modal').style.display = 'flex';
+        }
+        function closeTableEdit() { document.getElementById('table-edit-modal').style.display = 'none'; }
+        function saveTableEdit() {
+            const id = document.getElementById('edit-table-id').value;
+            let tables = getTables();
+            const index = tables.findIndex(t => t.id === id);
+            if(index > -1) {
+                let newLabel = document.getElementById('edit-table-label').value.trim();
+                if(newLabel === "") newLabel = "Tx"; 
+                tables[index].label = newLabel;
+                tables[index].radius = document.getElementById('edit-table-radius').value;
+                saveTables(tables); loadFloorPlan();
+            }
+            closeTableEdit();
+        }
+        function deleteTable() {
+            const id = document.getElementById('edit-table-id').value;
+            saveTables(getTables().filter(t => t.id !== id));
+            loadFloorPlan(); closeTableEdit();
+        }
+        function openDecorEdit(id) {
+            const d = getDecors().find(decor => decor.id === id);
+            if(!d) return;
+            document.getElementById('edit-decor-id').value = d.id;
+            document.getElementById('edit-decor-label').value = d.label || '';
+            document.getElementById('edit-decor-style').value = d.styleType || 'decor-zone';
+            document.getElementById('decor-edit-modal').style.display = 'flex';
+        }
+        function closeDecorEdit() { document.getElementById('decor-edit-modal').style.display = 'none'; }
+        function saveDecorEdit() {
+            const id = document.getElementById('edit-decor-id').value;
+            let decors = getDecors();
+            const index = decors.findIndex(d => d.id === id);
+            if(index > -1) {
+                decors[index].label = document.getElementById('edit-decor-label').value.trim();
+                decors[index].styleType = document.getElementById('edit-decor-style').value;
+                saveDecors(decors); loadFloorPlan();
+            }
+            closeDecorEdit();
+        }
+        function deleteDecor() {
+            const id = document.getElementById('edit-decor-id').value;
+            saveDecors(getDecors().filter(d => d.id !== id));
+            loadFloorPlan(); closeDecorEdit();
         }
 
         // INITIALISATION
