@@ -231,9 +231,9 @@
     </div>
 
     <script>
-        const ws = new WebSocket((window.location.protocol === 'https:' ? 'wss://' : 'ws://') + window.location.host);
-        let activeOrders = {}; let previousPendingCount = 0; let audioCtx;
+        let audioCtx;
         let isChefMode = false; 
+        let previousPendingCount = 0;
 
         function initSystem() {
             try {
@@ -243,6 +243,7 @@
             document.getElementById('start-overlay').style.display = 'none';
             document.getElementById('stats-date-picker').value = getTodayString();
             document.getElementById('haccp-date-picker').value = getTodayString();
+            renderKDS();
         }
 
         function playSound(type) {
@@ -265,18 +266,19 @@
             }
         }
 
-        ws.onmessage = (e) => {
-            const msg = JSON.parse(e.data);
-            if (msg.type === 'ORDER_UPDATE') {
-                activeOrders = msg.activeOrders; renderKDS();
-                if(document.getElementById('res-drawer').classList.contains('open')) renderResDrawer();
-                if(document.getElementById('gestion-drawer').classList.contains('open')) renderStatsDrawer();
-            }
-        };
+        // --- ECOUTE CLOUD (MARCHE EN AVANT EMPIRE) ---
+        window.addEventListener('storage', function(e) {
+            if (e.key === 'empire_kds_queue') renderKDS();
+            if (e.key === 'empire_reservations' && document.getElementById('res-drawer').classList.contains('open')) renderResDrawer();
+            if (e.key === 'kds_grimoire_bar_v2' && document.getElementById('gestion-drawer').classList.contains('open')) renderLibrary();
+            if (e.key === 'kds_hr_master_v9' && document.getElementById('staff-drawer').classList.contains('open')) renderStaffPlanning();
+        });
 
+        // Utilitaire Date
         function getTodayString() { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; }
         function getTimeString() { const d = new Date(); return String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0'); }
 
+        // --- GESTION DES TIROIRS ---
         function closeAllDrawers() { 
             ['res-drawer', 'gestion-drawer', 'staff-drawer', 'cmd-drawer', 'history-drawer'].forEach(id => {
                 if(document.getElementById(id)) document.getElementById(id).classList.remove('open');
@@ -301,19 +303,16 @@
             } else { alert("Code incorrect. Accès refusé."); }
         }
 
+        // --- STAFF PLANNING ---
         function openStaffPlanning() { renderStaffPlanning(); openDrawer('staff-drawer'); }
-
         function renderStaffPlanning() {
             const allStaff = JSON.parse(localStorage.getItem('kds_hr_master_v9')) || [];
-            // Filtre strict : Uniquement le staff assigné au BAR
             const staff = allStaff.filter(s => s.dept === 'bar');
-            
             const container = document.getElementById('staff-planning-container');
             const jours = ["LUN", "MAR", "MER", "JEU", "VEN", "SAM", "DIM"];
 
             if(staff.length === 0) {
-                container.innerHTML = "<p style='color:#555; text-align:center;'>Aucun employé assigné au Bar par les RH.</p>";
-                return;
+                container.innerHTML = "<p style='color:#555; text-align:center;'>Aucun employé assigné au Bar par les RH.</p>"; return;
             }
 
             container.innerHTML = staff.map(s => {
@@ -337,45 +336,30 @@
             }).join('');
         }
 
-        // ==========================================
-        // MODULE COMMANDES (ROUTAGE AUTOMATIQUE)
-        // ==========================================
-        function openCommandesDrawer() {
-            renderCommandes();
-            openDrawer('cmd-drawer');
-        }
-
+        // --- COMMANDES (ROUTAGE) ---
+        function openCommandesDrawer() { renderCommandes(); openDrawer('cmd-drawer'); }
         function addCommande() {
             const rawText = document.getElementById('cmd-text').value.trim();
             if(!rawText) return;
-
             const cmds = JSON.parse(localStorage.getItem('kds_commandes_v1')) || [];
             const supps = JSON.parse(localStorage.getItem('kds_suppliers_v1')) || [];
-
             const phrases = rawText.split(/\s+et\s+|\s+puis\s+|,|\n/i);
 
             phrases.forEach(phrase => {
                 let text = phrase.trim();
                 if(!text || text.length < 2) return;
-
                 let assignedSupplier = 'DIVERS (NON ASSIGNÉ)';
-
                 for(let s of supps) {
                     if(text.toLowerCase().includes(s.name.toLowerCase())) {
                         assignedSupplier = s.name;
-                        const regex = new RegExp(s.name, "i");
-                        text = text.replace(regex, '').trim(); 
+                        text = text.replace(new RegExp(s.name, "i"), '').trim(); 
                         break;
                     }
                 }
-
-                if(text !== "") {
-                    cmds.push({ id: Date.now() + Math.random(), supplier: assignedSupplier, text: text, done: false });
-                }
+                if(text !== "") cmds.push({ id: Date.now() + Math.random(), supplier: assignedSupplier, text: text, done: false });
             });
 
             localStorage.setItem('kds_commandes_v1', JSON.stringify(cmds));
-            
             document.getElementById('cmd-text').value = '';
             document.getElementById('cmd-text').removeAttribute('data-base');
             if(isCmdRecording) toggleCmdDictation(); 
@@ -385,109 +369,72 @@
         function toggleCommandeStatus(id) {
             const cmds = JSON.parse(localStorage.getItem('kds_commandes_v1')) || [];
             const idx = cmds.findIndex(c => c.id === id);
-            if(idx > -1) {
-                cmds[idx].done = !cmds[idx].done;
-                localStorage.setItem('kds_commandes_v1', JSON.stringify(cmds));
-                renderCommandes();
-            }
+            if(idx > -1) { cmds[idx].done = !cmds[idx].done; localStorage.setItem('kds_commandes_v1', JSON.stringify(cmds)); renderCommandes(); }
         }
 
         function clearCommandes() {
             if(!confirm("Supprimer tous les articles marqués comme terminés (✔️) ?")) return;
             const cmds = JSON.parse(localStorage.getItem('kds_commandes_v1')) || [];
-            const pending = cmds.filter(c => !c.done);
-            localStorage.setItem('kds_commandes_v1', JSON.stringify(pending));
+            localStorage.setItem('kds_commandes_v1', JSON.stringify(cmds.filter(c => !c.done)));
             renderCommandes();
         }
 
         function renderCommandes() {
             const cmds = JSON.parse(localStorage.getItem('kds_commandes_v1')) || [];
             const container = document.getElementById('cmd-list-container');
-            
-            if(cmds.length === 0) {
-                container.innerHTML = '<div style="color:#555; text-align:center; padding:20px; grid-column: 1 / -1;">Aucune commande en cours.</div>';
-                return;
-            }
+            if(cmds.length === 0) { container.innerHTML = '<div style="color:#555; text-align:center; padding:20px; grid-column: 1 / -1;">Aucune commande en cours.</div>'; return; }
 
             const grouped = {};
-            cmds.forEach(c => {
-                if(!grouped[c.supplier]) grouped[c.supplier] = [];
-                grouped[c.supplier].push(c);
-            });
+            cmds.forEach(c => { if(!grouped[c.supplier]) grouped[c.supplier] = []; grouped[c.supplier].push(c); });
 
             let html = '';
             for(const supplier in grouped) {
                 const items = grouped[supplier];
                 const allDone = items.every(i => i.done);
-                
-                html += `<div class="cmd-supp-card" style="${allDone ? 'opacity:0.5;' : ''}">
-                    <div class="cmd-supp-title">${supplier} <span style="color:#555; font-size:0.8rem;">${items.length} article(s)</span></div>
-                    <div>`;
-                
+                html += `<div class="cmd-supp-card" style="${allDone ? 'opacity:0.5;' : ''}"><div class="cmd-supp-title">${supplier} <span style="color:#555; font-size:0.8rem;">${items.length} article(s)</span></div><div>`;
                 items.forEach(item => {
                     const btnClass = item.done ? 'btn-check-cmd done' : 'btn-check-cmd';
                     const icon = item.done ? '✔' : 'O';
                     const cleanText = item.text.charAt(0).toUpperCase() + item.text.slice(1);
-                    html += `
-                        <div class="cmd-item ${item.done ? 'done' : ''}" onclick="toggleCommandeStatus(${item.id})" style="cursor:pointer;">
-                            <span class="cmd-item-text">${cleanText}</span>
-                            <button class="${btnClass}">${icon}</button>
-                        </div>`;
+                    html += `<div class="cmd-item ${item.done ? 'done' : ''}" onclick="toggleCommandeStatus(${item.id})" style="cursor:pointer;"><span class="cmd-item-text">${cleanText}</span><button class="${btnClass}">${icon}</button></div>`;
                 });
-                
                 html += `</div></div>`;
             }
             container.innerHTML = html;
         }
 
         // --- DICTÉE VOCALE ---
-        let cmdRecognition;
-        let isCmdRecording = false;
-
+        let cmdRecognition; let isCmdRecording = false;
         function initCmdDictation() {
             window.SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
             if(window.SpeechRecognition) {
-                cmdRecognition = new SpeechRecognition();
-                cmdRecognition.lang = 'fr-FR';
-                cmdRecognition.interimResults = true;
-                
+                cmdRecognition = new SpeechRecognition(); cmdRecognition.lang = 'fr-FR'; cmdRecognition.interimResults = true;
                 cmdRecognition.onresult = function(e) {
                     let final = ''; let interim = '';
                     for (let i = e.resultIndex; i < e.results.length; ++i) {
-                        if (e.results[i].isFinal) final += e.results[i][0].transcript;
-                        else interim += e.results[i][0].transcript;
+                        if (e.results[i].isFinal) final += e.results[i][0].transcript; else interim += e.results[i][0].transcript;
                     }
                     const inp = document.getElementById('cmd-text');
                     inp.value = (inp.getAttribute('data-base') || '') + final + interim;
                     if(final !== '') inp.setAttribute('data-base', inp.value + ' ');
                 };
-                
-                cmdRecognition.onend = function() {
-                    if(isCmdRecording) cmdRecognition.start();
-                };
+                cmdRecognition.onend = function() { if(isCmdRecording) cmdRecognition.start(); };
             } else { alert("Dictée vocale non supportée sur ce navigateur."); }
         }
 
         function toggleCmdDictation() {
             if(!cmdRecognition) initCmdDictation();
             if(!cmdRecognition) return;
-
-            const btn = document.getElementById('btn-cmd-mic');
-            const inp = document.getElementById('cmd-text');
-
+            const btn = document.getElementById('btn-cmd-mic'); const inp = document.getElementById('cmd-text');
             if(isCmdRecording) {
-                isCmdRecording = false;
-                cmdRecognition.stop();
-                btn.classList.remove('recording');
+                isCmdRecording = false; cmdRecognition.stop(); btn.classList.remove('recording');
             } else {
                 inp.setAttribute('data-base', inp.value + (inp.value.endsWith(' ') ? '' : (inp.value ? ' ' : '')));
-                cmdRecognition.start();
-                isCmdRecording = true;
-                btn.classList.add('recording');
+                cmdRecognition.start(); isCmdRecording = true; btn.classList.add('recording');
             }
         }
 
-        // --- HACCP BAR ---
+        // --- HACCP ---
         function saveHaccpLog(type) {
             let val = "", equip = "", alert = false;
             if (type === 'Température') {
@@ -495,18 +442,16 @@
                 const temp = parseFloat(document.getElementById('haccp-temp').value);
                 if(!equip || isNaN(temp)) return window.alert("Champs invalides.");
                 val = temp + " °C";
-                if (temp > 8.0 || temp < -20.0) alert = true; // Tolérance frigos bar ajustée
+                if (temp > 8.0 || temp < -20.0) alert = true; 
                 document.getElementById('haccp-equip').value = ''; document.getElementById('haccp-temp').value = '';
             } else if (type === 'Nettoyage') {
                 equip = document.getElementById('haccp-clean').value;
                 if(!equip) return;
-                val = "Validé ✔️";
-                document.getElementById('haccp-clean').value = '';
+                val = "Validé ✔️"; document.getElementById('haccp-clean').value = '';
             } else if (type === 'Incident') {
                 equip = document.getElementById('haccp-inc').value;
                 if(!equip) return;
-                val = "Signalé"; alert = true;
-                document.getElementById('haccp-inc').value = '';
+                val = "Signalé"; alert = true; document.getElementById('haccp-inc').value = '';
             }
 
             const logEntry = { type: type, equip: equip, value: val, time: getTimeString(), alert: alert };
@@ -527,31 +472,19 @@
             const container = document.getElementById('haccp-log-container');
             
             if(dailyLogs.length === 0) { container.innerHTML = '<div style="color:#555; text-align:center; padding-top:10px;">Aucun enregistrement.</div>'; return; }
-
             container.innerHTML = dailyLogs.map(log => {
-                const alertClass = log.alert ? 'alert' : '';
-                const alertIcon = log.alert ? '⚠️ ' : '';
-                return `
-                <div class="haccp-log ${alertClass}">
-                    <div style="flex:1;">
-                        <div style="font-weight:bold; color:#fff;">${log.type} : ${log.equip}</div>
-                        <div style="font-size:0.75rem; color:#888;">À ${log.time}</div>
-                    </div>
-                    <div style="font-weight:900; font-size:1rem; text-align:right;">${alertIcon}${log.value}</div>
-                </div>`;
+                const alertClass = log.alert ? 'alert' : ''; const alertIcon = log.alert ? '⚠️ ' : '';
+                return `<div class="haccp-log ${alertClass}"><div style="flex:1;"><div style="font-weight:bold; color:#fff;">${log.type} : ${log.equip}</div><div style="font-size:0.75rem; color:#888;">À ${log.time}</div></div><div style="font-weight:900; font-size:1rem; text-align:right;">${alertIcon}${log.value}</div></div>`;
             }).join('');
         }
 
-        // --- RECETTES BAR (COCKTAILS) ---
+        // --- RECETTES ---
         function renderLibrary() {
             const recipes = JSON.parse(localStorage.getItem('kds_grimoire_bar_v2') || '[]');
             let html = '';
-            recipes.forEach((r, idx) => {
-                html += `<div class="recipe-row"><button class="recipe-btn" onclick="openRecipeModal(${idx})">📄 ${r.nom}</button></div>`;
-            });
+            recipes.forEach((r, idx) => { html += `<div class="recipe-row"><button class="recipe-btn" onclick="openRecipeModal(${idx})">📄 ${r.nom}</button></div>`; });
             document.getElementById('library-container').innerHTML = html || '<div style="color:#555; text-align:center;">Vide.</div>';
         }
-
         function openRecipeModal(index) {
             const r = JSON.parse(localStorage.getItem('kds_grimoire_bar_v2'))[index];
             document.getElementById('modal-recipe-title').textContent = r.nom;
@@ -560,24 +493,26 @@
         }
         function closeRecipeModal() { document.getElementById('recipe-modal').style.display = 'none'; }
 
-        // --- RÉSERVATIONS & STATS BAR ---
+        // --- RÉSERVATIONS & STATS ---
         function openResDrawer() { openDrawer('res-drawer', renderResDrawer); }
         
         function renderResDrawer() {
+            const today = getTodayString();
+            const resas = JSON.parse(localStorage.getItem('empire_reservations')) || {};
+            const dayResas = resas[today] || [];
             const container = document.getElementById('res-list-container');
+            
+            if (dayResas.length === 0) { container.innerHTML = '<div style="color:#555; text-align:center;">Aucune réservation pour aujourd\'hui.</div>'; return; }
+
             let midiHtml = ''; let soirHtml = ''; let countMidi = 0; let countSoir = 0;
-            let reservations = [];
-            for (const tableId in activeOrders) {
-                if (activeOrders[tableId] && activeOrders[tableId].resName) reservations.push({ tableId, ...activeOrders[tableId] });
-            }
-            reservations.sort((a, b) => (a.resTime || "").localeCompare(b.resTime || ""));
-            reservations.forEach(order => {
-                let hour = 12; if (order.resTime) { const match = order.resTime.match(/\d+/); if (match) hour = parseInt(match[0], 10); }
-                const isSoir = hour >= 17; const nbCovers = parseInt(order.resCovers || order.covers || 1, 10);
-                const card = `<div class="res-card"><div style="display:flex; justify-content:space-between;"><b>${order.resName}</b><span>${order.resTime}</span></div><div style="color: #ccc; font-size: 0.9rem;">👥 ${nbCovers}p - Table ${order.tableId.replace('T', '')}</div></div>`;
+            
+            dayResas.sort((a, b) => a.time.localeCompare(b.time)).forEach(order => {
+                const hour = parseInt(order.time.split(':')[0], 10);
+                const isSoir = hour >= 17;
+                const card = `<div class="res-card"><div style="display:flex; justify-content:space-between;"><b>${order.name}</b><span>${order.time}</span></div><div style="color: #ccc; font-size: 0.9rem;">👥 ${order.pax}p - Table ${order.table}</div></div>`;
                 if (isSoir) { soirHtml += card; countSoir++; } else { midiHtml += card; countMidi++; }
             });
-            container.innerHTML = (countMidi > 0 ? `<h3 style="color:#aaa;">☀️ Midi</h3>${midiHtml}` : '') + (countSoir > 0 ? `<h3 style="color:#aaa;">🌙 Soir</h3>${soirHtml}` : '') || '<div style="color:#555; text-align:center;">Aucune réservation.</div>';
+            container.innerHTML = (countMidi > 0 ? `<h3 style="color:#aaa;">☀️ Midi</h3>${midiHtml}` : '') + (countSoir > 0 ? `<h3 style="color:#aaa;">🌙 Soir</h3>${soirHtml}` : '');
         }
 
         function renderStatsDrawer(selectedDateStr = null) {
@@ -586,106 +521,109 @@
             const allStats = JSON.parse(localStorage.getItem('kds_archives_bar_10ans') || '{}');
             const sortedStats = Object.entries(allStats[targetDate] || {}).sort((a, b) => b[1] - a[1]).slice(0, 20);
             const container = document.getElementById('stats-list-container');
-            if (sortedStats.length === 0 || sortedStats[0][1] === 0) { container.innerHTML = '<div style="color:#555; text-align:center;">Aucune boisson servie.</div>'; return; }
+            
+            if (sortedStats.length === 0 || sortedStats[0][1] === 0) { container.innerHTML = '<div style="color:#555; text-align:center;">Aucune boisson servie à cette date.</div>'; return; }
+            
             let html = '<div>';
             sortedStats.forEach(([name, count], index) => {
                 if(count > 0) {
                     let rankColor = index === 0 ? '#ffd700' : index === 1 ? '#c0c0c0' : index === 2 ? '#cd7f32' : '#fff';
-                    html += `<div class="stat-row"><span style="color:${rankColor};">#${index + 1} ${name.replace(' [WEB]', '')}</span><span class="stat-count">${count}</span></div>`;
+                    html += `<div class="stat-row"><span style="color:${rankColor};">#${index + 1} ${name}</span><span class="stat-count">${count}</span></div>`;
                 }
             });
             container.innerHTML = html + '</div>';
         }
 
-        // --- MOTEUR D'AFFICHAGE KDS BAR ---
-        function getCourseName(step) { 
-            if (step === 1) return "1. Apéritifs / Cocktails"; 
-            if (step === 2) return "2. Vins / Softs"; 
-            if (step === 3) return "3. Boissons Chaudes / Digestifs"; 
-            return "Direct Bar"; 
+        // =========================================================================
+        // MOTEUR D'AFFICHAGE DU KDS (LECTURE DE LA QUEUE CLOUD)
+        // =========================================================================
+        function getQueue() { return JSON.parse(localStorage.getItem('empire_kds_queue')) || []; }
+        function saveQueue(queue) { localStorage.setItem('empire_kds_queue', JSON.stringify(queue)); }
+
+        function markAsReady(orderId) {
+            let queue = getQueue();
+            const index = queue.findIndex(o => o.id === orderId);
+            if(index > -1) {
+                // On met à jour nos archives statistiques avant de supprimer
+                const today = getTodayString();
+                let allStats = JSON.parse(localStorage.getItem('kds_archives_bar_10ans') || '{}');
+                if(!allStats[today]) allStats[today] = {};
+                
+                queue[index].ticket.boissons.forEach(b => {
+                    allStats[today][b.name] = (allStats[today][b.name] || 0) + 1;
+                });
+                localStorage.setItem('kds_archives_bar_10ans', JSON.stringify(allStats));
+
+                // On vide la partie "Boissons" de ce bon
+                queue[index].ticket.boissons = [];
+                
+                // Si le reste de la commande (Cuisine) est aussi vide, on supprime le bon complet
+                const t = queue[index].ticket;
+                if(t.entrees.length === 0 && t.plats.length === 0 && t.desserts.length === 0) {
+                    queue.splice(index, 1);
+                }
+                saveQueue(queue);
+                playSound('send');
+            }
+            renderKDS();
         }
 
         function renderKDS() {
+            const queue = getQueue();
             const pendingContainer = document.getElementById('pending-container');
             const historyContainer = document.getElementById('history-container');
-            pendingContainer.innerHTML = ''; historyContainer.innerHTML = '';
+            pendingContainer.innerHTML = '';
+            
+            // Ne garder que les commandes en attente qui contiennent des boissons
+            const pendingOrders = queue.filter(o => o.status === 'pending' && o.ticket && o.ticket.boissons && o.ticket.boissons.length > 0);
+            
             let currentPendingCount = 0;
+            let currentItemCount = 0;
 
-            for (const tableId in activeOrders) {
-                const order = activeOrders[tableId];
-                // FILTRE CRUCIAL : On ne prend que ce qui va au Bar
-                const myItems = order.items ? order.items.filter(i => i.dest === 'Bar') : [];
-                if (myItems.length === 0) continue;
-                const titreTable = tableId.includes('WEB') ? tableId : 'Table ' + tableId.replace('T', '');
-                const nbCovers = order.covers || 1;
-                const pendingItems = myItems.filter(i => !i.done);
+            pendingOrders.forEach(order => {
+                currentPendingCount++;
+                currentItemCount += order.ticket.boissons.length;
                 
-                if (pendingItems.length > 0) {
-                    currentPendingCount += pendingItems.length;
-                    const ticketDiv = document.createElement('div'); ticketDiv.className = 'ticket';
-                    const grouped = { 1: [], 2: [], 3: [], 0: [] };
-                    pendingItems.forEach(i => { grouped[i.step || 0].push(i); });
-                    let bodyHtml = '';
-                    [1, 2, 3, 0].forEach(step => {
-                        if (grouped[step].length > 0) {
-                            bodyHtml += `<div class="course-section"><div class="course-title">${getCourseName(step)}</div><ul class="course-items">${grouped[step].map(i => `<li><span>${i.n.replace(' [WEB]', '')}</span> ${i.n.includes('[WEB]') ? '<span class="web-badge">WEB</span>' : ''}</li>`).join('')}</ul><button class="btn-send" style="background:var(--bar);" onclick="modifierStatutCours('${tableId}', ${step}, true)">ENVOYER BOISSONS</button></div>`;
-                        }
-                    });
-                    ticketDiv.innerHTML = `<div class="ticket-header"><div><span>${titreTable}</span><span style="color:#666; font-size:0.9rem; margin-left: 10px;">${order.time}</span></div><span class="ticket-covers">👥 ${nbCovers}p</span></div><div class="ticket-body">${bodyHtml}</div>`;
-                    pendingContainer.appendChild(ticketDiv);
-                }
+                const ticketDiv = document.createElement('div'); ticketDiv.className = 'ticket';
+                
+                // Regroupe les boissons identiques
+                const counts = {};
+                order.ticket.boissons.forEach(i => { counts[i.name] = (counts[i.name] || 0) + 1; });
+                
+                const boissonsHtml = Object.entries(counts).map(([name, qty]) => `
+                    <div class="course-item" style="border-bottom: 1px dashed #222; padding-bottom: 5px;"><span style="color:var(--accent); margin-right:10px;">${qty}x</span> ${name}</div>
+                `).join('');
 
-                const doneItems = myItems.filter(i => i.done);
-                if (doneItems.length > 0) {
-                    const historyDiv = document.createElement('div'); historyDiv.className = 'history-ticket';
-                    const groupedDone = { 1: [], 2: [], 3: [], 0: [] };
-                    doneItems.forEach(i => { groupedDone[i.step || 0].push(i); });
-                    let historyHtml = `<div class="history-ticket-header"><h3>${titreTable}</h3><span style="color:#555; font-size:0.8rem;">👥 ${nbCovers}p</span></div>`;
-                    [1, 2, 3, 0].forEach(step => {
-                        if (groupedDone[step].length > 0) {
-                            historyHtml += `<div style="margin-bottom: 10px;"><div style="font-size:0.7rem; color:#888; margin-bottom:3px;">${getCourseName(step)}</div><ul class="history-items">${groupedDone[step].map(i => `<li>${i.n.replace(' [WEB]', '')}</li>`).join('')}</ul><button class="btn-undo" onclick="modifierStatutCours('${tableId}', ${step}, false)">↺ ANNULER</button></div>`;
-                        }
-                    });
-                    historyDiv.innerHTML = historyHtml;
-                    historyContainer.appendChild(historyDiv);
-                }
-            }
-            if (currentPendingCount > previousPendingCount) { playSound('new'); }
-            previousPendingCount = currentPendingCount; document.getElementById('pending-count').textContent = currentPendingCount + " verres/boissons à envoyer";
-        }
-
-        async function modifierStatutCours(tableId, step, isDone) {
-            const order = activeOrders[tableId]; if (!order) return;
-            if (isDone) playSound('send'); else playSound('undo');
-
-            const today = getTodayString(); let allStats = JSON.parse(localStorage.getItem('kds_archives_bar_10ans') || '{}');
-            if(!allStats[today]) allStats[today] = {};
-
-            order.items.forEach(i => {
-                if (i.dest === 'Bar' && (i.step || 0) === step) {
-                    if (isDone && !i.done) { allStats[today][i.n] = (allStats[today][i.n] || 0) + 1; } 
-                    else if (!isDone && i.done) { allStats[today][i.n] = Math.max(0, (allStats[today][i.n] || 0) - 1); }
-                    i.done = isDone; if(!isDone) i.served = false; 
-                }
+                ticketDiv.innerHTML = `
+                    <div class="ticket-header">
+                        <div>
+                            <span>${order.table}</span>
+                            <span style="color:#666; font-size:0.9rem; margin-left: 10px;">${order.time}</span>
+                        </div>
+                    </div>
+                    <div class="ticket-body">
+                        <div class="course-section">
+                            <div class="course-title" style="color:var(--bar);">Boissons</div>
+                            <div style="padding: 10px 12px; font-size: 1.1rem; font-weight: bold;">
+                                ${boissonsHtml}
+                            </div>
+                        </div>
+                    </div>
+                    <button class="btn-send" style="background:var(--bar);" onclick="markAsReady('${order.id}')">ENVOYER BOISSONS ✓</button>
+                `;
+                pendingContainer.appendChild(ticketDiv);
             });
-            localStorage.setItem('kds_archives_bar_10ans', JSON.stringify(allStats));
-            if (document.getElementById('gestion-drawer').classList.contains('open')) renderStatsDrawer();
 
-            const allDone = order.items.every(i => i.done || i.served);
-            if (allDone) {
-                order.status = 'ready'; if (!order.readyPostes) order.readyPostes = [];
-                // Validation côté Bar
-                if (!order.readyPostes.includes('Bar')) order.readyPostes.push('Bar');
-            } else {
-                order.status = 'pending'; if (order.readyPostes) order.readyPostes = order.readyPostes.filter(p => p !== 'Bar');
-            }
-            await fetch('/update-order', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ tableId, order }) });
+            // Mise à jour des compteurs du Header
+            document.getElementById('pending-count').textContent = `${currentItemCount} verres/boissons à envoyer`;
+            
+            // Sonnerie
+            if (currentPendingCount > previousPendingCount) { playSound('new'); }
+            previousPendingCount = currentPendingCount;
         }
 
-        window.addEventListener('storage', function(e) {
-            if (e.key === 'kds_grimoire_bar_v2' && document.getElementById('gestion-drawer').classList.contains('open')) renderLibrary();
-            if (e.key === 'kds_hr_master_v9' && document.getElementById('staff-drawer').classList.contains('open')) renderStaffPlanning();
-        });
+        // --- DÉMARRAGE INITIAL ---
+        renderKDS();
 
     </script>
 </body>
