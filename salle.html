@@ -157,12 +157,15 @@
                 <button class="admin-menu-btn" style="border-left: 5px solid var(--blue);" onclick="enableArchitecture()">
                     <span>🛠️</span> MODE ARCHITECTURE
                 </button>
+                
                 <button class="admin-menu-btn" style="border-left: 5px solid #fff;" onclick="openDrawer('logs-drawer')">
                     <span>👁️</span> REGISTRE OPÉRATIONS
                 </button>
+                
                 <button class="admin-menu-btn" style="border-left: 5px solid var(--purple); background: rgba(234, 128, 252, 0.1);" onclick="window.location.href='rh.html'">
                     <span style="color:var(--purple);">👔</span> MODIFIER PLANNINGS & CONTRATS (RH)
                 </button>
+
                 <button class="admin-menu-btn" style="border-left: 5px solid var(--alert); margin-top: 30px;" onclick="closeDrawer('admin-drawer')">
                     <span style="color:var(--alert);">🔒</span> VERROUILLER SUPERVISION
                 </button>
@@ -184,8 +187,8 @@
             <input type="hidden" id="edit-table-id">
             
             <div class="input-group">
-                <label>Nom / Numéro affiché</label>
-                <input type="text" id="edit-table-label" class="input-full">
+                <label>Nom / Numéro affiché (ex: T1, VIP...)</label>
+                <input type="text" id="edit-table-label" class="input-full" placeholder="Laissez vide pour auto-génération">
             </div>
 
             <div class="input-group">
@@ -222,7 +225,7 @@
     <script>
         let isAdminUnlocked = false;
 
-        // --- GESTION DES TIROIRS ---
+        // --- GESTION DES TIROIRS ET DU MENU ---
         function openDrawer(drawerId) {
             document.querySelectorAll('.drawer').forEach(d => d.classList.remove('open'));
             document.getElementById(drawerId).classList.add('open');
@@ -328,8 +331,7 @@
             }
         }
 
-
-        // --- MOTEUR DU PLAN DE TABLE (TACTILE + RESIZE) ---
+        // --- MOTEUR DU PLAN DE TABLE (TACTILE + RESIZE + AUTO-NUMÉROTATION) ---
         let isArchiMode = false;
         let currentDrag = null;
         let startX = 0, startY = 0;
@@ -375,7 +377,6 @@
                 div.onmousedown = startDrag;
                 div.ontouchstart = startDrag;
 
-                // Ajout de la poignée de redimensionnement tactile
                 const handle = document.createElement('div');
                 handle.className = 'resize-handle';
                 handle.onmousedown = startResize;
@@ -405,17 +406,32 @@
             alert("✅ Plan validé.");
         }
 
+        // INTELLIGENCE D'AUTO-NUMÉROTATION DES TABLES
         function addTable() {
             const allTables = getTables();
+            const zoneTables = allTables.filter(t => t.zoneId === currentZoneId);
+            
+            // Recherche intelligente du numéro le plus élevé dans la salle, même si le manager a créé des "trous" ou renommé des tables
+            let maxNum = 0;
+            zoneTables.forEach(t => {
+                const match = t.label.match(/^T?(\d+)$/i); // Cherche un numéro (ex: T12, ou juste 12)
+                if(match) {
+                    const num = parseInt(match[1], 10);
+                    if(num > maxNum) maxNum = num;
+                }
+            });
+            const nextNum = maxNum + 1;
+            const newLabel = 'T' + nextNum;
+
             const newId = 't_' + Date.now();
             allTables.push({
-                id: newId, zoneId: currentZoneId, label: 'New', w: 80, h: 80, t: 50, l: 50, color: '#fff', radius: '8px'
+                id: newId, zoneId: currentZoneId, label: newLabel, w: 80, h: 80, t: 50, l: 50, color: '#fff', radius: '8px'
             });
             saveTables(allTables);
             loadFloorPlan();
         }
 
-        // LOGIQUE D'ÉDITION MODAL (ALLÉGÉE)
+        // LOGIQUE D'ÉDITION MODAL
         function openTableEdit(id) {
             const t = getTables().find(table => table.id === id);
             if(!t) return;
@@ -434,7 +450,11 @@
             let tables = getTables();
             const index = tables.findIndex(t => t.id === id);
             if(index > -1) {
-                tables[index].label = document.getElementById('edit-table-label').value;
+                // Si l'utilisateur laisse vide, on garde l'ID interne ou on auto-génère, ici on le force à "Table"
+                let newLabel = document.getElementById('edit-table-label').value.trim();
+                if(newLabel === "") newLabel = "Tx"; 
+                
+                tables[index].label = newLabel;
                 tables[index].radius = document.getElementById('edit-table-radius').value;
                 saveTables(tables);
                 loadFloorPlan();
@@ -452,10 +472,8 @@
         }
 
         // --- GESTION TACTILE : DRAG (DEPLACER) ET RESIZE (REDIMENSIONNER) ---
-        
         function startDrag(e) {
             if(!isArchiMode) {
-                // Utilisation normale = Ouvre la table (passerelle commande)
                 addLog(`Table ${this.getAttribute('data-id')} sélectionnée`);
                 return;
             }
@@ -473,11 +491,11 @@
 
         function startResize(e) {
             if(!isArchiMode) return;
-            e.stopPropagation(); // Bloque le déclenchement du drag normal
+            e.stopPropagation(); 
             
             hasMoved = false;
             isResizing = true;
-            currentDrag = this.parentElement; // On cible la table parente
+            currentDrag = this.parentElement; 
             
             const rect = currentDrag.getBoundingClientRect();
             startW = rect.width;
@@ -502,23 +520,19 @@
             let clientY = e.type.includes('mouse') ? e.clientY : e.touches[0].clientY;
             
             if(isResizing) {
-                // Logique de redimensionnement
                 let newW = startW + (clientX - startX);
                 let newH = startH + (clientY - startY);
                 
-                // Taille minimale : 40px
                 if(newW < 40) newW = 40;
                 if(newH < 40) newH = 40;
                 
                 currentDrag.style.width = newW + 'px';
                 currentDrag.style.height = newH + 'px';
             } else {
-                // Logique de déplacement
                 const floor = document.getElementById('floor-plan').getBoundingClientRect();
                 let newLeft = clientX - floor.left - startX;
                 let newTop = clientY - floor.top - startY;
 
-                // Magnétisme (Snapping pour un plan propre)
                 newLeft = Math.round(newLeft / 20) * 20;
                 newTop = Math.round(newTop / 20) * 20;
 
@@ -537,10 +551,8 @@
             if(!currentDrag || !isArchiMode) return;
             
             if(!hasMoved && !isResizing) {
-                // Clic simple au centre = Ouvre l'éditeur
                 openTableEdit(currentDrag.getAttribute('data-id'));
             } else {
-                // A bougé ou a été redimensionné = On sauvegarde dans la BDD
                 let tables = getTables();
                 const id = currentDrag.getAttribute('data-id');
                 const tIndex = tables.findIndex(t => t.id === id);
