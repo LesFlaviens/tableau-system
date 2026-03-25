@@ -1,132 +1,98 @@
-Flavien, tu as mis le doigt sur un bug technique invisible mais fatal. Le diagnostic est double :
-
-1. **Le conflit du Cache (L'ancienne mémoire) :** Hier, nous avons créé un système où le ticket de caisse était une liste simple. Aujourd'hui, on a structuré ça avec des catégories (Entrées, Plats, etc.). Quand tu as cliqué sur une table, le système a trouvé un *ancien* format de ticket dans la mémoire de ton navigateur, et il a "crashé" en essayant de le lire.
-2. **Le conflit Tactile :** Le serveur n'a *jamais* besoin de déplacer une table. Il ne faut donc pas lui imposer le système complexe d'amortisseur tactile. Le "glisser-déposer" doit être réservé exclusivement au Master (Chef). 
-
-J'ai blindé le système : j'ai mis un nettoyeur automatique qui convertit les anciens tickets pour éviter les crashs, et j'ai séparé les actions. **Un Serveur = 1 Clic pur et dur.**
-
-👉 **REMPLACE l'intégralité de ton fichier `salle.html` par cette version débuggée :**
-
-```html
 <!DOCTYPE html>
 <html lang="fr">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>Empire - Master Salle & Caisse</title>
+    <title>Empire - Gestionnaire de Salle</title>
     <style>
         :root { --bg: #050505; --accent: #00e676; --alert: #ff1744; --text: #fff; --panel: #111; --purple: #ea80fc; --blue: #00b0ff; --warning: #ffb300; --sub: #888; }
-        body { font-family: 'Inter', sans-serif; background: var(--bg); color: var(--text); margin: 0; display: flex; flex-direction: column; height: 100vh; overflow: hidden; user-select: none; touch-action: manipulation; }
+        body { font-family: 'Inter', sans-serif; background: var(--bg); color: var(--text); margin: 0; display: flex; flex-direction: column; height: 100vh; overflow: hidden; user-select: none; }
         
-        /* HEADER ÉPURÉ */
-        header { border-bottom: 2px solid #333; padding: 15px 20px; background: #0a0a0a; display: flex; justify-content: space-between; align-items: center; flex-shrink: 0; }
-        .header-title { color: var(--accent); font-size: 1.5rem; font-weight: 900; margin: 0; text-transform: uppercase; letter-spacing: 2px; display: flex; align-items: center; gap: 10px;}
-        .sync-icon { color: var(--blue); font-size: 1rem; animation: blink 2s infinite; }
-        @keyframes blink { 0% { opacity: 1; } 50% { opacity: 0.3; } 100% { opacity: 1; } }
+        /* SÉCURITÉ */
+        #security-block { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: #000; z-index: 99999; display: flex; flex-direction: column; justify-content: center; align-items: center; color: var(--alert); }
+        
+        /* HEADER EXACT DE LA CAPTURE */
+        header { border-bottom: 1px solid #333; padding: 15px 25px; background: #0a0a0a; display: flex; justify-content: space-between; align-items: center; flex-shrink: 0; }
+        .header-title { color: var(--accent); font-size: 1.8rem; font-weight: 900; margin: 0; text-transform: uppercase; letter-spacing: 3px; }
         
         .header-controls { display: flex; gap: 15px; }
-        .btn-top { background: #111; font-weight: 900; border-radius: 8px; padding: 15px 25px; cursor: pointer; text-transform: uppercase; transition: 0.2s; font-size: 1rem; border: 2px solid transparent; color: #fff; }
+        .btn-top { background: #111; font-weight: 900; border-radius: 6px; padding: 12px 20px; cursor: pointer; text-transform: uppercase; transition: 0.2s; font-size: 1rem; border: 2px solid transparent; color: #fff; }
         .btn-top:active { transform: scale(0.95); }
-        .btn-res { background: rgba(234, 128, 252, 0.1); border-color: var(--purple); color: var(--purple); }
+        .btn-plan { border-color: #888; color: #ccc; }
+        .btn-res { border-color: var(--purple); color: var(--purple); }
+        .btn-admin { border-color: var(--warning); color: var(--warning); }
 
-        /* BARRE ARCHITECTURE (CACHÉE SANS LA CLÉ) */
+        /* BARRE ARCHITECTURE (CACHÉE) */
         #archi-toolbar { display: none; background: var(--blue); padding: 10px 25px; justify-content: space-between; align-items: center; color: #000; font-weight: 900; text-transform: uppercase; box-shadow: 0 5px 20px rgba(0, 176, 255, 0.3); }
-        .btn-archi-action { background: rgba(0,0,0,0.5); border: 1px solid #000; color: #fff; padding: 8px 15px; border-radius: 6px; font-weight: bold; cursor: pointer; transition: 0.2s;}
-        .btn-archi-action:hover { background: #000; }
+        .btn-archi-action { background: rgba(0,0,0,0.5); border: 1px solid #000; color: #fff; padding: 8px 15px; border-radius: 6px; font-weight: bold; cursor: pointer; border:none;}
 
-        /* TABS (SALLES) */
-        .zones-bar { display: flex; border-bottom: 1px solid #222; background: #050505; overflow-x: auto;}
-        .zone-tab { padding: 12px 25px; font-size: 1rem; font-weight: 900; text-transform: uppercase; cursor: pointer; color: #555; border-right: 1px solid #222; transition: 0.2s; white-space: nowrap; }
+        /* ZONES */
+        .zones-bar { display: flex; border-bottom: 1px solid #222; background: #050505; }
+        .zone-tab { padding: 15px 30px; font-size: 1.1rem; font-weight: 900; text-transform: uppercase; cursor: pointer; color: #555; border-right: 1px solid #222; }
         .zone-tab.active { background: var(--accent); color: #000; }
 
-        /* MAIN AREA (PLAN DE SALLE) */
-        .main-workspace { display: flex; flex: 1; overflow: hidden; position: relative; background: #050505;}
-        
-        .floor-plan { flex: 1; position: relative; overflow: hidden; }
+        /* WORKSPACE & RADAR WOOCOMMERCE */
+        .main-workspace { display: flex; flex: 1; overflow: hidden; position: relative; }
+        .floor-plan { flex: 1; position: relative; background: #050505; overflow: hidden; }
         .floor-plan.archi-active { background: radial-gradient(circle, #333 2px, #050505 2px); background-size: 30px 30px; }
+        
+        .radar-panel { width: 280px; background: #0a0a0a; border-left: 1px solid #222; padding: 15px; display: flex; flex-direction: column; z-index: 50;}
+        .radar-title { color: var(--blue); font-size: 0.9rem; font-weight: 900; text-transform: uppercase; margin-bottom: 15px; display: flex; align-items: center; gap: 8px; }
 
-        /* TABLES ET DÉCORS */
-        .table-obj, .decor-obj { position: absolute; display: flex; justify-content: center; align-items: center; font-weight: 900; font-size: 1.2rem; cursor: pointer; box-shadow: 0 5px 15px rgba(0,0,0,0.5); padding: 5px; box-sizing: border-box; transition: 0.1s;}
-        .table-obj { background: #161616; border: 2px solid #555; color: #fff; z-index: 20; }
-        .table-obj:active { transform: scale(0.95); border-color: var(--accent); }
+        /* OBJETS SALLE */
+        .table-obj, .decor-obj { position: absolute; display: flex; justify-content: center; align-items: center; font-weight: 900; cursor: pointer; box-shadow: 0 5px 15px rgba(0,0,0,0.5); padding: 5px; box-sizing: border-box; }
+        .table-obj { background: #161616; border: 2px solid #fff; color: #fff; font-size: 1.2rem; z-index: 20; border-radius: 8px;}
         .decor-obj { z-index: 10; font-size: 1rem; }
         
-        .floor-plan.archi-active .table-obj, .floor-plan.archi-active .decor-obj { border-style: dashed; animation: pulse-border 2s infinite; }
+        .floor-plan.archi-active .table-obj, .floor-plan.archi-active .decor-obj { border-style: dashed; }
         .floor-plan.archi-active .resize-handle { display: block; }
-        @keyframes pulse-border { 0% { box-shadow: 0 0 0 0 rgba(0, 176, 255, 0.4); } 70% { box-shadow: 0 0 0 15px rgba(0, 176, 255, 0); } 100% { box-shadow: 0 0 0 0 rgba(0, 176, 255, 0); } }
+        .resize-handle { display: none; position: absolute; bottom: -10px; right: -10px; width: 25px; height: 25px; background: var(--accent); border: 3px solid #000; border-radius: 50%; cursor: se-resize; z-index: 2000; }
 
-        .table-badge { position: absolute; top: -10px; right: -10px; background: var(--purple); color: #000; font-size: 0.8rem; padding: 4px 8px; border-radius: 12px; font-weight: 900; border: 2px solid #000; box-shadow: 0 2px 5px rgba(0,0,0,0.5);}
-        .table-badge.active-order { background: var(--warning); right: auto; left: -10px; content: "🍽️"; }
-
+        .table-badge { position: absolute; top: -10px; right: -10px; background: var(--purple); color: #000; font-size: 0.8rem; padding: 4px 8px; border-radius: 12px; font-weight: 900; border: 2px solid #000; }
+        
         .decor-zone { background: rgba(255, 255, 255, 0.05); border: 2px dashed #555; color: #888; text-transform: uppercase; letter-spacing: 2px;}
         .decor-window { background: rgba(0, 176, 255, 0.15); border: 2px solid var(--blue); color: var(--blue); }
         .decor-wall { background: #222; border: 1px solid #111; color: transparent; }
         .decor-bar { background: #3e2723; border: 2px solid #212121; color: #d7ccc8; }
 
-        .resize-handle { display: none; position: absolute; bottom: -10px; right: -10px; width: 25px; height: 25px; background: var(--accent); border: 3px solid #000; border-radius: 50%; cursor: se-resize; z-index: 2000; box-shadow: 0 2px 5px rgba(0,0,0,0.5); }
-
-        /* =================================================================
-           TIROIRS (CAISSE, RÉSERVATIONS, LOGS)
-           ================================================================= */
-        .drawer { position: absolute; top: 0; right: 0; width: 100%; max-width: 450px; height: 100%; background: #0a0a0a; border-left: 2px solid #333; padding: 20px; z-index: 9000; box-sizing: border-box; overflow-y: auto; transform: translateX(100%); transition: transform 0.3s cubic-bezier(0.4, 0.0, 0.2, 1); display: flex; flex-direction: column; box-shadow: -20px 0 50px rgba(0,0,0,0.9);}
+        /* TIROIRS COULISSANTS */
+        .drawer { position: absolute; top: 0; right: 0; width: 500px; height: 100%; background: #0a0a0a; border-left: 2px solid #333; padding: 30px; z-index: 9000; box-sizing: border-box; overflow-y: auto; transform: translateX(100%); transition: transform 0.3s cubic-bezier(0.4, 0.0, 0.2, 1); box-shadow: -20px 0 50px rgba(0,0,0,0.9);}
         .drawer.open { transform: translateX(0); }
-        .drawer-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; border-bottom: 1px solid #333; padding-bottom: 15px; flex-shrink: 0;}
-        .drawer-title { margin: 0; font-size: 1.5rem; text-transform: uppercase; font-weight: 900; color: #fff; }
-        .btn-close-drawer { background: #222; border: none; color: #fff; font-size: 1.2rem; font-weight: bold; cursor: pointer; padding: 10px 15px; border-radius: 6px; }
+        .btn-close-drawer { position: absolute; top: 20px; left: 20px; background: transparent; border: none; color: #aaa; font-size: 2rem; font-weight: bold; cursor: pointer; }
+        .btn-close-drawer:hover { color: var(--alert); }
 
-        .input-base { background: #000; border: 1px solid #444; color: #fff; padding: 15px; border-radius: 8px; width: 100%; box-sizing: border-box; font-size: 1.1rem; margin-bottom: 10px; font-weight: bold;}
-        .input-base:focus { border-color: var(--purple); outline: none; }
-
-        /* TICKET / CAISSE (LARGE DRAWER) */
-        #order-drawer { max-width: 800px; border-left-color: var(--accent); }
-        .order-layout { display: flex; gap: 20px; flex: 1; overflow: hidden; }
+        .admin-menu-btn { width: 100%; padding: 18px; margin-bottom: 15px; background: #111; border: 1px solid #333; border-radius: 8px; font-size: 1.1rem; font-weight: 900; text-transform: uppercase; cursor: pointer; text-align: left; display: flex; align-items: center; gap: 15px; color: #fff;}
+        .admin-menu-btn:hover { background: #1a1a1a; }
         
-        .ticket-col { flex: 1; display: flex; flex-direction: column; background: #000; border: 1px solid #222; border-radius: 12px; overflow: hidden; }
-        .ticket-list { flex: 1; overflow-y: auto; padding: 15px; }
-        .ticket-group { margin-bottom: 15px; }
-        .ticket-group-title { font-size: 0.8rem; color: #555; text-transform: uppercase; font-weight: 900; letter-spacing: 1px; border-bottom: 1px dashed #222; padding-bottom: 5px; margin-bottom: 10px;}
-        .ticket-item { display: flex; justify-content: space-between; align-items: center; padding: 8px 0; font-size: 1.1rem; }
-        .ticket-item-name { font-weight: bold; color: #fff; flex: 1; }
-        .ticket-item-price { color: var(--sub); font-weight: bold; margin-left: 10px; }
-        .btn-del-item { background: none; border: none; color: #555; font-size: 1.2rem; font-weight: bold; cursor: pointer; padding: 0 10px; }
-        .ticket-total { background: #0a0a0a; padding: 20px; display: flex; justify-content: space-between; align-items: center; border-top: 2px solid #333; }
-        .total-amount { font-size: 2.5rem; color: var(--accent); font-weight: 900; }
+        .input-base { background: #000; border: 1px solid #444; color: #fff; padding: 12px; border-radius: 6px; width: 100%; box-sizing: border-box; font-size: 1rem; margin-bottom: 10px;}
 
-        .menu-col { flex: 1.5; display: flex; flex-direction: column; overflow: hidden; }
-        .cat-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 15px; flex-shrink: 0;}
-        .btn-cat { background: #161616; border: 1px solid #333; color: #fff; padding: 15px; font-weight: 900; text-transform: uppercase; border-radius: 8px; cursor: pointer; font-size: 1rem; transition: 0.1s;}
-        .btn-cat.active { background: #222; border-color: var(--accent); color: var(--accent); }
-        .items-grid { flex: 1; overflow-y: auto; display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 10px; align-content: start; }
-        .btn-item { background: #111; border: 1px solid #333; color: #fff; padding: 15px 10px; border-radius: 8px; cursor: pointer; text-align: center; display: flex; flex-direction: column; justify-content: center; align-items: center; transition: 0.1s; min-height: 80px;}
-        .btn-item:active { transform: scale(0.95); background: #222; border-color: var(--text); }
-        .item-name { font-weight: 900; font-size: 0.95rem; margin-bottom: 5px; line-height: 1.2; }
-        .item-price { color: var(--sub); font-size: 0.8rem; font-weight: bold; }
+        /* PLANNING STAFF */
+        .staff-plan-card { background: #161616; border: 1px solid #333; border-radius: 8px; padding: 15px; margin-bottom: 15px; border-left: 5px solid var(--purple); }
+        .staff-plan-name { font-weight: 900; font-size: 1.1rem; text-transform: uppercase; color: #fff; margin-bottom: 10px; display: block; }
+        .mini-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 5px; }
+        .mini-day { background: #000; padding: 8px 2px; border-radius: 4px; text-align: center; border: 1px solid #222; display: flex; flex-direction: column; min-height: 55px;}
+        .mini-day b { display: block; color: #555; margin-bottom: 5px; font-size: 0.6rem; text-transform: uppercase;}
+        .shift-time { font-weight: 900; color: var(--accent); font-size: 0.65rem; }
 
-        .action-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 15px; flex-shrink: 0; margin-top: 15px;}
-        .btn-send { background: var(--warning); color: #000; padding: 20px; font-weight: 900; text-transform: uppercase; border-radius: 8px; cursor: pointer; font-size: 1.2rem; border: none; box-shadow: 0 5px 15px rgba(255, 179, 0, 0.3);}
-        .btn-send:active { transform: scale(0.98); }
-        .btn-pay { background: var(--blue); color: #000; padding: 20px; font-weight: 900; text-transform: uppercase; border-radius: 8px; cursor: pointer; font-size: 1.2rem; border: none; }
-
-        /* MODALS ARCHITECTURE */
+        /* MODALS */
         .modal { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.9); z-index: 9999; justify-content: center; align-items: center; }
-        .modal-content { background: #111; padding: 30px; border-radius: 12px; border: 1px solid #333; width: 400px; box-shadow: 0 20px 50px rgba(0,0,0,0.8);}
-        .input-group { margin-bottom: 15px; }
+        .modal-content { background: #111; padding: 30px; border-radius: 12px; border: 1px solid #333; width: 400px; }
         .input-group label { display: block; font-size: 0.7rem; color: var(--sub); text-transform: uppercase; margin-bottom: 5px; font-weight: bold;}
-        .input-full { width: 100%; background: #000; border: 1px solid #444; color: #fff; padding: 10px; border-radius: 6px; font-size: 1rem; box-sizing: border-box;}
-        
     </style>
 </head>
 <body>
 
-    <header>
-        <h1 class="header-title" id="main-title">
-            TERMINAL DE SALLE
-            <span class="sync-icon" title="Synchronisation KDS Active">☁️</span>
-        </h1>
+    <div id="security-block">
+        <h1 style="font-size: 3rem;">🛑 ACCÈS REFUSÉ</h1>
+        <p>Clé ICHEF2026 requise pour le poste Gestionnaire.</p>
+    </div>
+
+    <header id="main-header" style="display:none;">
+        <h1 class="header-title">TABLEAU DE SALLE</h1>
         <div class="header-controls">
-            <button class="btn-top btn-res" onclick="openDrawer('res-drawer')">📅 RÉSERVATIONS</button>
-            <button id="btn-admin-logs" class="btn-top" style="display:none; border-color:var(--blue); color:var(--blue);" onclick="openDrawer('logs-drawer')">👁️ REGISTRE</button>
-            <button id="btn-admin-rh" class="btn-top" style="display:none; border-color:var(--warning); color:var(--warning);" onclick="window.location.href='rh.html'">👔 BUREAU RH</button>
+            <button class="btn-top btn-plan" onclick="openDrawer('plan-drawer')">📅 PLANNING SEMAINE</button>
+            <button class="btn-top btn-res" onclick="openDrawer('res-drawer')">📅 CAHIER RÉSERVATIONS</button>
+            <button class="btn-top btn-admin" onclick="openDrawer('admin-drawer')">🔒 SUPERVISION</button>
         </div>
     </header>
 
@@ -136,72 +102,54 @@ J'ai blindé le système : j'ai mis un nettoyeur automatique qui convertit les a
             <button class="btn-archi-action" onclick="addDecor()">+ DÉCOR / ZONE</button>
             <button class="btn-archi-action" onclick="openZoneManager()">⚙️ GÉRER LES SALLES</button>
         </div>
-        <span style="color:#000;">⚠️ ARCHITECTURE ACTIVE (Glissez pour déplacer/redimensionner)</span>
+        <button class="btn-archi-action" style="background:var(--accent); color:#000;" onclick="saveArchitecture()">💾 QUITTER ARCHITECTURE</button>
     </div>
 
-    <div class="zones-bar" id="zones-bar"></div>
+    <div class="zones-bar" id="zones-bar" style="display:none;"></div>
 
-    <div class="main-workspace">
+    <div class="main-workspace" id="workspace" style="display:none;">
         <div class="floor-plan" id="floor-plan"></div>
+        
+        <div class="radar-panel">
+            <div class="radar-title">🌐 RADAR WOOCOMMERCE</div>
+            <div style="color:#555; text-align:center; font-size:0.8rem; margin-top:20px; font-style:italic;">En attente de commandes web...</div>
+        </div>
+
+        <div id="plan-drawer" class="drawer">
+            <button class="btn-close-drawer" onclick="closeDrawer('plan-drawer')">✕</button>
+            <h2 style="color:#fff; margin: 30px 0 20px 0; font-size: 1.8rem; text-transform: uppercase;">📅 PLANNING ÉQUIPE</h2>
+            <div id="service-planning-container"></div>
+        </div>
 
         <div id="res-drawer" class="drawer">
-            <div class="drawer-header">
-                <h2 class="drawer-title" style="color:var(--purple);">RÉSERVATIONS</h2>
-                <button class="btn-close-drawer" onclick="closeDrawer('res-drawer')">FERMER</button>
+            <button class="btn-close-drawer" onclick="closeDrawer('res-drawer')">✕</button>
+            <h2 style="color:var(--purple); margin: 30px 0 20px 0; font-size: 1.8rem; text-transform: uppercase;">📅 RÉSERVATIONS</h2>
+            <div style="background: #161616; border: 1px solid #333; padding: 20px; border-radius: 8px; margin-bottom: 20px;">
+                <input type="date" id="res-date-filter" class="input-base" onchange="renderReservations()">
             </div>
-            <div style="overflow-y: auto; flex: 1; padding-right: 5px;">
-                <input type="date" id="res-date-filter" class="input-base" onchange="renderReservations()" style="border-color:var(--purple); color:var(--purple);">
-                <div style="background: #111; padding: 15px; border: 1px dashed #333; border-radius: 8px; margin-bottom: 20px;">
-                    <div style="color:#fff; font-weight:900; margin-bottom:10px;">NOUVELLE RÉSERVATION</div>
-                    <input type="text" id="res-name" class="input-base" placeholder="Nom du client">
-                    <div style="display: flex; gap: 10px;">
-                        <input type="time" id="res-time" class="input-base">
-                        <input type="number" id="res-pax" class="input-base" placeholder="Couverts" min="1">
-                    </div>
-                    <input type="text" id="res-table" class="input-base" placeholder="N° de Table (Optionnel)">
-                    <button onclick="saveReservation()" class="btn-top" style="width: 100%; background: var(--purple); color: #000; border: none;">VALIDER & SYNCHRONISER</button>
-                </div>
-                <div id="res-list-container"></div>
+            <div id="res-list-container"></div>
+        </div>
+
+        <div id="admin-drawer" class="drawer">
+            <button class="btn-close-drawer" onclick="closeDrawer('admin-drawer')">✕</button>
+            <h2 style="color:var(--warning); margin: 30px 0 30px 0; font-size: 1.8rem; text-transform: uppercase;">⚙️ SUPERVISION</h2>
+            <div>
+                <button class="admin-menu-btn" style="border-left: 5px solid var(--blue);" onclick="enableArchitecture()">
+                    <span>🛠️</span> MODE ARCHITECTURE (MODIFIER LE PLAN)
+                </button>
+                <button class="admin-menu-btn" style="border-left: 5px solid #fff;" onclick="openDrawer('logs-drawer')">
+                    <span>👁️</span> REGISTRE DES OPÉRATIONS
+                </button>
+                <button class="admin-menu-btn" style="border-left: 5px solid var(--purple);" onclick="window.location.href='rh.html'">
+                    <span style="color:var(--purple);">👔</span> ALLER AU BUREAU RH
+                </button>
             </div>
         </div>
 
-        <div id="order-drawer" class="drawer">
-            <div class="drawer-header">
-                <h2 class="drawer-title" id="order-table-title" style="color:var(--accent);">TABLE --</h2>
-                <button class="btn-close-drawer" onclick="closeDrawer('order-drawer')">FERMER</button>
-            </div>
-            
-            <div class="order-layout">
-                <div class="ticket-col">
-                    <div class="ticket-list" id="ticket-list"></div>
-                    <div class="ticket-total">
-                        <span style="color:#888; font-weight:bold; text-transform:uppercase;">Total</span>
-                        <span class="total-amount" id="ticket-total-amount">0.00 €</span>
-                    </div>
-                </div>
-
-                <div class="menu-col">
-                    <div class="cat-grid">
-                        <button class="btn-cat active" id="btn-cat-Entrée" onclick="loadMenuCategory('Entrée')">ENTRÉES</button>
-                        <button class="btn-cat" id="btn-cat-Plat" onclick="loadMenuCategory('Plat')">PLATS</button>
-                        <button class="btn-cat" id="btn-cat-Dessert" onclick="loadMenuCategory('Dessert')">DESSERTS</button>
-                        <button class="btn-cat" id="btn-cat-Boisson" onclick="loadMenuCategory('Boisson')" style="border-color:var(--blue);">BOISSONS</button>
-                    </div>
-                    <div class="items-grid" id="items-grid"></div>
-                    <div class="action-grid">
-                        <button class="btn-send" onclick="sendToKDS()">🔥 ENVOYER CUISINE/BAR</button>
-                        <button class="btn-pay" onclick="payTable()">💳 ENCAISSER</button>
-                    </div>
-                </div>
-            </div>
-        </div>
-
-        <div id="logs-drawer" class="drawer" style="max-width: 450px;">
-            <div class="drawer-header">
-                <h2 class="drawer-title">👁️ REGISTRE</h2>
-                <button class="btn-close-drawer" onclick="closeDrawer('logs-drawer')">FERMER</button>
-            </div>
-            <div id="logs-container" style="flex:1; overflow-y:auto;"></div>
+        <div id="logs-drawer" class="drawer">
+            <button class="btn-close-drawer" onclick="closeDrawer('logs-drawer')">✕</button>
+            <h2 style="color:#fff; margin: 30px 0 20px 0; font-size: 1.8rem; text-transform: uppercase;">👁️ REGISTRE</h2>
+            <div id="logs-container" style="background:#111; border:1px solid #333; border-radius:8px; padding:15px; max-height: 70vh; overflow-y:auto; color:#ccc; font-size:0.9rem;"></div>
         </div>
     </div>
 
@@ -209,9 +157,9 @@ J'ai blindé le système : j'ai mis un nettoyeur automatique qui convertit les a
         <div class="modal-content" style="border-top-color: var(--blue);">
             <h2 style="color:var(--blue); margin-top:0;">ÉDITER LA TABLE</h2>
             <input type="hidden" id="edit-table-id">
-            <div class="input-group"><label>Nom affiché</label><input type="text" id="edit-table-label" class="input-full"></div>
+            <div class="input-group"><label>Nom affiché</label><input type="text" id="edit-table-label" class="input-base"></div>
             <div class="input-group"><label>Forme</label>
-                <select id="edit-table-radius" class="input-full"><option value="8px">Carrée/Rectangulaire</option><option value="50%">Ronde/Ovale</option></select>
+                <select id="edit-table-radius" class="input-base"><option value="8px">Carrée/Rectangulaire</option><option value="50%">Ronde/Ovale</option></select>
             </div>
             <div style="display:flex; gap:10px; margin-top:20px;">
                 <button onclick="deleteTable()" style="flex:1; padding:10px; background:transparent; border:1px solid var(--alert); color:var(--alert); border-radius:6px; cursor:pointer;">SUPPRIMER</button>
@@ -224,17 +172,17 @@ J'ai blindé le système : j'ai mis un nettoyeur automatique qui convertit les a
         <div class="modal-content" style="border-top-color: var(--accent);">
             <h2 style="color:var(--accent); margin-top:0;">ÉDITER LE DÉCOR</h2>
             <input type="hidden" id="edit-decor-id">
-            <div class="input-group"><label>Texte affiché</label><input type="text" id="edit-decor-label" class="input-full"></div>
+            <div class="input-group"><label>Texte affiché</label><input type="text" id="edit-decor-label" class="input-base"></div>
             <div class="input-group"><label>Type d'élément</label>
-                <select id="edit-decor-style" class="input-full">
-                    <option value="decor-zone">Zone Délimitée (Pointillés)</option>
+                <select id="edit-decor-style" class="input-base">
+                    <option value="decor-zone">Zone Délimitée</option>
                     <option value="decor-window">Fenêtre / Baie vitrée</option>
-                    <option value="decor-wall">Mur / Cloison (Plein)</option>
+                    <option value="decor-wall">Mur / Cloison</option>
                     <option value="decor-bar">Comptoir de Bar</option>
                 </select>
             </div>
             <div style="display:flex; gap:10px; margin-top:20px;">
-                <button onclick="deleteDecor()" style="flex:1; padding:10px; background:transparent; border:1px solid var(--alert); color:var(--alert); border-radius:6px; cursor:pointer; font-weight:bold;">SUPPRIMER</button>
+                <button onclick="deleteDecor()" style="flex:1; padding:10px; background:transparent; border:1px solid var(--alert); color:var(--alert); border-radius:6px; cursor:pointer;">SUPPRIMER</button>
                 <button onclick="saveDecorEdit()" style="flex:2; padding:10px; background:var(--accent); border:none; color:#000; border-radius:6px; font-weight:bold; cursor:pointer;">VALIDER</button>
             </div>
         </div>
@@ -243,9 +191,9 @@ J'ai blindé le système : j'ai mis un nettoyeur automatique qui convertit les a
     <div id="zone-manager-modal" class="modal">
         <div class="modal-content" style="border-top-color: #fff;">
             <h2 style="color:#fff; margin-top:0;">GÉRER LES SALLES</h2>
-            <div class="zone-manager-list" id="zone-manager-list"></div>
+            <div id="zone-manager-list" style="margin-bottom:15px;"></div>
             <div style="display:flex; gap:10px; margin-bottom: 20px;">
-                <input type="text" id="new-zone-name" class="input-full" placeholder="Nouvelle salle (ex: Étage)">
+                <input type="text" id="new-zone-name" class="input-base" placeholder="Nouvelle salle (ex: Étage)" style="margin:0;">
                 <button onclick="addNewZone()" style="background:var(--accent); color:#000; border:none; padding:0 15px; border-radius:6px; font-weight:bold; cursor:pointer;">AJOUTER</button>
             </div>
             <button onclick="closeZoneManager()" style="width:100%; padding:10px; background:#222; border:none; color:#fff; border-radius:6px; font-weight:bold; cursor:pointer;">FERMER</button>
@@ -253,27 +201,48 @@ J'ai blindé le système : j'ai mis un nettoyeur automatique qui convertit les a
     </div>
 
     <script>
-        // --- 1. CONFIGURATION CHEF (ARCHITECTURE) ---
+        // SÉCURITÉ
         const urlParams = new URLSearchParams(window.location.search);
-        const isMaster = urlParams.get('key') === 'ICHEF2026';
-
-        if (isMaster) {
-            document.getElementById('main-title').innerHTML = "⚙️ MASTER SALLE <span class='sync-icon'>☁️</span>";
-            document.getElementById('archi-toolbar').style.display = 'flex';
-            document.getElementById('btn-admin-logs').style.display = 'block';
-            document.getElementById('btn-admin-rh').style.display = 'block';
-            document.getElementById('floor-plan').classList.add('archi-active');
+        if (urlParams.get('key') === 'ICHEF2026') {
+            document.getElementById('security-block').style.display = 'none';
+            document.getElementById('main-header').style.display = 'flex';
+            document.getElementById('zones-bar').style.display = 'flex';
+            document.getElementById('workspace').style.display = 'flex';
         }
 
-        // --- 2. SYNCHRONISATION MULTI-ÉCRANS ---
+        // SYNCHRO
         window.addEventListener('storage', function(e) {
-            if (e.key === 'empire_reservations') { renderReservations(); loadFloorPlan(); }
+            if (e.key === 'empire_reservations') { loadFloorPlan(); if(document.getElementById('res-drawer').classList.contains('open')) renderReservations(); }
             if (e.key === 'empire_salle_tables') { loadFloorPlan(); }
+            if (e.key === 'kds_hr_master_v9') { renderStaffPlanning(); }
         });
 
-        // --- 3. GESTION DES ZONES & PLAN DE TABLE ---
+        // TIROIRS
+        function openDrawer(id) {
+            document.querySelectorAll('.drawer').forEach(d => d.classList.remove('open'));
+            document.getElementById(id).classList.add('open');
+            if(id === 'plan-drawer') renderStaffPlanning();
+            if(id === 'res-drawer') renderReservations();
+            if(id === 'logs-drawer') renderLogs();
+        }
+        function closeDrawer(id) { document.getElementById(id).classList.remove('open'); }
+
+        // LOGS
+        function addLog(msg) {
+            const logs = JSON.parse(localStorage.getItem('empire_salle_logs')) || [];
+            logs.unshift({ time: new Date().toLocaleTimeString('fr-FR'), msg });
+            if(logs.length > 100) logs.pop();
+            localStorage.setItem('empire_salle_logs', JSON.stringify(logs));
+        }
+        function renderLogs() {
+            const logs = JSON.parse(localStorage.getItem('empire_salle_logs')) || [];
+            document.getElementById('logs-container').innerHTML = logs.map(l => `<div style="border-bottom:1px dashed #222; padding:8px 0;">[${l.time}] ${l.msg}</div>`).join('');
+        }
+        function clearLogs() { if(confirm("Purger ?")) { localStorage.removeItem('empire_salle_logs'); renderLogs(); } }
+
+        // ZONES & PLAN
         let currentZoneId = 'z1';
-        let currentTableId = null;
+        let isArchiMode = false;
 
         function getZones() {
             let zones = JSON.parse(localStorage.getItem('empire_salle_zones'));
@@ -287,479 +256,143 @@ J'ai blindé le système : j'ai mis un nettoyeur automatique qui convertit les a
             loadFloorPlan();
         }
         function switchZone(id) { currentZoneId = id; loadZonesUI(); }
-        function openZoneManager() { renderZoneManagerList(); document.getElementById('zone-manager-modal').style.display = 'flex'; }
-        function closeZoneManager() { document.getElementById('zone-manager-modal').style.display = 'none'; }
-        function renderZoneManagerList() {
-            const zones = getZones();
-            document.getElementById('zone-manager-list').innerHTML = zones.map(z => `
-                <div class="zone-manager-item"><span style="font-weight:bold; color:#fff;">${z.name}</span>${zones.length > 1 ? `<button onclick="deleteZoneSafely('${z.id}', '${z.name}')" style="background:none; border:none; color:var(--alert); cursor:pointer;">✕</button>` : ''}</div>
-            `).join('');
-        }
-        function addNewZone() {
-            const name = document.getElementById('new-zone-name').value.trim();
-            if(!name) return;
-            const zones = getZones();
-            zones.push({ id: 'z' + Date.now(), name: name });
-            localStorage.setItem('empire_salle_zones', JSON.stringify(zones));
-            document.getElementById('new-zone-name').value = '';
-            renderZoneManagerList(); loadZonesUI();
-        }
-        function deleteZoneSafely(id, name) {
-            if(confirm(`⚠️ Supprimer la salle "${name}" de manière irréversible ?`)) {
-                let zones = getZones().filter(z => z.id !== id);
-                localStorage.setItem('empire_salle_zones', JSON.stringify(zones));
-                let tables = JSON.parse(localStorage.getItem('empire_salle_tables')) || [];
-                tables = tables.filter(t => t.zoneId !== id);
-                localStorage.setItem('empire_salle_tables', JSON.stringify(tables));
-                renderZoneManagerList(); loadZonesUI();
-            }
-        }
-
-        function getTables() {
-            let tables = JSON.parse(localStorage.getItem('empire_salle_tables'));
-            if(!tables || tables.length === 0) tables = [{ id: 'T1', zoneId: 'z1', label: 'T1', w: 80, h: 80, t: 100, l: 50, color: '#555' }];
-            return tables;
-        }
-        function getDecors() { return JSON.parse(localStorage.getItem('empire_salle_decor')) || []; }
-        function saveTables(tables) { localStorage.setItem('empire_salle_tables', JSON.stringify(tables)); }
-        function saveDecors(decors) { localStorage.setItem('empire_salle_decor', JSON.stringify(decors)); }
-
-        function isTableReservedToday(tableLabel) {
-            const today = new Date().toISOString().split('T')[0];
-            const resas = JSON.parse(localStorage.getItem('empire_reservations')) || {};
-            return (resas[today] || []).some(r => r.table === tableLabel);
-        }
-
-        // CORRECTION DU CRASH HASACTIVEORDER : Gère l'ancienne méthode et la nouvelle méthode
-        function hasActiveOrder(tableLabel) {
-            const ticket = JSON.parse(localStorage.getItem('empire_order_' + tableLabel));
-            if(!ticket) return false;
-            // Sécurité si l'ancien format (array vide) est en mémoire
-            if(Array.isArray(ticket)) return ticket.length > 0;
-            
-            return (ticket.entrees && ticket.entrees.length > 0) || 
-                   (ticket.plats && ticket.plats.length > 0) || 
-                   (ticket.desserts && ticket.desserts.length > 0) || 
-                   (ticket.boissons && ticket.boissons.length > 0);
-        }
-
-        function loadFloorPlan() {
-            const floor = document.getElementById('floor-plan');
-            floor.innerHTML = '';
-            
-            const currentDecors = getDecors().filter(d => d.zoneId === currentZoneId);
-            currentDecors.forEach(d => {
-                const div = document.createElement('div');
-                div.className = `decor-obj ${d.styleType}`;
-                div.setAttribute('data-id', d.id);
-                div.setAttribute('data-type', 'decor');
-                div.innerHTML = d.label || '';
-                div.style.width = d.w + 'px'; div.style.height = d.h + 'px';
-                div.style.top = d.t + 'px'; div.style.left = d.l + 'px';
-                
-                if(isMaster) {
-                    div.onmousedown = function(e) { startDrag(e, this); };
-                    div.ontouchstart = function(e) { startDrag(e, this); };
-                    const handle = document.createElement('div'); handle.className = 'resize-handle';
-                    handle.onmousedown = startResize; handle.ontouchstart = startResize;
-                    div.appendChild(handle);
-                }
-                floor.appendChild(div);
-            });
-
-            getTables().filter(t => t.zoneId === currentZoneId).forEach(t => {
-                const label = t.label || t.id;
-                const div = document.createElement('div');
-                div.className = 'table-obj';
-                div.setAttribute('data-label', label);
-                div.setAttribute('data-id', t.id);
-                div.setAttribute('data-type', 'table');
-                div.innerHTML = label;
-                div.style.width = t.w + 'px'; div.style.height = t.h + 'px';
-                div.style.top = t.t + 'px'; div.style.left = t.l + 'px';
-                div.style.borderColor = t.color; div.style.borderRadius = t.radius || '8px';
-                
-                if(isTableReservedToday(label)) div.innerHTML += `<div class="table-badge">📅</div>`;
-                if(hasActiveOrder(label)) {
-                    div.style.borderColor = 'var(--warning)';
-                    div.innerHTML += `<div class="table-badge active-order">🍽️</div>`;
-                }
-
-                // GESTION INTELLIGENTE DU CLIC / DRAG
-                if(isMaster) {
-                    div.onmousedown = function(e) { startDrag(e, this); };
-                    div.ontouchstart = function(e) { startDrag(e, this); };
-                    const handle = document.createElement('div'); handle.className = 'resize-handle';
-                    handle.onmousedown = startResize; handle.ontouchstart = startResize;
-                    div.appendChild(handle);
-                } else {
-                    // SERVEUR : Clic pur et dur. Pas de drag. 100% de fiabilité.
-                    div.onclick = function() { openOrderPad(label); };
-                }
-
-                floor.appendChild(div);
-            });
-        }
-
-        // =================================================================
-        // 4. MOTEUR DE CAISSE (LA MARCHE EN AVANT + CORRECTION)
-        // =================================================================
-        let currentTicket = { entrees: [], plats: [], desserts: [], boissons: [] };
-
-        function openDrawer(drawerId) {
-            document.querySelectorAll('.drawer').forEach(d => d.classList.remove('open'));
-            document.getElementById(drawerId).classList.add('open');
-        }
-        function closeDrawer(drawerId) { document.getElementById(drawerId).classList.remove('open'); }
-
-        function openOrderPad(tableName) {
-            currentTableId = tableName;
-            document.getElementById('order-table-title').textContent = "TABLE " + tableName;
-            
-            let savedTicket = JSON.parse(localStorage.getItem('empire_order_' + tableName));
-            
-            // SÉCURITÉ ANTI-CRASH (Conversion de l'ancien système s'il en reste un)
-            if(savedTicket && !Array.isArray(savedTicket) && savedTicket.entrees) {
-                currentTicket = savedTicket;
-            } else {
-                currentTicket = { entrees: [], plats: [], desserts: [], boissons: [] };
-            }
-            
-            renderTicket();
-            loadMenuCategory('Entrée');
-            openDrawer('order-drawer');
-        }
-
-        function getChefMenu() {
-            let menu = JSON.parse(localStorage.getItem('empire_recipes'));
-            if(!menu || menu.length === 0) {
-                menu = [
-                    { id: 1, name: 'Œuf Mayo Truffé', category: 'Entrée', price: 9 },
-                    { id: 3, name: 'Bavette d\'Aloyau', category: 'Plat', price: 24 },
-                    { id: 5, name: 'Mousse Chocolat', category: 'Dessert', price: 8 },
-                    { id: 7, name: 'Mojito', category: 'Boisson', price: 12 },
-                    { id: 8, name: 'Verre de Chablis', category: 'Boisson', price: 8 }
-                ];
-            }
-            return menu;
-        }
-
-        function loadMenuCategory(categoryName) {
-            document.querySelectorAll('.btn-cat').forEach(b => b.classList.remove('active'));
-            document.getElementById('btn-cat-' + categoryName).classList.add('active');
-            const menu = getChefMenu().filter(item => item.category === categoryName);
-            const grid = document.getElementById('items-grid');
-            
-            if(menu.length === 0) { grid.innerHTML = `<div style="color:#555; grid-column:1/-1; text-align:center;">Catégorie vide.</div>`; return; }
-
-            grid.innerHTML = menu.map(item => {
-                const price = parseFloat(item.price || item.sellingPrice || 0).toFixed(2);
-                return `<button class="btn-item" onclick="addItemToTicket('${item.name.replace(/'/g, "\\'")}', ${price}, '${categoryName}')"><div class="item-name">${item.name}</div><div class="item-price">${price} €</div></button>`;
-            }).join('');
-        }
-
-        function addItemToTicket(name, price, category) {
-            const item = { id: Date.now() + Math.random(), name: name, price: parseFloat(price) };
-            if(category === 'Entrée') currentTicket.entrees.push(item);
-            else if(category === 'Plat') currentTicket.plats.push(item);
-            else if(category === 'Dessert') currentTicket.desserts.push(item);
-            else currentTicket.boissons.push(item);
-            saveTicket();
-        }
-
-        // CORRECTION D'ERREUR : Retirer un article
-        function removeItem(categoryArrayName, id) {
-            currentTicket[categoryArrayName] = currentTicket[categoryArrayName].filter(item => item.id !== id);
-            saveTicket();
-        }
-
-        function saveTicket() {
-            localStorage.setItem('empire_order_' + currentTableId, JSON.stringify(currentTicket));
-            renderTicket();
-            loadFloorPlan(); 
-        }
-
-        function renderTicket() {
-            const list = document.getElementById('ticket-list');
-            let total = 0; let html = '';
-
-            const renderGroup = (title, itemsArray, arrayName) => {
-                if(!itemsArray || itemsArray.length === 0) return '';
-                let groupHtml = `<div class="ticket-group"><div class="ticket-group-title">${title}</div>`;
-                itemsArray.forEach(item => {
-                    total += item.price;
-                    groupHtml += `<div class="ticket-item"><button class="btn-del-item" onclick="removeItem('${arrayName}', ${item.id})">✕</button><div class="ticket-item-name">1x ${item.name}</div><div class="ticket-item-price">${item.price.toFixed(2)} €</div></div>`;
-                });
-                return groupHtml + `</div>`;
-            };
-
-            html += renderGroup('ENTRÉES', currentTicket.entrees, 'entrees');
-            html += renderGroup('PLATS', currentTicket.plats, 'plats');
-            html += renderGroup('DESSERTS', currentTicket.desserts, 'desserts');
-            html += renderGroup('BOISSONS', currentTicket.boissons, 'boissons');
-
-            list.innerHTML = html || `<div style="color:#555; text-align:center; font-style:italic; margin-top:20px;">Ticket vide.</div>`;
-            document.getElementById('ticket-total-amount').textContent = total.toFixed(2) + " €";
-        }
-
-        // LE CŒUR DE LA SYNCHRO KDS (REMPLACEMENT AUTOMATIQUE)
-        function sendToKDS() {
-            if(currentTicket.entrees.length === 0 && currentTicket.plats.length === 0 && currentTicket.desserts.length === 0 && currentTicket.boissons.length === 0) {
-                return alert("Le ticket est vide.");
-            }
-
-            let kdsQueue = JSON.parse(localStorage.getItem('empire_kds_queue')) || [];
-            
-            // ANTI-DOUBLON : On écrase l'ancienne commande de cette table SI elle n'est pas encore partie
-            kdsQueue = kdsQueue.filter(o => !(o.table === currentTableId && o.status === 'pending'));
-
-            const orderData = {
-                id: 'ord_' + Date.now(),
-                table: currentTableId,
-                time: new Date().toLocaleTimeString('fr-FR', {hour: '2-digit', minute:'2-digit'}),
-                ticket: currentTicket,
-                status: 'pending' 
-            };
-
-            kdsQueue.push(orderData);
-            localStorage.setItem('empire_kds_queue', JSON.stringify(kdsQueue));
-            
-            const btn = document.querySelector('.btn-send');
-            btn.innerHTML = "✅ BONS ENVOYÉS !";
-            btn.style.background = "var(--accent)";
-            setTimeout(() => {
-                btn.innerHTML = "🔥 ENVOYER CUISINE/BAR";
-                btn.style.background = "var(--warning)";
-                closeDrawer('order-drawer');
-            }, 1000);
-        }
-
-        function payTable() {
-            if(confirm(`💰 ENCAISSER LA TABLE ${currentTableId} ?\nCeci va vider la table et clore la transaction.`)) {
-                currentTicket = { entrees: [], plats: [], desserts: [], boissons: [] };
-                saveTicket();
-                closeDrawer('order-drawer');
-            }
-        }
-
-        // =================================================================
-        // 5. RÉSERVATIONS (TRI MIDI/SOIR)
-        // =================================================================
-        document.getElementById('res-date-filter').valueAsDate = new Date();
         
-        function saveReservation() {
-            const date = document.getElementById('res-date-filter').value;
-            const name = document.getElementById('res-name').value.trim();
-            const time = document.getElementById('res-time').value;
-            const pax = document.getElementById('res-pax').value;
-            const table = document.getElementById('res-table').value.trim();
-
-            if(!date || !name || !time || !pax) return alert("Remplir Date, Nom, Heure, Pax.");
-
-            const resas = JSON.parse(localStorage.getItem('empire_reservations')) || {};
-            if(!resas[date]) resas[date] = [];
-            resas[date].push({ id: Date.now(), name, time, pax, table });
-            localStorage.setItem('empire_reservations', JSON.stringify(resas));
-            
-            document.getElementById('res-name').value = ''; document.getElementById('res-time').value = ''; document.getElementById('res-pax').value = '';
-            renderReservations(); loadFloorPlan();
+        function enableArchitecture() {
+            isArchiMode = true; closeDrawer('admin-drawer');
+            document.getElementById('main-header').style.display = 'none';
+            document.getElementById('archi-toolbar').style.display = 'flex';
+            document.getElementById('floor-plan').classList.add('archi-active');
+            addLog("Mode Architecture activé");
+        }
+        function saveArchitecture() {
+            isArchiMode = false;
+            document.getElementById('main-header').style.display = 'flex';
+            document.getElementById('archi-toolbar').style.display = 'none';
+            document.getElementById('floor-plan').classList.remove('archi-active');
+            addLog("Architecture sauvegardée");
         }
 
-        function deleteReservation(date, id) {
-            if(!confirm("Annuler la réservation ?")) return;
-            const resas = JSON.parse(localStorage.getItem('empire_reservations')) || {};
-            if(resas[date]) {
-                resas[date] = resas[date].filter(r => r.id !== id);
-                localStorage.setItem('empire_reservations', JSON.stringify(resas));
-                renderReservations(); loadFloorPlan();
-            }
-        }
-
-        function renderReservations() {
-            const date = document.getElementById('res-date-filter').value;
-            const resas = JSON.parse(localStorage.getItem('empire_reservations')) || {};
-            const container = document.getElementById('res-list-container');
-            const dayResas = resas[date] || [];
-
-            if(dayResas.length === 0) { container.innerHTML = '<div style="color:#555; text-align:center;">Cahier vide.</div>'; return; }
-
-            let midiHtml = ''; let soirHtml = '';
-            dayResas.sort((a, b) => a.time.localeCompare(b.time)).forEach(r => {
-                const isSoir = parseInt(r.time.split(':')[0], 10) >= 17;
-                const card = `
-                <div class="resa-card" style="background:#111; border-left:4px solid var(--purple); padding:15px; margin-bottom:10px; display:flex; justify-content:space-between; border-radius:8px;">
-                    <div><div style="font-size:1.1rem; font-weight:900; color:#fff;">${r.time} - ${r.name}</div>
-                    <div style="font-size:0.85rem; color:#aaa;">👥 ${r.pax} Pax | 📍 <span style="color:var(--accent);">${r.table || 'Libre'}</span></div></div>
-                    <button onclick="deleteReservation('${date}', ${r.id})" style="background:none; border:none; color:var(--alert); cursor:pointer; font-size:1.5rem; font-weight:bold;">✕</button>
-                </div>`;
-                if (isSoir) soirHtml += card; else midiHtml += card;
-            });
-            container.innerHTML = (midiHtml ? `<div style="color:#aaa; font-size:0.9rem; margin-bottom:10px;">☀️ SERVICE MIDI</div>${midiHtml}` : '') + 
-                                  (soirHtml ? `<div style="color:#aaa; font-size:0.9rem; margin-bottom:10px; margin-top:20px;">🌙 SERVICE SOIR</div>${soirHtml}` : '');
-        }
-
-        // =================================================================
-        // 6. LOGIQUE DRAG AND DROP (TACTILE + ANTI-ERREUR) - UNIQUEMENT MASTER
-        // =================================================================
-        let startClickX = 0, startClickY = 0;
+        // DRAG & RESIZE
+        let currentDrag = null; let startClickX = 0, startClickY = 0, startX = 0, startY = 0, startW = 0, startH = 0; let hasMoved = false; let isResizing = false;
 
         function startDrag(e, elem) {
-            hasMoved = false; currentDrag = elem;
-            const rect = currentDrag.getBoundingClientRect();
-            
-            let clientX = e.type.includes('mouse') ? e.clientX : e.touches[0].clientX;
-            let clientY = e.type.includes('mouse') ? e.clientY : e.touches[0].clientY;
-            
-            startClickX = clientX; startClickY = clientY;
-            startX = clientX - rect.left; startY = clientY - rect.top;
+            if(!isArchiMode) return;
+            hasMoved = false; currentDrag = elem; const rect = currentDrag.getBoundingClientRect();
+            startClickX = e.type.includes('mouse') ? e.clientX : e.touches[0].clientX;
+            startClickY = e.type.includes('mouse') ? e.clientY : e.touches[0].clientY;
+            startX = startClickX - rect.left; startY = startClickY - rect.top;
             currentDrag.style.zIndex = 1000;
         }
-
         function startResize(e) {
+            if(!isArchiMode) return;
             e.stopPropagation(); hasMoved = false; isResizing = true; currentDrag = this.parentElement; 
-            const rect = currentDrag.getBoundingClientRect();
-            startW = rect.width; startH = rect.height;
-            
-            let clientX = e.type.includes('mouse') ? e.clientX : e.touches[0].clientX;
-            let clientY = e.type.includes('mouse') ? e.clientY : e.touches[0].clientY;
-            startClickX = clientX; startClickY = clientY;
+            const rect = currentDrag.getBoundingClientRect(); startW = rect.width; startH = rect.height;
+            startClickX = e.type.includes('mouse') ? e.clientX : e.touches[0].clientX;
+            startClickY = e.type.includes('mouse') ? e.clientY : e.touches[0].clientY;
             currentDrag.style.zIndex = 1000;
         }
 
         document.onmousemove = dragAction; document.ontouchmove = dragAction;
         function dragAction(e) {
-            if(!currentDrag || !isMaster) return;
-            
+            if(!currentDrag || !isArchiMode) return;
             let clientX = e.type.includes('mouse') ? e.clientX : e.touches[0].clientX;
             let clientY = e.type.includes('mouse') ? e.clientY : e.touches[0].clientY;
-            
-            if (Math.abs(clientX - startClickX) > 10 || Math.abs(clientY - startClickY) > 10) { hasMoved = true; }
-
+            if (Math.abs(clientX - startClickX) > 10 || Math.abs(clientY - startClickY) > 10) hasMoved = true;
             if(isResizing) {
-                hasMoved = true;
-                let newW = startW + (clientX - startClickX);
-                let newH = startH + (clientY - startClickY);
-                if(newW < 40) newW = 40;
-                if(newH < 40) newH = 40;
-                currentDrag.style.width = newW + 'px';
-                currentDrag.style.height = newH + 'px';
+                currentDrag.style.width = Math.max(40, startW + (clientX - startClickX)) + 'px';
+                currentDrag.style.height = Math.max(40, startH + (clientY - startClickY)) + 'px';
             } else if (hasMoved) {
                 const floor = document.getElementById('floor-plan').getBoundingClientRect();
-                let newLeft = Math.round((clientX - floor.left - startX) / 20) * 20;
-                let newTop = Math.round((clientY - floor.top - startY) / 20) * 20;
-                currentDrag.style.left = Math.max(0, newLeft) + 'px'; currentDrag.style.top = Math.max(0, newTop) + 'px';
+                currentDrag.style.left = Math.max(0, Math.round((clientX - floor.left - startX) / 20) * 20) + 'px';
+                currentDrag.style.top = Math.max(0, Math.round((clientY - floor.top - startY) / 20) * 20) + 'px';
             }
         }
 
         document.onmouseup = stopDrag; document.ontouchend = stopDrag;
         function stopDrag() {
-            if(!currentDrag) return;
-            
-            const id = currentDrag.getAttribute('data-id');
-            const label = currentDrag.getAttribute('data-label'); 
-            const isDecor = currentDrag.getAttribute('data-type') === 'decor';
-
-            if(!hasMoved && !isResizing && isMaster) {
-                if (isDecor) openDecorEdit(id);
-                else openOrderPad(label);
-            } else if (isMaster && hasMoved) {
-                if (isDecor) {
-                    let decors = getDecors();
-                    const dIndex = decors.findIndex(d => d.id === id);
-                    if(dIndex > -1) {
-                        decors[dIndex].l = parseInt(currentDrag.style.left); decors[dIndex].t = parseInt(currentDrag.style.top);
-                        decors[dIndex].w = parseInt(currentDrag.style.width); decors[dIndex].h = parseInt(currentDrag.style.height);
-                        saveDecors(decors);
-                    }
-                } else {
-                    let tables = getTables();
-                    const tIndex = tables.findIndex(t => t.id === id);
-                    if(tIndex > -1) {
-                        tables[tIndex].l = parseInt(currentDrag.style.left); tables[tIndex].t = parseInt(currentDrag.style.top);
-                        tables[tIndex].w = parseInt(currentDrag.style.width); tables[tIndex].h = parseInt(currentDrag.style.height);
-                        saveTables(tables);
-                    }
+            if(!currentDrag || !isArchiMode) return;
+            const id = currentDrag.getAttribute('data-id'); const isDecor = currentDrag.getAttribute('data-type') === 'decor';
+            if(!hasMoved && !isResizing) {
+                if (isDecor) openDecorEdit(id); else openTableEdit(id);
+            } else {
+                let items = JSON.parse(localStorage.getItem(isDecor ? 'empire_salle_decor' : 'empire_salle_tables')) || [];
+                const idx = items.findIndex(i => i.id === id);
+                if(idx > -1) {
+                    items[idx].l = parseInt(currentDrag.style.left); items[idx].t = parseInt(currentDrag.style.top);
+                    items[idx].w = parseInt(currentDrag.style.width); items[idx].h = parseInt(currentDrag.style.height);
+                    localStorage.setItem(isDecor ? 'empire_salle_decor' : 'empire_salle_tables', JSON.stringify(items));
                 }
             }
             currentDrag.style.zIndex = ''; currentDrag = null; isResizing = false;
         }
 
-        // ARCHITECTURE MODALS (CHEF)
-        function addTable() {
-            const allTables = getTables();
-            const zoneTables = allTables.filter(t => t.zoneId === currentZoneId);
-            let maxNum = 0;
-            zoneTables.forEach(t => {
-                const match = t.label.match(/^T?(\d+)$/i); 
-                if(match) { const num = parseInt(match[1], 10); if(num > maxNum) maxNum = num; }
+        // LOAD ITEMS
+        function getTables() { return JSON.parse(localStorage.getItem('empire_salle_tables')) || [{ id: 'T1', zoneId: 'z1', label: 'T1', w: 80, h: 80, t: 100, l: 50, color: '#fff', radius: '8px' }]; }
+        function getDecors() { return JSON.parse(localStorage.getItem('empire_salle_decor')) || []; }
+        function isTableReservedToday(label) { const today = new Date().toISOString().split('T')[0]; const resas = JSON.parse(localStorage.getItem('empire_reservations')) || {}; return (resas[today] || []).some(r => r.table === label); }
+        
+        function loadFloorPlan() {
+            const floor = document.getElementById('floor-plan'); floor.innerHTML = '';
+            getDecors().filter(d => d.zoneId === currentZoneId).forEach(d => {
+                const div = document.createElement('div'); div.className = `decor-obj ${d.styleType}`; div.setAttribute('data-id', d.id); div.setAttribute('data-type', 'decor');
+                div.innerHTML = d.label || ''; div.style.width = d.w + 'px'; div.style.height = d.h + 'px'; div.style.top = d.t + 'px'; div.style.left = d.l + 'px';
+                div.onmousedown = function(e){ startDrag(e, this); }; div.ontouchstart = function(e){ startDrag(e, this); };
+                const handle = document.createElement('div'); handle.className = 'resize-handle'; handle.onmousedown = startResize; handle.ontouchstart = startResize; div.appendChild(handle);
+                floor.appendChild(div);
             });
-            const newLabel = 'T' + (maxNum + 1);
-            allTables.push({ id: 't_' + Date.now(), zoneId: currentZoneId, label: newLabel, w: 80, h: 80, t: 50, l: 50, color: '#fff', radius: '8px' });
-            saveTables(allTables); loadFloorPlan();
+            getTables().filter(t => t.zoneId === currentZoneId).forEach(t => {
+                const label = t.label || t.id; const div = document.createElement('div'); div.className = 'table-obj'; div.setAttribute('data-id', t.id); div.setAttribute('data-type', 'table');
+                div.innerHTML = label; div.style.width = t.w + 'px'; div.style.height = t.h + 'px'; div.style.top = t.t + 'px'; div.style.left = t.l + 'px'; div.style.borderRadius = t.radius || '8px';
+                if(isTableReservedToday(label)) div.innerHTML += `<div class="table-badge">📅</div>`;
+                div.onmousedown = function(e){ startDrag(e, this); }; div.ontouchstart = function(e){ startDrag(e, this); };
+                const handle = document.createElement('div'); handle.className = 'resize-handle'; handle.onmousedown = startResize; handle.ontouchstart = startResize; div.appendChild(handle);
+                floor.appendChild(div);
+            });
+        }
+
+        // ARCHI MODALS
+        function addTable() {
+            let tables = getTables(); let maxNum = 0; tables.filter(t => t.zoneId === currentZoneId).forEach(t => { const match = (t.label||'').match(/^T?(\d+)$/i); if(match) maxNum = Math.max(maxNum, parseInt(match[1], 10)); });
+            tables.push({ id: 't_' + Date.now(), zoneId: currentZoneId, label: 'T' + (maxNum + 1), w: 80, h: 80, t: 50, l: 50, color: '#fff', radius: '8px' });
+            localStorage.setItem('empire_salle_tables', JSON.stringify(tables)); loadFloorPlan();
         }
         function addDecor() {
-            const allDecors = getDecors();
-            allDecors.push({ id: 'd_' + Date.now(), zoneId: currentZoneId, label: 'ZONE', w: 150, h: 100, t: 50, l: 50, styleType: 'decor-zone' });
-            saveDecors(allDecors); loadFloorPlan();
+            let decors = getDecors(); decors.push({ id: 'd_' + Date.now(), zoneId: currentZoneId, label: 'ZONE', w: 150, h: 100, t: 50, l: 50, styleType: 'decor-zone' });
+            localStorage.setItem('empire_salle_decor', JSON.stringify(decors)); loadFloorPlan();
+        }
+        function openTableEdit(id) { const t = getTables().find(x => x.id === id); if(t) { document.getElementById('edit-table-id').value = t.id; document.getElementById('edit-table-label').value = t.label; document.getElementById('edit-table-radius').value = t.radius; document.getElementById('table-edit-modal').style.display = 'flex'; } }
+        function saveTableEdit() { const id = document.getElementById('edit-table-id').value; let tables = getTables(); const idx = tables.findIndex(t => t.id === id); if(idx > -1) { tables[idx].label = document.getElementById('edit-table-label').value || "Tx"; tables[idx].radius = document.getElementById('edit-table-radius').value; localStorage.setItem('empire_salle_tables', JSON.stringify(tables)); loadFloorPlan(); document.getElementById('table-edit-modal').style.display='none'; } }
+        function deleteTable() { const id = document.getElementById('edit-table-id').value; localStorage.setItem('empire_salle_tables', JSON.stringify(getTables().filter(t => t.id !== id))); loadFloorPlan(); document.getElementById('table-edit-modal').style.display='none'; }
+        
+        function openDecorEdit(id) { const d = getDecors().find(x => x.id === id); if(d) { document.getElementById('edit-decor-id').value = d.id; document.getElementById('edit-decor-label').value = d.label; document.getElementById('edit-decor-style').value = d.styleType; document.getElementById('decor-edit-modal').style.display = 'flex'; } }
+        function saveDecorEdit() { const id = document.getElementById('edit-decor-id').value; let decors = getDecors(); const idx = decors.findIndex(d => d.id === id); if(idx > -1) { decors[idx].label = document.getElementById('edit-decor-label').value; decors[idx].styleType = document.getElementById('edit-decor-style').value; localStorage.setItem('empire_salle_decor', JSON.stringify(decors)); loadFloorPlan(); document.getElementById('decor-edit-modal').style.display='none'; } }
+        function deleteDecor() { const id = document.getElementById('edit-decor-id').value; localStorage.setItem('empire_salle_decor', JSON.stringify(getDecors().filter(d => d.id !== id))); loadFloorPlan(); document.getElementById('decor-edit-modal').style.display='none'; }
+        
+        function openZoneManager() { document.getElementById('zone-manager-list').innerHTML = getZones().map(z => `<div style="display:flex; justify-content:space-between; padding:10px; border-bottom:1px solid #333; color:#fff;"><b>${z.name}</b> <button onclick="deleteZone('${z.id}')" style="background:none; border:none; color:red; cursor:pointer;">✕</button></div>`).join(''); document.getElementById('zone-manager-modal').style.display='flex'; }
+        function closeZoneManager() { document.getElementById('zone-manager-modal').style.display='none'; }
+        function addNewZone() { const name = document.getElementById('new-zone-name').value; if(name) { let zones = getZones(); zones.push({id: 'z'+Date.now(), name}); localStorage.setItem('empire_salle_zones', JSON.stringify(zones)); document.getElementById('new-zone-name').value=''; openZoneManager(); loadZonesUI(); } }
+        function deleteZone(id) { if(confirm("Supprimer ?")) { let zones = getZones().filter(z => z.id !== id); localStorage.setItem('empire_salle_zones', JSON.stringify(zones)); openZoneManager(); loadZonesUI(); } }
+
+        // RESAS
+        document.getElementById('res-date-filter').valueAsDate = new Date();
+        function renderReservations() {
+            const date = document.getElementById('res-date-filter').value; const resas = JSON.parse(localStorage.getItem('empire_reservations')) || {};
+            const dayResas = resas[date] || []; const container = document.getElementById('res-list-container');
+            if(dayResas.length === 0) { container.innerHTML = '<div style="color:#555; text-align:center;">Vide.</div>'; return; }
+            container.innerHTML = dayResas.sort((a,b) => a.time.localeCompare(b.time)).map(r => `<div style="background:#111; border-left:4px solid var(--purple); padding:15px; margin-bottom:10px; display:flex; justify-content:space-between; border-radius:8px;"><div><div style="font-size:1.1rem; font-weight:900; color:#fff;">${r.time} - ${r.name}</div><div style="font-size:0.85rem; color:#aaa;">👥 ${r.pax} Pax | 📍 <span style="color:var(--accent);">${r.table || 'Libre'}</span></div></div><button onclick="deleteReservation('${date}', ${r.id})" style="background:none; border:none; color:var(--alert); cursor:pointer; font-size:1.5rem; font-weight:bold;">✕</button></div>`).join('');
+        }
+        function deleteReservation(date, id) { if(confirm("Annuler ?")) { const resas = JSON.parse(localStorage.getItem('empire_reservations')) || {}; resas[date] = resas[date].filter(r => r.id !== id); localStorage.setItem('empire_reservations', JSON.stringify(resas)); renderReservations(); loadFloorPlan(); } }
+
+        // PLANNING RH
+        function renderStaffPlanning() {
+            const staff = (JSON.parse(localStorage.getItem('kds_hr_master_v9')) || []).filter(s => s.dept === 'service');
+            const c = document.getElementById('service-planning-container'); const jours = ["LUN", "MAR", "MER", "JEU", "VEN", "SAM", "DIM"];
+            if(staff.length === 0) { c.innerHTML = "<p style='color:#555; text-align:center;'>Aucun personnel.</p>"; return; }
+            c.innerHTML = staff.map(s => `<div class="staff-plan-card"><span class="staff-plan-name">${s.name}</span><div class="mini-grid">${s.plan.map((p, i) => `<div class="mini-day"><b>${jours[i]}</b>${p.status==='present' ? `<div class="shift-time">${p.s1||'-'}</div><div class="shift-time">${p.s2||'-'}</div>` : `<span style="color:#555; font-size:0.8rem; margin-top:5px; font-weight:bold;">${p.status}</span>`}</div>`).join('')}</div></div>`).join('');
         }
 
-        function openTableEdit(id) {
-            const t = getTables().find(table => table.id === id);
-            if(!t) return;
-            document.getElementById('edit-table-id').value = t.id;
-            document.getElementById('edit-table-label').value = t.label || t.id;
-            document.getElementById('edit-table-radius').value = t.radius || '8px';
-            document.getElementById('table-edit-modal').style.display = 'flex';
-        }
-        function closeTableEdit() { document.getElementById('table-edit-modal').style.display = 'none'; }
-        function saveTableEdit() {
-            const id = document.getElementById('edit-table-id').value;
-            let tables = getTables();
-            const index = tables.findIndex(t => t.id === id);
-            if(index > -1) {
-                let newLabel = document.getElementById('edit-table-label').value.trim();
-                if(newLabel === "") newLabel = "Tx"; 
-                tables[index].label = newLabel;
-                tables[index].radius = document.getElementById('edit-table-radius').value;
-                saveTables(tables); loadFloorPlan();
-            }
-            closeTableEdit();
-        }
-        function deleteTable() {
-            const id = document.getElementById('edit-table-id').value;
-            saveTables(getTables().filter(t => t.id !== id));
-            loadFloorPlan(); closeTableEdit();
-        }
-        function openDecorEdit(id) {
-            const d = getDecors().find(decor => decor.id === id);
-            if(!d) return;
-            document.getElementById('edit-decor-id').value = d.id;
-            document.getElementById('edit-decor-label').value = d.label || '';
-            document.getElementById('edit-decor-style').value = d.styleType || 'decor-zone';
-            document.getElementById('decor-edit-modal').style.display = 'flex';
-        }
-        function closeDecorEdit() { document.getElementById('decor-edit-modal').style.display = 'none'; }
-        function saveDecorEdit() {
-            const id = document.getElementById('edit-decor-id').value;
-            let decors = getDecors();
-            const index = decors.findIndex(d => d.id === id);
-            if(index > -1) {
-                decors[index].label = document.getElementById('edit-decor-label').value.trim();
-                decors[index].styleType = document.getElementById('edit-decor-style').value;
-                saveDecors(decors); loadFloorPlan();
-            }
-            closeDecorEdit();
-        }
-        function deleteDecor() {
-            const id = document.getElementById('edit-decor-id').value;
-            saveDecors(getDecors().filter(d => d.id !== id));
-            loadFloorPlan(); closeDecorEdit();
-        }
-
-        // INITIALISATION
+        // INIT
         loadZonesUI();
-        renderReservations();
     </script>
 </body>
 </html>
-```
