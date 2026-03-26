@@ -76,4 +76,281 @@
     <div id="room-bar" class="room-bar"></div>
 
     <div class="main-workspace">
-        <div
+        <div class="floor-plan" id="floor-plan"></div>
+
+        <div id="architect-floating-bar">
+            <span style="color:var(--gold); font-weight:bold; font-size:0.8rem; margin-right:10px;">MODE ARCHITECTE</span>
+            <button class="btn-action" onclick="addTable()">+ NOUVELLE TABLE</button>
+            <button class="btn-action" onclick="addRoom()">+ NOUVELLE SALLE (PAGE)</button>
+            
+            <div id="edit-context" style="display:none; align-items:center; gap:10px; border-left:1px solid #333; padding-left:15px; margin-left:5px;">
+                <input type="text" id="edit-label" class="input-field" style="margin:0; width:120px; text-align:center;" oninput="updateSelectedLabel(this.value)" placeholder="Nom...">
+                <button class="btn-action" onclick="modifySelected('shape')">ROND/CARRÉ</button>
+                <button class="btn-action" style="color:var(--alert); border-color:var(--alert);" onclick="modifySelected('delete')">🗑️ TABLE</button>
+            </div>
+            
+            <button class="btn-action" style="color:var(--alert); border-color:var(--alert); margin-left:15px;" onclick="deleteCurrentRoom()">🗑️ SUPPRIMER LA SALLE</button>
+            <button class="btn-action" style="background:#fff; color:#000; margin-left:15px;" onclick="savePlan()">💾 DÉPLOYER LE PLAN</button>
+        </div>
+
+        <div id="radar-drawer" class="drawer" style="width: 450px;">
+            <div class="drawer-header"><h2 style="margin:0;">ALERTES</h2><button class="btn-close" onclick="closeDrawer('radar-drawer')">✕</button></div>
+            <div id="radar-list" style="flex:1; overflow-y:auto; padding-right:5px;"></div>
+        </div>
+
+        <div id="caisse-drawer" class="drawer" style="width: 480px;">
+            <div class="drawer-header"><h2 id="table-title" style="margin:0; font-size:2rem;">TABLE</h2><button class="btn-close" onclick="closeDrawer('caisse-drawer')">✕</button></div>
+            <div class="ticket-area" id="ticket-list"></div>
+            <input type="text" id="order-obs" class="input-field" placeholder="⚠️ OBSERVATIONS CLIENT...">
+            <div class="cat-tabs" id="cat-tabs"></div>
+            <div class="menu-grid" id="menu-items"></div>
+            <div id="total-val" style="font-size:2.2rem; font-weight:900; text-align:right; margin:15px 0;">0.00 €</div>
+            <button class="btn-action" style="background:#fff; color:#000; width:100%;" onclick="sendOrder()">VALIDER LE TICKET</button>
+            <button class="btn-action" style="width:100%; margin-top:10px; border-style:dashed;" onclick="clearTable()">💳 ENCAISSER / LIBÉRER TABLE</button>
+        </div>
+
+        <div id="resa-drawer" class="drawer" style="width: 400px;">
+            <div class="drawer-header"><h2 style="margin:0;">NOUVELLE RÉSA</h2><button class="btn-close" onclick="closeDrawer('resa-drawer')">✕</button></div>
+            <div style="flex:1; overflow-y:auto; padding-right:5px;">
+                <div class="input-group"><span class="input-label">Date</span><input type="date" id="resa-date" class="input-field"></div>
+                <div class="input-group"><span class="input-label">Heure</span><input type="time" id="resa-time" class="input-field" value="20:00"></div>
+                <div class="input-group"><span class="input-label">Nom</span><input type="text" id="resa-name" class="input-field"></div>
+                <div class="input-group"><span class="input-label">Tél</span><input type="tel" id="resa-tel" class="input-field"></div>
+                <div class="input-group"><span class="input-label">Pax</span><input type="number" id="resa-pax" class="input-field" value="2" min="1"></div>
+            </div>
+            <button class="btn-action" style="background:#fff; color:#000; width:100%;" onclick="saveResa()">SÉCURISER</button>
+        </div>
+
+        <div id="audit-drawer" class="drawer" style="width: 500px;">
+            <div class="drawer-header"><h2 style="margin:0;">ESPACE MANAGER</h2><button class="btn-close" onclick="closeDrawer('audit-drawer')">✕</button></div>
+            
+            <div style="border:1px solid var(--gold); padding:20px; border-radius:8px; margin-bottom:30px; background:rgba(255,179,0,0.05);">
+                <h3 style="margin-top:0; color:var(--gold);">🛠️ GESTION ARCHITECTURE</h3>
+                <p style="font-size:0.9rem; color:#aaa; margin-bottom:15px;">Modifiez le plan de salle tactilement (Salles en onglets, ajout, redimensionnement au doigt).</p>
+                <button class="btn-action" style="background:var(--gold); color:#000; border:none; width:100%;" onclick="startEditMode()">ACTIVER LE MODE ARCHITECTE</button>
+            </div>
+
+            <h3 style="margin-bottom:10px;">AUDIT FINANCIER</h3>
+            <div id="audit-list" style="flex:1; overflow-y:auto; padding-right:5px;"></div>
+        </div>
+    </div>
+
+    <script>
+        const ws = new WebSocket((window.location.protocol === 'https:' ? 'wss://' : 'ws://') + window.location.host);
+        let activeOrders = {}; let currentTableId = null; let currentTicket = [];
+        
+        // MOTEUR DE SALLES (ONGLETS)
+        let rooms = JSON.parse(localStorage.getItem('EMPIRE_ROOMS')) || [{id: 'r_main', name: 'SALLE PRINCIPALE'}];
+        let currentRoomId = rooms[0].id;
+        let tables = JSON.parse(localStorage.getItem('EMPIRE_TABLES')) || [];
+        
+        let isEditMode = false; let selectedObj = null;
+        let draggedObj = null; let isResizing = false;
+        let startX, startY, startW, startH, offsetX, offsetY;
+
+        const tmrw = new Date(); tmrw.setDate(tmrw.getDate() + 1);
+        document.getElementById('resa-date').value = tmrw.toISOString().split('T')[0];
+
+        ws.onmessage = (e) => {
+            const msg = JSON.parse(e.data);
+            if (msg.type === 'ORDER_UPDATE' || msg.type === 'PLAN_UPDATE') {
+                activeOrders = msg.activeOrders || activeOrders;
+                if (msg.rooms && !isEditMode) { rooms = msg.rooms; localStorage.setItem('EMPIRE_ROOMS', JSON.stringify(rooms)); }
+                if (msg.tables && !isEditMode) { tables = msg.tables; localStorage.setItem('EMPIRE_TABLES', JSON.stringify(tables)); }
+                
+                if (!rooms.find(r => r.id === currentRoomId)) currentRoomId = rooms[0].id;
+                renderRooms(); renderFloorPlan(); renderRadar(); 
+            }
+        };
+
+        window.addEventListener('storage', (e) => { if (e.key === 'empire_recipes' && document.getElementById('caisse-drawer').classList.contains('open')) { renderMenu('Plat'); } });
+        async function forceSync() { try { const res = await fetch('/get-current-state'); const data = await res.json(); activeOrders = data.activeOrders; renderRooms(); renderFloorPlan(); renderRadar(); } catch(e) {} }
+
+        function openDrawer(id) { document.querySelectorAll('.drawer').forEach(d => d.classList.remove('open')); document.getElementById(id).classList.add('open'); }
+        function closeDrawer(id) { document.getElementById(id).classList.remove('open'); }
+
+        // ==========================================
+        // GESTION DES ONGLETS (SALLES)
+        // ==========================================
+        function renderRooms() {
+            const container = document.getElementById('room-bar');
+            container.innerHTML = rooms.map(r => `<button class="room-tab ${r.id === currentRoomId ? 'active' : ''}" onclick="switchRoom('${r.id}')">${r.name}</button>`).join('');
+        }
+
+        function switchRoom(id) {
+            currentRoomId = id; selectedObj = null; 
+            if(isEditMode) document.getElementById('edit-context').style.display = 'none';
+            renderRooms(); renderFloorPlan();
+        }
+
+        // ==========================================
+        // MOTEUR ARCHITECTE TACTILE
+        // ==========================================
+        function checkChefSecurity() {
+            const pin = prompt("CODE MANAGER :");
+            if (pin === "7777") {
+                document.getElementById('audit-list').innerHTML = (JSON.parse(localStorage.getItem('EMP_LOCAL_AUDIT')) || []).map(l => `<div class="audit-log"><div>${l.time}</div><div>${l.action}</div></div>`).join('');
+                openDrawer('audit-drawer');
+            } else if (pin !== null) { alert("Accès refusé."); }
+        }
+
+        function startEditMode() {
+            isEditMode = true; selectedObj = null; closeDrawer('audit-drawer');
+            document.getElementById('architect-floating-bar').style.display = 'flex';
+            document.getElementById('edit-context').style.display = 'none';
+            renderRooms(); renderFloorPlan();
+        }
+
+        function addRoom() {
+            const name = prompt("Nom de la nouvelle salle ? (ex: TERRASSE)");
+            if(!name) return;
+            const newRoom = { id: 'r_'+Date.now(), name: name.toUpperCase() };
+            rooms.push(newRoom); switchRoom(newRoom.id);
+        }
+
+        function deleteCurrentRoom() {
+            if(rooms.length <= 1) return alert("Impossible. Vous devez avoir au moins une salle.");
+            const tablesInRoom = tables.filter(t => t.roomId === currentRoomId);
+            if(tablesInRoom.length > 0) return alert("Interdit : Vous devez d'abord supprimer toutes les tables de cette salle.");
+            if(!confirm("Êtes-vous sûr de supprimer cet onglet ?")) return;
+            rooms = rooms.filter(r => r.id !== currentRoomId);
+            switchRoom(rooms[0].id);
+        }
+
+        function addTable() {
+            let maxNum = 0; tables.forEach(t => { const match = t.label.match(/T(\d+)/i); if(match) maxNum = Math.max(maxNum, parseInt(match[1])); });
+            const newObj = { id: Date.now().toString(), label: `T${maxNum + 1}`, l: window.innerWidth/2 - 50, t: window.innerHeight/2 - 150, w: 100, h: 100, shape: 'square', roomId: currentRoomId };
+            tables.push(newObj); selectObject(newObj); renderFloorPlan();
+        }
+
+        function selectObject(obj) {
+            selectedObj = obj; document.getElementById('edit-context').style.display = 'flex';
+            document.getElementById('edit-label').value = obj.label; renderFloorPlan();
+        }
+
+        function updateSelectedLabel(val) { if(!selectedObj) return; selectedObj.label = val; renderFloorPlan(); }
+
+        function modifySelected(action) {
+            if (!selectedObj) return;
+            if (action === 'shape') selectedObj.shape = selectedObj.shape === 'round' ? 'square' : 'round';
+            if (action === 'delete') { tables = tables.filter(t => t.id !== selectedObj.id); selectedObj = null; document.getElementById('edit-context').style.display = 'none'; }
+            renderFloorPlan();
+        }
+
+        function savePlan() {
+            localStorage.setItem('EMPIRE_TABLES', JSON.stringify(tables));
+            localStorage.setItem('EMPIRE_ROOMS', JSON.stringify(rooms));
+            if(ws.readyState === WebSocket.OPEN) { ws.send(JSON.stringify({type: 'PLAN_UPDATE', tables: tables, rooms: rooms})); }
+            isEditMode = false; selectedObj = null; document.getElementById('architect-floating-bar').style.display = 'none';
+            renderFloorPlan(); alert("Plan déployé avec succès !");
+        }
+
+        // DRAG & RESIZE TACTILE
+        const floorArea = document.getElementById('floor-plan');
+        floorArea.addEventListener('pointermove', (e) => {
+            if (!isEditMode) return;
+            if (isResizing && selectedObj) {
+                selectedObj.w = Math.max(60, startW + (e.clientX - startX)); selectedObj.h = Math.max(60, startH + (e.clientY - startY)); renderFloorPlan();
+            } else if (draggedObj) {
+                const rect = floorArea.getBoundingClientRect(); draggedObj.l = e.clientX - rect.left - offsetX; draggedObj.t = e.clientY - rect.top - offsetY; renderFloorPlan();
+            }
+        });
+        floorArea.addEventListener('pointerup', () => { draggedObj = null; isResizing = false; });
+        floorArea.addEventListener('pointerleave', () => { draggedObj = null; isResizing = false; });
+
+        function renderFloorPlan() {
+            floorArea.innerHTML = '';
+            tables.forEach(t => {
+                if(!t.roomId) t.roomId = rooms[0].id; 
+                if(t.roomId !== currentRoomId) return; 
+                
+                const div = document.createElement('div'); div.className = 'table-obj'; 
+                if (isEditMode && selectedObj && selectedObj.id === t.id) div.classList.add('is-selected');
+                div.style.borderRadius = t.shape === 'round' ? '50%' : '8px';
+                
+                const order = activeOrders[t.id] || activeOrders[t.label];
+                if(order && order.status !== 'system') { const foodReady = order.items.filter(i => i.category !== 'Boisson').length > 0 && order.items.filter(i => i.category !== 'Boisson').every(i => i.done); if (foodReady) div.classList.add('ready'); else div.classList.add('occupied'); }
+                
+                div.innerHTML = `<span>${t.label}</span>`; 
+                div.style.left = t.l + 'px'; div.style.top = t.t + 'px'; div.style.width = t.w + 'px'; div.style.height = t.h + 'px';
+                
+                if (isEditMode) {
+                    div.style.border = selectedObj && selectedObj.id === t.id ? '3px solid var(--gold)' : '2px solid var(--line)';
+                    const handle = document.createElement('div'); handle.className = 'resize-handle';
+                    handle.addEventListener('pointerdown', (e) => { e.stopPropagation(); isResizing = true; selectObject(t); startX = e.clientX; startY = e.clientY; startW = t.w; startH = t.h; });
+                    div.appendChild(handle);
+                    div.addEventListener('pointerdown', (e) => { e.stopPropagation(); selectObject(t); draggedObj = t; const rect = floorArea.getBoundingClientRect(); offsetX = e.clientX - rect.left - t.l; offsetY = e.clientY - rect.top - t.t; });
+                } else { div.addEventListener('pointerdown', (e) => { e.preventDefault(); e.stopPropagation(); openCaisse(t.label || t.id); }); }
+                floorArea.appendChild(div);
+            });
+        }
+        
+        // --- AFFICHAGE & PRIS DE COMMANDE ---
+        function renderRadar() {
+            const container = document.getElementById('radar-list'); let html = ''; let alertsCount = 0;
+            for (const tableId in activeOrders) {
+                const order = activeOrders[tableId]; if (!order.items || order.items.length === 0) continue;
+                const isWeb = tableId.includes('WEB'); const foodItems = order.items.filter(i => i.category !== 'Boisson'); const foodReady = foodItems.length > 0 && foodItems.every(i => i.done);
+                if (foodReady) { alertsCount++; html += `<div class="alert-card"><b>🔥 CUISINE PRÊTE</b><span>Table : ${tableId.replace('WEB_','')}</span></div>`; }
+                if (isWeb && order.items.every(i => !i.done)) { alertsCount++; html += `<div class="alert-card"><b>🌐 COMMANDE QR</b><span>Table : ${tableId.replace('WEB_','')}</span></div>`; }
+            }
+            container.innerHTML = html || '<div style="color:#555; text-align:center;">Aucune alerte.</div>';
+            const badge = document.getElementById('radar-badge'); if (alertsCount > 0) { badge.style.display = 'flex'; badge.textContent = alertsCount; } else { badge.style.display = 'none'; }
+        }
+
+        function openCaisse(label) { currentTableId = label; document.getElementById('table-title').innerText = label; currentTicket = activeOrders[label]?.items || []; renderTicket(); renderMenu('Plat'); openDrawer('caisse-drawer'); }
+
+        function renderMenu(activeCategory = 'Plat') {
+            const menu = JSON.parse(localStorage.getItem('empire_recipes')) || [{name:'Plat Test', price:20, category:'Plat'}];
+            const categories = [...new Set(menu.map(item => item.category || 'Autre'))];
+            document.getElementById('cat-tabs').innerHTML = categories.map(cat => `<div class="cat-tab ${cat === activeCategory ? 'active' : ''}" onclick="renderMenu('${cat}')">${cat}</div>`).join('');
+            document.getElementById('menu-items').innerHTML = menu.filter(m => (m.category || 'Autre') === activeCategory).map(m => `<div class="btn-item" onclick="addItem('${m.name.replace(/'/g, "\\'")}', ${m.price}, '${m.category}')"><span>${m.name}</span><span>${parseFloat(m.price).toFixed(2)}€</span></div>`).join('');
+        }
+
+        function addItem(n, p, c) { currentTicket.push({id: Date.now(), n: n, p: p, category: c, done: false}); renderTicket(); }
+        function removeItem(targetIndex) { currentTicket.splice(targetIndex, 1); renderTicket(); }
+
+        function renderTicket() {
+            const list = document.getElementById('ticket-list'); let total = 0; const itemCounts = {};
+            currentTicket.forEach((i, idx) => { total += i.p || 0; const name = i.n; if (!itemCounts[name]) itemCounts[name] = { item: i, count: 0, indices: [], price: i.p || 0 }; itemCounts[name].count++; itemCounts[name].indices.push(idx); });
+            let html = '';
+            for (const key in itemCounts) {
+                const g = itemCounts[key]; const lastIndex = g.indices[g.indices.length - 1];
+                html += `<div style="display:flex; justify-content:space-between; padding:10px 0; border-bottom:1px dashed rgba(255,255,255,0.3); align-items:center;"><span style="font-weight:bold; font-size:1rem; flex:1;"><span style="display:inline-block; min-width:25px; font-weight:900;">${g.count}x</span> ${g.item.done?'✅':'⏳'} ${key}</span><span style="font-weight:bold;">${(g.price * g.count).toFixed(2)}€ <span onclick="removeItem(${lastIndex})" style="border:1px solid #fff; border-radius:4px; padding:2px 8px; margin-left:10px; cursor:pointer;">✕</span></span></div>`;
+            }
+            list.innerHTML = html || '<div style="color:#555; text-align:center;">Ticket vierge</div>'; document.getElementById('total-val').innerText = total.toFixed(2) + " €";
+        }
+
+        async function sendOrder() {
+            if(currentTicket.length === 0) return; const obs = document.getElementById('order-obs').value.trim();
+            const order = { table: currentTableId, items: currentTicket, observation: obs, time: new Date().toLocaleTimeString('fr-FR', {hour:'2-digit', minute:'2-digit'}), status: 'pending' };
+            await fetch('/update-order', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ tableId: currentTableId, order }) });
+            document.getElementById('order-obs').value = ''; closeDrawer('caisse-drawer');
+        }
+
+        async function clearTable() {
+            if(!confirm("Encaisser et libérer cette table ?")) return;
+            const totalStr = document.getElementById('total-val').innerText.replace(' €', ''); const total = parseFloat(totalStr);
+            if (total > 0) {
+                const today = new Date().toISOString().split('T')[0]; const time = new Date().toLocaleTimeString('fr-FR', {hour:'2-digit', minute:'2-digit'});
+                let transacs = JSON.parse(localStorage.getItem('empire_transactions')) || []; transacs.push({ date: today, time: time, table: currentTableId, total: total }); localStorage.setItem('empire_transactions', JSON.stringify(transacs));
+            }
+            await fetch('/update-order', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ tableId: currentTableId, order: { status: 'ready' } }) });
+            logAudit(`ENCAISSEMENT - Table ${currentTableId} libérée. Montant: ${totalStr}€`); closeDrawer('caisse-drawer');
+        }
+
+        function saveResa() {
+            const date = document.getElementById('resa-date').value; const time = document.getElementById('resa-time').value; const name = document.getElementById('resa-name').value.trim(); const pax = document.getElementById('resa-pax').value; const tel = document.getElementById('resa-tel').value.trim();
+            if(!date || !name) return alert("Date et Nom obligatoires.");
+            let resas = JSON.parse(localStorage.getItem('empire_reservations')) || {}; if(!resas[date]) resas[date] = [];
+            resas[date].push({ id: Date.now(), time, name, pax, tel, status: 'confirmed' }); localStorage.setItem('empire_reservations', JSON.stringify(resas));
+            if(ws.readyState === WebSocket.OPEN) { fetch('/update-order', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ tableId: 'GLOBAL_RESAS', order: { status: 'system', items: [], reservations: resas } }) }); }
+            document.getElementById('resa-name').value = ''; document.getElementById('resa-tel').value = ''; closeDrawer('resa-drawer');
+        }
+
+        function logAudit(action) { let logs = JSON.parse(localStorage.getItem('EMP_LOCAL_AUDIT')) || []; logs.unshift({ time: new Date().toLocaleString('fr-FR'), action: action }); if(logs.length > 50) logs.pop(); localStorage.setItem('EMP_LOCAL_AUDIT', JSON.stringify(logs)); }
+
+        forceSync(); setInterval(forceSync, 3000); 
+    </script>
+</body>
+</html>
