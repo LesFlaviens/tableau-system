@@ -252,3 +252,233 @@
         const ws = new WebSocket((window.location.protocol === 'https:' ? 'wss://' : 'ws://') + window.location.host);
         let activeOrders = {}; let currentTableId = null; let currentTicket = [];
         let isEditMode = false;
+        
+        // SECURITE ANTI-CRASH MEMOIRE
+        let savedRooms = []; let tables = [];
+        try { 
+            let parsed = JSON.parse(localStorage.getItem('EMPIRE_ROOMS')); 
+            savedRooms = Array.isArray(parsed) ? parsed : [];
+            let parsedT = JSON.parse(localStorage.getItem('EMPIRE_TABLES'));
+            tables = Array.isArray(parsedT) ? parsedT : [];
+        } catch(e) {}
+        
+        let rooms = savedRooms.length > 0 ? savedRooms : [{id: 'r_main', name: 'SALLE PRINCIPALE'}];
+        let currentRoomId = rooms[0].id;
+        
+        let selectedObj = null; let draggedObj = null; let isResizing = false;
+        let startX, startY, startW, startH, offsetX, offsetY;
+        let audioCtx = null; let previousStatus = {};
+
+        const unlockAudio = () => { if (!audioCtx) { try { const AudioContext = window.AudioContext || window.webkitAudioContext; audioCtx = new AudioContext(); audioCtx.resume(); } catch(e){} } };
+        document.addEventListener('pointerdown', unlockAudio, { once: true }); document.addEventListener('touchstart', unlockAudio, { once: true });
+
+        function getTodayString() { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; }
+        function getTimeString() { const d = new Date(); return String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0'); }
+
+        window.onload = () => {
+            if(document.getElementById('stats-date-picker')) document.getElementById('stats-date-picker').value = getTodayString();
+            if(document.getElementById('haccp-date-picker')) document.getElementById('haccp-date-picker').value = getTodayString();
+            renderRooms();
+            renderFloorPlan();
+            forceSync();
+        };
+
+        function triggerAlert(type) {
+            if(!audioCtx) return;
+            const osc = audioCtx.createOscillator(); const gain = audioCtx.createGain();
+            osc.connect(gain); gain.connect(audioCtx.destination);
+            if (type === 'web') { osc.type = 'sine'; osc.frequency.setValueAtTime(523.25, audioCtx.currentTime); osc.frequency.setValueAtTime(659.25, audioCtx.currentTime + 0.2); osc.frequency.setValueAtTime(783.99, audioCtx.currentTime + 0.4); gain.gain.setValueAtTime(0, audioCtx.currentTime); gain.gain.linearRampToValueAtTime(0.8, audioCtx.currentTime + 0.1); gain.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 1.5);
+            } else { osc.type = 'triangle'; osc.frequency.setValueAtTime(880, audioCtx.currentTime); osc.frequency.setValueAtTime(1108.73, audioCtx.currentTime + 0.1); gain.gain.setValueAtTime(0, audioCtx.currentTime); gain.gain.linearRampToValueAtTime(0.8, audioCtx.currentTime + 0.05); gain.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 1.5); }
+            osc.start(audioCtx.currentTime); osc.stop(audioCtx.currentTime + 1.5);
+        }
+
+        function checkAlerts(newOrders) {
+            try {
+                for(let tid in newOrders) {
+                    if (!newOrders[tid] || newOrders[tid].status === 'system') continue;
+                    const isWeb = tid.includes('WEB_'); const isReady = newOrders[tid].status === 'ready';
+                    let currentState = 'none'; if (isWeb) currentState = 'web'; else if (isReady) currentState = 'ready';
+                    if (currentState !== 'none' && previousStatus[tid] !== currentState) { triggerAlert(currentState); }
+                    previousStatus[tid] = currentState;
+                }
+            } catch(e){}
+        }
+
+        ws.onmessage = (e) => {
+            try {
+                const msg = JSON.parse(e.data);
+                if (msg.type === 'ORDER_UPDATE' || msg.type === 'PLAN_UPDATE') {
+                    activeOrders = msg.activeOrders || activeOrders; checkAlerts(activeOrders);
+                    if (activeOrders['GLOBAL_PLAN'] && !isEditMode) { 
+                        if(activeOrders['GLOBAL_PLAN'].rooms) { rooms = activeOrders['GLOBAL_PLAN'].rooms; localStorage.setItem('EMPIRE_ROOMS', JSON.stringify(rooms)); } 
+                        if(activeOrders['GLOBAL_PLAN'].tables) { tables = activeOrders['GLOBAL_PLAN'].tables; localStorage.setItem('EMPIRE_TABLES', JSON.stringify(tables)); } 
+                    }
+                    if (!rooms.find(r => r.id === currentRoomId)) currentRoomId = rooms[0].id;
+                    renderRooms(); renderFloorPlan();
+                }
+            } catch(err){}
+        };
+
+        async function forceSync() { 
+            try { 
+                const res = await fetch('/get-current-state'); 
+                const data = await res.json(); 
+                activeOrders = data.activeOrders; 
+                checkAlerts(activeOrders); 
+            } catch(e) {} 
+            finally { 
+                renderRooms(); 
+                renderFloorPlan(); 
+            } 
+        }
+        
+        function openDrawer(id, callback) { document.querySelectorAll('.drawer').forEach(d => d.classList.remove('open')); document.getElementById(id).classList.add('open'); if(callback) callback(); }
+        function closeDrawer(id) { document.getElementById(id).classList.remove('open'); }
+        function renderRooms() { document.getElementById('room-bar').innerHTML = rooms.map(r => `<button class="room-tab ${r.id === currentRoomId ? 'active' : ''}" onclick="switchRoom('${r.id}')">${r.name}</button>`).join(''); }
+        function switchRoom(id) { currentRoomId = id; selectedObj = null; document.getElementById('edit-context').style.display = 'none'; renderRooms(); renderFloorPlan(); }
+
+        function checkChefSecurity() { const pin = prompt("CODE MANAGER :"); if (pin === "7777") { const logs = JSON.parse(localStorage.getItem('EMP_LOCAL_AUDIT')) || []; document.getElementById('audit-list').innerHTML = logs.length === 0 ? '<div style="color:#555;">Aucun encaissement validé.</div>' : logs.map(l => `<div class="audit-log"><div>${l.time}</div><div>${l.action}</div></div>`).join(''); openDrawer('audit-drawer'); } else if(pin !== null) alert("Accès refusé."); }
+        function startEditMode() { isEditMode = true; selectedObj = null; closeDrawer('audit-drawer'); document.getElementById('architect-floating-bar').style.display = 'flex'; document.getElementById('edit-context').style.display = 'none'; renderRooms(); renderFloorPlan(); }
+        function addRoom() { const name = prompt("Nom de la salle ?"); if(!name) return; const newRoom = { id: 'r_'+Date.now(), name: name.toUpperCase() }; rooms.push(newRoom); switchRoom(newRoom.id); }
+        function deleteCurrentRoom() { if(rooms.length <= 1) return alert("Impossible. Vous devez avoir au moins une salle."); const tablesInRoom = tables.filter(t => t.roomId === currentRoomId); if(tablesInRoom.length > 0) return alert("Interdit : Vous devez d'abord supprimer toutes les tables de cette salle."); if(!confirm("Êtes-vous sûr de supprimer cet onglet ?")) return; rooms = rooms.filter(r => r.id !== currentRoomId); switchRoom(rooms[0].id); }
+        function addTable() { let maxNum = 0; tables.forEach(t => { const match = t.label.match(/T(\d+)/i); if(match) maxNum = Math.max(maxNum, parseInt(match[1])); }); const newObj = { id: Date.now().toString(), label: `T${maxNum + 1}`, l: 100, t: 100, w: 100, h: 100, shape: 'square', roomId: currentRoomId }; tables.push(newObj); selectObject(newObj); renderFloorPlan(); }
+        function selectObject(obj) { selectedObj = obj; document.getElementById('edit-context').style.display = 'flex'; document.getElementById('edit-label').value = obj.label; renderFloorPlan(); }
+        function updateSelectedLabel(val) { if(!selectedObj) return; selectedObj.label = val; renderFloorPlan(); }
+        function modifySelected(action) { if (!selectedObj) return; if (action === 'shape') selectedObj.shape = selectedObj.shape === 'round' ? 'square' : 'round'; if (action === 'delete') { tables = tables.filter(t => t.id !== selectedObj.id); selectedObj = null; document.getElementById('edit-context').style.display = 'none'; } renderFloorPlan(); }
+        function savePlan() { localStorage.setItem('EMPIRE_TABLES', JSON.stringify(tables)); localStorage.setItem('EMPIRE_ROOMS', JSON.stringify(rooms)); fetch('/update-order', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ tableId: 'GLOBAL_PLAN', order: { status: 'system', rooms: rooms, tables: tables } }) }); isEditMode = false; selectedObj = null; document.getElementById('architect-floating-bar').style.display = 'none'; renderFloorPlan(); alert("Plan déployé !"); }
+
+        const floorArea = document.getElementById('floor-plan');
+        floorArea.addEventListener('pointermove', (e) => { if (!isEditMode) return; if (isResizing && selectedObj) { selectedObj.w = Math.max(60, startW + (e.clientX - startX)); selectedObj.h = Math.max(60, startH + (e.clientY - startY)); renderFloorPlan(); } else if (draggedObj) { const rect = floorArea.getBoundingClientRect(); draggedObj.l = e.clientX - rect.left - offsetX; draggedObj.t = e.clientY - rect.top - offsetY; renderFloorPlan(); } });
+        floorArea.addEventListener('pointerup', () => { draggedObj = null; isResizing = false; });
+        floorArea.addEventListener('pointerleave', () => { draggedObj = null; isResizing = false; });
+
+        function renderFloorPlan() {
+            try {
+                floorArea.innerHTML = '';
+                tables.forEach(t => {
+                    if(t.roomId !== currentRoomId) return; 
+                    const div = document.createElement('div'); div.className = 'table-obj'; 
+                    if (isEditMode && selectedObj && selectedObj.id === t.id) div.classList.add('is-selected');
+                    div.style.borderRadius = t.shape === 'round' ? '50%' : '8px';
+                    
+                    const normalOrder = activeOrders[t.id] || activeOrders[t.label];
+                    const webOrder = activeOrders['WEB_' + t.label] || activeOrders['WEB_' + t.id];
+
+                    if (webOrder) { div.classList.add('web-alert'); } 
+                    else if (normalOrder && normalOrder.status !== 'system') { if (normalOrder.status === 'ready') div.classList.add('ready'); else div.classList.add('occupied'); }
+                    
+                    div.innerHTML = `<span>${t.label}</span>`; div.style.left = t.l + 'px'; div.style.top = t.t + 'px'; div.style.width = t.w + 'px'; div.style.height = t.h + 'px';
+                    
+                    const targetId = webOrder ? ('WEB_' + (t.label || t.id)) : (t.label || t.id);
+
+                    if (isEditMode) { div.style.border = selectedObj && selectedObj.id === t.id ? '3px solid var(--gold)' : '2px solid var(--line)'; const handle = document.createElement('div'); handle.className = 'resize-handle'; handle.addEventListener('pointerdown', (e) => { e.stopPropagation(); isResizing = true; selectObject(t); startX = e.clientX; startY = e.clientY; startW = t.w; startH = t.h; }); div.appendChild(handle); div.addEventListener('pointerdown', (e) => { e.stopPropagation(); selectObject(t); draggedObj = t; const rect = floorArea.getBoundingClientRect(); offsetX = e.clientX - rect.left - t.l; offsetY = e.clientY - rect.top - t.t; });
+                    } else { div.addEventListener('pointerdown', (e) => { e.preventDefault(); e.stopPropagation(); openCaisse(targetId); }); }
+                    floorArea.appendChild(div);
+                });
+            } catch(e){}
+        }
+
+        // === MOTEUR GESTION / HACCP ePACK (SALLE) ===
+        function openStaffPlanning() { renderStaffPlanning(); openDrawer('staff-drawer'); }
+        function renderStaffPlanning() { const staff = JSON.parse(localStorage.getItem('kds_hr_master_v9')) || []; const container = document.getElementById('staff-planning-container'); if(staff.length === 0) { container.innerHTML = "<p style='color:#aaa; text-align:center;'>Aucun planning configuré.</p>"; return; } container.innerHTML = staff.map(s => { const daysHTML = s.plan.map((p, i) => `<div class="mini-day"><b>Jour ${i+1}</b>${p.status === "off" ? `<span style="color:#555; font-weight:900; font-size:0.8rem;">OFF</span>` : `<div style="font-weight:bold; font-size:0.7rem;">${p.s1 || '-'}</div>`}</div>`).join(''); return `<div class="staff-plan-card"><strong style="font-size:1.2rem; display:block; margin-bottom:10px; text-transform:uppercase;">${s.name}</strong><div class="mini-grid">${daysHTML}</div></div>`; }).join(''); }
+        
+        function openGestionDrawer() { openDrawer('gestion-drawer', () => { renderHaccpModule(); renderLibrary(); renderStatsDrawer(); }); }
+
+        function switchHaccpTab(tabName) {
+            document.querySelectorAll('.haccp-tab').forEach(t => t.classList.remove('active'));
+            document.getElementById('tab-' + tabName).classList.add('active');
+            ['temp', 'clean', 'recep'].forEach(t => document.getElementById('view-' + t).style.display = 'none');
+            document.getElementById('view-' + tabName).style.display = 'block';
+        }
+
+        function saveHaccpLog(type, overrideVal = null, isRecep = false) {
+            let equip = "", val = "";
+            if (type === 'Température') { equip = document.getElementById('haccp-equip').value; const t = parseFloat(document.getElementById('haccp-temp').value); if(!equip || isNaN(t)) return window.alert("Champs invalides."); val = t + " °C";
+            } else if (type === 'Nettoyage') { equip = "Validation"; val = overrideVal;
+            } else if (type === 'Réception') { const fourn = document.getElementById('recep-fourn').value; const prod = document.getElementById('recep-prod').value; if(!fourn || !prod) return window.alert("Fournisseur et Produit obligatoires."); equip = fourn + " - " + prod; val = overrideVal; }
+
+            const logEntry = { type: type, equip: equip, value: val, time: getTimeString() };
+            const date = document.getElementById('haccp-date-picker').value || getTodayString();
+            let allLogs = JSON.parse(localStorage.getItem('kds_haccp_archives') || '{}');
+            if(!allLogs[date]) allLogs[date] = []; allLogs[date].unshift(logEntry); 
+            localStorage.setItem('kds_haccp_archives', JSON.stringify(allLogs));
+            
+            document.getElementById('haccp-equip').value = ''; document.getElementById('haccp-temp').value = ''; document.getElementById('recep-fourn').value = ''; document.getElementById('recep-prod').value = '';
+            renderHaccpModule(date);
+        }
+
+        function renderHaccpModule(date) {
+            const targetDate = date || document.getElementById('haccp-date-picker').value || getTodayString();
+            const allLogs = JSON.parse(localStorage.getItem('kds_haccp_archives') || '{}')[targetDate] || [];
+            const renderList = (type, containerId) => { const filtered = allLogs.filter(l => l.type === type); document.getElementById(containerId).innerHTML = filtered.length ? filtered.map(l => `<div class="haccp-log-card"><div style="flex:1;"><b>${l.equip}</b><br><small style="color:#aaa;">${l.time}</small></div><div style="font-weight:bold; color:${l.value.includes('REFUS') ? 'var(--alert)' : l.value.includes('CONFORME') ? 'var(--accent)' : '#fff'}">${l.value}</div></div>`).join('') : '<div style="color:#555; text-align:center; padding:10px;">Aucun relevé.</div>'; };
+            renderList('Température', 'haccp-temp-list'); renderList('Nettoyage', 'haccp-clean-list'); renderList('Réception', 'haccp-recep-list');
+        }
+
+        function renderLibrary() { const recipes = JSON.parse(localStorage.getItem('kds_grimoire_v2') || '[]'); document.getElementById('library-container').innerHTML = recipes.map((r, i) => `<button class="btn-action" style="width:100%; margin-bottom:10px; text-align:left;" onclick="openRecipeModal(${i})">📄 ${r.nom}</button>`).join('') || '<div style="color:#aaa;">La carte ou le grimoire est vide.</div>'; }
+        function renderStatsDrawer(date) { const targetDate = date || document.getElementById('stats-date-picker').value || getTodayString(); const allStats = JSON.parse(localStorage.getItem('kds_archives_10ans') || '{}'); const sortedStats = Object.entries(allStats[targetDate] || {}).sort((a, b) => b[1] - a[1]).slice(0, 20); document.getElementById('stats-list-container').innerHTML = sortedStats.map(([name, count], index) => count > 0 ? `<div class="stat-row"><span>#${index + 1} ${name}</span><span class="stat-count">${count}</span></div>` : '').join('') || '<div style="color:#aaa; text-align:center;">Aucun plat servi.</div>'; }
+
+        // --- CAISSE ---
+        function openCaisse(label) { currentTableId = label; document.getElementById('table-title').innerText = label; currentTicket = activeOrders[label]?.items || []; document.getElementById('order-obs').value = activeOrders[label]?.observation || ''; if(activeOrders[label] && activeOrders[label].status === 'ready') { activeOrders[label].status = 'pending'; sendOrderSilently(); } renderTicket(); renderMenu('Entrée'); openDrawer('caisse-drawer'); }
+        function renderMenu(activeCategory = 'Entrée') { let menu = JSON.parse(localStorage.getItem('empire_recipes')) || [{name: 'Salade', price: 10, category: 'Entrée'}]; const categories = ['Entrée', 'Plat', 'Dessert']; document.getElementById('cat-tabs').innerHTML = categories.map(cat => `<div class="cat-tab ${cat === activeCategory ? 'active' : ''}" onclick="renderMenu('${cat}')">${cat}</div>`).join(''); document.getElementById('menu-items').innerHTML = menu.filter(m => (m.category || 'Autre') === activeCategory).map(m => `<div class="btn-item" onclick="addItem('${m.name.replace(/'/g, "\\'")}', ${m.price}, '${m.category}')"><span>${m.name}</span><span style="color:var(--sub);">${parseFloat(m.price).toFixed(2)}€</span></div>`).join(''); }
+        function addItem(n, p, c) { let step = c === 'Entrée' ? 1 : c === 'Dessert' ? 3 : 2; currentTicket.push({id: Date.now(), n: n, p: p, category: c, step: step, done: false}); renderTicket(); sendOrderSilently(); }
+        function removeItem(targetIndex) { currentTicket.splice(targetIndex, 1); renderTicket(); sendOrderSilently(); }
+        function cycleStep(targetIndex) { let s = currentTicket[targetIndex].step || 1; currentTicket[targetIndex].step = s === 1 ? 2 : s === 2 ? 3 : 1; renderTicket(); sendOrderSilently(); }
+
+        function renderTicket() {
+            const list = document.getElementById('ticket-list'); let total = 0; const itemCounts = {};
+            currentTicket.forEach((i, idx) => { let step = i.step || (i.category === 'Entrée' ? 1 : i.category === 'Dessert' ? 3 : 2); total += i.p || 0; const key = i.n + '_' + step; if (!itemCounts[key]) itemCounts[key] = { item: i, count: 0, indices: [], price: i.p || 0, step: step }; itemCounts[key].count++; itemCounts[key].indices.push(idx); });
+            let html = '';
+            for (const key in itemCounts) {
+                const g = itemCounts[key]; const lastIdx = g.indices[g.indices.length - 1]; const stepName = g.step === 1 ? 'ENTRÉE' : g.step === 2 ? 'PLAT' : 'DESSERT'; const stepColor = g.step === 1 ? '#aaa' : g.step === 2 ? '#fff' : '#ffb300';
+                html += `<div style="display:flex; justify-content:space-between; padding:10px 0; border-bottom:1px dashed rgba(255,255,255,0.2); align-items:center;"><span style="font-weight:bold; font-size:1.1rem; flex:1; display:flex; align-items:center;"><span style="display:inline-block; min-width:30px; font-weight:900;">${g.count}x</span> <button class="step-badge" style="color:${stepColor}; border-color:${stepColor};" onclick="cycleStep(${lastIdx})">${stepName}</button>${g.item.done ? '✅' : '⏳'} ${g.item.n}</span><span style="font-weight:bold; font-size:1.1rem; display:flex; align-items:center;">${(g.price * g.count).toFixed(2)}€ <button onclick="removeItem(${lastIdx})" style="background:transparent; border:1px solid var(--alert); color:var(--alert); border-radius:4px; padding:6px 12px; margin-left:15px; cursor:pointer; font-weight:bold;">✕</button></span></div>`;
+            }
+            list.innerHTML = html || '<div style="color:#555; text-align:center; padding:40px; font-style:italic;">-- TICKET VIDE --</div>'; document.getElementById('total-val').innerText = total.toFixed(2) + " €";
+        }
+
+        async function sendOrderSilently() { if(currentTableId.includes('WEB_')) return; const obs = document.getElementById('order-obs').value.trim(); const order = { table: currentTableId, items: currentTicket, observation: obs, time: new Date().toLocaleTimeString('fr-FR', {hour:'2-digit', minute:'2-digit'}), status: 'pending' }; await fetch('/update-order', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ tableId: currentTableId, order }) }); }
+        async function sendOrder() { if(currentTicket.length === 0) return; const obs = document.getElementById('order-obs').value.trim(); const isWeb = currentTableId.includes('WEB_'); const realTableId = currentTableId.replace('WEB_', ''); const order = { table: realTableId, items: currentTicket, observation: obs, time: new Date().toLocaleTimeString('fr-FR', {hour:'2-digit', minute:'2-digit'}), status: 'pending' }; await fetch('/update-order', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ tableId: realTableId, order }) }); if (isWeb) { await fetch('/update-order', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ tableId: currentTableId, order: null }) }); } document.getElementById('order-obs').value = ''; closeDrawer('caisse-drawer'); }
+        
+        async function clearTable() {
+            if(!confirm("Encaisser et libérer cette table ?")) return;
+            const totalStr = document.getElementById('total-val').innerText.replace(' €', ''); const total = parseFloat(totalStr);
+            if (total > 0) {
+                const today = new Date().toISOString().split('T')[0]; const time = new Date().toLocaleTimeString('fr-FR', {hour:'2-digit', minute:'2-digit'});
+                let transacs = JSON.parse(localStorage.getItem('empire_transactions')) || []; transacs.push({ date: today, time: time, table: currentTableId, total: total }); localStorage.setItem('empire_transactions', JSON.stringify(transacs));
+            }
+            await fetch('/update-order', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ tableId: currentTableId, order: null }) });
+            logAudit(`ENCAISSEMENT - Table ${currentTableId} libérée. Montant: ${totalStr}€`); 
+            
+            fermerFacture();
+            closeDrawer('caisse-drawer');
+        }
+
+        // --- FACTURE, PREVIEW ET QR CODE DYNAMIQUE ---
+        function afficherFacture() { 
+            if(currentTicket.length === 0) return alert("Ticket vide."); 
+            document.getElementById('qr-payment-zone').style.display = 'none';
+            document.getElementById('facture-date').innerText = new Date().toLocaleString('fr-FR'); 
+            const nomTable = currentTableId.replace('WEB_', '');
+            document.getElementById('facture-table').innerText = "Table : " + nomTable; 
+            
+            const itemCounts = {}; let total = 0; 
+            currentTicket.forEach(i => { total += i.p || 0; const name = i.n; if (!itemCounts[name]) itemCounts[name] = { count: 0, price: i.p || 0 }; itemCounts[name].count++; }); 
+            let html = ''; 
+            for (const key in itemCounts) { const g = itemCounts[key]; html += `<div class="facture-item"><span>${g.count}x ${key}</span><span>${(g.price * g.count).toFixed(2)}€</span></div>`; } 
+            
+            document.getElementById('facture-items').innerHTML = html; 
+            document.getElementById('facture-total-val').innerText = total.toFixed(2) + " €"; 
+            
+            const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=ICHEF_Paiement_Table_${nomTable}_Montant_${total.toFixed(2)}`;
+            document.getElementById('qr-image').src = qrUrl;
+
+            document.getElementById('facture-modal').classList.add('active-modal');
+        }
+
+        function showQRPayment() { document.getElementById('qr-payment-zone').style.display = 'block'; }
+        function fermerFacture() { document.getElementById('facture-modal').classList.remove('active-modal'); }
+        function logAudit(action) { let logs = JSON.parse(localStorage.getItem('EMP_LOCAL_AUDIT')) || []; logs.unshift({ time: new Date().toLocaleString('fr-FR'), action: action }); if(logs.length > 50) logs.pop(); localStorage.setItem('EMP_LOCAL_AUDIT', JSON.stringify(logs)); }
+
+        setInterval(forceSync, 3000); 
+    </script>
+</body>
+</html>
