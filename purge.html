@@ -1,22 +1,148 @@
-unction manage(type, action, idx = null) {
-    if(action === 'add') {
-        layout.push({ id: Date.now(), type, label: type === 'table' ? "T" + (layout.filter(i=>i.type==='table').length + 1) : "ZONE", l:150, t:150, w:100, h:80 });
-    }
-    if(action === 'delete' && idx !== null) {
-        layout.splice(idx, 1);
-    }
-    if(action === 'rename' && idx !== null) {
-        const name = prompt("Nom :", layout[idx].label);
-        if(name) layout[idx].label = name;
-    }
-    if(action === 'move' && idx !== null) {
-        layout[idx].l += 10;
-        layout[idx].t += 10;
-    }
-    if(action === 'resize' && idx !== null) {
-        layout[idx].w += 20;
-        layout[idx].h += 20;
-    }
-    save();
-    render();
-}
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>EMPIRE BAR - Centre de Production</title>
+    <style>
+        :root { --bg: #050505; --gold: #ffb300; --accent: #00e676; --alert: #ff1744; --panel: #111; }
+        body { font-family: 'Inter', sans-serif; background: var(--bg); color: #fff; margin: 0; display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
+        
+        header { background: var(--panel); padding: 20px 30px; border-bottom: 2px solid var(--gold); display: flex; justify-content: space-between; align-items: center; }
+        .logo-bar { font-weight: 900; letter-spacing: 3px; font-size: 1.4rem; color: var(--gold); text-transform: uppercase; }
+        
+        .main-grid { flex: 1; padding: 25px; display: flex; gap: 25px; overflow-x: auto; align-items: flex-start; }
+        
+        /* TICKETS KDS */
+        .ticket { background: #fff; color: #000; width: 280px; border-radius: 6px; flex-shrink: 0; box-shadow: 0 10px 30px rgba(0,0,0,0.5); display: flex; flex-direction: column; animation: slideUp 0.3s ease; }
+        @keyframes slideUp { from { transform: translateY(20px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
+        
+        .ticket-header { padding: 15px; border-bottom: 2px solid #000; display: flex; justify-content: space-between; align-items: center; }
+        .table-num { font-size: 1.5rem; font-weight: 900; }
+        .time-stamp { font-size: 0.8rem; font-weight: bold; background: #000; color: #fff; padding: 4px 8px; border-radius: 4px; }
+        
+        .ticket-body { padding: 15px; flex: 1; }
+        .drink-item { padding: 8px 0; border-bottom: 1px dashed #ccc; font-weight: bold; font-size: 1.1rem; display: flex; justify-content: space-between; }
+        .drink-obs { font-size: 0.8rem; color: var(--alert); font-style: italic; margin-top: 3px; }
+
+        .btn-ready { background: var(--accent); color: #000; border: none; padding: 15px; font-weight: 900; font-size: 1rem; cursor: pointer; text-transform: uppercase; border-radius: 0 0 6px 6px; }
+        .btn-ready:active { background: #00c853; }
+
+        /* STOCK STATUS */
+        .stock-sidebar { width: 300px; background: var(--panel); border-left: 1px solid #333; padding: 20px; overflow-y: auto; }
+        .stock-row { display: flex; justify-content: space-between; padding: 10px 0; border-bottom: 1px solid #222; font-size: 0.9rem; }
+        .stock-val { font-weight: 900; color: var(--gold); }
+        .stock-low { color: var(--alert) !important; animation: blink 1s infinite; }
+        @keyframes blink { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
+    </style>
+</head>
+<body>
+
+    <header>
+        <div class="logo-bar">🍻 BAR PRODUCTION LIVE</div>
+        <div id="sync-indicator" style="color: var(--accent); font-weight: 900; font-size: 0.8rem;">● SYNC H24</div>
+    </header>
+
+    <div style="display: flex; flex: 1; overflow: hidden;">
+        <div class="main-grid" id="kds-container">
+            </div>
+
+        <aside class="stock-sidebar">
+            <h3 style="color: var(--gold); text-transform: uppercase; font-size: 0.8rem; letter-spacing: 1px;">Stocks Boissons</h3>
+            <div id="stock-list"></div>
+        </aside>
+    </div>
+
+    <audio id="bell" src="https://assets.mixkit.co/active_storage/sfx/2869/2869-preview.mp3"></audio>
+
+    <script>
+        const ws = new WebSocket((window.location.protocol === 'https:' ? 'wss://' : 'ws://') + window.location.host);
+        let activeTickets = {};
+
+        ws.onmessage = (e) => {
+            const msg = JSON.parse(e.data);
+            
+            // Mise à jour des stocks en direct
+            if (msg.stock) renderStock(msg.stock);
+
+            // Mise à jour des commandes
+            if (msg.activeOrders || msg.type === 'SYNC') {
+                const orders = msg.activeOrders || msg.state.activeOrders;
+                processOrders(orders);
+            }
+        };
+
+        function processOrders(orders) {
+            const container = document.getElementById('kds-container');
+            container.innerHTML = '';
+            
+            for (let tableId in orders) {
+                const drinks = orders[tableId].items.filter(i => 
+                    i.category === 'Boissons & Bar' || i.dest === 'bar'
+                );
+
+                if (drinks.length > 0) {
+                    const ticket = document.createElement('div');
+                    ticket.className = 'ticket';
+                    ticket.innerHTML = `
+                        <div class="ticket-header">
+                            <span class="table-num">TABLE ${tableId}</span>
+                            <span class="time-stamp">${orders[tableId].time || '--:--'}</span>
+                        </div>
+                        <div class="ticket-body">
+                            ${drinks.map(d => `
+                                <div class="drink-item">
+                                    <span>1x ${d.n}</span>
+                                    ${d.obs ? `<div class="drink-obs">⚠ ${d.obs}</div>` : ''}
+                                </div>
+                            `).join('')}
+                        </div>
+                        <button class="btn-ready" onclick="markAsReady('${tableId}')">Prêt / Servir 🚀</button>
+                    `;
+                    container.appendChild(ticket);
+                }
+            }
+        }
+
+        async function markAsReady(tableId) {
+            // Signal visuel immédiat
+            const ticket = event.target.closest('.ticket');
+            ticket.style.transform = 'scale(0.9)';
+            ticket.style.opacity = '0';
+            
+            // On informe le serveur que la commande est prête
+            // Cela déclenchera le point VERT sur le Pad Serveur
+            await fetch('/update-order', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({
+                    tableId: tableId,
+                    order: { ...activeTickets[tableId], status: 'ready' }
+                })
+            });
+
+            setTimeout(() => ticket.remove(), 300);
+        }
+
+        function renderStock(stock) {
+            const list = document.getElementById('stock-list');
+            list.innerHTML = Object.keys(stock)
+                .filter(name => name.includes('Soda') || name.includes('Vin') || name.includes('Cocktail') || name.includes('Eau'))
+                .map(name => `
+                <div class="stock-row">
+                    <span>${name}</span>
+                    <span class="stock-val ${stock[name] < 5 ? 'stock-low' : ''}">${stock[name]}</span>
+                </div>
+            `).join('');
+        }
+
+        // Chargement initial
+        window.onload = async () => {
+            const res = await fetch('/get-current-state');
+            const state = await res.json();
+            if(state.stock) renderStock(state.stock);
+            processOrders(state.activeOrders);
+        };
+    </script>
+</body>
+</html>
