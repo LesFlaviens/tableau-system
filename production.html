@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <title>Empire KDS - Cuisine</title>
     <style>
-        :root { --bg: #050505; --text: #fff; --line: #fff; --sub: #aaa; }
+        :root { --bg: #050505; --text: #fff; --line: #fff; --sub: #aaa; --web: #00e5ff;}
         body { font-family: 'Inter', sans-serif; background-color: var(--bg); color: var(--text); margin: 0; display: flex; height: 100vh; overflow: hidden; background-image: linear-gradient(rgba(255,255,255,0.03) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,0.03) 1px, transparent 1px); background-size: 40px 40px; }
         #start-overlay { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.95); z-index: 9999; display: flex; justify-content: center; align-items: center; flex-direction: column; }
         #start-overlay button { padding: 20px 40px; font-size: 1.5rem; font-weight: 900; background: #fff; color: #000; border: none; border-radius: 4px; cursor: pointer; text-transform: uppercase; }
@@ -15,6 +15,7 @@
         .grid-wrapper { border: 1px solid rgba(255,255,255,0.3); border-radius: 8px; padding: 20px; }
         .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 25px; }
         .ticket-wire { border: 1px solid var(--line); border-radius: 8px; padding: 15px; display: flex; flex-direction: column; gap: 10px; background: #050505; }
+        .ticket-wire.web-ticket { border-color: var(--web); box-shadow: 0 0 15px rgba(0, 229, 255, 0.2); }
         .tw-header { display: grid; grid-template-columns: 1fr 1fr; border: 1px solid var(--line); border-radius: 4px; overflow: hidden; }
         .tw-head-title { background: var(--line); color: #000; font-weight: 900; text-align: center; padding: 6px; border-right: 1px solid #000; font-size: 0.85rem;}
         .tw-head-val { text-align: center; padding: 10px; font-weight: bold; font-size: 1.1rem; border-top: 1px solid var(--line); }
@@ -43,12 +44,25 @@
     <script>
         const ws = new WebSocket((window.location.protocol === 'https:' ? 'wss://' : 'ws://') + window.location.host);
         let activeOrders = {}; let audioCtx;
+        let previousPendingCount = 0;
 
         function initSystem() {
             try { const AudioContext = window.AudioContext || window.webkitAudioContext; if (AudioContext) { audioCtx = new AudioContext(); audioCtx.resume(); } } catch (e) {}
             document.getElementById('start-overlay').style.display = 'none';
         }
-        function playSound() { if(audioCtx) { const osc = audioCtx.createOscillator(); const gain = audioCtx.createGain(); osc.connect(gain); gain.connect(audioCtx.destination); osc.type = 'square'; osc.frequency.setValueAtTime(880, audioCtx.currentTime); gain.gain.setValueAtTime(0.1, audioCtx.currentTime); osc.start(audioCtx.currentTime); osc.stop(audioCtx.currentTime + 0.1); } }
+        
+        function playSound(type) { 
+            if(!audioCtx) return; 
+            const osc = audioCtx.createOscillator(); const gain = audioCtx.createGain(); 
+            osc.connect(gain); gain.connect(audioCtx.destination); 
+            
+            if (type === 'web') {
+                osc.type = 'sine'; osc.frequency.setValueAtTime(523.25, audioCtx.currentTime); osc.frequency.setValueAtTime(659.25, audioCtx.currentTime + 0.2); 
+            } else {
+                osc.type = 'square'; osc.frequency.setValueAtTime(880, audioCtx.currentTime); 
+            }
+            gain.gain.setValueAtTime(0.1, audioCtx.currentTime); osc.start(audioCtx.currentTime); osc.stop(audioCtx.currentTime + 0.3); 
+        }
 
         ws.onmessage = (e) => {
             const msg = JSON.parse(e.data);
@@ -57,6 +71,9 @@
 
         function renderKDS() {
             const container = document.getElementById('pending-container'); container.innerHTML = '';
+            let currentPendingCount = 0;
+            let hasWebOrder = false;
+
             for (const tableId in activeOrders) {
                 if (tableId === 'GLOBAL_RESAS' || tableId === 'GLOBAL_PLAN') continue; 
                 const order = activeOrders[tableId];
@@ -64,8 +81,14 @@
                 const pendingItems = myItems.filter(i => !i.done);
                 if (pendingItems.length === 0) continue;
                 
-                const ticketDiv = document.createElement('div'); ticketDiv.className = 'ticket-wire';
+                currentPendingCount += pendingItems.length;
+                const isWeb = tableId.includes('WEB_');
+                if(isWeb) hasWebOrder = true;
+
+                const ticketDiv = document.createElement('div'); 
+                ticketDiv.className = 'ticket-wire' + (isWeb ? ' web-ticket' : '');
                 let obsHtml = order.observation ? `<div class="obs-banner">${order.observation}</div>` : '';
+                if(isWeb) obsHtml = `<div class="obs-banner" style="background:var(--web); color:#000;">🌐 COMMANDE QR</div>` + obsHtml;
 
                 const grouped = { 1: [], 2: [], 3: [] };
                 pendingItems.forEach(i => { 
@@ -92,12 +115,17 @@
                 };
 
                 ticketDiv.innerHTML = `${obsHtml}
-                    <div class="tw-header"><div class="tw-head-title">TABLE</div><div class="tw-head-title">HEURE</div><div class="tw-head-val">${tableId.replace('T','')}</div><div class="tw-head-val">${order.time}</div></div>
+                    <div class="tw-header"><div class="tw-head-title">TABLE</div><div class="tw-head-title">HEURE</div><div class="tw-head-val">${tableId.replace('WEB_','').replace('T','')}</div><div class="tw-head-val">${order.time}</div></div>
                     ${renderSection('ENTRÉES', grouped[1], 1)}
                     ${renderSection('PLATS', grouped[2], 2)}
                     ${renderSection('DESSERTS', grouped[3], 3)}`;
                 container.appendChild(ticketDiv);
             }
+
+            if (currentPendingCount > previousPendingCount) {
+                playSound(hasWebOrder ? 'web' : 'normal');
+            }
+            previousPendingCount = currentPendingCount;
         }
 
         async function validerEtape(tableId, step) {
@@ -108,8 +136,8 @@
                 if (iStep === step && !i.done) { i.done = true; changed = true; }
             });
             if (changed) {
-                playSound();
-                order.status = 'ready'; // Fait clignoter la table en salle
+                playSound('normal');
+                order.status = 'ready'; 
                 await fetch('/update-order', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ tableId, order }) });
             }
         }
