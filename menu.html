@@ -5,8 +5,8 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>Menu Live - EMPIRE OS</title>
     <style>
-        :root { --bg: #050505; --accent: #00e676; --text: #fff; --panel: #111; }
-        body { font-family: 'Inter', sans-serif; background: var(--bg); color: var(--text); margin: 0; padding: 0; padding-bottom: 50px;}
+        :root { --bg: #050505; --accent: #00e676; --text: #fff; --panel: #111; --gold: #ffb300; }
+        body { font-family: 'Inter', sans-serif; background: var(--bg); color: var(--text); margin: 0; padding: 0; padding-bottom: 80px;} /* Bottom padding augmenté pour la barre */
         
         .header { background: var(--panel); padding: 30px 20px; text-align: center; border-bottom: 1px solid #333; position: sticky; top: 0; z-index: 100;}
         .logo { font-weight: 900; color: #fff; letter-spacing: 4px; font-size: 1.5rem; text-transform: uppercase; }
@@ -20,14 +20,20 @@
         .item-details { display: flex; flex-direction: column; flex: 1; padding-right: 10px; }
         .item-name { font-size: 1.1rem; font-weight: bold; color: #fff; }
         .item-desc { font-size: 0.75rem; color: #666; margin-top: 4px; font-style: italic; }
-        .item-price { font-size: 1.1rem; font-weight: 900; color: var(--accent); white-space: nowrap; }
+        .item-price { font-size: 1.1rem; font-weight: 900; color: var(--accent); white-space: nowrap; margin-right: 15px; }
+
+        /* AJOUT : Bouton d'ajout au panier */
+        .add-btn { background: var(--panel); border: 1px solid var(--accent); color: var(--accent); width: 35px; height: 35px; border-radius: 50%; font-weight: 900; cursor: pointer; transition: 0.2s; }
+        .add-btn:active { background: var(--accent); color: #000; transform: scale(0.9); }
+
+        /* AJOUT : Barre de commande flottante */
+        #cart-bar { position: fixed; bottom: 0; left: 0; width: 100%; background: var(--accent); color: #000; padding: 15px 20px; display: none; justify-content: space-between; align-items: center; box-sizing: border-box; z-index: 1000; font-weight: 900; text-transform: uppercase; cursor: pointer; box-shadow: 0 -5px 20px rgba(0, 230, 118, 0.3); }
 
         .footer { text-align: center; padding: 40px 20px; color: #444; font-size: 0.7rem; letter-spacing: 1px; }
 
         @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
 
-        /* Status de connexion discret */
-        #sync-status { position: fixed; bottom: 10px; right: 10px; width: 8px; height: 8px; border-radius: 50%; background: #333; z-index: 1000; }
+        #sync-status { position: fixed; bottom: 10px; right: 10px; width: 8px; height: 8px; border-radius: 50%; background: #333; z-index: 1001; }
         #sync-status.online { background: var(--accent); box-shadow: 0 0 5px var(--accent); }
     </style>
 </head>
@@ -37,11 +43,16 @@
 
     <div class="header">
         <div class="logo">TABLEAU</div>
-        <div class="subtitle">La Carte en Direct</div>
+        <div id="table-display" class="subtitle">La Carte en Direct</div>
     </div>
 
     <div class="container" id="menu-container">
         <div style="text-align:center; padding-top:50px; color:#555;">Initialisation de la carte...</div>
+    </div>
+
+    <div id="cart-bar" onclick="sendOrder()">
+        <span id="cart-count">0 PRODUITS</span>
+        <span>COMMANDER 🚀</span>
     </div>
 
     <div class="footer">
@@ -51,23 +62,26 @@
 
     <script>
         const ws = new WebSocket((window.location.protocol === 'https:' ? 'wss://' : 'ws://') + window.location.host);
-        let menuData = [];
+        
+        // Détection de la table dans l'URL (ex: menu.html?table=T1)
+        const urlParams = new URLSearchParams(window.location.search);
+        const tableId = urlParams.get('table') || "A Emporter";
+        document.getElementById('table-display').innerText = "TABLE : " + tableId;
 
-        // 1. Écoute du serveur (Télécommunication H24)
+        let cart = [];
+
         ws.onopen = () => document.getElementById('sync-status').classList.add('online');
         ws.onclose = () => document.getElementById('sync-status').classList.remove('online');
 
         ws.onmessage = (e) => {
             try {
                 const msg = JSON.parse(e.data);
-                // Si le Chef envoie une mise à jour globale du menu
                 if (msg.type === 'ORDER_UPDATE' && msg.activeOrders['GLOBAL_MENU']) {
                     renderMenu(msg.activeOrders['GLOBAL_MENU'].data);
                 }
             } catch(err) { console.error("Erreur Sync:", err); }
         };
 
-        // 2. Chargement initial forcé
         async function loadInitialMenu() {
             try {
                 const res = await fetch('/get-current-state');
@@ -75,18 +89,14 @@
                 if (state.activeOrders['GLOBAL_MENU']) {
                     renderMenu(state.activeOrders['GLOBAL_MENU'].data);
                 } else {
-                    // Si le serveur est vide, on affiche un message pro
                     document.getElementById('menu-container').innerHTML = '<div style="text-align:center; padding-top:50px; color:var(--accent);">CARTE EN COURS DE MISE À JOUR...</div>';
                 }
             } catch(e) { console.log("Mode hors-ligne"); }
         }
 
-        // 3. Rendu visuel chirurgical
         function renderMenu(data) {
             const container = document.getElementById('menu-container');
             container.innerHTML = '';
-            
-            // On regroupe par catégories
             const categories = ['Entrées', 'Plats de résistance', 'Desserts', 'Boissons & Bar'];
             
             categories.forEach(cat => {
@@ -106,6 +116,7 @@
                                 <span class="item-desc">${item.desc || ''}</span>
                             </div>
                             <div class="item-price">${parseFloat(item.price).toFixed(2)} €</div>
+                            <button class="add-btn" onclick='addToCart(${JSON.stringify(item)})'>+</button>
                         `;
                         container.appendChild(div);
                     });
@@ -113,8 +124,57 @@
             });
         }
 
+        // AJOUT : Gestion du Panier
+        function addToCart(item) {
+            cart.push(item);
+            const bar = document.getElementById('cart-bar');
+            const count = document.getElementById('cart-count');
+            
+            bar.style.display = 'flex';
+            count.innerText = cart.length + (cart.length > 1 ? " PRODUITS" : " PRODUIT");
+        }
+
+        // AJOUT : Envoi de la commande au système central (Cuisine/Bar/Addition)
+        async function sendOrder() {
+            const obs = prompt("Une précision pour le chef ? (cuisson, allergies...)") || "";
+            
+            // On prépare les items avec leur destination (Cuisine ou Bar)
+            // Note : On suppose que ton GLOBAL_MENU contient l'info 'dest' ou on la déduit de la catégorie
+            const formattedItems = cart.map(i => ({
+                n: i.name,
+                p: parseFloat(i.price),
+                obs: obs,
+                dest: (i.category === 'Boissons & Bar') ? 'bar' : 'cuisine'
+            }));
+
+            const payload = {
+                tableId: tableId,
+                order: {
+                    items: formattedItems,
+                    newItems: formattedItems,
+                    timestamp: new Date().toLocaleTimeString(),
+                    status: 'pending'
+                }
+            };
+
+            try {
+                const res = await fetch('/update-order', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify(payload)
+                });
+
+                if(res.ok) {
+                    alert("Commande envoyée ! Elle arrive...");
+                    cart = [];
+                    document.getElementById('cart-bar').style.display = 'none';
+                }
+            } catch(err) {
+                alert("Erreur de connexion au serveur.");
+            }
+        }
+
         loadInitialMenu();
-        // Vérification toutes les 30 secondes pour garantir le H24
         setInterval(loadInitialMenu, 30000);
     </script>
 </body>
