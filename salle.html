@@ -22,11 +22,8 @@
         .table-obj { position: absolute; background: #000; border: 2px solid var(--line); display: flex; justify-content: center; align-items: center; font-weight: 900; cursor: pointer; z-index: 50; font-size: 1.5rem; transition: 0.1s; box-sizing: border-box; border-radius: 8px;}
         .table-obj.occupied { border-color: var(--alert); background: rgba(255,23,68,0.1); color: var(--alert); }
         
-        /* CLIGNOTEMENT VERT : PLAT PRÊT */
         @keyframes table-ready-blink { 0% { background-color: #000; color: var(--accent); border-color: var(--accent); box-shadow: 0 0 0 transparent; } 100% { background-color: var(--accent); color: #000; border-color: #fff; box-shadow: 0 0 35px var(--accent); } }
         .table-obj.ready { animation: table-ready-blink 0.4s infinite alternate !important; z-index: 999 !important; transform: scale(1.1); border-width: 4px !important;}
-
-        /* CLIGNOTEMENT BLEU : COMMANDE QR */
         @keyframes table-web-blink { 0% { background-color: #000; color: var(--web); border-color: var(--web); box-shadow: 0 0 0 transparent; } 100% { background-color: var(--web); color: #000; border-color: #fff; box-shadow: 0 0 35px var(--web); } }
         .table-obj.web-alert { animation: table-web-blink 0.4s infinite alternate !important; z-index: 1000 !important; transform: scale(1.1); border-width: 4px !important;}
 
@@ -53,6 +50,15 @@
         .btn-action { padding: 15px 20px; background: transparent; color: #fff; border: 1px solid #fff; border-radius: 4px; font-weight: 900; font-size: 1.1rem; cursor: pointer; text-transform: uppercase;}
         
         .step-badge { background: #222; border: 1px solid #555; border-radius: 4px; font-size: 0.75rem; padding: 4px 8px; cursor: pointer; margin-right: 10px; font-weight: bold; width: 70px; text-align: center; display: inline-block;}
+        .audit-log { background: #000; border: 1px solid var(--line); padding: 15px; border-radius: 4px; margin-bottom: 10px; font-family: monospace; font-size: 0.9rem; }
+
+        /* FENÊTRE DE LA FACTURE (ADDITION) */
+        #facture-modal { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.95); z-index: 20000; flex-direction: column; justify-content: center; align-items: center; padding: 20px; box-sizing: border-box;}
+        .facture-paper { background: #fff; color: #000; width: 100%; max-width: 400px; padding: 30px; font-family: 'Courier New', Courier, monospace; border-radius: 4px; box-shadow: 0 0 20px rgba(255,255,255,0.2); }
+        .facture-header { text-align: center; border-bottom: 2px dashed #000; padding-bottom: 15px; margin-bottom: 15px; font-weight: bold;}
+        .facture-item { display: flex; justify-content: space-between; margin-bottom: 5px; font-size: 0.9rem; font-weight: bold;}
+        .facture-total { border-top: 2px dashed #000; padding-top: 15px; margin-top: 15px; display: flex; justify-content: space-between; font-size: 1.3rem; font-weight: 900;}
+
         @media (max-width: 800px) { #caisse-drawer { flex-direction: column; overflow-y: auto; } .pos-left, .pos-right { flex: none; height: auto; min-height: 50vh; } .pos-right { order: -1; } }
     </style>
 </head>
@@ -93,10 +99,13 @@
                     <h2 id="table-title" style="margin:0; font-size:2.2rem;">TABLE</h2><button class="btn-close" onclick="closeDrawer('caisse-drawer')">✕</button>
                 </div>
                 <div class="ticket-area" id="ticket-list"></div>
-                <div style="margin-bottom:15px;"><input type="text" id="order-obs" class="input-field" placeholder="⚠️ OBSERVATIONS"></div>
+                <div style="margin-bottom:15px;"><input type="text" id="order-obs" class="input-field" placeholder="⚠️ OBSERVATIONS" onchange="sendOrderSilently()"></div>
                 <div style="display:flex; flex-direction:column; gap:10px;">
                     <div id="total-val" style="font-size:2.5rem; font-weight:900; text-align:right;">0.00 €</div>
-                    <button class="btn-action" style="background:#fff; color:#000;" onclick="sendOrder()">VALIDER ET ENVOYER</button>
+                    <div style="display:flex; gap:10px;">
+                        <button class="btn-action" style="background:#333; color:#fff; flex:1;" onclick="afficherFacture()">🧾 ADDITION</button>
+                        <button class="btn-action" style="background:#fff; color:#000; flex:2;" onclick="sendOrder()">VALIDER ENVOI</button>
+                    </div>
                     <button class="btn-action" style="border-style:dashed;" onclick="clearTable()">💳 ENCAISSER / LIBÉRER</button>
                 </div>
             </div>
@@ -108,7 +117,28 @@
                 <h3 style="margin-top:0; color:var(--gold);">🛠️ GESTION ARCHITECTURE</h3>
                 <button class="btn-action" style="background:var(--gold); color:#000; border:none; width:100%;" onclick="startEditMode()">ACTIVER MODE ARCHITECTE</button>
             </div>
+            <h3 style="margin-bottom:10px;">AUDIT FINANCIER</h3>
+            <p style="color:#aaa; font-size:0.8rem; margin-top:0;">Seuls les encaissements validés (paiements réels) apparaissent ici.</p>
+            <div id="audit-list" style="flex:1; overflow-y:auto; padding-right:5px;"></div>
         </div>
+    </div>
+
+    <div id="facture-modal">
+        <div class="facture-paper">
+            <div class="facture-header">
+                <h2 style="margin:0;">ICHEF.CH</h2>
+                <div>L'Empire OS</div>
+                <div id="facture-date" style="margin-top:10px;"></div>
+                <div id="facture-table" style="font-size:1.2rem; margin-top:5px;"></div>
+            </div>
+            <div id="facture-items"></div>
+            <div class="facture-total">
+                <span>TOTAL TTC</span>
+                <span id="facture-total-val">0.00 €</span>
+            </div>
+            <div style="text-align:center; margin-top:20px; font-size:0.8rem; color:#555;">Merci de votre visite !</div>
+        </div>
+        <button class="btn-action" style="max-width:400px; margin-top:20px; background:#fff; color:#000;" onclick="document.getElementById('facture-modal').style.display='none'">FERMER L'ADDITION</button>
     </div>
 
     <script>
@@ -122,53 +152,26 @@
         let selectedObj = null; let draggedObj = null; let isResizing = false;
         let startX, startY, startW, startH, offsetX, offsetY;
 
-        // MOTEUR AUDIO (Double Mélodie)
-        let audioCtx = null;
-        let previousStatus = {};
+        let audioCtx = null; let previousStatus = {};
 
-        const unlockAudio = () => {
-            if (!audioCtx) { try { const AudioContext = window.AudioContext || window.webkitAudioContext; audioCtx = new AudioContext(); audioCtx.resume(); } catch(e){} }
-        };
-        document.addEventListener('pointerdown', unlockAudio, { once: true });
-        document.addEventListener('touchstart', unlockAudio, { once: true });
+        const unlockAudio = () => { if (!audioCtx) { try { const AudioContext = window.AudioContext || window.webkitAudioContext; audioCtx = new AudioContext(); audioCtx.resume(); } catch(e){} } };
+        document.addEventListener('pointerdown', unlockAudio, { once: true }); document.addEventListener('touchstart', unlockAudio, { once: true });
 
         function triggerAlert(type) {
             if(!audioCtx) return;
             const osc = audioCtx.createOscillator(); const gain = audioCtx.createGain();
             osc.connect(gain); gain.connect(audioCtx.destination);
-            
-            if (type === 'web') {
-                osc.type = 'sine';
-                osc.frequency.setValueAtTime(523.25, audioCtx.currentTime); 
-                osc.frequency.setValueAtTime(659.25, audioCtx.currentTime + 0.2); 
-                osc.frequency.setValueAtTime(783.99, audioCtx.currentTime + 0.4); 
-                gain.gain.setValueAtTime(0, audioCtx.currentTime);
-                gain.gain.linearRampToValueAtTime(0.8, audioCtx.currentTime + 0.1);
-                gain.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 1.5);
-            } else {
-                osc.type = 'triangle';
-                osc.frequency.setValueAtTime(880, audioCtx.currentTime); 
-                osc.frequency.setValueAtTime(1108.73, audioCtx.currentTime + 0.1); 
-                gain.gain.setValueAtTime(0, audioCtx.currentTime);
-                gain.gain.linearRampToValueAtTime(0.8, audioCtx.currentTime + 0.05);
-                gain.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 1.5);
-            }
+            if (type === 'web') { osc.type = 'sine'; osc.frequency.setValueAtTime(523.25, audioCtx.currentTime); osc.frequency.setValueAtTime(659.25, audioCtx.currentTime + 0.2); osc.frequency.setValueAtTime(783.99, audioCtx.currentTime + 0.4); gain.gain.setValueAtTime(0, audioCtx.currentTime); gain.gain.linearRampToValueAtTime(0.8, audioCtx.currentTime + 0.1); gain.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 1.5);
+            } else { osc.type = 'triangle'; osc.frequency.setValueAtTime(880, audioCtx.currentTime); osc.frequency.setValueAtTime(1108.73, audioCtx.currentTime + 0.1); gain.gain.setValueAtTime(0, audioCtx.currentTime); gain.gain.linearRampToValueAtTime(0.8, audioCtx.currentTime + 0.05); gain.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 1.5); }
             osc.start(audioCtx.currentTime); osc.stop(audioCtx.currentTime + 1.5);
         }
 
         function checkAlerts(newOrders) {
             for(let tid in newOrders) {
                 if (!newOrders[tid] || newOrders[tid].status === 'system') continue;
-                const isWeb = tid.includes('WEB_');
-                const isReady = newOrders[tid].status === 'ready';
-
-                let currentState = 'none';
-                if (isWeb) currentState = 'web';
-                else if (isReady) currentState = 'ready';
-
-                if (currentState !== 'none' && previousStatus[tid] !== currentState) {
-                    triggerAlert(currentState);
-                }
+                const isWeb = tid.includes('WEB_'); const isReady = newOrders[tid].status === 'ready';
+                let currentState = 'none'; if (isWeb) currentState = 'web'; else if (isReady) currentState = 'ready';
+                if (currentState !== 'none' && previousStatus[tid] !== currentState) { triggerAlert(currentState); }
                 previousStatus[tid] = currentState;
             }
         }
@@ -176,12 +179,8 @@
         ws.onmessage = (e) => {
             const msg = JSON.parse(e.data);
             if (msg.type === 'ORDER_UPDATE' || msg.type === 'PLAN_UPDATE') {
-                activeOrders = msg.activeOrders || activeOrders;
-                checkAlerts(activeOrders);
-                if (activeOrders['GLOBAL_PLAN'] && !isEditMode) {
-                    if(activeOrders['GLOBAL_PLAN'].rooms) { rooms = activeOrders['GLOBAL_PLAN'].rooms; localStorage.setItem('EMPIRE_ROOMS', JSON.stringify(rooms)); }
-                    if(activeOrders['GLOBAL_PLAN'].tables) { tables = activeOrders['GLOBAL_PLAN'].tables; localStorage.setItem('EMPIRE_TABLES', JSON.stringify(tables)); }
-                }
+                activeOrders = msg.activeOrders || activeOrders; checkAlerts(activeOrders);
+                if (activeOrders['GLOBAL_PLAN'] && !isEditMode) { if(activeOrders['GLOBAL_PLAN'].rooms) { rooms = activeOrders['GLOBAL_PLAN'].rooms; localStorage.setItem('EMPIRE_ROOMS', JSON.stringify(rooms)); } if(activeOrders['GLOBAL_PLAN'].tables) { tables = activeOrders['GLOBAL_PLAN'].tables; localStorage.setItem('EMPIRE_TABLES', JSON.stringify(tables)); } }
                 if (!rooms.find(r => r.id === currentRoomId)) currentRoomId = rooms[0].id;
                 renderRooms(); renderFloorPlan();
             }
@@ -193,7 +192,11 @@
         function renderRooms() { document.getElementById('room-bar').innerHTML = rooms.map(r => `<button class="room-tab ${r.id === currentRoomId ? 'active' : ''}" onclick="switchRoom('${r.id}')">${r.name}</button>`).join(''); }
         function switchRoom(id) { currentRoomId = id; selectedObj = null; document.getElementById('edit-context').style.display = 'none'; renderRooms(); renderFloorPlan(); }
 
-        function checkChefSecurity() { const pin = prompt("CODE MANAGER :"); if (pin === "7777") { openDrawer('audit-drawer'); } }
+        function checkChefSecurity() { const pin = prompt("CODE MANAGER :"); if (pin === "7777") { 
+            const logs = JSON.parse(localStorage.getItem('EMP_LOCAL_AUDIT')) || [];
+            document.getElementById('audit-list').innerHTML = logs.length === 0 ? '<div style="color:#555;">Aucun encaissement validé.</div>' : logs.map(l => `<div class="audit-log"><div>${l.time}</div><div>${l.action}</div></div>`).join('');
+            openDrawer('audit-drawer'); } 
+        }
         function startEditMode() { isEditMode = true; selectedObj = null; closeDrawer('audit-drawer'); document.getElementById('architect-floating-bar').style.display = 'flex'; document.getElementById('edit-context').style.display = 'none'; renderRooms(); renderFloorPlan(); }
         function addRoom() { const name = prompt("Nom de la salle ?"); if(!name) return; const newRoom = { id: 'r_'+Date.now(), name: name.toUpperCase() }; rooms.push(newRoom); switchRoom(newRoom.id); }
         function addTable() { let maxNum = 0; tables.forEach(t => { const match = t.label.match(/T(\d+)/i); if(match) maxNum = Math.max(maxNum, parseInt(match[1])); }); const newObj = { id: Date.now().toString(), label: `T${maxNum + 1}`, l: 100, t: 100, w: 100, h: 100, shape: 'square', roomId: currentRoomId }; tables.push(newObj); selectObject(newObj); renderFloorPlan(); }
@@ -215,16 +218,11 @@
                 if (isEditMode && selectedObj && selectedObj.id === t.id) div.classList.add('is-selected');
                 div.style.borderRadius = t.shape === 'round' ? '50%' : '8px';
                 
-                // DETECTION MULTIPLE (WEB + NORMAL)
                 const normalOrder = activeOrders[t.id] || activeOrders[t.label];
                 const webOrder = activeOrders['WEB_' + t.label] || activeOrders['WEB_' + t.id];
 
-                if (webOrder) {
-                    div.classList.add('web-alert'); // Alerte Bleue (QR Code)
-                } else if (normalOrder && normalOrder.status !== 'system') {
-                    if (normalOrder.status === 'ready') div.classList.add('ready'); // Alerte Verte (Cuisine Prête)
-                    else div.classList.add('occupied'); 
-                }
+                if (webOrder) { div.classList.add('web-alert'); } 
+                else if (normalOrder && normalOrder.status !== 'system') { if (normalOrder.status === 'ready') div.classList.add('ready'); else div.classList.add('occupied'); }
                 
                 div.innerHTML = `<span>${t.label}</span>`; div.style.left = t.l + 'px'; div.style.top = t.t + 'px'; div.style.width = t.w + 'px'; div.style.height = t.h + 'px';
                 
@@ -237,14 +235,8 @@
         }
 
         function openCaisse(label) { 
-            currentTableId = label; document.getElementById('table-title').innerText = label; 
-            currentTicket = activeOrders[label]?.items || []; 
-            document.getElementById('order-obs').value = activeOrders[label]?.observation || '';
-            
-            if(activeOrders[label] && activeOrders[label].status === 'ready') { 
-                activeOrders[label].status = 'pending'; 
-                fetch('/update-order', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ tableId: label, order: activeOrders[label] }) }); 
-            }
+            currentTableId = label; document.getElementById('table-title').innerText = label; currentTicket = activeOrders[label]?.items || []; document.getElementById('order-obs').value = activeOrders[label]?.observation || '';
+            if(activeOrders[label] && activeOrders[label].status === 'ready') { activeOrders[label].status = 'pending'; sendOrderSilently(); }
             renderTicket(); renderMenu('Entrée'); openDrawer('caisse-drawer'); 
         }
 
@@ -255,9 +247,9 @@
             document.getElementById('menu-items').innerHTML = menu.filter(m => (m.category || 'Autre') === activeCategory).map(m => `<div class="btn-item" onclick="addItem('${m.name.replace(/'/g, "\\'")}', ${m.price}, '${m.category}')"><span>${m.name}</span><span style="color:var(--sub);">${parseFloat(m.price).toFixed(2)}€</span></div>`).join('');
         }
 
-        function addItem(n, p, c) { let step = c === 'Entrée' ? 1 : c === 'Dessert' ? 3 : 2; currentTicket.push({id: Date.now(), n: n, p: p, category: c, step: step, done: false}); renderTicket(); }
-        function removeItem(targetIndex) { currentTicket.splice(targetIndex, 1); renderTicket(); }
-        function cycleStep(targetIndex) { let s = currentTicket[targetIndex].step || 1; currentTicket[targetIndex].step = s === 1 ? 2 : s === 2 ? 3 : 1; renderTicket(); }
+        function addItem(n, p, c) { let step = c === 'Entrée' ? 1 : c === 'Dessert' ? 3 : 2; currentTicket.push({id: Date.now(), n: n, p: p, category: c, step: step, done: false}); renderTicket(); sendOrderSilently(); }
+        function removeItem(targetIndex) { currentTicket.splice(targetIndex, 1); renderTicket(); sendOrderSilently(); }
+        function cycleStep(targetIndex) { let s = currentTicket[targetIndex].step || 1; currentTicket[targetIndex].step = s === 1 ? 2 : s === 2 ? 3 : 1; renderTicket(); sendOrderSilently(); }
 
         function renderTicket() {
             const list = document.getElementById('ticket-list'); let total = 0; const itemCounts = {};
@@ -277,25 +269,47 @@
             list.innerHTML = html || '<div style="color:#555; text-align:center; padding:40px; font-style:italic;">-- TICKET VIDE --</div>'; document.getElementById('total-val').innerText = total.toFixed(2) + " €";
         }
 
+        async function sendOrderSilently() {
+            if(currentTableId.includes('WEB_')) return; 
+            const obs = document.getElementById('order-obs').value.trim();
+            const order = { table: currentTableId, items: currentTicket, observation: obs, time: new Date().toLocaleTimeString('fr-FR', {hour:'2-digit', minute:'2-digit'}), status: 'pending' };
+            await fetch('/update-order', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ tableId: currentTableId, order }) });
+        }
+
         async function sendOrder() {
             if(currentTicket.length === 0) return; 
             const obs = document.getElementById('order-obs').value.trim();
-            const isWeb = currentTableId.includes('WEB_');
-            const realTableId = currentTableId.replace('WEB_', ''); 
-            
+            const isWeb = currentTableId.includes('WEB_'); const realTableId = currentTableId.replace('WEB_', ''); 
             const order = { table: realTableId, items: currentTicket, observation: obs, time: new Date().toLocaleTimeString('fr-FR', {hour:'2-digit', minute:'2-digit'}), status: 'pending' };
             await fetch('/update-order', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ tableId: realTableId, order }) });
-            
             if (isWeb) { await fetch('/update-order', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ tableId: currentTableId, order: null }) }); }
-            
             document.getElementById('order-obs').value = ''; closeDrawer('caisse-drawer');
         }
         
         async function clearTable() {
             if(!confirm("Encaisser et libérer cette table ?")) return;
+            const totalStr = document.getElementById('total-val').innerText.replace(' €', ''); const total = parseFloat(totalStr);
+            if (total > 0) {
+                const today = new Date().toISOString().split('T')[0]; const time = new Date().toLocaleTimeString('fr-FR', {hour:'2-digit', minute:'2-digit'});
+                let transacs = JSON.parse(localStorage.getItem('empire_transactions')) || []; transacs.push({ date: today, time: time, table: currentTableId, total: total }); localStorage.setItem('empire_transactions', JSON.stringify(transacs));
+            }
             await fetch('/update-order', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ tableId: currentTableId, order: null }) });
-            closeDrawer('caisse-drawer');
+            logAudit(`ENCAISSEMENT - Table ${currentTableId} libérée. Montant: ${totalStr}€`); closeDrawer('caisse-drawer');
         }
+
+        function afficherFacture() {
+            if(currentTicket.length === 0) return alert("Ticket vide.");
+            document.getElementById('facture-date').innerText = new Date().toLocaleString('fr-FR');
+            document.getElementById('facture-table').innerText = "Table : " + currentTableId.replace('WEB_', '');
+            const itemCounts = {}; let total = 0;
+            currentTicket.forEach(i => { total += i.p || 0; const name = i.n; if (!itemCounts[name]) itemCounts[name] = { count: 0, price: i.p || 0 }; itemCounts[name].count++; });
+            let html = '';
+            for (const key in itemCounts) { const g = itemCounts[key]; html += `<div class="facture-item"><span>${g.count}x ${key}</span><span>${(g.price * g.count).toFixed(2)}€</span></div>`; }
+            document.getElementById('facture-items').innerHTML = html; document.getElementById('facture-total-val').innerText = total.toFixed(2) + " €";
+            document.getElementById('facture-modal').style.display = 'flex';
+        }
+
+        function logAudit(action) { let logs = JSON.parse(localStorage.getItem('EMP_LOCAL_AUDIT')) || []; logs.unshift({ time: new Date().toLocaleString('fr-FR'), action: action }); if(logs.length > 50) logs.pop(); localStorage.setItem('EMP_LOCAL_AUDIT', JSON.stringify(logs)); }
 
         forceSync(); setInterval(forceSync, 3000); 
     </script>
