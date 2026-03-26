@@ -29,7 +29,6 @@
         .btn-wire { background: transparent; border: 1px solid var(--line); color: var(--line); padding: 6px 12px; font-weight: bold; cursor: pointer; border-radius: 4px; text-transform: uppercase; font-size: 0.75rem; transition: 0.2s;}
         .btn-wire:active { background: #fff; color: #000; }
         .obs-banner { border: 1px solid #fff; padding: 8px; font-weight: bold; font-size: 0.8rem; text-align: center; margin-bottom: -5px; text-transform: uppercase; background: rgba(255,255,255,0.1); }
-        .btn-safe-purge { background: transparent; color: #fff; border: 1px dashed #fff; padding: 10px 15px; font-weight: bold; border-radius: 4px; cursor: pointer; text-transform: uppercase; font-size: 0.8rem;}
     </style>
 </head>
 <body>
@@ -38,16 +37,14 @@
         <div class="header-container">
             <h2 class="header-title">CUISINE</h2>
             <div class="brand-watermark">ichef.ch</div>
-            <button class="btn-safe-purge" onclick="safePurge()">🧹 Vider les vieux tickets</button>
         </div>
-        <div class="grid-wrapper">
-            <div class="grid" id="pending-container"></div>
-        </div>
+        <div class="grid-wrapper"><div class="grid" id="pending-container"></div></div>
     </div>
 
     <script>
         const ws = new WebSocket((window.location.protocol === 'https:' ? 'wss://' : 'ws://') + window.location.host);
-        let activeOrders = {}; let audioCtx; let previousPendingCount = 0;
+        let activeOrders = {}; let audioCtx;
+        let previousPendingCount = 0;
 
         function initSystem() {
             try { const AudioContext = window.AudioContext || window.webkitAudioContext; if (AudioContext) { audioCtx = new AudioContext(); audioCtx.resume(); } } catch (e) {}
@@ -56,29 +53,27 @@
         
         function playSound(type) { 
             if(!audioCtx) return; 
-            const osc = audioCtx.createOscillator(); const gain = audioCtx.createGain(); osc.connect(gain); gain.connect(audioCtx.destination); 
-            if (type === 'web') { osc.type = 'sine'; osc.frequency.setValueAtTime(523.25, audioCtx.currentTime); osc.frequency.setValueAtTime(659.25, audioCtx.currentTime + 0.2); } else { osc.type = 'square'; osc.frequency.setValueAtTime(880, audioCtx.currentTime); }
+            const osc = audioCtx.createOscillator(); const gain = audioCtx.createGain(); 
+            osc.connect(gain); gain.connect(audioCtx.destination); 
+            if (type === 'web') { osc.type = 'sine'; osc.frequency.setValueAtTime(523.25, audioCtx.currentTime); osc.frequency.setValueAtTime(659.25, audioCtx.currentTime + 0.2); } 
+            else { osc.type = 'square'; osc.frequency.setValueAtTime(880, audioCtx.currentTime); }
             gain.gain.setValueAtTime(0.1, audioCtx.currentTime); osc.start(audioCtx.currentTime); osc.stop(audioCtx.currentTime + 0.3); 
         }
 
         ws.onmessage = (e) => {
-            try { const msg = JSON.parse(e.data); if (msg.type === 'ORDER_UPDATE') { activeOrders = msg.activeOrders; renderKDS(); } } catch(err) {}
+            try {
+                const msg = JSON.parse(e.data);
+                if (msg.type === 'ORDER_UPDATE') { activeOrders = msg.activeOrders; renderKDS(); }
+            } catch(err) { console.error("Erreur WS:", err); }
         };
 
         async function forceSync() {
-            try { const res = await fetch('/get-current-state'); const data = await res.json(); activeOrders = data.activeOrders || {}; renderKDS(); } catch(e) {}
-        }
-
-        // PURGE SECURISÉE (N'efface pas les salles, juste les tickets du serveur central)
-        async function safePurge() {
-            if(confirm("Effacer les tickets bloqués à l'écran ?")) {
-                for (const tableId in activeOrders) {
-                    if (tableId !== 'GLOBAL_PLAN' && tableId !== 'GLOBAL_RESAS') {
-                        try { await fetch('/update-order', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ tableId: tableId, order: null }) }); } catch(e) {}
-                    }
-                }
-                activeOrders = {}; renderKDS();
-            }
+            try {
+                const res = await fetch('/get-current-state');
+                const data = await res.json();
+                activeOrders = data.activeOrders;
+                renderKDS();
+            } catch(e) { console.log("Reconnexion en cours..."); }
         }
 
         function renderKDS() {
@@ -89,54 +84,68 @@
                 for (const tableId in activeOrders) {
                     if (tableId === 'GLOBAL_RESAS' || tableId === 'GLOBAL_PLAN') continue; 
                     const order = activeOrders[tableId];
-                    if(!order || typeof order !== 'object' || order.status === 'system') continue;
+                    if(!order || order.status === 'system') continue;
                     
-                    let myItems = [];
-                    if (order.ticket && Array.isArray(order.ticket.entrees)) { myItems = [...(order.ticket.entrees||[]), ...(order.ticket.plats||[]), ...(order.ticket.desserts||[])]; } 
-                    else if (Array.isArray(order.items)) { myItems = order.items; }
-
-                    const pendingItems = myItems.filter(i => i && !i.done);
+                    const myItems = order.items || [];
+                    const pendingItems = myItems.filter(i => !i.done);
                     if (pendingItems.length === 0) continue;
                     
                     currentPendingCount += pendingItems.length;
-                    const isWeb = tableId.includes('WEB_'); if(isWeb) hasWebOrder = true;
+                    const isWeb = tableId.includes('WEB_');
+                    if(isWeb) hasWebOrder = true;
 
-                    const ticketDiv = document.createElement('div'); ticketDiv.className = 'ticket-wire' + (isWeb ? ' web-ticket' : '');
+                    const ticketDiv = document.createElement('div'); 
+                    ticketDiv.className = 'ticket-wire' + (isWeb ? ' web-ticket' : '');
                     let obsHtml = order.observation ? `<div class="obs-banner">${order.observation}</div>` : '';
                     if(isWeb) obsHtml = `<div class="obs-banner" style="background:var(--web); color:#000;">🌐 COMMANDE QR</div>` + obsHtml;
 
                     const grouped = { 1: [], 2: [], 3: [] };
-                    pendingItems.forEach(i => { let step = i.step || (i.category === 'Entrée' ? 1 : i.category === 'Dessert' ? 3 : 2); grouped[step].push(i); });
+                    pendingItems.forEach(i => { 
+                        let step = i.step || (i.category === 'Entrée' ? 1 : i.category === 'Dessert' ? 3 : 2);
+                        grouped[step].push(i); 
+                    });
                     
                     const renderSection = (title, items, step) => {
                         if (items.length === 0) return '';
                         const itemCounts = {};
-                        items.forEach(i => { const name = (i.n || i.name || "Plat inconnu").replace(' [WEB]', ''); if (!itemCounts[name]) itemCounts[name] = { name: name, count: 0 }; itemCounts[name].count++; });
+                        items.forEach(i => {
+                            const name = (i.n || i.name || "Inconnu").replace(' [WEB]', '');
+                            if (!itemCounts[name]) itemCounts[name] = { name: name, count: 0 };
+                            itemCounts[name].count++;
+                        });
                         const html = Object.values(itemCounts).map(g => `<div class="tw-item"><span><span class="qty-badge">${g.count}x</span> ${g.name}</span></div>`).join('');
                         return `<div class="tw-section"><div class="tw-sec-header"><div class="tw-sec-title">${title}</div><button class="btn-wire" onclick="validerEtape('${tableId}', ${step})">✅ ENVOYER</button></div><div class="tw-sec-box">${html}</div></div>`;
                     };
 
-                    const timeStr = order.time || '--:--'; const tableStr = tableId.replace('WEB_','').replace('T','');
-
-                    ticketDiv.innerHTML = `${obsHtml}<div class="tw-header"><div class="tw-head-title">TABLE</div><div class="tw-head-title">HEURE</div><div class="tw-head-val">${tableStr}</div><div class="tw-head-val">${timeStr}</div></div>${renderSection('ENTRÉES', grouped[1], 1)}${renderSection('PLATS', grouped[2], 2)}${renderSection('DESSERTS', grouped[3], 3)}`;
+                    ticketDiv.innerHTML = `${obsHtml}
+                        <div class="tw-header"><div class="tw-head-title">TABLE</div><div class="tw-head-title">HEURE</div><div class="tw-head-val">${tableId.replace('WEB_','').replace('T','')}</div><div class="tw-head-val">${order.time || '--:--'}</div></div>
+                        ${renderSection('ENTRÉES', grouped[1], 1)}
+                        ${renderSection('PLATS', grouped[2], 2)}
+                        ${renderSection('DESSERTS', grouped[3], 3)}`;
                     container.appendChild(ticketDiv);
                 }
 
                 if (currentPendingCount > previousPendingCount) { playSound(hasWebOrder ? 'web' : 'normal'); }
                 previousPendingCount = currentPendingCount;
-            } catch(err) {}
+            } catch(err) {
+                console.error("Erreur critique Render KDS :", err);
+            }
         }
 
         async function validerEtape(tableId, step) {
             try {
-                const order = activeOrders[tableId]; if (!order) return; let changed = false;
-                let myItems = [];
-                if (order.ticket && Array.isArray(order.ticket.entrees)) { myItems = [...(order.ticket.entrees||[]), ...(order.ticket.plats||[]), ...(order.ticket.desserts||[])]; } 
-                else if (Array.isArray(order.items)) { myItems = order.items; }
-
-                myItems.forEach(i => { let iStep = i.step || (i.category === 'Entrée' ? 1 : i.category === 'Dessert' ? 3 : 2); if (iStep === step && !i.done) { i.done = true; changed = true; } });
-                if (changed) { order.status = 'ready'; await fetch('/update-order', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ tableId, order }) }); }
-            } catch(e) {}
+                const order = activeOrders[tableId]; if (!order) return;
+                let changed = false;
+                (order.items || []).forEach(i => {
+                    let iStep = i.step || (i.category === 'Entrée' ? 1 : i.category === 'Dessert' ? 3 : 2);
+                    if (iStep === step && !i.done) { i.done = true; changed = true; }
+                });
+                if (changed) {
+                    playSound('normal');
+                    order.status = 'ready'; 
+                    await fetch('/update-order', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ tableId, order }) });
+                }
+            } catch(err) { console.error("Erreur Validation :", err); }
         }
 
         forceSync(); setInterval(forceSync, 3000);
