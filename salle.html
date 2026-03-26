@@ -1,88 +1,322 @@
 <!DOCTYPE html>
 <html lang="fr">
 <head>
-    <meta charset="UTF-8"><title>Empire OS - Salle</title>
+    <meta charset="UTF-8">
+    <title>Empire OS - Plan de Salle</title>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
     <style>
         :root { --bg: #050505; --text: #fff; --gold: #ffb300; --accent: #00e676; --alert: #ff1744; }
         body { font-family: 'Inter', sans-serif; background: var(--bg); color: var(--text); margin: 0; display: flex; height: 100vh; overflow: hidden; }
-        .sidebar { width: 320px; border-right: 1px solid #333; display: flex; flex-direction: column; background: #000; }
-        .viewport { flex: 1; position: relative; overflow: auto; background-image: radial-gradient(#111 1px, transparent 1px); background-size: 30px 30px; }
-        .table-obj { position: absolute; background: #000; border: 2px solid #fff; border-radius: 8px; display: flex; justify-content: center; align-items: center; font-weight: 900; cursor: pointer; transition: 0.3s; }
-        .table-obj.occupied { border-color: var(--alert); color: var(--alert); }
-        .table-obj.ready { border-color: var(--accent); color: var(--accent); animation: blink 0.8s infinite; }
-        @keyframes blink { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
-        .details { width: 400px; border-left: 1px solid #333; padding: 25px; background: #000; }
-        .btn { width: 100%; padding: 15px; border-radius: 4px; font-weight: 900; cursor: pointer; border: none; text-transform: uppercase; margin-top: 10px; }
+        
+        /* Layout principal */
+        .sidebar { width: 320px; border-right: 1px solid #333; display: flex; flex-direction: column; background: #111; z-index: 10; }
+        .viewport { flex: 1; position: relative; overflow: auto; background-image: radial-gradient(#222 1px, transparent 1px); background-size: 30px 30px; }
+        .details { width: 350px; border-left: 1px solid #333; padding: 25px; background: #111; z-index: 10; display: flex; flex-direction: column; }
+
+        /* Les Tables */
+        .table-obj { position: absolute; background: #000; border: 2px solid #555; border-radius: 8px; display: flex; justify-content: center; align-items: center; font-weight: bold; cursor: pointer; transition: border-color 0.3s, background-color 0.3s; box-shadow: 0 4px 6px rgba(0,0,0,0.5); }
+        .table-obj:hover { border-color: var(--text); }
+        .table-obj.occupied { border-color: var(--alert); background: rgba(255, 23, 68, 0.1); }
+        .table-obj.ready { border-color: var(--accent); background: rgba(0, 230, 118, 0.1); animation: blink 1.5s infinite; }
+        .table-obj.selected-edit { border: 2px dashed var(--gold); }
+        
+        @keyframes blink { 0%, 100% { box-shadow: 0 0 5px var(--accent); } 50% { box-shadow: 0 0 20px var(--accent); } }
+        
+        /* UI Elements */
+        .btn { width: 100%; padding: 15px; border-radius: 4px; font-weight: bold; cursor: pointer; border: none; text-transform: uppercase; margin-top: 10px; transition: opacity 0.2s; }
+        .btn:hover { opacity: 0.8; }
+        .btn-outline { background: transparent; border: 1px solid var(--gold); color: var(--gold); }
+        
+        /* Radar & Ticket */
+        .header-title { padding: 20px; border-bottom: 2px solid var(--gold); font-weight: 900; font-size: 1.2rem; letter-spacing: 1px; }
+        #radar-list { flex: 1; padding: 15px; overflow-y: auto; }
+        .radar-item { padding: 10px; border-bottom: 1px solid #333; font-size: 0.9rem; }
+        
+        #bill-content { flex: 1; border-top: 1px solid #333; margin-top: 15px; padding-top: 15px; overflow-y: auto; }
+        .ticket-item { display: flex; justify-content: space-between; margin-bottom: 8px; color: #ccc; }
+        .total-zone { font-size: 1.8rem; font-weight: 900; text-align: right; margin: 20px 0; color: var(--gold); }
+        
+        /* Contrôles Édition */
+        #edit-controls { padding: 15px; background: #222; border-bottom: 1px solid #444; display: none; }
+        body.edit-mode #edit-controls { display: block; }
+        body.edit-mode .viewport { background-image: radial-gradient(var(--gold) 1px, transparent 1px); }
     </style>
 </head>
 <body>
-    <div class="sidebar">
-        <div style="padding:20px; border-bottom:2px solid var(--gold); font-weight:900;">⚡ RADAR</div>
-        <div id="radar-list" style="flex:1; padding:15px; overflow-y:auto;"></div>
-        <div style="padding:20px; text-align:center;"><div id="qrcode"></div></div>
-    </div>
-    <div class="viewport" id="floor-plan"></div>
-    <div class="details">
-        <h2 id="table-title">TABLE T...</h2>
-        <div id="bill-content" style="flex:1; border-top:1px solid #222; margin-top:15px; padding-top:15px;"></div>
-        <div style="font-size:2rem; font-weight:900; text-align:right;">TOTAL: <span id="total-val">0.00</span>€</div>
-        <button class="btn" style="background:var(--accent)" onclick="sendOrder()">🚀 ENVOYER CUISINE</button>
-        <button class="btn" style="background:var(--gold)" onclick="encaisser()">📑 ENCAISSER (7777)</button>
-    </div>
-    <script>
-        const ws = new WebSocket((window.location.protocol === 'https:' ? 'wss://' : 'ws://') + window.location.host);
-        let activeOrders = {}, currentTableId = null, selectedTable = null;
-        let tables = JSON.parse(localStorage.getItem('EMPIRE_LAYOUT')) || [{label:"T1", l:100, t:100, w:80, h:120}];
 
-        async function autoSync() {
-            const res = await fetch('/get-current-state');
-            const state = await res.json();
-            activeOrders = state.activeOrders;
-            render();
-            if(activeOrders['GLOBAL_RESERVATIONS']) renderRadar(activeOrders['GLOBAL_RESERVATIONS'].data);
+    <div class="sidebar">
+        <div class="header-title">⚡ RADAR & RÉSERVATIONS</div>
+        <div id="radar-list">
+            <div class="radar-item"><b>20:00</b> - Table 4 (VIP)</div>
+        </div>
+        
+        <div id="edit-controls">
+            <button class="btn btn-outline" onclick="addTable()">+ Ajouter Table</button>
+            <p style="font-size: 0.8rem; color: #888; text-align: center; margin-top: 10px;">
+                Mode Édition :<br>Glisser pour déplacer.<br>Maj + Glisser pour redimensionner.
+            </p>
+        </div>
+
+        <div style="padding: 20px;">
+            <button class="btn" id="btn-toggle-edit" style="background: #333; color: white; border: 1px solid #555;" onclick="toggleEditMode()">Activer Mode Édition</button>
+        </div>
+        <div style="padding: 20px; text-align: center; display: flex; justify-content: center;">
+            <div id="qrcode" style="background: white; padding: 10px; border-radius: 8px;"></div>
+        </div>
+    </div>
+
+    <div class="viewport" id="floor-plan"></div>
+
+    <div class="details">
+        <h2 id="table-title" style="margin-top: 0; color: var(--gold);">SÉLECTIONNEZ UNE TABLE</h2>
+        
+        <div id="bill-content">
+            <div style="color: #666; text-align: center; margin-top: 50px;">Table libre</div>
+        </div>
+        
+        <div class="total-zone">
+            TOTAL: <span id="total-val">0.00</span>€
+        </div>
+        
+        <button class="btn" style="background: var(--accent); color: black;" onclick="alert('Fonction envoi vers KDS à câbler')">🚀 ENVOYER CUISINE</button>
+        <button class="btn" style="background: var(--alert); color: white;" onclick="encaisser()">📑 ENCAISSER</button>
+    </div>
+
+    <script>
+        // --- 1. INITIALISATION ---
+        const ws = new WebSocket('ws://localhost:3000');
+        let activeOrders = {};
+        let currentTableId = null;
+        let isEditMode = false;
+        
+        // Variables pour la manipulation des tables
+        let interactionState = null; // null, 'dragging', 'resizing'
+        let selectedTableIndex = null;
+        let startX, startY, startW, startH, startL, startT;
+
+        // Chargement du plan de salle depuis le stockage local (ou création d'un plan par défaut)
+        let tables = JSON.parse(localStorage.getItem('EMPIRE_LAYOUT')) || [
+            { label: "T1", l: 100, t: 100, w: 80, h: 80 },
+            { label: "T2", l: 250, t: 100, w: 120, h: 80 },
+            { label: "T3", l: 100, t: 300, w: 80, h: 80 }
+        ];
+
+        // Génération du QR Code
+        window.onload = () => {
+            new QRCode(document.getElementById("qrcode"), { 
+                text: "https://ichf.ch/reservation", 
+                width: 100, 
+                height: 100 
+            });
+            renderFloorPlan();
+            fetchInitialState();
+        };
+
+        // --- 2. COMMUNICATION TEMPS RÉEL (H24) ---
+        ws.onopen = () => console.log('Radar connecté au QG');
+        ws.onmessage = (e) => {
+            const message = JSON.parse(e.data);
+            if (message.type === 'ORDER_UPDATE') {
+                activeOrders = message.activeOrders;
+                renderFloorPlan();
+                if(currentTableId) updateSidePanel();
+            }
+        };
+
+        async function fetchInitialState() {
+            try {
+                const res = await fetch('/get-current-state');
+                const state = await res.json();
+                activeOrders = state.activeOrders;
+                renderFloorPlan();
+            } catch (err) {
+                console.error("Erreur de synchronisation initiale", err);
+            }
         }
 
-        ws.onmessage = (e) => { if (JSON.parse(e.data).type === 'ORDER_UPDATE') autoSync(); };
-        setInterval(autoSync, 5000);
+        // --- 3. MOTEUR DE RENDU DU PLAN DE SALLE ---
+        function renderFloorPlan() {
+            const floor = document.getElementById('floor-plan');
+            floor.innerHTML = ''; // Nettoyage
 
-        function render() {
-            const floor = document.getElementById('floor-plan'); floor.innerHTML = '';
-            tables.forEach((t, i) => {
-                const div = document.createElement('div'); div.className = 'table-obj';
-                const o = activeOrders[t.label];
-                if(o) { div.classList.add('occupied'); if(o.status === 'ready') div.classList.add('ready'); }
-                div.style.left=t.l+'px'; div.style.top=t.t+'px'; div.style.width=t.w+'px'; div.style.height=t.h+'px';
+            tables.forEach((t, index) => {
+                const div = document.createElement('div');
+                div.className = 'table-obj';
+                
+                // Style de base (position et taille)
+                div.style.left = t.l + 'px';
+                div.style.top = t.t + 'px';
+                div.style.width = t.w + 'px';
+                div.style.height = t.h + 'px';
                 div.innerHTML = t.label;
-                div.onmousedown = (e) => {
-                    if(e.altKey) { selectedTable = { i, startX: e.clientX, startY: e.clientY, startL: t.l, startT: t.t }; e.preventDefault(); }
-                    else { currentTableId = t.label; render(); }
-                };
+
+                // Statut de la table (Temps réel)
+                const orderData = activeOrders[t.label];
+                if (orderData) {
+                    div.classList.add('occupied');
+                    // Si tu gères un statut 'ready' dans ton backend
+                    if (orderData.status === 'ready') div.classList.add('ready');
+                }
+
+                // Surbrillance en mode édition
+                if (isEditMode && selectedTableIndex === index) {
+                    div.classList.add('selected-edit');
+                }
+
+                // Événement d'interaction (Clic / Début de glissement)
+                div.onmousedown = (e) => handleTablePointerDown(e, index, t);
+
                 floor.appendChild(div);
             });
-            if(currentTableId) updatePanel();
+        }
+
+        // --- 4. LOGIQUE D'ÉDITION DE LA SALLE ---
+        function toggleEditMode() {
+            isEditMode = !isEditMode;
+            document.body.classList.toggle('edit-mode', isEditMode);
+            const btn = document.getElementById('btn-toggle-edit');
+            
+            if (isEditMode) {
+                btn.innerText = "💾 Quitter & Sauvegarder";
+                btn.style.background = "var(--gold)";
+                btn.style.color = "black";
+            } else {
+                btn.innerText = "Activer Mode Édition";
+                btn.style.background = "#333";
+                btn.style.color = "white";
+                selectedTableIndex = null;
+                // Sauvegarde de l'architecture
+                localStorage.setItem('EMPIRE_LAYOUT', JSON.stringify(tables));
+                renderFloorPlan();
+            }
+        }
+
+        function addTable() {
+            const newLabel = prompt("Numéro ou nom de la nouvelle table ? (ex: T4, Bar-1)");
+            if (!newLabel) return;
+            
+            tables.push({
+                label: newLabel,
+                l: 50, t: 50, w: 80, h: 80 // Position par défaut en haut à gauche
+            });
+            renderFloorPlan();
+        }
+
+        // --- 5. GESTION DES DÉPLACEMENTS ET REDIMENSIONNEMENTS ---
+        function handleTablePointerDown(e, index, tableObject) {
+            if (!isEditMode) {
+                // MODE SERVICE : Afficher les détails de la commande
+                currentTableId = tableObject.label;
+                updateSidePanel();
+                return;
+            }
+
+            // MODE ÉDITION : Sélection et préparation à l'action
+            e.preventDefault(); // Évite la sélection de texte
+            selectedTableIndex = index;
+            startX = e.clientX;
+            startY = e.clientY;
+            startL = tableObject.l;
+            startT = tableObject.t;
+            startW = tableObject.w;
+            startH = tableObject.h;
+
+            // Détection si on maintient "Shift" pour redimensionner
+            if (e.shiftKey) {
+                interactionState = 'resizing';
+            } else {
+                interactionState = 'dragging';
+            }
+            renderFloorPlan(); // Mettre à jour la surbrillance
         }
 
         window.onmousemove = (e) => {
-            if(!selectedTable) return;
-            const t = tables[selectedTable.i];
-            t.l = selectedTable.startL + (e.clientX - selectedTable.startX);
-            t.t = selectedTable.startT + (e.clientY - selectedTable.startY);
-            render();
-        };
-        window.onmouseup = () => { if(selectedTable) localStorage.setItem('EMPIRE_LAYOUT', JSON.stringify(tables)); selectedTable = null; };
+            if (!isEditMode || !interactionState || selectedTableIndex === null) return;
 
-        function updatePanel() {
-            document.getElementById('table-title').innerText = "TABLE " + currentTableId;
-            const o = activeOrders[currentTableId];
+            const t = tables[selectedTableIndex];
+            const deltaX = e.clientX - startX;
+            const deltaY = e.clientY - startY;
+
+            if (interactionState === 'dragging') {
+                // Déplacement avec une grille de 10px pour que ça reste propre
+                t.l = Math.max(0, Math.round((startL + deltaX) / 10) * 10);
+                t.t = Math.max(0, Math.round((startT + deltaY) / 10) * 10);
+            } 
+            else if (interactionState === 'resizing') {
+                // Redimensionnement (limité à 40px minimum)
+                t.w = Math.max(40, Math.round((startW + deltaX) / 10) * 10);
+                t.h = Math.max(40, Math.round((startH + deltaY) / 10) * 10);
+            }
+            
+            renderFloorPlan();
+        };
+
+        window.onmouseup = () => {
+            if (interactionState) {
+                interactionState = null;
+                // On sauvegarde à chaque lacher de souris pour ne rien perdre
+                localStorage.setItem('EMPIRE_LAYOUT', JSON.stringify(tables));
+            }
+        };
+
+        // --- 6. GESTION DU PANNEAU DE DROITE (TICKET) ---
+        function updateSidePanel() {
+            if (!currentTableId) return;
+
+            document.getElementById('table-title').innerText = "TABLE : " + currentTableId;
+            const orderData = activeOrders[currentTableId];
+            const billContainer = document.getElementById('bill-content');
             let total = 0;
-            document.getElementById('bill-content').innerHTML = o ? o.items.map(i => { total += i.p; return `<div style="display:flex; justify-content:space-between"><span>${i.n}</span><span>${i.p.toFixed(2)}€</span></div>`}).join('') : 'Libre';
+
+            if (!orderData || !orderData.plats || orderData.plats.length === 0) {
+                billContainer.innerHTML = '<div style="color: #666; text-align: center; margin-top: 50px;">Table libre</div>';
+                document.getElementById('total-val').innerText = "0.00";
+                return;
+            }
+
+            // Pour l'instant on simule des prix à 15€ par article car ton payload précédent n'avait pas de prix structurés
+            let ticketHTML = '';
+            orderData.plats.forEach(plat => {
+                const prixSimule = 15.00;
+                total += prixSimule;
+                ticketHTML += `
+                    <div class="ticket-item">
+                        <span>${plat}</span>
+                        <span>${prixSimule.toFixed(2)}€</span>
+                    </div>
+                `;
+            });
+
+            billContainer.innerHTML = ticketHTML;
             document.getElementById('total-val').innerText = total.toFixed(2);
         }
 
-        async function encaisser() { if(prompt("CODE:")==='7777') { await fetch('/update-order', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({tableId:currentTableId, order:null})}); currentTableId=null; } }
-        function renderRadar(d) { const today = new Date().toISOString().split('T')[0]; document.getElementById('radar-list').innerHTML = (d[today] || []).map(r => `<div style="padding:10px; border-bottom:1px solid #222;"><b>${r.time}</b> - ${r.name}</div>`).join(''); }
-        window.onload = () => { autoSync(); new QRCode(document.getElementById("qrcode"), { text: window.location.origin + "/reservation.html", width: 120, height: 120 }); };
+        async function encaisser() {
+            if (!currentTableId || !activeOrders[currentTableId]) {
+                alert("Aucune commande en cours sur cette table.");
+                return;
+            }
+            
+            const code = prompt("CODE MANAGER POUR ENCAISSEMENT (7777):");
+            if(code === '7777') {
+                try {
+                    // On envoie 'null' au backend pour libérer la table
+                    await fetch('/update-order', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ tableId: currentTableId, order: null })
+                    });
+                    currentTableId = null;
+                    document.getElementById('table-title').innerText = "SÉLECTIONNEZ UNE TABLE";
+                    document.getElementById('bill-content').innerHTML = '';
+                    document.getElementById('total-val').innerText = "0.00";
+                } catch (e) {
+                    alert("Erreur de connexion au QG");
+                }
+            } else {
+                alert("Code incorrect.");
+            }
+        }
     </script>
 </body>
 </html>
