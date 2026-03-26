@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Réserver - TABLEAU EMPIRE</title>
+    <style>
+        :root { --bg: #050505; --accent: #00e676; --gold: #ffb300; --text: #fff; --panel: #111; }
+        body { font-family: 'Inter', sans-serif; background: var(--bg); color: var(--text); margin: 0; display: flex; align-items: center; justify-content: center; min-height: 100vh; padding: 20px; box-sizing: border-box; }
+        
+        .booking-card { background: var(--panel); border: 1px solid #333; padding: 40px; border-radius: 15px; width: 100%; max-width: 450px; box-shadow: 0 10px 50px rgba(0,0,0,0.5); }
+        .logo { font-weight: 900; letter-spacing: 4px; text-align: center; margin-bottom: 30px; font-size: 1.5rem; color: #fff; }
+        
+        label { display: block; font-size: 0.7rem; text-transform: uppercase; color: #888; margin-bottom: 8px; letter-spacing: 1px; }
+        input, select { width: 100%; background: #000; border: 1px solid #333; color: #fff; padding: 15px; border-radius: 8px; margin-bottom: 20px; font-size: 1rem; box-sizing: border-box; font-family: inherit; }
+        input:focus { border-color: var(--gold); outline: none; }
+
+        .btn-book { width: 100%; padding: 20px; background: var(--gold); color: #000; border: none; border-radius: 8px; font-weight: 900; font-size: 1.1rem; cursor: pointer; text-transform: uppercase; transition: 0.3s; }
+        .btn-book:hover { transform: scale(1.02); background: #fff; }
+
+        #success-msg { display: none; text-align: center; animation: fadeIn 0.5s ease; }
+        @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+    </style>
+</head>
+<body>
+
+    <div class="booking-card" id="form-container">
+        <div class="logo">TABLEAU<br><span style="font-size:0.7rem; color:var(--gold); letter-spacing:2px;">RÉSERVATION LIVE</span></div>
+        
+        <div id="booking-form">
+            <label>Votre Nom</label>
+            <input type="text" id="res-name" placeholder="Ex: Flavien ..." required>
+
+            <div style="display:grid; grid-template-columns: 1fr 1fr; gap:15px;">
+                <div>
+                    <label>Nombre de PAX</label>
+                    <select id="res-pax">
+                        <option value="1">1 Personne</option>
+                        <option value="2" selected>2 Personnes</option>
+                        <option value="3">3 Personnes</option>
+                        <option value="4">4 Personnes</option>
+                        <option value="5">5 Personnes</option>
+                        <option value="6">6+ Personnes</option>
+                    </select>
+                </div>
+                <div>
+                    <label>Heure</label>
+                    <select id="res-time">
+                        <option>12:00</option><option>12:30</option><option>13:00</option>
+                        <option>19:00</option><option selected>19:30</option><option>20:00</option>
+                        <option>20:30</option><option>21:00</option>
+                    </select>
+                </div>
+            </div>
+
+            <label>Date</label>
+            <input type="date" id="res-date" required>
+
+            <button class="btn-book" onclick="submitReservation()">Confirmer la réservation</button>
+        </div>
+
+        <div id="success-msg">
+            <h2 style="color:var(--accent);">✓ CONFIRMÉ</h2>
+            <p>Votre table est réservée.<br>L'Empire vous attend.</p>
+            <button class="btn-book" style="background:#222; color:#fff; margin-top:20px;" onclick="location.reload()">Nouvelle réservation</button>
+        </div>
+    </div>
+
+    <script>
+        // On règle la date sur aujourd'hui par défaut
+        document.getElementById('res-date').valueAsDate = new Date();
+
+        async function submitReservation() {
+            const name = document.getElementById('res-name').value;
+            const pax = document.getElementById('res-pax').value;
+            const time = document.getElementById('res-time').value;
+            const date = document.getElementById('res-date').value;
+
+            if(!name || !date) return alert("Veuillez remplir votre nom et la date.");
+
+            const reservation = {
+                id: "RES_" + Date.now(),
+                name, pax, time, date,
+                status: 'web_confirmed',
+                timestamp: new Date().toLocaleString()
+            };
+
+            try {
+                // TÉLÉTRANSMISSION H24 VERS TON SERVEUR RENDER
+                // On utilise la clé GLOBAL_RESERVATIONS pour que tout le monde reçoive l'info
+                const res = await fetch('/get-current-state');
+                const state = await res.json();
+                
+                let currentResas = state.activeOrders['GLOBAL_RESERVATIONS'] ? state.activeOrders['GLOBAL_RESERVATIONS'].data : {};
+                
+                // On organise par date
+                if(!currentResas[date]) currentResas[date] = [];
+                currentResas[date].push(reservation);
+
+                await fetch('/update-order', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        tableId: 'GLOBAL_RESERVATIONS',
+                        order: { status: 'system', data: currentResas }
+                    })
+                });
+
+                // Succès visuel
+                document.getElementById('booking-form').style.display = 'none';
+                document.getElementById('success-msg').style.display = 'block';
+
+            } catch (err) {
+                alert("Erreur de connexion au serveur Empire.");
+            }
+        }
+    </script>
+</body>
+</html>
