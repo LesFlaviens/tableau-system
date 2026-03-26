@@ -18,7 +18,6 @@
         .radar-badge { position: absolute; top: -8px; right: -8px; background: var(--text); color: #000; border-radius: 50%; width: 20px; height: 20px; font-size: 0.75rem; display: flex; justify-content: center; align-items: center; animation: blink 1s infinite; font-weight: bold;}
         @keyframes blink { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
 
-        /* BARRE DE NAVIGATION DES SALLES */
         .room-bar { background: #0a0a0a; border-bottom: 1px solid rgba(255,255,255,0.2); padding: 12px 25px; display: flex; gap: 10px; overflow-x: auto; z-index: 999; }
         .room-tab { background: transparent; border: 1px solid var(--sub); color: var(--sub); padding: 8px 25px; border-radius: 20px; font-weight: 900; font-size: 0.9rem; cursor: pointer; text-transform: uppercase; white-space: nowrap; transition: 0.2s; }
         .room-tab.active { background: #fff; color: #000; border-color: #fff; }
@@ -139,7 +138,6 @@
         const ws = new WebSocket((window.location.protocol === 'https:' ? 'wss://' : 'ws://') + window.location.host);
         let activeOrders = {}; let currentTableId = null; let currentTicket = [];
         
-        // MOTEUR DE SALLES (ONGLETS)
         let rooms = JSON.parse(localStorage.getItem('EMPIRE_ROOMS')) || [{id: 'r_main', name: 'SALLE PRINCIPALE'}];
         let currentRoomId = rooms[0].id;
         let tables = JSON.parse(localStorage.getItem('EMPIRE_TABLES')) || [];
@@ -151,12 +149,23 @@
         const tmrw = new Date(); tmrw.setDate(tmrw.getDate() + 1);
         document.getElementById('resa-date').value = tmrw.toISOString().split('T')[0];
 
+        // GESTION DU RÉSEAU & SYNCHRONISATION (La Clé du Succès)
         ws.onmessage = (e) => {
             const msg = JSON.parse(e.data);
             if (msg.type === 'ORDER_UPDATE' || msg.type === 'PLAN_UPDATE') {
                 activeOrders = msg.activeOrders || activeOrders;
-                if (msg.rooms && !isEditMode) { rooms = msg.rooms; localStorage.setItem('EMPIRE_ROOMS', JSON.stringify(rooms)); }
-                if (msg.tables && !isEditMode) { tables = msg.tables; localStorage.setItem('EMPIRE_TABLES', JSON.stringify(tables)); }
+                
+                // On récupère le plan d'architecture s'il est envoyé via le serveur (Commande Système)
+                if (activeOrders['GLOBAL_PLAN'] && !isEditMode) {
+                    if(activeOrders['GLOBAL_PLAN'].rooms) {
+                        rooms = activeOrders['GLOBAL_PLAN'].rooms;
+                        localStorage.setItem('EMPIRE_ROOMS', JSON.stringify(rooms));
+                    }
+                    if(activeOrders['GLOBAL_PLAN'].tables) {
+                        tables = activeOrders['GLOBAL_PLAN'].tables;
+                        localStorage.setItem('EMPIRE_TABLES', JSON.stringify(tables));
+                    }
+                }
                 
                 if (!rooms.find(r => r.id === currentRoomId)) currentRoomId = rooms[0].id;
                 renderRooms(); renderFloorPlan(); renderRadar(); 
@@ -164,14 +173,25 @@
         };
 
         window.addEventListener('storage', (e) => { if (e.key === 'empire_recipes' && document.getElementById('caisse-drawer').classList.contains('open')) { renderMenu('Plat'); } });
-        async function forceSync() { try { const res = await fetch('/get-current-state'); const data = await res.json(); activeOrders = data.activeOrders; renderRooms(); renderFloorPlan(); renderRadar(); } catch(e) {} }
+        
+        async function forceSync() { 
+            try { 
+                const res = await fetch('/get-current-state'); const data = await res.json(); 
+                activeOrders = data.activeOrders; 
+                
+                if (activeOrders['GLOBAL_PLAN'] && !isEditMode) {
+                    if(activeOrders['GLOBAL_PLAN'].rooms) { rooms = activeOrders['GLOBAL_PLAN'].rooms; localStorage.setItem('EMPIRE_ROOMS', JSON.stringify(rooms)); }
+                    if(activeOrders['GLOBAL_PLAN'].tables) { tables = activeOrders['GLOBAL_PLAN'].tables; localStorage.setItem('EMPIRE_TABLES', JSON.stringify(tables)); }
+                }
+
+                if (!rooms.find(r => r.id === currentRoomId)) currentRoomId = rooms[0].id;
+                renderRooms(); renderFloorPlan(); renderRadar(); 
+            } catch(e) {} 
+        }
 
         function openDrawer(id) { document.querySelectorAll('.drawer').forEach(d => d.classList.remove('open')); document.getElementById(id).classList.add('open'); }
         function closeDrawer(id) { document.getElementById(id).classList.remove('open'); }
 
-        // ==========================================
-        // GESTION DES ONGLETS (SALLES)
-        // ==========================================
         function renderRooms() {
             const container = document.getElementById('room-bar');
             container.innerHTML = rooms.map(r => `<button class="room-tab ${r.id === currentRoomId ? 'active' : ''}" onclick="switchRoom('${r.id}')">${r.name}</button>`).join('');
@@ -183,9 +203,6 @@
             renderRooms(); renderFloorPlan();
         }
 
-        // ==========================================
-        // MOTEUR ARCHITECTE TACTILE
-        // ==========================================
         function checkChefSecurity() {
             const pin = prompt("CODE MANAGER :");
             if (pin === "7777") {
@@ -237,15 +254,26 @@
             renderFloorPlan();
         }
 
+        // SAUVEGARDE SUR LE SERVEUR EN TANT QUE COMMANDE SYSTÈME
         function savePlan() {
             localStorage.setItem('EMPIRE_TABLES', JSON.stringify(tables));
             localStorage.setItem('EMPIRE_ROOMS', JSON.stringify(rooms));
-            if(ws.readyState === WebSocket.OPEN) { ws.send(JSON.stringify({type: 'PLAN_UPDATE', tables: tables, rooms: rooms})); }
+            
+            // Le hack ultime : On envoie l'architecture au serveur comme si c'était une commande. 
+            // Ainsi, le serveur le stocke et l'envoie à tous les terminaux automatiquement.
+            fetch('/update-order', { 
+                method: 'POST', 
+                headers: { 'Content-Type': 'application/json' }, 
+                body: JSON.stringify({ 
+                    tableId: 'GLOBAL_PLAN', 
+                    order: { status: 'system', rooms: rooms, tables: tables } 
+                }) 
+            });
+            
             isEditMode = false; selectedObj = null; document.getElementById('architect-floating-bar').style.display = 'none';
             renderFloorPlan(); alert("Plan déployé avec succès !");
         }
 
-        // DRAG & RESIZE TACTILE
         const floorArea = document.getElementById('floor-plan');
         floorArea.addEventListener('pointermove', (e) => {
             if (!isEditMode) return;
@@ -285,7 +313,6 @@
             });
         }
         
-        // --- AFFICHAGE & PRIS DE COMMANDE ---
         function renderRadar() {
             const container = document.getElementById('radar-list'); let html = ''; let alertsCount = 0;
             for (const tableId in activeOrders) {
