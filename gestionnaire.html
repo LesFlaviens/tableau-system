@@ -32,7 +32,6 @@
         .table-obj.ready { border-color: var(--accent); background: rgba(0,230,118,0.15); color: var(--accent); animation: pulse-border 1.2s infinite; }
         @keyframes pulse-border { 0%, 100% { box-shadow: 0 0 0 rgba(0,230,118,0); } 50% { box-shadow: 0 0 20px rgba(0,230,118,0.8); } }
 
-        /* TIROIRS COCKPIT : 100% largeur sur mobile pour confort de frappe */
         .drawer { position: absolute; top: 0; right: 0; height: 100%; width: 100%; max-width: 500px; background: #050505; border-left: 1px solid var(--line); padding: 15px; z-index: 10000; transform: translateX(100%); transition: 0.3s cubic-bezier(0.4, 0, 0.2, 1); display: flex; flex-direction: column; box-sizing: border-box; }
         .drawer.open { transform: translateX(0); }
         #radar-drawer { right: auto; left: 0; border-left: none; border-right: 1px solid var(--line); transform: translateX(-100%); }
@@ -42,7 +41,6 @@
         .btn-close { background: transparent; border: 1px solid var(--line); color: var(--line); width: 40px; height: 40px; border-radius: 50%; font-size: 1.2rem; cursor: pointer; font-weight: bold; display: flex; align-items: center; justify-content: center; transition: 0.2s;}
         .btn-close:active { background: #fff; color: #000; }
 
-        /* STRUCTURE STRICTE DE LA CAISSE (Anti-Écrasement) */
         .ticket-area { flex: 0 0 30%; background: #000; border: 1px solid var(--line); border-radius: 4px; padding: 10px; overflow-y: auto; margin-bottom: 10px; }
         
         .obs-input-container { flex-shrink: 0; margin-bottom: 10px; }
@@ -69,7 +67,7 @@
 
         @media (max-width: 500px) {
             .brand-watermark { display: none; }
-            .drawer { max-width: 100%; } /* Prend tout l'écran sur mobile */
+            .drawer { max-width: 100%; }
         }
     </style>
 </head>
@@ -137,9 +135,12 @@
         const ws = new WebSocket((window.location.protocol === 'https:' ? 'wss://' : 'ws://') + window.location.host);
         let activeOrders = {}; let currentTableId = null; let currentTicket = [];
         
-        let isEditMode = false; // Le serveur n'édite jamais l'architecture
-        let rooms = JSON.parse(localStorage.getItem('EMPIRE_ROOMS')) || [{id: 'r_main', name: 'SALLE PRINCIPALE'}];
+        let isEditMode = false;
+        
+        let savedRooms = JSON.parse(localStorage.getItem('EMPIRE_ROOMS'));
+        let rooms = (savedRooms && savedRooms.length > 0) ? savedRooms : [{id: 'r_main', name: 'SALLE PRINCIPALE'}];
         let currentRoomId = rooms[0].id;
+        
         let tables = JSON.parse(localStorage.getItem('EMPIRE_TABLES')) || [];
 
         const tmrw = new Date(); tmrw.setDate(tmrw.getDate() + 1);
@@ -151,8 +152,14 @@
                 activeOrders = msg.activeOrders || activeOrders;
                 
                 if (activeOrders['GLOBAL_PLAN'] && !isEditMode) {
-                    if(activeOrders['GLOBAL_PLAN'].rooms) { rooms = activeOrders['GLOBAL_PLAN'].rooms; localStorage.setItem('EMPIRE_ROOMS', JSON.stringify(rooms)); }
-                    if(activeOrders['GLOBAL_PLAN'].tables) { tables = activeOrders['GLOBAL_PLAN'].tables; localStorage.setItem('EMPIRE_TABLES', JSON.stringify(tables)); }
+                    if(activeOrders['GLOBAL_PLAN'].rooms) { 
+                        rooms = activeOrders['GLOBAL_PLAN'].rooms; 
+                        localStorage.setItem('EMPIRE_ROOMS', JSON.stringify(rooms)); 
+                    }
+                    if(activeOrders['GLOBAL_PLAN'].tables) { 
+                        tables = activeOrders['GLOBAL_PLAN'].tables; 
+                        localStorage.setItem('EMPIRE_TABLES', JSON.stringify(tables)); 
+                    }
                 }
                 
                 if (!rooms.find(r => r.id === currentRoomId)) currentRoomId = rooms[0].id;
@@ -181,14 +188,12 @@
         function openDrawer(id) { document.querySelectorAll('.drawer').forEach(d => d.classList.remove('open')); document.getElementById(id).classList.add('open'); }
         function closeDrawer(id) { document.getElementById(id).classList.remove('open'); }
 
-        // --- GESTION DES ONGLETS (LECTURE SEULE) ---
         function renderRooms() {
             const container = document.getElementById('room-bar');
             container.innerHTML = rooms.map(r => `<button class="room-tab ${r.id === currentRoomId ? 'active' : ''}" onclick="switchRoom('${r.id}')">${r.name}</button>`).join('');
         }
         function switchRoom(id) { currentRoomId = id; renderRooms(); renderFloorPlan(); }
 
-        // --- RÉSERVATIONS ---
         function saveResa() {
             const date = document.getElementById('resa-date').value; const time = document.getElementById('resa-time').value;
             const name = document.getElementById('resa-name').value.trim(); const pax = document.getElementById('resa-pax').value; const tel = document.getElementById('resa-tel').value.trim();
@@ -199,23 +204,21 @@
             document.getElementById('resa-name').value = ''; document.getElementById('resa-tel').value = ''; closeDrawer('resa-drawer');
         }
 
-        // --- ALERTES RADAR ---
         function renderRadar() {
             const container = document.getElementById('radar-list'); let html = ''; let alertsCount = 0;
             for (const tableId in activeOrders) {
                 const order = activeOrders[tableId]; if (!order.items || order.items.length === 0) continue;
                 const isWeb = tableId.includes('WEB'); const foodItems = order.items.filter(i => i.category !== 'Boisson'); const drinkItems = order.items.filter(i => i.category === 'Boisson');
                 const foodReady = foodItems.length > 0 && foodItems.every(i => i.done);
-                if (foodReady) { alertsCount++; html += `<div class="alert-card"><span class="alert-title">🔥 CUISINE PRÊTE</span><span style="font-size:1.1rem;">Table : ${tableId.replace('WEB_','')}</span></div>`; }
+                if (foodReady) { alertsCount++; html += `<div class="alert-card"><b>🔥 CUISINE PRÊTE</b><span style="font-size:1.1rem;">Table : ${tableId.replace('WEB_','')}</span></div>`; }
                 const drinksReady = drinkItems.length > 0 && drinkItems.every(i => i.done);
-                if (drinksReady && !foodReady) { alertsCount++; html += `<div class="alert-card"><span class="alert-title">🧊 BAR PRÊT</span><span style="font-size:1.1rem;">Table : ${tableId.replace('WEB_','')}</span></div>`; }
-                if (isWeb && order.items.every(i => !i.done)) { alertsCount++; html += `<div class="alert-card"><span class="alert-title">🌐 COMMANDE QR</span><span style="font-size:1.1rem;">Table : ${tableId.replace('WEB_','')}</span></div>`; }
+                if (drinksReady && !foodReady) { alertsCount++; html += `<div class="alert-card"><b>🧊 BAR PRÊT</b><span style="font-size:1.1rem;">Table : ${tableId.replace('WEB_','')}</span></div>`; }
+                if (isWeb && order.items.every(i => !i.done)) { alertsCount++; html += `<div class="alert-card"><b>🌐 COMMANDE QR</b><span style="font-size:1.1rem;">Table : ${tableId.replace('WEB_','')}</span></div>`; }
             }
             container.innerHTML = html || '<div style="color:#555; text-align:center; padding-top:20px;">Aucune alerte.</div>';
             const badge = document.getElementById('radar-badge'); if (alertsCount > 0) { badge.style.display = 'flex'; badge.textContent = alertsCount; } else { badge.style.display = 'none'; }
         }
 
-        // --- PLAN DE SALLE ---
         function renderFloorPlan() {
             const floor = document.getElementById('floor-plan'); floor.innerHTML = '';
             tables.forEach(t => {
@@ -231,27 +234,35 @@
             });
         }
 
-        // --- CAISSE & PRISE DE COMMANDE (POS TACTILE) ---
         function openCaisse(label) { 
             currentTableId = label; document.getElementById('table-title').innerText = label; 
             currentTicket = activeOrders[label]?.items || []; 
             document.getElementById('order-obs').value = activeOrders[label]?.observation || '';
-            renderTicket(); renderMenu('Plat'); openDrawer('caisse-drawer'); 
+            renderTicket(); renderMenu('Entrée'); openDrawer('caisse-drawer'); 
         }
 
-        function renderMenu(activeCategory = 'Plat') {
-            const menu = JSON.parse(localStorage.getItem('empire_recipes')) || [{name:'Plat Test', price:20, category:'Plat'}];
-            const categories = [...new Set(menu.map(item => item.category || 'Autre'))];
+        // LE MOTEUR DU MENU ET L'INJECTION DES 30 PLATS DE TEST
+        function renderMenu(activeCategory = 'Entrée') {
+            const testMenu = [
+                {name: 'Salade César', price: 12, category: 'Entrée'}, {name: 'Soupe Oignon', price: 9, category: 'Entrée'}, {name: 'Carpaccio Bœuf', price: 14, category: 'Entrée'}, {name: 'Tartare Saumon', price: 15, category: 'Entrée'}, {name: 'Foie Gras', price: 18, category: 'Entrée'}, {name: 'Escargots (x6)', price: 10, category: 'Entrée'}, {name: 'Œufs Mayo', price: 7, category: 'Entrée'}, {name: 'Bruschetta', price: 11, category: 'Entrée'}, {name: 'Saumon Fumé', price: 16, category: 'Entrée'}, {name: 'Salade Chèvre', price: 13, category: 'Entrée'},
+                {name: 'Entrecôte 300g', price: 28, category: 'Plat'}, {name: 'Filet de Bar', price: 24, category: 'Plat'}, {name: 'Risotto Truffes', price: 22, category: 'Plat'}, {name: 'Magret Canard', price: 26, category: 'Plat'}, {name: 'Burger Empire', price: 19, category: 'Plat'}, {name: 'Tartare Bœuf', price: 20, category: 'Plat'}, {name: 'Côte de Bœuf', price: 65, category: 'Plat'}, {name: 'Lasagnes', price: 18, category: 'Plat'}, {name: 'Poke Bowl', price: 17, category: 'Plat'}, {name: 'Poulet Rôti', price: 19, category: 'Plat'},
+                {name: 'Tiramisu', price: 8, category: 'Dessert'}, {name: 'Fondant Choco', price: 9, category: 'Dessert'}, {name: 'Crème Brûlée', price: 8, category: 'Dessert'}, {name: 'Tarte Citron', price: 7, category: 'Dessert'}, {name: 'Profiteroles', price: 10, category: 'Dessert'}, {name: 'Coupe Glacée', price: 7, category: 'Dessert'}, {name: 'Café Gourmand', price: 11, category: 'Dessert'}, {name: 'Macarons', price: 9, category: 'Dessert'}, {name: 'Éclair Café', price: 6, category: 'Dessert'}, {name: 'Millefeuille', price: 8, category: 'Dessert'}
+            ];
+            
+            let menu = JSON.parse(localStorage.getItem('empire_recipes'));
+            if (!menu || menu.length < 5) {
+                menu = testMenu;
+                localStorage.setItem('empire_recipes', JSON.stringify(testMenu));
+            }
+
+            const categories = ['Entrée', 'Plat', 'Dessert'];
             document.getElementById('cat-tabs').innerHTML = categories.map(cat => `<div class="cat-tab ${cat === activeCategory ? 'active' : ''}" onclick="renderMenu('${cat}')">${cat}</div>`).join('');
-            document.getElementById('menu-items').innerHTML = menu.filter(m => (m.category || 'Autre') === activeCategory).map(m => `<div class="btn-item" onclick="addItem('${m.name.replace(/'/g, "\\'")}', ${m.price}, '${m.category}')"><span>${m.name}</span><span>${parseFloat(m.price).toFixed(2)}€</span></div>`).join('');
+            document.getElementById('menu-items').innerHTML = menu.filter(m => (m.category || 'Autre') === activeCategory).map(m => `<div class="btn-item" onclick="addItem('${m.name.replace(/'/g, "\\'")}', ${m.price}, '${m.category}')"><span>${m.name}</span><span style="color:var(--sub);">${parseFloat(m.price).toFixed(2)}€</span></div>`).join('');
         }
 
         function addItem(n, p, c) { currentTicket.push({id: Date.now(), n: n, p: p, category: c, done: false}); renderTicket(); }
-        
-        // Suppression tactile fluide
         function removeItem(targetIndex) { currentTicket.splice(targetIndex, 1); renderTicket(); }
 
-        // MOTEUR D'AGRÉGATION (Affiche "4x", Calcule le prix, Bouton de retrait)
         function renderTicket() {
             const list = document.getElementById('ticket-list'); let total = 0; const itemCounts = {};
             
