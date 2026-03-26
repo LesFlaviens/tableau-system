@@ -2,16 +2,16 @@
 <html lang="fr">
 <head>
     <meta charset="UTF-8">
-    <title>Empire OS - Registre HACCP Automatisé</title>
+    <title>Empire OS - Registre HACCP & Contrôle</title>
     <style>
-        :root { --bg: #050505; --text: #fff; --panel: #111; --accent: #00e676; --gold: #ffb300; --alert: #ff1744; }
+        :root { --bg: #050505; --text: #fff; --panel: #111; --accent: #00e676; --gold: #ffb300; --alert: #ff1744; --sub: #888; }
         body { font-family: 'Inter', sans-serif; background: var(--bg); color: var(--text); margin: 0; padding: 0; overflow: hidden; }
         header { background: #000; border-bottom: 2px solid var(--gold); padding: 15px 25px; display: flex; justify-content: space-between; align-items: center; }
         .status-sync { font-size: 0.7rem; color: var(--accent); font-weight: 900; text-transform: uppercase; display: flex; align-items: center; gap: 8px; }
         .dot { width: 8px; height: 8px; background: var(--accent); border-radius: 50%; box-shadow: 0 0 10px var(--accent); }
         
         .haccp-nav { display: flex; background: #0a0a0a; border-bottom: 1px solid #333; }
-        .nav-btn { flex: 1; padding: 20px; border: none; background: transparent; color: #888; font-weight: 900; cursor: pointer; text-transform: uppercase; }
+        .nav-btn { flex: 1; padding: 20px; border: none; background: transparent; color: #888; font-weight: 900; cursor: pointer; text-transform: uppercase; transition: 0.3s; }
         .nav-btn.active { color: #fff; background: #111; border-bottom: 3px solid var(--gold); }
 
         .workspace { height: calc(100vh - 120px); overflow-y: auto; padding: 30px; box-sizing: border-box; display: none; }
@@ -27,6 +27,11 @@
         .tag-temp { background: rgba(41, 121, 255, 0.2); color: #2979ff; }
         .tag-dlc { background: rgba(255, 23, 68, 0.2); color: #ff1744; }
         .tag-ok { color: var(--accent); }
+
+        /* BLACKLIST STYLE */
+        .card { background: #111; border: 1px solid #333; padding: 25px; border-radius: 8px; }
+        .input-empire { background: #000; border: 1px solid #444; color: #fff; padding: 12px; border-radius: 4px; flex: 1; font-weight: bold; }
+        .blacklist-item { background: #000; border: 1px solid var(--alert); padding: 15px; border-radius: 6px; display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
     </style>
 </head>
 <body>
@@ -37,19 +42,19 @@
     </header>
 
     <nav class="haccp-nav">
-        <button class="nav-btn active" onclick="switchTab('audit')">⚖️ Registre Direction / Contrôle</button>
-        <button class="nav-btn" onclick="switchTab('view')">👁️ Monitoring Secteurs</button>
+        <button id="btn-audit" class="nav-btn active" onclick="switchTab('audit')">⚖️ Registre Légal</button>
+        <button id="btn-view" class="nav-btn" onclick="switchTab('view')">👁️ Monitoring</button>
+        <button id="btn-blacklist" class="nav-btn" onclick="switchTab('blacklist')">🚫 Liste Noire</button>
     </nav>
 
     <section id="view-audit" class="workspace active">
         <div class="audit-header">
             <div>
                 <h2 style="margin:0;">REGISTRE LÉGAL DÉMATÉRIALISÉ</h2>
-                <small style="color:var(--sub)">Les données de la cuisine et du bar sont injectées ici en temps réel.</small>
+                <small style="color:var(--sub)">Les données cuisine sont injectées ici automatiquement.</small>
             </div>
-            <button class="btn-export" onclick="exportCSV()">📥 Télécharger pour Inspection</button>
+            <button class="btn-export" onclick="exportCSV()">📥 Télécharger CSV</button>
         </div>
-
         <table class="log-table">
             <thead>
                 <tr>
@@ -61,39 +66,45 @@
                     <th>Opérateur</th>
                 </tr>
             </thead>
-            <tbody id="live-logs">
-                </tbody>
+            <tbody id="live-logs"></tbody>
         </table>
     </section>
 
     <section id="view-view" class="workspace">
-        <h2 style="color:var(--sub)">VUE MONITORING EN COURS DE DÉVELOPPEMENT...</h2>
+        <h2 style="color:var(--sub)">VUE MONITORING EN COURS...</h2>
+    </section>
+
+    <section id="view-blacklist" class="workspace">
+        <div class="audit-header" style="border-left-color: var(--alert);">
+            <h2 style="margin:0;">GESTION DES NO-SHOWS</h2>
+            <small style="color:var(--sub)">Bannir un client bloque ses réservations futures.</small>
+        </div>
+        <div class="card">
+            <label style="display:block; margin-bottom:10px; font-size:0.75rem; color:var(--sub)">NOM À BANNIR (MAJUSCULES)</label>
+            <div style="display:flex; gap:10px; margin-bottom:20px;">
+                <input type="text" id="bad-guest-name" placeholder="EX: JEAN DUPONT" class="input-empire" style="text-transform: uppercase;">
+                <button class="btn-export" style="background:var(--alert); color:#fff;" onclick="addToBlacklist()">BANNIR DÉFINITIVEMENT</button>
+            </div>
+            <div id="blacklist-display"></div>
+        </div>
     </section>
 
     <script>
         const ws = new WebSocket((window.location.protocol === 'https:' ? 'wss://' : 'ws://') + window.location.host);
-        
-        // Stockage permanent des logs (Preuve légale)
         let masterRegistry = JSON.parse(localStorage.getItem('empire_haccp_master')) || [];
 
         ws.onmessage = (e) => {
             const msg = JSON.parse(e.data);
-            if (msg.type === 'ORDER_UPDATE' && msg.activeOrders['HACCP_EVENT']) {
-                const eventData = msg.activeOrders['HACCP_EVENT'].order.data;
-                processHaccpEvent(eventData);
+            if (msg.type === 'ORDER_UPDATE') {
+                if(msg.activeOrders['HACCP_EVENT']) processHaccpEvent(msg.activeOrders['HACCP_EVENT'].order.data);
+                if(msg.activeOrders['GLOBAL_BLACKLIST']) renderBlacklist();
             }
         };
 
         function processHaccpEvent(event) {
-            // Empêcher les doublons par timestamp
             if (masterRegistry.some(l => l.time === event.time && l.eq === event.eq)) return;
-
-            // Injection dans le registre
             masterRegistry.unshift(event);
-            
-            // On ne garde que les 500 derniers événements pour la performance
             if (masterRegistry.length > 500) masterRegistry.pop();
-            
             localStorage.setItem('empire_haccp_master', JSON.stringify(masterRegistry));
             renderRegistry();
         }
@@ -108,37 +119,75 @@
                     <td>${l.eq || l.name}</td>
                     <td class="tag-ok">${l.val ? l.val + '°C' : 'DLC: ' + l.date}</td>
                     <td style="font-size:0.7rem; opacity:0.5;">ID_AUTO_SYNC</td>
-                </tr>
-            `).join('');
+                </tr>`).join('');
         }
 
         function switchTab(tab) {
             document.querySelectorAll('.workspace').forEach(w => w.classList.remove('active'));
             document.querySelectorAll('.nav-btn').forEach(b => b.classList.remove('active'));
             document.getElementById('view-' + tab).classList.add('active');
-            renderRegistry();
+            document.getElementById('btn-' + tab).classList.add('active');
+            if(tab === 'blacklist') renderBlacklist();
+            if(tab === 'audit') renderRegistry();
+        }
+
+        // --- LOGIQUE BLACKLIST ---
+        async function addToBlacklist() {
+            const name = document.getElementById('bad-guest-name').value.toUpperCase().trim();
+            if(!name) return;
+            const res = await fetch('/get-current-state');
+            const state = await res.json();
+            let list = state.activeOrders['GLOBAL_BLACKLIST'] ? state.activeOrders['GLOBAL_BLACKLIST'].data : [];
+            if(!list.includes(name)) {
+                list.push(name);
+                await fetch('/update-order', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ tableId: 'GLOBAL_BLACKLIST', order: { status: 'system', data: list } })
+                });
+                alert(name + " banni.");
+                document.getElementById('bad-guest-name').value = "";
+                renderBlacklist();
+            }
+        }
+
+        async function renderBlacklist() {
+            const res = await fetch('/get-current-state');
+            const state = await res.json();
+            const list = state.activeOrders['GLOBAL_BLACKLIST'] ? state.activeOrders['GLOBAL_BLACKLIST'].data : [];
+            document.getElementById('blacklist-display').innerHTML = list.map(name => `
+                <div class="blacklist-item">
+                    <b style="color:var(--alert)">🚫 ${name}</b>
+                    <button onclick="removeFromBlacklist('${name}')" style="background:none; border:none; color:var(--sub); cursor:pointer;">Pardonner</button>
+                </div>`).join('');
+        }
+
+        async function removeFromBlacklist(name) {
+            if(!confirm("Lever le bannissement ?")) return;
+            const res = await fetch('/get-current-state');
+            const state = await res.json();
+            let list = state.activeOrders['GLOBAL_BLACKLIST'].data.filter(n => n !== name);
+            await fetch('/update-order', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ tableId: 'GLOBAL_BLACKLIST', order: { status: 'system', data: list } })
+            });
+            renderBlacklist();
         }
 
         function exportCSV() {
             let csv = "Date;Secteur;Type;Element;Valeur;Statut\n";
-            masterRegistry.forEach(l => {
-                csv += `${l.time};CUISINE;${l.type};${l.eq || l.name};${l.val || l.date};CONFORME\n`;
-            });
+            masterRegistry.forEach(l => { csv += `${l.time};CUISINE;${l.type};${l.eq || l.name};${l.val || l.date};CONFORME\n`; });
             const blob = new Blob([csv], { type: 'text/csv' });
             const url = window.URL.createObjectURL(blob);
             const a = document.createElement('a');
-            a.href = url;
-            a.download = `HACCP_EMPIRE_${new Date().toLocaleDateString()}.csv`;
-            a.click();
+            a.href = url; a.download = `HACCP_EMPIRE.csv`; a.click();
         }
 
-        // Chargement initial au démarrage
         async function loadInitial() {
             const res = await fetch('/get-current-state');
             const data = await res.json();
-            if (data.activeOrders['HACCP_EVENT']) {
-                processHaccpEvent(data.activeOrders['HACCP_EVENT'].order.data);
-            }
+            if (data.activeOrders['HACCP_EVENT']) processHaccpEvent(data.activeOrders['HACCP_EVENT'].order.data);
             renderRegistry();
         }
 
