@@ -67,37 +67,45 @@
     </div>
 
     <script>
-        // On règle la date sur aujourd'hui par défaut
+        // Initialisation de la date à aujourd'hui
         document.getElementById('res-date').valueAsDate = new Date();
 
         async function submitReservation() {
-            const name = document.getElementById('res-name').value;
-            const pax = document.getElementById('res-pax').value;
-            const time = document.getElementById('res-time').value;
+            const nameField = document.getElementById('res-name');
+            const name = nameField.value.trim();
             const date = document.getElementById('res-date').value;
 
             if(!name || !date) return alert("Veuillez remplir votre nom et la date.");
 
-            const reservation = {
-                id: "RES_" + Date.now(),
-                name, pax, time, date,
-                status: 'web_confirmed',
-                timestamp: new Date().toLocaleString()
-            };
-
             try {
-                // TÉLÉTRANSMISSION H24 VERS TON SERVEUR RENDER
-                // On utilise la clé GLOBAL_RESERVATIONS pour que tout le monde reçoive l'info
+                // 1. RÉCUPÉRATION DE L'ÉTAT DU SYSTÈME
                 const res = await fetch('/get-current-state');
                 const state = await res.json();
                 
+                // 2. VÉRIFICATION DE LA LISTE NOIRE (SÉCURITÉ)
+                const blacklist = state.activeOrders['GLOBAL_BLACKLIST'] ? state.activeOrders['GLOBAL_BLACKLIST'].data : [];
+                if (blacklist.includes(name.toUpperCase())) {
+                    alert("Désolé, l'établissement est complet pour cette période.");
+                    return;
+                }
+
+                // 3. PRÉPARATION DE LA RÉSERVATION
+                const reservation = {
+                    id: "RES_" + Date.now(),
+                    name, 
+                    pax: document.getElementById('res-pax').value, 
+                    time: document.getElementById('res-time').value, 
+                    date,
+                    status: 'web_confirmed',
+                    timestamp: new Date().toLocaleString()
+                };
+
+                // 4. MISE À JOUR DU REGISTRE GLOBAL
                 let currentResas = state.activeOrders['GLOBAL_RESERVATIONS'] ? state.activeOrders['GLOBAL_RESERVATIONS'].data : {};
-                
-                // On organise par date
                 if(!currentResas[date]) currentResas[date] = [];
                 currentResas[date].push(reservation);
 
-                await fetch('/update-order', {
+                const updateRes = await fetch('/update-order', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
@@ -106,12 +114,14 @@
                     })
                 });
 
-                // Succès visuel
-                document.getElementById('booking-form').style.display = 'none';
-                document.getElementById('success-msg').style.display = 'block';
+                if(updateRes.ok) {
+                    // Succès visuel
+                    document.getElementById('booking-form').style.display = 'none';
+                    document.getElementById('success-msg').style.display = 'block';
+                }
 
             } catch (err) {
-                alert("Erreur de connexion au serveur Empire.");
+                alert("Erreur de synchronisation avec le serveur Empire.");
             }
         }
     </script>
