@@ -46,7 +46,7 @@
         /* MODALS INFO */
         .modal { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.98); z-index: 20000; display: none; padding: 40px; box-sizing: border-box; overflow-y: auto; }
         .modal.open { display: block; }
-        .card { background: #111; border: 1px solid #333; padding: 20px; border-radius: 8px; margin-bottom: 10px; }
+        .card { background: #111; border: 1px solid #333; padding: 20px; border-radius: 8px; margin-bottom: 10px; cursor: pointer;} /* AJOUT CURSOR POINTER */
 
         /* -- MODE ARCHITECTURE -- */
         .edit-mode .table-obj { cursor: move; border-style: dashed; border-color: #2979ff; }
@@ -65,9 +65,19 @@
         .pin-btn:active { background: var(--gold); color: #000; }
         .pin-display { font-size: 2rem; letter-spacing: 10px; margin-bottom: 20px; color: var(--gold); min-height: 40px;}
         .item-delete-btn { background: var(--alert); color: #fff; border: none; padding: 5px 10px; font-weight: bold; cursor: pointer; border-radius: 4px; font-size: 0.7rem;}
+        
+        /* STYLE POUR L'IMPRESSION (ADDITION) */
+        @media print {
+            body * { visibility: hidden; }
+            #print-area, #print-area * { visibility: visible; }
+            #print-area { position: absolute; left: 0; top: 0; width: 100%; background: #fff; color: #000; padding: 20px; }
+        }
+        #print-area { display: none; }
     </style>
 </head>
 <body>
+
+    <div id="print-area"></div>
 
     <div id="login-screen">
         <h1 style="color:var(--gold); letter-spacing: 3px;">IDENTIFICATION REQUISE</h1>
@@ -213,9 +223,9 @@
 
         // --- HISTORIQUE ANTI-FRAUDE ---
         let fraudLog = JSON.parse(localStorage.getItem('empire_fraud_log')) || [];
-        function logAction(action, detail) {
+        function logAction(action, detail, itemsData = null) {
             const time = new Date().toLocaleTimeString('fr-FR');
-            fraudLog.unshift({ time, user: currentUser ? currentUser.name : 'Unknown', action, detail });
+            fraudLog.unshift({ time, user: currentUser ? currentUser.name : 'Unknown', action, detail, items: itemsData });
             localStorage.setItem('empire_fraud_log', JSON.stringify(fraudLog));
         }
 
@@ -401,8 +411,6 @@
                 let itemName = i.name || i.nom || "Article";
                 let safeName = itemName.replace(/'/g, "\\'");
                 let itemPrice = i.price !== undefined ? parseFloat(i.price) : 0;
-
-                // AJOUT : Aiguillage (dest) par défaut selon la catégorie si elle n'est pas déjà précisée.
                 let destination = i.dest || (category === 'Boissons' ? 'bar' : 'cuisine');
 
                 return `
@@ -412,33 +420,50 @@
             }).join('');
         }
 
-        // CORRECTION DE L'AIGUILLAGE ICI
         function addToTicket(n, p, dest) { 
-            // On ajoute la propriété "dest" (cuisine ou bar) dans le ticketItem
             ticketItems.push({ id: Date.now()+Math.random(), n, p, done: false, dest: dest }); 
             renderTicket(); 
         }
 
-        function removeTicketItem(index) {
-            const item = ticketItems[index];
-            if (activeOrders[currentTable] && activeOrders[currentTable].items && activeOrders[currentTable].items.find(i => i.id === item.id)) {
-                logAction("SUPPRESSION PLAT ENVOYÉ", `Plat: ${item.n} | Table: ${currentTable}`);
+        function removeTicketItem(idToRemove) {
+            const itemIndex = ticketItems.findIndex(i => i.id === idToRemove);
+            if (itemIndex > -1) {
+                const item = ticketItems[itemIndex];
+                if (activeOrders[currentTable] && activeOrders[currentTable].items && activeOrders[currentTable].items.find(i => i.id === item.id)) {
+                    logAction("SUPPRESSION PLAT ENVOYÉ", `Plat: ${item.n} | Table: ${currentTable}`);
+                }
+                ticketItems.splice(itemIndex, 1);
+                renderTicket();
             }
-            ticketItems.splice(index, 1);
-            renderTicket();
         }
         
         function renderTicket() {
             let total = 0;
-            document.getElementById('ticket-items').innerHTML = ticketItems.map((i, index) => {
-                total += i.p;
-                const style = i.done ? "text-decoration: line-through; opacity: 0.5;" : "";
+            let groupedItems = {};
+            
+            ticketItems.forEach(item => {
+                total += item.p;
+                let key = item.n + "_" + item.done;
+                if(!groupedItems[key]) {
+                    groupedItems[key] = { name: item.n, count: 0, pricePerUnit: item.p, done: item.done, ids: [] };
+                }
+                groupedItems[key].count += 1;
+                groupedItems[key].ids.push(item.id);
+            });
+
+            document.getElementById('ticket-items').innerHTML = Object.values(groupedItems).map(group => {
+                const style = group.done ? "text-decoration: line-through; opacity: 0.5;" : "";
+                const lineTotal = group.count * group.pricePerUnit;
+                const idToRemove = group.ids[group.ids.length - 1]; 
+                
                 return `
                 <div style="display:flex; justify-content:space-between; align-items:center; padding:8px 0; border-bottom:1px solid #222; ${style}">
-                    <span style="flex:1;">${i.n}</span><span style="margin-right:15px;">${i.p.toFixed(2)}€</span>
-                    <button class="item-delete-btn" onclick="removeTicketItem(${index})">X</button>
+                    <span style="flex:1;"><b>${group.count}x</b> ${group.name}</span>
+                    <span style="margin-right:15px;">${lineTotal.toFixed(2)}€</span>
+                    <button class="item-delete-btn" onclick="removeTicketItem(${idToRemove})">X</button>
                 </div>`;
             }).join('');
+            
             document.getElementById('ticket-total').innerText = `Total: ${total.toFixed(2)}€`;
         }
 
@@ -446,15 +471,16 @@
             if(ticketItems.length === 0) return alert("Ticket vide.");
             const obs = document.getElementById('order-obs').value.trim();
             const order = { 
-                items: ticketItems, // Les items contiennent maintenant la balise "dest: bar" ou "dest: cuisine"
+                items: ticketItems, 
                 time: new Date().toLocaleTimeString('fr-FR', {hour:'2-digit', minute:'2-digit'}), 
                 status: 'pending', observations: obs 
             };
             await fetch('/update-order', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({tableId:currentTable, order}) });
-            logAction("ENVOI COMMANDE", `Table: ${currentTable}`);
+            logAction("ENVOI COMMANDE", `Table: ${currentTable}`, ticketItems);
             closeOrder();
         }
         
+        // --- AJOUT : SÉCURITÉ ENCAISSEMENT ---
         async function processPayment() {
             if (ticketItems.length === 0) return alert("La table est vide.");
             
@@ -462,18 +488,64 @@
                 return alert("⛔ Vous n'avez pas les droits d'encaissement. Demandez au Manager.");
             }
 
+            // VÉRIFICATION : LA COMMANDE A-T-ELLE ÉTÉ ENVOYÉE ?
+            if (!activeOrders[currentTable] || activeOrders[currentTable].status === 'pending') {
+                return alert("⛔ Impossible d'encaisser : la commande doit d'abord être envoyée en cuisine ou au bar et préparée.");
+            }
+
             const totalAmount = document.getElementById('ticket-total').innerText.replace('Total: ', '');
             const confirmPay = confirm(`Encaisser la table ${currentTable} pour ${totalAmount} ?`);
             
             if(confirmPay) {
+                printReceipt(currentTable, totalAmount, ticketItems);
+
                 await fetch('/update-order', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({tableId: currentTable, order: null}) });
-                logAction("ENCAISSEMENT VALIDÉ", `Table: ${currentTable} | Montant: ${totalAmount}`);
+                logAction("ENCAISSEMENT VALIDÉ", `Table: ${currentTable} | Montant: ${totalAmount}`, ticketItems);
+                
                 ticketItems = []; document.getElementById('order-obs').value = ''; closeOrder();
             }
         }
 
+        function printReceipt(table, total, items) {
+            const printArea = document.getElementById('print-area');
+            const date = new Date().toLocaleString('fr-FR');
+            
+            let groupedItems = {};
+            items.forEach(item => {
+                if(!groupedItems[item.n]) {
+                    groupedItems[item.n] = { count: 0, pricePerUnit: item.p };
+                }
+                groupedItems[item.n].count += 1;
+            });
+            
+            let itemsHtml = Object.keys(groupedItems).map(name => {
+                const group = groupedItems[name];
+                const lineTotal = group.count * group.pricePerUnit;
+                return `
+                <div style="display:flex; justify-content:space-between; margin-bottom:5px;">
+                    <span>${group.count}x ${name}</span>
+                    <span>${lineTotal.toFixed(2)}€</span>
+                </div>
+            `}).join('');
+
+            printArea.innerHTML = `
+                <div style="font-family: monospace; max-width: 300px; margin: 0 auto; color: #000;">
+                    <h2 style="text-align: center; border-bottom: 1px dashed #000; padding-bottom: 10px;">RESTAURANT EMPIRE</h2>
+                    <p style="text-align: center;">TABLE: ${table}<br>Serveur: ${currentUser.name}<br>${date}</p>
+                    <div style="border-top: 1px dashed #000; border-bottom: 1px dashed #000; padding: 10px 0; margin: 10px 0;">
+                        ${itemsHtml}
+                    </div>
+                    <h3 style="text-align: right; font-size: 1.2rem;">TOTAL: ${total}</h3>
+                    <p style="text-align: center; font-size: 0.8rem; margin-top: 20px;">Merci de votre visite.<br>A bientôt !</p>
+                </div>
+            `;
+            
+            window.print();
+        }
+
         function closeOrder() { document.getElementById('order-drawer').classList.remove('open'); }
 
+        // --- DASHBOARD MANAGER AVEC DÉROULANT DES COMMANDES ---
         function openModal(type) {
             const body = document.getElementById('modal-body');
             document.getElementById('info-modal').classList.add('open');
@@ -492,11 +564,35 @@
             else if(type === 'dashboard') {
                 document.getElementById('modal-title').innerText = "👁️ LOGS SÉCURITÉ & FRAUDE";
                 const logs = JSON.parse(localStorage.getItem('empire_fraud_log')) || [];
-                body.innerHTML = logs.map(l => `
-                    <div class="card" style="${l.action.includes('SUPPRESSION') ? 'border-color:var(--alert);' : ''}">
+                
+                body.innerHTML = logs.map((l, idx) => {
+                    let detailsHtml = '';
+                    if (l.items && l.items.length > 0) {
+                        let grouped = {};
+                        l.items.forEach(i => {
+                            if(!grouped[i.n]) grouped[i.n] = { count: 0, p: i.p };
+                            grouped[i.n].count += 1;
+                        });
+                        const list = Object.keys(grouped).map(name => 
+                            `<div style="font-size:0.85rem; color:#ccc; display:flex; justify-content:space-between;"><span>- ${grouped[name].count}x ${name}</span><span>${(grouped[name].count * grouped[name].p).toFixed(2)}€</span></div>`
+                        ).join('');
+                        detailsHtml = `<div id="log-detail-${idx}" style="display:none; margin-top:10px; padding:10px; background:#000; border-radius:4px; border-left: 2px solid var(--gold);">${list}</div>`;
+                    }
+
+                    return `
+                    <div class="card" style="${l.action.includes('SUPPRESSION') ? 'border-color:var(--alert);' : ''}" onclick="toggleLogDetail(${idx})">
                         <div style="color:var(--sub); font-size:0.8rem;">${l.time} - Par: <b style="color:var(--gold);">${l.user}</b></div>
                         <div style="font-weight:bold; margin-top:5px;">[${l.action}] ${l.detail}</div>
-                    </div>`).join('') || "Aucune activité récente.";
+                        ${detailsHtml}
+                    </div>`;
+                }).join('') || "Aucune activité récente.";
+            }
+        }
+
+        function toggleLogDetail(idx) {
+            const el = document.getElementById(`log-detail-${idx}`);
+            if(el) {
+                el.style.display = el.style.display === 'none' ? 'block' : 'none';
             }
         }
 
