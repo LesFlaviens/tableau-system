@@ -117,8 +117,6 @@
         let activeOrders = {}; let currentTable = null; let ticketItems = [];
         // AJOUT : VARIABLE POUR TRAQUER LES ANCIENS ÉTATS ET DÉCLENCHER LE BIP
         let previousOrdersState = {};
-        // AJOUT : VARIABLE POUR SAVOIR SI LA COMMANDE A ÉTÉ SERVIE
-        let isOrderServed = false; 
         
         // MODIFICATION LÉGÈRE ICI : Chargement des tables depuis le localStorage s'il y a eu une modification
         const defaultTables = [
@@ -240,7 +238,6 @@
             tables.forEach(t => {
                 const div = document.createElement('div'); div.className = 'table-obj';
                 
-                // AJOUT : GESTION DES CLASSES CSS SELON LE STATUT
                 if(activeOrders && activeOrders[t.label]) {
                     div.classList.add('occupied');
                     if(activeOrders[t.label].status === 'ready') {
@@ -251,7 +248,6 @@
                 div.style.left=t.l+'px'; div.style.top=t.t+'px'; div.style.width=t.w+'px'; div.style.height=t.h+'px';
                 div.innerHTML = t.label; 
                 
-                // Différenciation Clic / Drag selon le mode
                 if (isArchiMode) {
                     attachDragEvents(div);
                 } else {
@@ -268,14 +264,11 @@
 
             const onPointerDown = (e) => {
                 const rect = el.getBoundingClientRect();
-                // Si on clique dans le coin inférieur droit (20x20px), c'est un resize
                 isResizing = (e.clientX - rect.left > rect.width - 20) && (e.clientY - rect.top > rect.height - 20);
-                
                 startX = e.clientX; startY = e.clientY;
                 initialL = parseInt(el.style.left, 10); initialT = parseInt(el.style.top, 10);
                 initialW = parseInt(el.style.width, 10); initialH = parseInt(el.style.height, 10);
                 activeDragElement = el;
-
                 document.addEventListener('pointermove', onPointerMove);
                 document.addEventListener('pointerup', onPointerUp);
             };
@@ -283,7 +276,6 @@
             const onPointerMove = (e) => {
                 if (!activeDragElement) return;
                 const dx = e.clientX - startX; const dy = e.clientY - startY;
-
                 if (isResizing) {
                     activeDragElement.style.width = Math.max(50, initialW + dx) + 'px';
                     activeDragElement.style.height = Math.max(50, initialH + dy) + 'px';
@@ -313,11 +305,9 @@
             }
             currentTable = id; document.getElementById('table-label').innerText = "TABLE " + id;
             
-            // AJOUT : Si la table clignotait "prêt", on coupe le clignotement et on passe le statut local en "served" (servi)
-            isOrderServed = false; // Par défaut non servi
+            // AJOUT : Si la table clignotait "prêt", on coupe le clignotement et on met les plats prêts "barrés"
             if(activeOrders[id] && activeOrders[id].status === 'ready') {
                  activeOrders[id].status = 'pending'; // Arrête le clignotement sur le plan
-                 isOrderServed = true; // Active le style barré dans le ticket
                  
                  // On prévient le serveur que c'est "en cours de repas"
                  fetch('/update-order', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({tableId:id, order:activeOrders[id]}) });
@@ -337,18 +327,17 @@
         }
 
         function addToTicket(n, p) { 
-            ticketItems.push({n, p, done:false}); 
-            isOrderServed = false; // Dès qu'on ajoute un nouveau plat, le ticket n'est plus entièrement "servi"
+            ticketItems.push({n, p, done: false}); 
             renderTicket(); 
         }
         
         function renderTicket() {
-            // AJOUT : Calcul du total et application du style "barré" si la commande est servie
+            // AJOUT : Calcul du total et application du style "barré" SEULEMENT SI le plat est prêt (done)
             let total = 0;
-            const itemStyle = isOrderServed ? "text-decoration: line-through; opacity: 0.5;" : "";
 
             document.getElementById('ticket-items').innerHTML = ticketItems.map(i => {
                 total += i.p;
+                const itemStyle = i.done ? "text-decoration: line-through; opacity: 0.5;" : "";
                 return `
                 <div style="display:flex; justify-content:space-between; padding:8px 0; border-bottom:1px solid #222; ${itemStyle}">
                     <span>${i.n}</span><span>${i.p.toFixed(2)}€</span>
@@ -380,7 +369,6 @@
                     body:JSON.stringify({tableId: currentTable, order: null}) 
                 });
                 ticketItems = [];
-                isOrderServed = false;
                 closeOrder();
             }
         }
@@ -404,3 +392,5 @@
 
         function closeModal() { document.getElementById('info-modal').classList.remove('open'); }
     </script>
+</body>
+</html>
