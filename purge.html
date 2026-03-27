@@ -2,7 +2,9 @@
 <html lang="fr">
 <head>
     <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>Empire - Le Laboratoire du Chef Barman</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.min.js"></script>
     <style>
         :root { --bg: #050505; --accent: #00e676; --alert: #ff1744; --panel: #111; --text: #fff; --sub: #888; --gold: #ffb300; --bar: #00e5ff; }
         body { font-family: 'Inter', sans-serif; background: var(--bg); color: var(--text); margin: 0; padding: 20px; }
@@ -18,6 +20,13 @@
         .tag-cocktail { background: #e91e63; color: #fff; }
         .tag-vin { background: var(--gold); color: #000; }
         .tag-soft { background: #2979ff; color: #fff; }
+
+        /* --- STYLES AJOUTÉS POUR LA CRÉATION --- */
+        .input-base { background: #000; border: 1px solid #444; color: #fff; padding: 12px; border-radius: 6px; width: 100%; box-sizing: border-box; margin-bottom: 15px;}
+        .btn-add { background: var(--bar); color: #000; font-weight: 900; padding: 15px; border-radius: 6px; border: none; cursor: pointer; text-transform: uppercase; width: 100%; font-size: 1.1rem; }
+        .btn-mic { background: #1a1a1a; border: 1px solid #444; color: #fff; padding: 10px; border-radius: 6px; cursor: pointer; margin-left: 10px; font-weight: bold;}
+        .btn-mic.recording { background: rgba(255,23,68,0.2); border-color: var(--alert); color: var(--alert); animation: pulse 1s infinite; }
+        @keyframes pulse { 0% { transform: scale(1); } 50% { transform: scale(1.05); } 100% { transform: scale(1); } }
     </style>
 </head>
 <body>
@@ -27,11 +36,37 @@
             <h1 style="margin:0; text-transform:uppercase; letter-spacing:2px; color:var(--bar);">🍸 LE LABORATOIRE DU CHEF BARMAN</h1>
             <p style="color:var(--gold); margin:5px 0 0 0; font-weight: bold;">ÉDITION DE LA CARTE DES BOISSONS - 30 RÉFÉRENCES</p>
         </div>
-        <div style="display:flex; gap:10px;">
-            <button class="btn-reset" onclick="forceResetMenu()">⚠️ RÉINITIALISER LES 30 BOISSONS</button>
-            <a href="bar.html" class="btn-nav" style="border-color:var(--bar); color:var(--bar); height: fit-content;">🍸 RETOUR BAR</a>
+        <div style="display:flex; gap:10px; align-items:center;">
+            <div id="sync-status" style="margin-right: 20px; font-weight: 900; font-size: 0.8rem; color: #888;">● CONNEXION...</div>
+            <button class="btn-reset" onclick="forceResetMenu()" style="margin:0;">⚠️ RÉINITIALISER LES 30 BOISSONS</button>
+            <a href="bar.html" class="btn-nav" style="border-color:var(--bar); color:var(--bar); height: fit-content; margin:0;">🍸 RETOUR BAR</a>
         </div>
     </header>
+
+    <div class="module-container" style="border-top: 4px solid var(--bar); margin-bottom: 30px;">
+        <h2 style="color:var(--bar); margin-top:0;">➕ AJOUTER UNE NOUVELLE BOISSON / RECETTE</h2>
+        
+        <div style="display:flex; gap:15px; margin-bottom:15px;">
+            <input type="text" id="new-name" class="input-base" style="margin:0; flex:2;" placeholder="Nom de la Boisson / Cocktail">
+            <select id="new-cat" class="input-base" style="margin:0; flex:1;">
+                <option value="Cocktails">Cocktails</option>
+                <option value="Vins & Bulles">Vins & Bulles</option>
+                <option value="Softs & Bières">Softs & Bières</option>
+            </select>
+            <input type="number" id="new-price" class="input-base" style="margin:0; flex:1;" step="0.5" placeholder="Prix (€)">
+        </div>
+
+        <div style="display:flex; gap:15px; margin-bottom:15px;">
+            <textarea id="new-desc" class="input-base" style="height:80px; margin:0; flex:1; resize:none;" placeholder="Description / Fiche technique (Écrire, Dicter ou Importer un PDF)"></textarea>
+            <div style="display:flex; flex-direction:column; gap:10px;">
+                <button id="btn-mic-recipe" class="btn-mic" onclick="toggleRecipeDictation()" style="margin:0; flex:1;">🎙️ DICTER</button>
+                <button class="btn-mic" onclick="document.getElementById('pdf-upload-recipe').click()" style="margin:0; flex:1; border-color:var(--bar); color:var(--bar);">📄 IMPORT PDF</button>
+                <input type="file" id="pdf-upload-recipe" accept="application/pdf" style="display:none;" onchange="extractTextFromPDF()">
+            </div>
+        </div>
+
+        <button class="btn-add" onclick="addNewRecipe()">SAUVEGARDER ET PROPULSER EN DIRECT</button>
+    </div>
 
     <div class="module-container">
         <h2 style="color:var(--bar); margin-top:0;">VOTRE CARTE ACTUELLE</h2>
@@ -106,7 +141,6 @@
         function deleteMenuItem(idx) { menuEmpire.splice(idx, 1); renderMenuLive(); }
 
         async function propulserMenu() {
-            // Attention : on l'envoie sur GLOBAL_RECIPES pour que le pad serveur le range dans Boissons
             const payload = { tableId: 'GLOBAL_RECIPES', order: { status: 'system', data: menuEmpire } };
             try {
                 const res = await fetch('/update-order', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
@@ -114,7 +148,120 @@
             } catch(e) { alert("Erreur de connexion H24."); }
         }
 
+        let ws;
+        function connectEmpireH24() {
+            ws = new WebSocket((window.location.protocol === 'https:' ? 'wss://' : 'ws://') + window.location.host);
+
+            ws.onopen = () => {
+                document.getElementById('sync-status').style.color = "var(--accent)";
+                document.getElementById('sync-status').innerText = "● SYNC H24 ACTIF";
+            };
+
+            ws.onmessage = (e) => {
+                // Le labo édite la carte, mais la ligne H24 reste ouverte pour assurer la présence sur le réseau
+            };
+
+            ws.onclose = () => {
+                document.getElementById('sync-status').style.color = "var(--alert)";
+                document.getElementById('sync-status').innerText = "● RECONNEXION...";
+                setTimeout(connectEmpireH24, 2500); 
+            };
+            
+            ws.onerror = (err) => { ws.close(); };
+        }
+        
+        connectEmpireH24();
         window.onload = renderMenuLive;
+
+        // ==========================================================
+        // AJOUT : SYSTÈME DE CRÉATION (DICTÉE & PDF)
+        // ==========================================================
+        let recipeRecognition;
+        let isRecipeRecording = false;
+
+        function toggleRecipeDictation() {
+            window.SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+            if (!window.SpeechRecognition) return alert("Dictée non supportée par votre navigateur.");
+            
+            if (!recipeRecognition) {
+                recipeRecognition = new SpeechRecognition();
+                recipeRecognition.lang = 'fr-FR';
+                recipeRecognition.interimResults = true;
+                recipeRecognition.onresult = (e) => {
+                    let final = '';
+                    for (let i = e.resultIndex; i < e.results.length; ++i) {
+                        if (e.results[i].isFinal) final += e.results[i][0].transcript + ' ';
+                    }
+                    if(final) {
+                        const textArea = document.getElementById('new-desc');
+                        textArea.value += final;
+                    }
+                };
+                recipeRecognition.onend = () => { document.getElementById('btn-mic-recipe').classList.remove('recording'); isRecipeRecording = false; };
+            }
+
+            if (isRecipeRecording) {
+                recipeRecognition.stop();
+            } else {
+                recipeRecognition.start();
+                isRecipeRecording = true;
+                document.getElementById('btn-mic-recipe').classList.add('recording');
+            }
+        }
+
+        async function extractTextFromPDF() {
+            const file = document.getElementById('pdf-upload-recipe').files[0];
+            if (!file) return;
+
+            const reader = new FileReader();
+            reader.onload = async function() {
+                try {
+                    const typedarray = new Uint8Array(this.result);
+                    const pdf = await pdfjsLib.getDocument(typedarray).promise;
+                    let fullText = "";
+                    
+                    for (let i = 1; i <= pdf.numPages; i++) {
+                        const page = await pdf.getPage(i);
+                        const textContent = await page.getTextContent();
+                        const text = textContent.items.map(s => s.str).join(' ');
+                        fullText += text + "\n";
+                    }
+                    document.getElementById('new-desc').value += (document.getElementById('new-desc').value ? '\n\n' : '') + fullText;
+                    alert("✅ PDF analysé avec succès !");
+                } catch(e) {
+                    alert("❌ Erreur lors de la lecture du PDF.");
+                }
+            };
+            reader.readAsArrayBuffer(file);
+            document.getElementById('pdf-upload-recipe').value = '';
+        }
+
+        async function addNewRecipe() {
+            const name = document.getElementById('new-name').value.trim();
+            const cat = document.getElementById('new-cat').value;
+            const price = parseFloat(document.getElementById('new-price').value);
+            const desc = document.getElementById('new-desc').value.trim();
+
+            if(!name || isNaN(price)) return alert("Nom et prix obligatoires.");
+
+            // Ajoute à la variable menuEmpire de ton code original
+            menuEmpire.unshift({ name: name, category: cat, price: price, description: desc });
+            
+            localStorage.setItem('kds_bar_menu_empire', JSON.stringify(menuEmpire));
+            renderMenuLive();
+
+            // Automatisation H24 immédiate après l'ajout
+            const payload = { tableId: 'GLOBAL_RECIPES', order: { status: 'system', data: menuEmpire } };
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                await fetch('/update-order', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+            }
+
+            document.getElementById('new-name').value = '';
+            document.getElementById('new-price').value = '';
+            document.getElementById('new-desc').value = '';
+            
+            alert(`✅ "${name}" ajouté et propulsé automatiquement sur les Pads !`);
+        }
     </script>
 </body>
 </html>
