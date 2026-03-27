@@ -1,91 +1,69 @@
 const express = require('express');
 const http = require('http');
 const WebSocket = require('ws');
+const bodyParser = require('body-parser');
 const path = require('path');
 
 const app = express();
 const server = http.createServer(app);
 const wss = new WebSocket.Server({ server });
 
-// --- CONFIGURATION DE SÉCURITÉ ET DOSSIER STATIQUE ---
-app.use(express.json());
+app.use(bodyParser.json());
+app.use(express.static(path.join(__dirname))); // Sert ton index.html
 
-// CORRECTION MAJEURE ICI : 
-// Le serveur va maintenant lire TOUS les fichiers HTML, CSS, JS 
-// directement dans le même dossier que server.js. Fini l'erreur "Cannot GET".
-app.use(express.static(__dirname)); 
+// --- ÉTAT GLOBAL DE L'EMPIRE ---
+let activeOrders = {}; 
 
-// --- BASE DE DONNÉES CENTRALE (EN MÉMOIRE) ---
-let appState = {
-    activeOrders: {
-        'GLOBAL_MENU': { status: 'system', data: [] },     // Carte de la cuisine
-        'GLOBAL_RECIPES': { status: 'system', data: [] },  // Carte du Bar
-        'GLOBAL_RESERVATIONS': { status: 'system', data: {} } // Réservations
-    }
-};
-
-// --- ROUTES REST (API) ---
-
-// 1. Synchronisation initiale quand une tablette s'allume
-app.get('/get-current-state', (req, res) => {
-    res.status(200).json(appState);
-});
-
-// 2. Réception et traitement des commandes / encaissements
-app.post('/update-order', (req, res) => {
-    const { tableId, order } = req.body;
-    
-    if (!tableId) {
-        return res.status(400).json({ error: 'Table ID manquant' });
-    }
-
-    if (order === null) {
-        // Encaissement / Suppression de la table
-        delete appState.activeOrders[tableId];
-        console.log(`[FINANCE] Table ${tableId} encaissée et clôturée.`);
-    } else {
-        // Ajout ou modification d'une commande
-        appState.activeOrders[tableId] = order;
-        console.log(`[ACTION] Mise à jour validée pour la table : ${tableId}`);
-    }
-
-    // PROPULSION H24 : On informe immédiatement tous les écrans connectés
-    broadcast({ type: 'ORDER_UPDATE', activeOrders: appState.activeOrders });
-    
-    res.status(200).json({ success: true });
-});
-
-
-// --- MOTEUR WEBSOCKET (LE H24 7/7 SANS LATENCE) ---
+// --- GESTION DES WEBSOCKETS (SYNC TEMPS RÉEL) ---
 wss.on('connection', (ws) => {
-    console.log('[RÉSEAU] Un nouvel écran Empire vient de se connecter.');
+    console.log('● Nouvel appareil connecté au réseau Empire');
+    
+    // Envoi immédiat de l'état actuel à la connexion
+    ws.send(JSON.stringify({ type: 'SYNC', orders: activeOrders }));
 
-    // Envoi immédiat de l'état du restaurant au nouvel écran
-    ws.send(JSON.stringify({ type: 'SYNC', state: appState }));
-
-    ws.on('error', (error) => {
-        console.error('[ERREUR RÉSEAU]', error);
-    });
-
-    ws.on('close', () => {
-        console.log('[RÉSEAU] Un écran s\'est déconnecté.');
-    });
-});
-
-// Diffuse le signal à tout le restaurant
-function broadcast(data) {
-    const message = JSON.stringify(data);
-    wss.clients.forEach((client) => {
-        if (client.readyState === WebSocket.OPEN) {
-            client.send(message);
+    ws.on('message', (message) => {
+        const msg = JSON.parse(message);
+        if (msg.type === 'NEW_ORDER') {
+            handleOrderUpdate(msg.data.tableId, msg.data);
         }
     });
+});
+
+// --- API REST (BACKUP & PERSISTANCE) ---
+app.post('/update-order', (req, res) => {
+    const { tableId, order } = req.body;
+    handleOrderUpdate(tableId, order);
+    res.status(200).send({ status: 'success' });
+});
+
+app.get('/get-current-state', (req, res) => {
+    res.json({ activeOrders });
+});
+
+// --- MOTEUR DE DIFFUSION (BROADCAST) ---
+function handleOrderUpdate(tableId, order) {
+    if (!order) {
+        delete activeOrders[tableId]; // Table encaissée/libérée
+    } else {
+        activeOrders[tableId] = order; // Nouvelle commande ou mise à jour
+    }
+
+    // Propage l'info à TOUS les appareils (Pads + Chef)
+    const broadcastData = JSON.stringify({ type: 'UPDATE_ALL', orders: activeOrders });
+    wss.clients.forEach((client) => {
+        if (client.readyState === WebSocket.OPEN) {
+            client.send(broadcastData);
+        }
+    });
+    console.log(`🚀 Table ${tableId} mise à jour et synchronisée sur le réseau.`);
 }
 
-// --- DÉMARRAGE DU SERVEUR ---
-const PORT = process.env.PORT || 3000;
-server.listen(PORT, () => {
-    console.log(`=================================================`);
-    console.log(`🚀 SYSTÈME EMPIRE CENTRAL OPÉRATIONNEL SUR LE PORT ${PORT}`);
-    console.log(`=================================================`);
+// --- LANCEMENT DU SERVEUR ---
+const PORT = 80; // Port standard pour réseau local
+server.listen(PORT, '0.0.0.0', () => {
+    console.log('-------------------------------------------');
+    console.log('   EMPIRE OS - SERVEUR MAÎTRE ACTIF        ');
+    console.log(`   URL : http://localhost:${PORT}           `);
+    console.log('   RESEAU : Connectez vos pads sur votre IP');
+    console.log('-------------------------------------------');
 });
