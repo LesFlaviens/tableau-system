@@ -31,9 +31,6 @@
         /* AJOUT : CLIGNOTEMENT QUAND PRÊT */
         .table-obj.ready { border-color: var(--accent); color: var(--accent); animation: pulse-ready 1s infinite; box-shadow: 0 0 20px rgba(0, 230, 118, 0.6); }
         @keyframes pulse-ready { 0% { transform: scale(1); } 50% { transform: scale(1.1); } 100% { transform: scale(1); } }
-        
-        /* AJOUT : STATUT "SERVI MAIS PAS PAYÉ" (BARRÉ) */
-        .table-obj.served { border-color: #555; color: #aaa; text-decoration: line-through; text-decoration-color: var(--alert); text-decoration-thickness: 3px; box-shadow: none; animation: none; }
 
         /* TIROIR COMMANDE */
         .drawer { position: fixed; top: 0; right: 0; width: 100%; height: 100%; background: #050505; z-index: 10000; display: none; flex-direction: column; }
@@ -95,11 +92,25 @@
             <h2 id="table-label" style="margin:0;">TABLE</h2>
             <button class="btn-mini" onclick="closeOrder()">FERMER ✕</button>
         </div>
+        
+        <div style="padding:10px 20px; background:#111; border-bottom:1px solid #333;">
+            <input type="text" id="order-obs" placeholder="⚠️ OBSERVATIONS (VIP, Allergies, Cuissons...)" style="width:100%; padding:12px; background:#000; color:var(--alert); border:1px solid #444; border-radius:4px; font-weight:900; box-sizing:border-box;">
+        </div>
+
         <div id="ticket" class="ticket-view">
             <div id="ticket-items" class="ticket-items-container"></div>
             <div id="ticket-total" class="ticket-total">Total: 0.00€</div>
         </div>
+
+        <div style="display:flex; gap:5px; padding:15px 20px; background:#0a0a0a; border-bottom:1px solid #222;">
+            <button class="btn-mini" style="flex:1; font-size:0.9rem;" onclick="renderMenu('Entrées')">🥗 ENTRÉES</button>
+            <button class="btn-mini gold" style="flex:1; font-size:0.9rem;" onclick="renderMenu('Plats de résistance')">🔥 PLATS</button>
+            <button class="btn-mini" style="flex:1; font-size:0.9rem; border-color:#ea80fc; color:#ea80fc;" onclick="renderMenu('Desserts')">🍰 DESSERTS</button>
+            <button class="btn-mini" style="flex:1; font-size:0.9rem; border-color:#00e5ff; color:#00e5ff;" onclick="renderMenu('Boissons')">🍸 BOISSONS</button>
+        </div>
+
         <div id="menu" class="menu-grid"></div>
+        
         <div style="padding:20px; background:#000; display:flex; gap:10px;">
             <button class="btn-mini gold" style="flex:2; padding:20px; font-size:1rem;" onclick="sendToKitchen()">🚀 ENVOYER (AJOUTER)</button>
             <button class="btn-mini sync" style="flex:1; padding:20px; font-size:1rem; border-color:var(--accent); color:var(--accent);" onclick="processPayment()">💳 ENCAISSER</button>
@@ -118,10 +129,9 @@
 
     <script>
         let activeOrders = {}; let currentTable = null; let ticketItems = [];
-        // AJOUT : VARIABLE POUR TRAQUER LES ANCIENS ÉTATS ET DÉCLENCHER LE BIP
         let previousOrdersState = {};
+        let isOrderServed = false; 
         
-        // MODIFICATION LÉGÈRE ICI : Chargement des tables depuis le localStorage s'il y a eu une modification
         const defaultTables = [
             {label:"T1", l:550, t:500, w:80, h:120}, {label:"T2", l:550, t:300, w:80, h:120},
             {label:"T3", l:430, t:450, w:80, h:120}, {label:"T4", l:440, t:300, w:80, h:120},
@@ -132,7 +142,7 @@
         let tables = JSON.parse(localStorage.getItem('empire_architecture')) || defaultTables;
 
         // =========================================================================
-        // AJOUT : LOGIQUE DU MODE ARCHITECTURE
+        // MODE ARCHITECTURE
         // =========================================================================
         let isArchiMode = false;
         let activeDragElement = null;
@@ -143,7 +153,7 @@
             if(pass === "7777") {
                 isArchiMode = true;
                 document.body.classList.add('edit-mode');
-                renderFloor(); // Re-render pour attacher les événements de drag
+                renderFloor();
             } else {
                 alert("Code incorrect.");
             }
@@ -152,15 +162,14 @@
         function closeArchiMode() {
             isArchiMode = false;
             document.body.classList.remove('edit-mode');
-            tables = JSON.parse(localStorage.getItem('empire_architecture')) || defaultTables; // Annule les modifs non sauvées
+            tables = JSON.parse(localStorage.getItem('empire_architecture')) || defaultTables;
             renderFloor();
         }
 
         function saveArchitecture() {
-            // Mettre à jour l'array tables avec les nouvelles positions
             const domTables = document.querySelectorAll('.table-obj');
             tables = Array.from(domTables).map(el => ({
-                label: el.innerText.replace('⇲',''), // Retire le symbole de resize
+                label: el.innerText.replace('⇲',''),
                 l: parseInt(el.style.left, 10),
                 t: parseInt(el.style.top, 10),
                 w: parseInt(el.style.width, 10),
@@ -182,7 +191,7 @@
         }
 
         // =========================================================================
-        // CONNEXION H24 7/7 (REMPLACE TON ANCIEN setInterval) + DÉTECTION "PRÊT"
+        // CONNEXION H24 7/7 (CUISINE, BAR, FINANCE)
         // =========================================================================
         let ws;
         function connectEmpireH24() {
@@ -203,11 +212,9 @@
                 if(msg.type === 'ORDER_UPDATE' || msg.state || msg.type === 'SYNC') {
                     const newOrders = msg.activeOrders || (msg.state ? msg.state.activeOrders : {});
                     
-                    // AJOUT : DÉTECTION DU CHANGEMENT DE STATUT VERS "READY" POUR LE BIP
                     for (let tableId in newOrders) {
                         if (newOrders[tableId].status === 'ready' && 
                            (!previousOrdersState[tableId] || previousOrdersState[tableId].status !== 'ready')) {
-                            
                             const beep = document.getElementById('beep-ready');
                             if(beep) beep.play().catch(err => console.log("Son bloqué"));
                         }
@@ -217,8 +224,12 @@
                     activeOrders = newOrders;
                     renderFloor();
                     
+                    // AJOUT : Capture simultanée de la carte Cuisine et Bar
                     const globalMenu = msg.activeOrders ? msg.activeOrders['GLOBAL_MENU'] : (msg.state && msg.state.activeOrders['GLOBAL_MENU']);
                     if(globalMenu) localStorage.setItem('kds_menu', JSON.stringify(globalMenu.data));
+
+                    const globalRecipes = msg.activeOrders ? msg.activeOrders['GLOBAL_RECIPES'] : (msg.state && msg.state.activeOrders['GLOBAL_RECIPES']);
+                    if(globalRecipes) localStorage.setItem('kds_bar_menu', JSON.stringify(globalRecipes.data));
                 }
             };
 
@@ -234,46 +245,34 @@
         connectEmpireH24();
 
         // =========================================================================
-        // TON CODE ORIGINAL (INTOUCHÉ, JUSTE ADAPTÉ POUR L'ARCHITECTURE ET LE TOTAL)
+        // PLAN DE SALLE
         // =========================================================================
         function renderFloor() {
             const floor = document.getElementById('floor-plan'); floor.innerHTML = '';
             tables.forEach(t => {
                 const div = document.createElement('div'); div.className = 'table-obj';
                 
-                // AJOUT : GESTION DES CLASSES CSS SELON LE STATUT
                 if(activeOrders && activeOrders[t.label]) {
-                    if (activeOrders[t.label].status === 'served') {
-                        div.classList.add('served'); // Table barrée (servie mais non payée)
-                    } else {
-                        div.classList.add('occupied');
-                        if(activeOrders[t.label].status === 'ready') {
-                            div.classList.add('ready'); // Déclenche le clignotement vert
-                        }
+                    div.classList.add('occupied');
+                    if(activeOrders[t.label].status === 'ready') {
+                        div.classList.add('ready'); 
                     }
                 }
                 
                 div.style.left=t.l+'px'; div.style.top=t.t+'px'; div.style.width=t.w+'px'; div.style.height=t.h+'px';
                 div.innerHTML = t.label; 
                 
-                // Différenciation Clic / Drag selon le mode
-                if (isArchiMode) {
-                    attachDragEvents(div);
-                } else {
-                    div.onclick = () => openOrder(t.label);
-                }
+                if (isArchiMode) { attachDragEvents(div); } else { div.onclick = () => openOrder(t.label); }
                 
                 floor.appendChild(div);
             });
         }
 
-        // LOGIQUE TACTILE POUR LE DRAG & RESIZE
         function attachDragEvents(el) {
             let startX, startY, initialL, initialT, initialW, initialH;
 
             const onPointerDown = (e) => {
                 const rect = el.getBoundingClientRect();
-                // Si on clique dans le coin inférieur droit (20x20px), c'est un resize
                 isResizing = (e.clientX - rect.left > rect.width - 20) && (e.clientY - rect.top > rect.height - 20);
                 
                 startX = e.clientX; startY = e.clientY;
@@ -307,7 +306,9 @@
             el.addEventListener('pointerdown', onPointerDown);
         }
 
-        // LE RESTE DE TON CODE ORIGINAL
+        // =========================================================================
+        // GESTION DU TIROIR COMMANDE ET FILTRAGE DES 4 FENÊTRES
+        // =========================================================================
         function openOrder(id) {
             if(isArchiMode) {
                 if(confirm("Supprimer la table " + id + " ?")) {
@@ -318,35 +319,67 @@
             }
             currentTable = id; document.getElementById('table-label').innerText = "TABLE " + id;
             
-            // AJOUT : Si la table a une commande existante, on la passe en statut "served" (barrée)
-            // Cela coupe le rouge d'occupation ou le vert clignotant.
-            if(activeOrders[id] && activeOrders[id].items && activeOrders[id].items.length > 0) {
-                 activeOrders[id].status = 'served';
+            // Chargement des observations si existantes
+            if(activeOrders[id] && activeOrders[id].observations) {
+                document.getElementById('order-obs').value = activeOrders[id].observations;
+            } else {
+                document.getElementById('order-obs').value = '';
+            }
+
+            isOrderServed = false;
+            if(activeOrders[id] && activeOrders[id].status === 'ready') {
+                 activeOrders[id].status = 'pending'; 
+                 isOrderServed = true; 
                  fetch('/update-order', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({tableId:id, order:activeOrders[id]}) });
             }
             
             ticketItems = activeOrders[id] ? activeOrders[id].items : [];
-            renderTicket(); renderMenu();
+            renderTicket(); 
+            renderMenu('Plats de résistance'); // Ouvre par défaut sur Plats
             document.getElementById('order-drawer').classList.add('open');
         }
 
-        function renderMenu() {
-            const menu = JSON.parse(localStorage.getItem('kds_menu')) || [];
-            document.getElementById('menu').innerHTML = menu.map(i => `
+        // AJOUT : FILTRAGE DES CARTES (Cuisine + Bar)
+        function renderMenu(category) {
+            let cuisineMenu = JSON.parse(localStorage.getItem('kds_menu')) || [];
+            let barMenuRaw = JSON.parse(localStorage.getItem('kds_bar_menu')) || [];
+            
+            // Formatage propre de la carte bar
+            let barMenu = barMenuRaw.map(r => {
+                let price = 0;
+                let match = r.nom.match(/\(([\d.]+)€?\)/);
+                if(match) price = parseFloat(match[1]);
+                return { name: r.nom.split('(')[0].trim(), category: 'Boissons', price: price };
+            });
+
+            let fullMenu = [...cuisineMenu, ...barMenu];
+            
+            // Filtrage selon la "fenêtre" choisie
+            let filteredMenu = fullMenu.filter(i => {
+                if (category === 'Boissons') return i.category === 'Boissons' || i.category === 'Boissons & Bar';
+                return i.category === category;
+            });
+
+            document.getElementById('menu').innerHTML = filteredMenu.map(i => `
                 <div class="btn-item" onclick="addToTicket('${i.name}', ${i.price})">
                     <span>${i.name}</span><span style="color:var(--gold)">${parseFloat(i.price).toFixed(2)}€</span>
                 </div>`).join('');
         }
 
-        function addToTicket(n, p) { ticketItems.push({n, p, done:false}); renderTicket(); }
+        function addToTicket(n, p) { 
+            ticketItems.push({n, p, done:false}); 
+            isOrderServed = false; 
+            renderTicket(); 
+        }
         
         function renderTicket() {
-            // AJOUT : Calcul du total
             let total = 0;
+            const itemStyle = isOrderServed ? "text-decoration: line-through; opacity: 0.5;" : "";
+
             document.getElementById('ticket-items').innerHTML = ticketItems.map(i => {
                 total += i.p;
                 return `
-                <div style="display:flex; justify-content:space-between; padding:8px 0; border-bottom:1px solid #222;">
+                <div style="display:flex; justify-content:space-between; padding:8px 0; border-bottom:1px solid #222; ${itemStyle}">
                     <span>${i.n}</span><span>${i.p.toFixed(2)}€</span>
                 </div>`;
             }).join('');
@@ -355,28 +388,42 @@
         }
 
         async function sendToKitchen() {
-            const order = { items: ticketItems, time: new Date().toLocaleTimeString('fr-FR', {hour:'2-digit', minute:'2-digit'}), status:'pending' };
+            // AJOUT : Capture des observations client
+            const obs = document.getElementById('order-obs').value.trim();
+            const order = { 
+                items: ticketItems, 
+                time: new Date().toLocaleTimeString('fr-FR', {hour:'2-digit', minute:'2-digit'}), 
+                status: 'pending',
+                observations: obs 
+            };
             await fetch('/update-order', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({tableId:currentTable, order}) });
             closeOrder();
         }
         
         // =========================================================================
-        // AJOUT : FONCTION D'ENCAISSEMENT (FINANCE.HTML)
+        // AJOUT : SÉCURITÉ ENCAISSEMENT (ANTI-ERREUR)
         // =========================================================================
         async function processPayment() {
             if (ticketItems.length === 0) return alert("La table est déjà vide.");
             
-            const confirmPay = confirm(`Encaisser la table ${currentTable} pour un total de ${document.getElementById('ticket-total').innerText.replace('Total: ', '')} ?`);
+            const totalAmount = document.getElementById('ticket-total').innerText.replace('Total: ', '');
             
-            if(confirmPay) {
-                // Envoi de null supprime la table des activeOrders et déclenche la logique Finance côté serveur
+            // Double validation stricte demandée (Sécurité)
+            const validationCode = prompt(`🔒 SÉCURITÉ ENCAISSEMENT\nConfirmez le règlement de la table ${currentTable} pour ${totalAmount}\nTapez "OK" pour valider :`);
+            
+            if(validationCode !== null && validationCode.toUpperCase() === "OK") {
                 await fetch('/update-order', { 
                     method:'POST', 
                     headers:{'Content-Type':'application/json'}, 
                     body:JSON.stringify({tableId: currentTable, order: null}) 
                 });
                 ticketItems = [];
+                isOrderServed = false;
+                document.getElementById('order-obs').value = '';
                 closeOrder();
+                alert(`✅ Encaissement validé. Transmission à la Finance.`);
+            } else {
+                alert("❌ Encaissement annulé (Sécurité anti-erreur).");
             }
         }
 
