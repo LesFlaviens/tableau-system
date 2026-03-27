@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>Empire OS - Pad Serveur Master</title>
     <style>
-        :root { --bg: #050505; --text: #fff; --sub: #aaa; --gold: #ffb300; --accent: #00e676; --alert: #ff1744; }
+        :root { --bg: #050505; --text: #fff; --sub: #aaa; --gold: #ffb300; --accent: #00e676; --alert: #ff1744; --ordered: #2979ff; }
         body { font-family: 'Inter', sans-serif; background: var(--bg); color: var(--text); margin: 0; height: 100vh; display: flex; flex-direction: column; overflow: hidden; touch-action: manipulation; }
         
         /* HEADER TOTAL : TOUT SUR UNE LIGNE */
@@ -26,7 +26,9 @@
         /* PLAN DE SALLE */
         .floor-plan { flex: 1; position: relative; background-image: radial-gradient(#222 1px, transparent 1px); background-size: 30px 30px; padding: 20px; overflow: auto; }
         .table-obj { position: absolute; background: #000; border: 2px solid #fff; border-radius: 8px; display: flex; justify-content: center; align-items: center; font-weight: 900; color: #fff; cursor: pointer; transition: 0.2s; }
-        .table-obj.occupied { border-color: var(--alert); color: var(--alert); box-shadow: 0 0 15px rgba(255, 23, 68, 0.4); }
+        
+        /* TABLE BLEUE QUAND COMMANDE EN COURS */
+        .table-obj.ordered { border-color: var(--ordered); color: var(--ordered); box-shadow: 0 0 15px rgba(41, 121, 255, 0.4); }
         
         /* CLIGNOTEMENT QUAND PRÊT */
         .table-obj.ready { border-color: var(--accent); color: var(--accent); animation: pulse-ready 1s infinite; box-shadow: 0 0 20px rgba(0, 230, 118, 0.6); }
@@ -71,12 +73,12 @@
         .pay-btn { background: #111; border: 2px solid var(--accent); color: var(--accent); padding: 20px 40px; font-size: 1.5rem; font-weight: 900; border-radius: 8px; cursor: pointer; width: 300px; margin-bottom: 15px; text-transform: uppercase; }
         .pay-btn.cancel { border-color: var(--alert); color: var(--alert); margin-top: 30px;}
 
-        /* AJOUT : MODAL ANNULATION (QCM) */
+        /* MODAL ANNULATION (QCM) */
         #cancel-modal { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.95); z-index: 40000; display: none; flex-direction: column; align-items: center; justify-content: center; }
         .cancel-btn { background: #111; border: 2px solid var(--gold); color: var(--gold); padding: 20px 40px; font-size: 1.2rem; font-weight: bold; border-radius: 8px; cursor: pointer; width: 350px; margin-bottom: 15px; text-transform: uppercase; }
         .cancel-btn.abort { border-color: var(--sub); color: var(--sub); margin-top: 20px; }
 
-        /* CORRECTION : STYLE POUR L'IMPRESSION (ADDITION) */
+        /* STYLE POUR L'IMPRESSION (ADDITION) */
         #print-area { display: none; }
         @media print {
             body { height: auto !important; overflow: visible !important; display: block !important; background: #fff !important; color: #000 !important; }
@@ -104,8 +106,8 @@
         <h3 style="color:#fff; font-size: 1.2rem; margin-bottom: 30px;" id="cancel-item-name">Nom du plat</h3>
         <button class="cancel-btn" onclick="executeCancelItem('Erreur de frappe')">❌ ERREUR DE FRAPPE</button>
         <button class="cancel-btn" onclick="executeCancelItem('Client change d\'avis')">❌ CLIENT CHANGE D'AVIS</button>
-        <button class="cancel-btn" onclick="executeCancelItem('Rupture de stock (Cuisine)')">❌ RUPTURE DE STOCK</button>
-        <button class="cancel-btn" onclick="executeCancelItem('Retour cuisine (Non conforme)')">❌ RETOUR CUISINE</button>
+        <button class="cancel-btn" onclick="executeCancelItem('Rupture de stock')">❌ RUPTURE DE STOCK</button>
+        <button class="cancel-btn" onclick="executeCancelItem('Retour (Non conforme)')">❌ RETOUR CUISINE/BAR</button>
         <button class="cancel-btn abort" onclick="abortCancelItem()">🔙 NE PAS SUPPRIMER (RETOUR)</button>
     </div>
 
@@ -133,6 +135,9 @@
             <button class="btn-mini" style="border-color: #2979ff; color: #2979ff;" onclick="unlockArchiMode()">🏗️ ARCHI</button>
             <button class="btn-mini gold" onclick="openModal('radar')">⚡ RADAR</button>
             <button class="btn-mini" onclick="openModal('plan')">📅 PLANNING</button>
+            
+            <button class="btn-mini" style="border-color: #ff3d00; color: #ff3d00;" onclick="window.open('carte.html', '_blank')">📖 CARTE</button>
+            
             <button class="btn-mini gold" onclick="window.open('haccp.html', '_blank')">⚙️ HACCP</button>
             <button class="btn-mini sync" onclick="logout()">🔒 LOGOUT</button>
         </div>
@@ -190,11 +195,24 @@
     <audio id="beep-ready" src="https://assets.mixkit.co/active_storage/sfx/2869/2869-preview.mp3" preload="auto"></audio>
 
     <script>
-        // --- DONNÉES GLOBALES ---
+        let isArchiMode = false;
+
+        function safeArray(key, fallbackArray) {
+            try {
+                let val = localStorage.getItem(key);
+                if (val && val !== 'undefined' && val !== 'null') {
+                    let parsed = JSON.parse(val);
+                    if (Array.isArray(parsed)) {
+                        return parsed.filter(item => item !== null && item !== undefined);
+                    }
+                }
+            } catch(e) { console.warn("Erreur mémoire contournée sur:", key); }
+            return fallbackArray;
+        }
+
         let activeOrders = {}; let currentTable = null; let ticketItems = [];
         let previousOrdersState = {};
         
-        // --- INACTIVITÉ (VERROUILLAGE AUTO) ---
         let inactivityTimer;
         const INACTIVITY_LIMIT = 120000; 
 
@@ -205,7 +223,6 @@
 
         ['touchstart', 'click', 'mousemove', 'keypress'].forEach(evt => document.addEventListener(evt, resetInactivityTimer, false));
 
-        // --- LOGIN ---
         let currentUser = null;
         let currentPin = "";
         const USERS = { "1234": { name: "Flavien", role: "Serveur" }, "9999": { name: "Directeur", role: "Manager" } };
@@ -219,6 +236,7 @@
                 document.getElementById('user-badge').innerText = `Badge: ${currentUser.name} (${currentUser.role})`;
                 document.getElementById('login-screen').style.display = 'none';
                 if(currentUser.role === 'Manager') document.getElementById('btn-dashboard').style.display = 'block';
+                renderFloor(); 
                 connectEmpireH24(); resetInactivityTimer();
             } else { alert("❌ PIN Incorrect."); clearPin(); }
         }
@@ -230,119 +248,169 @@
             if(ws) ws.close(); clearTimeout(inactivityTimer);
         }
 
-        // --- LOGS ---
-        let fraudLog = JSON.parse(localStorage.getItem('empire_fraud_log')) || [];
+        let fraudLog = safeArray('empire_fraud_log', []);
         function logAction(action, detail, itemsData = null) {
             const time = new Date().toLocaleTimeString('fr-FR');
             fraudLog.unshift({ time, user: currentUser ? currentUser.name : 'Unknown', action, detail, items: itemsData });
             localStorage.setItem('empire_fraud_log', JSON.stringify(fraudLog));
         }
 
-        // --- PLAN ---
-        let tables = JSON.parse(localStorage.getItem('empire_architecture')) || [ {label:"T1", l:550, t:500, w:80, h:120} ];
+        let tables = safeArray('empire_architecture', [ {label:"T1", l:550, t:500, w:80, h:120} ]);
+
+        function unlockArchiMode() {
+            if (!currentUser || currentUser.role !== 'Manager') return alert("⛔ Accès Manager requis pour modifier le plan.");
+            isArchiMode = true;
+            document.body.classList.add('edit-mode');
+        }
+
+        function closeArchiMode() {
+            isArchiMode = false;
+            document.body.classList.remove('edit-mode');
+            tables = safeArray('empire_architecture', [ {label:"T1", l:550, t:500, w:80, h:120} ]);
+            renderFloor();
+        }
+
+        function addNewTable() {
+            const label = prompt("Nom ou Numéro de la nouvelle table ?");
+            if (label) {
+                tables.push({ label: label, l: 100, t: 100, w: 80, h: 120 });
+                renderFloor();
+            }
+        }
+
+        function saveArchitecture() {
+            localStorage.setItem('empire_architecture', JSON.stringify(tables));
+            alert("✅ Plan sauvegardé avec succès.");
+            closeArchiMode();
+        }
 
         function renderFloor() {
-            const floor = document.getElementById('floor-plan'); floor.innerHTML = '';
-            tables.forEach(t => {
-                const div = document.createElement('div'); div.className = 'table-obj';
-                if(activeOrders[t.label]) { div.classList.add('occupied'); if(activeOrders[t.label].status === 'ready') div.classList.add('ready'); }
-                div.style.left=t.l+'px'; div.style.top=t.t+'px'; div.style.width=t.w+'px'; div.style.height=t.h+'px';
-                div.innerHTML = t.label; 
-                div.onclick = () => openOrder(t.label);
-                floor.appendChild(div);
-            });
-        }
-
-        // --- NETWORK ---
-        let ws;
-        function connectEmpireH24() {
-            ws = new WebSocket((window.location.protocol === 'https:' ? 'wss://' : 'ws://') + window.location.host);
-            ws.onopen = () => {
-                document.getElementById('stock-tag').innerText = "● SYNC H24 ACTIF";
-                fetch('/get-current-state').then(r=>r.json()).then(d=>{ activeOrders=d.activeOrders; renderFloor(); });
-            };
-            ws.onmessage = (e) => {
-                const msg = JSON.parse(e.data);
-                if(msg.type === 'ORDER_UPDATE' || msg.state || msg.type === 'SYNC') {
-                    const newOrders = msg.activeOrders || (msg.state ? msg.state.activeOrders : {});
-                    for (let tableId in newOrders) {
-                        if (newOrders[tableId].status === 'ready' && (!previousOrdersState[tableId] || previousOrdersState[tableId].status !== 'ready')) {
-                            const beep = document.getElementById('beep-ready');
-                            if(beep) beep.play().catch(err => console.log("Son bloqué"));
-                            if(newOrders[tableId].items) newOrders[tableId].items.forEach(i => i.done = true);
+            try {
+                const floor = document.getElementById('floor-plan'); floor.innerHTML = '';
+                tables.forEach(t => {
+                    if(!t) return;
+                    const div = document.createElement('div'); div.className = 'table-obj';
+                    
+                    if(activeOrders[t.label]) { 
+                        div.classList.add('ordered'); 
+                        if(activeOrders[t.label].status === 'ready') {
+                            div.classList.remove('ordered'); 
+                            div.classList.add('ready'); 
                         }
                     }
-                    previousOrdersState = JSON.parse(JSON.stringify(newOrders));
-                    activeOrders = newOrders;
-                    if (document.getElementById('order-drawer').classList.contains('open') && currentTable) {
-                        ticketItems = activeOrders[currentTable] ? activeOrders[currentTable].items : ticketItems;
-                        renderTicket();
-                    }
-                    renderFloor();
-                    const globalMenu = msg.activeOrders ? msg.activeOrders['GLOBAL_MENU'] : (msg.state && msg.state.activeOrders['GLOBAL_MENU']);
-                    if(globalMenu) localStorage.setItem('kds_menu', JSON.stringify(globalMenu.data));
-                    const globalRecipes = msg.activeOrders ? msg.activeOrders['GLOBAL_RECIPES'] : (msg.state && msg.state.activeOrders['GLOBAL_RECIPES']);
-                    if(globalRecipes) localStorage.setItem('kds_bar_menu', JSON.stringify(globalRecipes.data));
-                }
-            };
+                    
+                    div.style.left=(t.l||0)+'px'; div.style.top=(t.t||0)+'px'; div.style.width=(t.w||80)+'px'; div.style.height=(t.h||120)+'px';
+                    div.innerHTML = t.label || '?'; 
+                    div.onclick = () => openOrder(t.label);
+                    floor.appendChild(div);
+                });
+            } catch (e) { console.error(e); }
         }
 
-        // --- COMMANDES ---
-        function openOrder(id) {
-            if(isArchiMode) {
-                if(confirm("Supprimer la table " + id + " ?")) { tables = tables.filter(t => t.label !== id); renderFloor(); }
-                return;
-            }
-            currentTable = id; document.getElementById('table-label').innerText = "TABLE " + id;
-            if(activeOrders[id] && activeOrders[id].observations) document.getElementById('order-obs').value = activeOrders[id].observations;
-            else document.getElementById('order-obs').value = '';
+        let ws;
+        function connectEmpireH24() {
+            try {
+                // SÉCURITÉ : Empêche le crash si le fichier est ouvert en local (file://)
+                if (window.location.protocol === 'file:') {
+                    console.warn("Mode local détecté, synchronisation désactivée.");
+                    document.getElementById('stock-tag').innerText = "● HORS-LIGNE (LOCAL)";
+                    renderFloor();
+                    return;
+                }
 
-            if(activeOrders[id] && activeOrders[id].status === 'ready') {
-                 activeOrders[id].status = 'served'; 
-                 fetch('/update-order', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({tableId:id, order:activeOrders[id]}) });
+                ws = new WebSocket((window.location.protocol === 'https:' ? 'wss://' : 'ws://') + window.location.host);
+                ws.onopen = () => {
+                    document.getElementById('stock-tag').innerText = "● SYNC H24 ACTIF";
+                    fetch('/get-current-state').then(r=>r.json()).then(d=>{ activeOrders=d.activeOrders||{}; renderFloor(); }).catch(e=>{});
+                };
+                ws.onmessage = (e) => {
+                    try {
+                        const msg = JSON.parse(e.data);
+                        if(msg.type === 'ORDER_UPDATE' || msg.state || msg.type === 'SYNC') {
+                            const newOrders = msg.activeOrders || (msg.state ? msg.state.activeOrders : {});
+                            for (let tableId in newOrders) {
+                                if (newOrders[tableId] && newOrders[tableId].status === 'ready' && (!previousOrdersState[tableId] || previousOrdersState[tableId].status !== 'ready')) {
+                                    const beep = document.getElementById('beep-ready');
+                                    if(beep) beep.play().catch(err => console.log("Son bloqué", err));
+                                    if(newOrders[tableId].items) newOrders[tableId].items.forEach(i => { if(i) i.done = true; });
+                                }
+                            }
+                            previousOrdersState = JSON.parse(JSON.stringify(newOrders));
+                            activeOrders = newOrders;
+                            if (document.getElementById('order-drawer').classList.contains('open') && currentTable) {
+                                ticketItems = (activeOrders[currentTable] && activeOrders[currentTable].items) ? activeOrders[currentTable].items : ticketItems;
+                                renderTicket();
+                            }
+                            renderFloor();
+                            const globalMenu = msg.activeOrders ? msg.activeOrders['GLOBAL_MENU'] : (msg.state && msg.state.activeOrders['GLOBAL_MENU']);
+                            if(globalMenu) localStorage.setItem('kds_menu', JSON.stringify(globalMenu.data));
+                            const globalRecipes = msg.activeOrders ? msg.activeOrders['GLOBAL_RECIPES'] : (msg.state && msg.state.activeOrders['GLOBAL_RECIPES']);
+                            if(globalRecipes) localStorage.setItem('kds_bar_menu', JSON.stringify(globalRecipes.data));
+                        }
+                    } catch(err) { console.error("Erreur de traitement des données:", err); }
+                };
+            } catch(error) {
+                console.warn("Échec de l'initialisation réseau:", error);
+                document.getElementById('stock-tag').innerText = "● ERREUR RÉSEAU";
+                renderFloor();
             }
-            
-            ticketItems = (activeOrders[id] && activeOrders[id].items) ? activeOrders[id].items : [];
-            renderTicket(); renderMenu('Plats de résistance');
-            document.getElementById('order-drawer').classList.add('open');
+        }
+
+        function openOrder(id) {
+            try {
+                if(isArchiMode) {
+                    if(confirm("Supprimer la table " + id + " ?")) { tables = tables.filter(t => t && t.label !== id); renderFloor(); }
+                    return;
+                }
+                currentTable = id; document.getElementById('table-label').innerText = "TABLE " + id;
+                if(activeOrders[id] && activeOrders[id].observations) document.getElementById('order-obs').value = activeOrders[id].observations;
+                else document.getElementById('order-obs').value = '';
+
+                if(activeOrders[id] && activeOrders[id].status === 'ready') {
+                     activeOrders[id].status = 'served'; 
+                     fetch('/update-order', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({tableId:id, order:activeOrders[id]}) }).catch(e=>{});
+                }
+                
+                ticketItems = (activeOrders[id] && Array.isArray(activeOrders[id].items)) ? activeOrders[id].items.filter(Boolean) : [];
+                renderTicket(); 
+                renderMenu('Plats de résistance');
+                document.getElementById('order-drawer').classList.add('open');
+            } catch (err) { console.error(err); }
         }
 
         function renderMenu(category) {
-            let cuisineMenu = JSON.parse(localStorage.getItem('kds_menu')) || [];
-            let barMenuRaw = JSON.parse(localStorage.getItem('kds_bar_menu')) || [];
-            
-            let barMenu = barMenuRaw.map(r => {
-                let itemName = r.name || (r.nom ? r.nom.split('(')[0].trim() : "Boisson");
-                let itemPrice = r.price !== undefined ? parseFloat(r.price) : 0;
-                return { name: itemName, category: 'Boissons', price: itemPrice };
-            });
+            try {
+                let cuisineMenu = safeArray('kds_menu', []);
+                let barMenuRaw = safeArray('kds_bar_menu', []);
+                
+                let barMenu = barMenuRaw.map(r => {
+                    let itemName = r.name || (r.nom ? String(r.nom).split('(')[0].trim() : "Boisson");
+                    let itemPrice = r.price !== undefined ? parseFloat(r.price) : 0;
+                    return { name: itemName, category: 'Boissons', price: itemPrice };
+                });
 
-            let fullMenu = [...cuisineMenu, ...barMenu];
-            let filteredMenu = fullMenu.filter(i => {
-                if (category === 'Boissons') return i.category === 'Boissons' || i.category === 'Boissons & Bar' || i.category === 'Cocktails' || i.category === 'Vins & Bulles' || i.category === 'Softs & Bières';
-                return i.category === category;
-            });
+                let fullMenu = [...cuisineMenu, ...barMenu];
+                let filteredMenu = fullMenu.filter(i => {
+                    if (!i) return false;
+                    if (category === 'Boissons') return i.category === 'Boissons' || i.category === 'Boissons & Bar' || i.category === 'Cocktails' || i.category === 'Vins & Bulles' || i.category === 'Softs & Bières';
+                    return i.category === category;
+                });
 
-            document.getElementById('menu').innerHTML = filteredMenu.map(i => {
-                let itemName = i.name || i.nom || "Article";
-                let safeName = itemName.replace(/'/g, "\\'");
-                let itemPrice = i.price !== undefined ? parseFloat(i.price) : 0;
-                let destination = i.dest || (category === 'Boissons' ? 'bar' : 'cuisine');
-                return `
-                <div class="btn-item" onclick="addToTicket('${safeName}', ${itemPrice}, '${destination}')">
-                    <span>${itemName}</span><span style="color:var(--gold)">${itemPrice.toFixed(2)}€</span>
-                </div>`;
-            }).join('');
+                document.getElementById('menu').innerHTML = filteredMenu.map(i => {
+                    let itemName = i.name || i.nom || "Article";
+                    let safeName = String(itemName).replace(/'/g, "\\'");
+                    let itemPrice = i.price !== undefined ? parseFloat(i.price) : 0;
+                    let destination = i.dest || (category === 'Boissons' ? 'bar' : 'cuisine');
+                    return `
+                    <div class="btn-item" onclick="addToTicket('${safeName}', ${itemPrice}, '${destination}')">
+                        <span>${itemName}</span><span style="color:var(--gold)">${itemPrice.toFixed(2)}€</span>
+                    </div>`;
+                }).join('');
+            } catch (err) { console.error(err); }
         }
 
-        function addToTicket(n, p, dest) { 
-            ticketItems.push({ id: Date.now()+Math.random(), n, p, done: false, dest: dest }); 
-            renderTicket(); 
-        }
+        function addToTicket(n, p, dest) { ticketItems.push({ id: Date.now()+Math.random(), n, p, done: false, dest: dest }); renderTicket(); }
 
-        // ==========================================================
-        // SYSTÈME DE SUPPRESSION AVEC MODAL QCM
-        // ==========================================================
         let pendingCancelIndex = null;
 
         function removeTicketItem(index) {
@@ -353,41 +421,40 @@
         }
 
         function abortCancelItem() {
-            // Le serveur clique sur "Ne pas supprimer", la fenêtre se ferme, le plat reste
             pendingCancelIndex = null;
             document.getElementById('cancel-modal').style.display = 'none';
         }
 
         function executeCancelItem(raison) {
             if (pendingCancelIndex === null) return;
-
             const item = ticketItems[pendingCancelIndex];
             
-            // Si le plat était déjà envoyé (enregistré en base de données), c'est une alerte de fraude
-            if (activeOrders[currentTable] && activeOrders[currentTable].items && activeOrders[currentTable].items.find(i => i.id === item.id)) {
+            if (activeOrders[currentTable] && activeOrders[currentTable].items && activeOrders[currentTable].items.find(i => i && i.id === item.id)) {
                 logAction("ANNULATION PLAT ENVOYÉ", `Table: ${currentTable} | Plat: ${item.n} | RAISON: ${raison}`);
             } else {
                 logAction("SUPPRESSION AVANT ENVOI", `Table: ${currentTable} | Plat: ${item.n} | RAISON: ${raison}`);
             }
 
             ticketItems.splice(pendingCancelIndex, 1);
-            
             pendingCancelIndex = null;
             document.getElementById('cancel-modal').style.display = 'none';
             renderTicket();
         }
         
         function renderTicket() {
-            let total = 0;
-            document.getElementById('ticket-items').innerHTML = ticketItems.map((i, index) => {
-                total += i.p;
-                const style = i.done ? "text-decoration: line-through; opacity: 0.5;" : "";
-                return `<div style="display:flex; justify-content:space-between; align-items:center; padding:8px 0; border-bottom:1px solid #222; ${style}">
-                    <span style="flex:1;">${i.n}</span><span style="margin-right:15px;">${i.p.toFixed(2)}€</span>
-                    <button class="item-delete-btn" onclick="removeTicketItem(${index})">X</button>
-                </div>`;
-            }).join('');
-            document.getElementById('ticket-total').innerText = `Total: ${total.toFixed(2)}€`;
+            try {
+                let total = 0;
+                document.getElementById('ticket-items').innerHTML = ticketItems.map((i, index) => {
+                    if (!i) return '';
+                    total += parseFloat(i.p) || 0;
+                    const style = i.done ? "text-decoration: line-through; opacity: 0.5;" : "";
+                    return `<div style="display:flex; justify-content:space-between; align-items:center; padding:8px 0; border-bottom:1px solid #222; ${style}">
+                        <span style="flex:1;">${i.n || '?'}</span><span style="margin-right:15px;">${(parseFloat(i.p)||0).toFixed(2)}€</span>
+                        <button class="item-delete-btn" onclick="removeTicketItem(${index})">X</button>
+                    </div>`;
+                }).join('');
+                document.getElementById('ticket-total').innerText = `Total: ${total.toFixed(2)}€`;
+            } catch (err) { console.error(err); }
         }
 
         async function sendToKitchen() {
@@ -398,19 +465,18 @@
                 time: new Date().toLocaleTimeString('fr-FR', {hour:'2-digit', minute:'2-digit'}), 
                 status: 'pending', observations: obs 
             };
-            await fetch('/update-order', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({tableId:currentTable, order}) });
+            await fetch('/update-order', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({tableId:currentTable, order}) }).catch(e=>{});
             logAction("ENVOI COMMANDE", `Table: ${currentTable}`, ticketItems);
             closeOrder();
         }
 
-        // --- ENCAISSEMENT TACTILE SANS BUG ---
         function openPaymentModal() {
             if (ticketItems.length === 0) return alert("La table est vide.");
             if (currentUser.role === 'Serveur') return alert("⛔ Vous n'avez pas les droits d'encaissement. Demandez au Manager.");
 
             let tableData = activeOrders[currentTable];
             if (!tableData || !tableData.items || tableData.items.length !== ticketItems.length) {
-                return alert("⚠️ IMPOSSIBLE D'ENCAISSER !\n\nVous avez ajouté ou modifié des plats sans les envoyer.\nVeuillez d'abord cliquer sur [🚀 ENVOYER (AJOUTER)] pour valider la commande.");
+                return alert("⚠️ IMPOSSIBLE D'ENCAISSER !\n\nVous avez ajouté ou supprimé des plats sans les envoyer.\nVeuillez d'abord cliquer sur [🚀 ENVOYER (AJOUTER)] pour valider la commande.");
             }
 
             const totalAmount = document.getElementById('ticket-total').innerText.replace('Total: ', '');
@@ -429,7 +495,7 @@
             document.getElementById('payment-modal').style.display = 'none';
 
             printReceipt(currentTable, totalAmount, ticketItems, paymentType);
-            await fetch('/update-order', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({tableId: currentTable, order: null}) });
+            await fetch('/update-order', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({tableId: currentTable, order: null}) }).catch(e=>{});
             logAction("ENCAISSEMENT VALIDÉ", `Table: ${currentTable} | Montant: ${totalAmount} | Type: ${paymentType}`, ticketItems);
             
             ticketItems = []; 
@@ -442,12 +508,13 @@
             const date = new Date().toLocaleString('fr-FR');
             const transactionID = 'TX-' + Math.floor(Math.random() * 1000000000);
             
-            let itemsHtml = items.map(i => `
-                <div style="display:flex; justify-content:space-between; margin-bottom:5px;">
-                    <span>1x ${i.n}</span>
-                    <span>${i.p.toFixed(2)}€</span>
-                </div>
-            `).join('');
+            let itemsHtml = items.map(i => {
+                if(!i) return '';
+                return `<div style="display:flex; justify-content:space-between; margin-bottom:5px;">
+                    <span>1x ${i.n || '?'}</span>
+                    <span>${(parseFloat(i.p)||0).toFixed(2)}€</span>
+                </div>`;
+            }).join('');
 
             let tpeHtml = '';
             if (paymentType === 'CB') {
@@ -494,51 +561,110 @@
 
         function closeOrder() { document.getElementById('order-drawer').classList.remove('open'); }
 
-        // --- DASHBOARD MANAGER ---
         function openModal(type) {
-            const body = document.getElementById('modal-body');
-            document.getElementById('info-modal').classList.add('open');
-            
-            if(type === 'radar') {
-                document.getElementById('modal-title').innerText = "⚡ RADAR RÉSERVATIONS";
-                const res = activeOrders['GLOBAL_RESERVATIONS'] ? activeOrders['GLOBAL_RESERVATIONS'].data : {};
-                const today = new Date().toISOString().split('T')[0];
-                body.innerHTML = (res[today] || []).map(r => `<div class="card"><b>${r.time}</b> — ${r.name} (${r.pax} PAX)</div>`).join('') || "Aucune résa.";
-            } 
-            else if(type === 'plan') {
-                document.getElementById('modal-title').innerText = "📅 PLANNING BRIGADE";
-                const p = JSON.parse(localStorage.getItem('kds_hr_master_v9')) || [];
-                body.innerHTML = p.map(s => `<div class="card"><b>${s.name}</b> — ${s.role}</div>`).join('');
-            }
-            else if(type === 'dashboard') {
-                document.getElementById('modal-title').innerText = "👁️ LOGS SÉCURITÉ & FRAUDE";
-                const logs = JSON.parse(localStorage.getItem('empire_fraud_log')) || [];
+            try {
+                const body = document.getElementById('modal-body');
+                document.getElementById('info-modal').classList.add('open');
                 
-                body.innerHTML = logs.map((l, idx) => {
-                    let detailsHtml = '';
-                    if (l.items && l.items.length > 0) {
-                        const list = l.items.map(i => `<div style="font-size:0.85rem; color:#ccc; display:flex; justify-content:space-between;"><span>- ${i.n}</span><span>${i.p.toFixed(2)}€</span></div>`).join('');
-                        detailsHtml = `<div id="log-detail-${idx}" style="display:none; margin-top:10px; padding:10px; background:#000; border-radius:4px; border-left: 2px solid var(--gold);">${list}</div>`;
-                    }
+                if(type === 'radar') {
+                    document.getElementById('modal-title').innerText = "⚡ RADAR RÉSERVATIONS";
+                    const res = (activeOrders['GLOBAL_RESERVATIONS'] && activeOrders['GLOBAL_RESERVATIONS'].data) ? activeOrders['GLOBAL_RESERVATIONS'].data : {};
+                    const today = new Date().toISOString().split('T')[0];
+                    let todaysRes = Array.isArray(res[today]) ? res[today] : [];
+                    body.innerHTML = todaysRes.map(r => r ? `<div class="card"><b>${r.time||'?'}</b> — ${r.name||'?'} (${r.pax||0} PAX)</div>` : '').join('') || "Aucune résa.";
+                } 
+                else if(type === 'plan') {
+                    document.getElementById('modal-title').innerText = "📅 PLANNING BRIGADE";
+                    const p = safeArray('kds_hr_master_v9', []);
+                    body.innerHTML = p.map(s => s ? `<div class="card"><b>${s.name||'?'}</b> — ${s.role||'?'}</div>` : '').join('') || "Aucun planning.";
+                }
+                else if(type === 'dashboard') {
+                    document.getElementById('modal-title').innerText = "👁️ LOGS SÉCURITÉ & FRAUDE";
+                    const logs = safeArray('empire_fraud_log', []);
+                    
+                    body.innerHTML = logs.map((l, idx) => {
+                        if(!l) return '';
+                        let actionText = String(l.action || '');
+                        let timeText = String(l.time || '');
+                        let userText = String(l.user || '');
+                        let detailText = String(l.detail || '');
 
-                    return `
-                    <div class="card" style="${l.action.includes('SUPPRESSION') || l.action.includes('ANNULATION') ? 'border-color:var(--alert);' : ''}" onclick="toggleLogDetail(${idx})">
-                        <div style="color:var(--sub); font-size:0.8rem;">${l.time} - Par: <b style="color:var(--gold);">${l.user}</b></div>
-                        <div style="font-weight:bold; margin-top:5px;">[${l.action}] ${l.detail} <span style="font-size:0.7rem; font-weight:normal; color:#888;">(Cliquez pour détails)</span></div>
-                        ${detailsHtml}
-                    </div>`;
-                }).join('') || "Aucune activité récente.";
-            }
+                        let detailsHtml = '';
+                        if (l.items && Array.isArray(l.items) && l.items.length > 0) {
+                            const list = l.items.map(i => i ? `<div style="font-size:0.85rem; color:#ccc; display:flex; justify-content:space-between;"><span>- ${i.n||'?'}</span><span>${(parseFloat(i.p)||0).toFixed(2)}€</span></div>` : '').join('');
+                            detailsHtml = `<div id="log-detail-${idx}" style="display:none; margin-top:10px; padding:10px; background:#000; border-radius:4px; border-left: 2px solid var(--gold);">${list}</div>`;
+                        }
+
+                        return `
+                        <div class="card" style="${actionText.includes('SUPPRESSION') || actionText.includes('ANNULATION') ? 'border-color:var(--alert);' : ''}" onclick="toggleLogDetail(${idx})">
+                            <div style="color:var(--sub); font-size:0.8rem;">${timeText} - Par: <b style="color:var(--gold);">${userText}</b></div>
+                            <div style="font-weight:bold; margin-top:5px;">[${actionText}] ${detailText} <span style="font-size:0.7rem; font-weight:normal; color:#888;">(Cliquez pour détails)</span></div>
+                            ${detailsHtml}
+                        </div>`;
+                    }).join('') || "Aucune activité récente.";
+                }
+            } catch(e) { console.error(e); }
         }
 
         function toggleLogDetail(idx) {
             const el = document.getElementById(`log-detail-${idx}`);
-            if(el) {
-                el.style.display = el.style.display === 'none' ? 'block' : 'none';
-            }
+            if(el) el.style.display = el.style.display === 'none' ? 'block' : 'none';
         }
 
         function closeModal() { document.getElementById('info-modal').classList.remove('open'); }
+    </script>
+
+    <script>
+        // 1. Injection de la carte de secours au démarrage
+        setTimeout(() => {
+            let menuActuel = localStorage.getItem('kds_menu');
+            
+            if (!menuActuel || menuActuel === '[]' || menuActuel === 'null') {
+                const carteCuisineForcee = [
+                    { name: "Salade César", category: "Entrées", price: 14.00, dest: "cuisine" },
+                    { name: "Foie Gras Maison", category: "Entrées", price: 19.00, dest: "cuisine" },
+                    { name: "Entrecôte Premium", category: "Plats de résistance", price: 35.00, dest: "cuisine" },
+                    { name: "Saumon Grillé", category: "Plats de résistance", price: 26.00, dest: "cuisine" },
+                    { name: "Tiramisu Italien", category: "Desserts", price: 10.00, dest: "cuisine" },
+                    { name: "Fondant Chocolat", category: "Desserts", price: 12.00, dest: "cuisine" }
+                ];
+
+                const carteBarForcee = [
+                    { name: "Mojito Signature", category: "Boissons", price: 14.00, dest: "bar" },
+                    { name: "Coupe de Champagne", category: "Boissons", price: 18.00, dest: "bar" },
+                    { name: "Coca-Cola Zero", category: "Boissons", price: 5.00, dest: "bar" }
+                ];
+
+                localStorage.setItem('kds_menu', JSON.stringify(carteCuisineForcee));
+                localStorage.setItem('kds_bar_menu', JSON.stringify(carteBarForcee));
+                console.log("⚡ Carte de base injectée avec succès dans le Pad.");
+            }
+        }, 500);
+
+        // 2. Vérification automatique des mises à jour du menu.html
+        let lastVersion = null;
+
+        async function checkMenuUpdate() {
+            try {
+                const response = await fetch("menu.html?cache=" + new Date().getTime());
+                const text = await response.text();
+
+                // Création d'une "signature" du fichier
+                const version = text.length;
+
+                if (lastVersion && lastVersion !== version) {
+                    console.log("Mise à jour détectée du menu !");
+                    location.reload(); // recharge automatique du pad
+                }
+
+                lastVersion = version;
+            } catch (e) {
+                console.log("Erreur vérification menu", e);
+            }
+        }
+
+        // Vérifie toutes les 5 secondes
+        setInterval(checkMenuUpdate, 5000);
     </script>
 </body>
 </html>
