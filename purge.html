@@ -66,22 +66,34 @@
         .pin-display { font-size: 2rem; letter-spacing: 10px; margin-bottom: 20px; color: var(--gold); min-height: 40px;}
         .item-delete-btn { background: var(--alert); color: #fff; border: none; padding: 5px 10px; font-weight: bold; cursor: pointer; border-radius: 4px; font-size: 0.7rem;}
         
+        /* MODAL PAIEMENT TACTILE */
+        #payment-modal { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.95); z-index: 30000; display: none; flex-direction: column; align-items: center; justify-content: center; }
+        .pay-btn { background: #111; border: 2px solid var(--accent); color: var(--accent); padding: 20px 40px; font-size: 1.5rem; font-weight: 900; border-radius: 8px; cursor: pointer; width: 300px; margin-bottom: 15px; text-transform: uppercase; }
+        .pay-btn.cancel { border-color: var(--alert); color: var(--alert); margin-top: 30px;}
+
         /* CORRECTION : STYLE POUR L'IMPRESSION (ADDITION) */
         #print-area { display: none; }
         @media print {
-            /* On coupe le layout bloquant de l'application */
             body { height: auto !important; overflow: visible !important; display: block !important; background: #fff !important; color: #000 !important; }
-            /* On cache tout le reste de l'interface */
             body > *:not(#print-area) { display: none !important; }
-            /* On affiche uniquement le ticket, en flux normal */
-            #print-area { display: block !important; position: relative !important; width: 100% !important; padding: 0 !important; margin: 0 !important; }
-            #print-area * { color: #000 !important; }
+            #print-area { display: block !important; position: relative !important; width: 100% !important; padding: 0 !important; margin: 0 !important; background: #fff !important; color: #000 !important; font-family: monospace; }
+            /* Forcer les couleurs noires sur fond blanc pour l'impression */
+            #print-area * { color: #000 !important; text-shadow: none !important; }
         }
     </style>
 </head>
 <body>
 
     <div id="print-area"></div>
+
+    <div id="payment-modal">
+        <h2 style="color:var(--gold); font-size: 2rem; margin-bottom: 5px;" id="pay-modal-title">ENCAISSEMENT</h2>
+        <h3 style="color:#fff; font-size: 1.5rem; margin-bottom: 40px;" id="pay-modal-amount">Total: 0.00€</h3>
+        <button class="pay-btn" onclick="executePayment('CB')">💳 CARTE BANCAIRE</button>
+        <button class="pay-btn" onclick="executePayment('ESPECES')">💶 ESPÈCES</button>
+        <button class="pay-btn" onclick="executePayment('CHEQUE')">📄 CHÈQUE</button>
+        <button class="pay-btn cancel" onclick="cancelPayment()">❌ FERMER (ANNULER)</button>
+    </div>
 
     <div id="login-screen">
         <h1 style="color:var(--gold); letter-spacing: 3px;">IDENTIFICATION REQUISE</h1>
@@ -151,7 +163,7 @@
         
         <div style="padding:20px; background:#000; display:flex; gap:10px;">
             <button class="btn-mini gold" style="flex:2; padding:20px; font-size:1rem;" onclick="sendToKitchen()">🚀 ENVOYER (AJOUTER)</button>
-            <button class="btn-mini sync" style="flex:1; padding:20px; font-size:1rem; border-color:var(--accent); color:var(--accent);" onclick="processPayment()">💳 ENCAISSER</button>
+            <button class="btn-mini sync" style="flex:1; padding:20px; font-size:1rem; border-color:var(--accent); color:var(--accent);" onclick="openPaymentModal()">💳 ENCAISSER</button>
         </div>
     </div>
 
@@ -466,46 +478,50 @@
             closeOrder();
         }
         
-        // --- IMPRESSION SÉCURISÉE & ANTI-ANNULATION ---
-        async function processPayment() {
+        // --- SYSTÈME D'ENCAISSEMENT TACTILE AVEC GARDE-FOU ANTI-VOL ---
+        function openPaymentModal() {
             if (ticketItems.length === 0) return alert("La table est vide.");
-            
-            if (currentUser.role === 'Serveur') {
-                return alert("⛔ Vous n'avez pas les droits d'encaissement. Demandez au Manager.");
+            if (currentUser.role === 'Serveur') return alert("⛔ Vous n'avez pas les droits d'encaissement. Demandez au Manager.");
+
+            // GARDE-FOU : Vérifie si tous les plats du ticket actuel sont bien présents dans la base de données.
+            // S'il y a une différence (des plats non envoyés), on bloque l'encaissement.
+            let tableData = activeOrders[currentTable];
+            if (!tableData || !tableData.items || tableData.items.length !== ticketItems.length) {
+                return alert("⚠️ IMPOSSIBLE D'ENCAISSER !\n\nVous avez ajouté ou modifié des plats sans les envoyer en cuisine/bar.\nVeuillez d'abord cliquer sur [🚀 ENVOYER (AJOUTER)] pour valider la commande.");
             }
 
             const totalAmount = document.getElementById('ticket-total').innerText.replace('Total: ', '');
+            document.getElementById('pay-modal-title').innerText = "TABLE " + currentTable;
+            document.getElementById('pay-modal-amount').innerText = "TOTAL À ENCAISSER : " + totalAmount;
             
-            const paymentType = prompt(`💳 MODE DE PAIEMENT\nTable ${currentTable} - Total : ${totalAmount}\nTapez : CB, ESPECES, ou CHEQUE\n(Ou annulez pour quitter)`);
-            
-            if(!paymentType) {
-                renderTicket(); // Force le rafraîchissement si annulation
-                return; 
-            }
-            
-            const pType = paymentType.toUpperCase();
-            if(!['CB', 'ESPECES', 'CHEQUE'].includes(pType)) {
-                alert("❌ Mode de paiement invalide.");
-                renderTicket();
-                return;
-            }
-
-            const confirmPay = confirm(`Confirmer l'encaissement de ${totalAmount} en ${pType} ?`);
-            
-            if(confirmPay) {
-                printReceipt(currentTable, totalAmount, ticketItems, pType);
-
-                await fetch('/update-order', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({tableId: currentTable, order: null}) });
-                
-                logAction("ENCAISSEMENT VALIDÉ", `Table: ${currentTable} | Montant: ${totalAmount} | Type: ${pType}`, ticketItems);
-                
-                ticketItems = []; document.getElementById('order-obs').value = ''; closeOrder();
-            } else {
-                renderTicket(); 
-            }
+            document.getElementById('payment-modal').style.display = 'flex';
         }
 
-        // LE TICKET RESTE INTÉGRALEMENT DÉTAILLÉ
+        function cancelPayment() {
+            // L'annulation ferme la modale sans vider le ticket ni perdre les données.
+            document.getElementById('payment-modal').style.display = 'none';
+        }
+
+        async function executePayment(paymentType) {
+            const totalAmount = document.getElementById('ticket-total').innerText.replace('Total: ', '');
+            
+            document.getElementById('payment-modal').style.display = 'none';
+
+            // 1. Impression
+            printReceipt(currentTable, totalAmount, ticketItems, paymentType);
+
+            // 2. Base de données
+            await fetch('/update-order', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({tableId: currentTable, order: null}) });
+            
+            // 3. Log
+            logAction("ENCAISSEMENT VALIDÉ", `Table: ${currentTable} | Montant: ${totalAmount} | Type: ${paymentType}`, ticketItems);
+            
+            // 4. Clôture de la table
+            ticketItems = []; 
+            document.getElementById('order-obs').value = ''; 
+            closeOrder();
+        }
+
         function printReceipt(table, total, items, paymentType) {
             const printArea = document.getElementById('print-area');
             const date = new Date().toLocaleString('fr-FR');
@@ -559,13 +575,12 @@
                 </div>
             `;
             
-            // LAISSE LE TEMPS AU NAVIGATEUR DE CHARGER LE HTML AVANT D'IMPRIMER
             setTimeout(() => { window.print(); }, 100);
         }
 
         function closeOrder() { document.getElementById('order-drawer').classList.remove('open'); }
 
-        // --- DASHBOARD MANAGER ---
+        // --- DASHBOARD MANAGER AVEC DÉROULANT DES COMMANDES ---
         function openModal(type) {
             const body = document.getElementById('modal-body');
             document.getElementById('info-modal').classList.add('open');
