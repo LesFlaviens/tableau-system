@@ -1,8 +1,3 @@
-Flavien, voici ton code de **Pad Serveur Master** absolument intact, avec l'intégration exclusive de ta demande : le bouton **RÉSA** qui ouvre ton fichier `reservation.html` sans délai et la **connexion H24 7/7 (Auto-Reconnect)** qui remplace ton ancien `setInterval`.
-
-Aucune autre ligne ou fonction de ton code n'a été modifiée.
-
-```html
 <!DOCTYPE html>
 <html lang="fr">
 <head>
@@ -44,6 +39,16 @@ Aucune autre ligne ou fonction de ton code n'a été modifiée.
         .modal { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.98); z-index: 20000; display: none; padding: 40px; box-sizing: border-box; overflow-y: auto; }
         .modal.open { display: block; }
         .card { background: #111; border: 1px solid #333; padding: 20px; border-radius: 8px; margin-bottom: 10px; }
+
+        /* -- AJOUT : MODE ARCHITECTURE -- */
+        .edit-mode .table-obj { cursor: move; border-style: dashed; border-color: #2979ff; }
+        .edit-mode .table-obj::after {
+            content: "⇲"; position: absolute; bottom: 0; right: 0; background: #2979ff; 
+            color: #fff; width: 20px; height: 20px; font-size: 14px; display: flex; 
+            justify-content: center; align-items: center; cursor: se-resize; border-radius: 4px 0 0 0;
+        }
+        #archi-tools { display: none; background: #111; padding: 10px; border-top: 1px solid #333; justify-content: space-between; }
+        .edit-mode #archi-tools { display: flex; }
     </style>
 </head>
 <body>
@@ -55,6 +60,8 @@ Aucune autre ligne ou fonction de ton code n'a été modifiée.
         </div>
         <div class="nav-btns">
             <button class="btn-mini" style="border-color: #ea80fc; color: #ea80fc;" onclick="window.open('reservation.html', '_blank')">📅 RÉSA</button>
+            <button class="btn-mini" style="border-color: #2979ff; color: #2979ff;" onclick="unlockArchiMode()">🏗️ ARCHI</button>
+            
             <button class="btn-mini gold" onclick="openModal('radar')">⚡ RADAR</button>
             <button class="btn-mini" onclick="openModal('plan')">📅 PLANNING</button>
             <button class="btn-mini gold" onclick="window.location.href='haccp.html'">⚙️ HACCP</button>
@@ -63,6 +70,15 @@ Aucune autre ligne ou fonction de ton code n'a été modifiée.
     </header>
 
     <div id="floor-plan" class="floor-plan"></div>
+
+    <div id="archi-tools">
+        <div style="color:#2979ff; font-weight:900;">MODE ÉDITION SALLE ACTIF</div>
+        <div style="display:flex; gap:10px;">
+            <button class="btn-mini" onclick="addNewTable()">+ NOUVELLE TABLE</button>
+            <button class="btn-mini gold" onclick="saveArchitecture()">💾 SAUVEGARDER PLAN</button>
+            <button class="btn-mini sync" onclick="closeArchiMode()">QUITTER SANS SAUVER</button>
+        </div>
+    </div>
 
     <div id="order-drawer" class="drawer">
         <div style="padding:20px; border-bottom:1px solid #333; display:flex; justify-content:space-between; align-items:center;">
@@ -86,13 +102,66 @@ Aucune autre ligne ou fonction de ton code n'a été modifiée.
 
     <script>
         let activeOrders = {}; let currentTable = null; let ticketItems = [];
-        const tables = [
+        
+        // MODIFICATION LÉGÈRE ICI : Chargement des tables depuis le localStorage s'il y a eu une modification
+        const defaultTables = [
             {label:"T1", l:550, t:500, w:80, h:120}, {label:"T2", l:550, t:300, w:80, h:120},
             {label:"T3", l:430, t:450, w:80, h:120}, {label:"T4", l:440, t:300, w:80, h:120},
             {label:"T5", l:330, t:430, w:80, h:120}, {label:"T6", l:350, t:300, w:80, h:120},
             {label:"T7", l:150, t:550, w:80, h:120}, {label:"T8", l:120, t:300, w:80, h:120},
             {label:"T9", l:250, t:250, w:80, h:120}, {label:"T10", l:240, t:420, w:80, h:120}
         ];
+        let tables = JSON.parse(localStorage.getItem('empire_architecture')) || defaultTables;
+
+        // =========================================================================
+        // AJOUT : LOGIQUE DU MODE ARCHITECTURE
+        // =========================================================================
+        let isArchiMode = false;
+        let activeDragElement = null;
+        let isResizing = false;
+
+        function unlockArchiMode() {
+            const pass = prompt("CODE SÉCURITÉ MANAGER (Taper 7777) :");
+            if(pass === "7777") {
+                isArchiMode = true;
+                document.body.classList.add('edit-mode');
+                renderFloor(); // Re-render pour attacher les événements de drag
+            } else {
+                alert("Code incorrect.");
+            }
+        }
+
+        function closeArchiMode() {
+            isArchiMode = false;
+            document.body.classList.remove('edit-mode');
+            tables = JSON.parse(localStorage.getItem('empire_architecture')) || defaultTables; // Annule les modifs non sauvées
+            renderFloor();
+        }
+
+        function saveArchitecture() {
+            // Mettre à jour l'array tables avec les nouvelles positions
+            const domTables = document.querySelectorAll('.table-obj');
+            tables = Array.from(domTables).map(el => ({
+                label: el.innerText.replace('⇲',''), // Retire le symbole de resize
+                l: parseInt(el.style.left, 10),
+                t: parseInt(el.style.top, 10),
+                w: parseInt(el.style.width, 10),
+                h: parseInt(el.style.height, 10)
+            }));
+            localStorage.setItem('empire_architecture', JSON.stringify(tables));
+            alert("Plan de salle sauvegardé avec succès !");
+            isArchiMode = false;
+            document.body.classList.remove('edit-mode');
+            renderFloor();
+        }
+
+        function addNewTable() {
+            const name = prompt("Nom de la nouvelle table ? (ex: T11)");
+            if(name) {
+                tables.push({label: name, l: 50, t: 50, w: 80, h: 120});
+                renderFloor();
+            }
+        }
 
         // =========================================================================
         // CONNEXION H24 7/7 (REMPLACE TON ANCIEN setInterval)
@@ -105,7 +174,6 @@ Aucune autre ligne ou fonction de ton code n'a été modifiée.
                 document.getElementById('stock-tag').style.color = "var(--accent)";
                 document.getElementById('stock-tag').innerText = "● SYNC H24 ACTIF";
                 
-                // Au démarrage, on récupère l'état initial
                 fetch('/get-current-state').then(r=>r.json()).then(d=>{
                     activeOrders=d.activeOrders;
                     renderFloor();
@@ -118,7 +186,6 @@ Aucune autre ligne ou fonction de ton code n'a été modifiée.
                     activeOrders = msg.activeOrders || (msg.state ? msg.state.activeOrders : {});
                     renderFloor();
                     
-                    // Si on a reçu le menu global, on le sauvegarde (comme dans ton code original)
                     const globalMenu = msg.activeOrders ? msg.activeOrders['GLOBAL_MENU'] : (msg.state && msg.state.activeOrders['GLOBAL_MENU']);
                     if(globalMenu) localStorage.setItem('kds_menu', JSON.stringify(globalMenu.data));
                 }
@@ -127,30 +194,85 @@ Aucune autre ligne ou fonction de ton code n'a été modifiée.
             ws.onclose = () => {
                 document.getElementById('stock-tag').style.color = "var(--alert)";
                 document.getElementById('stock-tag').innerText = "● RECONNEXION...";
-                setTimeout(connectEmpireH24, 2500); // Reconnexion auto
+                setTimeout(connectEmpireH24, 2500); 
             };
             
             ws.onerror = (err) => { ws.close(); };
         }
 
-        // Lancement immédiat de la connexion H24
         connectEmpireH24();
 
         // =========================================================================
-        // TON CODE ORIGINAL (INTOUCHÉ)
+        // TON CODE ORIGINAL (INTOUCHÉ, JUSTE ADAPTÉ POUR L'ARCHITECTURE)
         // =========================================================================
         function renderFloor() {
             const floor = document.getElementById('floor-plan'); floor.innerHTML = '';
             tables.forEach(t => {
                 const div = document.createElement('div'); div.className = 'table-obj';
-                if(activeOrders[t.label]) div.classList.add('occupied');
+                if(activeOrders && activeOrders[t.label]) div.classList.add('occupied');
                 div.style.left=t.l+'px'; div.style.top=t.t+'px'; div.style.width=t.w+'px'; div.style.height=t.h+'px';
-                div.innerHTML = t.label; div.onclick = () => openOrder(t.label);
+                div.innerHTML = t.label; 
+                
+                // Différenciation Clic / Drag selon le mode
+                if (isArchiMode) {
+                    attachDragEvents(div);
+                } else {
+                    div.onclick = () => openOrder(t.label);
+                }
+                
                 floor.appendChild(div);
             });
         }
 
+        // LOGIQUE TACTILE POUR LE DRAG & RESIZE
+        function attachDragEvents(el) {
+            let startX, startY, initialL, initialT, initialW, initialH;
+
+            const onPointerDown = (e) => {
+                const rect = el.getBoundingClientRect();
+                // Si on clique dans le coin inférieur droit (20x20px), c'est un resize
+                isResizing = (e.clientX - rect.left > rect.width - 20) && (e.clientY - rect.top > rect.height - 20);
+                
+                startX = e.clientX; startY = e.clientY;
+                initialL = parseInt(el.style.left, 10); initialT = parseInt(el.style.top, 10);
+                initialW = parseInt(el.style.width, 10); initialH = parseInt(el.style.height, 10);
+                activeDragElement = el;
+
+                document.addEventListener('pointermove', onPointerMove);
+                document.addEventListener('pointerup', onPointerUp);
+            };
+
+            const onPointerMove = (e) => {
+                if (!activeDragElement) return;
+                const dx = e.clientX - startX; const dy = e.clientY - startY;
+
+                if (isResizing) {
+                    activeDragElement.style.width = Math.max(50, initialW + dx) + 'px';
+                    activeDragElement.style.height = Math.max(50, initialH + dy) + 'px';
+                } else {
+                    activeDragElement.style.left = (initialL + dx) + 'px';
+                    activeDragElement.style.top = (initialT + dy) + 'px';
+                }
+            };
+
+            const onPointerUp = () => {
+                activeDragElement = null;
+                document.removeEventListener('pointermove', onPointerMove);
+                document.removeEventListener('pointerup', onPointerUp);
+            };
+
+            el.addEventListener('pointerdown', onPointerDown);
+        }
+
+        // LE RESTE DE TON CODE ORIGINAL
         function openOrder(id) {
+            if(isArchiMode) {
+                if(confirm("Supprimer la table " + id + " ?")) {
+                    tables = tables.filter(t => t.label !== id);
+                    renderFloor();
+                }
+                return;
+            }
             currentTable = id; document.getElementById('table-label').innerText = "TABLE " + id;
             ticketItems = activeOrders[id] ? activeOrders[id].items : [];
             renderTicket(); renderMenu();
@@ -182,7 +304,6 @@ Aucune autre ligne ou fonction de ton code n'a été modifiée.
 
         function closeOrder() { document.getElementById('order-drawer').classList.remove('open'); }
 
-        // --- RADAR & PLANNING ---
         function openModal(type) {
             const body = document.getElementById('modal-body');
             document.getElementById('info-modal').classList.add('open');
@@ -202,4 +323,3 @@ Aucune autre ligne ou fonction de ton code n'a été modifiée.
     </script>
 </body>
 </html>
-```
