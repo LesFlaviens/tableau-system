@@ -192,8 +192,6 @@
     <audio id="beep-ready" src="https://assets.mixkit.co/active_storage/sfx/2869/2869-preview.mp3" preload="auto"></audio>
 
     <script>
-        let isArchiMode = false;
-
         function safeArray(key, fallbackArray) {
             try {
                 let val = localStorage.getItem(key);
@@ -254,33 +252,6 @@
 
         let tables = safeArray('empire_architecture', [ {label:"T1", l:550, t:500, w:80, h:120} ]);
 
-        function unlockArchiMode() {
-            if (!currentUser || currentUser.role !== 'Manager') return alert("⛔ Accès Manager requis pour modifier le plan.");
-            isArchiMode = true;
-            document.body.classList.add('edit-mode');
-        }
-
-        function closeArchiMode() {
-            isArchiMode = false;
-            document.body.classList.remove('edit-mode');
-            tables = safeArray('empire_architecture', [ {label:"T1", l:550, t:500, w:80, h:120} ]);
-            renderFloor();
-        }
-
-        function addNewTable() {
-            const label = prompt("Nom ou Numéro de la nouvelle table ?");
-            if (label) {
-                tables.push({ label: label, l: 100, t: 100, w: 80, h: 120 });
-                renderFloor();
-            }
-        }
-
-        function saveArchitecture() {
-            localStorage.setItem('empire_architecture', JSON.stringify(tables));
-            alert("✅ Plan sauvegardé avec succès.");
-            closeArchiMode();
-        }
-
         function renderFloor() {
             try {
                 const floor = document.getElementById('floor-plan'); floor.innerHTML = '';
@@ -306,51 +277,37 @@
 
         let ws;
         function connectEmpireH24() {
-            try {
-                // SÉCURITÉ : Empêche le crash si le fichier est ouvert en local (file://)
-                if (window.location.protocol === 'file:') {
-                    console.warn("Mode local détecté, synchronisation désactivée.");
-                    document.getElementById('stock-tag').innerText = "● HORS-LIGNE (LOCAL)";
-                    renderFloor();
-                    return;
-                }
-
-                ws = new WebSocket((window.location.protocol === 'https:' ? 'wss://' : 'ws://') + window.location.host);
-                ws.onopen = () => {
-                    document.getElementById('stock-tag').innerText = "● SYNC H24 ACTIF";
-                    fetch('/get-current-state').then(r=>r.json()).then(d=>{ activeOrders=d.activeOrders||{}; renderFloor(); }).catch(e=>{});
-                };
-                ws.onmessage = (e) => {
-                    try {
-                        const msg = JSON.parse(e.data);
-                        if(msg.type === 'ORDER_UPDATE' || msg.state || msg.type === 'SYNC') {
-                            const newOrders = msg.activeOrders || (msg.state ? msg.state.activeOrders : {});
-                            for (let tableId in newOrders) {
-                                if (newOrders[tableId] && newOrders[tableId].status === 'ready' && (!previousOrdersState[tableId] || previousOrdersState[tableId].status !== 'ready')) {
-                                    const beep = document.getElementById('beep-ready');
-                                    if(beep) beep.play().catch(err => console.log("Son bloqué", err));
-                                    if(newOrders[tableId].items) newOrders[tableId].items.forEach(i => { if(i) i.done = true; });
-                                }
+            ws = new WebSocket((window.location.protocol === 'https:' ? 'wss://' : 'ws://') + window.location.host);
+            ws.onopen = () => {
+                document.getElementById('stock-tag').innerText = "● SYNC H24 ACTIF";
+                fetch('/get-current-state').then(r=>r.json()).then(d=>{ activeOrders=d.activeOrders||{}; renderFloor(); }).catch(e=>{});
+            };
+            ws.onmessage = (e) => {
+                try {
+                    const msg = JSON.parse(e.data);
+                    if(msg.type === 'ORDER_UPDATE' || msg.state || msg.type === 'SYNC') {
+                        const newOrders = msg.activeOrders || (msg.state ? msg.state.activeOrders : {});
+                        for (let tableId in newOrders) {
+                            if (newOrders[tableId] && newOrders[tableId].status === 'ready' && (!previousOrdersState[tableId] || previousOrdersState[tableId].status !== 'ready')) {
+                                const beep = document.getElementById('beep-ready');
+                                if(beep) beep.play().catch(err => console.log("Son bloqué", err));
+                                if(newOrders[tableId].items) newOrders[tableId].items.forEach(i => { if(i) i.done = true; });
                             }
-                            previousOrdersState = JSON.parse(JSON.stringify(newOrders));
-                            activeOrders = newOrders;
-                            if (document.getElementById('order-drawer').classList.contains('open') && currentTable) {
-                                ticketItems = (activeOrders[currentTable] && activeOrders[currentTable].items) ? activeOrders[currentTable].items : ticketItems;
-                                renderTicket();
-                            }
-                            renderFloor();
-                            const globalMenu = msg.activeOrders ? msg.activeOrders['GLOBAL_MENU'] : (msg.state && msg.state.activeOrders['GLOBAL_MENU']);
-                            if(globalMenu) localStorage.setItem('kds_menu', JSON.stringify(globalMenu.data));
-                            const globalRecipes = msg.activeOrders ? msg.activeOrders['GLOBAL_RECIPES'] : (msg.state && msg.state.activeOrders['GLOBAL_RECIPES']);
-                            if(globalRecipes) localStorage.setItem('kds_bar_menu', JSON.stringify(globalRecipes.data));
                         }
-                    } catch(err) { console.error("Erreur de traitement des données:", err); }
-                };
-            } catch(error) {
-                console.warn("Échec de l'initialisation réseau:", error);
-                document.getElementById('stock-tag').innerText = "● ERREUR RÉSEAU";
-                renderFloor();
-            }
+                        previousOrdersState = JSON.parse(JSON.stringify(newOrders));
+                        activeOrders = newOrders;
+                        if (document.getElementById('order-drawer').classList.contains('open') && currentTable) {
+                            ticketItems = (activeOrders[currentTable] && activeOrders[currentTable].items) ? activeOrders[currentTable].items : ticketItems;
+                            renderTicket();
+                        }
+                        renderFloor();
+                        const globalMenu = msg.activeOrders ? msg.activeOrders['GLOBAL_MENU'] : (msg.state && msg.state.activeOrders['GLOBAL_MENU']);
+                        if(globalMenu) localStorage.setItem('kds_menu', JSON.stringify(globalMenu.data));
+                        const globalRecipes = msg.activeOrders ? msg.activeOrders['GLOBAL_RECIPES'] : (msg.state && msg.state.activeOrders['GLOBAL_RECIPES']);
+                        if(globalRecipes) localStorage.setItem('kds_bar_menu', JSON.stringify(globalRecipes.data));
+                    }
+                } catch(err) { console.error(err); }
+            };
         }
 
         function openOrder(id) {
