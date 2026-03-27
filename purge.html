@@ -17,7 +17,7 @@
         .tag-entree { background: #2979ff; color: #fff; }
         .tag-plat { background: var(--gold); color: #000; }
         .tag-dessert { background: #e91e63; color: #fff; }
-        
+
         /* STYLES AJOUTÉS POUR LA CRÉATION */
         .input-base { background: #000; border: 1px solid #444; color: #fff; padding: 12px; border-radius: 6px; width: 100%; box-sizing: border-box; margin-bottom: 15px;}
         .btn-add { background: var(--gold); color: #000; font-weight: 900; padding: 15px; border-radius: 6px; border: none; cursor: pointer; text-transform: uppercase; width: 100%; font-size: 1.1rem; }
@@ -31,12 +31,12 @@
     <header>
         <div>
             <h1 style="margin:0; text-transform:uppercase; letter-spacing:2px;">🔪 LE LABORATOIRE DU CHEF</h1>
-            <p style="color:var(--gold); margin:5px 0 0 0; font-weight: bold;">ÉDITION DE LA CARTE & CRÉATION</p>
+            <p style="color:var(--gold); margin:5px 0 0 0; font-weight: bold;">ÉDITION DE LA CARTE - 30 RÉFÉRENCES</p>
         </div>
         <div style="display:flex; gap:10px; align-items:center;">
             <div id="sync-status" style="margin-right: 20px; font-weight: 900; font-size: 0.8rem; color: #888;">● CONNEXION...</div>
             <button class="btn-reset" onclick="forceResetMenu()" style="margin:0;">⚠️ RÉINITIALISER LES 30 PLATS</button>
-            <a href="production.html" class="btn-nav" style="border-color:var(--alert); color:var(--alert);">🔥 CUISINE</a>
+            <a href="production.html" class="btn-nav" style="border-color:var(--alert); color:var(--alert); height: fit-content;">🔥 CUISINE</a>
         </div>
     </header>
 
@@ -56,7 +56,7 @@
         <div style="display:flex; gap:15px; margin-bottom:15px;">
             <textarea id="new-desc" class="input-base" style="height:80px; margin:0; flex:1; resize:none;" placeholder="Description / Ingrédients (Écrire, Dicter ou Importer un PDF)"></textarea>
             <div style="display:flex; flex-direction:column; gap:10px;">
-                <button id="btn-mic" class="btn-mic" onclick="toggleDictation()" style="margin:0; flex:1;">🎙️ DICTER</button>
+                <button id="btn-mic-recipe" class="btn-mic" onclick="toggleRecipeDictation()" style="margin:0; flex:1;">🎙️ DICTER</button>
                 <button class="btn-mic" onclick="document.getElementById('pdf-upload').click()" style="margin:0; flex:1;">📄 IMPORT PDF</button>
                 <input type="file" id="pdf-upload" accept="application/pdf" style="display:none;" onchange="extractTextFromPDF()">
             </div>
@@ -68,12 +68,95 @@
     <div class="module-container">
         <h2 style="color:var(--gold); margin-top:0;">VOTRE CARTE ACTUELLE</h2>
         <div id="menu-live-list"></div>
-        <button class="btn-propulse" onclick="propulserMenu()">🚀 PROPULSER LA CARTE SUR LE RÉSEAU (H24)</button>
+        <button class="btn-propulse" onclick="propulserMenu()">🚀 PROPULSER LES 30 PLATS SUR LE RÉSEAU</button>
     </div>
 
     <script>
         // ==========================================================
-        // CONNEXION H24 7/7 (AUTO-RECONNECT)
+        // SYSTÈME DE CRÉATION (DICTÉE & PDF) - AJOUTÉ
+        // ==========================================================
+        let recipeRecognition;
+        let isRecipeRecording = false;
+
+        function toggleRecipeDictation() {
+            window.SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+            if (!window.SpeechRecognition) return alert("Dictée non supportée par votre navigateur.");
+            
+            if (!recipeRecognition) {
+                recipeRecognition = new SpeechRecognition();
+                recipeRecognition.lang = 'fr-FR';
+                recipeRecognition.interimResults = true;
+                recipeRecognition.onresult = (e) => {
+                    let final = '';
+                    for (let i = e.resultIndex; i < e.results.length; ++i) {
+                        if (e.results[i].isFinal) final += e.results[i][0].transcript + ' ';
+                    }
+                    if(final) {
+                        const textArea = document.getElementById('new-desc');
+                        textArea.value += final;
+                    }
+                };
+                recipeRecognition.onend = () => { document.getElementById('btn-mic-recipe').classList.remove('recording'); isRecipeRecording = false; };
+            }
+
+            if (isRecipeRecording) {
+                recipeRecognition.stop();
+            } else {
+                recipeRecognition.start();
+                isRecipeRecording = true;
+                document.getElementById('btn-mic-recipe').classList.add('recording');
+            }
+        }
+
+        async function extractTextFromPDF() {
+            const file = document.getElementById('pdf-upload').files[0];
+            if (!file) return;
+
+            const reader = new FileReader();
+            reader.onload = async function() {
+                try {
+                    const typedarray = new Uint8Array(this.result);
+                    const pdf = await pdfjsLib.getDocument(typedarray).promise;
+                    let fullText = "";
+                    
+                    for (let i = 1; i <= pdf.numPages; i++) {
+                        const page = await pdf.getPage(i);
+                        const textContent = await page.getTextContent();
+                        const text = textContent.items.map(s => s.str).join(' ');
+                        fullText += text + "\n";
+                    }
+                    document.getElementById('new-desc').value = fullText;
+                    alert("PDF analysé avec succès !");
+                } catch(e) {
+                    alert("Erreur lors de la lecture du PDF.");
+                }
+            };
+            reader.readAsArrayBuffer(file);
+        }
+
+        function addNewRecipe() {
+            const name = document.getElementById('new-name').value.trim();
+            const cat = document.getElementById('new-cat').value;
+            const price = parseFloat(document.getElementById('new-price').value);
+            const desc = document.getElementById('new-desc').value.trim();
+
+            if(!name || isNaN(price)) return alert("Nom et prix obligatoires.");
+
+            // Ajoute à la variable menuEmpire de ton code original
+            menuEmpire.unshift({ name: name, category: cat, price: price, description: desc });
+            
+            localStorage.setItem('kds_menu_empire', JSON.stringify(menuEmpire));
+            renderMenuLive();
+
+            document.getElementById('new-name').value = '';
+            document.getElementById('new-price').value = '';
+            document.getElementById('new-desc').value = '';
+            
+            alert(`"${name}" ajouté ! N'oubliez pas de cliquer sur "Propulser" pour l'envoyer au Pad Salle/Cuisine.`);
+        }
+
+        // ==========================================================
+        // CONNEXION H24 7/7 (AUTO-RECONNECT) - AJOUTÉ
         // ==========================================================
         let ws;
         function connectEmpireH24() {
@@ -92,88 +175,7 @@
         connectEmpireH24();
 
         // ==========================================================
-        // SYSTÈME DE CRÉATION (DICTÉE & PDF)
-        // ==========================================================
-        let recognition;
-        let isRecording = false;
-
-        function toggleDictation() {
-            window.SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-            if (!window.SpeechRecognition) return alert("Dictée non supportée par votre navigateur.");
-            
-            if (!recognition) {
-                recognition = new SpeechRecognition();
-                recognition.lang = 'fr-FR';
-                recognition.interimResults = true;
-                recognition.onresult = (e) => {
-                    let final = '';
-                    for (let i = e.resultIndex; i < e.results.length; ++i) {
-                        if (e.results[i].isFinal) final += e.results[i][0].transcript + ' ';
-                    }
-                    if(final) {
-                        const textArea = document.getElementById('new-desc');
-                        textArea.value += final;
-                    }
-                };
-                recognition.onend = () => { document.getElementById('btn-mic').classList.remove('recording'); isRecording = false; };
-            }
-
-            if (isRecording) {
-                recognition.stop();
-            } else {
-                recognition.start();
-                isRecording = true;
-                document.getElementById('btn-mic').classList.add('recording');
-            }
-        }
-
-        async function extractTextFromPDF() {
-            const file = document.getElementById('pdf-upload').files[0];
-            if (!file) return;
-
-            const reader = new FileReader();
-            reader.onload = async function() {
-                const typedarray = new Uint8Array(this.result);
-                const pdf = await pdfjsLib.getDocument(typedarray).promise;
-                let fullText = "";
-                
-                for (let i = 1; i <= pdf.numPages; i++) {
-                    const page = await pdf.getPage(i);
-                    const textContent = await page.getTextContent();
-                    const text = textContent.items.map(s => s.str).join(' ');
-                    fullText += text + "\n";
-                }
-                document.getElementById('new-desc').value = fullText;
-                alert("PDF analysé avec succès !");
-            };
-            reader.readAsArrayBuffer(file);
-        }
-
-        function addNewRecipe() {
-            const name = document.getElementById('new-name').value.trim();
-            const cat = document.getElementById('new-cat').value;
-            const price = parseFloat(document.getElementById('new-price').value);
-            const desc = document.getElementById('new-desc').value.trim();
-
-            if(!name || isNaN(price)) return alert("Nom et prix obligatoires.");
-
-            // Ajoute à la variable menuEmpire existante
-            menuEmpire.unshift({ name: name, category: cat, price: price, description: desc });
-            
-            // Sauvegarde locale et affichage
-            localStorage.setItem('kds_menu_empire', JSON.stringify(menuEmpire));
-            renderMenuLive();
-
-            // Reset des champs
-            document.getElementById('new-name').value = '';
-            document.getElementById('new-price').value = '';
-            document.getElementById('new-desc').value = '';
-            
-            alert(`"${name}" ajouté ! N'oubliez pas de cliquer sur "Propulser" pour l'envoyer en salle.`);
-        }
-
-        // ==========================================================
-        // CODE ORIGINAL INTACT
+        // CODE ORIGINAL (INTOUCHÉ)
         // ==========================================================
         const defaultMenu = [
             // ENTRÉES (10)
@@ -242,9 +244,13 @@
             const payload = { tableId: 'GLOBAL_MENU', order: { status: 'system', data: menuEmpire } };
             try {
                 // Utilisation de la connexion H24
-                const res = await fetch('/update-order', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
-                if(res.ok) alert("✅ CARTE SYNCHRONISÉE : Tout est à jour.");
-            } catch(e) { alert("Erreur."); }
+                if (ws && ws.readyState === WebSocket.OPEN) {
+                    const res = await fetch('/update-order', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+                    if(res.ok) alert("✅ CARTE SYNCHRONISÉE : Tout est à jour.");
+                } else {
+                    alert("⚠️ Non connecté au serveur H24. Vérifiez votre connexion.");
+                }
+            } catch(e) { alert("Erreur de connexion."); }
         }
 
         window.onload = renderMenuLive;
