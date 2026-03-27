@@ -71,13 +71,17 @@
         .pay-btn { background: #111; border: 2px solid var(--accent); color: var(--accent); padding: 20px 40px; font-size: 1.5rem; font-weight: 900; border-radius: 8px; cursor: pointer; width: 300px; margin-bottom: 15px; text-transform: uppercase; }
         .pay-btn.cancel { border-color: var(--alert); color: var(--alert); margin-top: 30px;}
 
+        /* AJOUT : MODAL ANNULATION (QCM) */
+        #cancel-modal { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.95); z-index: 40000; display: none; flex-direction: column; align-items: center; justify-content: center; }
+        .cancel-btn { background: #111; border: 2px solid var(--gold); color: var(--gold); padding: 20px 40px; font-size: 1.2rem; font-weight: bold; border-radius: 8px; cursor: pointer; width: 350px; margin-bottom: 15px; text-transform: uppercase; }
+        .cancel-btn.abort { border-color: var(--sub); color: var(--sub); margin-top: 20px; }
+
         /* CORRECTION : STYLE POUR L'IMPRESSION (ADDITION) */
         #print-area { display: none; }
         @media print {
             body { height: auto !important; overflow: visible !important; display: block !important; background: #fff !important; color: #000 !important; }
             body > *:not(#print-area) { display: none !important; }
             #print-area { display: block !important; position: relative !important; width: 100% !important; padding: 0 !important; margin: 0 !important; background: #fff !important; color: #000 !important; font-family: monospace; }
-            /* Forcer les couleurs noires sur fond blanc pour l'impression */
             #print-area * { color: #000 !important; text-shadow: none !important; }
         }
     </style>
@@ -93,6 +97,16 @@
         <button class="pay-btn" onclick="executePayment('ESPECES')">💶 ESPÈCES</button>
         <button class="pay-btn" onclick="executePayment('CHEQUE')">📄 CHÈQUE</button>
         <button class="pay-btn cancel" onclick="cancelPayment()">❌ FERMER (ANNULER)</button>
+    </div>
+
+    <div id="cancel-modal">
+        <h2 style="color:var(--alert); font-size: 1.8rem; margin-bottom: 5px;">⚠️ ANNULER CE PLAT ?</h2>
+        <h3 style="color:#fff; font-size: 1.2rem; margin-bottom: 30px;" id="cancel-item-name">Nom du plat</h3>
+        <button class="cancel-btn" onclick="executeCancelItem('Erreur de frappe')">❌ ERREUR DE FRAPPE</button>
+        <button class="cancel-btn" onclick="executeCancelItem('Client change d\'avis')">❌ CLIENT CHANGE D'AVIS</button>
+        <button class="cancel-btn" onclick="executeCancelItem('Rupture de stock (Cuisine)')">❌ RUPTURE DE STOCK</button>
+        <button class="cancel-btn" onclick="executeCancelItem('Retour cuisine (Non conforme)')">❌ RETOUR CUISINE</button>
+        <button class="cancel-btn abort" onclick="abortCancelItem()">🔙 NE PAS SUPPRIMER (RETOUR)</button>
     </div>
 
     <div id="login-screen">
@@ -115,10 +129,8 @@
         </div>
         <div class="nav-btns">
             <button id="btn-dashboard" class="btn-mini sync" style="display:none;" onclick="openModal('dashboard')">👁️ DASHBOARD DIR.</button>
-            
             <button class="btn-mini" style="border-color: #ea80fc; color: #ea80fc;" onclick="window.open('reservation.html', '_blank')">📅 RÉSA</button>
             <button class="btn-mini" style="border-color: #2979ff; color: #2979ff;" onclick="unlockArchiMode()">🏗️ ARCHI</button>
-            
             <button class="btn-mini gold" onclick="openModal('radar')">⚡ RADAR</button>
             <button class="btn-mini" onclick="openModal('plan')">📅 PLANNING</button>
             <button class="btn-mini gold" onclick="window.open('haccp.html', '_blank')">⚙️ HACCP</button>
@@ -184,27 +196,19 @@
         
         // --- INACTIVITÉ (VERROUILLAGE AUTO) ---
         let inactivityTimer;
-        const INACTIVITY_LIMIT = 120000; // 2 minutes en millisecondes
+        const INACTIVITY_LIMIT = 120000; 
 
         function resetInactivityTimer() {
             clearTimeout(inactivityTimer);
-            if(currentUser) {
-                inactivityTimer = setTimeout(logout, INACTIVITY_LIMIT);
-            }
+            if(currentUser) inactivityTimer = setTimeout(logout, INACTIVITY_LIMIT);
         }
 
-        ['touchstart', 'click', 'mousemove', 'keypress'].forEach(evt => 
-            document.addEventListener(evt, resetInactivityTimer, false)
-        );
+        ['touchstart', 'click', 'mousemove', 'keypress'].forEach(evt => document.addEventListener(evt, resetInactivityTimer, false));
 
-        // --- HIÉRARCHIE & LOGIN ---
+        // --- LOGIN ---
         let currentUser = null;
         let currentPin = "";
-        const USERS = {
-            "1234": { name: "Flavien", role: "Serveur" },
-            "5678": { name: "Chef Jean", role: "Chef" },
-            "9999": { name: "Directeur", role: "Manager" }
-        };
+        const USERS = { "1234": { name: "Flavien", role: "Serveur" }, "9999": { name: "Directeur", role: "Manager" } };
 
         function appendPin(num) { currentPin += num; document.getElementById('pin-display').innerText = '*'.repeat(currentPin.length); resetInactivityTimer(); }
         function clearPin() { currentPin = ""; document.getElementById('pin-display').innerText = ""; resetInactivityTimer(); }
@@ -214,30 +218,19 @@
                 currentUser = USERS[currentPin];
                 document.getElementById('user-badge').innerText = `Badge: ${currentUser.name} (${currentUser.role})`;
                 document.getElementById('login-screen').style.display = 'none';
-                
                 if(currentUser.role === 'Manager') document.getElementById('btn-dashboard').style.display = 'block';
-                else document.getElementById('btn-dashboard').style.display = 'none';
-                
-                connectEmpireH24(); 
-                resetInactivityTimer();
-            } else {
-                alert("❌ PIN Incorrect.");
-                clearPin();
-            }
+                connectEmpireH24(); resetInactivityTimer();
+            } else { alert("❌ PIN Incorrect."); clearPin(); }
         }
 
         function logout() {
             currentUser = null; currentPin = "";
             document.getElementById('login-screen').style.display = 'flex';
-            document.getElementById('pin-display').innerText = "";
-            closeOrder(); 
-            closeModal(); 
-            closeArchiMode(); 
-            if(ws) ws.close();
-            clearTimeout(inactivityTimer);
+            closeOrder(); closeModal(); closeArchiMode();
+            if(ws) ws.close(); clearTimeout(inactivityTimer);
         }
 
-        // --- HISTORIQUE ANTI-FRAUDE ---
+        // --- LOGS ---
         let fraudLog = JSON.parse(localStorage.getItem('empire_fraud_log')) || [];
         function logAction(action, detail, itemsData = null) {
             const time = new Date().toLocaleTimeString('fr-FR');
@@ -245,154 +238,62 @@
             localStorage.setItem('empire_fraud_log', JSON.stringify(fraudLog));
         }
 
-        // --- PLAN DE SALLE ---
-        const defaultTables = [
-            {label:"T1", l:550, t:500, w:80, h:120}, {label:"T2", l:550, t:300, w:80, h:120},
-            {label:"T3", l:430, t:450, w:80, h:120}, {label:"T4", l:440, t:300, w:80, h:120},
-            {label:"T5", l:330, t:430, w:80, h:120}, {label:"T6", l:350, t:300, w:80, h:120},
-            {label:"T7", l:150, t:550, w:80, h:120}, {label:"T8", l:120, t:300, w:80, h:120},
-            {label:"T9", l:250, t:250, w:80, h:120}, {label:"T10", l:240, t:420, w:80, h:120}
-        ];
-        let tables = JSON.parse(localStorage.getItem('empire_architecture')) || defaultTables;
+        // --- PLAN ---
+        let tables = JSON.parse(localStorage.getItem('empire_architecture')) || [ {label:"T1", l:550, t:500, w:80, h:120} ];
 
-        // --- ARCHITECTURE ---
-        let isArchiMode = false;
-        let activeDragElement = null;
-        let isResizing = false;
-
-        function unlockArchiMode() {
-            if(currentUser.role !== 'Manager') return alert("⛔ Réservé au Manager.");
-            isArchiMode = true; document.body.classList.add('edit-mode'); renderFloor();
-        }
-
-        function closeArchiMode() {
-            isArchiMode = false; document.body.classList.remove('edit-mode');
-            tables = JSON.parse(localStorage.getItem('empire_architecture')) || defaultTables; 
-            renderFloor();
-        }
-
-        function saveArchitecture() {
-            const domTables = document.querySelectorAll('.table-obj');
-            tables = Array.from(domTables).map(el => ({
-                label: el.innerText.replace('⇲',''), l: parseInt(el.style.left, 10),
-                t: parseInt(el.style.top, 10), w: parseInt(el.style.width, 10), h: parseInt(el.style.height, 10)
-            }));
-            localStorage.setItem('empire_architecture', JSON.stringify(tables));
-            alert("Plan de salle sauvegardé !");
-            isArchiMode = false; document.body.classList.remove('edit-mode'); renderFloor();
-        }
-
-        function addNewTable() {
-            const name = prompt("Nom de la nouvelle table ?");
-            if(name) { tables.push({label: name, l: 50, t: 50, w: 80, h: 120}); renderFloor(); }
-        }
-
-        // --- CONNEXION H24 7/7 ---
-        let ws;
-        function connectEmpireH24() {
-            ws = new WebSocket((window.location.protocol === 'https:' ? 'wss://' : 'ws://') + window.location.host);
-
-            ws.onopen = () => {
-                document.getElementById('stock-tag').style.color = "var(--accent)";
-                document.getElementById('stock-tag').innerText = "● SYNC H24 ACTIF";
-                fetch('/get-current-state').then(r=>r.json()).then(d=>{ activeOrders=d.activeOrders; renderFloor(); });
-            };
-
-            ws.onmessage = (e) => {
-                const msg = JSON.parse(e.data);
-                if(msg.type === 'ORDER_UPDATE' || msg.state || msg.type === 'SYNC') {
-                    const newOrders = msg.activeOrders || (msg.state ? msg.state.activeOrders : {});
-                    
-                    for (let tableId in newOrders) {
-                        if (newOrders[tableId].status === 'ready' && (!previousOrdersState[tableId] || previousOrdersState[tableId].status !== 'ready')) {
-                            const beep = document.getElementById('beep-ready');
-                            if(beep) beep.play().catch(err => console.log("Son bloqué"));
-                            
-                            if(newOrders[tableId].items) {
-                                newOrders[tableId].items.forEach(i => i.done = true);
-                            }
-                        }
-                    }
-                    
-                    previousOrdersState = JSON.parse(JSON.stringify(newOrders));
-                    activeOrders = newOrders;
-                    
-                    if (document.getElementById('order-drawer').classList.contains('open') && currentTable) {
-                        ticketItems = activeOrders[currentTable] ? activeOrders[currentTable].items : ticketItems;
-                        renderTicket();
-                    }
-
-                    renderFloor();
-                    
-                    const globalMenu = msg.activeOrders ? msg.activeOrders['GLOBAL_MENU'] : (msg.state && msg.state.activeOrders['GLOBAL_MENU']);
-                    if(globalMenu) localStorage.setItem('kds_menu', JSON.stringify(globalMenu.data));
-
-                    const globalRecipes = msg.activeOrders ? msg.activeOrders['GLOBAL_RECIPES'] : (msg.state && msg.state.activeOrders['GLOBAL_RECIPES']);
-                    if(globalRecipes) localStorage.setItem('kds_bar_menu', JSON.stringify(globalRecipes.data));
-                }
-            };
-
-            ws.onclose = () => {
-                if(!currentUser) return; 
-                document.getElementById('stock-tag').style.color = "var(--alert)";
-                document.getElementById('stock-tag').innerText = "● RECONNEXION...";
-                setTimeout(connectEmpireH24, 2500); 
-            };
-            ws.onerror = () => { ws.close(); };
-        }
-
-        // --- AFFICHAGE PLAN DE SALLE ---
         function renderFloor() {
             const floor = document.getElementById('floor-plan'); floor.innerHTML = '';
             tables.forEach(t => {
                 const div = document.createElement('div'); div.className = 'table-obj';
-                
-                if(activeOrders && activeOrders[t.label]) {
-                    div.classList.add('occupied');
-                    if(activeOrders[t.label].status === 'ready') div.classList.add('ready');
-                }
-                
+                if(activeOrders[t.label]) { div.classList.add('occupied'); if(activeOrders[t.label].status === 'ready') div.classList.add('ready'); }
                 div.style.left=t.l+'px'; div.style.top=t.t+'px'; div.style.width=t.w+'px'; div.style.height=t.h+'px';
                 div.innerHTML = t.label; 
-                
-                if (isArchiMode) attachDragEvents(div); else div.onclick = () => openOrder(t.label);
+                div.onclick = () => openOrder(t.label);
                 floor.appendChild(div);
             });
         }
 
-        function attachDragEvents(el) {
-            let startX, startY, initialL, initialT, initialW, initialH;
-            const onPointerDown = (e) => {
-                const rect = el.getBoundingClientRect();
-                isResizing = (e.clientX - rect.left > rect.width - 20) && (e.clientY - rect.top > rect.height - 20);
-                startX = e.clientX; startY = e.clientY; initialL = parseInt(el.style.left, 10); initialT = parseInt(el.style.top, 10);
-                initialW = parseInt(el.style.width, 10); initialH = parseInt(el.style.height, 10);
-                activeDragElement = el;
-                document.addEventListener('pointermove', onPointerMove); document.addEventListener('pointerup', onPointerUp);
+        // --- NETWORK ---
+        let ws;
+        function connectEmpireH24() {
+            ws = new WebSocket((window.location.protocol === 'https:' ? 'wss://' : 'ws://') + window.location.host);
+            ws.onopen = () => {
+                document.getElementById('stock-tag').innerText = "● SYNC H24 ACTIF";
+                fetch('/get-current-state').then(r=>r.json()).then(d=>{ activeOrders=d.activeOrders; renderFloor(); });
             };
-            const onPointerMove = (e) => {
-                if (!activeDragElement) return;
-                const dx = e.clientX - startX; const dy = e.clientY - startY;
-                if (isResizing) {
-                    activeDragElement.style.width = Math.max(50, initialW + dx) + 'px';
-                    activeDragElement.style.height = Math.max(50, initialH + dy) + 'px';
-                } else {
-                    activeDragElement.style.left = (initialL + dx) + 'px';
-                    activeDragElement.style.top = (initialT + dy) + 'px';
+            ws.onmessage = (e) => {
+                const msg = JSON.parse(e.data);
+                if(msg.type === 'ORDER_UPDATE' || msg.state || msg.type === 'SYNC') {
+                    const newOrders = msg.activeOrders || (msg.state ? msg.state.activeOrders : {});
+                    for (let tableId in newOrders) {
+                        if (newOrders[tableId].status === 'ready' && (!previousOrdersState[tableId] || previousOrdersState[tableId].status !== 'ready')) {
+                            const beep = document.getElementById('beep-ready');
+                            if(beep) beep.play().catch(err => console.log("Son bloqué"));
+                            if(newOrders[tableId].items) newOrders[tableId].items.forEach(i => i.done = true);
+                        }
+                    }
+                    previousOrdersState = JSON.parse(JSON.stringify(newOrders));
+                    activeOrders = newOrders;
+                    if (document.getElementById('order-drawer').classList.contains('open') && currentTable) {
+                        ticketItems = activeOrders[currentTable] ? activeOrders[currentTable].items : ticketItems;
+                        renderTicket();
+                    }
+                    renderFloor();
+                    const globalMenu = msg.activeOrders ? msg.activeOrders['GLOBAL_MENU'] : (msg.state && msg.state.activeOrders['GLOBAL_MENU']);
+                    if(globalMenu) localStorage.setItem('kds_menu', JSON.stringify(globalMenu.data));
+                    const globalRecipes = msg.activeOrders ? msg.activeOrders['GLOBAL_RECIPES'] : (msg.state && msg.state.activeOrders['GLOBAL_RECIPES']);
+                    if(globalRecipes) localStorage.setItem('kds_bar_menu', JSON.stringify(globalRecipes.data));
                 }
             };
-            const onPointerUp = () => { activeDragElement = null; document.removeEventListener('pointermove', onPointerMove); document.removeEventListener('pointerup', onPointerUp); };
-            el.addEventListener('pointerdown', onPointerDown);
         }
 
-        // --- GESTION TIROIR COMMANDE ---
+        // --- COMMANDES ---
         function openOrder(id) {
             if(isArchiMode) {
                 if(confirm("Supprimer la table " + id + " ?")) { tables = tables.filter(t => t.label !== id); renderFloor(); }
                 return;
             }
             currentTable = id; document.getElementById('table-label').innerText = "TABLE " + id;
-            
             if(activeOrders[id] && activeOrders[id].observations) document.getElementById('order-obs').value = activeOrders[id].observations;
             else document.getElementById('order-obs').value = '';
 
@@ -402,7 +303,6 @@
             }
             
             ticketItems = (activeOrders[id] && activeOrders[id].items) ? activeOrders[id].items : [];
-            
             renderTicket(); renderMenu('Plats de résistance');
             document.getElementById('order-drawer').classList.add('open');
         }
@@ -428,7 +328,6 @@
                 let safeName = itemName.replace(/'/g, "\\'");
                 let itemPrice = i.price !== undefined ? parseFloat(i.price) : 0;
                 let destination = i.dest || (category === 'Boissons' ? 'bar' : 'cuisine');
-
                 return `
                 <div class="btn-item" onclick="addToTicket('${safeName}', ${itemPrice}, '${destination}')">
                     <span>${itemName}</span><span style="color:var(--gold)">${itemPrice.toFixed(2)}€</span>
@@ -441,12 +340,40 @@
             renderTicket(); 
         }
 
+        // ==========================================================
+        // SYSTÈME DE SUPPRESSION AVEC MODAL QCM
+        // ==========================================================
+        let pendingCancelIndex = null;
+
         function removeTicketItem(index) {
+            pendingCancelIndex = index;
             const item = ticketItems[index];
+            document.getElementById('cancel-item-name').innerText = `Plat sélectionné : ${item.n}`;
+            document.getElementById('cancel-modal').style.display = 'flex';
+        }
+
+        function abortCancelItem() {
+            // Le serveur clique sur "Ne pas supprimer", la fenêtre se ferme, le plat reste
+            pendingCancelIndex = null;
+            document.getElementById('cancel-modal').style.display = 'none';
+        }
+
+        function executeCancelItem(raison) {
+            if (pendingCancelIndex === null) return;
+
+            const item = ticketItems[pendingCancelIndex];
+            
+            // Si le plat était déjà envoyé (enregistré en base de données), c'est une alerte de fraude
             if (activeOrders[currentTable] && activeOrders[currentTable].items && activeOrders[currentTable].items.find(i => i.id === item.id)) {
-                logAction("SUPPRESSION PLAT ENVOYÉ", `Plat: ${item.n} | Table: ${currentTable}`);
+                logAction("ANNULATION PLAT ENVOYÉ", `Table: ${currentTable} | Plat: ${item.n} | RAISON: ${raison}`);
+            } else {
+                logAction("SUPPRESSION AVANT ENVOI", `Table: ${currentTable} | Plat: ${item.n} | RAISON: ${raison}`);
             }
-            ticketItems.splice(index, 1);
+
+            ticketItems.splice(pendingCancelIndex, 1);
+            
+            pendingCancelIndex = null;
+            document.getElementById('cancel-modal').style.display = 'none';
             renderTicket();
         }
         
@@ -455,8 +382,7 @@
             document.getElementById('ticket-items').innerHTML = ticketItems.map((i, index) => {
                 total += i.p;
                 const style = i.done ? "text-decoration: line-through; opacity: 0.5;" : "";
-                return `
-                <div style="display:flex; justify-content:space-between; align-items:center; padding:8px 0; border-bottom:1px solid #222; ${style}">
+                return `<div style="display:flex; justify-content:space-between; align-items:center; padding:8px 0; border-bottom:1px solid #222; ${style}">
                     <span style="flex:1;">${i.n}</span><span style="margin-right:15px;">${i.p.toFixed(2)}€</span>
                     <button class="item-delete-btn" onclick="removeTicketItem(${index})">X</button>
                 </div>`;
@@ -473,21 +399,18 @@
                 status: 'pending', observations: obs 
             };
             await fetch('/update-order', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({tableId:currentTable, order}) });
-            
             logAction("ENVOI COMMANDE", `Table: ${currentTable}`, ticketItems);
             closeOrder();
         }
-        
-        // --- SYSTÈME D'ENCAISSEMENT TACTILE AVEC GARDE-FOU ANTI-VOL ---
+
+        // --- ENCAISSEMENT TACTILE SANS BUG ---
         function openPaymentModal() {
             if (ticketItems.length === 0) return alert("La table est vide.");
             if (currentUser.role === 'Serveur') return alert("⛔ Vous n'avez pas les droits d'encaissement. Demandez au Manager.");
 
-            // GARDE-FOU : Vérifie si tous les plats du ticket actuel sont bien présents dans la base de données.
-            // S'il y a une différence (des plats non envoyés), on bloque l'encaissement.
             let tableData = activeOrders[currentTable];
             if (!tableData || !tableData.items || tableData.items.length !== ticketItems.length) {
-                return alert("⚠️ IMPOSSIBLE D'ENCAISSER !\n\nVous avez ajouté ou modifié des plats sans les envoyer en cuisine/bar.\nVeuillez d'abord cliquer sur [🚀 ENVOYER (AJOUTER)] pour valider la commande.");
+                return alert("⚠️ IMPOSSIBLE D'ENCAISSER !\n\nVous avez ajouté ou modifié des plats sans les envoyer.\nVeuillez d'abord cliquer sur [🚀 ENVOYER (AJOUTER)] pour valider la commande.");
             }
 
             const totalAmount = document.getElementById('ticket-total').innerText.replace('Total: ', '');
@@ -498,25 +421,17 @@
         }
 
         function cancelPayment() {
-            // L'annulation ferme la modale sans vider le ticket ni perdre les données.
             document.getElementById('payment-modal').style.display = 'none';
         }
 
         async function executePayment(paymentType) {
             const totalAmount = document.getElementById('ticket-total').innerText.replace('Total: ', '');
-            
             document.getElementById('payment-modal').style.display = 'none';
 
-            // 1. Impression
             printReceipt(currentTable, totalAmount, ticketItems, paymentType);
-
-            // 2. Base de données
             await fetch('/update-order', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({tableId: currentTable, order: null}) });
-            
-            // 3. Log
             logAction("ENCAISSEMENT VALIDÉ", `Table: ${currentTable} | Montant: ${totalAmount} | Type: ${paymentType}`, ticketItems);
             
-            // 4. Clôture de la table
             ticketItems = []; 
             document.getElementById('order-obs').value = ''; 
             closeOrder();
@@ -574,13 +489,12 @@
                     <p style="text-align: center; font-size: 0.8rem; margin-top: 20px;">Merci de votre visite.<br>A bientôt !</p>
                 </div>
             `;
-            
             setTimeout(() => { window.print(); }, 100);
         }
 
         function closeOrder() { document.getElementById('order-drawer').classList.remove('open'); }
 
-        // --- DASHBOARD MANAGER AVEC DÉROULANT DES COMMANDES ---
+        // --- DASHBOARD MANAGER ---
         function openModal(type) {
             const body = document.getElementById('modal-body');
             document.getElementById('info-modal').classList.add('open');
@@ -608,7 +522,7 @@
                     }
 
                     return `
-                    <div class="card" style="${l.action.includes('SUPPRESSION') ? 'border-color:var(--alert);' : ''}" onclick="toggleLogDetail(${idx})">
+                    <div class="card" style="${l.action.includes('SUPPRESSION') || l.action.includes('ANNULATION') ? 'border-color:var(--alert);' : ''}" onclick="toggleLogDetail(${idx})">
                         <div style="color:var(--sub); font-size:0.8rem;">${l.time} - Par: <b style="color:var(--gold);">${l.user}</b></div>
                         <div style="font-weight:bold; margin-top:5px;">[${l.action}] ${l.detail} <span style="font-size:0.7rem; font-weight:normal; color:#888;">(Cliquez pour détails)</span></div>
                         ${detailsHtml}
