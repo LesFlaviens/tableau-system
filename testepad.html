@@ -170,6 +170,7 @@
             <button class="btn-mini" style="flex:1; font-size:0.9rem;" onclick="renderMenu('Entrées')">🥗 ENTRÉES</button>
             <button class="btn-mini gold" style="flex:1; font-size:0.9rem;" onclick="renderMenu('Plats de résistance')">🔥 PLATS</button>
             <button class="btn-mini" style="flex:1; font-size:0.9rem; border-color:#ea80fc; color:#ea80fc;" onclick="renderMenu('Desserts')">🍰 DESSERTS</button>
+            
             <button class="btn-mini" style="flex:1; font-size:0.9rem; border-color:#00e5ff; color:#00e5ff;" onclick="renderMenu('Boissons')">🍸 BOISSONS</button>
         </div>
 
@@ -332,32 +333,37 @@
             } catch (err) { console.error(err); }
         }
 
+        // ==========================================================
+        // CORRECTION : CONNEXION SÉPARÉE CUISINE / BAR
+        // ==========================================================
         function renderMenu(category) {
             try {
-                let cuisineMenu = safeArray('kds_menu', []);
-                let barMenuRaw = safeArray('kds_bar_menu', []);
-                
-                let barMenu = barMenuRaw.map(r => {
-                    let itemName = r.name || (r.nom ? String(r.nom).split('(')[0].trim() : "Boisson");
-                    let itemPrice = r.price !== undefined ? parseFloat(r.price) : 0;
-                    return { name: itemName, category: 'Boissons', price: itemPrice };
-                });
+                let itemsToDisplay = [];
+                let destination = 'cuisine'; // Par défaut
 
-                let fullMenu = [...cuisineMenu, ...barMenu];
-                let filteredMenu = fullMenu.filter(i => {
-                    if (!i) return false;
-                    if (category === 'Boissons') return i.category === 'Boissons' || i.category === 'Boissons & Bar' || i.category === 'Cocktails' || i.category === 'Vins & Bulles' || i.category === 'Softs & Bières';
-                    return i.category === category;
-                });
+                if (category === 'Boissons') {
+                    // Si on clique sur Boissons, on lit UNIQUEMENT la base de données du BAR (kds_bar_menu)
+                    let barMenuRaw = safeArray('kds_bar_menu', []);
+                    itemsToDisplay = barMenuRaw.map(r => {
+                        let itemName = r.name || (r.nom ? String(r.nom).split('(')[0].trim() : "Boisson");
+                        let itemPrice = r.price !== undefined ? parseFloat(r.price) : 0;
+                        return { name: itemName, category: 'Boissons', price: itemPrice, dest: 'bar' };
+                    });
+                    destination = 'bar';
+                } else {
+                    // Si on clique sur Entrées, Plats, Desserts, on lit UNIQUEMENT la base de données de la CUISINE (kds_menu)
+                    let cuisineMenuRaw = safeArray('kds_menu', []);
+                    itemsToDisplay = cuisineMenuRaw.filter(i => i && i.category === category).map(i => {
+                        return { name: i.name, category: i.category, price: parseFloat(i.price) || 0, dest: 'cuisine' };
+                    });
+                }
 
-                document.getElementById('menu').innerHTML = filteredMenu.map(i => {
-                    let itemName = i.name || i.nom || "Article";
-                    let safeName = String(itemName).replace(/'/g, "\\'");
-                    let itemPrice = i.price !== undefined ? parseFloat(i.price) : 0;
-                    let destination = i.dest || (category === 'Boissons' ? 'bar' : 'cuisine');
+                // Affichage dans la grille
+                document.getElementById('menu').innerHTML = itemsToDisplay.map(i => {
+                    let safeName = String(i.name).replace(/'/g, "\\'");
                     return `
-                    <div class="btn-item" onclick="addToTicket('${safeName}', ${itemPrice}, '${destination}')">
-                        <span>${itemName}</span><span style="color:var(--gold)">${itemPrice.toFixed(2)}€</span>
+                    <div class="btn-item" onclick="addToTicket('${safeName}', ${i.price}, '${i.dest}')">
+                        <span>${i.name}</span><span style="color:var(--gold)">${i.price.toFixed(2)}€</span>
                     </div>`;
                 }).join('');
             } catch (err) { console.error(err); }
