@@ -2,9 +2,10 @@
 <html lang="fr">
 <head>
     <meta charset="UTF-8">
-    <title>Empire KDS - Bar</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>EMPIRE BAR - Centre de Production</title>
     <style>
-        :root { --bg: #050505; --accent: #00e676; --alert: #ff1744; --text: #fff; --panel: #111; --haccp: #00b0ff; --hr: #2979ff; --gold: #ffb300; --bar: #00e5ff; }
+  :root { --bg: #050505; --accent: #00e676; --alert: #ff1744; --text: #fff; --panel: #111; --haccp: #00b0ff; --hr: #2979ff; --gold: #ffb300; --bar: #00e5ff; }
         body { font-family: 'Inter', sans-serif; background: var(--bg); color: var(--text); margin: 0; display: flex; height: 100vh; overflow: hidden; }
         
         #start-overlay { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.95); z-index: 9999; display: flex; justify-content: center; align-items: center; flex-direction: column; }
@@ -219,6 +220,7 @@
         <div class="header-container">
             <h2 class="header-title" style="color: var(--bar);">🍸 GESTION DU BAR <span id="pending-count" style="color:#fff; margin-left: 15px; font-size: 1rem; text-transform: none;">0 verres/boissons à envoyer</span></h2>
             <div style="display: flex; gap: 10px;">
+                <div id="sync-status" style="margin-right: 20px; align-self: center; font-weight: 900; font-size: 0.8rem; color: #888;">● CONNEXION...</div>
                 <button class="btn-top" style="border-color:#888; color:#888;" onclick="openDrawer('history-drawer')">✔️ HISTORIQUE</button>
                 <button class="btn-top" style="border-color:var(--hr); color:var(--hr);" onclick="openStaffPlanning()">📅 PLANNING</button>
                 <button class="btn-top" style="border-color:#ea80fc; color:#ea80fc;" onclick="openResDrawer()">📅 RÉSA</button>
@@ -234,7 +236,118 @@
         let audioCtx;
         let isChefMode = false; 
         let previousPendingCount = 0;
+        
+        // =========================================================================
+        // MOTEUR D'AFFICHAGE DU KDS ET CONNEXION H24 7/7 INFAILLIBLE
+        // =========================================================================
+        let activeOrders = {};
+        let ws;
 
+        function connectEmpireH24() {
+            ws = new WebSocket((window.location.protocol === 'https:' ? 'wss://' : 'ws://') + window.location.host);
+
+            ws.onopen = () => {
+                document.getElementById('sync-status').style.color = "var(--accent)";
+                document.getElementById('sync-status').innerText = "● SYNC H24 ACTIF";
+                
+                // Récupère l'état à la connexion
+                fetch('/get-current-state').then(r => r.json()).then(state => {
+                    activeOrders = state.activeOrders || {};
+                    renderKDS();
+                }).catch(e => console.log("Erreur init", e));
+            };
+
+            ws.onmessage = (e) => {
+                const msg = JSON.parse(e.data);
+                if (msg.type === 'ORDER_UPDATE' || msg.state) {
+                    activeOrders = msg.activeOrders || (msg.state ? msg.state.activeOrders : {});
+                    renderKDS();
+                }
+            };
+
+            ws.onclose = () => {
+                document.getElementById('sync-status').style.color = "var(--alert)";
+                document.getElementById('sync-status').innerText = "● RECONNEXION...";
+                // LA MAGIE DU 24/7 : Il force le redémarrage tout seul
+                setTimeout(connectEmpireH24, 2500); 
+            };
+            
+            ws.onerror = (err) => {
+                ws.close(); // Force onclose pour relancer la boucle
+            };
+        }
+
+        function renderKDS() {
+            const pendingContainer = document.getElementById('pending-container');
+            pendingContainer.innerHTML = '';
+            
+            let currentPendingCount = 0;
+            let currentItemCount = 0;
+
+            for (let tableId in activeOrders) {
+                const order = activeOrders[tableId];
+                if (!order || !order.items) continue;
+
+                const drinks = order.items.filter(i => i.category === 'Boissons & Bar' || i.dest === 'bar');
+                
+                // On affiche uniquement si c'est pas encore prêt
+                if (drinks.length > 0 && order.status !== 'ready') {
+                    currentPendingCount++;
+                    currentItemCount += drinks.length;
+                    
+                    const ticketDiv = document.createElement('div'); 
+                    ticketDiv.className = 'ticket';
+                    
+                    const counts = {};
+                    drinks.forEach(i => { counts[i.n] = (counts[i.n] || 0) + 1; });
+                    
+                    const boissonsHtml = Object.entries(counts).map(([name, qty]) => `
+                        <div class="course-item" style="border-bottom: 1px dashed #222; padding-bottom: 5px;">
+                            <span style="color:var(--accent); margin-right:10px;">${qty}x</span> ${name}
+                        </div>
+                    `).join('');
+
+                    ticketDiv.innerHTML = `
+                        <div class="ticket-header">
+                            <div>
+                                <span>TABLE ${tableId}</span>
+                                <span style="color:#666; font-size:0.9rem; margin-left: 10px;">${order.time || '--:--'}</span>
+                            </div>
+                        </div>
+                        <div class="ticket-body">
+                            <div class="course-section">
+                                <div class="course-title" style="color:var(--bar);">Boissons</div>
+                                <div style="padding: 10px 12px; font-size: 1.1rem; font-weight: bold;">
+                                    ${boissonsHtml}
+                                </div>
+                            </div>
+                        </div>
+                        <button class="btn-send" style="background:var(--bar);" onclick="markAsReady('${tableId}')">ENVOYER BOISSONS ✓</button>
+                    `;
+                    pendingContainer.appendChild(ticketDiv);
+                }
+            }
+
+            document.getElementById('pending-count').textContent = `${currentItemCount} verres/boissons à envoyer`;
+            
+            if (currentPendingCount > previousPendingCount) { playSound('new'); }
+            previousPendingCount = currentPendingCount;
+        }
+
+        async function markAsReady(tableId) {
+            playSound('send');
+            // Envoi au serveur H24
+            await fetch('/update-order', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({ tableId: tableId, order: { ...activeOrders[tableId], status: 'ready' } })
+            });
+        }
+
+
+        // =========================================================================
+        // INITIALISATION ET UTILITAIRES DE BASE (ORIGINAL)
+        // =========================================================================
         function initSystem() {
             try {
                 const AudioContext = window.AudioContext || window.webkitAudioContext;
@@ -243,7 +356,7 @@
             document.getElementById('start-overlay').style.display = 'none';
             document.getElementById('stats-date-picker').value = getTodayString();
             document.getElementById('haccp-date-picker').value = getTodayString();
-            renderKDS();
+            connectEmpireH24(); // Lancement du H24
         }
 
         function playSound(type) {
@@ -265,14 +378,6 @@
                 osc.start(now); osc.stop(now + 0.4);
             }
         }
-
-        // --- ECOUTE CLOUD (MARCHE EN AVANT EMPIRE) ---
-        window.addEventListener('storage', function(e) {
-            if (e.key === 'empire_kds_queue') renderKDS();
-            if (e.key === 'empire_reservations' && document.getElementById('res-drawer').classList.contains('open')) renderResDrawer();
-            if (e.key === 'kds_grimoire_bar_v2' && document.getElementById('gestion-drawer').classList.contains('open')) renderLibrary();
-            if (e.key === 'kds_hr_master_v9' && document.getElementById('staff-drawer').classList.contains('open')) renderStaffPlanning();
-        });
 
         // Utilitaire Date
         function getTodayString() { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; }
@@ -533,98 +638,6 @@
             });
             container.innerHTML = html + '</div>';
         }
-
-        // =========================================================================
-        // MOTEUR D'AFFICHAGE DU KDS (LECTURE DE LA QUEUE CLOUD)
-        // =========================================================================
-        function getQueue() { return JSON.parse(localStorage.getItem('empire_kds_queue')) || []; }
-        function saveQueue(queue) { localStorage.setItem('empire_kds_queue', JSON.stringify(queue)); }
-
-        function markAsReady(orderId) {
-            let queue = getQueue();
-            const index = queue.findIndex(o => o.id === orderId);
-            if(index > -1) {
-                // On met à jour nos archives statistiques avant de supprimer
-                const today = getTodayString();
-                let allStats = JSON.parse(localStorage.getItem('kds_archives_bar_10ans') || '{}');
-                if(!allStats[today]) allStats[today] = {};
-                
-                queue[index].ticket.boissons.forEach(b => {
-                    allStats[today][b.name] = (allStats[today][b.name] || 0) + 1;
-                });
-                localStorage.setItem('kds_archives_bar_10ans', JSON.stringify(allStats));
-
-                // On vide la partie "Boissons" de ce bon
-                queue[index].ticket.boissons = [];
-                
-                // Si le reste de la commande (Cuisine) est aussi vide, on supprime le bon complet
-                const t = queue[index].ticket;
-                if(t.entrees.length === 0 && t.plats.length === 0 && t.desserts.length === 0) {
-                    queue.splice(index, 1);
-                }
-                saveQueue(queue);
-                playSound('send');
-            }
-            renderKDS();
-        }
-
-        function renderKDS() {
-            const queue = getQueue();
-            const pendingContainer = document.getElementById('pending-container');
-            const historyContainer = document.getElementById('history-container');
-            pendingContainer.innerHTML = '';
-            
-            // Ne garder que les commandes en attente qui contiennent des boissons
-            const pendingOrders = queue.filter(o => o.status === 'pending' && o.ticket && o.ticket.boissons && o.ticket.boissons.length > 0);
-            
-            let currentPendingCount = 0;
-            let currentItemCount = 0;
-
-            pendingOrders.forEach(order => {
-                currentPendingCount++;
-                currentItemCount += order.ticket.boissons.length;
-                
-                const ticketDiv = document.createElement('div'); ticketDiv.className = 'ticket';
-                
-                // Regroupe les boissons identiques
-                const counts = {};
-                order.ticket.boissons.forEach(i => { counts[i.name] = (counts[i.name] || 0) + 1; });
-                
-                const boissonsHtml = Object.entries(counts).map(([name, qty]) => `
-                    <div class="course-item" style="border-bottom: 1px dashed #222; padding-bottom: 5px;"><span style="color:var(--accent); margin-right:10px;">${qty}x</span> ${name}</div>
-                `).join('');
-
-                ticketDiv.innerHTML = `
-                    <div class="ticket-header">
-                        <div>
-                            <span>${order.table}</span>
-                            <span style="color:#666; font-size:0.9rem; margin-left: 10px;">${order.time}</span>
-                        </div>
-                    </div>
-                    <div class="ticket-body">
-                        <div class="course-section">
-                            <div class="course-title" style="color:var(--bar);">Boissons</div>
-                            <div style="padding: 10px 12px; font-size: 1.1rem; font-weight: bold;">
-                                ${boissonsHtml}
-                            </div>
-                        </div>
-                    </div>
-                    <button class="btn-send" style="background:var(--bar);" onclick="markAsReady('${order.id}')">ENVOYER BOISSONS ✓</button>
-                `;
-                pendingContainer.appendChild(ticketDiv);
-            });
-
-            // Mise à jour des compteurs du Header
-            document.getElementById('pending-count').textContent = `${currentItemCount} verres/boissons à envoyer`;
-            
-            // Sonnerie
-            if (currentPendingCount > previousPendingCount) { playSound('new'); }
-            previousPendingCount = currentPendingCount;
-        }
-
-        // --- DÉMARRAGE INITIAL ---
-        renderKDS();
-
     </script>
 </body>
 </html>
