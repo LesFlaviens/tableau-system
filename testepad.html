@@ -609,4 +609,274 @@
                 let filteredMenu = fullMenu.filter(i => {
                     if (!i) return false;
                     if (category === 'Tous') return true; 
-                    if (category === 'Boissons') return i.category === 'Boissons' || i.category === 'Boissons & Bar' || i.category === 'Cocktails' || i.
+                    if (category === 'Boissons') return i.category === 'Boissons' || i.category === 'Boissons & Bar' || i.category === 'Cocktails' || i.category === 'Vins & Bulles' || i.category === 'Softs & Bières';
+                    return i.category === category;
+                });
+
+                document.getElementById('menu').innerHTML = filteredMenu.map(i => {
+                    let itemName = i.name || i.nom || "Article";
+                    let safeName = String(itemName).replace(/'/g, "\\'");
+                    let itemPrice = i.price !== undefined ? parseFloat(i.price) : 0;
+                    let destination = i.dest || (category === 'Boissons' ? 'bar' : 'cuisine');
+                    return `
+                    <div class="btn-item" onclick="addToTicket('${safeName}', ${itemPrice}, '${destination}')">
+                        <span>${itemName}</span><span style="color:var(--gold)">${itemPrice.toFixed(2)}€</span>
+                    </div>`;
+                }).join('');
+            } catch (err) { console.error(err); }
+        }
+
+        function addToTicket(n, p, dest) { ticketItems.push({ id: Date.now()+Math.random(), n, p, done: false, dest: dest }); renderTicket(); }
+
+        let pendingCancelIndex = null;
+
+        function removeTicketItem(index) {
+            pendingCancelIndex = index;
+            const item = ticketItems[index];
+            document.getElementById('cancel-item-name').innerText = `Plat sélectionné : ${item.n}`;
+            document.getElementById('cancel-modal').style.display = 'flex';
+        }
+
+        function abortCancelItem() {
+            pendingCancelIndex = null;
+            document.getElementById('cancel-modal').style.display = 'none';
+        }
+
+        function executeCancelItem(raison) {
+            if (pendingCancelIndex === null) return;
+            const item = ticketItems[pendingCancelIndex];
+            
+            if (activeOrders[currentTable] && activeOrders[currentTable].items && activeOrders[currentTable].items.find(i => i && i.id === item.id)) {
+                logAction("ANNULATION PLAT ENVOYÉ", `Table: ${currentTable} | Plat: ${item.n} | RAISON: ${raison}`);
+            } else {
+                logAction("SUPPRESSION AVANT ENVOI", `Table: ${currentTable} | Plat: ${item.n} | RAISON: ${raison}`);
+            }
+
+            ticketItems.splice(pendingCancelIndex, 1);
+            pendingCancelIndex = null;
+            document.getElementById('cancel-modal').style.display = 'none';
+            renderTicket();
+        }
+        
+        function renderTicket() {
+            try {
+                let total = 0;
+                document.getElementById('ticket-items').innerHTML = ticketItems.map((i, index) => {
+                    if (!i) return '';
+                    total += parseFloat(i.p) || 0;
+                    const style = i.done ? "text-decoration: line-through; opacity: 0.5;" : "";
+                    return `<div style="display:flex; justify-content:space-between; align-items:center; padding:8px 0; border-bottom:1px solid #222; ${style}">
+                        <span style="flex:1;">${i.n || '?'}</span><span style="margin-right:15px;">${(parseFloat(i.p)||0).toFixed(2)}€</span>
+                        <button class="item-delete-btn" onclick="removeTicketItem(${index})">X</button>
+                    </div>`;
+                }).join('');
+                document.getElementById('ticket-total').innerText = `Total: ${total.toFixed(2)}€`;
+            } catch (err) { console.error(err); }
+        }
+
+        async function sendToKitchen() {
+            if(ticketItems.length === 0) return alert("Ticket vide.");
+            const obs = document.getElementById('order-obs').value.trim();
+            const order = { 
+                items: ticketItems, 
+                time: new Date().toLocaleTimeString('fr-FR', {hour:'2-digit', minute:'2-digit'}), 
+                status: 'pending', observations: obs 
+            };
+            await fetch('/update-order', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({tableId:currentTable, order}) }).catch(e=>{});
+            logAction("ENVOI COMMANDE", `Table: ${currentTable}`, ticketItems);
+            closeOrder();
+        }
+
+        function openPaymentModal() {
+            if (ticketItems.length === 0) return alert("La table est vide.");
+            if (currentUser.role === 'Serveur') return alert("⛔ Vous n'avez pas les droits d'encaissement. Demandez au Manager.");
+
+            let tableData = activeOrders[currentTable];
+            if (!tableData || !tableData.items || tableData.items.length !== ticketItems.length) {
+                return alert("⚠️ IMPOSSIBLE D'ENCAISSER !\n\nVous avez ajouté ou supprimé des plats sans les envoyer.\nVeuillez d'abord cliquer sur [🚀 ENVOYER (AJOUTER)] pour valider la commande.");
+            }
+
+            const totalAmount = document.getElementById('ticket-total').innerText.replace('Total: ', '');
+            document.getElementById('pay-modal-title').innerText = "TABLE " + currentTable;
+            document.getElementById('pay-modal-amount').innerText = "TOTAL À ENCAISSER : " + totalAmount;
+            
+            document.getElementById('payment-modal').style.display = 'flex';
+        }
+
+        function cancelPayment() {
+            document.getElementById('payment-modal').style.display = 'none';
+        }
+
+        async function executePayment(paymentType) {
+            const totalAmount = document.getElementById('ticket-total').innerText.replace('Total: ', '');
+            document.getElementById('payment-modal').style.display = 'none';
+
+            printReceipt(currentTable, totalAmount, ticketItems, paymentType);
+            await fetch('/update-order', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({tableId: currentTable, order: null}) }).catch(e=>{});
+            logAction("ENCAISSEMENT VALIDÉ", `Table: ${currentTable} | Montant: ${totalAmount} | Type: ${paymentType}`, ticketItems);
+            
+            ticketItems = []; 
+            document.getElementById('order-obs').value = ''; 
+            closeOrder();
+        }
+
+        function printReceipt(table, total, items, paymentType) {
+            const printArea = document.getElementById('print-area');
+            const date = new Date().toLocaleString('fr-FR');
+            const transactionID = 'TX-' + Math.floor(Math.random() * 1000000000);
+            
+            let itemsHtml = items.map(i => {
+                if(!i) return '';
+                return `<div style="display:flex; justify-content:space-between; margin-bottom:5px;">
+                    <span>1x ${i.n || '?'}</span>
+                    <span>${(parseFloat(i.p)||0).toFixed(2)}€</span>
+                </div>`;
+            }).join('');
+
+            let tpeHtml = '';
+            if (paymentType === 'CB') {
+                tpeHtml = `
+                    <div style="border: 2px solid #000; padding: 10px; margin-top: 15px; font-size: 0.9rem;">
+                        <div style="text-align: center; font-weight: bold; margin-bottom: 5px;">TICKET CARTE BANCAIRE</div>
+                        <div>MERCIANT: RESTAURANT EMPIRE</div>
+                        <div>TERMINAL: 04294821</div>
+                        <div>DATE: ${date}</div>
+                        <div><strong>MONTANT: ${total}</strong></div>
+                        <div>AUTORISATION: ${Math.floor(10000 + Math.random() * 90000)}</div>
+                        <div style="text-align: center; font-weight: bold; margin-top: 10px;">-- TRANSACTION ACCEPTÉE --</div>
+                        <div style="text-align: center; font-size: 0.7rem; margin-top: 5px;">ID: ${transactionID}</div>
+                    </div>
+                `;
+            } else {
+                tpeHtml = `
+                    <div style="border: 1px dashed #000; padding: 10px; margin-top: 15px; font-size: 0.9rem; text-align: center;">
+                        <strong>PAIEMENT: ${paymentType}</strong><br>
+                        MONTANT REÇU: ${total}
+                    </div>
+                `;
+            }
+
+            printArea.innerHTML = `
+                <div style="font-family: monospace; max-width: 350px; margin: 0 auto; color: #000;">
+                    <h2 style="text-align: center; border-bottom: 1px dashed #000; padding-bottom: 10px;">RESTAURANT EMPIRE</h2>
+                    <p style="text-align: center;">TABLE: ${table}<br>Serveur: ${currentUser.name}<br>${date}</p>
+                    
+                    <div style="font-weight: bold; margin-bottom: 5px;">DÉTAIL DE LA CONSOMMATION :</div>
+                    <div style="border-top: 1px dashed #000; border-bottom: 1px dashed #000; padding: 10px 0; margin-bottom: 15px;">
+                        ${itemsHtml}
+                    </div>
+                    
+                    <h3 style="text-align: right; font-size: 1.4rem; margin: 0;">TOTAL: ${total}</h3>
+                    
+                    ${tpeHtml}
+                    
+                    <p style="text-align: center; font-size: 0.8rem; margin-top: 20px;">Merci de votre visite.<br>A bientôt !</p>
+                </div>
+            `;
+            setTimeout(() => { window.print(); }, 100);
+        }
+
+        function closeOrder() { document.getElementById('order-drawer').classList.remove('open'); }
+
+        function openModal(type) {
+            try {
+                const body = document.getElementById('modal-body');
+                document.getElementById('info-modal').classList.add('open');
+                
+                if(type === 'radar') {
+                    document.getElementById('modal-title').innerText = "⚡ RADAR RÉSERVATIONS";
+                    const res = (activeOrders['GLOBAL_RESERVATIONS'] && activeOrders['GLOBAL_RESERVATIONS'].data) ? activeOrders['GLOBAL_RESERVATIONS'].data : {};
+                    const today = new Date().toISOString().split('T')[0];
+                    let todaysRes = Array.isArray(res[today]) ? res[today] : [];
+                    body.innerHTML = todaysRes.map(r => r ? `<div class="card"><b>${r.time||'?'}</b> — ${r.name||'?'} (${r.pax||0} PAX)</div>` : '').join('') || "Aucune résa.";
+                } 
+                else if(type === 'plan') {
+                    document.getElementById('modal-title').innerText = "📅 PLANNING BRIGADE";
+                    const p = safeArray('kds_hr_master_v9', []);
+                    body.innerHTML = p.map(s => s ? `<div class="card"><b>${s.name||'?'}</b> — ${s.role||'?'}</div>` : '').join('') || "Aucun planning.";
+                }
+                else if(type === 'dashboard') {
+                    document.getElementById('modal-title').innerText = "👁️ LOGS SÉCURITÉ & FRAUDE";
+                    const logs = safeArray('empire_fraud_log', []);
+                    
+                    body.innerHTML = logs.map((l, idx) => {
+                        if(!l) return '';
+                        let actionText = String(l.action || '');
+                        let timeText = String(l.time || '');
+                        let userText = String(l.user || '');
+                        let detailText = String(l.detail || '');
+
+                        let detailsHtml = '';
+                        if (l.items && Array.isArray(l.items) && l.items.length > 0) {
+                            const list = l.items.map(i => i ? `<div style="font-size:0.85rem; color:#ccc; display:flex; justify-content:space-between;"><span>- ${i.n||'?'}</span><span>${(parseFloat(i.p)||0).toFixed(2)}€</span></div>` : '').join('');
+                            detailsHtml = `<div id="log-detail-${idx}" style="display:none; margin-top:10px; padding:10px; background:#000; border-radius:4px; border-left: 2px solid var(--gold);">${list}</div>`;
+                        }
+
+                        return `
+                        <div class="card" style="${actionText.includes('SUPPRESSION') || actionText.includes('ANNULATION') ? 'border-color:var(--alert);' : ''}" onclick="toggleLogDetail(${idx})">
+                            <div style="color:var(--sub); font-size:0.8rem;">${timeText} - Par: <b style="color:var(--gold);">${userText}</b></div>
+                            <div style="font-weight:bold; margin-top:5px;">[${actionText}] ${detailText} <span style="font-size:0.7rem; font-weight:normal; color:#888;">(Cliquez pour détails)</span></div>
+                            ${detailsHtml}
+                        </div>`;
+                    }).join('') || "Aucune activité récente.";
+                }
+            } catch(e) { console.error(e); }
+        }
+
+        function toggleLogDetail(idx) {
+            const el = document.getElementById(`log-detail-${idx}`);
+            if(el) el.style.display = el.style.display === 'none' ? 'block' : 'none';
+        }
+
+        function closeModal() { document.getElementById('info-modal').classList.remove('open'); }
+    </script>
+
+    <script>
+        // 1. Injection de la carte de secours au démarrage
+        setTimeout(() => {
+            let menuActuel = localStorage.getItem('kds_menu');
+            
+            if (!menuActuel || menuActuel === '[]' || menuActuel === 'null') {
+                const carteCuisineForcee = [
+                    { name: "Salade César", category: "Entrées", price: 14.00, dest: "cuisine" },
+                    { name: "Foie Gras Maison", category: "Entrées", price: 19.00, dest: "cuisine" },
+                    { name: "Entrecôte Premium", category: "Plats de résistance", price: 35.00, dest: "cuisine" },
+                    { name: "Saumon Grillé", category: "Plats de résistance", price: 26.00, dest: "cuisine" },
+                    { name: "Tiramisu Italien", category: "Desserts", price: 10.00, dest: "cuisine" },
+                    { name: "Fondant Chocolat", category: "Desserts", price: 12.00, dest: "cuisine" }
+                ];
+
+                const carteBarForcee = [
+                    { name: "Mojito Signature", category: "Boissons", price: 14.00, dest: "bar" },
+                    { name: "Coupe de Champagne", category: "Boissons", price: 18.00, dest: "bar" },
+                    { name: "Coca-Cola Zero", category: "Boissons", price: 5.00, dest: "bar" }
+                ];
+
+                localStorage.setItem('kds_menu', JSON.stringify(carteCuisineForcee));
+                localStorage.setItem('kds_bar_menu', JSON.stringify(carteBarForcee));
+                console.log("⚡ Carte de base injectée avec succès dans le Pad.");
+            }
+        }, 500);
+
+        // 2. Vérification automatique des mises à jour du menu.html
+        let lastVersion = null;
+
+        async function checkMenuUpdate() {
+            try {
+                const response = await fetch("menu.html?cache=" + new Date().getTime());
+                const text = await response.text();
+                const version = text.length;
+
+                if (lastVersion && lastVersion !== version) {
+                    console.log("Mise à jour détectée du menu !");
+                    location.reload(); 
+                }
+                lastVersion = version;
+            } catch (e) {
+                console.log("Erreur vérification menu", e);
+            }
+        }
+        setInterval(checkMenuUpdate, 5000);
+    </script>
+</body>
+</html>
