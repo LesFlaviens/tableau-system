@@ -222,8 +222,17 @@
         let currentPin = "";
         const USERS = { "1234": { name: "Flavien", role: "Serveur" }, "9999": { name: "Directeur", role: "Manager" } };
 
-        function appendPin(num) { currentPin += num; document.getElementById('pin-display').innerText = '*'.repeat(currentPin.length); resetInactivityTimer(); }
-        function clearPin() { currentPin = ""; document.getElementById('pin-display').innerText = ""; resetInactivityTimer(); }
+        function appendPin(num) { 
+            currentPin += num; 
+            document.getElementById('pin-display').innerText = '*'.repeat(currentPin.length); 
+            resetInactivityTimer(); 
+        }
+
+        function clearPin() { 
+            currentPin = ""; 
+            document.getElementById('pin-display').innerText = ""; 
+            resetInactivityTimer(); 
+        }
         
         function submitPin() {
             if(USERS[currentPin]) {
@@ -232,8 +241,12 @@
                 document.getElementById('login-screen').style.display = 'none';
                 if(currentUser.role === 'Manager') document.getElementById('btn-dashboard').style.display = 'block';
                 renderFloor(); 
-                connectEmpireH24(); resetInactivityTimer();
-            } else { alert("❌ PIN Incorrect."); clearPin(); }
+                connectEmpireH24(); 
+                resetInactivityTimer();
+            } else { 
+                alert("❌ PIN Incorrect."); 
+                clearPin(); 
+            }
         }
 
         function logout() {
@@ -277,37 +290,62 @@
 
         let ws;
         function connectEmpireH24() {
-            ws = new WebSocket((window.location.protocol === 'https:' ? 'wss://' : 'ws://') + window.location.host);
-            ws.onopen = () => {
-                document.getElementById('stock-tag').innerText = "● SYNC H24 ACTIF";
-                fetch('/get-current-state').then(r=>r.json()).then(d=>{ activeOrders=d.activeOrders||{}; renderFloor(); }).catch(e=>{});
-            };
-            ws.onmessage = (e) => {
-                try {
-                    const msg = JSON.parse(e.data);
-                    if(msg.type === 'ORDER_UPDATE' || msg.state || msg.type === 'SYNC') {
-                        const newOrders = msg.activeOrders || (msg.state ? msg.state.activeOrders : {});
-                        for (let tableId in newOrders) {
-                            if (newOrders[tableId] && newOrders[tableId].status === 'ready' && (!previousOrdersState[tableId] || previousOrdersState[tableId].status !== 'ready')) {
-                                const beep = document.getElementById('beep-ready');
-                                if(beep) beep.play().catch(err => console.log("Son bloqué", err));
-                                if(newOrders[tableId].items) newOrders[tableId].items.forEach(i => { if(i) i.done = true; });
-                            }
-                        }
-                        previousOrdersState = JSON.parse(JSON.stringify(newOrders));
-                        activeOrders = newOrders;
-                        if (document.getElementById('order-drawer').classList.contains('open') && currentTable) {
-                            ticketItems = (activeOrders[currentTable] && activeOrders[currentTable].items) ? activeOrders[currentTable].items : ticketItems;
-                            renderTicket();
-                        }
-                        renderFloor();
-                        const globalMenu = msg.activeOrders ? msg.activeOrders['GLOBAL_MENU'] : (msg.state && msg.state.activeOrders['GLOBAL_MENU']);
-                        if(globalMenu) localStorage.setItem('kds_menu', JSON.stringify(globalMenu.data));
-                        const globalRecipes = msg.activeOrders ? msg.activeOrders['GLOBAL_RECIPES'] : (msg.state && msg.state.activeOrders['GLOBAL_RECIPES']);
-                        if(globalRecipes) localStorage.setItem('kds_bar_menu', JSON.stringify(globalRecipes.data));
+            try {
+                let host = window.location.host || "localhost:3000";
+                ws = new WebSocket((window.location.protocol === 'https:' ? 'wss://' : 'ws://') + host);
+                
+                ws.onopen = () => {
+                    let tag = document.getElementById('stock-tag');
+                    if(tag) {
+                        tag.style.color = "var(--accent)";
+                        tag.innerText = "● SYNC H24 ACTIF";
                     }
-                } catch(err) { console.error(err); }
-            };
+                    fetch('/get-current-state').then(r=>r.json()).then(d=>{ activeOrders=d.activeOrders||{}; renderFloor(); }).catch(e=>{});
+                };
+
+                ws.onmessage = (e) => {
+                    try {
+                        const msg = JSON.parse(e.data);
+                        if(msg.type === 'ORDER_UPDATE' || msg.state || msg.type === 'SYNC') {
+                            const newOrders = msg.activeOrders || (msg.state ? msg.state.activeOrders : {});
+                            for (let tableId in newOrders) {
+                                if (newOrders[tableId] && newOrders[tableId].status === 'ready' && (!previousOrdersState[tableId] || previousOrdersState[tableId].status !== 'ready')) {
+                                    const beep = document.getElementById('beep-ready');
+                                    if(beep) beep.play().catch(err => console.log("Son bloqué", err));
+                                    if(newOrders[tableId].items) newOrders[tableId].items.forEach(i => { if(i) i.done = true; });
+                                }
+                            }
+                            previousOrdersState = JSON.parse(JSON.stringify(newOrders));
+                            activeOrders = newOrders;
+                            if (document.getElementById('order-drawer').classList.contains('open') && currentTable) {
+                                ticketItems = (activeOrders[currentTable] && activeOrders[currentTable].items) ? activeOrders[currentTable].items : ticketItems;
+                                renderTicket();
+                            }
+                            renderFloor();
+                            const globalMenu = msg.activeOrders ? msg.activeOrders['GLOBAL_MENU'] : (msg.state && msg.state.activeOrders['GLOBAL_MENU']);
+                            if(globalMenu) localStorage.setItem('kds_menu', JSON.stringify(globalMenu.data));
+                            const globalRecipes = msg.activeOrders ? msg.activeOrders['GLOBAL_RECIPES'] : (msg.state && msg.state.activeOrders['GLOBAL_RECIPES']);
+                            if(globalRecipes) localStorage.setItem('kds_bar_menu', JSON.stringify(globalRecipes.data));
+                        }
+                    } catch(err) { console.error(err); }
+                };
+
+                // BOUCLE DE RECONNEXION AUTOMATIQUE (H24 7/7)
+                ws.onclose = () => {
+                    let tag = document.getElementById('stock-tag');
+                    if(tag) {
+                        tag.style.color = "var(--alert)";
+                        tag.innerText = "● RECONNEXION...";
+                    }
+                    setTimeout(connectEmpireH24, 3000); 
+                };
+
+                ws.onerror = () => {
+                    ws.close(); 
+                };
+            } catch(e) {
+                setTimeout(connectEmpireH24, 5000); 
+            }
         }
 
         function openOrder(id) {
@@ -332,32 +370,35 @@
             } catch (err) { console.error(err); }
         }
 
+        // SEPARATION HERMETIQUE CUISINE ET BAR
         function renderMenu(category) {
             try {
-                let cuisineMenu = safeArray('kds_menu', []);
-                let barMenuRaw = safeArray('kds_bar_menu', []);
-                
-                let barMenu = barMenuRaw.map(r => {
-                    let itemName = r.name || (r.nom ? String(r.nom).split('(')[0].trim() : "Boisson");
-                    let itemPrice = r.price !== undefined ? parseFloat(r.price) : 0;
-                    return { name: itemName, category: 'Boissons', price: itemPrice };
-                });
+                let itemsToDisplay = [];
+                let destination = 'cuisine'; 
 
-                let fullMenu = [...cuisineMenu, ...barMenu];
-                let filteredMenu = fullMenu.filter(i => {
-                    if (!i) return false;
-                    if (category === 'Boissons') return i.category === 'Boissons' || i.category === 'Boissons & Bar' || i.category === 'Cocktails' || i.category === 'Vins & Bulles' || i.category === 'Softs & Bières';
-                    return i.category === category;
-                });
+                if (category === 'Boissons') {
+                    // Les BOISSONS sont lues EXCLUSIVEMENT depuis le Bar
+                    let barMenuRaw = safeArray('kds_bar_menu', []);
+                    itemsToDisplay = barMenuRaw.map(r => {
+                        let itemName = r.name || (r.nom ? String(r.nom).split('(')[0].trim() : "Boisson");
+                        let itemPrice = r.price !== undefined ? parseFloat(r.price) : 0;
+                        return { name: itemName, category: 'Boissons', price: itemPrice, dest: 'bar' };
+                    });
+                    destination = 'bar';
+                } else {
+                    // Les ENTRÉES, PLATS et DESSERTS sont lus EXCLUSIVEMENT depuis la Cuisine
+                    let cuisineMenuRaw = safeArray('kds_menu', []);
+                    itemsToDisplay = cuisineMenuRaw.filter(i => i && i.category === category).map(i => {
+                        return { name: i.name, category: i.category, price: parseFloat(i.price) || 0, dest: 'cuisine' };
+                    });
+                    destination = 'cuisine';
+                }
 
-                document.getElementById('menu').innerHTML = filteredMenu.map(i => {
-                    let itemName = i.name || i.nom || "Article";
-                    let safeName = String(itemName).replace(/'/g, "\\'");
-                    let itemPrice = i.price !== undefined ? parseFloat(i.price) : 0;
-                    let destination = i.dest || (category === 'Boissons' ? 'bar' : 'cuisine');
+                document.getElementById('menu').innerHTML = itemsToDisplay.map(i => {
+                    let safeName = String(i.name).replace(/['"]/g, " "); // Sécurité anti-crash
                     return `
-                    <div class="btn-item" onclick="addToTicket('${safeName}', ${itemPrice}, '${destination}')">
-                        <span>${itemName}</span><span style="color:var(--gold)">${itemPrice.toFixed(2)}€</span>
+                    <div class="btn-item" onclick="addToTicket('${safeName}', ${i.price}, '${i.dest}')">
+                        <span>${i.name}</span><span style="color:var(--gold)">${i.price.toFixed(2)}€</span>
                     </div>`;
                 }).join('');
             } catch (err) { console.error(err); }
