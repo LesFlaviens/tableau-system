@@ -64,9 +64,9 @@
         .pin-btn { background: #1a1a1a; border: 1px solid #333; color: #fff; font-size: 1.5rem; font-weight: bold; width: 80px; height: 80px; border-radius: 50%; cursor: pointer; transition: 0.1s; }
         .pin-btn:active { background: var(--gold); color: #000; }
         .pin-display { font-size: 2rem; letter-spacing: 10px; margin-bottom: 20px; color: var(--gold); min-height: 40px;}
-        .item-delete-btn { background: var(--alert); color: #fff; border: none; padding: 5px 10px; font-weight: bold; cursor: pointer; border-radius: 4px; font-size: 0.7rem;}
+        .item-delete-btn { background: var(--alert); color: #fff; border: none; padding: 5px 10px; font-weight: bold; cursor: pointer; border-radius: 4px; font-size: 0.7rem; margin-left: 10px;}
         
-        /* AJOUT : STYLE POUR L'IMPRESSION (ADDITION) */
+        /* STYLE POUR L'IMPRESSION (ADDITION) */
         @media print {
             body * { visibility: hidden; }
             #print-area, #print-area * { visibility: visible; }
@@ -425,26 +425,49 @@
             renderTicket(); 
         }
 
-        function removeTicketItem(index) {
-            const item = ticketItems[index];
-            if (activeOrders[currentTable] && activeOrders[currentTable].items && activeOrders[currentTable].items.find(i => i.id === item.id)) {
-                logAction("SUPPRESSION PLAT ENVOYÉ", `Plat: ${item.n} | Table: ${currentTable}`);
+        function removeTicketItem(idToRemove) {
+            // Recherche par ID (au lieu de l'index brut) car le tableau est groupé à l'affichage
+            const itemIndex = ticketItems.findIndex(i => i.id === idToRemove);
+            if (itemIndex > -1) {
+                const item = ticketItems[itemIndex];
+                if (activeOrders[currentTable] && activeOrders[currentTable].items && activeOrders[currentTable].items.find(i => i.id === item.id)) {
+                    logAction("SUPPRESSION PLAT ENVOYÉ", `Plat: ${item.n} | Table: ${currentTable}`);
+                }
+                ticketItems.splice(itemIndex, 1);
+                renderTicket();
             }
-            ticketItems.splice(index, 1);
-            renderTicket();
         }
         
         function renderTicket() {
             let total = 0;
-            document.getElementById('ticket-items').innerHTML = ticketItems.map((i, index) => {
-                total += i.p;
-                const style = i.done ? "text-decoration: line-through; opacity: 0.5;" : "";
+            // AJOUT : REGROUPEMENT AUTOMATISÉ POUR L'AFFICHAGE DU TICKET
+            let groupedItems = {};
+            
+            ticketItems.forEach(item => {
+                total += item.p;
+                // Clé de regroupement : nom + statut (pour ne pas regrouper un plat servi et un plat non servi)
+                let key = item.n + "_" + item.done;
+                if(!groupedItems[key]) {
+                    groupedItems[key] = { name: item.n, count: 0, pricePerUnit: item.p, done: item.done, ids: [] };
+                }
+                groupedItems[key].count += 1;
+                groupedItems[key].ids.push(item.id);
+            });
+
+            document.getElementById('ticket-items').innerHTML = Object.values(groupedItems).map(group => {
+                const style = group.done ? "text-decoration: line-through; opacity: 0.5;" : "";
+                const lineTotal = group.count * group.pricePerUnit;
+                // Bouton de suppression retire le dernier ID ajouté de ce groupe
+                const idToRemove = group.ids[group.ids.length - 1]; 
+                
                 return `
                 <div style="display:flex; justify-content:space-between; align-items:center; padding:8px 0; border-bottom:1px solid #222; ${style}">
-                    <span style="flex:1;">${i.n}</span><span style="margin-right:15px;">${i.p.toFixed(2)}€</span>
-                    <button class="item-delete-btn" onclick="removeTicketItem(${index})">X</button>
+                    <span style="flex:1;"><b>${group.count}x</b> ${group.name}</span>
+                    <span style="margin-right:15px;">${lineTotal.toFixed(2)}€</span>
+                    <button class="item-delete-btn" onclick="removeTicketItem(${idToRemove})">X</button>
                 </div>`;
             }).join('');
+            
             document.getElementById('ticket-total').innerText = `Total: ${total.toFixed(2)}€`;
         }
 
@@ -457,13 +480,10 @@
                 status: 'pending', observations: obs 
             };
             await fetch('/update-order', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({tableId:currentTable, order}) });
-            
-            // AJOUT : Capture des plats pour le log
             logAction("ENVOI COMMANDE", `Table: ${currentTable}`, ticketItems);
             closeOrder();
         }
         
-        // --- AJOUT : ENCAISSEMENT & IMPRESSION TICKET ---
         async function processPayment() {
             if (ticketItems.length === 0) return alert("La table est vide.");
             
@@ -475,7 +495,7 @@
             const confirmPay = confirm(`Encaisser la table ${currentTable} pour ${totalAmount} ?`);
             
             if(confirmPay) {
-                // 1. Création et impression du ticket de caisse détaillé
+                // 1. Création et impression du ticket de caisse détaillé et regroupé
                 printReceipt(currentTable, totalAmount, ticketItems);
 
                 // 2. Traitement back-end
@@ -490,12 +510,24 @@
             const printArea = document.getElementById('print-area');
             const date = new Date().toLocaleString('fr-FR');
             
-            let itemsHtml = items.map(i => `
+            // Regroupement pour l'impression
+            let groupedItems = {};
+            items.forEach(item => {
+                if(!groupedItems[item.n]) {
+                    groupedItems[item.n] = { count: 0, pricePerUnit: item.p };
+                }
+                groupedItems[item.n].count += 1;
+            });
+            
+            let itemsHtml = Object.keys(groupedItems).map(name => {
+                const group = groupedItems[name];
+                const lineTotal = group.count * group.pricePerUnit;
+                return `
                 <div style="display:flex; justify-content:space-between; margin-bottom:5px;">
-                    <span>1x ${i.n}</span>
-                    <span>${i.p.toFixed(2)}€</span>
+                    <span>${group.count}x ${name}</span>
+                    <span>${lineTotal.toFixed(2)}€</span>
                 </div>
-            `).join('');
+            `}).join('');
 
             printArea.innerHTML = `
                 <div style="font-family: monospace; max-width: 300px; margin: 0 auto; color: #000;">
@@ -535,10 +567,17 @@
                 const logs = JSON.parse(localStorage.getItem('empire_fraud_log')) || [];
                 
                 body.innerHTML = logs.map((l, idx) => {
-                    // Si c'est un envoi de commande ou un encaissement, on prépare le html du détail des plats
                     let detailsHtml = '';
                     if (l.items && l.items.length > 0) {
-                        const list = l.items.map(i => `<div style="font-size:0.85rem; color:#ccc; display:flex; justify-content:space-between;"><span>- ${i.n}</span><span>${i.p.toFixed(2)}€</span></div>`).join('');
+                        // Regroupement aussi dans l'historique visuel
+                        let grouped = {};
+                        l.items.forEach(i => {
+                            if(!grouped[i.n]) grouped[i.n] = { count: 0, p: i.p };
+                            grouped[i.n].count += 1;
+                        });
+                        const list = Object.keys(grouped).map(name => 
+                            `<div style="font-size:0.85rem; color:#ccc; display:flex; justify-content:space-between;"><span>- ${grouped[name].count}x ${name}</span><span>${(grouped[name].count * grouped[name].p).toFixed(2)}€</span></div>`
+                        ).join('');
                         detailsHtml = `<div id="log-detail-${idx}" style="display:none; margin-top:10px; padding:10px; background:#000; border-radius:4px; border-left: 2px solid var(--gold);">${list}</div>`;
                     }
 
@@ -552,7 +591,6 @@
             }
         }
 
-        // AJOUT : Afficher/Masquer les détails du ticket dans l'historique
         function toggleLogDetail(idx) {
             const el = document.getElementById(`log-detail-${idx}`);
             if(el) {
