@@ -73,7 +73,7 @@
         .pay-btn { background: #111; border: 2px solid var(--accent); color: var(--accent); padding: 20px 40px; font-size: 1.5rem; font-weight: 900; border-radius: 8px; cursor: pointer; width: 300px; margin-bottom: 15px; text-transform: uppercase; }
         .pay-btn.cancel { border-color: var(--alert); color: var(--alert); margin-top: 30px;}
 
-        /* CORRECTION : CSS RESTAURÉ POUR LA MODAL ANNULATION (QCM) */
+        /* MODAL ANNULATION (QCM) */
         #cancel-modal { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.95); z-index: 40000; display: none; flex-direction: column; align-items: center; justify-content: center; }
         .cancel-btn { background: #111; border: 2px solid var(--gold); color: var(--gold); padding: 20px 40px; font-size: 1.2rem; font-weight: bold; border-radius: 8px; cursor: pointer; width: 350px; margin-bottom: 15px; text-transform: uppercase; }
         .cancel-btn.abort { border-color: var(--sub); color: var(--sub); margin-top: 20px; }
@@ -198,9 +198,12 @@
                 let val = localStorage.getItem(key);
                 if (val && val !== 'undefined' && val !== 'null') {
                     let parsed = JSON.parse(val);
-                    if (Array.isArray(parsed)) return parsed;
+                    if (Array.isArray(parsed)) {
+                        // Filtre de sécurité pour retirer les éléments corrompus (null)
+                        return parsed.filter(item => item !== null && item !== undefined);
+                    }
                 }
-            } catch(e) { console.warn("Erreur de mémoire contournée sur:", key); }
+            } catch(e) { console.warn("Erreur mémoire contournée sur:", key); }
             return fallbackArray;
         }
 
@@ -257,23 +260,26 @@
         let tables = safeArray('empire_architecture', [ {label:"T1", l:550, t:500, w:80, h:120} ]);
 
         function renderFloor() {
-            const floor = document.getElementById('floor-plan'); floor.innerHTML = '';
-            tables.forEach(t => {
-                const div = document.createElement('div'); div.className = 'table-obj';
-                
-                if(activeOrders[t.label]) { 
-                    div.classList.add('ordered'); 
-                    if(activeOrders[t.label].status === 'ready') {
-                        div.classList.remove('ordered'); 
-                        div.classList.add('ready'); 
+            try {
+                const floor = document.getElementById('floor-plan'); floor.innerHTML = '';
+                tables.forEach(t => {
+                    if(!t) return;
+                    const div = document.createElement('div'); div.className = 'table-obj';
+                    
+                    if(activeOrders[t.label]) { 
+                        div.classList.add('ordered'); 
+                        if(activeOrders[t.label].status === 'ready') {
+                            div.classList.remove('ordered'); 
+                            div.classList.add('ready'); 
+                        }
                     }
-                }
-                
-                div.style.left=t.l+'px'; div.style.top=t.t+'px'; div.style.width=t.w+'px'; div.style.height=t.h+'px';
-                div.innerHTML = t.label; 
-                div.onclick = () => openOrder(t.label);
-                floor.appendChild(div);
-            });
+                    
+                    div.style.left=(t.l||0)+'px'; div.style.top=(t.t||0)+'px'; div.style.width=(t.w||80)+'px'; div.style.height=(t.h||120)+'px';
+                    div.innerHTML = t.label || '?'; 
+                    div.onclick = () => openOrder(t.label);
+                    floor.appendChild(div);
+                });
+            } catch (e) { console.error(e); }
         }
 
         // --- NETWORK ---
@@ -282,80 +288,88 @@
             ws = new WebSocket((window.location.protocol === 'https:' ? 'wss://' : 'ws://') + window.location.host);
             ws.onopen = () => {
                 document.getElementById('stock-tag').innerText = "● SYNC H24 ACTIF";
-                fetch('/get-current-state').then(r=>r.json()).then(d=>{ activeOrders=d.activeOrders; renderFloor(); }).catch(e=>{});
+                fetch('/get-current-state').then(r=>r.json()).then(d=>{ activeOrders=d.activeOrders||{}; renderFloor(); }).catch(e=>{});
             };
             ws.onmessage = (e) => {
-                const msg = JSON.parse(e.data);
-                if(msg.type === 'ORDER_UPDATE' || msg.state || msg.type === 'SYNC') {
-                    const newOrders = msg.activeOrders || (msg.state ? msg.state.activeOrders : {});
-                    for (let tableId in newOrders) {
-                        if (newOrders[tableId].status === 'ready' && (!previousOrdersState[tableId] || previousOrdersState[tableId].status !== 'ready')) {
-                            const beep = document.getElementById('beep-ready');
-                            if(beep) beep.play().catch(err => console.log("Son bloqué", err));
-                            if(newOrders[tableId].items) newOrders[tableId].items.forEach(i => i.done = true);
+                try {
+                    const msg = JSON.parse(e.data);
+                    if(msg.type === 'ORDER_UPDATE' || msg.state || msg.type === 'SYNC') {
+                        const newOrders = msg.activeOrders || (msg.state ? msg.state.activeOrders : {});
+                        for (let tableId in newOrders) {
+                            if (newOrders[tableId] && newOrders[tableId].status === 'ready' && (!previousOrdersState[tableId] || previousOrdersState[tableId].status !== 'ready')) {
+                                const beep = document.getElementById('beep-ready');
+                                if(beep) beep.play().catch(err => console.log("Son bloqué", err));
+                                if(newOrders[tableId].items) newOrders[tableId].items.forEach(i => { if(i) i.done = true; });
+                            }
                         }
+                        previousOrdersState = JSON.parse(JSON.stringify(newOrders));
+                        activeOrders = newOrders;
+                        if (document.getElementById('order-drawer').classList.contains('open') && currentTable) {
+                            ticketItems = (activeOrders[currentTable] && activeOrders[currentTable].items) ? activeOrders[currentTable].items : ticketItems;
+                            renderTicket();
+                        }
+                        renderFloor();
+                        const globalMenu = msg.activeOrders ? msg.activeOrders['GLOBAL_MENU'] : (msg.state && msg.state.activeOrders['GLOBAL_MENU']);
+                        if(globalMenu) localStorage.setItem('kds_menu', JSON.stringify(globalMenu.data));
+                        const globalRecipes = msg.activeOrders ? msg.activeOrders['GLOBAL_RECIPES'] : (msg.state && msg.state.activeOrders['GLOBAL_RECIPES']);
+                        if(globalRecipes) localStorage.setItem('kds_bar_menu', JSON.stringify(globalRecipes.data));
                     }
-                    previousOrdersState = JSON.parse(JSON.stringify(newOrders));
-                    activeOrders = newOrders;
-                    if (document.getElementById('order-drawer').classList.contains('open') && currentTable) {
-                        ticketItems = activeOrders[currentTable] ? activeOrders[currentTable].items : ticketItems;
-                        renderTicket();
-                    }
-                    renderFloor();
-                    const globalMenu = msg.activeOrders ? msg.activeOrders['GLOBAL_MENU'] : (msg.state && msg.state.activeOrders['GLOBAL_MENU']);
-                    if(globalMenu) localStorage.setItem('kds_menu', JSON.stringify(globalMenu.data));
-                    const globalRecipes = msg.activeOrders ? msg.activeOrders['GLOBAL_RECIPES'] : (msg.state && msg.state.activeOrders['GLOBAL_RECIPES']);
-                    if(globalRecipes) localStorage.setItem('kds_bar_menu', JSON.stringify(globalRecipes.data));
-                }
+                } catch(err) { console.error(err); }
             };
         }
 
         // --- COMMANDES ---
         function openOrder(id) {
-            if(isArchiMode) {
-                if(confirm("Supprimer la table " + id + " ?")) { tables = tables.filter(t => t.label !== id); renderFloor(); }
-                return;
-            }
-            currentTable = id; document.getElementById('table-label').innerText = "TABLE " + id;
-            if(activeOrders[id] && activeOrders[id].observations) document.getElementById('order-obs').value = activeOrders[id].observations;
-            else document.getElementById('order-obs').value = '';
+            try {
+                if(isArchiMode) {
+                    if(confirm("Supprimer la table " + id + " ?")) { tables = tables.filter(t => t && t.label !== id); renderFloor(); }
+                    return;
+                }
+                currentTable = id; document.getElementById('table-label').innerText = "TABLE " + id;
+                if(activeOrders[id] && activeOrders[id].observations) document.getElementById('order-obs').value = activeOrders[id].observations;
+                else document.getElementById('order-obs').value = '';
 
-            if(activeOrders[id] && activeOrders[id].status === 'ready') {
-                 activeOrders[id].status = 'served'; 
-                 fetch('/update-order', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({tableId:id, order:activeOrders[id]}) }).catch(e=>{});
-            }
-            
-            ticketItems = (activeOrders[id] && Array.isArray(activeOrders[id].items)) ? activeOrders[id].items : [];
-            renderTicket(); renderMenu('Plats de résistance');
-            document.getElementById('order-drawer').classList.add('open');
+                if(activeOrders[id] && activeOrders[id].status === 'ready') {
+                     activeOrders[id].status = 'served'; 
+                     fetch('/update-order', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({tableId:id, order:activeOrders[id]}) }).catch(e=>{});
+                }
+                
+                ticketItems = (activeOrders[id] && Array.isArray(activeOrders[id].items)) ? activeOrders[id].items.filter(Boolean) : [];
+                renderTicket(); 
+                renderMenu('Plats de résistance');
+                document.getElementById('order-drawer').classList.add('open');
+            } catch (err) { console.error(err); }
         }
 
         function renderMenu(category) {
-            let cuisineMenu = safeArray('kds_menu', []);
-            let barMenuRaw = safeArray('kds_bar_menu', []);
-            
-            let barMenu = barMenuRaw.map(r => {
-                let itemName = r.name || (r.nom ? r.nom.split('(')[0].trim() : "Boisson");
-                let itemPrice = r.price !== undefined ? parseFloat(r.price) : 0;
-                return { name: itemName, category: 'Boissons', price: itemPrice };
-            });
+            try {
+                let cuisineMenu = safeArray('kds_menu', []);
+                let barMenuRaw = safeArray('kds_bar_menu', []);
+                
+                let barMenu = barMenuRaw.map(r => {
+                    let itemName = r.name || (r.nom ? String(r.nom).split('(')[0].trim() : "Boisson");
+                    let itemPrice = r.price !== undefined ? parseFloat(r.price) : 0;
+                    return { name: itemName, category: 'Boissons', price: itemPrice };
+                });
 
-            let fullMenu = [...cuisineMenu, ...barMenu];
-            let filteredMenu = fullMenu.filter(i => {
-                if (category === 'Boissons') return i.category === 'Boissons' || i.category === 'Boissons & Bar' || i.category === 'Cocktails' || i.category === 'Vins & Bulles' || i.category === 'Softs & Bières';
-                return i.category === category;
-            });
+                let fullMenu = [...cuisineMenu, ...barMenu];
+                let filteredMenu = fullMenu.filter(i => {
+                    if (!i) return false;
+                    if (category === 'Boissons') return i.category === 'Boissons' || i.category === 'Boissons & Bar' || i.category === 'Cocktails' || i.category === 'Vins & Bulles' || i.category === 'Softs & Bières';
+                    return i.category === category;
+                });
 
-            document.getElementById('menu').innerHTML = filteredMenu.map(i => {
-                let itemName = i.name || i.nom || "Article";
-                let safeName = itemName.replace(/'/g, "\\'");
-                let itemPrice = i.price !== undefined ? parseFloat(i.price) : 0;
-                let destination = i.dest || (category === 'Boissons' ? 'bar' : 'cuisine');
-                return `
-                <div class="btn-item" onclick="addToTicket('${safeName}', ${itemPrice}, '${destination}')">
-                    <span>${itemName}</span><span style="color:var(--gold)">${itemPrice.toFixed(2)}€</span>
-                </div>`;
-            }).join('');
+                document.getElementById('menu').innerHTML = filteredMenu.map(i => {
+                    let itemName = i.name || i.nom || "Article";
+                    let safeName = String(itemName).replace(/'/g, "\\'"); // Gilet pare-balles pour les apostrophes
+                    let itemPrice = i.price !== undefined ? parseFloat(i.price) : 0;
+                    let destination = i.dest || (category === 'Boissons' ? 'bar' : 'cuisine');
+                    return `
+                    <div class="btn-item" onclick="addToTicket('${safeName}', ${itemPrice}, '${destination}')">
+                        <span>${itemName}</span><span style="color:var(--gold)">${itemPrice.toFixed(2)}€</span>
+                    </div>`;
+                }).join('');
+            } catch (err) { console.error(err); }
         }
 
         function addToTicket(n, p, dest) { ticketItems.push({ id: Date.now()+Math.random(), n, p, done: false, dest: dest }); renderTicket(); }
@@ -381,7 +395,7 @@
             if (pendingCancelIndex === null) return;
             const item = ticketItems[pendingCancelIndex];
             
-            if (activeOrders[currentTable] && activeOrders[currentTable].items && activeOrders[currentTable].items.find(i => i.id === item.id)) {
+            if (activeOrders[currentTable] && activeOrders[currentTable].items && activeOrders[currentTable].items.find(i => i && i.id === item.id)) {
                 logAction("ANNULATION PLAT ENVOYÉ", `Table: ${currentTable} | Plat: ${item.n} | RAISON: ${raison}`);
             } else {
                 logAction("SUPPRESSION AVANT ENVOI", `Table: ${currentTable} | Plat: ${item.n} | RAISON: ${raison}`);
@@ -394,16 +408,19 @@
         }
         
         function renderTicket() {
-            let total = 0;
-            document.getElementById('ticket-items').innerHTML = ticketItems.map((i, index) => {
-                total += i.p;
-                const style = i.done ? "text-decoration: line-through; opacity: 0.5;" : "";
-                return `<div style="display:flex; justify-content:space-between; align-items:center; padding:8px 0; border-bottom:1px solid #222; ${style}">
-                    <span style="flex:1;">${i.n}</span><span style="margin-right:15px;">${i.p.toFixed(2)}€</span>
-                    <button class="item-delete-btn" onclick="removeTicketItem(${index})">X</button>
-                </div>`;
-            }).join('');
-            document.getElementById('ticket-total').innerText = `Total: ${total.toFixed(2)}€`;
+            try {
+                let total = 0;
+                document.getElementById('ticket-items').innerHTML = ticketItems.map((i, index) => {
+                    if (!i) return '';
+                    total += parseFloat(i.p) || 0;
+                    const style = i.done ? "text-decoration: line-through; opacity: 0.5;" : "";
+                    return `<div style="display:flex; justify-content:space-between; align-items:center; padding:8px 0; border-bottom:1px solid #222; ${style}">
+                        <span style="flex:1;">${i.n || '?'}</span><span style="margin-right:15px;">${(parseFloat(i.p)||0).toFixed(2)}€</span>
+                        <button class="item-delete-btn" onclick="removeTicketItem(${index})">X</button>
+                    </div>`;
+                }).join('');
+                document.getElementById('ticket-total').innerText = `Total: ${total.toFixed(2)}€`;
+            } catch (err) { console.error(err); }
         }
 
         async function sendToKitchen() {
@@ -458,12 +475,13 @@
             const date = new Date().toLocaleString('fr-FR');
             const transactionID = 'TX-' + Math.floor(Math.random() * 1000000000);
             
-            let itemsHtml = items.map(i => `
-                <div style="display:flex; justify-content:space-between; margin-bottom:5px;">
-                    <span>1x ${i.n}</span>
-                    <span>${i.p.toFixed(2)}€</span>
-                </div>
-            `).join('');
+            let itemsHtml = items.map(i => {
+                if(!i) return '';
+                return `<div style="display:flex; justify-content:space-between; margin-bottom:5px;">
+                    <span>1x ${i.n || '?'}</span>
+                    <span>${(parseFloat(i.p)||0).toFixed(2)}€</span>
+                </div>`;
+            }).join('');
 
             let tpeHtml = '';
             if (paymentType === 'CB') {
@@ -512,40 +530,48 @@
 
         // --- DASHBOARD MANAGER ---
         function openModal(type) {
-            const body = document.getElementById('modal-body');
-            document.getElementById('info-modal').classList.add('open');
-            
-            if(type === 'radar') {
-                document.getElementById('modal-title').innerText = "⚡ RADAR RÉSERVATIONS";
-                const res = (activeOrders['GLOBAL_RESERVATIONS'] && activeOrders['GLOBAL_RESERVATIONS'].data) ? activeOrders['GLOBAL_RESERVATIONS'].data : {};
-                const today = new Date().toISOString().split('T')[0];
-                let todaysRes = Array.isArray(res[today]) ? res[today] : [];
-                body.innerHTML = todaysRes.map(r => `<div class="card"><b>${r.time}</b> — ${r.name} (${r.pax} PAX)</div>`).join('') || "Aucune résa.";
-            } 
-            else if(type === 'plan') {
-                document.getElementById('modal-title').innerText = "📅 PLANNING BRIGADE";
-                const p = safeArray('kds_hr_master_v9', []);
-                body.innerHTML = p.map(s => `<div class="card"><b>${s.name}</b> — ${s.role}</div>`).join('');
-            }
-            else if(type === 'dashboard') {
-                document.getElementById('modal-title').innerText = "👁️ LOGS SÉCURITÉ & FRAUDE";
-                const logs = safeArray('empire_fraud_log', []);
+            try {
+                const body = document.getElementById('modal-body');
+                document.getElementById('info-modal').classList.add('open');
                 
-                body.innerHTML = logs.map((l, idx) => {
-                    let detailsHtml = '';
-                    if (l.items && l.items.length > 0) {
-                        const list = l.items.map(i => `<div style="font-size:0.85rem; color:#ccc; display:flex; justify-content:space-between;"><span>- ${i.n}</span><span>${i.p.toFixed(2)}€</span></div>`).join('');
-                        detailsHtml = `<div id="log-detail-${idx}" style="display:none; margin-top:10px; padding:10px; background:#000; border-radius:4px; border-left: 2px solid var(--gold);">${list}</div>`;
-                    }
+                if(type === 'radar') {
+                    document.getElementById('modal-title').innerText = "⚡ RADAR RÉSERVATIONS";
+                    const res = (activeOrders['GLOBAL_RESERVATIONS'] && activeOrders['GLOBAL_RESERVATIONS'].data) ? activeOrders['GLOBAL_RESERVATIONS'].data : {};
+                    const today = new Date().toISOString().split('T')[0];
+                    let todaysRes = Array.isArray(res[today]) ? res[today] : [];
+                    body.innerHTML = todaysRes.map(r => r ? `<div class="card"><b>${r.time||'?'}</b> — ${r.name||'?'} (${r.pax||0} PAX)</div>` : '').join('') || "Aucune résa.";
+                } 
+                else if(type === 'plan') {
+                    document.getElementById('modal-title').innerText = "📅 PLANNING BRIGADE";
+                    const p = safeArray('kds_hr_master_v9', []);
+                    body.innerHTML = p.map(s => s ? `<div class="card"><b>${s.name||'?'}</b> — ${s.role||'?'}</div>` : '').join('') || "Aucun planning.";
+                }
+                else if(type === 'dashboard') {
+                    document.getElementById('modal-title').innerText = "👁️ LOGS SÉCURITÉ & FRAUDE";
+                    const logs = safeArray('empire_fraud_log', []);
+                    
+                    body.innerHTML = logs.map((l, idx) => {
+                        if(!l) return '';
+                        let actionText = String(l.action || '');
+                        let timeText = String(l.time || '');
+                        let userText = String(l.user || '');
+                        let detailText = String(l.detail || '');
 
-                    return `
-                    <div class="card" style="${l.action.includes('SUPPRESSION') || l.action.includes('ANNULATION') ? 'border-color:var(--alert);' : ''}" onclick="toggleLogDetail(${idx})">
-                        <div style="color:var(--sub); font-size:0.8rem;">${l.time} - Par: <b style="color:var(--gold);">${l.user}</b></div>
-                        <div style="font-weight:bold; margin-top:5px;">[${l.action}] ${l.detail} <span style="font-size:0.7rem; font-weight:normal; color:#888;">(Cliquez pour détails)</span></div>
-                        ${detailsHtml}
-                    </div>`;
-                }).join('') || "Aucune activité récente.";
-            }
+                        let detailsHtml = '';
+                        if (l.items && Array.isArray(l.items) && l.items.length > 0) {
+                            const list = l.items.map(i => i ? `<div style="font-size:0.85rem; color:#ccc; display:flex; justify-content:space-between;"><span>- ${i.n||'?'}</span><span>${(parseFloat(i.p)||0).toFixed(2)}€</span></div>` : '').join('');
+                            detailsHtml = `<div id="log-detail-${idx}" style="display:none; margin-top:10px; padding:10px; background:#000; border-radius:4px; border-left: 2px solid var(--gold);">${list}</div>`;
+                        }
+
+                        return `
+                        <div class="card" style="${actionText.includes('SUPPRESSION') || actionText.includes('ANNULATION') ? 'border-color:var(--alert);' : ''}" onclick="toggleLogDetail(${idx})">
+                            <div style="color:var(--sub); font-size:0.8rem;">${timeText} - Par: <b style="color:var(--gold);">${userText}</b></div>
+                            <div style="font-weight:bold; margin-top:5px;">[${actionText}] ${detailText} <span style="font-size:0.7rem; font-weight:normal; color:#888;">(Cliquez pour détails)</span></div>
+                            ${detailsHtml}
+                        </div>`;
+                    }).join('') || "Aucune activité récente.";
+                }
+            } catch(e) { console.error(e); }
         }
 
         function toggleLogDetail(idx) {
