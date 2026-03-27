@@ -66,4 +66,41 @@ server.listen(PORT, '0.0.0.0', () => {
     console.log(`   URL : http://localhost:${PORT}           `);
     console.log('   RESEAU : Connectez vos pads sur votre IP');
     console.log('-------------------------------------------');
+    // --- ÉTAT INITIAL DES STOCKS (Exemple) ---
+let globalStock = {
+    "Caviar Beluga & Blinis": 5,
+    "Homard Bleu": 3,
+    "Dom Pérignon": 12,
+    "Tartare Wagyu": 8
+    // Les autres articles sont considérés en stock illimité (99+)
+};
+
+function handleOrderUpdate(tableId, order) {
+    if (order && order.status === 'pending') {
+        // Déduction du stock lors de l'envoi en cuisine
+        order.items.forEach(item => {
+            if (globalStock[item.n] !== undefined) {
+                globalStock[item.n]--;
+                if (globalStock[item.n] < 0) globalStock[item.n] = 0;
+            }
+        });
+    }
+
+    if (!order) {
+        delete activeOrders[tableId];
+    } else {
+        activeOrders[tableId] = order;
+    }
+
+    // Diffusion avec l'objet Stock inclus
+    const broadcastData = JSON.stringify({ 
+        type: 'UPDATE_ALL', 
+        orders: activeOrders, 
+        stock: globalStock 
+    });
+    
+    wss.clients.forEach(client => {
+        if (client.readyState === WebSocket.OPEN) client.send(broadcastData);
+    });
+}
 });
