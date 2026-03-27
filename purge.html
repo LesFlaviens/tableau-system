@@ -46,7 +46,7 @@
         /* MODALS INFO */
         .modal { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.98); z-index: 20000; display: none; padding: 40px; box-sizing: border-box; overflow-y: auto; }
         .modal.open { display: block; }
-        .card { background: #111; border: 1px solid #333; padding: 20px; border-radius: 8px; margin-bottom: 10px; cursor: pointer;} /* AJOUT CURSOR POINTER */
+        .card { background: #111; border: 1px solid #333; padding: 20px; border-radius: 8px; margin-bottom: 10px; cursor: pointer;}
 
         /* -- MODE ARCHITECTURE -- */
         .edit-mode .table-obj { cursor: move; border-style: dashed; border-color: #2979ff; }
@@ -66,7 +66,7 @@
         .pin-display { font-size: 2rem; letter-spacing: 10px; margin-bottom: 20px; color: var(--gold); min-height: 40px;}
         .item-delete-btn { background: var(--alert); color: #fff; border: none; padding: 5px 10px; font-weight: bold; cursor: pointer; border-radius: 4px; font-size: 0.7rem;}
         
-        /* AJOUT : STYLE POUR L'IMPRESSION (ADDITION) */
+        /* STYLE POUR L'IMPRESSION (ADDITION) */
         @media print {
             body * { visibility: hidden; }
             #print-area, #print-area * { visibility: visible; }
@@ -462,7 +462,7 @@
             closeOrder();
         }
         
-        // --- AJOUT : ENCAISSEMENT & IMPRESSION TICKET ---
+        // --- CORRECTION : ENCAISSEMENT & IMPRESSION TICKET ---
         async function processPayment() {
             if (ticketItems.length === 0) return alert("La table est vide.");
             
@@ -472,34 +472,37 @@
 
             const totalAmount = document.getElementById('ticket-total').innerText.replace('Total: ', '');
             
-            // On demande explicitement le type de paiement pour la traçabilité
             const paymentType = prompt(`💳 MODE DE PAIEMENT\nTable ${currentTable} - Total : ${totalAmount}\nTapez : CB, ESPECES, ou CHEQUE\n(Ou annulez pour quitter)`);
             
-            if(!paymentType) return; // Annulation
+            // CORRECTION ANTI-ANNULATION:
+            // Si on annule, on sort simplement de la fonction. On NE RECHARGE PAS la table, ce qui laissait croire que c'était vidé. On force un re-render visuel par sécurité.
+            if(!paymentType) {
+                renderTicket(); // Force le rafraîchissement visuel pour que rien ne bouge
+                return; 
+            }
             
             const pType = paymentType.toUpperCase();
             if(!['CB', 'ESPECES', 'CHEQUE'].includes(pType)) {
-                return alert("❌ Mode de paiement invalide.");
+                alert("❌ Mode de paiement invalide.");
+                renderTicket();
+                return;
             }
 
             const confirmPay = confirm(`Confirmer l'encaissement de ${totalAmount} en ${pType} ?`);
             
             if(confirmPay) {
-                // 1. Impression du ticket DÉTAILLÉ
                 printReceipt(currentTable, totalAmount, ticketItems, pType);
 
-                // 2. Traitement back-end
                 await fetch('/update-order', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({tableId: currentTable, order: null}) });
                 
-                // 3. Log Historique Manager avec tous les détails
                 logAction("ENCAISSEMENT VALIDÉ", `Table: ${currentTable} | Montant: ${totalAmount} | Type: ${pType}`, ticketItems);
                 
-                // 4. Vider la table
                 ticketItems = []; document.getElementById('order-obs').value = ''; closeOrder();
+            } else {
+                renderTicket(); // Force le rafraîchissement visuel si on annule la confirmation
             }
         }
 
-        // FONCTION D'IMPRESSION COMPLÈTE
         function printReceipt(table, total, items, paymentType) {
             const printArea = document.getElementById('print-area');
             const date = new Date().toLocaleString('fr-FR');
@@ -512,7 +515,6 @@
                 </div>
             `).join('');
 
-            // Bloc TPE généré dynamiquement si paiement CB
             let tpeHtml = '';
             if (paymentType === 'CB') {
                 tpeHtml = `
@@ -554,7 +556,6 @@
                 </div>
             `;
             
-            // Appel de l'impression native du navigateur
             window.print();
         }
 
@@ -597,7 +598,6 @@
             }
         }
 
-        // AJOUT : Afficher/Masquer les détails du ticket dans l'historique
         function toggleLogDetail(idx) {
             const el = document.getElementById(`log-detail-${idx}`);
             if(el) {
