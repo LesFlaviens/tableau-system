@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>Empire OS - Pad Serveur Master</title>
     <style>
-        :root { --bg: #050505; --text: #fff; --sub: #aaa; --gold: #ffb300; --accent: #00e676; --alert: #ff1744; }
+        :root { --bg: #050505; --text: #fff; --sub: #aaa; --gold: #ffb300; --accent: #00e676; --alert: #ff1744; --ordered: #2979ff; }
         body { font-family: 'Inter', sans-serif; background: var(--bg); color: var(--text); margin: 0; height: 100vh; display: flex; flex-direction: column; overflow: hidden; touch-action: manipulation; }
         
         /* HEADER TOTAL : TOUT SUR UNE LIGNE */
@@ -26,7 +26,9 @@
         /* PLAN DE SALLE */
         .floor-plan { flex: 1; position: relative; background-image: radial-gradient(#222 1px, transparent 1px); background-size: 30px 30px; padding: 20px; overflow: auto; }
         .table-obj { position: absolute; background: #000; border: 2px solid #fff; border-radius: 8px; display: flex; justify-content: center; align-items: center; font-weight: 900; color: #fff; cursor: pointer; transition: 0.2s; }
-        .table-obj.occupied { border-color: var(--alert); color: var(--alert); box-shadow: 0 0 15px rgba(255, 23, 68, 0.4); }
+        
+        /* AJOUT : TABLE BLEUE QUAND COMMANDE EN COURS */
+        .table-obj.ordered { border-color: var(--ordered); color: var(--ordered); box-shadow: 0 0 15px rgba(41, 121, 255, 0.4); }
         
         /* CLIGNOTEMENT QUAND PRÊT */
         .table-obj.ready { border-color: var(--accent); color: var(--accent); animation: pulse-ready 1s infinite; box-shadow: 0 0 20px rgba(0, 230, 118, 0.6); }
@@ -71,12 +73,12 @@
         .pay-btn { background: #111; border: 2px solid var(--accent); color: var(--accent); padding: 20px 40px; font-size: 1.5rem; font-weight: 900; border-radius: 8px; cursor: pointer; width: 300px; margin-bottom: 15px; text-transform: uppercase; }
         .pay-btn.cancel { border-color: var(--alert); color: var(--alert); margin-top: 30px;}
 
-        /* AJOUT : MODAL ANNULATION (QCM) */
+        /* MODAL ANNULATION (QCM) */
         #cancel-modal { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.95); z-index: 40000; display: none; flex-direction: column; align-items: center; justify-content: center; }
         .cancel-btn { background: #111; border: 2px solid var(--gold); color: var(--gold); padding: 20px 40px; font-size: 1.2rem; font-weight: bold; border-radius: 8px; cursor: pointer; width: 350px; margin-bottom: 15px; text-transform: uppercase; }
         .cancel-btn.abort { border-color: var(--sub); color: var(--sub); margin-top: 20px; }
 
-        /* CORRECTION : STYLE POUR L'IMPRESSION (ADDITION) */
+        /* STYLE POUR L'IMPRESSION (ADDITION) */
         #print-area { display: none; }
         @media print {
             body { height: auto !important; overflow: visible !important; display: block !important; background: #fff !important; color: #000 !important; }
@@ -104,8 +106,8 @@
         <h3 style="color:#fff; font-size: 1.2rem; margin-bottom: 30px;" id="cancel-item-name">Nom du plat</h3>
         <button class="cancel-btn" onclick="executeCancelItem('Erreur de frappe')">❌ ERREUR DE FRAPPE</button>
         <button class="cancel-btn" onclick="executeCancelItem('Client change d\'avis')">❌ CLIENT CHANGE D'AVIS</button>
-        <button class="cancel-btn" onclick="executeCancelItem('Rupture de stock (Cuisine)')">❌ RUPTURE DE STOCK</button>
-        <button class="cancel-btn" onclick="executeCancelItem('Retour cuisine (Non conforme)')">❌ RETOUR CUISINE</button>
+        <button class="cancel-btn" onclick="executeCancelItem('Rupture de stock')">❌ RUPTURE DE STOCK</button>
+        <button class="cancel-btn" onclick="executeCancelItem('Retour (Non conforme)')">❌ RETOUR CUISINE/BAR</button>
         <button class="cancel-btn abort" onclick="abortCancelItem()">🔙 NE PAS SUPPRIMER (RETOUR)</button>
     </div>
 
@@ -245,7 +247,16 @@
             const floor = document.getElementById('floor-plan'); floor.innerHTML = '';
             tables.forEach(t => {
                 const div = document.createElement('div'); div.className = 'table-obj';
-                if(activeOrders[t.label]) { div.classList.add('occupied'); if(activeOrders[t.label].status === 'ready') div.classList.add('ready'); }
+                
+                // LOGIQUE D'AFFICHAGE MODIFIÉE : BLEU SI COMMANDE EN COURS, VERT SI PRÊT
+                if(activeOrders[t.label]) { 
+                    div.classList.add('ordered'); // Devient bleu
+                    if(activeOrders[t.label].status === 'ready') {
+                        div.classList.remove('ordered'); // Enlève le bleu
+                        div.classList.add('ready'); // Devient vert et clignote
+                    }
+                }
+                
                 div.style.left=t.l+'px'; div.style.top=t.t+'px'; div.style.width=t.w+'px'; div.style.height=t.h+'px';
                 div.innerHTML = t.label; 
                 div.onclick = () => openOrder(t.label);
@@ -267,8 +278,13 @@
                     const newOrders = msg.activeOrders || (msg.state ? msg.state.activeOrders : {});
                     for (let tableId in newOrders) {
                         if (newOrders[tableId].status === 'ready' && (!previousOrdersState[tableId] || previousOrdersState[tableId].status !== 'ready')) {
+                            // AJOUT : VÉRIFICATION ET LECTURE DU BIP
                             const beep = document.getElementById('beep-ready');
-                            if(beep) beep.play().catch(err => console.log("Son bloqué"));
+                            if(beep) {
+                                beep.play().catch(err => {
+                                    console.log("Son bloqué par le navigateur, interaction requise.", err);
+                                });
+                            }
                             if(newOrders[tableId].items) newOrders[tableId].items.forEach(i => i.done = true);
                         }
                     }
@@ -335,10 +351,7 @@
             }).join('');
         }
 
-        function addToTicket(n, p, dest) { 
-            ticketItems.push({ id: Date.now()+Math.random(), n, p, done: false, dest: dest }); 
-            renderTicket(); 
-        }
+        function addToTicket(n, p, dest) { ticketItems.push({ id: Date.now()+Math.random(), n, p, done: false, dest: dest }); renderTicket(); }
 
         // ==========================================================
         // SYSTÈME DE SUPPRESSION AVEC MODAL QCM
@@ -353,17 +366,14 @@
         }
 
         function abortCancelItem() {
-            // Le serveur clique sur "Ne pas supprimer", la fenêtre se ferme, le plat reste
             pendingCancelIndex = null;
             document.getElementById('cancel-modal').style.display = 'none';
         }
 
         function executeCancelItem(raison) {
             if (pendingCancelIndex === null) return;
-
             const item = ticketItems[pendingCancelIndex];
             
-            // Si le plat était déjà envoyé (enregistré en base de données), c'est une alerte de fraude
             if (activeOrders[currentTable] && activeOrders[currentTable].items && activeOrders[currentTable].items.find(i => i.id === item.id)) {
                 logAction("ANNULATION PLAT ENVOYÉ", `Table: ${currentTable} | Plat: ${item.n} | RAISON: ${raison}`);
             } else {
@@ -371,7 +381,6 @@
             }
 
             ticketItems.splice(pendingCancelIndex, 1);
-            
             pendingCancelIndex = null;
             document.getElementById('cancel-modal').style.display = 'none';
             renderTicket();
@@ -403,14 +412,14 @@
             closeOrder();
         }
 
-        // --- ENCAISSEMENT TACTILE SANS BUG ---
+        // --- ENCAISSEMENT TACTILE ---
         function openPaymentModal() {
             if (ticketItems.length === 0) return alert("La table est vide.");
             if (currentUser.role === 'Serveur') return alert("⛔ Vous n'avez pas les droits d'encaissement. Demandez au Manager.");
 
             let tableData = activeOrders[currentTable];
             if (!tableData || !tableData.items || tableData.items.length !== ticketItems.length) {
-                return alert("⚠️ IMPOSSIBLE D'ENCAISSER !\n\nVous avez ajouté ou modifié des plats sans les envoyer.\nVeuillez d'abord cliquer sur [🚀 ENVOYER (AJOUTER)] pour valider la commande.");
+                return alert("⚠️ IMPOSSIBLE D'ENCAISSER !\n\nVous avez ajouté ou supprimé des plats sans les envoyer.\nVeuillez d'abord cliquer sur [🚀 ENVOYER (AJOUTER)] pour valider la commande.");
             }
 
             const totalAmount = document.getElementById('ticket-total').innerText.replace('Total: ', '');
@@ -533,9 +542,7 @@
 
         function toggleLogDetail(idx) {
             const el = document.getElementById(`log-detail-${idx}`);
-            if(el) {
-                el.style.display = el.style.display === 'none' ? 'block' : 'none';
-            }
+            if(el) el.style.display = el.style.display === 'none' ? 'block' : 'none';
         }
 
         function closeModal() { document.getElementById('info-modal').classList.remove('open'); }
