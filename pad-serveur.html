@@ -634,5 +634,127 @@
 
         function closeModal() { document.getElementById('info-modal').classList.remove('open'); }
     </script>
+    // --- 1. CONFIGURATION RÉSEAU & ÉTAT ---
+let ws;
+let currentTable = null;
+let ticketItems = [];
+let activeOrders = {};
+const RECONNECT_DELAY = 3000;
+
+// --- 2. BASE DE DONNÉES MAÎTRE (ACCÈS 24/7) ---
+const MASTER_MENU = [
+    {n: "Caviar Beluga & Blinis", c: "Entrées", p: 85, d: "cuisine"},
+    {n: "Foie Gras mi-cuit", c: "Entrées", p: 24, d: "cuisine"},
+    {n: "Carpaccio St-Jacques", c: "Entrées", p: 28, d: "cuisine"},
+    {n: "Tartare Wagyu", c: "Entrées", p: 32, d: "cuisine"},
+    {n: "Huîtres Gillardeau", c: "Entrées", p: 26, d: "cuisine"},
+    {n: "Filet Bœuf Rossini", c: "Plats de résistance", p: 45, d: "cuisine"},
+    {n: "Homard Bleu", c: "Plats de résistance", p: 55, d: "cuisine"},
+    {n: "Côte de Veau", c: "Plats de résistance", p: 38, d: "cuisine"},
+    {n: "Bar de Ligne", c: "Plats de résistance", p: 42, d: "cuisine"},
+    {n: "Risotto Truffe Blanche", c: "Plats de résistance", p: 35, d: "cuisine"},
+    {n: "Sphère Chocolat", c: "Desserts", p: 15, d: "cuisine"},
+    {n: "Millefeuille Vanille", c: "Desserts", p: 14, d: "cuisine"},
+    {n: "Soufflé Grand Marnier", c: "Desserts", p: 16, d: "cuisine"},
+    {n: "Tarte Tatin", c: "Desserts", p: 13, d: "cuisine"},
+    {n: "Baba au Rhum", c: "Desserts", p: 15, d: "cuisine"},
+    {n: "Dom Pérignon", c: "Boissons", p: 250, d: "bar"},
+    {n: "Château Margaux", c: "Boissons", p: 450, d: "bar"},
+    {n: "Meursault 1er Cru", c: "Boissons", p: 120, d: "bar"},
+    {n: "Cocktail L'Empire", c: "Boissons", p: 22, d: "bar"},
+    {n: "Eau Voss", c: "Boissons", p: 9, d: "bar"}
+];
+
+// --- 3. MOTEUR DE CONNEXION H24 ---
+function connectEmpireH24() {
+    // Tentative de connexion au serveur maître (le Chef)
+    ws = new WebSocket((window.location.protocol === 'https:' ? 'wss://' : 'ws://') + window.location.host);
+
+    ws.onopen = () => {
+        updateStatus("● SYNC H24 ACTIF", "var(--accent)");
+        syncDataWithServer(); // Récupère l'état actuel des tables dès la reconnexion
+    };
+
+    ws.onmessage = (event) => {
+        const msg = JSON.parse(event.data);
+        if (msg.type === 'UPDATE_ALL' || msg.type === 'SYNC') {
+            activeOrders = msg.orders || {};
+            renderFloor(); // Met à jour le plan de salle visuel
+        }
+    };
+
+    ws.onclose = () => {
+        updateStatus("● MODE HORS-LIGNE (AUTO-SYNC...)", "var(--alert)");
+        setTimeout(connectEmpireH24, RECONNECT_DELAY); // Reconnexion automatique infinie
+    };
+}
+
+function updateStatus(text, color) {
+    const statusTag = document.getElementById('status') || document.getElementById('stock-tag');
+    if(statusTag) {
+        statusTag.innerText = text;
+        statusTag.style.color = color;
+    }
+}
+
+// --- 4. LOGIQUE DE COMMANDE INTERCONNECTÉE ---
+function renderMenu(category) {
+    const grid = document.getElementById('menu');
+    const items = MASTER_MENU.filter(i => i.c === category);
+    
+    grid.innerHTML = items.map(i => `
+        <div class="btn-item" onclick="addToTicket('${i.n.replace(/'/g, "\\'")}', ${i.p}, '${i.d}')">
+            <span>${i.n}</span>
+            <span style="color:var(--gold); font-weight:900;">${i.p.toFixed(2)}€</span>
+        </div>
+    `).join('');
+}
+
+async function sendToKitchen() {
+    if(ticketItems.length === 0) return alert("Ticket vide.");
+    
+    const orderData = {
+        tableId: currentTable,
+        items: ticketItems,
+        timestamp: new Date().toISOString(),
+        status: 'pending'
+    };
+
+    // Stratégie double : Envoi Réseau + Backup Local
+    try {
+        if (ws && ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({ type: 'NEW_ORDER', data: orderData }));
+        }
+
+        const response = await fetch('/update-order', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ tableId: currentTable, order: orderData })
+        });
+
+        if(response.ok) {
+            alert("🚀 ENVOI CHEF RÉUSSI");
+            ticketItems = [];
+            closeOrder();
+        }
+    } catch (e) {
+        // Si le réseau est mort, on stocke en local pour le futur sync
+        saveOfflineOrder(orderData);
+        alert("⚠️ RÉSEAU INDISPONIBLE : Commande stockée localement (Sync auto dès retour).");
+        closeOrder();
+    }
+}
+
+function saveOfflineOrder(order) {
+    let queue = JSON.parse(localStorage.getItem('empire_offline_queue') || "[]");
+    queue.push(order);
+    localStorage.setItem('empire_offline_queue', JSON.stringify(queue));
+}
+
+// Initialisation au chargement
+window.onload = () => {
+    connectEmpireH24();
+    if(typeof renderFloor === "function") renderFloor();
+};
 </body>
 </html>
