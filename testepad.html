@@ -161,7 +161,7 @@
         <div class="nav-btns">
             <button id="btn-dashboard" class="btn-mini sync" style="display:none;" onclick="openModal('dashboard')">👁️ DASHBOARD DIR.</button>
             <button class="btn-mini" style="border-color: #ea80fc; color: #ea80fc;" onclick="window.open('reservation.html', '_blank')">📅 RÉSA</button>
-            <button class="btn-mini" style="border-color: #2979ff; color: #2979ff;" onclick="unlockArchiMode()">🏗️ ARCHI</button>
+            <button class="btn-mini" style="border-color: #2979ff; color: #2979ff;" onclick="promptArchiPin()">🏗️ ARCHI</button>
             <button class="btn-mini gold" onclick="openModal('radar')">⚡ RADAR</button>
             <button class="btn-mini" onclick="openModal('plan')">📅 PLANNING</button>
             
@@ -334,8 +334,17 @@
             renderFloor();
         }
 
+        // --- NOUVEAU : PROTECTION ARCHI PAR PIN ---
+        function promptArchiPin() {
+            const code = prompt("Veuillez saisir le code Manager pour modifier l'architecture :");
+            if (code === "9999") { // Remplacer "9999" par la constante si tu as un système de variables centralisé
+                unlockArchiMode();
+            } else {
+                alert("❌ Code incorrect. Accès refusé.");
+            }
+        }
+
         function unlockArchiMode() {
-            if (!currentUser || currentUser.role !== 'Manager') return alert("⛔ Accès Manager requis pour modifier le plan.");
             isArchiMode = true;
             document.body.classList.add('edit-mode');
         }
@@ -631,6 +640,8 @@
         let pendingCancelIndex = null;
 
         function removeTicketItem(index) {
+            // Attention : avec le regroupement visuel, la suppression doit cibler un des éléments de ce groupe.
+            // La logique 'index' fonctionne car on parcourt le tableau original dans renderTicket pour générer les index.
             pendingCancelIndex = index;
             const item = ticketItems[index];
             document.getElementById('cancel-item-name').innerText = `Plat sélectionné : ${item.n}`;
@@ -658,18 +669,51 @@
             renderTicket();
         }
         
+        // --- NOUVEAU : REGROUPEMENT DES ARTICLES (CONSOLIDATION) ---
         function renderTicket() {
             try {
                 let total = 0;
-                document.getElementById('ticket-items').innerHTML = ticketItems.map((i, index) => {
-                    if (!i) return '';
-                    total += parseFloat(i.p) || 0;
-                    const style = i.done ? "text-decoration: line-through; opacity: 0.5;" : "";
-                    return `<div style="display:flex; justify-content:space-between; align-items:center; padding:8px 0; border-bottom:1px solid #222; ${style}">
-                        <span style="flex:1;">${i.n || '?'}</span><span style="margin-right:15px;">${(parseFloat(i.p)||0).toFixed(2)}€</span>
-                        <button class="item-delete-btn" onclick="removeTicketItem(${index})">X</button>
+                let groupedItems = {};
+                
+                // On sépare les articles déjà préparés (done) des autres pour ne pas les mélanger
+                ticketItems.forEach((item, index) => {
+                    if (!item) return;
+                    total += parseFloat(item.p) || 0;
+                    
+                    // Clé unique de regroupement : Nom + Prix + Statut
+                    let key = `${item.n}_${item.p}_${item.done}`;
+                    
+                    if (!groupedItems[key]) {
+                        groupedItems[key] = {
+                            n: item.n,
+                            p: parseFloat(item.p) || 0,
+                            done: item.done,
+                            count: 0,
+                            // On garde le dernier index pour la suppression (X supprimera le dernier ajouté de ce groupe)
+                            lastIndex: index 
+                        };
+                    }
+                    groupedItems[key].count++;
+                    groupedItems[key].lastIndex = index;
+                });
+
+                let html = "";
+                for (let key in groupedItems) {
+                    let g = groupedItems[key];
+                    let lineTotal = g.p * g.count;
+                    const style = g.done ? "text-decoration: line-through; opacity: 0.5;" : "";
+                    
+                    // Affichage : "3x Entrecôte" au lieu de "Entrecôte" x3
+                    let displayName = g.count > 1 ? `<strong style="color:var(--gold);">${g.count}x</strong> ${g.n}` : g.n;
+
+                    html += `<div style="display:flex; justify-content:space-between; align-items:center; padding:8px 0; border-bottom:1px solid #222; ${style}">
+                        <span style="flex:1;">${displayName}</span>
+                        <span style="margin-right:15px;">${lineTotal.toFixed(2)}€</span>
+                        <button class="item-delete-btn" onclick="removeTicketItem(${g.lastIndex})">X</button>
                     </div>`;
-                }).join('');
+                }
+
+                document.getElementById('ticket-items').innerHTML = html;
                 document.getElementById('ticket-total').innerText = `Total: ${total.toFixed(2)}€`;
             } catch (err) { console.error(err); }
         }
@@ -720,18 +764,31 @@
             closeOrder();
         }
 
+        // --- NOUVEAU : REGROUPEMENT SUR LE TICKET DE CAISSE ---
         function printReceipt(table, total, items, paymentType) {
             const printArea = document.getElementById('print-area');
             const date = new Date().toLocaleString('fr-FR');
             const transactionID = 'TX-' + Math.floor(Math.random() * 1000000000);
             
-            let itemsHtml = items.map(i => {
-                if(!i) return '';
-                return `<div style="display:flex; justify-content:space-between; margin-bottom:5px;">
-                    <span>1x ${i.n || '?'}</span>
-                    <span>${(parseFloat(i.p)||0).toFixed(2)}€</span>
+            let groupedPrintItems = {};
+            items.forEach(i => {
+                if(!i) return;
+                let key = `${i.n}_${i.p}`;
+                if(!groupedPrintItems[key]) {
+                    groupedPrintItems[key] = { n: i.n, p: parseFloat(i.p)||0, count: 0 };
+                }
+                groupedPrintItems[key].count++;
+            });
+
+            let itemsHtml = "";
+            for(let key in groupedPrintItems) {
+                let g = groupedPrintItems[key];
+                let lineTotal = g.p * g.count;
+                itemsHtml += `<div style="display:flex; justify-content:space-between; margin-bottom:5px;">
+                    <span>${g.count}x ${g.n || '?'}</span>
+                    <span>${lineTotal.toFixed(2)}€</span>
                 </div>`;
-            }).join('');
+            }
 
             let tpeHtml = '';
             if (paymentType === 'CB') {
