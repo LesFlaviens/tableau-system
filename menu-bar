@@ -1,1 +1,198 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Menu Bar Live - EMPIRE OS</title>
+    <style>
+        :root { --bg: #050505; --accent: #00e676; --text: #fff; --panel: #111; --gold: #ffb300; }
+        body { font-family: 'Inter', sans-serif; background: var(--bg); color: var(--text); margin: 0; padding: 0; padding-bottom: 80px;} /* Bottom padding augmenté pour la barre */
+        
+        .header { background: var(--panel); padding: 30px 20px; text-align: center; border-bottom: 1px solid #333; position: sticky; top: 0; z-index: 100;}
+        .logo { font-weight: 900; color: #fff; letter-spacing: 4px; font-size: 1.5rem; text-transform: uppercase; }
+        .subtitle { color: #888; font-size: 0.8rem; margin-top: 5px; text-transform: uppercase; letter-spacing: 2px;}
 
+        .container { padding: 20px; max-width: 600px; margin: 0 auto; }
+        
+        .category-title { color: var(--accent); font-size: 1.2rem; font-weight: 900; text-transform: uppercase; letter-spacing: 2px; margin-top: 40px; margin-bottom: 15px; border-bottom: 1px solid #333; padding-bottom: 10px; }
+        
+        .menu-item { display: flex; justify-content: space-between; align-items: center; padding: 15px 0; border-bottom: 1px dashed #222; animation: fadeIn 0.5s ease; }
+        .item-details { display: flex; flex-direction: column; flex: 1; padding-right: 10px; }
+        .item-name { font-size: 1.1rem; font-weight: bold; color: #fff; }
+        .item-desc { font-size: 0.75rem; color: #666; margin-top: 4px; font-style: italic; }
+        .item-price { font-size: 1.1rem; font-weight: 900; color: var(--accent); white-space: nowrap; margin-right: 15px; }
+
+        .add-btn { background: var(--panel); border: 1px solid var(--accent); color: var(--accent); width: 35px; height: 35px; border-radius: 50%; font-weight: 900; cursor: pointer; transition: 0.2s; }
+        .add-btn:active { background: var(--accent); color: #000; transform: scale(0.9); }
+
+        #cart-bar { position: fixed; bottom: 0; left: 0; width: 100%; background: var(--accent); color: #000; padding: 15px 20px; display: none; justify-content: space-between; align-items: center; box-sizing: border-box; z-index: 1000; font-weight: 900; text-transform: uppercase; cursor: pointer; box-shadow: 0 -5px 20px rgba(0, 230, 118, 0.3); }
+
+        .footer { text-align: center; padding: 40px 20px; color: #444; font-size: 0.7rem; letter-spacing: 1px; }
+
+        @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+
+        #sync-status { position: fixed; bottom: 10px; right: 10px; width: 8px; height: 8px; border-radius: 50%; background: #333; z-index: 1001; }
+        #sync-status.online { background: var(--accent); box-shadow: 0 0 5px var(--accent); }
+    </style>
+</head>
+<body>
+
+    <div id="sync-status"></div>
+
+    <div class="header">
+        <div class="logo">CARTE DU BAR</div>
+        <div id="table-display" class="subtitle">Commande en Direct</div>
+    </div>
+
+    <div class="container" id="menu-container">
+        <div style="text-align:center; padding-top:50px; color:#555;">Initialisation de la carte du bar...</div>
+    </div>
+
+    <div id="cart-bar" onclick="sendOrder()">
+        <span id="cart-count">0 BOISSONS</span>
+        <span>COMMANDER 🚀</span>
+    </div>
+
+    <div class="footer">
+        PROPULSÉ PAR LE SYSTÈME TABLEAU © 2026<br>
+        MISE À JOUR EN TEMPS RÉEL
+    </div>
+
+    <script>
+        // Détection de la table dans l'URL (ex: menu-bar.html?table=T1)
+        const urlParams = new URLSearchParams(window.location.search);
+        const tableId = urlParams.get('table') || "A Emporter (Bar)";
+        document.getElementById('table-display').innerText = "TABLE : " + tableId;
+
+        let cart = [];
+        let ws;
+
+        // CONNEXION H24 7/7 (AUTO-RECONNECT)
+        function connectEmpireH24() {
+            ws = new WebSocket((window.location.protocol === 'https:' ? 'wss://' : 'ws://') + window.location.host);
+            
+            ws.onopen = () => document.getElementById('sync-status').classList.add('online');
+            
+            ws.onclose = () => {
+                document.getElementById('sync-status').classList.remove('online');
+                setTimeout(connectEmpireH24, 2500); // Reconnexion auto
+            };
+
+            ws.onmessage = (e) => {
+                try {
+                    const msg = JSON.parse(e.data);
+                    if (msg.type === 'ORDER_UPDATE' || msg.state || msg.type === 'SYNC') {
+                        const activeOrders = msg.activeOrders || (msg.state ? msg.state.activeOrders : {});
+                        // On écoute spécifiquement les fiches créées par le Chef Barman (GLOBAL_RECIPES)
+                        if (activeOrders['GLOBAL_RECIPES']) {
+                            renderMenu(activeOrders['GLOBAL_RECIPES'].data);
+                        }
+                    }
+                } catch(err) { console.error("Erreur Sync:", err); }
+            };
+        }
+
+        connectEmpireH24();
+
+        async function loadInitialMenu() {
+            try {
+                const res = await fetch('/get-current-state');
+                const state = await res.json();
+                if (state.activeOrders['GLOBAL_RECIPES']) {
+                    renderMenu(state.activeOrders['GLOBAL_RECIPES'].data);
+                } else {
+                    document.getElementById('menu-container').innerHTML = '<div style="text-align:center; padding-top:50px; color:var(--accent);">CARTE DU BAR EN COURS DE MISE À JOUR...</div>';
+                }
+            } catch(e) { console.log("Mode hors-ligne"); }
+        }
+
+        function renderMenu(data) {
+            const container = document.getElementById('menu-container');
+            container.innerHTML = '';
+            
+            // Formatage des données issues du Labo Barman
+            const formattedData = data.map(r => {
+                let price = 0;
+                let match = r.nom.match(/\(([\d.]+)€?\)/);
+                if(match) price = parseFloat(match[1]);
+                return {
+                    name: r.nom.split('(')[0].trim(),
+                    desc: "Mixologie Empire",
+                    price: price,
+                    category: 'Boissons & Cocktails'
+                };
+            });
+
+            if (formattedData.length > 0) {
+                const catTitle = document.createElement('div');
+                catTitle.className = 'category-title';
+                catTitle.innerText = "🍸 COCKTAILS & BOISSONS";
+                container.appendChild(catTitle);
+
+                formattedData.forEach(item => {
+                    const div = document.createElement('div');
+                    div.className = 'menu-item';
+                    div.innerHTML = `
+                        <div class="item-details">
+                            <span class="item-name">${item.name}</span>
+                            <span class="item-desc">${item.desc}</span>
+                        </div>
+                        <div class="item-price">${item.price.toFixed(2)} €</div>
+                        <button class="add-btn" onclick='addToCart(${JSON.stringify(item)})'>+</button>
+                    `;
+                    container.appendChild(div);
+                });
+            }
+        }
+
+        function addToCart(item) {
+            cart.push(item);
+            const bar = document.getElementById('cart-bar');
+            const count = document.getElementById('cart-count');
+            
+            bar.style.display = 'flex';
+            count.innerText = cart.length + (cart.length > 1 ? " BOISSONS" : " BOISSON");
+        }
+
+        async function sendOrder() {
+            const obs = prompt("Une précision pour le barman ? (Glaçons, Citron...)") || "";
+            
+            // On force la destination "bar" pour que ça sorte sur l'écran du barman
+            const formattedItems = cart.map(i => ({
+                n: i.name,
+                p: parseFloat(i.price),
+                obs: obs,
+                dest: 'bar'
+            }));
+
+            const payload = {
+                tableId: tableId,
+                order: {
+                    items: formattedItems,
+                    newItems: formattedItems,
+                    timestamp: new Date().toLocaleTimeString(),
+                    status: 'pending'
+                }
+            };
+
+            try {
+                const res = await fetch('/update-order', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify(payload)
+                });
+
+                if(res.ok) {
+                    alert("Commande envoyée au Bar ! Elle arrive...");
+                    cart = [];
+                    document.getElementById('cart-bar').style.display = 'none';
+                }
+            } catch(err) {
+                alert("Erreur de connexion au serveur.");
+            }
+        }
+
+        loadInitialMenu();
+    </script>
+</body>
+</html>
