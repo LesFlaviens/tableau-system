@@ -91,6 +91,16 @@
             #print-area { display: block !important; position: relative !important; width: 100% !important; padding: 0 !important; margin: 0 !important; background: #fff !important; color: #000 !important; font-family: monospace; }
             #print-area * { color: #000 !important; text-shadow: none !important; }
         }
+
+        /* 3. Clignotement OR / NOIR à l'impression */
+        @keyframes print-blink {
+            0% { background: #000; border-color: var(--gold); transform: scale(1); }
+            50% { background: var(--gold); border-color: #fff; color: #000; transform: scale(1.15); box-shadow: 0 0 30px var(--gold); z-index: 100;}
+            100% { background: #000; border-color: var(--gold); transform: scale(1); }
+        }
+        .table-obj.printing {
+            animation: print-blink 0.4s ease-in-out 4;
+        }
     </style>
 </head>
 <body>
@@ -496,7 +506,7 @@
                     const style = i.done ? "text-decoration: line-through; opacity: 0.5;" : "";
                     const obsHtml = i.obs ? `<div style="font-size:0.7rem; color:var(--gold);">${i.obs}</div>` : '';
                     
-                    // 🟢 AJOUT : Modification du HTML du ticket pour permettre l'édition en cliquant sur le texte
+                    // Modification du HTML du ticket pour permettre l'édition en cliquant sur le texte
                     return `<div style="display:flex; justify-content:space-between; align-items:center; padding:8px 0; border-bottom:1px solid #222; ${style}">
                         <div style="flex:1; cursor:pointer;" onclick="openEditItem(${index})">
                             <div>${i.n || '?'}</div>
@@ -543,17 +553,41 @@
             document.getElementById('payment-modal').style.display = 'none';
         }
 
-        async function executePayment(paymentType) {
-            const totalAmount = document.getElementById('ticket-total').innerText.replace('Total: ', '');
-            document.getElementById('payment-modal').style.display = 'none';
-
-            printReceipt(currentTable, totalAmount, ticketItems, paymentType);
-            await fetch('/update-order', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({tableId: currentTable, order: null}) }).catch(e=>{});
-            logAction("ENCAISSEMENT VALIDÉ", `Table: ${currentTable} | Montant: ${totalAmount} | Type: ${paymentType}`, ticketItems);
+        // 🟢 PATCH DÉLAI D'IMPRESSION ANTI-FREEZE
+        if (typeof executePayment === "function") {
+            const encaissementOriginal = executePayment;
             
-            ticketItems = []; 
-            document.getElementById('order-obs').value = ''; 
-            closeOrder();
+            executePayment = function(paymentType) {
+                const tableEnCours = currentTable;
+                
+                // On déclenche le signalement visuel en priorité
+                if (tableEnCours) {
+                    const floor = document.getElementById('floor-plan');
+                    const tablesDOM = floor.getElementsByClassName('table-obj');
+                    for(let i = 0; i < tablesDOM.length; i++) {
+                        if(tablesDOM[i].textContent.trim() === tableEnCours) {
+                            tablesDOM[i].classList.add('printing');
+                            setTimeout(() => {
+                                tablesDOM[i].classList.remove('printing');
+                            }, 1600);
+                        }
+                    }
+                }
+
+                // On impose un délai de 300ms avant l'impression.
+                setTimeout(async () => {
+                    const totalAmount = document.getElementById('ticket-total').innerText.replace('Total: ', '');
+                    document.getElementById('payment-modal').style.display = 'none';
+
+                    printReceipt(currentTable, totalAmount, ticketItems, paymentType);
+                    await fetch('/update-order', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({tableId: currentTable, order: null}) }).catch(e=>{});
+                    logAction("ENCAISSEMENT VALIDÉ", `Table: ${currentTable} | Montant: ${totalAmount} | Type: ${paymentType}`, ticketItems);
+                    
+                    ticketItems = []; 
+                    document.getElementById('order-obs').value = ''; 
+                    closeOrder();
+                }, 300);
+            };
         }
 
         function printReceipt(table, total, items, paymentType) {
@@ -702,12 +736,11 @@
                 const response = await fetch("menu.html?cache=" + new Date().getTime());
                 const text = await response.text();
 
-                // Création d'une "signature" du fichier
                 const version = text.length;
 
                 if (lastVersion && lastVersion !== version) {
                     console.log("Mise à jour détectée du menu !");
-                    location.reload(); // recharge automatique du pad
+                    location.reload(); 
                 }
 
                 lastVersion = version;
@@ -716,8 +749,43 @@
             }
         }
 
-        // Vérifie toutes les 5 secondes
         setInterval(checkMenuUpdate, 5000);
+    </script>
+
+    <script>
+        // 1. Suppression nucléaire du bouton CARTE rouge
+        document.querySelectorAll('.btn-mini').forEach(btn => {
+            if (btn.innerHTML.includes('CARTE') || btn.getAttribute('onclick').includes('carte.html')) {
+                btn.style.display = 'none';
+                btn.remove(); // Destruction totale
+            }
+        });
+
+        // 2. Radar Sonore (Vérifie chaque seconde si un plat est prêt)
+        let watchPreviousState = JSON.stringify(activeOrders);
+        
+        setInterval(() => {
+            let currentState = JSON.stringify(activeOrders);
+            if (currentState !== watchPreviousState) {
+                for (let table in activeOrders) {
+                    let oldTable = null;
+                    try { oldTable = JSON.parse(watchPreviousState)[table]; } catch(e){}
+                    
+                    let isNowReady = activeOrders[table].status === 'ready';
+                    let wasReady = oldTable && oldTable.status === 'ready';
+
+                    // Si la table vient de passer en "ready" (prête)
+                    if (isNowReady && !wasReady) {
+                        console.log("🔔 PLAT PRÊT ! Déclenchement du bip sonore.");
+                        const son = document.getElementById('beep-ready');
+                        if (son) {
+                            son.play().catch(e => console.log("Info: L'écran doit être touché au moins une fois par le serveur pour autoriser le son."));
+                        }
+                    }
+                }
+                watchPreviousState = currentState;
+            }
+        }, 1000);
     </script>
 </body>
 </html>
