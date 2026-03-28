@@ -19,6 +19,7 @@
         
         .input-group { display: flex; flex-direction: column; gap: 8px; }
         input, select { background: #000; border: 1px solid #333; color: #fff; padding: 12px; border-radius: 4px; font-size: 1rem; }
+        input[type="date"] { font-family: 'Inter', sans-serif; }
         
         .status-badge { padding: 4px 8px; border-radius: 4px; font-size: 0.7rem; font-weight: 900; text-transform: uppercase; }
         .status-ok { background: rgba(0, 230, 118, 0.1); color: var(--accent); border: 1px solid var(--accent); }
@@ -37,16 +38,28 @@
         .signature-audit { font-size: 0.65rem; color: #444; font-style: italic; display: flex; flex-direction: column; gap: 2px;}
         .signature-audit span.rectified { color: var(--gold); }
 
-        /* 🟢 AJOUTS CSS POUR LE NOUVEAU MODULE ET LE MICROPHONE */
+        /* CSS POUR LE MICROPHONE ET L'EXPORT */
         .mic-btn { background: #222; color: #fff; border: 1px solid #444; border-radius: 4px; padding: 10px; cursor: pointer; display: flex; align-items: center; justify-content: center; transition: 0.2s; }
         .mic-btn.recording { background: var(--alert); border-color: var(--alert); animation: pulse 1s infinite; }
         .input-with-mic { display: flex; gap: 5px; }
         .input-with-mic input { flex: 1; }
         .export-btn { background: transparent; border: 1px solid var(--ordered); color: var(--ordered); padding: 10px 15px; cursor: pointer; font-weight: bold; border-radius: 4px; font-size: 0.8rem; margin-left: auto; }
         .export-btn:hover { background: rgba(41, 121, 255, 0.1); }
+
+        /* 🟢 AJOUT : ALERTES DLC CLIGNOTANTES */
+        @keyframes dlc-blink {
+            0% { background-color: transparent; }
+            50% { background-color: rgba(255, 23, 68, 0.2); }
+            100% { background-color: transparent; }
+        }
+        .dlc-alert { animation: dlc-blink 1.5s infinite; border-left: 3px solid var(--alert); }
+        .dlc-expired-text { color: var(--alert); font-weight: 900; font-size: 0.8rem; padding: 2px 6px; border: 1px solid var(--alert); border-radius: 3px; display: inline-block; margin-top: 5px;}
+        .dlc-warning-text { color: var(--gold); font-weight: bold; }
     </style>
 </head>
 <body>
+
+    <audio id="beep-dlc" src="https://assets.mixkit.co/active_storage/sfx/2869/2869-preview.mp3" preload="auto"></audio>
 
     <div class="nav-haccp">
         <div style="font-weight: 900; color: var(--gold); margin-right: 20px; text-transform: uppercase; letter-spacing: 1px;">⚖️ HACCP AUDIT</div>
@@ -158,7 +171,11 @@
                         </div>
                     </div>
                     <div class="input-group">
-                        <label>Photo de l'étiquette (Tablette Cam)</label>
+                        <label>Date Limite (DLC)</label>
+                        <input type="date" id="trace-dlc">
+                    </div>
+                    <div class="input-group">
+                        <label>Photo de l'étiquette (Caméra)</label>
                         <input type="file" id="trace-img" accept="image/*" capture="camera" style="border:1px solid #222; padding:8px;">
                     </div>
                     <div class="input-group" style="justify-content: flex-end;">
@@ -168,10 +185,10 @@
             </div>
 
             <div class="card" style="flex:1; overflow:auto;">
-                <h2 style="margin:0; font-size: 0.8rem; color: #555; text-transform: uppercase;">REGISTRE DES ÉTIQUETTES (TRAÇABILITÉ)</h2>
+                <h2 style="margin:0; font-size: 0.8rem; color: #555; text-transform: uppercase;">REGISTRE DES ÉTIQUETTES (TRAÇABILITÉ & PÉREMPTION)</h2>
                 <table>
                     <thead>
-                        <tr><th>Heure</th><th>Produit</th><th>Lot / Fournisseur</th><th>Image DLC</th><th>Audit Trail</th><th class="hide-on-print">Action</th></tr>
+                        <tr><th>Heure / Audit</th><th>Produit & Compte à rebours</th><th>Lot & Fournisseur</th><th>Image DLC</th><th class="hide-on-print">Action</th></tr>
                     </thead>
                     <tbody id="logs-trace"></tbody>
                 </table>
@@ -192,12 +209,10 @@
             }).catch(e => console.log("Sauvegarde locale uniquement"))
         };
 
-        // Ajout de 'cleaning' dans la base locale
         let db = { temp: [], trace: [], cleaning: [] };
         let rectifiedTarget = null; 
-        let currentModuleType = 'temp'; // Pour savoir quel module est actif
+        let currentModuleType = 'temp';
 
-        // Restauration depuis le localStorage au cas où le serveur est injoignable
         try {
             if(localStorage.getItem('HACCP_TEMP')) db.temp = JSON.parse(localStorage.getItem('HACCP_TEMP'));
             if(localStorage.getItem('HACCP_TRACE')) db.trace = JSON.parse(localStorage.getItem('HACCP_TRACE'));
@@ -212,7 +227,6 @@
             event.target.classList.add('active');
         }
 
-        // --- MOTEUR DE SOUMISSION UNIQUE (GÈRE NOUVEAU & RECTIFICATION) ---
         async function submitEntry(type) {
             let eventObj = { 
                 id: rectifiedTarget || Date.now(), 
@@ -237,20 +251,23 @@
             } else if (type === 'trace') {
                 const name = document.getElementById('trace-name').value.trim();
                 const lot = document.getElementById('trace-lot').value.trim();
+                const dlc = document.getElementById('trace-dlc').value; 
                 const file = document.getElementById('trace-img').files[0];
-                if(!name || !lot) return alert("Remplissez Produit et Lot !");
                 
-                eventObj = { ...eventObj, name, lot, 
+                if(!name || !lot || !dlc) return alert("Remplissez le Produit, le Lot ET la Date DLC !");
+                
+                eventObj = { ...eventObj, name, lot, dlc, 
                     imgPlaceholder: file ? "IMAGE_ARCHIVÉE" : "PAS_D'IMAGE" 
                 };
                 
-                if(rectifiedTarget) rectifiedText = ` Rectifié (Nom/Lot) par Manager ID-${(Math.random()+1).toString(36).substring(7).toUpperCase()}`;
+                if(rectifiedTarget) rectifiedText = ` Rectifié (Nom/Lot/DLC) par Manager ID-${(Math.random()+1).toString(36).substring(7).toUpperCase()}`;
 
+                // Reset
                 document.getElementById('trace-name').value = "";
                 document.getElementById('trace-lot').value = "";
+                document.getElementById('trace-dlc').value = "";
                 document.getElementById('trace-img').value = "";
             
-            // 🟢 GESTION DU NOUVEAU MODULE NETTOYAGE
             } else if (type === 'cleaning') {
                 const zone = document.getElementById('clean-zone').value;
                 const obs = document.getElementById('clean-obs').value.trim();
@@ -258,12 +275,11 @@
                 
                 eventObj = { ...eventObj, zone, obs: obs || "Aucune observation", status };
                 
-                if(rectifiedTarget) rectifiedText = ` Statut rectifié (${status}) par Manager ID-${(Math.random()+1).toString(36).substring(7).toUpperCase()}`;
+                if(rectifiedTarget) rectifiedText = ` Statut rectifié (${status}), Observation modifiée par Manager ID-${(Math.random()+1).toString(36).substring(7).toUpperCase()}`;
 
                 document.getElementById('clean-obs').value = "";
             }
 
-            // --- GESTION DE L'ERREUR HUMAINE (RECTIFICATION) ---
             if(rectifiedTarget) {
                 db[type] = db[type].map(l => {
                     if(l.id === rectifiedTarget) {
@@ -273,9 +289,8 @@
                     }
                     return l;
                 });
-                rectifiedTarget = null; // Reset
+                rectifiedTarget = null;
                 
-                // Remettre le bouton à son état normal
                 let btn = document.querySelector(`#mod-${type} .btn-empire`);
                 if(btn) {
                     if(type === 'temp') btn.innerText = "Enregistrer le relevé";
@@ -283,19 +298,15 @@
                     if(type === 'cleaning') btn.innerText = "VALIDER NETTOYAGE";
                 }
             } else {
-                // Nouveau relevé
                 eventObj.auditTrailOriginal = `📜 SIGNATURE AUDIT : Horodatage ORIGINAL ${eventObj.time}. Signé ID-${(Math.random()+1).toString(36).substring(7).toUpperCase()}`;
                 db[type] = [eventObj, ...db[type]].slice(0, 100);
             }
 
-            // Sauvegarde locale forcée pour garantir que ça marche même sans serveur
             localStorage.setItem(`HACCP_${type.toUpperCase()}`, JSON.stringify(db[type]));
-            
             await API.update(`HACCP_${type.toUpperCase()}`, db[type]);
             loadAllLogs();
         }
 
-        // --- FONCTIONS DE CHARGEMENT ET D'AFFICHAGE ---
         async function loadAllLogs() {
             try {
                 const state = await API.getState();
@@ -304,9 +315,7 @@
                     if(state.activeOrders['HACCP_TRACE'] && state.activeOrders['HACCP_TRACE'].data) db.trace = state.activeOrders['HACCP_TRACE'].data;
                     if(state.activeOrders['HACCP_CLEANING'] && state.activeOrders['HACCP_CLEANING'].data) db.cleaning = state.activeOrders['HACCP_CLEANING'].data;
                 }
-            } catch(e) {
-                // Utilise la DB locale si echec réseau
-            }
+            } catch(e) { }
 
             renderTempLogs();
             renderTraceLogs();
@@ -331,23 +340,56 @@
         }
 
         function renderTraceLogs() {
+            let triggerAlarm = false;
             const container = document.getElementById('logs-trace');
-            container.innerHTML = db.trace.map(l => `
-                <tr>
-                    <td>${l.time}</td>
-                    <td style="font-weight:bold;">${l.name}</td>
-                    <td>${l.lot}</td>
-                    <td style="font-size: 0.7rem; color: #444;">[ ${l.imgPlaceholder} ]</td>
+            
+            container.innerHTML = db.trace.map(l => {
+                let dlcBadge = "";
+                let rowClass = "";
+                
+                if (l.dlc) {
+                    const today = new Date();
+                    today.setHours(0,0,0,0);
+                    const dlcDate = new Date(l.dlc);
+                    const diffTime = dlcDate - today;
+                    const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+
+                    if (diffDays < 0) {
+                        dlcBadge = `<span class="dlc-expired-text">⚠️ PÉRIMÉ DEPUIS ${Math.abs(diffDays)} JOUR(S)</span>`;
+                        rowClass = "dlc-alert";
+                        triggerAlarm = true;
+                    } else if (diffDays === 0) {
+                        dlcBadge = `<span class="dlc-expired-text">⚠️ EXPIRE AUJOURD'HUI</span>`;
+                        rowClass = "dlc-alert";
+                        triggerAlarm = true;
+                    } else if (diffDays <= 2) {
+                        dlcBadge = `<span class="dlc-warning-text">J-${diffDays}</span>`;
+                    } else {
+                        dlcBadge = `<span style="color:#aaa">J-${diffDays}</span>`;
+                    }
+                }
+
+                return `
+                <tr class="${rowClass}">
                     <td class="signature-audit">
+                        <strong style="color:#fff; font-size:1rem;">${l.time}</strong><br>
                         <span>${l.auditTrailOriginal}</span>
                         ${l.auditTrailRectified ? `<span class="rectified">${l.auditTrailRectified}</span>` : ''}
                     </td>
+                    <td><div style="font-weight:bold; font-size:1.1rem; color:var(--gold);">${l.name}</div>${dlcBadge}</td>
+                    <td>${l.lot}<br><small style="color:#888;">DLC Fixée : ${l.dlc || 'N/A'}</small></td>
+                    <td style="font-size: 0.7rem; color: #444;">[ ${l.imgPlaceholder} ]</td>
                     <td class="hide-on-print"><button class="btn-rectify" onclick="rectifyEntry('trace', '${l.id}')">✏️ Rectifier</button></td>
                 </tr>
-            `).join('');
+            `;
+            }).join('');
+
+            if (triggerAlarm) {
+                const son = document.getElementById('beep-dlc');
+                if (son) son.play().catch(e => console.log("L'écran doit être cliqué pour autoriser l'audio."));
+            }
         }
 
-        // 🟢 AFFICHAGE DU REGISTRE DE NETTOYAGE
         function renderCleaningLogs() {
             const container = document.getElementById('logs-cleaning');
             container.innerHTML = db.cleaning.map(l => `
@@ -365,7 +407,6 @@
             `).join('');
         }
 
-        // --- FONCTION DE RECTIFICATION UNIFIÉE ---
         function rectifyEntry(type, id) {
             const l = db[type].find(item => item.id == id);
             if(!l) return;
@@ -377,6 +418,7 @@
             } else if (type === 'trace') {
                 document.getElementById('trace-name').value = l.name;
                 document.getElementById('trace-lot').value = l.lot;
+                if(l.dlc) document.getElementById('trace-dlc').value = l.dlc; 
             } else if (type === 'cleaning') {
                 document.getElementById('clean-zone').value = l.zone;
                 document.getElementById('clean-obs').value = l.obs !== "Aucune observation" ? l.obs : "";
@@ -387,7 +429,6 @@
             document.querySelector(`#mod-${type} .btn-empire`).innerText = "VALIDER RECTIFICATION";
         }
 
-        // 🟢 API WEB SPEECH (DICTÉE VOCALE)
         function toggleDictation(inputId, btnElement) {
             if (!('webkitSpeechRecognition' in window) && !('SpeechRecognition' in window)) {
                 alert("Votre navigateur ne supporte pas la dictée vocale.");
@@ -408,12 +449,10 @@
 
             recognition.onresult = function(event) {
                 const speechResult = event.results[0][0].transcript;
-                // Concatène si l'input contient déjà du texte
                 inputField.value = inputField.value ? inputField.value + " " + speechResult : speechResult;
             };
 
             recognition.onerror = function(event) {
-                console.error("Erreur de dictée", event.error);
                 btnElement.classList.remove('recording');
             };
 
@@ -424,9 +463,7 @@
             recognition.start();
         }
 
-        // 🟢 EXPORTATION PDF (html2pdf)
         function exportToPDF() {
-            // Options pour le rendu PDF
             const opt = {
                 margin:       10,
                 filename:     `Audit_HACCP_${currentModuleType}_${new Date().toLocaleDateString('fr-FR').replace(/\//g, '-')}.pdf`,
@@ -435,16 +472,12 @@
                 jsPDF:        { unit: 'mm', format: 'a4', orientation: 'landscape' }
             };
 
-            // On cache temporairement les éléments inutiles à l'impression
             const hideElements = document.querySelectorAll('.hide-on-print');
             hideElements.forEach(el => el.style.display = 'none');
 
-            // On sélectionne la table du module actif
             const elementToPrint = document.querySelector(`#mod-${currentModuleType} table`);
 
-            // Génération du PDF
             html2pdf().set(opt).from(elementToPrint).save().then(() => {
-                // On restaure l'affichage
                 hideElements.forEach(el => el.style.display = '');
             });
         }
