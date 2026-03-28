@@ -65,6 +65,16 @@
         .dlc-alert { animation: dlc-blink 1.5s infinite; border-left: 3px solid var(--alert); }
         .dlc-expired-text { color: var(--alert); font-weight: 900; font-size: 0.8rem; padding: 2px 6px; border: 1px solid var(--alert); border-radius: 3px; display: inline-block; margin-top: 5px;}
         .dlc-warning-text { color: var(--gold); font-weight: bold; }
+
+        /* 🟢 MODAL HISTORIQUE - STYLES RENFORCÉS */
+        .modal { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.95); z-index: 50000; display: none; align-items: center; justify-content: center; }
+        .modal.open { display: flex !important; }
+        .history-box { background: #111; border: 2px solid var(--gold); padding: 25px; border-radius: 8px; width: 600px; max-width: 90%; max-height: 80vh; display: flex; flex-direction: column; }
+        #history-content { flex: 1; overflow-y: auto; padding-right: 10px; margin-top: 15px; }
+        .history-entry { border-left: 2px solid #333; padding-left: 20px; padding-bottom: 20px; position: relative; }
+        .history-entry::before { content: ''; position: absolute; left: -7px; top: 0; width: 12px; height: 12px; background: var(--gold); border-radius: 50%; box-shadow: 0 0 5px var(--gold); }
+        .history-time { font-size: 0.9rem; color: #888; font-weight: bold; margin-bottom: 6px; display: inline-block; background: #000; padding: 2px 8px; border-radius: 4px; border: 1px solid #333;}
+        .history-detail { font-size: 1rem; color: #fff; line-height: 1.4; background: #1a1a1a; padding: 10px; border-radius: 4px; border: 1px solid #222;}
     </style>
 </head>
 <body>
@@ -211,6 +221,20 @@
 
     </div>
 
+    <div id="history-modal" class="modal">
+        <div class="history-box">
+            <div style="display:flex; justify-content:space-between; align-items:center; border-bottom: 2px solid #333; padding-bottom: 15px;">
+                <h2 style="color:var(--gold); margin:0;">📜 HISTORIQUE DU RELEVÉ</h2>
+                <button style="background:transparent; border:none; color:#fff; font-size:1.5rem; cursor:pointer;" onclick="closeHistory()">✕</button>
+            </div>
+            <div id="history-content">
+                </div>
+            <div style="margin-top: 20px; text-align: right;">
+                 <button class="btn-empire" onclick="closeHistory()" style="background: #333; color: #fff;">FERMER</button>
+            </div>
+        </div>
+    </div>
+
     <script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js"></script>
 
     <script>
@@ -261,6 +285,7 @@
                 dept: currentDept
             };
             let rectifiedText = "";
+            let historyText = "";
 
             if(type === 'temp') {
                 const eq = document.getElementById('eq-name').value.trim();
@@ -272,6 +297,8 @@
                 eventObj = { ...eventObj, eq, val,
                     status: (isCongele ? val <= -18 : (isCF ? val <= 4 : val <= 8)) ? 'OK' : 'ALERTE'
                 };
+                
+                historyText = `Saisi : ${eq} à ${val}°C`;
                 if(rectifiedTarget) rectifiedText = ` Rectifié à ${val}°C par Manager ID-${(Math.random()+1).toString(36).substring(7).toUpperCase()}`;
                 
                 document.getElementById('eq-name').value = "";
@@ -289,6 +316,7 @@
                     imgPlaceholder: file ? "IMAGE_ARCHIVÉE" : "PAS_D'IMAGE" 
                 };
                 
+                historyText = `Saisi : ${name} (Lot: ${lot}, DLC: ${dlc})`;
                 if(rectifiedTarget) rectifiedText = ` Rectifié (Nom/Lot/DLC) par Manager ID-${(Math.random()+1).toString(36).substring(7).toUpperCase()}`;
 
                 document.getElementById('trace-name').value = "";
@@ -305,6 +333,7 @@
 
                 eventObj = { ...eventObj, zone, obs: obs || "Aucune observation", status };
                 
+                historyText = `Saisi : ${zone} (${status}) - Obs: ${obs}`;
                 if(rectifiedTarget) rectifiedText = ` Statut rectifié (${status}), Observation modifiée par Manager ID-${(Math.random()+1).toString(36).substring(7).toUpperCase()}`;
 
                 document.getElementById('clean-zone').value = "";
@@ -314,8 +343,12 @@
             if(rectifiedTarget) {
                 db[type] = db[type].map(l => {
                     if(l.id === rectifiedTarget) {
+                        let historyArray = l.history || [{ time: l.time, details: "Création initiale de la donnée" }];
+                        historyArray.push({ time: eventObj.time, details: historyText + " [RECTIFICATION MANAGER]" });
+
                         return { ...l, ...eventObj,
-                            auditTrailRectified: `📜 SIGNATURE AUDIT : Horodatage ORIGINAL ${l.time}. ${rectifiedText}`
+                            auditTrailRectified: `📜 SIGNATURE AUDIT : Horodatage ORIGINAL ${l.time}. ${rectifiedText}`,
+                            history: historyArray
                         };
                     }
                     return l;
@@ -330,6 +363,7 @@
                 }
             } else {
                 eventObj.auditTrailOriginal = `📜 SIGNATURE AUDIT : Horodatage ORIGINAL ${eventObj.time}. Signé ID-${(Math.random()+1).toString(36).substring(7).toUpperCase()}`;
+                eventObj.history = [{ time: eventObj.time, details: historyText + " [CRÉATION ORIGINALE]" }];
                 db[type] = [eventObj, ...db[type]].slice(0, 100);
             }
 
@@ -353,6 +387,29 @@
             renderCleaningLogs();
         }
 
+        function showHistory(type, id) {
+            const item = db[type].find(l => l.id == id);
+            
+            let historyData = item.history;
+            if (!historyData || historyData.length === 0) {
+                 historyData = [{ time: item.time, details: "Création de la donnée (Archive standard)" }];
+            }
+
+            const container = document.getElementById('history-content');
+            container.innerHTML = historyData.map(h => `
+                <div class="history-entry">
+                    <div class="history-time">🕒 ${h.time}</div>
+                    <div class="history-detail">${h.details}</div>
+                </div>
+            `).join('');
+
+            document.getElementById('history-modal').classList.add('open');
+        }
+
+        function closeHistory() {
+            document.getElementById('history-modal').classList.remove('open');
+        }
+
         function renderTempLogs() {
             const container = document.getElementById('logs-temp');
             const filteredDb = db.temp.filter(l => (l.dept || 'CUISINE') === currentDept);
@@ -367,7 +424,10 @@
                         <span>${l.auditTrailOriginal}</span>
                         ${l.auditTrailRectified ? `<span class="rectified">${l.auditTrailRectified}</span>` : ''}
                     </td>
-                    <td class="hide-on-print"><button class="btn-rectify" onclick="rectifyEntry('temp', '${l.id}')">✏️ Rectifier</button></td>
+                    <td class="hide-on-print" style="min-width: 190px;">
+                        <button class="btn-rectify" style="border-color:#2979ff; color:#2979ff; margin-right:5px; background:rgba(41,121,255,0.1);" onclick="showHistory('temp', '${l.id}')">👁️ HISTO</button>
+                        <button class="btn-rectify" onclick="rectifyEntry('temp', '${l.id}')">✏️ Rectifier</button>
+                    </td>
                 </tr>
             `).join('');
         }
@@ -413,7 +473,10 @@
                     <td><div style="font-weight:bold; font-size:1.1rem; color:var(--gold);">${l.name}</div>${dlcBadge}</td>
                     <td>${l.lot}<br><small style="color:#888;">DLC Fixée : ${l.dlc || 'N/A'}</small></td>
                     <td style="font-size: 0.7rem; color: #444;">[ ${l.imgPlaceholder} ]</td>
-                    <td class="hide-on-print"><button class="btn-rectify" onclick="rectifyEntry('trace', '${l.id}')">✏️ Rectifier</button></td>
+                    <td class="hide-on-print" style="min-width: 190px;">
+                        <button class="btn-rectify" style="border-color:#2979ff; color:#2979ff; margin-right:5px; background:rgba(41,121,255,0.1);" onclick="showHistory('trace', '${l.id}')">👁️ HISTO</button>
+                        <button class="btn-rectify" onclick="rectifyEntry('trace', '${l.id}')">✏️ Rectifier</button>
+                    </td>
                 </tr>
             `;
             }).join('');
@@ -438,7 +501,10 @@
                         <span>${l.auditTrailOriginal}</span>
                         ${l.auditTrailRectified ? `<span class="rectified">${l.auditTrailRectified}</span>` : ''}
                     </td>
-                    <td class="hide-on-print"><button class="btn-rectify" onclick="rectifyEntry('cleaning', '${l.id}')">✏️ Rectifier</button></td>
+                    <td class="hide-on-print" style="min-width: 190px;">
+                        <button class="btn-rectify" style="border-color:#2979ff; color:#2979ff; margin-right:5px; background:rgba(41,121,255,0.1);" onclick="showHistory('cleaning', '${l.id}')">👁️ HISTO</button>
+                        <button class="btn-rectify" onclick="rectifyEntry('cleaning', '${l.id}')">✏️ Rectifier</button>
+                    </td>
                 </tr>
             `).join('');
         }
@@ -518,7 +584,6 @@
             });
         }
 
-        // 🟢 MOTEUR RÉSEAU H24
         let ws;
         function connectEmpireH24() {
             try {
@@ -560,7 +625,6 @@
         }
         connectEmpireH24();
 
-        // 🟢 AIGUILLAGE RETOUR (.HTLM)
         function updateReturnRouting(dept) {
             const returnBtn = document.querySelector('.return-btn');
             if (!returnBtn) return;
