@@ -25,7 +25,8 @@
 
         /* PLAN DE SALLE */
         .floor-plan { flex: 1; position: relative; background-image: radial-gradient(#222 1px, transparent 1px); background-size: 30px 30px; padding: 20px; overflow: auto; }
-        .table-obj { position: absolute; background: #000; border: 2px solid #fff; border-radius: 8px; display: flex; justify-content: center; align-items: center; font-weight: 900; color: #fff; cursor: pointer; transition: 0.2s; }
+        /* 🟢 AJOUT : border-radius: 50% pour la forme ovale */
+        .table-obj { position: absolute; background: #000; border: 2px solid #fff; border-radius: 50%; display: flex; justify-content: center; align-items: center; font-weight: 900; color: #fff; cursor: pointer; transition: 0.2s; }
         
         /* TABLE BLEUE QUAND COMMANDE EN COURS */
         .table-obj.ordered { border-color: var(--ordered); color: var(--ordered); box-shadow: 0 0 15px rgba(41, 121, 255, 0.4); }
@@ -33,7 +34,7 @@
         /* CLIGNOTEMENT QUAND PRÊT */
         .table-obj.ready { border-color: var(--accent); color: var(--accent); animation: pulse-ready 1s infinite; box-shadow: 0 0 20px rgba(0, 230, 118, 0.6); }
         @keyframes pulse-ready { 0% { transform: scale(1); } 50% { transform: scale(1.1); } 100% { transform: scale(1); } }
-        
+
         /* TIROIR COMMANDE */
         .drawer { position: fixed; top: 0; right: 0; width: 100%; height: 100%; background: #050505; z-index: 10000; display: none; flex-direction: column; }
         .drawer.open { display: flex; }
@@ -78,6 +79,10 @@
         .cancel-btn { background: #111; border: 2px solid var(--gold); color: var(--gold); padding: 20px 40px; font-size: 1.2rem; font-weight: bold; border-radius: 8px; cursor: pointer; width: 350px; margin-bottom: 15px; text-transform: uppercase; }
         .cancel-btn.abort { border-color: var(--sub); color: var(--sub); margin-top: 20px; }
 
+        /* 🟢 AJOUT : MODAL CORRECTION ERREUR HUMAINE */
+        #edit-item-modal { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.95); z-index: 45000; display: none; flex-direction: column; align-items: center; justify-content: center; }
+        .edit-input { width: 300px; padding: 15px; margin-bottom: 15px; background: #111; border: 1px solid var(--gold); color: #fff; font-size: 1.2rem; border-radius: 8px; }
+
         /* STYLE POUR L'IMPRESSION (ADDITION) */
         #print-area { display: none; }
         @media print {
@@ -109,6 +114,15 @@
         <button class="cancel-btn" onclick="executeCancelItem('Rupture de stock')">❌ RUPTURE DE STOCK</button>
         <button class="cancel-btn" onclick="executeCancelItem('Retour (Non conforme)')">❌ RETOUR CUISINE/BAR</button>
         <button class="cancel-btn abort" onclick="abortCancelItem()">🔙 NE PAS SUPPRIMER (RETOUR)</button>
+    </div>
+
+    <div id="edit-item-modal">
+        <h2 style="color:var(--gold); font-size: 1.8rem; margin-bottom: 20px;">✏️ CORRIGER LE PLAT</h2>
+        <h3 style="color:#fff; margin-bottom: 10px;" id="edit-item-title">Nom</h3>
+        <input type="number" id="edit-item-price" class="edit-input" step="0.01" placeholder="Nouveau Prix (€)">
+        <input type="text" id="edit-item-obs" class="edit-input" placeholder="Observation (Sans sel, etc...)">
+        <button class="pay-btn" style="border-color: var(--accent); color: var(--accent);" onclick="saveItemEdit()">✅ VALIDER</button>
+        <button class="pay-btn cancel" onclick="closeEditModal()">❌ ANNULER</button>
     </div>
 
     <div id="login-screen">
@@ -441,6 +455,38 @@
             renderTicket();
         }
         
+        // 🟢 AJOUT : SCRIPTS POUR LA CORRECTION ERREUR HUMAINE
+        let pendingEditIndex = null;
+        
+        function openEditItem(index) {
+            pendingEditIndex = index;
+            const item = ticketItems[index];
+            document.getElementById('edit-item-title').innerText = item.n;
+            document.getElementById('edit-item-price').value = item.p;
+            document.getElementById('edit-item-obs').value = item.obs || "";
+            document.getElementById('edit-item-modal').style.display = 'flex';
+        }
+
+        function closeEditModal() {
+            pendingEditIndex = null;
+            document.getElementById('edit-item-modal').style.display = 'none';
+        }
+
+        function saveItemEdit() {
+            if (pendingEditIndex === null) return;
+            const newPrice = parseFloat(document.getElementById('edit-item-price').value);
+            const newObs = document.getElementById('edit-item-obs').value;
+            
+            if (!isNaN(newPrice)) {
+                ticketItems[pendingEditIndex].p = newPrice;
+                ticketItems[pendingEditIndex].obs = newObs;
+                logAction("CORRECTION ERREUR HUMAINE", `Table: ${currentTable} | Plat: ${ticketItems[pendingEditIndex].n} modifié.`);
+            }
+            
+            closeEditModal();
+            renderTicket();
+        }
+
         function renderTicket() {
             try {
                 let total = 0;
@@ -448,8 +494,15 @@
                     if (!i) return '';
                     total += parseFloat(i.p) || 0;
                     const style = i.done ? "text-decoration: line-through; opacity: 0.5;" : "";
+                    const obsHtml = i.obs ? `<div style="font-size:0.7rem; color:var(--gold);">${i.obs}</div>` : '';
+                    
+                    // 🟢 AJOUT : Modification du HTML du ticket pour permettre l'édition en cliquant sur le texte
                     return `<div style="display:flex; justify-content:space-between; align-items:center; padding:8px 0; border-bottom:1px solid #222; ${style}">
-                        <span style="flex:1;">${i.n || '?'}</span><span style="margin-right:15px;">${(parseFloat(i.p)||0).toFixed(2)}€</span>
+                        <div style="flex:1; cursor:pointer;" onclick="openEditItem(${index})">
+                            <div>${i.n || '?'}</div>
+                            ${obsHtml}
+                        </div>
+                        <span style="margin-right:15px;">${(parseFloat(i.p)||0).toFixed(2)}€</span>
                         <button class="item-delete-btn" onclick="removeTicketItem(${index})">X</button>
                     </div>`;
                 }).join('');
