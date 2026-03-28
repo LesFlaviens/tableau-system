@@ -91,6 +91,37 @@
             #print-area { display: block !important; position: relative !important; width: 100% !important; padding: 0 !important; margin: 0 !important; background: #fff !important; color: #000 !important; font-family: monospace; }
             #print-area * { color: #000 !important; text-shadow: none !important; }
         }
+
+        /* ========================================================= */
+        /* 🟢 PATCH VISUEL & HORLOGE (SANS TOUCHER AU CODE SOURCE) 🟢 */
+        /* ========================================================= */
+        /* 1. Masquer le bouton CARTE rouge */
+        button[onclick*="carte.html"] {
+            display: none !important;
+        }
+
+        /* 3. Clignotement OR / NOIR à l'impression */
+        @keyframes print-blink {
+            0% { background: #000; border-color: var(--gold); transform: scale(1); }
+            50% { background: var(--gold); border-color: #fff; color: #000; transform: scale(1.15); box-shadow: 0 0 30px var(--gold); z-index: 100;}
+            100% { background: #000; border-color: var(--gold); transform: scale(1); }
+        }
+        .table-obj.printing {
+            animation: print-blink 0.4s ease-in-out 4;
+        }
+
+        /* Horloge Digitale */
+        #empire-clock {
+            color: #fff;
+            font-family: monospace;
+            font-size: 1.2rem;
+            font-weight: bold;
+            background: #111;
+            padding: 5px 10px;
+            border-radius: 4px;
+            border: 1px solid #333;
+            margin-left: 15px;
+        }
     </style>
 </head>
 <body>
@@ -142,6 +173,7 @@
             <div style="font-weight:900; letter-spacing:1px;">EMPIRE PAD</div>
             <div id="stock-tag" style="color:var(--accent); font-weight:900; font-size:0.7rem;">● CONNEXION...</div>
             <div id="user-badge" style="background:#111; padding:5px 10px; border-radius:4px; font-size:0.8rem; color:var(--gold); border:1px solid #333;">Utilisateur: Aucun</div>
+            <div id="empire-clock">00:00:00</div>
         </div>
         <div class="nav-btns">
             <button id="btn-dashboard" class="btn-mini sync" style="display:none;" onclick="openModal('dashboard')">👁️ DASHBOARD DIR.</button>
@@ -423,7 +455,20 @@
             } catch (err) { console.error(err); }
         }
 
-        function addToTicket(n, p, dest) { ticketItems.push({ id: Date.now()+Math.random(), n, p, done: false, dest: dest }); renderTicket(); }
+        // 🟢 PATCH : Regroupement automatique des quantités
+        function addToTicket(n, p, dest) { 
+            // Cherche si l'article existe déjà dans le ticket
+            let existingItem = ticketItems.find(item => item.n === n && !item.done);
+            
+            if (existingItem) {
+                // Si oui, on incrémente la quantité
+                existingItem.qty = (existingItem.qty || 1) + 1;
+            } else {
+                // Sinon, on l'ajoute avec une quantité de 1
+                ticketItems.push({ id: Date.now()+Math.random(), n, p, qty: 1, done: false, dest: dest }); 
+            }
+            renderTicket(); 
+        }
 
         let pendingCancelIndex = null;
 
@@ -449,13 +494,18 @@
                 logAction("SUPPRESSION AVANT ENVOI", `Table: ${currentTable} | Plat: ${item.n} | RAISON: ${raison}`);
             }
 
-            ticketItems.splice(pendingCancelIndex, 1);
+            // Gestion de la quantité lors de l'annulation
+            if (ticketItems[pendingCancelIndex].qty > 1) {
+                ticketItems[pendingCancelIndex].qty -= 1;
+            } else {
+                ticketItems.splice(pendingCancelIndex, 1);
+            }
+            
             pendingCancelIndex = null;
             document.getElementById('cancel-modal').style.display = 'none';
             renderTicket();
         }
         
-        // 🟢 AJOUT : SCRIPTS POUR LA CORRECTION ERREUR HUMAINE
         let pendingEditIndex = null;
         
         function openEditItem(index) {
@@ -487,22 +537,25 @@
             renderTicket();
         }
 
+        // 🟢 PATCH : Affichage des quantités groupées ("3x Entrecôte")
         function renderTicket() {
             try {
                 let total = 0;
                 document.getElementById('ticket-items').innerHTML = ticketItems.map((i, index) => {
                     if (!i) return '';
-                    total += parseFloat(i.p) || 0;
+                    let quantite = i.qty || 1;
+                    total += (parseFloat(i.p) || 0) * quantite;
                     const style = i.done ? "text-decoration: line-through; opacity: 0.5;" : "";
                     const obsHtml = i.obs ? `<div style="font-size:0.7rem; color:var(--gold);">${i.obs}</div>` : '';
                     
-                    // 🟢 AJOUT : Modification du HTML du ticket pour permettre l'édition en cliquant sur le texte
+                    let affichageNom = quantite > 1 ? `<span style="color:var(--accent); font-weight:bold;">${quantite}x</span> ${i.n || '?'}` : i.n || '?';
+
                     return `<div style="display:flex; justify-content:space-between; align-items:center; padding:8px 0; border-bottom:1px solid #222; ${style}">
                         <div style="flex:1; cursor:pointer;" onclick="openEditItem(${index})">
-                            <div>${i.n || '?'}</div>
+                            <div>${affichageNom}</div>
                             ${obsHtml}
                         </div>
-                        <span style="margin-right:15px;">${(parseFloat(i.p)||0).toFixed(2)}€</span>
+                        <span style="margin-right:15px;">${((parseFloat(i.p)||0) * quantite).toFixed(2)}€</span>
                         <button class="item-delete-btn" onclick="removeTicketItem(${index})">X</button>
                     </div>`;
                 }).join('');
@@ -543,17 +596,39 @@
             document.getElementById('payment-modal').style.display = 'none';
         }
 
-        async function executePayment(paymentType) {
-            const totalAmount = document.getElementById('ticket-total').innerText.replace('Total: ', '');
-            document.getElementById('payment-modal').style.display = 'none';
-
-            printReceipt(currentTable, totalAmount, ticketItems, paymentType);
-            await fetch('/update-order', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({tableId: currentTable, order: null}) }).catch(e=>{});
-            logAction("ENCAISSEMENT VALIDÉ", `Table: ${currentTable} | Montant: ${totalAmount} | Type: ${paymentType}`, ticketItems);
+        // Délai anti-freeze impression
+        if (typeof executePayment === "function") {
+            const encaissementOriginal = executePayment;
             
-            ticketItems = []; 
-            document.getElementById('order-obs').value = ''; 
-            closeOrder();
+            executePayment = function(paymentType) {
+                const tableEnCours = currentTable;
+                
+                if (tableEnCours) {
+                    const floor = document.getElementById('floor-plan');
+                    const tablesDOM = floor.getElementsByClassName('table-obj');
+                    for(let i = 0; i < tablesDOM.length; i++) {
+                        if(tablesDOM[i].textContent.trim() === tableEnCours) {
+                            tablesDOM[i].classList.add('printing');
+                            setTimeout(() => {
+                                tablesDOM[i].classList.remove('printing');
+                            }, 1600);
+                        }
+                    }
+                }
+
+                setTimeout(async () => {
+                    const totalAmount = document.getElementById('ticket-total').innerText.replace('Total: ', '');
+                    document.getElementById('payment-modal').style.display = 'none';
+
+                    printReceipt(currentTable, totalAmount, ticketItems, paymentType);
+                    await fetch('/update-order', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({tableId: currentTable, order: null}) }).catch(e=>{});
+                    logAction("ENCAISSEMENT VALIDÉ", `Table: ${currentTable} | Montant: ${totalAmount} | Type: ${paymentType}`, ticketItems);
+                    
+                    ticketItems = []; 
+                    document.getElementById('order-obs').value = ''; 
+                    closeOrder();
+                }, 300);
+            };
         }
 
         function printReceipt(table, total, items, paymentType) {
@@ -563,9 +638,10 @@
             
             let itemsHtml = items.map(i => {
                 if(!i) return '';
+                let quantite = i.qty || 1;
                 return `<div style="display:flex; justify-content:space-between; margin-bottom:5px;">
-                    <span>1x ${i.n || '?'}</span>
-                    <span>${(parseFloat(i.p)||0).toFixed(2)}€</span>
+                    <span>${quantite}x ${i.n || '?'}</span>
+                    <span>${((parseFloat(i.p)||0)*quantite).toFixed(2)}€</span>
                 </div>`;
             }).join('');
 
@@ -668,7 +744,6 @@
     </script>
 
     <script>
-        // 1. Injection de la carte de secours au démarrage
         setTimeout(() => {
             let menuActuel = localStorage.getItem('kds_menu');
             
@@ -690,11 +765,9 @@
 
                 localStorage.setItem('kds_menu', JSON.stringify(carteCuisineForcee));
                 localStorage.setItem('kds_bar_menu', JSON.stringify(carteBarForcee));
-                console.log("⚡ Carte de base injectée avec succès dans le Pad.");
             }
         }, 500);
 
-        // 2. Vérification automatique des mises à jour du menu.html
         let lastVersion = null;
 
         async function checkMenuUpdate() {
@@ -702,130 +775,63 @@
                 const response = await fetch("menu.html?cache=" + new Date().getTime());
                 const text = await response.text();
 
-                // Création d'une "signature" du fichier
                 const version = text.length;
 
                 if (lastVersion && lastVersion !== version) {
-                    console.log("Mise à jour détectée du menu !");
-                    location.reload(); // recharge automatique du pad
+                    location.reload(); 
                 }
 
                 lastVersion = version;
-            } catch (e) {
-                console.log("Erreur vérification menu", e);
-            }
+            } catch (e) {}
         }
 
-        // Vérifie toutes les 5 secondes
         setInterval(checkMenuUpdate, 5000);
     </script>
-        <style>
-        /* 1. Masquer le bouton CARTE rouge sans effacer ta ligne de code HTML */
-        button[onclick*="carte.html"] {
-            display: none !important;
-        }
-
-        /* 2. Signalement couleur renforcé dès qu'une commande est prise (Table Bleue/Lumineuse) */
-        .table-obj.ordered {
-            background: rgba(41, 121, 255, 0.25) !important;
-            border: 2px solid #2979ff !important;
-            box-shadow: 0 0 20px rgba(41, 121, 255, 0.8) !important;
-        }
-
-        /* 3. Clignotement OR / NOIR quand le serveur imprime le ticket (Encaissement) */
-        @keyframes print-blink {
-            0% { background: #000; border-color: var(--gold); transform: scale(1); }
-            50% { background: var(--gold); border-color: #fff; color: #000; transform: scale(1.15); box-shadow: 0 0 30px var(--gold); z-index: 100;}
-            100% { background: #000; border-color: var(--gold); transform: scale(1); }
-        }
-        .table-obj.printing {
-            animation: print-blink 0.4s ease-in-out 4; /* Clignote 4 fois très vite */
-        }
-    </style>
 
     <script>
-        // 4. Interception du clic sur "ENCAISSER" pour déclencher le clignotement de la table
-        // On conserve ta fonction d'origine intacte, on ajoute juste l'animation par-dessus.
-        if (typeof executePayment === "function") {
-            const encaissementOriginal = executePayment;
-            
-            executePayment = async function(paymentType) {
-                const tableEnCours = currentTable;
-                
-                // Trouve la table sur le plan et la fait clignoter
-                if (tableEnCours) {
-                    const floor = document.getElementById('floor-plan');
-                    const tablesDOM = floor.getElementsByClassName('table-obj');
-                    for(let i = 0; i < tablesDOM.length; i++) {
-                        if(tablesDOM[i].innerText === tableEnCours) {
-                            tablesDOM[i].classList.add('printing');
-                            // Retire la classe après le clignotement (1.6 secondes)
-                            setTimeout(() => {
-                                tablesDOM[i].classList.remove('printing');
-                            }, 1600);
+        // 1. Suppression du bouton CARTE
+        document.querySelectorAll('.btn-mini').forEach(btn => {
+            if (btn.innerHTML.includes('CARTE') || btn.getAttribute('onclick').includes('carte.html')) {
+                btn.style.display = 'none';
+                btn.remove();
+            }
+        });
+
+        // 2. Radar Sonore
+        let watchPreviousState = JSON.stringify(activeOrders);
+        
+        setInterval(() => {
+            let currentState = JSON.stringify(activeOrders);
+            if (currentState !== watchPreviousState) {
+                for (let table in activeOrders) {
+                    let oldTable = null;
+                    try { oldTable = JSON.parse(watchPreviousState)[table]; } catch(e){}
+                    
+                    let isNowReady = activeOrders[table].status === 'ready';
+                    let wasReady = oldTable && oldTable.status === 'ready';
+
+                    if (isNowReady && !wasReady) {
+                        const son = document.getElementById('beep-ready');
+                        if (son) {
+                            son.play().catch(e => console.log("Son bloqué par le navigateur."));
                         }
                     }
                 }
+                watchPreviousState = currentState;
+            }
+        }, 1000);
 
-                // Exécute ton code d'encaissement habituel
-                await encaissementOriginal(paymentType);
-            };
+        // 3. Horloge Digitale Fonctionnelle
+        function updateClock() {
+            const now = new Date();
+            const timeString = now.toLocaleTimeString('fr-FR', { hour12: false });
+            const clockEl = document.getElementById('empire-clock');
+            if(clockEl) {
+                clockEl.innerText = timeString;
+            }
         }
-            <style>
-        /* 1. Masquer le bouton CARTE rouge */
-        button[onclick*="carte.html"] {
-            display: none !important;
-        }
-
-        /* 2. Signalement couleur renforcé (Table Bleue/Lumineuse) */
-        .table-obj.ordered {
-            background: rgba(41, 121, 255, 0.25) !important;
-            border: 2px solid #2979ff !important;
-            box-shadow: 0 0 20px rgba(41, 121, 255, 0.8) !important;
-        }
-
-        /* 3. Clignotement OR / NOIR à l'impression */
-        @keyframes print-blink {
-            0% { background: #000; border-color: var(--gold); transform: scale(1); }
-            50% { background: var(--gold); border-color: #fff; color: #000; transform: scale(1.15); box-shadow: 0 0 30px var(--gold); z-index: 100;}
-            100% { background: #000; border-color: var(--gold); transform: scale(1); }
-        }
-        .table-obj.printing {
-            animation: print-blink 0.4s ease-in-out 4;
-        }
-    </style>
-
-    <script>
-        // 4. Interception de l'encaissement avec micro-pause anti-freeze
-        if (typeof executePayment === "function") {
-            const encaissementOriginal = executePayment;
-            
-            executePayment = function(paymentType) {
-                const tableEnCours = currentTable;
-                
-                // ÉTAPE 1 : On déclenche le signalement visuel en priorité
-                if (tableEnCours) {
-                    const floor = document.getElementById('floor-plan');
-                    const tablesDOM = floor.getElementsByClassName('table-obj');
-                    for(let i = 0; i < tablesDOM.length; i++) {
-                        // textContent.trim() est plus fiable pour éviter les erreurs d'espaces invisibles
-                        if(tablesDOM[i].textContent.trim() === tableEnCours) {
-                            tablesDOM[i].classList.add('printing');
-                            setTimeout(() => {
-                                tablesDOM[i].classList.remove('printing');
-                            }, 1600);
-                        }
-                    }
-                }
-
-                // ÉTAPE 2 : On impose un délai de 300ms avant l'impression.
-                // Cela laisse le système respirer, exécuter l'animation et valider la donnée.
-                setTimeout(async () => {
-                    await encaissementOriginal(paymentType);
-                }, 300);
-            };
-        }
-    </script>
+        setInterval(updateClock, 1000);
+        updateClock(); // Initialisation immédiate
     </script>
 </body>
 </html>
