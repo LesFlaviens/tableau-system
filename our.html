@@ -23,15 +23,23 @@
         .btn-mini.gold { border-color: var(--gold); color: var(--gold); }
         .btn-mini.sync { border-color: var(--alert); color: var(--alert); }
 
-        /* PLAN DE SALLE */
+        /* PLAN DE SALLE & TABLES */
         .floor-plan { flex: 1; position: relative; background-image: radial-gradient(#222 1px, transparent 1px); background-size: 30px 30px; padding: 20px; overflow: auto; }
-        .table-obj { position: absolute; background: #000; border: 2px solid #fff; border-radius: 50%; display: flex; justify-content: center; align-items: center; font-weight: 900; color: #fff; cursor: pointer; transition: 0.2s; }
+        
+        /* 🟢 MISE A JOUR DES FORMES DE TABLES */
+        .table-obj { position: absolute; background: #000; border: 2px solid #fff; display: flex; justify-content: center; align-items: center; font-weight: 900; color: #fff; cursor: pointer; transition: border-color 0.2s, box-shadow 0.2s, background 0.2s; }
+        .shape-oval { border-radius: 50%; }
+        .shape-rect { border-radius: 8px; }
+        .shape-losange { clip-path: polygon(50% 0%, 100% 50%, 50% 100%, 0% 50%); background: #1a1a1a; border: none; }
+        .shape-triangle { clip-path: polygon(50% 0%, 0% 100%, 100% 100%); background: #1a1a1a; border: none; align-items: flex-end; padding-bottom: 15%; }
         
         /* TABLE BLEUE QUAND COMMANDE EN COURS */
         .table-obj.ordered { border-color: var(--ordered); color: var(--ordered); box-shadow: 0 0 15px rgba(41, 121, 255, 0.4); }
+        .shape-losange.ordered, .shape-triangle.ordered { background: rgba(41, 121, 255, 0.3); color: var(--ordered); }
         
         /* CLIGNOTEMENT QUAND PRÊT */
         .table-obj.ready { border-color: var(--accent); color: var(--accent); animation: pulse-ready 1s infinite; box-shadow: 0 0 20px rgba(0, 230, 118, 0.6); }
+        .shape-losange.ready, .shape-triangle.ready { background: rgba(0, 230, 118, 0.3); color: var(--accent); animation: pulse-ready 1s infinite; }
         @keyframes pulse-ready { 0% { transform: scale(1); } 50% { transform: scale(1.1); } 100% { transform: scale(1); } }
 
         /* TIROIR COMMANDE */
@@ -52,11 +60,6 @@
 
         /* -- MODE ARCHITECTURE -- */
         .edit-mode .table-obj { cursor: move; border-style: dashed; border-color: #2979ff; }
-        .edit-mode .table-obj::after {
-            content: "⇲"; position: absolute; bottom: 0; right: 0; background: #2979ff; 
-            color: #fff; width: 20px; height: 20px; font-size: 14px; display: flex; 
-            justify-content: center; align-items: center; cursor: se-resize; border-radius: 4px 0 0 0;
-        }
         #archi-tools { display: none; background: #111; padding: 10px; border-top: 1px solid #333; justify-content: space-between; }
         .edit-mode #archi-tools { display: flex; }
 
@@ -138,6 +141,36 @@
         <input type="text" id="edit-item-obs" class="edit-input" placeholder="Observation (Sans sel, etc...)">
         <button class="pay-btn" style="border-color: var(--accent); color: var(--accent);" onclick="saveItemEdit()">✅ VALIDER</button>
         <button class="pay-btn cancel" onclick="closeEditModal()">❌ ANNULER</button>
+    </div>
+
+    <div id="table-config-modal" class="modal">
+        <h2 style="color:var(--gold); font-size: 1.8rem; margin-bottom: 20px;">⚙️ CONFIGURATION TABLE</h2>
+        <h3 style="color:#fff; margin-bottom: 20px;" id="config-table-title">Table X</h3>
+        
+        <div style="display:flex; flex-direction:column; gap:15px; margin-bottom:25px; align-items:center; background:#111; padding:20px; border-radius:8px; border:1px solid #333;">
+            <label style="color:var(--sub); font-size:0.9rem; font-weight:bold;">FORME DE LA TABLE</label>
+            <select id="config-table-shape" class="edit-input" style="width:250px; text-align:center; font-weight:bold;">
+                <option value="oval">Rond / Ovale</option>
+                <option value="rect">Carré / Rectangle</option>
+                <option value="losange">Losange</option>
+                <option value="triangle">Triangle</option>
+            </select>
+            
+            <div style="display:flex; gap:20px; width:100%; justify-content:center;">
+                <div style="display:flex; flex-direction:column; align-items:center;">
+                    <label style="color:var(--sub); font-size:0.8rem; margin-bottom:5px;">Largeur (px)</label>
+                    <input type="number" id="config-table-w" class="edit-input" style="width:100px; text-align:center;" step="10">
+                </div>
+                <div style="display:flex; flex-direction:column; align-items:center;">
+                    <label style="color:var(--sub); font-size:0.8rem; margin-bottom:5px;">Hauteur (px)</label>
+                    <input type="number" id="config-table-h" class="edit-input" style="width:100px; text-align:center;" step="10">
+                </div>
+            </div>
+        </div>
+        
+        <button class="pay-btn" style="border-color: var(--accent); color: var(--accent);" onclick="saveTableConfig()">✅ APPLIQUER</button>
+        <button class="pay-btn cancel" onclick="deleteCurrentTable()">🗑️ SUPPRIMER CETTE TABLE</button>
+        <button class="pay-btn cancel" style="border-color: #555; color: #555; margin-top:10px;" onclick="closeTableConfigModal()">❌ FERMER</button>
     </div>
 
     <div id="cuisson-modal" class="modal">
@@ -240,6 +273,8 @@
 
     <script>
         let isArchiMode = false;
+        let isDraggingTable = false; // Sécurité pour différencier glisser et cliquer
+        let configTableId = null;
 
         function safeArray(key, fallbackArray) {
             try {
@@ -299,26 +334,116 @@
             localStorage.setItem('empire_fraud_log', JSON.stringify(fraudLog));
         }
 
-        let tables = safeArray('empire_architecture', [ {label:"T1", l:550, t:500, w:80, h:120} ]);
+        let tables = safeArray('empire_architecture', [ {label:"T1", l:550, t:500, w:80, h:120, shape:"oval"} ]);
 
         function unlockArchiMode() {
             if (!currentUser || currentUser.role !== 'Manager') return alert("⛔ Accès Manager requis pour modifier le plan.");
             isArchiMode = true;
             document.body.classList.add('edit-mode');
+            renderFloor(); // Pour activer le drag & drop
         }
 
         function closeArchiMode() {
             isArchiMode = false;
             document.body.classList.remove('edit-mode');
-            tables = safeArray('empire_architecture', [ {label:"T1", l:550, t:500, w:80, h:120} ]);
+            tables = safeArray('empire_architecture', [ {label:"T1", l:550, t:500, w:80, h:120, shape:"oval"} ]);
             renderFloor();
         }
 
         function addNewTable() {
             const label = prompt("Nom ou Numéro de la nouvelle table ?");
             if (label) {
-                tables.push({ label: label, l: 100, t: 100, w: 80, h: 120 });
+                tables.push({ label: label, l: 100, t: 100, w: 80, h: 120, shape: "oval" });
                 renderFloor();
+            }
+        }
+
+        // 🟢 NOUVELLES FONCTIONS POUR LA CONFIGURATION DES FORMES DE TABLES
+        function openTableConfigModal(id) {
+            const t = tables.find(x => x && x.label === id);
+            if(!t) return;
+            configTableId = id;
+            document.getElementById('config-table-title').innerText = "TABLE " + id;
+            document.getElementById('config-table-shape').value = t.shape || 'oval';
+            document.getElementById('config-table-w').value = t.w || 80;
+            document.getElementById('config-table-h').value = t.h || 120;
+            document.getElementById('table-config-modal').style.display = 'flex';
+        }
+
+        function closeTableConfigModal() {
+            configTableId = null;
+            document.getElementById('table-config-modal').style.display = 'none';
+        }
+
+        function saveTableConfig() {
+            if(!configTableId) return;
+            let t = tables.find(x => x && x.label === configTableId);
+            if(t) {
+                t.shape = document.getElementById('config-table-shape').value;
+                t.w = parseInt(document.getElementById('config-table-w').value) || 80;
+                t.h = parseInt(document.getElementById('config-table-h').value) || 120;
+            }
+            closeTableConfigModal();
+            renderFloor();
+        }
+
+        function deleteCurrentTable() {
+            if(confirm("Supprimer définitivement la table " + configTableId + " ?")) {
+                tables = tables.filter(t => t && t.label !== configTableId);
+                closeTableConfigModal();
+                renderFloor();
+            }
+        }
+
+        // 🟢 MOTEUR DRAG & DROP POUR LES TABLES EN MODE ARCHI
+        function makeDraggable(elmnt, tableObj) {
+            let pos1 = 0, pos2 = 0, pos3 = 0, pos4 = 0;
+            let moved = false;
+
+            elmnt.onmousedown = dragMouseDown;
+            elmnt.ontouchstart = dragTouchStart;
+
+            function dragMouseDown(e) {
+                if(!isArchiMode) return;
+                e = e || window.event;
+                e.preventDefault();
+                pos3 = e.clientX; pos4 = e.clientY;
+                moved = false;
+                document.onmouseup = closeDragElement;
+                document.onmousemove = elementDrag;
+            }
+
+            function dragTouchStart(e) {
+                if(!isArchiMode) return;
+                pos3 = e.touches[0].clientX; pos4 = e.touches[0].clientY;
+                moved = false;
+                document.ontouchend = closeDragElement;
+                document.ontouchmove = elementTouchDrag;
+            }
+
+            function elementDrag(e) {
+                e = e || window.event; e.preventDefault();
+                moved = true; isDraggingTable = true;
+                pos1 = pos3 - e.clientX; pos2 = pos4 - e.clientY;
+                pos3 = e.clientX; pos4 = e.clientY;
+                elmnt.style.top = (elmnt.offsetTop - pos2) + "px";
+                elmnt.style.left = (elmnt.offsetLeft - pos1) + "px";
+                tableObj.t = elmnt.offsetTop; tableObj.l = elmnt.offsetLeft;
+            }
+
+            function elementTouchDrag(e) {
+                moved = true; isDraggingTable = true;
+                pos1 = pos3 - e.touches[0].clientX; pos2 = pos4 - e.touches[0].clientY;
+                pos3 = e.touches[0].clientX; pos4 = e.touches[0].clientY;
+                elmnt.style.top = (elmnt.offsetTop - pos2) + "px";
+                elmnt.style.left = (elmnt.offsetLeft - pos1) + "px";
+                tableObj.t = elmnt.offsetTop; tableObj.l = elmnt.offsetLeft;
+            }
+
+            function closeDragElement() {
+                document.onmouseup = null; document.onmousemove = null;
+                document.ontouchend = null; document.ontouchmove = null;
+                setTimeout(() => { isDraggingTable = false; }, 50); // Empêche l'ouverture du tiroir juste après avoir glissé
             }
         }
 
@@ -333,7 +458,8 @@
                 const floor = document.getElementById('floor-plan'); floor.innerHTML = '';
                 tables.forEach(t => {
                     if(!t) return;
-                    const div = document.createElement('div'); div.className = 'table-obj';
+                    const div = document.createElement('div'); 
+                    div.className = 'table-obj shape-' + (t.shape || 'oval'); // Application de la forme dynamique
                     
                     if(activeOrders[t.label]) { 
                         div.classList.add('ordered'); 
@@ -345,7 +471,17 @@
                     
                     div.style.left=(t.l||0)+'px'; div.style.top=(t.t||0)+'px'; div.style.width=(t.w||80)+'px'; div.style.height=(t.h||120)+'px';
                     div.innerHTML = t.label || '?'; 
-                    div.onclick = () => openOrder(t.label);
+                    
+                    // Comportement au clic dynamique
+                    div.onclick = (e) => {
+                        if(isArchiMode) {
+                            if(!isDraggingTable) openTableConfigModal(t.label); // Clic simple = Configuration Forme/Taille
+                        } else {
+                            openOrder(t.label); // Clic normal = Prise de commande
+                        }
+                    };
+
+                    makeDraggable(div, t); // Active le Glisser-Déposer si on est en mode Archi
                     floor.appendChild(div);
                 });
             } catch (e) { console.error(e); }
@@ -401,10 +537,6 @@
 
         function openOrder(id) {
             try {
-                if(isArchiMode) {
-                    if(confirm("Supprimer la table " + id + " ?")) { tables = tables.filter(t => t && t.label !== id); renderFloor(); }
-                    return;
-                }
                 currentTable = id; document.getElementById('table-label').innerText = "TABLE " + id;
                 if(activeOrders[id] && activeOrders[id].observations) document.getElementById('order-obs').value = activeOrders[id].observations;
                 else document.getElementById('order-obs').value = '';
@@ -452,7 +584,7 @@
             } catch (err) { console.error(err); }
         }
 
-        // 🟢 NOUVEAU SYSTÈME D'INTERCEPTION : CUISSONS
+        // 🟢 SYSTÈME D'INTERCEPTION : CUISSONS
         let pendingCuissonItem = null;
 
         function addToTicket(n, p, dest) { 
