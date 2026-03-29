@@ -1,53 +1,943 @@
-<style>
-        /* 1. Masquer le bouton CARTE rouge sans effacer ta ligne de code HTML */
-        button[onclick*="carte.html"] {
-            display: none !important;
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Empire OS - Pad Serveur Master</title>
+    <style>
+        :root { --bg: #050505; --text: #fff; --sub: #aaa; --gold: #ffb300; --accent: #00e676; --alert: #ff1744; --ordered: #2979ff; }
+        body { font-family: 'Inter', sans-serif; background: var(--bg); color: var(--text); margin: 0; height: 100vh; display: flex; flex-direction: column; overflow: hidden; touch-action: manipulation; }
+        
+        /* HEADER TOTAL : TOUT SUR UNE LIGNE */
+        header { 
+            background: #000; border-bottom: 2px solid var(--gold); padding: 10px 20px; 
+            display: flex; justify-content: space-between; align-items: center; gap: 15px;
         }
+        .header-left { display: flex; align-items: center; gap: 20px; }
+        .nav-btns { display: flex; gap: 8px; }
+        
+        .btn-mini { 
+            background: transparent; border: 1px solid #fff; color: #fff; padding: 8px 12px; 
+            border-radius: 4px; font-size: 0.75rem; font-weight: 900; cursor: pointer; text-transform: uppercase;
+        }
+        .btn-mini.gold { border-color: var(--gold); color: var(--gold); }
+        .btn-mini.sync { border-color: var(--alert); color: var(--alert); }
 
-        /* 2. Signalement couleur renforcé dès qu'une commande est prise (Table Bleue/Lumineuse) */
-        .table-obj.ordered {
-            background: rgba(41, 121, 255, 0.25) !important;
-            border: 2px solid #2979ff !important;
-            box-shadow: 0 0 20px rgba(41, 121, 255, 0.8) !important;
+        /* --- NOUVEAU : BARRE DES SECTEURS --- */
+        .sector-bar {
+            display: flex; gap: 10px; padding: 10px 20px 0; background: #0a0a0a; border-bottom: 1px solid #333; overflow-x: auto;
         }
+        .sector-tab {
+            background: #111; color: var(--sub); border: 1px solid #333; border-bottom: none; 
+            padding: 10px 20px; border-radius: 8px 8px 0 0; font-weight: bold; cursor: pointer; white-space: nowrap; transition: 0.2s;
+        }
+        .sector-tab.active { background: #222; color: var(--gold); border-color: var(--gold); }
 
-        /* 3. Clignotement OR / NOIR quand le serveur imprime le ticket (Encaissement) */
-        @keyframes print-blink {
-            0% { background: #000; border-color: var(--gold); transform: scale(1); }
-            50% { background: var(--gold); border-color: #fff; color: #000; transform: scale(1.15); box-shadow: 0 0 30px var(--gold); z-index: 100;}
-            100% { background: #000; border-color: var(--gold); transform: scale(1); }
-        }
-        .table-obj.printing {
-            animation: print-blink 0.4s ease-in-out 4; /* Clignote 4 fois très vite */
+        /* PLAN DE SALLE */
+        .floor-plan { flex: 1; position: relative; background-image: radial-gradient(#222 1px, transparent 1px); background-size: 30px 30px; padding: 20px; overflow: hidden; touch-action: none;}
+        .table-obj { position: absolute; background: #000; border: 2px solid #fff; border-radius: 8px; display: flex; justify-content: center; align-items: center; font-weight: 900; color: #fff; cursor: pointer; transition: box-shadow 0.2s, border-color 0.2s; user-select: none; }
+        
+        /* FORMES DE TABLES */
+        .table-obj.circle { border-radius: 50%; }
+        .table-obj.oval { border-radius: 100px; } /* Ovale type "gélule" / pill shape */
+
+        /* TABLE BLEUE QUAND COMMANDE EN COURS */
+        .table-obj.ordered { border-color: var(--ordered); color: var(--ordered); box-shadow: 0 0 15px rgba(41, 121, 255, 0.4); }
+        
+        /* CLIGNOTEMENT QUAND PRÊT */
+        .table-obj.ready { border-color: var(--accent); color: var(--accent); animation: pulse-ready 1s infinite; box-shadow: 0 0 20px rgba(0, 230, 118, 0.6); }
+        @keyframes pulse-ready { 0% { transform: scale(1); } 50% { transform: scale(1.1); } 100% { transform: scale(1); } }
+
+        /* TIROIR COMMANDE */
+        .drawer { position: fixed; top: 0; right: 0; width: 100%; height: 100%; background: #050505; z-index: 10000; display: none; flex-direction: column; }
+        .drawer.open { display: flex; }
+        .menu-grid { flex: 1; display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; padding: 15px; overflow-y: auto; }
+        .btn-item { background: #111; border: 1px solid #333; color: #fff; padding: 15px; border-radius: 6px; font-weight: bold; text-align: left; display: flex; justify-content: space-between; }
+        .ticket-view { flex: 0 0 30%; background: #0a0a0a; border-bottom: 1px solid #333; padding: 15px; overflow-y: auto; display: flex; flex-direction: column;}
+        .ticket-items-container { flex: 1; overflow-y: auto; }
+        
+        /* TOTAL ADDITION */
+        .ticket-total { padding-top: 10px; border-top: 2px solid #333; margin-top: 10px; font-size: 1.5rem; font-weight: 900; color: var(--gold); text-align: right; }
+
+        /* MODALS INFO */
+        .modal { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.98); z-index: 20000; display: none; padding: 40px; box-sizing: border-box; overflow-y: auto; }
+        .modal.open { display: block; }
+        .card { background: #111; border: 1px solid #333; padding: 20px; border-radius: 8px; margin-bottom: 10px; cursor: pointer;}
+
+        /* -- MODE ARCHITECTURE -- */
+        .edit-mode .table-obj { cursor: move; border-style: dashed; border-color: #2979ff; }
+        
+        /* POIGNÉE DE REDIMENSIONNEMENT TACTILE */
+        .resize-handle { position: absolute; bottom: -5px; right: -5px; background: #2979ff; color: #fff; width: 30px; height: 30px; font-size: 18px; display: none; justify-content: center; align-items: center; cursor: se-resize; border-radius: 50%; z-index: 10; touch-action: none; box-shadow: 0 0 10px rgba(0,0,0,0.8); }
+        .edit-mode .resize-handle { display: flex; }
+        
+        #archi-tools { display: none; background: #111; padding: 10px; border-top: 1px solid #333; justify-content: space-between; flex-wrap: wrap; gap: 10px;}
+        .edit-mode #archi-tools { display: flex; }
+
+        /* --- AJOUTS SÉCURITÉ --- */
+        #login-screen { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: #050505; z-index: 50000; display: flex; flex-direction: column; align-items: center; justify-content: center; }
+        .pin-pad { display: grid; grid-template-columns: repeat(3, 80px); gap: 15px; margin-top: 20px; }
+        .pin-btn { background: #1a1a1a; border: 1px solid #333; color: #fff; font-size: 1.5rem; font-weight: bold; width: 80px; height: 80px; border-radius: 50%; cursor: pointer; transition: 0.1s; }
+        .pin-btn:active { background: var(--gold); color: #000; }
+        .pin-display { font-size: 2rem; letter-spacing: 10px; margin-bottom: 20px; color: var(--gold); min-height: 40px;}
+        .item-delete-btn { background: var(--alert); color: #fff; border: none; padding: 5px 10px; font-weight: bold; cursor: pointer; border-radius: 4px; font-size: 0.7rem;}
+        
+        /* MODAL PAIEMENT TACTILE */
+        #payment-modal { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.95); z-index: 30000; display: none; flex-direction: column; align-items: center; justify-content: center; }
+        .pay-btn { background: #111; border: 2px solid var(--accent); color: var(--accent); padding: 20px 40px; font-size: 1.5rem; font-weight: 900; border-radius: 8px; cursor: pointer; width: 300px; margin-bottom: 15px; text-transform: uppercase; }
+        .pay-btn.cancel { border-color: var(--alert); color: var(--alert); margin-top: 30px;}
+
+        /* MODAL ANNULATION (QCM) */
+        #cancel-modal { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.95); z-index: 40000; display: none; flex-direction: column; align-items: center; justify-content: center; }
+        .cancel-btn { background: #111; border: 2px solid var(--gold); color: var(--gold); padding: 20px 40px; font-size: 1.2rem; font-weight: bold; border-radius: 8px; cursor: pointer; width: 350px; margin-bottom: 15px; text-transform: uppercase; }
+        .cancel-btn.abort { border-color: var(--sub); color: var(--sub); margin-top: 20px; }
+
+        /* STYLE POUR L'IMPRESSION (ADDITION) */
+        #print-area { display: none; }
+        @media print {
+            body { height: auto !important; overflow: visible !important; display: block !important; background: #fff !important; color: #000 !important; }
+            body > *:not(#print-area) { display: none !important; }
+            #print-area { display: block !important; position: relative !important; width: 100% !important; padding: 0 !important; margin: 0 !important; background: #fff !important; color: #000 !important; font-family: monospace; }
+            #print-area * { color: #000 !important; text-shadow: none !important; }
         }
     </style>
+</head>
+<body>
+
+    <div id="print-area"></div>
+
+    <div id="table-edit-modal" class="modal" style="z-index: 45000;">
+        <h2 style="color:var(--gold); font-size: 2rem;">MODIFIER LA TABLE</h2>
+        <div style="color:#aaa; margin-bottom:20px;">Ajustez les paramètres de cette table (Secteur actuel : <span id="table-edit-sector"></span>)</div>
+        
+        <input type="text" id="edit-table-name" placeholder="Nom ou Numéro de la table" style="width:100%; padding:20px; background:#000; color:#fff; border:1px solid var(--gold); border-radius:8px; font-size:1.5rem; font-weight:bold; text-align:center; box-sizing:border-box; margin-bottom: 20px;">
+        
+        <div style="display:flex; gap:10px; margin-bottom:30px;">
+            <button class="pay-btn" style="flex:1; width:auto; border-color:#2979ff; color:#2979ff; font-size:1.2rem; padding: 15px;" onclick="setTableShape('rect')">🟩 CARRÉ</button>
+            <button class="pay-btn" style="flex:1; width:auto; border-color:#ea80fc; color:#ea80fc; font-size:1.2rem; padding: 15px;" onclick="setTableShape('circle')">⭕ ROND</button>
+            <button class="pay-btn" style="flex:1; width:auto; border-color:#00e5ff; color:#00e5ff; font-size:1.2rem; padding: 15px;" onclick="setTableShape('oval')">🕳️ OVALE</button>
+        </div>
+
+        <button class="pay-btn" style="width:100%; border-color:var(--accent); color:var(--accent);" onclick="saveTableEdit()">✅ VALIDER LES MODIFICATIONS</button>
+        <button class="pay-btn cancel" style="width:100%; margin-top:10px;" onclick="deleteTableEdit()">🗑️ SUPPRIMER CETTE TABLE</button>
+        <button class="btn-mini" style="width:100%; padding:20px; font-size:1.2rem; margin-top:20px;" onclick="closeTableEdit()">❌ ANNULER</button>
+    </div>
+
+    <div id="payment-modal">
+        <h2 style="color:var(--gold); font-size: 2rem; margin-bottom: 5px;" id="pay-modal-title">ENCAISSEMENT</h2>
+        <h3 style="color:#fff; font-size: 1.5rem; margin-bottom: 40px;" id="pay-modal-amount">Total: 0.00€</h3>
+        <button class="pay-btn" onclick="executePayment('CB')">💳 CARTE BANCAIRE</button>
+        <button class="pay-btn" onclick="executePayment('ESPECES')">💶 ESPÈCES</button>
+        <button class="pay-btn" onclick="executePayment('CHEQUE')">📄 CHÈQUE</button>
+        <button class="pay-btn cancel" onclick="cancelPayment()">❌ FERMER (ANNULER)</button>
+    </div>
+
+    <div id="cancel-modal">
+        <h2 style="color:var(--alert); font-size: 1.8rem; margin-bottom: 5px;">⚠️ ANNULER CE PLAT ?</h2>
+        <h3 style="color:#fff; font-size: 1.2rem; margin-bottom: 30px;" id="cancel-item-name">Nom du plat</h3>
+        <button class="cancel-btn" onclick="executeCancelItem('Erreur de frappe')">❌ ERREUR DE FRAPPE</button>
+        <button class="cancel-btn" onclick="executeCancelItem('Client change d\'avis')">❌ CLIENT CHANGE D'AVIS</button>
+        <button class="cancel-btn" onclick="executeCancelItem('Rupture de stock')">❌ RUPTURE DE STOCK</button>
+        <button class="cancel-btn" onclick="executeCancelItem('Retour (Non conforme)')">❌ RETOUR CUISINE/BAR</button>
+        <button class="cancel-btn abort" onclick="abortCancelItem()">🔙 NE PAS SUPPRIMER (RETOUR)</button>
+    </div>
+
+    <div id="login-screen">
+        <h1 style="color:var(--gold); letter-spacing: 3px;">IDENTIFICATION REQUISE</h1>
+        <div style="color:#aaa; margin-bottom: 20px;">Entrez votre PIN (Ex: Serveur=1234, Manager=9999)</div>
+        <div id="pin-display" class="pin-display"></div>
+        <div class="pin-pad">
+            <button class="pin-btn" onclick="appendPin(1)">1</button><button class="pin-btn" onclick="appendPin(2)">2</button><button class="pin-btn" onclick="appendPin(3)">3</button>
+            <button class="pin-btn" onclick="appendPin(4)">4</button><button class="pin-btn" onclick="appendPin(5)">5</button><button class="pin-btn" onclick="appendPin(6)">6</button>
+            <button class="pin-btn" onclick="appendPin(7)">7</button><button class="pin-btn" onclick="appendPin(8)">8</button><button class="pin-btn" onclick="appendPin(9)">9</button>
+            <button class="pin-btn" onclick="clearPin()" style="background:#333;">C</button><button class="pin-btn" onclick="appendPin(0)">0</button><button class="pin-btn" onclick="submitPin()" style="background:var(--accent); color:#000;">OK</button>
+        </div>
+    </div>
+
+    <header>
+        <div class="header-left">
+            <div style="font-weight:900; letter-spacing:1px;">EMPIRE PAD</div>
+            <div id="stock-tag" style="color:var(--accent); font-weight:900; font-size:0.7rem;">● CONNEXION...</div>
+            <div id="user-badge" style="background:#111; padding:5px 10px; border-radius:4px; font-size:0.8rem; color:var(--gold); border:1px solid #333;">Utilisateur: Aucun</div>
+        </div>
+        <div class="nav-btns">
+            <button id="btn-dashboard" class="btn-mini sync" style="display:none;" onclick="openModal('dashboard')">👁️ DASHBOARD DIR.</button>
+            <button class="btn-mini" style="border-color: #ea80fc; color: #ea80fc;" onclick="window.open('reservation.html', '_blank')">📅 RÉSA</button>
+            <button class="btn-mini" style="border-color: #2979ff; color: #2979ff;" onclick="promptArchiPin()">🏗️ ARCHI</button>
+            <button class="btn-mini gold" onclick="openModal('radar')">⚡ RADAR</button>
+            <button class="btn-mini" onclick="openModal('plan')">📅 PLANNING</button>
+            
+            <button class="btn-mini" style="border-color: #ff3d00; color: #ff3d00;" onclick="window.open('carte.html', '_blank')">📖 CARTE</button>
+            
+            <button class="btn-mini gold" onclick="window.open('haccp.html', '_blank')">⚙️ HACCP</button>
+            <button class="btn-mini sync" onclick="logout()">🔒 LOGOUT</button>
+        </div>
+    </header>
+
+    <div id="sector-bar" class="sector-bar"></div>
+
+    <div id="floor-plan" class="floor-plan"></div>
+
+    <div id="archi-tools">
+        <div style="color:#2979ff; font-weight:900; width:100%; margin-bottom: 5px;">MODE ÉDITION SALLE ACTIF (Secteur: <span id="archi-sector-label"></span>)</div>
+        <div style="display:flex; gap:10px; flex-wrap:wrap;">
+            <button class="btn-mini" onclick="addNewTable()">+ NOUVELLE TABLE</button>
+            <button class="btn-mini" style="border-color:#ea80fc; color:#ea80fc;" onclick="addSector()">+ NOUVEAU SECTEUR</button>
+            <button class="btn-mini sync" onclick="deleteSector()">🗑️ SUPPRIMER CE SECTEUR</button>
+            <button class="btn-mini gold" style="margin-left: auto;" onclick="saveArchitecture()">💾 SAUVEGARDER PLAN</button>
+            <button class="btn-mini sync" onclick="closeArchiMode()">QUITTER SANS SAUVER</button>
+        </div>
+    </div>
+
+    <div id="order-drawer" class="drawer">
+        <div style="padding:20px; border-bottom:1px solid #333; display:flex; justify-content:space-between; align-items:center;">
+            <h2 id="table-label" style="margin:0;">TABLE</h2>
+            <button class="btn-mini" onclick="closeOrder()">FERMER ✕</button>
+        </div>
+        
+        <div style="padding:10px 20px; background:#111; border-bottom:1px solid #333;">
+            <input type="text" id="order-obs" placeholder="⚠️ OBSERVATIONS (VIP, Allergies, Cuissons...)" style="width:100%; padding:12px; background:#000; color:var(--alert); border:1px solid #444; border-radius:4px; font-weight:900; box-sizing:border-box;">
+        </div>
+
+        <div id="ticket" class="ticket-view">
+            <div id="ticket-items" class="ticket-items-container"></div>
+            <div id="ticket-total" class="ticket-total">Total: 0.00€</div>
+        </div>
+
+        <div style="display:flex; gap:5px; padding:15px 20px; background:#0a0a0a; border-bottom:1px solid #222;">
+            <button class="btn-mini" style="flex:1; font-size:0.9rem;" onclick="renderMenu('Entrées')">🥗 ENTRÉES</button>
+            <button class="btn-mini gold" style="flex:1; font-size:0.9rem;" onclick="renderMenu('Tous')">🔥 PLATS / TOUT</button>
+            <button class="btn-mini" style="flex:1; font-size:0.9rem; border-color:#ea80fc; color:#ea80fc;" onclick="renderMenu('Desserts')">🍰 DESSERTS</button>
+            <button class="btn-mini" style="flex:1; font-size:0.9rem; border-color:#00e5ff; color:#00e5ff;" onclick="renderMenu('Boissons')">🍸 BOISSONS</button>
+        </div>
+
+        <div id="menu" class="menu-grid"></div>
+        
+        <div style="padding:20px; background:#000; display:flex; gap:10px;">
+            <button class="btn-mini gold" style="flex:2; padding:20px; font-size:1rem;" onclick="sendToKitchen()">🚀 ENVOYER (AJOUTER)</button>
+            <button class="btn-mini sync" style="flex:1; padding:20px; font-size:1rem; border-color:var(--accent); color:var(--accent);" onclick="openPaymentModal()">💳 ENCAISSER</button>
+        </div>
+    </div>
+
+    <div id="info-modal" class="modal">
+        <div style="display:flex; justify-content:space-between; align-items:center;">
+            <h1 id="modal-title" style="color:var(--gold);">INFO</h1>
+            <button class="btn-mini" onclick="closeModal()">FERMER ✕</button>
+        </div>
+        <div id="modal-body" style="margin-top:30px;"></div>
+    </div>
+
+    <audio id="beep-ready" src="https://assets.mixkit.co/active_storage/sfx/2869/2869-preview.mp3" preload="auto"></audio>
 
     <script>
-        // 4. Interception du clic sur "ENCAISSER" pour déclencher le clignotement de la table
-        // On conserve ta fonction d'origine intacte, on ajoute juste l'animation par-dessus.
-        if (typeof executePayment === "function") {
-            const encaissementOriginal = executePayment;
-            
-            executePayment = async function(paymentType) {
-                const tableEnCours = currentTable;
-                
-                // Trouve la table sur le plan et la fait clignoter
-                if (tableEnCours) {
-                    const floor = document.getElementById('floor-plan');
-                    const tablesDOM = floor.getElementsByClassName('table-obj');
-                    for(let i = 0; i < tablesDOM.length; i++) {
-                        if(tablesDOM[i].innerText === tableEnCours) {
-                            tablesDOM[i].classList.add('printing');
-                            // Retire la classe après le clignotement (1.6 secondes)
-                            setTimeout(() => {
-                                tablesDOM[i].classList.remove('printing');
-                            }, 1600);
-                        }
+        let isArchiMode = false;
+
+        function safeArray(key, fallbackArray) {
+            try {
+                let val = localStorage.getItem(key);
+                if (val && val !== 'undefined' && val !== 'null') {
+                    let parsed = JSON.parse(val);
+                    if (Array.isArray(parsed)) {
+                        return parsed.filter(item => item !== null && item !== undefined);
                     }
                 }
-
-                // Exécute ton code d'encaissement habituel
-                await encaissementOriginal(paymentType);
-            };
+            } catch(e) { console.warn("Erreur mémoire contournée sur:", key); }
+            return fallbackArray;
         }
+
+        let activeOrders = {}; let currentTable = null; let ticketItems = [];
+        let previousOrdersState = {};
+        
+        let inactivityTimer;
+        const INACTIVITY_LIMIT = 120000; 
+
+        function resetInactivityTimer() {
+            clearTimeout(inactivityTimer);
+            if(currentUser) inactivityTimer = setTimeout(logout, INACTIVITY_LIMIT);
+        }
+
+        ['touchstart', 'click', 'mousemove', 'keypress'].forEach(evt => document.addEventListener(evt, resetInactivityTimer, false));
+
+        let currentUser = null;
+        let currentPin = "";
+        const USERS = { "1234": { name: "Flavien", role: "Serveur" }, "9999": { name: "Directeur", role: "Manager" } };
+
+        function appendPin(num) { currentPin += num; document.getElementById('pin-display').innerText = '*'.repeat(currentPin.length); resetInactivityTimer(); }
+        function clearPin() { currentPin = ""; document.getElementById('pin-display').innerText = ""; resetInactivityTimer(); }
+        
+        function submitPin() {
+            if(USERS[currentPin]) {
+                currentUser = USERS[currentPin];
+                document.getElementById('user-badge').innerText = `Badge: ${currentUser.name} (${currentUser.role})`;
+                document.getElementById('login-screen').style.display = 'none';
+                if(currentUser.role === 'Manager') document.getElementById('btn-dashboard').style.display = 'block';
+                renderSectors();
+                renderFloor(); 
+                connectEmpireH24(); resetInactivityTimer();
+            } else { alert("❌ PIN Incorrect."); clearPin(); }
+        }
+
+        function logout() {
+            currentUser = null; currentPin = "";
+            document.getElementById('login-screen').style.display = 'flex';
+            closeOrder(); closeModal(); closeArchiMode();
+            if(ws) ws.close(); clearTimeout(inactivityTimer);
+        }
+
+        let fraudLog = safeArray('empire_fraud_log', []);
+        function logAction(action, detail, itemsData = null) {
+            const time = new Date().toLocaleTimeString('fr-FR');
+            fraudLog.unshift({ time, user: currentUser ? currentUser.name : 'Unknown', action, detail, items: itemsData });
+            localStorage.setItem('empire_fraud_log', JSON.stringify(fraudLog));
+        }
+
+        // --- GESTION DES SECTEURS ---
+        let sectors = safeArray('empire_sectors', ['Salle Principale']);
+        let currentSector = sectors[0] || 'Salle Principale';
+        // Ajustement base de données existante
+        let tables = safeArray('empire_architecture', [ {label:"T1", l:100, t:100, w:80, h:120, shape:'rect', sector: currentSector} ]);
+
+        function renderSectors() {
+            const bar = document.getElementById('sector-bar');
+            bar.innerHTML = sectors.map(s => 
+                `<button class="sector-tab ${s === currentSector ? 'active' : ''}" onclick="switchSector('${s.replace(/'/g, "\\'")}')">${s}</button>`
+            ).join('');
+            document.getElementById('archi-sector-label').innerText = currentSector;
+        }
+
+        function switchSector(sectorName) {
+            currentSector = sectorName;
+            renderSectors();
+            renderFloor();
+        }
+
+        function addSector() {
+            const newSector = prompt("Nom du nouveau secteur (ex: Terrasse, Salle 2) :");
+            if (newSector && newSector.trim() !== "" && !sectors.includes(newSector)) {
+                sectors.push(newSector.trim());
+                currentSector = newSector.trim();
+                localStorage.setItem('empire_sectors', JSON.stringify(sectors));
+                renderSectors();
+                renderFloor();
+            }
+        }
+
+        function deleteSector() {
+            if (sectors.length <= 1) return alert("Impossible de supprimer le seul secteur existant.");
+            const tablesInSector = tables.filter(t => t && t.sector === currentSector);
+            if (tablesInSector.length > 0) {
+                if (!confirm(`⚠️ Attention : Il y a ${tablesInSector.length} table(s) dans ce secteur. Supprimer le secteur effacera aussi ces tables. Confirmer ?`)) return;
+            }
+            tables = tables.filter(t => t && t.sector !== currentSector);
+            sectors = sectors.filter(s => s !== currentSector);
+            currentSector = sectors[0];
+            localStorage.setItem('empire_sectors', JSON.stringify(sectors));
+            renderSectors();
+            renderFloor();
+        }
+
+        // --- NOUVEAU : PROTECTION ARCHI PAR PIN ---
+        function promptArchiPin() {
+            const code = prompt("Veuillez saisir le code Manager pour modifier l'architecture :");
+            if (code === "9999") { // Remplacer "9999" par la constante si tu as un système de variables centralisé
+                unlockArchiMode();
+            } else {
+                alert("❌ Code incorrect. Accès refusé.");
+            }
+        }
+
+        function unlockArchiMode() {
+            isArchiMode = true;
+            document.body.classList.add('edit-mode');
+        }
+
+        function closeArchiMode() {
+            isArchiMode = false;
+            document.body.classList.remove('edit-mode');
+            // Recharger sans sauver
+            tables = safeArray('empire_architecture', [ {label:"T1", l:100, t:100, w:80, h:120, shape:'rect', sector: currentSector} ]);
+            sectors = safeArray('empire_sectors', ['Salle Principale']);
+            if(!sectors.includes(currentSector)) currentSector = sectors[0];
+            renderSectors();
+            renderFloor();
+        }
+
+        function saveArchitecture() {
+            localStorage.setItem('empire_architecture', JSON.stringify(tables));
+            localStorage.setItem('empire_sectors', JSON.stringify(sectors));
+            alert("✅ Plan et Secteurs sauvegardés avec succès.");
+            closeArchiMode();
+        }
+
+        function addNewTable() {
+            let num = 1;
+            while(tables.find(t => t && t.label === "T"+num)) num++; // auto-incrément intelligent
+            tables.push({ label: "T" + num, l: 50, t: 50, w: 80, h: 80, shape: 'rect', sector: currentSector });
+            renderFloor();
+        }
+
+        // --- GESTION ÉDITION DE TABLE (ERREUR HUMAINE) ---
+        let editingTableIndex = -1;
+        let pendingShape = 'rect';
+
+        function openTableEditModal(tableObj, index) {
+            editingTableIndex = index;
+            document.getElementById('table-edit-sector').innerText = tableObj.sector || currentSector;
+            document.getElementById('edit-table-name').value = tableObj.label;
+            pendingShape = tableObj.shape || 'rect';
+            document.getElementById('table-edit-modal').style.display = 'block';
+        }
+
+        function closeTableEdit() {
+            editingTableIndex = -1;
+            document.getElementById('table-edit-modal').style.display = 'none';
+        }
+
+        function setTableShape(shape) {
+            pendingShape = shape;
+            let shapeName = shape === 'circle' ? "ROND" : (shape === 'oval' ? "OVALE" : "CARRÉ/RECTANGLE");
+            alert("Forme sélectionnée : " + shapeName);
+        }
+
+        function saveTableEdit() {
+            if (editingTableIndex === -1) return;
+            const newName = document.getElementById('edit-table-name').value.trim();
+            if (!newName) return alert("Le nom de la table ne peut pas être vide.");
+            
+            const table = tables[editingTableIndex];
+            
+            // Sécurité : si la table est renommée mais qu'elle a une commande en cours
+            if (table.label !== newName && activeOrders[table.label]) {
+                if(!confirm(`⚠️ Il y a une commande en cours sur la table [${table.label}]. Renommer la table va la détacher de la commande actuelle. Continuer ?`)) return;
+            }
+
+            table.label = newName;
+            table.shape = pendingShape;
+            renderFloor();
+            closeTableEdit();
+        }
+
+        function deleteTableEdit() {
+            if (editingTableIndex === -1) return;
+            const table = tables[editingTableIndex];
+            if (activeOrders[table.label]) {
+                alert(`⛔ Impossible de supprimer la table [${table.label}] car elle a une commande en cours. Encaissez ou annulez la commande d'abord.`);
+                return;
+            }
+            if (confirm(`Supprimer définitivement la table [${table.label}] ?`)) {
+                tables.splice(editingTableIndex, 1);
+                renderFloor();
+                closeTableEdit();
+            }
+        }
+
+        function renderFloor() {
+            try {
+                const floor = document.getElementById('floor-plan'); floor.innerHTML = '';
+                tables.forEach((t, index) => {
+                    if(!t || (t.sector && t.sector !== currentSector) || (!t.sector && currentSector !== sectors[0])) return;
+                    
+                    const div = document.createElement('div'); div.className = 'table-obj';
+                    if (t.shape === 'circle') div.classList.add('circle');
+                    if (t.shape === 'oval') div.classList.add('oval');
+                    
+                    if(activeOrders[t.label]) { 
+                        div.classList.add('ordered'); 
+                        if(activeOrders[t.label].status === 'ready') {
+                            div.classList.remove('ordered'); 
+                            div.classList.add('ready'); 
+                        }
+                    }
+                    
+                    div.style.left=(t.l||0)+'px'; div.style.top=(t.t||0)+'px'; div.style.width=(t.w||80)+'px'; div.style.height=(t.h||120)+'px';
+                    div.innerHTML = `<span>${t.label || '?'}</span>`; 
+                    div.dataset.idx = index; // stocker l'index pour le drag&drop/edit
+                    
+                    // Poignée de redimensionnement
+                    const handle = document.createElement('div');
+                    handle.className = 'resize-handle';
+                    handle.innerHTML = '⇲';
+                    handle.dataset.idx = index;
+                    div.appendChild(handle);
+
+                    div.onclick = (e) => {
+                        // Empêcher l'ouverture si on vient de glisser (drag & drop tactile)
+                        if (isDragging) return;
+                        if (isArchiMode) {
+                            openTableEditModal(t, index);
+                        } else {
+                            openOrder(t.label);
+                        }
+                    };
+                    floor.appendChild(div);
+                });
+            } catch (e) { console.error(e); }
+        }
+
+        // --- GESTION TACTILE DU GLISSER-DÉPOSER & REDIMENSIONNEMENT ---
+        let activeEl = null;
+        let resizingTable = null;
+        let draggedTable = null;
+        let startX, startY, startW, startH, startL, startT;
+        let isDragging = false;
+        
+        const floorPlanElement = document.getElementById('floor-plan');
+
+        floorPlanElement.addEventListener('pointerdown', (e) => {
+            if (!isArchiMode) return;
+            isDragging = false;
+            
+            if (e.target.classList.contains('resize-handle')) {
+                const idx = e.target.dataset.idx;
+                resizingTable = tables[idx];
+                activeEl = e.target.parentElement;
+                startX = e.clientX; startY = e.clientY;
+                startW = resizingTable.w || 80; startH = resizingTable.h || 120;
+                floorPlanElement.setPointerCapture(e.pointerId);
+                e.stopPropagation();
+            } else if (e.target.classList.contains('table-obj') || e.target.parentElement.classList.contains('table-obj')) {
+                const targetDiv = e.target.classList.contains('table-obj') ? e.target : e.target.parentElement;
+                const idx = targetDiv.dataset.idx;
+                draggedTable = tables[idx];
+                activeEl = targetDiv;
+                startX = e.clientX; startY = e.clientY;
+                startL = draggedTable.l || 0; startT = draggedTable.t || 0;
+                floorPlanElement.setPointerCapture(e.pointerId);
+                e.stopPropagation();
+            }
+        });
+
+        floorPlanElement.addEventListener('pointermove', (e) => {
+            if (!isArchiMode) return;
+            
+            // Si on a bougé de plus de 5px, c'est un drag et non un clic
+            if ((resizingTable || draggedTable) && (Math.abs(e.clientX - startX) > 5 || Math.abs(e.clientY - startY) > 5)) {
+                isDragging = true;
+            }
+
+            if (resizingTable && activeEl) {
+                resizingTable.w = Math.max(40, startW + (e.clientX - startX));
+                resizingTable.h = Math.max(40, startH + (e.clientY - startY));
+                activeEl.style.width = resizingTable.w + 'px';
+                activeEl.style.height = resizingTable.h + 'px';
+            } else if (draggedTable && activeEl && isDragging) {
+                draggedTable.l = startL + (e.clientX - startX);
+                draggedTable.t = startT + (e.clientY - startY);
+                activeEl.style.left = draggedTable.l + 'px';
+                activeEl.style.top = draggedTable.t + 'px';
+            }
+        });
+
+        floorPlanElement.addEventListener('pointerup', (e) => {
+            if (!isArchiMode) return;
+            if (resizingTable || draggedTable) {
+                floorPlanElement.releasePointerCapture(e.pointerId);
+                resizingTable = null; draggedTable = null; activeEl = null;
+                // isDragging est réinitialisé dans pointerdown
+                setTimeout(() => { isDragging = false; }, 50); // Petit délai pour bloquer le 'onclick' qui suit
+            }
+        });
+
+        let ws;
+        function connectEmpireH24() {
+            try {
+                if (window.location.protocol === 'file:') {
+                    console.warn("Mode local détecté, synchronisation désactivée.");
+                    document.getElementById('stock-tag').innerText = "● HORS-LIGNE (LOCAL)";
+                    renderFloor();
+                    return;
+                }
+
+                ws = new WebSocket((window.location.protocol === 'https:' ? 'wss://' : 'ws://') + window.location.host);
+                ws.onopen = () => {
+                    document.getElementById('stock-tag').innerText = "● SYNC H24 ACTIF";
+                    fetch('/get-current-state').then(r=>r.json()).then(d=>{ activeOrders=d.activeOrders||{}; renderFloor(); }).catch(e=>{});
+                };
+                ws.onmessage = (e) => {
+                    try {
+                        const msg = JSON.parse(e.data);
+                        if(msg.type === 'ORDER_UPDATE' || msg.state || msg.type === 'SYNC') {
+                            const newOrders = msg.activeOrders || (msg.state ? msg.state.activeOrders : {});
+                            for (let tableId in newOrders) {
+                                if (newOrders[tableId] && newOrders[tableId].status === 'ready' && (!previousOrdersState[tableId] || previousOrdersState[tableId].status !== 'ready')) {
+                                    const beep = document.getElementById('beep-ready');
+                                    if(beep) beep.play().catch(err => console.log("Son bloqué", err));
+                                    if(newOrders[tableId].items) newOrders[tableId].items.forEach(i => { if(i) i.done = true; });
+                                }
+                            }
+                            previousOrdersState = JSON.parse(JSON.stringify(newOrders));
+                            activeOrders = newOrders;
+                            if (document.getElementById('order-drawer').classList.contains('open') && currentTable) {
+                                ticketItems = (activeOrders[currentTable] && activeOrders[currentTable].items) ? activeOrders[currentTable].items : ticketItems;
+                                renderTicket();
+                            }
+                            renderFloor();
+                            const globalMenu = msg.activeOrders ? msg.activeOrders['GLOBAL_MENU'] : (msg.state && msg.state.activeOrders['GLOBAL_MENU']);
+                            if(globalMenu) localStorage.setItem('kds_menu', JSON.stringify(globalMenu.data));
+                            const globalRecipes = msg.activeOrders ? msg.activeOrders['GLOBAL_RECIPES'] : (msg.state && msg.state.activeOrders['GLOBAL_RECIPES']);
+                            if(globalRecipes) localStorage.setItem('kds_bar_menu', JSON.stringify(globalRecipes.data));
+                        }
+                    } catch(err) { console.error("Erreur de traitement des données:", err); }
+                };
+            } catch(error) {
+                console.warn("Échec de l'initialisation réseau:", error);
+                document.getElementById('stock-tag').innerText = "● ERREUR RÉSEAU";
+                renderFloor();
+            }
+        }
+
+        function openOrder(id) {
+            try {
+                // SÉCURITÉ : La fonction Archi est désormais gérée par le 'onclick' de renderFloor via les events Tactiles.
+                if (isArchiMode) return; 
+
+                currentTable = id; document.getElementById('table-label').innerText = "TABLE " + id;
+                if(activeOrders[id] && activeOrders[id].observations) document.getElementById('order-obs').value = activeOrders[id].observations;
+                else document.getElementById('order-obs').value = '';
+
+                if(activeOrders[id] && activeOrders[id].status === 'ready') {
+                     activeOrders[id].status = 'served'; 
+                     fetch('/update-order', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({tableId:id, order:activeOrders[id]}) }).catch(e=>{});
+                }
+                
+                ticketItems = (activeOrders[id] && Array.isArray(activeOrders[id].items)) ? activeOrders[id].items.filter(Boolean) : [];
+                renderTicket(); 
+                renderMenu('Tous'); 
+                document.getElementById('order-drawer').classList.add('open');
+            } catch (err) { console.error(err); }
+        }
+
+        function renderMenu(category) {
+            try {
+                let cuisineMenu = safeArray('kds_menu', []);
+                let barMenuRaw = safeArray('kds_bar_menu', []);
+                
+                let barMenu = barMenuRaw.map(r => {
+                    let itemName = r.name || (r.nom ? String(r.nom).split('(')[0].trim() : "Boisson");
+                    let itemPrice = r.price !== undefined ? parseFloat(r.price) : 0;
+                    return { name: itemName, category: 'Boissons', price: itemPrice };
+                });
+
+                let fullMenu = [...cuisineMenu, ...barMenu];
+                let filteredMenu = fullMenu.filter(i => {
+                    if (!i) return false;
+                    if (category === 'Tous') return true; 
+                    if (category === 'Boissons') return i.category === 'Boissons' || i.category === 'Boissons & Bar' || i.category === 'Cocktails' || i.category === 'Vins & Bulles' || i.category === 'Softs & Bières';
+                    return i.category === category;
+                });
+
+                document.getElementById('menu').innerHTML = filteredMenu.map(i => {
+                    let itemName = i.name || i.nom || "Article";
+                    let safeName = String(itemName).replace(/'/g, "\\'");
+                    let itemPrice = i.price !== undefined ? parseFloat(i.price) : 0;
+                    let destination = i.dest || (category === 'Boissons' ? 'bar' : 'cuisine');
+                    return `
+                    <div class="btn-item" onclick="addToTicket('${safeName}', ${itemPrice}, '${destination}')">
+                        <span>${itemName}</span><span style="color:var(--gold)">${itemPrice.toFixed(2)}€</span>
+                    </div>`;
+                }).join('');
+            } catch (err) { console.error(err); }
+        }
+
+        function addToTicket(n, p, dest) { ticketItems.push({ id: Date.now()+Math.random(), n, p, done: false, dest: dest }); renderTicket(); }
+
+        let pendingCancelIndex = null;
+
+        function removeTicketItem(index) {
+            // Attention : avec le regroupement visuel, la suppression doit cibler un des éléments de ce groupe.
+            // La logique 'index' fonctionne car on parcourt le tableau original dans renderTicket pour générer les index.
+            pendingCancelIndex = index;
+            const item = ticketItems[index];
+            document.getElementById('cancel-item-name').innerText = `Plat sélectionné : ${item.n}`;
+            document.getElementById('cancel-modal').style.display = 'flex';
+        }
+
+        function abortCancelItem() {
+            pendingCancelIndex = null;
+            document.getElementById('cancel-modal').style.display = 'none';
+        }
+
+        function executeCancelItem(raison) {
+            if (pendingCancelIndex === null) return;
+            const item = ticketItems[pendingCancelIndex];
+            
+            if (activeOrders[currentTable] && activeOrders[currentTable].items && activeOrders[currentTable].items.find(i => i && i.id === item.id)) {
+                logAction("ANNULATION PLAT ENVOYÉ", `Table: ${currentTable} | Plat: ${item.n} | RAISON: ${raison}`);
+            } else {
+                logAction("SUPPRESSION AVANT ENVOI", `Table: ${currentTable} | Plat: ${item.n} | RAISON: ${raison}`);
+            }
+
+            ticketItems.splice(pendingCancelIndex, 1);
+            pendingCancelIndex = null;
+            document.getElementById('cancel-modal').style.display = 'none';
+            renderTicket();
+        }
+        
+        // --- NOUVEAU : REGROUPEMENT DES ARTICLES (CONSOLIDATION) ---
+        function renderTicket() {
+            try {
+                let total = 0;
+                let groupedItems = {};
+                
+                // On sépare les articles déjà préparés (done) des autres pour ne pas les mélanger
+                ticketItems.forEach((item, index) => {
+                    if (!item) return;
+                    total += parseFloat(item.p) || 0;
+                    
+                    // Clé unique de regroupement : Nom + Prix + Statut
+                    let key = `${item.n}_${item.p}_${item.done}`;
+                    
+                    if (!groupedItems[key]) {
+                        groupedItems[key] = {
+                            n: item.n,
+                            p: parseFloat(item.p) || 0,
+                            done: item.done,
+                            count: 0,
+                            // On garde le dernier index pour la suppression (X supprimera le dernier ajouté de ce groupe)
+                            lastIndex: index 
+                        };
+                    }
+                    groupedItems[key].count++;
+                    groupedItems[key].lastIndex = index;
+                });
+
+                let html = "";
+                for (let key in groupedItems) {
+                    let g = groupedItems[key];
+                    let lineTotal = g.p * g.count;
+                    const style = g.done ? "text-decoration: line-through; opacity: 0.5;" : "";
+                    
+                    // Affichage : "3x Entrecôte" au lieu de "Entrecôte" x3
+                    let displayName = g.count > 1 ? `<strong style="color:var(--gold);">${g.count}x</strong> ${g.n}` : g.n;
+
+                    html += `<div style="display:flex; justify-content:space-between; align-items:center; padding:8px 0; border-bottom:1px solid #222; ${style}">
+                        <span style="flex:1;">${displayName}</span>
+                        <span style="margin-right:15px;">${lineTotal.toFixed(2)}€</span>
+                        <button class="item-delete-btn" onclick="removeTicketItem(${g.lastIndex})">X</button>
+                    </div>`;
+                }
+
+                document.getElementById('ticket-items').innerHTML = html;
+                document.getElementById('ticket-total').innerText = `Total: ${total.toFixed(2)}€`;
+            } catch (err) { console.error(err); }
+        }
+
+        async function sendToKitchen() {
+            if(ticketItems.length === 0) return alert("Ticket vide.");
+            const obs = document.getElementById('order-obs').value.trim();
+            const order = { 
+                items: ticketItems, 
+                time: new Date().toLocaleTimeString('fr-FR', {hour:'2-digit', minute:'2-digit'}), 
+                status: 'pending', observations: obs 
+            };
+            await fetch('/update-order', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({tableId:currentTable, order}) }).catch(e=>{});
+            logAction("ENVOI COMMANDE", `Table: ${currentTable}`, ticketItems);
+            closeOrder();
+        }
+
+        function openPaymentModal() {
+            if (ticketItems.length === 0) return alert("La table est vide.");
+            if (currentUser.role === 'Serveur') return alert("⛔ Vous n'avez pas les droits d'encaissement. Demandez au Manager.");
+
+            let tableData = activeOrders[currentTable];
+            if (!tableData || !tableData.items || tableData.items.length !== ticketItems.length) {
+                return alert("⚠️ IMPOSSIBLE D'ENCAISSER !\n\nVous avez ajouté ou supprimé des plats sans les envoyer.\nVeuillez d'abord cliquer sur [🚀 ENVOYER (AJOUTER)] pour valider la commande.");
+            }
+
+            const totalAmount = document.getElementById('ticket-total').innerText.replace('Total: ', '');
+            document.getElementById('pay-modal-title').innerText = "TABLE " + currentTable;
+            document.getElementById('pay-modal-amount').innerText = "TOTAL À ENCAISSER : " + totalAmount;
+            
+            document.getElementById('payment-modal').style.display = 'flex';
+        }
+
+        function cancelPayment() {
+            document.getElementById('payment-modal').style.display = 'none';
+        }
+
+        async function executePayment(paymentType) {
+            const totalAmount = document.getElementById('ticket-total').innerText.replace('Total: ', '');
+            document.getElementById('payment-modal').style.display = 'none';
+
+            printReceipt(currentTable, totalAmount, ticketItems, paymentType);
+            await fetch('/update-order', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({tableId: currentTable, order: null}) }).catch(e=>{});
+            logAction("ENCAISSEMENT VALIDÉ", `Table: ${currentTable} | Montant: ${totalAmount} | Type: ${paymentType}`, ticketItems);
+            
+            ticketItems = []; 
+            document.getElementById('order-obs').value = ''; 
+            closeOrder();
+        }
+
+        // --- NOUVEAU : REGROUPEMENT SUR LE TICKET DE CAISSE ---
+        function printReceipt(table, total, items, paymentType) {
+            const printArea = document.getElementById('print-area');
+            const date = new Date().toLocaleString('fr-FR');
+            const transactionID = 'TX-' + Math.floor(Math.random() * 1000000000);
+            
+            let groupedPrintItems = {};
+            items.forEach(i => {
+                if(!i) return;
+                let key = `${i.n}_${i.p}`;
+                if(!groupedPrintItems[key]) {
+                    groupedPrintItems[key] = { n: i.n, p: parseFloat(i.p)||0, count: 0 };
+                }
+                groupedPrintItems[key].count++;
+            });
+
+            let itemsHtml = "";
+            for(let key in groupedPrintItems) {
+                let g = groupedPrintItems[key];
+                let lineTotal = g.p * g.count;
+                itemsHtml += `<div style="display:flex; justify-content:space-between; margin-bottom:5px;">
+                    <span>${g.count}x ${g.n || '?'}</span>
+                    <span>${lineTotal.toFixed(2)}€</span>
+                </div>`;
+            }
+
+            let tpeHtml = '';
+            if (paymentType === 'CB') {
+                tpeHtml = `
+                    <div style="border: 2px solid #000; padding: 10px; margin-top: 15px; font-size: 0.9rem;">
+                        <div style="text-align: center; font-weight: bold; margin-bottom: 5px;">TICKET CARTE BANCAIRE</div>
+                        <div>MERCIANT: RESTAURANT EMPIRE</div>
+                        <div>TERMINAL: 04294821</div>
+                        <div>DATE: ${date}</div>
+                        <div><strong>MONTANT: ${total}</strong></div>
+                        <div>AUTORISATION: ${Math.floor(10000 + Math.random() * 90000)}</div>
+                        <div style="text-align: center; font-weight: bold; margin-top: 10px;">-- TRANSACTION ACCEPTÉE --</div>
+                        <div style="text-align: center; font-size: 0.7rem; margin-top: 5px;">ID: ${transactionID}</div>
+                    </div>
+                `;
+            } else {
+                tpeHtml = `
+                    <div style="border: 1px dashed #000; padding: 10px; margin-top: 15px; font-size: 0.9rem; text-align: center;">
+                        <strong>PAIEMENT: ${paymentType}</strong><br>
+                        MONTANT REÇU: ${total}
+                    </div>
+                `;
+            }
+
+            printArea.innerHTML = `
+                <div style="font-family: monospace; max-width: 350px; margin: 0 auto; color: #000;">
+                    <h2 style="text-align: center; border-bottom: 1px dashed #000; padding-bottom: 10px;">RESTAURANT EMPIRE</h2>
+                    <p style="text-align: center;">TABLE: ${table}<br>Serveur: ${currentUser.name}<br>${date}</p>
+                    
+                    <div style="font-weight: bold; margin-bottom: 5px;">DÉTAIL DE LA CONSOMMATION :</div>
+                    <div style="border-top: 1px dashed #000; border-bottom: 1px dashed #000; padding: 10px 0; margin-bottom: 15px;">
+                        ${itemsHtml}
+                    </div>
+                    
+                    <h3 style="text-align: right; font-size: 1.4rem; margin: 0;">TOTAL: ${total}</h3>
+                    
+                    ${tpeHtml}
+                    
+                    <p style="text-align: center; font-size: 0.8rem; margin-top: 20px;">Merci de votre visite.<br>A bientôt !</p>
+                </div>
+            `;
+            setTimeout(() => { window.print(); }, 100);
+        }
+
+        function closeOrder() { document.getElementById('order-drawer').classList.remove('open'); }
+
+        function openModal(type) {
+            try {
+                const body = document.getElementById('modal-body');
+                document.getElementById('info-modal').classList.add('open');
+                
+                if(type === 'radar') {
+                    document.getElementById('modal-title').innerText = "⚡ RADAR RÉSERVATIONS";
+                    const res = (activeOrders['GLOBAL_RESERVATIONS'] && activeOrders['GLOBAL_RESERVATIONS'].data) ? activeOrders['GLOBAL_RESERVATIONS'].data : {};
+                    const today = new Date().toISOString().split('T')[0];
+                    let todaysRes = Array.isArray(res[today]) ? res[today] : [];
+                    body.innerHTML = todaysRes.map(r => r ? `<div class="card"><b>${r.time||'?'}</b> — ${r.name||'?'} (${r.pax||0} PAX)</div>` : '').join('') || "Aucune résa.";
+                } 
+                else if(type === 'plan') {
+                    document.getElementById('modal-title').innerText = "📅 PLANNING BRIGADE";
+                    const p = safeArray('kds_hr_master_v9', []);
+                    body.innerHTML = p.map(s => s ? `<div class="card"><b>${s.name||'?'}</b> — ${s.role||'?'}</div>` : '').join('') || "Aucun planning.";
+                }
+                else if(type === 'dashboard') {
+                    document.getElementById('modal-title').innerText = "👁️ LOGS SÉCURITÉ & FRAUDE";
+                    const logs = safeArray('empire_fraud_log', []);
+                    
+                    body.innerHTML = logs.map((l, idx) => {
+                        if(!l) return '';
+                        let actionText = String(l.action || '');
+                        let timeText = String(l.time || '');
+                        let userText = String(l.user || '');
+                        let detailText = String(l.detail || '');
+
+                        let detailsHtml = '';
+                        if (l.items && Array.isArray(l.items) && l.items.length > 0) {
+                            const list = l.items.map(i => i ? `<div style="font-size:0.85rem; color:#ccc; display:flex; justify-content:space-between;"><span>- ${i.n||'?'}</span><span>${(parseFloat(i.p)||0).toFixed(2)}€</span></div>` : '').join('');
+                            detailsHtml = `<div id="log-detail-${idx}" style="display:none; margin-top:10px; padding:10px; background:#000; border-radius:4px; border-left: 2px solid var(--gold);">${list}</div>`;
+                        }
+
+                        return `
+                        <div class="card" style="${actionText.includes('SUPPRESSION') || actionText.includes('ANNULATION') ? 'border-color:var(--alert);' : ''}" onclick="toggleLogDetail(${idx})">
+                            <div style="color:var(--sub); font-size:0.8rem;">${timeText} - Par: <b style="color:var(--gold);">${userText}</b></div>
+                            <div style="font-weight:bold; margin-top:5px;">[${actionText}] ${detailText} <span style="font-size:0.7rem; font-weight:normal; color:#888;">(Cliquez pour détails)</span></div>
+                            ${detailsHtml}
+                        </div>`;
+                    }).join('') || "Aucune activité récente.";
+                }
+            } catch(e) { console.error(e); }
+        }
+
+        function toggleLogDetail(idx) {
+            const el = document.getElementById(`log-detail-${idx}`);
+            if(el) el.style.display = el.style.display === 'none' ? 'block' : 'none';
+        }
+
+        function closeModal() { document.getElementById('info-modal').classList.remove('open'); }
     </script>
+
+    <script>
+        // 1. Injection de la carte de secours au démarrage
+        setTimeout(() => {
+            let menuActuel = localStorage.getItem('kds_menu');
+            
+            if (!menuActuel || menuActuel === '[]' || menuActuel === 'null') {
+                const carteCuisineForcee = [
+                    { name: "Salade César", category: "Entrées", price: 14.00, dest: "cuisine" },
+                    { name: "Foie Gras Maison", category: "Entrées", price: 19.00, dest: "cuisine" },
+                    { name: "Entrecôte Premium", category: "Plats de résistance", price: 35.00, dest: "cuisine" },
+                    { name: "Saumon Grillé", category: "Plats de résistance", price: 26.00, dest: "cuisine" },
+                    { name: "Tiramisu Italien", category: "Desserts", price: 10.00, dest: "cuisine" },
+                    { name: "Fondant Chocolat", category: "Desserts", price: 12.00, dest: "cuisine" }
+                ];
+
+                const carteBarForcee = [
+                    { name: "Mojito Signature", category: "Boissons", price: 14.00, dest: "bar" },
+                    { name: "Coupe de Champagne", category: "Boissons", price: 18.00, dest: "bar" },
+                    { name: "Coca-Cola Zero", category: "Boissons", price: 5.00, dest: "bar" }
+                ];
+
+                localStorage.setItem('kds_menu', JSON.stringify(carteCuisineForcee));
+                localStorage.setItem('kds_bar_menu', JSON.stringify(carteBarForcee));
+                console.log("⚡ Carte de base injectée avec succès dans le Pad.");
+            }
+        }, 500);
+
+        // 2. Vérification automatique des mises à jour du menu.html
+        let lastVersion = null;
+
+        async function checkMenuUpdate() {
+            try {
+                const response = await fetch("menu.html?cache=" + new Date().getTime());
+                const text = await response.text();
+                const version = text.length;
+
+                if (lastVersion && lastVersion !== version) {
+                    console.log("Mise à jour détectée du menu !");
+                    location.reload(); 
+                }
+                lastVersion = version;
+            } catch (e) {
+                console.log("Erreur vérification menu", e);
+            }
+        }
+        setInterval(checkMenuUpdate, 5000);
+    </script>
+</body>
+</html>
