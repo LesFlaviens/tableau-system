@@ -18,5 +18,8 @@ app.get('/menu.html', (req, res) => {
 });
 
 app.get('/chef.html', (req, res) => {
-    res.sendFile(path.join(__dirname, 'public', 'chef.html')); // C'EST ICI QUE CA BLOQUE
+    res.sendFile(path.join(__dirname, 'public', 'chef.html')); 
+    
+app.get('/chef.html', (req, res) => {
+    res.sendFile(__dirname + '/public/chef.html');
 });
