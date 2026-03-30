@@ -5,8 +5,8 @@ const app = express();
 // Autorisation étendue pour sauvegarder les photos (Système HACCP)
 app.use(express.json({ limit: '50mb' })); 
 
-// Connexion au dossier public
-app.use(express.static(path.join(__dirname, 'public'))); 
+// Connexion directe au dossier racine (là où sont tes fichiers HTML et ton logo)
+app.use(express.static(__dirname)); 
 
 // --- MOTEUR DE SYNCHRONISATION H24 (L'API) ---
 let globalState = { activeOrders: {} };
@@ -27,15 +27,15 @@ app.post('/update-order', (req, res) => {
 
 // --- ROUTAGE OFFICIEL DES PAGES ---
 app.get('/haccp.html', (req, res) => {
-    res.sendFile(path.join(__dirname, 'public', 'haccp.html'));
+    res.sendFile(path.join(__dirname, 'haccp.html'));
 });
 
 app.get('/menu.html', (req, res) => {
-    res.sendFile(path.join(__dirname, 'public', 'menu.html'));
+    res.sendFile(path.join(__dirname, 'menu.html'));
 });
 
 app.get('/chef.html', (req, res) => {
-    res.sendFile(path.join(__dirname, 'public', 'chef.html')); 
+    res.sendFile(path.join(__dirname, 'chef.html')); 
 });
 
 // --- DÉMARRAGE DU MOTEUR (OBLIGATOIRE POUR RENDER) ---
