@@ -1,38 +1,31 @@
-// Dans ton fichier server.js (ou index.js)
 const express = require('express');
-const app = express();
 const path = require('path');
+const app = express();
 
-// 1. Assure-toi que ton dossier public est bien servi :
+// Autorisation étendue pour sauvegarder les photos (Système HACCP)
+app.use(express.json({ limit: '50mb' })); 
+
+// Connexion au dossier public
 app.use(express.static(path.join(__dirname, 'public'))); 
 
-// 2. Les routes manuelles pour chaque fichier :
-app.get('/haccp.html', (req, res) => {
-    res.sendFile(path.join(__dirname, 'public', 'haccp.html'));
+// --- MOTEUR DE SYNCHRONISATION H24 (L'API) ---
+let globalState = { activeOrders: {} };
+
+app.get('/get-current-state', (req, res) => {
+    res.json(globalState);
 });
 
-app.get('/menu.html', (req, res) => {
-    res.sendFile(path.join(__dirname, 'public', 'menu.html'));
+app.post('/update-order', (req, res) => {
+    const { tableId, order } = req.body;
+    if (tableId && order) {
+        globalState.activeOrders[tableId] = order;
+        res.json({ success: true });
+    } else {
+        res.status(400).json({ error: "Données invalides" });
+    }
 });
 
-// 3. LA ROUTE DU CHEF (Corrigée : une seule fois et bien fermée)
-app.get('/chef.html', (req, res) => {
-    res.sendFile(path.join(__dirname, 'public', 'chef.html')); 
-});
-
-/* ⚠️ N'oublie pas : Tout en bas de ton fichier server.js d'origine, 
-il doit y avoir une ligne comme "app.listen(port...)" pour démarrer le serveur. 
-Ne l'efface pas ! 
-*/
-const express = require('express');
-const app = express();
-const path = require('path');
-
-// 1. Assure-toi que ton dossier public est bien servi :
-app.use(express.static(path.join(__dirname, 'public'))); 
-// (Remplace 'public' par le nom du dossier où tu as mis tes fichiers HTML)
-
-// 2. Si tu n'utilises pas express.static, tu dois créer les routes manuellement pour chaque fichier :
+// --- ROUTAGE OFFICIEL DES PAGES ---
 app.get('/haccp.html', (req, res) => {
     res.sendFile(path.join(__dirname, 'public', 'haccp.html'));
 });
@@ -43,7 +36,10 @@ app.get('/menu.html', (req, res) => {
 
 app.get('/chef.html', (req, res) => {
     res.sendFile(path.join(__dirname, 'public', 'chef.html')); 
-    
-app.get('/chef.html', (req, res) => {
-    res.sendFile(__dirname + '/public/chef.html');
+});
+
+// --- DÉMARRAGE DU MOTEUR (OBLIGATOIRE POUR RENDER) ---
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => {
+    console.log(`Système iChef en ligne sur le port ${PORT}`);
 });
