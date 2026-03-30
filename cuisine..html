@@ -810,6 +810,94 @@
 
         switchTab('menu');
         bootSystem();
-    </script>
+  // 🟢 MOTEUR DE CALCUL DU COÛT MATIÈRE AUTOMATIQUE (SMART PARSING)
+        let calcTimeout;
+        function autoCalculateCost() {
+            clearTimeout(calcTimeout);
+            
+            // Attendre 800ms après la fin du "coller" pour ne pas faire bugger l'interface
+            calcTimeout = setTimeout(() => {
+                const text = document.getElementById('rec-ing').value;
+                const lines = text.split('\n');
+                let totalCost = 0;
+                let matchedItemsCount = 0;
+
+                // Aplatir l'inventaire pour chercher le prix des ingrédients
+                let flatInventory = [];
+                if(globalInventoryData.cuisine) flatInventory.push(...globalInventoryData.cuisine);
+                if(globalInventoryData.bar) flatInventory.push(...globalInventoryData.bar);
+
+                lines.forEach(line => {
+                    line = line.trim();
+                    if(!line) return;
+
+                    // L'Intelligence Artificielle de parsing : 
+                    // Il extrait : [1] La quantité, [2] L'unité (g, ml, gousse...), [3] Le nom de l'ingrédient sans "de" ou "d'"
+                    const match = line.match(/^([\d.,]+)\s*([a-zA-Zéèêàâäöüïîç]+)?\s*(?:de\s|d'|des\s)?(.*)$/i);
+                    
+                    if(match) {
+                        let qty = parseFloat(match[1].replace(',', '.'));
+                        let unit = match[2] ? match[2].toLowerCase() : '';
+                        let ingName = match[3].trim().toLowerCase();
+
+                        // Chercher l'ingrédient dans l'économat (recherche très souple)
+                        let invItem = flatInventory.find(i => {
+                            let dbName = i.name.toLowerCase();
+                            return ingName.includes(dbName) || dbName.includes(ingName);
+                        });
+
+                        if(invItem) {
+                            let pricePerInvUnit = invItem.unitPrice || 0;
+                            let invUnit = (invItem.unit || '').toLowerCase(); 
+                            let costForLine = 0;
+
+                            // Conversions Mathématiques Automatiques
+                            if ((invUnit === 'kg' || invUnit === 'kilo') && unit === 'g') {
+                                costForLine = (qty / 1000) * pricePerInvUnit;
+                            } else if ((invUnit === 'l' || invUnit === 'litre') && (unit === 'cl')) {
+                                costForLine = (qty / 100) * pricePerInvUnit;
+                            } else if ((invUnit === 'l' || invUnit === 'litre') && (unit === 'ml')) {
+                                costForLine = (qty / 1000) * pricePerInvUnit;
+                            } else {
+                                // Cas direct : (ex: 1 gousse, 1 pièce, ou 200g = 200g)
+                                costForLine = qty * pricePerInvUnit;
+                            }
+
+                            totalCost += costForLine;
+                            matchedItemsCount++;
+                        }
+                    }
+                });
+
+                const costInput = document.getElementById('rec-cost');
+                const displayInfo = document.getElementById('fc-display');
+
+                if(totalCost > 0) {
+                    costInput.value = totalCost.toFixed(2);
+                    
+                    // 🟢 EFFET WAOUH : La case clignote en vert pour montrer qu'elle a travaillé
+                    costInput.style.backgroundColor = "rgba(52, 211, 153, 0.2)";
+                    costInput.style.borderColor = "var(--accent)";
+                    costInput.style.color = "var(--accent)";
+                    
+                    displayInfo.innerHTML = `✅ <b>${matchedItemsCount} ingrédient(s)</b> reconnu(s) et calculé(s) depuis l'Économat.`;
+                    displayInfo.className = 'fc-display fc-good';
+                    
+                    setTimeout(() => {
+                        costInput.style.backgroundColor = "var(--panel)";
+                        costInput.style.borderColor = "var(--border)";
+                        costInput.style.color = "var(--text-main)";
+                    }, 1000);
+                    
+                    updateFC(); // Met à jour le Food Cost
+                } else if (text.length > 5) {
+                     displayInfo.innerHTML = `⚠️ Aucun ingrédient n'a été trouvé. Vérifiez votre Économat.`;
+                     displayInfo.className = 'fc-display fc-bad';
+                } else {
+                     displayInfo.innerHTML = `ℹ️ Collez vos ingrédients pour estimer le coût matière.`;
+                     displayInfo.className = 'fc-display';
+                }
+            }, 800);
+        }
 </body>
 </html>
