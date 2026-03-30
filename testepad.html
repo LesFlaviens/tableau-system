@@ -53,16 +53,13 @@
         
         .table-content { width: 100%; height: 100%; display: flex; justify-content: center; align-items: center; border-radius: inherit; }
 
-        /* TABLE BLEUE QUAND COMMANDE EN COURS */
         .table-obj.ordered { border-color: var(--ordered); color: var(--ordered); box-shadow: 0 0 15px rgba(41, 121, 255, 0.4); background: #fff;}
         .table-obj.ordered > .table-content { color: var(--ordered); background: #000; }
         
-        /* CLIGNOTEMENT QUAND PRÊT */
         .table-obj.ready { border-color: var(--accent); color: var(--accent); animation: pulse-ready 1s infinite; box-shadow: 0 0 20px rgba(0, 230, 118, 0.6); background: #fff;}
         .table-obj.ready > .table-content { color: var(--accent); background: #000; }
         @keyframes pulse-ready { 0% { transform: scale(1); } 50% { transform: scale(1.1); } 100% { transform: scale(1); } }
 
-        /* COMMANDES TACTILES (MODE ARCHITECTURE) */
         .edit-mode .table-obj { cursor: move; border-style: dashed; border-color: #2979ff; background: #2979ff; }
         .table-resizer {
             position: absolute; bottom: -10px; right: -10px; width: 30px; height: 30px;
@@ -82,12 +79,23 @@
         .cat-title.special { color: var(--gold); border-color: var(--gold); }
         .grid-items { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 10px; }
         
-        .btn-item { background: #1a1a1a; border: 1px solid #333; color: #fff; padding: 15px 10px; border-radius: 8px; font-size: 0.9rem; font-weight: bold; cursor: pointer; display: flex; flex-direction: column; align-items: center; gap: 8px; transition: 0.1s; text-align: center; }
+        /* 🟢 BOUTONS DE COMMANDE AVEC BADGE DE STOCK */
+        .btn-item { position: relative; background: #1a1a1a; border: 1px solid #333; color: #fff; padding: 15px 10px; border-radius: 8px; font-size: 0.9rem; font-weight: bold; cursor: pointer; display: flex; flex-direction: column; align-items: center; gap: 8px; transition: 0.1s; text-align: center; }
         .btn-item:active { transform: scale(0.95); border-color: var(--accent); }
         .btn-item .price { color: var(--accent); font-weight: 900; font-size: 1rem; }
         .btn-item.sold-out { background: rgba(255, 23, 68, 0.1); border-color: var(--alert); color: #555; pointer-events: none; opacity: 0.6; }
         .btn-item.sold-out .price { color: var(--alert); text-decoration: line-through; }
         .btn-item.sold-out::after { content: "ÉPUISÉ"; color: var(--alert); font-size: 0.7rem; font-weight: 900; margin-top: 5px; }
+
+        .stock-badge {
+            position: absolute; top: -8px; right: -8px;
+            background: var(--ordered); color: #fff;
+            border-radius: 4px; padding: 4px 8px; font-size: 0.85rem; font-weight: 900;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.8); border: 1px solid #000;
+            z-index: 10;
+        }
+        .stock-badge.low { background: var(--alert); animation: pulse-low 1.5s infinite;}
+        @keyframes pulse-low { 0% { transform: scale(1); } 50% { transform: scale(1.1); box-shadow: 0 0 10px var(--alert); } 100% { transform: scale(1); } }
 
         .ticket-view { flex: 0 0 35%; background: #0a0a0a; border-top: 2px solid var(--gold); padding: 15px; overflow-y: auto; display: flex; flex-direction: column; }
         .ticket-items-container { flex: 1; overflow-y: auto; }
@@ -124,7 +132,7 @@
         .shape-btn { background: #222; border: 1px solid #555; color: #fff; padding: 15px; font-weight: bold; border-radius: 8px; cursor: pointer; flex: 1; font-size: 1rem; transition: 0.2s;}
         .shape-btn:active { background: var(--gold); color: #000; }
 
-        /* 🟢 BOUTONS DE CUISSON (QCM 8 NIVEAUX) */
+        /* BOUTONS DE CUISSON (QCM 8 NIVEAUX) */
         .cuisson-btn { background: #111; border: 2px solid; padding: 12px; font-size: 1rem; font-weight: 900; border-radius: 8px; cursor: pointer; width: 100%; margin-bottom: 8px; text-transform: uppercase; transition: 0.2s; }
         .cuisson-btn:active { transform: scale(0.98); }
 
@@ -386,7 +394,7 @@
 
         function connectEmpireH24() {
             fetchMenuFromChef(); 
-            setInterval(fetchMenuFromChef, 5000); // Check Menu 
+            setInterval(fetchMenuFromChef, 5000); 
             setInterval(async () => {
                 const state = await API.getState();
                 if(state && state.activeOrders) {
@@ -459,7 +467,7 @@
         }
 
         // -----------------------------------------
-        // 5. GESTION DES COMMANDES & TICKET
+        // 5. GESTION DES COMMANDES & TICKET (AVEC DÉCOMPTE AUTOMATIQUE)
         // -----------------------------------------
         function openOrder(tableLabel) {
             currentTable = tableLabel;
@@ -487,8 +495,17 @@
                     currentMenu[cat.id].forEach(item => {
                         let isSoldOut = (item.stock === 0);
                         let cleanName = item.name.replace(/\n/g, '<br>');
+                        
+                        // 🟢 AFFICHAGE DU BADGE DE STOCK RESTANT
+                        let stockHtml = '';
+                        if (item.stock !== "" && item.stock !== undefined && item.stock > 0) {
+                            let badgeClass = item.stock <= 3 ? 'stock-badge low' : 'stock-badge';
+                            stockHtml = `<div class="${badgeClass}">${item.stock}</div>`;
+                        }
+
                         html += `
                             <button class="btn-item ${isSoldOut ? 'sold-out' : ''}" onclick="addToTicket('${escapeQuotes(item.name)}', ${item.price}, '${item.id}')">
+                                ${stockHtml}
                                 <span>${cleanName}</span>
                                 <span class="price">${parseFloat(item.price).toFixed(2)} €</span>
                             </button>
@@ -504,7 +521,6 @@
 
         function escapeQuotes(str) { return str.replace(/'/g, "\\'").replace(/"/g, '&quot;'); }
 
-        // 🟢 NOUVELLE LOGIQUE : DÉTECTION DES VIANDES POUR LE QCM DE CUISSON
         let pendingCuissonItem = null;
         function addToTicket(n, p, id) { 
             const meatKeywords = ['entrecôte', 'entrecote', 'bœuf', 'boeuf', 'steak', 'burger', 'filet', 'canard', 'agneau', 'viande', 'tartare', 'onglet', 'bavette', 'côte', 'cote'];
@@ -567,10 +583,42 @@
             }).join(''); document.getElementById('ticket-total').innerText = `Total: ${t.toFixed(2)}€`;
         }
 
+        // 🟢 LE CŒUR DU DÉCOMPTE AUTOMATIQUE
         async function sendToKitchen() {
             if(ticketItems.length === 0) return alert("Ticket vide.");
+            
+            // 1. On récupère la base de données centrale
+            const state = await API.getState();
+            if (state && state.activeOrders && state.activeOrders['MENU_MASTER']) {
+                let centralMenu = state.activeOrders['MENU_MASTER'].data;
+                let menuChanged = false;
+
+                // 2. On déduit les portions de chaque plat commandé
+                ticketItems.forEach(tItem => {
+                    if(!tItem.done) { // Ne déduit que les NOUVEAUX plats envoyés
+                        for (let cat in centralMenu) {
+                            let mItem = centralMenu[cat].find(i => i.id == tItem.itemId);
+                            if (mItem && mItem.stock !== "" && mItem.stock !== undefined && mItem.stock > 0) {
+                                mItem.stock = Math.max(0, mItem.stock - (tItem.qty || 1));
+                                menuChanged = true;
+                            }
+                        }
+                        tItem.done = false; // Sera mis à 'true' quand la cuisine validera, mais on le marque envoyé
+                    }
+                });
+
+                // 3. On sauvegarde la déduction des stocks dans le serveur
+                if (menuChanged) {
+                    await API.update('MENU_MASTER', centralMenu);
+                }
+            }
+
+            // 4. On envoie la commande à la table
             await fetch('/update-order', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({tableId:currentTable, order: { items: ticketItems, time: new Date().toLocaleTimeString('fr-FR', {hour:'2-digit', minute:'2-digit'}), status: 'pending', observations: document.getElementById('order-obs').value.trim() }}) }).catch(e=>{});
-            logAction("ENVOI COMMANDE", `Table: ${currentTable}`, ticketItems); closeOrder(); renderFloor();
+            
+            logAction("ENVOI COMMANDE", `Table: ${currentTable}`, ticketItems); 
+            closeOrder(); 
+            renderFloor();
         }
 
         function openPaymentModal() {
