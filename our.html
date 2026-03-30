@@ -3,13 +3,13 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>HACCP EMPIRE - Normes & Traçabilité</title>
+    <title>HACCP EMPIRE - Contrôle Master</title>
     <style>
         :root { --bg: #050505; --gold: #ffb300; --accent: #00e676; --alert: #ff1744; --panel: #111; --ordered: #2979ff;}
         body { background: var(--bg); color: #fff; font-family: 'Inter', sans-serif; margin: 0; display: flex; flex-direction: column; height: 100vh; overflow: hidden; touch-action: manipulation; }
         
         /* NAVIGATION */
-        .nav-haccp { background: var(--panel); padding: 10px 20px; display: flex; gap: 10px; border-bottom: 1px solid #333; align-items: center; z-index: 100; }
+        .nav-haccp { background: var(--panel); padding: 10px 20px; display: flex; gap: 10px; border-bottom: 1px solid #333; align-items: center; z-index: 100; flex-wrap: wrap;}
         .nav-btn { background: transparent; border: 1px solid #333; color: #888; padding: 10px 15px; cursor: pointer; font-weight: bold; border-radius: 4px; font-size: 0.75rem; text-transform: uppercase; transition: 0.2s;}
         .nav-btn.active { border-color: var(--gold); color: var(--gold); background: rgba(255, 179, 0, 0.05); }
 
@@ -28,6 +28,13 @@
         .input-group { display: flex; flex-direction: column; gap: 8px; }
         input, select { background: #000; border: 1px solid #333; color: #fff; padding: 12px; border-radius: 4px; font-size: 1rem; width: 100%; box-sizing: border-box; }
         
+        /* PASTILLES TACTILES */
+        .chips-container { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 5px; }
+        .chip { background: #222; border: 1px solid #444; color: var(--gold); padding: 6px 12px; border-radius: 20px; font-size: 0.8rem; font-weight: bold; cursor: pointer; transition: 0.2s; display: flex; align-items: center; gap: 8px;}
+        .chip:active { background: var(--gold); color: #000; transform: scale(0.95); }
+        .chip-del { color: var(--alert); font-size: 1rem; line-height: 1; padding: 0 4px; border-radius: 50%; }
+        .chip-del:active { background: rgba(255, 23, 68, 0.3); }
+
         table { width: 100%; border-collapse: collapse; margin-top: 15px; }
         th { text-align: left; color: #555; font-size: 0.7rem; text-transform: uppercase; padding: 10px; border-bottom: 1px solid #333; }
         td { padding: 12px 10px; border-bottom: 1px solid #111; font-size: 0.85rem; vertical-align: top; }
@@ -54,7 +61,6 @@
         .pin-btn { background: #1a1a1a; border: 1px solid #333; color: #fff; font-size: 1.8rem; font-weight: bold; width: 85px; height: 85px; border-radius: 50%; cursor: pointer; }
         .pin-display { font-size: 2.5rem; letter-spacing: 12px; margin-bottom: 20px; color: var(--gold); min-height: 45px;}
         
-        /* ALERTE DLC */
         .dlc-alert { background: rgba(255, 23, 68, 0.1); border-left: 4px solid var(--alert); }
     </style>
 </head>
@@ -99,9 +105,9 @@
                 <h2 style="margin:0 0 15px 0; font-size: 0.9rem; color: var(--gold); text-transform: uppercase;">RELEVÉ DE TEMPÉRATURE : <span class="display-dept"></span></h2>
                 <div class="grid">
                     <div class="input-group">
-                        <label>Équipement</label>
-                        <select id="temp-eq">
-                            </select>
+                        <label>Équipement (Taper au clavier ou choisir en dessous)</label>
+                        <input type="text" id="temp-eq" placeholder="Ex: Frigo Positif 1...">
+                        <div id="chips-temp-eq" class="chips-container"></div>
                     </div>
                     <div class="input-group">
                         <label>Valeur Relevée (°C)</label>
@@ -122,9 +128,9 @@
                 <h2 style="margin:0 0 15px 0; font-size: 0.9rem; color: var(--gold); text-transform: uppercase;">PLAN DE NETTOYAGE : <span class="display-dept"></span></h2>
                 <div class="grid">
                     <div class="input-group">
-                        <label>Zone / Matériel à valider</label>
-                        <select id="clean-zone">
-                            </select>
+                        <label>Zone / Matériel à valider (Taper ou choisir)</label>
+                        <input type="text" id="clean-zone" placeholder="Ex: Sols et Siphons...">
+                        <div id="chips-clean-zone" class="chips-container"></div>
                     </div>
                     <div class="input-group">
                         <label>Statut</label>
@@ -151,9 +157,10 @@
             <div class="card">
                 <h2 style="margin:0 0 15px 0; font-size: 0.9rem; color: var(--gold); text-transform: uppercase;">TRAÇABILITÉ / ÉTIQUETTES : <span class="display-dept"></span></h2>
                 <div class="grid" style="grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));">
-                    <div class="input-group">
-                        <label>Produit</label>
+                    <div class="input-group" style="grid-column: span 2;">
+                        <label>Produit (Taper ou choisir)</label>
                         <input type="text" id="trace-name" placeholder="Ex: Entrecôte Angus">
+                        <div id="chips-trace-name" class="chips-container"></div>
                     </div>
                     <div class="input-group">
                         <label>N° Lot / Fournisseur</label>
@@ -191,20 +198,32 @@
         let db = { temp: [], cleaning: [], trace: [] };
         let currentDept = ""; let pin = ""; let rectifiedId = null; let rectifiedType = null;
         
-        const USERS = { "1234": "Serveur", "5678": "Cuisinier", "4321": "Barman", "9999": "Manager" };
+        // 🟢 NOUVELLE HIÉRARCHIE D'UTILISATEURS (Le Chef est intégré)
+        const USERS = { "1234": "Serveur", "5678": "Cuisinier", "4321": "Barman", "7777": "Chef", "9999": "Manager" };
 
-        // 🟢 NORMES HACCP : PLAN DE NETTOYAGE STRICT PAR SERVICE
-        const CLEANING_PLAN = {
-            "CUISINE": ["Sols et Siphons", "Plans de travail (Désinfection)", "Chambres Froides (Sols/Étagères)", "Hottes et Filtres", "Plonge et Lave-vaisselle", "Trancheuse / Hachoir", "Poubelles", "Autre"],
-            "BAR": ["Tirage Pression / Becs", "Machine à Glaçons", "Arrière-bar (Frigos vitrés)", "Plans de travail Bar", "Sols Bar", "Lave-verres", "Autre"],
-            "SERVICE": ["Sols Salle", "Tables et Chaises (Désinfection)", "Sanitaires Clients", "TPE / Caisse", "Cartes / Menus", "Autre"]
+        // BASES DE DONNÉES APPRENANTES
+        let EMPIRE_LISTS = {
+            "CUISINE": {
+                eq: ["Chambre Froide Positive", "Chambre Froide Négative", "Frigo Sous-Bassement", "Liaison Chaude"],
+                clean: ["Sols et Siphons", "Plans de travail", "Chambres Froides", "Hottes et Filtres", "Plonge", "Trancheuse"],
+                trace: ["Entrecôte", "Saumon", "Poulet", "Fond de Veau"]
+            },
+            "BAR": {
+                eq: ["Arrière Bar 1", "Arrière Bar 2", "Cave à Vin", "Machine à Glaçons"],
+                clean: ["Tirage Pression", "Machine à Glaçons", "Arrière-bar", "Sols Bar", "Lave-verres"],
+                trace: ["Jus d'orange", "Lait", "Citrons", "Fût de bière"]
+            },
+            "SERVICE": {
+                eq: ["Vitrine Desserts", "Frigo Boissons Salle"],
+                clean: ["Sols Salle", "Tables et Chaises", "Sanitaires", "TPE / Caisse"],
+                trace: ["Moutarde", "Ketchup", "Mayonnaise"]
+            }
         };
 
-        const EQUIPMENTS = {
-            "CUISINE": ["Chambre Froide Positive", "Chambre Froide Négative", "Frigo Sous-Bassement 1", "Cellule de Refroidissement", "Liaison Chaude (>63°C)"],
-            "BAR": ["Arrière Bar 1", "Arrière Bar 2", "Cave à Vin", "Machine à Glaçons"],
-            "SERVICE": ["Vitrine Desserts", "Frigo Boissons Salle"]
-        };
+        try {
+            const savedLists = localStorage.getItem('EMPIRE_HACCP_LISTS');
+            if (savedLists) EMPIRE_LISTS = JSON.parse(savedLists);
+        } catch(e){}
 
         // INITIALISATION
         function showPinPad(d) { currentDept = d; document.getElementById('login-step-1').style.display = 'none'; document.getElementById('login-step-2').style.display = 'flex'; document.getElementById('login-instruction').innerText = "CODE " + d + " REQUIS"; }
@@ -218,24 +237,51 @@
                 document.getElementById('link-' + currentDept.toLowerCase()).style.display = 'block';
                 document.getElementById('login-screen').style.display = 'none';
                 
-                // Charger les listes déroulantes normatives
-                populateSelects();
-                
-                // Charger la Date du jour par défaut pour l'ouverture DLC
+                renderChips(); 
                 document.getElementById('trace-open').valueAsDate = new Date();
-
                 await loadData();
             } else { alert("❌ CODE PIN INVALIDE."); clearPin(); }
         }
 
-        function populateSelects() {
-            // Remplir Plan de Nettoyage
-            const cleanSelect = document.getElementById('clean-zone');
-            cleanSelect.innerHTML = CLEANING_PLAN[currentDept].map(t => `<option value="${t}">${t}</option>`).join('');
-            
-            // Remplir Equipements Température
-            const eqSelect = document.getElementById('temp-eq');
-            eqSelect.innerHTML = EQUIPMENTS[currentDept].map(e => `<option value="${e}">${e}</option>`).join('');
+        // 🟢 RENDU DES PASTILLES AVEC DROIT DE SUPPRESSION POUR CHEF/MANAGER
+        function renderChips() {
+            const list = EMPIRE_LISTS[currentDept];
+            const isBoss = (USERS[pin] === "Manager" || USERS[pin] === "Chef");
+
+            const makeChips = (arr, cat) => arr.map((v, i) => 
+                `<span class="chip" onclick="document.getElementById('${getCatInput(cat)}').value='${v.replace(/'/g, "\\'")}'">${v} ${isBoss ? `<span class="chip-del" onclick="event.stopPropagation(); deleteChip('${cat}', ${i})">✖</span>` : ''}</span>`
+            ).join('');
+
+            document.getElementById('chips-temp-eq').innerHTML = makeChips(list.eq, 'eq');
+            document.getElementById('chips-clean-zone').innerHTML = makeChips(list.clean, 'clean');
+            document.getElementById('chips-trace-name').innerHTML = makeChips(list.trace, 'trace');
+        }
+
+        function getCatInput(cat) {
+            if(cat==='eq') return 'temp-eq';
+            if(cat==='clean') return 'clean-zone';
+            return 'trace-name';
+        }
+
+        // 🟢 GOMME DU MANAGER/CHEF
+        function deleteChip(category, index) {
+            if(confirm("Supprimer cette pastille définitivement ?")) {
+                EMPIRE_LISTS[currentDept][category].splice(index, 1);
+                localStorage.setItem('EMPIRE_HACCP_LISTS', JSON.stringify(EMPIRE_LISTS));
+                renderChips();
+            }
+        }
+
+        // 🟢 APPRENTISSAGE RESTREINT (Seul Chef/Manager enregistre le mot pour le futur)
+        function learnNewItem(category, value) {
+            const valClean = value.trim();
+            if (valClean !== "" && !EMPIRE_LISTS[currentDept][category].includes(valClean)) {
+                if (USERS[pin] === "Manager" || USERS[pin] === "Chef") {
+                    EMPIRE_LISTS[currentDept][category].push(valClean);
+                    localStorage.setItem('EMPIRE_HACCP_LISTS', JSON.stringify(EMPIRE_LISTS));
+                    renderChips(); 
+                }
+            }
         }
 
         function toggleCleanObs() {
@@ -261,7 +307,6 @@
         }
 
         function renderLogs() {
-            // 1. Rendu Températures
             document.getElementById('logs-temp').innerHTML = db.temp.filter(l => l.dept === currentDept).slice(0,20).map(l => `
                 <tr class="${l.originalId ? 'strikethrough' : ''}">
                     <td>${l.date} à ${l.time}</td>
@@ -272,7 +317,6 @@
                     <td>${!l.originalId ? `<button class="btn-rectify" onclick="initRectify('temp', ${l.id})">⚠️ Corriger</button>` : ''}</td>
                 </tr>`).join('');
 
-            // 2. Rendu Nettoyage
             document.getElementById('logs-cleaning').innerHTML = db.cleaning.filter(l => l.dept === currentDept).slice(0,20).map(l => `
                 <tr class="${l.originalId ? 'strikethrough' : ''}">
                     <td>${l.date} à ${l.time}</td>
@@ -283,11 +327,9 @@
                     <td>${!l.originalId ? `<button class="btn-rectify" onclick="initRectify('cleaning', ${l.id})">⚠️ Corriger</button>` : ''}</td>
                 </tr>`).join('');
 
-            // 3. Rendu DLC Epack Pro
             document.getElementById('logs-trace').innerHTML = db.trace.filter(l => l.dept === currentDept).slice(0,20).map(l => {
                 let diffDays = l.dlc ? Math.ceil((new Date(l.dlc) - new Date().setHours(0,0,0,0)) / 86400000) : null;
-                let dlcStatus = "";
-                let rowClass = "";
+                let dlcStatus = ""; let rowClass = "";
                 if(diffDays !== null) {
                     if (diffDays < 0) { dlcStatus = `<b style="color:var(--alert);">PÉRIMÉ</b>`; rowClass = "dlc-alert"; }
                     else if (diffDays === 0) { dlcStatus = `<b style="color:var(--alert);">EXPIRE AUJ.</b>`; rowClass = "dlc-alert"; }
@@ -318,38 +360,40 @@
             };
 
             if (rectifiedId) {
-                if(USERS[pin] !== "Manager") return alert("⛔ ACCÈS REFUSÉ : Seul un Manager (9999) peut valider une rectification.");
-                entry.rectified = `[CORRIGÉ PAR MANAGER] le ${entry.date} à ${entry.time}`;
-                // L'ancienne ligne devient obsolète (on garde une trace)
+                if(USERS[pin] !== "Manager" && USERS[pin] !== "Chef") return alert("⛔ ACCÈS REFUSÉ : Chef ou Manager requis pour rectifier.");
+                entry.rectified = `[CORRIGÉ PAR ${USERS[pin].toUpperCase()}] le ${entry.date} à ${entry.time}`;
                 const oldIndex = db[type].findIndex(x => x.id === rectifiedId);
                 if(oldIndex > -1) db[type][oldIndex].originalId = entry.id; 
             }
 
             if(type === 'temp') {
-                entry.eq = document.getElementById('temp-eq').value;
+                entry.eq = document.getElementById('temp-eq').value.trim();
                 entry.val = parseFloat(document.getElementById('temp-val').value);
                 if(!entry.eq || isNaN(entry.val)) return alert("Remplissez l'équipement et la valeur.");
-                entry.status = entry.val <= (entry.eq.includes("Négative") ? -18 : 4) ? 'OK' : 'ALERTE';
+                entry.status = entry.val <= (entry.eq.toUpperCase().includes("NÉGATIVE") || entry.eq.toUpperCase().includes("CONGÉL") ? -18 : 4) ? 'OK' : 'ALERTE';
+                learnNewItem('eq', entry.eq);
             
             } else if(type === 'cleaning') {
-                entry.zone = document.getElementById('clean-zone').value;
+                entry.zone = document.getElementById('clean-zone').value.trim();
                 entry.status = document.getElementById('clean-status').value;
-                entry.obs = document.getElementById('clean-obs').value;
+                entry.obs = document.getElementById('clean-obs').value.trim();
+                if(!entry.zone) return alert("Veuillez indiquer la zone nettoyée.");
                 if(entry.status === 'NON CONFORME' && !entry.obs) return alert("Une action corrective est obligatoire si NON CONFORME.");
+                learnNewItem('clean', entry.zone);
             
             } else if(type === 'trace') {
-                entry.name = document.getElementById('trace-name').value;
-                entry.lot = document.getElementById('trace-lot').value;
+                entry.name = document.getElementById('trace-name').value.trim();
+                entry.lot = document.getElementById('trace-lot').value.trim();
                 entry.openDate = document.getElementById('trace-open').value;
                 entry.dlc = document.getElementById('trace-dlc').value;
                 entry.img = document.getElementById('trace-img').files.length > 0;
                 if(!entry.name || !entry.lot || !entry.dlc) return alert("Produit, Lot et DLC obligatoires.");
+                learnNewItem('trace', entry.name);
             }
 
             db[type].unshift(entry);
             await API.update(`HACCP_${type.toUpperCase()}`, db[type]);
             
-            // Reset UI
             rectifiedId = null;
             document.getElementById(`btn-save-${type}`).innerText = type === 'trace' ? "ARCHIVER PRODUIT" : (type === 'cleaning' ? "VALIDER LE NETTOYAGE" : "ENREGISTRER");
             document.querySelectorAll('input[type="text"], input[type="number"]').forEach(i => i.value = "");
@@ -358,10 +402,8 @@
         }
 
         function initRectify(type, id) {
-            if(USERS[pin] !== "Manager") {
-                alert("⛔ RECTIFICATION MANAGER UNIQUEMENT. Le code 9999 est requis.");
-                return;
-            }
+            if(USERS[pin] !== "Manager" && USERS[pin] !== "Chef") return alert("⛔ MANAGER OU CHEF UNIQUEMENT.");
+            
             const item = db[type].find(x => x.id === id);
             rectifiedId = id; rectifiedType = type;
             
