@@ -381,76 +381,91 @@
             } else { display.classList.remove('fc-good', 'fc-bad'); display.innerHTML = `ℹ️ Le calcul se fera automatiquement.`; }
         }
 
-        // 🟢 NOUVELLE FONCTION : CALCUL DU COÛT MATIÈRE AUTOMATIQUE
+        // 🟢 MOTEUR DE CALCUL DU COÛT MATIÈRE AUTOMATIQUE (SMART PARSING)
         let calcTimeout;
         function autoCalculateCost() {
             clearTimeout(calcTimeout);
+            
             calcTimeout = setTimeout(() => {
                 const text = document.getElementById('rec-ing').value;
                 const lines = text.split('\n');
                 let totalCost = 0;
+                let matchedItemsCount = 0;
 
-                // Aplatir l'inventaire pour la recherche rapide
+                // Aplatir l'inventaire pour chercher le prix des ingrédients
                 let flatInventory = [];
                 if(globalInventoryData.cuisine) flatInventory.push(...globalInventoryData.cuisine);
                 if(globalInventoryData.bar) flatInventory.push(...globalInventoryData.bar);
-                if(globalInventoryData.service) flatInventory.push(...globalInventoryData.service);
 
                 lines.forEach(line => {
                     line = line.trim();
                     if(!line) return;
 
-                    // Regex qui comprend : "200 g Viande", "2.5 L Lait", "3 pièce Oeufs"
-                    const match = line.match(/^([\d.,]+)\s*(g|kg|ml|cl|l|litre|litres|pièce|piece|pce|tranche|feuille|botte)?\s+(.*)$/i);
+                    // Regex de parsing
+                    const match = line.match(/^([\d.,]+)\s*([a-zA-Zéèêàâäöüïîç]+)?\s*(?:de\s|d'|des\s)?(.*)$/i);
                     
                     if(match) {
                         let qty = parseFloat(match[1].replace(',', '.'));
                         let unit = match[2] ? match[2].toLowerCase() : '';
                         let ingName = match[3].trim().toLowerCase();
 
-                        // Chercher dans l'inventaire (Recherche approximative)
-                        let invItem = flatInventory.find(i => i.name.toLowerCase() === ingName || ingName.includes(i.name.toLowerCase()));
+                        // Chercher l'ingrédient
+                        let invItem = flatInventory.find(i => {
+                            let dbName = i.name.toLowerCase();
+                            return ingName.includes(dbName) || dbName.includes(ingName);
+                        });
 
                         if(invItem) {
-                            let pricePerInvUnit = invItem.unitPrice;
-                            let invUnit = invItem.unit.toLowerCase(); 
+                            let pricePerInvUnit = invItem.unitPrice || 0;
+                            let invUnit = (invItem.unit || '').toLowerCase(); 
                             let costForLine = 0;
 
-                            // CONVERSIONS INTELLIGENTES
-                            if (invUnit === 'kg') {
-                                if (unit === 'g') costForLine = (qty / 1000) * pricePerInvUnit;
-                                else costForLine = qty * pricePerInvUnit; // Assume kg
-                            } 
-                            else if (invUnit === 'l' || invUnit === 'litre' || invUnit === 'litres') {
-                                if (unit === 'cl') costForLine = (qty / 100) * pricePerInvUnit;
-                                else if (unit === 'ml') costForLine = (qty / 1000) * pricePerInvUnit;
-                                else costForLine = qty * pricePerInvUnit; // Assume L
-                            }
-                            else {
-                                // Pièce, Boîte, etc. (Multiplication directe)
+                            // Conversions
+                            if ((invUnit === 'kg' || invUnit === 'kilo') && unit === 'g') {
+                                costForLine = (qty / 1000) * pricePerInvUnit;
+                            } else if ((invUnit === 'l' || invUnit === 'litre') && (unit === 'cl')) {
+                                costForLine = (qty / 100) * pricePerInvUnit;
+                            } else if ((invUnit === 'l' || invUnit === 'litre') && (unit === 'ml')) {
+                                costForLine = (qty / 1000) * pricePerInvUnit;
+                            } else {
                                 costForLine = qty * pricePerInvUnit;
                             }
+
                             totalCost += costForLine;
+                            matchedItemsCount++;
                         }
                     }
                 });
 
-                // Mettre à jour l'interface si un coût a été trouvé
+                const costInput = document.getElementById('rec-cost');
+                const displayInfo = document.getElementById('fc-display');
+
                 if(totalCost > 0) {
-                    let costInput = document.getElementById('rec-cost');
                     costInput.value = totalCost.toFixed(2);
                     
                     // Effet Waouh
-                    costInput.style.backgroundColor = "var(--accent-dim)";
+                    costInput.style.backgroundColor = "rgba(52, 211, 153, 0.2)";
                     costInput.style.borderColor = "var(--accent)";
+                    costInput.style.color = "var(--accent)";
+                    
+                    displayInfo.innerHTML = `✅ <b>${matchedItemsCount} ingrédient(s)</b> reconnu(s) et calculé(s) depuis l'Économat.`;
+                    displayInfo.className = 'fc-display fc-good';
+                    
                     setTimeout(() => {
                         costInput.style.backgroundColor = "var(--panel)";
                         costInput.style.borderColor = "var(--border)";
-                    }, 800);
+                        costInput.style.color = "var(--text-main)";
+                    }, 1000);
                     
                     updateFC();
+                } else if (text.length > 5) {
+                     displayInfo.innerHTML = `⚠️ Aucun ingrédient n'a été trouvé. Vérifiez votre Économat.`;
+                     displayInfo.className = 'fc-display fc-bad';
+                } else {
+                     displayInfo.innerHTML = `ℹ️ Collez vos ingrédients pour estimer le coût matière.`;
+                     displayInfo.className = 'fc-display';
                 }
-            }, 800); // Attend que le chef ait fini de coller/taper (800ms)
+            }, 800);
         }
 
         function startSmartDictation(category, btnId) {
@@ -564,7 +579,7 @@
             recognition.onresult = function(e) { 
                 let sep = input.tagName.toLowerCase() === 'textarea' ? " \n" : " ";
                 input.value += (input.value ? sep : "") + e.results[0][0].transcript; 
-                if(inputId === 'rec-ing') autoCalculateCost(); // Déclenche le calcul automatique aussi après dictée
+                if(inputId === 'rec-ing') autoCalculateCost();
             };
             recognition.onspeechend = function() { recognition.stop(); };
             recognition.onend = function() { btn.classList.remove('recording'); };
@@ -671,7 +686,7 @@
                 if (state.activeOrders && state.activeOrders['RECIPES_MASTER']) { recipesData = state.activeOrders['RECIPES_MASTER'].data; }
                 
                 if (state.activeOrders && state.activeOrders['INVENTORY_MASTER']) {
-                    globalInventoryData = state.activeOrders['INVENTORY_MASTER'].data; // Sauvegarde globale pour le calcul auto
+                    globalInventoryData = state.activeOrders['INVENTORY_MASTER'].data;
                     let totalCuisine = 0;
                     if(globalInventoryData.cuisine) {
                         globalInventoryData.cuisine.forEach(item => {
@@ -810,94 +825,6 @@
 
         switchTab('menu');
         bootSystem();
-  // 🟢 MOTEUR DE CALCUL DU COÛT MATIÈRE AUTOMATIQUE (SMART PARSING)
-        let calcTimeout;
-        function autoCalculateCost() {
-            clearTimeout(calcTimeout);
-            
-            // Attendre 800ms après la fin du "coller" pour ne pas faire bugger l'interface
-            calcTimeout = setTimeout(() => {
-                const text = document.getElementById('rec-ing').value;
-                const lines = text.split('\n');
-                let totalCost = 0;
-                let matchedItemsCount = 0;
-
-                // Aplatir l'inventaire pour chercher le prix des ingrédients
-                let flatInventory = [];
-                if(globalInventoryData.cuisine) flatInventory.push(...globalInventoryData.cuisine);
-                if(globalInventoryData.bar) flatInventory.push(...globalInventoryData.bar);
-
-                lines.forEach(line => {
-                    line = line.trim();
-                    if(!line) return;
-
-                    // L'Intelligence Artificielle de parsing : 
-                    // Il extrait : [1] La quantité, [2] L'unité (g, ml, gousse...), [3] Le nom de l'ingrédient sans "de" ou "d'"
-                    const match = line.match(/^([\d.,]+)\s*([a-zA-Zéèêàâäöüïîç]+)?\s*(?:de\s|d'|des\s)?(.*)$/i);
-                    
-                    if(match) {
-                        let qty = parseFloat(match[1].replace(',', '.'));
-                        let unit = match[2] ? match[2].toLowerCase() : '';
-                        let ingName = match[3].trim().toLowerCase();
-
-                        // Chercher l'ingrédient dans l'économat (recherche très souple)
-                        let invItem = flatInventory.find(i => {
-                            let dbName = i.name.toLowerCase();
-                            return ingName.includes(dbName) || dbName.includes(ingName);
-                        });
-
-                        if(invItem) {
-                            let pricePerInvUnit = invItem.unitPrice || 0;
-                            let invUnit = (invItem.unit || '').toLowerCase(); 
-                            let costForLine = 0;
-
-                            // Conversions Mathématiques Automatiques
-                            if ((invUnit === 'kg' || invUnit === 'kilo') && unit === 'g') {
-                                costForLine = (qty / 1000) * pricePerInvUnit;
-                            } else if ((invUnit === 'l' || invUnit === 'litre') && (unit === 'cl')) {
-                                costForLine = (qty / 100) * pricePerInvUnit;
-                            } else if ((invUnit === 'l' || invUnit === 'litre') && (unit === 'ml')) {
-                                costForLine = (qty / 1000) * pricePerInvUnit;
-                            } else {
-                                // Cas direct : (ex: 1 gousse, 1 pièce, ou 200g = 200g)
-                                costForLine = qty * pricePerInvUnit;
-                            }
-
-                            totalCost += costForLine;
-                            matchedItemsCount++;
-                        }
-                    }
-                });
-
-                const costInput = document.getElementById('rec-cost');
-                const displayInfo = document.getElementById('fc-display');
-
-                if(totalCost > 0) {
-                    costInput.value = totalCost.toFixed(2);
-                    
-                    // 🟢 EFFET WAOUH : La case clignote en vert pour montrer qu'elle a travaillé
-                    costInput.style.backgroundColor = "rgba(52, 211, 153, 0.2)";
-                    costInput.style.borderColor = "var(--accent)";
-                    costInput.style.color = "var(--accent)";
-                    
-                    displayInfo.innerHTML = `✅ <b>${matchedItemsCount} ingrédient(s)</b> reconnu(s) et calculé(s) depuis l'Économat.`;
-                    displayInfo.className = 'fc-display fc-good';
-                    
-                    setTimeout(() => {
-                        costInput.style.backgroundColor = "var(--panel)";
-                        costInput.style.borderColor = "var(--border)";
-                        costInput.style.color = "var(--text-main)";
-                    }, 1000);
-                    
-                    updateFC(); // Met à jour le Food Cost
-                } else if (text.length > 5) {
-                     displayInfo.innerHTML = `⚠️ Aucun ingrédient n'a été trouvé. Vérifiez votre Économat.`;
-                     displayInfo.className = 'fc-display fc-bad';
-                } else {
-                     displayInfo.innerHTML = `ℹ️ Collez vos ingrédients pour estimer le coût matière.`;
-                     displayInfo.className = 'fc-display';
-                }
-            }, 800);
-        }
+    </script>
 </body>
 </html>
