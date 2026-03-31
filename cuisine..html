@@ -96,7 +96,7 @@
 
         /* MODULE RECETTES & STAFF */
         .recipe-card { background: var(--panel-zen); padding: 20px; border-radius: 8px; border: 1px solid var(--border-zen); }
-        .recipe-title { color: var(--info-zen); font-size: 1.2rem; font-weight: bold; margin: 0 0 10px 0; border-bottom: 1px solid var(--border-zen); padding-bottom: 10px; }
+        .recipe-title { color: var(--info-zen); font-size: 1.2rem; font-weight: bold; margin: 0 0 10px 0; border-bottom: 1px solid var(--border-zen); padding-bottom: 10px; text-transform: uppercase; }
         .recipe-text { font-size: 0.9rem; color: #cbd5e1; line-height: 1.6; white-space: pre-wrap; }
 
         /* MODULE FOURNISSEURS & INPUTS */
@@ -160,8 +160,13 @@
     </div>
 
     <div id="mod-staff" class="module">
-        <h2 style="color:var(--purple-zen); margin:0; border-bottom: 1px solid var(--border-zen); padding-bottom: 15px;">👥 PLANNING DE LA BRIGADE</h2>
-        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 20px; margin-top: 10px;">
+        <div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid var(--border-zen); padding-bottom: 15px;">
+            <h2 style="color:var(--purple-zen); margin:0;">👥 PLANNING DE LA BRIGADE</h2>
+            
+            <button class="nav-btn" style="border-color: var(--purple-zen); color: var(--purple-zen); background: rgba(167, 139, 250, 0.1);" onclick="window.open('rh.html', '_blank')">👔 PORTAIL RH</button>
+        </div>
+        
+        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 20px; margin-top: 15px;">
             
             <div class="recipe-card" style="display: flex; flex-direction: column;">
                 <h4 class="recipe-title" style="color: var(--text-zen);">LUNDI</h4>
@@ -199,7 +204,7 @@
             </div>
 
         </div>
-        <button class="btn-add" style="width: 100%; margin-top: 15px; background: var(--purple-zen); color: #000;" onclick="saveStaffPlanning()">💾 SAUVEGARDER LE PLANNING BRIGADE</button>
+        <button class="btn-add" style="width: 100%; margin-top: 15px; background: var(--purple-zen); color: #000; font-size: 1.1rem; padding: 20px;" onclick="saveStaffPlanning()">💾 SAUVEGARDER ET SYNCHRONISER AVEC LES RH</button>
     </div>
 
     <div id="mod-recipes" class="module">
@@ -294,11 +299,9 @@
             ];
         }
 
-        // Rotation fluide du texte
         setInterval(() => {
             const textEl = document.getElementById('resa-text');
             textEl.style.opacity = 0; 
-            
             setTimeout(() => {
                 textEl.innerText = resaViews[currentResaViewIndex];
                 currentResaViewIndex = (currentResaViewIndex + 1) % resaViews.length;
@@ -306,23 +309,27 @@
             }, 500); 
         }, 5000); 
 
-        // --- GESTION DU PLANNING STAFF ---
-        function loadStaffPlanning() {
-            try {
-                let staffData = JSON.parse(localStorage.getItem('empire_staff_planning') || '{}');
-                ['lun', 'mar', 'mer', 'jeu', 'ven', 'sam', 'dim'].forEach(day => {
-                    if(staffData[day]) document.getElementById(`staff-${day}`).value = staffData[day];
-                });
-            } catch(e) {}
+        // 🟢 GESTION CONNECTÉE DU PLANNING STAFF AVEC LES RH
+        function updateStaffUI(staffData) {
+            if (!staffData) return;
+            ['lun', 'mar', 'mer', 'jeu', 'ven', 'sam', 'dim'].forEach(day => {
+                let el = document.getElementById(`staff-${day}`);
+                // On met à jour l'affichage seulement si le chef n'est pas en train d'écrire dedans
+                if(staffData[day] !== undefined && document.activeElement !== el) {
+                    el.value = staffData[day];
+                }
+            });
         }
 
-        function saveStaffPlanning() {
+        async function saveStaffPlanning() {
             let staffData = {};
             ['lun', 'mar', 'mer', 'jeu', 'ven', 'sam', 'dim'].forEach(day => {
                 staffData[day] = document.getElementById(`staff-${day}`).value;
             });
-            localStorage.setItem('empire_staff_planning', JSON.stringify(staffData));
-            alert("✅ Planning de la Brigade sauvegardé !");
+            
+            // Envoi dans la base de données centrale pour que RH.html puisse le lire
+            await API.update('STAFF_PLANNING_MASTER', staffData);
+            alert("✅ Planning de la Brigade synchronisé avec succès vers le portail RH !");
         }
 
         // --- 3. MOTEUR KDS (LES BONS) ---
@@ -512,7 +519,6 @@
             `).join('');
         }
 
-        // --- 6. NAVIGATION ET BOOT ---
         function switchTab(tab) {
             document.querySelectorAll('.module').forEach(m => m.classList.remove('active'));
             document.querySelectorAll('.nav-btn').forEach(b => { if(!b.classList.contains('haccp')) b.classList.remove('active'); });
@@ -531,10 +537,14 @@
                 if (activeOrders['RECIPES_MASTER']) recipesData = activeOrders['RECIPES_MASTER'].data;
                 if (activeOrders['SUPPLIER_ORDERS_CUISINE']) supplierOrders = activeOrders['SUPPLIER_ORDERS_CUISINE'].data;
                 
-                // 🟢 MAJ DES RÉSERVATIONS POUR LE COMPTEUR
                 if (activeOrders['RESERVATIONS_MASTER']) {
                     reservationsData = activeOrders['RESERVATIONS_MASTER'].data || [];
                     calculateReservations(); 
+                }
+
+                // 🟢 LECTURE DU PLANNING STAFF DEPUIS LE SERVEUR
+                if (activeOrders['STAFF_PLANNING_MASTER']) {
+                    updateStaffUI(activeOrders['STAFF_PLANNING_MASTER'].data);
                 }
                 
                 renderKDS();
@@ -542,12 +552,10 @@
         }
 
         async function bootSystem() {
-            loadStaffPlanning();
             await fetchSystemState();
             renderRecipes();
             renderSupplierOrders();
 
-            // Polling toutes les 3 secondes pour un affichage réactif
             setInterval(async () => {
                 await fetchSystemState();
             }, 3000);
