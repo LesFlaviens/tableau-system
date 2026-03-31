@@ -339,8 +339,12 @@
     <div id="edit-item-modal" class="modal">
         <h2 style="color:var(--gold); font-size: 2rem; margin-bottom: 20px; text-transform: uppercase;">✏️ Ajuster le Plat</h2>
         <h3 style="color:var(--text-main); margin-bottom: 20px; font-size: 1.4rem;" id="edit-item-title">Nom</h3>
+        
+        <button class="pay-btn" style="border-color: var(--service); color: var(--service); background: rgba(244, 114, 182, 0.1); width: 100%; margin-bottom: 15px;" onclick="offerItem()">🎁 OFFRIR CE PLAT (Geste Co.)</button>
+        
         <input type="number" id="edit-item-price" class="edit-input" step="0.01" placeholder="Nouveau Prix (€)">
         <input type="text" id="edit-item-obs" class="edit-input" placeholder="Observation (Sans sel, etc...)">
+        
         <button class="pay-btn" style="border-color: var(--accent); color: var(--accent); background: var(--accent-dim);" onclick="saveItemEdit()">✅ VALIDER L'AJUSTEMENT</button>
         <button class="pay-btn cancel" style="background: var(--bg);" onclick="closeEditModal()">❌ ANNULER</button>
     </div>
@@ -557,7 +561,6 @@
         // 3. GESTION DES SALLES ET ARCHITECTURE
         // -----------------------------------------
         
-        // 🟢 NOUVELLE FONCTION : LA TABLE VOLANTE (EXTRA)
         function addExtraTable() {
             let tName = prompt("Nom de la table supplémentaire ? (ex: EXT 1, BAR, etc.)");
             if (!tName || tName.trim() === "") return;
@@ -575,12 +578,12 @@
                 h: 80, 
                 shape: "rect", 
                 room: currentRoom,
-                isExtra: true // Le marqueur magique
+                isExtra: true 
             });
             
             localStorage.setItem('empire_architecture', JSON.stringify(tables));
             renderFloor();
-            openOrder(tName); // Ouvre la table instantanément
+            openOrder(tName);
         }
 
         function renderRooms() { document.getElementById('room-tabs-container').innerHTML = rooms.map((r, i) => `<div class="room-tab ${r === currentRoom ? 'active' : 'inactive'}" onclick="handleRoomClick('${r}')">${r}</div>`).join(''); }
@@ -660,7 +663,6 @@
                 tables.filter(t => t && t.room === currentRoom).forEach(t => {
                     let d = document.createElement('div'); d.className = 'table-obj shape-' + (t.shape || 'oval');
                     
-                    // 🟢 AJOUT CLASSE VISUELLE POUR TABLE EXTRA
                     if(t.isExtra) d.classList.add('extra');
 
                     if(activeOrders[t.label]) { d.classList.add('ordered'); if(activeOrders[t.label].status === 'ready') { d.classList.remove('ordered'); d.classList.add('ready'); } }
@@ -677,7 +679,7 @@
         }
 
         // -----------------------------------------
-        // 5. GESTION DES COMMANDES (TIROIR & MENU DYNAMIQUE)
+        // 5. GESTION DES COMMANDES (TIROIR & MENU)
         // -----------------------------------------
         function openOrder(tableLabel) {
             currentTable = tableLabel;
@@ -767,7 +769,7 @@
         function executeAddToCart(n, p, dest) { 
             let e = ticketItems.find(i => i.n === n && !i.done && !i.fired); 
             if(e) e.qty = (e.qty||1)+1; 
-            else ticketItems.push({ id: Date.now()+Math.random(), itemId: Date.now(), n, p, qty: 1, done: false, dest, fired: false, savedToDB: false }); 
+            else ticketItems.push({ id: Date.now()+Math.random(), itemId: Date.now(), n, p, qty: 1, done: false, dest, fired: false, savedToDB: false, isOffered: false }); 
             renderTicket(); 
         }
         
@@ -782,12 +784,36 @@
         }
 
         let pendingEditIndex = null;
-        function openEditItem(idx) { pendingEditIndex = idx; let item = ticketItems[idx]; document.getElementById('edit-item-title').innerText = item.n.replace(/\n/g, ' '); document.getElementById('edit-item-price').value = item.p; document.getElementById('edit-item-obs').value = item.obs || ""; document.getElementById('edit-item-modal').style.display = 'flex'; }
+        function openEditItem(idx) { 
+            pendingEditIndex = idx; 
+            let item = ticketItems[idx]; 
+            document.getElementById('edit-item-title').innerText = item.n.replace(/\n/g, ' '); 
+            document.getElementById('edit-item-price').value = item.p; 
+            document.getElementById('edit-item-obs').value = item.obs || ""; 
+            document.getElementById('edit-item-modal').style.display = 'flex'; 
+        }
         function closeEditModal() { pendingEditIndex = null; document.getElementById('edit-item-modal').style.display = 'none'; }
         function saveItemEdit() {
             if(pendingEditIndex === null) return; let p = parseFloat(document.getElementById('edit-item-price').value);
             if(!isNaN(p)) { ticketItems[pendingEditIndex].p = p; ticketItems[pendingEditIndex].obs = document.getElementById('edit-item-obs').value; logAction("CORRECTION ERREUR HUMAINE", `Table: ${currentTable} | Plat: ${ticketItems[pendingEditIndex].n}`); }
             closeEditModal(); renderTicket();
+        }
+
+        // 🟢 NOUVEAU : FONCTION GESTE COMMERCIAL (CADEAU)
+        function offerItem() {
+            if(pendingEditIndex === null) return;
+            let item = ticketItems[pendingEditIndex];
+            
+            item.originalPrice = item.originalPrice || item.p; 
+            item.p = 0; 
+            item.isOffered = true;
+            item.obs = (item.obs ? item.obs + " | " : "") + "🎁 Geste Co.";
+
+            logAction("GESTE COMMERCIAL (PLAT OFFERT)", `Table: ${currentTable} | Plat: ${item.n} | Ancien prix: ${item.originalPrice}€`);
+
+            closeEditModal();
+            renderTicket();
+            saveTableState(false, true); 
         }
 
         async function fireItem(idx) {
@@ -811,6 +837,14 @@
                     statusHtml = `<button class="status-btn-fire" onclick="fireItem(${idx}); event.stopPropagation();">🔥 ENVOYER</button>`;
                 }
 
+                // 🟢 MODIFICATION : AFFICHAGE SPÉCIAL SI LE PLAT EST OFFERT
+                let priceHtml = '';
+                if (i.isOffered) {
+                    priceHtml = `<span style="margin-right:15px; font-weight:900; color:var(--service);">🎁 OFFERT</span>`;
+                } else {
+                    priceHtml = `<span style="margin-right:15px; font-weight:bold;">${((parseFloat(i.p)||0)*q).toFixed(2)}€</span>`;
+                }
+
                 return `<div style="display:flex; justify-content:space-between; align-items:center; padding:15px 10px; border-bottom:1px solid var(--border); ${i.done ? "opacity:0.5;" : ""}">
                     <div style="flex:1; cursor:pointer;" onclick="openEditItem(${idx})">
                         <div style="font-weight:bold; font-size:1.05rem;">${q>1?`<span style="color:var(--accent); font-weight:900;">${q}x</span> `:""}${cleanName||'?'}</div>
@@ -819,7 +853,7 @@
                             ${i.obs?`<span style="font-size:0.8rem; color:var(--obs-zen);">⚠️ ${i.obs}</span>`:''}
                         </div>
                     </div>
-                    <span style="margin-right:15px; font-weight:bold;">${((parseFloat(i.p)||0)*q).toFixed(2)}€</span>
+                    ${priceHtml}
                     <button class="item-delete-btn" onclick="removeTicketItem(${idx}); event.stopPropagation();">✕</button>
                 </div>`;
             }).join(''); document.getElementById('ticket-total').innerText = `Total: ${t.toFixed(2)}€`;
@@ -872,7 +906,6 @@
             }
         }
 
-        // 🟢 MODIFICATION : AUTO-DESTRUCTION DE LA TABLE VOLANTE SI VIDE
         function closeOrder() { 
             let tObj = tables.find(t => t && t.label === currentTable && t.isExtra);
             if (tObj && ticketItems.length === 0) {
@@ -994,12 +1027,10 @@
                 
                 await API.update('SALES_ARCHIVE_CUISINE', currentArchive);
 
-                // Clôture de la table
                 await fetch('/update-order', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({tableId: currentTable, order: null}) }).catch(e=>{});
                 
                 logAction("TABLE CLÔTURÉE (MULTI-PAIEMENTS)", `Table: ${currentTable} | Total: ${currentPayTotal.toFixed(2)}€`, ticketItems); 
                 
-                // 🟢 MODIFICATION : AUTO-DESTRUCTION SI TABLE EXTRA
                 let isExtra = tables.find(t => t && t.label === currentTable && t.isExtra);
                 if (isExtra) {
                     tables = tables.filter(t => !(t && t.label === currentTable && t.isExtra));
