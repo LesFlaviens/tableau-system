@@ -100,9 +100,6 @@
         .stat-name { flex: 1; font-weight: 600; font-size: 1.1rem; color: var(--text-main); }
         .stat-qty { font-size: 1.2rem; font-weight: 900; color: var(--accent); background: var(--accent-dim); padding: 5px 15px; border-radius: 20px; border: 1px solid rgba(52, 211, 153, 0.2); }
 
-        /* ECRAN LOGIN */
-        #login-screen { position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; background: var(--bg); z-index: 999999; display: flex; flex-direction: column; align-items: center; justify-content: center; }
-
         #print-zone { display: none; }
         @media print { body { background:#fff!important; color:#000!important; display:block; margin: 0; padding: 0;} body > *:not(#print-zone) { display: none !important; } #print-zone { display: block !important; width: 100%; font-family: sans-serif; } }
     </style>
@@ -249,13 +246,13 @@
                         <option value="desserts">Mettre dans : DESSERTS</option>
                     </select>
                     <div style="display:flex; gap:10px;">
-                        <input type="number" id="rec-cost" placeholder="Coût Matières (€)..." step="0.1" style="flex:1;" oninput="updateFC()">
+                        <input type="number" id="rec-cost" placeholder="Coût Matières (Calcul Auto) €" step="0.01" style="flex:1; transition: 0.3s;" oninput="updateFC()">
                         <input type="number" id="rec-price" placeholder="Prix de vente (€)..." step="0.5" style="flex:1;" oninput="updateFC()">
                     </div>
-                    <div id="fc-display" class="fc-display">ℹ️ Entrez le coût matières et le prix pour calculer la marge.</div>
+                    <div id="fc-display" class="fc-display">ℹ️ Collez vos ingrédients pour estimer le coût matière.</div>
                     
                     <div style="display:flex; gap:10px; align-items:stretch;">
-                        <textarea id="rec-ing" placeholder="Ingrédients..." style="flex:1; min-height: 80px;"></textarea>
+                        <textarea id="rec-ing" placeholder="Collez les ingrédients ici (ex: 200g Viande)..." style="flex:1; min-height: 100px;" oninput="autoCalculateCost()"></textarea>
                         <button id="mic-ing" class="btn-mic" onclick="startDictation('rec-ing', 'mic-ing')">🎙️</button>
                     </div>
                     <div style="display:flex; gap:10px; align-items:stretch;">
@@ -308,6 +305,7 @@
         let menuData = { menuJour: [], suggestions: [], entrees: [], plats: [], desserts: [] };
         let recipesData = [];
         let salesArchiveData = []; 
+        let globalInventoryData = { cuisine: [], bar: [], service: [] }; // Pour le calcul auto
         
         let editingRecipeId = null;
 
@@ -378,9 +376,96 @@
             if (price > 0 && cost > 0) {
                 let fc = (cost / price) * 100; let marge = price - cost;
                 display.classList.remove('fc-good', 'fc-bad');
-                if (fc <= target) { display.innerHTML = `✅ Food Cost : <b>${fc.toFixed(1)}%</b> <br><span style="font-size:0.75rem;">(+${marge.toFixed(2)}€)</span>`; display.classList.add('fc-good'); } 
-                else { display.innerHTML = `⚠️ DANGER FC : <b>${fc.toFixed(1)}%</b> <br><span style="font-size:0.75rem;">Dépasse ${target}% !</span>`; display.classList.add('fc-bad'); }
-            } else { display.classList.remove('fc-good', 'fc-bad'); display.innerHTML = `ℹ️ Entrez les prix.`; }
+                if (fc <= target) { display.innerHTML = `✅ Food Cost : <b>${fc.toFixed(1)}%</b> <br><span style="font-size:0.75rem; color:var(--text-muted);">Marge brute : +${marge.toFixed(2)}€</span>`; display.classList.add('fc-good'); } 
+                else { display.innerHTML = `⚠️ DANGER FC : <b>${fc.toFixed(1)}%</b> <br><span style="font-size:0.75rem;">Dépasse l'objectif de ${target}% !</span>`; display.classList.add('fc-bad'); }
+            } else { display.classList.remove('fc-good', 'fc-bad'); display.innerHTML = `ℹ️ Le calcul se fera automatiquement.`; }
+        }
+
+        // 🟢 MOTEUR DE CALCUL DU COÛT MATIÈRE AUTOMATIQUE (SMART PARSING)
+        let calcTimeout;
+        function autoCalculateCost() {
+            clearTimeout(calcTimeout);
+            
+            calcTimeout = setTimeout(() => {
+                const text = document.getElementById('rec-ing').value;
+                const lines = text.split('\n');
+                let totalCost = 0;
+                let matchedItemsCount = 0;
+
+                // Aplatir l'inventaire pour chercher le prix des ingrédients
+                let flatInventory = [];
+                if(globalInventoryData.cuisine) flatInventory.push(...globalInventoryData.cuisine);
+                if(globalInventoryData.bar) flatInventory.push(...globalInventoryData.bar);
+
+                lines.forEach(line => {
+                    line = line.trim();
+                    if(!line) return;
+
+                    // Regex de parsing
+                    const match = line.match(/^([\d.,]+)\s*([a-zA-Zéèêàâäöüïîç]+)?\s*(?:de\s|d'|des\s)?(.*)$/i);
+                    
+                    if(match) {
+                        let qty = parseFloat(match[1].replace(',', '.'));
+                        let unit = match[2] ? match[2].toLowerCase() : '';
+                        let ingName = match[3].trim().toLowerCase();
+
+                        // Chercher l'ingrédient
+                        let invItem = flatInventory.find(i => {
+                            let dbName = i.name.toLowerCase();
+                            return ingName.includes(dbName) || dbName.includes(ingName);
+                        });
+
+                        if(invItem) {
+                            let pricePerInvUnit = invItem.unitPrice || 0;
+                            let invUnit = (invItem.unit || '').toLowerCase(); 
+                            let costForLine = 0;
+
+                            // Conversions
+                            if ((invUnit === 'kg' || invUnit === 'kilo') && unit === 'g') {
+                                costForLine = (qty / 1000) * pricePerInvUnit;
+                            } else if ((invUnit === 'l' || invUnit === 'litre') && (unit === 'cl')) {
+                                costForLine = (qty / 100) * pricePerInvUnit;
+                            } else if ((invUnit === 'l' || invUnit === 'litre') && (unit === 'ml')) {
+                                costForLine = (qty / 1000) * pricePerInvUnit;
+                            } else {
+                                costForLine = qty * pricePerInvUnit;
+                            }
+
+                            totalCost += costForLine;
+                            matchedItemsCount++;
+                        }
+                    }
+                });
+
+                const costInput = document.getElementById('rec-cost');
+                const displayInfo = document.getElementById('fc-display');
+
+                if(totalCost > 0) {
+                    costInput.value = totalCost.toFixed(2);
+                    
+                    // Effet Waouh
+                    costInput.style.backgroundColor = "rgba(52, 211, 153, 0.2)";
+                    costInput.style.borderColor = "var(--accent)";
+                    costInput.style.color = "var(--accent)";
+                    
+                    displayInfo.innerHTML = `✅ <b>${matchedItemsCount} ingrédient(s)</b> reconnu(s) et calculé(s) depuis l'Économat.`;
+                    displayInfo.className = 'fc-display fc-good';
+                    
+                    setTimeout(() => {
+                        costInput.style.backgroundColor = "var(--panel)";
+                        costInput.style.borderColor = "var(--border)";
+                        costInput.style.color = "var(--text-main)";
+                    }, 1000);
+                    
+                    updateFC();
+                } else if (text.length > 5) {
+                     displayInfo.innerHTML = `⚠️ Aucun ingrédient n'a été trouvé. Vérifiez votre Économat.`;
+                     displayInfo.className = 'fc-display fc-bad';
+                } else {
+                     displayInfo.innerHTML = `ℹ️ Collez vos ingrédients pour estimer le coût matière.`;
+                     displayInfo.className = 'fc-display';
+                }
+            }, 800);
         }
 
         function startSmartDictation(category, btnId) {
@@ -494,6 +579,7 @@
             recognition.onresult = function(e) { 
                 let sep = input.tagName.toLowerCase() === 'textarea' ? " \n" : " ";
                 input.value += (input.value ? sep : "") + e.results[0][0].transcript; 
+                if(inputId === 'rec-ing') autoCalculateCost();
             };
             recognition.onspeechend = function() { recognition.stop(); };
             recognition.onend = function() { btn.classList.remove('recording'); };
@@ -506,7 +592,6 @@
             let clickedBtn = document.getElementById('tab-' + tab);
             if(clickedBtn) {
                 clickedBtn.classList.add('active');
-                // Adaptation de la couleur active selon le bouton cliqué (Gris pour reset, or pour certains)
                 if(tab === 'menu' || tab === 'recettes') {
                     clickedBtn.style.borderColor = 'var(--gold)'; clickedBtn.style.color = 'var(--gold)'; clickedBtn.style.background = 'var(--gold-dim)';
                 } else if(tab === 'stats') {
@@ -601,10 +686,10 @@
                 if (state.activeOrders && state.activeOrders['RECIPES_MASTER']) { recipesData = state.activeOrders['RECIPES_MASTER'].data; }
                 
                 if (state.activeOrders && state.activeOrders['INVENTORY_MASTER']) {
-                    let invData = state.activeOrders['INVENTORY_MASTER'].data;
+                    globalInventoryData = state.activeOrders['INVENTORY_MASTER'].data;
                     let totalCuisine = 0;
-                    if(invData.cuisine) {
-                        invData.cuisine.forEach(item => {
+                    if(globalInventoryData.cuisine) {
+                        globalInventoryData.cuisine.forEach(item => {
                             totalCuisine += (item.unitPrice * (item.realStock || 0));
                         });
                     }
@@ -738,7 +823,6 @@
         function importRecipes(input) { const reader = new FileReader(); reader.onload = async (e) => { const imported = JSON.parse(e.target.result); const existingIds = new Set(recipesData.map(x => x.id)); imported.forEach(item => { if(!existingIds.has(item.id)) recipesData.push(item); }); await API.update('RECIPES_MASTER', recipesData); renderRecipes(); }; if(input.files[0]) reader.readAsText(input.files[0]); input.value = ''; }
         function exportToMobile() { window.print(); }
 
-        // Initialisation de l'UI
         switchTab('menu');
         bootSystem();
     </script>
