@@ -1,0 +1,295 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>iBar - Carte des Boissons</title>
+    <style>
+        /* 🟢 DESIGN LUXE ÉPURÉ (PALACE STYLE) */
+        :root { 
+            --bg-deep: #050505;
+            --text-main: #f8fafc;    
+            --text-muted: #64748b;   
+            --gold: #fbbf24;         
+            --border-light: rgba(255, 255, 255, 0.05);
+            --border-dash: rgba(255, 255, 255, 0.15);
+        }
+        
+        body { 
+            background: var(--bg-deep); 
+            color: var(--text-main); 
+            font-family: 'Inter', 'Helvetica Neue', sans-serif; 
+            margin: 0; 
+            padding: 0;
+            display: flex; 
+            flex-direction: column; 
+            min-height: 100vh;
+        }
+        
+        /* HEADER MINIMALISTE */
+        header { 
+            padding: 40px 20px 20px; 
+            text-align: center; 
+            border-bottom: 1px solid var(--border-light);
+            background: linear-gradient(to bottom, #111, transparent);
+            position: sticky;
+            top: 0;
+            z-index: 10;
+            backdrop-filter: blur(10px);
+        }
+        
+        .logo-text { 
+            color: var(--gold); 
+            font-size: 2rem; 
+            font-weight: 900; 
+            letter-spacing: 8px; 
+            margin: 0; 
+            text-transform: uppercase; 
+        }
+        
+        .subtitle {
+            color: var(--text-muted);
+            font-size: 0.8rem;
+            letter-spacing: 4px;
+            text-transform: uppercase;
+            margin-top: 10px;
+        }
+
+        /* CONTENEUR DU MENU */
+        .menu-container {
+            flex: 1;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+            width: 100%;
+            box-sizing: border-box;
+        }
+
+        /* CATÉGORIES */
+        .category-section {
+            margin-top: 50px;
+            margin-bottom: 30px;
+        }
+
+        .category-title {
+            font-size: 1.2rem;
+            color: var(--gold);
+            text-transform: uppercase;
+            letter-spacing: 4px;
+            text-align: center;
+            margin-bottom: 30px;
+            padding-bottom: 10px;
+            border-bottom: 1px solid var(--border-light);
+            font-weight: 300;
+        }
+
+        /* LIGNES DE PRODUITS */
+        .menu-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: baseline;
+            margin-bottom: 20px;
+            position: relative;
+        }
+
+        /* Ligne de pointillés entre le nom et le prix */
+        .menu-item::before {
+            content: "";
+            position: absolute;
+            left: 0;
+            right: 0;
+            bottom: 6px;
+            border-bottom: 1px dashed var(--border-dash);
+            z-index: 1;
+        }
+
+        .item-name {
+            font-size: 1.1rem;
+            font-weight: 600;
+            color: var(--text-main);
+            background: var(--bg-deep);
+            padding-right: 15px;
+            z-index: 2;
+            max-width: 75%;
+            line-height: 1.4;
+        }
+
+        .item-price {
+            font-size: 1.2rem;
+            font-weight: 400;
+            color: var(--gold);
+            background: var(--bg-deep);
+            padding-left: 15px;
+            z-index: 2;
+        }
+
+        /* GESTION RUPTURE DE STOCK */
+        .sold-out {
+            opacity: 0.3;
+        }
+        .sold-out .item-price {
+            text-decoration: line-through;
+            color: var(--alert);
+        }
+        .sold-out .item-name::after {
+            content: " (Épuisé)";
+            color: var(--alert);
+            font-size: 0.8rem;
+            font-weight: bold;
+            letter-spacing: 1px;
+            text-transform: uppercase;
+        }
+
+        /* CHARGEMENT */
+        .loader {
+            text-align: center;
+            color: var(--text-muted);
+            font-style: italic;
+            margin-top: 100px;
+            letter-spacing: 2px;
+        }
+
+        /* PIED DE PAGE */
+        footer {
+            text-align: center;
+            padding: 30px 20px;
+            color: #333;
+            font-size: 0.7rem;
+            text-transform: uppercase;
+            letter-spacing: 2px;
+            border-top: 1px solid var(--border-light);
+            margin-top: auto;
+        }
+        
+        .sync-dot {
+            display: inline-block;
+            width: 6px;
+            height: 6px;
+            border-radius: 50%;
+            background: #10b981;
+            margin-right: 5px;
+            box-shadow: 0 0 8px #10b981;
+            vertical-align: middle;
+        }
+        .sync-dot.offline {
+            background: #ef4444;
+            box-shadow: 0 0 8px #ef4444;
+        }
+    </style>
+</head>
+<body>
+
+    <header>
+        <h1 class="logo-text">ibar.ch</h1>
+        <div class="subtitle">Carte des Boissons</div>
+    </header>
+
+    <div class="menu-container" id="menu-container">
+        <div class="loader">Synchronisation en cours avec le Bar...</div>
+    </div>
+
+    <footer>
+        <span id="sync-status-icon" class="sync-dot"></span> <span id="sync-status-text">Synchronisation en temps réel</span>
+    </footer>
+
+    <script>
+        // -----------------------------------------
+        // API HYBRIDE (RÉSEAU + SYNCHRO LOCALE)
+        // -----------------------------------------
+        const API = {
+            getState: async () => {
+                let state = { activeOrders: {} };
+                try {
+                    if (window.location.protocol !== 'file:') {
+                        let r = await fetch('/get-current-state');
+                        if(r.ok) state = await r.json();
+                    } else throw new Error("Local");
+                } catch(e) {
+                    state = JSON.parse(localStorage.getItem('EMPIRE_GLOBAL_SYNC')) || { activeOrders: {} };
+                }
+                return state;
+            }
+        };
+
+        window.addEventListener('storage', (e) => {
+            if (e.key === 'EMPIRE_GLOBAL_SYNC') {
+                fetchMenuData();
+            }
+        });
+
+        // Les catégories exactes du Barman
+        const CAT_NAMES = {
+            "cocktails": "Cocktails Créations",
+            "mocktails": "Sans Alcool",
+            "vins": "Sélection de Vins",
+            "bieres": "Bières Pression",
+            "spiritueux": "Spiritueux & Dégustation",
+            "chaudes": "Boissons Chaudes",
+            "froides": "Boissons Froides"
+        };
+
+        const CAT_ORDER = ["cocktails", "mocktails", "vins", "bieres", "spiritueux", "froides", "chaudes"];
+
+        function renderMenu(menuData) {
+            const container = document.getElementById('menu-container');
+            let html = '';
+            let hasItems = false;
+
+            CAT_ORDER.forEach(catKey => {
+                if (menuData[catKey] && menuData[catKey].length > 0) {
+                    hasItems = true;
+                    html += `<div class="category-section">
+                                <h2 class="category-title">${CAT_NAMES[catKey]}</h2>`;
+                    
+                    menuData[catKey].forEach(item => {
+                        let isSoldOut = (item.stock === 0 || item.stock === "0");
+                        let priceFormatted = parseFloat(item.price).toFixed(2) + " €";
+                        
+                        html += `
+                        <div class="menu-item ${isSoldOut ? 'sold-out' : ''}">
+                            <div class="item-name">${item.name}</div>
+                            <div class="item-price">${priceFormatted}</div>
+                        </div>`;
+                    });
+                    
+                    html += `</div>`;
+                }
+            });
+
+            if (!hasItems) {
+                container.innerHTML = `<div class="loader">La carte est en cours d'élaboration par le Barman.</div>`;
+            } else {
+                container.innerHTML = html;
+            }
+        }
+
+        async function fetchMenuData() {
+            try {
+                const state = await API.getState();
+                const dot = document.getElementById('sync-status-icon');
+                const text = document.getElementById('sync-status-text');
+
+                if (state && state.activeOrders && state.activeOrders['MENU_MASTER_BAR']) {
+                    let menuBarData = state.activeOrders['MENU_MASTER_BAR'].data;
+                    renderMenu(menuBarData);
+
+                    dot.classList.remove('offline');
+                    text.innerText = "Synchronisation en temps réel";
+                } else {
+                    // Aucun menu créé pour le moment
+                    document.getElementById('menu-container').innerHTML = `<div class="loader">La carte est en cours d'élaboration par le Barman.</div>`;
+                }
+            } catch (error) {
+                const dot = document.getElementById('sync-status-icon');
+                const text = document.getElementById('sync-status-text');
+                dot.classList.add('offline');
+                text.innerText = "Hors Ligne - Reconnexion...";
+            }
+        }
+
+        // Lancement et Polling H24
+        fetchMenuData();
+        setInterval(fetchMenuData, 5000); // Mise à jour toutes les 5 secondes
+    </script>
+</body>
+</html>
