@@ -120,7 +120,7 @@
             <div id="empire-clock">00:00:00</div>
         </div>
         <div class="nav-btns">
-            <button id="btn-dashboard" class="btn-mini sync" style="display:none;" onclick="openModal('dashboard')">👁️ DASHBOARD DIR.</button>
+            <button id="btn-dashboard" class="btn-mini sync" style="display:none;" onclick="window.open('finance.html', '_blank')">👁️ DASHBOARD DIR.</button>
             <button class="btn-mini" style="border-color: #ea80fc; color: #ea80fc;" onclick="window.open('reservation.html', '_blank')">📅 RÉSA</button>
             <button class="btn-mini" style="border-color: #2979ff; color: #2979ff;" onclick="unlockArchiMode()">🏗️ ARCHI</button>
             <button class="btn-mini gold" onclick="openModal('radar')">⚡ RADAR</button>
@@ -277,8 +277,36 @@
 
     <script>
         // -----------------------------------------
-        // 1. VARIABLES GLOBALES & UTILITAIRES
+        // 1. API SYSTEM & VARIABLES GLOBALES
         // -----------------------------------------
+        const API = {
+            getState: async () => {
+                let state = { activeOrders: {} };
+                try {
+                    if (window.location.protocol !== 'file:') {
+                        let r = await fetch('/get-current-state');
+                        if(r.ok) state = await r.json();
+                    } else throw new Error("Local");
+                } catch(e) {
+                    state = JSON.parse(localStorage.getItem('EMPIRE_GLOBAL_SYNC')) || { activeOrders: {} };
+                }
+                return state;
+            },
+            update: async (key, data) => {
+                let state = JSON.parse(localStorage.getItem('EMPIRE_GLOBAL_SYNC')) || { activeOrders: {} };
+                if (data === null) delete state.activeOrders[key];
+                else state.activeOrders[key] = { data: data };
+                localStorage.setItem('EMPIRE_GLOBAL_SYNC', JSON.stringify(state));
+                if (window.location.protocol !== 'file:') {
+                    try { await fetch('/update-order', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ tableId: key, order: data === null ? null : { data: data } }) }); } catch(e) {}
+                }
+            }
+        };
+
+        window.addEventListener('storage', (e) => {
+            if (e.key === 'EMPIRE_GLOBAL_SYNC') fetchSystemState();
+        });
+
         let isArchiMode = false;
         let isDraggingTable = false; 
         let configTableId = null;
@@ -298,11 +326,24 @@
         let fraudLog = safeArray('empire_fraud_log', []);
         
         let currentUser = null, currentPin = "";
-        const USERS = { "1234": { name: "Flavien", role: "Serveur" }, "9999": { name: "Directeur", role: "Manager" } };
+        let USERS = { "1234": { name: "Flavien", role: "Serveur" }, "9999": { name: "Directeur", role: "Manager" } };
 
         // -----------------------------------------
         // 2. SYSTEME DE SECURITE (PIN)
         // -----------------------------------------
+        function loadSecurityPins() {
+            let savedPins = localStorage.getItem('EMPIRE_SECURITY_PINS');
+            if (savedPins) {
+                try { 
+                    let parsedPins = JSON.parse(savedPins); 
+                    USERS = {};
+                    for(let role in parsedPins) {
+                        USERS[parsedPins[role]] = { name: "Collaborateur", role: role };
+                    }
+                } catch(e) {}
+            }
+        }
+
         function resetInactivityTimer() { clearTimeout(inactivityTimer); if(currentUser) inactivityTimer = setTimeout(logout, INACTIVITY_LIMIT); }
         ['touchstart', 'click', 'mousemove', 'keypress'].forEach(e => document.addEventListener(e, resetInactivityTimer, false));
         
@@ -311,14 +352,15 @@
         
         function submitPin() {
             if(USERS[currentPin]) {
-                currentUser = USERS[currentPin]; document.getElementById('user-badge').innerText = `Badge: ${currentUser.name} (${currentUser.role})`;
+                currentUser = USERS[currentPin]; document.getElementById('user-badge').innerText = `Badge: ${currentUser.role}`;
                 document.getElementById('login-screen').style.display = 'none';
-                if(currentUser.role === 'Manager') document.getElementById('btn-dashboard').style.display = 'block';
-                renderRooms(); renderFloor(); connectEmpireH24(); resetInactivityTimer();
+                if(currentUser.role === 'Manager' || currentUser.role === 'Directeur') document.getElementById('btn-dashboard').style.display = 'block';
+                renderRooms(); renderFloor(); bootSystem(); resetInactivityTimer();
             } else { alert("❌ PIN Incorrect."); clearPin(); }
         }
 
-        function logout() { currentUser = null; currentPin = ""; document.getElementById('login-screen').style.display = 'flex'; closeOrder(); closeModal(); closeArchiMode(); if(ws) ws.close(); clearTimeout(inactivityTimer); }
+        function logout() { currentUser = null; currentPin = ""; document.getElementById('login-screen').style.display = 'flex'; closeOrder(); closeModal(); closeArchiMode(); clearTimeout(inactivityTimer); }
+        
         function logAction(action, detail, itemsData = null) {
             fraudLog.unshift({ time: new Date().toLocaleTimeString('fr-FR'), user: currentUser ? currentUser.name : 'Unknown', action, detail, items: itemsData });
             localStorage.setItem('empire_fraud_log', JSON.stringify(fraudLog));
@@ -336,7 +378,7 @@
         // -----------------------------------------
         // 4. MODE ARCHITECTURE
         // -----------------------------------------
-        function unlockArchiMode() { if (!currentUser || currentUser.role !== 'Manager') return alert("⛔ Accès Manager requis"); isArchiMode = true; document.body.classList.add('edit-mode'); renderRooms(); renderFloor(); }
+        function unlockArchiMode() { if (!currentUser || (currentUser.role !== 'Manager' && currentUser.role !== 'Directeur')) return alert("⛔ Accès Manager requis"); isArchiMode = true; document.body.classList.add('edit-mode'); renderRooms(); renderFloor(); }
         function closeArchiMode() { isArchiMode = false; document.body.classList.remove('edit-mode'); renderRooms(); renderFloor(); }
         function saveArchitecture() { localStorage.setItem('empire_architecture', JSON.stringify(tables)); localStorage.setItem('empire_rooms', JSON.stringify(rooms)); alert("✅ Plan sauvegardé avec succès."); closeArchiMode(); }
         
@@ -418,39 +460,79 @@
                 tables.forEach(t => { if(t && !t.room) t.room = rooms[0] || 'Salle Principale'; });
                 tables.filter(t => t && t.room === currentRoom).forEach(t => {
                     let d = document.createElement('div'); d.className = 'table-obj shape-' + (t.shape || 'oval');
-                    if(activeOrders[t.label]) { d.classList.add('ordered'); if(activeOrders[t.label].status === 'ready') { d.classList.remove('ordered'); d.classList.add('ready'); } }
+                    let tableOrder = activeOrders[`TABLE_${t.label}`];
+                    
+                    if(tableOrder && tableOrder.data && tableOrder.data.items && tableOrder.data.items.length > 0) { 
+                        d.classList.add('ordered'); 
+                        if(tableOrder.data.status === 'ready') { d.classList.remove('ordered'); d.classList.add('ready'); } 
+                    }
+                    
                     d.style.left=(t.l||0)+'px'; d.style.top=(t.t||0)+'px'; d.style.width=(t.w||80)+'px'; d.style.height=(t.h||120)+'px';
                     
                     if (t.shape === 'losange' || t.shape === 'triangle') d.innerHTML = `<div class="table-content">${t.label || '?'}</div>`;
                     else d.innerHTML = t.label || '?'; 
                     
                     let r = document.createElement('div'); r.className = 'table-resizer'; r.innerHTML = '↘'; d.appendChild(r);
-                    d.onclick = (e) => { if(isArchiMode) { if(!isDraggingTable && e.target !== r) openTableConfigModal(t.label); } else openOrder(t.label); };
+                    d.onclick = (e) => { 
+                        if(isArchiMode) { 
+                            if(!isDraggingTable && e.target !== r) openTableConfigModal(t.label); 
+                        } else {
+                            openOrder(t.label); 
+                        }
+                    };
                     makeInteractive(d, t, r); floor.appendChild(d);
                 });
             } catch (e) { console.error(e); }
         }
 
         // -----------------------------------------
-        // 5. MOTEUR RÉSEAU H24 & COMMANDES
+        // 5. PRISE DE COMMANDE ET RÉSEAU (AVEC ENCAISSEMENT GLOBAL)
         // -----------------------------------------
         let pendingCuissonItem = null;
+        let menuCuisineData = {};
+        let menuBarData = {};
+
+        function openOrder(tableLabel) {
+            currentTable = `TABLE_${tableLabel}`;
+            document.getElementById('table-label').innerText = "TABLE " + tableLabel;
+            
+            let savedOrder = activeOrders[currentTable];
+            if (savedOrder && savedOrder.data && savedOrder.data.items) {
+                ticketItems = JSON.parse(JSON.stringify(savedOrder.data.items));
+                document.getElementById('order-obs').value = savedOrder.data.observations || "";
+            } else {
+                ticketItems = [];
+                document.getElementById('order-obs').value = "";
+            }
+            
+            document.getElementById('order-drawer').classList.add('open');
+            renderMenu('Plats de résistance'); // Ouvre Plats par défaut
+            renderTicket();
+        }
+
         function addToTicket(n, p, dest) { 
             if(['entrecôte', 'bœuf', 'steak', 'burger', 'filet', 'canard', 'agneau', 'viande'].some(m => n.toLowerCase().includes(m))) {
                 pendingCuissonItem = { n, p, dest }; document.getElementById('cuisson-item-name').innerText = n; document.getElementById('cuisson-modal').classList.add('open'); return;
             }
             executeAddToCart(n, p, dest);
         }
+
         function confirmCuisson(niv) { if(pendingCuissonItem) { executeAddToCart(`${pendingCuissonItem.n} (${niv})`, pendingCuissonItem.p, pendingCuissonItem.dest); cancelCuisson(); } }
         function cancelCuisson() { pendingCuissonItem = null; document.getElementById('cuisson-modal').classList.remove('open'); }
-        function executeAddToCart(n, p, dest) { let e = ticketItems.find(i => i.n === n && !i.done); if(e) e.qty = (e.qty||1)+1; else ticketItems.push({ id: Date.now()+Math.random(), n, p, qty: 1, done: false, dest }); renderTicket(); }
+        
+        function executeAddToCart(n, p, dest) { 
+            let e = ticketItems.find(i => i.n === n && !i.done); 
+            if(e) e.qty = (e.qty||1)+1; 
+            else ticketItems.push({ id: Date.now()+Math.random(), n, p, qty: 1, done: false, dest }); 
+            renderTicket(); 
+        }
         
         let pendingCancelIndex = null;
         function removeTicketItem(idx) { pendingCancelIndex = idx; document.getElementById('cancel-item-name').innerText = `Plat sélectionné : ${ticketItems[idx].n}`; document.getElementById('cancel-modal').style.display = 'flex'; }
         function abortCancelItem() { pendingCancelIndex = null; document.getElementById('cancel-modal').style.display = 'none'; }
         function executeCancelItem(raison) {
             if(pendingCancelIndex === null) return; let item = ticketItems[pendingCancelIndex];
-            logAction(activeOrders[currentTable]?.items?.find(i => i?.id === item.id) ? "ANNULATION PLAT ENVOYÉ" : "SUPPRESSION AVANT ENVOI", `Table: ${currentTable} | Plat: ${item.n} | RAISON: ${raison}`);
+            logAction(activeOrders[currentTable]?.data?.items?.find(i => i?.id === item.id) ? "ANNULATION PLAT ENVOYÉ" : "SUPPRESSION AVANT ENVOI", `Table: ${currentTable} | Plat: ${item.n} | RAISON: ${raison}`);
             if (ticketItems[pendingCancelIndex].qty > 1) ticketItems[pendingCancelIndex].qty -= 1; else ticketItems.splice(pendingCancelIndex, 1);
             pendingCancelIndex = null; document.getElementById('cancel-modal').style.display = 'none'; renderTicket();
         }
@@ -476,42 +558,144 @@
 
         async function sendToKitchen() {
             if(ticketItems.length === 0) return alert("Ticket vide.");
-            await fetch('/update-order', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({tableId:currentTable, order: { items: ticketItems, time: new Date().toLocaleTimeString('fr-FR', {hour:'2-digit', minute:'2-digit'}), status: 'pending', observations: document.getElementById('order-obs').value.trim() }}) }).catch(e=>{});
+            await API.update(currentTable, { items: ticketItems, time: new Date().toLocaleTimeString('fr-FR', {hour:'2-digit', minute:'2-digit'}), status: 'pending', observations: document.getElementById('order-obs').value.trim() });
             logAction("ENVOI COMMANDE", `Table: ${currentTable}`, ticketItems); closeOrder();
         }
 
         function openPaymentModal() {
-            if(ticketItems.length === 0) return alert("Table vide."); if(currentUser.role === 'Serveur') return alert("⛔ Demandez au Manager.");
-            let td = activeOrders[currentTable]; if(!td || !td.items || td.items.length !== ticketItems.length) return alert("⚠️ IMPOSSIBLE D'ENCAISSER !\nEnvoyez la commande avant d'encaisser.");
-            document.getElementById('pay-modal-title').innerText = "TABLE " + currentTable; document.getElementById('pay-modal-amount').innerText = "TOTAL : " + document.getElementById('ticket-total').innerText.replace('Total: ', ''); document.getElementById('payment-modal').style.display = 'flex';
+            if(ticketItems.length === 0) return alert("Table vide.");
+            let td = activeOrders[currentTable]; 
+            if(!td || !td.data || !td.data.items || td.data.items.length !== ticketItems.length) return alert("⚠️ IMPOSSIBLE D'ENCAISSER !\nEnvoyez la commande avant d'encaisser.");
+            
+            document.getElementById('pay-modal-title').innerText = currentTable.replace('_', ' '); 
+            document.getElementById('pay-modal-amount').innerText = "TOTAL : " + document.getElementById('ticket-total').innerText.replace('Total: ', ''); 
+            document.getElementById('payment-modal').style.display = 'flex';
         }
         function cancelPayment() { document.getElementById('payment-modal').style.display = 'none'; }
-        function executePayment(pt) {
+        
+        // 🟢 FONCTION CRUCIALE : ENCAISSEMENT ET ARCHIVAGE DANS LE COCKPIT DIRECTION
+        async function executePayment(pt) {
             setTimeout(async () => {
-                let ta = document.getElementById('ticket-total').innerText.replace('Total: ', ''); document.getElementById('payment-modal').style.display = 'none';
-                await fetch('/update-order', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({tableId: currentTable, order: null}) }).catch(e=>{});
-                logAction("ENCAISSEMENT VALIDÉ", `Table: ${currentTable} | Montant: ${ta} | Type: ${pt}`, ticketItems); ticketItems = []; document.getElementById('order-obs').value = ''; closeOrder();
+                let ta = document.getElementById('ticket-total').innerText.replace('Total: ', ''); 
+                document.getElementById('payment-modal').style.display = 'none';
+                
+                // 1. Séparer Cuisine et Bar pour l'archive
+                let cuisineItems = ticketItems.filter(i => i.dest === 'cuisine');
+                let barItems = ticketItems.filter(i => i.dest === 'bar');
+
+                const state = await API.getState();
+                let archiveCuisine = state.activeOrders['SALES_ARCHIVE_CUISINE']?.data || [];
+                let archiveBar = state.activeOrders['SALES_ARCHIVE_BAR']?.data || [];
+
+                const now = new Date();
+                const dateStr = now.toLocaleDateString('fr-FR');
+                const timeStr = now.toLocaleTimeString('fr-FR', {hour:'2-digit', minute:'2-digit'});
+
+                // 2. Injecter dans les archives Globales (Le Directeur le verra instantanément)
+                if(cuisineItems.length > 0) {
+                    archiveCuisine.push({ id: Date.now(), date: dateStr, time: timeStr, items: cuisineItems });
+                    await API.update('SALES_ARCHIVE_CUISINE', archiveCuisine);
+                }
+                if(barItems.length > 0) {
+                    archiveBar.push({ id: Date.now()+1, date: dateStr, time: timeStr, items: barItems });
+                    await API.update('SALES_ARCHIVE_BAR', archiveBar);
+                }
+
+                // 3. Libérer la table
+                await API.update(currentTable, null);
+                
+                logAction("ENCAISSEMENT VALIDÉ", `Table: ${currentTable} | Montant: ${ta} | Type: ${pt}`, ticketItems); 
+                ticketItems = []; document.getElementById('order-obs').value = ''; 
+                closeOrder();
             }, 300);
         }
+        
         function closeOrder() { document.getElementById('order-drawer').classList.remove('open'); }
 
-        // MENUS ET MODALS
-        function renderMenu(category) {
-            let cm = safeArray('kds_menu', []), bm = safeArray('kds_bar_menu', []).map(r => ({ name: r.name || (r.nom ? String(r.nom).split('(')[0].trim() : "Boisson"), category: 'Boissons', price: r.price !== undefined ? parseFloat(r.price) : 0 }));
-            document.getElementById('menu').innerHTML = [...cm, ...bm].filter(i => i && (category === 'Boissons' ? ['Boissons', 'Boissons & Bar', 'Cocktails', 'Vins & Bulles', 'Softs & Bières'].includes(i.category) : i.category === category)).map(i => `<div class="btn-item" onclick="addToTicket('${String(i.name||i.nom||"Article").replace(/'/g, "\\'")}', ${i.price!==undefined?parseFloat(i.price):0}, '${i.dest||(category==='Boissons'?'bar':'cuisine')}')"><span>${i.name||i.nom||"Article"}</span><span style="color:var(--gold)">${(i.price!==undefined?parseFloat(i.price):0).toFixed(2)}€</span></div>`).join('');
+        // ==========================================
+        // RÉCUPÉRATION DES MENUS (CUISINE & BAR)
+        // ==========================================
+        function renderMenu(categoryFilter) {
+            let cm = [];
+            // Aplatir le menu Cuisine
+            for(let key in menuCuisineData) {
+                let niceCat = "Plats de résistance";
+                if(key === 'entrees') niceCat = "Entrées";
+                if(key === 'desserts') niceCat = "Desserts";
+                menuCuisineData[key].forEach(i => cm.push({ name: i.name, category: niceCat, price: parseFloat(i.price)||0, dest: 'cuisine' }));
+            }
+
+            let bm = [];
+            // Aplatir le menu Bar
+            for(let key in menuBarData) {
+                menuBarData[key].forEach(i => bm.push({ name: i.name, category: "Boissons", price: parseFloat(i.price)||0, dest: 'bar' }));
+            }
+
+            let combinedMenu = [...cm, ...bm];
+
+            document.getElementById('menu').innerHTML = combinedMenu.filter(i => i && i.category === categoryFilter).map(i => {
+                let colorBorder = i.dest === 'cuisine' ? 'var(--gold)' : 'var(--cyan)';
+                return `<div class="btn-item" style="border-left: 4px solid ${colorBorder};" onclick="addToTicket('${String(i.name).replace(/'/g, "\\'")}', ${i.price}, '${i.dest}')">
+                    <span>${i.name}</span><span style="color:var(--gold)">${(i.price).toFixed(2)}€</span>
+                </div>`;
+            }).join('');
         }
+
         function openModal(t) { document.getElementById('info-modal').classList.add('open'); }
         function closeModal() { document.getElementById('info-modal').classList.remove('open'); }
 
-        function connectEmpireH24() {
-            if (window.location.protocol === 'file:') return renderFloor();
-            ws = new WebSocket((window.location.protocol === 'https:' ? 'wss://' : 'ws://') + window.location.host);
-            ws.onopen = () => { document.getElementById('stock-tag').innerText = "● SYNC H24 ACTIF"; fetch('/get-current-state').then(r=>r.json()).then(d=>{ activeOrders=d.activeOrders||{}; renderFloor(); }).catch(e=>{}); };
-            ws.onmessage = (e) => { try { let m=JSON.parse(e.data); if(m.type==='ORDER_UPDATE'||m.state||m.type==='SYNC') { let nO = m.activeOrders || (m.state ? m.state.activeOrders : {}); for (let t in nO) { if (nO[t] && nO[t].status === 'ready' && (!previousOrdersState[t] || previousOrdersState[t].status !== 'ready')) { let b=document.getElementById('beep-ready'); if(b) b.play().catch(e=>{}); if(nO[t].items) nO[t].items.forEach(i => { if(i) i.done = true; }); } } previousOrdersState = JSON.parse(JSON.stringify(nO)); activeOrders = nO; if(document.getElementById('order-drawer').classList.contains('open') && currentTable) { ticketItems = (activeOrders[currentTable] && activeOrders[currentTable].items) ? activeOrders[currentTable].items : ticketItems; renderTicket(); } renderFloor(); } } catch(err){} };
+        // ==========================================
+        // CONNEXION H24
+        // ==========================================
+        async function fetchSystemState() {
+            try {
+                const state = await API.getState();
+                if (state && state.activeOrders) {
+                    
+                    // Récupérer les menus du Chef et du Barman
+                    if (state.activeOrders['MENU_MASTER']) menuCuisineData = state.activeOrders['MENU_MASTER'].data || {};
+                    if (state.activeOrders['MENU_MASTER_BAR']) menuBarData = state.activeOrders['MENU_MASTER_BAR'].data || {};
+
+                    let nO = state.activeOrders;
+                    for (let t in nO) { 
+                        if (t.startsWith('TABLE_') && nO[t] && nO[t].data && nO[t].data.status === 'ready' && (!previousOrdersState[t] || !previousOrdersState[t].data || previousOrdersState[t].data.status !== 'ready')) { 
+                            let b=document.getElementById('beep-ready'); if(b) b.play().catch(e=>{}); 
+                            if(nO[t].data.items) nO[t].data.items.forEach(i => { if(i) i.done = true; }); 
+                        } 
+                    } 
+                    previousOrdersState = JSON.parse(JSON.stringify(nO)); 
+                    
+                    activeOrders = {};
+                    for(let key in nO) { if(key.startsWith('TABLE_')) activeOrders[key] = nO[key]; }
+
+                    if(document.getElementById('order-drawer').classList.contains('open') && currentTable) { 
+                        ticketItems = (activeOrders[currentTable] && activeOrders[currentTable].data && activeOrders[currentTable].data.items) ? activeOrders[currentTable].data.items : ticketItems; 
+                        renderTicket(); 
+                    } 
+                    renderFloor();
+
+                    const dot = document.getElementById('sync-dot');
+                    dot.classList.add('online'); 
+                    document.getElementById('stock-tag').innerText = "● SYSTÈME EN LIGNE";
+                    dot.style.boxShadow = "0 0 15px var(--accent)";
+                    setTimeout(() => { dot.style.boxShadow = "0 0 8px var(--accent)"; }, 500); 
+                }
+            } catch(e) {
+                document.getElementById('sync-dot').classList.remove('online'); 
+                document.getElementById('stock-tag').innerText = "CONNEXION PERDUE"; 
+            }
+        }
+
+        async function bootSystem() {
+            loadSecurityPins();
+            initTables();
+            await fetchSystemState();
         }
 
         setInterval(() => { let c = document.getElementById('empire-clock'); if(c) c.innerText = new Date().toLocaleTimeString('fr-FR', { hour12: false }); }, 1000);
-        setTimeout(() => { if (!localStorage.getItem('kds_menu')) { localStorage.setItem('kds_menu', JSON.stringify([{ name: "Salade", category: "Entrées", price: 10, dest: "cuisine" }])); localStorage.setItem('kds_bar_menu', JSON.stringify([{ name: "Eau", category: "Boissons", price: 2, dest: "bar" }])); } }, 500);
+        setInterval(fetchSystemState, 3000); // Polling rapide
+        
+        loadSecurityPins(); // Load before login screen
     </script>
 </body>
 </html>
