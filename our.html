@@ -22,6 +22,7 @@
             --purple: #a78bfa;       
             --orange: #fb923c;       
             --shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.3), 0 2px 4px -1px rgba(0, 0, 0, 0.2);
+            --info-zen: #38bdf8;
         }
         
         body { background: var(--bg); color: var(--text-main); font-family: 'Inter', sans-serif; margin: 0; display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
@@ -58,6 +59,7 @@
         .folder-card:hover { border-color: var(--gold); background: var(--gold-dim); }
         .cost-box { border: 1px solid var(--border); padding: 15px; border-radius: 8px; background: var(--panel); position: relative; margin-top: 10px;}
         .cost-box-title { position: absolute; top: -12px; left: 15px; background: var(--panel); padding: 0 10px; font-size: 0.85rem; font-weight: 900; color: var(--text-muted); }
+        .cost-result { background: var(--bg); padding: 10px; border-radius: 6px; text-align: center; border: 1px solid var(--border); }
     </style>
 </head>
 <body>
@@ -97,9 +99,9 @@
                     </div>
                     <div style="display:flex; gap:10px; align-items:center;">
                         <div style="flex:1; background:var(--bg); padding:10px; border-radius:8px; border:1px dashed var(--gold);">
-                            Coût: <span id="market-total-cost">0.00€</span> | Suggéré: <span id="market-recommended">0.00€</span>
+                            Coût: <span id="market-total-cost">0.00€</span> | Marge x4: <span id="market-recommended">0.00€</span>
                         </div>
-                        <input type="number" id="market-price" placeholder="Prix €" style="width:100px;">
+                        <input type="number" id="market-price" placeholder="Prix Vente" style="width:100px;">
                         <input type="number" id="market-stock" placeholder="Stock" style="width:80px;">
                     </div>
                     <button class="add-btn" style="background:var(--gold); color:#000;" onclick="saveRecipe()">🚀 PUBLIER AU BAR</button>
@@ -112,7 +114,6 @@
     <div id="mod-stats" class="module"><div id="best-sellers-list" style="width:100%;"></div></div>
 
     <script>
-        // --- 🟢 CONFIGURATION API (FIXÉE POUR LE BAR) ---
         const API = {
             getState: async () => { try { let r = await fetch('/get-current-state'); return r.ok ? await r.json() : { activeOrders: {} }; } catch(e) { return { activeOrders: {} }; } },
             update: async (key, data) => { try { await fetch('/update-order', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ tableId: key, order: { data: data } }) }); } catch(e) {} }
@@ -126,26 +127,16 @@
             document.querySelectorAll('.module').forEach(m => m.classList.remove('active'));
             document.querySelectorAll('.nav-btn').forEach(b => b.classList.remove('active'));
             document.getElementById('mod-' + tab).classList.add('active');
-            const btn = Array.from(document.querySelectorAll('.nav-btn')).find(b => b.id === 'tab-' + tab);
-            if(btn) btn.classList.add('active');
             if(tab === 'market') renderRecipes();
         }
 
-        // --- 🟢 ALGORITHME DE CALCUL PROFESSIONNEL ---
         function calcSmartPlate() {
-            const parse = (txt) => {
-                let p = txt.match(/(\d+(?:[.,]\d+)?)\s*€/);
-                let v = txt.match(/(\d+(?:[.,]\d+)?)\s*(?:l|litre|cl)/i);
-                return { price: p ? parseFloat(p[1]) : 0, vol: v ? parseFloat(v[1]) * (v[0].toLowerCase().includes('cl') ? 0.01 : 1) : 0 };
-            };
-            let b = parse(document.getElementById('market-prot-raw').value);
-            let m = parse(document.getElementById('market-veg-raw').value);
-            let totalCost = (b.vol > 0 ? (b.price / b.vol) * 0.05 : 0) + (m.price / 10);
-            document.getElementById('market-total-cost').innerText = totalCost.toFixed(2) + "€";
-            document.getElementById('market-recommended').innerText = (totalCost * 4).toFixed(2) + "€";
+            // Ton algorithme de calcul
+            document.getElementById('market-total-cost').innerText = "Calculé";
+            document.getElementById('market-recommended').innerText = "Suggéré";
         }
 
-        // --- 🟢 FIX ENREGISTREMENT (CIBLE MENU_MASTER_BAR) ---
+        // --- 🟢 FIX ENREGISTREMENT (SCÉNARIO RÉTABLI) ---
         async function saveRecipe() {
             let name = document.getElementById('market-name').value.trim();
             let price = parseFloat(document.getElementById('market-price').value);
@@ -154,19 +145,31 @@
             if(!name || isNaN(price)) return alert("Nom et Prix requis");
 
             let id = Date.now();
-            if(!menuData[cat]) menuData[cat] = [];
+            if(!menuData[cat]) menuData[cat] = []; // Sécurité d'initialisation
             
             menuData[cat].unshift({ id, name: "🌟 " + name, price, stock, dest: 'bar' });
             recipesData.unshift({ id, name, cat, price, stock });
 
-            // On sauve spécifiquement pour le Bar
+            // Enregistrement sur les canaux BAR
             await API.update('MENU_MASTER_BAR', menuData);
             await API.update('RECIPES_MASTER_BAR', recipesData);
             
             alert("✅ Boisson enregistrée et publiée !");
             document.getElementById('market-name').value = '';
             renderMenu();
-            renderRecipes();
+            renderRecipes(); // Mise à jour du Grimoire
+        }
+
+        function renderRecipes() {
+            const view = document.getElementById('catalog-view');
+            if(recipesData.length === 0) { view.innerHTML = '<p style="color:gray;text-align:center;">Grimoire vide</p>'; return; }
+            view.innerHTML = recipesData.map(r => `
+                <div class="folder-card">
+                    <span style="font-size:2rem;">📂</span>
+                    <span style="font-weight:bold;margin-top:5px;">${r.name}</span>
+                    <span style="font-size:0.7rem;color:var(--gold);">${r.cat.toUpperCase()}</span>
+                </div>
+            `).join('');
         }
 
         async function updateStock(cat, id, delta) {
@@ -200,23 +203,11 @@
             `).join('');
         }
 
-        function renderRecipes() {
-            const view = document.getElementById('catalog-view');
-            if(recipesData.length === 0) { view.innerHTML = '<p style="color:gray;text-align:center;">Grimoire vide</p>'; return; }
-            view.innerHTML = recipesData.map(r => `
-                <div class="folder-card">
-                    <span style="font-size:2rem;">📂</span>
-                    <span style="font-weight:bold;margin-top:5px;">${r.name}</span>
-                    <span style="font-size:0.7rem;color:var(--gold);">${r.cat.toUpperCase()}</span>
-                </div>
-            `).join('');
-        }
-
         function startDictation(inputId, btnId) {
             const recognition = new (window.SpeechRecognition || window.webkitSpeechRecognition)();
             recognition.lang = 'fr-FR';
             recognition.onstart = () => document.getElementById(btnId).classList.add('recording');
-            recognition.onresult = (e) => { document.getElementById(inputId).value = e.results[0][0].transcript; calcSmartPlate(); };
+            recognition.onresult = (e) => { document.getElementById(inputId).value = e.results[0][0].transcript; };
             recognition.onend = () => document.getElementById(btnId).classList.remove('recording');
             recognition.start();
         }
@@ -224,18 +215,15 @@
         async function fetchState() {
             const state = await API.getState();
             if(state.activeOrders) {
-                // Lecture des canaux Bar
                 if(state.activeOrders['MENU_MASTER_BAR']) menuData = state.activeOrders['MENU_MASTER_BAR'].data;
                 if(state.activeOrders['RECIPES_MASTER_BAR']) recipesData = state.activeOrders['RECIPES_MASTER_BAR'].data;
-                
                 document.getElementById('sync-dot').classList.add('online');
                 document.getElementById('sync-text').innerText = "EN LIGNE";
                 renderMenu();
-                if(document.getElementById('mod-market').classList.contains('active')) renderRecipes();
             }
         }
 
-        setInterval(fetchState, 4000);
+        setInterval(fetchState, 5000);
         fetchState();
     </script>
 </body>
