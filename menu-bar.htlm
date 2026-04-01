@@ -90,9 +90,9 @@
             padding: 15px 20px; 
             gap: 15px; 
             border-bottom: 1px solid var(--border);
-            scrollbar-width: none; /* Firefox */
+            scrollbar-width: none;
         }
-        .nav-categories::-webkit-scrollbar { display: none; } /* Safari and Chrome */
+        .nav-categories::-webkit-scrollbar { display: none; }
         
         .cat-btn { 
             background: transparent; 
@@ -184,7 +184,7 @@
             .cat-btn { padding: 8px 15px; font-size: 0.8rem; }
             .item-name { font-size: 1.1rem; }
             .item-price { font-size: 1.1rem; }
-            .live-badge { display: none; } /* On cache sur les petits écrans pour épurer */
+            .live-badge { display: none; }
         }
     </style>
 </head>
@@ -209,18 +209,28 @@
 
     <script>
         // -----------------------------------------
-        // 1. MOTEUR DE SYNCHRONISATION (Lecture Seule)
+        // 1. MOTEUR DE SYNCHRONISATION ULTRA-SÉCURISÉ
         // -----------------------------------------
         const API = {
             getState: async () => {
+                let state = { activeOrders: {} };
                 try {
                     if (window.location.protocol !== 'file:') {
                         let r = await fetch('/get-current-state');
-                        if(r.ok) return await r.json();
-                    } else throw new Error("Local");
+                        if(r.ok) {
+                            state = await r.json();
+                        } else {
+                            // Si le serveur local bug, on prend le cache du navigateur
+                            state = JSON.parse(localStorage.getItem('EMPIRE_GLOBAL_SYNC')) || { activeOrders: {} };
+                        }
+                    } else {
+                        // En mode fichier pur (sans serveur node.js)
+                        state = JSON.parse(localStorage.getItem('EMPIRE_GLOBAL_SYNC')) || { activeOrders: {} };
+                    }
                 } catch(e) {
-                    return JSON.parse(localStorage.getItem('EMPIRE_GLOBAL_SYNC')) || { activeOrders: {} };
+                    state = JSON.parse(localStorage.getItem('EMPIRE_GLOBAL_SYNC')) || { activeOrders: {} };
                 }
+                return state || { activeOrders: {} };
             }
         };
 
@@ -311,17 +321,27 @@
                 const dot = document.getElementById('sync-dot');
                 const text = document.getElementById('sync-text');
 
+                // Si les données du Barman existent dans le coffre
                 if (state && state.activeOrders && state.activeOrders['MENU_MASTER_BAR']) {
-                    barMenuData = state.activeOrders['MENU_MASTER_BAR'].data;
+                    let rawData = state.activeOrders['MENU_MASTER_BAR'];
                     
+                    // Sécurité pour bien parser les données
+                    barMenuData = rawData.data || rawData; 
+                    
+                    // S'assurer que chaque catégorie existe pour éviter le crash
+                    CAT_KEYS.forEach(cat => {
+                        if (!barMenuData[cat]) barMenuData[cat] = [];
+                    });
+
                     dot.classList.add('online');
                     text.innerText = "En Direct";
                     
                     renderMenu();
                 } else {
-                    // Si le menu n'a jamais été créé par le bar
+                    // Si le barman n'a encore rien publié
                     dot.classList.add('online');
                     text.innerText = "En Direct";
+                    renderMenu();
                 }
             } catch (e) {
                 document.getElementById('sync-dot').classList.remove('online');
@@ -335,7 +355,7 @@
         function bootSystem() {
             buildNavigation();
             fetchMenuData();
-            // Rafraîchissement automatique toutes les 5 secondes pour les clients
+            // Rafraîchissement automatique toutes les 5 secondes pour que le client ait toujours la dernière carte
             setInterval(fetchMenuData, 5000); 
         }
 
