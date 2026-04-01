@@ -76,7 +76,7 @@
         input, select, textarea { background: var(--bg); border: 1px solid var(--border); color: var(--text-main); padding: 10px 12px; border-radius: 6px; outline: none; font-size: 1rem; font-family: 'Inter', sans-serif; box-sizing: border-box; transition: 0.2s; box-shadow: inset 0 1px 2px rgba(0,0,0,0.1);}
         input:focus, select:focus, textarea:focus { border-color: var(--gold); box-shadow: 0 0 0 2px var(--gold-dim); }
         
-        /* INPUTS MASSIFS ADAPTÉS PAYSAGE */
+        /* INPUTS MASSIFS ADAPTÉS */
         .input-massive { font-size: 1.8rem !important; font-weight: 900 !important; text-align: center; height: 60px; padding: 5px !important; border-radius: 8px !important; background: var(--panel) !important; }
         .input-massive.price { color: var(--accent); border: 2px solid var(--accent); }
         .input-massive.stock { color: var(--text-main); border: 2px solid var(--gold); }
@@ -320,7 +320,7 @@
                                 <input type="text" id="market-total-cost" readonly value="0.00 €" style="font-weight:900; font-size:1.2rem; color:var(--alert); border:none; background:transparent; padding:0; width:70px;">
                             </div>
                             
-                            <div style="font-size: 1.2rem; color: var(--border);">+</div>
+                            <div style="font-size: 1.2rem; color: var(--border); font-weight:bold;">+</div>
                             
                             <div style="display: flex; flex-direction: column; align-items: center; gap: 2px;">
                                 <label style="color:var(--text-muted); font-size:0.75rem; font-weight:bold; text-transform:uppercase;">Coeff</label>
@@ -351,9 +351,12 @@
                         <div style="flex:1; display:flex; flex-direction:column; gap:5px;">
                             <div style="display:flex; justify-content:space-between; align-items:center;">
                                 <label style="font-size:0.8rem; color:var(--text-muted); font-weight:bold;">INGRÉDIENTS</label>
-                                <button id="mic-ing" class="btn-mic" style="padding:2px 8px; font-size:0.8rem;" onclick="startDictation('rec-ing', 'mic-ing')">🎙️</button>
+                                <div style="display:flex; gap:5px;">
+                                    <button class="nav-btn" style="padding:2px 8px; font-size:0.7rem; border-color:var(--info-zen); color:var(--info-zen);" onclick="generateRecipeIngredients(10)" title="Auto-écrire pour 10 portions">🪄 AUTO 10 PAX</button>
+                                    <button id="mic-ing" class="btn-mic" style="padding:2px 8px; font-size:0.8rem;" onclick="startDictation('rec-ing', 'mic-ing')">🎙️</button>
+                                </div>
                             </div>
-                            <textarea id="rec-ing" placeholder="Ex: 200g Viande..." style="height: 60px; resize:none; font-size:0.9rem;"></textarea>
+                            <textarea id="rec-ing" placeholder="Cliquez sur AUTO 10 PAX ou dictez..." style="height: 60px; resize:none; font-size:0.9rem; font-weight:bold; color:var(--info-zen);"></textarea>
                         </div>
                         <div style="flex:1; display:flex; flex-direction:column; gap:5px;">
                             <div style="display:flex; justify-content:space-between; align-items:center;">
@@ -519,6 +522,9 @@
             alert("✅ Planning de la Brigade synchronisé avec succès !");
         }
 
+        // ==========================================
+        // ALGORITHME : SMART COSTING UNIFIÉ
+        // ==========================================
         function parseDictation(text) {
             let normalized = text.replace(/(\d+)\s*(?:euros?|€)\s*(\d{1,2})\b/gi, "$1.$2");
             let priceRegex = /(\d+(?:[.,]\d{1,2})?)\s*(?:€|euros?|balles?)/gi;
@@ -548,12 +554,15 @@
                 let maxPortions = Math.floor((protData.weight * 1000) / portionGrams);
                 let waste = Math.round((protData.weight * 1000) % portionGrams);
                 
-                protInfoEl.innerHTML = `<span style="color:var(--accent);">✅ ${protData.weight}kg à ${pricePerKg.toFixed(2)}€/kg</span>`;
+                protInfoEl.innerHTML = `<span style="color:var(--accent);">✅ ${protData.name || "Achat"} : ${protData.weight}kg pour ${protData.price.toFixed(2)}€ (${pricePerKg.toFixed(2)}€/kg)</span>`;
+                protYieldEl.style.display = "block";
+                protYieldEl.innerHTML = `💡 Rendement théorique : ${maxPortions} portions. (Chutes : ${waste}g)`;
                 let stockInput = document.getElementById('market-stock');
                 if (stockInput.dataset.manual !== "true") { stockInput.value = maxPortions; }
             } else if (protData.price > 0) {
-                protInfoEl.innerHTML = `⚠️ Achat: ${protData.price.toFixed(2)}€ (Poids manquant)`;
-            } else { protInfoEl.innerHTML = `En attente de données...`; }
+                protInfoEl.innerHTML = `⚠️ Achat: ${protData.price.toFixed(2)}€ (Poids manquant ! Indiquez 'X kg' pour calculer le rendement)`;
+                protYieldEl.style.display = "none";
+            } else { protInfoEl.innerHTML = `En attente de données...`; protYieldEl.style.display = "none"; }
             document.getElementById('prot-cost-display').innerText = protCostPerPlate.toFixed(2) + " €";
 
             let vegText = document.getElementById('market-veg-raw').value.toLowerCase();
@@ -564,7 +573,7 @@
 
             if (vegData.price > 0) {
                 vegCostPerPlate = vegData.price / vegYield;
-                vegInfoEl.innerHTML = `<span style="color:var(--accent);">✅ Divisé par ${vegYield}</span>`;
+                vegInfoEl.innerHTML = `<span style="color:var(--accent);">✅ ${vegData.name || "Garniture"} : ${vegData.price.toFixed(2)}€ divisé par ${vegYield} assiettes.</span>`;
             } else { vegInfoEl.innerHTML = `En attente de données...`; }
             document.getElementById('veg-cost-display').innerText = vegCostPerPlate.toFixed(2) + " €";
 
@@ -574,7 +583,8 @@
             let margin = parseFloat(document.getElementById('market-margin').value) || 3.5;
             let recommended = totalCost * margin;
             document.getElementById('market-recommended').innerText = recommended.toFixed(2) + " €";
-
+            
+            // 🟢 L'ASSISTANT EST ICI, DANS LE CALCUL DE BASE
             let priceInput = document.getElementById('market-price');
             if (priceInput.value === "" || priceInput.dataset.autoFilled === "true") {
                 priceInput.value = (Math.ceil(recommended * 2) / 2).toFixed(2);
@@ -611,6 +621,35 @@
             };
             recognition.onspeechend = function() { recognition.stop(); };
             recognition.onend = function() { btn.classList.remove('recording'); };
+        }
+        
+        // 🟢 NOUVELLE FONCTION : AUTO-ÉCRITURE INGRÉDIENTS
+        function generateRecipeIngredients(paxCount) {
+            let protText = document.getElementById('market-prot-raw').value.toLowerCase();
+            let protData = parseDictation(protText);
+            let portionGrams = parseFloat(document.getElementById('market-prot-portion').value) || 150;
+            
+            let vegText = document.getElementById('market-veg-raw').value.toLowerCase();
+            let vegData = parseDictation(vegText);
+            
+            let ingTextarea = document.getElementById('rec-ing');
+            let generatedLines = [];
+
+            if(protData.name && portionGrams > 0) {
+                let kgForPax = (portionGrams * paxCount) / 1000;
+                generatedLines.push(`- ${kgForPax} kg ${protData.name}`);
+            }
+            if(vegData.name) {
+                generatedLines.push(`- ${vegData.name} (Garniture pour ${paxCount} portions)`);
+            }
+
+            if(generatedLines.length > 0) {
+                ingTextarea.value = "Ingrédients pour " + paxCount + " portions :\n" + generatedLines.join('\n');
+                ingTextarea.style.backgroundColor = "rgba(96, 165, 250, 0.1)";
+                setTimeout(() => { ingTextarea.style.backgroundColor = "var(--bg)"; }, 1000);
+            } else {
+                alert("⚠️ Remplissez d'abord l'achat de la Protéine ou de la Garniture pour générer la liste.");
+            }
         }
 
         async function saveRecipe() {
@@ -668,6 +707,10 @@
             alert(`✅ "${name}" a été sauvegardé dans le Grimoire et publié avec succès en Salle !`);
             renderMenu(); renderRecipes();
         }
+
+        // ==========================================
+        // GESTION RECETTES (LE CATALOGUE PAYSAGE)
+        // ==========================================
 
         function renderRecipes() {
             if (!currentFolderCat) { renderFolders(); } else { renderFolderContents(currentFolderCat); }
@@ -747,6 +790,7 @@
 
             document.getElementById('market-price').value = r.price || ''; 
             document.getElementById('market-stock').value = r.yield || r.stock || '';
+            document.getElementById('market-margin').value = r.targetFc > 0 ? (100 / r.targetFc).toFixed(1) : 3.5;
             
             document.getElementById('rec-ing').value = r.ing || ''; 
             document.getElementById('rec-prep').value = r.prep || '';
