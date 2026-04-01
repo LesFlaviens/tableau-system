@@ -244,8 +244,8 @@
                 <div id="ticket-tva" style="text-align: right; color: var(--text-muted); font-size: 0.85rem; margin-top: 5px;">Dont TVA (10%) : 0.00€</div>
                 
                 <div style="display:flex; gap:10px; margin-top:20px; flex-wrap: wrap;">
-                    <button class="btn-mini" style="flex:1; padding:15px; font-size:0.9rem; border-color:var(--text-muted); color:var(--text-main); background: var(--bg);" onclick="saveTableState(false)">💾 SAUVER<br><span style="font-size:0.7rem; font-weight:normal;">(Sans envoyer)</span></button>
-                    <button class="btn-mini gold" style="flex:1.5; padding:15px; font-size:1.1rem; background: var(--gold-dim);" onclick="sendToKitchen()">🚀 TOUT ENVOYER<br><span style="font-size:0.7rem; font-weight:normal;">(Cuisine & Bar)</span></button>
+                    <button class="btn-mini" style="flex:1; padding:15px; font-size:0.9rem; border-color:var(--text-muted); color:var(--text-main); background: var(--bg);" onclick="closeOrder()">⬇️ FERMER<br><span style="font-size:0.7rem; font-weight:normal;">(Mémorisé Auto)</span></button>
+                    <button class="btn-mini gold" style="flex:1.5; padding:15px; font-size:1.1rem; background: var(--gold-dim);" onclick="saveTableState(true)">🚀 TOUT ENVOYER<br><span style="font-size:0.7rem; font-weight:normal;">(Cuisine & Bar)</span></button>
                     <button class="btn-mini" style="flex:1; padding:15px; font-size:1.1rem; border-color:var(--accent); color:var(--accent); background: var(--accent-dim);" onclick="openPaymentModal()">💳 CAISSE</button>
                 </div>
             </div>
@@ -484,7 +484,6 @@
                     let parsedPins = JSON.parse(savedPins); 
                     USERS = {};
                     for(let role in parsedPins) {
-                        // On garde la logique des rôles
                         USERS[parsedPins[role]] = { name: "Collaborateur", role: role === "Directeur" ? "Manager" : role };
                     }
                 } catch(e) {}
@@ -693,6 +692,24 @@
             } catch (e) { console.error(e); }
         }
 
+        // ==========================================
+        // 5. PRISE DE COMMANDE ET RÉSEAU
+        // ==========================================
+        
+        // 🟢 AUTO-SAVE (Mémorisation Passive H24)
+        async function autoSaveTable() {
+            if(!currentTable) return;
+            await API.update(currentTable, { 
+                items: ticketItems, 
+                time: new Date().toLocaleTimeString('fr-FR', {hour:'2-digit', minute:'2-digit'}), 
+                status: 'pending', 
+                observations: document.getElementById('order-obs').value.trim() 
+            }, true);
+            renderFloor();
+        }
+
+        document.getElementById('order-obs').addEventListener('input', autoSaveTable);
+
         function openOrder(tableLabel) {
             currentTable = `TABLE_${tableLabel}`;
             document.getElementById('table-label').innerText = "TABLE " + tableLabel;
@@ -788,8 +805,9 @@
         function executeAddToCart(n, p, dest) { 
             let e = ticketItems.find(i => i.n === n && !i.done && !i.fired); 
             if(e) e.qty = (e.qty||1)+1; 
-            else ticketItems.push({ id: Date.now()+Math.random(), itemId: Date.now(), n, p, qty: 1, done: false, dest, fired: false, savedToDB: false, isOffered: false }); 
+            else ticketItems.push({ id: Date.now()+Math.random(), itemId: Date.now(), n, p, qty: 1, done: false, dest, fired: false, stockDeducted: false, isOffered: false }); 
             renderTicket(); 
+            autoSaveTable(); // 🟢 Mémo Auto
         }
         
         let pendingCancelIndex = null;
@@ -799,7 +817,9 @@
             if(pendingCancelIndex === null) return; let item = ticketItems[pendingCancelIndex];
             logAction(activeOrders[currentTable]?.data?.items?.find(i => i?.id === item.id) ? "ANNULATION PLAT ENVOYÉ" : "SUPPRESSION AVANT ENVOI", `Table: ${currentTable} | Plat: ${item.n} | RAISON: ${raison}`);
             if (ticketItems[pendingCancelIndex].qty > 1) ticketItems[pendingCancelIndex].qty -= 1; else ticketItems.splice(pendingCancelIndex, 1);
-            pendingCancelIndex = null; document.getElementById('cancel-modal').style.display = 'none'; renderTicket();
+            pendingCancelIndex = null; document.getElementById('cancel-modal').style.display = 'none'; 
+            renderTicket();
+            autoSaveTable(); // 🟢 Mémo Auto
         }
 
         let pendingEditIndex = null;
@@ -815,7 +835,9 @@
         function saveItemEdit() {
             if(pendingEditIndex === null) return; let p = parseFloat(document.getElementById('edit-item-price').value);
             if(!isNaN(p)) { ticketItems[pendingEditIndex].p = p; ticketItems[pendingEditIndex].obs = document.getElementById('edit-item-obs').value; logAction("CORRECTION ERREUR HUMAINE", `Table: ${currentTable} | Plat: ${ticketItems[pendingEditIndex].n}`); }
-            closeEditModal(); renderTicket();
+            closeEditModal(); 
+            renderTicket();
+            autoSaveTable(); // 🟢 Mémo Auto
         }
 
         function offerItem() {
@@ -828,13 +850,14 @@
             logAction("GESTE COMMERCIAL (PLAT OFFERT)", `Table: ${currentTable} | Plat: ${item.n} | Ancien prix: ${item.originalPrice}€`);
             closeEditModal();
             renderTicket();
-            saveTableState(false, true); 
+            autoSaveTable(); // 🟢 Mémo Auto
         }
 
+        // 🟢 ENVOI SÉPARÉ D'UN SEUL PLAT
         async function fireItem(idx) {
             ticketItems[idx].fired = true;
             await saveTableState(false, true); 
-            logAction("RÉCLAME (PLAT ENVOYÉ)", `Table: ${currentTable} | Plat: ${ticketItems[idx].n}`);
+            logAction("RÉCLAME (PLAT ENVOYÉ SÉPARÉMENT)", `Table: ${currentTable} | Plat: ${ticketItems[idx].n}`);
             renderTicket();
         }
 
@@ -846,10 +869,11 @@
                 
                 let statusHtml = '';
                 if (i.done) {
-                    statusHtml = `<span class="status-badge-ready">PRÊT</span>`;
+                    statusHtml = `<span class="status-badge-ready">✅ PRÊT</span>`;
                 } else if (i.fired) {
                     statusHtml = `<span class="status-badge-cooking">⏳ EN CUISINE</span>`;
                 } else {
+                    // 🟢 BOUTON D'ENVOI SÉPARÉ
                     statusHtml = `<button class="status-btn-fire" onclick="fireItem(${idx}); event.stopPropagation();">🔥 ENVOYER</button>`;
                 }
 
@@ -860,7 +884,10 @@
                     priceHtml = `<span style="margin-right:15px; font-weight:bold;">${((parseFloat(i.p)||0)*q).toFixed(2)}€</span>`;
                 }
 
-                return `<div style="display:flex; justify-content:space-between; align-items:center; padding:15px 10px; border-bottom:1px solid var(--border); ${i.done ? "opacity:0.5;" : ""}">
+                // Différence visuelle pour les plats non envoyés
+                let rowBg = i.fired ? 'background:rgba(255,255,255,0.05);' : '';
+
+                return `<div style="display:flex; justify-content:space-between; align-items:center; padding:15px 10px; border-bottom:1px solid var(--border); ${rowBg} ${i.done ? "opacity:0.5;" : ""}">
                     <div style="flex:1; cursor:pointer;" onclick="openEditItem(${idx})">
                         <div style="font-weight:bold; font-size:1.05rem;">${q>1?`<span style="color:var(--accent); font-weight:900;">${q}x</span> `:""}${cleanName||'?'}</div>
                         <div style="display:flex; align-items:center; gap:10px; margin-top:8px;">
@@ -879,36 +906,35 @@
             if(tvaEl) tvaEl.innerText = `Dont TVA (10%) : ${tva.toFixed(2)}€`;
         }
 
-        // 🟢 FONCTION CRUCIALE : ENVOI EN PRODUCTION
         async function sendToKitchen() {
             if(ticketItems.length === 0) return alert("Ticket vide.");
             await saveTableState(true);
         }
 
+        // 🟢 SAUVEGARDE & DÉDUCTION DES STOCKS
         async function saveTableState(fireAllNew = false, keepOpen = false) {
-            if(ticketItems.length === 0) return alert("Ticket vide.");
+            if(ticketItems.length === 0 && !keepOpen) return;
             
             const state = await API.getState();
-            let centralMenu = null;
-            if (state && state.activeOrders && state.activeOrders['MENU_MASTER']) {
-                centralMenu = state.activeOrders['MENU_MASTER'].data;
-            }
+            let centralMenu = state?.activeOrders['MENU_MASTER']?.data || null;
             let menuChanged = false;
 
             ticketItems.forEach(tItem => {
-                if(!tItem.savedToDB) { 
+                if (fireAllNew && !tItem.fired) tItem.fired = true;
+
+                // 🟢 La déduction de stock ne se fait QUE lorsque le plat est officiellement "Envoyé"
+                if (tItem.fired && !tItem.stockDeducted) { 
                     if(centralMenu) {
                         for (let cat in centralMenu) {
-                            let mItem = centralMenu[cat].find(i => i.id == tItem.itemId);
+                            let mItem = centralMenu[cat].find(i => i.name === tItem.n);
                             if (mItem && mItem.stock !== "" && mItem.stock !== undefined && mItem.stock > 0) {
                                 mItem.stock = Math.max(0, mItem.stock - (tItem.qty || 1));
                                 menuChanged = true;
                             }
                         }
                     }
-                    tItem.savedToDB = true; 
+                    tItem.stockDeducted = true; 
                 }
-                if (fireAllNew && !tItem.fired) tItem.fired = true;
             });
 
             if (menuChanged && centralMenu) {
@@ -918,7 +944,6 @@
             await API.update(currentTable, { items: ticketItems, time: new Date().toLocaleTimeString('fr-FR', {hour:'2-digit', minute:'2-digit'}), status: 'pending', observations: document.getElementById('order-obs').value.trim() }, true);
             
             if (fireAllNew) logAction("ENVOI MASSIF", `Table: ${currentTable}`, ticketItems); 
-            else logAction("SAUVEGARDE COMMANDE", `Table: ${currentTable}`, ticketItems);
             
             if(!keepOpen) {
                 closeOrder(); 
@@ -939,7 +964,7 @@
         }
 
         // ==========================================
-        // 5.5. CAISSE CHIRURGICALE & MULTI-PAIEMENTS (LIÉE AUX FINANCES)
+        // 5.5. CAISSE CHIRURGICALE (LIÉE AUX FINANCES)
         // ==========================================
         let currentPayTotal = 0;
         let currentPayRemaining = 0;
@@ -950,7 +975,7 @@
             if(currentUser.role === 'Serveur') return alert("⛔ Demandez au Manager pour encaisser.");
             
             let td = activeOrders[currentTable]; 
-            if(!td || !td.data || !td.data.items || td.data.items.length !== ticketItems.length) return alert("⚠️ IMPOSSIBLE D'ENCAISSER !\nSauvegardez les modifications avant d'encaisser.");
+            if(!td || !td.data || !td.data.items || td.data.items.length !== ticketItems.length) return alert("⚠️ IMPOSSIBLE D'ENCAISSER !\nEnvoyez tous les plats restants avant d'encaisser.");
             
             currentPayTotal = parseFloat(document.getElementById('ticket-total').innerText.replace('Total TTC: ', '').replace('Total: ', '').replace('€', ''));
             currentPayRemaining = currentPayTotal;
@@ -1026,7 +1051,6 @@
             document.getElementById('payment-modal').classList.remove('open'); 
         }
 
-        // 🟢 FONCTION CRUCIALE : ENVOI DES VENTES VERS L'ARCHIVE DU DIRECTEUR
         async function finalizeTablePayment() {
             document.getElementById('payment-modal').classList.remove('open');
             let methodsUsed = currentPayHistory.map(p => p.method).join(' + ');
@@ -1034,7 +1058,7 @@
             setTimeout(async () => {
                 const state = await API.getState();
                 
-                // Séparation des plats (Chef) et des boissons (Barman) pour l'audit financier
+                // Séparation pour le Dashboard Financier
                 let cuisineItems = ticketItems.filter(i => i.dest === 'cuisine');
                 let barItems = ticketItems.filter(i => i.dest === 'bar');
 
@@ -1049,32 +1073,21 @@
                 const now = new Date();
                 const dateStr = now.toLocaleDateString('fr-FR');
                 const timeStr = now.toLocaleTimeString('fr-FR', {hour:'2-digit', minute:'2-digit'});
-                let tvaTotal = currentPayTotal - (currentPayTotal / 1.10);
 
-                // Envoi des plats dans l'archive Cuisine
                 if(cuisineItems.length > 0) {
                     let cTotal = cuisineItems.reduce((acc, i) => acc + ((parseFloat(i.p)||0)*(i.qty||1)), 0);
-                    archiveCuisine.push({ 
-                        id: Date.now(), table: currentTable, date: dateStr, time: timeStr, 
-                        total: cTotal.toFixed(2), typePaiement: methodsUsed, items: cuisineItems 
-                    });
+                    archiveCuisine.push({ id: Date.now(), table: currentTable, date: dateStr, time: timeStr, total: cTotal.toFixed(2), typePaiement: methodsUsed, items: cuisineItems });
                     await API.update('SALES_ARCHIVE_CUISINE', archiveCuisine);
                 }
 
-                // Envoi des boissons dans l'archive Bar
                 if(barItems.length > 0) {
                     let bTotal = barItems.reduce((acc, i) => acc + ((parseFloat(i.p)||0)*(i.qty||1)), 0);
-                    archiveBar.push({ 
-                        id: Date.now()+1, table: currentTable, date: dateStr, time: timeStr, 
-                        total: bTotal.toFixed(2), typePaiement: methodsUsed, items: barItems 
-                    });
+                    archiveBar.push({ id: Date.now()+1, table: currentTable, date: dateStr, time: timeStr, total: bTotal.toFixed(2), typePaiement: methodsUsed, items: barItems });
                     await API.update('SALES_ARCHIVE_BAR', archiveBar);
                 }
 
-                // Effacer la table (Encaissement complet)
                 await API.update(currentTable, null, true);
-                
-                logAction("TABLE CLÔTURÉE (MULTI-PAIEMENTS)", `Table: ${currentTable} | Total: ${currentPayTotal.toFixed(2)}€`, ticketItems); 
+                logAction("TABLE CLÔTURÉE (ENCAISSEMENT)", `Table: ${currentTable} | Total: ${currentPayTotal.toFixed(2)}€`, ticketItems); 
                 
                 let tLabel = currentTable ? currentTable.replace('TABLE_', '') : null;
                 let isExtra = tables.find(t => t && t.label === tLabel && t.isExtra);
@@ -1084,7 +1097,6 @@
                 }
 
                 ticketItems = []; document.getElementById('order-obs').value = ''; 
-                
                 document.getElementById('order-drawer').classList.remove('open'); 
                 currentTable = null; 
                 renderFloor();
@@ -1143,6 +1155,7 @@
         }
 
         loadSecurityPins();
+        setInterval(() => { let c = document.getElementById('empire-clock'); if(c) c.innerText = new Date().toLocaleTimeString('fr-FR', { hour12: false }); }, 1000);
     </script>
 </body>
 </html>
