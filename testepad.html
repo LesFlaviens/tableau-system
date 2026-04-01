@@ -911,20 +911,24 @@
             await saveTableState(true);
         }
 
-        // 🟢 SAUVEGARDE & DÉDUCTION DES STOCKS
+        // 🟢 SAUVEGARDE & DÉDUCTION DES STOCKS SIMULTANÉE (Cuisine ET Bar)
         async function saveTableState(fireAllNew = false, keepOpen = false) {
             if(ticketItems.length === 0 && !keepOpen) return;
             
             const state = await API.getState();
             let centralMenu = state?.activeOrders['MENU_MASTER']?.data || null;
+            let barMenu = state?.activeOrders['MENU_MASTER_BAR']?.data || null; // 🟢 On charge aussi le Bar
             let menuChanged = false;
+            let barMenuChanged = false; // 🟢 Traceur pour le Bar
 
             ticketItems.forEach(tItem => {
                 if (fireAllNew && !tItem.fired) tItem.fired = true;
 
                 // 🟢 La déduction de stock ne se fait QUE lorsque le plat est officiellement "Envoyé"
                 if (tItem.fired && !tItem.stockDeducted) { 
-                    if(centralMenu) {
+                    
+                    // Si c'est un article de Cuisine
+                    if(centralMenu && tItem.dest === 'cuisine') {
                         for (let cat in centralMenu) {
                             let mItem = centralMenu[cat].find(i => i.name === tItem.n);
                             if (mItem && mItem.stock !== "" && mItem.stock !== undefined && mItem.stock > 0) {
@@ -933,14 +937,32 @@
                             }
                         }
                     }
+                    
+                    // Si c'est un article du Bar (Nouvelle liaison 3-voies) 🟢
+                    if(barMenu && tItem.dest === 'bar') {
+                        for (let cat in barMenu) {
+                            let mItem = barMenu[cat].find(i => i.name === tItem.n);
+                            if (mItem && mItem.stock !== "" && mItem.stock !== undefined && mItem.stock > 0) {
+                                mItem.stock = Math.max(0, mItem.stock - (tItem.qty || 1));
+                                barMenuChanged = true;
+                            }
+                        }
+                    }
+                    
                     tItem.stockDeducted = true; 
                 }
             });
 
+            // On prévient le serveur si la Cuisine a changé
             if (menuChanged && centralMenu) {
                 await API.update('MENU_MASTER', centralMenu);
             }
+            // On prévient le serveur si le Bar a changé (Ça mettra à jour menu-bar.html !)
+            if (barMenuChanged && barMenu) {
+                await API.update('MENU_MASTER_BAR', barMenu);
+            }
 
+            // On sauvegarde la table du client
             await API.update(currentTable, { items: ticketItems, time: new Date().toLocaleTimeString('fr-FR', {hour:'2-digit', minute:'2-digit'}), status: 'pending', observations: document.getElementById('order-obs').value.trim() }, true);
             
             if (fireAllNew) logAction("ENVOI MASSIF", `Table: ${currentTable}`, ticketItems); 
