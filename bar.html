@@ -142,7 +142,7 @@
             
             <div style="display:flex; justify-content:space-between; align-items:center; border-bottom: 2px solid #333; padding-bottom: 15px; margin-bottom: 20px;">
                 <h2 style="color:var(--gold); font-size: 2rem; margin:0; text-transform: uppercase; letter-spacing: 2px;">🛒 GESTION DES ACHATS (CAVE/BAR)</h2>
-                <button onclick="clearCommandes()" class="btn-nav" style="border-color:#555; color:#aaa; font-size:1rem;">🗑️ PURGER COMMANDES TERMINÉES</button>
+                <button onclick="clearCommandes()" class="btn-top" style="border-color:#555; color:#aaa; font-size:1rem;">🗑️ PURGER COMMANDES TERMINÉES</button>
             </div>
 
             <div style="background:#1a1a1a; padding:25px; border-radius:8px; border:1px solid #444; margin-bottom:30px; display:flex; gap:20px; align-items:center;">
@@ -233,48 +233,72 @@
     </div>
 
     <script>
+        // =========================================================================
+        // 1. API HYBRIDE & CONNEXION 24/7 (SYSTÈME EMPIRE)
+        // =========================================================================
         let audioCtx;
         let isChefMode = false; 
         let previousPendingCount = 0;
-        
-        // =========================================================================
-        // MOTEUR D'AFFICHAGE DU KDS ET CONNEXION H24 7/7 INFAILLIBLE
-        // =========================================================================
         let activeOrders = {};
-        let ws;
-
-        function connectEmpireH24() {
-            ws = new WebSocket((window.location.protocol === 'https:' ? 'wss://' : 'ws://') + window.location.host);
-
-            ws.onopen = () => {
-                document.getElementById('sync-status').style.color = "var(--accent)";
-                document.getElementById('sync-status').innerText = "● SYNC H24 ACTIF";
+        
+        const API = {
+            getState: async () => {
+                let state = { activeOrders: {} };
+                try {
+                    if (window.location.protocol !== 'file:') {
+                        let r = await fetch('/get-current-state');
+                        if(r.ok) state = await r.json();
+                    } else throw new Error("Local");
+                } catch(e) {
+                    state = JSON.parse(localStorage.getItem('EMPIRE_GLOBAL_SYNC')) || { activeOrders: {} };
+                }
+                return state;
+            },
+            update: async (key, data, isOrder = false) => {
+                let payload = isOrder ? data : { data: data };
+                let state = JSON.parse(localStorage.getItem('EMPIRE_GLOBAL_SYNC')) || { activeOrders: {} };
+                if (data === null) delete state.activeOrders[key];
+                else state.activeOrders[key] = payload;
+                localStorage.setItem('EMPIRE_GLOBAL_SYNC', JSON.stringify(state));
                 
-                // Récupère l'état à la connexion
-                fetch('/get-current-state').then(r => r.json()).then(state => {
-                    activeOrders = state.activeOrders || {};
-                    renderKDS();
-                }).catch(e => console.log("Erreur init", e));
-            };
+                if (window.location.protocol !== 'file:') {
+                    try {
+                        await fetch('/update-order', { 
+                            method: 'POST', headers: {'Content-Type': 'application/json'}, 
+                            body: JSON.stringify({ tableId: key, order: data === null ? null : payload }) 
+                        });
+                    } catch(e) {}
+                }
+            }
+        };
 
-            ws.onmessage = (e) => {
-                const msg = JSON.parse(e.data);
-                if (msg.type === 'ORDER_UPDATE' || msg.state) {
-                    activeOrders = msg.activeOrders || (msg.state ? msg.state.activeOrders : {});
+        window.addEventListener('storage', (e) => {
+            if (e.key === 'EMPIRE_GLOBAL_SYNC') {
+                if(typeof syncData === 'function') syncData();
+            }
+        });
+
+        // =========================================================================
+        // MOTEUR D'AFFICHAGE DU KDS (KITCHEN DISPLAY SYSTEM) POUR LE BAR
+        // =========================================================================
+        async function syncData() {
+            try {
+                const state = await API.getState();
+                if (state && state.activeOrders) {
+                    activeOrders = state.activeOrders;
+                    document.getElementById('sync-status').style.color = "var(--accent)";
+                    document.getElementById('sync-status').innerText = "● SYNC H24 ACTIF";
                     renderKDS();
                 }
-            };
-
-            ws.onclose = () => {
+            } catch(e) {
                 document.getElementById('sync-status').style.color = "var(--alert)";
                 document.getElementById('sync-status').innerText = "● RECONNEXION...";
-                // LA MAGIE DU 24/7 : Il force le redémarrage tout seul
-                setTimeout(connectEmpireH24, 2500); 
-            };
-            
-            ws.onerror = (err) => {
-                ws.close(); // Force onclose pour relancer la boucle
-            };
+            }
+        }
+
+        function connectEmpireH24() {
+            syncData();
+            setInterval(syncData, 3000); // Scan les commandes des serveurs toutes les 3s
         }
 
         function renderKDS() {
@@ -285,26 +309,32 @@
             let currentItemCount = 0;
 
             for (let tableId in activeOrders) {
+                // Ignore les clés système (Menus, Archives, Réservations)
+                if (tableId.includes('MASTER') || tableId.includes('ARCHIVE') || tableId.includes('ALERTS') || tableId.includes('ARCHITECTURE')) continue;
+
                 const order = activeOrders[tableId];
                 if (!order || !order.items) continue;
 
-                const drinks = order.items.filter(i => i.category === 'Boissons & Bar' || i.dest === 'bar');
+                // 🟢 FILTRE CHIRURGICAL : Uniquement les articles destinés au BAR
+                const drinks = order.items.filter(i => i.dest === 'bar');
                 
-                // On affiche uniquement si c'est pas encore prêt
-                if (drinks.length > 0 && order.status !== 'ready') {
+                // Affiche uniquement les boissons qui ont été réclamées (fired) par le serveur mais qui ne sont pas encore prêtes (done)
+                const drinksToPrepare = drinks.filter(i => i.fired && !i.done);
+
+                if (drinksToPrepare.length > 0) {
                     currentPendingCount++;
-                    currentItemCount += drinks.length;
+                    currentItemCount += drinksToPrepare.length;
                     
                     const ticketDiv = document.createElement('div'); 
                     ticketDiv.className = 'ticket';
                     
                     const counts = {};
-                    drinks.forEach(i => { counts[i.n] = (counts[i.n] || 0) + 1; });
+                    drinksToPrepare.forEach(i => { counts[i.n] = (counts[i.n] || 0) + 1; });
                     
                     const boissonsHtml = Object.entries(counts).map(([name, qty]) => `
-                        <div class="course-item" style="border-bottom: 1px dashed #222; padding-bottom: 5px;">
+                        <li style="border-bottom: 1px dashed #222; padding-bottom: 5px;">
                             <span style="color:var(--accent); margin-right:10px;">${qty}x</span> ${name}
-                        </div>
+                        </li>
                     `).join('');
 
                     ticketDiv.innerHTML = `
@@ -316,13 +346,13 @@
                         </div>
                         <div class="ticket-body">
                             <div class="course-section">
-                                <div class="course-title" style="color:var(--bar);">Boissons</div>
-                                <div style="padding: 10px 12px; font-size: 1.1rem; font-weight: bold;">
+                                <div class="course-title" style="color:var(--bar);">Boissons & Cocktails</div>
+                                <ul class="course-items">
                                     ${boissonsHtml}
-                                </div>
+                                </ul>
                             </div>
                         </div>
-                        <button class="btn-send" style="background:var(--bar);" onclick="markAsReady('${tableId}')">ENVOYER BOISSONS ✓</button>
+                        <button class="btn-send" style="background:var(--bar);" onclick="markDrinksAsReady('${tableId}')">ENVOYER BOISSONS ✓</button>
                     `;
                     pendingContainer.appendChild(ticketDiv);
                 }
@@ -334,19 +364,28 @@
             previousPendingCount = currentPendingCount;
         }
 
-        async function markAsReady(tableId) {
+        async function markDrinksAsReady(tableId) {
             playSound('send');
-            // Envoi au serveur H24
-            await fetch('/update-order', {
-                method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({ tableId: tableId, order: { ...activeOrders[tableId], status: 'ready' } })
+            
+            // On récupère le ticket complet de la table
+            let currentOrder = activeOrders[tableId];
+            
+            // On passe UNIQUEMENT les boissons à "done: true"
+            currentOrder.items.forEach(i => {
+                if (i.dest === 'bar' && i.fired) {
+                    i.done = true;
+                }
             });
+
+            // Envoi au Cerveau central
+            await API.update(tableId, currentOrder, true);
+            
+            // L'historique pourrait être géré ici si tu le souhaites
+            renderKDS();
         }
 
-
         // =========================================================================
-        // INITIALISATION ET UTILITAIRES DE BASE (ORIGINAL)
+        // INITIALISATION ET UTILITAIRES DE BASE
         // =========================================================================
         function initSystem() {
             try {
@@ -356,7 +395,7 @@
             document.getElementById('start-overlay').style.display = 'none';
             document.getElementById('stats-date-picker').value = getTodayString();
             document.getElementById('haccp-date-picker').value = getTodayString();
-            connectEmpireH24(); // Lancement du H24
+            connectEmpireH24(); // Lancement de la synchro avec les Pads Serveurs
         }
 
         function playSound(type) {
@@ -372,14 +411,9 @@
                 osc.type = 'sine'; osc.frequency.setValueAtTime(440, now);
                 gain.gain.setValueAtTime(0, now); gain.gain.linearRampToValueAtTime(0.5, now + 0.05); gain.gain.exponentialRampToValueAtTime(0.01, now + 0.4);
                 osc.start(now); osc.stop(now + 0.4);
-            } else if (type === 'undo') { 
-                osc.type = 'sawtooth'; osc.frequency.setValueAtTime(220, now); osc.frequency.setValueAtTime(110, now + 0.2);
-                gain.gain.setValueAtTime(0, now); gain.gain.linearRampToValueAtTime(0.2, now + 0.05); gain.gain.exponentialRampToValueAtTime(0.01, now + 0.4);
-                osc.start(now); osc.stop(now + 0.4);
             }
         }
 
-        // Utilitaire Date
         function getTodayString() { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; }
         function getTimeString() { const d = new Date(); return String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0'); }
 
@@ -584,26 +618,53 @@
         }
 
         // --- RECETTES ---
-        function renderLibrary() {
-            const recipes = JSON.parse(localStorage.getItem('kds_grimoire_bar_v2') || '[]');
+        async function renderLibrary() {
+            const state = await API.getState();
+            let recipes = [];
+            if(state.activeOrders && state.activeOrders['RECIPES_MASTER_BAR']) {
+                recipes = state.activeOrders['RECIPES_MASTER_BAR'].data || [];
+            }
+            
             let html = '';
-            recipes.forEach((r, idx) => { html += `<div class="recipe-row"><button class="recipe-btn" onclick="openRecipeModal(${idx})">📄 ${r.nom}</button></div>`; });
-            document.getElementById('library-container').innerHTML = html || '<div style="color:#555; text-align:center;">Vide.</div>';
+            recipes.forEach((r, idx) => { 
+                // Formatage propre du contenu pour l'affichage de la fiche technique
+                let contentText = `📋 INGRÉDIENTS :\n${r.ing || 'Non spécifiés'}\n\n👨‍🍳 PRÉPARATION :\n${r.prep || 'Non spécifiée'}\n\n💰 Coût Théorique : ${r.cost}€\n🎯 FoodCost Cible : ${r.targetFc}%`;
+                
+                // On stocke le contenu de façon sécurisée
+                let safeName = r.name.replace(/'/g, "\\'");
+                let safeContent = contentText.replace(/'/g, "\\'").replace(/\n/g, '\\n');
+                
+                html += `<div class="recipe-row"><button class="recipe-btn" onclick="openRecipeModal('${safeName}', '${safeContent}')">📄 ${r.name}</button></div>`; 
+            });
+            document.getElementById('library-container').innerHTML = html || '<div style="color:#555; text-align:center;">Le Grimoire est vide.</div>';
         }
-        function openRecipeModal(index) {
-            const r = JSON.parse(localStorage.getItem('kds_grimoire_bar_v2'))[index];
-            document.getElementById('modal-recipe-title').textContent = r.nom;
-            document.getElementById('modal-recipe-content').textContent = r.content;
+        
+        function openRecipeModal(name, content) {
+            document.getElementById('modal-recipe-title').textContent = name;
+            // Interprète les sauts de ligne correctement
+            document.getElementById('modal-recipe-content').innerHTML = content.replace(/\\n/g, '<br>');
             document.getElementById('recipe-modal').style.display = 'flex';
         }
         function closeRecipeModal() { document.getElementById('recipe-modal').style.display = 'none'; }
 
         // --- RÉSERVATIONS & STATS ---
-        function openResDrawer() { openDrawer('res-drawer', renderResDrawer); }
+        async function openResDrawer() { 
+            const state = await API.getState();
+            let resas = {};
+            if(state.activeOrders && state.activeOrders['RESERVATIONS_MASTER']) {
+                // Conversion de la liste de réservations en objet groupé par date (pour compatibilité avec ton code d'affichage)
+                let resList = state.activeOrders['RESERVATIONS_MASTER'].data || [];
+                resList.forEach(r => {
+                    if(!resas[r.date]) resas[r.date] = [];
+                    resas[r.date].push(r);
+                });
+            }
+            renderResDrawer(resas); 
+            openDrawer('res-drawer'); 
+        }
         
-        function renderResDrawer() {
+        function renderResDrawer(resas) {
             const today = getTodayString();
-            const resas = JSON.parse(localStorage.getItem('empire_reservations')) || {};
             const dayResas = resas[today] || [];
             const container = document.getElementById('res-list-container');
             
@@ -614,20 +675,43 @@
             dayResas.sort((a, b) => a.time.localeCompare(b.time)).forEach(order => {
                 const hour = parseInt(order.time.split(':')[0], 10);
                 const isSoir = hour >= 17;
-                const card = `<div class="res-card"><div style="display:flex; justify-content:space-between;"><b>${order.name}</b><span>${order.time}</span></div><div style="color: #ccc; font-size: 0.9rem;">👥 ${order.pax}p - Table ${order.table}</div></div>`;
+                const pax = order.couverts || order.pax || order.personnes || '?';
+                const obs = order.obs ? ` | ⚠️ ${order.obs}` : '';
+                
+                const card = `<div class="res-card"><div style="display:flex; justify-content:space-between;"><b>${order.name}</b><span style="color:var(--gold); font-weight:bold;">${order.time}</span></div><div style="color: #aaa; font-size: 0.85rem; margin-top:5px;">👥 ${pax} personnes${obs}</div></div>`;
                 if (isSoir) { soirHtml += card; countSoir++; } else { midiHtml += card; countMidi++; }
             });
             container.innerHTML = (countMidi > 0 ? `<h3 style="color:#aaa;">☀️ Midi</h3>${midiHtml}` : '') + (countSoir > 0 ? `<h3 style="color:#aaa;">🌙 Soir</h3>${soirHtml}` : '');
         }
 
-        function renderStatsDrawer(selectedDateStr = null) {
+        async function renderStatsDrawer(selectedDateStr = null) {
             const targetDate = selectedDateStr || document.getElementById('stats-date-picker').value || getTodayString();
             document.getElementById('stats-date-picker').value = targetDate; 
-            const allStats = JSON.parse(localStorage.getItem('kds_archives_bar_10ans') || '{}');
-            const sortedStats = Object.entries(allStats[targetDate] || {}).sort((a, b) => b[1] - a[1]).slice(0, 20);
+            
+            const state = await API.getState();
+            let allSales = [];
+            if(state.activeOrders && state.activeOrders['SALES_ARCHIVE_BAR']) {
+                allSales = state.activeOrders['SALES_ARCHIVE_BAR'].data || [];
+            }
+            
+            // Filtre les ventes pour la date sélectionnée
+            let dailySales = allSales.filter(sale => sale.time && sale.time.startsWith(targetDate));
+            
+            // Compile les quantités
+            let itemCounts = {};
+            dailySales.forEach(sale => {
+                if(sale.items) {
+                    sale.items.forEach(item => {
+                        let cleanName = item.n.replace('🌟 ', '').trim();
+                        itemCounts[cleanName] = (itemCounts[cleanName] || 0) + (item.qty || 1);
+                    });
+                }
+            });
+            
+            const sortedStats = Object.entries(itemCounts).sort((a, b) => b[1] - a[1]).slice(0, 20);
             const container = document.getElementById('stats-list-container');
             
-            if (sortedStats.length === 0 || sortedStats[0][1] === 0) { container.innerHTML = '<div style="color:#555; text-align:center;">Aucune boisson servie à cette date.</div>'; return; }
+            if (sortedStats.length === 0) { container.innerHTML = '<div style="color:#555; text-align:center;">Aucune boisson servie à cette date.</div>'; return; }
             
             let html = '<div>';
             sortedStats.forEach(([name, count], index) => {
