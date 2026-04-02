@@ -454,6 +454,7 @@
     </div>
 
     <script>
+        // 🟢 LIAISONS API CORRIGÉES - VÉRIFIÉES
         const API = {
             getState: async () => {
                 let state = { activeOrders: {} };
@@ -670,6 +671,7 @@
             }
         }
 
+        // 🟢 CORRECTION DE LA SAUVEGARDE GRIMOIRE 🟢
         async function saveRecipe() {
             if(!menuData) return alert("⚠️ Erreur : Le menu n'est pas synchronisé.");
             let name = document.getElementById('market-name').value.trim();
@@ -702,10 +704,16 @@
                     let oldCat = recipesData[rIndex].cat; let oldName = recipesData[rIndex].name;
                     recipeObj.id = editingRecipeId;
                     recipesData[rIndex] = recipeObj;
+                    
+                    if(!menuData[oldCat]) menuData[oldCat] = [];
                     let mIndex = menuData[oldCat].findIndex(item => item.name.toLowerCase() === oldName.toLowerCase());
+                    
                     if(mIndex > -1) {
                         if (oldCat !== category) {
-                            let itemToMove = menuData[oldCat].splice(mIndex, 1)[0]; itemToMove.name = "🌟 " + name; itemToMove.price = price; itemToMove.stock = stock; menuData[category].push(itemToMove);
+                            let itemToMove = menuData[oldCat].splice(mIndex, 1)[0]; 
+                            itemToMove.name = "🌟 " + name; itemToMove.price = price; itemToMove.stock = stock; 
+                            if(!menuData[category]) menuData[category] = [];
+                            menuData[category].push(itemToMove);
                         } else {
                             menuData[oldCat][mIndex].name = "🌟 " + name; menuData[oldCat][mIndex].price = price; menuData[oldCat][mIndex].stock = stock;
                         }
@@ -719,6 +727,7 @@
                 cancelEditRecipe(); 
             }
 
+            // 🎯 LIAISONS CORRIGÉES VERS MENU_MASTER_BAR 🎯
             await API.update('MENU_MASTER_BAR', menuData);
             await API.update('RECIPES_MASTER_BAR', recipesData); 
             
@@ -837,7 +846,22 @@
             calcSmartPlate();
         }
 
-        async function deleteRecipe(id) { if(confirm("Supprimer cette fiche ?")) { recipesData = recipesData.filter(r => r.id !== id); renderRecipes(); await API.update('RECIPES_MASTER_BAR', recipesData); } }
+        async function deleteRecipe(id) { 
+            if(confirm("Supprimer cette fiche ?")) { 
+                recipesData = recipesData.filter(r => r.id !== id); 
+                CAT_KEYS.forEach(k => {
+                    if(menuData[k]) menuData[k] = menuData[k].filter(i => i.id !== id);
+                });
+                
+                // 🎯 LIAISONS CORRIGÉES VERS MENU_MASTER_BAR 🎯
+                await API.update('MENU_MASTER_BAR', menuData);
+                await API.update('RECIPES_MASTER_BAR', recipesData); 
+                
+                renderRecipes(); 
+                renderMenu();
+            } 
+        }
+        
         function exportRecipes() { const blob = new Blob([JSON.stringify(recipesData, null, 2)], { type: 'application/json' }); const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = `iBAR_GRIMOIRE.json`; a.click(); }
         function importRecipes(input) { const reader = new FileReader(); reader.onload = async (e) => { const imported = JSON.parse(e.target.result); const existingIds = new Set(recipesData.map(x => x.id)); imported.forEach(item => { if(!existingIds.has(item.id)) recipesData.push(item); }); await API.update('RECIPES_MASTER_BAR', recipesData); renderRecipes(); }; if(input.files[0]) reader.readAsText(input.files[0]); input.value = ''; }
 
@@ -848,7 +872,10 @@
             CAT_KEYS.forEach(category => {
                 const listEl = document.getElementById(`list-${category}`);
                 if (!listEl) return;
+                
+                if(!menuData[category]) menuData[category] = [];
                 document.getElementById(`count-${category}`).innerText = menuData[category].length;
+                
                 listEl.innerHTML = menuData[category].map(item => {
                     let stockVal = (item.stock === "" || item.stock === undefined) ? "∞" : item.stock;
                     let isZero = stockVal === 0;
@@ -868,26 +895,44 @@
             });
         }
 
+        // 🟢 CORRECTION AJOUT MANUEL CARTE 🟢
         async function updateMenuStock(category, id, delta) {
             let item = menuData[category].find(i => i.id === id);
             if(item) {
                 if(item.stock === "" || item.stock === undefined) {
                     let s = prompt(`Définir un stock pour "${item.name}" ?`); if(s && !isNaN(s)) item.stock = parseInt(s); else return;
                 } else { item.stock = Math.max(0, parseInt(item.stock) + delta); }
-                renderMenu(); await API.update('MENU_MASTER_BAR', menuData); 
+                renderMenu(); 
+                
+                // 🎯 LIAISON CORRIGÉE VERS MENU_MASTER_BAR 🎯
+                await API.update('MENU_MASTER_BAR', menuData); 
             }
         }
 
+        // 🟢 CORRECTION AJOUT MANUEL CARTE 🟢
         async function addMenuItem(category) {
             const nameInput = document.getElementById(`add-name-${category}`); const priceInput = document.getElementById(`add-price-${category}`); const stockInput = document.getElementById(`add-stock-${category}`);
             const name = nameInput.value.trim(); const price = parseFloat(priceInput.value); const stock = stockInput && stockInput.value !== "" ? parseInt(stockInput.value) : "";
             if (!name || isNaN(price)) return;
-            menuData[category].push({ id: Date.now(), name: name, price: price, stock: stock });
+            
+            if(!menuData[category]) menuData[category] = [];
+            menuData[category].push({ id: Date.now(), name: name, price: price, stock: stock, dest: 'bar' });
+            
             nameInput.value = ''; priceInput.value = ''; if(stockInput) stockInput.value = '';
-            renderMenu(); await API.update('MENU_MASTER_BAR', menuData);
+            renderMenu(); 
+            
+            // 🎯 LIAISON CORRIGÉE VERS MENU_MASTER_BAR 🎯
+            await API.update('MENU_MASTER_BAR', menuData);
         }
 
-        async function deleteMenuItem(category, id) { menuData[category] = menuData[category].filter(item => item.id !== id); renderMenu(); await API.update('MENU_MASTER_BAR', menuData); }
+        // 🟢 CORRECTION SUPPRESSION MANUEL CARTE 🟢
+        async function deleteMenuItem(category, id) { 
+            menuData[category] = menuData[category].filter(item => item.id !== id); 
+            renderMenu(); 
+            
+            // 🎯 LIAISON CORRIGÉE VERS MENU_MASTER_BAR 🎯
+            await API.update('MENU_MASTER_BAR', menuData); 
+        }
 
         function renderBestSellers() {
             const container = document.getElementById('best-sellers-list');
@@ -928,6 +973,8 @@
             try {
                 const state = await API.getState();
                 if (state && state.activeOrders) {
+                    
+                    // 🎯 CORRECTION DE LA LECTURE : ON RÉCUPÈRE LES DONNÉES DU BAR 🎯
                     if (state.activeOrders['RECIPES_MASTER_BAR']) recipesData = state.activeOrders['RECIPES_MASTER_BAR'].data;
                     if (state.activeOrders['MENU_MASTER_BAR']) { menuData = state.activeOrders['MENU_MASTER_BAR'].data; }
                     if (state.activeOrders['SALES_ARCHIVE_BAR']) { salesArchiveData = state.activeOrders['SALES_ARCHIVE_BAR'].data || []; renderBestSellers(); }
