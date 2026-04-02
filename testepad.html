@@ -253,7 +253,6 @@
                     <button class="btn-mini" style="flex:1; padding:15px; font-size:0.9rem; border-color:var(--text-muted); color:var(--text-main); background: var(--bg);" onclick="saveTableState(false)">💾 SAUVER<br><span style="font-size:0.7rem; font-weight:normal;">(Sans envoyer)</span></button>
                     <button class="btn-mini gold" style="flex:1.5; padding:15px; font-size:1.1rem; background: var(--gold-dim);" onclick="saveTableState(true)">🚀 TOUT ENVOYER<br><span style="font-size:0.7rem; font-weight:normal;">(Cuisine & Bar)</span></button>
                     <button class="btn-mini" style="flex:1; padding:15px; font-size:1.1rem; border-color:var(--accent); color:var(--accent); background: var(--accent-dim);" onclick="openPaymentModal()">💳 CAISSE</button>
-                    
                     <button class="btn-mini sync" style="width:100%; margin-top:10px; padding:12px; font-size:1.1rem; border-width: 2px;" onclick="confirmClearTicket()">🗑️ TOUT EFFACER</button>
                 </div>
             </div>
@@ -606,6 +605,7 @@
             localStorage.setItem('empire_rooms', JSON.stringify(rooms));
         }
 
+        // 🟢 NOUVELLE FONCTION TABLE EXTRA AVEC NOMBRE DE COUVERTS 🟢
         function addExtraTable() {
             let tName = prompt("Nom de la table supplémentaire ? (ex: EXT 1, BAR, etc.)");
             if (!tName || tName.trim() === "") return;
@@ -614,12 +614,23 @@
             if (tables.find(t => t && t.label === tName && t.room === currentRoom)) {
                 return alert("⚠️ Ce nom de table existe déjà dans cette salle !");
             }
+
+            let paxInput = prompt("Combien de personnes à cette table ?");
+            let pax = parseInt(paxInput);
+            if (isNaN(pax) || pax <= 0) pax = 1; // Sécurité par défaut
             
-            tables.push({ label: tName, l: window.innerWidth/2 - 40, t: window.innerHeight/2 - 60, w: 80, h: 80, shape: "rect", room: currentRoom, isExtra: true });
+            tables.push({ label: tName, pax: pax, l: window.innerWidth/2 - 40, t: window.innerHeight/2 - 60, w: 90, h: 90, shape: "rect", room: currentRoom, isExtra: true });
             
             pushArchitecture();
             renderFloor();
+            
+            // Pré-remplit les observations pour la cuisine
+            document.getElementById('order-obs').value = `🍽️ ${pax} Couvert(s)`;
+            
             openOrder(tName);
+            
+            // Force l'affichage dans le tiroir au cas où openOrder l'efface
+            document.getElementById('order-obs').value = `🍽️ ${pax} Couvert(s)`;
         }
 
         function renderRooms() { document.getElementById('room-tabs-container').innerHTML = rooms.map((r, i) => `<div class="room-tab ${r === currentRoom ? 'active' : 'inactive'}" onclick="handleRoomClick('${r}')">${r}</div>`).join(''); }
@@ -692,6 +703,7 @@
             function close() { document.onmouseup=null; document.onmousemove=null; document.ontouchend=null; document.ontouchmove=null; setTimeout(()=>{isDraggingTable=false;}, 50); }
         }
 
+        // 🟢 AFFICHAGE DU PLAN DE SALLE AVEC LES COUVERTS 🟢
         function renderFloor() {
             try {
                 let floor = document.getElementById('floor-plan'); floor.innerHTML = '';
@@ -708,8 +720,17 @@
                     if(activeOrders[t.label]) { d.classList.add('ordered'); if(activeOrders[t.label].status === 'ready') { d.classList.remove('ordered'); d.classList.add('ready'); } }
                     d.style.left=(t.l||0)+'px'; d.style.top=(t.t||0)+'px'; d.style.width=(t.w||80)+'px'; d.style.height=(t.h||120)+'px';
                     
-                    if (t.shape === 'losange' || t.shape === 'triangle') d.innerHTML = `<div class="table-content">${t.label || '?'}</div>`;
-                    else d.innerHTML = t.label || '?'; 
+                    // Ajout du nombre de personnes visuellement sur le bouton de la table
+                    let contentHtml = `<span style="text-align:center;">${t.label || '?'}</span>`;
+                    if (t.isExtra && t.pax) {
+                        contentHtml += `<span style="font-size:0.75rem; color:var(--service); margin-top:5px; font-weight:900;">👤 ${t.pax}</span>`;
+                    }
+
+                    if (t.shape === 'losange' || t.shape === 'triangle') {
+                        d.innerHTML = `<div class="table-content" style="flex-direction:column;">${contentHtml}</div>`;
+                    } else {
+                        d.innerHTML = `<div class="table-content" style="flex-direction:column;">${contentHtml}</div>`;
+                    }
                     
                     let r = document.createElement('div'); r.className = 'table-resizer'; r.innerHTML = '↘'; d.appendChild(r);
                     d.onclick = (e) => { if(isArchiMode) { if(!isDraggingTable && e.target !== r) openTableConfigModal(t.label); } else openOrder(t.label); };
@@ -724,6 +745,12 @@
             ticketItems = (activeOrders[tableLabel] && activeOrders[tableLabel].items) ? JSON.parse(JSON.stringify(activeOrders[tableLabel].items)) : [];
             document.getElementById('order-obs').value = (activeOrders[tableLabel] && activeOrders[tableLabel].observations) ? activeOrders[tableLabel].observations : '';
             
+            // Sécurité de remplissage du PAX si la table vient d'être créée mais que l'observation est vide
+            let tObj = tables.find(t => t && t.label === tableLabel && t.isExtra);
+            if (tObj && ticketItems.length === 0 && document.getElementById('order-obs').value === '') {
+                document.getElementById('order-obs').value = `🍽️ ${tObj.pax || 1} Couvert(s)`;
+            }
+
             renderMenu('Plats'); 
             renderTicket();
             document.getElementById('order-drawer').classList.add('open');
@@ -825,7 +852,6 @@
             pendingCancelIndex = null; document.getElementById('cancel-modal').style.display = 'none'; renderTicket();
         }
 
-        // 🟢 FONCTIONNALITÉ: TOUT EFFACER (PANIC BUTTON) 🟢
         function confirmClearTicket() {
             if(ticketItems.length === 0) return;
             document.getElementById('clear-ticket-modal').classList.add('open');
@@ -839,10 +865,7 @@
             logAction("ANNULATION GLOBALE DE LA TABLE", `Table: ${currentTable} | RAISON: ${raison}`, ticketItems);
             ticketItems = [];
             renderTicket();
-            
-            // Mise à jour du réseau (purge de la table)
             await API.update(currentTable, null, true);
-            
             document.getElementById('clear-ticket-modal').classList.remove('open');
             closeOrder();
             renderFloor();
