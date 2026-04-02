@@ -1,27 +1,1390 @@
 <!DOCTYPE html>
 <html lang="fr">
-<head><meta charset="UTF-8"><title>Réserver - EMPIRE</title></head>
-<body style="background:#050505; color:#fff; font-family:sans-serif; text-align:center; padding:50px;">
-    <h1>RÉSERVATION LIVE</h1>
-    <input type="text" id="res-name" placeholder="VOTRE NOM" style="padding:15px; width:80%; margin-bottom:10px;"><br>
-    <input type="time" id="res-time" style="padding:15px; width:80%; margin-bottom:10px;"><br>
-    <button onclick="submitRes()" style="padding:20px; width:85%; background:#ffb300; border:none; font-weight:900;">RÉSERVER MA TABLE</button>
-    <script>
-        async function submitRes() {
-            const name = document.getElementById('res-name').value.toUpperCase().trim();
-            const time = document.getElementById('res-time').value;
-            const res = await fetch('/get-current-state'); const state = await res.json();
-            const blacklist = state.activeOrders['GLOBAL_BLACKLIST'] ? state.activeOrders['GLOBAL_BLACKLIST'].data : [];
-            if(blacklist.includes(name)) return alert("Complet pour cette période.");
-            
-            const date = new Date().toISOString().split('T')[0];
-            let currentResas = state.activeOrders['GLOBAL_RESERVATIONS'] ? state.activeOrders['GLOBAL_RESERVATIONS'].data : {};
-            if(!currentResas[date]) currentResas[date] = [];
-            currentResas[date].push({ name, time, pax: 2 });
-
-            await fetch('/update-order', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({tableId:'GLOBAL_RESERVATIONS', order:{status:'system', data:currentResas}})});
-            alert("Confirmé. L'Empire vous attend.");
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Empire OS - Pad Serveur Master</title>
+    <style>
+        :root { 
+            --bg: #0f172a;           
+            --panel: #1e293b;        
+            --border: #334155;       
+            --text-main: #f8fafc;    
+            --text-muted: #94a3b8;   
+            --gold: #fbbf24;         
+            --gold-dim: rgba(251, 191, 36, 0.1);
+            --accent: #34d399;       
+            --accent-dim: rgba(52, 211, 153, 0.1);
+            --alert: #f87171;        
+            --alert-dim: rgba(248, 113, 113, 0.1);
+            --ordered: #60a5fa;      
+            --ordered-dim: rgba(96, 165, 250, 0.1);
+            --purple: #a78bfa;       
+            --service: #f472b6;      
+            --shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.3), 0 2px 4px -1px rgba(0, 0, 0, 0.2);
+            --info-zen: #38bdf8;
+            --digestif: #b45309;
         }
+        
+        body { font-family: 'Inter', sans-serif; background: var(--bg); color: var(--text-main); margin: 0; height: 100vh; display: flex; flex-direction: column; overflow: hidden; touch-action: manipulation; }
+        
+        header { background: var(--bg); border-bottom: 1px solid var(--border); padding: 10px 20px; display: flex; justify-content: space-between; align-items: center; gap: 15px; z-index: 100; box-shadow: 0 2px 10px rgba(0,0,0,0.2); }
+        .header-left { display: flex; align-items: center; gap: 20px; }
+        .nav-btns { display: flex; gap: 8px; align-items: center;}
+        
+        .btn-mini { background: var(--bg); border: 1px solid var(--border); color: var(--text-muted); padding: 10px 15px; border-radius: 6px; font-size: 0.8rem; font-weight: bold; cursor: pointer; text-transform: uppercase; transition: 0.2s; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
+        .btn-mini:hover { background: var(--panel); color: var(--text-main); border-color: #475569; }
+        .btn-mini.gold { border-color: var(--gold); color: var(--gold); background: var(--gold-dim); }
+        .btn-mini.sync { border-color: var(--alert); color: var(--alert); background: var(--alert-dim); }
+        .btn-mini.admin { border-color: var(--purple); color: var(--purple); background: rgba(167, 139, 250, 0.1); display: none; } 
+
+        .financial-tracker { background: var(--bg); border: 1px solid var(--service); color: var(--service); padding: 6px 12px; border-radius: 6px; font-weight: 900; font-size: 0.8rem; display: flex; align-items: center; box-shadow: inset 0 1px 3px rgba(0,0,0,0.2); }
+
+        #archi-btn-bar { display: none; background: var(--bg); padding: 15px; border-bottom: 1px solid var(--border); justify-content: center; gap: 15px; flex-wrap: wrap; box-shadow: inset 0 -2px 5px rgba(0,0,0,0.1); }
+        .edit-mode #archi-btn-bar { display: flex; }
+
+        #room-tabs-container { display: flex; background: var(--panel); overflow-x: auto; border-bottom: 1px solid var(--border); padding: 10px 20px; gap: 10px; align-items: center; }
+        #room-tabs-container::-webkit-scrollbar { height: 4px; }
+        #room-tabs-container::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
+        .room-tab { padding: 10px 20px; font-weight: bold; border-radius: 6px; border: 1px solid transparent; cursor: pointer; font-size: 0.9rem; transition: 0.2s; white-space: nowrap; box-shadow: 0 1px 2px rgba(0,0,0,0.1); }
+        .room-tab.active { background: var(--gold-dim); color: var(--gold); border-color: var(--gold); }
+        .room-tab.inactive { background: var(--bg); color: var(--text-muted); border-color: var(--border); }
+        .room-tab.inactive:hover { background: #2f3e53; color: var(--text-main); }
+
+        #archi-text-bar { display: none; background: var(--panel); padding: 10px; border-bottom: 1px solid var(--border); justify-content: center; text-align: center; }
+        .edit-mode #archi-text-bar { display: flex; color: var(--ordered); font-weight: bold; font-size: 0.95rem; }
+
+        .floor-plan-wrapper { flex: 1; overflow: auto; background: var(--bg); touch-action: auto; }
+        .floor-plan { position: relative; background-image: radial-gradient(var(--border) 1px, transparent 1px); background-size: 30px 30px; width: 2000px; height: 1500px; }
+        
+        .table-obj { position: absolute; background: var(--panel); border: 2px solid var(--border); display: flex; justify-content: center; align-items: center; font-weight: bold; color: var(--text-main); cursor: pointer; transition: border-color 0.2s, box-shadow 0.2s, background 0.2s, transform 0.1s; box-sizing: border-box; touch-action: none; box-shadow: var(--shadow);}
+        .table-obj:active { transform: scale(0.95); }
+        .table-obj.extra { border: 2px dashed var(--service); background: rgba(244, 114, 182, 0.1); color: var(--service); }
+        .shape-oval { border-radius: 50%; }
+        .shape-rect { border-radius: 8px; }
+        .shape-losange { clip-path: polygon(50% 0%, 100% 50%, 50% 100%, 0% 50%); background: var(--border); border: none; padding: 2px; }
+        .shape-losange > .table-content { clip-path: polygon(50% 0%, 100% 50%, 50% 100%, 0% 50%); background: var(--panel); width: 100%; height: 100%; display: flex; justify-content: center; align-items: center; }
+        .shape-triangle { clip-path: polygon(50% 0%, 0% 100%, 100% 100%); background: var(--border); border: none; padding: 2px; padding-bottom: 0px; }
+        .shape-triangle > .table-content { clip-path: polygon(50% 0%, 0% 100%, 100% 100%); background: var(--panel); width: 100%; height: 100%; display: flex; justify-content: center; align-items: flex-end; padding-bottom: 15px; box-sizing: border-box; }
+        
+        .table-content { width: 100%; height: 100%; display: flex; justify-content: center; align-items: center; border-radius: inherit; }
+
+        .table-obj.status-hold { border-color: var(--gold); background: var(--gold-dim); color: var(--gold); }
+        .table-obj.status-hold > .table-content { background: var(--gold-dim); color: var(--gold); }
+        .table-obj.status-cooking { border-color: var(--orange); background: rgba(249, 115, 22, 0.1); color: var(--orange); }
+        .table-obj.status-cooking > .table-content { background: rgba(249, 115, 22, 0.1); color: var(--orange); }
+        .table-obj.status-ready { border-color: var(--accent); background: var(--accent); color: var(--bg); animation: pulse-ready 1s infinite; box-shadow: 0 0 20px var(--accent-dim); }
+        .table-obj.status-ready > .table-content { background: var(--accent); color: var(--bg); }
+        .table-obj.status-drinks { border-color: var(--info-zen); background: rgba(56, 189, 248, 0.1); color: var(--info-zen); }
+        .table-obj.status-drinks > .table-content { background: rgba(56, 189, 248, 0.1); color: var(--info-zen); }
+        .table-obj.status-dessert { border-color: var(--purple); background: rgba(167, 139, 250, 0.1); color: var(--purple); }
+        .table-obj.status-dessert > .table-content { background: rgba(167, 139, 250, 0.1); color: var(--purple); }
+        .table-obj.status-digestif { border-color: var(--digestif); background: rgba(180, 83, 9, 0.1); color: var(--digestif); }
+        .table-obj.status-digestif > .table-content { background: rgba(180, 83, 9, 0.1); color: var(--digestif); }
+
+        @keyframes pulse-ready { 0% { transform: scale(1); box-shadow: 0 0 10px var(--accent-dim); } 50% { transform: scale(1.05); box-shadow: 0 0 25px rgba(52, 211, 153, 0.4); } 100% { transform: scale(1); box-shadow: 0 0 10px var(--accent-dim); } }
+
+        .edit-mode .table-obj { cursor: move; border-style: dashed; border-color: var(--ordered); background: var(--ordered-dim); color: var(--ordered); animation: none; box-shadow: none;}
+        .edit-mode .table-obj > .table-content { background: var(--ordered-dim); color: var(--ordered); }
+
+        .table-resizer { position: absolute; bottom: -10px; right: -10px; width: 30px; height: 30px; background: var(--gold); border: 2px solid var(--bg); border-radius: 50%; display: none; justify-content: center; align-items: center; font-size: 16px; font-weight: bold; color: var(--bg); cursor: se-resize; z-index: 100; box-shadow: 0 0 5px rgba(0,0,0,0.5); }
+        .edit-mode .table-resizer { display: flex; }
+
+        .drawer { position: fixed; top: 0; right: 0; width: 100%; height: 100%; background: var(--bg); z-index: 10000; display: none; flex-direction: column; }
+        .drawer.open { display: flex; }
+        
+        .drawer-body { display:flex; flex:1; overflow:hidden; }
+        
+        .menu-grid { flex: 1; display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 15px; padding: 25px; overflow-y: auto; align-content: start; }
+        
+        .btn-item { position: relative; background: var(--panel); border: 1px solid var(--border); color: var(--text-main); padding: 18px 15px; border-radius: 10px; font-weight: bold; text-align: left; display: flex; flex-direction: column; justify-content: center; align-items: center; gap: 10px; font-size: 0.95rem; transition: all 0.2s ease; box-shadow: 0 2px 5px rgba(0,0,0,0.15); cursor: pointer; }
+        .btn-item:hover { border-color: #475569; transform: translateY(-2px); box-shadow: 0 4px 8px rgba(0,0,0,0.2); }
+        .btn-item:active { transform: scale(0.95); border-color: var(--accent); }
+        .btn-item .price { color: var(--accent); background: var(--accent-dim); padding: 4px 10px; border-radius: 20px; font-weight: 900; font-size: 1.1rem; }
+        
+        .btn-item.sold-out { background: var(--alert-dim); border-color: var(--alert); color: var(--text-muted); pointer-events: none; opacity: 0.6; }
+        .btn-item.sold-out .price { color: var(--alert); text-decoration: line-through; background: transparent; border-color: transparent;}
+        .btn-item.sold-out::after { content: "ÉPUISÉ"; color: var(--alert); font-size: 0.75rem; font-weight: 900; margin-top: 5px; background: rgba(248, 113, 113, 0.2); padding: 2px 8px; border-radius: 4px;}
+        
+        .stock-badge { position: absolute; top: -8px; right: -8px; color: #fff; border-radius: 6px; padding: 4px 10px; font-size: 0.85rem; font-weight: 900; box-shadow: 0 2px 5px rgba(0,0,0,0.5); border: 2px solid var(--bg); z-index: 10; background: var(--text-muted); }
+        .stock-badge.alert-green { background: #10b981; }
+        .stock-badge.alert-yellow { background: #facc15; color: #000; }
+        .stock-badge.alert-orange { background: #f97316; animation: pulse-orange 2s infinite; }
+        .stock-badge.alert-red { background: #ef4444; animation: pulse-red 1s infinite; }
+        
+        @keyframes pulse-orange { 0% { transform: scale(1); } 50% { transform: scale(1.05); box-shadow: 0 0 10px #f97316; } 100% { transform: scale(1); } }
+        @keyframes pulse-red { 0% { transform: scale(1); } 50% { transform: scale(1.15); box-shadow: 0 0 15px #ef4444; } 100% { transform: scale(1); } }
+
+        .ticket-view { flex: 0 0 35%; background: var(--panel); border-left: 1px solid var(--border); padding: 20px; overflow-y: auto; display: flex; flex-direction: column; box-shadow: -5px 0 15px rgba(0,0,0,0.2);}
+        .ticket-items-container { flex: 1; overflow-y: auto; padding-right: 5px; }
+        .ticket-items-container::-webkit-scrollbar { width: 6px; }
+        .ticket-items-container::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
+        .ticket-total { padding-top: 15px; border-top: 2px solid var(--border); margin-top: 15px; font-size: 1.8rem; font-weight: 900; color: var(--gold); text-align: right; letter-spacing: 1px; }
+
+        .status-btn-fire { background: var(--gold-dim); border: 1px solid var(--gold); color: var(--gold); border-radius: 6px; padding: 6px 12px; cursor: pointer; font-weight: 900; font-size: 0.8rem; text-transform: uppercase; transition: 0.2s; box-shadow: 0 2px 4px rgba(0,0,0,0.2);}
+        .status-btn-fire:active { transform: scale(0.95); background: var(--gold); color: #000; }
+        .status-badge-cooking { background: var(--ordered-dim); color: var(--ordered); padding: 4px 8px; border-radius: 4px; font-size: 0.75rem; font-weight: bold; border: 1px solid var(--ordered); }
+        .status-badge-ready { background: var(--accent-dim); color: var(--accent); padding: 4px 8px; border-radius: 4px; font-size: 0.75rem; font-weight: bold; border: 1px solid var(--accent); }
+
+        .course-zone { border: 2px dashed transparent; border-radius: 8px; padding: 8px; margin-bottom: 15px; min-height: 60px; background: rgba(0,0,0,0.15); transition: 0.2s; }
+        .course-zone.drag-over { border-color: var(--gold); background: var(--gold-dim); }
+        .course-header { display: flex; justify-content: space-between; align-items: center; color: var(--text-muted); font-size: 0.9rem; font-weight: 900; border-bottom: 1px solid var(--border); padding-bottom: 5px; margin-bottom: 10px; text-transform: uppercase;}
+        .drag-handle { cursor: grab; font-size: 1.2rem; color: var(--text-muted); padding-right: 15px; touch-action: none; }
+        .drag-handle:active { cursor: grabbing; color: var(--gold); }
+        .ticket-item-row { display:flex; justify-content:space-between; align-items:center; padding:12px 10px; border:1px solid transparent; border-bottom-color:var(--border); background: var(--panel); margin-bottom: 5px; border-radius: 6px; }
+        .ticket-item-row:hover { border-color: var(--border); }
+
+        .modal { position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; background: rgba(15, 23, 42, 0.95); z-index: 20000; display: none; flex-direction: column; align-items: center; justify-content: center; backdrop-filter: blur(5px); }
+        .modal.open { display: flex !important; }
+        
+        #login-screen { position: fixed !important; top: 0 !important; left: 0 !important; width: 100vw !important; height: 100vh !important; background: var(--bg) !important; z-index: 999999 !important; display: flex; flex-direction: column; align-items: center; justify-content: center; }
+        .pin-pad { display: grid; grid-template-columns: repeat(3, 80px); gap: 15px; margin-top: 30px; }
+        .pin-btn { background: var(--panel); border: 1px solid var(--border); color: var(--text-main); font-size: 1.5rem; font-weight: bold; width: 80px; height: 80px; border-radius: 50%; cursor: pointer; transition: 0.1s; box-shadow: 0 4px 6px rgba(0,0,0,0.2);}
+        .pin-btn:active { background: var(--gold); color: #000; border-color: var(--gold); transform: scale(0.95);}
+        .pin-display { font-size: 2.5rem; letter-spacing: 15px; margin-bottom: 20px; color: var(--gold); min-height: 50px; font-weight: bold;}
+        .item-delete-btn { background: var(--alert-dim); color: var(--alert); border: 1px solid transparent; padding: 6px 12px; font-weight: bold; cursor: pointer; border-radius: 6px; font-size: 0.75rem; transition: 0.2s;}
+        .item-delete-btn:hover { background: var(--alert); color: #fff; }
+        
+        .pay-btn { background: var(--panel); border: 2px solid var(--accent); color: var(--accent); padding: 20px 40px; font-size: 1.2rem; font-weight: 900; border-radius: 8px; cursor: pointer; width: 300px; margin-bottom: 15px; text-transform: uppercase; transition: 0.2s; box-shadow: 0 4px 6px rgba(0,0,0,0.2);}
+        .pay-btn:hover { background: var(--accent-dim); }
+        .pay-btn:active { transform: scale(0.98); }
+        .pay-btn.cancel { border-color: var(--alert); color: var(--alert); margin-top: 30px;}
+        .pay-btn.cancel:hover { background: var(--alert-dim); }
+        
+        .cancel-btn { background: var(--panel); border: 2px solid var(--gold); color: var(--gold); padding: 20px 40px; font-size: 1.1rem; font-weight: bold; border-radius: 8px; cursor: pointer; width: 350px; margin-bottom: 15px; text-transform: uppercase; transition: 0.2s; box-shadow: 0 4px 6px rgba(0,0,0,0.2);}
+        .cancel-btn:hover { background: var(--gold-dim); }
+        .cancel-btn.abort { border-color: var(--text-muted); color: var(--text-muted); margin-top: 20px; }
+        .cancel-btn.abort:hover { background: rgba(255,255,255,0.05); }
+        .edit-input { width: 300px; padding: 15px; margin-bottom: 15px; background: var(--bg); border: 1px solid var(--gold); color: var(--text-main); font-size: 1.1rem; border-radius: 8px; text-align: center; box-shadow: inset 0 2px 4px rgba(0,0,0,0.2); outline: none;}
+        .edit-input:focus { box-shadow: 0 0 0 2px var(--gold-dim); }
+
+        .key-btn { background: var(--panel); border: 1px solid var(--border); color: var(--text-main); font-size: 1rem; font-weight: bold; padding: 15px 0; border-radius: 6px; cursor: pointer; transition: 0.1s; display: flex; justify-content: center; align-items: center; box-shadow: 0 2px 4px rgba(0,0,0,0.1);}
+        .key-btn:active { background: var(--gold); color: #000; border-color: var(--gold); transform: scale(0.95); }
+        .key-row { display: flex; gap: 6px; margin-bottom: 6px; width: 100%; justify-content: center;}
+        .key-row > button { flex: 1; }
+        .shape-btn { background: var(--panel); border: 1px solid var(--border); color: var(--text-main); padding: 15px; font-weight: bold; border-radius: 8px; cursor: pointer; flex: 1; font-size: 1rem; transition: 0.2s; box-shadow: 0 2px 4px rgba(0,0,0,0.1);}
+        .shape-btn:active { background: var(--gold); color: #000; border-color: var(--gold); transform: scale(0.95); }
+
+        .cuisson-btn { background: var(--panel); border: 2px solid; padding: 15px; font-size: 1.1rem; font-weight: 900; border-radius: 8px; cursor: pointer; width: 350px; margin-bottom: 10px; text-transform: uppercase; transition: 0.2s; box-shadow: 0 4px 6px rgba(0,0,0,0.15); }
+        .cuisson-btn:active { transform: scale(0.98); }
+        .cuisson-bleu { border-color: #3b82f6; color: #3b82f6; background: rgba(59, 130, 246, 0.1); }
+        .cuisson-entre-bleu-apoint { border-color: #a855f7; color: #a855f7; background: rgba(168, 85, 247, 0.1); }
+        .cuisson-apoint { border-color: #ef4444; color: #ef4444; background: rgba(239, 68, 68, 0.1); }
+        .cuisson-entre-apoint-bien { border-color: #f97316; color: #f97316; background: rgba(249, 115, 22, 0.1); }
+        .cuisson-biencuit { border-color: #78350f; color: #78350f; background: rgba(120, 53, 15, 0.1); }
+        .cuisson-tresbiencuit { border-color: #451a03; color: #451a03; background: rgba(69, 26, 3, 0.1); }
+
+        #empire-clock { color: var(--text-main); font-family: monospace; font-size: 1.1rem; font-weight: bold; background: var(--panel); padding: 6px 12px; border-radius: 6px; border: 1px solid var(--border); margin-left: 15px; box-shadow: inset 0 1px 3px rgba(0,0,0,0.2); }
+
+        #print-zone { display: none; }
+        @media print {
+            body > :not(#print-zone) { display: none !important; }
+            #print-zone { display: block !important; background: white; color: black; font-family: monospace; padding: 10px; width: 80mm; margin: 0 auto; }
+        }
+
+        @media (max-width: 800px) {
+            header { flex-direction: column; padding: 10px; align-items: stretch; gap: 10px;}
+            .header-left { justify-content: space-between; }
+            .nav-btns { flex-wrap: wrap; justify-content: space-between; }
+            .nav-btns button { flex: 1; text-align: center; padding: 10px; font-size: 0.7rem;}
+            .drawer-body { flex-direction: column !important; }
+            .ticket-view { flex: none !important; height: 50vh; border-left: none !important; border-top: 3px solid var(--gold); box-shadow: 0 -5px 15px rgba(0,0,0,0.3) !important;}
+            #empire-clock { display: none; }
+        }
+    </style>
+</head>
+<body>
+
+    <div id="print-zone"></div>
+
+    <div id="login-screen">
+        <h1 style="color:var(--gold); letter-spacing: 4px; font-size: 2.5rem; margin-bottom: 10px;">IDENTIFICATION</h1>
+        <div style="color:var(--text-muted); margin-bottom: 30px; font-size: 1.1rem;">Entrez votre code d'accès personnel</div>
+        <div id="pin-display" class="pin-display"></div>
+        <div class="pin-pad">
+            <button class="pin-btn" onclick="appendPin(1)">1</button><button class="pin-btn" onclick="appendPin(2)">2</button><button class="pin-btn" onclick="appendPin(3)">3</button>
+            <button class="pin-btn" onclick="appendPin(4)">4</button><button class="pin-btn" onclick="appendPin(5)">5</button><button class="pin-btn" onclick="appendPin(6)">6</button>
+            <button class="pin-btn" onclick="appendPin(7)">7</button><button class="pin-btn" onclick="appendPin(8)">8</button><button class="pin-btn" onclick="appendPin(9)">9</button>
+            <button class="pin-btn" onclick="clearPin()" style="background:var(--alert-dim); color:var(--alert); border-color:transparent;">C</button><button class="pin-btn" onclick="appendPin(0)">0</button><button class="pin-btn" onclick="submitPin()" style="background:var(--accent); color:#000; border-color:var(--accent);">OK</button>
+        </div>
+    </div>
+
+    <header>
+        <div class="header-left">
+            <div style="font-weight:900; letter-spacing:2px; font-size: 1.3rem; color: var(--gold);">EMPIRE PAD</div>
+            <div id="stock-tag" style="color:var(--accent); font-weight:900; font-size:0.7rem; background: var(--accent-dim); padding: 4px 8px; border-radius: 4px; border: 1px solid var(--accent);">● LIAISON SÉCURISÉE</div>
+            <div id="user-badge" style="background:var(--panel); padding:6px 12px; border-radius:6px; font-size:0.85rem; color:var(--text-main); border:1px solid var(--border); font-weight: bold;">Utilisateur: Aucun</div>
+            <div id="empire-clock">00:00:00</div>
+        </div>
+        <div class="nav-btns">
+            <button class="btn-mini" style="border-color: var(--service); color: var(--service); background: rgba(244, 114, 182, 0.1);" onclick="addExtraTable()">➕ TABLE EXTRA</button>
+            <button class="btn-mini" onclick="openPlanningModal()">📅 PLANNING</button>
+            <button class="btn-mini" style="border-color: var(--purple); color: var(--purple);" onclick="window.open('reservation.html', '_blank')">🎟️ RÉSA RAPIDE</button>
+            <button id="btn-admin-catalog" class="btn-mini admin" onclick="openAdminCatalog()">👑 GESTION PRIVÉE</button>
+            <button class="btn-mini sync" style="background: var(--alert-dim);" onclick="logout()">🔒 LOGOUT</button>
+        </div>
+    </header>
+
+    <div id="admin-catalog-modal" class="modal">
+        <h2 style="color:var(--gold); font-size: 2.2rem; margin-bottom: 20px; text-transform: uppercase; letter-spacing: 2px;">👑 GESTION PRIVÉE</h2>
+        <div style="background:var(--panel); padding:35px; border-radius:12px; border:1px solid var(--border); width: 600px; max-width: 95%; box-shadow: var(--shadow); display: flex; flex-direction: column; gap: 20px;">
+            <div style="background: var(--bg); border: 1px solid var(--service); padding: 20px; border-radius: 8px; text-align: center; box-shadow: inset 0 2px 4px rgba(0,0,0,0.2);">
+                <div style="color: var(--text-muted); font-size: 0.95rem; font-weight: bold; margin-bottom: 5px; text-transform: uppercase; letter-spacing: 1px;">Valeur Stock Service Financière</div>
+                <div id="stock-tracker" style="color: var(--service); font-size: 2.2rem; font-weight: 900;">0.00 €</div>
+            </div>
+            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px; margin-top: 10px;">
+                <button class="pay-btn" style="width: 100%; margin: 0; border-color: var(--ordered); color: var(--ordered); background: var(--ordered-dim); padding: 25px 0;" onclick="unlockArchiMode(); closeAdminCatalog();">🏗️ ARCHITECTURE SALLE</button>
+                <button class="pay-btn" style="width: 100%; margin: 0; border-color: var(--purple); color: var(--purple); background: rgba(167, 139, 250, 0.1); padding: 25px 0;" onclick="window.open('economat.html', '_blank')">📦 ÉCONOMAT SERVICE</button>
+                <button class="pay-btn" style="width: 100%; margin: 0; border-color: var(--accent); color: var(--accent); background: var(--accent-dim); padding: 25px 0;" onclick="window.open('haccp.html', '_blank')">🛡️ HACCP SALLE</button>
+                <button class="pay-btn" style="width: 100%; margin: 0; border-color: var(--gold); color: var(--gold); background: var(--gold-dim); padding: 25px 0;" onclick="openModal('dashboard'); closeAdminCatalog();">👁️ DASHBOARD DIR.</button>
+            </div>
+        </div>
+        <button class="pay-btn cancel" style="width: auto; padding: 15px 40px; font-size: 1.1rem; border-color: var(--text-muted); color: var(--text-muted); background: var(--bg); margin-top: 25px;" onclick="closeAdminCatalog()">❌ FERMER LE COFFRE</button>
+    </div>
+
+    <div id="planning-modal" class="modal">
+        <div style="background:var(--panel); padding:30px; border-radius:12px; width: 800px; max-width: 95%; max-height: 90vh; display:flex; flex-direction:column; box-shadow: var(--shadow); border: 1px solid var(--border);">
+            <div style="display:flex; justify-content:space-between; align-items:center; border-bottom: 1px solid var(--border); padding-bottom: 15px; margin-bottom: 15px;">
+                <h2 style="color:var(--text-main); font-size: 1.8rem; margin: 0; text-transform: uppercase; letter-spacing: 1px;">📅 PLANNING DES RÉSERVATIONS</h2>
+                <button class="btn-mini" style="font-size: 1rem; padding: 10px 15px;" onclick="closePlanningModal()">✕ FERMER</button>
+            </div>
+            <div style="display:flex; gap: 10px; margin-bottom: 20px;">
+                <button id="btn-plan-today" class="btn-mini gold" style="flex:1; padding: 15px; font-size: 1.1rem;" onclick="renderPlanning('today')">AUJOURD'HUI</button>
+                <button id="btn-plan-tomorrow" class="btn-mini" style="flex:1; padding: 15px; font-size: 1.1rem;" onclick="renderPlanning('tomorrow')">DEMAIN</button>
+            </div>
+            <div id="planning-content" style="flex:1; overflow-y:auto; display:flex; flex-direction:column; gap:12px; padding-right:10px;"></div>
+        </div>
+    </div>
+
+    <div id="archi-btn-bar">
+        <button class="btn-mini" style="border-color: var(--purple); color: var(--purple); padding: 12px 20px; font-size: 0.9rem;" onclick="addNewRoom()">+ NOUVELLE SALLE</button>
+        <button class="btn-mini" style="padding: 12px 20px; font-size: 0.9rem; border-color: var(--text-main); color: var(--text-main);" onclick="addNewTable()">+ NOUVELLE TABLE</button>
+        <button class="btn-mini gold" style="padding: 12px 20px; font-size: 0.9rem; background: var(--gold-dim);" onclick="saveArchitecture()">💾 SAUVEGARDER PLAN</button>
+        <button class="btn-mini sync" style="padding: 12px 20px; font-size: 0.9rem; background: var(--alert-dim);" onclick="closeArchiMode()">QUITTER SANS SAUVER</button>
+    </div>
+    
+    <div class="room-tabs" id="room-tabs-container"></div>
+    <div id="archi-text-bar">MODE ÉDITION : Glissez la table pour déplacer | Tirez la flèche ↘️ pour agrandir | Cliquez pour configurer</div>
+
+    <div class="floor-plan-wrapper">
+        <div id="floor-plan" class="floor-plan"></div>
+    </div>
+
+    <div id="order-drawer" class="drawer">
+        <div style="padding:15px 25px; border-bottom:1px solid var(--border); display:flex; justify-content:space-between; align-items:center; background: var(--panel);">
+            <h2 id="table-label" style="margin:0; font-size: 1.5rem; color: var(--text-main); letter-spacing: 1px;">TABLE</h2>
+            <button class="btn-mini" style="font-size: 0.9rem; padding: 8px 15px;" onclick="closeOrder()">FERMER ✕</button>
+        </div>
+        <div style="padding:10px 25px; background:var(--bg); border-bottom:1px solid var(--border);">
+            <input type="text" id="order-obs" placeholder="⚠️ OBSERVATIONS POUR LA TABLE (VIP, Allergies...)" style="width:100%; padding:10px; background:var(--alert-dim); color:var(--alert); border:1px solid var(--alert); border-radius:8px; font-weight:bold; box-sizing:border-box; font-size: 1rem;">
+        </div>
+        <div class="drawer-body">
+            
+            <div style="flex:1; display:flex; flex-direction:column; background: var(--bg); overflow: hidden;">
+                <div style="display:flex; gap:10px; padding:10px; background:var(--panel); border-bottom:1px solid var(--border); overflow-x: auto;">
+                    <button class="btn-mini menu-tab" style="flex:1; min-width: 100px; font-size:0.85rem; padding:10px;" onclick="renderMenu('Entrées')">🥗 ENTRÉES</button>
+                    <button class="btn-mini menu-tab" style="flex:1; min-width: 100px; font-size:0.85rem; padding:10px;" onclick="renderMenu('Plats')">🔥 PLATS</button>
+                    <button class="btn-mini menu-tab" style="flex:1; min-width: 100px; font-size:0.85rem; padding:10px;" onclick="renderMenu('Desserts')">🍰 DESSERTS</button>
+                    <button class="btn-mini menu-tab" style="flex:1; min-width: 100px; font-size:0.85rem; padding:10px;" onclick="renderMenu('Boissons')">🍸 BOISSONS</button>
+                </div>
+                <div id="menu" class="menu-grid"></div>
+            </div>
+
+            <div id="ticket" class="ticket-view">
+                <div id="ticket-items" class="ticket-items-container"></div>
+                <div id="ticket-total" class="ticket-total">Total TTC: 0.00€</div>
+                <div id="ticket-tva" style="text-align: right; color: var(--text-muted); font-size: 0.85rem; margin-top: 5px;">Dont TVA (10%) : 0.00€</div>
+                
+                <div style="display:flex; gap:10px; margin-top:20px; flex-wrap: wrap;">
+                    <button class="btn-mini" style="flex:1; padding:15px; font-size:0.9rem; border-color:var(--text-muted); color:var(--text-main); background: var(--bg);" onclick="saveTableState(false)">💾 SAUVER<br><span style="font-size:0.7rem; font-weight:normal;">(Sans envoyer)</span></button>
+                    <button class="btn-mini gold" style="flex:1.5; padding:15px; font-size:1.1rem; background: var(--gold-dim);" onclick="saveTableState(true)">🚀 TOUT ENVOYER<br><span style="font-size:0.7rem; font-weight:normal;">(Rapide)</span></button>
+                    <button class="btn-mini" style="flex:1; padding:15px; font-size:1.1rem; border-color:var(--accent); color:var(--accent); background: var(--accent-dim);" onclick="openPaymentModal()">💳 CAISSE</button>
+                    <button class="btn-mini sync" style="width:100%; margin-top:10px; padding:12px; font-size:1.1rem; border-width: 2px;" onclick="confirmClearTicket()">🗑️ TOUT EFFACER</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div id="clear-ticket-modal" class="modal">
+        <h2 style="color:var(--alert); font-size: 2.2rem; margin-bottom: 10px; text-transform: uppercase;">⚠️ TOUT EFFACER ?</h2>
+        <h3 style="color:var(--text-main); font-size: 1.1rem; margin-bottom: 30px; text-align: center; max-width: 400px; font-weight: normal;">Attention, cette action supprimera l'intégralité de la commande de cette table.</h3>
+        
+        <button class="cancel-btn" onclick="executeClearTicket('Erreur de frappe globale')">❌ ERREUR DE FRAPPE GLOBALE</button>
+        <button class="cancel-btn" onclick="executeClearTicket('Le client est parti')">❌ LE CLIENT EST PARTI</button>
+        
+        <button class="cancel-btn abort" onclick="abortClearTicket()">🔙 NE PAS SUPPRIMER (RETOUR)</button>
+    </div>
+
+    <div id="room-config-modal" class="modal">
+        <h2 style="color:var(--purple); font-size: 2rem; margin-bottom: 15px; text-transform: uppercase;">⚙️ Gestion de la Salle</h2>
+        <div style="display:flex; flex-direction:column; gap:10px; margin-bottom:20px; align-items:center; background:var(--panel); padding:30px; border-radius:12px; border:1px solid var(--border); width: 650px; max-width: 95%; box-shadow: var(--shadow);">
+            <div style="display:flex; gap: 15px; width:100%; align-items: center; justify-content: center; margin-bottom: 15px;">
+                <div id="config-room-name-display" style="background:var(--bg); border:2px solid var(--purple); border-radius:8px; padding:15px; font-size:1.8rem; font-weight:bold; color:var(--text-main); width:65%; text-align:center; min-height: 40px; box-shadow: inset 0 2px 4px rgba(0,0,0,0.3);"></div>
+                <button style="background:var(--alert-dim); border:1px solid var(--alert); border-radius:8px; color:var(--alert); font-weight:bold; font-size:1.2rem; padding:15px; flex:1; transition: 0.2s;" onclick="addTactileRoomName('CLEAR')">EFFACER</button>
+            </div>
+            <div style="width: 100%; max-width: 550px; margin-top: 10px;">
+                <div class="key-row"><button class="key-btn" onclick="addTactileRoomName('1')">1</button><button class="key-btn" onclick="addTactileRoomName('2')">2</button><button class="key-btn" onclick="addTactileRoomName('3')">3</button><button class="key-btn" onclick="addTactileRoomName('4')">4</button><button class="key-btn" onclick="addTactileRoomName('5')">5</button><button class="key-btn" onclick="addTactileRoomName('6')">6</button><button class="key-btn" onclick="addTactileRoomName('7')">7</button><button class="key-btn" onclick="addTactileRoomName('8')">8</button><button class="key-btn" onclick="addTactileRoomName('9')">9</button><button class="key-btn" onclick="addTactileRoomName('0')">0</button></div>
+                <div class="key-row"><button class="key-btn" onclick="addTactileRoomName('A')">A</button><button class="key-btn" onclick="addTactileRoomName('Z')">Z</button><button class="key-btn" onclick="addTactileRoomName('E')">E</button><button class="key-btn" onclick="addTactileRoomName('R')">R</button><button class="key-btn" onclick="addTactileRoomName('T')">T</button><button class="key-btn" onclick="addTactileRoomName('Y')">Y</button><button class="key-btn" onclick="addTactileRoomName('U')">U</button><button class="key-btn" onclick="addTactileRoomName('I')">I</button><button class="key-btn" onclick="addTactileRoomName('O')">O</button><button class="key-btn" onclick="addTactileRoomName('P')">P</button></div>
+                <div class="key-row" style="width: 90%;"><button class="key-btn" onclick="addTactileRoomName('Q')">Q</button><button class="key-btn" onclick="addTactileRoomName('S')">S</button><button class="key-btn" onclick="addTactileRoomName('D')">D</button><button class="key-btn" onclick="addTactileRoomName('F')">F</button><button class="key-btn" onclick="addTactileRoomName('G')">G</button><button class="key-btn" onclick="addTactileRoomName('H')">H</button><button class="key-btn" onclick="addTactileRoomName('J')">J</button><button class="key-btn" onclick="addTactileRoomName('K')">K</button><button class="key-btn" onclick="addTactileRoomName('L')">L</button><button class="key-btn" onclick="addTactileRoomName('M')">M</button></div>
+                <div class="key-row" style="width: 70%;"><button class="key-btn" onclick="addTactileRoomName('W')">W</button><button class="key-btn" onclick="addTactileRoomName('X')">X</button><button class="key-btn" onclick="addTactileRoomName('C')">C</button><button class="key-btn" onclick="addTactileRoomName('V')">V</button><button class="key-btn" onclick="addTactileRoomName('B')">B</button><button class="key-btn" onclick="addTactileRoomName('N')">N</button></div>
+                <div class="key-row"><button class="key-btn" style="flex:2; background: var(--bg);" onclick="addTactileRoomName(' ')">ESPACE</button><button class="key-btn" style="background:var(--gold-dim); color:var(--gold); border-color:var(--gold);" onclick="addTactileRoomName('SALLE ')">SALLE</button><button class="key-btn" style="background:var(--ordered-dim); color:var(--ordered); border-color:var(--ordered);" onclick="addTactileRoomName('TERRASSE ')">TERRASSE</button></div>
+            </div>
+        </div>
+        <button class="pay-btn" style="border-color: var(--accent); color: var(--accent); background: var(--accent-dim); margin-bottom: 15px;" onclick="saveRoomConfig()">✅ SAUVEGARDER LA SALLE</button>
+        <div style="display: flex; gap: 15px;">
+            <button class="pay-btn cancel" id="btn-delete-room" style="width: auto; padding: 15px 30px; font-size: 1rem; margin-top: 0; background: var(--bg);" onclick="deleteCurrentRoom()">🗑️ SUPPRIMER</button>
+            <button class="pay-btn cancel" style="width: auto; padding: 15px 30px; font-size: 1rem; border-color: var(--text-muted); color: var(--text-muted); margin-top: 0; background: var(--bg);" onclick="closeRoomConfigModal()">❌ FERMER</button>
+        </div>
+    </div>
+
+    <div id="table-config-modal" class="modal">
+        <h2 style="color:var(--gold); font-size: 2rem; margin-bottom: 15px; text-transform: uppercase;">⚙️ Configuration Table</h2>
+        <div style="display:flex; flex-direction:column; gap:10px; margin-bottom:20px; align-items:center; background:var(--panel); padding:30px; border-radius:12px; border:1px solid var(--border); width: 650px; max-width: 95%; box-shadow: var(--shadow);">
+            <div style="display:flex; gap: 15px; width:100%; align-items: center; justify-content: center; margin-bottom: 15px;">
+                <div id="config-table-name-display" style="background:var(--bg); border:2px solid var(--gold); border-radius:8px; padding:15px; font-size:1.8rem; font-weight:bold; color:var(--text-main); width:65%; text-align:center; min-height: 40px; box-shadow: inset 0 2px 4px rgba(0,0,0,0.3);"></div>
+                <button style="background:var(--alert-dim); border:1px solid var(--alert); border-radius:8px; color:var(--alert); font-weight:bold; font-size:1.2rem; padding:15px; flex:1; transition: 0.2s;" onclick="addTactileTableName('CLEAR')">EFFACER</button>
+            </div>
+            <div style="width: 100%; max-width: 550px; margin-top: 10px;">
+                <div class="key-row"><button class="key-btn" onclick="addTactileTableName('1')">1</button><button class="key-btn" onclick="addTactileTableName('2')">2</button><button class="key-btn" onclick="addTactileTableName('3')">3</button><button class="key-btn" onclick="addTactileTableName('4')">4</button><button class="key-btn" onclick="addTactileTableName('5')">5</button><button class="key-btn" onclick="addTactileTableName('6')">6</button><button class="key-btn" onclick="addTactileTableName('7')">7</button><button class="key-btn" onclick="addTactileTableName('8')">8</button><button class="key-btn" onclick="addTactileTableName('9')">9</button><button class="key-btn" onclick="addTactileTableName('0')">0</button></div>
+                <div class="key-row"><button class="key-btn" onclick="addTactileTableName('A')">A</button><button class="key-btn" onclick="addTactileTableName('Z')">Z</button><button class="key-btn" onclick="addTactileTableName('E')">E</button><button class="key-btn" onclick="addTactileTableName('R')">R</button><button class="key-btn" onclick="addTactileTableName('T')">T</button><button class="key-btn" onclick="addTactileTableName('Y')">Y</button><button class="key-btn" onclick="addTactileTableName('U')">U</button><button class="key-btn" onclick="addTactileTableName('I')">I</button><button class="key-btn" onclick="addTactileTableName('O')">O</button><button class="key-btn" onclick="addTactileTableName('P')">P</button></div>
+                <div class="key-row" style="width: 90%;"><button class="key-btn" onclick="addTactileTableName('Q')">Q</button><button class="key-btn" onclick="addTactileTableName('S')">S</button><button class="key-btn" onclick="addTactileTableName('D')">D</button><button class="key-btn" onclick="addTactileTableName('F')">F</button><button class="key-btn" onclick="addTactileTableName('G')">G</button><button class="key-btn" onclick="addTactileTableName('H')">H</button><button class="key-btn" onclick="addTactileTableName('J')">J</button><button class="key-btn" onclick="addTactileTableName('K')">K</button><button class="key-btn" onclick="addTactileTableName('L')">L</button><button class="key-btn" onclick="addTactileTableName('M')">M</button></div>
+                <div class="key-row" style="width: 70%;"><button class="key-btn" onclick="addTactileTableName('W')">W</button><button class="key-btn" onclick="addTactileTableName('X')">X</button><button class="key-btn" onclick="addTactileTableName('C')">C</button><button class="key-btn" onclick="addTactileTableName('V')">V</button><button class="key-btn" onclick="addTactileTableName('B')">B</button><button class="key-btn" onclick="addTactileTableName('N')">N</button></div>
+                <div class="key-row"><button class="key-btn" style="flex:2; background: var(--bg);" onclick="addTactileTableName(' ')">ESPACE</button><button class="key-btn" style="background:var(--gold-dim); color:var(--gold); border-color:var(--gold);" onclick="addTactileTableName('VIP')">VIP</button><button class="key-btn" style="background:var(--ordered-dim); color:var(--ordered); border-color:var(--ordered);" onclick="addTactileTableName('TER')">TER</button></div>
+            </div>
+            <div style="height: 1px; width:100%; background:var(--border); margin: 20px 0;"></div>
+            <label style="color:var(--text-muted); font-size:1rem; font-weight:bold; margin-bottom: 10px; display: block; text-transform: uppercase; letter-spacing: 1px;">Forme de la table</label>
+            <div style="display:flex; gap:15px; width:100%; justify-content:center;">
+                <button class="shape-btn" onclick="setShape('oval')">⭕ ROND</button>
+                <button class="shape-btn" onclick="setShape('rect')">🟥 CARRÉ</button>
+                <button class="shape-btn" onclick="setShape('losange')">🔶 LOSANGE</button>
+                <button class="shape-btn" onclick="setShape('triangle')">🔺 TRIANGLE</button>
+            </div>
+            <input type="hidden" id="config-table-shape" value="oval">
+        </div>
+        <button class="pay-btn" style="border-color: var(--accent); color: var(--accent); background: var(--accent-dim); margin-bottom: 10px;" onclick="saveTableConfig()">✅ SAUVEGARDER LA TABLE</button>
+        <div style="display: flex; gap: 10px;">
+            <button class="pay-btn cancel" style="width: auto; padding: 15px 20px; font-size: 1rem; margin-top: 0; background: var(--bg);" onclick="deleteCurrentTable()">🗑️ SUPPRIMER</button>
+            <button class="pay-btn cancel" style="width: auto; padding: 15px 20px; font-size: 1rem; border-color: #555; color: #555; margin-top: 0; background: var(--bg);" onclick="closeTableConfigModal()">❌ FERMER</button>
+        </div>
+    </div>
+
+    <div id="cancel-modal" class="modal">
+        <h2 style="color:var(--alert); font-size: 2rem; margin-bottom: 10px; text-transform: uppercase;">⚠️ Annuler ce plat ?</h2>
+        <h3 style="color:var(--text-main); font-size: 1.3rem; margin-bottom: 30px; background: var(--panel); padding: 10px 20px; border-radius: 6px; border: 1px solid var(--border);" id="cancel-item-name">Nom du plat</h3>
+        <button class="cancel-btn" onclick="executeCancelItem('Erreur de frappe')">❌ ERREUR DE FRAPPE</button>
+        <button class="cancel-btn" onclick="executeCancelItem('Client change d\'avis')">❌ CLIENT CHANGE D'AVIS</button>
+        <button class="cancel-btn" onclick="executeCancelItem('Rupture de stock')">❌ RUPTURE DE STOCK</button>
+        <button class="cancel-btn" onclick="executeCancelItem('Retour (Non conforme)')">❌ RETOUR CUISINE/BAR</button>
+        <button class="cancel-btn abort" onclick="abortCancelItem()">🔙 NE PAS SUPPRIMER (RETOUR)</button>
+    </div>
+
+    <div id="edit-item-modal" class="modal">
+        <h2 style="color:var(--gold); font-size: 2rem; margin-bottom: 20px; text-transform: uppercase;">✏️ Ajuster le Plat</h2>
+        <h3 style="color:var(--text-main); margin-bottom: 20px; font-size: 1.4rem;" id="edit-item-title">Nom</h3>
+        
+        <button class="pay-btn" style="border-color: var(--service); color: var(--service); background: rgba(244, 114, 182, 0.1); width: 100%; margin-bottom: 15px;" onclick="offerItem()">🎁 OFFRIR CE PLAT (Geste Co.)</button>
+        
+        <select id="edit-item-course" class="edit-input" style="font-weight: bold; background: var(--panel); cursor: pointer;">
+            <option value="0">🍸 APÉRITIFS / BOISSONS</option>
+            <option value="1">🥗 ENTRÉES</option>
+            <option value="2">🔥 PLATS</option>
+            <option value="3">🍰 DESSERTS</option>
+        </select>
+
+        <input type="number" id="edit-item-price" class="edit-input" step="0.01" placeholder="Nouveau Prix (€)">
+        <input type="text" id="edit-item-obs" class="edit-input" placeholder="Observation (Sans sel, etc...)">
+        
+        <button class="pay-btn" style="border-color: var(--accent); color: var(--accent); background: var(--accent-dim);" onclick="saveItemEdit()">✅ VALIDER L'AJUSTEMENT</button>
+        <button class="pay-btn cancel" style="background: var(--bg);" onclick="closeEditModal()">❌ ANNULER</button>
+    </div>
+
+    <div id="payment-modal" class="modal">
+        <div style="background:var(--panel); padding:30px; border-radius:16px; border:2px solid var(--accent); display:flex; flex-direction:column; width: 550px; max-width: 95%; box-shadow: 0 10px 30px rgba(0,0,0,0.5);">
+            
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom: 20px; border-bottom: 1px solid var(--border); padding-bottom: 15px;">
+                <h2 style="color:var(--text-main); font-size: 1.5rem; margin: 0; text-transform: uppercase; letter-spacing: 2px;" id="pay-modal-title">TABLE X</h2>
+                <button class="btn-mini" style="border-color: var(--border); color: var(--text-muted);" onclick="cancelPayment()">✕ FERMER</button>
+            </div>
+            
+            <div style="display: flex; gap: 15px; margin-bottom: 20px;">
+                <div style="flex: 1; background: var(--bg); padding: 20px; border-radius: 12px; text-align: center; border: 1px solid var(--border); box-shadow: inset 0 2px 4px rgba(0,0,0,0.2);">
+                    <div style="color: var(--text-muted); font-size: 0.85rem; text-transform: uppercase; font-weight: bold; margin-bottom: 5px;">Total Addition</div>
+                    <div id="pay-modal-total" style="font-size: 1.8rem; font-weight: 900; color: var(--text-main);">0.00 €</div>
+                    <div id="pay-modal-tva" style="font-size: 0.85rem; color: var(--text-muted); margin-top: 5px;">Dont TVA (10%) : 0.00 €</div>
+                </div>
+                <div style="flex: 1.5; background: var(--bg); padding: 20px; border-radius: 12px; text-align: center; border: 2px solid var(--accent); box-shadow: inset 0 2px 4px rgba(0,0,0,0.2);">
+                    <div style="color: var(--text-muted); font-size: 0.85rem; text-transform: uppercase; font-weight: bold; margin-bottom: 5px;">Reste à payer</div>
+                    <div id="pay-modal-remaining" style="font-size: 2.5rem; font-weight: 900; color: var(--accent); letter-spacing: -1px;">0.00 €</div>
+                </div>
+            </div>
+
+            <div id="pay-action-zone">
+                <div style="display: flex; gap: 10px; margin-bottom: 15px; align-items: stretch;">
+                    <input type="number" id="pay-custom-amount" step="0.01" style="flex: 1; font-size: 2rem; font-weight: 900; text-align: center; color: var(--gold); border: 2px solid var(--gold); background: var(--bg); border-radius: 8px;" placeholder="0.00">
+                    
+                    <div style="display: flex; flex-direction: column; gap: 5px; flex: 0.5;">
+                        <div style="display: flex; gap: 5px; flex: 1;">
+                            <select id="split-divisor" style="flex:1; background:var(--bg); color:var(--text-main); border:1px solid var(--border); border-radius:6px; font-weight:bold; text-align:center; outline:none; font-size: 1.1rem; cursor:pointer;" onchange="setSplitAmount(this.value)">
+                                <option value="">➗ DIVISER</option>
+                                <option value="20">20 parts</option>
+                                <option value="19">19 parts</option>
+                                <option value="18">18 parts</option>
+                                <option value="17">17 parts</option>
+                                <option value="16">16 parts</option>
+                                <option value="15">15 parts</option>
+                                <option value="14">14 parts</option>
+                                <option value="13">13 parts</option>
+                                <option value="12">12 parts</option>
+                                <option value="11">11 parts</option>
+                                <option value="10">10 parts</option>
+                                <option value="9">9 parts</option>
+                                <option value="8">8 parts</option>
+                                <option value="7">7 parts</option>
+                                <option value="6">6 parts</option>
+                                <option value="5">5 parts</option>
+                                <option value="4">4 parts</option>
+                                <option value="3">3 parts</option>
+                                <option value="2">2 parts</option>
+                            </select>
+                        </div>
+                        <button class="btn-mini gold" style="flex:1;" onclick="setRemainderAmount()">LE RESTE</button>
+                    </div>
+                </div>
+
+                <div id="pay-methods-container" style="display: flex; gap: 10px; margin-bottom: 20px;">
+                    <button class="pay-btn" style="flex: 1; padding: 15px 5px; font-size: 1rem; border-color: var(--ordered); color: var(--ordered); background: var(--ordered-dim); margin:0;" onclick="processPartialPayment('QR/TEL')">📱 QR / TEL</button>
+                    <button class="pay-btn" style="flex: 1; padding: 15px 5px; font-size: 1rem; border-color: var(--accent); color: var(--accent); background: var(--accent-dim); margin:0;" onclick="processPartialPayment('CB')">💳 CB</button>
+                    <button class="pay-btn" style="flex: 1; padding: 15px 5px; font-size: 1rem; border-color: var(--gold); color: var(--gold); background: var(--gold-dim); margin:0;" onclick="processPartialPayment('ESPÈCES')">💶 ESPÈCES</button>
+                </div>
+            </div>
+
+            <div style="background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: 15px; margin-bottom: 20px; max-height: 120px; overflow-y: auto;">
+                <div style="font-size: 0.8rem; color: var(--text-muted); margin-bottom: 10px; font-weight: bold; text-transform: uppercase;">Déjà encaissé :</div>
+                <div id="pay-history-list" style="display: flex; flex-direction: column; gap: 5px;">
+                    </div>
+            </div>
+
+            <button id="btn-finalize-table" class="pay-btn" style="width: 100%; display: none; background: var(--accent); color: #000; border-color: var(--accent); margin: 0; font-size: 1.3rem;" onclick="finalizeTablePayment()">
+                ✅ CLÔTURER LA TABLE
+            </button>
+        </div>
+    </div>
+
+    <div id="cuisson-modal" class="modal">
+        <div style="background:var(--panel); padding:35px; border-radius:12px; border:2px solid var(--ordered); display:flex; flex-direction:column; align-items:center; max-height: 90vh; overflow-y: auto; box-shadow: var(--shadow); width: 90%; max-width: 450px;">
+            <h2 style="color:var(--ordered); font-size: 2rem; margin-top: 0; margin-bottom: 10px; text-transform: uppercase; letter-spacing: 1px;">🔥 Cuisson Requise</h2>
+            <h3 style="color:var(--text-main); font-size: 1.3rem; margin-bottom: 30px; text-align: center; background: var(--bg); padding: 15px; border-radius: 8px; width: 100%; border: 1px solid var(--border); box-sizing: border-box;" id="cuisson-item-name">Plat</h3>
+            
+            <button class="cuisson-btn cuisson-bleu" onclick="confirmCuisson('Bleu')">🔵 BLEU</button>
+            <button class="cuisson-btn cuisson-entre-bleu-apoint" onclick="confirmCuisson('Entre Bleu et Saignant')">🟣 ENTRE BLEU ET SAIGNANT</button>
+            <button class="cuisson-btn cuisson-apoint" onclick="confirmCuisson('Saignant')">🔴 SAIGNANT</button>
+            <button class="cuisson-btn cuisson-entre-apoint-bien" onclick="confirmCuisson('Entre Saignant et À point')">🏮 ENTRE SAIGNANT ET À POINT</button>
+            <button class="cuisson-btn cuisson-biencuit" onclick="confirmCuisson('À point')">🟠 À POINT</button>
+            <button class="cuisson-btn cuisson-tresbiencuit" onclick="confirmCuisson('Bien cuit')">🟤 BIEN CUIT</button>
+            
+            <button class="pay-btn cancel" style="width: 100%; padding: 15px; font-size: 1rem; margin-top: 25px; background: var(--bg);" onclick="cancelCuisson()">❌ ANNULER L'AJOUT</button>
+        </div>
+    </div>
+
+    <script>
+        const API = {
+            getState: async () => {
+                let state = { activeOrders: {} };
+                try {
+                    if (window.location.protocol !== 'file:') {
+                        let r = await fetch('/get-current-state');
+                        if(r.ok) state = await r.json();
+                    } else throw new Error("Local");
+                } catch(e) {
+                    state = JSON.parse(localStorage.getItem('EMPIRE_GLOBAL_SYNC')) || { activeOrders: {} };
+                }
+                return state;
+            },
+            update: async (key, data, isOrder = false) => {
+                let payload = isOrder ? data : { data: data };
+                
+                let state = JSON.parse(localStorage.getItem('EMPIRE_GLOBAL_SYNC')) || { activeOrders: {} };
+                if (data === null) delete state.activeOrders[key];
+                else state.activeOrders[key] = payload;
+                localStorage.setItem('EMPIRE_GLOBAL_SYNC', JSON.stringify(state));
+                
+                if (window.location.protocol !== 'file:') {
+                    try {
+                        await fetch('/update-order', { 
+                            method: 'POST', 
+                            headers: {'Content-Type': 'application/json'}, 
+                            body: JSON.stringify({ tableId: key, order: data === null ? null : payload }) 
+                        });
+                    } catch(e) {}
+                }
+            }
+        };
+
+        window.addEventListener('storage', (e) => {
+            if (e.key === 'EMPIRE_GLOBAL_SYNC') {
+                if(typeof syncData === 'function') syncData();
+            }
+        });
+
+        let menuCuisine = { menuJour: [], suggestions: [], entrees: [], plats: [], desserts: [] };
+        let menuBar = { vins: [], cocktails: [], bieres: [], spiritueux: [], chaudes: [], froides: [] };
+        let reservationsData = []; 
+        let currentCategory = 'Plats'; 
+        let currentCourseDefault = 2;
+        let stockAlerts = { green: 10, yellow: 7, orange: 5, red: 2 }; 
+
+        let isArchiMode = false;
+        let isDraggingTable = false; 
+        let configTableId = null;
+
+        function safeArray(key, fallback) {
+            try { 
+                let v = localStorage.getItem(key); 
+                if (v && v !== 'undefined' && v !== 'null') { 
+                    let p = JSON.parse(v); 
+                    if (Array.isArray(p)) return p.filter(i => i !== null && i !== undefined); 
+                } 
+            } catch(e) {} 
+            return fallback;
+        }
+
+        let rooms = safeArray('empire_rooms', ['Salle Principale']);
+        let currentRoom = rooms[0] || 'Salle Principale';
+        let configRoomOldName = null, currentTactileRoomName = "";
+        let tables = safeArray('empire_architecture', [ {label:"T1", l:550, t:500, w:80, h:120, shape:"oval", room: "Salle Principale"} ]);
+
+        let activeOrders = {}; let currentTable = null; let ticketItems = []; let previousOrdersState = {};
+        let inactivityTimer; const INACTIVITY_LIMIT = 120000; 
+
+        let fraudLog = safeArray('empire_fraud_log', []);
+        
+        let currentUser = null, currentPin = "";
+        
+        const USERS = { 
+            "1234": { name: "Flavien", role: "Serveur" }, 
+            "2222": { name: "Chef de Salle", role: "Manager" }, 
+            "9999": { name: "Directeur", role: "Manager" } 
+        };
+
+        function resetInactivityTimer() { clearTimeout(inactivityTimer); if(currentUser) inactivityTimer = setTimeout(logout, INACTIVITY_LIMIT); }
+        ['touchstart', 'click', 'mousemove', 'keypress'].forEach(e => document.addEventListener(e, resetInactivityTimer, false));
+        
+        function appendPin(n) { currentPin += n; document.getElementById('pin-display').innerText = '*'.repeat(currentPin.length); resetInactivityTimer(); }
+        function clearPin() { currentPin = ""; document.getElementById('pin-display').innerText = ""; resetInactivityTimer(); }
+        
+        function submitPin() {
+            if(USERS[currentPin]) {
+                currentUser = USERS[currentPin]; document.getElementById('user-badge').innerText = `Badge: ${currentUser.name} (${currentUser.role})`;
+                document.getElementById('login-screen').style.display = 'none';
+                
+                if(currentUser.role === 'Manager') {
+                    document.getElementById('btn-admin-catalog').style.display = 'block';
+                } else {
+                    document.getElementById('btn-admin-catalog').style.display = 'none';
+                }
+
+                renderRooms(); renderFloor(); connectEmpireH24(); resetInactivityTimer();
+            } else { alert("❌ PIN Incorrect."); clearPin(); }
+        }
+
+        function logout() { 
+            currentUser = null; currentPin = ""; 
+            document.getElementById('login-screen').style.display = 'flex'; 
+            closeOrder(); closeArchiMode(); closeAdminCatalog(); closePlanningModal();
+            clearTimeout(inactivityTimer); 
+        }
+
+        function logAction(action, detail, itemsData = null) {
+            fraudLog.unshift({ time: new Date().toLocaleTimeString('fr-FR'), user: currentUser ? currentUser.name : 'Unknown', action, detail, items: itemsData });
+            localStorage.setItem('empire_fraud_log', JSON.stringify(fraudLog));
+        }
+
+        function openAdminCatalog() {
+            if (!currentUser || currentUser.role !== 'Manager') return alert("⛔ Accès Manager requis");
+            document.getElementById('admin-catalog-modal').classList.add('open');
+        }
+        function closeAdminCatalog() {
+            document.getElementById('admin-catalog-modal').classList.remove('open');
+        }
+
+        function openPlanningModal() {
+            document.getElementById('planning-modal').classList.add('open');
+            renderPlanning('today');
+        }
+        function closePlanningModal() {
+            document.getElementById('planning-modal').classList.remove('open');
+        }
+
+        function renderPlanning(day) {
+            document.getElementById('btn-plan-today').classList.remove('gold');
+            document.getElementById('btn-plan-today').style.background = 'var(--bg)';
+            document.getElementById('btn-plan-tomorrow').classList.remove('gold');
+            document.getElementById('btn-plan-tomorrow').style.background = 'var(--bg)';
+
+            if(day === 'today') {
+                document.getElementById('btn-plan-today').classList.add('gold');
+                document.getElementById('btn-plan-today').style.background = 'var(--gold-dim)';
+            } else {
+                document.getElementById('btn-plan-tomorrow').classList.add('gold');
+                document.getElementById('btn-plan-tomorrow').style.background = 'var(--gold-dim)';
+            }
+
+            const container = document.getElementById('planning-content');
+            let now = new Date();
+            if (day === 'tomorrow') now.setDate(now.getDate() + 1);
+            let targetDate = now.toISOString().split('T')[0];
+
+            let filteredResas = reservationsData.filter(r => r.date === targetDate);
+            filteredResas.sort((a, b) => (a.time || "00:00").localeCompare(b.time || "00:00"));
+
+            if (filteredResas.length === 0) {
+                container.innerHTML = `<div style="text-align:center; padding: 40px; color:var(--text-muted); font-size:1.1rem; font-style:italic;">Aucune réservation enregistrée pour cette journée.</div>`;
+                return;
+            }
+
+            container.innerHTML = filteredResas.map(r => {
+                let pax = parseInt(r.couverts) || parseInt(r.pax) || parseInt(r.personnes) || '?';
+                let obsHtml = r.obs ? `<div style="color:var(--alert); font-size:0.85rem; margin-top:5px; font-weight:bold;">⚠️ ${r.obs}</div>` : '';
+                let phoneHtml = r.phone ? `<div style="color:var(--text-muted); font-size:0.85rem;">📞 ${r.phone}</div>` : '';
+                
+                return `
+                <div style="background:var(--bg); border:1px solid var(--border); padding:15px; border-radius:8px; display:flex; align-items:center; gap:20px; box-shadow:0 2px 4px rgba(0,0,0,0.1);">
+                    <div style="color:var(--gold); font-size:1.6rem; font-weight:900; width: 70px; text-align: center;">${r.time || '??:??'}</div>
+                    <div style="flex:1;">
+                        <div style="color:var(--text-main); font-weight:bold; font-size:1.1rem; text-transform:uppercase;">${r.name || 'Client'}</div>
+                        ${phoneHtml}
+                        ${obsHtml}
+                    </div>
+                    <div style="background:var(--accent-dim); color:var(--accent); padding:10px 20px; border-radius:8px; font-weight:900; font-size:1.2rem;">${pax} PAX</div>
+                </div>`;
+            }).join('');
+        }
+
+        async function pushArchitecture() {
+            await API.update('ARCHITECTURE', { rooms: rooms, tables: tables });
+            localStorage.setItem('empire_architecture', JSON.stringify(tables));
+            localStorage.setItem('empire_rooms', JSON.stringify(rooms));
+        }
+
+        function addExtraTable() {
+            let tName = prompt("Nom de la table supplémentaire ? (ex: EXT 1, BAR, etc.)");
+            if (!tName || tName.trim() === "") return;
+            tName = tName.trim().toUpperCase();
+            
+            if (tables.find(t => t && t.label === tName && t.room === currentRoom)) {
+                return alert("⚠️ Ce nom de table existe déjà dans cette salle !");
+            }
+
+            let paxInput = prompt("Combien de personnes à cette table ?");
+            let pax = parseInt(paxInput);
+            if (isNaN(pax) || pax <= 0) pax = 1; 
+            
+            tables.push({ label: tName, pax: pax, l: window.innerWidth/2 - 40, t: window.innerHeight/2 - 60, w: 90, h: 90, shape: "rect", room: currentRoom, isExtra: true });
+            
+            pushArchitecture();
+            renderFloor();
+            
+            document.getElementById('order-obs').value = `🍽️ ${pax} Couvert(s)`;
+            openOrder(tName);
+            document.getElementById('order-obs').value = `🍽️ ${pax} Couvert(s)`;
+        }
+
+        function renderRooms() { document.getElementById('room-tabs-container').innerHTML = rooms.map((r, i) => `<div class="room-tab ${r === currentRoom ? 'active' : 'inactive'}" onclick="handleRoomClick('${r}')">${r}</div>`).join(''); }
+        function handleRoomClick(r) { if(isArchiMode && r === currentRoom) openRoomConfigModal(r); else { currentRoom = r; renderRooms(); renderFloor(); } }
+        function addNewRoom() { let n = "Salle " + (rooms.length + 1); rooms.push(n); currentRoom = n; renderRooms(); renderFloor(); }
+        function addTactileRoomName(v) { if(v === 'CLEAR') currentTactileRoomName = currentTactileRoomName.slice(0, -1); else currentTactileRoomName += v; document.getElementById('config-room-name-display').innerText = currentTactileRoomName; }
+        function openRoomConfigModal(r) { configRoomOldName = r; currentTactileRoomName = r; document.getElementById('config-room-name-display').innerText = currentTactileRoomName; document.getElementById('btn-delete-room').style.display = rooms.length > 1 ? 'block' : 'none'; document.getElementById('room-config-modal').style.display = 'flex'; }
+        function closeRoomConfigModal() { configRoomOldName = null; document.getElementById('room-config-modal').style.display = 'none'; }
+        function saveRoomConfig() {
+            if(!configRoomOldName) return; let n = currentTactileRoomName.trim();
+            if(n && n !== configRoomOldName) {
+                let idx = rooms.indexOf(configRoomOldName); if(idx > -1) rooms[idx] = n;
+                tables.forEach(t => { if(t && t.room === configRoomOldName) t.room = n; });
+                if(currentRoom === configRoomOldName) currentRoom = n;
+            }
+            closeRoomConfigModal(); renderRooms(); renderFloor(); pushArchitecture();
+        }
+        function deleteCurrentRoom() {
+            if(rooms.length <= 1) return alert("Impossible de supprimer la dernière salle.");
+            if(confirm(`Supprimer la salle "${configRoomOldName}" et TOUTES ses tables ?`)) {
+                tables = tables.filter(t => t && t.room !== configRoomOldName); rooms = rooms.filter(r => r !== configRoomOldName); currentRoom = rooms[0];
+                closeRoomConfigModal(); renderRooms(); renderFloor(); pushArchitecture();
+            }
+        }
+
+        function unlockArchiMode() { if (!currentUser || currentUser.role !== 'Manager') return alert("⛔ Accès Manager requis"); isArchiMode = true; document.body.classList.add('edit-mode'); renderRooms(); renderFloor(); }
+        function closeArchiMode() { isArchiMode = false; document.body.classList.remove('edit-mode'); renderRooms(); renderFloor(); }
+        function saveArchitecture() { pushArchitecture(); alert("✅ Plan sauvegardé avec succès sur tous les Pads."); closeArchiMode(); }
+        
+        function addNewTable() {
+            let nextNum = 1; tables.filter(t => t && t.room === currentRoom).forEach(t => { let m = t.label.match(/\d+/); if(m && parseInt(m[0]) >= nextNum) nextNum = parseInt(m[0]) + 1; });
+            tables.push({ label: "T" + nextNum, l: window.innerWidth/2 - 40, t: window.innerHeight/2 - 60, w: 80, h: 120, shape: "oval", room: currentRoom }); renderFloor();
+        }
+        function addTactileTableName(v) { if(v === 'CLEAR') currentTactileName = currentTactileName.slice(0, -1); else currentTactileName += v; document.getElementById('config-table-name-display').innerText = currentTactileName; }
+        function setShape(s) { document.getElementById('config-table-shape').value = s; }
+        
+        function openTableConfigModal(id) {
+            let t = tables.find(x => x && x.label === id && x.room === currentRoom); if(!t) return;
+            configTableId = id; currentTactileName = t.label; document.getElementById('config-table-name-display').innerText = currentTactileName; document.getElementById('config-table-shape').value = t.shape || 'oval';
+            document.getElementById('table-config-modal').style.display = 'flex';
+        }
+        function closeTableConfigModal() { configTableId = null; document.getElementById('table-config-modal').style.display = 'none'; }
+        function saveTableConfig() {
+            let t = tables.find(x => x && x.label === configTableId && x.room === currentRoom);
+            if(t) {
+                let n = currentTactileName.trim();
+                if(n && n !== t.label) { if(activeOrders[t.label]) { activeOrders[n] = activeOrders[t.label]; delete activeOrders[t.label]; } t.label = n; }
+                t.shape = document.getElementById('config-table-shape').value;
+            }
+            closeTableConfigModal(); renderFloor(); pushArchitecture();
+        }
+        function deleteCurrentTable() { if(confirm("Supprimer cette table ?")) { tables = tables.filter(t => !(t && t.label === configTableId && t.room === currentRoom)); closeTableConfigModal(); renderFloor(); pushArchitecture(); } }
+
+        function makeInteractive(elmnt, tableObj, resizerElnt) {
+            let p1=0, p2=0, p3=0, p4=0, iW, iH, iX, iY;
+            elmnt.onmousedown = dragMD; elmnt.ontouchstart = dragTS;
+            resizerElnt.onmousedown = resMD; resizerElnt.ontouchstart = resTS;
+
+            function dragMD(e) { if(!isArchiMode || e.target === resizerElnt) return; e.preventDefault(); p3=e.clientX; p4=e.clientY; document.onmouseup=close; document.onmousemove=drag; }
+            function dragTS(e) { if(!isArchiMode || e.target === resizerElnt) return; p3=e.touches[0].clientX; p4=e.touches[0].clientY; document.ontouchend=close; document.ontouchmove=tDrag; }
+            function drag(e) { e.preventDefault(); isDraggingTable=true; p1=p3-e.clientX; p2=p4-e.clientY; p3=e.clientX; p4=e.clientY; updatePos(); }
+            function tDrag(e) { isDraggingTable=true; p1=p3-e.touches[0].clientX; p2=p4-e.touches[0].clientY; p3=e.touches[0].clientX; p4=e.touches[0].clientY; updatePos(); }
+            function updatePos() { elmnt.style.top = (elmnt.offsetTop-p2)+"px"; elmnt.style.left = (elmnt.offsetLeft-p1)+"px"; tableObj.t = elmnt.offsetTop; tableObj.l = elmnt.offsetLeft; }
+            
+            function resMD(e) { if(!isArchiMode) return; e.preventDefault(); e.stopPropagation(); iW=elmnt.offsetWidth; iH=elmnt.offsetHeight; iX=e.clientX; iY=e.clientY; document.onmouseup=close; document.onmousemove=res; }
+            function resTS(e) { if(!isArchiMode) return; e.stopPropagation(); iW=elmnt.offsetWidth; iH=elmnt.offsetHeight; iX=e.touches[0].clientX; iY=e.touches[0].clientY; document.ontouchend=close; document.ontouchmove=tRes; }
+            function res(e) { e.preventDefault(); isDraggingTable=true; updateDim(e.clientX, e.clientY); }
+            function tRes(e) { isDraggingTable=true; updateDim(e.touches[0].clientX, e.touches[0].clientY); }
+            function updateDim(cX, cY) { let nW = Math.max(40, iW+(cX-iX)); let nH = Math.max(40, iH+(cY-iY)); elmnt.style.width=nW+"px"; elmnt.style.height=nH+"px"; tableObj.w=nW; tableObj.h=nH; }
+            function close() { document.onmouseup=null; document.onmousemove=null; document.ontouchend=null; document.ontouchmove=null; setTimeout(()=>{isDraggingTable=false;}, 50); }
+        }
+
+        const isItemInCategory = (itemName, catArray) => {
+            if(!catArray) return false;
+            let pName = itemName.split(' (')[0].replace('🌟 ', '').trim().toLowerCase();
+            return catArray.some(x => x.name.replace('🌟 ', '').trim().toLowerCase() === pName);
+        };
+
+        function renderFloor() {
+            try {
+                let floor = document.getElementById('floor-plan'); floor.innerHTML = '';
+                if(tables.length === 0 && !isArchiMode) {
+                    floor.innerHTML = `<div style="text-align:center; color:var(--text-muted); margin-top:50px;">Aucune table configurée. Demandez au Manager d'activer l'Architecture Salle.</div>`;
+                    return;
+                }
+
+                tables.forEach(t => { if(t && !t.room) t.room = rooms[0] || 'Salle Principale'; });
+                tables.filter(t => t && t.room === currentRoom).forEach(t => {
+                    let d = document.createElement('div'); d.className = 'table-obj shape-' + (t.shape || 'oval');
+                    
+                    if(t.isExtra) d.classList.add('extra');
+
+                    if (activeOrders[t.label] && activeOrders[t.label].items && activeOrders[t.label].items.length > 0) {
+                        let items = activeOrders[t.label].items;
+                        let hasUnfired = items.some(i => !i.fired);
+                        let hasReady = items.some(i => i.done);
+                        let hasCooking = items.some(i => i.fired && !i.done && i.dest === 'cuisine');
+                        
+                        let allBar = items.every(i => i.dest === 'bar');
+                        let hasDessert = items.some(i => isItemInCategory(i.n, menuCuisine.desserts));
+                        let hasDigestif = items.some(i => isItemInCategory(i.n, menuBar.spiritueux));
+                        let hasPlat = items.some(i => isItemInCategory(i.n, menuCuisine.plats) || isItemInCategory(i.n, menuCuisine.menuJour));
+
+                        let tStatus = '';
+                        if (hasReady) tStatus = 'ready';
+                        else if (hasUnfired) tStatus = 'hold';
+                        else if (allBar) {
+                            if (hasDigestif) tStatus = 'digestif';
+                            else tStatus = 'drinks';
+                        }
+                        else if (hasDessert && !hasPlat && !hasCooking) tStatus = 'dessert';
+                        else tStatus = 'cooking';
+
+                        d.classList.add('status-' + tStatus);
+                    }
+
+                    d.style.left=(t.l||0)+'px'; d.style.top=(t.t||0)+'px'; d.style.width=(t.w||80)+'px'; d.style.height=(t.h||120)+'px';
+                    
+                    let contentHtml = `<span style="text-align:center;">${t.label || '?'}</span>`;
+                    if (t.isExtra && t.pax) {
+                        contentHtml += `<span style="font-size:0.75rem; color:var(--text-main); margin-top:5px; font-weight:900;">👤 ${t.pax}</span>`;
+                    }
+
+                    if (t.shape === 'losange' || t.shape === 'triangle') {
+                        d.innerHTML = `<div class="table-content" style="flex-direction:column;">${contentHtml}</div>`;
+                    } else {
+                        d.innerHTML = `<div class="table-content" style="flex-direction:column;">${contentHtml}</div>`;
+                    }
+                    
+                    let r = document.createElement('div'); r.className = 'table-resizer'; r.innerHTML = '↘'; d.appendChild(r);
+                    d.onclick = (e) => { if(isArchiMode) { if(!isDraggingTable && e.target !== r) openTableConfigModal(t.label); } else openOrder(t.label); };
+                    makeInteractive(d, t, r); floor.appendChild(d);
+                });
+            } catch (e) { console.error(e); }
+        }
+
+        function openOrder(tableLabel) {
+            currentTable = tableLabel;
+            document.getElementById('table-label').innerText = "TABLE " + tableLabel;
+            ticketItems = (activeOrders[tableLabel] && activeOrders[tableLabel].items) ? JSON.parse(JSON.stringify(activeOrders[tableLabel].items)) : [];
+            document.getElementById('order-obs').value = (activeOrders[tableLabel] && activeOrders[tableLabel].observations) ? activeOrders[tableLabel].observations : '';
+            
+            let tObj = tables.find(t => t && t.label === tableLabel && t.isExtra);
+            if (tObj && ticketItems.length === 0 && document.getElementById('order-obs').value === '') {
+                document.getElementById('order-obs').value = `🍽️ ${tObj.pax || 1} Couvert(s)`;
+            }
+
+            renderMenu('Plats'); 
+            renderTicket();
+            document.getElementById('order-drawer').classList.add('open');
+        }
+
+        function renderMenu(category) {
+            currentCategory = category;
+            let itemsToDisplay = [];
+            
+            if (category === 'Entrées') {
+                currentCourseDefault = 1;
+                if(menuCuisine.entrees) itemsToDisplay.push(...menuCuisine.entrees.map(i => ({...i, dest: 'cuisine'})));
+            } 
+            else if (category === 'Plats') {
+                currentCourseDefault = 2;
+                if(menuCuisine.menuJour) itemsToDisplay.push(...menuCuisine.menuJour.map(i => ({...i, dest: 'cuisine'})));
+                if(menuCuisine.suggestions) itemsToDisplay.push(...menuCuisine.suggestions.map(i => ({...i, dest: 'cuisine'})));
+                if(menuCuisine.plats) itemsToDisplay.push(...menuCuisine.plats.map(i => ({...i, dest: 'cuisine'})));
+            } 
+            else if (category === 'Desserts') {
+                currentCourseDefault = 3;
+                if(menuCuisine.desserts) itemsToDisplay.push(...menuCuisine.desserts.map(i => ({...i, dest: 'cuisine'})));
+            } 
+            else if (category === 'Boissons') {
+                currentCourseDefault = 0;
+                for(let key in menuBar) {
+                    if(menuBar[key]) itemsToDisplay.push(...menuBar[key].map(i => ({...i, dest: 'bar'})));
+                }
+            }
+
+            document.querySelectorAll('.drawer .menu-tab').forEach(b => {
+                b.classList.remove('gold');
+                b.style.background = 'transparent';
+                b.style.borderColor = 'var(--border)';
+                b.style.color = 'var(--text-main)';
+                
+                if(b.innerText.includes(category) || (category==='Plats' && b.innerText.includes('PLATS'))) {
+                    b.classList.add('gold');
+                    b.style.background = 'var(--gold-dim)';
+                    b.style.borderColor = 'var(--gold)';
+                    b.style.color = 'var(--gold)';
+                }
+            });
+
+            const container = document.getElementById('menu');
+            if (itemsToDisplay.length === 0) {
+                container.innerHTML = `<div style="grid-column:1/-1; text-align:center; color:var(--text-muted); padding:20px; font-size:1.1rem;">La carte est vide. Le chef n'a rien publié dans cette section.</div>`;
+                return;
+            }
+
+            container.innerHTML = itemsToDisplay.map(item => {
+                let isSoldOut = (item.stock === 0);
+                let cleanName = item.name.replace(/\n/g, '<br>');
+                let price = parseFloat(item.price) || 0;
+                
+                let stockHtml = '';
+                if (item.stock !== "" && item.stock !== undefined && item.stock > 0) {
+                    let badgeClass = 'stock-badge';
+                    if (item.stock <= stockAlerts.red) badgeClass += ' alert-red';
+                    else if (item.stock <= stockAlerts.orange) badgeClass += ' alert-orange';
+                    else if (item.stock <= stockAlerts.yellow) badgeClass += ' alert-yellow';
+                    else if (item.stock <= stockAlerts.green) badgeClass += ' alert-green';
+
+                    stockHtml = `<div class="${badgeClass}">${item.stock}</div>`;
+                }
+
+                return `
+                    <button class="btn-item ${isSoldOut ? 'sold-out' : ''}" onclick="addToTicket('${escapeQuotes(item.name)}', ${price}, '${item.dest}')">
+                        ${stockHtml}
+                        <span>${cleanName}</span>
+                        <span class="price">${price.toFixed(2)} €</span>
+                    </button>
+                `;
+            }).join('');
+        }
+
+        function escapeQuotes(str) { return str.replace(/'/g, "\\'").replace(/"/g, '&quot;'); }
+
+        let pendingCuissonItem = null;
+        function addToTicket(n, p, dest) { 
+            if(['entrecôte', 'entrecote', 'bœuf', 'boeuf', 'steak', 'burger', 'filet', 'canard', 'agneau', 'viande', 'tartare', 'onglet', 'bavette', 'côte', 'cote'].some(m => n.toLowerCase().includes(m))) {
+                pendingCuissonItem = { n, p, dest }; document.getElementById('cuisson-item-name').innerText = n.replace(/\n/g, ' '); document.getElementById('cuisson-modal').classList.add('open'); return;
+            }
+            executeAddToCart(n, p, dest);
+        }
+        function confirmCuisson(niv) { if(pendingCuissonItem) { executeAddToCart(`${pendingCuissonItem.n} (${niv})`, pendingCuissonItem.p, pendingCuissonItem.dest); cancelCuisson(); } }
+        function cancelCuisson() { pendingCuissonItem = null; document.getElementById('cuisson-modal').classList.remove('open'); }
+        
+        function executeAddToCart(n, p, dest) { 
+            let e = ticketItems.find(i => i.n === n && !i.done && !i.fired && i.course === currentCourseDefault); 
+            if(e) e.qty = (e.qty||1)+1; 
+            else ticketItems.push({ id: Date.now()+Math.random(), itemId: Date.now(), n, p, qty: 1, done: false, dest, fired: false, savedToDB: false, isOffered: false, course: currentCourseDefault }); 
+            renderTicket(); 
+        }
+        
+        let pendingCancelIndex = null;
+        function removeTicketItem(idx) { pendingCancelIndex = idx; document.getElementById('cancel-item-name').innerText = `${ticketItems[idx].n.replace(/\n/g, ' ')}`; document.getElementById('cancel-modal').style.display = 'flex'; }
+        function abortCancelItem() { pendingCancelIndex = null; document.getElementById('cancel-modal').style.display = 'none'; }
+        function executeCancelItem(raison) {
+            if(pendingCancelIndex === null) return; let item = ticketItems[pendingCancelIndex];
+            logAction(activeOrders[currentTable]?.items?.find(i => i?.id === item.id) ? "ANNULATION PLAT ENVOYÉ" : "SUPPRESSION AVANT ENVOI", `Table: ${currentTable} | Plat: ${item.n} | RAISON: ${raison}`);
+            if (ticketItems[pendingCancelIndex].qty > 1) ticketItems[pendingCancelIndex].qty -= 1; else ticketItems.splice(pendingCancelIndex, 1);
+            pendingCancelIndex = null; document.getElementById('cancel-modal').style.display = 'none'; renderTicket();
+        }
+
+        function confirmClearTicket() {
+            if(ticketItems.length === 0) return;
+            document.getElementById('clear-ticket-modal').classList.add('open');
+        }
+
+        function abortClearTicket() {
+            document.getElementById('clear-ticket-modal').classList.remove('open');
+        }
+
+        async function executeClearTicket(raison) {
+            logAction("ANNULATION GLOBALE DE LA TABLE", `Table: ${currentTable} | RAISON: ${raison}`, ticketItems);
+            ticketItems = [];
+            renderTicket();
+            
+            await API.update(currentTable, null, true);
+            
+            document.getElementById('clear-ticket-modal').classList.remove('open');
+            closeOrder();
+            renderFloor();
+        }
+
+        let pendingEditIndex = null;
+        function openEditItem(idx) { 
+            pendingEditIndex = idx; 
+            let item = ticketItems[idx]; 
+            document.getElementById('edit-item-title').innerText = item.n.replace(/\n/g, ' '); 
+            document.getElementById('edit-item-price').value = item.p; 
+            document.getElementById('edit-item-obs').value = item.obs || ""; 
+            document.getElementById('edit-item-course').value = item.course !== undefined ? item.course : 2;
+            
+            document.getElementById('edit-item-modal').style.display = 'flex'; 
+        }
+        function closeEditModal() { pendingEditIndex = null; document.getElementById('edit-item-modal').style.display = 'none'; }
+        
+        function saveItemEdit() {
+            if(pendingEditIndex === null) return; 
+            let p = parseFloat(document.getElementById('edit-item-price').value);
+            let c = parseInt(document.getElementById('edit-item-course').value);
+            
+            if(!isNaN(p)) { 
+                ticketItems[pendingEditIndex].p = p; 
+                ticketItems[pendingEditIndex].obs = document.getElementById('edit-item-obs').value; 
+                ticketItems[pendingEditIndex].course = c; 
+                logAction("CORRECTION ERREUR HUMAINE", `Table: ${currentTable} | Plat: ${ticketItems[pendingEditIndex].n}`); 
+            }
+            closeEditModal(); renderTicket();
+        }
+
+        function offerItem() {
+            if(pendingEditIndex === null) return;
+            let item = ticketItems[pendingEditIndex];
+            item.originalPrice = item.originalPrice || item.p; 
+            item.p = 0; 
+            item.isOffered = true;
+            item.obs = (item.obs ? item.obs + " | " : "") + "🎁 Geste Co.";
+            logAction("GESTE COMMERCIAL (PLAT OFFERT)", `Table: ${currentTable} | Plat: ${item.n} | Ancien prix: ${item.originalPrice}€`);
+            closeEditModal();
+            renderTicket();
+            saveTableState(false, true); 
+        }
+
+        async function fireCourse(courseId) {
+            let hasChanges = false;
+            ticketItems.forEach(i => {
+                let c = i.course !== undefined ? i.course : 2;
+                if (c === courseId && !i.fired) { i.fired = true; hasChanges = true; }
+            });
+            if (hasChanges) {
+                await saveTableState(false, true); 
+                let cNames = { 0: 'Boissons', 1: 'Entrées', 2: 'Plats', 3: 'Desserts' };
+                logAction("RÉCLAME (ÉTAPE ENVOYÉE)", `Table: ${currentTable} | Étape: ${cNames[courseId]}`);
+                renderTicket();
+            }
+        }
+
+        function allowDrop(ev) { ev.preventDefault(); ev.currentTarget.classList.add('drag-over'); }
+        function dragLeave(ev) { ev.currentTarget.classList.remove('drag-over'); }
+        function dragItem(ev, idx) { ev.dataTransfer.setData("text/plain", idx); }
+        function dropItem(ev, targetCourse) {
+            ev.preventDefault();
+            ev.currentTarget.classList.remove('drag-over');
+            let idx = ev.dataTransfer.getData("text/plain");
+            if(idx !== "" && ticketItems[idx]) {
+                ticketItems[idx].course = targetCourse;
+                renderTicket();
+            }
+        }
+
+        function renderTicket() {
+            let t = 0; 
+            let htmlByCourse = { 0: '', 1: '', 2: '', 3: '' };
+            let courseNames = { 0: '🍸 BOISSONS', 1: '🥗 ENTRÉES', 2: '🔥 PLATS', 3: '🍰 DESSERTS' };
+
+            ticketItems.forEach((i, idx) => {
+                if(!i) return; let q = i.qty || 1; t += (parseFloat(i.p)||0)*q;
+                let cleanName = i.n.replace(/\n/g, ' + ');
+                let c = i.course !== undefined ? i.course : 2; 
+                
+                let statusHtml = '';
+                if (i.done) statusHtml = `<span class="status-badge-ready">PRÊT</span>`;
+                else if (i.fired) statusHtml = `<span class="status-badge-cooking">⏳ EN COURS</span>`;
+                
+                let priceHtml = i.isOffered ? `<span style="margin-right:15px; font-weight:900; color:var(--service);">🎁 OFFERT</span>` : `<span style="margin-right:15px; font-weight:bold;">${((parseFloat(i.p)||0)*q).toFixed(2)}€</span>`;
+
+                let itemHtml = `
+                <div class="ticket-item-row" ${!i.fired ? `draggable="true" ondragstart="dragItem(event, ${idx})"` : ''} style="${i.done ? "opacity:0.5;" : ""} ${!i.fired ? "border-left: 4px solid var(--gold);" : ""}">
+                    ${!i.fired ? `<div class="drag-handle">☰</div>` : ''}
+                    <div style="flex:1; cursor:pointer;" onclick="openEditItem(${idx})">
+                        <div style="font-weight:bold; font-size:1.05rem;">${q>1?`<span style="color:var(--accent); font-weight:900;">${q}x</span> `:""}${cleanName||'?'}</div>
+                        <div style="display:flex; align-items:center; gap:10px; margin-top:5px;">
+                            ${statusHtml}
+                            ${i.obs?`<span style="font-size:0.75rem; color:#facc15;">⚠️ ${i.obs}</span>`:''}
+                        </div>
+                    </div>
+                    ${priceHtml}
+                    <button class="item-delete-btn" onclick="removeTicketItem(${idx}); event.stopPropagation();">✕</button>
+                </div>`;
+
+                htmlByCourse[c] += itemHtml;
+            }); 
+
+            let finalHtml = '';
+            [0, 1, 2, 3].forEach(c => {
+                if(htmlByCourse[c] !== '') {
+                    let hasUnfired = ticketItems.some(i => (i.course === c || (i.course===undefined && c===2)) && !i.fired);
+                    let fireBtn = hasUnfired ? `<button class="btn-mini gold" style="font-size:0.75rem; padding:6px 12px; margin-left:10px;" onclick="fireCourse(${c})">🔥 ENVOYER</button>` : '';
+                    
+                    finalHtml += `
+                    <div class="course-card" ondrop="dropItem(event, ${c})" ondragover="allowDrop(event)" ondragleave="dragLeave(event)">
+                        <div class="course-card-header">
+                            <span class="course-title">${courseNames[c]}</span>
+                            ${fireBtn}
+                        </div>
+                        <div class="course-body">
+                            ${htmlByCourse[c]}
+                        </div>
+                    </div>`;
+                }
+            });
+
+            if(finalHtml === '') {
+                finalHtml = `<div style="text-align:center; color:var(--border); font-style:italic; padding:40px 0; border: 2px dashed var(--border); border-radius: 8px;">Tapez un plat ou glissez-le ici</div>`;
+            }
+
+            document.getElementById('ticket-items').innerHTML = finalHtml;
+
+            let tva = t - (t / 1.10);
+            document.getElementById('ticket-total').innerText = `Total TTC: ${t.toFixed(2)}€`;
+            let tvaEl = document.getElementById('ticket-tva');
+            if(tvaEl) tvaEl.innerText = `Dont TVA (10%) : ${tva.toFixed(2)}€`;
+        }
+
+        async function saveTableState(fireAllNew = false, keepOpen = false) {
+            if(ticketItems.length === 0 && !keepOpen) return;
+            
+            const state = await API.getState();
+            let centralMenu = (state && state.activeOrders && state.activeOrders['MENU_MASTER']) ? state.activeOrders['MENU_MASTER'].data : null;
+            let barMenu = (state && state.activeOrders && state.activeOrders['MENU_MASTER_BAR']) ? state.activeOrders['MENU_MASTER_BAR'].data : null;
+            
+            let menuChanged = false;
+            let barMenuChanged = false;
+
+            ticketItems.forEach(tItem => {
+                if(!tItem.savedToDB) { 
+                    let pureName = tItem.n.replace('🌟 ', ''); 
+
+                    if(centralMenu && tItem.dest === 'cuisine') {
+                        for (let cat in centralMenu) {
+                            if(centralMenu[cat] && Array.isArray(centralMenu[cat])) {
+                                let mItem = centralMenu[cat].find(i => i.name && i.name.replace('🌟 ', '') === pureName);
+                                if (mItem && mItem.stock !== "" && mItem.stock !== undefined && mItem.stock > 0) {
+                                    mItem.stock = Math.max(0, mItem.stock - (tItem.qty || 1));
+                                    menuChanged = true;
+                                }
+                            }
+                        }
+                    }
+                    
+                    if(barMenu && tItem.dest === 'bar') {
+                        for (let cat in barMenu) {
+                            if(barMenu[cat] && Array.isArray(barMenu[cat])) {
+                                let mItem = barMenu[cat].find(i => i.name && i.name.replace('🌟 ', '') === pureName);
+                                if (mItem && mItem.stock !== "" && mItem.stock !== undefined && mItem.stock > 0) {
+                                    mItem.stock = Math.max(0, mItem.stock - (tItem.qty || 1));
+                                    barMenuChanged = true;
+                                }
+                            }
+                        }
+                    }
+                    tItem.savedToDB = true; 
+                }
+                if (fireAllNew && !tItem.fired) tItem.fired = true;
+            });
+
+            if (menuChanged && centralMenu) await API.update('MENU_MASTER', centralMenu);
+            if (barMenuChanged && barMenu) await API.update('MENU_MASTER_BAR', barMenu);
+
+            await API.update(currentTable, { items: ticketItems, time: new Date().toLocaleTimeString('fr-FR', {hour:'2-digit', minute:'2-digit'}), status: 'pending', observations: document.getElementById('order-obs').value.trim() }, true);
+            
+            if (fireAllNew) logAction("ENVOI MASSIF", `Table: ${currentTable}`, ticketItems); 
+            else logAction("SAUVEGARDE COMMANDE", `Table: ${currentTable}`, ticketItems);
+            
+            if(!keepOpen) {
+                closeOrder(); 
+                renderFloor();
+            }
+        }
+
+        function closeOrder() { 
+            let tObj = tables.find(t => t && t.label === currentTable && t.isExtra);
+            if (tObj && ticketItems.length === 0) {
+                tables = tables.filter(t => t.label !== currentTable);
+                pushArchitecture();
+                renderFloor();
+            }
+            document.getElementById('order-drawer').classList.remove('open'); 
+            currentTable = null; 
+        }
+
+        let currentPayTotal = 0;
+        let currentPayRemaining = 0;
+        let currentPayHistory = [];
+
+        function openPaymentModal() {
+            if(ticketItems.length === 0) return alert("Table vide."); 
+            if(currentUser.role === 'Serveur') return alert("⛔ Demandez au Manager pour encaisser.");
+            
+            let td = activeOrders[currentTable]; 
+            if(!td || !td.items || td.items.length !== ticketItems.length) return alert("⚠️ IMPOSSIBLE D'ENCAISSER !\nSauvegardez les modifications avant d'encaisser.");
+            
+            currentPayTotal = parseFloat(document.getElementById('ticket-total').innerText.replace('Total TTC: ', '').replace('Total: ', '').replace('€', ''));
+            currentPayRemaining = currentPayTotal;
+            currentPayHistory = [];
+            
+            document.getElementById('pay-modal-title').innerText = "TABLE " + currentTable; 
+            document.getElementById('pay-modal-total').innerText = currentPayTotal.toFixed(2) + " €";
+            
+            let tva = currentPayTotal - (currentPayTotal / 1.10);
+            document.getElementById('pay-modal-tva').innerText = `Dont TVA (10%) : ${tva.toFixed(2)} €`;
+            
+            updatePaymentUI();
+            document.getElementById('payment-modal').classList.add('open');
+        }
+
+        function setSplitAmount(divisor) {
+            if(!divisor) return;
+            let amt = currentPayTotal / parseFloat(divisor);
+            if(amt > currentPayRemaining) amt = currentPayRemaining;
+            document.getElementById('pay-custom-amount').value = amt.toFixed(2);
+            document.getElementById('split-divisor').value = ""; 
+        }
+
+        function setRemainderAmount() {
+            document.getElementById('pay-custom-amount').value = currentPayRemaining.toFixed(2);
+        }
+
+        function processPartialPayment(method) {
+            let amtInput = document.getElementById('pay-custom-amount').value;
+            let amt = parseFloat(amtInput.replace(',', '.'));
+            
+            if(isNaN(amt) || amt <= 0) return alert("⚠️ Saisissez un montant valide à encaisser.");
+            if(amt > currentPayRemaining + 0.05) return alert("⚠️ Le montant saisi dépasse le reste à payer de la table.");
+            
+            if (method === 'QR/TEL') alert(`📲 Affichage du QR Code pour ${amt.toFixed(2)}€.\nEn attente du paiement du client...`);
+
+            currentPayHistory.push({ method: method, amount: amt });
+            currentPayRemaining -= amt;
+            if(currentPayRemaining < 0) currentPayRemaining = 0;
+            
+            updatePaymentUI();
+        }
+
+        function updatePaymentUI() {
+            document.getElementById('pay-modal-remaining').innerText = currentPayRemaining.toFixed(2) + " €";
+            
+            let histHtml = currentPayHistory.map((p, i) => `
+                <div style="display:flex; justify-content:space-between; background:var(--panel); padding:8px 12px; border-radius:6px; border:1px solid var(--border);">
+                    <span style="color:var(--text-muted); font-weight:bold;">${p.method}</span>
+                    <span style="color:var(--text-main); font-weight:900;">${p.amount.toFixed(2)} €</span>
+                </div>
+            `).join('');
+            
+            if(currentPayHistory.length === 0) histHtml = `<div style="color:var(--border); text-align:center; font-style:italic;">En attente de paiement...</div>`;
+            document.getElementById('pay-history-list').innerHTML = histHtml;
+
+            document.getElementById('pay-custom-amount').value = currentPayRemaining.toFixed(2);
+
+            let btnClose = document.getElementById('btn-finalize-table');
+            let actionZone = document.getElementById('pay-action-zone');
+            
+            if(currentPayRemaining <= 0.05) { 
+                btnClose.style.display = 'block';
+                actionZone.style.display = 'none';
+            } else {
+                btnClose.style.display = 'none';
+                actionZone.style.display = 'block';
+            }
+        }
+
+        function cancelPayment() { 
+            if(currentPayHistory.length > 0 && currentPayRemaining > 0) {
+                if(!confirm("⚠️ ATTENTION : Des encaissements partiels ont été faits.\nÊtes-vous sûr de vouloir fermer et laisser la table ouverte ?")) return;
+            }
+            document.getElementById('payment-modal').classList.remove('open'); 
+        }
+
+        async function finalizeTablePayment() {
+            document.getElementById('payment-modal').classList.remove('open');
+            let methodsUsed = currentPayHistory.map(p => p.method).join(' + ');
+
+            let receiptHtml = `
+                <div style="font-family: monospace; font-size: 14px; text-align: center; width: 100%;">
+                    <h2 style="margin: 0 0 10px 0; font-size: 20px;">EMPIRE OS</h2>
+                    <p style="margin: 0 0 15px 0;">Table : ${currentTable}<br>${new Date().toLocaleString('fr-FR')}</p>
+                    <div style="border-bottom: 1px dashed black; margin-bottom: 15px;"></div>
+            `;
+            
+            ticketItems.forEach(item => {
+                let q = item.qty || 1;
+                let p = item.isOffered ? 0 : (parseFloat(item.p) || 0);
+                receiptHtml += `
+                    <div style="display: flex; justify-content: space-between; margin-bottom: 5px;">
+                        <span style="text-align: left;">${q}x ${item.n}</span>
+                        <span>${(p * q).toFixed(2)}€</span>
+                    </div>
+                `;
+            });
+
+            let tvaTotal = currentPayTotal - (currentPayTotal / 1.10);
+            receiptHtml += `
+                    <div style="border-bottom: 1px dashed black; margin: 15px 0;"></div>
+                    <div style="display: flex; justify-content: space-between; font-weight: bold; font-size: 16px;">
+                        <span>TOTAL TTC</span>
+                        <span>${currentPayTotal.toFixed(2)}€</span>
+                    </div>
+                    <div style="display: flex; justify-content: space-between; font-size: 12px; margin-bottom: 15px;">
+                        <span>Dont TVA 10%</span>
+                        <span>${tvaTotal.toFixed(2)}€</span>
+                    </div>
+                    <div style="text-align: left; font-size: 12px; margin-bottom: 20px;">
+                        <strong>Paiements :</strong><br>
+                        ${currentPayHistory.map(p => `${p.method} : ${p.amount.toFixed(2)}€`).join('<br>')}
+                    </div>
+                    <p style="margin: 0;">Merci de votre visite !</p>
+                </div>
+            `;
+
+            document.getElementById('print-zone').innerHTML = receiptHtml;
+            window.print(); 
+
+            setTimeout(async () => {
+                const state = await API.getState();
+                
+                let cuisineItems = ticketItems.filter(i => i.dest === 'cuisine');
+                let barItems = ticketItems.filter(i => i.dest === 'bar');
+
+                let archiveCuisine = (state && state.activeOrders && state.activeOrders['SALES_ARCHIVE_CUISINE']) ? state.activeOrders['SALES_ARCHIVE_CUISINE'].data || [] : [];
+                let archiveBar = (state && state.activeOrders && state.activeOrders['SALES_ARCHIVE_BAR']) ? state.activeOrders['SALES_ARCHIVE_BAR'].data || [] : [];
+                
+                let timeStr = new Date().toISOString();
+
+                if (cuisineItems.length > 0) {
+                    let cTotal = cuisineItems.reduce((acc, i) => acc + ((parseFloat(i.p)||0)*(i.qty||1)), 0);
+                    archiveCuisine.push({ id: Date.now(), table: currentTable, time: timeStr, total: cTotal.toFixed(2), tva: tvaTotal.toFixed(2), typePaiement: methodsUsed, splitDetails: currentPayHistory, items: cuisineItems });
+                    await API.update('SALES_ARCHIVE_CUISINE', archiveCuisine);
+                }
+
+                if (barItems.length > 0) {
+                    let bTotal = barItems.reduce((acc, i) => acc + ((parseFloat(i.p)||0)*(i.qty||1)), 0);
+                    archiveBar.push({ id: Date.now() + 1, table: currentTable, time: timeStr, total: bTotal.toFixed(2), tva: tvaTotal.toFixed(2), typePaiement: methodsUsed, splitDetails: currentPayHistory, items: barItems });
+                    await API.update('SALES_ARCHIVE_BAR', archiveBar);
+                }
+
+                await API.update(currentTable, null, true);
+                
+                logAction("TABLE CLÔTURÉE (MULTI-PAIEMENTS)", `Table: ${currentTable} | Total: ${currentPayTotal.toFixed(2)}€`, ticketItems); 
+                
+                let isExtra = tables.find(t => t && t.label === currentTable && t.isExtra);
+                if (isExtra) {
+                    tables = tables.filter(t => !(t && t.label === currentTable && t.isExtra));
+                    pushArchitecture();
+                }
+
+                ticketItems = []; document.getElementById('order-obs').value = ''; 
+                
+                document.getElementById('order-drawer').classList.remove('open'); 
+                currentTable = null; 
+                renderFloor();
+            }, 300);
+        }
+
+        async function syncData() {
+            try {
+                const state = await API.getState();
+                if (state && state.activeOrders) {
+                    let nO = state.activeOrders;
+                    
+                    if(nO['MENU_MASTER'] && nO['MENU_MASTER'].data) menuCuisine = nO['MENU_MASTER'].data;
+                    if(nO['MENU_MASTER_BAR'] && nO['MENU_MASTER_BAR'].data) menuBar = nO['MENU_MASTER_BAR'].data;
+                    if(nO['RESERVATIONS_MASTER']) reservationsData = nO['RESERVATIONS_MASTER'].data || [];
+                    if(nO['STOCK_ALERTS']) stockAlerts = nO['STOCK_ALERTS'].data;
+                    
+                    if(nO['ARCHITECTURE']) {
+                        let arch = nO['ARCHITECTURE'].data;
+                        let archChanged = false;
+                        if(JSON.stringify(rooms) !== JSON.stringify(arch.rooms)) { rooms = arch.rooms || ['Salle Principale']; archChanged = true; }
+                        if(JSON.stringify(tables) !== JSON.stringify(arch.tables)) { tables = arch.tables || []; archChanged = true; }
+                        if(archChanged && !isArchiMode && !isDraggingTable) {
+                            if(!rooms.includes(currentRoom)) currentRoom = rooms[0] || 'Salle Principale';
+                            renderRooms(); renderFloor();
+                        }
+                    }
+
+                    if(nO['INVENTORY_MASTER']) {
+                        let invData = nO['INVENTORY_MASTER'].data;
+                        let totalService = 0;
+                        if(invData.service) { invData.service.forEach(item => { totalService += (item.unitPrice * (item.realStock || 0)); }); }
+                        let tracker = document.getElementById('stock-tracker');
+                        if (tracker) tracker.innerText = `${totalService.toFixed(2)} €`;
+                    }
+
+                    for (let t in nO) { 
+                        if (!t.includes('MASTER') && !t.includes('ARCHIVE') && !t.includes('BAR') && !t.includes('CUISINE') && !t.includes('ALERTS') && !t.includes('ARCHITECTURE') && nO[t] && nO[t].status === 'ready' && (!previousOrdersState[t] || previousOrdersState[t].status !== 'ready')) { 
+                            let b=document.getElementById('beep-ready'); if(b) b.play().catch(e=>{}); 
+                            if(nO[t].items) nO[t].items.forEach(i => { if(i) i.done = true; }); 
+                        } 
+                    } 
+                    previousOrdersState = JSON.parse(JSON.stringify(nO)); 
+                    activeOrders = nO; 
+                    
+                    if(document.getElementById('order-drawer').classList.contains('open') && currentTable) { 
+                        ticketItems = (activeOrders[currentTable] && activeOrders[currentTable].items) ? JSON.parse(JSON.stringify(activeOrders[currentTable].items)) : ticketItems; 
+                        renderTicket(); 
+                        renderMenu(currentCategory); 
+                    } 
+                    if(!isArchiMode && !isDraggingTable) renderFloor();
+                }
+            } catch(e) {}
+        }
+
+        function connectEmpireH24() {
+            syncData(); 
+            setInterval(syncData, 3000);
+        }
+
+        setInterval(() => { let c = document.getElementById('empire-clock'); if(c) c.innerText = new Date().toLocaleTimeString('fr-FR', { hour12: false }); }, 1000);
     </script>
 </body>
 </html>
