@@ -253,10 +253,21 @@
                     <button class="btn-mini" style="flex:1; padding:15px; font-size:0.9rem; border-color:var(--text-muted); color:var(--text-main); background: var(--bg);" onclick="saveTableState(false)">💾 SAUVER<br><span style="font-size:0.7rem; font-weight:normal;">(Sans envoyer)</span></button>
                     <button class="btn-mini gold" style="flex:1.5; padding:15px; font-size:1.1rem; background: var(--gold-dim);" onclick="saveTableState(true)">🚀 TOUT ENVOYER<br><span style="font-size:0.7rem; font-weight:normal;">(Cuisine & Bar)</span></button>
                     <button class="btn-mini" style="flex:1; padding:15px; font-size:1.1rem; border-color:var(--accent); color:var(--accent); background: var(--accent-dim);" onclick="openPaymentModal()">💳 CAISSE</button>
-                    <button class="btn-mini sync" style="width:100%; margin-top:10px; padding:12px; font-size:1rem;" onclick="clearTicket()">🗑️ VIDER LA COMMANDE (ERREUR FRAPPE)</button>
+                    
+                    <button class="btn-mini sync" style="width:100%; margin-top:10px; padding:12px; font-size:1.1rem; border-width: 2px;" onclick="confirmClearTicket()">🗑️ TOUT EFFACER</button>
                 </div>
             </div>
         </div>
+    </div>
+
+    <div id="clear-ticket-modal" class="modal">
+        <h2 style="color:var(--alert); font-size: 2.2rem; margin-bottom: 10px; text-transform: uppercase;">⚠️ TOUT EFFACER ?</h2>
+        <h3 style="color:var(--text-main); font-size: 1.1rem; margin-bottom: 30px; text-align: center; max-width: 400px; font-weight: normal;">Attention, cette action supprimera l'intégralité de la commande de cette table.</h3>
+        
+        <button class="cancel-btn" onclick="executeClearTicket('Erreur de frappe globale')">❌ ERREUR DE FRAPPE GLOBALE</button>
+        <button class="cancel-btn" onclick="executeClearTicket('Le client est parti')">❌ LE CLIENT EST PARTI</button>
+        
+        <button class="cancel-btn abort" onclick="abortClearTicket()">🔙 NE PAS SUPPRIMER (RETOUR)</button>
     </div>
 
     <div id="room-config-modal" class="modal">
@@ -424,9 +435,6 @@
     </div>
 
     <script>
-        // -----------------------------------------
-        // 1. API HYBRIDE (RÉSEAU + SYNCHRO LOCALE)
-        // -----------------------------------------
         const API = {
             getState: async () => {
                 let state = { activeOrders: {} };
@@ -592,7 +600,6 @@
             }).join('');
         }
 
-        // 🟢 ARCHITECTURE MULTIJOUEUR 🟢
         async function pushArchitecture() {
             await API.update('ARCHITECTURE', { rooms: rooms, tables: tables });
             localStorage.setItem('empire_architecture', JSON.stringify(tables));
@@ -818,6 +825,29 @@
             pendingCancelIndex = null; document.getElementById('cancel-modal').style.display = 'none'; renderTicket();
         }
 
+        // 🟢 FONCTIONNALITÉ: TOUT EFFACER (PANIC BUTTON) 🟢
+        function confirmClearTicket() {
+            if(ticketItems.length === 0) return;
+            document.getElementById('clear-ticket-modal').classList.add('open');
+        }
+
+        function abortClearTicket() {
+            document.getElementById('clear-ticket-modal').classList.remove('open');
+        }
+
+        async function executeClearTicket(raison) {
+            logAction("ANNULATION GLOBALE DE LA TABLE", `Table: ${currentTable} | RAISON: ${raison}`, ticketItems);
+            ticketItems = [];
+            renderTicket();
+            
+            // Mise à jour du réseau (purge de la table)
+            await API.update(currentTable, null, true);
+            
+            document.getElementById('clear-ticket-modal').classList.remove('open');
+            closeOrder();
+            renderFloor();
+        }
+
         let pendingEditIndex = null;
         function openEditItem(idx) { 
             pendingEditIndex = idx; 
@@ -852,20 +882,6 @@
             await saveTableState(false, true); 
             logAction("RÉCLAME (PLAT ENVOYÉ)", `Table: ${currentTable} | Plat: ${ticketItems[idx].n}`);
             renderTicket();
-        }
-
-        async function clearTicket() {
-            if(ticketItems.length === 0) return;
-            let hasFiredItems = ticketItems.some(i => i.fired || i.done);
-            let confirmMsg = hasFiredItems 
-                ? "⚠️ ATTENTION : Des plats ont déjà été envoyés en cuisine ou au bar.\nVoulez-vous vraiment TOUT supprimer ?" 
-                : "🗑️ Effacer toute la saisie en cours ?";
-            if(confirm(confirmMsg)) {
-                logAction("ANNULATION GLOBALE DE LA TABLE", `Table: ${currentTable}`, ticketItems);
-                ticketItems = [];
-                renderTicket();
-                await API.update(currentTable, null, true);
-            }
         }
 
         function renderTicket() {
@@ -1109,7 +1125,6 @@
             }, 300);
         }
 
-        // 🟢 NOUVELLE FONCTION CLÉ : SYNCHRO ARCHITECTURE 🟢
         async function syncData() {
             try {
                 const state = await API.getState();
@@ -1121,7 +1136,6 @@
                     if(nO['RESERVATIONS_MASTER']) reservationsData = nO['RESERVATIONS_MASTER'].data || [];
                     if(nO['STOCK_ALERTS']) stockAlerts = nO['STOCK_ALERTS'].data;
                     
-                    // LECTURE MULTIJOUEUR DU PLAN DE SALLE
                     if(nO['ARCHITECTURE']) {
                         let arch = nO['ARCHITECTURE'].data;
                         let archChanged = false;
