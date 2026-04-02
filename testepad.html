@@ -89,6 +89,7 @@
         .btn-item.sold-out .price { color: var(--alert); text-decoration: line-through; background: transparent; border-color: transparent;}
         .btn-item.sold-out::after { content: "ÉPUISÉ"; color: var(--alert); font-size: 0.75rem; font-weight: 900; margin-top: 5px; background: rgba(248, 113, 113, 0.2); padding: 2px 8px; border-radius: 4px;}
         
+        /* 🟢 NOUVELLES COULEURS D'ALERTES DE STOCK 🟢 */
         .stock-badge { position: absolute; top: -8px; right: -8px; color: #fff; border-radius: 6px; padding: 4px 10px; font-size: 0.85rem; font-weight: 900; box-shadow: 0 2px 5px rgba(0,0,0,0.5); border: 2px solid var(--bg); z-index: 10; background: var(--text-muted); }
         .stock-badge.alert-green { background: #10b981; }
         .stock-badge.alert-yellow { background: #facc15; color: #000; }
@@ -253,6 +254,7 @@
                     <button class="btn-mini" style="flex:1; padding:15px; font-size:0.9rem; border-color:var(--text-muted); color:var(--text-main); background: var(--bg);" onclick="saveTableState(false)">💾 SAUVER<br><span style="font-size:0.7rem; font-weight:normal;">(Sans envoyer)</span></button>
                     <button class="btn-mini gold" style="flex:1.5; padding:15px; font-size:1.1rem; background: var(--gold-dim);" onclick="saveTableState(true)">🚀 TOUT ENVOYER<br><span style="font-size:0.7rem; font-weight:normal;">(Cuisine & Bar)</span></button>
                     <button class="btn-mini" style="flex:1; padding:15px; font-size:1.1rem; border-color:var(--accent); color:var(--accent); background: var(--accent-dim);" onclick="openPaymentModal()">💳 CAISSE</button>
+                    <button class="btn-mini sync" style="width:100%; margin-top:10px; padding:12px; font-size:1rem;" onclick="clearTicket()">🗑️ VIDER LA COMMANDE (ERREUR FRAPPE)</button>
                 </div>
             </div>
         </div>
@@ -360,7 +362,6 @@
                     
                     <div style="display: flex; flex-direction: column; gap: 5px; flex: 0.5;">
                         <div style="display: flex; gap: 5px; flex: 1;">
-                            
                             <select id="split-divisor" style="flex:1; background:var(--bg); color:var(--text-main); border:1px solid var(--border); border-radius:6px; font-weight:bold; text-align:center; outline:none; font-size: 1.1rem; cursor:pointer;" onchange="setSplitAmount(this.value)">
                                 <option value="">➗ DIVISER</option>
                                 <option value="20">20 parts</option>
@@ -383,7 +384,6 @@
                                 <option value="3">3 parts</option>
                                 <option value="2">2 parts</option>
                             </select>
-
                         </div>
                         <button class="btn-mini gold" style="flex:1;" onclick="setRemainderAmount()">LE RESTE</button>
                     </div>
@@ -425,9 +425,6 @@
     </div>
 
     <script>
-        // -----------------------------------------
-        // 1. API HYBRIDE (RÉSEAU + SYNCHRO LOCALE)
-        // -----------------------------------------
         const API = {
             getState: async () => {
                 let state = { activeOrders: {} };
@@ -844,6 +841,26 @@
             renderTicket();
         }
 
+        // 🟢 NOUVELLE FONCTION : VIDER LE TICKET EN UNE FOIS 🟢
+        async function clearTicket() {
+            if(ticketItems.length === 0) return;
+            
+            let hasFiredItems = ticketItems.some(i => i.fired || i.done);
+            let confirmMsg = hasFiredItems 
+                ? "⚠️ ATTENTION : Des plats ont déjà été envoyés en cuisine ou au bar.\nVoulez-vous vraiment TOUT supprimer ?" 
+                : "🗑️ Effacer toute la saisie en cours ?";
+                
+            if(confirm(confirmMsg)) {
+                logAction("ANNULATION GLOBALE DE LA TABLE", `Table: ${currentTable}`, ticketItems);
+                
+                ticketItems = [];
+                renderTicket();
+                
+                // On met à jour le serveur pour purger la table immédiatement
+                await API.update(currentTable, null, true);
+            }
+        }
+
         function renderTicket() {
             let t = 0; 
             document.getElementById('ticket-items').innerHTML = ticketItems.map((i, idx) => {
@@ -952,9 +969,6 @@
             currentTable = null; 
         }
 
-        // -----------------------------------------
-        // 5.5. CAISSE CHIRURGICALE & MULTI-PAIEMENTS
-        // -----------------------------------------
         let currentPayTotal = 0;
         let currentPayRemaining = 0;
         let currentPayHistory = [];
@@ -980,13 +994,12 @@
             document.getElementById('payment-modal').classList.add('open');
         }
 
-        // 🟢 NOUVELLE FONCTION DE DIVISION DYNAMIQUE 🟢
         function setSplitAmount(divisor) {
             if(!divisor) return;
             let amt = currentPayTotal / parseFloat(divisor);
             if(amt > currentPayRemaining) amt = currentPayRemaining;
             document.getElementById('pay-custom-amount').value = amt.toFixed(2);
-            document.getElementById('split-divisor').value = ""; // Réinitialise l'affichage du menu déroulant
+            document.getElementById('split-divisor').value = "";
         }
 
         function setRemainderAmount() {
@@ -1089,9 +1102,6 @@
             }, 300);
         }
 
-        // -----------------------------------------
-        // 6. SYNCHRONISATION H24 
-        // -----------------------------------------
         async function syncData() {
             try {
                 const state = await API.getState();
