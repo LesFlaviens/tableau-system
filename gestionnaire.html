@@ -88,9 +88,16 @@
         .btn-item.sold-out { background: var(--alert-dim); border-color: var(--alert); color: var(--text-muted); pointer-events: none; opacity: 0.6; }
         .btn-item.sold-out .price { color: var(--alert); text-decoration: line-through; background: transparent; border-color: transparent;}
         .btn-item.sold-out::after { content: "ÉPUISÉ"; color: var(--alert); font-size: 0.75rem; font-weight: 900; margin-top: 5px; background: rgba(248, 113, 113, 0.2); padding: 2px 8px; border-radius: 4px;}
-        .stock-badge { position: absolute; top: -8px; right: -8px; background: var(--ordered); color: #fff; border-radius: 6px; padding: 4px 10px; font-size: 0.85rem; font-weight: 900; box-shadow: 0 2px 5px rgba(0,0,0,0.5); border: 2px solid var(--bg); z-index: 10; }
-        .stock-badge.low { background: var(--alert); animation: pulse-low 1.5s infinite;}
-        @keyframes pulse-low { 0% { transform: scale(1); } 50% { transform: scale(1.1); box-shadow: 0 0 10px var(--alert); } 100% { transform: scale(1); } }
+        
+        /* 🟢 NOUVELLES COULEURS D'ALERTES DE STOCK 🟢 */
+        .stock-badge { position: absolute; top: -8px; right: -8px; color: #fff; border-radius: 6px; padding: 4px 10px; font-size: 0.85rem; font-weight: 900; box-shadow: 0 2px 5px rgba(0,0,0,0.5); border: 2px solid var(--bg); z-index: 10; background: var(--text-muted); }
+        .stock-badge.alert-green { background: #10b981; }
+        .stock-badge.alert-yellow { background: #facc15; color: #000; }
+        .stock-badge.alert-orange { background: #f97316; animation: pulse-orange 2s infinite; }
+        .stock-badge.alert-red { background: #ef4444; animation: pulse-red 1s infinite; }
+        
+        @keyframes pulse-orange { 0% { transform: scale(1); } 50% { transform: scale(1.05); box-shadow: 0 0 10px #f97316; } 100% { transform: scale(1); } }
+        @keyframes pulse-red { 0% { transform: scale(1); } 50% { transform: scale(1.15); box-shadow: 0 0 15px #ef4444; } 100% { transform: scale(1); } }
 
         .ticket-view { flex: 0 0 35%; background: var(--panel); border-left: 1px solid var(--border); padding: 20px; overflow-y: auto; display: flex; flex-direction: column; box-shadow: -5px 0 15px rgba(0,0,0,0.2);}
         .ticket-items-container { flex: 1; overflow-y: auto; padding-right: 5px; }
@@ -245,7 +252,7 @@
                 
                 <div style="display:flex; gap:10px; margin-top:20px; flex-wrap: wrap;">
                     <button class="btn-mini" style="flex:1; padding:15px; font-size:0.9rem; border-color:var(--text-muted); color:var(--text-main); background: var(--bg);" onclick="saveTableState(false)">💾 SAUVER<br><span style="font-size:0.7rem; font-weight:normal;">(Sans envoyer)</span></button>
-                    <button class="btn-mini gold" style="flex:1.5; padding:15px; font-size:1.1rem; background: var(--gold-dim);" onclick="saveTableState(true)">🚀 TOUT ENVOYER<br><span style="font-size:0.7rem; font-weight:normal;">(Cuisine)</span></button>
+                    <button class="btn-mini gold" style="flex:1.5; padding:15px; font-size:1.1rem; background: var(--gold-dim);" onclick="saveTableState(true)">🚀 TOUT ENVOYER<br><span style="font-size:0.7rem; font-weight:normal;">(Cuisine & Bar)</span></button>
                     <button class="btn-mini" style="flex:1; padding:15px; font-size:1.1rem; border-color:var(--accent); color:var(--accent); background: var(--accent-dim);" onclick="openPaymentModal()">💳 CAISSE</button>
                 </div>
             </div>
@@ -410,7 +417,6 @@
                         if(r.ok) state = await r.json();
                     } else throw new Error("Local");
                 } catch(e) {
-                    // 🟢 PONT DE SECOURS (Permet la synchro entre onglets en local)
                     state = JSON.parse(localStorage.getItem('EMPIRE_GLOBAL_SYNC')) || { activeOrders: {} };
                 }
                 return state;
@@ -418,13 +424,11 @@
             update: async (key, data, isOrder = false) => {
                 let payload = isOrder ? data : { data: data };
                 
-                // 1. SAUVEGARDE LOCALE INSTANTANÉE (Le Pont de Secours)
                 let state = JSON.parse(localStorage.getItem('EMPIRE_GLOBAL_SYNC')) || { activeOrders: {} };
                 if (data === null) delete state.activeOrders[key];
                 else state.activeOrders[key] = payload;
                 localStorage.setItem('EMPIRE_GLOBAL_SYNC', JSON.stringify(state));
                 
-                // 2. SAUVEGARDE SERVEUR RENDER (Si disponible et en ligne)
                 if (window.location.protocol !== 'file:') {
                     try {
                         await fetch('/update-order', { 
@@ -437,7 +441,6 @@
             }
         };
 
-        // 🟢 ÉCOUTEUR MAGIQUE : SYNCHRONISATION INSTANTANÉE ENTRE LES ONGLETS 
         window.addEventListener('storage', (e) => {
             if (e.key === 'EMPIRE_GLOBAL_SYNC') {
                 if(typeof syncData === 'function') syncData();
@@ -445,9 +448,10 @@
         });
 
         let menuCuisine = { menuJour: [], suggestions: [], entrees: [], plats: [], desserts: [] };
-        let menuBar = { vins: [], cocktails: [], bieres: [], spiritueux: [], softs: [] };
+        let menuBar = { vins: [], cocktails: [], bieres: [], spiritueux: [], chaudes: [], froides: [] };
         let reservationsData = []; 
         let currentCategory = 'Plats'; 
+        let stockAlerts = { green: 10, yellow: 7, orange: 5, red: 2 }; // NOUVEAU: SEUILS D'ALERTE
 
         let isArchiMode = false;
         let isDraggingTable = false; 
@@ -736,7 +740,14 @@
                 
                 let stockHtml = '';
                 if (item.stock !== "" && item.stock !== undefined && item.stock > 0) {
-                    let badgeClass = item.stock <= 3 ? 'stock-badge low' : 'stock-badge';
+                    let badgeClass = 'stock-badge';
+                    
+                    // 🟢 NOUVEAU SYSTÈME D'ALERTES DYNAMIQUES DU CHEF 🟢
+                    if (item.stock <= stockAlerts.red) badgeClass += ' alert-red';
+                    else if (item.stock <= stockAlerts.orange) badgeClass += ' alert-orange';
+                    else if (item.stock <= stockAlerts.yellow) badgeClass += ' alert-yellow';
+                    else if (item.stock <= stockAlerts.green) badgeClass += ' alert-green';
+
                     stockHtml = `<div class="${badgeClass}">${item.stock}</div>`;
                 }
 
@@ -825,7 +836,7 @@
                 if (i.done) {
                     statusHtml = `<span class="status-badge-ready">PRÊT</span>`;
                 } else if (i.fired) {
-                    statusHtml = `<span class="status-badge-cooking">⏳ EN CUISINE</span>`;
+                    statusHtml = `<span class="status-badge-cooking">⏳ EN CUISINE/BAR</span>`;
                 } else {
                     statusHtml = `<button class="status-btn-fire" onclick="fireItem(${idx}); event.stopPropagation();">🔥 ENVOYER</button>`;
                 }
@@ -842,7 +853,7 @@
                         <div style="font-weight:bold; font-size:1.05rem;">${q>1?`<span style="color:var(--accent); font-weight:900;">${q}x</span> `:""}${cleanName||'?'}</div>
                         <div style="display:flex; align-items:center; gap:10px; margin-top:8px;">
                             ${statusHtml}
-                            ${i.obs?`<span style="font-size:0.8rem; color:var(--obs-zen);">⚠️ ${i.obs}</span>`:''}
+                            ${i.obs?`<span style="font-size:0.8rem; color:#facc15;">⚠️ ${i.obs}</span>`:''}
                         </div>
                     </div>
                     ${priceHtml}
@@ -856,24 +867,39 @@
             if(tvaEl) tvaEl.innerText = `Dont TVA (10%) : ${tva.toFixed(2)}€`;
         }
 
+        // 🟢 CORRECTION SAUVEGARDE & DÉDUCTION DES STOCKS 🟢
         async function saveTableState(fireAllNew = false, keepOpen = false) {
-            if(ticketItems.length === 0) return alert("Ticket vide.");
+            if(ticketItems.length === 0 && !keepOpen) return;
             
             const state = await API.getState();
-            let centralMenu = null;
-            if (state && state.activeOrders && state.activeOrders['MENU_MASTER']) {
-                centralMenu = state.activeOrders['MENU_MASTER'].data;
-            }
+            let centralMenu = (state && state.activeOrders && state.activeOrders['MENU_MASTER']) ? state.activeOrders['MENU_MASTER'].data : null;
+            let barMenu = (state && state.activeOrders && state.activeOrders['MENU_MASTER_BAR']) ? state.activeOrders['MENU_MASTER_BAR'].data : null;
+            
             let menuChanged = false;
+            let barMenuChanged = false;
 
             ticketItems.forEach(tItem => {
                 if(!tItem.savedToDB) { 
-                    if(centralMenu) {
+                    let pureName = tItem.n.replace('🌟 ', ''); // Enlève l'étoile pour la comparaison
+
+                    // Déduction Cuisine
+                    if(centralMenu && tItem.dest === 'cuisine') {
                         for (let cat in centralMenu) {
-                            let mItem = centralMenu[cat].find(i => i.id == tItem.itemId);
+                            let mItem = centralMenu[cat].find(i => i.name.replace('🌟 ', '') === pureName);
                             if (mItem && mItem.stock !== "" && mItem.stock !== undefined && mItem.stock > 0) {
                                 mItem.stock = Math.max(0, mItem.stock - (tItem.qty || 1));
                                 menuChanged = true;
+                            }
+                        }
+                    }
+                    
+                    // Déduction Bar
+                    if(barMenu && tItem.dest === 'bar') {
+                        for (let cat in barMenu) {
+                            let mItem = barMenu[cat].find(i => i.name.replace('🌟 ', '') === pureName);
+                            if (mItem && mItem.stock !== "" && mItem.stock !== undefined && mItem.stock > 0) {
+                                mItem.stock = Math.max(0, mItem.stock - (tItem.qty || 1));
+                                barMenuChanged = true;
                             }
                         }
                     }
@@ -882,9 +908,9 @@
                 if (fireAllNew && !tItem.fired) tItem.fired = true;
             });
 
-            if (menuChanged && centralMenu) {
-                await API.update('MENU_MASTER', centralMenu);
-            }
+            // Envoi des stocks mis à jour
+            if (menuChanged && centralMenu) await API.update('MENU_MASTER', centralMenu);
+            if (barMenuChanged && barMenu) await API.update('MENU_MASTER_BAR', barMenu);
 
             await API.update(currentTable, { items: ticketItems, time: new Date().toLocaleTimeString('fr-FR', {hour:'2-digit', minute:'2-digit'}), status: 'pending', observations: document.getElementById('order-obs').value.trim() }, true);
             
@@ -996,33 +1022,35 @@
             document.getElementById('payment-modal').classList.remove('open'); 
         }
 
+        // 🟢 CORRECTION ARCHIVAGE FINANCIER CUISINE + BAR 🟢
         async function finalizeTablePayment() {
             document.getElementById('payment-modal').classList.remove('open');
             let methodsUsed = currentPayHistory.map(p => p.method).join(' + ');
 
             setTimeout(async () => {
                 const state = await API.getState();
-                let currentArchive = [];
-                if(state && state.activeOrders && state.activeOrders['SALES_ARCHIVE_CUISINE']) {
-                    currentArchive = state.activeOrders['SALES_ARCHIVE_CUISINE'].data || [];
-                }
+                
+                let cuisineItems = ticketItems.filter(i => i.dest === 'cuisine');
+                let barItems = ticketItems.filter(i => i.dest === 'bar');
+
+                let archiveCuisine = (state && state.activeOrders && state.activeOrders['SALES_ARCHIVE_CUISINE']) ? state.activeOrders['SALES_ARCHIVE_CUISINE'].data || [] : [];
+                let archiveBar = (state && state.activeOrders && state.activeOrders['SALES_ARCHIVE_BAR']) ? state.activeOrders['SALES_ARCHIVE_BAR'].data || [] : [];
                 
                 let tvaTotal = currentPayTotal - (currentPayTotal / 1.10);
+                let timeStr = new Date().toISOString();
 
-                currentArchive.push({ 
-                    id: Date.now(), 
-                    table: currentTable, 
-                    time: new Date().toISOString(), 
-                    total: currentPayTotal.toFixed(2), 
-                    tva: tvaTotal.toFixed(2),
-                    typePaiement: methodsUsed, 
-                    splitDetails: currentPayHistory, 
-                    items: ticketItems.filter(i => i.n) 
-                });
-                
-                await API.update('SALES_ARCHIVE_CUISINE', currentArchive);
+                if (cuisineItems.length > 0) {
+                    let cTotal = cuisineItems.reduce((acc, i) => acc + ((parseFloat(i.p)||0)*(i.qty||1)), 0);
+                    archiveCuisine.push({ id: Date.now(), table: currentTable, time: timeStr, total: cTotal.toFixed(2), tva: tvaTotal.toFixed(2), typePaiement: methodsUsed, splitDetails: currentPayHistory, items: cuisineItems });
+                    await API.update('SALES_ARCHIVE_CUISINE', archiveCuisine);
+                }
 
-                // Efface la table en passant "null"
+                if (barItems.length > 0) {
+                    let bTotal = barItems.reduce((acc, i) => acc + ((parseFloat(i.p)||0)*(i.qty||1)), 0);
+                    archiveBar.push({ id: Date.now() + 1, table: currentTable, time: timeStr, total: bTotal.toFixed(2), tva: tvaTotal.toFixed(2), typePaiement: methodsUsed, splitDetails: currentPayHistory, items: barItems });
+                    await API.update('SALES_ARCHIVE_BAR', archiveBar);
+                }
+
                 await API.update(currentTable, null, true);
                 
                 logAction("TABLE CLÔTURÉE (MULTI-PAIEMENTS)", `Table: ${currentTable} | Total: ${currentPayTotal.toFixed(2)}€`, ticketItems); 
@@ -1051,8 +1079,14 @@
                     let nO = state.activeOrders;
                     
                     if(nO['MENU_MASTER']) menuCuisine = nO['MENU_MASTER'].data;
-                    if(nO['MENU_BAR']) menuBar = nO['MENU_BAR'].data;
+                    
+                    // 🟢 CORRECTION LECTURE CANAL BAR 🟢
+                    if(nO['MENU_MASTER_BAR']) menuBar = nO['MENU_MASTER_BAR'].data;
+                    
                     if(nO['RESERVATIONS_MASTER']) reservationsData = nO['RESERVATIONS_MASTER'].data || [];
+                    
+                    // 🟢 LECTURE DES ALERTES DYNAMIQUES DU CHEF 🟢
+                    if(nO['STOCK_ALERTS']) stockAlerts = nO['STOCK_ALERTS'].data;
 
                     if(nO['INVENTORY_MASTER']) {
                         let invData = nO['INVENTORY_MASTER'].data;
@@ -1063,7 +1097,7 @@
                     }
 
                     for (let t in nO) { 
-                        if (!t.includes('MASTER') && !t.includes('ARCHIVE') && !t.includes('BAR') && !t.includes('CUISINE') && nO[t] && nO[t].status === 'ready' && (!previousOrdersState[t] || previousOrdersState[t].status !== 'ready')) { 
+                        if (!t.includes('MASTER') && !t.includes('ARCHIVE') && !t.includes('BAR') && !t.includes('CUISINE') && !t.includes('ALERTS') && nO[t] && nO[t].status === 'ready' && (!previousOrdersState[t] || previousOrdersState[t].status !== 'ready')) { 
                             let b=document.getElementById('beep-ready'); if(b) b.play().catch(e=>{}); 
                             if(nO[t].items) nO[t].items.forEach(i => { if(i) i.done = true; }); 
                         } 
