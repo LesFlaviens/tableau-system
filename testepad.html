@@ -89,7 +89,6 @@
         .btn-item.sold-out .price { color: var(--alert); text-decoration: line-through; background: transparent; border-color: transparent;}
         .btn-item.sold-out::after { content: "ÉPUISÉ"; color: var(--alert); font-size: 0.75rem; font-weight: 900; margin-top: 5px; background: rgba(248, 113, 113, 0.2); padding: 2px 8px; border-radius: 4px;}
         
-        /* 🟢 NOUVELLES COULEURS D'ALERTES DE STOCK 🟢 */
         .stock-badge { position: absolute; top: -8px; right: -8px; color: #fff; border-radius: 6px; padding: 4px 10px; font-size: 0.85rem; font-weight: 900; box-shadow: 0 2px 5px rgba(0,0,0,0.5); border: 2px solid var(--bg); z-index: 10; background: var(--text-muted); }
         .stock-badge.alert-green { background: #10b981; }
         .stock-badge.alert-yellow { background: #facc15; color: #000; }
@@ -425,6 +424,9 @@
     </div>
 
     <script>
+        // -----------------------------------------
+        // 1. API HYBRIDE (RÉSEAU + SYNCHRO LOCALE)
+        // -----------------------------------------
         const API = {
             getState: async () => {
                 let state = { activeOrders: {} };
@@ -474,9 +476,10 @@
         let isDraggingTable = false; 
         let configTableId = null;
 
-        let rooms = safeArray('empire_rooms', ['Salle Principale']);
-        let currentRoom = rooms[0] || 'Salle Principale';
+        let rooms = ['Salle Principale'];
+        let currentRoom = rooms[0];
         let configRoomOldName = null, currentTactileRoomName = "";
+        let tables = [];
 
         function safeArray(key, fallback) {
             try { let v = localStorage.getItem(key); if (v && v !== 'undefined' && v !== 'null') { let p = JSON.parse(v); if (Array.isArray(p)) return p.filter(i => i !== null && i !== undefined); } } catch(e) {} return fallback;
@@ -485,7 +488,6 @@
         let activeOrders = {}; let currentTable = null; let ticketItems = []; let previousOrdersState = {};
         let inactivityTimer; const INACTIVITY_LIMIT = 120000; 
 
-        let tables = safeArray('empire_architecture', [ {label:"T1", l:550, t:500, w:80, h:120, shape:"oval", room: "Salle Principale"} ]);
         let fraudLog = safeArray('empire_fraud_log', []);
         
         let currentUser = null, currentPin = "";
@@ -590,6 +592,13 @@
             }).join('');
         }
 
+        // 🟢 ARCHITECTURE MULTIJOUEUR 🟢
+        async function pushArchitecture() {
+            await API.update('ARCHITECTURE', { rooms: rooms, tables: tables });
+            localStorage.setItem('empire_architecture', JSON.stringify(tables));
+            localStorage.setItem('empire_rooms', JSON.stringify(rooms));
+        }
+
         function addExtraTable() {
             let tName = prompt("Nom de la table supplémentaire ? (ex: EXT 1, BAR, etc.)");
             if (!tName || tName.trim() === "") return;
@@ -601,7 +610,7 @@
             
             tables.push({ label: tName, l: window.innerWidth/2 - 40, t: window.innerHeight/2 - 60, w: 80, h: 80, shape: "rect", room: currentRoom, isExtra: true });
             
-            localStorage.setItem('empire_architecture', JSON.stringify(tables));
+            pushArchitecture();
             renderFloor();
             openOrder(tName);
         }
@@ -619,19 +628,19 @@
                 tables.forEach(t => { if(t && t.room === configRoomOldName) t.room = n; });
                 if(currentRoom === configRoomOldName) currentRoom = n;
             }
-            closeRoomConfigModal(); renderRooms(); renderFloor();
+            closeRoomConfigModal(); renderRooms(); renderFloor(); pushArchitecture();
         }
         function deleteCurrentRoom() {
             if(rooms.length <= 1) return alert("Impossible de supprimer la dernière salle.");
             if(confirm(`Supprimer la salle "${configRoomOldName}" et TOUTES ses tables ?`)) {
                 tables = tables.filter(t => t && t.room !== configRoomOldName); rooms = rooms.filter(r => r !== configRoomOldName); currentRoom = rooms[0];
-                closeRoomConfigModal(); renderRooms(); renderFloor();
+                closeRoomConfigModal(); renderRooms(); renderFloor(); pushArchitecture();
             }
         }
 
         function unlockArchiMode() { if (!currentUser || currentUser.role !== 'Manager') return alert("⛔ Accès Manager requis"); isArchiMode = true; document.body.classList.add('edit-mode'); renderRooms(); renderFloor(); }
         function closeArchiMode() { isArchiMode = false; document.body.classList.remove('edit-mode'); renderRooms(); renderFloor(); }
-        function saveArchitecture() { localStorage.setItem('empire_architecture', JSON.stringify(tables)); localStorage.setItem('empire_rooms', JSON.stringify(rooms)); alert("✅ Plan sauvegardé avec succès."); closeArchiMode(); }
+        function saveArchitecture() { pushArchitecture(); alert("✅ Plan sauvegardé avec succès sur tous les Pads."); closeArchiMode(); }
         
         function addNewTable() {
             let nextNum = 1; tables.filter(t => t && t.room === currentRoom).forEach(t => { let m = t.label.match(/\d+/); if(m && parseInt(m[0]) >= nextNum) nextNum = parseInt(m[0]) + 1; });
@@ -653,9 +662,9 @@
                 if(n && n !== t.label) { if(activeOrders[t.label]) { activeOrders[n] = activeOrders[t.label]; delete activeOrders[t.label]; } t.label = n; }
                 t.shape = document.getElementById('config-table-shape').value;
             }
-            closeTableConfigModal(); renderFloor();
+            closeTableConfigModal(); renderFloor(); pushArchitecture();
         }
-        function deleteCurrentTable() { if(confirm("Supprimer cette table ?")) { tables = tables.filter(t => !(t && t.label === configTableId && t.room === currentRoom)); closeTableConfigModal(); renderFloor(); } }
+        function deleteCurrentTable() { if(confirm("Supprimer cette table ?")) { tables = tables.filter(t => !(t && t.label === configTableId && t.room === currentRoom)); closeTableConfigModal(); renderFloor(); pushArchitecture(); } }
 
         function makeInteractive(elmnt, tableObj, resizerElnt) {
             let p1=0, p2=0, p3=0, p4=0, iW, iH, iX, iY;
@@ -679,6 +688,10 @@
         function renderFloor() {
             try {
                 let floor = document.getElementById('floor-plan'); floor.innerHTML = '';
+                if(tables.length === 0 && !isArchiMode) {
+                    floor.innerHTML = `<div style="text-align:center; color:var(--text-muted); margin-top:50px;">Aucune table configurée. Demandez au Manager d'activer l'Architecture Salle.</div>`;
+                    return;
+                }
                 tables.forEach(t => { if(t && !t.room) t.room = rooms[0] || 'Salle Principale'; });
                 tables.filter(t => t && t.room === currentRoom).forEach(t => {
                     let d = document.createElement('div'); d.className = 'table-obj shape-' + (t.shape || 'oval');
@@ -841,22 +854,16 @@
             renderTicket();
         }
 
-        // 🟢 NOUVELLE FONCTION : VIDER LE TICKET EN UNE FOIS 🟢
         async function clearTicket() {
             if(ticketItems.length === 0) return;
-            
             let hasFiredItems = ticketItems.some(i => i.fired || i.done);
             let confirmMsg = hasFiredItems 
                 ? "⚠️ ATTENTION : Des plats ont déjà été envoyés en cuisine ou au bar.\nVoulez-vous vraiment TOUT supprimer ?" 
                 : "🗑️ Effacer toute la saisie en cours ?";
-                
             if(confirm(confirmMsg)) {
                 logAction("ANNULATION GLOBALE DE LA TABLE", `Table: ${currentTable}`, ticketItems);
-                
                 ticketItems = [];
                 renderTicket();
-                
-                // On met à jour le serveur pour purger la table immédiatement
                 await API.update(currentTable, null, true);
             }
         }
@@ -962,7 +969,7 @@
             let tObj = tables.find(t => t && t.label === currentTable && t.isExtra);
             if (tObj && ticketItems.length === 0) {
                 tables = tables.filter(t => t.label !== currentTable);
-                localStorage.setItem('empire_architecture', JSON.stringify(tables));
+                pushArchitecture();
                 renderFloor();
             }
             document.getElementById('order-drawer').classList.remove('open'); 
@@ -999,7 +1006,7 @@
             let amt = currentPayTotal / parseFloat(divisor);
             if(amt > currentPayRemaining) amt = currentPayRemaining;
             document.getElementById('pay-custom-amount').value = amt.toFixed(2);
-            document.getElementById('split-divisor').value = "";
+            document.getElementById('split-divisor').value = ""; 
         }
 
         function setRemainderAmount() {
@@ -1091,7 +1098,7 @@
                 let isExtra = tables.find(t => t && t.label === currentTable && t.isExtra);
                 if (isExtra) {
                     tables = tables.filter(t => !(t && t.label === currentTable && t.isExtra));
-                    localStorage.setItem('empire_architecture', JSON.stringify(tables));
+                    pushArchitecture();
                 }
 
                 ticketItems = []; document.getElementById('order-obs').value = ''; 
@@ -1102,6 +1109,7 @@
             }, 300);
         }
 
+        // 🟢 NOUVELLE FONCTION CLÉ : SYNCHRO ARCHITECTURE 🟢
         async function syncData() {
             try {
                 const state = await API.getState();
@@ -1112,6 +1120,18 @@
                     if(nO['MENU_MASTER_BAR'] && nO['MENU_MASTER_BAR'].data) menuBar = nO['MENU_MASTER_BAR'].data;
                     if(nO['RESERVATIONS_MASTER']) reservationsData = nO['RESERVATIONS_MASTER'].data || [];
                     if(nO['STOCK_ALERTS']) stockAlerts = nO['STOCK_ALERTS'].data;
+                    
+                    // LECTURE MULTIJOUEUR DU PLAN DE SALLE
+                    if(nO['ARCHITECTURE']) {
+                        let arch = nO['ARCHITECTURE'].data;
+                        let archChanged = false;
+                        if(JSON.stringify(rooms) !== JSON.stringify(arch.rooms)) { rooms = arch.rooms || ['Salle Principale']; archChanged = true; }
+                        if(JSON.stringify(tables) !== JSON.stringify(arch.tables)) { tables = arch.tables || []; archChanged = true; }
+                        if(archChanged && !isArchiMode && !isDraggingTable) {
+                            if(!rooms.includes(currentRoom)) currentRoom = rooms[0] || 'Salle Principale';
+                            renderRooms(); renderFloor();
+                        }
+                    }
 
                     if(nO['INVENTORY_MASTER']) {
                         let invData = nO['INVENTORY_MASTER'].data;
@@ -1122,7 +1142,7 @@
                     }
 
                     for (let t in nO) { 
-                        if (!t.includes('MASTER') && !t.includes('ARCHIVE') && !t.includes('BAR') && !t.includes('CUISINE') && !t.includes('ALERTS') && nO[t] && nO[t].status === 'ready' && (!previousOrdersState[t] || previousOrdersState[t].status !== 'ready')) { 
+                        if (!t.includes('MASTER') && !t.includes('ARCHIVE') && !t.includes('BAR') && !t.includes('CUISINE') && !t.includes('ALERTS') && !t.includes('ARCHITECTURE') && nO[t] && nO[t].status === 'ready' && (!previousOrdersState[t] || previousOrdersState[t].status !== 'ready')) { 
                             let b=document.getElementById('beep-ready'); if(b) b.play().catch(e=>{}); 
                             if(nO[t].items) nO[t].items.forEach(i => { if(i) i.done = true; }); 
                         } 
@@ -1135,7 +1155,7 @@
                         renderTicket(); 
                         renderMenu(currentCategory); 
                     } 
-                    renderFloor();
+                    if(!isArchiMode && !isDraggingTable) renderFloor();
                 }
             } catch(e) {}
         }
