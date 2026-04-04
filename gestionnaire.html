@@ -207,6 +207,22 @@
 
         /* 🟢 TOAST NOTIFICATION 🟢 */
         .toast-notification { position: fixed; top: 20px; left: 50%; transform: translateX(-50%); color: #000; padding: 15px 30px; border-radius: 30px; font-weight: 900; z-index: 999999; box-shadow: 0 10px 30px rgba(0,0,0,0.5); font-size: 1.2rem; text-transform: uppercase; animation: dropDown 0.3s ease-out; }
+        
+        /* 🟢 ANIMATION DE RUPTURE IMMINENTE 🟢 */
+        @keyframes shake-violent {
+            0% { transform: translate(2px, 1px) rotate(0deg); }
+            10% { transform: translate(-2px, -2px) rotate(-2deg); }
+            20% { transform: translate(-4px, 0px) rotate(2deg); }
+            30% { transform: translate(4px, 2px) rotate(0deg); }
+            40% { transform: translate(2px, -2px) rotate(2deg); }
+            50% { transform: translate(-2px, 2px) rotate(-2deg); }
+            60% { transform: translate(-4px, 2px) rotate(0deg); }
+            70% { transform: translate(4px, 2px) rotate(-2deg); }
+            80% { transform: translate(-2px, -2px) rotate(2deg); }
+            90% { transform: translate(2px, 4px) rotate(0deg); }
+            100% { transform: translate(2px, -2px) rotate(-2deg); }
+        }
+        .modal-shake { animation: shake-violent 0.4s cubic-bezier(.36,.07,.19,.97) both; }
     </style>
 </head>
 <body>
@@ -259,6 +275,14 @@
             <button class="pay-btn" style="width: 100%; margin: 0; border-color: var(--gold); color: var(--gold); background: var(--gold-dim); padding: 20px 0;" onclick="openModal('dashboard'); closeAdminCatalog();">👁️ DASHBOARD DIR.</button>
         </div>
         <button class="pay-btn cancel" style="width: auto; padding: 15px 40px; font-size: 1.1rem; border-color: var(--text-muted); color: var(--text-muted); background: var(--bg); margin-top: 25px;" onclick="closeAdminCatalog()">❌ FERMER LE COFFRE</button>
+    </div>
+
+    <div id="stock-critical-modal" class="modal" style="z-index: 9999999;">
+        <div class="modal-shake" style="background:var(--alert); padding:40px; border-radius:12px; text-align:center; box-shadow: 0 0 50px rgba(248, 113, 113, 0.8); border: 5px solid #fff; width: 90%; max-width: 500px;">
+            <h1 style="color:#fff; font-size: 2.5rem; margin:0; text-transform: uppercase;">⚠️ RUPTURE IMMINENTE</h1>
+            <h2 style="color:#000; font-size: 1.8rem; margin: 20px 0; background: #fff; padding: 20px; border-radius: 8px;" id="critical-stock-msg"></h2>
+            <button class="pay-btn" style="background:#000; color:var(--alert); border:none; font-size:1.5rem; padding: 20px; width: 100%;" onclick="closeCriticalStockAlert()">J'AI COMPRIS</button>
+        </div>
     </div>
 
     <div id="history-drawer" class="drawer">
@@ -533,38 +557,6 @@
     </div>
 
     <script>
-        /* 🟢 EFFET TACTILE RIPPLE (ONDE DE CHOC) 🟢 */
-        button {
-            position: relative;
-            overflow: hidden; 
-        }
-        .ripple {
-            position: absolute;
-            border-radius: 50%;
-            transform: scale(0);
-            animation: ripple-effect 0.5s linear;
-            background-color: rgba(255, 255, 255, 0.4); 
-            pointer-events: none; 
-        }
-        @keyframes ripple-effect {
-            to {
-                transform: scale(3);
-                opacity: 0;
-            }
-        }
-        // 🟢 UTILITAIRE DE NOTIFICATION VISUELLE SUR TÉLÉPHONE 🟢
-        function showToast(msg, isError=false) {
-            let t = document.createElement('div');
-            t.innerText = msg;
-            t.className = 'toast-notification';
-            t.style.background = isError ? 'var(--alert)' : 'var(--accent)';
-            document.body.appendChild(t);
-            setTimeout(() => {
-                t.style.animation = 'dropDown 0.3s ease-in reverse forwards';
-                setTimeout(() => t.remove(), 300);
-            }, 2500);
-        }
-
         function openDrawer(id) { document.getElementById(id).classList.add('open'); }
         function closeDrawer(id) { document.getElementById(id).classList.remove('open'); }
 
@@ -596,9 +588,7 @@
                             headers: {'Content-Type': 'application/json'}, 
                             body: JSON.stringify({ tableId: key, order: data === null ? null : payload }) 
                         });
-                    } catch(e) {
-                        showToast("⚠️ HORS LIGNE - Enregistré en local", true);
-                    }
+                    } catch(e) {}
                 }
             }
         };
@@ -880,7 +870,7 @@
             document.body.classList.remove('assign-mode');
             document.getElementById('assign-overlay').style.display = 'none';
             
-            showToast(`✅ ${tableData.clientName} ASSIGNÉ(E) SUR ${tableLabel}`);
+            alert(`✅ Réservation de ${tableData.clientName} assignée à la table ${tableLabel}.`);
             renderFloor();
         }
 
@@ -989,9 +979,6 @@
             return catArray.some(x => x.name.replace('🌟 ', '').trim().toLowerCase() === pName);
         };
 
-        // ==========================================
-        // MOTEUR D'AFFICHAGE MODIFIÉ (RENDER FLOOR)
-        // ==========================================
         function renderFloor() {
             try {
                 let floor = document.getElementById('floor-plan'); floor.innerHTML = '';
@@ -1075,37 +1062,35 @@
                 }
 
                 // -------------------------------------------------------------------
-                // NOUVEAU BLOC : AFFICHAGE DES COMMANDES WOOCOMMERCE
+                // BLOC : AFFICHAGE DES COMMANDES WOOCOMMERCE (ÉVOLUÉ)
                 // -------------------------------------------------------------------
-                let webOrders = Object.keys(activeOrders).filter(k => k.startsWith('order_'));
+                let webOrders = Object.keys(activeOrders).filter(k => activeOrders[k] && activeOrders[k].isWeb);
                 let webStartX = 20;
                 let webStartY = 20;
 
                 webOrders.forEach((orderKey, index) => {
                     let orderData = activeOrders[orderKey];
                     let d = document.createElement('div');
-                    d.className = 'table-obj shape-rect';
+                    d.className = 'table-obj shape-rect status-cooking'; 
                     d.style.left = webStartX + (index * 150) + 'px';
                     d.style.top = webStartY + 'px';
                     d.style.width = '130px';
                     d.style.height = '100px';
-                    d.style.background = 'rgba(56, 189, 248, 0.1)'; 
-                    d.style.borderColor = 'var(--info-zen)';
-                    d.style.boxShadow = '0 0 15px rgba(56, 189, 248, 0.3)';
-                    d.style.animation = 'pulse-ready 2s infinite';
                     d.style.zIndex = '100';
                     d.style.cursor = 'pointer';
+                    d.style.border = '2px solid var(--alert)';
+                    d.style.boxShadow = '0 0 15px rgba(248, 113, 113, 0.4)';
 
-                    let contentHtml = `<span style="color:var(--bg); background:var(--info-zen); font-weight:900; font-size:0.9rem; padding: 2px 6px; border-radius: 4px;">🌐 WEB #${orderData.id}</span>`;
-                    contentHtml += `<span style="font-size:0.75rem; color:var(--text-main); margin-top:8px; font-weight:bold; text-align:center; padding: 0 5px;">${orderData.client.substring(0,15)}</span>`;
-                    contentHtml += `<span style="font-size:0.9rem; color:var(--gold); font-weight:900; margin-top:5px;">${orderData.total}</span>`;
+                    let clientName = orderData.clientName ? orderData.clientName.substring(0,15) : 'Client Web';
+
+                    let contentHtml = `<span style="color:var(--bg); background:var(--alert); font-weight:900; font-size:0.9rem; padding: 2px 6px; border-radius: 4px;">🌐 WEB #${orderData.id || ''}</span>`;
+                    contentHtml += `<span style="font-size:0.75rem; color:var(--alert); margin-top:8px; font-weight:bold; text-align:center; padding: 0 5px;">${clientName}</span>`;
+                    contentHtml += `<span style="font-size:0.9rem; color:var(--text-main); font-weight:900; margin-top:5px;">${orderData.totalStr || ''}</span>`;
 
                     d.innerHTML = `<div class="table-content" style="flex-direction:column; justify-content:center;">${contentHtml}</div>`;
 
                     d.onclick = () => {
-                        if(confirm(`📦 COMMANDE WEB #${orderData.id}\n👤 Client: ${orderData.client}\n💰 Total: ${orderData.total}\n\n🍔 ARTICLES :\n${orderData.items}\n\n👉 Marquer comme TRAITÉE et l'effacer de l'écran ?`)) {
-                            API.update(orderKey, null, true);
-                        }
+                        openOrder(orderKey);
                     };
 
                     floor.appendChild(d);
@@ -1211,13 +1196,49 @@
 
         function escapeQuotes(str) { return str.replace(/'/g, "\\'").replace(/"/g, '&quot;'); }
 
+        // 🟢 NOUVEAU : Fonction pour récupérer le stock exact d'un article
+        function getItemStock(name) {
+            let pureName = name.replace('🌟 ', '').trim().toLowerCase();
+            let foundStock = null;
+            ['entrees', 'plats', 'desserts', 'menuJour', 'suggestions'].forEach(cat => {
+                if(menuCuisine[cat]) {
+                    let match = menuCuisine[cat].find(i => i.name.replace('🌟 ', '').trim().toLowerCase() === pureName);
+                    if(match && match.stock !== "" && match.stock !== undefined) foundStock = match.stock;
+                }
+            });
+            for(let cat in menuBar) {
+                if(menuBar[cat]) {
+                    let match = menuBar[cat].find(i => i.name.replace('🌟 ', '').trim().toLowerCase() === pureName);
+                    if(match && match.stock !== "" && match.stock !== undefined) foundStock = match.stock;
+                }
+            }
+            return foundStock;
+        }
+
+        function showCriticalStockAlert(name, stock) {
+            document.getElementById('critical-stock-msg').innerHTML = `Il ne reste que <br><span style="color:var(--alert); font-size:4rem; font-weight:900;">${stock}</span><br> ${name}`;
+            document.getElementById('stock-critical-modal').classList.add('open');
+            if(navigator.vibrate) navigator.vibrate([200, 100, 200]); 
+        }
+
+        function closeCriticalStockAlert() {
+            document.getElementById('stock-critical-modal').classList.remove('open');
+        }
+
         let pendingCuissonItem = null;
         function addToTicket(n, p, dest) { 
+            let currentStock = getItemStock(n);
+            // 🚨 Alerte rupture de stock (3 ou moins)
+            if (currentStock !== null && currentStock <= 3 && currentStock > 0) {
+                showCriticalStockAlert(n, currentStock);
+            }
+
             if(['entrecôte', 'entrecote', 'bœuf', 'boeuf', 'steak', 'burger', 'filet', 'canard', 'agneau', 'viande', 'tartare', 'onglet', 'bavette', 'côte', 'cote'].some(m => n.toLowerCase().includes(m))) {
                 pendingCuissonItem = { n, p, dest }; document.getElementById('cuisson-item-name').innerText = n.replace(/\n/g, ' '); document.getElementById('cuisson-modal').classList.add('open'); return;
             }
             executeAddToCart(n, p, dest);
         }
+
         function confirmCuisson(niv) { if(pendingCuissonItem) { executeAddToCart(`${pendingCuissonItem.n} (${niv})`, pendingCuissonItem.p, pendingCuissonItem.dest); cancelCuisson(); } }
         function cancelCuisson() { pendingCuissonItem = null; document.getElementById('cuisson-modal').classList.remove('open'); }
         
@@ -1309,7 +1330,6 @@
                 await saveTableState(false, true); 
                 let cNames = { 0: 'Boissons', 1: 'Entrées', 2: 'Plats', 3: 'Desserts' };
                 logAction("RÉCLAME (ÉTAPE ENVOYÉE)", `Table: ${currentTable} | Étape: ${cNames[courseId]}`);
-                showToast(`🔥 ${cNames[courseId].toUpperCase()} ENVOYÉS !`);
                 renderTicket();
             }
         }
@@ -1440,7 +1460,6 @@
             
             if (fireAllNew) {
                 logAction("ENVOI MASSIF", `Table: ${currentTable}`, ticketItems); 
-                showToast("🚀 COMMANDE ENVOYÉE !");
             } else {
                 logAction("SAUVEGARDE COMMANDE", `Table: ${currentTable}`, ticketItems);
             }
@@ -1704,18 +1723,19 @@
         }
 
         setInterval(() => { let c = document.getElementById('empire-clock'); if(c) c.innerText = new Date().toLocaleTimeString('fr-FR', { hour12: false }); }, 1000);
-   // 🟢 MOTEUR D'EFFET TACTILE (RIPPLE) SUR TOUS LES BOUTONS 🟢
+        
+        // 🟢 NOUVEAU MOTEUR TACTILE (ONDE DE CHOC / RIPPLE) 🟢
         document.addEventListener('mousedown', function(e) {
             creerEffetTactile(e);
         });
         document.addEventListener('touchstart', function(e) {
             if(e.touches.length > 0) {
-                creerEffetTactile(e.touches[0], true);
+                creerEffetTactile(e, true);
             }
         }, {passive: true});
 
         function creerEffetTactile(e, isTouch = false) {
-            let target = e.target.closest('button');
+            let target = e.target.closest('button, .nav-btn, .btn-mini, .menu-tab, .btn-item');
             if (!target) return; 
 
             let circle = document.createElement('span');
@@ -1723,10 +1743,12 @@
             let radius = diameter / 2;
 
             let rect = target.getBoundingClientRect();
+            let clientX = isTouch ? e.touches[0].clientX : e.clientX;
+            let clientY = isTouch ? e.touches[0].clientY : e.clientY;
             
             circle.style.width = circle.style.height = `${diameter}px`;
-            circle.style.left = `${e.clientX - rect.left - radius}px`;
-            circle.style.top = `${e.clientY - rect.top - radius}px`;
+            circle.style.left = `${clientX - rect.left - radius}px`;
+            circle.style.top = `${clientY - rect.top - radius}px`;
             circle.classList.add('ripple');
 
             let existingRipple = target.querySelector('.ripple');
@@ -1736,7 +1758,7 @@
 
             setTimeout(() => {
                 circle.remove();
-            }, 500);
+            }, 400);
         }
     </script>
 </body>
