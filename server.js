@@ -49,7 +49,7 @@ app.post('/update-order', (req, res) => {
     });
 });
 
-// --- RÉCEPTION DES COMMANDES WOOCOMMERCE (LE ROUTEUR INTELLIGENT) ---
+// --- RÉCEPTION DES COMMANDES WOOCOMMERCE (LE ROUTEUR INTELLIGENT + QR CODE) ---
 app.post('/api/woo-webhook', (req, res) => {
     const commande = req.body;
     
@@ -58,15 +58,35 @@ app.post('/api/woo-webhook', (req, res) => {
         return res.status(200).send("Ping reçu");
     }
 
-    const orderId = `order_${commande.id}`; // Identifiant unique WEB
-
     fs.readFile(DB_FILE, 'utf8', (err, data) => {
         let db = { activeOrders: {} };
         if (!err && data) {
             try { db = JSON.parse(data); } catch (e) {}
         }
 
-        // Le Cerveau : Tri automatique Cuisine ou Bar
+        // 1. CHERCHE LE NUMÉRO DE TABLE (SCAN QR CODE)
+        let tableCible = null;
+        
+        // A. Chercher dans les Meta Data (plugins de QR Code WooCommerce)
+        if (commande.meta_data) {
+            let metaTable = commande.meta_data.find(m => m.key.toLowerCase().includes('table'));
+            if (metaTable && metaTable.value) tableCible = metaTable.value.toString().trim().toUpperCase();
+        }
+        
+        // B. Chercher dans les notes de commande (Si le client l'écrit)
+        if (!tableCible && commande.customer_note) {
+            let note = commande.customer_note.toUpperCase();
+            // Cherche "TABLE 2" ou "T2"
+            let match = note.match(/(?:TABLE|T)\s*([0-9A-Z]+)/);
+            if (match) tableCible = match[1];
+        }
+
+        // C. Normalisation (si le système trouve "2", on le transforme en "T2" pour correspondre au Pad)
+        if (tableCible && !isNaN(tableCible)) {
+            tableCible = "T" + tableCible;
+        }
+
+        // 2. PRÉPARATION DES ARTICLES (Tri Cuisine/Bar)
         let formattedItems = [];
         if (commande.line_items && commande.line_items.length > 0) {
             formattedItems = commande.line_items.map((item, index) => {
@@ -74,7 +94,6 @@ app.post('/api/woo-webhook', (req, res) => {
                 
                 // Mots-clés pour le BAR
                 let isDrink = ['bière', 'biere', 'vin', 'champagne', 'cocktail', 'eau', 'coca', 'jus', 'café', 'cafe', 'thé', 'the', 'boisson', 'verre', 'bouteille'].some(mot => nomLow.includes(mot));
-                
                 let dest = isDrink ? 'bar' : 'cuisine';
                 
                 // Catégories (0=Boissons, 1=Entrées, 2=Plats, 3=Desserts)
@@ -97,21 +116,43 @@ app.post('/api/woo-webhook', (req, res) => {
             });
         }
 
-        // Création de la table virtuelle WEB
-        db.activeOrders[orderId] = {
-            isWeb: true, 
-            id: commande.id,
-            clientName: commande.billing ? `${commande.billing.first_name} ${commande.billing.last_name}` : 'Client Web',
-            totalStr: `${commande.total} ${commande.currency}`,
-            time: new Date().toLocaleTimeString('fr-FR', {hour:'2-digit', minute:'2-digit'}),
-            status: "pending", 
-            observations: `🛒 COMMANDE WEB #${commande.id}`,
-            items: formattedItems
-        };
+        // 3. INJECTION DANS LA SALLE
+        if (tableCible) {
+            // C'est une commande sur table (QR CODE)
+            if (!db.activeOrders[tableCible]) {
+                // La table est vide, on la crée
+                db.activeOrders[tableCible] = {
+                    status: "pending",
+                    time: new Date().toLocaleTimeString('fr-FR', {hour:'2-digit', minute:'2-digit'}),
+                    clientName: "Client QR",
+                    observations: `📱 COMMANDE QR CODE (#${commande.id})`,
+                    items: formattedItems
+                };
+            } else {
+                // La table est déjà ouverte, on ajoute simplement les plats
+                if(!db.activeOrders[tableCible].items) db.activeOrders[tableCible].items = [];
+                db.activeOrders[tableCible].items.push(...formattedItems);
+                db.activeOrders[tableCible].observations += ` | 📱 + #${commande.id}`;
+            }
+            console.log(`🔥 Commande QR Code #${commande.id} injectée dans la table ${tableCible}`);
+        } else {
+            // Pas de table trouvée = Commande WEB classique (à emporter ou livraison)
+            const orderId = `order_${commande.id}`;
+            db.activeOrders[orderId] = {
+                isWeb: true, 
+                id: commande.id,
+                clientName: commande.billing ? `${commande.billing.first_name} ${commande.billing.last_name}` : 'Client Web',
+                totalStr: `${commande.total} ${commande.currency}`,
+                time: new Date().toLocaleTimeString('fr-FR', {hour:'2-digit', minute:'2-digit'}),
+                status: "pending", 
+                observations: `🛒 COMMANDE WEB #${commande.id}`,
+                items: formattedItems
+            };
+            console.log(`🔥 Commande WEB #${commande.id} routée (sans table).`);
+        }
 
         fs.writeFile(DB_FILE, JSON.stringify(db, null, 2), (err) => {
             if (err) return res.status(500).send("Erreur d'écriture");
-            console.log(`🔥 Commande WEB #${commande.id} routée avec succès.`);
             res.status(200).send("OK");
         });
     });
