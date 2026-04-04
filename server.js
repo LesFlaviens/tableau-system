@@ -92,8 +92,25 @@ app.post('/api/woo-webhook', (req, res) => {
             formattedItems = commande.line_items.map((item, index) => {
                 let nomLow = item.name.toLowerCase();
                 
-                // Mots-clés pour le BAR
-                let isDrink = ['bière', 'biere', 'vin', 'champagne', 'cocktail', 'eau', 'coca', 'jus', 'café', 'cafe', 'thé', 'the', 'boisson', 'verre', 'bouteille'].some(mot => nomLow.includes(mot));
+                // Mots-clés pour le BAR (Recherche de MOTS ENTIERS pour éviter le piège de "Gât-EAU")
+                let nomTest = " " + nomLow.replace(/[.,'!?]/g, " ") + " "; // On isole les mots avec des espaces
+                
+                // Liste ultra-précise incluant les pluriels
+                let motsBar = [
+                    ' biere ', ' bière ', ' bieres ', ' bières ', 
+                    ' vin ', ' vins ', 
+                    ' champagne ', ' champagnes ', 
+                    ' cocktail ', ' cocktails ', 
+                    ' eau ', ' eaux ', 
+                    ' coca ', ' jus ', 
+                    ' cafe ', ' café ', ' cafes ', ' cafés ', 
+                    ' the ', ' thé ', ' thes ', ' thés ', 
+                    ' boisson ', ' boissons ', 
+                    ' verre ', ' verres ', 
+                    ' bouteille ', ' bouteilles '
+                ];
+                
+                let isDrink = motsBar.some(mot => nomTest.includes(mot));
                 let dest = isDrink ? 'bar' : 'cuisine';
                 
                 // Catégories (0=Boissons, 1=Entrées, 2=Plats, 3=Desserts)
