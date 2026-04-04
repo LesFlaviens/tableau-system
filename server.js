@@ -92,10 +92,8 @@ app.post('/api/woo-webhook', (req, res) => {
             formattedItems = commande.line_items.map((item, index) => {
                 let nomLow = item.name.toLowerCase();
                 
-                // Mots-clés pour le BAR (Recherche de MOTS ENTIERS pour éviter le piège de "Gât-EAU")
-                let nomTest = " " + nomLow.replace(/[.,'!?]/g, " ") + " "; // On isole les mots avec des espaces
-                
-                // Liste ultra-précise incluant les pluriels
+                // Mots-clés pour le BAR
+                let nomTest = " " + nomLow.replace(/[.,'!?]/g, " ") + " "; 
                 let motsBar = [
                     ' biere ', ' bière ', ' bieres ', ' bières ', 
                     ' vin ', ' vins ', 
@@ -123,9 +121,9 @@ app.post('/api/woo-webhook', (req, res) => {
                     n: item.name,
                     p: parseFloat(item.price) || 0,
                     qty: item.quantity || 1,
-                    dest: dest,          // Envoi auto au Bar ou Cuisine
+                    dest: dest,          
                     course: courseId,
-                    fired: true,         // Déclenche l'affichage direct sur les écrans
+                    fired: false,        // 🟢 C'EST ICI LA MAGIE : La commande arrive "En attente" pour validation par le serveur
                     done: false,
                     savedToDB: true,
                     isOffered: false
@@ -135,25 +133,21 @@ app.post('/api/woo-webhook', (req, res) => {
 
         // 3. INJECTION DANS LA SALLE
         if (tableCible) {
-            // C'est une commande sur table (QR CODE)
             if (!db.activeOrders[tableCible]) {
-                // La table est vide, on la crée
                 db.activeOrders[tableCible] = {
-                    status: "pending",
+                    status: "hold", // 🟢 Passe la table en mode "Attente" (Couleur Or/Jaune sur le Pad)
                     time: new Date().toLocaleTimeString('fr-FR', {hour:'2-digit', minute:'2-digit'}),
                     clientName: "Client QR",
                     observations: `📱 COMMANDE QR CODE (#${commande.id})`,
                     items: formattedItems
                 };
             } else {
-                // La table est déjà ouverte, on ajoute simplement les plats
                 if(!db.activeOrders[tableCible].items) db.activeOrders[tableCible].items = [];
                 db.activeOrders[tableCible].items.push(...formattedItems);
                 db.activeOrders[tableCible].observations += ` | 📱 + #${commande.id}`;
             }
-            console.log(`🔥 Commande QR Code #${commande.id} injectée dans la table ${tableCible}`);
+            console.log(`🔥 Commande QR Code #${commande.id} injectée EN ATTENTE dans la table ${tableCible}`);
         } else {
-            // Pas de table trouvée = Commande WEB classique (à emporter ou livraison)
             const orderId = `order_${commande.id}`;
             db.activeOrders[orderId] = {
                 isWeb: true, 
@@ -161,11 +155,11 @@ app.post('/api/woo-webhook', (req, res) => {
                 clientName: commande.billing ? `${commande.billing.first_name} ${commande.billing.last_name}` : 'Client Web',
                 totalStr: `${commande.total} ${commande.currency}`,
                 time: new Date().toLocaleTimeString('fr-FR', {hour:'2-digit', minute:'2-digit'}),
-                status: "pending", 
+                status: "hold", 
                 observations: `🛒 COMMANDE WEB #${commande.id}`,
                 items: formattedItems
             };
-            console.log(`🔥 Commande WEB #${commande.id} routée (sans table).`);
+            console.log(`🔥 Commande WEB #${commande.id} routée EN ATTENTE (sans table).`);
         }
 
         fs.writeFile(DB_FILE, JSON.stringify(db, null, 2), (err) => {
