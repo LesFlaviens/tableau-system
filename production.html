@@ -1,3 +1,13 @@
+C'est une excellente idée. En plein service, un chef a besoin de vérifier ce qui a déjà été "réclamé" et envoyé, sans avoir à demander à la salle. 
+
+J'ai ajouté un onglet **"📜 HISTO"** (Historique) directement sur l'écran de la cuisine. 
+Ce catalogue va récupérer tous les bons clôturés de la journée dans ta base de données, filtrer uniquement les plats de la cuisine (il ignorera les boissons), et **les classer automatiquement du plus récent (en haut) au plus ancien (en bas)**.
+
+Voici le code complet et définitif de ton fichier **`cuisine.html`**, qui inclut la correction pour les boissons, l'effet visuel tactile (Ripple), et ton nouvel Historique.
+
+**Remplace l'intégralité de ton `cuisine.html` par ceci :**
+
+```html
 <!DOCTYPE html>
 <html lang="fr">
 <head>
@@ -90,6 +100,25 @@
         .stock-val { width: 40px; text-align: center; font-weight: 900; font-size: 1.1rem; color: var(--info-zen); }
         .stock-val.zero { color: var(--alert-zen); }
 
+        /* 🟢 EFFET TACTILE RIPPLE (ONDE DE CHOC) 🟢 */
+        button {
+            position: relative;
+            overflow: hidden; 
+        }
+        .ripple {
+            position: absolute;
+            border-radius: 50%;
+            transform: scale(0);
+            animation: ripple-effect 0.5s linear;
+            background-color: rgba(255, 255, 255, 0.4); 
+            pointer-events: none; 
+        }
+        @keyframes ripple-effect {
+            to {
+                transform: scale(3);
+                opacity: 0;
+            }
+        }
     </style>
 </head>
 <body>
@@ -109,6 +138,7 @@
         </div>
         <div class="nav-btns">
             <button class="nav-btn active" id="tab-kds" onclick="switchTab('kds')">📝 LES BONS</button>
+            <button class="nav-btn" id="tab-history" onclick="switchTab('history')">📜 HISTO</button>
             <button class="nav-btn" id="tab-menu" onclick="switchTab('menu')">📋 STOCKS (86)</button>
             <button class="nav-btn" id="tab-staff" onclick="switchTab('staff')">👥 STAFF</button>
             <button class="nav-btn" id="tab-recipes" onclick="switchTab('recipes')">📖 RECETTES</button>
@@ -125,6 +155,13 @@
                     Aucun bon en attente. La cuisine est propre.
                 </div>
             </div>
+        </div>
+    </div>
+
+    <div id="mod-history" class="module">
+        <h2 style="color:var(--purple-zen); margin:0; border-bottom: 1px solid var(--border-zen); padding-bottom: 15px;">📜 HISTORIQUE DU JOUR (CUISINE)</h2>
+        <div id="history-container" style="display: flex; flex-direction: column; gap: 15px; margin-top: 15px;">
+            <div style="color: #64748b; grid-column: 1/-1;">Synchronisation des archives...</div>
         </div>
     </div>
 
@@ -235,6 +272,7 @@
         let supplierOrders = safeArray('empire_supplier_orders', []); 
         let reservationsData = []; 
         let menuData = null; 
+        let archiveCuisineData = [];
 
         setInterval(() => { document.getElementById('clock').innerText = new Date().toLocaleTimeString('fr-FR'); }, 1000);
 
@@ -478,6 +516,54 @@
             bar.innerHTML = recentlyDoneItems.map((item, idx) => `<div class="undo-item" onclick="undoItemReady(${idx})">T.${item.tableId} - ${item.name.replace(/\n/g, ' ')}</div>`).join('');
         }
 
+        // 🟢 NOUVELLE FONCTION : RENDU DE L'HISTORIQUE DE LA CUISINE 🟢
+        function renderHistory() {
+            const container = document.getElementById('history-container');
+            if (archiveCuisineData.length === 0) {
+                container.innerHTML = `<div style="color: #64748b; text-align:center; padding: 20px;">Aucun historique de commande pour aujourd'hui.</div>`;
+                return;
+            }
+
+            // Trier du plus récent (en haut) au plus ancien (en bas)
+            let sortedArchive = [...archiveCuisineData].sort((a, b) => new Date(b.time) - new Date(a.time));
+            
+            // On filtre pour ne garder que la journée en cours
+            let todayStr = new Date().toISOString().split('T')[0];
+            let todayArchive = sortedArchive.filter(x => x.time && x.time.startsWith(todayStr));
+
+            if (todayArchive.length === 0) {
+                container.innerHTML = `<div style="color: #64748b; text-align:center; padding: 20px;">La cuisine n'a rien sorti aujourd'hui.</div>`;
+                return;
+            }
+
+            container.innerHTML = todayArchive.map(t => {
+                let timeStr = new Date(t.time).toLocaleTimeString('fr-FR', {hour: '2-digit', minute:'2-digit'});
+                
+                // Formater les plats envoyés
+                let itemsHtml = t.items ? t.items.map(i => `
+                    <div style="display:flex; justify-content:space-between; margin-bottom: 5px; padding: 5px 0;">
+                        <span><span style="color:var(--accent-zen); font-weight:900;">${i.qty||1}x</span> ${i.n}</span>
+                    </div>
+                `).join('') : '';
+
+                // Formater le titre (WEB ou TABLE classique)
+                let isWeb = t.table.startsWith('order_');
+                let tableTitle = isWeb ? `🌐 WEB #${t.table.replace('order_','')}` : `TABLE ${t.table}`;
+                let titleColor = isWeb ? `var(--alert-zen)` : `var(--purple-zen)`;
+
+                return `
+                <div style="background:var(--panel-zen); border:1px solid var(--border-zen); padding:15px; border-radius:8px; box-shadow:0 2px 4px rgba(0,0,0,0.1);">
+                    <div style="display:flex; justify-content:space-between; border-bottom:1px dashed var(--border-zen); padding-bottom:10px; margin-bottom:10px;">
+                        <div style="color:${titleColor}; font-weight:900; font-size:1.2rem;">${tableTitle}</div>
+                        <div style="color:var(--text-muted); font-weight:bold;">${timeStr}</div>
+                    </div>
+                    <div style="color:var(--text-zen); font-size:0.95rem;">
+                        ${itemsHtml}
+                    </div>
+                </div>`;
+            }).join('');
+        }
+
         function renderRecipes() {
             const container = document.getElementById('recipes-container');
             if (recipesData.length === 0) { container.innerHTML = `<div style="color: #64748b; grid-column: 1/-1;">Aucune recette trouvée.</div>`; return; }
@@ -533,6 +619,11 @@
             document.getElementById('mod-' + tab).classList.add('active');
             let mainBtn = document.getElementById('tab-' + tab);
             if(mainBtn) { mainBtn.classList.add('active'); }
+
+            // Si on clique sur l'historique, on force le rendu
+            if (tab === 'history') {
+                renderHistory();
+            }
         }
 
         async function fetchSystemState() {
@@ -563,6 +654,14 @@
                             renderMenuStocks();
                         }
                     }
+
+                    // 🟢 RÉCUPÉRATION DES ARCHIVES POUR L'HISTORIQUE CUISINE
+                    if (activeOrders['SALES_ARCHIVE_CUISINE']) {
+                        archiveCuisineData = activeOrders['SALES_ARCHIVE_CUISINE'].data || [];
+                        if(document.getElementById('mod-history').classList.contains('active')) {
+                            renderHistory();
+                        }
+                    }
                     
                     renderSupplierOrders();
                     renderKDS();
@@ -582,7 +681,45 @@
             }, 3000);
         }
 
+        // 🟢 MOTEUR D'EFFET TACTILE (RIPPLE) SUR TOUS LES BOUTONS 🟢
+        document.addEventListener('mousedown', function(e) {
+            creerEffetTactile(e);
+        });
+        document.addEventListener('touchstart', function(e) {
+            if(e.touches.length > 0) {
+                creerEffetTactile(e.touches[0], true);
+            }
+        }, {passive: true});
+
+        function creerEffetTactile(e, isTouch = false) {
+            let target = e.target.closest('button, .resa-ticker, .ticket-item');
+            if (!target) return; 
+
+            let circle = document.createElement('span');
+            let diameter = Math.max(target.clientWidth, target.clientHeight);
+            let radius = diameter / 2;
+
+            let rect = target.getBoundingClientRect();
+            let clientX = isTouch ? e.clientX : e.clientX;
+            let clientY = isTouch ? e.clientY : e.clientY;
+            
+            circle.style.width = circle.style.height = `${diameter}px`;
+            circle.style.left = `${clientX - rect.left - radius}px`;
+            circle.style.top = `${clientY - rect.top - radius}px`;
+            circle.classList.add('ripple');
+
+            let existingRipple = target.querySelector('.ripple');
+            if (existingRipple) existingRipple.remove();
+
+            target.appendChild(circle);
+
+            setTimeout(() => {
+                circle.remove();
+            }, 500);
+        }
+
         bootSystem();
     </script>
 </body>
 </html>
+```
