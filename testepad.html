@@ -233,16 +233,13 @@
             position: absolute;
             border-radius: 50%;
             transform: scale(0);
-            /* Animation très légèrement plus longue pour marquer l'œil */
             animation: ripple-effect-heavy 0.5s cubic-bezier(0.25, 0.46, 0.45, 0.94);
-            /* Un blanc beaucoup plus laiteux/opaque au départ */
             background-color: rgba(255, 255, 255, 0.5); 
             pointer-events: none; 
             z-index: 9999;
         }
         @keyframes ripple-effect-heavy {
             0% { transform: scale(0); opacity: 1; }
-            /* L'onde grossit beaucoup plus (scale 6 au lieu de 4) */
             100% { transform: scale(6); opacity: 0; }
         }
     </style>
@@ -492,15 +489,20 @@
     </div>
 
     <div id="edit-item-modal" class="modal">
-        <h2 style="color:var(--gold); font-size: 2rem; margin-bottom: 20px; text-transform: uppercase;"> Ajuster le Prix </h2>
+        <h2 style="color:var(--gold); font-size: 2rem; margin-bottom: 20px; text-transform: uppercase;">✏️ Ajuster le Plat</h2>
         <h3 style="color:var(--text-main); margin-bottom: 20px; font-size: 1.4rem;" id="edit-item-title">Nom</h3>
         
-        <button class="pay-btn" style="border-color: var(--service); color: var(--service); background: rgba(244, 114, 182, 0.1); width: 100%; margin-bottom: 15px;" onclick="offerItem()"> Réduction </button>
+        <button class="pay-btn" style="border-color: var(--service); color: var(--service); background: rgba(244, 114, 182, 0.1); width: 100%; margin-bottom: 15px;" onclick="offerItem()">🎁 OFFRIR (Geste Co.)</button>
         
-       
+        <select id="edit-item-course" class="edit-input" style="font-weight: bold; background: var(--panel); cursor: pointer;">
+            <option value="0">🍸 APÉRITIFS / BOISSONS</option>
+            <option value="1">🥗 ENTRÉES</option>
+            <option value="2">🔥 PLATS</option>
+            <option value="3">🍰 DESSERTS</option>
+        </select>
 
         <input type="number" id="edit-item-price" class="edit-input" step="0.01" placeholder="Nouveau Prix (€)">
-        <input type="text" id="edit-item-obs" class="edit-input" placeholder=" pour quel raison ? ">
+        <input type="text" id="edit-item-obs" class="edit-input" placeholder="Observation (Sans sel, etc...)">
         
         <button class="pay-btn" style="border-color: var(--accent); color: var(--accent); background: var(--accent-dim);" onclick="saveItemEdit()">✅ VALIDER L'AJUSTEMENT</button>
         <button class="pay-btn cancel" style="background: var(--bg);" onclick="closeEditModal()">❌ ANNULER</button>
@@ -1030,7 +1032,7 @@
 
         function unlockArchiMode() { if (!currentUser || currentUser.role !== 'Manager') return alert("⛔ Accès Manager requis"); isArchiMode = true; document.body.classList.add('edit-mode'); renderRooms(); renderFloor(); }
         function closeArchiMode() { isArchiMode = false; document.body.classList.remove('edit-mode'); renderRooms(); renderFloor(); }
-        function saveArchitecture() { pushArchitecture(); alert("✅ Plan sauvegardé avec succès sur tous Pads."); closeArchiMode(); }
+        function saveArchitecture() { pushArchitecture(); alert("✅ Plan sauvegardé avec succès sur tous les Pads."); closeArchiMode(); }
         
         function addNewTable() {
             let nextNum = 1; tables.filter(t => t && t.room === currentRoom).forEach(t => { let m = t.label.match(/\d+/); if(m && parseInt(m[0]) >= nextNum) nextNum = parseInt(m[0]) + 1; });
@@ -1350,9 +1352,10 @@
         function cancelCuisson() { pendingCuissonItem = null; document.getElementById('cuisson-modal').classList.remove('open'); }
         
         function executeAddToCart(n, p, dest) { 
-            let e = ticketItems.find(i => i.n === n && !i.done && !i.fired && i.course === currentCourseDefault); 
+            // 🟢 CORRECTIF: On ne groupe pas les plats s'ils ont déjà une observation ou s'ils sont offerts
+            let e = ticketItems.find(i => i.n === n && !i.done && !i.fired && i.course === currentCourseDefault && !i.obs && !i.isOffered); 
             if(e) e.qty = (e.qty||1)+1; 
-            else ticketItems.push({ id: Date.now()+Math.random(), itemId: Date.now(), n, p, qty: 1, done: false, dest, fired: false, savedToDB: false, isOffered: false, course: currentCourseDefault }); 
+            else ticketItems.push({ id: Date.now()+Math.random(), itemId: Date.now(), n, p, qty: 1, done: false, dest, fired: false, savedToDB: false, isOffered: false, course: currentCourseDefault, obs: "" }); 
             renderTicket(); 
         }
         
@@ -1404,10 +1407,11 @@
             if(pendingEditIndex === null) return; 
             let p = parseFloat(document.getElementById('edit-item-price').value);
             let c = parseInt(document.getElementById('edit-item-course').value);
+            let obsVal = document.getElementById('edit-item-obs').value.trim();
             
             if(!isNaN(p)) { 
                 ticketItems[pendingEditIndex].p = p; 
-                ticketItems[pendingEditIndex].obs = document.getElementById('edit-item-obs').value; 
+                ticketItems[pendingEditIndex].obs = obsVal; 
                 ticketItems[pendingEditIndex].course = c; 
                 logAction("CORRECTION ERREUR HUMAINE", `Table: ${currentTable} | Plat: ${ticketItems[pendingEditIndex].n}`); 
             }
@@ -1492,19 +1496,25 @@
                 let c = i.course !== undefined ? i.course : 2; 
                 
                 let statusHtml = '';
-                if (i.done) statusHtml = `<span class="status-badge-ready">PRÊT</span>`;
-                else if (i.fired) statusHtml = `<span class="status-badge-cooking">⏳ EN COURS</span>`;
+                if (i.done) statusHtml = `<span class="status-badge-ready" style="color:#34d399; font-weight:bold;">✓ PRÊT</span>`;
+                else if (i.fired) statusHtml = `<span class="status-badge-cooking" style="color:#fbbf24; font-weight:bold;">⏳ ENVOYÉ</span>`;
                 
                 let priceHtml = i.isOffered ? `<span style="margin-right:15px; font-weight:900; color:var(--service);">🎁 OFFERT</span>` : `<span style="margin-right:15px; font-weight:bold;">${((parseFloat(i.p)||0)*q).toFixed(2)}€</span>`;
 
+                // 🟢 PLAT BARRÉ SI ENVOYÉ 🟢
+                let nameStyle = i.fired ? 'text-decoration: line-through; color: var(--text-muted);' : 'color: var(--text-main);';
+
+                // 🟢 BOUTON EXPLICITE POUR AJOUTER UNE OBSERVATION 🟢
+                let obsDisplay = i.obs ? `<span style="font-size:0.85rem; color:#facc15; background: rgba(250, 204, 21, 0.15); padding: 2px 6px; border-radius: 4px; border: 1px solid #facc15;">⚠️ ${i.obs}</span>` : (!i.fired ? `<span style="font-size:0.75rem; color:var(--text-muted); font-style:italic; padding: 2px 6px; border: 1px solid var(--border); border-radius: 4px;">✏️ Ajouter obs.</span>` : '');
+
                 let itemHtml = `
-                <div class="ticket-item-row" ${!i.fired ? `draggable="true" ondragstart="dragItem(event, ${idx})"` : ''} style="${i.done ? "opacity:0.5;" : ""} ${!i.fired ? "border-left: 4px solid var(--gold);" : ""}">
+                <div class="ticket-item-row" ${!i.fired ? `draggable="true" ondragstart="dragItem(event, ${idx})"` : ''} style="${i.done ? "opacity:0.5;" : ""} ${!i.fired ? "border-left: 4px solid var(--gold);" : "border-left: 4px solid transparent; background: rgba(255,255,255,0.02);"}">
                     ${!i.fired ? `<div class="drag-handle">☰</div>` : ''}
                     <div style="flex:1; cursor:pointer;" onclick="openEditItem(${idx})">
-                        <div style="font-weight:bold; font-size:1.05rem;">${q>1?`<span style="color:var(--accent); font-weight:900;">${q}x</span> `:""}${cleanName||'?'}</div>
+                        <div style="font-weight:bold; font-size:1.05rem; ${nameStyle}">${q>1?`<span style="color:var(--accent); font-weight:900; text-decoration:none; display:inline-block;">${q}x</span> `:""}${cleanName||'?'}</div>
                         <div style="display:flex; align-items:center; gap:10px; margin-top:5px;">
                             ${statusHtml}
-                            ${i.obs?`<span style="font-size:0.75rem; color:#facc15;">⚠️ ${i.obs}</span>`:''}
+                            ${obsDisplay}
                         </div>
                     </div>
                     ${priceHtml}
