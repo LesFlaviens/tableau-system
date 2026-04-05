@@ -75,10 +75,11 @@
         .order-item { display: flex; justify-content: space-between; align-items: center; background: var(--panel-zen); padding: 12px 15px; border-radius: 4px; border: 1px solid var(--border-zen); margin-bottom: 8px; }
         .btn-del { background: rgba(239, 68, 68, 0.1); color: var(--alert-zen); border: none; padding: 8px 12px; border-radius: 4px; cursor: pointer; font-weight: bold; z-index: 10;}
 
-        .undo-bar { background: #0f172a; padding: 10px 20px; border-bottom: 1px solid var(--border-zen); display: flex; gap: 10px; overflow-x: auto; white-space: nowrap; }
-        .undo-item { background: rgba(255,255,255,0.05); border: 1px solid var(--border-zen); color: #94a3b8; padding: 5px 15px; border-radius: 20px; font-size: 0.8rem; cursor: pointer; display: flex; align-items: center; gap: 8px; transition: 0.2s; }
+        /* 🟢 NOUVEAU DESIGN DE LA BARRE DE REPÊCHAGE DANS HISTO 🟢 */
+        .undo-bar { background: rgba(255,255,255,0.02); padding: 15px; border-radius: 8px; border: 1px solid var(--border-zen); display: flex; gap: 10px; overflow-x: auto; white-space: nowrap; margin-bottom: 15px; }
+        .undo-item { background: rgba(255,255,255,0.05); border: 1px solid var(--border-zen); color: #94a3b8; padding: 8px 15px; border-radius: 20px; font-size: 0.85rem; font-weight: bold; cursor: pointer; display: flex; align-items: center; gap: 8px; transition: 0.2s; }
         .undo-item:hover { background: rgba(239, 68, 68, 0.1); color: var(--alert-zen); border-color: var(--alert-zen); }
-        .undo-item::before { content: "↩️ Repêcher :"; opacity: 0.5; }
+        .undo-item::before { content: "↩️ Repêcher :"; opacity: 0.6; }
 
         .modal { position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; background: rgba(15, 23, 42, 0.95); z-index: 20000; display: none; flex-direction: column; align-items: center; justify-content: center; backdrop-filter: blur(5px); }
         .modal.open { display: flex !important; }
@@ -98,16 +99,13 @@
             position: absolute;
             border-radius: 50%;
             transform: scale(0);
-            /* Animation très légèrement plus longue pour marquer l'œil */
             animation: ripple-effect-heavy 0.5s cubic-bezier(0.25, 0.46, 0.45, 0.94);
-            /* Un blanc beaucoup plus laiteux/opaque au départ */
             background-color: rgba(255, 255, 255, 0.5); 
             pointer-events: none; 
             z-index: 9999;
         }
         @keyframes ripple-effect-heavy {
             0% { transform: scale(0); opacity: 1; }
-            /* L'onde grossit beaucoup plus (scale 6 au lieu de 4) */
             100% { transform: scale(6); opacity: 0; }
         }
     </style>
@@ -139,7 +137,6 @@
     </header>
 
     <div id="mod-kds" class="module active" style="padding: 0;">
-        <div class="undo-bar" id="undo-bar"></div>
         <div style="padding: 20px; flex: 1; overflow-y: auto;">
             <div id="kds-container" class="kds-grid">
                 <div style="text-align: center; grid-column: 1/-1; color: #64748b; margin-top: 50px; font-size: 1.2rem;">
@@ -150,11 +147,14 @@
     </div>
 
     <div id="mod-history" class="module">
-        <div style="display:flex; justify-content:space-between; align-items:center; border-bottom: 1px solid var(--border-zen); padding-bottom: 15px;">
+        <div style="display:flex; justify-content:space-between; align-items:center; border-bottom: 1px solid var(--border-zen); padding-bottom: 15px; margin-bottom: 15px;">
             <h2 style="color:var(--purple-zen); margin:0;">📜 HISTORIQUE DU JOUR (CUISINE)</h2>
             <button class="nav-btn" style="border-color: var(--border-zen); color: var(--text-muted);" onclick="switchTab('kds')">✕ FERMER</button>
         </div>
-        <div id="history-container" style="display: flex; flex-direction: column; gap: 15px; margin-top: 15px;">
+        
+        <div class="undo-bar" id="undo-bar" style="display: none;"></div>
+
+        <div id="history-container" style="display: flex; flex-direction: column; gap: 15px;">
             <div style="color: #64748b; grid-column: 1/-1;">Synchronisation des archives...</div>
         </div>
     </div>
@@ -267,8 +267,6 @@
         let reservationsData = []; 
         let menuData = null; 
         let archiveCuisineData = [];
-
-        // 🟢 NOUVELLE VARIABLE : Mémoire pour anti-clignotement
         let previousCuisineState = "";
 
         // 🟢 GESTION DU SON 🟢
@@ -451,6 +449,9 @@
                     hasPending = true;
                     currentItemsCount += pendingItems.length;
 
+                    // 🟢 TRI AUTOMATIQUE (Entrées -> Plats -> Desserts)
+                    pendingItems.sort((a, b) => (a.course || 2) - (b.course || 2));
+
                     // AFFICHAGE PROPRE POUR LES COMMANDES WEB
                     let isWeb = orderData.isWeb || tableId.startsWith('order_');
                     let tableTitle = isWeb ? `🌐 WEB #${orderData.id || tableId.replace('order_','')}` : `TABLE ${tableId}`;
@@ -466,10 +467,23 @@
                         html += `<div class="ticket-obs">⚠️ ${orderData.observations}</div>`;
                     }
 
+                    let lastCourse = -1;
+
                     pendingItems.forEach((item) => {
                         let realIndex = orderData.items.findIndex(i => i.id === item.id);
                         let cleanName = item.n.replace(/\n/g, '<br>');
                         let qty = item.qty || 1;
+                        let currentCourse = item.course || 2; // Si pas de course, on considère que c'est un plat (2)
+
+                        // 🟢 SÉPARATEUR VISUEL DANS LE TICKET SI LE TYPE DE PLAT CHANGE
+                        if (currentCourse !== lastCourse) {
+                            let courseLabel = currentCourse === 1 ? '🥗 ENTRÉES' : (currentCourse === 2 ? '🔥 PLATS' : '🍰 DESSERTS');
+                            // Si par hasard une boisson s'est glissée (course 0), on la nomme
+                            if (currentCourse === 0) courseLabel = '🍸 BOISSONS'; 
+
+                            html += `<div style="background: rgba(0,0,0,0.2); text-align: center; font-size: 0.75rem; color: var(--info-zen); padding: 4px; font-weight: 900; letter-spacing: 1px; border-top: 1px solid var(--border-zen); border-bottom: 1px solid var(--border-zen);">${courseLabel}</div>`;
+                            lastCourse = currentCourse;
+                        }
 
                         html += `
                         <div class="ticket-item" onclick="markItemReady('${tableId}', ${realIndex})">
@@ -510,6 +524,7 @@
             await API.update(tableId, activeOrders[tableId], true);
         }
 
+        // 🟢 FONCTION DE REPÊCHAGE AVEC BASCULE AUTO SUR LE KDS 🟢
         async function undoItemReady(undoIndex) {
             let undoData = recentlyDoneItems[undoIndex];
             if (!activeOrders[undoData.tableId] || !activeOrders[undoData.tableId].items[undoData.itemIndex]) return;
@@ -520,6 +535,9 @@
             
             renderKDS();
             await API.update(undoData.tableId, activeOrders[undoData.tableId], true);
+            
+            renderUndoBar();
+            switchTab('kds'); // Le cuisinier retourne automatiquement voir son plat réapparaître
         }
 
         function renderUndoBar() {
@@ -701,7 +719,7 @@
             }, 3000);
         }
 
-        // 🟢 NOUVEAU MOTEUR TACTILE (ONDE DE CHOC / RIPPLE GLOBAL ULTRA-VOYANT) 🟢
+        // 🟢 MOTEUR D'EFFET TACTILE (RIPPLE) SUR TOUS LES BOUTONS 🟢
         document.addEventListener('mousedown', function(e) {
             creerEffetTactile(e);
         });
