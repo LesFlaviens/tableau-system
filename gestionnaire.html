@@ -223,6 +223,24 @@
             100% { transform: translate(2px, -2px) rotate(-2deg); }
         }
         .modal-shake { animation: shake-violent 0.4s cubic-bezier(.36,.07,.19,.97) both; }
+        
+        /* 🟢 EFFET TACTILE RIPPLE (ONDE DE CHOC) 🟢 */
+        button, .nav-btn, .btn-mini, .menu-tab, .btn-item {
+            position: relative;
+            overflow: hidden; 
+        }
+        .ripple {
+            position: absolute;
+            border-radius: 50%;
+            transform: scale(0);
+            animation: ripple-effect 0.4s linear;
+            background-color: rgba(255, 255, 255, 0.25); 
+            pointer-events: none; 
+            z-index: 10;
+        }
+        @keyframes ripple-effect {
+            to { transform: scale(4); opacity: 0; }
+        }
     </style>
 </head>
 <body>
@@ -452,7 +470,7 @@
         <h2 style="color:var(--gold); font-size: 2rem; margin-bottom: 20px; text-transform: uppercase;">✏️ Ajuster le Plat</h2>
         <h3 style="color:var(--text-main); margin-bottom: 20px; font-size: 1.4rem;" id="edit-item-title">Nom</h3>
         
-        <button class="pay-btn" style="border-color: var(--service); color: var(--service); background: rgba(244, 114, 182, 0.1); width: 100%; margin-bottom: 15px;" onclick="offerItem()">🎁 OFFRIR CE PLAT (Geste Co.)</button>
+        <button class="pay-btn" style="border-color: var(--service); color: var(--service); background: rgba(244, 114, 182, 0.1); width: 100%; margin-bottom: 15px;" onclick="offerItem()">🎁 OFFRIR (Geste Co.)</button>
         
         <select id="edit-item-course" class="edit-input" style="font-weight: bold; background: var(--panel); cursor: pointer;">
             <option value="0">🍸 APÉRITIFS / BOISSONS</option>
@@ -1071,20 +1089,25 @@
                 webOrders.forEach((orderKey, index) => {
                     let orderData = activeOrders[orderKey];
                     let d = document.createElement('div');
-                    d.className = 'table-obj shape-rect status-cooking'; 
+                    
+                    // Si web est en attente, le colorier en Or/Jaune (hold)
+                    let statusClass = 'status-cooking';
+                    if (orderData.status === 'hold') statusClass = 'status-hold';
+                    
+                    d.className = `table-obj shape-rect ${statusClass}`; 
                     d.style.left = webStartX + (index * 150) + 'px';
                     d.style.top = webStartY + 'px';
                     d.style.width = '130px';
                     d.style.height = '100px';
                     d.style.zIndex = '100';
                     d.style.cursor = 'pointer';
-                    d.style.border = '2px solid var(--alert)';
-                    d.style.boxShadow = '0 0 15px rgba(248, 113, 113, 0.4)';
+                    d.style.border = orderData.status === 'hold' ? '2px solid var(--gold)' : '2px solid var(--alert)';
+                    d.style.boxShadow = orderData.status === 'hold' ? '0 0 15px rgba(251, 191, 36, 0.4)' : '0 0 15px rgba(248, 113, 113, 0.4)';
 
                     let clientName = orderData.clientName ? orderData.clientName.substring(0,15) : 'Client Web';
 
-                    let contentHtml = `<span style="color:var(--bg); background:var(--alert); font-weight:900; font-size:0.9rem; padding: 2px 6px; border-radius: 4px;">🌐 WEB #${orderData.id || ''}</span>`;
-                    contentHtml += `<span style="font-size:0.75rem; color:var(--alert); margin-top:8px; font-weight:bold; text-align:center; padding: 0 5px;">${clientName}</span>`;
+                    let contentHtml = `<span style="color:var(--bg); background:${orderData.status === 'hold' ? 'var(--gold)' : 'var(--alert)'}; font-weight:900; font-size:0.9rem; padding: 2px 6px; border-radius: 4px;">🌐 WEB #${orderData.id || ''}</span>`;
+                    contentHtml += `<span style="font-size:0.75rem; color:${orderData.status === 'hold' ? 'var(--gold)' : 'var(--alert)'}; margin-top:8px; font-weight:bold; text-align:center; padding: 0 5px;">${clientName}</span>`;
                     contentHtml += `<span style="font-size:0.9rem; color:var(--text-main); font-weight:900; margin-top:5px;">${orderData.totalStr || ''}</span>`;
 
                     d.innerHTML = `<div class="table-content" style="flex-direction:column; justify-content:center;">${contentHtml}</div>`;
@@ -1196,7 +1219,7 @@
 
         function escapeQuotes(str) { return str.replace(/'/g, "\\'").replace(/"/g, '&quot;'); }
 
-        // 🟢 NOUVEAU : Fonction pour récupérer le stock exact d'un article
+        // 🟢 Fonction pour récupérer le stock exact d'un article
         function getItemStock(name) {
             let pureName = name.replace('🌟 ', '').trim().toLowerCase();
             let foundStock = null;
@@ -1307,14 +1330,44 @@
             closeEditModal(); renderTicket();
         }
 
+        // 🟢 NOUVELLE FONCTION : GESTE CO PARTIEL (SÉLECTION DE QUANTITÉ) 🟢
         function offerItem() {
             if(pendingEditIndex === null) return;
             let item = ticketItems[pendingEditIndex];
-            item.originalPrice = item.originalPrice || item.p; 
-            item.p = 0; 
-            item.isOffered = true;
-            item.obs = (item.obs ? item.obs + " | " : "") + "🎁 Geste Co.";
-            logAction("GESTE COMMERCIAL (PLAT OFFERT)", `Table: ${currentTable} | Plat: ${item.n} | Ancien prix: ${item.originalPrice}€`);
+            let maxQty = item.qty || 1;
+
+            let qtyToOfferStr = prompt(`Combien de "${item.n.replace(/\n/g, ' ')}" voulez-vous offrir ? (Max: ${maxQty})`, "1");
+            if (!qtyToOfferStr) return; // Annulé par le serveur
+            
+            let qtyToOffer = parseInt(qtyToOfferStr);
+            if (isNaN(qtyToOffer) || qtyToOffer <= 0 || qtyToOffer > maxQty) {
+                return alert("⚠️ Quantité invalide.");
+            }
+
+            if (qtyToOffer === maxQty) {
+                // On offre la ligne complète
+                item.originalPrice = item.originalPrice !== undefined ? item.originalPrice : item.p; 
+                item.p = 0; 
+                item.isOffered = true;
+                item.obs = (item.obs ? item.obs + " | " : "") + "🎁 Geste Co.";
+                logAction("GESTE COMMERCIAL TOTAL", `Table: ${currentTable} | Plat: ${item.n} (${qtyToOffer}x)`);
+            } else {
+                // On scinde la ligne en deux pour une comptabilité parfaite
+                item.qty = maxQty - qtyToOffer; // Ligne d'origine (facturée)
+                
+                // Nouvelle ligne (offerte)
+                let offeredItem = JSON.parse(JSON.stringify(item)); 
+                offeredItem.id = Date.now() + Math.random(); 
+                offeredItem.qty = qtyToOffer;
+                offeredItem.originalPrice = offeredItem.originalPrice !== undefined ? offeredItem.originalPrice : offeredItem.p;
+                offeredItem.p = 0;
+                offeredItem.isOffered = true;
+                offeredItem.obs = (offeredItem.obs ? offeredItem.obs + " | " : "") + "🎁 Geste Co.";
+                
+                ticketItems.push(offeredItem);
+                logAction("GESTE COMMERCIAL PARTIEL", `Table: ${currentTable} | Plat: ${item.n} (${qtyToOffer}x offerts sur ${maxQty})`);
+            }
+
             closeEditModal();
             renderTicket();
             saveTableState(false, true); 
@@ -1708,7 +1761,27 @@
                     activeOrders = nO; 
                     
                     if(document.getElementById('order-drawer').classList.contains('open') && currentTable) { 
-                        ticketItems = (activeOrders[currentTable] && activeOrders[currentTable].items) ? JSON.parse(JSON.stringify(activeOrders[currentTable].items)) : ticketItems; 
+                        let dbItems = (activeOrders[currentTable] && activeOrders[currentTable].items) ? activeOrders[currentTable].items : [];
+                        let mergedItems = [];
+                        
+                        dbItems.forEach(dbItem => {
+                            let localItem = ticketItems.find(i => i.id === dbItem.id);
+                            if (localItem) {
+                                localItem.done = dbItem.done;
+                                localItem.fired = dbItem.fired;
+                                mergedItems.push(localItem);
+                            } else {
+                                mergedItems.push(dbItem); 
+                            }
+                        });
+                        
+                        ticketItems.forEach(localItem => {
+                            if (!dbItems.find(i => i.id === localItem.id)) {
+                                mergedItems.push(localItem);
+                            }
+                        });
+
+                        ticketItems = mergedItems;
                         renderTicket(); 
                         renderMenu(currentCategory); 
                     } 
