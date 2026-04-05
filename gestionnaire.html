@@ -233,16 +233,13 @@
             position: absolute;
             border-radius: 50%;
             transform: scale(0);
-            /* Animation très légèrement plus longue pour marquer l'œil */
             animation: ripple-effect-heavy 0.5s cubic-bezier(0.25, 0.46, 0.45, 0.94);
-            /* Un blanc beaucoup plus laiteux/opaque au départ */
             background-color: rgba(255, 255, 255, 0.5); 
             pointer-events: none; 
             z-index: 9999;
         }
         @keyframes ripple-effect-heavy {
             0% { transform: scale(0); opacity: 1; }
-            /* L'onde grossit beaucoup plus (scale 6 au lieu de 4) */
             100% { transform: scale(6); opacity: 0; }
         }
     </style>
@@ -294,9 +291,30 @@
                 <button class="pay-btn" style="width: 100%; margin: 0; border-color: var(--accent); color: var(--accent); background: var(--accent-dim); padding: 25px 0;" onclick="window.open('haccp.html', '_blank')">🛡️ HACCP SALLE</button>
                 <button class="pay-btn" style="width: 100%; margin: 0; border-color: var(--alert); color: var(--alert); background: var(--alert-dim); padding: 25px 0;" onclick="openAuditModal(); closeAdminCatalog();">🚨 AUDIT SÉCURITÉ</button>
             </div>
-            <button class="pay-btn" style="width: 100%; margin: 0; border-color: var(--gold); color: var(--gold); background: var(--gold-dim); padding: 20px 0;" onclick="openModal('dashboard'); closeAdminCatalog();">👁️ DASHBOARD DIR.</button>
+            <button class="pay-btn" style="width: 100%; margin: 0; border-color: var(--gold); color: var(--gold); background: var(--gold-dim); padding: 20px 0;" onclick="openDashboard(); closeAdminCatalog();">👁️ DASHBOARD DIR.</button>
         </div>
         <button class="pay-btn cancel" style="width: auto; padding: 15px 40px; font-size: 1.1rem; border-color: var(--text-muted); color: var(--text-muted); background: var(--bg); margin-top: 25px;" onclick="closeAdminCatalog()">❌ FERMER LE COFFRE</button>
+    </div>
+
+    <div id="dashboard-modal" class="modal">
+        <div style="background:var(--panel); padding:30px; border-radius:12px; width: 900px; max-width: 95%; max-height: 90vh; display:flex; flex-direction:column; box-shadow: var(--shadow); border: 1px solid var(--gold);">
+            <div style="display:flex; justify-content:space-between; align-items:center; border-bottom: 1px solid var(--border); padding-bottom: 15px; margin-bottom: 15px;">
+                <h2 style="color:var(--gold); font-size: 1.8rem; margin: 0; text-transform: uppercase; letter-spacing: 1px;">👁️ DASHBOARD DIRECTION</h2>
+                <button class="btn-mini" style="font-size: 1rem; padding: 10px 15px;" onclick="closeDashboard()">✕ FERMER</button>
+            </div>
+            <div style="display: flex; gap: 15px; margin-bottom: 20px;">
+                <div style="flex: 1; background: var(--bg); padding: 20px; border-radius: 8px; text-align: center; border: 1px solid var(--gold);">
+                    <div style="color: var(--text-muted); font-size: 0.9rem; font-weight: bold; text-transform: uppercase;">Chiffre d'Affaires (CA) Global</div>
+                    <div id="dash-ca" style="color: var(--gold); font-size: 2rem; font-weight: 900;">0.00 €</div>
+                </div>
+                <div style="flex: 1; background: var(--bg); padding: 20px; border-radius: 8px; text-align: center; border: 1px solid var(--ordered);">
+                    <div style="color: var(--text-muted); font-size: 0.9rem; font-weight: bold; text-transform: uppercase;">Tables Servies Aujourd'hui</div>
+                    <div id="dash-tables-count" style="color: var(--ordered); font-size: 2rem; font-weight: 900;">0</div>
+                </div>
+            </div>
+            <h3 style="color:var(--text-main); margin-bottom: 10px; border-bottom: 1px dashed var(--border); padding-bottom: 5px;">HISTORIQUE COMPLET DES COMMANDES (BAR & CUISINE)</h3>
+            <div id="dashboard-content" style="flex:1; overflow-y:auto; display:flex; flex-direction:column; gap:10px; padding-right:10px;"></div>
+        </div>
     </div>
 
     <div id="stock-critical-modal" class="modal" style="z-index: 9999999;">
@@ -786,6 +804,70 @@
                     </div>
                 </div>`;
             }).join('');
+        }
+
+        // 🟢 OUVERTURE DU DASHBOARD DIRECTION 🟢
+        async function openDashboard() {
+            if (!currentUser || currentUser.role !== 'Manager') return alert("⛔ Accès Direction requis");
+            document.getElementById('dashboard-modal').classList.add('open');
+            renderDashboard();
+        }
+
+        function closeDashboard() {
+            document.getElementById('dashboard-modal').classList.remove('open');
+        }
+
+        async function renderDashboard() {
+            const container = document.getElementById('dashboard-content');
+            container.innerHTML = '<div style="color:var(--text-muted); text-align:center;">Chargement des archives globales...</div>';
+            
+            const state = await API.getState();
+            let archiveCuisine = (state && state.activeOrders && state.activeOrders['SALES_ARCHIVE_CUISINE']) ? state.activeOrders['SALES_ARCHIVE_CUISINE'].data || [] : [];
+            let archiveBar = (state && state.activeOrders && state.activeOrders['SALES_ARCHIVE_BAR']) ? state.activeOrders['SALES_ARCHIVE_BAR'].data || [] : [];
+            
+            let allClosed = [...archiveCuisine, ...archiveBar];
+            allClosed.sort((a, b) => new Date(b.time) - new Date(a.time)); 
+            
+            let totalCA = 0;
+            
+            let todayStr = new Date().toISOString().split('T')[0];
+            let todayClosed = allClosed.filter(x => x.time && x.time.startsWith(todayStr));
+            let uniqueTables = new Set(todayClosed.map(t => t.table));
+
+            let html = '';
+            allClosed.forEach(t => {
+                totalCA += parseFloat(t.total) || 0;
+                let dateObj = new Date(t.time);
+                let timeStr = dateObj.toLocaleDateString('fr-FR') + ' ' + dateObj.toLocaleTimeString('fr-FR', {hour: '2-digit', minute:'2-digit'});
+                let itemsHtml = t.items ? t.items.map(i => `<div style="display:flex; justify-content:space-between; font-size: 0.9rem;"><span>${i.qty||1}x ${i.n}</span><span>${(i.p * (i.qty||1)).toFixed(2)}€</span></div>`).join('') : '';
+                
+                let isWeb = t.table.startsWith('order_');
+                let tableTitle = isWeb ? `🌐 WEB #${t.table.replace('order_','')}` : `TABLE ${t.table}`;
+
+                html += `
+                <div style="background:var(--bg); border:1px solid var(--border); padding:15px; border-radius:8px;">
+                    <div style="display:flex; justify-content:space-between; border-bottom:1px solid var(--border); padding-bottom:10px; margin-bottom:10px;">
+                        <div style="color:var(--gold); font-weight:900; font-size:1.1rem;">${tableTitle}</div>
+                        <div style="color:var(--text-muted); font-size:0.85rem;">${timeStr}</div>
+                    </div>
+                    <div style="color:var(--text-main); margin-bottom:10px; line-height:1.4;">
+                        ${itemsHtml}
+                    </div>
+                    <div style="display:flex; justify-content:space-between; color:var(--accent); font-weight:900; border-top:1px dashed var(--border); padding-top:5px;">
+                        <span>TOTAL</span>
+                        <span>${parseFloat(t.total).toFixed(2)}€</span>
+                    </div>
+                    <div style="font-size:0.75rem; color:var(--text-muted); text-align:right; margin-top:5px;">Paiement: ${t.typePaiement || 'Inconnu'}</div>
+                </div>`;
+            });
+
+            if (allClosed.length === 0) {
+                html = '<div style="color:var(--text-muted); text-align:center; padding: 20px;">Aucun historique disponible.</div>';
+            }
+
+            document.getElementById('dash-ca').innerText = totalCA.toFixed(2) + ' €';
+            document.getElementById('dash-tables-count').innerText = uniqueTables.size;
+            container.innerHTML = html;
         }
 
         function openPlanningModal() {
@@ -1412,16 +1494,19 @@
                 let c = i.course !== undefined ? i.course : 2; 
                 
                 let statusHtml = '';
-                if (i.done) statusHtml = `<span class="status-badge-ready">PRÊT</span>`;
-                else if (i.fired) statusHtml = `<span class="status-badge-cooking">⏳ EN COURS</span>`;
+                if (i.done) statusHtml = `<span class="status-badge-ready" style="color:#34d399; font-weight:bold;">✓ PRÊT</span>`;
+                else if (i.fired) statusHtml = `<span class="status-badge-cooking" style="color:#fbbf24; font-weight:bold;">⏳ ENVOYÉ</span>`;
                 
                 let priceHtml = i.isOffered ? `<span style="margin-right:15px; font-weight:900; color:var(--service);">🎁 OFFERT</span>` : `<span style="margin-right:15px; font-weight:bold;">${((parseFloat(i.p)||0)*q).toFixed(2)}€</span>`;
 
+                // 🟢 PLAT BARRÉ SI ENVOYÉ 🟢
+                let nameStyle = i.fired ? 'text-decoration: line-through; color: var(--text-muted);' : 'color: var(--text-main);';
+
                 let itemHtml = `
-                <div class="ticket-item-row" ${!i.fired ? `draggable="true" ondragstart="dragItem(event, ${idx})"` : ''} style="${i.done ? "opacity:0.5;" : ""} ${!i.fired ? "border-left: 4px solid var(--gold);" : ""}">
+                <div class="ticket-item-row" ${!i.fired ? `draggable="true" ondragstart="dragItem(event, ${idx})"` : ''} style="${i.done ? "opacity:0.5;" : ""} ${!i.fired ? "border-left: 4px solid var(--gold);" : "border-left: 4px solid transparent; background: rgba(255,255,255,0.02);"}">
                     ${!i.fired ? `<div class="drag-handle">☰</div>` : ''}
                     <div style="flex:1; cursor:pointer;" onclick="openEditItem(${idx})">
-                        <div style="font-weight:bold; font-size:1.05rem;">${q>1?`<span style="color:var(--accent); font-weight:900;">${q}x</span> `:""}${cleanName||'?'}</div>
+                        <div style="font-weight:bold; font-size:1.05rem; ${nameStyle}">${q>1?`<span style="color:var(--accent); font-weight:900; text-decoration:none; display:inline-block;">${q}x</span> `:""}${cleanName||'?'}</div>
                         <div style="display:flex; align-items:center; gap:10px; margin-top:5px;">
                             ${statusHtml}
                             ${i.obs?`<span style="font-size:0.75rem; color:#facc15;">⚠️ ${i.obs}</span>`:''}
