@@ -223,9 +223,9 @@
             100% { transform: translate(2px, -2px) rotate(-2deg); }
         }
         .modal-shake { animation: shake-violent 0.4s cubic-bezier(.36,.07,.19,.97) both; }
-        
+
         /* 🟢 EFFET TACTILE RIPPLE (ONDE DE CHOC) 🟢 */
-        button, .nav-btn, .btn-mini, .menu-tab, .btn-item {
+        button, .room-tab, .btn-item, .pin-btn, .pay-btn, .cancel-btn, .shape-btn, .cuisson-btn, .key-btn, .menu-tab, .ticket-item-row {
             position: relative;
             overflow: hidden; 
         }
@@ -236,7 +236,7 @@
             animation: ripple-effect 0.4s linear;
             background-color: rgba(255, 255, 255, 0.25); 
             pointer-events: none; 
-            z-index: 10;
+            z-index: 9999;
         }
         @keyframes ripple-effect {
             to { transform: scale(4); opacity: 0; }
@@ -470,9 +470,7 @@
         <h2 style="color:var(--gold); font-size: 2rem; margin-bottom: 20px; text-transform: uppercase;">✏️ Ajuster le Plat</h2>
         <h3 style="color:var(--text-main); margin-bottom: 20px; font-size: 1.4rem;" id="edit-item-title">Nom</h3>
         
-        <button id="btn-send-single" class="pay-btn" style="border-color: var(--gold); color: var(--gold); background: var(--gold-dim); width: 100%; margin-bottom: 15px;" onclick="fireSingleItem()">🔥 ENVOYER CE PLAT MAINTENANT</button>
-        
-        <button class="pay-btn" style="border-color: var(--service); color: var(--service); background: rgba(244, 114, 182, 0.1); width: 100%; margin-bottom: 15px;" onclick="offerItem()">🎁 OFFRIR CE PLAT (Geste Co.)</button>
+        <button class="pay-btn" style="border-color: var(--service); color: var(--service); background: rgba(244, 114, 182, 0.1); width: 100%; margin-bottom: 15px;" onclick="offerItem()">🎁 OFFRIR (Geste Co.)</button>
         
         <select id="edit-item-course" class="edit-input" style="font-weight: bold; background: var(--panel); cursor: pointer;">
             <option value="0">🍸 APÉRITIFS / BOISSONS</option>
@@ -1314,13 +1312,6 @@
             document.getElementById('edit-item-obs').value = item.obs || ""; 
             document.getElementById('edit-item-course').value = item.course !== undefined ? item.course : 2;
             
-            // 🟢 Afficher le bouton d'envoi individuel SEULEMENT si le plat n'est pas encore envoyé
-            if (item.fired) {
-                document.getElementById('btn-send-single').style.display = 'none';
-            } else {
-                document.getElementById('btn-send-single').style.display = 'block';
-            }
-
             document.getElementById('edit-item-modal').style.display = 'flex'; 
         }
         function closeEditModal() { pendingEditIndex = null; document.getElementById('edit-item-modal').style.display = 'none'; }
@@ -1339,38 +1330,41 @@
             closeEditModal(); renderTicket();
         }
 
-        // 🟢 NOUVELLE FONCTION : ENVOI D'UN SEUL PLAT EN CUISINE/BAR 🟢
-        async function fireSingleItem() {
-            if(pendingEditIndex === null) return;
-            let item = ticketItems[pendingEditIndex];
-            
-            // On sauvegarde les modifications s'il y en a eu avant d'envoyer
-            let p = parseFloat(document.getElementById('edit-item-price').value);
-            let c = parseInt(document.getElementById('edit-item-course').value);
-            if(!isNaN(p)) { item.p = p; }
-            item.obs = document.getElementById('edit-item-obs').value;
-            item.course = c;
-
-            // On marque le plat comme envoyé
-            item.fired = true;
-            
-            closeEditModal();
-            renderTicket();
-            
-            // On sauvegarde la table pour l'envoyer au cerveau
-            await saveTableState(false, true); 
-            logAction("RÉCLAME (ENVOI INDIVIDUEL)", `Table: ${currentTable} | Plat: ${item.n}`);
-            showToast(`🔥 ${item.n.toUpperCase()} ENVOYÉ !`);
-        }
-
+        // 🟢 FONCTION : GESTE CO PARTIEL (SÉLECTION DE QUANTITÉ) 🟢
         function offerItem() {
             if(pendingEditIndex === null) return;
             let item = ticketItems[pendingEditIndex];
-            item.originalPrice = item.originalPrice || item.p; 
-            item.p = 0; 
-            item.isOffered = true;
-            item.obs = (item.obs ? item.obs + " | " : "") + "🎁 Geste Co.";
-            logAction("GESTE COMMERCIAL (PLAT OFFERT)", `Table: ${currentTable} | Plat: ${item.n} | Ancien prix: ${item.originalPrice}€`);
+            let maxQty = item.qty || 1;
+
+            let qtyToOfferStr = prompt(`Combien de "${item.n.replace(/\n/g, ' ')}" voulez-vous offrir ? (Max: ${maxQty})`, "1");
+            if (!qtyToOfferStr) return; 
+            
+            let qtyToOffer = parseInt(qtyToOfferStr);
+            if (isNaN(qtyToOffer) || qtyToOffer <= 0 || qtyToOffer > maxQty) {
+                return alert("⚠️ Quantité invalide.");
+            }
+
+            if (qtyToOffer === maxQty) {
+                item.originalPrice = item.originalPrice !== undefined ? item.originalPrice : item.p; 
+                item.p = 0; 
+                item.isOffered = true;
+                item.obs = (item.obs ? item.obs + " | " : "") + "🎁 Geste Co.";
+                logAction("GESTE COMMERCIAL TOTAL", `Table: ${currentTable} | Plat: ${item.n} (${qtyToOffer}x)`);
+            } else {
+                item.qty = maxQty - qtyToOffer; 
+                
+                let offeredItem = JSON.parse(JSON.stringify(item)); 
+                offeredItem.id = Date.now() + Math.random(); 
+                offeredItem.qty = qtyToOffer;
+                offeredItem.originalPrice = offeredItem.originalPrice !== undefined ? offeredItem.originalPrice : offeredItem.p;
+                offeredItem.p = 0;
+                offeredItem.isOffered = true;
+                offeredItem.obs = (offeredItem.obs ? offeredItem.obs + " | " : "") + "🎁 Geste Co.";
+                
+                ticketItems.push(offeredItem);
+                logAction("GESTE COMMERCIAL PARTIEL", `Table: ${currentTable} | Plat: ${item.n} (${qtyToOffer}x offerts sur ${maxQty})`);
+            }
+
             closeEditModal();
             renderTicket();
             saveTableState(false, true); 
@@ -1386,7 +1380,6 @@
                 await saveTableState(false, true); 
                 let cNames = { 0: 'Boissons', 1: 'Entrées', 2: 'Plats', 3: 'Desserts' };
                 logAction("RÉCLAME (ÉTAPE ENVOYÉE)", `Table: ${currentTable} | Étape: ${cNames[courseId]}`);
-                showToast(`🔥 ${cNames[courseId].toUpperCase()} ENVOYÉS !`);
                 renderTicket();
             }
         }
@@ -1764,11 +1757,10 @@
                     previousOrdersState = JSON.parse(JSON.stringify(nO)); 
                     activeOrders = nO; 
                     
-                 if(document.getElementById('order-drawer').classList.contains('open') && currentTable) { 
+                    if(document.getElementById('order-drawer').classList.contains('open') && currentTable) { 
                         let dbItems = (activeOrders[currentTable] && activeOrders[currentTable].items) ? activeOrders[currentTable].items : [];
                         let mergedItems = [];
                         
-                        // 1. On récupère les plats existants et on met à jour leur statut (Prêt, En cours...)
                         dbItems.forEach(dbItem => {
                             let localItem = ticketItems.find(i => i.id === dbItem.id);
                             if (localItem) {
@@ -1776,11 +1768,10 @@
                                 localItem.fired = dbItem.fired;
                                 mergedItems.push(localItem);
                             } else {
-                                mergedItems.push(dbItem); // Nouvelles commandes QR Code
+                                mergedItems.push(dbItem); 
                             }
                         });
                         
-                        // 2. On protège les plats que le serveur vient de taper et qui ne sont pas encore envoyés !
                         ticketItems.forEach(localItem => {
                             if (!dbItems.find(i => i.id === localItem.id)) {
                                 mergedItems.push(localItem);
@@ -1790,7 +1781,7 @@
                         ticketItems = mergedItems;
                         renderTicket(); 
                         renderMenu(currentCategory); 
-                    }
+                    } 
                     if(!isArchiMode && !isDraggingTable) renderFloor();
                 }
             } catch(e) {}
@@ -1802,8 +1793,8 @@
         }
 
         setInterval(() => { let c = document.getElementById('empire-clock'); if(c) c.innerText = new Date().toLocaleTimeString('fr-FR', { hour12: false }); }, 1000);
-        
-        // 🟢 NOUVEAU MOTEUR TACTILE (ONDE DE CHOC / RIPPLE) 🟢
+
+        // 🟢 NOUVEAU MOTEUR TACTILE (ONDE DE CHOC / RIPPLE GLOBAL) 🟢
         document.addEventListener('mousedown', function(e) {
             creerEffetTactile(e);
         });
@@ -1814,8 +1805,12 @@
         }, {passive: true});
 
         function creerEffetTactile(e, isTouch = false) {
-            let target = e.target.closest('button, .nav-btn, .btn-mini, .menu-tab, .btn-item');
+            // Cible absolument toutes les zones d'interaction du Pad Serveur
+            let target = e.target.closest('button, .room-tab, .table-obj, .btn-item, .ticket-item-row');
             if (!target) return; 
+
+            // Exception : Ne pas déclencher si on touche l'icône pour redimensionner une table
+            if (e.target.classList.contains('table-resizer')) return;
 
             let circle = document.createElement('span');
             let diameter = Math.max(target.clientWidth, target.clientHeight);
