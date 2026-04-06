@@ -399,7 +399,7 @@
                 
                 <div style="display:flex; gap:10px; margin-top:20px; flex-wrap: wrap;">
                     <button class="btn-mini" style="flex:1; padding:15px; font-size:0.9rem; border-color:var(--text-muted); color:var(--text-main); background: var(--bg);" onclick="saveTableState(false)">💾 SAUVER<br><span style="font-size:0.7rem; font-weight:normal;">(Sans envoyer)</span></button>
-                    <button class="btn-mini gold" style="flex:1.5; padding:15px; font-size:1.1rem; background: var(--gold-dim);" onclick="saveTableState(true)">🚀 TOUT ENVOYER<br><span style="font-size:0.7rem; font-weight:normal;">(Rapide)</span></button>
+                    <button class="btn-mini gold" style="flex:1.5; padding:15px; font-size:1.1rem; background: var(--gold-dim);" onclick="saveTableState(true)">📣 ANNONCER LA TABLE<br><span style="font-size:0.7rem; font-weight:normal;">(Tout envoyer "À suivre")</span></button>
                     <button class="btn-mini" style="flex:1; padding:15px; font-size:1.1rem; border-color:var(--accent); color:var(--accent); background: var(--accent-dim);" onclick="openPaymentModal()">💳 CAISSE</button>
                     <button class="btn-mini sync" style="width:100%; margin-top:10px; padding:12px; font-size:1.1rem; border-width: 2px;" onclick="confirmClearTicket()">🗑️ VIDER LA COMMANDE (ERREUR)</button>
                 </div>
@@ -640,7 +640,8 @@
             }
         });
 
-        function escapeQuotes(str) { return str.replace(/'/g, "\\'").replace(/"/g, '&quot;').replace(/\n/g, '[BR]').replace(/\r/g, ''); }
+        // 🟢 MODIFICATION MAJEURE : On garde les [BR] pour la séparation des menus
+        function escapeQuotes(str) { return str.replace(/'/g, "\\'").replace(/"/g, '&quot;'); }
 
         function safeArray(key, fallback) {
             try { let v = localStorage.getItem(key); if (v && v !== 'undefined' && v !== 'null') { let p = JSON.parse(v); if (Array.isArray(p)) return p.filter(i => i !== null && i !== undefined); } } catch(e) {} return fallback;
@@ -649,7 +650,7 @@
         let menuCuisine = { menuJour: [], suggestions: [], entrees: [], plats: [], desserts: [] };
         let menuBar = { vins: [], cocktails: [], bieres: [], spiritueux: [], chaudes: [], froides: [] };
         let reservationsData = []; 
-        let currentCategory = 'Plats'; 
+        let currentCategory = 'MenuJour'; 
         let currentCourseDefault = 2;
         let stockAlerts = { green: 10, yellow: 7, orange: 5, red: 2 }; 
 
@@ -678,7 +679,8 @@
         function resetInactivityTimer() { clearTimeout(inactivityTimer); if(currentUser) inactivityTimer = setTimeout(logout, INACTIVITY_LIMIT); }
         ['touchstart', 'click', 'mousemove', 'keypress'].forEach(e => document.addEventListener(e, resetInactivityTimer, false));
         
-     function appendPin(n) { currentPin += n; document.getElementById('pin-display').innerText = '*'.repeat(currentPin.length); resetInactivityTimer(); }
+        function appendPin(n) { currentPin += n; document.getElementById('pin-display').innerText = '*'.repeat(currentPin.length); resetInactivityTimer(); }
+        function clearPin() { currentPin = ""; document.getElementById('pin-display').innerText = ""; resetInactivityTimer(); }
         
         function submitPin() {
             if(USERS[currentPin]) {
@@ -1221,7 +1223,7 @@
                 document.getElementById('order-obs').value = `🍽️ ${tObj.pax || 1} Couvert(s)`;
             }
 
-            renderMenu('Plats'); 
+            renderMenu('MenuJour'); 
             renderTicket();
             document.getElementById('order-drawer').classList.add('open');
         }
@@ -1232,8 +1234,8 @@
             
             if (category === 'MenuJour') {
                 currentCourseDefault = 2;
-                if(menuCuisine.menuJour) itemsToDisplay.push(...menuCuisine.menuJour.map(i => ({...i, dest: 'cuisine'})));
-                if(menuCuisine.suggestions) itemsToDisplay.push(...menuCuisine.suggestions.map(i => ({...i, dest: 'cuisine'})));
+                if(menuCuisine.menuJour) itemsToDisplay.push(...menuCuisine.menuJour.map(i => ({...i, dest: 'cuisine', isMenuJour: true})));
+                if(menuCuisine.suggestions) itemsToDisplay.push(...menuCuisine.suggestions.map(i => ({...i, dest: 'cuisine', isMenuJour: false})));
             }
             else if (category === 'Entrées') {
                 currentCourseDefault = 1;
@@ -1241,8 +1243,6 @@
             } 
             else if (category === 'Plats') {
                 currentCourseDefault = 2;
-                if(menuCuisine.menuJour) itemsToDisplay.push(...menuCuisine.menuJour.map(i => ({...i, dest: 'cuisine'})));
-                if(menuCuisine.suggestions) itemsToDisplay.push(...menuCuisine.suggestions.map(i => ({...i, dest: 'cuisine'})));
                 if(menuCuisine.plats) itemsToDisplay.push(...menuCuisine.plats.map(i => ({...i, dest: 'cuisine'})));
             } 
             else if (category === 'Desserts') {
@@ -1293,8 +1293,7 @@
                     stockHtml = `<div class="${badgeClass}">${item.stock}</div>`;
                 }
 
-                // 🟢 SI C'EST UN MENU JOUR, ON UTILISE LA FONCTION DE DÉCOUPAGE
-                let clickAction = (category === 'MenuJour') 
+                let clickAction = (item.isMenuJour) 
                     ? `addMenuToTicket('${escapedName}', ${price}, '${item.dest}')` 
                     : `addToTicket('${escapedName}', ${price}, '${item.dest}')`;
 
@@ -1312,29 +1311,29 @@
         function addMenuToTicket(n, p, dest) {
             let parts = n.split('[BR]');
             
-            // Si c'est juste une ligne (ex: une suggestion du chef sans retour à la ligne)
-            if (parts.length === 1) {
-                executeAddToCart("⭐ " + parts[0].trim(), p, dest, 2);
+            if (parts.length <= 1) {
+                // Création automatique des 3 compartiments si le chef n'a pas fait de sauts de ligne
+                let cleanN = n.replace('🌟 ', '').trim();
+                executeAddToCart("🥗 Entrée (" + cleanN + ")", 0, dest, 1, n);
+                executeAddToCart("🔥 Plat (" + cleanN + ")", p, dest, 2, n);
+                executeAddToCart("🍰 Dessert (" + cleanN + ")", 0, dest, 3, n);
                 return;
             }
 
-            // Si c'est un menu à étapes (séparé par des sauts de ligne)
-            let entree = parts[0] ? "🥗 [Menu] " + parts[0].trim() : null;
-            let plat = parts[1] ? "🔥 [Menu] " + parts[1].trim() : null;
-            let dessert = parts[2] ? "🍰 [Menu] " + parts[2].trim() : null;
+            // Si le chef a fait des sauts de ligne, on respecte ses lignes !
+            let entree = parts[0] ? "🥗 " + parts[0].trim() : null;
+            let plat = parts[1] ? "🔥 " + parts[1].trim() : null;
+            let dessert = parts[2] ? "🍰 " + parts[2].trim() : null;
 
-            // On injecte les étapes séparément dans le ticket
-            if (entree) executeAddToCart(entree, 0, dest, 1, n); // 1 = Entrée
-            if (plat) executeAddToCart(plat, p, dest, 2, n);     // 2 = Plat (Prend le prix total pour le CA et déduit le stock du Menu complet)
-            if (dessert) executeAddToCart(dessert, 0, dest, 3, n); // 3 = Dessert
+            if (entree) executeAddToCart(entree, 0, dest, 1, n); 
+            if (plat) executeAddToCart(plat, p, dest, 2, n);     
+            if (dessert) executeAddToCart(dessert, 0, dest, 3, n); 
             
-            // S'il y a plus de lignes (ex: Fromage), on les met en suite
             for(let i=3; i<parts.length; i++) {
-                if(parts[i].trim() !== '') executeAddToCart("🍰 [Menu] " + parts[i].trim(), 0, dest, 3, n);
+                if(parts[i].trim() !== '') executeAddToCart("🍰 " + parts[i].trim(), 0, dest, 3, n);
             }
         }
 
-        // 🟢 Fonction pour récupérer le stock exact d'un article
         function getItemStock(name) {
             let pureName = name.replace('🌟 ', '').trim().toLowerCase();
             let foundStock = null;
@@ -1541,6 +1540,7 @@
             let t = 0; 
             let htmlByCourse = { 0: '', 1: '', 2: '', 3: '' };
             let courseNames = { 0: '🍸 BOISSONS', 1: '🥗 ENTRÉES', 2: '🔥 PLATS', 3: '🍰 DESSERTS' };
+            let actionNames = { 0: 'LES BOISSONS', 1: 'LES ENTRÉES', 2: 'LES PLATS', 3: 'LES DESSERTS' };
 
             ticketItems.forEach((i, idx) => {
                 if(!i) return; let q = i.qty || 1; t += (parseFloat(i.p)||0)*q;
@@ -1554,6 +1554,7 @@
                 let priceHtml = i.isOffered ? `<span style="margin-right:15px; font-weight:900; color:var(--service);">🎁 OFFERT</span>` : `<span style="margin-right:15px; font-weight:bold;">${((parseFloat(i.p)||0)*q).toFixed(2)}€</span>`;
 
                 let nameStyle = i.fired ? 'text-decoration: line-through; color: var(--text-muted);' : 'color: var(--text-main);';
+
                 let obsDisplay = i.obs ? `<span style="font-size:0.85rem; color:#facc15; background: rgba(250, 204, 21, 0.15); padding: 2px 6px; border-radius: 4px; border: 1px solid #facc15;">⚠️ ${i.obs}</span>` : (!i.fired ? `<span style="font-size:0.75rem; color:var(--text-muted); font-style:italic; padding: 2px 6px; border: 1px solid var(--border); border-radius: 4px;">✏️ Ajouter obs.</span>` : '');
 
                 let itemHtml = `
@@ -1577,7 +1578,7 @@
             [0, 1, 2, 3].forEach(c => {
                 if(htmlByCourse[c] !== '') {
                     let hasUnfired = ticketItems.some(i => (i.course === c || (i.course===undefined && c===2)) && !i.fired);
-                    let fireBtn = hasUnfired ? `<button class="btn-mini gold" style="font-size:0.75rem; padding:6px 12px; margin-left:10px;" onclick="fireCourse(${c})">🔥 ENVOYER</button>` : '';
+                    let fireBtn = hasUnfired ? `<button class="btn-mini gold" style="font-size:0.75rem; padding:6px 12px; margin-left:10px; box-shadow: 0 0 10px rgba(251, 191, 36, 0.4);" onclick="fireCourse(${c})">🔥 RÉCLAMER ${actionNames[c]}</button>` : '';
                     
                     finalHtml += `
                     <div class="course-card" ondrop="dropItem(event, ${c})" ondragover="allowDrop(event)" ondragleave="dragLeave(event)">
