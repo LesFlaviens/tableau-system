@@ -640,6 +640,8 @@
             }
         });
 
+        function escapeQuotes(str) { return str.replace(/'/g, "\\'").replace(/"/g, '&quot;').replace(/\n/g, '[BR]').replace(/\r/g, ''); }
+
         function safeArray(key, fallback) {
             try { let v = localStorage.getItem(key); if (v && v !== 'undefined' && v !== 'null') { let p = JSON.parse(v); if (Array.isArray(p)) return p.filter(i => i !== null && i !== undefined); } } catch(e) {} return fallback;
         }
@@ -800,7 +802,6 @@
             }).join('');
         }
 
-        // 🟢 OUVERTURE DU DASHBOARD DIRECTION 🟢
         async function openDashboard() {
             if (!currentUser || currentUser.role !== 'Manager') return alert("⛔ Accès Direction requis");
             document.getElementById('dashboard-modal').classList.add('open');
@@ -984,7 +985,7 @@
             tName = tName.trim().toUpperCase();
             
             if (tables.find(t => t && t.label === tName && t.room === currentRoom)) {
-                return alert("⚠️ Ce nom de table existe déjà dans salle !");
+                return alert("⚠️ Ce nom de table existe déjà dans cette salle !");
             }
 
             let paxInput = prompt("Combien de personnes à cette table ?");
@@ -1241,6 +1242,8 @@
             } 
             else if (category === 'Plats') {
                 currentCourseDefault = 2;
+                if(menuCuisine.menuJour) itemsToDisplay.push(...menuCuisine.menuJour.map(i => ({...i, dest: 'cuisine'})));
+                if(menuCuisine.suggestions) itemsToDisplay.push(...menuCuisine.suggestions.map(i => ({...i, dest: 'cuisine'})));
                 if(menuCuisine.plats) itemsToDisplay.push(...menuCuisine.plats.map(i => ({...i, dest: 'cuisine'})));
             } 
             else if (category === 'Desserts') {
@@ -1277,6 +1280,7 @@
             container.innerHTML = itemsToDisplay.map(item => {
                 let isSoldOut = (item.stock === 0);
                 let cleanName = item.name.replace(/\n/g, '<br>');
+                let escapedName = escapeQuotes(item.name);
                 let price = parseFloat(item.price) || 0;
                 
                 let stockHtml = '';
@@ -1290,8 +1294,13 @@
                     stockHtml = `<div class="${badgeClass}">${item.stock}</div>`;
                 }
 
+                // 🟢 SI C'EST UN MENU JOUR, ON UTILISE LA FONCTION DE DÉCOUPAGE
+                let clickAction = (category === 'MenuJour') 
+                    ? `addMenuToTicket('${escapedName}', ${price}, '${item.dest}')` 
+                    : `addToTicket('${escapedName}', ${price}, '${item.dest}')`;
+
                 return `
-                    <button class="btn-item ${isSoldOut ? 'sold-out' : ''}" onclick="addToTicket('${escapeQuotes(item.name)}', ${price}, '${item.dest}')">
+                    <button class="btn-item ${isSoldOut ? 'sold-out' : ''}" onclick="${clickAction}">
                         ${stockHtml}
                         <span>${cleanName}</span>
                         <span class="price">${price.toFixed(2)} €</span>
@@ -1300,8 +1309,32 @@
             }).join('');
         }
 
-        function escapeQuotes(str) { return str.replace(/'/g, "\\'").replace(/"/g, '&quot;').replace(/\n/g, ' ').replace(/\r/g, ''); }
-        
+        // 🟢 FONCTION DE DÉCOUPAGE AUTOMATIQUE DU MENU 🟢
+        function addMenuToTicket(n, p, dest) {
+            let parts = n.split('[BR]');
+            
+            // Si c'est juste une ligne (ex: une suggestion du chef sans retour à la ligne)
+            if (parts.length === 1) {
+                executeAddToCart("⭐ " + parts[0].trim(), p, dest, 2);
+                return;
+            }
+
+            // Si c'est un menu à étapes (séparé par des sauts de ligne)
+            let entree = parts[0] ? "🥗 [Menu] " + parts[0].trim() : null;
+            let plat = parts[1] ? "🔥 [Menu] " + parts[1].trim() : null;
+            let dessert = parts[2] ? "🍰 [Menu] " + parts[2].trim() : null;
+
+            // On injecte les étapes séparément dans le ticket
+            if (entree) executeAddToCart(entree, 0, dest, 1, n); // 1 = Entrée
+            if (plat) executeAddToCart(plat, p, dest, 2, n);     // 2 = Plat (Prend le prix total pour le CA et déduit le stock du Menu complet)
+            if (dessert) executeAddToCart(dessert, 0, dest, 3, n); // 3 = Dessert
+            
+            // S'il y a plus de lignes (ex: Fromage), on les met en suite
+            for(let i=3; i<parts.length; i++) {
+                if(parts[i].trim() !== '') executeAddToCart("🍰 [Menu] " + parts[i].trim(), 0, dest, 3, n);
+            }
+        }
+
         // 🟢 Fonction pour récupérer le stock exact d'un article
         function getItemStock(name) {
             let pureName = name.replace('🌟 ', '').trim().toLowerCase();
@@ -1333,26 +1366,50 @@
 
         let pendingCuissonItem = null;
         function addToTicket(n, p, dest) { 
-            let currentStock = getItemStock(n);
-            // 🚨 Alerte rupture de stock (3 ou moins)
+            let realName = n.replace(/\[BR\]/g, ' ');
+            let currentStock = getItemStock(realName);
+            
             if (currentStock !== null && currentStock <= 3 && currentStock > 0) {
-                showCriticalStockAlert(n, currentStock);
+                showCriticalStockAlert(realName, currentStock);
             }
 
-            if(['entrecôte', 'entrecote', 'bœuf', 'boeuf', 'steak', 'burger', 'filet', 'canard', 'agneau', 'viande', 'tartare', 'onglet', 'bavette', 'côte', 'cote'].some(m => n.toLowerCase().includes(m))) {
-                pendingCuissonItem = { n, p, dest }; document.getElementById('cuisson-item-name').innerText = n.replace(/\n/g, ' '); document.getElementById('cuisson-modal').classList.add('open'); return;
+            if(['entrecôte', 'entrecote', 'bœuf', 'boeuf', 'steak', 'burger', 'filet', 'canard', 'agneau', 'viande', 'tartare', 'onglet', 'bavette', 'côte', 'cote'].some(m => realName.toLowerCase().includes(m))) {
+                pendingCuissonItem = { n: realName, p, dest }; 
+                document.getElementById('cuisson-item-name').innerText = realName; 
+                document.getElementById('cuisson-modal').classList.add('open'); 
+                return;
             }
-            executeAddToCart(n, p, dest);
+            executeAddToCart(realName, p, dest);
         }
 
-        function confirmCuisson(niv) { if(pendingCuissonItem) { executeAddToCart(`${pendingCuissonItem.n} (${niv})`, pendingCuissonItem.p, pendingCuissonItem.dest); cancelCuisson(); } }
+        function confirmCuisson(niv) { 
+            if(pendingCuissonItem) { 
+                executeAddToCart(`${pendingCuissonItem.n} (${niv})`, pendingCuissonItem.p, pendingCuissonItem.dest); 
+                cancelCuisson(); 
+            } 
+        }
         function cancelCuisson() { pendingCuissonItem = null; document.getElementById('cuisson-modal').classList.remove('open'); }
         
-        function executeAddToCart(n, p, dest) { 
-            // 🟢 CORRECTIF: On ne groupe pas les plats s'ils ont déjà une observation ou s'ils sont offerts
-            let e = ticketItems.find(i => i.n === n && !i.done && !i.fired && i.course === currentCourseDefault && !i.obs && !i.isOffered); 
+        function executeAddToCart(n, p, dest, courseOverride, originalName) { 
+            let cId = courseOverride !== undefined ? courseOverride : currentCourseDefault;
+            
+            let e = ticketItems.find(i => i.n === n && !i.done && !i.fired && i.course === cId && !i.obs && !i.isOffered); 
             if(e) e.qty = (e.qty||1)+1; 
-            else ticketItems.push({ id: Date.now()+Math.random(), itemId: Date.now(), n, p, qty: 1, done: false, dest, fired: false, savedToDB: false, isOffered: false, course: currentCourseDefault, obs: "" }); 
+            else ticketItems.push({ 
+                id: Date.now()+Math.random(), 
+                itemId: Date.now(), 
+                n: n.replace(/\[BR\]/g, ' '), 
+                originalName: (originalName || n).replace(/\[BR\]/g, '\n'), // Garde la trace du vrai plat complet pour déduire le stock
+                p, 
+                qty: 1, 
+                done: false, 
+                dest, 
+                fired: false, 
+                savedToDB: false, 
+                isOffered: false, 
+                course: cId, 
+                obs: "" 
+            }); 
             renderTicket(); 
         }
         
@@ -1415,7 +1472,6 @@
             closeEditModal(); renderTicket();
         }
 
-        // 🟢 FONCTION : GESTE CO PARTIEL (SÉLECTION DE QUANTITÉ) 🟢
         function offerItem() {
             if(pendingEditIndex === null) return;
             let item = ticketItems[pendingEditIndex];
@@ -1498,10 +1554,7 @@
                 
                 let priceHtml = i.isOffered ? `<span style="margin-right:15px; font-weight:900; color:var(--service);">🎁 OFFERT</span>` : `<span style="margin-right:15px; font-weight:bold;">${((parseFloat(i.p)||0)*q).toFixed(2)}€</span>`;
 
-                // 🟢 PLAT BARRÉ SI ENVOYÉ 🟢
                 let nameStyle = i.fired ? 'text-decoration: line-through; color: var(--text-muted);' : 'color: var(--text-main);';
-
-                // 🟢 BOUTON EXPLICITE POUR AJOUTER UNE OBSERVATION 🟢
                 let obsDisplay = i.obs ? `<span style="font-size:0.85rem; color:#facc15; background: rgba(250, 204, 21, 0.15); padding: 2px 6px; border-radius: 4px; border: 1px solid #facc15;">⚠️ ${i.obs}</span>` : (!i.fired ? `<span style="font-size:0.75rem; color:var(--text-muted); font-style:italic; padding: 2px 6px; border: 1px solid var(--border); border-radius: 4px;">✏️ Ajouter obs.</span>` : '');
 
                 let itemHtml = `
@@ -1564,7 +1617,8 @@
 
             ticketItems.forEach(tItem => {
                 if(!tItem.savedToDB) { 
-                    let pureName = tItem.n.replace('🌟 ', ''); 
+                    // 🟢 On utilise le nom original du plat pour déduire les stocks du Menu global 
+                    let pureName = (tItem.originalName || tItem.n).replace('🌟 ', ''); 
 
                     if(centralMenu && tItem.dest === 'cuisine') {
                         for (let cat in centralMenu) {
@@ -1885,7 +1939,6 @@
 
         setInterval(() => { let c = document.getElementById('empire-clock'); if(c) c.innerText = new Date().toLocaleTimeString('fr-FR', { hour12: false }); }, 1000);
 
-        // 🟢 NOUVEAU MOTEUR TACTILE (ONDE DE CHOC / RIPPLE GLOBAL ULTRA-VOYANT) 🟢
         document.addEventListener('mousedown', function(e) {
             creerEffetTactile(e);
         });
@@ -1896,11 +1949,9 @@
         }, {passive: true});
 
         function creerEffetTactile(e, isTouch = false) {
-            // Cible absolument toutes les zones d'interaction du Pad Serveur
             let target = e.target.closest('button, .room-tab, .table-obj, .btn-item, .ticket-item-row, .pin-btn, .pay-btn, .cancel-btn, .shape-btn, .cuisson-btn, .key-btn, .menu-tab');
             if (!target) return; 
 
-            // Exception : Ne pas déclencher si on touche l'icône pour redimensionner une table
             if (e.target.classList.contains('table-resizer')) return;
 
             let circle = document.createElement('span');
