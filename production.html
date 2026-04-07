@@ -108,7 +108,7 @@
         .priority-badge { position: absolute; top: -15px; left: -15px; background: #000; color: var(--alert-zen); width: 40px; height: 40px; border-radius: 50%; display: flex; justify-content: center; align-items: center; font-size: 1.2rem; font-weight: 900; border: 3px solid var(--alert-zen); box-shadow: 0 4px 10px rgba(239, 68, 68, 0.6); z-index: 50; }
 
         /* 🟢 TITRE DE TABLE CLIQUABLE (POUR ALERTE) 🟢 */
-        .clickable-title { cursor: pointer; transition: 0.2s ease; position: relative; padding-right: 30px; display: inline-block; }
+        .clickable-title { cursor: pointer; transition: color 0.2s ease, text-shadow 0.2s ease; position: relative; padding-right: 30px; display: inline-block; }
         .clickable-title::after { content: "⚠️"; position: absolute; right: 0; top: 50%; transform: translateY(-50%); font-size: 1.1rem; opacity: 0.3; transition: 0.2s; }
         .clickable-title:hover { color: var(--alert-zen); }
         .clickable-title:hover::after { opacity: 1; filter: drop-shadow(0 0 5px rgba(239,68,68,0.8)); }
@@ -132,6 +132,14 @@
         .drag-handle { font-size: 1.5rem; color: var(--border-zen); padding-right: 15px; cursor: grab; touch-action: none; transition: 0.2s; }
         .drag-handle:active { color: var(--gold); cursor: grabbing; }
         .kds-grid.drag-over { background: rgba(255, 255, 255, 0.05); border-radius: 8px; border: 2px dashed var(--gold); }
+
+        /* 🟢 TICKET EN PAUSE (ALERTE ROUGE) 🟢 */
+        .ticket.paused { border: 2px dashed var(--alert-zen); background: rgba(239, 68, 68, 0.05); }
+        .ticket.paused .ticket-header { background: rgba(239, 68, 68, 0.2); }
+        .ticket.paused .ticket-table { color: var(--alert-zen); }
+        .ticket.paused .ticket-item { opacity: 0.4; pointer-events: none; filter: grayscale(100%); }
+        .pause-banner { background: var(--alert-zen); color: #fff; text-align: center; font-weight: 900; padding: 8px; font-size: 0.9rem; text-transform: uppercase; letter-spacing: 1px; animation: pulse-pause 2s infinite; }
+        @keyframes pulse-pause { 0% { opacity: 1; } 50% { opacity: 0.7; } 100% { opacity: 1; } }
 
     </style>
 </head>
@@ -557,15 +565,24 @@
                 // Fonction de création de sous-ticket
                 let buildTicket = (items, prioMap) => {
                     if (items.length === 0) return '';
-                    let tHtml = `<div class="ticket">
+                    
+                    let isPaused = orderData.alerteRouge ? true : false;
+                    let pausedClass = isPaused ? 'paused' : '';
+                    let clickAction = isPaused ? `clearAlert('${tableId}')` : `openAlertModal('${tableId}')`;
+                    let titleAttr = isPaused ? 'Cliquez pour RÉACTIVER la table' : 'Signaler un problème au serveur';
+
+                    let tHtml = `<div class="ticket ${pausedClass}">
                         <div class="ticket-header" style="${headerStyle}">
-                            <span class="ticket-table clickable-title" onclick="openAlertModal('${tableId}')" title="Signaler un problème au serveur">${tableTitle}</span>
+                            <span class="ticket-table clickable-title" onclick="${clickAction}" title="${titleAttr}">${tableTitle}</span>
                             <span class="ticket-time" style="${isWeb ? 'color: var(--alert-zen);' : ''}">${orderData.time || ''}</span>
                         </div>`;
                     
-                    if (orderData.observations && orderData.observations.trim() !== '') {
+                    if (isPaused) {
+                        tHtml += `<div class="pause-banner">⚠️ EN PAUSE : ${orderData.alerteRouge}</div>`;
+                    } else if (orderData.observations && orderData.observations.trim() !== '') {
                         tHtml += `<div class="ticket-obs">⚠️ ${orderData.observations}</div>`;
                     }
+
                     if (prioMap[tableId]) {
                         tHtml += `<div class="priority-badge">${prioMap[tableId]}</div>`;
                     }
@@ -859,11 +876,22 @@
             if (!tableInAlert) return;
             let order = activeOrders[tableInAlert];
             if (order) {
-                // On injecte le signal d'alerte UNIQUEMENT dans cette table
+                // On met la table en pause et on prévient la salle
                 order.alerteRouge = message; 
                 await API.update(tableInAlert, order);
+                renderKDS(); // Met à jour l'écran immédiatement
             }
             closeAlertModal();
+        }
+
+        async function clearAlert(tableId) {
+            let order = activeOrders[tableId];
+            if (order) {
+                // On enlève la pause, la table repart en production
+                order.alerteRouge = null; 
+                await API.update(tableId, order);
+                renderKDS(); // Met à jour l'écran immédiatement
+            }
         }
 
         // 🟢 MOTEUR DE GLISSER-DÉPOSER TACTILE (CORRECTION D'ERREUR) 🟢
@@ -949,4 +977,3 @@
     </script>
 </body>
 </html>
-```
