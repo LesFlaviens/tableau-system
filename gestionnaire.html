@@ -1177,12 +1177,37 @@
                         
                         let r = document.createElement('div'); r.className = 'table-resizer'; r.innerHTML = '↘'; d.appendChild(r);
                         
+                        // 🟢 LA LOGIQUE DU DOUBLE-CLIC EST ICI 🟢
+                        let clickTimer = null;
+
                         d.onclick = (e) => { 
+                            // 1. Si on est en Mode Architecture (Edition)
                             if(isArchiMode) { 
                                 if(!isDraggingTable && e.target !== r) openTableConfigModal(t.label); 
-                            } else if(pendingAssignResa) {
+                            } 
+                            // 2. Si on est en Mode Assignation de Réservation
+                            else if(pendingAssignResa) {
                                 assignTableToResa(t.label);
-                            } else {
+                            } 
+                            // 3. Si on est en MODE RUSH (La logique du Double-Tap)
+                            else if (isRushMode) {
+                                if (clickTimer == null) {
+                                    // Premier clic : on attend 300 millisecondes
+                                    clickTimer = setTimeout(() => {
+                                        clickTimer = null;
+                                        openOrder(t.label); // Ouvre la table normalement si pas de 2ème clic
+                                    }, 300); 
+                                } else {
+                                    // Deuxième clic détecté ! C'est un Double-Tap !
+                                    clearTimeout(clickTimer);
+                                    clickTimer = null;
+                                    
+                                    // ACTION : Envoyer la suite en cuisine instantanément
+                                    envoyerLaSuite(t.label); 
+                                }
+                            } 
+                            // 4. Mode normal (hors rush)
+                            else {
                                 openOrder(t.label); 
                             }
                         };
@@ -2028,6 +2053,55 @@
             setTimeout(() => {
                 circle.remove();
             }, 500); 
+        }
+        
+        async function envoyerLaSuite(tableLabel) {
+            let order = activeOrders[tableLabel];
+            
+            // 1. Sécurité : Vérifier si la table existe et contient des articles
+            if (!order || !order.items || order.items.length === 0) {
+                return; 
+            }
+
+            // 2. Filtrer les articles qui n'ont pas encore été envoyés en cuisine
+            let unfiredItems = order.items.filter(i => !i.fired);
+            
+            if (unfiredItems.length === 0) {
+                // Optionnel : Alerte visuelle pour prévenir le serveur que tout est déjà parti
+                alert("⚠️ Tous les plats de la table " + tableLabel + " sont déjà en préparation.");
+                return;
+            }
+
+            // 3. Identifier la prochaine étape logique (1 = Entrées, 2 = Plats, 3 = Desserts)
+            let coursesToFire = unfiredItems.map(i => i.course !== undefined ? i.course : 2);
+            let nextCourseId = Math.min(...coursesToFire);
+
+            // 4. Mettre à jour uniquement les plats de cette étape précise
+            let itemsFired = false;
+            order.items.forEach(i => {
+                let c = i.course !== undefined ? i.course : 2;
+                if (c === nextCourseId && !i.fired) {
+                    i.fired = true;
+                    itemsFired = true;
+                }
+            });
+
+            if (itemsFired) {
+                // 5. Sauvegarde instantanée dans l'infrastructure de données globale
+                await API.update(tableLabel, order, true);
+                
+                // 6. Trace d'audit de sécurité (Pour le tableau de bord Manager)
+                let cNames = { 0: 'Boissons', 1: 'Entrées', 2: 'Plats', 3: 'Desserts' };
+                let etapeNom = cNames[nextCourseId] || 'Suite';
+                logAction("RÉCLAME RAPIDE (DOUBLE-TAP)", `Table: ${tableLabel} | Étape: ${etapeNom}`);
+                
+                // 7. Mise à jour de l'écran pour confirmer l'action visuellement
+                renderFloor();
+                
+                // Optionnel mais recommandé : Un léger bip de confirmation si la tablette l'autorise
+                let beep = document.getElementById('beep-ready'); 
+                if(beep) beep.play().catch(e => {});
+            }
         }
     </script>
 </body>
