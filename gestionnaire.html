@@ -1109,7 +1109,7 @@
             return catArray.some(x => x.name.replace('🌟 ', '').trim().toLowerCase() === pName);
         };
 
-        function renderFloor() {
+function renderFloor() {
             try {
                 let floor = document.getElementById('floor-plan'); floor.innerHTML = '';
                 
@@ -1122,12 +1122,43 @@
                     floor.appendChild(msg);
                 }
 
+                // =========================================================================
+                // 🟢 MOTEUR DE PRIORITÉ CHRONOLOGIQUE (FIFO) POUR LE RUSH
+                // =========================================================================
+                let tablesEnAttente = [];
+                for (let tLabel in activeOrders) {
+                    let order = activeOrders[tLabel];
+                    if (order && order.items && order.items.length > 0 && order.status !== 'reserved') {
+                        let unfired = order.items.filter(i => !i.fired);
+                        let hasReady = order.items.some(i => i.done);
+                        
+                        // Si la table a des plats à réclamer et n'a pas de plats prêts bloquant le passe
+                        if (unfired.length > 0 && !hasReady) {
+                            // On isole le timestamp (l'heure exacte de saisie) du plat le plus ancien
+                            let oldestItemTime = Math.min(...unfired.map(i => i.itemId));
+                            tablesEnAttente.push({ label: tLabel, time: oldestItemTime });
+                        }
+                    }
+                }
+                
+                // Tri mathématique du plus ancien au plus récent
+                tablesEnAttente.sort((a, b) => a.time - b.time);
+                
+                // Création du dictionnaire d'attribution des numéros (1, 2, 3...)
+                let ordrePriorite = {};
+                tablesEnAttente.forEach((t, index) => {
+                    ordrePriorite[t.label] = index + 1;
+                });
+                // =========================================================================
+
                 if (hasTables) {
                     tables.forEach(t => { if(t && !t.room) t.room = rooms[0] || 'Salle Principale'; });
                     tables.filter(t => t && t.room === currentRoom).forEach(t => {
                         let d = document.createElement('div'); d.className = 'table-obj shape-' + (t.shape || 'oval');
                         
                         if(t.isExtra) d.classList.add('extra');
+
+                        let tStatus = '';
 
                         if (activeOrders[t.label]) {
                             if(activeOrders[t.label].status === 'reserved') {
@@ -1144,7 +1175,6 @@
                                 let hasDigestif = items.some(i => isItemInCategory(i.n, menuBar.spiritueux));
                                 let hasPlat = items.some(i => isItemInCategory(i.n, menuCuisine.plats) || isItemInCategory(i.n, menuCuisine.menuJour));
 
-                                let tStatus = '';
                                 if (hasReady) tStatus = 'ready';
                                 else if (hasUnfired) tStatus = 'hold';
                                 else if (allBar) {
@@ -1169,20 +1199,43 @@
                             contentHtml += `<span style="font-size:0.75rem; color:var(--text-main); margin-top:5px; font-weight:900;">👤 ${t.pax}</span>`;
                         }
 
+                        // 🟢 INJECTION DU BADGE CHRONOLOGIQUE 🟢
+                        let badgeHtml = '';
+                        if (ordrePriorite[t.label] && tStatus === 'hold') {
+                            let rank = ordrePriorite[t.label];
+                            // Badge noir et or, énorme, impossible à rater
+                            badgeHtml = `<div style="position:absolute; top:-15px; left:-15px; background:#000; color:var(--gold); width:40px; height:40px; border-radius:50%; display:flex; justify-content:center; align-items:center; font-size:1.4rem; font-weight:900; border:3px solid var(--gold); box-shadow:0 4px 10px rgba(0,0,0,0.8); z-index:50;">${rank}</div>`;
+                        }
+
                         if (t.shape === 'losange' || t.shape === 'triangle') {
-                            d.innerHTML = `<div class="table-content" style="flex-direction:column;">${contentHtml}</div>`;
+                            d.innerHTML = `${badgeHtml}<div class="table-content" style="flex-direction:column;">${contentHtml}</div>`;
                         } else {
-                            d.innerHTML = `<div class="table-content" style="flex-direction:column;">${contentHtml}</div>`;
+                            d.innerHTML = `${badgeHtml}<div class="table-content" style="flex-direction:column;">${contentHtml}</div>`;
                         }
                         
                         let r = document.createElement('div'); r.className = 'table-resizer'; r.innerHTML = '↘'; d.appendChild(r);
                         
+                        let clickTimer = null;
                         d.onclick = (e) => { 
                             if(isArchiMode) { 
                                 if(!isDraggingTable && e.target !== r) openTableConfigModal(t.label); 
-                            } else if(pendingAssignResa) {
+                            } 
+                            else if(pendingAssignResa) {
                                 assignTableToResa(t.label);
-                            } else {
+                            } 
+                            else if (isRushMode) {
+                                if (clickTimer == null) {
+                                    clickTimer = setTimeout(() => {
+                                        clickTimer = null;
+                                        openOrder(t.label); 
+                                    }, 300); 
+                                } else {
+                                    clearTimeout(clickTimer);
+                                    clickTimer = null;
+                                    envoyerLaSuite(t.label); 
+                                }
+                            } 
+                            else {
                                 openOrder(t.label); 
                             }
                         };
@@ -1190,6 +1243,42 @@
                         makeInteractive(d, t, r); floor.appendChild(d);
                     });
                 }
+
+                // Affichage Commandes Web (Inchangé)
+                let webOrders = Object.keys(activeOrders).filter(k => activeOrders[k] && activeOrders[k].isWeb);
+                let webStartX = 20; let webStartY = 20;
+
+                webOrders.forEach((orderKey, index) => {
+                    let orderData = activeOrders[orderKey];
+                    let d = document.createElement('div');
+                    
+                    let statusClass = 'status-cooking';
+                    if (orderData.status === 'hold') statusClass = 'status-hold';
+                    
+                    d.className = `table-obj shape-rect ${statusClass}`; 
+                    d.style.left = webStartX + (index * 150) + 'px'; d.style.top = webStartY + 'px';
+                    d.style.width = '130px'; d.style.height = '100px'; d.style.zIndex = '100'; d.style.cursor = 'pointer';
+                    d.style.border = orderData.status === 'hold' ? '2px solid var(--gold)' : '2px solid var(--alert)';
+                    d.style.boxShadow = orderData.status === 'hold' ? '0 0 15px rgba(251, 191, 36, 0.4)' : '0 0 15px rgba(248, 113, 113, 0.4)';
+
+                    let clientName = orderData.clientName ? orderData.clientName.substring(0,15) : 'Client Web';
+                    let contentHtml = `<span style="color:var(--bg); background:${orderData.status === 'hold' ? 'var(--gold)' : 'var(--alert)'}; font-weight:900; font-size:0.9rem; padding: 2px 6px; border-radius: 4px;">🌐 WEB #${orderData.id || ''}</span>`;
+                    contentHtml += `<span style="font-size:0.75rem; color:${orderData.status === 'hold' ? 'var(--gold)' : 'var(--alert)'}; margin-top:8px; font-weight:bold; text-align:center; padding: 0 5px;">${clientName}</span>`;
+                    contentHtml += `<span style="font-size:0.9rem; color:var(--text-main); font-weight:900; margin-top:5px;">${orderData.totalStr || ''}</span>`;
+
+                    let badgeHtml = '';
+                    if (ordrePriorite[orderKey] && orderData.status === 'hold') {
+                        let rank = ordrePriorite[orderKey];
+                        badgeHtml = `<div style="position:absolute; top:-15px; left:-15px; background:#000; color:var(--gold); width:40px; height:40px; border-radius:50%; display:flex; justify-content:center; align-items:center; font-size:1.4rem; font-weight:900; border:3px solid var(--gold); box-shadow:0 4px 10px rgba(0,0,0,0.8); z-index:50;">${rank}</div>`;
+                    }
+
+                    d.innerHTML = `${badgeHtml}<div class="table-content" style="flex-direction:column; justify-content:center;">${contentHtml}</div>`;
+                    d.onclick = () => { openOrder(orderKey); };
+                    floor.appendChild(d);
+                });
+
+            } catch (e) { console.error(e); }
+        }
 
                 // -------------------------------------------------------------------
                 // BLOC : AFFICHAGE DES COMMANDES WOOCOMMERCE (ÉVOLUÉ)
