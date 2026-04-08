@@ -86,11 +86,6 @@
         .order-item { display: flex; justify-content: space-between; align-items: center; background: var(--panel-zen); padding: 12px 15px; border-radius: 4px; border: 1px solid var(--border-zen); margin-bottom: 8px; }
         .btn-del { background: rgba(239, 68, 68, 0.1); color: var(--alert-zen); border: none; padding: 8px 12px; border-radius: 4px; cursor: pointer; font-weight: bold; z-index: 10;}
 
-        .undo-bar { background: rgba(255,255,255,0.02); padding: 15px; border-radius: 8px; border: 1px solid var(--border-zen); display: flex; gap: 10px; overflow-x: auto; white-space: nowrap; margin-bottom: 15px; }
-        .undo-item { background: rgba(255,255,255,0.05); border: 1px solid var(--border-zen); color: #94a3b8; padding: 8px 15px; border-radius: 20px; font-size: 0.85rem; font-weight: bold; cursor: pointer; display: flex; align-items: center; gap: 8px; transition: 0.2s; }
-        .undo-item:hover { background: rgba(239, 68, 68, 0.1); color: var(--alert-zen); border-color: var(--alert-zen); }
-        .undo-item::before { content: "↩️ Repêcher :"; opacity: 0.6; }
-
         .modal { position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; background: rgba(15, 23, 42, 0.95); z-index: 20000; display: none; flex-direction: column; align-items: center; justify-content: center; backdrop-filter: blur(5px); }
         .modal.open { display: flex !important; }
 
@@ -130,9 +125,18 @@
         button, .nav-btn, .resa-ticker, .undo-item { position: relative; overflow: hidden; }
         .ripple { position: absolute; border-radius: 50%; transform: scale(0); animation: ripple-effect-heavy 0.5s cubic-bezier(0.25, 0.46, 0.45, 0.94); background-color: rgba(255, 255, 255, 0.5); pointer-events: none; z-index: 9999; }
         @keyframes ripple-effect-heavy { 0% { transform: scale(0); opacity: 1; } 100% { transform: scale(6); opacity: 0; } }
+
+        /* 🟢 TOAST NOTIFICATION CUISINE 🟢 */
+        #toast-container { position: fixed; top: 20px; left: 50%; transform: translateX(-50%); z-index: 999999; display: flex; flex-direction: column; gap: 10px; pointer-events: none; }
+        .kds-toast { background: var(--accent-zen); color: #000; padding: 15px 30px; border-radius: 30px; font-weight: 900; font-size: 1.2rem; box-shadow: 0 10px 30px rgba(0,0,0,0.5); border: 2px solid #fff; animation: dropDownToast 0.5s cubic-bezier(0.25, 0.46, 0.45, 0.94), fadeOutToast 0.5s ease-in 2.5s forwards; text-transform: uppercase;}
+        @keyframes dropDownToast { from { transform: translateY(-100px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
+        @keyframes fadeOutToast { to { opacity: 0; transform: translateY(-20px); } }
+
     </style>
 </head>
 <body>
+
+    <div id="toast-container"></div>
 
     <div id="chef-alert-modal" class="modal">
         <div style="background:var(--panel-zen); padding:35px; border-radius:12px; width: 90%; max-width: 500px; text-align: center; border: 2px solid var(--alert-zen); box-shadow: 0 10px 30px rgba(0,0,0,0.5);">
@@ -167,10 +171,25 @@
         <div id="kds-grid-3" class="kds-grid"></div>
     </div>
 
-    <div id="mod-history" class="module"><div style="color:var(--text-muted); text-align:center; padding:40px;">L'historique sera synchronisé ici.</div></div>
+    <div id="mod-history" class="module">
+        <div style="display:flex; justify-content:space-between; align-items:center; border-bottom: 1px solid var(--border-zen); padding-bottom: 15px; margin-bottom: 15px;">
+            <h2 style="color:var(--purple-zen); margin:0;">📜 HISTORIQUE DU JOUR (CUISINE)</h2>
+            <button class="nav-btn" style="border-color: var(--border-zen); color: var(--text-muted);" onclick="switchTab('kds')">✕ FERMER</button>
+        </div>
+        <div id="history-container" style="display: flex; flex-direction: column; gap: 15px;"></div>
+    </div>
+
     <div id="mod-menu" class="module"><div style="color:var(--text-muted); text-align:center; padding:40px;">Les stocks seront synchronisés ici.</div></div>
 
     <script>
+        function showToast(msg) {
+            let t = document.createElement('div');
+            t.className = 'kds-toast';
+            t.innerText = msg;
+            document.getElementById('toast-container').appendChild(t);
+            setTimeout(() => t.remove(), 3000);
+        }
+
         const API = {
             getState: async () => {
                 let state = { activeOrders: {} };
@@ -214,7 +233,7 @@
         let isDragging = false;
         let dragItemData = null;
         let dragClone = null;
-        let recentlyDoneItems = JSON.parse(localStorage.getItem('empire_recently_done')) || [];
+        let archiveCuisineData = [];
 
         setInterval(refreshKDS, 2000);
 
@@ -224,7 +243,13 @@
                 const state = await API.getState();
                 if (state && state.activeOrders) {
                     activeOrders = state.activeOrders;
+                    if (activeOrders['SALES_ARCHIVE_CUISINE']) {
+                        archiveCuisineData = activeOrders['SALES_ARCHIVE_CUISINE'].data || [];
+                    }
                     renderKDS();
+                    if(document.getElementById('mod-history').classList.contains('active')) {
+                        renderHistory();
+                    }
                 }
             } catch (e) { console.error("Erreur Sync", e); }
         }
@@ -245,7 +270,7 @@
             let order = activeOrders[tableInAlert];
             if (order) {
                 order.alerteRouge = message; 
-                await API.update(tableInAlert, order, true); 
+                await API.update(tableInAlert, order); 
                 renderKDS(); 
             }
             closeAlertModal();
@@ -255,7 +280,7 @@
             let order = activeOrders[tableId];
             if (order) {
                 order.alerteRouge = null; 
-                await API.update(tableId, order, true);
+                await API.update(tableId, order);
                 renderKDS(); 
             }
         }
@@ -276,12 +301,8 @@
                 
                 let item = activeOrders[tableId].items[itemIndex];
                 item.done = true; 
-                
-                recentlyDoneItems.unshift({ tableId, itemIndex, name: item.n, time: Date.now() });
-                if (recentlyDoneItems.length > 10) recentlyDoneItems.pop(); 
-                localStorage.setItem('empire_recently_done', JSON.stringify(recentlyDoneItems));
 
-                await API.update(tableId, activeOrders[tableId], true);
+                await API.update(tableId, activeOrders[tableId]);
                 renderKDS();
             }, 300);
         }
@@ -303,7 +324,6 @@
                 let c2 = pendingItems.filter(i => i.course === 2 || i.course === undefined);
                 let c3 = pendingItems.filter(i => i.course === 3);
 
-                // Analyse de l'historique complet de la table pour le tri
                 let allEntrees = orderData.items.filter(i => (i.course === 1 || i.course === 0) && (!i.dest || i.dest.toLowerCase() !== 'bar'));
                 let allPlats = orderData.items.filter(i => (i.course === 2 || i.course === undefined) && (!i.dest || i.dest.toLowerCase() !== 'bar'));
 
@@ -320,20 +340,19 @@
                     let isDirect = (laneNum === 2 && !hasEntrees);
                     let oldestTime = Math.min(...cList.map(i => i.itemId));
 
-                    // 🟢 MOTEUR D'INTELLIGENCE PRIORITAIRE 🟢
                     let priorityLevel = 1;
                     let isSuite = false;
 
                     if (laneNum === 2 && entreesServed) {
-                        priorityLevel = 4; // ⏩ LA SUITE IMMÉDIATE (Le serveur a servi l'entrée)
+                        priorityLevel = 4; // ⏩ LA SUITE IMMÉDIATE
                         isSuite = true;
                     } else if (laneNum === 3 && platsServed) {
-                        priorityLevel = 4; // ⏩ LA SUITE IMMÉDIATE (Le serveur a servi le plat)
+                        priorityLevel = 4; // ⏩ LA SUITE IMMÉDIATE
                         isSuite = true;
                     } else if (hasFired) {
                         priorityLevel = 3; // 🔥 RÉCLAMÉ MANUELLEMENT
                     } else if (isDirect) {
-                        priorityLevel = 2; // 🚀 DIRECT (Pas d'entrée à manger)
+                        priorityLevel = 2; // 🚀 DIRECT
                     }
 
                     lanes[laneNum].push({
@@ -352,7 +371,6 @@
                 pushToLane(c3, 3);
             }
 
-            // 🟢 TRI : Les plus urgents d'abord, puis par heure de commande
             [1, 2, 3].forEach(laneNum => {
                 lanes[laneNum].sort((a, b) => {
                     if (a.priorityLevel !== b.priorityLevel) return b.priorityLevel - a.priorityLevel; 
@@ -360,7 +378,6 @@
                 });
             });
 
-            // Construction du HTML
             let buildLaneHtml = (laneData, laneNum) => {
                 let html = '';
                 laneData.forEach((ticket, index) => {
@@ -387,7 +404,6 @@
                         tHtml += `<div class="ticket-obs">⚠️ ${orderData.observations}</div>`;
                     }
 
-                    // 🟢 BADGES DE COULEURS SELON LA VITESSE 🟢
                     let rank = index + 1;
                     let badgeColor = priorityLevel === 4 ? '#ec4899' : (priorityLevel === 3 ? 'var(--alert-zen)' : (priorityLevel === 2 ? 'var(--info-zen)' : 'var(--text-muted)'));
                     let badgeShadow = priorityLevel === 4 ? '0 0 10px rgba(236,72,153,0.8)' : (priorityLevel === 3 ? '0 0 10px rgba(239,68,68,0.8)' : (priorityLevel === 2 ? '0 0 10px rgba(96,165,250,0.8)' : 'none'));
@@ -444,29 +460,98 @@
             document.getElementById('kds-grid-3').innerHTML = html3 || emptyMsg;
         }
 
-        async function undoItemReady(undoIndex) {
-            let undoData = recentlyDoneItems[undoIndex];
-            if (!activeOrders[undoData.tableId] || !activeOrders[undoData.tableId].items[undoData.itemIndex]) return;
-            
-            activeOrders[undoData.tableId].items[undoData.itemIndex].done = false;
-            activeOrders[undoData.tableId].items[undoData.itemIndex].served = false; 
-            
-            recentlyDoneItems.splice(undoIndex, 1);
-            localStorage.setItem('empire_recently_done', JSON.stringify(recentlyDoneItems));
-            
-            await API.update(undoData.tableId, activeOrders[undoData.tableId], true);
-            renderKDS();
-            renderUndoBar();
+        // 🟢 NOUVEAU MODULE HISTORIQUE & RÉCUPÉRATION (REPÊCHAGE) 🟢
+        async function restoreItem(tableId, itemId) {
+            let order = activeOrders[tableId];
+            if (order && order.items) {
+                let item = order.items.find(i => i.id === itemId);
+                if (item) {
+                    item.done = false;
+                    item.served = false; 
+                    await API.update(tableId, order);
+                    renderHistory(); 
+                    renderKDS(); 
+                    showToast("✅ Plat remis en production !");
+                }
+            }
         }
 
-        function renderUndoBar() {
-            const bar = document.getElementById('undo-bar'); const now = Date.now();
-            recentlyDoneItems = recentlyDoneItems.filter(item => (now - item.time) < 300000);
-            localStorage.setItem('empire_recently_done', JSON.stringify(recentlyDoneItems));
+        function renderHistory() {
+            const container = document.getElementById('history-container');
+            let html = '';
 
-            if (recentlyDoneItems.length === 0) { bar.style.display = 'none'; return; }
-            bar.style.display = 'flex';
-            bar.innerHTML = recentlyDoneItems.map((item, idx) => `<div class="undo-item" onclick="undoItemReady(${idx})">T.${item.tableId} - ${item.name.replace(/\[BR\]/g, ' ')}</div>`).join('');
+            // 1. PLATS TERMINÉS (RÉCUPÉRABLES)
+            html += `<h3 style="color:var(--accent-zen); border-bottom: 1px solid var(--border-zen); padding-bottom: 10px; margin-top: 0;">🟢 PLATS AU PASSE (RÉCUPÉRABLES)</h3>`;
+            
+            let hasRecoverable = false;
+            for (let tId in activeOrders) {
+                if (tId.includes('MASTER') || tId.includes('ARCHIVE') || tId.includes('BAR') || tId.includes('CUISINE') || tId.includes('ALERTS') || tId.includes('ARCHITECTURE')) continue;
+                let order = activeOrders[tId];
+                if (!order || !order.items) continue;
+
+                let doneItems = order.items.filter(i => i.done && (!i.dest || i.dest.toLowerCase() !== 'bar'));
+                if (doneItems.length > 0) {
+                    hasRecoverable = true;
+                    let isWeb = order.isWeb || tId.startsWith('order_');
+                    let tableTitle = isWeb ? `🌐 WEB #${order.id || tId.replace('order_','')}` : `TABLE ${tId}`;
+                    
+                    doneItems.forEach(item => {
+                        let cleanName = item.n.replace(/\[BR\]/g, ' ').replace(/\n/g, ' ');
+                        html += `
+                        <div style="background:var(--panel-zen); border:1px solid var(--accent-zen); padding:12px 15px; border-radius:8px; display:flex; justify-content:space-between; align-items:center; margin-bottom: 8px;">
+                            <div>
+                                <div style="color:var(--accent-zen); font-weight:900; font-size:1.1rem; margin-bottom: 4px;">${tableTitle}</div>
+                                <div style="color:var(--text-zen); font-size:1rem;"><span style="font-weight:900;">${item.qty||1}x</span> ${cleanName}</div>
+                            </div>
+                            <button class="nav-btn" style="border-color:var(--gold); color:var(--gold); padding: 10px 15px;" onclick="restoreItem('${tId}', ${item.id})">↩️ REPÊCHER</button>
+                        </div>`;
+                    });
+                }
+            }
+            if (!hasRecoverable) {
+                html += `<div style="color: #64748b; font-style:italic; margin-bottom: 20px;">Aucun plat en attente de repêchage.</div>`;
+            }
+
+            // 2. ARCHIVES DU JOUR (TABLES CLÔTURÉES)
+            html += `<h3 style="color:var(--purple-zen); border-bottom: 1px solid var(--border-zen); padding-bottom: 10px; margin-top: 30px;">🟣 TABLES CLÔTURÉES (ARCHIVES)</h3>`;
+            
+            if (archiveCuisineData.length === 0) {
+                html += `<div style="color: #64748b; font-style:italic;">Aucune table clôturée aujourd'hui.</div>`;
+            } else {
+                let sortedArchive = [...archiveCuisineData].sort((a, b) => new Date(b.time) - new Date(a.time));
+                let todayStr = new Date().toISOString().split('T')[0];
+                let todayArchive = sortedArchive.filter(x => x.time && x.time.startsWith(todayStr));
+
+                if (todayArchive.length === 0) {
+                    html += `<div style="color: #64748b; font-style:italic;">La cuisine n'a rien sorti aujourd'hui.</div>`;
+                } else {
+                    html += todayArchive.map(t => {
+                        let timeStr = new Date(t.time).toLocaleTimeString('fr-FR', {hour: '2-digit', minute:'2-digit'});
+                        let itemsHtml = t.items ? t.items.map(i => `
+                            <div style="display:flex; justify-content:space-between; margin-bottom: 5px; padding: 5px 0;">
+                                <span><span style="color:var(--accent-zen); font-weight:900;">${i.qty||1}x</span> ${i.n.replace(/\[BR\]/g, ' ')}</span>
+                            </div>
+                        `).join('') : '';
+
+                        let isWeb = t.table.startsWith('order_');
+                        let tableTitle = isWeb ? `🌐 WEB #${t.table.replace('order_','')}` : `TABLE ${t.table}`;
+                        let titleColor = isWeb ? `var(--alert-zen)` : `var(--purple-zen)`;
+
+                        return `
+                        <div style="background:var(--panel-zen); border:1px solid var(--border-zen); padding:15px; border-radius:8px; box-shadow:0 2px 4px rgba(0,0,0,0.1); margin-bottom: 10px;">
+                            <div style="display:flex; justify-content:space-between; border-bottom:1px dashed var(--border-zen); padding-bottom:10px; margin-bottom:10px;">
+                                <div style="color:${titleColor}; font-weight:900; font-size:1.2rem;">${tableTitle}</div>
+                                <div style="color:var(--text-muted); font-weight:bold;">${timeStr}</div>
+                            </div>
+                            <div style="color:var(--text-zen); font-size:0.95rem;">
+                                ${itemsHtml}
+                            </div>
+                        </div>`;
+                    }).join('');
+                }
+            }
+            
+            container.innerHTML = html;
         }
 
         // 🟢 DRAG & DROP TACTILE 🟢
@@ -534,6 +619,9 @@
             document.querySelectorAll('.nav-btn').forEach(b => b.classList.remove('active'));
             document.getElementById('mod-' + tab).classList.add('active');
             document.getElementById('tab-' + tab).classList.add('active');
+            
+            // Rafraîchir l'historique quand on clique sur l'onglet
+            if (tab === 'history') renderHistory();
         }
 
         // Effets tactiles
