@@ -54,7 +54,6 @@
         .item-qty { color: var(--accent-zen); font-weight: 900; margin-right: 8px; }
         .item-sub-obs { font-size: 0.8rem; color: var(--obs-zen); font-style: italic; }
 
-        /* 🟢 BOUTON DE VALIDATION RÉPARÉ 🟢 */
         .btn-ready { background: var(--panel-zen); border: 2px solid var(--border-zen); color: var(--text-muted); width: 45px; height: 45px; border-radius: 50%; display: flex; justify-content: center; align-items: center; font-size: 1.4rem; cursor: pointer; transition: 0.2s; pointer-events: auto; z-index: 10;}
         .btn-ready:hover { border-color: var(--accent-zen); color: var(--accent-zen); }
         .btn-ready:active { transform: scale(0.9); }
@@ -112,18 +111,15 @@
         .btn-alerte-massive:hover { filter: brightness(1.2); }
         .btn-alerte-massive:active { transform: scale(0.98); }
 
-        /* 🟢 SÉPARATION EN 3 ÉTAGES (ENTRÉES / PLATS / DESSERTS) 🟢 */
         .lane-header { font-size: 1.5rem; font-weight: 900; padding: 10px 20px; border-bottom: 2px solid var(--border-zen); margin-bottom: 15px; margin-top: 10px; background: rgba(0,0,0,0.2); border-radius: 8px; text-transform: uppercase; letter-spacing: 2px;}
         .lane-entrees { color: #34d399; border-bottom-color: #34d399; }
         .lane-plats { color: #facc15; border-bottom-color: #facc15; }
         .lane-desserts { color: #a78bfa; border-bottom-color: #a78bfa; }
 
-        /* 🟢 DRAG & DROP (GLISSEMENT) 🟢 */
         .drag-handle { font-size: 1.5rem; color: var(--border-zen); padding-right: 15px; cursor: grab; touch-action: none; transition: 0.2s; }
         .drag-handle:active { color: var(--obs-zen); cursor: grabbing; }
         .kds-grid.drag-over { background: rgba(255, 255, 255, 0.05); border-radius: 8px; border: 2px dashed var(--obs-zen); }
 
-        /* 🟢 TICKET EN PAUSE (ALERTE ROUGE) 🟢 */
         .ticket.paused { border: 2px dashed var(--alert-zen); background: rgba(239, 68, 68, 0.05); }
         .ticket.paused .ticket-header { background: rgba(239, 68, 68, 0.2); }
         .ticket.paused .ticket-table { color: var(--alert-zen); }
@@ -249,7 +245,7 @@
             let order = activeOrders[tableInAlert];
             if (order) {
                 order.alerteRouge = message; 
-                await API.update(tableInAlert, order); 
+                await API.update(tableInAlert, order, true); 
                 renderKDS(); 
             }
             closeAlertModal();
@@ -259,12 +255,11 @@
             let order = activeOrders[tableId];
             if (order) {
                 order.alerteRouge = null; 
-                await API.update(tableId, order);
+                await API.update(tableId, order, true);
                 renderKDS(); 
             }
         }
 
-        // 🟢 C'EST ICI QUE LE BOUTON DÉVERROUILLÉ TRANSMET L'INFO 🟢
         function markItemReady(tableId, itemIndex, currentEvent) {
             currentEvent.stopPropagation(); 
             
@@ -286,12 +281,11 @@
                 if (recentlyDoneItems.length > 10) recentlyDoneItems.pop(); 
                 localStorage.setItem('empire_recently_done', JSON.stringify(recentlyDoneItems));
 
-                await API.update(tableId, activeOrders[tableId]);
+                await API.update(tableId, activeOrders[tableId], true);
                 renderKDS();
             }, 300);
         }
 
-        // 🟢 LE MOTEUR INTELLIGENT DE PRIORITÉ 🟢
         function renderKDS() {
             let html1 = '', html2 = '', html3 = '';
             let lanes = { 1: [], 2: [], 3: [] };
@@ -309,19 +303,38 @@
                 let c2 = pendingItems.filter(i => i.course === 2 || i.course === undefined);
                 let c3 = pendingItems.filter(i => i.course === 3);
 
-                // Détecte si la table a pris des entrées dans toute sa commande (pour savoir si le plat est "Direct")
-                let hasEntreesEver = orderData.items.some(i => i.course === 1 || i.course === 0);
+                // Analyse de l'historique complet de la table pour le tri
+                let allEntrees = orderData.items.filter(i => (i.course === 1 || i.course === 0) && (!i.dest || i.dest.toLowerCase() !== 'bar'));
+                let allPlats = orderData.items.filter(i => (i.course === 2 || i.course === undefined) && (!i.dest || i.dest.toLowerCase() !== 'bar'));
+
+                let hasEntrees = allEntrees.length > 0;
+                let entreesServed = hasEntrees && allEntrees.every(i => i.served); 
+                
+                let hasPlats = allPlats.length > 0;
+                let platsServed = hasPlats && allPlats.every(i => i.served);
 
                 let pushToLane = (cList, laneNum) => {
                     if (cList.length === 0) return;
                     
                     let hasFired = cList.some(i => i.fired);
-                    let isDirect = (laneNum === 2 && !hasEntreesEver);
+                    let isDirect = (laneNum === 2 && !hasEntrees);
                     let oldestTime = Math.min(...cList.map(i => i.itemId));
 
-                    // 🟢 CALCUL DU SCORE DE PRIORITÉ 🟢
-                    // 3 = 🔥 Réclamé (Urgence Max) | 2 = 🚀 Plat Direct | 1 = ⚪ À suivre
-                    let priorityLevel = hasFired ? 3 : (isDirect ? 2 : 1);
+                    // 🟢 MOTEUR D'INTELLIGENCE PRIORITAIRE 🟢
+                    let priorityLevel = 1;
+                    let isSuite = false;
+
+                    if (laneNum === 2 && entreesServed) {
+                        priorityLevel = 4; // ⏩ LA SUITE IMMÉDIATE (Le serveur a servi l'entrée)
+                        isSuite = true;
+                    } else if (laneNum === 3 && platsServed) {
+                        priorityLevel = 4; // ⏩ LA SUITE IMMÉDIATE (Le serveur a servi le plat)
+                        isSuite = true;
+                    } else if (hasFired) {
+                        priorityLevel = 3; // 🔥 RÉCLAMÉ MANUELLEMENT
+                    } else if (isDirect) {
+                        priorityLevel = 2; // 🚀 DIRECT (Pas d'entrée à manger)
+                    }
 
                     lanes[laneNum].push({
                         tableId: tableId,
@@ -329,7 +342,8 @@
                         items: cList,
                         priorityLevel: priorityLevel,
                         time: oldestTime,
-                        isDirect: isDirect
+                        isDirect: isDirect,
+                        isSuite: isSuite
                     });
                 };
 
@@ -338,19 +352,19 @@
                 pushToLane(c3, 3);
             }
 
-            // 🟢 TRI AUTOMATIQUE DE CHAQUE ÉTAGE 🟢
+            // 🟢 TRI : Les plus urgents d'abord, puis par heure de commande
             [1, 2, 3].forEach(laneNum => {
                 lanes[laneNum].sort((a, b) => {
-                    if (a.priorityLevel !== b.priorityLevel) return b.priorityLevel - a.priorityLevel; // Les priorités fortes à gauche
-                    return a.time - b.time; // Ensuite, chronologique normal
+                    if (a.priorityLevel !== b.priorityLevel) return b.priorityLevel - a.priorityLevel; 
+                    return a.time - b.time; 
                 });
             });
 
-            // 🟢 CONSTRUCTION DE L'AFFICHAGE 🟢
+            // Construction du HTML
             let buildLaneHtml = (laneData, laneNum) => {
                 let html = '';
                 laneData.forEach((ticket, index) => {
-                    let { tableId, orderData, items, priorityLevel, isDirect } = ticket;
+                    let { tableId, orderData, items, priorityLevel, isDirect, isSuite } = ticket;
                     
                     let isWeb = orderData.isWeb || tableId.startsWith('order_');
                     let tableTitle = isWeb ? `🌐 WEB #${orderData.id || tableId.replace('order_','')}` : `TABLE ${tableId}`;
@@ -373,10 +387,11 @@
                         tHtml += `<div class="ticket-obs">⚠️ ${orderData.observations}</div>`;
                     }
 
-                    // 🟢 BADGE VISUEL DE POSITION 🟢
+                    // 🟢 BADGES DE COULEURS SELON LA VITESSE 🟢
                     let rank = index + 1;
-                    let badgeColor = priorityLevel === 3 ? 'var(--alert-zen)' : (priorityLevel === 2 ? 'var(--info-zen)' : 'var(--text-muted)');
-                    let badgeShadow = priorityLevel === 3 ? '0 0 10px rgba(239,68,68,0.8)' : (priorityLevel === 2 ? '0 0 10px rgba(96,165,250,0.8)' : 'none');
+                    let badgeColor = priorityLevel === 4 ? '#ec4899' : (priorityLevel === 3 ? 'var(--alert-zen)' : (priorityLevel === 2 ? 'var(--info-zen)' : 'var(--text-muted)'));
+                    let badgeShadow = priorityLevel === 4 ? '0 0 10px rgba(236,72,153,0.8)' : (priorityLevel === 3 ? '0 0 10px rgba(239,68,68,0.8)' : (priorityLevel === 2 ? '0 0 10px rgba(96,165,250,0.8)' : 'none'));
+                    
                     tHtml += `<div class="priority-badge" style="color: ${badgeColor}; border-color: ${badgeColor}; box-shadow: ${badgeShadow};">${rank}</div>`;
 
                     items.forEach((item) => {
@@ -389,7 +404,10 @@
                         let reclamClass = isFired ? "reclam-active" : "";
                         
                         let statusBadge = "";
-                        if (isFired) {
+                        if (isSuite) {
+                            statusBadge = `<span style="background:#ec4899; color:#fff; font-size:0.7rem; font-weight:900; padding:3px 6px; border-radius:4px; margin-right:6px; vertical-align:middle; text-transform:uppercase; box-shadow: 0 0 8px rgba(236, 72, 153, 0.8);">⏩ LA SUITE</span>`;
+                            opacityStyle = "opacity: 1; background: rgba(236, 72, 153, 0.05); border-left: 4px solid #ec4899;";
+                        } else if (isFired) {
                             statusBadge = `<span style="background:var(--alert-zen); color:#fff; font-size:0.7rem; font-weight:900; padding:3px 6px; border-radius:4px; margin-right:6px; vertical-align:middle; text-transform:uppercase; box-shadow: 0 0 8px rgba(239,68,68,0.8);">🔥 ENVOI</span>`;
                         } else if (isDirect) {
                             statusBadge = `<span style="background:var(--info-zen); color:#000; font-size:0.7rem; font-weight:900; padding:3px 6px; border-radius:4px; margin-right:6px; vertical-align:middle; text-transform:uppercase; box-shadow: 0 0 8px rgba(96, 165, 250, 0.8);">🚀 DIRECT</span>`;
@@ -398,8 +416,7 @@
                             statusBadge = `<span style="background:var(--bg-zen); color:#94a3b8; border:1px solid #94a3b8; font-size:0.6rem; padding:2px 4px; border-radius:4px; margin-right:6px; vertical-align:middle;">À SUIVRE</span>`;
                         }
 
-                        // 🟢 LE BOUTON DÉVERROUILLÉ 🟢 (Légèrement grisé si c'est pas encore réclamé ou direct, mais TOUJOURS cliquable)
-                        let checkBtn = `<div class="btn-ready" style="${(!isFired && !isDirect) ? 'opacity:0.4;' : ''}" onclick="markItemReady('${tableId}', ${realIndex}, event)">✓</div>`;
+                        let checkBtn = `<div class="btn-ready" style="${(!isFired && !isDirect && !isSuite) ? 'opacity:0.4;' : ''}" onclick="markItemReady('${tableId}', ${realIndex}, event)">✓</div>`;
 
                         tHtml += `
                         <div class="ticket-item ${reclamClass}" style="${opacityStyle}">
@@ -437,7 +454,7 @@
             recentlyDoneItems.splice(undoIndex, 1);
             localStorage.setItem('empire_recently_done', JSON.stringify(recentlyDoneItems));
             
-            await API.update(undoData.tableId, activeOrders[undoData.tableId]);
+            await API.update(undoData.tableId, activeOrders[undoData.tableId], true);
             renderKDS();
             renderUndoBar();
         }
@@ -499,7 +516,7 @@
                     let item = order.items.find(i => i.id == dragItemData.itemId);
                     if (item && item.course !== newCourse) {
                         item.course = newCourse;
-                        await API.update(dragItemData.tableId, order);
+                        await API.update(dragItemData.tableId, order, true);
                         renderKDS();
                     }
                 }
