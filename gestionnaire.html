@@ -230,22 +230,46 @@
             0% { transform: scale(0); opacity: 1; }
             100% { transform: scale(6); opacity: 0; }
         }
+
+        /* 🟢 NOTIFICATIONS CUISINE / BAR 🟢 */
+        #notification-center { position: fixed; top: 20px; left: 50%; transform: translateX(-50%); z-index: 999999; display: flex; flex-direction: column; gap: 10px; pointer-events: none; }
+        .toast-ready { background: var(--accent); color: #000; padding: 15px 30px; border-radius: 30px; font-weight: 900; font-size: 1.5rem; box-shadow: 0 10px 30px rgba(52, 211, 153, 0.5); border: 2px solid #fff; animation: dropDownToast 0.5s cubic-bezier(0.25, 0.46, 0.45, 0.94), fadeOutToast 0.5s ease-in 4.5s forwards; pointer-events: auto; cursor: pointer; text-transform: uppercase;}
+        @keyframes dropDownToast { from { transform: translateY(-100px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
+        @keyframes fadeOutToast { to { opacity: 0; transform: translateY(-20px); } }
+
+        /* 🟢 L'ÉCRAN ROUGE DE LA MORT (ALERTE CUISINE) 🟢 */
+        #red-alert-screen { position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; background: #ef4444; z-index: 9999999; display: none; flex-direction: column; align-items: center; justify-content: center; text-align: center; padding: 20px; box-sizing: border-box; animation: flashRed 1s infinite alternate; }
+        #red-alert-screen.active { display: flex; }
+        @keyframes flashRed { 0% { background: #ef4444; } 100% { background: #b91c1c; } }
+        .alert-giant-text { font-size: 3rem; font-weight: 900; color: #fff; text-transform: uppercase; margin-bottom: 10px; text-shadow: 0 4px 10px rgba(0,0,0,0.5); line-height: 1.2; }
+        .alert-sub-text { font-size: 2rem; font-weight: bold; color: #fee2e2; margin-bottom: 50px; background: rgba(0,0,0,0.2); padding: 15px 30px; border-radius: 12px; }
+        .btn-acknowledge { background: #000; color: #ef4444; border: 4px solid #fff; font-size: 2rem; font-weight: 900; padding: 30px 60px; border-radius: 20px; cursor: pointer; box-shadow: 0 10px 30px rgba(0,0,0,0.6); transition: 0.2s; text-transform: uppercase; }
+        .btn-acknowledge:active { transform: scale(0.95); }
     </style>
 </head>
 <body>
 
+    <div id="red-alert-screen">
+        <div class="alert-giant-text">⚠️ ALERTE CUISINE !<br>TABLE <span id="salle-alert-table"></span></div>
+        <div class="alert-sub-text" id="salle-alert-msg"></div>
+        <button class="btn-acknowledge" onclick="acknowledgeChefAlert()">✅ J'Y VAIS IMMÉDIATEMENT</button>
+    </div>
+
     <div id="print-zone"></div>
     <div id="assign-overlay">👇 CLIQUEZ SUR LA TABLE POUR ASSIGNER LA RÉSERVATION 👇</div>
+    <div id="notification-center"></div>
 
     <div id="login-screen">
         <h1 style="color:var(--gold); letter-spacing: 4px; font-size: 2.5rem; margin-bottom: 10px;">IDENTIFICATION</h1>
         <div style="color:var(--text-muted); margin-bottom: 30px; font-size: 1.1rem;">Entrez votre code d'accès personnel</div>
-        <div id="pin-display" class="pin-display"></div>
+        <div id="pin-display" class="pin-display" style="min-height: 50px; font-size: 2.5rem; color: var(--gold); letter-spacing: 10px;"></div>
         <div class="pin-pad">
             <button class="pin-btn" onclick="appendPin(1)">1</button><button class="pin-btn" onclick="appendPin(2)">2</button><button class="pin-btn" onclick="appendPin(3)">3</button>
             <button class="pin-btn" onclick="appendPin(4)">4</button><button class="pin-btn" onclick="appendPin(5)">5</button><button class="pin-btn" onclick="appendPin(6)">6</button>
             <button class="pin-btn" onclick="appendPin(7)">7</button><button class="pin-btn" onclick="appendPin(8)">8</button><button class="pin-btn" onclick="appendPin(9)">9</button>
-            <button class="pin-btn" onclick="clearPin()" style="background:var(--alert-dim); color:var(--alert); border-color:transparent;">C</button><button class="pin-btn" onclick="appendPin(0)">0</button><button class="pin-btn" onclick="submitPin()" style="background:var(--accent); color:#000; border-color:var(--accent);">OK</button>
+            <button class="pin-btn" onclick="clearPin()" style="background:var(--alert-dim); color:var(--alert); border-color:transparent;">C</button>
+            <button class="pin-btn" onclick="appendPin(0)">0</button>
+            <button class="pin-btn" onclick="submitPin()" style="background:var(--accent); color:#000; border-color:var(--accent);">OK</button>
         </div>
     </div>
 
@@ -2036,9 +2060,18 @@ function renderFloor() {
                     }
 
                     for (let t in nO) { 
-                        if (!t.includes('MASTER') && !t.includes('ARCHIVE') && !t.includes('BAR') && !t.includes('CUISINE') && !t.includes('ALERTS') && !t.includes('ARCHITECTURE') && nO[t] && nO[t].status === 'ready' && (!previousOrdersState[t] || previousOrdersState[t].status !== 'ready')) { 
-                            let b=document.getElementById('beep-ready'); if(b) b.play().catch(e=>{}); 
-                            if(nO[t].items) nO[t].items.forEach(i => { if(i) i.done = true; }); 
+                        if (!t.includes('MASTER') && !t.includes('ARCHIVE') && !t.includes('BAR') && !t.includes('CUISINE') && !t.includes('ALERTS') && !t.includes('ARCHITECTURE') && nO[t]) { 
+                            
+                            // 🟢 DÉTECTION DU PROTOCOLE D'ALERTE ROUGE CUISINE 🟢
+                            if (nO[t].alerteRouge && (!previousOrdersState[t] || previousOrdersState[t].alerteRouge !== nO[t].alerteRouge)) {
+                                triggerChefAlert(t, nO[t].alerteRouge);
+                            }
+
+                            // Détection des plats prêts (inchangé)
+                            if (nO[t].status === 'ready' && (!previousOrdersState[t] || previousOrdersState[t].status !== 'ready')) { 
+                                let b=document.getElementById('beep-ready'); if(b) b.play().catch(e=>{}); 
+                                if(nO[t].items) nO[t].items.forEach(i => { if(i) i.done = true; }); 
+                            } 
                         } 
                     } 
                     previousOrdersState = JSON.parse(JSON.stringify(nO)); 
@@ -2071,6 +2104,46 @@ function renderFloor() {
                     } 
                     if(!isArchiMode && !isDraggingTable) renderFloor();
                 }
+            } catch(e) {}
+        }
+
+        // 🟢 FONCTIONS D'ALERTE ROUGE (RÉCEPTION SALLE) 🟢
+        let currentAlertTable = null;
+
+        function triggerChefAlert(tableLabel, message) {
+            let alertScreen = document.getElementById('red-alert-screen');
+            if (!alertScreen.classList.contains('active')) {
+                playKlaxon();
+                if(navigator.vibrate) navigator.vibrate([500, 200, 500, 200, 1000]);
+                currentAlertTable = tableLabel;
+                document.getElementById('salle-alert-table').innerText = tableLabel;
+                document.getElementById('salle-alert-msg').innerText = message;
+                alertScreen.classList.add('active');
+            }
+        }
+
+        async function acknowledgeChefAlert() {
+            if (!currentAlertTable) return;
+            let order = activeOrders[currentAlertTable];
+            if (order && order.alerteRouge) {
+                order.alerteRouge = null; // Le serveur confirme qu'il a vu, on efface l'alerte
+                await API.update(currentAlertTable, order, true);
+            }
+            document.getElementById('red-alert-screen').classList.remove('active');
+            currentAlertTable = null;
+        }
+
+        function playKlaxon() {
+            try {
+                let ctx = new (window.AudioContext || window.webkitAudioContext)();
+                let osc = ctx.createOscillator();
+                let gain = ctx.createGain();
+                osc.connect(gain); gain.connect(ctx.destination);
+                osc.type = 'sawtooth'; // Son agressif (Buzzer)
+                osc.frequency.setValueAtTime(150, ctx.currentTime);
+                gain.gain.setValueAtTime(0.2, ctx.currentTime);
+                osc.start();
+                osc.stop(ctx.currentTime + 1.5);
             } catch(e) {}
         }
 
