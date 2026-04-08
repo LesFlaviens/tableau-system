@@ -22,7 +22,11 @@ app.use(express.static(__dirname));
 app.get('/get-current-state', (req, res) => {
     fs.readFile(DB_FILE, 'utf8', (err, data) => {
         if (err) return res.status(500).send("Erreur de lecture de la base de données.");
-        res.json(JSON.parse(data));
+        try {
+            res.json(JSON.parse(data));
+        } catch (e) {
+            res.json({ activeOrders: {} }); // Sécurité absolue en lecture
+        }
     });
 });
 
@@ -33,7 +37,7 @@ app.post('/update-order', (req, res) => {
     fs.readFile(DB_FILE, 'utf8', (err, data) => {
         let db = { activeOrders: {} };
         if (!err && data) {
-            try { db = JSON.parse(data); } catch (e) {}
+            try { db = JSON.parse(data); } catch (e) { console.error("JSON Parse Error", e); }
         }
         
         if (order === null) {
