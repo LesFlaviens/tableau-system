@@ -259,6 +259,10 @@
         .btn-reminder { background: rgba(96, 165, 250, 0.1); color: #60a5fa; border-color: #60a5fa; min-width: 100%; margin-top: 5px;}
         .btn-reminder:hover { background: #60a5fa; color: #000; }
 
+        /* 🟢 SÉLECTEUR DE CONVIVES 🟢 */
+        .seat-btn { background: var(--bg); border: 1px solid var(--border); color: var(--text-muted); padding: 8px 12px; border-radius: 6px; font-size: 0.8rem; font-weight: bold; cursor: pointer; transition: 0.2s;}
+        .seat-btn.gold { border-color: var(--gold); color: var(--gold); background: var(--gold-dim); box-shadow: inset 0 1px 3px rgba(0,0,0,0.3); }
+
     </style>
 </head>
 <body>
@@ -448,6 +452,10 @@
                     <button class="btn-mini menu-tab" style="flex:1; min-width: 100px; font-size:0.85rem; padding:10px;" onclick="renderMenu('Desserts')">🍰 DESSERTS</button>
                     <button class="btn-mini menu-tab" style="flex:1; min-width: 100px; font-size:0.85rem; padding:10px;" onclick="renderMenu('Boissons')">🍸 BOISSONS</button>
                 </div>
+                
+                <div id="seat-bar-container" style="display:flex; gap:10px; padding:10px; background:var(--panel); border-bottom:1px solid var(--border); overflow-x: auto; align-items:center;">
+                    </div>
+
                 <div id="menu" class="menu-grid"></div>
             </div>
 
@@ -582,6 +590,12 @@
         
         <button class="pay-btn" style="border-color: var(--service); color: var(--service); background: rgba(244, 114, 182, 0.1); width: 100%; margin-bottom: 15px;" onclick="offerItem()">🎁 OFFRIR (Geste Co.)</button>
         
+        <div style="display:flex; align-items:center; gap:10px; width: 300px; margin-bottom: 15px;">
+            <label style="flex:1; margin:0; color:var(--text-main);">Assigner au Convive N°</label>
+            <input type="number" id="edit-item-seat" class="edit-input" style="margin-bottom:0; width:80px; text-align:center;" min="0">
+        </div>
+        <p style="font-size:0.7rem; color:var(--text-muted); margin-top:-10px; margin-bottom: 15px; width: 300px; text-align:right;">(0 = Table entière)</p>
+
         <select id="edit-item-course" class="edit-input" style="font-weight: bold; background: var(--panel); cursor: pointer;">
             <option value="0">🍸 APÉRITIFS / BOISSONS</option>
             <option value="1">🥗 ENTRÉES</option>
@@ -685,6 +699,70 @@
     </div>
 
     <script>
+        // 🟢 NOUVEAUTÉ : VARIABLES ET FONCTIONS DU SÉLECTEUR DE CONVIVES 🟢
+        let currentSeat = 0; // 0 = Toute la table
+
+        function renderSeatBar() {
+            let pax = 2;
+            let obsInput = document.getElementById('order-obs').value;
+            let match = obsInput.match(/🍽️ (\d+) Couvert\(s\)/);
+            if(match) pax = parseInt(match[1]);
+            else {
+                let tObj = tables.find(t => t && t.label === currentTable);
+                if(tObj && tObj.pax) pax = tObj.pax;
+            }
+
+            let html = `<span style="color:var(--text-muted); font-size:0.8rem; font-weight:bold; align-self:center; margin-right:5px; text-transform:uppercase;">Cibler Convive :</span>`;
+            html += `<button class="btn-mini seat-btn" id="seat-btn-0" onclick="setSeat(0)">TOUS</button>`;
+            for(let i=1; i<=pax; i++) {
+                html += `<button class="btn-mini seat-btn" id="seat-btn-${i}" onclick="setSeat(${i})">C${i}</button>`;
+            }
+            html += `<button class="btn-mini" style="background:var(--bg); border:1px dashed var(--border);" onclick="addExtraSeatToBar()">+</button>`;
+            
+            let container = document.getElementById('seat-bar-container');
+            if(container) {
+                container.innerHTML = html;
+                setSeat(0); // Toujours "Tous" par défaut à l'ouverture
+            }
+        }
+
+        function setSeat(s) {
+            currentSeat = s;
+            document.querySelectorAll('.seat-btn').forEach(b => {
+                b.classList.remove('gold');
+                b.style.background = 'var(--bg)';
+                b.style.color = 'var(--text-muted)';
+                b.style.borderColor = 'var(--border)';
+            });
+            let activeBtn = document.getElementById('seat-btn-'+s);
+            if(activeBtn) {
+                activeBtn.classList.add('gold');
+                activeBtn.style.background = 'var(--gold-dim)';
+                activeBtn.style.color = 'var(--gold)';
+                activeBtn.style.borderColor = 'var(--gold)';
+            }
+        }
+
+        function addExtraSeatToBar() {
+            let maxC = 0;
+            document.querySelectorAll('.seat-btn').forEach(b => {
+                if(b.id.startsWith('seat-btn-')) {
+                    let val = parseInt(b.id.replace('seat-btn-', ''));
+                    if(val > maxC) maxC = val;
+                }
+            });
+            let n = maxC + 1;
+            let newBtn = document.createElement('button');
+            newBtn.className = 'btn-mini seat-btn';
+            newBtn.id = 'seat-btn-' + n;
+            newBtn.onclick = () => setSeat(n);
+            newBtn.innerText = 'C' + n;
+            
+            let container = document.getElementById('seat-bar-container');
+            container.insertBefore(newBtn, container.lastElementChild);
+            setSeat(n);
+        }
+
         // 🟢 AUTO-PLACEMENT DES RÉSERVATIONS 🟢
         async function autoAssignToday() {
             if (!currentUser || currentUser.role !== 'Manager') return alert("⛔ Accès Manager requis");
@@ -766,6 +844,7 @@
             }
 
             await saveTableState(false, true); 
+            renderSeatBar(); // Recalcul des sièges dans le tiroir !
             renderFloor();
         }
 
@@ -885,7 +964,6 @@
         let currentRoom = rooms[0] || 'Salle Principale';
         let configRoomOldName = null, currentTactileRoomName = "";
         
-        // 🟢 LES TABLES ONT UNE CAPACITÉ PAR DÉFAUT (pax: 4) 🟢
         let tables = safeArray('empire_architecture', [ {label:"T1", l:550, t:500, w:80, h:120, shape:"rect", pax: 4, room: "Salle Principale"} ]);
 
         let activeOrders = {}; let currentTable = null; let ticketItems = []; let previousOrdersState = {};
@@ -1124,7 +1202,7 @@
                     resas[index].reminderSent = true;
                     await API.update('RESERVATIONS_MASTER', resas);
                     loadResaManager(); 
-                    alert("Le rappel est enregistré. Le client le verra sur son suivi.");
+                    alert("Le rappel est enregistré.");
                 }
             } catch(e) {
                 alert("Erreur de sauvegarde.");
@@ -1584,6 +1662,7 @@
                                 else if (hasDessert && !hasPlat && !hasCooking) tStatus = 'dessert';
                                 else tStatus = 'cooking';
                             }
+                            if (tStatus) wrapper.classList.add('status-' + tStatus);
                         }
 
                         let wrapper = document.createElement('div');
@@ -1771,6 +1850,7 @@
                 API.update(currentTable, updatedOrder, true);
             }
 
+            renderSeatBar();
             renderMenu('MenuJour'); 
             renderTicket();
             checkTableAlertState(currentTable); 
@@ -1959,8 +2039,9 @@
         
         function executeAddToCart(n, p, dest, courseOverride, originalName) { 
             let cId = courseOverride !== undefined ? courseOverride : currentCourseDefault;
+            let seatId = currentSeat; 
             
-            let e = ticketItems.find(i => i.n === n && !i.done && !i.fired && i.course === cId && !i.obs && !i.isOffered); 
+            let e = ticketItems.find(i => i.n === n && !i.done && !i.fired && i.course === cId && !i.obs && !i.isOffered && (i.seat || 0) === seatId); 
             if(e) e.qty = (e.qty||1)+1; 
             else ticketItems.push({ 
                 id: Date.now()+Math.random(), 
@@ -1976,7 +2057,8 @@
                 savedToDB: false, 
                 isOffered: false, 
                 course: cId, 
-                obs: "" 
+                obs: "",
+                seat: seatId
             }); 
             renderTicket(); 
         }
@@ -2008,21 +2090,7 @@
             await API.update(currentTable, null, true);
             
             document.getElementById('clear-ticket-modal').classList.remove('open');
-            
-            try {
-                if (currentTable) {
-                    let tObj = tables.find(t => t && t.label === currentTable && t.isExtra);
-                    if (tObj && ticketItems.length === 0) {
-                        tables = tables.filter(t => t && t.label !== currentTable);
-                        pushArchitecture();
-                        renderFloor();
-                    }
-                }
-            } catch(e) { console.error("Erreur suppression table extra", e); }
-            
-            let drawer = document.getElementById('order-drawer');
-            if (drawer) drawer.classList.remove('open'); 
-            currentTable = null; 
+            closeOrder();
             renderFloor();
         }
 
@@ -2034,6 +2102,7 @@
             document.getElementById('edit-item-price').value = item.p; 
             document.getElementById('edit-item-obs').value = item.obs || ""; 
             document.getElementById('edit-item-course').value = item.course !== undefined ? item.course : 2;
+            document.getElementById('edit-item-seat').value = item.seat || 0;
             
             document.getElementById('edit-item-modal').style.display = 'flex'; 
         }
@@ -2043,12 +2112,14 @@
             if(pendingEditIndex === null) return; 
             let p = parseFloat(document.getElementById('edit-item-price').value);
             let c = parseInt(document.getElementById('edit-item-course').value);
+            let seat = parseInt(document.getElementById('edit-item-seat').value) || 0;
             let obsVal = document.getElementById('edit-item-obs').value.trim();
             
             if(!isNaN(p)) { 
                 ticketItems[pendingEditIndex].p = p; 
                 ticketItems[pendingEditIndex].obs = obsVal; 
                 ticketItems[pendingEditIndex].course = c; 
+                ticketItems[pendingEditIndex].seat = seat; 
                 logAction("CORRECTION ERREUR HUMAINE", `Table: ${currentTable} | Plat: ${ticketItems[pendingEditIndex].n}`); 
             }
             closeEditModal(); renderTicket();
@@ -2127,6 +2198,8 @@
                     statusHtml = `<span style="color:#94a3b8; font-weight:bold; background: rgba(148, 163, 184, 0.1); padding: 4px 8px; border-radius: 4px;">⏸️ À RÉCLAMER PLUS TARD</span>`;
                 }
                 
+                let seatBadge = (i.seat && i.seat > 0) ? `<span style="background:var(--purple); color:#fff; padding:2px 6px; border-radius:4px; font-size:0.75rem; margin-right:8px; font-weight:bold; border: 1px solid var(--purple);">C${i.seat}</span>` : '';
+                
                 let priceHtml = i.isOffered ? `<span style="margin-right:15px; font-weight:900; color:var(--service);">🎁 OFFERT</span>` : `<span style="margin-right:15px; font-weight:bold;">${((parseFloat(i.p)||0)*q).toFixed(2)}€</span>`;
                 let nameStyle = isFired ? 'color: var(--text-main);' : 'color: var(--text-muted); opacity: 0.7;';
                 let obsDisplay = i.obs ? `<span style="font-size:0.85rem; color:#facc15; background: rgba(250, 204, 21, 0.15); padding: 2px 6px; border-radius: 4px; border: 1px solid #facc15;">⚠️ ${i.obs}</span>` : (!i.fired ? `<span style="font-size:0.75rem; color:var(--text-muted); font-style:italic; padding: 2px 6px; border: 1px solid var(--border); border-radius: 4px;">✏️ Ajouter obs.</span>` : '');
@@ -2138,7 +2211,7 @@
                 <div class="ticket-item-row ${reclamClass}" ${!i.fired ? `draggable="true" ondragstart="dragItem(event, ${idx})"` : ''} style="${i.done ? "opacity:0.5; background:transparent; border-left:none;" : opacityStyle}">
                     ${!isFired ? `<div class="drag-handle">☰</div>` : ''}
                     <div style="flex:1; cursor:pointer;" onclick="openEditItem(${idx})">
-                        <div style="font-weight:bold; font-size:1.05rem; ${nameStyle}">${q>1?`<span style="color:var(--accent); font-weight:900; text-decoration:none; display:inline-block;">${q}x</span> `:""}${cleanName||'?'}</div>
+                        <div style="font-weight:bold; font-size:1.05rem; ${nameStyle}">${seatBadge}${q>1?`<span style="color:var(--accent); font-weight:900; text-decoration:none; display:inline-block;">${q}x</span> `:""}${cleanName||'?'}</div>
                         <div style="display:flex; align-items:center; gap:10px; margin-top:5px;">
                             ${statusHtml}
                             ${obsDisplay}
@@ -2416,7 +2489,6 @@
             }, 300);
         }
 
-        // --- GLISSER-DÉPOSER ---
         let isTicketDragging = false;
         function dragItem(ev, idx) { isTicketDragging = true; ev.dataTransfer.setData("text/plain", idx); }
         document.addEventListener('dragend', () => isTicketDragging = false);
@@ -2479,7 +2551,7 @@
         document.body.addEventListener('mousedown', unlockAudio, {passive: true});
 
         async function syncData() {
-            if (isArchiMode) return; // 🟢 BOUCLIER ANTI-CRASH : Ne pas synchroniser en mode Edition 🟢
+            if (isArchiMode) return; 
 
             try {
                 const state = await API.getState();
