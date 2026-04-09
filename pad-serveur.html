@@ -42,6 +42,10 @@
         .btn-mini.has-notification { border-color: var(--alert); color: var(--alert); animation: pulse-alert-btn 2s infinite; }
         @keyframes pulse-alert-btn { 0% { box-shadow: 0 0 0 0 rgba(248, 113, 113, 0.4); } 70% { box-shadow: 0 0 0 10px rgba(248, 113, 113, 0); } 100% { box-shadow: 0 0 0 0 rgba(248, 113, 113, 0); } }
 
+        .resa-ticker { background: rgba(167, 139, 250, 0.1); border: 1px solid var(--purple); color: var(--purple); padding: 6px 15px; border-radius: 6px; font-size: 0.85rem; font-weight: 900; display: flex; align-items: center; gap: 10px; min-width: 220px; justify-content: center; cursor: pointer; transition: transform 0.2s; }
+        .resa-ticker:active { transform: scale(0.98); }
+        .ticker-text { transition: opacity 0.5s ease-in-out; opacity: 1; letter-spacing: 1px; }
+
         #archi-btn-bar { display: none; background: var(--bg); padding: 15px; border-bottom: 1px solid var(--border); justify-content: center; gap: 15px; flex-wrap: wrap; box-shadow: inset 0 -2px 5px rgba(0,0,0,0.1); }
         .edit-mode #archi-btn-bar { display: flex; }
 
@@ -271,6 +275,11 @@
             <div style="font-weight:900; letter-spacing:2px; font-size: 1.3rem; color: var(--gold);">EMPIRE PAD</div>
             <div id="stock-tag" style="color:var(--accent); font-weight:900; font-size:0.7rem; background: var(--accent-dim); padding: 4px 8px; border-radius: 4px; border: 1px solid var(--accent); transition: 0.3s;">● LIAISON SÉCURISÉE</div>
             <div id="user-badge" style="background:var(--panel); padding:6px 12px; border-radius:6px; font-size:0.85rem; color:var(--text-main); border:1px solid var(--border); font-weight: bold;">Utilisateur: Aucun</div>
+            
+            <div id="resa-ticker" class="resa-ticker" onclick="openPlanningModal()">
+                <span id="resa-text" class="ticker-text">Sync. Réservations...</span>
+            </div>
+
             <div id="empire-clock">00:00:00</div>
         </div>
         <div class="nav-btns">
@@ -398,7 +407,12 @@
 
     <div id="order-drawer" class="drawer">
         <div style="padding:15px 25px; border-bottom:1px solid var(--border); display:flex; justify-content:space-between; align-items:center; background: var(--panel);">
-            <h2 id="table-label" style="margin:0; font-size: 1.5rem; color: var(--text-main); letter-spacing: 1px;">TABLE</h2>
+            
+            <div style="display: flex; align-items: center; gap: 15px;">
+                <h2 id="table-label" style="margin:0; font-size: 1.5rem; color: var(--text-main); letter-spacing: 1px;">TABLE</h2>
+                <button class="btn-mini" style="border-color: var(--info-zen); color: var(--info-zen); background: rgba(56, 189, 248, 0.1);" onclick="modifyTableCovers()">👤 MODIFIER COUVERTS</button>
+            </div>
+            
             <button class="btn-mini" style="font-size: 0.9rem; padding: 8px 15px;" onclick="closeOrder()">FERMER ✕</button>
         </div>
         
@@ -521,7 +535,7 @@
                 <button class="shape-btn" onclick="setShape('losange')">🔶 LOSANGE</button>
                 <button class="shape-btn" onclick="setShape('triangle')">🔺 TRIANGLE</button>
             </div>
-            <input type="hidden" id="config-table-shape" value="oval">
+            <input type="hidden" id="config-table-shape" value="rect">
         </div>
         <button class="pay-btn" style="border-color: var(--accent); color: var(--accent); background: var(--accent-dim); margin-bottom: 10px;" onclick="saveTableConfig()">✅ SAUVEGARDER LA TABLE</button>
         <div style="display: flex; gap: 10px;">
@@ -649,6 +663,42 @@
     </div>
 
     <script>
+        // 🟢 NOUVELLE FONCTION : MODIFIER LES COUVERTS EN PLEIN SERVICE 🟢
+        async function modifyTableCovers() {
+            if (!currentTable) return;
+            
+            // On cherche si c'est une table Extra ou une Résa assignée (qui ont le paramètre pax/couverts)
+            let currentPax = "?";
+            let obsInput = document.getElementById('order-obs');
+            let match = obsInput.value.match(/🍽️ (\d+) Couvert\(s\)/);
+            if(match) currentPax = match[1];
+
+            let newPaxStr = prompt(`Combien de couverts à la table ${currentTable} ?`, currentPax);
+            if (newPaxStr === null || newPaxStr.trim() === "") return; // Annulé
+            
+            let newPax = parseInt(newPaxStr);
+            if (isNaN(newPax) || newPax <= 0) return alert("Nombre invalide.");
+
+            // 1. Mise à jour de l'affichage local (l'input d'observation du tiroir)
+            let baseObs = obsInput.value.replace(/🍽️ \d+ Couvert\(s\)( \| )?/, '').replace(/ \| $/, '').trim();
+            if (baseObs === "") {
+                obsInput.value = `🍽️ ${newPax} Couvert(s)`;
+            } else {
+                obsInput.value = `🍽️ ${newPax} Couvert(s) | ${baseObs}`;
+            }
+
+            // 2. Si c'est une table de l'architecture "Extra", on met à jour l'architecture
+            let tObj = tables.find(t => t && t.label === currentTable && t.isExtra);
+            if (tObj) {
+                tObj.pax = newPax;
+                pushArchitecture();
+            }
+
+            // 3. Sauvegarde silencieuse dans la base de données
+            await saveTableState(false, true); 
+            renderFloor();
+        }
+
         // 🟢 FONCTION DE FERMETURE DU TIROIR BLINDÉE 🟢
         function closeOrder() { 
             try {
@@ -756,7 +806,9 @@
         let rooms = safeArray('empire_rooms', ['Salle Principale']);
         let currentRoom = rooms[0] || 'Salle Principale';
         let configRoomOldName = null, currentTactileRoomName = "";
-        let tables = safeArray('empire_architecture', [ {label:"T1", l:550, t:500, w:80, h:120, shape:"oval", room: "Salle Principale"} ]);
+        
+        // 🟢 LES TABLES SONT CRÉÉES EN CARRÉ PAR DÉFAUT MAINTENANT ("shape":"rect") 🟢
+        let tables = safeArray('empire_architecture', [ {label:"T1", l:550, t:500, w:80, h:120, shape:"rect", room: "Salle Principale"} ]);
 
         let activeOrders = {}; let currentTable = null; let ticketItems = []; let previousOrdersState = {};
         let inactivityTimer; const INACTIVITY_LIMIT = 120000; 
@@ -800,7 +852,6 @@
             closeOrder(); closeArchiMode(); closeAdminCatalog(); closePlanningModal(); closeDrawer('history-drawer'); closeAuditModal();
             clearTimeout(inactivityTimer); 
             
-            // 🟢 FERMETURE DU MODAL DE CONCIERGERIE 🟢
             let resaModal = document.getElementById('admin-resa-manager-modal');
             if(resaModal) resaModal.classList.remove('open');
         }
@@ -853,7 +904,6 @@
             document.getElementById('audit-modal').classList.remove('open');
         }
 
-        // 🟢 FONCTIONS DE CONCIERGERIE MANAGER 🟢
         function openResaManager() {
             if (!currentUser || currentUser.role !== 'Manager') return alert("⛔ Accès Manager requis");
             document.getElementById('admin-resa-manager-modal').classList.add('open');
@@ -1002,7 +1052,6 @@
                 alert("Erreur de sauvegarde.");
             }
         }
-        // 🟢 ----------------------------------------------------- 🟢
 
         async function renderAuditModal() {
             const container = document.getElementById('audit-content');
@@ -1136,7 +1185,6 @@
             container.innerHTML = html;
         }
 
-        // 🟢 GESTION DU PLANNING ET DE L'ASSIGNATION 🟢
         function openPlanningModal() {
             document.getElementById('planning-modal').classList.add('open');
             renderPlanning('today');
@@ -1276,6 +1324,7 @@
             let pax = parseInt(paxInput);
             if (isNaN(pax) || pax <= 0) pax = 1; 
             
+            // 🟢 NOUVELLE TABLE EXTRA EST CARRÉE PAR DÉFAUT 🟢
             tables.push({ label: tName, pax: pax, l: window.innerWidth/2 - 40, t: window.innerHeight/2 - 60, w: 90, h: 90, shape: "rect", room: currentRoom, isExtra: true });
             
             pushArchitecture();
@@ -1315,14 +1364,15 @@
         
         function addNewTable() {
             let nextNum = 1; tables.filter(t => t && t.room === currentRoom).forEach(t => { let m = t.label.match(/\d+/); if(m && parseInt(m[0]) >= nextNum) nextNum = parseInt(m[0]) + 1; });
-            tables.push({ label: "T" + nextNum, l: window.innerWidth/2 - 40, t: window.innerHeight/2 - 60, w: 80, h: 120, shape: "oval", room: currentRoom }); renderFloor();
+            // 🟢 NOUVELLE TABLE EST CARRÉE PAR DÉFAUT 🟢
+            tables.push({ label: "T" + nextNum, l: window.innerWidth/2 - 40, t: window.innerHeight/2 - 60, w: 80, h: 120, shape: "rect", room: currentRoom }); renderFloor();
         }
         function addTactileTableName(v) { if(v === 'CLEAR') currentTactileName = currentTactileName.slice(0, -1); else currentTactileName += v; document.getElementById('config-table-name-display').innerText = currentTactileName; }
         function setShape(s) { document.getElementById('config-table-shape').value = s; }
         
         function openTableConfigModal(id) {
             let t = tables.find(x => x && x.label === id && x.room === currentRoom); if(!t) return;
-            configTableId = id; currentTactileName = t.label; document.getElementById('config-table-name-display').innerText = currentTactileName; document.getElementById('config-table-shape').value = t.shape || 'oval';
+            configTableId = id; currentTactileName = t.label; document.getElementById('config-table-name-display').innerText = currentTactileName; document.getElementById('config-table-shape').value = t.shape || 'rect';
             document.getElementById('table-config-modal').style.display = 'flex';
         }
         function closeTableConfigModal() { configTableId = null; document.getElementById('table-config-modal').style.display = 'none'; }
@@ -2208,7 +2258,6 @@
 
                 ticketItems = []; document.getElementById('order-obs').value = ''; 
                 
-                // 🟢 FERMETURE DU TIROIR SÉCURISÉE APRÈS ENCAISSEMENT 🟢
                 let drawer = document.getElementById('order-drawer');
                 if (drawer) drawer.classList.remove('open'); 
                 currentTable = null; 
@@ -2403,7 +2452,6 @@
             setInterval(syncData, 3000);
         }
 
-        // Le chronomètre et le recalcul
         setInterval(() => { 
             let c = document.getElementById('empire-clock'); 
             if(c) c.innerText = new Date().toLocaleTimeString('fr-FR', { hour12: false }); 
