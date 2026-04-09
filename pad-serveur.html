@@ -229,7 +229,7 @@
         @keyframes dropDownToast { from { transform: translateY(-100px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
         @keyframes fadeOutToast { to { opacity: 0; transform: translateY(-20px); } }
 
-        /* 🟢 ADMIN RESA (CONCIERGERIE) 🟢 */
+        /* 🟢 ADMIN RESA 🟢 */
         .admin-resa-card { background: var(--bg); border: 1px solid var(--border); padding: 15px; border-radius: 8px; margin-bottom: 15px; }
         .admin-resa-card.confirmed { border-left: 4px solid var(--accent); }
         .admin-resa-card.rejected { border-left: 4px solid var(--alert); opacity: 0.6; }
@@ -287,6 +287,7 @@
             <button class="btn-mini" style="border-color: var(--service); color: var(--service); background: rgba(244, 114, 182, 0.1);" onclick="addExtraTable()">➕ TABLE EXTRA</button>
             <button class="btn-mini" style="border-color: #60a5fa; color: #60a5fa; background: rgba(96, 165, 250, 0.1);" onclick="openHistoryDrawer()">📜 HISTO.</button>
             <button id="btn-planning" class="btn-mini" onclick="openPlanningModal()">📅 PLAN.</button>
+            <button class="btn-mini" style="border-color: var(--purple); color: var(--purple);" onclick="window.location.href='reservation.html?source=pad'">🎟️ RÉSA</button>
             <button id="btn-admin-catalog" class="btn-mini admin" onclick="openAdminCatalog()">👑 GESTION</button>
             <button class="btn-mini sync" style="background: var(--alert-dim);" onclick="logout()">🔒</button>
         </div>
@@ -1324,7 +1325,6 @@
             let pax = parseInt(paxInput);
             if (isNaN(pax) || pax <= 0) pax = 1; 
             
-            // 🟢 NOUVELLE TABLE EXTRA EST CARRÉE PAR DÉFAUT 🟢
             tables.push({ label: tName, pax: pax, l: window.innerWidth/2 - 40, t: window.innerHeight/2 - 60, w: 90, h: 90, shape: "rect", room: currentRoom, isExtra: true });
             
             pushArchitecture();
@@ -1359,13 +1359,30 @@
         }
 
         function unlockArchiMode() { if (!currentUser || currentUser.role !== 'Manager') return alert("⛔ Accès Manager requis"); isArchiMode = true; document.body.classList.add('edit-mode'); renderRooms(); renderFloor(); }
-        function closeArchiMode() { isArchiMode = false; document.body.classList.remove('edit-mode'); renderRooms(); renderFloor(); }
+        
+        async function closeArchiMode() { 
+            isArchiMode = false; 
+            document.body.classList.remove('edit-mode'); 
+            
+            // 🟢 LORSQU'ON QUITTE SANS SAUVER, ON RÉTABLIT LA DERNIÈRE ARCHITECTURE CONNUE 🟢
+            try {
+                const state = await API.getState();
+                if (state.activeOrders && state.activeOrders['ARCHITECTURE']) {
+                    rooms = state.activeOrders['ARCHITECTURE'].data.rooms || ['Salle Principale'];
+                    tables = state.activeOrders['ARCHITECTURE'].data.tables || [];
+                }
+            } catch(e) {}
+            
+            renderRooms(); 
+            renderFloor(); 
+        }
+        
         function saveArchitecture() { pushArchitecture(); showToast("✅ Plan sauvegardé avec succès"); closeArchiMode(); }
         
         function addNewTable() {
             let nextNum = 1; tables.filter(t => t && t.room === currentRoom).forEach(t => { let m = t.label.match(/\d+/); if(m && parseInt(m[0]) >= nextNum) nextNum = parseInt(m[0]) + 1; });
-            // 🟢 NOUVELLE TABLE EST CARRÉE PAR DÉFAUT 🟢
-            tables.push({ label: "T" + nextNum, l: window.innerWidth/2 - 40, t: window.innerHeight/2 - 60, w: 80, h: 120, shape: "rect", room: currentRoom }); renderFloor();
+            tables.push({ label: "T" + nextNum, l: window.innerWidth/2 - 40, t: window.innerHeight/2 - 60, w: 80, h: 120, shape: "rect", room: currentRoom }); 
+            renderFloor();
         }
         function addTactileTableName(v) { if(v === 'CLEAR') currentTactileName = currentTactileName.slice(0, -1); else currentTactileName += v; document.getElementById('config-table-name-display').innerText = currentTactileName; }
         function setShape(s) { document.getElementById('config-table-shape').value = s; }
@@ -1383,9 +1400,10 @@
                 if(n && n !== t.label) { if(activeOrders[t.label]) { activeOrders[n] = activeOrders[t.label]; delete activeOrders[t.label]; } t.label = n; }
                 t.shape = document.getElementById('config-table-shape').value;
             }
-            closeTableConfigModal(); renderFloor(); pushArchitecture();
+            closeTableConfigModal(); renderFloor(); 
+            // Retiré : pushArchitecture() ici pour ne pas écraser avant "Sauvegarder le plan" complet
         }
-        function deleteCurrentTable() { if(confirm("Supprimer cette table ?")) { tables = tables.filter(t => !(t && t.label === configTableId && t.room === currentRoom)); closeTableConfigModal(); renderFloor(); pushArchitecture(); } }
+        function deleteCurrentTable() { if(confirm("Supprimer cette table ?")) { tables = tables.filter(t => !(t && t.label === configTableId && t.room === currentRoom)); closeTableConfigModal(); renderFloor(); } }
 
         function makeInteractive(elmnt, tableObj, resizerElnt) {
             let p1=0, p2=0, p3=0, p4=0, iW, iH, iX, iY;
@@ -1538,6 +1556,7 @@
                     });
                 }
 
+                // Affichage Commandes Web
                 let webOrders = Object.keys(activeOrders).filter(k => activeOrders[k] && activeOrders[k].isWeb);
                 let webStartX = 20; let webStartY = 20;
 
@@ -1871,7 +1890,22 @@
             await API.update(currentTable, null, true);
             
             document.getElementById('clear-ticket-modal').classList.remove('open');
-            closeOrder();
+            
+            // 🟢 FORCE LA FERMETURE SÉCURISÉE 🟢
+            try {
+                if (currentTable) {
+                    let tObj = tables.find(t => t && t.label === currentTable && t.isExtra);
+                    if (tObj && ticketItems.length === 0) {
+                        tables = tables.filter(t => t && t.label !== currentTable);
+                        pushArchitecture();
+                        renderFloor();
+                    }
+                }
+            } catch(e) { console.error("Erreur suppression table extra", e); }
+            
+            let drawer = document.getElementById('order-drawer');
+            if (drawer) drawer.classList.remove('open'); 
+            currentTable = null; 
             renderFloor();
         }
 
@@ -2258,6 +2292,7 @@
 
                 ticketItems = []; document.getElementById('order-obs').value = ''; 
                 
+                // 🟢 FERMETURE DU TIROIR SÉCURISÉE APRÈS ENCAISSEMENT 🟢
                 let drawer = document.getElementById('order-drawer');
                 if (drawer) drawer.classList.remove('open'); 
                 currentTable = null; 
@@ -2360,12 +2395,13 @@
                     
                     if(nO['STOCK_ALERTS']) stockAlerts = nO['STOCK_ALERTS'].data;
                     
-                    if(nO['ARCHITECTURE']) {
+                    // 🟢 LE BOUCLIER D'ARCHITECTURE : NE PAS ÉCRASER SI ON MODIFIE LE PLAN 🟢
+                    if(nO['ARCHITECTURE'] && !isArchiMode) {
                         let arch = nO['ARCHITECTURE'].data;
                         let archChanged = false;
                         if(JSON.stringify(rooms) !== JSON.stringify(arch.rooms)) { rooms = arch.rooms || ['Salle Principale']; archChanged = true; }
                         if(JSON.stringify(tables) !== JSON.stringify(arch.tables)) { tables = arch.tables || []; archChanged = true; }
-                        if(archChanged && !isArchiMode && !isDraggingTable) {
+                        if(archChanged && !isDraggingTable) {
                             if(!rooms.includes(currentRoom)) currentRoom = rooms[0] || 'Salle Principale';
                             renderRooms(); renderFloor();
                         }
