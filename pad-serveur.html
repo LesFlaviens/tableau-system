@@ -42,6 +42,10 @@
         .btn-mini.has-notification { border-color: var(--alert); color: var(--alert); animation: pulse-alert-btn 2s infinite; }
         @keyframes pulse-alert-btn { 0% { box-shadow: 0 0 0 0 rgba(248, 113, 113, 0.4); } 70% { box-shadow: 0 0 0 10px rgba(248, 113, 113, 0); } 100% { box-shadow: 0 0 0 0 rgba(248, 113, 113, 0); } }
 
+        .resa-ticker { background: rgba(167, 139, 250, 0.1); border: 1px solid var(--purple); color: var(--purple); padding: 6px 15px; border-radius: 6px; font-size: 0.85rem; font-weight: 900; display: flex; align-items: center; gap: 10px; min-width: 220px; justify-content: center; cursor: pointer; transition: transform 0.2s; }
+        .resa-ticker:active { transform: scale(0.98); }
+        .ticker-text { transition: opacity 0.5s ease-in-out; opacity: 1; letter-spacing: 1px; }
+
         #archi-btn-bar { display: none; background: var(--bg); padding: 15px; border-bottom: 1px solid var(--border); justify-content: center; gap: 15px; flex-wrap: wrap; box-shadow: inset 0 -2px 5px rgba(0,0,0,0.1); }
         .edit-mode #archi-btn-bar { display: flex; }
 
@@ -59,27 +63,8 @@
         .assign-mode .floor-plan { background-color: rgba(96, 165, 250, 0.05); animation: pulse-bg-assign 2s infinite; }
         @keyframes pulse-bg-assign { 0% { background-color: rgba(96, 165, 250, 0.05); } 50% { background-color: rgba(96, 165, 250, 0.15); } 100% { background-color: rgba(96, 165, 250, 0.05); } }
 
-        /* 🟢 NOUVELLE STRUCTURE DES TABLES AVEC CHAISES 🟢 */
-        .table-wrapper {
-            position: absolute;
-            box-sizing: border-box;
-            touch-action: none;
-            display: flex;
-            justify-content: center;
-            align-items: center;
-        }
-
-        .chair {
-            position: absolute;
-            width: 14px;
-            height: 14px;
-            background: var(--panel);
-            border: 2px solid var(--border);
-            border-radius: 50%;
-            z-index: 1;
-            transition: all 0.3s;
-            box-shadow: 0 2px 4px rgba(0,0,0,0.5);
-        }
+        .table-wrapper { position: absolute; box-sizing: border-box; touch-action: none; display: flex; justify-content: center; align-items: center; }
+        .chair { position: absolute; width: 14px; height: 14px; background: var(--panel); border: 2px solid var(--border); border-radius: 50%; z-index: 1; transition: all 0.3s; box-shadow: 0 2px 4px rgba(0,0,0,0.5); }
 
         .table-obj { position: relative; width: 100%; height: 100%; background: var(--panel); border: 2px solid var(--border); display: flex; justify-content: center; align-items: center; font-weight: bold; color: var(--text-main); cursor: pointer; transition: border-color 0.2s, box-shadow 0.2s, background 0.2s, transform 0.1s; box-sizing: border-box; touch-action: none; box-shadow: var(--shadow); z-index: 10;}
         .table-obj:active { transform: scale(0.95); }
@@ -95,7 +80,7 @@
         
         .table-content { width: 100%; height: 100%; display: flex; justify-content: center; align-items: center; border-radius: inherit; }
 
-        /* 🟢 STATUTS DE TABLES ET CHAISES 🟢 */
+        /* 🟢 STATUTS DE TABLES 🟢 */
         .table-wrapper.status-hold .table-obj { border-color: var(--gold); background: var(--gold-dim); color: var(--gold); }
         .table-wrapper.status-hold .chair { border-color: var(--gold); }
         .table-wrapper.status-hold .table-obj > .table-content { background: var(--gold-dim); color: var(--gold); }
@@ -309,11 +294,6 @@
             <div style="font-weight:900; letter-spacing:2px; font-size: 1.3rem; color: var(--gold);">EMPIRE PAD</div>
             <div id="stock-tag" style="color:var(--accent); font-weight:900; font-size:0.7rem; background: var(--accent-dim); padding: 4px 8px; border-radius: 4px; border: 1px solid var(--accent); transition: 0.3s;">● LIAISON SÉCURISÉE</div>
             <div id="user-badge" style="background:var(--panel); padding:6px 12px; border-radius:6px; font-size:0.85rem; color:var(--text-main); border:1px solid var(--border); font-weight: bold;">Utilisateur: Aucun</div>
-            
-            <div id="resa-ticker" class="resa-ticker" onclick="openPlanningModal()">
-                <span id="resa-text" class="ticker-text">Sync. Réservations...</span>
-            </div>
-
             <div id="empire-clock">00:00:00</div>
         </div>
         <div class="nav-btns">
@@ -422,6 +402,7 @@
                 <button id="btn-plan-today" class="btn-mini gold" style="flex:1; padding: 15px; font-size: 1.1rem;" onclick="renderPlanning('today')">AUJOURD'HUI</button>
                 <button id="btn-plan-tomorrow" class="btn-mini" style="flex:1; padding: 15px; font-size: 1.1rem;" onclick="renderPlanning('tomorrow')">DEMAIN</button>
             </div>
+            <button class="pay-btn" style="width: 100%; border-color: var(--gold); color: var(--gold); background: var(--gold-dim); padding: 15px; margin-bottom: 15px;" onclick="autoAssignToday()">🪄 AUTO-PLACER LES RÉSERVATIONS</button>
             <div id="planning-content" style="flex:1; overflow-y:auto; display:flex; flex-direction:column; gap:12px; padding-right:10px;"></div>
         </div>
     </div>
@@ -707,6 +688,58 @@
     </div>
 
     <script>
+        // 🟢 AUTO-PLACEMENT DES RÉSERVATIONS 🟢
+        async function autoAssignToday() {
+            if (!currentUser || currentUser.role !== 'Manager') return alert("⛔ Accès Manager requis");
+            
+            let todayStr = new Date().toISOString().split('T')[0];
+            let resasToAssign = reservationsData.filter(r => r.date === todayStr && r.status === 'confirmed' && !r.assignedTable);
+            
+            if (resasToAssign.length === 0) return alert("Aucune réservation confirmée en attente d'assignation pour aujourd'hui.");
+
+            const state = await API.getState();
+            let currentOrders = state.activeOrders || {};
+            
+            let updatesCount = 0;
+
+            for (let resa of resasToAssign) {
+                let availableTables = tables.filter(t => {
+                    let o = currentOrders[t.label];
+                    if (o && (o.status === 'reserved' || (o.items && o.items.length > 0))) return false;
+                    if (t.isExtra) return false; 
+                    return t.pax >= resa.couverts;
+                });
+
+                if (availableTables.length > 0) {
+                    availableTables.sort((a, b) => a.pax - b.pax);
+                    let bestTable = availableTables[0];
+
+                    let tableData = {
+                        status: 'reserved',
+                        time: resa.time,
+                        clientName: resa.name,
+                        observations: `🍽️ ${resa.couverts} Couvert(s)` + (resa.obs ? ` | ⚠️ ${resa.obs}` : ''),
+                        items: []
+                    };
+
+                    currentOrders[bestTable.label] = { data: tableData }; 
+                    await API.update(bestTable.label, tableData, true);
+                    
+                    resa.assignedTable = bestTable.label;
+                    updatesCount++;
+                }
+            }
+
+            if (updatesCount > 0) {
+                await API.update('RESERVATIONS_MASTER', reservationsData);
+                showToast(`✅ ${updatesCount} table(s) assignée(s) automatiquement.`);
+                renderPlanning('today');
+                renderFloor();
+            } else {
+                alert("⚠️ Aucune table adéquate ou disponible n'a été trouvée pour les réservations en attente.");
+            }
+        }
+
         // 🟢 NOUVELLE FONCTION : MODIFIER LES COUVERTS EN PLEIN SERVICE 🟢
         async function modifyTableCovers() {
             if (!currentTable) return;
@@ -852,7 +885,6 @@
         let currentRoom = rooms[0] || 'Salle Principale';
         let configRoomOldName = null, currentTactileRoomName = "";
         
-        // 🟢 LES TABLES ONT UNE CAPACITÉ PAR DÉFAUT (pax: 4) 🟢
         let tables = safeArray('empire_architecture', [ {label:"T1", l:550, t:500, w:80, h:120, shape:"rect", pax: 4, room: "Salle Principale"} ]);
 
         let activeOrders = {}; let currentTable = null; let ticketItems = []; let previousOrdersState = {};
@@ -1139,7 +1171,7 @@
             let todayClosed = allClosed.filter(x => x.time && x.time.startsWith(todayStr));
             
             if (todayClosed.length === 0) {
-                container.innerHTML = '<div style="color:var(--text-muted); text-align:center; padding: 20px;">Aucune table clôturée aujourd\'hui.</div>';
+                container.innerHTML = '<div style="color:var(--text-muted); text-align:center; padding: 20px;">Aucune table clôturée aujourd'hui.</div>';
                 return;
             }
 
@@ -1439,7 +1471,7 @@
             configTableId = id; currentTactileName = t.label; 
             document.getElementById('config-table-name-display').innerText = currentTactileName; 
             document.getElementById('config-table-shape').value = t.shape || 'rect';
-            document.getElementById('config-table-pax').value = t.pax || 4; // 🟢 On charge la capacité
+            document.getElementById('config-table-pax').value = t.pax || 4; 
             document.getElementById('table-config-modal').style.display = 'flex';
         }
         function closeTableConfigModal() { configTableId = null; document.getElementById('table-config-modal').style.display = 'none'; }
@@ -1450,7 +1482,7 @@
                 let n = currentTactileName.trim();
                 if(n && n !== t.label) { if(activeOrders[t.label]) { activeOrders[n] = activeOrders[t.label]; delete activeOrders[t.label]; } t.label = n; }
                 t.shape = document.getElementById('config-table-shape').value;
-                t.pax = parseInt(document.getElementById('config-table-pax').value) || 4; // 🟢 On sauvegarde la capacité
+                t.pax = parseInt(document.getElementById('config-table-pax').value) || 4; 
             }
             closeTableConfigModal(); renderFloor(); 
         }
@@ -1472,7 +1504,7 @@
             function res(e) { e.preventDefault(); isDraggingTable=true; updateDim(e.clientX, e.clientY); }
             function tRes(e) { isDraggingTable=true; updateDim(e.touches[0].clientX, e.touches[0].clientY); }
             function updateDim(cX, cY) { let nW = Math.max(40, iW+(cX-iX)); let nH = Math.max(40, iH+(cY-iY)); elmnt.style.width=nW+"px"; elmnt.style.height=nH+"px"; tableObj.w=nW; tableObj.h=nH; }
-            function close() { document.onmouseup=null; document.onmousemove=null; document.ontouchend=null; document.ontouchmove=null; setTimeout(()=>{isDraggingTable=false; renderFloor(); }, 50); } // 🟢 Re-render pour aligner les chaises après resize 🟢
+            function close() { document.onmouseup=null; document.onmousemove=null; document.ontouchend=null; document.ontouchmove=null; setTimeout(()=>{isDraggingTable=false; renderFloor(); }, 50); } 
         }
 
         const isItemInCategory = (itemName, catArray) => {
@@ -1516,7 +1548,6 @@
                     tables.forEach(t => { if(t && !t.room) t.room = rooms[0] || 'Salle Principale'; });
                     tables.filter(t => t && t.room === currentRoom).forEach(t => {
                         
-                        // 🟢 GÉNÉRATION DU WRAPPER (POUR LES CHAISES) ET DE LA TABLE 🟢
                         let tStatus = '';
                         let orderData = activeOrders[t.label];
 
@@ -1635,12 +1666,11 @@
                         };
                         
                         wrapper.appendChild(d);
-                        makeInteractive(wrapper, t, r); // On rend interactif le wrapper contenant les chaises
+                        makeInteractive(wrapper, t, r); 
                         floor.appendChild(wrapper);
                     });
                 }
 
-                // Affichage Commandes Web
                 let webOrders = Object.keys(activeOrders).filter(k => activeOrders[k] && activeOrders[k].isWeb);
                 let webStartX = 20; let webStartY = 20;
 
@@ -1974,21 +2004,7 @@
             await API.update(currentTable, null, true);
             
             document.getElementById('clear-ticket-modal').classList.remove('open');
-            
-            try {
-                if (currentTable) {
-                    let tObj = tables.find(t => t && t.label === currentTable && t.isExtra);
-                    if (tObj && ticketItems.length === 0) {
-                        tables = tables.filter(t => t && t.label !== currentTable);
-                        pushArchitecture();
-                        renderFloor();
-                    }
-                }
-            } catch(e) { console.error("Erreur suppression table extra", e); }
-            
-            let drawer = document.getElementById('order-drawer');
-            if (drawer) drawer.classList.remove('open'); 
-            currentTable = null; 
+            closeOrder();
             renderFloor();
         }
 
