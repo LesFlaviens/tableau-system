@@ -51,6 +51,11 @@
         .logo-text { color: var(--text-zen); font-size: 1.5rem; font-weight: 900; letter-spacing: 2px; margin: 0; text-transform: uppercase; }
         .clock { font-family: monospace; font-size: 1.2rem; color: var(--info-zen); font-weight: bold; background: rgba(96, 165, 250, 0.1); padding: 5px 15px; border-radius: 6px; border: 1px solid rgba(96, 165, 250, 0.3);}
 
+        /* 🟢 LE RADAR DE RÉSERVATION 🟢 */
+        .resa-ticker { background: rgba(167, 139, 250, 0.1); border: 1px solid var(--purple-zen); color: var(--purple-zen); padding: 6px 15px; border-radius: 6px; font-size: 1rem; font-weight: 900; display: flex; align-items: center; gap: 10px; min-width: 260px; justify-content: center; cursor: pointer; transition: transform 0.2s; box-shadow: inset 0 0 8px rgba(0,0,0,0.3);}
+        .resa-ticker:active { transform: scale(0.98); }
+        .ticker-text { transition: opacity 0.5s ease-in-out; opacity: 1; letter-spacing: 1px; }
+
         .nav-btns { display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
         .nav-btn { background: var(--bg-zen); border: 1px solid var(--border-zen); color: var(--text-zen); padding: 10px 18px; border-radius: 6px; font-size: 0.85rem; font-weight: bold; cursor: pointer; text-transform: uppercase; transition: 0.2s; box-shadow: 0 2px 4px rgba(0,0,0,0.2);}
         .nav-btn:hover { background: rgba(255,255,255,0.05); }
@@ -148,7 +153,6 @@
         .undo-item:hover { background: rgba(239, 68, 68, 0.1); color: var(--alert-zen); border-color: var(--alert-zen); }
         .undo-item::before { content: "↩️ Repêcher :"; opacity: 0.6; }
 
-        /* Styles des modules d'accompagnement */
         .recipe-card { background: var(--panel-zen); padding: 20px; border-radius: 8px; border: 1px solid var(--border-zen); }
         .recipe-title { color: var(--info-zen); font-size: 1.2rem; font-weight: bold; margin: 0 0 10px 0; border-bottom: 1px solid var(--border-zen); padding-bottom: 10px; text-transform: uppercase; }
         .recipe-text { font-size: 0.9rem; color: #cbd5e1; line-height: 1.6; white-space: pre-wrap; }
@@ -182,10 +186,25 @@
         </div>
     </div>
 
+    <div id="resa-details-modal" class="modal">
+        <div style="background:var(--panel-zen); padding:30px; border-radius:12px; width: 800px; max-width: 95%; max-height: 90vh; display:flex; flex-direction:column; box-shadow: 0 10px 30px rgba(0,0,0,0.5); border: 1px solid var(--purple-zen);">
+            <div style="display:flex; justify-content:space-between; align-items:center; border-bottom: 1px solid var(--border-zen); padding-bottom: 15px; margin-bottom: 15px;">
+                <h2 style="color:var(--purple-zen); font-size: 1.8rem; margin: 0; text-transform: uppercase; letter-spacing: 1px;">📅 DÉTAILS DES RÉSERVATIONS</h2>
+                <button class="nav-btn" style="border-color: var(--border-zen); color: var(--text-muted);" onclick="closeResaDetailsModal()">✕ FERMER</button>
+            </div>
+            <div id="resa-details-content" style="flex:1; overflow-y:auto; display:flex; flex-direction:column; gap:12px; padding-right:10px;"></div>
+        </div>
+    </div>
+
     <header>
         <div style="display: flex; align-items: center; gap: 20px;">
             <h1 class="logo-text">🔥 LE PASS</h1>
             <div id="clock" class="clock">00:00:00</div>
+            
+            <div id="resa-ticker" class="resa-ticker" onclick="openResaDetailsModal()">
+                <span id="resa-text" class="ticker-text">Sync. Réservations...</span>
+            </div>
+
         </div>
         <div class="nav-btns">
             <button class="nav-btn active" id="tab-kds" onclick="switchTab('kds')">📝 LES BONS</button>
@@ -324,6 +343,11 @@
         let menuData = null;
         let supplierOrders = safeArray('empire_supplier_orders', []); 
         let recentlyDoneItems = safeArray('empire_recently_done', []);
+        
+        // 🟢 NOUVELLES VARIABLES RÉSERVATION 🟢
+        let reservationsData = [];
+        let currentResaViewIndex = 0;
+        let resaViews = ["⏳ CE MIDI : --", "⏳ CE SOIR : --", "📅 DEMAIN : --", "📅 SEMAINE : --"];
 
         // 🟢 RAFRAICHISSEMENT 1 SECONDE (HORLOGE ET CHRONO KDS) 🟢
         setInterval(() => { 
@@ -346,9 +370,110 @@
                     if (activeOrders['MENU_MASTER']) menuData = activeOrders['MENU_MASTER'].data;
                     if (activeOrders['SUPPLIER_ORDERS_CUISINE'] && activeOrders['SUPPLIER_ORDERS_CUISINE'].data.length > 0) supplierOrders = activeOrders['SUPPLIER_ORDERS_CUISINE'].data;
                     if (activeOrders['STAFF_PLANNING_MASTER']) updateStaffUI(activeOrders['STAFF_PLANNING_MASTER'].data);
+                    
+                    // 🟢 RÉCUPÉRATION DES RÉSERVATIONS 🟢
+                    if (activeOrders['RESERVATIONS_MASTER']) {
+                        reservationsData = activeOrders['RESERVATIONS_MASTER'].data || [];
+                        calculateReservations(); // Recalcul du radar
+                    }
                 }
             } catch (e) { console.error("Erreur Sync", e); }
         }
+
+        // 🟢 LOGIQUE DU RADAR 🟢
+        function calculateReservations() {
+            if(!reservationsData || reservationsData.length === 0) {
+                resaViews = ["⏳ CE MIDI : 0 Couverts", "⏳ CE SOIR : 0 Couverts", "📅 DEMAIN : 0 Couverts", "📅 SEMAINE : 0 Couverts"];
+                return;
+            }
+            let now = new Date(); 
+            let todayDateStr = now.toISOString().split('T')[0]; 
+            
+            let tomorrow = new Date(now); 
+            tomorrow.setDate(tomorrow.getDate() + 1); 
+            let tomorrowDateStr = tomorrow.toISOString().split('T')[0];
+
+            let endOfWeek = new Date(now);
+            endOfWeek.setDate(endOfWeek.getDate() + 7);
+            let endOfWeekStr = endOfWeek.toISOString().split('T')[0];
+
+            let coversMidi = 0; let coversSoir = 0; let coversDemain = 0; let coversSemaine = 0;
+
+            reservationsData.forEach(r => {
+                // On ignore les réservations refusées
+                if (r.status === 'rejected') return; 
+
+                let pax = parseInt(r.couverts) || parseInt(r.pax) || parseInt(r.personnes) || 0;
+                
+                if (r.date === todayDateStr) {
+                    if ((r.time || "00:00") < "16:00") coversMidi += pax; else coversSoir += pax;
+                } else if (r.date === tomorrowDateStr) { 
+                    coversDemain += pax; 
+                }
+                
+                if (r.date >= todayDateStr && r.date <= endOfWeekStr) {
+                    coversSemaine += pax;
+                }
+            });
+
+            resaViews = [ 
+                `⏳ CE MIDI : ${coversMidi} Couverts`, 
+                `⏳ CE SOIR : ${coversSoir} Couverts`, 
+                `📅 DEMAIN : ${coversDemain} Couverts`,
+                `📅 7 PROCHAINS JOURS : ${coversSemaine} Couverts`
+            ];
+        }
+
+        setInterval(() => {
+            const textEl = document.getElementById('resa-text');
+            if(textEl) {
+                textEl.style.opacity = 0; 
+                setTimeout(() => {
+                    textEl.innerText = resaViews[currentResaViewIndex];
+                    currentResaViewIndex = (currentResaViewIndex + 1) % resaViews.length;
+                    textEl.style.opacity = 1; 
+                }, 500); 
+            }
+        }, 5000);
+
+        // 🟢 OUVRIR LA LISTE DETAILLÉE DES RÉSERVATIONS 🟢
+        function openResaDetailsModal() {
+            const container = document.getElementById('resa-details-content');
+            if (!reservationsData || reservationsData.length === 0) {
+                container.innerHTML = `<div style="text-align:center; padding: 40px; color:var(--text-muted); font-size:1.1rem; font-style:italic;">Aucune réservation enregistrée.</div>`;
+            } else {
+                let now = new Date(); let todayStr = now.toISOString().split('T')[0];
+                let tomorrow = new Date(now); tomorrow.setDate(tomorrow.getDate() + 1); let tomorrowStr = tomorrow.toISOString().split('T')[0];
+                
+                // Filtre: Aujourd'hui/Demain + Confirmées ou en attente
+                let resas = reservationsData.filter(r => (r.date === todayStr || r.date === tomorrowStr) && r.status !== 'rejected');
+                resas.sort((a, b) => { if(a.date !== b.date) return a.date.localeCompare(b.date); return (a.time || "00:00").localeCompare(b.time || "00:00"); });
+
+                if(resas.length === 0) {
+                    container.innerHTML = `<div style="text-align:center; padding: 40px; color:var(--text-muted); font-size:1.1rem; font-style:italic;">Aucune réservation prévue aujourd'hui ni demain.</div>`;
+                } else {
+                    let html = ''; let currentDisplayDate = '';
+                    resas.forEach(r => {
+                        let displayDateLabel = (r.date === todayStr) ? "AUJOURD'HUI" : "DEMAIN";
+                        if (currentDisplayDate !== r.date) { html += `<h3 style="color:var(--text-main); border-bottom:1px solid var(--border-zen); padding-bottom:5px; margin-top:15px; margin-bottom:10px;">${displayDateLabel}</h3>`; currentDisplayDate = r.date; }
+                        let pax = parseInt(r.couverts) || parseInt(r.pax) || parseInt(r.personnes) || '?';
+                        let obsHtml = r.obs ? `<div style="color:var(--alert-zen); font-size:0.85rem; margin-top:5px; font-weight:bold;">⚠️ ${r.obs}</div>` : '';
+                        let statusIcon = r.status === 'confirmed' ? '🟢' : '⏳';
+
+                        html += `
+                        <div style="background:var(--bg-zen); border:1px solid var(--border-zen); padding:15px; border-radius:8px; display:flex; align-items:center; gap:20px;">
+                            <div style="color:var(--purple-zen); font-size:1.4rem; font-weight:900; width: 70px; text-align: center;">${r.time || '??:??'}</div>
+                            <div style="flex:1;"><div style="color:var(--text-zen); font-weight:bold; font-size:1.1rem; text-transform:uppercase;">${statusIcon} ${r.name || 'Client'}</div>${obsHtml}</div>
+                            <div style="background:rgba(167, 139, 250, 0.1); color:var(--purple-zen); padding:8px 15px; border-radius:6px; font-weight:900; font-size:1.1rem;">${pax} PAX</div>
+                        </div>`;
+                    });
+                    container.innerHTML = html;
+                }
+            }
+            document.getElementById('resa-details-modal').classList.add('open');
+        }
+
+        function closeResaDetailsModal() { document.getElementById('resa-details-modal').classList.remove('open'); }
 
         // --- GESTION DES BONS ET ALERTE (KDS) ---
         function openAlertModal(tableLabel) {
@@ -857,6 +982,12 @@
                     if (activeOrders['MENU_MASTER']) menuData = activeOrders['MENU_MASTER'].data;
                     if (activeOrders['SUPPLIER_ORDERS_CUISINE'] && activeOrders['SUPPLIER_ORDERS_CUISINE'].data.length > 0) supplierOrders = activeOrders['SUPPLIER_ORDERS_CUISINE'].data;
                     if (activeOrders['STAFF_PLANNING_MASTER']) updateStaffUI(activeOrders['STAFF_PLANNING_MASTER'].data);
+                    
+                    // 🟢 RÉCUPÉRATION DES RÉSERVATIONS 🟢
+                    if (activeOrders['RESERVATIONS_MASTER']) {
+                        reservationsData = activeOrders['RESERVATIONS_MASTER'].data || [];
+                        calculateReservations(); // Recalcul du radar
+                    }
                 }
             } catch (e) {}
         }
