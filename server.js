@@ -169,9 +169,17 @@ app.post('/api/woo-webhook', (req, res) => {
         fs.writeFile(DB_FILE, JSON.stringify(db, null, 2), (err) => {
             if (err) return res.status(500).send("Erreur d'écriture");
             res.status(200).send("OK");
+            const express = require('express');
+const cors = require('cors'); // <-- IL FAUT CETTE LIGNE
+
+const app = express();
+
+app.use(cors()); // <-- ET SURTOUT CETTE LIGNE POUR AUTORISER LA CONNEXION
+app.use(express.json());
         });
     });
 });
+
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
