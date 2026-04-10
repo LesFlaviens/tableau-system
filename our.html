@@ -290,7 +290,7 @@
         </div>
     </div>
 
-   <header>
+    <header>
         <div class="header-left">
             <div style="font-weight:900; letter-spacing:2px; font-size: 1.3rem; color: var(--gold);">EMPIRE PAD</div>
             <div id="stock-tag" style="color:var(--accent); font-weight:900; font-size:0.7rem; background: var(--accent-dim); padding: 4px 8px; border-radius: 4px; border: 1px solid var(--accent); transition: 0.3s;">● LIAISON SÉCURISÉE</div>
@@ -1065,6 +1065,8 @@
         function openDrawer(id) { document.getElementById(id).classList.add('open'); }
         function closeDrawer(id) { document.getElementById(id).classList.remove('open'); }
 
+        const RENDER_URL = "https://tableau-system.onrender.com";
+
         const API = {
             getState: async () => {
                 let state = { activeOrders: {} };
@@ -1094,17 +1096,19 @@
             },
             update: async (key, data, isOrder = false) => {
                 let payload = isOrder ? data : { data: data };
+                
                 let state = JSON.parse(localStorage.getItem('EMPIRE_GLOBAL_SYNC')) || { activeOrders: {} };
                 if (data === null) delete state.activeOrders[key];
                 else state.activeOrders[key] = payload;
                 localStorage.setItem('EMPIRE_GLOBAL_SYNC', JSON.stringify(state));
                 
                 try {
-                    await fetch(`${RENDER_URL}/update-order`, { 
+                    let r = await fetch(`${RENDER_URL}/update-order`, { 
                         method: 'POST', 
                         headers: {'Content-Type': 'application/json'}, 
                         body: JSON.stringify({ tableId: key, order: data === null ? null : payload }) 
                     });
+                    if (!r.ok) throw new Error("Update Failed");
                 } catch(e) {
                     let tag = document.getElementById('stock-tag');
                     if (tag) {
@@ -1116,6 +1120,7 @@
                 }
             }
         };
+
         window.addEventListener('storage', (e) => {
             if (e.key === 'EMPIRE_GLOBAL_SYNC') {
                 if(typeof syncData === 'function') syncData();
@@ -2828,6 +2833,9 @@
         document.body.addEventListener('touchstart', unlockAudio, {passive: true});
         document.body.addEventListener('mousedown', unlockAudio, {passive: true});
 
+        // 🟢 SÉCURITÉ : Empêche le spam des vieilles commandes au démarrage
+        let isFirstSync = true; 
+
         async function syncData() {
             if (isArchiMode) return; 
 
@@ -2906,7 +2914,8 @@
                                 });
                             }
                             
-                            if (hasNewReady) {
+                            // 🟢 SÉCURITÉ APPLIQUÉE : Ne sonne pas si c'est le 1er chargement
+                            if (hasNewReady && !isFirstSync) {
                                 playReadySound();
                                 if(navigator.vibrate) navigator.vibrate([200, 100, 200]);
                                 showToast(`✅ TABLE ${t} : PLAT PRÊT AU PASSE !`);
@@ -2916,6 +2925,9 @@
                     
                     previousOrdersState = JSON.parse(JSON.stringify(nO)); 
                     activeOrders = nO; 
+                    
+                    // 🟢 Fin du premier chargement
+                    isFirstSync = false; 
                     
                     if(document.getElementById('order-drawer').classList.contains('open') && currentTable) { 
                         checkTableAlertState(currentTable);
