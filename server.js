@@ -46,7 +46,7 @@ app.post('/update-order', (req, res) => {
     });
 });
 
-// 🟢 MOTEUR QR CODE ICHEF.CH (CONSERVÉ) 🟢
+// 🟢 MOTEUR QR CODE ICHEF.CH
 app.post('/api/woo-webhook', (req, res) => {
     const commande = req.body;
     if (!commande || !commande.id) return res.status(200).send("Ping");
@@ -68,7 +68,8 @@ app.post('/api/woo-webhook', (req, res) => {
 
         let formattedItems = commande.line_items ? commande.line_items.map((item, index) => {
             let nomLow = item.name.toLowerCase();
-            let isDrink = ['biere', 'vin', 'eau', 'coca', 'jus', 'café', 'thé', 'boisson', 'cocktail'].some(mot => nomLow.includes(mot));
+            // Liste étendue pour que le Bar reçoive bien ses bons
+            let isDrink = ['biere', 'bière', 'vin', 'eau', 'coca', 'jus', 'café', 'cafe', 'thé', 'boisson', 'cocktail', 'spritz', 'verre', 'bouteille'].some(mot => nomLow.includes(mot));
             return {
                 id: Date.now() + index, itemId: Date.now() + index,
                 n: item.name, p: parseFloat(item.price) || 0, qty: item.quantity || 1,
