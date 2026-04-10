@@ -55,29 +55,27 @@
         .resa-ticker { background: rgba(167, 139, 250, 0.1); border: 1px solid var(--purple-zen); color: var(--purple-zen); padding: 6px 15px; border-radius: 6px; font-size: 1rem; font-weight: 900; display: flex; align-items: center; gap: 10px; min-width: 260px; justify-content: center; cursor: pointer; transition: transform 0.2s; box-shadow: inset 0 0 8px rgba(0,0,0,0.3);}
         .resa-ticker:active { transform: scale(0.98); }
         .ticker-text { transition: opacity 0.5s ease-in-out; opacity: 1; letter-spacing: 1px; }
-        
-        #conn-status { font-size: 0.8rem; font-weight: bold; padding: 4px 8px; border-radius: 4px; border: 1px solid; margin-left: 10px;}
 
-        /* 🟢 MENU NAVIGATION EN BAS 🟢 */
-        .bottom-nav {
-            background: var(--panel-zen);
-            border: 1px solid var(--border-zen);
-            border-radius: 12px;
-            padding: 10px;
-            display: flex;
+        /* 🟢 LA BARRE MENU ALIGNÉE EN BAS 🟢 */
+        .bottom-nav { 
+            background: var(--panel-zen); 
+            border: 1px solid var(--border-zen); 
+            border-radius: 12px; 
+            padding: 10px; 
+            display: flex; 
+            gap: 8px; 
             justify-content: center;
-            gap: 10px;
+            flex-wrap: nowrap !important; /* Force l'alignement sur une ligne */
+            overflow-x: auto; 
+            scrollbar-width: none; 
+            margin-top: auto; /* Pousse le menu tout en bas */
             box-shadow: 0 -4px 10px rgba(0,0,0,0.3);
-            margin-top: auto;
-            flex-wrap: nowrap;
-            overflow-x: auto;
-            scrollbar-width: none;
         }
         .bottom-nav::-webkit-scrollbar { display: none; }
         
-        .nav-btn { background: var(--bg-zen); border: 1px solid var(--border-zen); color: var(--text-zen); padding: 12px 20px; border-radius: 6px; font-size: 0.9rem; font-weight: bold; cursor: pointer; text-transform: uppercase; transition: 0.2s; box-shadow: 0 2px 4px rgba(0,0,0,0.2); flex-shrink: 0;}
+        .nav-btn { background: var(--bg-zen); border: 1px solid var(--border-zen); color: var(--text-zen); padding: 10px 18px; border-radius: 6px; font-size: 0.85rem; font-weight: bold; cursor: pointer; text-transform: uppercase; transition: 0.2s; box-shadow: 0 2px 4px rgba(0,0,0,0.2); flex-shrink: 0; white-space: nowrap; }
         .nav-btn:hover { background: rgba(255,255,255,0.05); }
-        .nav-btn.active { background: rgba(255,255,255,0.1); border-color: var(--accent-zen); color: var(--accent-zen); box-shadow: inset 0 2px 4px rgba(0,0,0,0.3);}
+        .nav-btn.active { background: rgba(255,255,255,0.1); border-color: var(--text-zen); color: var(--text-zen); box-shadow: inset 0 2px 4px rgba(0,0,0,0.3);}
         .nav-btn.haccp { border-color: var(--info-zen); color: var(--info-zen); background: rgba(96, 165, 250, 0.05); }
 
         .module { display: none; flex: 1; overflow: hidden; }
@@ -218,7 +216,6 @@
         <div class="header-left">
             <h1 class="logo-text">🔥 LE PASS</h1>
             <div id="clock" class="clock">00:00:00</div>
-            <div id="conn-status" style="border-color: var(--alert-zen); color: var(--alert-zen);">🔴 HORS LIGNE</div>
         </div>
         <div id="resa-ticker" class="resa-ticker" onclick="openResaDetailsModal()">
             <span id="resa-text" class="ticker-text">Sync. Réservations...</span>
@@ -307,22 +304,15 @@
     </div>
 
     <script>
-        const RENDER_SERVER_URL = 'https://tableau-system.onrender.com';
-
         const API = {
             getState: async () => {
                 let state = { activeOrders: {} };
                 try {
-                    let r = await fetch(`${RENDER_SERVER_URL}/get-current-state`);
-                    if(r.ok) {
-                        state = await r.json();
-                        setConnectionStatus(true);
-                    } else {
-                        throw new Error("Serveur indisponible");
-                    }
+                    let url = (window.location.protocol === 'file:') ? 'https://tableau-system.onrender.com/get-current-state' : '/get-current-state';
+                    let r = await fetch(url);
+                    if(r.ok) state = await r.json();
                 } catch(e) {
-                    setConnectionStatus(false);
-                    // On ne charge plus le cache local pour forcer la vraie connexion
+                    state = JSON.parse(localStorage.getItem('EMPIRE_GLOBAL_SYNC')) || { activeOrders: {} };
                 }
                 return state;
             },
@@ -330,33 +320,21 @@
                 let isOrder = !key.includes('MASTER') && !key.includes('ARCHIVE') && !key.includes('SUPPLIER') && !key.includes('PLANNING') && !key.includes('MENU');
                 let payload = isOrder ? data : { data: data };
                 
+                let state = JSON.parse(localStorage.getItem('EMPIRE_GLOBAL_SYNC')) || { activeOrders: {} };
+                if (data === null) delete state.activeOrders[key];
+                else state.activeOrders[key] = payload;
+                localStorage.setItem('EMPIRE_GLOBAL_SYNC', JSON.stringify(state));
+                
+                let url = (window.location.protocol === 'file:') ? 'https://tableau-system.onrender.com/update-order' : '/update-order';
                 try {
-                    let r = await fetch(`${RENDER_SERVER_URL}/update-order`, { 
+                    await fetch(url, { 
                         method: 'POST', 
                         headers: {'Content-Type': 'application/json'}, 
                         body: JSON.stringify({ tableId: key, order: data === null ? null : payload }) 
                     });
-                    if(r.ok) setConnectionStatus(true);
-                } catch(e) {
-                    setConnectionStatus(false);
-                }
+                } catch(e) {}
             }
         };
-
-        function setConnectionStatus(isOnline) {
-            let tag = document.getElementById('conn-status');
-            if(isOnline) {
-                tag.innerText = "🟢 EN LIGNE";
-                tag.style.borderColor = "var(--accent-zen)";
-                tag.style.color = "var(--accent-zen)";
-                tag.style.background = "var(--accent-dim)";
-            } else {
-                tag.innerText = "🔴 HORS LIGNE";
-                tag.style.borderColor = "var(--alert-zen)";
-                tag.style.color = "var(--alert-zen)";
-                tag.style.background = "var(--alert-dim)";
-            }
-        }
 
         window.addEventListener('storage', (e) => {
             if (e.key === 'EMPIRE_GLOBAL_SYNC') {
@@ -394,7 +372,7 @@
             }
         }, 1000);
 
-        setInterval(refreshKDS, 3000); // Synchro BDD toutes les 3s pour éviter de saturer Render
+        setInterval(refreshKDS, 2000); // Synchro BDD 
 
         async function refreshKDS() {
             if (isDragging) return; 
