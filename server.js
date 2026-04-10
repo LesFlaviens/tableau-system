@@ -1,133 +1,94 @@
-<!DOCTYPE html>
-<html lang="fr">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>Empire OS - Pass Cuisine</title>
-    <style>
-        :root { 
-            --bg-zen: #0f172a; --panel-zen: #1e293b; --text-zen: #f8fafc; 
-            --accent-zen: #34d399; --info-zen: #60a5fa; --obs-zen: #fbbf24; 
-            --border-zen: #334155; --purple-zen: #a78bfa; --shadow: 0 4px 10px rgba(0,0,0,0.5);
-        }
-        body { font-family: 'Inter', sans-serif; background: var(--bg-zen); color: var(--text-zen); margin: 0; padding: 10px 15px; height: 100vh; display: flex; flex-direction: column; overflow: hidden; box-sizing: border-box; gap: 10px; }
+const express = require('express');
+const fs = require('fs');
+const path = require('path');
 
-        header { 
-            background: var(--panel-zen); border: 1px solid var(--border-zen); border-radius: 12px; 
-            padding: 10px 15px; display: flex; justify-content: space-between; align-items: center; 
-            z-index: 100; box-shadow: var(--shadow); flex-wrap: nowrap; overflow: hidden; gap: 15px;
-        }
-        .header-left { display: flex; align-items: center; gap: 12px; flex-shrink: 0; }
-        .logo-text { font-weight: 900; letter-spacing: 1px; text-transform: uppercase; white-space: nowrap; font-size: 1.2rem;}
-        .clock { font-family: monospace; font-size: 1rem; color: var(--info-zen); font-weight: bold; background: rgba(96, 165, 250, 0.1); padding: 5px 10px; border-radius: 6px; }
+const app = express();
 
-        .resa-ticker { background: rgba(167, 139, 250, 0.1); border: 1px solid var(--purple-zen); color: var(--purple-zen); padding: 6px 12px; border-radius: 6px; font-size: 0.85rem; font-weight: 900; min-width: 160px; text-align: center; flex-shrink: 0; }
+// 🟢 CONFIGURATION SÉCURITÉ (CORS Manuel pour éviter les erreurs de module)
+app.use((req, res, next) => {
+    res.header("Access-Control-Allow-Origin", "*");
+    res.header("Access-Control-Allow-Headers", "Origin, X-Requested-With, Content-Type, Accept");
+    res.header("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+    next();
+});
 
-        .nav-btns { display: flex; gap: 6px; flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; }
-        .nav-btns::-webkit-scrollbar { display: none; }
-        .nav-btn { background: var(--bg-zen); border: 1px solid var(--border-zen); color: var(--text-zen); padding: 10px 15px; border-radius: 6px; font-size: 0.8rem; font-weight: bold; cursor: pointer; text-transform: uppercase; white-space: nowrap; flex-shrink: 0; }
-        .nav-btn.active { background: rgba(255,255,255,0.1); border-color: var(--accent-zen); color: var(--accent-zen); }
+app.use(express.json());
 
-        .module { display: none; flex: 1; overflow: hidden; }
-        .module.active { display: flex; flex-direction: column; }
-        .kds-scroll-area { flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 15px; padding-bottom: 20px; }
-        .kds-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 12px; align-items: start; }
-        .ticket { background: var(--panel-zen); border: 1px solid var(--border-zen); border-radius: 8px; display: flex; flex-direction: column; overflow: hidden; box-shadow: 0 4px 6px rgba(0,0,0,0.3); }
-        .ticket-header { background: #1e293b; padding: 10px 12px; border-bottom: 2px solid var(--border-zen); display: flex; justify-content: space-between; align-items: center; font-weight: 900; color: var(--gold); }
-        .ticket-item { padding: 12px; border-bottom: 1px solid var(--border-zen); display: flex; justify-content: space-between; align-items: center; }
-        .seat-badge { background: #000; color: var(--gold); border: 1px solid var(--gold); padding: 2px 6px; border-radius: 4px; font-size: 0.8rem; font-weight: 900; margin-right: 10px; font-family: monospace; }
-        .btn-ready { background: var(--bg-zen); border: 1px solid var(--border-zen); color: var(--text-muted); width: 42px; height: 42px; border-radius: 50%; display: flex; justify-content: center; align-items: center; font-size: 1.3rem; cursor: pointer; }
-        .lane-header { font-size: 1.1rem; font-weight: 900; padding: 10px 15px; border-bottom: 3px solid; background: rgba(30, 41, 59, 0.8); border-radius: 8px 8px 0 0; text-transform: uppercase; margin-bottom: 10px; }
-        .lane-entrees { color: #34d399; border-bottom-color: #34d399; }
-        .lane-plats { color: #facc15; border-bottom-color: #facc15; }
-        .lane-desserts { color: #a78bfa; border-bottom-color: #a78bfa; }
-    </style>
-</head>
-<body>
+const DB_FILE = path.join(__dirname, 'empire_db.json');
 
-    <header>
-        <div class="header-left">
-            <h1 class="logo-text">🔥 LE PASS</h1>
-            <div id="clock" class="clock">00:00:00</div>
-        </div>
-        <div id="resa-ticker" class="resa-ticker">
-            <span id="resa-text">CHARGEMENT...</span>
-        </div>
-        <div class="nav-btns">
-            <button class="nav-btn active" onclick="switchTab('kds')">BONS</button>
-            <button class="nav-btn" onclick="switchTab('history')">HISTO</button>
-            <button class="nav-btn" onclick="switchTab('menu')">STOCKS</button>
-            <button class="nav-btn" onclick="switchTab('staff')">STAFF</button>
-            <button class="nav-btn" onclick="switchTab('recipes')">RECETTES</button>
-            <button class="nav-btn" onclick="switchTab('supplier')">MANQUES</button>
-        </div>
-    </header>
+// Initialisation de la base de données
+if (!fs.existsSync(DB_FILE)) {
+    fs.writeFileSync(DB_FILE, JSON.stringify({ activeOrders: {} }));
+}
 
-    <div id="mod-kds" class="module active">
-        <div class="kds-scroll-area">
-            <div><div class="lane-header lane-entrees">🥗 ENTRÉES</div><div id="kds-grid-1" class="kds-grid"></div></div>
-            <div><div class="lane-header lane-plats">🔥 PLATS</div><div id="kds-grid-2" class="kds-grid"></div></div>
-            <div><div class="lane-header lane-desserts">🍰 DESSERTS</div><div id="kds-grid-3" class="kds-grid"></div></div>
-        </div>
-    </div>
+app.use(express.static(__dirname));
 
-    <div id="mod-history" class="module"></div><div id="mod-menu" class="module"></div><div id="mod-staff" class="module"></div><div id="mod-recipes" class="module"></div><div id="mod-supplier" class="module"></div>
+// Route pour récupérer l'état
+app.get('/get-current-state', (req, res) => {
+    fs.readFile(DB_FILE, 'utf8', (err, data) => {
+        if (err) return res.status(500).json({ error: "Erreur lecture" });
+        try { res.json(JSON.parse(data)); } catch (e) { res.json({ activeOrders: {} }); }
+    });
+});
 
-    <script>
-        let activeOrders = {};
+// Route pour mettre à jour
+app.post('/update-order', (req, res) => {
+    const { tableId, order } = req.body;
+    fs.readFile(DB_FILE, 'utf8', (err, data) => {
+        let db = { activeOrders: {} };
+        if (!err && data) { try { db = JSON.parse(data); } catch (e) {} }
+        if (order === null) delete db.activeOrders[tableId];
+        else db.activeOrders[tableId] = order;
+        fs.writeFile(DB_FILE, JSON.stringify(db, null, 2), (err) => {
+            if (err) return res.status(500).send("Erreur");
+            res.status(200).send("OK");
+        });
+    });
+});
+
+// 🟢 MOTEUR QR CODE ICHEF.CH (CONSERVÉ) 🟢
+app.post('/api/woo-webhook', (req, res) => {
+    const commande = req.body;
+    if (!commande || !commande.id) return res.status(200).send("Ping");
+    fs.readFile(DB_FILE, 'utf8', (err, data) => {
+        let db = { activeOrders: {} };
+        if (!err && data) { try { db = JSON.parse(data); } catch (e) {} }
         
-        async function refreshKDS() {
-            try {
-                const r = await fetch('/get-current-state');
-                if (!r.ok) throw new Error();
-                const state = await r.json();
-                activeOrders = state.activeOrders;
-                renderKDS();
-                document.getElementById('resa-text').innerText = "LIAISON OK";
-            } catch(e) { document.getElementById('resa-text').innerText = "CONNECTING..."; }
+        let tableCible = null;
+        if (commande.meta_data) {
+            let metaTable = commande.meta_data.find(m => m.key.toLowerCase().includes('table'));
+            if (metaTable && metaTable.value) tableCible = metaTable.value.toString().trim().toUpperCase();
         }
-
-        function renderKDS() {
-            const lanes = { 1: [], 2: [], 3: [] };
-            Object.entries(activeOrders).forEach(([tId, order]) => {
-                if (tId.includes('MASTER') || !order.items) return;
-                [1, 2, 3].forEach(lId => {
-                    let items = order.items.filter(i => !i.done && (i.course === lId || (lId === 2 && i.course === undefined)));
-                    if (items.length > 0) lanes[lId].push({ tId, order, items });
-                });
-            });
-
-            [1, 2, 3].forEach(l => {
-                document.getElementById('kds-grid-' + l).innerHTML = lanes[l].map(ticket => `
-                    <div class="ticket">
-                        <div class="ticket-header"><span>TABLE ${ticket.tId}</span><span>${ticket.order.time || ''}</span></div>
-                        <div class="ticket-body">
-                            ${ticket.items.map(item => `
-                                <div class="ticket-item">
-                                    <div class="item-details"><div class="item-name"><span class="seat-badge">${item.seat || 'T'}</span><span style="color:var(--accent-zen)">${item.qty}x</span> ${item.n}</div></div>
-                                    <div class="btn-ready" onclick="markReady('${ticket.tId}', ${item.id})">✓</div>
-                                </div>`).join('')}
-                        </div>
-                    </div>`).join('');
-            });
+        if (!tableCible && commande.customer_note) {
+            let note = commande.customer_note.toUpperCase();
+            let match = note.match(/(?:TABLE|T)\s*([0-9A-Z]+)/);
+            if (match) tableCible = match[1];
         }
+        if (tableCible && !isNaN(tableCible)) tableCible = "T" + tableCible;
 
-        async function markReady(tId, itemId) {
-            let order = activeOrders[tId];
-            let item = order.items.find(i => i.id === itemId);
-            if(item) item.done = true;
-            await fetch('/update-order', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ tableId: tId, order }) });
-            refreshKDS();
+        let formattedItems = commande.line_items ? commande.line_items.map((item, index) => {
+            let nomLow = item.name.toLowerCase();
+            let isDrink = ['biere', 'vin', 'eau', 'coca', 'jus', 'café', 'thé', 'boisson', 'cocktail'].some(mot => nomLow.includes(mot));
+            return {
+                id: Date.now() + index, itemId: Date.now() + index,
+                n: item.name, p: parseFloat(item.price) || 0, qty: item.quantity || 1,
+                dest: isDrink ? 'bar' : 'cuisine', course: isDrink ? 0 : 2,
+                fired: false, done: false, savedToDB: true
+            };
+        }) : [];
+
+        if (tableCible) {
+            if (!db.activeOrders[tableCible]) {
+                db.activeOrders[tableCible] = { status: "hold", time: new Date().toLocaleTimeString('fr-FR'), clientName: "Client QR", observations: `📱 QR ICHEF (#${commande.id})`, items: formattedItems };
+            } else {
+                db.activeOrders[tableCible].items.push(...formattedItems);
+            }
+        } else {
+            db.activeOrders[`order_${commande.id}`] = { isWeb: true, id: commande.id, clientName: 'WEB ICHEF', status: "hold", items: formattedItems };
         }
+        fs.writeFile(DB_FILE, JSON.stringify(db, null, 2), (err) => { res.status(200).send("OK"); });
+    });
+});
 
-        function switchTab(tab) {
-            document.querySelectorAll('.module').forEach(m => m.classList.remove('active'));
-            document.querySelectorAll('.nav-btn').forEach(b => b.classList.remove('active'));
-            document.getElementById('mod-' + tab).classList.add('active');
-        }
-
-        setInterval(() => { document.getElementById('clock').innerText = new Date().toLocaleTimeString('fr-FR'); }, 1000);
-        setInterval(refreshKDS, 3000); refreshKDS();
-    </script>
-</body>
-</html>
+const PORT = process.env.PORT || 10000;
+app.listen(PORT, () => { console.log(`🚀 Empire OS en ligne sur le port ${PORT}`); });
