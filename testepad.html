@@ -676,7 +676,85 @@
     </div>
 
     <script>
-        const RENDER_URL = "https://tableau-system.onrender.com";
+       const RENDER_URL = "https://tableau-system.onrender.com";
+
+        // 🚀 LE MOTEUR DE CONNEXION (RÉPARÉ - ABSOLUTE FETCH)
+        const API = {
+            getState: async () => {
+                try {
+                    let r = await fetch(`${RENDER_URL}/get-current-state`);
+                    if(r.ok) return await r.json();
+                } catch(e) { console.error("⚠️ Erreur liaison serveur Empire"); }
+                return { activeOrders: {} };
+            },
+            update: async (key, data, isOrder = false) => {
+                let payload = isOrder ? data : { data: data };
+                try {
+                    await fetch(`${RENDER_URL}/update-order`, {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify({ tableId: key, order: data === null ? null : payload })
+                    });
+                } catch(e) { console.error("⚠️ Erreur envoi données Empire"); }
+            }
+        };
+
+        // 👤 GESTION DES CONVIVES & SIÈGES
+        let currentSeat = 0; 
+
+        function renderSeatBar() {
+            let pax = 2;
+            let obsInput = document.getElementById('order-obs').value;
+            // On récupère le nombre de couverts dans les observations
+            let match = obsInput ? obsInput.match(/🍽️ (\d+) Couvert\(s\)/) : null;
+            if(match) pax = parseInt(match[1]);
+            else {
+                let tObj = tables.find(t => t && t.label === currentTable);
+                if(tObj && tObj.pax) pax = tObj.pax;
+            }
+
+            let html = `
+            <div style="width:100%; display:flex; flex-direction:column; gap:8px;">
+                <div style="color:var(--gold); font-size:0.9rem; font-weight:900; text-align:center; letter-spacing:1px;">📍 1. SÉLECTIONNEZ LE CONVIVE PUIS AJOUTEZ LE PLAT</div>
+                <div style="display:flex; gap:10px; overflow-x:auto; justify-content:center; padding-bottom:5px;">
+                    <button class="btn-mini seat-btn ${currentSeat===0?'gold':''}" onclick="setSeat(0)" style="font-size:1rem; padding:12px 15px;">🍽️ CENTRE</button>
+            `;
+            
+            for(let i=1; i<=pax; i++) {
+                html += `<button class="btn-mini seat-btn ${currentSeat===i?'gold':''}" onclick="setSeat(${i})" style="font-size:1.1rem; padding:12px 20px;">👤 ${i}</button>`;
+            }
+            
+            html += `<button class="btn-mini" style="background:var(--bg); border:1px dashed var(--border); font-size:1.1rem; padding:12px 20px;" onclick="addExtraSeatToBar()">+</button>
+                </div>
+            </div>`;
+            
+            let container = document.getElementById('seat-bar-container');
+            if(container) container.innerHTML = html;
+        }
+
+        function setSeat(s) {
+            currentSeat = s;
+            renderSeatBar(); 
+        }
+
+        function addExtraSeatToBar() {
+            let maxC = 0;
+            let obsInput = document.getElementById('order-obs').value;
+            let match = obsInput ? obsInput.match(/🍽️ (\d+) Couvert\(s\)/) : null;
+            if(match) maxC = parseInt(match[1]);
+            
+            let newPax = maxC + 1;
+            let baseObs = obsInput ? obsInput.replace(/🍽️ \d+ Couvert\(s\)( \| )?/, '').trim() : "";
+            
+            document.getElementById('order-obs').value = baseObs === "" ? `🍽️ ${newPax} Couvert(s)` : `🍽️ ${newPax} Couvert(s) | ${baseObs}`;
+
+            let tObj = tables.find(t => t && t.label === currentTable);
+            if (tObj) {
+                tObj.pax = newPax;
+                if(typeof pushArchitecture === 'function') pushArchitecture();
+            }
+            setSeat(newPax);
+        }
 
         const API = {
             getState: async () => {
