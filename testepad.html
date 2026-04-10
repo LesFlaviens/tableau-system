@@ -1642,101 +1642,44 @@
                         let r = document.createElement('div'); r.className = 'table-resizer'; r.innerHTML = '↘'; d.appendChild(r);
                         
                         let clickTimer = null;
+                       // 🟢 LOGIQUE DE CLIC DÉBOGUÉE 🟢
                         d.onclick = (e) => { 
-                            if(isArchiMode) { 
+                            // 1. Mode Architecture (Déplacement/Modif)
+                            if(typeof isArchiMode !== 'undefined' && isArchiMode) { 
                                 if(!isDraggingTable && e.target !== r) openTableConfigModal(t.label); 
+                                return;
                             } 
-                            else if(pendingAssignResa) {
+                            
+                            // 2. Mode Assignation de réservation
+                            if(typeof pendingAssignResa !== 'undefined' && pendingAssignResa) {
                                 assignTableToResa(t.label);
+                                return;
                             } 
-                            else if (isRushMode) {
-                                if (clickTimer == null) {
-                                    clickTimer = setTimeout(() => {
-                                        clickTimer = null;
+
+                            // 3. Mode Rush (Double clic sécurité) ou Mode Normal
+                            if (typeof isRushMode !== 'undefined' && isRushMode) {
+                                // En mode Rush, on garde le petit délai pour éviter les erreurs
+                                if (typeof clickTimer === 'undefined') window.clickTimer = null;
+                                if (window.clickTimer == null) {
+                                    window.clickTimer = setTimeout(() => {
+                                        window.clickTimer = null;
                                         openOrder(t.label); 
-                                    }, 300); 
+                                    }, 250); 
                                 } else {
-                                    clearTimeout(clickTimer);
-                                    clickTimer = null;
+                                    clearTimeout(window.clickTimer);
+                                    window.clickTimer = null;
                                 }
-                            } 
-                            else {
+                            } else {
+                                // ⚡ MODE NORMAL : Ouverture instantanée
                                 openOrder(t.label); 
                             }
                         };
                         
                         wrapper.appendChild(d);
-                        makeInteractive(wrapper, t, r); 
+                        if(typeof makeInteractive === 'function') makeInteractive(wrapper, t, r); 
                         floor.appendChild(wrapper);
                     });
                 }
-
-                let webOrders = Object.keys(activeOrders).filter(k => activeOrders[k] && activeOrders[k].isWeb);
-                let webStartX = 20; let webStartY = 20;
-
-                webOrders.forEach((orderKey, index) => {
-                    let orderData = activeOrders[orderKey];
-                    let d = document.createElement('div');
-                    
-                    let statusClass = 'status-cooking';
-                    if (orderData.alerteRouge) statusClass = 'status-alert';
-                    else if (orderData.items && orderData.items.some(i => i.done && !i.served)) statusClass = 'status-ready';
-                    else if (orderData.status === 'hold') statusClass = 'status-hold';
-                    
-                    d.className = `table-obj shape-rect ${statusClass}`; 
-                    d.style.left = webStartX + (index * 150) + 'px'; d.style.top = webStartY + 'px';
-                    d.style.width = '130px'; d.style.height = '100px'; d.style.zIndex = '100'; d.style.cursor = 'pointer';
-                    d.style.border = orderData.status === 'hold' ? '2px solid var(--gold)' : '2px solid var(--alert)';
-                    d.style.boxShadow = orderData.status === 'hold' ? '0 0 15px rgba(251, 191, 36, 0.4)' : '0 0 15px rgba(248, 113, 113, 0.4)';
-
-                    let clientName = orderData.clientName ? orderData.clientName.substring(0,15) : 'Client Web';
-                    let contentHtml = `<span style="color:var(--bg); background:${orderData.status === 'hold' ? 'var(--gold)' : 'var(--alert)'}; font-weight:900; font-size:0.9rem; padding: 2px 6px; border-radius: 4px;">🌐 WEB #${orderData.id || ''}</span>`;
-                    
-                    if(statusClass === 'status-alert') {
-                        contentHtml += `<span style="font-size:1.5rem; margin-top:5px;">⚠️</span>`;
-                    } else {
-                        contentHtml += `<span style="font-size:0.75rem; color:${orderData.status === 'hold' ? 'var(--gold)' : 'var(--alert)'}; margin-top:8px; font-weight:bold; text-align:center; padding: 0 5px;">${clientName}</span>`;
-                        contentHtml += `<span style="font-size:0.9rem; color:var(--text-main); font-weight:900; margin-top:5px;">${orderData.totalStr || ''}</span>`;
-                    }
-
-                    let badgeHtml = '';
-                    if (ordrePriorite[orderKey] && orderData.status === 'hold') {
-                        let rank = ordrePriorite[orderKey];
-                        badgeHtml = `<div style="position:absolute; top:-15px; left:-15px; background:#000; color:var(--gold); width:40px; height:40px; border-radius:50%; display:flex; justify-content:center; align-items:center; font-size:1.4rem; font-weight:900; border:3px solid var(--gold); box-shadow:0 4px 10px rgba(0,0,0,0.8); z-index:50;">${rank}</div>`;
-                    }
-
-                    d.innerHTML = `${badgeHtml}<div class="table-content" style="flex-direction:column; justify-content:center;">${contentHtml}</div>`;
-                    d.onclick = () => { openOrder(orderKey); };
-                    floor.appendChild(d);
-                });
-
-            } catch (e) { console.error(e); }
-        }
-
-        function checkTableAlertState(tableId) {
-            let order = activeOrders[tableId];
-            let banner = document.getElementById('drawer-alert-banner');
-            let msgBox = document.getElementById('drawer-alert-msg');
-            let body = document.getElementById('drawer-main-body');
-            let actions = document.getElementById('ticket-action-buttons');
-            
-            if (order && order.alerteRouge) {
-                banner.style.display = 'flex';
-                msgBox.innerText = order.alerteRouge;
-                body.style.pointerEvents = 'none'; 
-                body.style.opacity = '0.3';        
-                body.style.filter = 'grayscale(100%)';
-                actions.style.display = 'none';    
-            } else {
-                banner.style.display = 'none';
-                body.style.pointerEvents = 'auto';
-                body.style.opacity = '1';
-                body.style.filter = 'none';
-                actions.style.display = 'flex';
-            }
-        }
-
-        function openOrder(tableLabel) {
             currentTable = tableLabel;
             document.getElementById('table-label').innerText = "TABLE " + tableLabel;
             
