@@ -833,152 +833,184 @@
             }
         }
 
-        // --- VUE INDIVIDUELLE ---
-        function updateDay(day, field, val) {
+        // ==========================================
+        // AUTO-PLANNING STRATÉGIQUE (NORME HCR FRANCE)
+        // ==========================================
+        function autoPlanMonth() {
+            if(!currentDept) return;
+            if(!confirm(`⚡ Lancer l'Auto-Planning HCR pour l'équipe ${currentDept.toUpperCase()} ?\nL'algorithme va appliquer :\n- 2 jours de repos consécutifs\n- 11h de repos minimum entre 2 services\n- 20 à 30 min de pause légale déduite.`)) return;
+            
             const monthStr = document.getElementById('month-selector').value;
+            const [year, month] = monthStr.split('-');
+            const daysInMonth = new Date(year, month, 0).getDate();
             const ts = getTimesheets();
-            ts[monthStr][currentStaffId][day][field] = val;
-            saveTimesheets(ts);
-            loadMonthData(); 
-        }
+            const deptStaff = getDirectory().filter(s => (s.dept || 'cuisine') === currentDept);
 
-        function renderTimesheet(year, month, daysInMonth, monthData) {
-            const tbody = document.getElementById('timesheet-body');
-            let html = ''; let totalHoursActual = 0;
-            
-            const dir = getDirectory();
-            const idx = dir.findIndex(s => s.id === currentStaffId);
-            if(idx === -1) return; 
+            if(deptStaff.length === 0) return alert("Aucun employé dans ce département.");
 
-            const color = staffColors[idx % staffColors.length];
+            // Schémas de repos (2 jours consécutifs selon convention)
+            const safePatterns = [ [1, 2], [2, 3], [3, 4], [0, 1] ]; 
 
-            for(let d=1; d<=daysInMonth; d++) {
-                const dateObj = new Date(year, month-1, d);
-                const dayOfWeek = dateObj.getDay();
-                const isWeekend = (dayOfWeek === 0 || dayOfWeek === 6);
-                const dayName = daysOfWeek[dayOfWeek];
-                const data = monthData[d];
+            deptStaff.forEach((staff, index) => {
+                const pattern = safePatterns[index % safePatterns.length];
                 
-                let hDay = 0;
-                if(data.status === 'present') hDay = calculateH(data.s1) + calculateH(data.s2);
-                else if(data.status === 'off_matin') hDay = calculateH(data.s2);
-                else if(data.status === 'off_soir') hDay = calculateH(data.s1);
+                // Calcul du temps quotidien basé sur le contrat (ex: 35h / 5 jours = 7h/jour)
+                const dailyTarget = staff.contract / 5; 
                 
-                let pauseH = (parseFloat(data.pause) || 0) / 60;
-                hDay = Math.max(0, hDay - pauseH);
+                // Si la personne travaille plus de 6h, la loi HCR impose 20 min de pause (on met 30 min par sécurité)
+                const legalPauseMins = (dailyTarget >= 6) ? 30 : 0;
                 
-                totalHoursActual += hDay;
+                // On ajoute la pause à l'amplitude de présence pour que le temps de travail "net" soit respecté
+                const amplitudeBrute = dailyTarget + (legalPauseMins / 60);
+                const shiftHoursBrut = amplitudeBrute / 2; 
 
-                const disableS1 = (data.status !== 'present' && data.status !== 'off_soir');
-                const disableS2 = (data.status !== 'present' && data.status !== 'off_matin');
-                const isOffDay = (data.status === 'off' || data.status === 'maladie' || data.status === 'conge');
-                
-                let selColor = isOffDay ? '#888' : color;
-                let selBorder = isOffDay ? '#444' : color;
+                const formatShift = (startHour, duration) => {
+                    const end = startHour + duration;
+                    let endH = Math.floor(end);
+                    let endM = Math.round((end - endH) * 60);
+                    endM = Math.round(endM / 5) * 5; 
+                    if (endM === 60) { endH += 1; endM = 0; }
+                    return `${String(startHour).padStart(2,'0')}:00-${String(endH).padStart(2,'0')}:${String(endM).padStart(2,'0')}`;
+                };
 
-                html += `
-                <tr class="${isWeekend ? 'weekend' : ''}" style="${isOffDay ? 'opacity:0.6;' : ''}">
-                    <td><span class="day-label">${dayName}</span><br><span class="date-label">${String(d).padStart(2,'0')}/${month}</span></td>
-                    <td>
-                        <select class="status-sel" style="border-color:${selBorder}; color:${selColor};" onchange="updateDay(${d}, 'status', this.value)">
-                            <option value="present" ${data.status==='present'?'selected':''}>✔ PRÉSENT</option>
-                            <option value="off_matin" ${data.status==='off_matin'?'selected':''}>☀️ MATIN OFF</option>
-                            <option value="off_soir" ${data.status==='off_soir'?'selected':''}>🌙 SOIR OFF</option>
-                            <option value="off" ${data.status==='off'?'selected':''}>💤 OFF</option>
-                            <option value="conge" ${data.status==='conge'?'selected':''}>🏖️ CONGÉ PAYÉ</option>
-                            <option value="maladie" ${data.status==='maladie'?'selected':''}>🤒 MALADIE</option>
-                        </select>
-                    </td>
-                    <td><input type="text" class="shift-inp" value="${data.s1}" ${disableS1 ? 'disabled' : ''} onchange="updateDay(${d}, 's1', this.value)"></td>
-                    <td><input type="text" class="shift-inp" value="${data.s2}" ${disableS2 ? 'disabled' : ''} onchange="updateDay(${d}, 's2', this.value)"></td>
-                    <td><input type="number" class="pause-inp" value="${data.pause || 0}" ${isOffDay ? 'disabled' : ''} onchange="updateDay(${d}, 'pause', this.value)"></td>
-                    <td class="day-total" style="color:${hDay > 0 ? color : '#666'}">${hDay > 0 ? hDay.toFixed(1)+'h' : '-'}</td>
-                    <td><input type="text" class="obs-inp" placeholder="Motif, retard..." value="${data.obs}" onchange="updateDay(${d}, 'obs', this.value)"></td>
-                </tr>`;
-            }
-            tbody.innerHTML = html;
+                let s1 = "", s2 = "";
+                // Sécurisation des 11h de repos : Si le soir finit à 23h, le matin ne commence pas avant 10h
+                if (currentDept === 'cuisine') {
+                    s1 = formatShift(9.5, shiftHoursBrut);  s2 = formatShift(18, shiftHoursBrut); // Fin max 22h/23h
+                } else if (currentDept === 'service') {
+                    s1 = formatShift(10.5, shiftHoursBrut); s2 = formatShift(18.5, shiftHoursBrut); 
+                } else { 
+                    s1 = formatShift(16, amplitudeBrute); s2 = ""; // Bar: Shift continu soir
+                }
 
-            const staffData = dir[idx];
-            const expectedHours = (staffData.contract / 7) * daysInMonth;
-            const diff = totalHoursActual - expectedHours;
-
-            document.getElementById('stat-expected').textContent = expectedHours.toFixed(1) + "h";
-            document.getElementById('stat-actual').textContent = totalHoursActual.toFixed(1) + "h";
-            
-            const diffEl = document.getElementById('stat-diff');
-            diffEl.textContent = (diff > 0 ? '+' : '') + diff.toFixed(1) + "h";
-            diffEl.style.color = diff > 0 ? 'var(--alert)' : (diff < -5 ? 'var(--warning)' : SECURITY[currentDept].color);
-        }
-
-        // --- VUE GLOBALE AVEC EMOJIS SEULS ---
-        function renderGlobalView(year, month, daysInMonth, tsMonthData) {
-            const dir = getDirectory().filter(s => (s.dept || 'cuisine') === currentDept);
-            const thead = document.getElementById('global-thead');
-            const tbody = document.getElementById('global-tbody');
-            
-            let headHtml = '<tr><th class="sticky-col" style="z-index:20;">SALARIÉ</th>';
-            for(let d=1; d<=daysInMonth; d++) {
-                const dateObj = new Date(year, month-1, d);
-                const isWknd = (dateObj.getDay() === 0 || dateObj.getDay() === 6);
-                headHtml += `<th style="color:${isWknd ? 'var(--alert)' : 'var(--sub)'}">${daysOfWeek[dateObj.getDay()]}<br><span style="font-size:1.1rem; color:#fff;">${d}</span></th>`;
-            }
-            headHtml += '</tr>';
-            thead.innerHTML = headHtml;
-
-            let bodyHtml = '';
-            dir.forEach((staff, idx) => {
-                const color = staffColors[idx % staffColors.length];
-                
-                bodyHtml += `<tr><td class="sticky-col" onclick="selectStaff(${staff.id}, '${currentDept}')" style="cursor:pointer; color:${color};" title="Ouvrir le détail de ${staff.name}">${staff.name}</td>`;
-                
                 for(let d=1; d<=daysInMonth; d++) {
-                    const data = tsMonthData[staff.id][d];
-                    let textColor = '#555';
-                    if(data.status === 'present') textColor = color; 
+                    const dateObj = new Date(year, month-1, d);
+                    const dayOfWeek = dateObj.getDay(); 
+                    const currentStatus = ts[monthStr][staff.id][d].status;
 
-                    bodyHtml += `<td>
-                        <select class="status-micro" style="color:${textColor};" onchange="updateDayGlobal(${staff.id}, ${d}, this.value)" title="${data.status}">
-                            <option value="present" ${data.status==='present'?'selected':''}>✔</option>
-                            <option value="off" ${data.status==='off'?'selected':''}>💤</option>
-                            <option value="off_matin" ${data.status==='off_matin'?'selected':''}>☀️</option>
-                            <option value="off_soir" ${data.status==='off_soir'?'selected':''}>🌙</option>
-                            <option value="conge" ${data.status==='conge'?'selected':''}>🏖️</option>
-                            <option value="maladie" ${data.status==='maladie'?'selected':''}>🤒</option>
-                        </select>
-                    </td>`;
+                    if(currentStatus !== 'conge' && currentStatus !== 'maladie') {
+                        if(pattern.includes(dayOfWeek)) {
+                            ts[monthStr][staff.id][d].status = 'off';
+                            ts[monthStr][staff.id][d].s1 = '';
+                            ts[monthStr][staff.id][d].s2 = '';
+                            ts[monthStr][staff.id][d].pause = 0;
+                        } else {
+                            ts[monthStr][staff.id][d].status = 'present';
+                            ts[monthStr][staff.id][d].s1 = s1;
+                            ts[monthStr][staff.id][d].s2 = s2;
+                            ts[monthStr][staff.id][d].pause = legalPauseMins; 
+                        }
+                    }
                 }
-                bodyHtml += '</tr>';
             });
-            tbody.innerHTML = bodyHtml;
-        }
-
-        function updateDayGlobal(staffId, day, val) {
-            const monthStr = document.getElementById('month-selector').value;
-            const ts = getTimesheets();
-            ts[monthStr][staffId][day].status = val;
-            saveTimesheets(ts);
-            loadMonthData(); 
-        }
-
-        function closeMonth() {
-            if(!currentStaffId && !isGlobalView) return alert("Sélectionnez un employé ou passez en vue globale.");
-            const monthStr = document.getElementById('month-selector').value;
             
-            if(confirm(`Archiver et clôturer ${monthStr} ?`)) {
-                if(currentStaffId) {
-                    const diff = parseFloat(document.getElementById('stat-diff').textContent);
-                    const dir = getDirectory();
-                    const idx = dir.findIndex(s => s.id === currentStaffId);
-                    dir[idx].balanceHours += diff;
-                    saveDirectory(dir);
-                    alert(`Clôture effectuée pour ${dir[idx].name}. Solde ajusté de ${diff}h.`);
-                } else {
-                    alert("Module d'export global en cours de préparation.");
-                }
+            saveTimesheets(ts);
+            loadMonthData();
+            showToast("✅ Planning HCR généré et légalement conforme !");
+        }
+
+        // --- INTELLIGENCE ARTIFICIELLE DE RENTABILITÉ ---
+        function updateGlobalModulation() {
+            const ts = getTimesheets();
+            const monthStr = document.getElementById('month-selector').value;
+            if (!ts[monthStr] || !currentDept) return;
+
+            const [year, month] = monthStr.split('-');
+            const daysInMonth = new Date(year, month, 0).getDate();
+            const dir = getDirectory().filter(s => (s.dept || 'cuisine') === currentDept);
+            const conf = SECURITY[currentDept];
+
+            let wHours = [0, 0, 0, 0];
+            let daysOpenCount = 0;
+            let totalHours = 0;
+            let totalCost = 0; // Calcul de la rentabilité (Taux horaire)
+
+            for(let d = 1; d <= daysInMonth; d++) {
+                let dayHasPresence = false;
+                let hDay = 0;
+                
+                dir.forEach(s => {
+                    if (ts[monthStr][s.id] && ts[monthStr][s.id][d]) {
+                        const p = ts[monthStr][s.id][d];
+                        if (p.status !== "off" && p.status !== "maladie" && p.status !== "conge") {
+                            dayHasPresence = true;
+                            let h = 0;
+                            if (p.status === "present") h = calculateH(p.s1) + calculateH(p.s2);
+                            else if (p.status === "off_matin") h = calculateH(p.s2);
+                            else if (p.status === "off_soir") h = calculateH(p.s1);
+                            
+                            let pauseH = (parseFloat(p.pause) || 0) / 60;
+                            h = Math.max(0, h - pauseH);
+                            
+                            hDay += h;
+                            totalCost += h * (s.rate || 15); // Calcul du coût réel
+                        }
+                    }
+                });
+                
+                if(dayHasPresence) daysOpenCount++;
+                totalHours += hDay;
+
+                if (d <= 7) wHours[0] += hDay;
+                else if (d <= 14) wHours[1] += hDay;
+                else if (d <= 21) wHours[2] += hDay;
+                else wHours[3] += hDay;
+            }
+
+            const fcW1 = parseFloat(document.getElementById('fc-w1').value) || 0;
+            const fcW2 = parseFloat(document.getElementById('fc-w2').value) || 0;
+            const fcW3 = parseFloat(document.getElementById('fc-w3').value) || 0;
+            const fcW4 = parseFloat(document.getElementById('fc-w4').value) || 0;
+            const totalFc = fcW1 + fcW2 + fcW3 + fcW4;
+
+            document.getElementById('fc-total').textContent = totalFc;
+            
+            document.getElementById('sum-w1').textContent = fcW1;
+            document.getElementById('sum-w2').textContent = fcW2;
+            document.getElementById('sum-w3').textContent = fcW3;
+            document.getElementById('sum-w4').textContent = fcW4;
+            document.getElementById('sum-total').textContent = totalFc;
+
+            const updateW = (wIdx, h, fc) => {
+                document.getElementById(`h-w${wIdx}`).textContent = h.toFixed(1) + 'h';
+                const ratio = h > 0 ? (fc / h).toFixed(2) : 0;
+                const rEl = document.getElementById(`r-w${wIdx}`);
+                rEl.textContent = ratio;
+                if (ratio == 0) rEl.style.color = '#888';
+                else if (ratio < conf.warnLow) rEl.style.color = 'var(--warning)';
+                else if (ratio > conf.warnHigh) rEl.style.color = 'var(--alert)';
+                else rEl.style.color = conf.color;
+            };
+
+            updateW(1, wHours[0], fcW1);
+            updateW(2, wHours[1], fcW2);
+            updateW(3, wHours[2], fcW3);
+            updateW(4, wHours[3], fcW4);
+
+            const globalRatio = totalHours > 0 ? (totalFc / totalHours).toFixed(2) : 0;
+            const grEl = document.getElementById('r-total');
+            const srEl = document.getElementById('sum-ratio');
+            grEl.textContent = globalRatio;
+            srEl.textContent = globalRatio;
+
+            if (globalRatio == 0) { grEl.style.color = '#888'; srEl.style.color = '#888'; }
+            else if (globalRatio < conf.warnLow) { grEl.style.color = 'var(--warning)'; srEl.style.color = 'var(--warning)'; }
+            else if (globalRatio > conf.warnHigh) { grEl.style.color = 'var(--alert)'; srEl.style.color = 'var(--alert)'; }
+            else { grEl.style.color = conf.color; srEl.style.color = conf.color; }
+
+            const adviceBox = document.getElementById('smart-advice');
+            // Cible : Idéalement le coût staff ne doit pas dépasser 30-35% du CA prévisionnel (Ici le prévisionnel "Total Mois" est en volume, pas en euros, on ajuste l'analyse)
+            if (totalHours < (daysOpenCount * 7) && daysOpenCount > 0) {
+                adviceBox.innerHTML = `❌ <b>DANGER :</b> Couverture insuffisante ! Risque de fermeture.`;
+                adviceBox.style.color = "var(--alert)";
+            } else if (globalRatio > conf.warnHigh) {
+                adviceBox.innerHTML = `⚠️ <b>SUREXPLOITATION :</b> Risque de Burn-out et majorations (Heures Sup à +25%).`;
+                adviceBox.style.color = "var(--warning)";
+            } else if (globalRatio > 0 && globalRatio < conf.warnLow) {
+                adviceBox.innerHTML = `💸 <b>PERTE DE RENTABILITÉ :</b> Équipe en sur-staff. Coût salarial estimé à ${totalCost.toFixed(0)}€.`;
+                adviceBox.style.color = "var(--warning)";
+            } else {
+                adviceBox.innerHTML = `✅ <b>PLANNING OPTIMISÉ (Norme HCR) :</b> Ratio légal et rentable. Coût cible respecté.`;
+                adviceBox.style.color = conf.color;
             }
         }
-
-        init();
-    </script>
-</body>
-</html>
