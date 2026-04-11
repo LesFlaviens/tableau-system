@@ -4,13 +4,13 @@ const path = require('path');
 
 const app = express();
 
-// 🟢 CONFIGURATION SÉCURITÉ (CORS Manuel pour éviter les erreurs de module)
+// 🟢 CONFIGURATION SÉCURITÉ ABSOLUE (CORS) - INDISPENSABLE POUR L'IPAD
 app.use((req, res, next) => {
     res.header("Access-Control-Allow-Origin", "*");
-    res.header("Access-Control-Allow-Headers", "Origin, X-Requested-With, Content-Type, Accept");
-    res.header("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+    res.header("Access-Control-Allow-Methods", "GET, POST, OPTIONS, PUT, DELETE");
+    res.header("Access-Control-Allow-Headers", "Origin, X-Requested-With, Content-Type, Accept, Authorization");
     
-    // INDISPENSABLE POUR QUE L'IPAD PUISSE SAUVEGARDER (Preflight request)
+    // Le serveur doit dire "Oui" quand l'iPad demande l'autorisation de sauvegarder
     if (req.method === "OPTIONS") {
         return res.status(200).end();
     }
@@ -18,7 +18,7 @@ app.use((req, res, next) => {
     next();
 });
 
-app.use(express.json());
+app.use(express.json({ limit: '50mb' })); // Sécurité pour les gros plans de salle
 
 const DB_FILE = path.join(__dirname, 'empire_db.json');
 
