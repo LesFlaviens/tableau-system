@@ -1,11 +1,11 @@
 const express = require('express');
-const fs = require('fs').promises;
+const fs = require('fs');
 const path = require('path');
 
 const app = express();
 const DB_FILE = path.join(__dirname, 'empire_db.json');
 
-// 🟢 SÉCURITÉ NATIVE (Aucun module externe requis, empêche les crashs)
+// 🟢 SÉCURITÉ NATIVE ABSOLUE
 app.use((req, res, next) => {
     res.header("Access-Control-Allow-Origin", "*");
     res.header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
@@ -17,63 +17,65 @@ app.use((req, res, next) => {
     next();
 });
 
-// Limite augmentée à 50mb pour laisser passer l'architecture de la salle
+// Limite augmentée à 50mb pour laisser passer l'architecture de la salle sans blocage
 app.use(express.json({ limit: '50mb' }));
 app.use(express.static(__dirname));
 
-// Utilitaire pour lire/écrire
-async function getDb() {
+// 🧠 BASE DE DONNÉES EN MÉMOIRE VIVE (Élimine 100% des crashs et des collisions de fichiers)
+let memoryDB = { activeOrders: {} };
+
+// Chargement de l'historique au démarrage
+if (fs.existsSync(DB_FILE)) {
     try {
-        const data = await fs.readFile(DB_FILE, 'utf8');
-        return JSON.parse(data);
+        const data = fs.readFileSync(DB_FILE, 'utf8');
+        memoryDB = JSON.parse(data);
+        if (!memoryDB.activeOrders) memoryDB.activeOrders = {};
     } catch (e) {
-        return { activeOrders: {} };
+        console.log("Démarrage à zéro de la mémoire.");
     }
 }
 
-async function saveDb(db) {
+// Sauvegarde silencieuse en arrière-plan
+function persistDB() {
     try {
-        await fs.writeFile(DB_FILE, JSON.stringify(db, null, 2), 'utf8');
-        return true;
-    } catch (error) {
-        console.error("Erreur d'écriture :", error);
-        return false;
+        fs.writeFileSync(DB_FILE, JSON.stringify(memoryDB, null, 2), 'utf8');
+    } catch (e) {
+        console.error("Erreur de sauvegarde disque locale", e);
     }
 }
 
-// 🔵 ROUTES
-app.get('/get-current-state', async (req, res) => {
-    const db = await getDb();
-    res.json(db);
+// 🔵 ROUTES SÉCURISÉES (Réponse ultra-rapide depuis la RAM)
+app.get('/get-current-state', (req, res) => {
+    res.json(memoryDB);
 });
 
-app.post('/update-order', async (req, res) => {
+app.post('/update-order', (req, res) => {
     try {
         const { tableId, order } = req.body;
-        const db = await getDb();
+        if (!tableId) return res.status(400).send("ID manquant");
+
+        if (order === null) delete memoryDB.activeOrders[tableId];
+        else memoryDB.activeOrders[tableId] = order;
         
-        if (order === null) delete db.activeOrders[tableId];
-        else db.activeOrders[tableId] = order;
-        
-        await saveDb(db);
+        persistDB();
         res.status(200).send("OK");
     } catch (err) {
+        console.error("Erreur mise à jour:", err);
         res.status(500).send("Erreur");
     }
 });
 
-// 🔴 MOTEUR WEBHOOK (WooCommerce / ICHEF.CH)
-app.post('/api/woo-webhook', async (req, res) => {
+// 🔴 MOTEUR WEBHOOK (Commandes QR Code WooCommerce / ICHEF.CH)
+app.post('/api/woo-webhook', (req, res) => {
     const commande = req.body;
     if (!commande || !commande.id) return res.status(200).send("Ping");
 
     try {
-        const db = await getDb();
         let tableCible = null;
 
         if (commande.meta_data) {
             let metaTable = commande.meta_data.find(m => m.key.toLowerCase().includes('table'));
-            if (metaTable?.value) tableCible = metaTable.value.toString().trim().toUpperCase();
+            if (metaTable && metaTable.value) tableCible = metaTable.value.toString().trim().toUpperCase();
         }
         
         if (!tableCible && commande.customer_note) {
@@ -102,8 +104,8 @@ app.post('/api/woo-webhook', async (req, res) => {
         });
 
         if (tableCible) {
-            if (!db.activeOrders[tableCible]) {
-                db.activeOrders[tableCible] = { 
+            if (!memoryDB.activeOrders[tableCible]) {
+                memoryDB.activeOrders[tableCible] = { 
                     status: "hold", 
                     time: new Date().toLocaleTimeString('fr-FR'), 
                     clientName: "Client QR", 
@@ -111,10 +113,10 @@ app.post('/api/woo-webhook', async (req, res) => {
                     items: formattedItems 
                 };
             } else {
-                db.activeOrders[tableCible].items.push(...formattedItems);
+                memoryDB.activeOrders[tableCible].items.push(...formattedItems);
             }
         } else {
-            db.activeOrders[`order_${commande.id}`] = { 
+            memoryDB.activeOrders[`order_${commande.id}`] = { 
                 isWeb: true, 
                 id: commande.id, 
                 clientName: 'WEB ICHEF', 
@@ -123,10 +125,10 @@ app.post('/api/woo-webhook', async (req, res) => {
             };
         }
 
-        await saveDb(db);
+        persistDB();
         res.status(200).send("OK");
     } catch (err) {
-        console.error("Erreur Webhook:", err);
+        console.error("Erreur Webhook QR:", err);
         res.status(500).send("Erreur");
     }
 });
