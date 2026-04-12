@@ -782,15 +782,79 @@
     </div>
 
     <script>
-        // --- VARIABLES GLOBALES EMPIRE OS ---
-        let activeOrders = {}; 
-        let currentTable = null; 
-        let ticketItems = []; 
-        let previousOrdersState = {};
-        let notifiedAlerts = new Set(); // Mémoire des alertes pour éviter les klaxons en boucle
+     async function syncData() {
+            if (isArchiMode) return;
+            try {
+                const state = await API.getState();
+                if (state && state.activeOrders) {
+                    let nO = state.activeOrders;
+                    
+                    // --- GESTION DES ALERTES INTELLIGENTE ---
+                    for (let t in nO) { 
+                        if (nO[t] && nO[t].alerteRouge) {
+                            let alertKey = t + "_" + nO[t].alerteRouge;
+                            if (!notifiedAlerts.has(alertKey)) {
+                                playKlaxon();
+                                showToast(`⚠️ ALERTE TABLE ${t}: ${nO[t].alerteRouge}`);
+                                notifiedAlerts.add(alertKey);
+                            }
+                        } else {
+                            // Nettoyage si l'alerte est résolue
+                            let keysToRemove = Array.from(notifiedAlerts).filter(k => k.startsWith(t + "_"));
+                            keysToRemove.forEach(k => notifiedAlerts.delete(k));
+                        }
+                    } 
+                    previousOrdersState = JSON.parse(JSON.stringify(nO)); 
+                    activeOrders = nO; 
+                    if(!isDraggingTable) renderFloor();
+                }
+            } catch(e) {}
+        }
 
-        // 🟢 NOUVEAU SÉLECTEUR DE CONVIVES (NUMÉRIQUE) 🟢
-        let currentSeat = 0; 
+        async function processPartialPayment(method) {
+            let amtInput = document.getElementById('pay-custom-amount').value;
+            let amt = parseFloat(amtInput.replace(',', '.'));
+            if(isNaN(amt) || amt <= 0) return alert("⚠️ Montant invalide.");
+            
+            // Logique TR/CV (Non-rendu de monnaie)
+            if ((method === 'TR' || method === 'CV') && amt > currentPayRemaining) {
+                if(!confirm("⚠️ Pas de rendu de monnaie autorisé. Solder quand même ?")) return;
+            }
+
+            // --- OPTION QR CODE ---
+            if (method === 'QR/TEL') {
+                let qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=PAY_TABLE_${currentTable}_AMT_${amt.toFixed(2)}`;
+                document.getElementById('qr-code-img').src = qrUrl;
+                document.getElementById('qr-amount-display').innerText = amt.toFixed(2);
+                document.getElementById('pay-action-zone').style.display = 'none';
+                document.getElementById('qr-pay-zone').style.display = 'flex';
+                document.getElementById('qr-pay-zone').dataset.amt = amt;
+                return;
+            }
+
+            // --- COMMISSION 0.5% (SI OPTION ACTIVÉE) ---
+            // let commission = amt * 0.005; // Pour ton futur dashboard
+
+            currentPayHistory.push({ method: method, amount: amt });
+            currentPayRemaining -= amt;
+            if(currentPayRemaining < 0) currentPayRemaining = 0;
+            updatePaymentUI();
+        }
+
+        function cancelQRZone() {
+            document.getElementById('qr-pay-zone').style.display = 'none';
+            document.getElementById('pay-action-zone').style.display = 'block';
+        }
+
+        function confirmQRPayment() {
+            let amt = parseFloat(document.getElementById('qr-pay-zone').dataset.amt);
+            currentPayHistory.push({ method: 'QR/TEL', amount: amt });
+            currentPayRemaining -= amt;
+            if(currentPayRemaining < 0) currentPayRemaining = 0;
+            cancelQRZone();
+            updatePaymentUI();
+            showToast("✅ Paiement QR Validé");
+        }
 
         function renderSeatBar() {
             let pax = 2;
