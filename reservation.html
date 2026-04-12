@@ -24,6 +24,7 @@
             background: var(--panel); color: var(--gold); border: 2px solid var(--gold);
             padding: 12px 20px; border-radius: 8px; font-weight: 900;
             cursor: pointer; z-index: 9999; text-transform: uppercase;
+            box-shadow: 0 10px 20px rgba(0,0,0,0.5);
         }
 
         .booking-container { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 30px; width: 100%; max-width: 500px; box-shadow: 0 20px 50px rgba(0,0,0,0.5); margin-top: 60px; }
@@ -47,14 +48,17 @@
         .resa-status { font-size: 0.7rem; font-weight: 900; padding: 4px 8px; border-radius: 4px; background: var(--gold-dim); }
         
         .resa-details { font-size: 0.9rem; color: var(--text-muted); margin-bottom: 15px; line-height: 1.5; }
-        .resa-actions { display: flex; gap: 10px; }
+        .resa-actions { display: flex; gap: 8px; }
         
         .btn-action { flex: 1; padding: 10px; border-radius: 6px; font-weight: bold; cursor: pointer; border: 1px solid; text-transform: uppercase; font-size: 0.7rem; transition: 0.2s; }
         .btn-ok { background: rgba(52, 211, 153, 0.1); color: var(--accent); border-color: var(--accent); }
         .btn-ok:hover { background: var(--accent); color: #000; }
         .btn-no { background: rgba(248, 113, 113, 0.1); color: var(--alert); border-color: var(--alert); }
         .btn-no:hover { background: var(--alert); color: #000; }
-        .btn-wa { background: #25D366; color: #fff; border: none; }
+        
+        .btn-comm { flex: 0.5; border: none; color: white; display: flex; align-items: center; justify-content: center; }
+        .btn-wa { background: #25D366; }
+        .btn-sms { background: #007AFF; }
     </style>
 </head>
 <body>
@@ -86,16 +90,15 @@
     <script>
         const RENDER_URL = "https://tableau-system.onrender.com";
         const urlParams = new URLSearchParams(window.location.search);
-const IS_STAFF = urlParams.get('mode') === 'staff';
+        const IS_STAFF = urlParams.get('mode') === 'staff';
 
-// Si c'est le Chef, on affiche le bouton retour et le tableau de bord secret
-if (IS_STAFF) {
-    document.getElementById('staff-back-btn').style.display = 'block';
-    // On peut aussi masquer le formulaire client pour gagner de la place
-    document.getElementById('booking-form').style.display = 'none'; 
-    document.getElementById('staff-dashboard').style.display = 'block';
-    loadStaffDashboard();
-}
+        if (IS_STAFF) {
+            document.getElementById('staff-back-btn').style.display = 'block';
+            document.getElementById('booking-form').style.display = 'none'; 
+            document.getElementById('staff-dashboard').style.display = 'block';
+            loadStaffDashboard();
+            setInterval(loadStaffDashboard, 5000);
+        }
 
         async function submitReservation() {
             const resaData = {
@@ -123,7 +126,7 @@ if (IS_STAFF) {
                     body: JSON.stringify({ tableId: 'RESERVATIONS_MASTER', order: {data: resas} })
                 });
 
-                alert("Opération réussie.");
+                alert("Demande envoyée.");
                 location.reload();
             } catch (e) { alert("Erreur serveur."); }
         }
@@ -135,11 +138,10 @@ if (IS_STAFF) {
                 let resas = state.activeOrders['RESERVATIONS_MASTER'] ? state.activeOrders['RESERVATIONS_MASTER'].data : [];
 
                 if (resas.length === 0) {
-                    list.innerHTML = "<p style='text-align:center; color:var(--text-muted);'>Aucune demande.</p>";
+                    list.innerHTML = "<p style='text-align:center; color:var(--text-muted);'>Aucune demande en attente.</p>";
                     return;
                 }
 
-                // Tri : Pending en premier, puis par date
                 resas.sort((a,b) => (a.status === 'pending' ? -1 : 1));
 
                 list.innerHTML = resas.map(r => `
@@ -149,17 +151,20 @@ if (IS_STAFF) {
                             <span class="resa-status">${r.status.toUpperCase()}</span>
                         </div>
                         <div class="resa-details">
-                            📅 ${r.date} à ${r.time} — 👥 ${r.couverts} Pers.<br>
+                            📅 ${r.date} à ${r.time} — 👥 ${r.couverts} PAX<br>
                             📞 ${r.phone} <br>
-                            ${r.obs ? `⚠️ ${r.obs}` : ''}
+                            ${r.obs ? `⚠️ <span style="color:var(--alert)">${r.obs}</span>` : ''}
                         </div>
                         <div class="resa-actions">
                             ${r.status === 'pending' ? `
-                                <button class="btn-action btn-ok" onclick="updateStatus(${r.id}, 'confirmed')">Confirmer</button>
-                                <button class="btn-action btn-no" onclick="updateStatus(${r.id}, 'rejected')">Refuser</button>
+                                <button class="btn-action btn-ok" onclick="updateStatus(${r.id}, 'confirmed')">✓ ACCEPTER</button>
+                                <button class="btn-action btn-no" onclick="updateStatus(${r.id}, 'rejected')">✕ REFUSER</button>
                             ` : ''}
-                            <button class="btn-action btn-wa" onclick="sendWhatsApp('${r.phone}', '${r.name}', '${r.date}', '${r.time}', '${r.status}')">WhatsApp</button>
-                            <button class="btn-action" style="flex:0.3; border-color:var(--border);" onclick="deleteResa(${r.id})">🗑️</button>
+                            
+                            <button class="btn-action btn-comm btn-wa" onclick="openComm('whatsapp', '${r.phone}', '${r.name}', '${r.date}', '${r.time}', '${r.status}')">WA</button>
+                            <button class="btn-action btn-comm btn-sms" onclick="openComm('sms', '${r.phone}', '${r.name}', '${r.date}', '${r.time}', '${r.status}')">SMS</button>
+                            
+                            <button class="btn-action" style="flex:0.2; border-color:var(--border);" onclick="deleteResa(${r.id})">🗑️</button>
                         </div>
                     </div>
                 `).join('');
@@ -193,12 +198,24 @@ if (IS_STAFF) {
             loadStaffDashboard();
         }
 
-        function sendWhatsApp(phone, name, date, time, status) {
-            let msg = status === 'confirmed' 
-                ? `Bonjour ${name}, votre réservation à l'EMPIRE pour le ${date} à ${time} est validée. À très bientôt !`
-                : `Bonjour ${name}, nous ne pouvons malheureusement pas confirmer votre table pour le ${date}. Merci de votre compréhension.`;
-            let cleanPhone = phone.replace(/\s+/g, '').replace(/^0/, '+33');
-            window.open(`https://wa.me/${cleanPhone}?text=${encodeURIComponent(msg)}`, '_blank');
+        function openComm(type, phone, name, date, time, status) {
+            let cleanPhone = phone.replace(/\s+/g, '');
+            if (cleanPhone.startsWith('0')) cleanPhone = '+33' + cleanPhone.substring(1);
+
+            let message = "";
+            if (status === 'confirmed') {
+                message = `Bonjour ${name}, le bureau du Maître d'Hôtel a le plaisir de vous confirmer votre table à l'EMPIRE pour le ${date} à ${time}. Nous avons hâte de vous recevoir.`;
+            } else if (status === 'rejected') {
+                message = `Bonjour ${name}, nous avons bien reçu votre demande pour le ${date}. Malheureusement, l'EMPIRE affiche complet sur ce créneau. Au plaisir de vous recevoir prochainement.`;
+            } else {
+                message = `Bonjour ${name}, concernant votre demande de réservation à l'EMPIRE pour le ${date}...`;
+            }
+
+            if (type === 'whatsapp') {
+                window.open(`https://wa.me/${cleanPhone}?text=${encodeURIComponent(message)}`, '_blank');
+            } else {
+                window.open(`sms:${cleanPhone}?body=${encodeURIComponent(message)}`, '_blank');
+            }
         }
     </script>
 </body>
