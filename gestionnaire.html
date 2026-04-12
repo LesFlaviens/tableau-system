@@ -2565,46 +2565,64 @@
             document.getElementById('pay-custom-amount').value = currentPayRemaining.toFixed(2);
         }
 
-        function processPartialPayment(method) {
+        // 1. LA FONCTION DE PAIEMENT (À remplacer)
+        async function processPartialPayment(method) {
             let amtInput = document.getElementById('pay-custom-amount').value;
             let amt = parseFloat(amtInput.replace(',', '.'));
             
             if(isNaN(amt) || amt <= 0) return alert("⚠️ Saisissez un montant valide à encaisser.");
-            if(amt > currentPayRemaining + 0.05) return alert("⚠️ Le montant saisi dépasse le reste à payer de la table.");
+            if(amt > currentPayRemaining + 0.05) return alert("⚠️ Le montant saisi dépasse le reste à payer.");
             
-            if (method === 'QR/TEL') alert(`📲 Affichage du QR Code pour ${amt.toFixed(2)}€.\nEn attente du paiement du client...`);
+            // LOGIQUE CONNECTÉE SUMUP
+            if (method === 'CB') {
+                const go = confirm(`Envoyer ${amt.toFixed(2)}€ au terminal SumUp ?`);
+                if (!go) return;
 
+                // On lance la connexion. Si le terminal refuse, on stoppe tout.
+                const success = await triggerSumUpPayment(amt);
+                if (!success) return; 
+            }
+
+            // Si c'est validé (ou si c'est Espèces/QR), on enregistre dans l'OS
             currentPayHistory.push({ method: method, amount: amt });
             currentPayRemaining -= amt;
             if(currentPayRemaining < 0) currentPayRemaining = 0;
             
             updatePaymentUI();
+            logAction("ENCAISSEMENT", `${method} : ${amt.toFixed(2)}€ | Table: ${currentTable}`);
         }
 
-        function updatePaymentUI() {
-            document.getElementById('pay-modal-remaining').innerText = currentPayRemaining.toFixed(2) + " €";
-            
-            let histHtml = currentPayHistory.map((p, i) => `
-                <div style="display:flex; justify-content:space-between; background:var(--panel); padding:8px 12px; border-radius:6px; border:1px solid var(--border);">
-                    <span style="color:var(--text-muted); font-weight:bold;">${p.method}</span>
-                    <span style="color:var(--text-main); font-weight:900;">${p.amount.toFixed(2)} €</span>
-                </div>
-            `).join('');
-            
-            if(currentPayHistory.length === 0) histHtml = `<div style="color:var(--border); text-align:center; font-style:italic;">En attente de paiement...</div>`;
-            document.getElementById('pay-history-list').innerHTML = histHtml;
+        // 2. LE MOTEUR SUMUP (À ajouter juste en dessous de la fonction précédente)
+        async function triggerSumUpPayment(montant) {
+            try {
+                // IMPORTANT : Remplace 'TON_TOKEN_API' par ton jeton secret SumUp
+                const API_TOKEN = 'TON_TOKEN_API'; 
+                
+                const response = await fetch('https://api.sumup.com/v1.0/checkouts', {
+                    method: 'POST',
+                    headers: {
+                        'Authorization': `Bearer ${API_TOKEN}`,
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        amount: montant,
+                        currency: 'EUR',
+                        checkout_reference: `EMPIRE-${currentTable}-${Date.now()}`,
+                        description: `Table ${currentTable}`
+                    })
+                });
 
-            document.getElementById('pay-custom-amount').value = currentPayRemaining.toFixed(2);
-
-            let btnClose = document.getElementById('btn-finalize-table');
-            let actionZone = document.getElementById('pay-action-zone');
-            
-            if(currentPayRemaining <= 0.05) { 
-                btnClose.style.display = 'block';
-                actionZone.style.display = 'none';
-            } else {
-                btnClose.style.display = 'none';
-                actionZone.style.display = 'block';
+                if (response.ok) {
+                    showToast("📡 TERMINAL ACTIVÉ...");
+                    return true;
+                } else {
+                    const err = await response.json();
+                    alert("❌ ERREUR SUMUP : " + (err.message || "Vérifiez la connexion"));
+                    return false;
+                }
+            } catch (error) {
+                alert("❌ ERREUR RÉSEAU : Impossible de joindre SumUp.");
+                return false;
             }
         }
 
