@@ -2655,50 +2655,54 @@
             document.getElementById('pay-custom-amount').value = currentPayRemaining.toFixed(2);
         }
 
-        async function processPartialPayment(method) {
-            let amtInput = document.getElementById('pay-custom-amount').value;
-            let amt = parseFloat(amtInput.replace(',', '.'));
-            
-            if(isNaN(amt) || amt <= 0) return alert("⚠️ Saisissez un montant valide à encaisser.");
-            
-            // 🛡️ Logique Spéciale "Hybride" (Pas de rendu de monnaie sur TR et CV)
-            let isVoucher = (method === 'TR' || method === 'CV');
-            
-            if(!isVoucher && amt > currentPayRemaining + 0.05) {
-                return alert("⚠️ Le montant saisi dépasse le reste à payer.");
-            }
+  async function processPartialPayment(method) {
+    let amtInput = document.getElementById('pay-custom-amount').value;
+    let amt = parseFloat(amtInput.replace(',', '.'));
+    
+    if(isNaN(amt) || amt <= 0) return alert("⚠️ Saisissez un montant valide.");
+    
+    // Détection des Tickets Resto et Chèques Vacances
+    let isVoucher = (method === 'TR' || method === 'CV');
+    if(!isVoucher && amt > currentPayRemaining + 0.05) return alert("⚠️ Le montant dépasse le reste à payer.");
 
-            if (isVoucher && amt > currentPayRemaining) {
-                let confirmOverpay = confirm(`Le montant (${amt.toFixed(2)}€) dépasse le reste à payer (${currentPayRemaining.toFixed(2)}€).\n\nRAPPEL LÉGAL : Interdiction de rendre la monnaie sur les ${method}.\n\nEncaisser quand même et solder la table ?`);
-                if (!confirmOverpay) return;
-            }
-            
-            // --- LOGIQUE CONNECTÉE SUMUP ---
-            if (method === 'CB') {
-                const go = confirm(`Envoyer ${amt.toFixed(2)}€ au terminal SumUp ?`);
-                if (!go) return;
-                const success = await triggerSumUpPayment(amt);
-                if (!success) return; 
-            }
+    if (isVoucher && amt > currentPayRemaining) {
+        if (!confirm(`Montant supérieur au reste (${amt.toFixed(2)}€). On ne rend pas la monnaie sur les ${method}. Valider ?`)) return;
+    }
 
-            // On enregistre la transaction dans l'historique
-            currentPayHistory.push({ method: method, amount: amt });
-            
-            // Le solde est mis à jour (si dépassement via voucher, il tombe à 0)
-            currentPayRemaining -= amt;
-            if(currentPayRemaining < 0) currentPayRemaining = 0;
-            
-            updatePaymentUI();
-            logAction("ENCAISSEMENT", `${method} : ${amt.toFixed(2)}€ | Table: ${currentTable}`);
-        }
+    // 📱 GESTION DU QR CODE
+    if (method === 'QR/TEL') {
+        // On génère un QR simple pointant vers une data (plus tard ce sera ton lien de paiement Stripe)
+        let qrData = encodeURIComponent(`TABLE_${currentTable}_TOTAL_${amt.toFixed(2)}`);
+        let qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=250x250&data=${qrData}`;
+        
+        document.getElementById('qr-code-img').src = qrUrl;
+        document.getElementById('qr-amount-display').innerText = amt.toFixed(2);
+        
+        // On bascule l'affichage
+        document.getElementById('pay-action-zone').style.display = 'none';
+        document.getElementById('qr-pay-zone').style.display = 'flex';
+        
+        // On stocke le montant en cours dans la zone QR pour la confirmation
+        document.getElementById('qr-pay-zone').dataset.amt = amt;
+        return; // On arrête ici, le serveur validera manuellement après scan
+    }
+    
+    // Logique SumUp pour la CB
+    if (method === 'CB') {
+        const go = confirm(`Envoyer ${amt.toFixed(2)}€ au terminal ?`);
+        if (!go) return;
+        const success = await triggerSumUpPayment(amt);
+        if (!success) return; 
+    }
 
-            currentPayHistory.push({ method: method, amount: amt });
-            currentPayRemaining -= amt;
-            if(currentPayRemaining < 0) currentPayRemaining = 0;
-            
-            updatePaymentUI();
-            logAction("ENCAISSEMENT", `${method} : ${amt.toFixed(2)}€ | Table: ${currentTable}`);
-        }
+    // Enregistrement standard
+    currentPayHistory.push({ method: method, amount: amt });
+    currentPayRemaining -= amt;
+    if(currentPayRemaining < 0) currentPayRemaining = 0;
+    
+    updatePaymentUI();
+    logAction("ENCAISSEMENT", `${method} : ${amt.toFixed(2)}€ | Table: ${currentTable}`);
+}
 
         async function triggerSumUpPayment(montant) {
             try {
