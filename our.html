@@ -324,7 +324,7 @@
                 <button class="pay-btn" style="width: 100%; margin: 0; border-color: var(--purple); color: var(--purple); background: rgba(167, 139, 250, 0.1); padding: 25px 0;" onclick="window.open('economat.html', '_blank')">📦 ÉCONOMAT SERVICE</button>
                 <button class="pay-btn" style="width: 100%; margin: 0; border-color: var(--accent); color: var(--accent); background: var(--accent-dim); padding: 25px 0;" onclick="window.open('haccp.html', '_blank')">🛡️ HACCP SALLE</button>
                 <button class="pay-btn" style="width: 100%; margin: 0; border-color: var(--alert); color: var(--alert); background: var(--alert-dim); padding: 25px 0;" onclick="openAuditModal(); closeAdminCatalog();">🚨 AUDIT SÉCURITÉ</button>
-                <button class="btn-mini" style="border-color: var(--gold); color: var(--gold); background: var(--gold-dim);" onclick="window.location.href='planning-staff.html'">🗓️ PLANNING STAFF</button>
+            </div>
             
             <button class="pay-btn" style="width: 100%; margin: 0; border-color: var(--info-zen); color: var(--info-zen); background: rgba(56, 189, 248, 0.1); padding: 20px 0;" onclick="openResaManager(); closeAdminCatalog();">🛎️ CONCIERGERIE (VALIDER LES DEMANDES)</button>
 
@@ -590,6 +590,7 @@
                 <div class="key-row" style="width: 70%;"><button class="key-btn" onclick="addTactileTableName('W')">W</button><button class="key-btn" onclick="addTactileTableName('X')">X</button><button class="key-btn" onclick="addTactileTableName('C')">C</button><button class="key-btn" onclick="addTactileTableName('V')">V</button><button class="key-btn" onclick="addTactileTableName('B')">B</button><button class="key-btn" onclick="addTactileTableName('N')">N</button></div>
                 <div class="key-row"><button class="key-btn" style="flex:2; background: var(--bg);" onclick="addTactileTableName(' ')">ESPACE</button><button class="key-btn" style="background:var(--gold-dim); color:var(--gold); border-color:var(--gold);" onclick="addTactileTableName('VIP')">VIP</button><button class="key-btn" style="background:var(--ordered-dim); color:var(--ordered); border-color:var(--ordered);" onclick="addTactileTableName('TER')">TER</button></div>
             </div>
+            
             <div style="height: 1px; width:100%; background:var(--border); margin: 20px 0;"></div>
             <label style="color:var(--text-muted); font-size:1rem; font-weight:bold; margin-bottom: 10px; display: block; text-transform: uppercase; letter-spacing: 1px;">Capacité (Couverts)</label>
             <div style="display:flex; justify-content:center; align-items:center; gap:15px; margin-bottom:20px; width:100%;">
@@ -597,6 +598,7 @@
                 <input type="number" id="config-table-pax" readonly value="4" style="width: 80px; text-align: center; font-size: 1.5rem; font-weight: bold; background: var(--bg); color: var(--gold); border: 2px solid var(--gold); border-radius: 8px; outline: none;">
                 <button class="btn-mini" style="font-size:1.5rem; padding:10px 20px;" onclick="changeConfigPax(1)">+</button>
             </div>
+
             <div style="height: 1px; width:100%; background:var(--border); margin: 20px 0;"></div>
             <label style="color:var(--text-muted); font-size:1rem; font-weight:bold; margin-bottom: 10px; display: block; text-transform: uppercase; letter-spacing: 1px;">Forme de la table</label>
             <div style="display:flex; gap:15px; width:100%; justify-content:center;">
@@ -740,6 +742,26 @@
     </div>
 
     <script>
+        // --- VARIABLES GLOBALES (Y compris le fix du bug) ---
+        let isArchiMode = false;
+        let isDraggingTable = false; 
+        let configTableId = null;
+        let currentTactileName = ""; // FIX ADDED
+        let isRushMode = false;
+
+        let rooms = ['Salle Principale'];
+        let currentRoom = 'Salle Principale';
+        let configRoomOldName = null, currentTactileRoomName = "";
+        
+        let tables = [ {label:"T1", l:550, t:500, w:80, h:120, shape:"rect", pax: 4, room: "Salle Principale"} ];
+
+        let activeOrders = {}; let currentTable = null; let ticketItems = []; let previousOrdersState = {};
+        let inactivityTimer; const INACTIVITY_LIMIT = 120000; 
+
+        let fraudLog = [];
+        
+        let currentUser = null, currentPin = "";
+        
         // 🟢 NOUVEAU SÉLECTEUR DE CONVIVES (NUMÉRIQUE) 🟢
         let currentSeat = 0; 
 
@@ -888,7 +910,6 @@
             renderReviewItems(); 
         }
 
-        // 🟢 LE SAS UTILISE LES NUMÉROS 🟢
         function renderReviewItems() {
             let pax = parseInt(document.getElementById('review-pax').value) || 2;
             let container = document.getElementById('review-items-list');
@@ -1069,11 +1090,12 @@
             getState: async () => {
                 let state = { activeOrders: {} };
                 try {
-                    let r = await fetch(`${RENDER_URL}/get-current-state`);
+                    let url = (window.location.protocol === 'file:') ? 'https://tableau-system.onrender.com/get-current-state' : '/get-current-state';
+                    let r = await fetch(url);
                     if(r.ok) {
                         state = await r.json();
                         let tag = document.getElementById('stock-tag');
-                        if (tag && (tag.innerText.includes('DÉCONNECTÉ') || tag.innerText.includes('ERREUR'))) {
+                        if (tag && tag.innerText.includes('DÉCONNECTÉ') || tag.innerText.includes('ERREUR')) {
                             tag.innerHTML = '● LIAISON SÉCURISÉE';
                             tag.style.background = 'var(--accent-dim)';
                             tag.style.color = 'var(--accent)';
@@ -1099,12 +1121,14 @@
                 else state.activeOrders[key] = payload;
                 localStorage.setItem('EMPIRE_GLOBAL_SYNC', JSON.stringify(state));
                 
+                let url = (window.location.protocol === 'file:') ? 'https://tableau-system.onrender.com/update-order' : '/update-order';
                 try {
-                    await fetch(`${RENDER_URL}/update-order`, { 
+                    let r = await fetch(url, { 
                         method: 'POST', 
                         headers: {'Content-Type': 'application/json'}, 
                         body: JSON.stringify({ tableId: key, order: data === null ? null : payload }) 
                     });
+                    if (!r.ok) throw new Error("Update Failed");
                 } catch(e) {
                     let tag = document.getElementById('stock-tag');
                     if (tag) {
@@ -1125,36 +1149,6 @@
 
         function escapeQuotes(str) { return str.replace(/'/g, "\\'").replace(/"/g, '&quot;').replace(/\n/g, '[BR]').replace(/\r/g, ''); }
 
-        function safeArray(key, fallback) {
-            try { let v = localStorage.getItem(key); if (v && v !== 'undefined' && v !== 'null') { let p = JSON.parse(v); if (Array.isArray(p)) return p.filter(i => i !== null && i !== undefined); } } catch(e) {} return fallback;
-        }
-
-        let menuCuisine = { menuJour: [], suggestions: [], entrees: [], plats: [], desserts: [] };
-        let menuBar = { vins: [], cocktails: [], bieres: [], spiritueux: [], chaudes: [], froides: [] };
-        let reservationsData = []; 
-        let currentCategory = 'MenuJour'; 
-        let currentCourseDefault = 2;
-        let stockAlerts = { green: 10, yellow: 7, orange: 5, red: 2 }; 
-
-        let isArchiMode = false;
-        let isDraggingTable = false; 
-        let configTableId = null;
-        
-        let isRushMode = false;
-
-        let rooms = safeArray('empire_rooms', ['Salle Principale']);
-        let currentRoom = rooms[0] || 'Salle Principale';
-        let configRoomOldName = null, currentTactileRoomName = "";
-        
-        let tables = safeArray('empire_architecture', [ {label:"T1", l:550, t:500, w:80, h:120, shape:"rect", pax: 4, room: "Salle Principale"} ]);
-
-        let activeOrders = {}; let currentTable = null; let ticketItems = []; let previousOrdersState = {};
-        let inactivityTimer; const INACTIVITY_LIMIT = 120000; 
-
-        let fraudLog = safeArray('empire_fraud_log', []);
-        
-        let currentUser = null, currentPin = "";
-        
         const USERS = { 
             "1234": { name: "Flavien", role: "Serveur" }, 
             "2222": { name: "Chef de Salle", role: "Manager" }, 
@@ -1753,21 +1747,32 @@
         }
         function deleteCurrentTable() { if(confirm("Supprimer cette table ?")) { tables = tables.filter(t => !(t && t.label === configTableId && t.room === currentRoom)); closeTableConfigModal(); renderFloor(); } }
 
+        // 🟢 LE FIX DU GLISSER-DÉPOSER POUR LE SAMSUNG BOOK EST ICI 🟢
         function makeInteractive(elmnt, tableObj, resizerElnt) {
             let p1=0, p2=0, p3=0, p4=0, iW, iH, iX, iY;
+            let startX=0, startY=0;
+            
             elmnt.onmousedown = dragMD; elmnt.ontouchstart = dragTS;
             resizerElnt.onmousedown = resMD; resizerElnt.ontouchstart = resTS;
 
-            function dragMD(e) { if(!isArchiMode || e.target === resizerElnt) return; e.preventDefault(); p3=e.clientX; p4=e.clientY; document.onmouseup=close; document.onmousemove=drag; }
-            function dragTS(e) { if(!isArchiMode || e.target === resizerElnt) return; p3=e.touches[0].clientX; p4=e.touches[0].clientY; document.ontouchend=close; document.ontouchmove=tDrag; }
-            function drag(e) { e.preventDefault(); isDraggingTable=true; p1=p3-e.clientX; p2=p4-e.clientY; p3=e.clientX; p4=e.clientY; updatePos(); }
-            function tDrag(e) { isDraggingTable=true; p1=p3-e.touches[0].clientX; p2=p4-e.touches[0].clientY; p3=e.touches[0].clientX; p4=e.touches[0].clientY; updatePos(); }
+            function dragMD(e) { if(!isArchiMode || e.target === resizerElnt) return; e.preventDefault(); startX=e.clientX; startY=e.clientY; p3=e.clientX; p4=e.clientY; document.onmouseup=close; document.onmousemove=drag; }
+            function dragTS(e) { if(!isArchiMode || e.target === resizerElnt) return; startX=e.touches[0].clientX; startY=e.touches[0].clientY; p3=e.touches[0].clientX; p4=e.touches[0].clientY; document.ontouchend=close; document.ontouchmove=tDrag; }
+            
+            function drag(e) { 
+                e.preventDefault(); 
+                if(Math.abs(startX - e.clientX) > 5 || Math.abs(startY - e.clientY) > 5) isDraggingTable=true; 
+                p1=p3-e.clientX; p2=p4-e.clientY; p3=e.clientX; p4=e.clientY; updatePos(); 
+            }
+            function tDrag(e) { 
+                if(Math.abs(startX - e.touches[0].clientX) > 5 || Math.abs(startY - e.touches[0].clientY) > 5) isDraggingTable=true; 
+                p1=p3-e.touches[0].clientX; p2=p4-e.touches[0].clientY; p3=e.touches[0].clientX; p4=e.touches[0].clientY; updatePos(); 
+            }
             function updatePos() { elmnt.style.top = (elmnt.offsetTop-p2)+"px"; elmnt.style.left = (elmnt.offsetLeft-p1)+"px"; tableObj.t = elmnt.offsetTop; tableObj.l = elmnt.offsetLeft; }
             
-            function resMD(e) { if(!isArchiMode) return; e.preventDefault(); e.stopPropagation(); iW=elmnt.offsetWidth; iH=elmnt.offsetHeight; iX=e.clientX; iY=e.clientY; document.onmouseup=close; document.onmousemove=res; }
-            function resTS(e) { if(!isArchiMode) return; e.stopPropagation(); iW=elmnt.offsetWidth; iH=elmnt.offsetHeight; iX=e.touches[0].clientX; iY=e.touches[0].clientY; document.ontouchend=close; document.ontouchmove=tRes; }
-            function res(e) { e.preventDefault(); isDraggingTable=true; updateDim(e.clientX, e.clientY); }
-            function tRes(e) { isDraggingTable=true; updateDim(e.touches[0].clientX, e.touches[0].clientY); }
+            function resMD(e) { if(!isArchiMode) return; e.preventDefault(); e.stopPropagation(); startX=e.clientX; startY=e.clientY; iW=elmnt.offsetWidth; iH=elmnt.offsetHeight; iX=e.clientX; iY=e.clientY; document.onmouseup=close; document.onmousemove=res; }
+            function resTS(e) { if(!isArchiMode) return; e.stopPropagation(); startX=e.touches[0].clientX; startY=e.touches[0].clientY; iW=elmnt.offsetWidth; iH=elmnt.offsetHeight; iX=e.touches[0].clientX; iY=e.touches[0].clientY; document.ontouchend=close; document.ontouchmove=tRes; }
+            function res(e) { e.preventDefault(); if(Math.abs(startX - e.clientX) > 5 || Math.abs(startY - e.clientY) > 5) isDraggingTable=true; updateDim(e.clientX, e.clientY); }
+            function tRes(e) { if(Math.abs(startX - e.touches[0].clientX) > 5 || Math.abs(startY - e.touches[0].clientY) > 5) isDraggingTable=true; updateDim(e.touches[0].clientX, e.touches[0].clientY); }
             function updateDim(cX, cY) { let nW = Math.max(40, iW+(cX-iX)); let nH = Math.max(40, iH+(cY-iY)); elmnt.style.width=nW+"px"; elmnt.style.height=nH+"px"; tableObj.w=nW; tableObj.h=nH; }
             function close() { document.onmouseup=null; document.onmousemove=null; document.ontouchend=null; document.ontouchmove=null; setTimeout(()=>{isDraggingTable=false; renderFloor(); }, 50); } 
         }
@@ -1866,7 +1871,6 @@
                             if (match) pax = parseInt(match[1]);
                         }
 
-                        // 🟢 GÉNÉRATION DES CHAISES ET PLATS 🟢
                         for(let i=0; i<pax; i++) {
                             let angle = (i / pax) * 2 * Math.PI - (Math.PI / 2); 
                             let seatNum = i + 1;
@@ -1900,7 +1904,6 @@
                             }
                             wrapper.appendChild(c);
 
-                            // 🟢 AFFICHER LES PLATS DIRECTEMENT SUR LE PLAN (Étiquettes) 🟢
                             let seatItems = orderData && orderData.items ? orderData.items.filter(item => item.seat === seatNum) : [];
                             if (seatItems.length > 0) {
                                 let label = document.createElement('div');
@@ -1909,7 +1912,7 @@
                                 let rxLabel = (t.w || 80) / 2 + 38; 
                                 let ryLabel = (t.h || 120) / 2 + 38;
                                 
-                                let lx = (t.w || 80) / 2 + rxLabel * Math.cos(angle) - 40; // 80px wide -> center is -40
+                                let lx = (t.w || 80) / 2 + rxLabel * Math.cos(angle) - 40; 
                                 let ly = (t.h || 120) / 2 + ryLabel * Math.sin(angle) - 10;
                                 
                                 label.style.left = lx + 'px';
@@ -1955,7 +1958,6 @@
                             contentHtml += `<span style="font-size:0.75rem; color:var(--text-main); margin-top:5px; font-weight:900;">👤 ${t.pax}</span>`;
                         }
 
-                        // 🟢 AFFICHAGE DES PLATS "CENTRE" DANS LA TABLE 🟢
                         let centerItems = orderData && orderData.items ? orderData.items.filter(item => !item.seat || item.seat === 0) : [];
                         if (centerItems.length > 0) {
                             let centerText = centerItems.map(item => {
@@ -1976,35 +1978,7 @@
                         
                         let r = document.createElement('div'); r.className = 'table-resizer'; r.innerHTML = '↘'; d.appendChild(r);
                         
-                        let clickTimer = null;
-                        d.onclick = (e) => { 
-                            try {
-                                if (typeof isArchiMode !== 'undefined' && isArchiMode) { 
-                                    if(!isDraggingTable && e.target !== r) openTableConfigModal(t.label); 
-                                } 
-                                else if (typeof pendingAssignResa !== 'undefined' && pendingAssignResa) {
-                                    assignTableToResa(t.label);
-                                } 
-                                else if (typeof isRushMode !== 'undefined' && isRushMode) {
-                                    if (clickTimer == null) {
-                                        clickTimer = setTimeout(() => {
-                                            clickTimer = null;
-                                            openOrder(t.label); 
-                                        }, 300); 
-                                    } else {
-                                        clearTimeout(clickTimer);
-                                        clickTimer = null;
-                                    }
-                                } 
-                                else {
-                                    openOrder(t.label); 
-                                }
-                            } catch(err) {
-                                console.error("Erreur au clic sur la table : ", err);
-                                openOrder(t.label); // Sécurité : on ouvre la table par défaut
-                            }
-                        };
-                        
+                        wrapper.setAttribute('data-label', t.label);
                         wrapper.appendChild(d);
                         makeInteractive(wrapper, t, r); 
                         floor.appendChild(wrapper);
@@ -2024,6 +1998,7 @@
                     else if (orderData.status === 'hold') statusClass = 'status-hold';
                     
                     d.className = `table-obj shape-rect ${statusClass}`; 
+                    d.setAttribute('data-label', orderKey);
                     d.style.left = webStartX + (index * 150) + 'px'; d.style.top = webStartY + 'px';
                     d.style.width = '130px'; d.style.height = '100px'; d.style.zIndex = '100'; d.style.cursor = 'pointer';
                     d.style.border = orderData.status === 'hold' ? '2px solid var(--gold)' : '2px solid var(--alert)';
@@ -2046,8 +2021,12 @@
                     }
 
                     d.innerHTML = `${badgeHtml}<div class="table-content" style="flex-direction:column; justify-content:center;">${contentHtml}</div>`;
-                    d.onclick = () => { openOrder(orderKey); };
-                    floor.appendChild(d);
+                    
+                    let wrapper = document.createElement('div');
+                    wrapper.className = 'table-wrapper';
+                    wrapper.setAttribute('data-label', orderKey);
+                    wrapper.appendChild(d);
+                    floor.appendChild(wrapper);
                 });
 
             } catch (e) { console.error(e); }
@@ -2201,6 +2180,10 @@
                         } 
                     } 
                     
+                    let stateStr = JSON.stringify(nO);
+                    let prevStateStr = JSON.stringify(previousOrdersState);
+                    let hasChanges = stateStr !== prevStateStr;
+
                     previousOrdersState = JSON.parse(JSON.stringify(nO)); 
                     activeOrders = nO; 
                     
@@ -2233,24 +2216,38 @@
                         renderTicket(); 
                         renderMenu(currentCategory); 
                     } 
-                    if(!isDraggingTable) renderFloor();
+                    if(!isDraggingTable && hasChanges) renderFloor();
                 }
             } catch(e) {}
         }
 
-        function connectEmpireH24() {
-            syncData(); 
-            setInterval(syncData, 3000);
-        }
-
-        setInterval(() => { 
-            let c = document.getElementById('empire-clock'); 
-            if(c) c.innerText = new Date().toLocaleTimeString('fr-FR', { hour12: false }); 
+        // 🟢 LE BOUCLIER D'ÉVÉNEMENTS CLIC SUR LE SOL 🟢
+        document.getElementById('floor-plan').addEventListener('click', (e) => {
+            let targetWrapper = e.target.closest('.table-wrapper') || e.target.closest('.table-obj');
+            if(!targetWrapper) return;
             
-            if(currentTable && document.getElementById('order-drawer').classList.contains('open') && typeof isTicketDragging !== 'undefined' && !isTicketDragging) {
-                renderTicket();
+            let tLabel = targetWrapper.getAttribute('data-label');
+            if(!tLabel) return;
+            
+            try {
+                if (isArchiMode) { 
+                    if(!isDraggingTable && !e.target.classList.contains('table-resizer')) {
+                        openTableConfigModal(tLabel); 
+                    }
+                } 
+                else if (pendingAssignResa) {
+                    assignTableToResa(tLabel);
+                } 
+                else if (isRushMode) {
+                    openOrder(tLabel); 
+                } 
+                else {
+                    openOrder(tLabel); 
+                }
+            } catch(err) {
+                console.error(err);
             }
-        }, 1000);
+        });
 
     </script>
 </body>
