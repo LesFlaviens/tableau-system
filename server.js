@@ -1,8 +1,7 @@
 const express = require('express');
 const fs = require('fs');
 const path = require('path');
-// Import de node-fetch si tu as ajouté la dépendance. Sinon, supprime cette ligne si tu utilises Node >= 18.
-const fetch = require('node-fetch');
+// La ligne "node-fetch" a été supprimée pour utiliser le moteur natif du serveur.
 
 const app = express();
 const DB_FILE = path.join(__dirname, 'empire_db.json');
