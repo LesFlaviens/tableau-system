@@ -1044,59 +1044,83 @@
             });
         }
 
-        // --- 🤖 MOTEUR IA (RELIÉ AU BACKEND) 🤖 ---
+      // --- 🤖 MOTEUR IA (RELIÉ AU BACKEND) 🤖 ---
         async function processInvoiceFile(input) {
-            const file = input.files[0];
-            if (!file) return;
-            
+            const file = input.files[0]; if(!file) return;
             const btn = document.getElementById('btn-scan-trigger');
-            const originalText = btn.innerHTML;
-            
-            btn.classList.add('scanning-active');
             btn.innerHTML = "⏳ ANALYSE EN COURS...";
 
-            try {
-                const base64Full = await toBase64(file);
-                const base64Data = base64Full.split(',')[1];
-                const mimeType = file.type || "image/jpeg";
+            const reader = new FileReader();
+            reader.readAsDataURL(file);
+            reader.onload = async () => {
+                try {
+                    const base64Data = reader.result.split(',')[1];
+                    const response = await fetch('/analyse-ticket', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ image: base64Data, mimeType: file.type })
+                    });
 
-                // Le frontend ne contient PLUS AUCUNE CLÉ. Il parle au backend.
-                const response = await fetch('/analyse-ticket', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ image: base64Data, mimeType: mimeType })
-                });
+                    const data = await response.json();
+                    if (!response.ok || data.error) throw new Error(data.error || "Erreur serveur.");
 
-                const data = await response.json();
-                
-                if (!response.ok) {
-                    throw new Error(data.error || "Erreur Serveur Backend");
+                    const res = data.resultat;
+
+                    // 🧠 FONCTION INVINCIBLE : Attrape les données même si l'IA change les noms des colonnes
+                    const getArr = (obj, words) => {
+                        if(!obj) return [];
+                        for(let k in obj) {
+                            if(words.some(w => k.toLowerCase().includes(w)) && Array.isArray(obj[k])) return obj[k];
+                        }
+                        return [];
+                    };
+
+                    const proteine = getArr(res, ['prot', 'viand', 'poisson']);
+                    const garniture = getArr(res, ['garn', 'legum', 'fruit']);
+                    const cremerie = getArr(res, ['crem', 'lait', 'fromag', 'oeuf']);
+                    const divers = getArr(res, ['div', 'sec', 'eco']);
+
+                    // 1. Affichage visuel dans tes 4 colonnes
+                    const resultsBox = document.getElementById('scanner-results');
+                    if (resultsBox) resultsBox.style.display = 'block';
+                    
+                    const totalBox = document.getElementById('scan-total');
+                    if (totalBox) totalBox.innerText = (res.total || res.Total || 0).toFixed(2);
+
+                    const fill = (id, list) => {
+                        const el = document.getElementById(id);
+                        if (el) {
+                            el.innerHTML = list.length > 0 
+                                ? list.map(i => `<li>${i.nom} (${i.prix}€)</li>`).join('') 
+                                : "<li style='opacity:0.5'>-</li>";
+                        }
+                    };
+
+                    fill('res-prot', proteine);
+                    fill('res-garn', garniture);
+                    fill('res-crem', cremerie);
+                    fill('res-div', divers);
+
+                    // 2. Remplissage automatique de tes cases de Prix de Revient
+                    const pList = [...proteine, ...cremerie];
+                    const vList = [...garniture, ...divers];
+
+                    const inputProt = document.getElementById('market-prot-raw');
+                    const inputVeg = document.getElementById('market-veg-raw');
+
+                    if (inputProt) inputProt.value = pList.map(x => `${x.nom} ${x.poids || '1pce'} pour ${x.prix}€`).join(' + ');
+                    if (inputVeg) inputVeg.value = vList.map(x => `${x.nom} ${x.poids || '1pce'} pour ${x.prix}€`).join(' + ');
+
+                    // Déclenche ton calcul mathématique
+                    if (typeof calcSmartPlate === "function") calcSmartPlate();
+
+                    btn.innerHTML = "✅ TICKET INTÉGRÉ !";
+                    setTimeout(() => btn.innerHTML = "📸 SCANNER & IMPORTER", 3000);
+                } catch(e) {
+                    alert("Erreur : " + e.message);
+                    btn.innerHTML = "📸 SCANNER & IMPORTER";
                 }
-
-                const aiResponse = data.resultat;
-
-                // Remplissage automatique des champs de l'éditeur de recette
-                if(aiResponse.proteins) {
-                    document.getElementById('market-prot-raw').value = aiResponse.proteins
-                        .map(p => `${p.name} ${p.weightKg || 1}kg pour ${p.totalCost || 0}€`).join(' + ');
-                }
-                if(aiResponse.garnishes) {
-                    document.getElementById('market-veg-raw').value = aiResponse.garnishes
-                        .map(g => `${g.name} ${g.weightKg || 1}kg pour ${g.totalCost || 0}€`).join(' + ');
-                }
-
-                calcSmartPlate();
-                btn.classList.remove('scanning-active');
-                btn.style.backgroundColor = "var(--accent)";
-                btn.innerHTML = "✅ TICKET LU !";
-                setTimeout(() => { btn.innerHTML = originalText; btn.style.backgroundColor = ""; }, 3000);
-
-            } catch(e) {
-                console.error("DEBUG:", e);
-                alert("❌ ERREUR : " + e.message);
-                btn.classList.remove('scanning-active');
-                btn.innerHTML = originalText;
-            } finally { input.value = ""; }
+            };
         }
 
         // Allumage automatique du système au démarrage
