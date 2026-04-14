@@ -36,12 +36,20 @@ app.post('/update-order', (req, res) => {
 
 app.post("/analyse-ticket", async (req, res) => {
     try {
-        const { image, mimeType } = req.body;
+        const { image, mimeType, isLabelScan } = req.body;
         const API_KEY = process.env.GEMINI_API_KEY;
 
-        console.log("📸 Image reçue par le serveur ! Taille de l'image :", image.length);
+        console.log(`📸 Image reçue ! Taille: ${image.length}. Mode: ${isLabelScan ? 'ÉTIQUETTE HACCP' : 'FACTURE ÉCONOMAT'}`);
 
-        const promptSysteme = "MISSION OBLIGATOIRE : Extraire la TOTALITE des articles. LIS CHAQUE LIGNE ATTENTIVEMENT. Classe en 4 categories : proteine (viandes/poissons/charcuterie), garniture (legumes/fruits/herbes), cremerie (fromages/lait/beurre/oeufs), divers (sec/economat/boissons). REGLE 1: Reponds UNIQUEMENT par un JSON valide. REGLE 2: Extraire les VRAIES donnees, remplis les tableaux. Si pas de poids, mets '1 pce'. Format attendu : {\"total\": 84.86, \"proteine\": [{\"nom\": \"Poulet\", \"poids\": \"1.2kg\", \"prix\": 15.50}], \"garniture\": [], \"cremerie\": [], \"divers\": []}";
+        let promptSysteme = "";
+
+        if (isLabelScan) {
+            // 🏷️ L'ORDRE POUR LES ÉTIQUETTES HACCP
+            promptSysteme = "MISSION HACCP : Lis cette etiquette alimentaire. Extrais les informations suivantes : 'nom' (Le nom du produit), 'lot' (Le numero de lot, souvent precede de L), 'dlc' (La Date Limite de Consommation ou DLUO au format DD/MM/YY). REGLE ABSOLUE : Reponds UNIQUEMENT par un objet JSON pur. Exemple attendu : {\"nom\": \"Saumon Fume\", \"lot\": \"L-12345\", \"dlc\": \"12/05/26\"}";
+        } else {
+            // 🧾 L'ORDRE POUR LES FACTURES
+            promptSysteme = "MISSION OBLIGATOIRE : Extraire la TOTALITE des articles. LIS CHAQUE LIGNE ATTENTIVEMENT. Classe en 4 categories : proteine (viandes/poissons/charcuterie), garniture (legumes/fruits/herbes), cremerie (fromages/lait/beurre/oeufs), divers (sec/economat/boissons). REGLE 1: Reponds UNIQUEMENT par un JSON valide. REGLE 2: Extraire les VRAIES donnees, remplis les tableaux. Si pas de poids, mets '1 pce'. Format attendu : {\"total\": 84.86, \"proteine\": [{\"nom\": \"Poulet\", \"poids\": \"1.2kg\", \"prix\": 15.50}], \"garniture\": [], \"cremerie\": [], \"divers\": []}";
+        }
 
         const payload = {
             contents: [{ parts: [{ text: promptSysteme }, { inline_data: { mime_type: mimeType || "image/jpeg", data: image } }] }],
@@ -71,7 +79,7 @@ app.post("/analyse-ticket", async (req, res) => {
 
         let rawText = data.candidates[0].content.parts[0].text;
         
-        // 🚨 LE MOUCHARD EST ICI 🚨
+        // 🚨 MOUCHARD POUR SURVEILLER L'IA 🚨
         console.log("=============================");
         console.log("🤖 CE QUE L'IA A RÉPONDU :");
         console.log(rawText);
