@@ -39,8 +39,8 @@ app.post("/analyse-ticket", async (req, res) => {
         const { image, mimeType } = req.body;
         const API_KEY = process.env.GEMINI_API_KEY;
 
-        // PROMPT MILITAIRE SUR UNE SEULE LIGNE (Anti-bug de copier-coller)
-        const promptSysteme = "MISSION OBLIGATOIRE : Extraire la TOTALITE des articles. LIS CHAQUE LIGNE ATTENTIVEMENT. Classe en 4 categories : proteine (viandes/poissons/charcuterie), garniture (legumes/fruits/herbes), cremerie (fromages/lait/beurre/oeufs), divers (sec/economat/boissons). REGLE 1: Reponds UNIQUEMENT par un JSON valide. REGLE 2: Extraire les VRAIES donnees, remplis les tableaux. Si pas de poids, mets '1 pce'. Format attendu : {\"total\": 84.86, \"proteine\": [{\"nom\": \"Poulet\", \"poids\": \"1.2kg\", \"prix\": 15.50}], \"garniture\": [], \"cremerie\": [], \"divers\": []}";
+        // PROMPT ANTI-CENSURE ET ANTI-HÉSITATION
+        const promptSysteme = "EXTRACTION ABSOLUE : Lis cette facture. Extrais TOUS les articles alimentaires. AUCUNE CENSURE. Si tu hesites sur la categorie d'un article, mets-le OBLIGATOIREMENT dans le tableau 'divers'. Ne me renvoie JAMAIS de tableaux vides si tu vois de la nourriture. Format OBLIGATOIRE : {\"total\": 0.00, \"proteine\": [], \"garniture\": [], \"cremerie\": [], \"divers\": []}";
 
         const payload = {
             contents: [{ parts: [{ text: promptSysteme }, { inline_data: { mime_type: mimeType || "image/jpeg", data: image } }] }],
@@ -62,13 +62,20 @@ app.post("/analyse-ticket", async (req, res) => {
         if (!data.candidates || !data.candidates[0]) throw new Error("L'IA n'a pas pu lire l'image.");
 
         let rawText = data.candidates[0].content.parts[0].text;
+        
+        // 🚨 LE MOUCHARD EST ICI 🚨
+        console.log("=============================");
+        console.log("🤖 CE QUE L'IA A VU :");
+        console.log(rawText);
+        console.log("=============================");
+
         rawText = rawText.replace(/```json/g, '').replace(/```/g, '').trim();
 
         let aiResponse;
         try {
             aiResponse = JSON.parse(rawText);
         } catch (e) {
-            throw new Error("L'IA a mal formatte la reponse. Relance le scan.");
+            throw new Error("Format IA incorrect.");
         }
 
         res.json({ resultat: aiResponse });
