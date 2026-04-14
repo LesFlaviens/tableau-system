@@ -137,3 +137,67 @@ const PORT = process.env.PORT || 10000;
 app.listen(PORT, () => { 
     console.log(`🚀 Empire OS en ligne sur le port ${PORT}`); 
 });
+import express from "express";
+import fetch from "node-fetch";
+import cors from "cors";
+
+const app = express();
+app.use(cors());
+app.use(express.json({ limit: "10mb" }));
+
+const API_KEY = "TA_CLE_API"; // ⚠️ mets ta clé ici
+
+app.post("/analyse-ticket", async (req, res) => {
+  try {
+    const { image } = req.body;
+
+    // 1️⃣ OCR (lecture du ticket)
+    const visionRes = await fetch(
+      `https://vision.googleapis.com/v1/images:annotate?key=${API_KEY}`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          requests: [{
+            image: { content: image },
+            features: [{ type: "TEXT_DETECTION" }]
+          }]
+        })
+      }
+    );
+
+    const visionData = await visionRes.json();
+    const texte = visionData.responses[0].fullTextAnnotation.text;
+
+    // 2️⃣ IA (analyse intelligente)
+    const aiRes = await fetch(
+      `https://generativelanguage.googleapis.com/v1/models/gemini-pro:generateContent?key=${API_KEY}`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          contents: [{
+            parts: [{
+              text: `Analyse ce ticket et retourne un JSON avec produit, quantité, unité et prix :
+              
+              ${texte}`
+            }]
+          }]
+        })
+      }
+    );
+
+    const aiData = await aiRes.json();
+
+    res.json({
+      texte_brut: texte,
+      resultat: aiData
+    });
+
+  } catch (error) {
+    console.error(error);
+    res.status(500).send("Erreur serveur");
+  }
+});
+
+app.listen(3000, () => console.log("Serveur OK 🚀"));
