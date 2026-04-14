@@ -5,7 +5,7 @@ const path = require('path');
 const app = express();
 const DB_FILE = path.join(__dirname, 'empire_db.json');
 
-// 🟢 SÉCURITÉ NATIVE ABSOLUE
+// 🟢 SÉCURITÉ NATIVE ABSOLUE (CORS Custom)
 app.use((req, res, next) => {
     res.header("Access-Control-Allow-Origin", "*");
     res.header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
@@ -17,11 +17,11 @@ app.use((req, res, next) => {
     next();
 });
 
-// Limite augmentée à 50mb pour laisser passer l'architecture de la salle sans blocage
+// Limite augmentée à 50mb pour laisser passer l'architecture de la salle et les photos HD
 app.use(express.json({ limit: '50mb' }));
 app.use(express.static(__dirname));
 
-// 🧠 BASE DE DONNÉES EN MÉMOIRE VIVE (Élimine 100% des crashs et des collisions de fichiers)
+// 🧠 BASE DE DONNÉES EN MÉMOIRE VIVE (Élimine 100% des crashs)
 let memoryDB = { activeOrders: {} };
 
 // Chargement de l'historique au démarrage
@@ -133,71 +133,62 @@ app.post('/api/woo-webhook', (req, res) => {
     }
 });
 
+// 🤖 MOTEUR IA GEMINI (Centralisé sur le serveur)
+app.post("/analyse-ticket", async (req, res) => {
+    try {
+        const { image, mimeType } = req.body;
+
+        if (!image) return res.status(400).json({ error: "Aucune image reçue." });
+
+        // La clé est extraite des variables d'environnement de Render pour une sécurité totale
+        const API_KEY = process.env.GEMINI_API_KEY;
+        
+        if (!API_KEY) {
+            console.error("❌ ALERTE: Clé API manquante dans l'environnement Render.");
+            return res.status(500).json({ error: "Configuration serveur incomplète (Clé IA manquante)." });
+        }
+
+        const payload = {
+            contents: [{
+                parts: [
+                    { text: "Tu es un chef. Analyse ce ticket de caisse. Extrais les produits alimentaires. Réponds UNIQUEMENT avec un objet JSON pur: {\"proteins\": [{\"name\":\"...\", \"weightKg\":1, \"totalCost\":10}], \"garnishes\": [{\"name\":\"...\", \"weightKg\":1, \"totalCost\":5}]}" },
+                    { inline_data: { mime_type: mimeType || "image/jpeg", data: image } }
+                ]
+            }],
+            generation_config: { response_mime_type: "application/json" }
+        };
+
+        // Requête native vers le modèle 1.5 Flash
+        const aiRes = await fetch(
+            `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${API_KEY}`,
+            {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(payload)
+            }
+        );
+
+        const data = await aiRes.json();
+        
+        if (!aiRes.ok) {
+            throw new Error(data.error ? data.error.message : "Refus des serveurs Google");
+        }
+
+        // Nettoyage de la réponse
+        let rawText = data.candidates[0].content.parts[0].text;
+        rawText = rawText.replace(/```json/g, '').replace(/```/g, '').trim();
+        
+        const aiResponse = JSON.parse(rawText);
+        res.json({ resultat: aiResponse });
+
+    } catch (error) {
+        console.error("Erreur Moteur IA:", error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// 🚀 ALLUMAGE DU SYSTÈME
 const PORT = process.env.PORT || 10000;
 app.listen(PORT, () => { 
-    console.log(`🚀 Empire OS en ligne sur le port ${PORT}`); 
+    console.log(`🚀 Empire OS en ligne et prêt à encaisser sur le port ${PORT}`); 
 });
-import express from "express";
-import fetch from "node-fetch";
-import cors from "cors";
-
-const app = express();
-app.use(cors());
-app.use(express.json({ limit: "10mb" }));
-
-const API_KEY = "TA_CLE_API"; // ⚠️ mets ta clé ici
-
-app.post("/analyse-ticket", async (req, res) => {
-  try {
-    const { image } = req.body;
-
-    // 1️⃣ OCR (lecture du ticket)
-    const visionRes = await fetch(
-      `https://vision.googleapis.com/v1/images:annotate?key=${API_KEY}`,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          requests: [{
-            image: { content: image },
-            features: [{ type: "TEXT_DETECTION" }]
-          }]
-        })
-      }
-    );
-
-    const visionData = await visionRes.json();
-    const texte = visionData.responses[0].fullTextAnnotation.text;
-
-    // 2️⃣ IA (analyse intelligente)
-    const aiRes = await fetch(
-      `https://generativelanguage.googleapis.com/v1/models/gemini-pro:generateContent?key=${API_KEY}`,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          contents: [{
-            parts: [{
-              text: `Analyse ce ticket et retourne un JSON avec produit, quantité, unité et prix :
-              
-              ${texte}`
-            }]
-          }]
-        })
-      }
-    );
-
-    const aiData = await aiRes.json();
-
-    res.json({
-      texte_brut: texte,
-      resultat: aiData
-    });
-
-  } catch (error) {
-    console.error(error);
-    res.status(500).send("Erreur serveur");
-  }
-});
-
-app.listen(3000, () => console.log("Serveur OK 🚀"));
