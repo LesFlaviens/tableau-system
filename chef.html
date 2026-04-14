@@ -639,14 +639,22 @@
             alert("✅ Planning de la Brigade synchronisé avec succès !");
         }
 
-        function parseDictation(text) {
+function parseDictation(text) {
             let normalized = text.replace(/(\d+)\s*(?:euros?|€)\s*(\d{1,2})\b/gi, "$1.$2");
             let priceRegex = /(\d+(?:[.,]\d{1,2})?)\s*(?:€|euros?|balles?)/gi;
-            let weightRegex = /(\d+(?:[.,]\d{1,3})?)\s*(?:kg|kilo|kilos|kilogrammes?)/gi;
+            let weightRegex = /(\d+(?:[.,]\d{1,3})?)\s*(?:kg|kilo|kilos|kilogrammes?|g|gr|grammes?)\b/gi;
+            
             let price = 0; let matchP;
             while ((matchP = priceRegex.exec(normalized)) !== null) { price += parseFloat(matchP[1].replace(',', '.')); }
+            
             let weight = 0; let matchW;
-            while ((matchW = weightRegex.exec(normalized)) !== null) { weight += parseFloat(matchW[1].replace(',', '.')); }
+            while ((matchW = weightRegex.exec(normalized)) !== null) { 
+                let val = parseFloat(matchW[1].replace(',', '.'));
+                let unit = matchW[0].toLowerCase();
+                // Conversion automatique des grammes en kilos pour le calcul
+                if (unit.includes('kg') || unit.includes('kilo')) { weight += val; } 
+                else if (unit.includes('g') || unit.includes('gr')) { weight += val / 1000; }
+            }
             
             let cleanName = normalized.replace(priceRegex, '').replace(weightRegex, '').replace(/\b(pour|à|de|et)\b/gi, ' ').replace(/\s+/g, ' ').trim();
             cleanName = cleanName.charAt(0).toUpperCase() + cleanName.slice(1);
@@ -655,43 +663,129 @@
         }
 
         function calcSmartPlate() {
-            let protText = document.getElementById('market-prot-raw').value.toLowerCase();
-            let protData = parseDictation(protText);
-            let portionGrams = parseFloat(document.getElementById('market-prot-portion').value) || 150;
-            let protCostPerPlate = 0;
-            let protInfoEl = document.getElementById('prot-info');
-            let protYieldEl = document.getElementById('prot-yield-advice');
-
-            if (protData.weight > 0 && protData.price > 0) {
-                let pricePerKg = protData.price / protData.weight;
-                protCostPerPlate = (pricePerKg / 1000) * portionGrams;
-                let maxPortions = Math.floor((protData.weight * 1000) / portionGrams);
-                let waste = Math.round((protData.weight * 1000) % portionGrams);
+            // Le moteur intelligent qui s'adapte à chaque boîte (Double Mode)
+            const calcBox = (prefix) => {
+                let text = document.getElementById(`market-${prefix}-raw`).value.toLowerCase();
+                let data = parseDictation(text);
                 
-                protInfoEl.innerHTML = `<span style="color:var(--accent);">✅ ${protData.name || "Achat"} : ${protData.weight}kg pour ${protData.price.toFixed(2)}€ (${pricePerKg.toFixed(2)}€/kg)</span>`;
-                protYieldEl.style.display = "block";
-                protYieldEl.innerHTML = `💡 Rendement théorique : ${maxPortions} portions. (Chutes : ${waste}g)`;
-                let stockInput = document.getElementById('market-stock');
-                if (stockInput.dataset.manual !== "true") { stockInput.value = maxPortions; }
-            } else if (protData.price > 0) {
-                protInfoEl.innerHTML = `⚠️ Achat: ${protData.price.toFixed(2)}€ (Poids manquant ! Indiquez 'X kg' pour calculer le rendement)`;
-                protYieldEl.style.display = "none";
-            } else { protInfoEl.innerHTML = `En attente de données...`; protYieldEl.style.display = "none"; }
-            document.getElementById('prot-cost-display').innerText = protCostPerPlate.toFixed(2) + " €";
+                let inputId = prefix === 'prot' ? 'market-prot-portion' : `market-${prefix}-yield`;
+                let inputVal = parseFloat(document.getElementById(inputId).value) || 1;
+                
+                let costPerPlate = 0;
+                let infoEl = document.getElementById(`${prefix}-info`);
 
-            let vegText = document.getElementById('market-veg-raw').value.toLowerCase();
-            let vegData = parseDictation(vegText);
-            let vegYield = parseFloat(document.getElementById('market-veg-yield').value) || 1;
-            let vegCostPerPlate = 0;
-            let vegInfoEl = document.getElementById('veg-info');
+                if (data.weight > 0 && data.price > 0) {
+                    // MODE 1 (GRAMMAGE) : Si l'IA trouve un poids en kg/g, on calcule au centime près
+                    let pricePerKg = data.price / data.weight;
+                    costPerPlate = (pricePerKg / 1000) * inputVal;
+                    infoEl.innerHTML = `<span style="color:var(--accent);">✅ Poids détecté. Calculé pour ${inputVal}g</span>`;
+                    
+                    // Remplissage automatique du "Stock" uniquement via la protéine principale
+                    if (prefix === 'prot') {
+                        let stockInput = document.getElementById('market-stock');
+                        if (stockInput.dataset.manual !== "true") {
+                            stockInput.value = Math.floor((data.weight * 1000) / inputVal);
+                        }
+                    }
+                } else if (data.price > 0) {
+                    // MODE 2 (FORFAIT) : S'il n'y a pas de poids, on divise le prix global par le nombre entré
+                    costPerPlate = data.price / inputVal;
+                    infoEl.innerHTML = `<span style="color:var(--gold);">⚠️ Sans poids. Divisé par ${inputVal} parts</span>`;
+                } else {
+                    infoEl.innerHTML = `En attente...`;
+                }
+                
+                document.getElementById(`${prefix}-cost-display`).innerText = costPerPlate.toFixed(2) + " €";
+                return costPerPlate;
+            };
 
-            if (vegData.price > 0) {
-                vegCostPerPlate = vegData.price / vegYield;
-                vegInfoEl.innerHTML = `<span style="color:var(--accent);">✅ ${vegData.name || "Garniture"} : ${vegData.price.toFixed(2)}€ divisé par ${vegYield} assiettes.</span>`;
-            } else { vegInfoEl.innerHTML = `En attente de données...`; }
-            document.getElementById('veg-cost-display').innerText = vegCostPerPlate.toFixed(2) + " €";
+            // Lancement du calcul pour les 4 colonnes
+            let protCost = calcBox('prot');
+            let vegCost = calcBox('veg');
+            let cremCost = calcBox('crem');
+            let divCost = calcBox('div');
 
-            let totalCost = protCostPerPlate + vegCostPerPlate;
+            // Addition totale et marges
+            let totalCost = protCost + vegCost + cremCost + divCost;
+            document.getElementById('market-total-cost').value = totalCost.toFixed(2) + " €";
+
+            let margin = parseFloat(document.getElementById('market-margin').value) || 3.5;
+            let recommended = totalCost * margin;
+            document.getElementById('market-recommended').innerText = recommended.toFixed(2) + " €";
+            
+            let priceInput = document.getElementById('market-price');
+            if (priceInput.value === "" || priceInput.dataset.autoFilled === "true") {
+                priceInput.value = (Math.ceil(recommended * 2) / 2).toFixed(2);
+                priceInput.dataset.autoFilled = "true";
+            }
+        }function parseDictation(text) {
+            let normalized = text.replace(/(\d+)\s*(?:euros?|€)\s*(\d{1,2})\b/gi, "$1.$2");
+            let priceRegex = /(\d+(?:[.,]\d{1,2})?)\s*(?:€|euros?|balles?)/gi;
+            let weightRegex = /(\d+(?:[.,]\d{1,3})?)\s*(?:kg|kilo|kilos|kilogrammes?|g|gr|grammes?)\b/gi;
+            
+            let price = 0; let matchP;
+            while ((matchP = priceRegex.exec(normalized)) !== null) { price += parseFloat(matchP[1].replace(',', '.')); }
+            
+            let weight = 0; let matchW;
+            while ((matchW = weightRegex.exec(normalized)) !== null) { 
+                let val = parseFloat(matchW[1].replace(',', '.'));
+                let unit = matchW[0].toLowerCase();
+                // Conversion automatique des grammes en kilos pour le calcul
+                if (unit.includes('kg') || unit.includes('kilo')) { weight += val; } 
+                else if (unit.includes('g') || unit.includes('gr')) { weight += val / 1000; }
+            }
+            
+            let cleanName = normalized.replace(priceRegex, '').replace(weightRegex, '').replace(/\b(pour|à|de|et)\b/gi, ' ').replace(/\s+/g, ' ').trim();
+            cleanName = cleanName.charAt(0).toUpperCase() + cleanName.slice(1);
+            
+            return { price, weight, name: cleanName };
+        }
+
+        function calcSmartPlate() {
+            // Le moteur intelligent qui s'adapte à chaque boîte (Double Mode)
+            const calcBox = (prefix) => {
+                let text = document.getElementById(`market-${prefix}-raw`).value.toLowerCase();
+                let data = parseDictation(text);
+                
+                let inputId = prefix === 'prot' ? 'market-prot-portion' : `market-${prefix}-yield`;
+                let inputVal = parseFloat(document.getElementById(inputId).value) || 1;
+                
+                let costPerPlate = 0;
+                let infoEl = document.getElementById(`${prefix}-info`);
+
+                if (data.weight > 0 && data.price > 0) {
+                    // MODE 1 (GRAMMAGE) : Si l'IA trouve un poids en kg/g, on calcule au centime près
+                    let pricePerKg = data.price / data.weight;
+                    costPerPlate = (pricePerKg / 1000) * inputVal;
+                    infoEl.innerHTML = `<span style="color:var(--accent);">✅ Poids détecté. Calculé pour ${inputVal}g</span>`;
+                    
+                    // Remplissage automatique du "Stock" uniquement via la protéine principale
+                    if (prefix === 'prot') {
+                        let stockInput = document.getElementById('market-stock');
+                        if (stockInput.dataset.manual !== "true") {
+                            stockInput.value = Math.floor((data.weight * 1000) / inputVal);
+                        }
+                    }
+                } else if (data.price > 0) {
+                    // MODE 2 (FORFAIT) : S'il n'y a pas de poids, on divise le prix global par le nombre entré
+                    costPerPlate = data.price / inputVal;
+                    infoEl.innerHTML = `<span style="color:var(--gold);">⚠️ Sans poids. Divisé par ${inputVal} parts</span>`;
+                } else {
+                    infoEl.innerHTML = `En attente...`;
+                }
+                
+                document.getElementById(`${prefix}-cost-display`).innerText = costPerPlate.toFixed(2) + " €";
+                return costPerPlate;
+            };
+
+            // Lancement du calcul pour les 4 colonnes
+            let protCost = calcBox('prot');
+            let vegCost = calcBox('veg');
+            let cremCost = calcBox('crem');
+            let divCost = calcBox('div');
+
+            // Addition totale et marges
+            let totalCost = protCost + vegCost + cremCost + divCost;
             document.getElementById('market-total-cost').value = totalCost.toFixed(2) + " €";
 
             let margin = parseFloat(document.getElementById('market-margin').value) || 3.5;
