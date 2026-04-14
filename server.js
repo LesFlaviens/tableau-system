@@ -1,6 +1,8 @@
 const express = require('express');
 const fs = require('fs');
 const path = require('path');
+// Import de node-fetch si tu as ajouté la dépendance. Sinon, supprime cette ligne si tu utilises Node >= 18.
+const fetch = require('node-fetch');
 
 const app = express();
 const DB_FILE = path.join(__dirname, 'empire_db.json');
@@ -174,7 +176,7 @@ app.post("/analyse-ticket", async (req, res) => {
             throw new Error(data.error ? data.error.message : "Refus des serveurs Google");
         }
 
-        // Nettoyage de la réponse
+        // Nettoyage de la réponse pour s'assurer d'avoir un JSON propre
         let rawText = data.candidates[0].content.parts[0].text;
         rawText = rawText.replace(/```json/g, '').replace(/```/g, '').trim();
         
@@ -187,7 +189,7 @@ app.post("/analyse-ticket", async (req, res) => {
     }
 });
 
-// 🚀 ALLUMAGE DU SYSTÈME
+// 🚀 ALLUMAGE DU SYSTÈME (Une seule fois !)
 const PORT = process.env.PORT || 10000;
 app.listen(PORT, () => { 
     console.log(`🚀 Empire OS en ligne et prêt à encaisser sur le port ${PORT}`); 
