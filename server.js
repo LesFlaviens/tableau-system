@@ -140,7 +140,6 @@ app.post("/analyse-ticket", async (req, res) => {
 
         if (!image) return res.status(400).json({ error: "Aucune image reçue." });
 
-        // La clé est extraite des variables d'environnement de Render pour une sécurité totale
         const API_KEY = process.env.GEMINI_API_KEY;
         
         if (!API_KEY) {
@@ -148,15 +147,59 @@ app.post("/analyse-ticket", async (req, res) => {
             return res.status(500).json({ error: "Configuration serveur incomplète (Clé IA manquante)." });
         }
 
+        // LE NOUVEAU CERVEAU : Instructions strictes de classification comptable
+        const promptSysteme = `Tu es un chef exécutif et un expert comptable. Analyse ce ticket de caisse ou cette facture.
+        1. Trouve le prix TOTAL de la facture.
+        2. Extrais TOUS les articles alimentaires et classe-les STRICTEMENT dans ces 4 catégories :
+           - viandes (Boeuf, poulet, porc, charcuterie carnée...)
+           - proteines (Poissons, fruits de mer, oeufs, fromages, tofu...)
+           - legumes (Légumes frais, fruits frais, herbes aromatiques...)
+           - secs (Épicerie, farines, épices, conserves, boissons, surgelés...)
+        3. Réponds UNIQUEMENT avec un objet JSON pur, sans aucun texte autour, avec ce format exact :
+        {
+          "total": 50.32,
+          "viandes": [{"nom": "Poulet fermier", "poids": "1.2kg", "prix": 15.50}],
+          "proteines": [{"nom": "Saumon", "poids": "0.5kg", "prix": 10.00}],
+          "legumes": [{"nom": "Courgette", "poids": "1kg", "prix": 3.42}],
+          "secs": [{"nom": "Matcha Latte", "poids": "1pce", "prix": 5.99}]
+        }`;
+
         const payload = {
             contents: [{
                 parts: [
-                    { text: "Tu es un chef. Analyse ce ticket de caisse. Extrais les produits alimentaires. Réponds UNIQUEMENT avec un objet JSON pur: {\"proteins\": [{\"name\":\"...\", \"weightKg\":1, \"totalCost\":10}], \"garnishes\": [{\"name\":\"...\", \"weightKg\":1, \"totalCost\":5}]}" },
+                    { text: promptSysteme },
                     { inline_data: { mime_type: mimeType || "image/jpeg", data: image } }
                 ]
             }],
             generation_config: { response_mime_type: "application/json" }
         };
+
+        const aiRes = await fetch(
+            `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${API_KEY}`,
+            {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(payload)
+            }
+        );
+
+        const data = await aiRes.json();
+        
+        if (!aiRes.ok) {
+            throw new Error(data.error ? data.error.message : "Refus des serveurs Google");
+        }
+
+        let rawText = data.candidates[0].content.parts[0].text;
+        rawText = rawText.replace(/```json/g, '').replace(/```/g, '').trim();
+        
+        const aiResponse = JSON.parse(rawText);
+        res.json({ resultat: aiResponse });
+
+    } catch (error) {
+        console.error("Erreur Moteur IA:", error);
+        res.status(500).json({ error: error.message });
+    }
+});
 
       // Requête native vers le NOUVEAU modèle 2.5 Flash
         const aiRes = await fetch(
