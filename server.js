@@ -38,24 +38,49 @@ app.post("/analyse-ticket", async (req, res) => {
         const { image, mimeType } = req.body;
         const API_KEY = process.env.GEMINI_API_KEY;
         
-        const promptSysteme = "Tu es un chef. Analyse ce ticket. Classe en 4 catégories JSON pur : 'proteine' (viandes/poissons), 'garniture' (legumes/fruits), 'cremerie' (laitage/oeufs), 'divers' (sec/economat). Format: {total:0, proteine:[{nom:'',poids:'',prix:0}], garniture:[], cremerie:[], divers:[]}";
+        // LE NOUVEAU CERVEAU : Ordres militaires pour empêcher l'IA d'être paresseuse
+        const promptSysteme = `Tu es un chef exécutif et un auditeur financier intraitable. 
+TA MISSION OBLIGATOIRE : Extraire la TOTALITÉ des articles présents sur cette facture. LIS CHAQUE LIGNE ATTENTIVEMENT.
+Classe chaque article trouvé dans l'une de ces 4 catégories :
+1. proteine : Viandes, poissons, fruits de mer, charcuterie.
+2. garniture : Légumes frais, fruits frais, herbes.
+3. cremerie : Fromages, lait, beurre, crème, oeufs.
+4. divers : Épicerie sèche, épices, huiles, conserves, emballages.
+
+RÈGLE ABSOLUE : Tu dois répondre UNIQUEMENT par un objet JSON valide. REMPLIS LES TABLEAUX avec les vraies données lues sur l'image (ne me renvoie pas de tableaux vides). Si tu ne trouves pas le poids, mets "1pce".
+
+Modèle attendu :
+{
+  "total": 84.86,
+  "proteine": [{"nom": "Poulet fermier", "poids": "1.2kg", "prix": 15.50}],
+  "garniture": [{"nom": "Courgette Espagne", "poids": "1.1kg", "prix": 3.42}],
+  "cremerie": [{"nom": "Beurre doux", "poids": "250g", "prix": 3.00}],
+  "divers": [{"nom": "Matcha Latte", "poids": "0.17kg", "prix": 5.99}]
+}`;
 
         const payload = {
             contents: [{ parts: [{ text: promptSysteme }, { inline_data: { mime_type: mimeType || "image/jpeg", data: image } }] }],
             generation_config: { response_mime_type: "application/json" }
         };
 
-   const aiRes = await fetch('https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=' + API_KEY, {
+        const response = await fetch("https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=" + API_KEY, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify(payload)
         });
 
-        const data = await aiRes.json();
-        const aiResponse = JSON.parse(data.candidates[0].content.parts[0].text);
-        res.json({ resultat: aiResponse });
+        const data = await response.json();
+        
+        if (!response.ok) throw new Error(data.error ? data.error.message : "Erreur API Google");
+        if (!data.candidates || !data.candidates[0]) throw new Error("L'IA n'a pas pu lire l'image.");
+
+        let rawText = data.candidates[0].content.parts[0].text;
+        rawText = rawText.replace(/```json/g, '').replace(/```/g, '').trim();
+        
+        res.json({ resultat: JSON.parse(rawText) });
 
     } catch (error) {
+        console.error("Erreur backend:", error);
         res.status(500).json({ error: error.message });
     }
 });
