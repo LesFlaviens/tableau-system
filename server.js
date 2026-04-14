@@ -129,35 +129,50 @@ app.post('/api/woo-webhook', (req, res) => {
     }
 });
 
-// 🤖 NOUVEAU MOTEUR IA GEMINI (Structuré)
+// 🤖 MOTEUR IA GEMINI (Version 4 Colonnes Spécifiques)
 app.post("/analyse-ticket", async (req, res) => {
     try {
         const { image, mimeType } = req.body;
-
         if (!image) return res.status(400).json({ error: "Aucune image reçue." });
 
         const API_KEY = process.env.GEMINI_API_KEY;
         
-        if (!API_KEY) {
-            return res.status(500).json({ error: "Clé IA manquante sur le serveur." });
-        }
+        const promptSysteme = `Tu es un expert en gestion de stocks cuisine. Analyse ce ticket.
+        Extrais les articles et classe-les dans ces 4 catégories STRICTES :
+        1. proteine : Toutes les viandes, charcuteries, poissons et crustacés.
+        2. garniture : Tous les légumes frais, fruits frais et herbes.
+        3. cremerie : Fromages, œufs, lait, crème, beurre.
+        4. divers : Économat, épicerie sèche, huiles, épices, produits d'entretien, emballages.
 
-        const promptSysteme = `Tu es un chef exécutif et un expert comptable. Analyse ce ticket de caisse ou cette facture.
-        1. Trouve le prix TOTAL de la facture.
-        2. Extrais TOUS les articles alimentaires et classe-les STRICTEMENT dans ces 4 catégories :
-           - viandes (Boeuf, poulet, porc, charcuterie carnée...)
-           - proteines (Poissons, fruits de mer, oeufs, fromages, tofu...)
-           - legumes (Légumes frais, fruits frais, herbes aromatiques...)
-           - secs (Épicerie, farines, épices, conserves, boissons, surgelés...)
-        3. Réponds UNIQUEMENT avec un objet JSON pur, sans aucun texte autour, avec ce format exact :
+        Réponds UNIQUEMENT en JSON pur avec ce format :
         {
-          "total": 50.32,
-          "viandes": [{"nom": "Poulet fermier", "poids": "1.2kg", "prix": 15.50}],
-          "proteines": [{"nom": "Saumon", "poids": "0.5kg", "prix": 10.00}],
-          "legumes": [{"nom": "Courgette", "poids": "1kg", "prix": 3.42}],
-          "secs": [{"nom": "Matcha Latte", "poids": "1pce", "prix": 5.99}]
+          "total": 0.00,
+          "proteine": [{"nom": "...", "poids": "...", "prix": 0.00}],
+          "garniture": [{"nom": "...", "poids": "...", "prix": 0.00}],
+          "cremerie": [{"nom": "...", "poids": "...", "prix": 0.00}],
+          "divers": [{"nom": "...", "poids": "...", "prix": 0.00}]
         }`;
 
+        const payload = {
+            contents: [{ parts: [{ text: promptSysteme }, { inline_data: { mime_type: mimeType || "image/jpeg", data: image } }] }],
+            generation_config: { response_mime_type: "application/json" }
+        };
+
+        const aiRes = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${API_KEY}`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload)
+        });
+
+        const data = await aiRes.json();
+        let rawText = data.candidates[0].content.parts[0].text;
+        rawText = rawText.replace(/```json/g, '').replace(/```/g, '').trim();
+        res.json({ resultat: JSON.parse(rawText) });
+
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
         const payload = {
             contents: [{
                 parts: [
