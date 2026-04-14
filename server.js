@@ -1,7 +1,6 @@
 const express = require('express');
 const fs = require('fs');
 const path = require('path');
-// La ligne "node-fetch" a été supprimée pour utiliser le moteur natif du serveur.
 
 const app = express();
 const DB_FILE = path.join(__dirname, 'empire_db.json');
@@ -159,9 +158,9 @@ app.post("/analyse-ticket", async (req, res) => {
             generation_config: { response_mime_type: "application/json" }
         };
 
-      // Requête native vers le modèle 1.5 Flash Latest
+      // Requête native vers le NOUVEAU modèle 2.5 Flash
         const aiRes = await fetch(
-            `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash-latest:generateContent?key=${API_KEY}`,
+            `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${API_KEY}`,
             {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
