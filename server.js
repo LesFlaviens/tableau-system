@@ -17,14 +17,13 @@ app.use((req, res, next) => {
     next();
 });
 
-// Limite augmentée à 50mb pour laisser passer l'architecture de la salle et les photos HD
+// Limite augmentée à 50mb pour laisser passer les photos
 app.use(express.json({ limit: '50mb' }));
 app.use(express.static(__dirname));
 
-// 🧠 BASE DE DONNÉES EN MÉMOIRE VIVE (Élimine 100% des crashs)
+// 🧠 BASE DE DONNÉES EN MÉMOIRE VIVE
 let memoryDB = { activeOrders: {} };
 
-// Chargement de l'historique au démarrage
 if (fs.existsSync(DB_FILE)) {
     try {
         const data = fs.readFileSync(DB_FILE, 'utf8');
@@ -35,16 +34,15 @@ if (fs.existsSync(DB_FILE)) {
     }
 }
 
-// Sauvegarde silencieuse en arrière-plan
 function persistDB() {
     try {
         fs.writeFileSync(DB_FILE, JSON.stringify(memoryDB, null, 2), 'utf8');
     } catch (e) {
-        console.error("Erreur de sauvegarde disque locale", e);
+        console.error("Erreur de sauvegarde", e);
     }
 }
 
-// 🔵 ROUTES SÉCURISÉES (Réponse ultra-rapide depuis la RAM)
+// 🔵 ROUTES SÉCURISÉES
 app.get('/get-current-state', (req, res) => {
     res.json(memoryDB);
 });
@@ -60,12 +58,11 @@ app.post('/update-order', (req, res) => {
         persistDB();
         res.status(200).send("OK");
     } catch (err) {
-        console.error("Erreur mise à jour:", err);
         res.status(500).send("Erreur");
     }
 });
 
-// 🔴 MOTEUR WEBHOOK (Commandes QR Code WooCommerce / ICHEF.CH)
+// 🔴 MOTEUR WEBHOOK
 app.post('/api/woo-webhook', (req, res) => {
     const commande = req.body;
     if (!commande || !commande.id) return res.status(200).send("Ping");
@@ -128,12 +125,11 @@ app.post('/api/woo-webhook', (req, res) => {
         persistDB();
         res.status(200).send("OK");
     } catch (err) {
-        console.error("Erreur Webhook QR:", err);
         res.status(500).send("Erreur");
     }
 });
 
-// 🤖 MOTEUR IA GEMINI (Centralisé sur le serveur)
+// 🤖 NOUVEAU MOTEUR IA GEMINI (Structuré)
 app.post("/analyse-ticket", async (req, res) => {
     try {
         const { image, mimeType } = req.body;
@@ -143,11 +139,9 @@ app.post("/analyse-ticket", async (req, res) => {
         const API_KEY = process.env.GEMINI_API_KEY;
         
         if (!API_KEY) {
-            console.error("❌ ALERTE: Clé API manquante dans l'environnement Render.");
-            return res.status(500).json({ error: "Configuration serveur incomplète (Clé IA manquante)." });
+            return res.status(500).json({ error: "Clé IA manquante sur le serveur." });
         }
 
-        // LE NOUVEAU CERVEAU : Instructions strictes de classification comptable
         const promptSysteme = `Tu es un chef exécutif et un expert comptable. Analyse ce ticket de caisse ou cette facture.
         1. Trouve le prix TOTAL de la facture.
         2. Extrais TOUS les articles alimentaires et classe-les STRICTEMENT dans ces 4 catégories :
@@ -201,37 +195,8 @@ app.post("/analyse-ticket", async (req, res) => {
     }
 });
 
-      // Requête native vers le NOUVEAU modèle 2.5 Flash
-        const aiRes = await fetch(
-            `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${API_KEY}`,
-            {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify(payload)
-            }
-        );
-
-        const data = await aiRes.json();
-        
-        if (!aiRes.ok) {
-            throw new Error(data.error ? data.error.message : "Refus des serveurs Google");
-        }
-
-        // Nettoyage de la réponse pour s'assurer d'avoir un JSON propre
-        let rawText = data.candidates[0].content.parts[0].text;
-        rawText = rawText.replace(/```json/g, '').replace(/```/g, '').trim();
-        
-        const aiResponse = JSON.parse(rawText);
-        res.json({ resultat: aiResponse });
-
-    } catch (error) {
-        console.error("Erreur Moteur IA:", error);
-        res.status(500).json({ error: error.message });
-    }
-});
-
-// 🚀 ALLUMAGE DU SYSTÈME (Une seule fois !)
+// 🚀 ALLUMAGE DU SYSTÈME
 const PORT = process.env.PORT || 10000;
 app.listen(PORT, () => { 
-    console.log(`🚀 Empire OS en ligne et prêt à encaisser sur le port ${PORT}`); 
+    console.log(`🚀 Empire OS en ligne sur le port ${PORT}`); 
 });
