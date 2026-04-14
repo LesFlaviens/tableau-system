@@ -1,34 +1,52 @@
+const express = require('express');
+const fs = require('fs');
+const path = require('path');
+
+const app = express();
+const DB_FILE = path.join(__dirname, 'empire_db.json');
+
+app.use((req, res, next) => {
+    res.header("Access-Control-Allow-Origin", "*");
+    res.header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
+    res.header("Access-Control-Allow-Headers", "Origin, X-Requested-With, Content-Type, Accept, Authorization");
+    if (req.method === "OPTIONS") return res.status(200).end();
+    next();
+});
+
+app.use(express.json({ limit: '50mb' }));
+app.use(express.static(__dirname));
+
+let memoryDB = { activeOrders: {} };
+if (fs.existsSync(DB_FILE)) {
+    try { memoryDB = JSON.parse(fs.readFileSync(DB_FILE, 'utf8')); } catch (e) { memoryDB = { activeOrders: {} }; }
+}
+
+function persistDB() { fs.writeFileSync(DB_FILE, JSON.stringify(memoryDB, null, 2), 'utf8'); }
+
+app.get('/get-current-state', (req, res) => res.json(memoryDB));
+
+app.post('/update-order', (req, res) => {
+    const { tableId, order } = req.body;
+    if (!tableId) return res.status(400).send("ID manquant");
+    if (order === null) delete memoryDB.activeOrders[tableId];
+    else memoryDB.activeOrders[tableId] = order;
+    persistDB();
+    res.status(200).send("OK");
+});
+
 app.post("/analyse-ticket", async (req, res) => {
     try {
         const { image, mimeType } = req.body;
         const API_KEY = process.env.GEMINI_API_KEY;
-        
-        // LE NOUVEAU CERVEAU : Ordres militaires + Anti-Hallucination
-        const promptSysteme = `Tu es un chef exécutif et un auditeur financier intraitable. 
-TA MISSION OBLIGATOIRE : Extraire la TOTALITÉ des articles présents sur cette facture. LIS CHAQUE LIGNE ATTENTIVEMENT.
-Classe chaque article trouvé dans l'une de ces 4 catégories :
-1. proteine : Viandes, poissons, fruits de mer, charcuterie.
-2. garniture : Légumes frais, fruits frais, herbes.
-3. cremerie : Fromages, lait, beurre, crème, oeufs.
-4. divers : Épicerie sèche, épices, huiles, conserves, emballages, boissons.
 
-RÈGLE ABSOLUE 1 : Tu dois répondre UNIQUEMENT par un objet JSON valide.
-RÈGLE ABSOLUE 2 : NE RECOPIE PAS L'EXEMPLE. Tu dois extraire les VRAIES données de l'image. Si tu ne trouves pas le poids, mets "1 pce". S'il n'y a pas d'article pour une catégorie, renvoie un tableau vide [].
-
-Modèle attendu (Ceci n'est qu'un exemple visuel, utilise les vraies données du ticket) :
-{
-  "total": 84.86,
-  "proteine": [{"nom": "Poulet fermier", "poids": "1.2kg", "prix": 15.50}],
-  "garniture": [{"nom": "Courgette Espagne", "poids": "1.1kg", "prix": 3.42}],
-  "cremerie": [{"nom": "Beurre doux", "poids": "250g", "prix": 3.00}],
-  "divers": [{"nom": "Matcha Latte", "poids": "0.17kg", "prix": 5.99}]
-}`;
+        // PROMPT MILITAIRE SUR UNE SEULE LIGNE (Anti-bug de copier-coller)
+        const promptSysteme = "MISSION OBLIGATOIRE : Extraire la TOTALITE des articles. LIS CHAQUE LIGNE ATTENTIVEMENT. Classe en 4 categories : proteine (viandes/poissons/charcuterie), garniture (legumes/fruits/herbes), cremerie (fromages/lait/beurre/oeufs), divers (sec/economat/boissons). REGLE 1: Reponds UNIQUEMENT par un JSON valide. REGLE 2: Extraire les VRAIES donnees, remplis les tableaux. Si pas de poids, mets '1 pce'. Format attendu : {\"total\": 84.86, \"proteine\": [{\"nom\": \"Poulet\", \"poids\": \"1.2kg\", \"prix\": 15.50}], \"garniture\": [], \"cremerie\": [], \"divers\": []}";
 
         const payload = {
             contents: [{ parts: [{ text: promptSysteme }, { inline_data: { mime_type: mimeType || "image/jpeg", data: image } }] }],
-            generation_config: { 
+            generation_config: {
                 response_mime_type: "application/json",
-                temperature: 0.1 // 👈 Bride l'imagination : 100% précision mathématique
+                temperature: 0.1
             }
         };
 
@@ -39,24 +57,20 @@ Modèle attendu (Ceci n'est qu'un exemple visuel, utilise les vraies données du
         });
 
         const data = await response.json();
-        
+
         if (!response.ok) throw new Error(data.error ? data.error.message : "Erreur API Google");
-        if (!data.candidates || !data.candidates[0]) throw new Error("L'IA n'a pas pu lire l'image. Assure-toi que la photo est nette.");
+        if (!data.candidates || !data.candidates[0]) throw new Error("L'IA n'a pas pu lire l'image.");
 
         let rawText = data.candidates[0].content.parts[0].text;
-        
-        // Nettoyage au cas où l'IA ajoute des balises Markdown
         rawText = rawText.replace(/```json/g, '').replace(/```/g, '').trim();
-        
-        // GILET PARE-BALLES ULTIME : Vérification du parsing
+
         let aiResponse;
         try {
             aiResponse = JSON.parse(rawText);
-        } catch (parseError) {
-            console.error("Erreur de format IA (Texte brut) :", rawText);
-            throw new Error("L'IA a mal structuré sa réponse. Relance le scan.");
+        } catch (e) {
+            throw new Error("L'IA a mal formatte la reponse. Relance le scan.");
         }
-        
+
         res.json({ resultat: aiResponse });
 
     } catch (error) {
@@ -64,3 +78,6 @@ Modèle attendu (Ceci n'est qu'un exemple visuel, utilise les vraies données du
         res.status(500).json({ error: error.message });
     }
 });
+
+const PORT = process.env.PORT || 10000;
+app.listen(PORT, () => console.log("Serveur demarre sur le port " + PORT));
