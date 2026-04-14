@@ -1253,13 +1253,70 @@ function parseDictation(text) {
         window.onload = bootSystem;
 
         function parseDictation(text) {
-            // Lancement du calcul pour les 4 colonnes
+            let normalized = text.replace(/(\d+)\s*(?:euros?|€)\s*(\d{1,2})\b/gi, "$1.$2");
+            let priceRegex = /(\d+(?:[.,]\d{1,2})?)\s*(?:€|euros?|balles?)/gi;
+            let weightRegex = /(\d+(?:[.,]\d{1,3})?)\s*(?:kg|kilo|kilos|kilogrammes?|g|gr|grammes?)\b/gi;
+            
+            let price = 0; let matchP;
+            while ((matchP = priceRegex.exec(normalized)) !== null) { price += parseFloat(matchP[1].replace(',', '.')); }
+            
+            let weight = 0; let matchW;
+            while ((matchW = weightRegex.exec(normalized)) !== null) { 
+                let val = parseFloat(matchW[1].replace(',', '.'));
+                let unit = matchW[0].toLowerCase();
+                if (unit.includes('kg') || unit.includes('kilo')) { weight += val; } 
+                else if (unit.includes('g') || unit.includes('gr')) { weight += val / 1000; }
+            }
+            
+            let cleanName = normalized.replace(priceRegex, '').replace(weightRegex, '').replace(/\b(pour|à|de|et)\b/gi, ' ').replace(/\s+/g, ' ').trim();
+            cleanName = cleanName.charAt(0).toUpperCase() + cleanName.slice(1);
+            
+            return { price, weight, name: cleanName };
+        }
+
+        function calcSmartPlate() {
+            const calcBox = (prefix) => {
+                let rawEl = document.getElementById(`market-${prefix}-raw`);
+                if(!rawEl) return 0;
+                
+                let text = rawEl.value.toLowerCase();
+                let data = parseDictation(text);
+                
+                let inputId = prefix === 'prot' ? 'market-prot-portion' : `market-${prefix}-yield`;
+                let inputEl = document.getElementById(inputId);
+                let inputVal = inputEl ? (parseFloat(inputEl.value) || 1) : 1;
+                
+                let costPerPlate = 0;
+                let infoEl = document.getElementById(`${prefix}-info`);
+                let displayEl = document.getElementById(`${prefix}-cost-display`);
+
+                if (data.weight > 0 && data.price > 0) {
+                    let pricePerKg = data.price / data.weight;
+                    costPerPlate = (pricePerKg / 1000) * inputVal;
+                    if(infoEl) infoEl.innerHTML = `<span style="color:var(--accent);">✅ Poids détecté. Calculé pour ${inputVal}g</span>`;
+                    
+                    if (prefix === 'prot') {
+                        let stockInput = document.getElementById('market-stock');
+                        if (stockInput && stockInput.dataset.manual !== "true") {
+                            stockInput.value = Math.floor((data.weight * 1000) / inputVal);
+                        }
+                    }
+                } else if (data.price > 0) {
+                    costPerPlate = data.price / inputVal;
+                    if(infoEl) infoEl.innerHTML = `<span style="color:var(--gold);">⚠️ Sans poids. Divisé par ${inputVal} parts</span>`;
+                } else {
+                    if(infoEl) infoEl.innerHTML = `En attente...`;
+                }
+                
+                if(displayEl) displayEl.innerText = costPerPlate.toFixed(2) + " €";
+                return costPerPlate;
+            };
+
             let protCost = calcBox('prot');
             let vegCost = calcBox('veg');
             let cremCost = calcBox('crem');
             let divCost = calcBox('div');
 
-            // Addition totale et marges
             let totalCost = protCost + vegCost + cremCost + divCost;
             let totalEl = document.getElementById('market-total-cost');
             if(totalEl) totalEl.value = totalCost.toFixed(2) + " €";
@@ -1275,6 +1332,70 @@ function parseDictation(text) {
             if (priceInput && (priceInput.value === "" || priceInput.dataset.autoFilled === "true")) {
                 priceInput.value = (Math.ceil(recommended * 2) / 2).toFixed(2);
                 priceInput.dataset.autoFilled = "true";
+            }
+        }
+
+        // --- 🤖 MOTEUR IA (LECTURE DES ÉTIQUETTES HACCP) 🤖 ---
+        async function processLabelScan(input) {
+            const file = input.files[0];
+            if (!file) return;
+
+            const btn = document.getElementById('btn-scan-label');
+            const originalText = btn.innerHTML;
+            btn.innerHTML = "⏳ LECTURE EN COURS...";
+            btn.style.backgroundColor = "var(--ordered)";
+            btn.style.color = "#fff";
+
+            try {
+                const base64Full = await getBase64Image(file);
+                const base64Data = base64Full.split(',')[1];
+
+                const response = await fetch('/analyse-ticket', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ 
+                        image: base64Data, 
+                        mimeType: file.type || "image/jpeg",
+                        isLabelScan: true 
+                    })
+                });
+
+                const data = await response.json();
+                if (!response.ok) throw new Error(data.error || "Erreur serveur.");
+
+                const res = data.resultat;
+
+                if (res.nom) document.getElementById('trace-name').value = res.nom;
+                if (res.lot) document.getElementById('trace-lot').value = res.lot;
+                if (res.dlc) {
+                    try {
+                        let parts = res.dlc.split('/');
+                        if (parts.length === 3) document.getElementById('trace-dlc').value = `20${parts[2].slice(-2)}-${parts[1]}-${parts[0]}`;
+                    } catch(e) {}
+                }
+
+                const dataTransfer = new DataTransfer();
+                dataTransfer.items.add(file);
+                document.getElementById('trace-img').files = dataTransfer.files;
+                updateFileName(document.getElementById('trace-img'));
+
+                btn.innerHTML = "✅ ÉTIQUETTE LUE !";
+                btn.style.backgroundColor = "var(--accent)";
+                btn.style.borderColor = "var(--accent)";
+                
+                setTimeout(() => { 
+                    btn.innerHTML = originalText; 
+                    btn.style.backgroundColor = "rgba(41, 121, 255, 0.1)"; 
+                    btn.style.borderColor = "var(--ordered)";
+                    btn.style.color = "var(--ordered)";
+                }, 3000);
+
+            } catch (e) {
+                alert("❌ ERREUR IA : " + e.message);
+                btn.innerHTML = originalText;
+                btn.style.backgroundColor = "rgba(41, 121, 255, 0.1)"; 
+            } finally {
+                input.value = "";
             }
         }
     </script>
