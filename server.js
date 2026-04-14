@@ -159,9 +159,9 @@ app.post("/analyse-ticket", async (req, res) => {
             generation_config: { response_mime_type: "application/json" }
         };
 
-        // Requête native vers le modèle 1.5 Flash
+      // Requête native vers le modèle 1.5 Flash Latest
         const aiRes = await fetch(
-            `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${API_KEY}`,
+            `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash-latest:generateContent?key=${API_KEY}`,
             {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
