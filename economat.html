@@ -809,7 +809,7 @@
             window.print();
         }
 
-        function importArchive(input) {
+       function importArchive(input) {
             const file = input.files[0];
             if(!file) return;
             const reader = new FileReader();
@@ -838,23 +838,76 @@
             };
             reader.readAsText(file);
         }
-        // ... tes autres fonctions existantes ...
-        function importArchive(input) {
-            // ... le code existant de l'import d'archive ...
-        }
 
-        // 👇👇👇 C'EST ICI QUE TU COLLES L'ÉTAPE 2 👇👇👇
         // --- 🤖 MOTEUR IA (LECTURE DES ÉTIQUETTES) 🤖 ---
         async function processLabelScan(input) {
             const file = input.files[0];
             if (!file) return;
-            // ... (tout le reste du code que je t'ai donné à l'étape 2) ...
-        }
-        // 👆👆👆 FIN DU COLLAGE 👆👆👆
 
-    </script>
-</body>
-</html>
+            const btn = document.getElementById('btn-scan-label');
+            const originalText = btn.innerHTML;
+            btn.innerHTML = "⏳ LECTURE EN COURS...";
+            btn.style.backgroundColor = "var(--ordered)";
+            btn.style.color = "#fff";
+
+            try {
+                // On utilise ta fonction existante pour récupérer l'image
+                const base64Full = await getBase64Image(file);
+                const base64Data = base64Full.split(',')[1];
+
+                // Appel au même backend Render (il sait maintenant lire les étiquettes)
+                const response = await fetch('/analyse-ticket', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ 
+                        image: base64Data, 
+                        mimeType: file.type || "image/jpeg",
+                        isLabelScan: true // On prévient le serveur que c'est une étiquette
+                    })
+                });
+
+                const data = await response.json();
+                if (!response.ok) throw new Error(data.error || "Erreur serveur.");
+
+                const res = data.resultat;
+
+                // Remplissage des champs (si l'IA a trouvé la donnée)
+                if (res.nom) document.getElementById('trace-name').value = res.nom;
+                if (res.lot) document.getElementById('trace-lot').value = res.lot;
+                
+                // Formatage des dates au format YYYY-MM-DD exigé par les champs <input type="date">
+                if (res.dlc) {
+                    try {
+                        let parts = res.dlc.split('/');
+                        if (parts.length === 3) document.getElementById('trace-dlc').value = `20${parts[2].slice(-2)}-${parts[1]}-${parts[0]}`;
+                    } catch(e) {}
+                }
+
+                // Optionnel : On garde la photo pour l'archive
+                const dataTransfer = new DataTransfer();
+                dataTransfer.items.add(file);
+                document.getElementById('trace-img').files = dataTransfer.files;
+                updateFileName(document.getElementById('trace-img'));
+
+                btn.innerHTML = "✅ ÉTIQUETTE LUE !";
+                btn.style.backgroundColor = "var(--accent)";
+                btn.style.borderColor = "var(--accent)";
+                
+                setTimeout(() => { 
+                    btn.innerHTML = originalText; 
+                    btn.style.backgroundColor = "rgba(41, 121, 255, 0.1)"; 
+                    btn.style.borderColor = "var(--ordered)";
+                    btn.style.color = "var(--ordered)";
+                }, 3000);
+
+            } catch (e) {
+                alert("❌ ERREUR IA : " + e.message);
+                btn.innerHTML = originalText;
+                btn.style.backgroundColor = "rgba(41, 121, 255, 0.1)"; 
+            } finally {
+                input.value = "";
+            }
+        }
     </script>
 </body>
 </html>
