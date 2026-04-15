@@ -100,7 +100,6 @@
         .btn-io.import { border: 2px solid var(--accent); color: var(--accent); }
         .btn-io.export { border: 2px solid var(--ordered); color: var(--text-main); }
 
-        /* NOUVEAU GRID POUR LES 5 BOITES */
         .market-layout { display: grid; grid-template-columns: 1.5fr 1fr; gap: 20px; align-items: start; height: calc(100vh - 80px); }
         .market-cost-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 15px; background: var(--bg); border: 1px solid var(--border); padding: 15px; border-radius: 8px; margin-bottom: 15px; }
         .stats-layout { display: grid; grid-template-columns: minmax(350px, 1fr) 2fr; gap: 25px; align-items: start; }
@@ -297,7 +296,7 @@
                     </div>
 
                     <div class="cost-box" style="border-color: var(--gold); padding: 10px;">
-                        <div class="cost-box-title" style="color: var(--gold); top: -12px; font-size:0.75rem;">🧀 4. Laitier</div>
+                        <div class="cost-box-title" style="color: var(--gold); top: -12px; font-size:0.75rem;">🧀 4. B.O.F / Laitier</div>
                         <div style="display:flex; gap:5px; align-items: stretch; margin-top: 5px;">
                             <textarea id="market-crem-raw" placeholder="Ex: Beurre 1kg pour 12€..." style="flex:1; min-height:40px; resize:none; font-style:italic; font-size:0.85rem;" oninput="calcSmartPlate()"></textarea>
                             <button id="mic-crem" class="btn-mic" style="border-color: var(--gold); color: var(--gold); padding: 0 10px;" onclick="startMarketDictation('market-crem-raw', 'mic-crem')">🎙️</button>
@@ -305,7 +304,7 @@
                         <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 10px;">
                             <div style="display:flex; align-items:center; gap:5px;">
                                 <label style="font-size: 0.7rem; color:var(--text-muted);">Gr (ou div) :</label>
-                                <input type="number" id="market-crem-yield" value="30" oninput="calcSmartPlate()" style="width: 50px; text-align: center; padding: 5px; font-weight:bold;">
+                                <input type="number" id="market-crem-portion" value="30" oninput="calcSmartPlate()" style="width: 50px; text-align: center; padding: 5px; font-weight:bold;">
                             </div>
                             <div class="cost-result" style="padding: 3px 6px; font-size:0.85rem; white-space:nowrap;">Coût: <span id="crem-cost-display" style="font-size:1rem; color: var(--gold);">0.00 €</span></div>
                         </div>
@@ -321,7 +320,7 @@
                         <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 10px;">
                             <div style="display:flex; align-items:center; gap:5px;">
                                 <label style="font-size: 0.7rem; color:var(--text-muted);">Gr (ou div) :</label>
-                                <input type="number" id="market-div-yield" value="10" oninput="calcSmartPlate()" style="width: 50px; text-align: center; padding: 5px; font-weight:bold;">
+                                <input type="number" id="market-div-portion" value="10" oninput="calcSmartPlate()" style="width: 50px; text-align: center; padding: 5px; font-weight:bold;">
                             </div>
                             <div class="cost-result" style="padding: 3px 6px; font-size:0.85rem; white-space:nowrap;">Coût: <span id="div-cost-display" style="font-size:1rem; color: #94a3b8;">0.00 €</span></div>
                         </div>
@@ -451,20 +450,13 @@
     <script>
         const API = {
             getState: async () => {
-                let state = { activeOrders: {} };
                 try {
-                    if (window.location.protocol !== 'file:') {
-                        let r = await fetch('/get-current-state');
-                        if(r.ok) state = await r.json();
-                    }
-                } catch(e) {}
-                return state;
+                    let r = await fetch('/get-current-state');
+                    return r.ok ? await r.json() : { activeOrders: {} };
+                } catch(e) { return { activeOrders: {} }; }
             },
-            update: async (key, data, isOrder = false) => {
-                let payload = isOrder ? data : { data: data };
-                if (window.location.protocol !== 'file:') {
-                    try { await fetch('/update-order', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ tableId: key, order: data === null ? null : payload }) }); } catch(e) {}
-                }
+            update: async (key, data) => {
+                await fetch('/update-order', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ tableId: key, order: { data: data } }) });
             }
         };
 
@@ -545,10 +537,10 @@
             let ingTextarea = document.getElementById('rec-ing');
             let generatedLines = [];
             
-            ['prot', 'gluc', 'veg', 'crem', 'div'].forEach(k => {
+            ['prot', 'gluc', 'garn', 'crem', 'div'].forEach(k => {
                 let rawVal = document.getElementById(`market-${k}-raw`).value;
                 if (rawVal && rawVal.trim() !== "") {
-                    let portionId = k === 'prot' ? 'market-prot-portion' : `market-${k}-yield`;
+                    let portionId = k === 'prot' ? 'market-prot-portion' : `market-${k}-portion`;
                     let gram = parseFloat(document.getElementById(portionId).value) || 1;
                     let totalGr = gram * paxCount;
                     
@@ -556,7 +548,7 @@
                         return line.split(' pour ')[0].trim();
                     }).join(', ');
 
-                    let label = k === 'veg' ? 'GARNITURE' : (k === 'div' ? 'DIVERS' : (k === 'gluc' ? 'GLUCIDES' : (k === 'crem' ? 'CRÈMERIE' : 'PROTÉINES')));
+                    let label = k === 'garn' ? 'GARNITURE' : (k === 'div' ? 'DIVERS' : (k === 'gluc' ? 'GLUCIDES' : (k === 'crem' ? 'B.O.F / LAITIER' : 'PROTÉINES')));
                     generatedLines.push(`- ${label} : ${totalGr}g (${names})`);
                 }
             });
@@ -608,7 +600,7 @@
                     const proteine = res.proteine || getArr(res, ['prot', 'viand', 'poisson']);
                     const glucides = res.glucides || getArr(res, ['gluc', 'pat', 'riz', 'fecu']);
                     const garniture = res.garniture || getArr(res, ['garn', 'legum', 'fruit']);
-                    const cremerie = res.cremerie || getArr(res, ['crem', 'lait', 'fromag', 'oeuf']);
+                    const cremerie = res.cremerie || getArr(res, ['crem', 'lait', 'fromag', 'oeuf', 'bof']);
                     const divers = res.divers || getArr(res, ['div', 'sec', 'eco']);
 
                     const fillRaw = (id, list) => {
@@ -622,7 +614,7 @@
 
                     fillRaw('market-prot-raw', proteine);
                     fillRaw('market-gluc-raw', glucides);
-                    fillRaw('market-veg-raw', garniture);
+                    fillRaw('market-garn-raw', garniture);
                     fillRaw('market-crem-raw', cremerie);
                     fillRaw('market-div-raw', divers);
 
@@ -669,7 +661,7 @@
                 let text = rawEl.value.toLowerCase();
                 let lines = text.split('\n');
                 
-                let inputId = prefix === 'prot' ? 'market-prot-portion' : `market-${prefix}-yield`;
+                let inputId = prefix === 'prot' ? 'market-prot-portion' : `market-${prefix}-portion`;
                 let inputEl = document.getElementById(inputId);
                 let inputVal = inputEl ? (parseFloat(inputEl.value) || 1) : 1;
                 
@@ -682,13 +674,6 @@
                         let pricePerKg = data.price / data.weight;
                         costPerPlate += (pricePerKg / 1000) * inputVal;
                         isWeightFound = true;
-                        
-                        if (prefix === 'prot') {
-                            let stockInput = document.getElementById('market-stock');
-                            if (stockInput && stockInput.dataset.manual !== "true") {
-                                stockInput.value = Math.floor((data.weight * 1000) / inputVal);
-                            }
-                        }
                     } else if (data.price > 0) {
                         costPerPlate += data.price / inputVal;
                     }
@@ -713,7 +698,7 @@
 
             let protCost = calcBox('prot');
             let glucCost = calcBox('gluc');
-            let garnCost = calcBox('veg');
+            let garnCost = calcBox('garn');
             let cremCost = calcBox('crem');
             let divCost  = calcBox('div');
 
