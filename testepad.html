@@ -62,7 +62,6 @@
         .btn-io { background: transparent; border-radius: 8px; padding: 8px 15px; font-weight: 900; font-size: 1rem; cursor: pointer; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px; transition: 0.2s; text-transform: uppercase; min-width: 110px;}
         .btn-io.import { border: 2px solid var(--accent); color: var(--accent); }
         .btn-io.export { border: 2px solid var(--ordered); color: var(--text-main); }
-        .ai-scanner-box { display:flex; justify-content:space-between; align-items:center; background:var(--panel); padding:10px 15px; border-radius:8px; margin-bottom:15px; border: 1px dashed var(--ordered); flex-wrap: wrap; gap: 10px; }
         
         .folder-card { background: var(--panel); border: 1px solid var(--border); padding: 15px; border-radius: 8px; display: flex; flex-direction: column; align-items: center; justify-content: center; cursor: pointer; transition: 0.2s; box-shadow: var(--shadow); gap: 8px; }
         .folder-card:hover { border-color: var(--gold); background: var(--gold-dim); transform: translateY(-3px); }
@@ -81,7 +80,6 @@
         .pax-input::-webkit-outer-spin-button, .pax-input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
         .pax-input { -moz-appearance: textfield; }
 
-        /* NOUVEAU BOUTON PROD DOSSIER */
         .btn-prod-folder { background: rgba(52, 211, 153, 0.1); border: 1px solid var(--accent); color: var(--accent); width: 60px; height: 28px; border-radius: 6px; cursor: pointer; font-weight: bold; display: flex; align-items: center; justify-content: center; font-size:0.8rem; transition: 0.2s; white-space:nowrap;}
         .btn-prod-folder:hover { background: var(--accent); color: #000; }
 
@@ -427,6 +425,8 @@
     </div>
 
     <script>
+        let isSyncing = false; // 🟢 BOUCLIER DE SYNCHRONISATION
+        
         const API = {
             getState: async () => {
                 try { let r = await fetch('/get-current-state'); return r.ok ? await r.json() : { activeOrders: {} }; } 
@@ -464,6 +464,7 @@
         }
 
         async function fetchSystemState() {
+            if(isSyncing) return; // 🟢 ON BLOQUE LA MISE A JOUR SI LE CHEF TRAVAILLE
             try {
                 const state = await API.getState();
                 if (state && state.activeOrders) {
@@ -522,7 +523,12 @@
         // 📦 LOGIQUE INVENTAIRE
         // ==========================================
         async function processInvoiceForInventory(input) {
-            const file = input.files[0]; if(!file) return;
+            const file = input.files[0]; 
+            if(!file) return;
+            
+            // 🟢 ON VIDE L'INPUT POUR PERMETTRE DE SCANNER 2 FOIS DE SUITE
+            input.value = '';
+
             const btn = document.getElementById('btn-scan-inv');
             const origText = btn.innerHTML;
             btn.innerHTML = "⏳ ANALYSE INTELLIGENTE...";
@@ -574,7 +580,7 @@
                     setTimeout(() => { btn.innerHTML = origText; btn.style.opacity = "1"; }, 3000);
 
                 } catch(e) {
-                    alert("Erreur Scanner : " + e.message);
+                    alert("Erreur Scanner : L'IA a été trop sollicitée (Limite Google). Patientez 15 secondes puis réessayez.");
                     btn.innerHTML = origText; btn.style.opacity = "1";
                 }
             };
@@ -611,18 +617,32 @@
         function cancelInvoice() {
             pendingInvoiceItems = [];
             document.getElementById('pending-invoice-area').style.display = 'none';
-            document.getElementById('upload-invoice-inv').value = '';
         }
 
         async function injectInvoiceToStock() {
             if(pendingInvoiceItems.length === 0) return alert("Rien à injecter.");
             
+            isSyncing = true; // 🟢 ACTIVATION DU BOUCLIER
+
             pendingInvoiceItems.forEach(item => {
                 let existing = stockGlobalData.find(x => x.name.toLowerCase() === item.name.toLowerCase());
                 if (existing) {
                     existing.lastPrice = item.unitPriceStr;
-                    existing.qtyStr = item.qtyStr;
                     existing.date = new Date().toLocaleDateString();
+                    
+                    // 🟢 ADDITION MATHEMATIQUE DES STOCKS EXISTANTS
+                    let oldMatch = existing.qtyStr.toString().replace(',','.').match(/[\d.]+/);
+                    let newMatch = item.qtyStr.toString().replace(',','.').match(/[\d.]+/);
+                    
+                    if(oldMatch && newMatch) {
+                        let oldVal = parseFloat(oldMatch[0]);
+                        let newVal = parseFloat(newMatch[0]);
+                        let unit = existing.qtyStr.toString().replace(/[\d.]+/,'').trim();
+                        if(!unit) unit = item.qtyStr.toString().replace(/[\d.]+/,'').trim(); // Sécurité
+                        existing.qtyStr = parseFloat((oldVal + newVal).toFixed(3)) + " " + unit;
+                    } else {
+                        existing.qtyStr = item.qtyStr; // Si illisible, on remplace
+                    }
                 } else {
                     stockGlobalData.unshift({
                         id: item.id, name: item.name, cat: item.cat, 
@@ -633,9 +653,11 @@
             });
 
             await API.update('INVENTORY_MASTER', stockGlobalData);
+            isSyncing = false; // 🟢 DESACTIVATION DU BOUCLIER
+
             cancelInvoice();
             renderGlobalStock(); renderLiveStockPanel();
-            alert("✅ Injection au Stock Global réussie ! Valeurs actualisées.");
+            alert("✅ Injection réussie ! Les quantités ont été additionnées à votre stock global.");
         }
 
         function renderGlobalStock() {
@@ -815,7 +837,6 @@
 
             let fc = 0; if(price > 0 && unitCost > 0) fc = parseFloat(((unitCost / price) * 100).toFixed(1));
             
-            // On mémorise la composition structurelle exacte de la recette pour la déduction de stock
             let structuredIngs = [];
             const cats = ['fecu', 'prot', 'bof', 'sauc', 'legu', 'eco'];
             cats.forEach(k => {
@@ -852,13 +873,15 @@
                 menuData[category].unshift(newItem);
             }
 
+            isSyncing = true;
             await API.update('MENU_MASTER', menuData);
             await API.update('RECIPES_MASTER', recipesData); 
+            isSyncing = false;
+            
             renderMenu(); renderRecipes();
             alert(`✅ Plat "${name}" publié (Ingrédients liés au stock) !`);
         }
 
-        // 🟢 FONCTION CRITIQUE : DÉDUCTION DES STOCKS
         async function produceRecipe(id) {
             let r = recipesData.find(x => x.id === id);
             if(!r) return;
@@ -878,19 +901,16 @@
                 let stockItem = stockGlobalData.find(s => s.name.toLowerCase() === ing.name.toLowerCase());
                 
                 if(stockItem) {
-                    // Extraction du nombre et de l'unité actuels dans le stock
                     let stockQtyNumMatch = stockItem.qtyStr.toString().replace(',','.').match(/[\d.]+/);
                     if(stockQtyNumMatch) {
                         let stockQtyNum = parseFloat(stockQtyNumMatch[0]);
                         let stockUnit = stockItem.qtyStr.toString().replace(/[\d.]+/,'').trim().toLowerCase();
 
                         if(stockUnit.startsWith('k') || (stockUnit.startsWith('l') && !stockUnit.includes('m') && !stockUnit.includes('c'))) {
-                            // Stock en Kilo ou Litre, Recette en grammes ou cl
                             stockQtyNum -= (totalNeeded / 1000);
                             stockItem.qtyStr = stockQtyNum.toFixed(3) + " " + stockUnit;
                             log += `✅ ${ing.name} : -${(totalNeeded/1000)} ${stockUnit} déduits.\n`;
                         } else {
-                            // Stock en grammes ou pièce
                             stockQtyNum -= totalNeeded;
                             stockItem.qtyStr = stockQtyNum.toFixed(1) + " " + stockUnit;
                             log += `✅ ${ing.name} : -${totalNeeded} ${stockUnit} déduits.\n`;
@@ -903,7 +923,10 @@
                 }
             });
 
+            isSyncing = true;
             await API.update('INVENTORY_MASTER', stockGlobalData);
+            isSyncing = false;
+            
             renderGlobalStock(); renderLiveStockPanel();
             alert(log + "\nOpération terminée. Inventaire théorique mis à jour.");
         }
@@ -934,7 +957,10 @@
         async function deleteRecipe(id) { 
             if(confirm("Supprimer cette recette ?")) { 
                 recipesData = recipesData.filter(r => r.id !== id); 
-                renderRecipes(); await API.update('RECIPES_MASTER', recipesData); 
+                isSyncing = true;
+                await API.update('RECIPES_MASTER', recipesData); 
+                isSyncing = false;
+                renderRecipes(); 
             } 
         }
 
@@ -1004,12 +1030,19 @@
             if(!menuData[category]) menuData[category] = [];
             menuData[category].push({ id: Date.now(), name: nameInput.value, price: parseFloat(priceInput.value), stock: 99 });
             nameInput.value = ''; priceInput.value = '';
-            renderMenu(); await API.update('MENU_MASTER', menuData);
+            
+            isSyncing = true;
+            await API.update('MENU_MASTER', menuData);
+            isSyncing = false;
+            renderMenu(); 
         }
 
         async function deleteMenuItem(category, id) { 
             menuData[category] = menuData[category].filter(item => item.id !== id); 
-            renderMenu(); await API.update('MENU_MASTER', menuData); 
+            isSyncing = true;
+            await API.update('MENU_MASTER', menuData); 
+            isSyncing = false;
+            renderMenu(); 
         }
 
         function renderRecipes() {
