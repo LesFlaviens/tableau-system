@@ -1,7 +1,6 @@
 const express = require('express');
 const cors = require('cors');
 const path = require('path');
-require('dotenv').config();
 
 const app = express();
 const PORT = process.env.PORT || 10000;
@@ -45,18 +44,16 @@ app.post('/analyse-ticket', async (req, res) => {
                - feculents: Pâtes, pommes de terre, quinoa, riz.
                - proteines: Viandes (entrecôte, poulet, veau, porc), poissons, charcuterie.
                - bof: B.O.F (Beurre, Oeufs, Fromages), lait, crème.
-               - sauces: Sauces, bases de sauces, vins de cuisson, bouillons (légume, jus de veau, jus volaille, animaux).
-               - legumes: Légumes frais (carotte, choux, etc.), fruits.
+               - sauces: Sauces, bases de sauces, vins de cuisson, bouillons.
+               - legumes: Légumes frais, fruits.
                - economat: Farine, sucre, sel, poivre, épices, confiserie, vins de table, emballages, divers.
-            3. CALCULS À L'UNITÉ : Analyse les quantités dans les noms (ex: "x20", "3 fruits") ET la colonne Qté. 
-               - Si c'est un lot, calcule IMPÉRATIVEMENT le prix unitaire et ajoute-le au nom (ex: "Oeufs cage (0.21€/pce)").
-               - Le champ "prix" doit être le prix TOTAL de la ligne.
-               - Le champ "poids" doit être la quantité totale.
+            3. CALCULS À L'UNITÉ : Si c'est un lot (ex: "Oeufs x20"), ajoute le prix unitaire au nom (ex: "Oeufs cage (0.21€/pce)").
             
             FORMAT JSON STRICT :
             {
               "total": 0.00, 
-              "feculents": [], "proteines": [], "bof": [], "sauces": [], "legumes": [], "economat": []
+              "feculents": [{"nom": "Pâtes", "prix": 2.50, "poids": "500g"}], 
+              "proteines": [], "bof": [], "sauces": [], "legumes": [], "economat": []
             }`;
 
         const payload = {
@@ -72,6 +69,9 @@ app.post('/analyse-ticket', async (req, res) => {
         if (data.error) throw new Error(data.error.message);
 
         let rawText = data.candidates[0].content.parts[0].text;
+        // Sécurité pour nettoyer le markdown si l'IA en renvoie
+        rawText = rawText.replace(/```json/g, '').replace(/```/g, '').trim();
+        
         res.json({ resultat: JSON.parse(rawText) });
 
     } catch (error) {
