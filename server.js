@@ -40,13 +40,18 @@ app.post('/analyse-ticket', async (req, res) => {
             : `MISSION EXPERT ECONOMAT : Extraire tous les articles. 
             RÈGLES CRITIQUES :
             1. PIÈGES : 'Lapin chocolat', 'Lapin ruban' ou confiseries = 'divers'. JAMAIS 'proteine'.
-            2. 5 CATÉGORIES OBLIGATOIRES : 
-               - proteine: Viandes, poissons, oeufs, charcuterie.
-               - glucides: Pâtes, riz, pommes de terre, gnocchis, féculents, pain.
-               - garniture: Légumes verts, fruits, champignons, herbes.
-               - cremerie: Lait, crème, beurre, fromages.
-               - divers: Épices, sauces, confiserie, boissons, emballages.
-            Format JSON strict : {"total": 0.00, "proteine":[], "glucides":[], "garniture":[], "cremerie":[], "divers":[]}`;
+            2. 5 CATÉGORIES OBLIGATOIRES : proteine, glucides, garniture, cremerie, divers.
+            
+            FORMAT JSON STRICT : Tu DOIS utiliser EXACTEMENT les clés "nom", "prix", et "poids" pour chaque article.
+            Exemple attendu :
+            {
+              "total": 0.00, 
+              "proteine": [{"nom": "Steak haché", "prix": 15.50, "poids": "1kg"}], 
+              "glucides": [{"nom": "Pâtes", "prix": 2.00, "poids": "500g"}], 
+              "garniture": [], 
+              "cremerie": [], 
+              "divers": [{"nom": "Lapin ruban", "prix": 3.98, "poids": "2pce"}]
+            }`;
 
         const payload = {
             contents: [{ parts: [{ text: promptSysteme }, { inline_data: { mime_type: mimeType || "image/jpeg", data: image } }] }],
