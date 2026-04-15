@@ -44,7 +44,7 @@ app.post('/analyse-ticket', async (req, res) => {
             2. 5 CATÉGORIES OBLIGATOIRES : 
                - proteine: Viandes, poissons, oeufs, charcuterie.
                - glucides: Pâtes, riz, pommes de terre, gnocchis, féculents, pain.
-               - garniture: Légumes verts, fruits, champignons, herbes fraîches.
+               - garniture: Légumes verts, fruits, champignons, herbes.
                - cremerie: Lait, crème, beurre, fromages.
                - divers: Épices, sauces, confiserie, boissons, emballages.
             Format JSON strict : {"total": 0.00, "proteine":[], "glucides":[], "garniture":[], "cremerie":[], "divers":[]}`;
