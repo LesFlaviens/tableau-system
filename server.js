@@ -8,17 +8,18 @@ app.post("/analyse-ticket", async (req, res) => {
         if (isLabelScan) {
             promptSysteme = "MISSION HACCP : Lis cette etiquette. Extrais : nom, lot, dlc (DD/MM/YY). JSON pur uniquement.";
         } else {
-            promptSysteme = `MISSION EXPERT ECONOMAT : Extraire tous les articles. 
-            REGLES SPECIALES :
-            1. ANALYSE SEMANTIQUE : Si tu vois 'Lapin ruban' ou 'Lapin chocolat', c'est un article de CONFISERIE/PAQUES, classe-le dans 'divers'. Ne pas confondre avec de la viande.
-            2. CATEGORIES (5) : 
-               - proteine: Viandes, poissons, oeufs, charcuterie.
-               - garniture: Legumes, fruits, herbes fraiches.
-               - glucides: Pates, riz, pommes de terre, gnocchis, semoule, flocons d'avoine, pain.
-               - cremerie: Lait, beurre, creme, fromages.
-               - divers: Epices, sauces, sucre, confiserie (lapins), alcool, emballages.
-            3. PRIX : Conserve le prix unitaire ou au kilo si precisé.
-            Format JSON : {"total": 0.00, "proteine":[], "garniture":[], "glucides":[], "cremerie":[], "divers":[]}`;
+      // ... dans app.post("/analyse-ticket") ...
+const promptSysteme = `MISSION EXPERT ÉCONOMAT : Extraire tous les articles. 
+    RÈGLES CRITIQUES :
+    1. PIÈGES SÉMANTIQUES : Les articles comme 'Lapin chocolat', 'Lapin ruban' ou confiseries sont des 'divers'. Ne jamais les mettre en 'proteine'.
+    2. CATÉGORIES (5) : 
+       - proteine: Viandes, poissons, oeufs, charcuterie.
+       - glucides: Pâtes, riz, pommes de terre, gnocchis, féculents, pain.
+       - garniture: Légumes verts, fruits, champignons, herbes.
+       - cremerie: Lait, crème, beurre, fromages.
+       - divers: Épices, sauces, confiserie, boissons, économat.
+    3. PRIX : Garde le prix total ligne par ligne.
+    Format JSON strict : {"total": 0.00, "proteine":[], "glucides":[], "garniture":[], "cremerie":[], "divers":[]}`;
         }
 
         const payload = {
