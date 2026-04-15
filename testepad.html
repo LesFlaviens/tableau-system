@@ -366,6 +366,11 @@
                 </button>
 
                 <div id="pending-invoice-area" style="display:none; margin-top: 20px; border-top: 1px dashed var(--border); padding-top:20px;">
+                    <div style="display:flex; gap:10px; margin-bottom: 15px; background: rgba(96, 165, 250, 0.1); padding: 10px; border-radius: 6px; border: 1px solid var(--ordered);">
+                        <input type="text" id="pending-supplier" placeholder="Fournisseur (ex: Transgourmet)" style="flex:1; border-color: var(--ordered); background: #000; color: #fff;">
+                        <input type="date" id="pending-date" style="width:150px; border-color: var(--ordered); background: #000; color: #fff;">
+                    </div>
+
                     <h4 style="color:var(--gold); margin-top:0;">📝 ARTICLES DÉTECTÉS :</h4>
                     <div id="pending-items-list" style="max-height:300px; overflow-y:auto; display:flex; flex-direction:column; gap:10px; margin-bottom:15px;"></div>
                     <div style="display:flex; justify-content:space-between; font-weight:900; font-size:1.2rem; margin-bottom:15px; color:var(--text-main);">
@@ -425,7 +430,7 @@
     </div>
 
     <script>
-        let isSyncing = false; // 🟢 BOUCLIER DE SYNCHRONISATION
+        let isSyncing = false;
         
         const API = {
             getState: async () => {
@@ -464,7 +469,7 @@
         }
 
         async function fetchSystemState() {
-            if(isSyncing) return; // 🟢 ON BLOQUE LA MISE A JOUR SI LE CHEF TRAVAILLE
+            if(isSyncing) return; 
             try {
                 const state = await API.getState();
                 if (state && state.activeOrders) {
@@ -520,13 +525,12 @@
         }
 
         // ==========================================
-        // 📦 LOGIQUE INVENTAIRE
+        // 📦 LOGIQUE INVENTAIRE ET FOURNISSEUR
         // ==========================================
         async function processInvoiceForInventory(input) {
             const file = input.files[0]; 
             if(!file) return;
             
-            // 🟢 ON VIDE L'INPUT POUR PERMETTRE DE SCANNER 2 FOIS DE SUITE
             input.value = '';
 
             const btn = document.getElementById('btn-scan-inv');
@@ -550,6 +554,13 @@
 
                     pendingInvoiceItems = [];
                     let totalFacture = 0;
+
+                    // 🟢 RÉCUPÉRATION DU FOURNISSEUR PAR L'IA
+                    let invSupplier = res.fournisseur || res.fournisseur_nom || res.nom_fournisseur || "";
+                    let invDate = new Date().toISOString().split('T')[0]; // Date du jour par défaut
+                    
+                    document.getElementById('pending-supplier').value = invSupplier;
+                    document.getElementById('pending-date').value = invDate;
 
                     const extractCat = (objList, catName) => {
                         if(!objList || !Array.isArray(objList)) return;
@@ -622,38 +633,42 @@
         async function injectInvoiceToStock() {
             if(pendingInvoiceItems.length === 0) return alert("Rien à injecter.");
             
-            isSyncing = true; // 🟢 ACTIVATION DU BOUCLIER
+            isSyncing = true; 
+
+            // 🟢 LECTURE DU FOURNISSEUR ET DE LA DATE
+            let pendingSupplier = document.getElementById('pending-supplier').value.trim() || "Inconnu";
+            let dateObj = document.getElementById('pending-date').value ? new Date(document.getElementById('pending-date').value) : new Date();
+            let pendingDate = dateObj.toLocaleDateString('fr-FR');
 
             pendingInvoiceItems.forEach(item => {
                 let existing = stockGlobalData.find(x => x.name.toLowerCase() === item.name.toLowerCase());
                 if (existing) {
                     existing.lastPrice = item.unitPriceStr;
-                    existing.date = new Date().toLocaleDateString();
+                    existing.date = pendingDate;
+                    existing.supplier = pendingSupplier; // 🟢 MAJ DU FOURNISSEUR
                     
-                    // 🟢 ADDITION MATHEMATIQUE DES STOCKS EXISTANTS
                     let oldMatch = existing.qtyStr.toString().replace(',','.').match(/[\d.]+/);
                     let newMatch = item.qtyStr.toString().replace(',','.').match(/[\d.]+/);
                     
                     if(oldMatch && newMatch) {
                         let oldVal = parseFloat(oldMatch[0]);
                         let newVal = parseFloat(newMatch[0]);
-                        let unit = existing.qtyStr.toString().replace(/[\d.]+/,'').trim();
-                        if(!unit) unit = item.qtyStr.toString().replace(/[\d.]+/,'').trim(); // Sécurité
+                        let unit = existing.qtyStr.toString().replace(/[\d.]+/,'').trim() || item.qtyStr.toString().replace(/[\d.]+/,'').trim();
                         existing.qtyStr = parseFloat((oldVal + newVal).toFixed(3)) + " " + unit;
                     } else {
-                        existing.qtyStr = item.qtyStr; // Si illisible, on remplace
+                        existing.qtyStr = item.qtyStr; 
                     }
                 } else {
                     stockGlobalData.unshift({
                         id: item.id, name: item.name, cat: item.cat, 
                         qtyStr: item.qtyStr, lastPrice: item.unitPriceStr, 
-                        date: new Date().toLocaleDateString()
+                        date: pendingDate, supplier: pendingSupplier // 🟢 AJOUT DU FOURNISSEUR
                     });
                 }
             });
 
             await API.update('INVENTORY_MASTER', stockGlobalData);
-            isSyncing = false; // 🟢 DESACTIVATION DU BOUCLIER
+            isSyncing = false; 
 
             cancelInvoice();
             renderGlobalStock(); renderLiveStockPanel();
@@ -670,7 +685,7 @@
             tbody.innerHTML = stockGlobalData.map(item => `
                 <tr>
                     <td><span class="badge-cat" style="background:${STOCK_BADGES[item.cat]}">${item.cat.substring(0,3).toUpperCase()}</span></td>
-                    <td style="font-weight:bold; color:var(--text-main);">${item.name} <br><span style="font-size:0.7rem; color:var(--text-muted); font-weight:normal;">Dernier achat: ${item.date}</span></td>
+                    <td style="font-weight:bold; color:var(--text-main);">${item.name} <br><span style="font-size:0.7rem; color:var(--text-muted); font-weight:normal;">Dernier achat: ${item.date} chez <b>${item.supplier || 'Inconnu'}</b></span></td>
                     <td style="color:var(--text-main); font-weight:bold;">${item.qtyStr}</td>
                     <td style="color:var(--gold); font-weight:bold;">${item.lastPrice}</td>
                     <td><button style="background:var(--panel); border:1px solid var(--alert); color:var(--alert); padding:4px 8px; border-radius:4px; font-size:0.7rem; cursor:pointer;" onclick="alert('Ajouté à la liste des courses.')">🛒 COMMANDER</button></td>
@@ -724,7 +739,7 @@
         }
 
         // ==========================================
-        // 🧮 LE MOTEUR MATHÉMATIQUE (RÉPARÉ ET INTELLIGENT)
+        // 🧮 LE MOTEUR MATHÉMATIQUE
         // ==========================================
         function calcSmartPlate() {
             const calcBox = (prefix) => {
