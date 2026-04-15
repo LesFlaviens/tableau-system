@@ -26,9 +26,6 @@ app.post('/update-order', (req, res) => {
     res.json({ success: true });
 });
 
-// ==========================================
-// 🤖 MOTEUR IA (ANALYSE FACTURES & HACCP)
-// ==========================================
 app.post('/analyse-ticket', async (req, res) => {
     try {
         const { image, mimeType, isLabelScan } = req.body;
