@@ -26,7 +26,9 @@ app.post('/update-order', (req, res) => {
     res.json({ success: true });
 });
 
-// MOTEUR IA 
+// ==========================================
+// 🤖 MOTEUR IA (ANALYSE FACTURES & HACCP)
+// ==========================================
 app.post('/analyse-ticket', async (req, res) => {
     try {
         const { image, mimeType, isLabelScan } = req.body;
@@ -42,7 +44,7 @@ app.post('/analyse-ticket', async (req, res) => {
             2. 5 CATÉGORIES OBLIGATOIRES : 
                - proteine: Viandes, poissons, oeufs, charcuterie.
                - glucides: Pâtes, riz, pommes de terre, gnocchis, féculents, pain.
-               - garniture: Légumes verts, fruits, champignons, herbes.
+               - garniture: Légumes verts, fruits, champignons, herbes fraîches.
                - cremerie: Lait, crème, beurre, fromages.
                - divers: Épices, sauces, confiserie, boissons, emballages.
             Format JSON strict : {"total": 0.00, "proteine":[], "glucides":[], "garniture":[], "cremerie":[], "divers":[]}`;
@@ -68,4 +70,4 @@ app.post('/analyse-ticket', async (req, res) => {
     }
 });
 
-app.listen(PORT, () => console.log(`Serveur iChef démarré sur le port ${PORT}`));
+app.listen(PORT, () => console.log(`🚀 Serveur iChef démarré sur le port ${PORT}`));
