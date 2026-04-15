@@ -1,7 +1,6 @@
 const express = require('express');
 const cors = require('cors');
 const path = require('path');
-require('dotenv').config();
 
 const app = express();
 const PORT = process.env.PORT || 10000;
@@ -26,6 +25,9 @@ app.post('/update-order', (req, res) => {
     res.json({ success: true });
 });
 
+// ==========================================
+// 🤖 MOTEUR IA (ANALYSE FACTURES & HACCP)
+// ==========================================
 app.post('/analyse-ticket', async (req, res) => {
     try {
         const { image, mimeType, isLabelScan } = req.body;
