@@ -37,20 +37,20 @@ app.post('/analyse-ticket', async (req, res) => {
 
         let promptSysteme = isLabelScan 
             ? "MISSION HACCP : Lis cette etiquette. Extrais : nom, lot, dlc (DD/MM/YY). JSON: {\"nom\": \"...\", \"lot\": \"...\", \"dlc\": \"...\"}"
-            : `MISSION EXPERT ECONOMAT : Extraire tous les articles. 
-            RÈGLES CRITIQUES :
-            1. PIÈGES : 'Lapin chocolat', 'Lapin ruban' ou confiseries = 'divers'. JAMAIS 'proteine'.
-            2. 5 CATÉGORIES OBLIGATOIRES : proteine, glucides, garniture, cremerie, divers.
+            : `MISSION EXPERT ECONOMAT : Extraire tous les articles de cette facture. 
+            RÈGLES CRITIQUES ET ABSOLUES :
+            1. PIÈGES SÉMANTIQUES : 'Lapin chocolat', 'Lapin ruban' ou toute confiserie = 'divers'. JAMAIS 'proteine'.
+            2. 5 CATÉGORIES OBLIGATOIRES : 
+               - proteine: Viandes, poissons, volailles, charcuterie.
+               - glucides: Pâtes, riz, pommes de terre, féculents, pain.
+               - garniture: Légumes verts, fruits, champignons, herbes fraîches.
+               - cremerie: B.O.F (Beurre, Oeufs, Fromages), lait, crème, yaourts.
+               - divers: Épices, sauces, confiserie, boissons, emballages, économat général.
             
-            FORMAT JSON STRICT : Tu DOIS utiliser EXACTEMENT les clés "nom", "prix", et "poids" pour chaque article.
-            Exemple attendu :
+            FORMAT JSON STRICT : Tu DOIS utiliser les clés "nom", "prix", et "poids".
             {
               "total": 0.00, 
-              "proteine": [{"nom": "Steak haché", "prix": 15.50, "poids": "1kg"}], 
-              "glucides": [{"nom": "Pâtes", "prix": 2.00, "poids": "500g"}], 
-              "garniture": [], 
-              "cremerie": [], 
-              "divers": [{"nom": "Lapin ruban", "prix": 3.98, "poids": "2pce"}]
+              "proteine": [], "glucides": [], "garniture": [], "cremerie": [], "divers": []
             }`;
 
         const payload = {
