@@ -290,7 +290,28 @@
                     </select>
                 </div>
 
+                <div style="display:flex; gap:10px; flex-wrap: wrap; margin-bottom: 15px;">
+                    <div style="flex:1; display:flex; flex-direction:column; gap:5px; min-width:250px;">
+                        <div style="display:flex; justify-content:space-between; align-items:center;">
+                            <label style="font-size:0.8rem; font-weight:bold; color:var(--text-muted);">INGRÉDIENTS (FICHE TECHNIQUE)</label>
+                            <button class="nav-btn" style="padding:4px 8px; font-size:0.7rem; border-color:var(--ordered); color:var(--ordered);" onclick="generateRecipeIngredients(10)">🪄 AUTO 10 PAX</button>
+                        </div>
+                        <div style="display:flex; gap:5px;">
+                            <textarea id="rec-ing" style="flex:1; height: 100px; resize:none;"></textarea>
+                            <button class="btn-mic" style="padding:0 10px;" onclick="startDictation('rec-ing', this.id)" id="mic-ing">🎙️</button>
+                        </div>
+                    </div>
+                    <div style="flex:1; display:flex; flex-direction:column; gap:5px; min-width:250px;">
+                        <label style="font-size:0.8rem; font-weight:bold; color:var(--text-muted);">DÉROULÉ DE LA PRÉPARATION</label>
+                        <div style="display:flex; gap:5px;">
+                            <textarea id="rec-prep" style="flex:1; height: 100px; resize:none;"></textarea>
+                            <button class="btn-mic" style="padding:0 10px;" onclick="startDictation('rec-prep', this.id)" id="mic-prep">🎙️</button>
+                        </div>
+                    </div>
+                </div>
+
                 <button id="btn-save-recipe" class="add-btn" style="background:var(--gold); color:#000;" onclick="saveRecipe()">🚀 SAUVEGARDER & PUBLIER LE PLAT</button>
+                <button id="btn-cancel-edit" class="add-btn" style="display:none; background:transparent; border-color:var(--alert); color:var(--alert); margin-top:5px;" onclick="cancelEditRecipe()">❌ ANNULER LA MODIFICATION</button>
             </div>
 
             <div style="display:flex; flex-direction:column; gap:15px; overflow-y:auto; max-height: calc(100vh - 120px);">
@@ -407,6 +428,8 @@
         let recipesData = [];
         let stockGlobalData = []; 
         let pendingInvoiceItems = []; 
+        let editingRecipeId = null;
+        let currentFolderCat = null;
 
         const CAT_NAMES = { "menuJour": "🔥 Menus du Jour", "suggestions": "⭐ Suggestions", "entrees": "🥗 Entrées", "plats": "🥩 Plats", "desserts": "🍰 Desserts" };
         const STOCK_BADGES = { "feculents": "#60a5fa", "proteines": "#f87171", "bof": "#fbbf24", "sauces": "#a78bfa", "legumes": "#34d399", "economat": "#94a3b8" };
@@ -445,7 +468,7 @@
         }
 
         // ==========================================
-        // 🎙️ GESTION DICTÉE VOCALE (RESTAURÉE)
+        // 🎙️ GESTION DICTÉE VOCALE
         // ==========================================
         function startMarketDictation(inputId, btnId) {
             const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
@@ -703,28 +726,144 @@
         }
 
         // ==========================================
-        // GESTION DES MENUS ET RECETTES (INCHANGÉ)
+        // 🟢 GESTION DES MENUS ET RECETTES AVEC FICHE TECHNIQUE
         // ==========================================
+        function generateRecipeIngredients(paxCount) {
+            let ingTextarea = document.getElementById('rec-ing');
+            let generatedLines = [];
+            
+            const cats = ['fecu', 'prot', 'bof', 'sauc', 'legu', 'eco'];
+            const labels = {'fecu': 'FÉCULENTS', 'prot': 'PROTÉINES', 'bof': 'B.O.F / LAITIER', 'sauc': 'SAUCES', 'legu': 'LÉGUMES', 'eco': 'ÉCONOMAT'};
+
+            cats.forEach(k => {
+                let rawVal = document.getElementById(`market-${k}-raw`).value;
+                if (rawVal && rawVal.trim() !== "") {
+                    let gram = parseFloat(document.getElementById(`gram-${k}`).value) || 1;
+                    // On nettoie le nom comme pour le calcul
+                    let names = rawVal.split('\n').map(line => {
+                        return line.replace(/\([^)]+\)/g, '').replace(/dispo:.*$/i, '').trim().split(' pour ')[0].split('€')[0].trim();
+                    }).filter(n => n !== "").join(', ');
+                    if(names !== "") generatedLines.push(`- ${labels[k]} : ${gram * paxCount}g/pce (${names})`);
+                }
+            });
+
+            if(generatedLines.length > 0) {
+                ingTextarea.value = "Ingrédients pour " + paxCount + " portions :\n" + generatedLines.join('\n');
+            } else {
+                alert("⚠️ Remplissez d'abord les cases du marché.");
+            }
+        }
+
         async function saveRecipe() {
             let name = document.getElementById('market-name').value.trim();
             let price = parseFloat(document.getElementById('market-price').value);
             let category = document.getElementById('market-category').value;
             let unitCost = parseFloat(document.getElementById('market-total-cost').value) || 0; 
+            
+            let ing = document.getElementById('rec-ing') ? document.getElementById('rec-ing').value : '';
+            let prep = document.getElementById('rec-prep') ? document.getElementById('rec-prep').value : '';
+
             if(!name || isNaN(price)) return alert("⚠️ Nom et Prix obligatoires.");
 
             let fc = 0; if(price > 0 && unitCost > 0) fc = parseFloat(((unitCost / price) * 100).toFixed(1));
             
-            let recipeObj = { id: Date.now(), name: name, cat: category, price: price, cost: unitCost, fc: fc };
+            let recipeObj = { id: Date.now(), name: name, cat: category, price: price, cost: unitCost, fc: fc, ing: ing, prep: prep };
             let newItem = { id: Date.now(), name: "🌟 " + name, price: price, stock: 99 };
 
-            recipesData.unshift(recipeObj);
-            if(!menuData[category]) menuData[category] = [];
-            menuData[category].unshift(newItem);
+            if (editingRecipeId) {
+                let rIndex = recipesData.findIndex(x => x.id === editingRecipeId);
+                if(rIndex > -1) {
+                    let oldCat = recipesData[rIndex].cat; 
+                    recipeObj.id = editingRecipeId; // Garder le même ID
+                    recipesData[rIndex] = recipeObj;
+                    let mIndex = menuData[oldCat].findIndex(item => item.name.includes(name));
+                    if(mIndex > -1) menuData[oldCat].splice(mIndex, 1);
+                    menuData[category].push(newItem);
+                }
+                cancelEditRecipe(); 
+            } else {
+                recipesData.unshift(recipeObj);
+                if(!menuData[category]) menuData[category] = [];
+                menuData[category].unshift(newItem);
+            }
 
             await API.update('MENU_MASTER', menuData);
             await API.update('RECIPES_MASTER', recipesData); 
             renderMenu(); renderRecipes();
-            alert(`✅ Plat publié !`);
+            alert(`✅ Plat "${name}" publié !`);
+        }
+
+        function editRecipe(id) {
+            const r = recipesData.find(x => x.id === id); if(!r) return;
+            document.getElementById('market-name').value = r.name; 
+            document.getElementById('market-category').value = r.cat; 
+            document.getElementById('market-price').value = r.price || ''; 
+            
+            if(document.getElementById('rec-ing')) document.getElementById('rec-ing').value = r.ing || '';
+            if(document.getElementById('rec-prep')) document.getElementById('rec-prep').value = r.prep || '';
+
+            editingRecipeId = id; 
+            document.getElementById('btn-cancel-edit').style.display = 'block'; 
+            window.scrollTo({ top: 0, behavior: 'smooth' });
+        }
+
+        function cancelEditRecipe() {
+            editingRecipeId = null; 
+            document.getElementById('market-name').value = ''; 
+            document.getElementById('market-price').value = '';
+            if(document.getElementById('rec-ing')) document.getElementById('rec-ing').value = '';
+            if(document.getElementById('rec-prep')) document.getElementById('rec-prep').value = '';
+            document.getElementById('btn-cancel-edit').style.display = 'none'; 
+        }
+
+        async function deleteRecipe(id) { 
+            if(confirm("Supprimer cette recette ?")) { 
+                recipesData = recipesData.filter(r => r.id !== id); 
+                renderRecipes(); await API.update('RECIPES_MASTER', recipesData); 
+            } 
+        }
+
+        // ==========================================
+        // AFFICHAGE DES DOSSIERS DE RECETTES
+        // ==========================================
+        function renderFolders() {
+            document.getElementById('folder-view').style.display = 'none';
+            const catView = document.getElementById('catalog-view');
+            if(!catView) return;
+            catView.style.display = 'grid';
+            let html = '';
+            ['menuJour', 'suggestions', 'entrees', 'plats', 'desserts'].forEach(cat => {
+                let count = recipesData.filter(r => r.cat === cat).length;
+                html += `<div class="folder-card" onclick="openFolder('${cat}')"><div class="folder-title">${CAT_NAMES[cat] || cat}</div><div class="folder-count">${count} Fiches</div></div>`;
+            });
+            catView.innerHTML = html;
+        }
+
+        function openFolder(cat) {
+            currentFolderCat = cat;
+            document.getElementById('catalog-view').style.display = 'none';
+            document.getElementById('folder-view').style.display = 'flex';
+            document.getElementById('current-folder-title').innerText = "📂 " + (CAT_NAMES[cat] || cat);
+            renderFolderContents(cat);
+        }
+
+        function closeFolder() { currentFolderCat = null; renderRecipes(); }
+
+        function renderFolderContents(cat) {
+            const container = document.getElementById('recipes-list');
+            let filtered = recipesData.filter(r => r.cat === cat);
+            if(filtered.length === 0) { container.innerHTML = "<p style='text-align:center; color:var(--text-muted);'>Vide.</p>"; return; }
+            container.innerHTML = filtered.map(r => `
+                <div style="background: var(--bg); border:1px solid var(--border); padding:15px; border-radius:8px;">
+                    <div style="display:flex; justify-content:space-between;">
+                        <span style="color:var(--gold); font-weight:900;">${r.name}</span>
+                        <div style="display:flex; gap: 5px;">
+                            <button class="btn-del" style="width:28px; height:28px; font-size:0.9rem;" onclick="editRecipe(${r.id})">✏️</button>
+                            <button class="btn-del" style="width:28px; height:28px; font-size:0.9rem;" onclick="deleteRecipe(${r.id})">✖</button>
+                        </div>
+                    </div>
+                    <div style="margin-top:10px; color:var(--text-muted); font-size:0.85rem;">Coût: ${r.cost}€ | Prix: ${r.price}€ | FC: ${r.fc}%</div>
+                </div>`).join('');
         }
 
         function renderMenu() {
@@ -738,22 +877,30 @@
                         <span class="item-name">${item.name}</span>
                         <div style="display:flex; align-items:center;">
                             <span class="item-price">${parseFloat(item.price).toFixed(2)} €</span>
+                            <button class="btn-del" onclick="deleteMenuItem('${category}', ${item.id})">✖</button>
                         </div>
                     </div>`).join('');
                 }
             });
         }
 
+        async function addMenuItem(category) {
+            const nameInput = document.getElementById(`add-name-${category}`); 
+            const priceInput = document.getElementById(`add-price-${category}`); 
+            if (!nameInput.value || !priceInput.value) return;
+            if(!menuData[category]) menuData[category] = [];
+            menuData[category].push({ id: Date.now(), name: nameInput.value, price: parseFloat(priceInput.value), stock: 99 });
+            nameInput.value = ''; priceInput.value = '';
+            renderMenu(); await API.update('MENU_MASTER', menuData);
+        }
+
+        async function deleteMenuItem(category, id) { 
+            menuData[category] = menuData[category].filter(item => item.id !== id); 
+            renderMenu(); await API.update('MENU_MASTER', menuData); 
+        }
+
         function renderRecipes() {
-            const catView = document.getElementById('catalog-view');
-            if(!catView) return;
-            catView.style.display = 'grid';
-            let html = '';
-            ['menuJour', 'suggestions', 'entrees', 'plats', 'desserts'].forEach(cat => {
-                let count = recipesData.filter(r => r.cat === cat).length;
-                html += `<div class="folder-card"><div class="folder-title">${CAT_NAMES[cat] || cat}</div><div class="folder-count">${count} Fiches Techniques</div></div>`;
-            });
-            catView.innerHTML = html;
+            if (!currentFolderCat) { renderFolders(); } else { renderFolderContents(currentFolderCat); }
         }
 
         window.onload = bootSystem;
