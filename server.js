@@ -11,9 +11,10 @@ app.use(express.static(path.join(__dirname)));
 
 let globalState = { activeOrders: {} };
 
-// 🚦 REGLAGES DU SAS (Modifiables en temps réel par le Gérant)
-let sasConfig = { active: true, maxTables: 5 };
-let webOrderQueue = []; // La file d'attente invisible
+// 🚦 REGLAGES DU SAS (Modifiables en temps réel)
+let sasConfig = { active: true, maxTables: 5, delaySeconds: 60 };
+let webOrderQueue = []; 
+let lastSasRelease = 0; // Chronomètre interne
 
 app.get('/get-current-state', (req, res) => {
     res.json({ activeOrders: globalState.activeOrders, sasConfig: sasConfig });
@@ -29,14 +30,14 @@ app.post('/update-order', (req, res) => {
     res.json({ success: true });
 });
 
-// 🎛️ NOUVEAU : LA TÉLÉCOMMANDE DU GÉRANT
+// 🎛️ LA TÉLÉCOMMANDE DU GÉRANT
 app.post('/update-sas', (req, res) => {
     sasConfig.active = req.body.active;
     sasConfig.maxTables = req.body.maxTables;
+    sasConfig.delaySeconds = req.body.delaySeconds || 60;
     
-    console.log(`⚙️ Ordre de la Direction : SAS ${sasConfig.active ? 'ACTIVÉ' : 'DÉSACTIVÉ'} | Max Tables : ${sasConfig.maxTables}`);
+    console.log(`⚙️ Ordre Direction : SAS ${sasConfig.active ? 'ACTIVÉ' : 'DÉSACTIVÉ'} | Max : ${sasConfig.maxTables} | Délai : ${sasConfig.delaySeconds}s`);
 
-    // Si le gérant coupe le SAS, on vide toute la file d'attente d'un coup sur les écrans
     if (!sasConfig.active && webOrderQueue.length > 0) {
         while(webOrderQueue.length > 0) {
             let nextOrder = webOrderQueue.shift();
@@ -49,24 +50,32 @@ app.post('/update-sas', (req, res) => {
     res.json({ success: true, sasConfig });
 });
 
-// Le Métronome du SAS (Tourne toutes les 60 secondes)
+// Le Métronome du SAS (Vérifie toutes les 5 secondes si le délai est écoulé)
 setInterval(() => {
     if (sasConfig.active && webOrderQueue.length > 0) {
-        let activeWebCount = Object.values(globalState.activeOrders)
-            .filter(o => o.isWeb && o.items && o.items.some(i => !i.done)).length;
+        let now = Date.now();
+        let requiredDelay = (sasConfig.delaySeconds || 60) * 1000;
+        
+        // Si le temps exigé par le manager est écoulé
+        if (now - lastSasRelease >= requiredDelay) {
+            let activeWebCount = Object.values(globalState.activeOrders)
+                .filter(o => o.isWeb && o.items && o.items.some(i => !i.done)).length;
 
-        if (activeWebCount < sasConfig.maxTables) {
-            let nextOrder = webOrderQueue.shift(); 
-            nextOrder.order.time = new Date().toLocaleTimeString('fr-FR', {hour:'2-digit', minute:'2-digit'});
-            if(nextOrder.order.items) nextOrder.order.items.forEach(i => { i.firedTime = Date.now(); i.itemId = Date.now(); });
-            globalState.activeOrders[nextOrder.tableId] = nextOrder.order;
-            console.log(`🟢 SAS Libéré : Commande ${nextOrder.tableId} envoyée. Reste : ${webOrderQueue.length}`);
+            // Et que l'équipe a de la place
+            if (activeWebCount < sasConfig.maxTables) {
+                let nextOrder = webOrderQueue.shift(); 
+                nextOrder.order.time = new Date().toLocaleTimeString('fr-FR', {hour:'2-digit', minute:'2-digit'});
+                if(nextOrder.order.items) nextOrder.order.items.forEach(i => { i.firedTime = Date.now(); i.itemId = Date.now(); });
+                globalState.activeOrders[nextOrder.tableId] = nextOrder.order;
+                lastSasRelease = now; // On réinitialise le chrono
+                console.log(`🟢 SAS Libéré : Commande ${nextOrder.tableId} envoyée. Reste : ${webOrderQueue.length}`);
+            }
         }
     }
-}, 60000); 
+}, 5000); 
 
 // ==========================================
-// 🛒 WEBHOOK WOOCOMMERCE BLINDÉ, CADENCÉ & ROUTAGE STRICT
+// 🛒 WEBHOOK WOOCOMMERCE 
 // ==========================================
 app.post('/woo-webhook', (req, res) => {
     try {
@@ -126,11 +135,9 @@ app.post('/woo-webhook', (req, res) => {
             });
         }
 
-        // 4. LA DÉCISION DU RÉGULATEUR (Envoi direct ou SAS)
         let activeWebCount = Object.values(globalState.activeOrders)
             .filter(o => o.isWeb && o.items && o.items.some(i => !i.done)).length;
 
-        // Si le SAS est désactivé OU qu'on est en dessous du seuil -> Envoi direct
         if (!sasConfig.active || activeWebCount < sasConfig.maxTables) {
             globalState.activeOrders[tableNum] = newOrder;
             console.log(`🚀 Commande Woo #${order.id} envoyée direct. En cours : ${activeWebCount + 1}`);
