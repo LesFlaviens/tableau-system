@@ -1,6 +1,7 @@
 const express = require('express');
 const cors = require('cors');
 const path = require('path');
+const mongoose = require('mongoose'); // 🔌 LE MOTEUR DE BASE DE DONNÉES CLOUD
 
 const app = express();
 const PORT = process.env.PORT || 10000;
@@ -8,6 +9,66 @@ const PORT = process.env.PORT || 10000;
 app.use(cors());
 app.use(express.json({ limit: '50mb' }));
 app.use(express.static(path.join(__dirname))); 
+
+// ==========================================
+// 🧠 CONNEXION AU COFFRE-FORT (MONGODB)
+// ==========================================
+const MONGO_URI = process.env.MONGODB_URI;
+if (MONGO_URI) {
+    mongoose.connect(MONGO_URI)
+        .then(() => console.log('🟢 Base de données Cloud Empire OS connectée !'))
+        .catch(err => console.error('🔴 Erreur de connexion MongoDB :', err));
+} else {
+    console.log('⚠️ ATTENTION : La clé MONGODB_URI n\'est pas définie sur Render. Le cloud est inactif.');
+}
+
+// 🏗️ LE MOULE DE TES CLIENTS (SaaS Multi-Locataires)
+const tenantSchema = new mongoose.Schema({
+    tenantID: { type: String, required: true, unique: true },
+    clientName: String,
+    status: { type: String, enum: ['ACTIF', 'ESSAI', 'SUSPENDU'], default: 'ESSAI' },
+    trialEndDate: Date,
+    subscriptionPaid: { type: Boolean, default: false },
+    config: Object
+});
+const Tenant = mongoose.model('Tenant', tenantSchema);
+
+// ==========================================
+// 🛡️ LE VERROU CENTRAL (KILL-SWITCH EMPIRE OS)
+// ==========================================
+app.get('/verify-tenant/:tenantID', async (req, res) => {
+    try {
+        const tenant = await Tenant.findOne({ tenantID: req.params.tenantID });
+        
+        if (!tenant) {
+            // Sécurité : si le client n'existe pas, on bloque la porte.
+            return res.status(404).json({ success: false, message: "🚨 RESTAURANT INCONNU DANS LA MATRICE." });
+        }
+
+        // Le couperet automatique : vérification de la date d'essai
+        let now = new Date();
+        if (tenant.status === 'ESSAI' && tenant.trialEndDate && now > tenant.trialEndDate) {
+            tenant.status = 'SUSPENDU'; 
+            await tenant.save(); // On sauvegarde la suspension dans la base
+            console.log(`⚖️ COUPERET : La période d'essai de ${tenant.tenantID} est terminée. Suspendu.`);
+        }
+
+        // Le blocage physique
+        if (tenant.status === 'SUSPENDU') {
+            console.log(`🔴 BLOCAGE : Tentative de connexion du resto ${tenant.tenantID} (SUSPENDU)`);
+            return res.status(403).json({ 
+                success: false, 
+                message: "🚨 ACCÈS SUSPENDU : Veuillez contacter Empire OS pour régulariser votre abonnement." 
+            });
+        }
+
+        // Tout est en règle
+        res.json({ success: true, clientName: tenant.clientName, status: tenant.status });
+    } catch (error) {
+        res.status(500).json({ error: "Erreur serveur interne." });
+    }
+});
+
 
 let globalState = { activeOrders: {} };
 
@@ -159,7 +220,7 @@ app.post('/woo-webhook', (req, res) => {
 app.get('/portail-client', (req, res) => {
     const tableId = req.query.table;
     const order = globalState.activeOrders[tableId];
-    if (!order) return res.send(`<body style="background:#0f172a; color:white; font-family:sans-serif; text-align:center; padding:50px;"><h1 style="color:#fbbf24;">ichef.ch</h1><p>Aucune addition active pour la table ${tableId}.</p></body>`);
+    if (!order) return res.send(`<body style="background:#0f172a; color:white; font-family:sans-serif; text-align:center; padding:50px;"><h1 style="color:#fbbf24;">Empire OS</h1><p>Aucune addition active pour la table ${tableId}.</p></body>`);
     const total = order.items.reduce((acc, i) => acc + (parseFloat(i.p) * (i.qty || 1)), 0);
     res.send(`<!DOCTYPE html><html><head><meta name="viewport" content="width=device-width, initial-scale=1"><style>body{background:#0f172a;color:#f8fafc;font-family:sans-serif;padding:20px;text-align:center;}.card{background:#1e293b;border-radius:15px;padding:20px;border:1px solid #fbbf24;}h1{color:#fbbf24;margin-bottom:5px;}.item{display:flex;justify-content:space-between;padding:10px 0;border-bottom:1px dashed #334155;font-size:0.9rem;}.total{font-size:2rem;font-weight:900;color:#fbbf24;margin:25px 0;}.btn{background:#fbbf24;color:#000;border:none;padding:15px 30px;border-radius:10px;font-weight:bold;width:100%;font-size:1.1rem;}</style></head><body><h1>EMPIRE</h1><p>Addition Table ${tableId}</p><div class="card">${order.items.map(i=>`<div class="item"><span>${i.qty||1}x ${i.n}</span><span>${(parseFloat(i.p)*(i.qty||1)).toFixed(2)}€</span></div>`).join('')}<div class="total">${total.toFixed(2)} €</div><button class="btn" onclick="alert('Paiement via Stripe bientôt activé')">Payer</button></div></body></html>`);
 });
@@ -181,5 +242,7 @@ app.post('/analyse-ticket', async (req, res) => {
     }
 });
 
+// ==========================================
+// 🚀 DÉMARRAGE DU SERVEUR
+// ==========================================
 app.listen(PORT, () => console.log(`🚀 Serveur Empire OS démarré sur le port ${PORT}`));
-
