@@ -11,8 +11,12 @@ app.use(express.static(path.join(__dirname)));
 
 let globalState = { activeOrders: {} };
 
+// 🚦 REGLAGES DU SAS (Modifiables en temps réel par le Gérant)
+let sasConfig = { active: true, maxTables: 5 };
+let webOrderQueue = []; // La file d'attente invisible
+
 app.get('/get-current-state', (req, res) => {
-    res.json(globalState);
+    res.json({ activeOrders: globalState.activeOrders, sasConfig: sasConfig });
 });
 
 app.post('/update-order', (req, res) => {
@@ -25,36 +29,41 @@ app.post('/update-order', (req, res) => {
     res.json({ success: true });
 });
 
-// ==========================================
-// 🚦 SAS DE DÉCOMPRESSION (CADENCEMENT)
-// ==========================================
-let webOrderQueue = []; // La file d'attente invisible
+// 🎛️ NOUVEAU : LA TÉLÉCOMMANDE DU GÉRANT
+app.post('/update-sas', (req, res) => {
+    sasConfig.active = req.body.active;
+    sasConfig.maxTables = req.body.maxTables;
+    
+    console.log(`⚙️ Ordre de la Direction : SAS ${sasConfig.active ? 'ACTIVÉ' : 'DÉSACTIVÉ'} | Max Tables : ${sasConfig.maxTables}`);
 
-// Le Métronome (Tourne toutes les 60 secondes en tâche de fond)
+    // Si le gérant coupe le SAS, on vide toute la file d'attente d'un coup sur les écrans
+    if (!sasConfig.active && webOrderQueue.length > 0) {
+        while(webOrderQueue.length > 0) {
+            let nextOrder = webOrderQueue.shift();
+            nextOrder.order.time = new Date().toLocaleTimeString('fr-FR', {hour:'2-digit', minute:'2-digit'});
+            if(nextOrder.order.items) nextOrder.order.items.forEach(i => { i.firedTime = Date.now(); i.itemId = Date.now(); });
+            globalState.activeOrders[nextOrder.tableId] = nextOrder.order;
+        }
+        console.log("🌊 Vannes ouvertes : File d'attente vidée.");
+    }
+    res.json({ success: true, sasConfig });
+});
+
+// Le Métronome du SAS (Tourne toutes les 60 secondes)
 setInterval(() => {
-    if (webOrderQueue.length > 0) {
-        // On compte combien de tables WEB sont actuellement "en cours" (non servies)
+    if (sasConfig.active && webOrderQueue.length > 0) {
         let activeWebCount = Object.values(globalState.activeOrders)
             .filter(o => o.isWeb && o.items && o.items.some(i => !i.done)).length;
 
-        // Si l'équipe a moins de 5 tickets Web en cours, on libère 1 ticket du SAS
-        if (activeWebCount < 5) {
-            let nextOrder = webOrderQueue.shift(); // Sort le premier de la file
-            
-            // On actualise l'heure pour la brigade pour que le ticket ne paraisse pas en retard
+        if (activeWebCount < sasConfig.maxTables) {
+            let nextOrder = webOrderQueue.shift(); 
             nextOrder.order.time = new Date().toLocaleTimeString('fr-FR', {hour:'2-digit', minute:'2-digit'});
-            if(nextOrder.order.items) {
-                nextOrder.order.items.forEach(i => {
-                    i.firedTime = Date.now();
-                    i.itemId = Date.now();
-                });
-            }
-
+            if(nextOrder.order.items) nextOrder.order.items.forEach(i => { i.firedTime = Date.now(); i.itemId = Date.now(); });
             globalState.activeOrders[nextOrder.tableId] = nextOrder.order;
-            console.log(`🟢 SAS Libéré : Commande ${nextOrder.tableId} envoyée à la brigade. Reste en attente : ${webOrderQueue.length}`);
+            console.log(`🟢 SAS Libéré : Commande ${nextOrder.tableId} envoyée. Reste : ${webOrderQueue.length}`);
         }
     }
-}, 60000); // Vérification toutes les 60 secondes
+}, 60000); 
 
 // ==========================================
 // 🛒 WEBHOOK WOOCOMMERCE BLINDÉ, CADENCÉ & ROUTAGE STRICT
@@ -64,7 +73,6 @@ app.post('/woo-webhook', (req, res) => {
         const order = req.body;
         if (!order || !order.id) return res.status(400).send("Payload invalide");
 
-        // 1. Détection de la Table
         let tableNum = "WEB_" + order.id; 
         if (order.customer_note) {
             let match = order.customer_note.match(/table\s*(\d+)/i);
@@ -75,7 +83,6 @@ app.post('/woo-webhook', (req, res) => {
             if (tableMeta && tableMeta.value) tableNum = tableMeta.value;
         }
 
-        // 2. Formatage du Ticket
         let newOrder = {
             status: 'cooking',
             time: new Date().toLocaleTimeString('fr-FR', {hour:'2-digit', minute:'2-digit'}),
@@ -87,7 +94,6 @@ app.post('/woo-webhook', (req, res) => {
             id: order.id
         };
 
-        // 3. ROUTAGE ULTRA-PRÉCIS (Mots exacts uniquement)
         const regexBar = /\b(vin|vins|bière|bières|biere|bieres|cocktail|cocktails|eau|eaux|coca|cocas|jus|café|cafés|cafe|cafes|mojito|mojitos|verre|verres|bouteille|bouteilles|rhum|vodka|boisson|boissons|thé|thés|the|thes|sirop|sprite|fanta|limonade|perrier|alcool|soft|softs)\b/i;
         const regexDessert = /\b(dessert|desserts|glace|glaces|chocolat|chocolats|gâteau|gâteaux|gateau|gateaux|tarte|tartes|tiramisu|crème|creme|fruit|fruits|sorbet|sorbets|fondant|mousse)\b/i;
         const regexEntree = /\b(entrée|entrées|entree|entrees|salade|salades|soupe|soupes|planche|planches|tapas|foie|saumon|carpaccio|tartare|charcuterie|fromage|fromages)\b/i;
@@ -96,7 +102,6 @@ app.post('/woo-webhook', (req, res) => {
             order.line_items.forEach(item => {
                 let rawName = item.name || "Produit sans nom";
                 let nomItem = rawName.toLowerCase();
-                
                 let dest = 'cuisine'; 
                 let course = 2; 
 
@@ -125,7 +130,8 @@ app.post('/woo-webhook', (req, res) => {
         let activeWebCount = Object.values(globalState.activeOrders)
             .filter(o => o.isWeb && o.items && o.items.some(i => !i.done)).length;
 
-        if (activeWebCount < 5) {
+        // Si le SAS est désactivé OU qu'on est en dessous du seuil -> Envoi direct
+        if (!sasConfig.active || activeWebCount < sasConfig.maxTables) {
             globalState.activeOrders[tableNum] = newOrder;
             console.log(`🚀 Commande Woo #${order.id} envoyée direct. En cours : ${activeWebCount + 1}`);
         } else {
@@ -141,7 +147,7 @@ app.post('/woo-webhook', (req, res) => {
 });
 
 // ==========================================
-// 📱 PORTAIL CLIENT (QR Code d'encaissement)
+// 📱 PORTAIL CLIENT & IA
 // ==========================================
 app.get('/portail-client', (req, res) => {
     const tableId = req.query.table;
@@ -151,9 +157,6 @@ app.get('/portail-client', (req, res) => {
     res.send(`<!DOCTYPE html><html><head><meta name="viewport" content="width=device-width, initial-scale=1"><style>body{background:#0f172a;color:#f8fafc;font-family:sans-serif;padding:20px;text-align:center;}.card{background:#1e293b;border-radius:15px;padding:20px;border:1px solid #fbbf24;}h1{color:#fbbf24;margin-bottom:5px;}.item{display:flex;justify-content:space-between;padding:10px 0;border-bottom:1px dashed #334155;font-size:0.9rem;}.total{font-size:2rem;font-weight:900;color:#fbbf24;margin:25px 0;}.btn{background:#fbbf24;color:#000;border:none;padding:15px 30px;border-radius:10px;font-weight:bold;width:100%;font-size:1.1rem;}</style></head><body><h1>EMPIRE</h1><p>Addition Table ${tableId}</p><div class="card">${order.items.map(i=>`<div class="item"><span>${i.qty||1}x ${i.n}</span><span>${(parseFloat(i.p)*(i.qty||1)).toFixed(2)}€</span></div>`).join('')}<div class="total">${total.toFixed(2)} €</div><button class="btn" onclick="alert('Paiement via Stripe bientôt activé')">Payer</button></div></body></html>`);
 });
 
-// ==========================================
-// 🤖 MOTEUR IA (FACTURES)
-// ==========================================
 app.post('/analyse-ticket', async (req, res) => {
     try {
         const { image, mimeType, isLabelScan } = req.body;
