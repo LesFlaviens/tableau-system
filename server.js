@@ -243,6 +243,28 @@ app.post('/analyse-ticket', async (req, res) => {
     }
 });
 // ==========================================
+// 💳 PASSAGE EN CAISSE STRIPE
+// ==========================================
+app.get('/create-checkout-session', async (req, res) => {
+    try {
+        const session = await stripe.checkout.sessions.create({
+            payment_method_types: ['card'],
+            line_items: [{
+                price: process.env.STRIPE_PRICE_ID,
+                quantity: 1,
+            }],
+            mode: 'subscription',
+            success_url: 'https://tableau-system.onrender.com/?success=true',
+            cancel_url: 'https://tableau-system.onrender.com/?canceled=true',
+        });
+        res.redirect(303, session.url);
+    } catch (error) {
+        console.error("🔴 Erreur Stripe :", error);
+        res.status(500).send("Erreur lors de la création de la session de paiement.");
+    }
+});
+
+// ==========================================
 // 🏠 PAGE D'ACCUEIL (LA VITRINE)
 // ==========================================
 app.get('/', (req, res) => {
@@ -255,33 +277,15 @@ app.get('/', (req, res) => {
         <body style="background:#0f172a; color:white; font-family:sans-serif; text-align:center; padding:50px;">
             <h1 style="color:#fbbf24;">Empire OS</h1>
             <p>Le système SaaS est opérationnel.</p>
-            <button style="background:#fbbf24; color:black; padding:15px 30px; margin-top:20px; font-weight:bold; border:none; border-radius:5px; cursor:pointer;" onclick="alert('La redirection Stripe sera branchée ici.')">
-                Accéder au système (99€)
-            </button>
-        </body>
-        </html>
-    `);
-});// ==========================================
-// 🏠 PAGE D'ACCUEIL (LA VITRINE)
-// ==========================================
-app.get('/', (req, res) => {
-    res.send(`
-        <!DOCTYPE html>
-        <html>
-        <head>
-            <meta name="viewport" content="width=device-width, initial-scale=1">
-        </head>
-        <body style="background:#0f172a; color:white; font-family:sans-serif; text-align:center; padding:50px;">
-            <h1 style="color:#fbbf24;">Empire OS</h1>
-            <p>Le système SaaS est opérationnel.</p>
-            <button style="background:#fbbf24; color:black; padding:15px 30px; margin-top:20px; font-weight:bold; border:none; border-radius:5px; cursor:pointer;" onclick="alert('La redirection Stripe sera branchée ici.')">
+            <button style="background:#fbbf24; color:black; padding:15px 30px; margin-top:20px; font-weight:bold; border:none; border-radius:5px; cursor:pointer;" onclick="window.location.href='/create-checkout-session'">
                 Accéder au système (99€)
             </button>
         </body>
         </html>
     `);
 });
+
 // ==========================================
 // 🚀 DÉMARRAGE DU SERVEUR
 // ==========================================
-app.listen(PORT, () => console.log(`🚀 Serveur Empire OS démarré sur le port ${PORT}`));
+app.listen(PORT, () => console.log(\`🚀 Serveur Empire OS démarré sur le port \${PORT}\`));
