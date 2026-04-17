@@ -288,4 +288,4 @@ app.get('/', (req, res) => {
 // ==========================================
 // 🚀 DÉMARRAGE DU SERVEUR
 // ==========================================
-app.listen(PORT, () => console.log(\`🚀 Serveur Empire OS démarré sur le port \${PORT}\`));
+app.listen(PORT, () => console.log("🚀 Serveur Empire OS démarré sur le port " + PORT));
