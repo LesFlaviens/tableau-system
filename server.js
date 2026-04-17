@@ -241,7 +241,45 @@ app.post('/analyse-ticket', async (req, res) => {
         res.status(500).json({ error: error.message });
     }
 });
-
+// ==========================================
+// 🏠 PAGE D'ACCUEIL (LA VITRINE)
+// ==========================================
+app.get('/', (req, res) => {
+    res.send(`
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <meta name="viewport" content="width=device-width, initial-scale=1">
+        </head>
+        <body style="background:#0f172a; color:white; font-family:sans-serif; text-align:center; padding:50px;">
+            <h1 style="color:#fbbf24;">Empire OS</h1>
+            <p>Le système SaaS est opérationnel.</p>
+            <button style="background:#fbbf24; color:black; padding:15px 30px; margin-top:20px; font-weight:bold; border:none; border-radius:5px; cursor:pointer;" onclick="alert('La redirection Stripe sera branchée ici.')">
+                Accéder au système (99€)
+            </button>
+        </body>
+        </html>
+    `);
+});// ==========================================
+// 🏠 PAGE D'ACCUEIL (LA VITRINE)
+// ==========================================
+app.get('/', (req, res) => {
+    res.send(`
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <meta name="viewport" content="width=device-width, initial-scale=1">
+        </head>
+        <body style="background:#0f172a; color:white; font-family:sans-serif; text-align:center; padding:50px;">
+            <h1 style="color:#fbbf24;">Empire OS</h1>
+            <p>Le système SaaS est opérationnel.</p>
+            <button style="background:#fbbf24; color:black; padding:15px 30px; margin-top:20px; font-weight:bold; border:none; border-radius:5px; cursor:pointer;" onclick="alert('La redirection Stripe sera branchée ici.')">
+                Accéder au système (99€)
+            </button>
+        </body>
+        </html>
+    `);
+});
 // ==========================================
 // 🚀 DÉMARRAGE DU SERVEUR
 // ==========================================
