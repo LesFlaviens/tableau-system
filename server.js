@@ -284,7 +284,23 @@ app.get('/', (req, res) => {
         </html>
     `);
 });
+<script>
+// On récupère les paramètres dans l'URL
+const urlParams = new URLSearchParams(window.location.search);
 
+// Si "success=true" est présent, on change l'affichage
+if (urlParams.get('success') === 'true') {
+    document.body.innerHTML = `
+        <div style="text-align: center; margin-top: 50px; font-family: sans-serif;">
+            <h1 style="color: #22c55e;">✅ Paiement Validé !</h1>
+            <p style="font-size: 1.2rem;">Bienvenue dans l'écosystème Empire OS.</p>
+            <p>Votre accès est en cours de configuration. Vous allez recevoir un e-mail de confirmation.</p>
+            <br>
+            <a href="/" style="color: #6366f1; text-decoration: none;">Retour à l'accueil</a>
+        </div>
+    `;
+}
+</script>
 // ==========================================
 // 🚀 DÉMARRAGE DU SERVEUR
 // ==========================================
