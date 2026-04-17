@@ -295,45 +295,100 @@
     
     <div id="print-zone"></div>
     
-    <div id="assign-overlay">
-        <span>👇 CLIQUEZ SUR LA TABLE POUR ASSIGNER LA RÉSERVATION 👇</span>
-        <button style="background: var(--alert); color: #fff; border: 1px solid #fff; padding: 5px 15px; border-radius: 20px; font-weight: bold; cursor: pointer; pointer-events: auto;" onclick="cancelAssignResa()">❌ ANNULER</button>
-    </div>
-    
-    <div id="notification-center"></div>
-
-    <div id="login-screen">
-        <h1 style="color:var(--gold); letter-spacing: 4px; font-size: 2.5rem; margin-bottom: 10px;">IDENTIFICATION</h1>
-        <div style="color:var(--text-muted); margin-bottom: 30px; font-size: 1.1rem;">Entrez votre code d'accès personnel</div>
-        <div id="pin-display" class="pin-display"></div>
-        <div class="pin-pad">
-            <button class="pin-btn" onclick="appendPin(1)">1</button><button class="pin-btn" onclick="appendPin(2)">2</button><button class="pin-btn" onclick="appendPin(3)">3</button>
-            <button class="pin-btn" onclick="appendPin(4)">4</button><button class="pin-btn" onclick="appendPin(5)">5</button><button class="pin-btn" onclick="appendPin(6)">6</button>
-            <button class="pin-btn" onclick="appendPin(7)">7</button><button class="pin-btn" onclick="appendPin(8)">8</button><button class="pin-btn" onclick="appendPin(9)">9</button>
-            <button class="pin-btn" onclick="clearPin()" style="background:var(--alert-dim); color:var(--alert); border-color:transparent;">C</button>
-            <button class="pin-btn" onclick="appendPin(0)">0</button>
-            <button class="pin-btn" onclick="submitPin()" style="background:var(--accent); color:#000; border-color:var(--accent);">OK</button>
+    <div id="dashboard-modal" class="modal">
+        <div style="background:var(--panel); padding:30px; border-radius:12px; width: 900px; max-width: 95%; max-height: 90vh; display:flex; flex-direction:column; box-shadow: var(--shadow); border: 1px solid var(--gold);">
+            <div style="display:flex; justify-content:space-between; align-items:center; border-bottom: 1px solid var(--border); padding-bottom: 15px; margin-bottom: 15px;">
+                <h2 style="color:var(--gold); font-size: 1.8rem; margin: 0; text-transform: uppercase; letter-spacing: 1px;">👁️ DASHBOARD DIRECTION</h2>
+                <button class="btn-mini" onclick="closeDashboard()">✕ FERMER</button>
+            </div>
+            <div id="dashboard-content" style="flex:1; overflow-y:auto;"></div>
         </div>
     </div>
 
-    <header>
-        <div class="header-left">
-            <div style="font-weight:900; letter-spacing:2px; font-size: 1.3rem; color: var(--gold);">EMPIRE PAD</div>
-            <div id="stock-tag" style="color:var(--accent); font-weight:900; font-size:0.7rem; background: var(--accent-dim); padding: 4px 8px; border-radius: 4px; border: 1px solid var(--accent); transition: 0.3s;">● LIAISON SÉCURISÉE</div>
-            <div id="user-badge" style="background:var(--panel); padding:6px 12px; border-radius:6px; font-size:0.85rem; color:var(--text-main); border:1px solid var(--border); font-weight: bold;">Utilisateur: Aucun</div>
-            <div id="empire-clock">00:00:00</div>
-        </div>
-        <div class="nav-btns">
-            <button class="btn-mini" style="border-color: var(--accent); color: var(--accent); background: var(--accent-dim);" onclick="openQuickOrder()">📝 NOUV. COMMANDE</button>
+    <div class="floor-plan-wrapper">
+        <div id="floor-plan" class="floor-plan"></div>
+    </div>
 
-            <button id="btn-rush-toggle" class="btn-mini gold" style="border-color: #f59e0b; color: #f59e0b; background: rgba(245, 158, 11, 0.1);" onclick="toggleRushMode()">⚡ MODE RUSH</button>
-            <button class="btn-mini" style="border-color: var(--service); color: var(--service); background: rgba(244, 114, 182, 0.1);" onclick="addExtraTable()">➕ TABLE EXTRA</button>
-            <button class="btn-mini" style="border-color: #60a5fa; color: #60a5fa; background: rgba(96, 165, 250, 0.1);" onclick="openHistoryDrawer()">📜 HISTO.</button>
-            <button id="btn-planning" class="btn-mini" onclick="openPlanningModal()">📅 PLAN.</button>
-            <button id="btn-admin-catalog" class="btn-mini admin" onclick="openAdminCatalog()">👑 GESTION</button>
-            <button class="btn-mini sync" style="background: var(--alert-dim);" onclick="logout()">🔒</button>
-        </div>
-    </header>
+    <script>
+        let currentPin = "";
+        let currentUser = null;
+        let activeOrders = {};
+        let menuCuisine = {};
+        const USERS = { 
+            "1234": { name: "Flavien", role: "Serveur" }, 
+            "2222": { name: "Chef", role: "Manager" }, 
+            "9999": { name: "Directeur", role: "Manager" } 
+        };
+
+        // --- GESTION DU CLAVIER PIN ---
+        function appendPin(n) {
+            currentPin += n;
+            document.getElementById('pin-display').innerText = '*'.repeat(currentPin.length);
+            if (currentPin.length === 4) submitPin();
+        }
+
+        function clearPin() {
+            currentPin = "";
+            document.getElementById('pin-display').innerText = "";
+        }
+
+        function submitPin() {
+            if (USERS[currentPin]) {
+                currentUser = USERS[currentPin];
+                document.getElementById('login-screen').style.display = 'none';
+                if(currentUser.role === 'Manager') document.querySelectorAll('.admin').forEach(e => e.style.display = 'block');
+                boot();
+            } else {
+                alert("❌ CODE PIN INCORRECT");
+                clearPin();
+            }
+        }
+
+        // --- SYNCHRONISATION MASTER ---
+        async function syncData() {
+            try {
+                const response = await fetch('/get-current-state');
+                const state = await response.json();
+                if (state && state.activeOrders) {
+                    let nO = state.activeOrders;
+                    activeOrders = nO;
+
+                    // 🟢 PONT TÉLÉPATHIQUE : RÉCUPÉRATION DU MENU DU CHEF
+                    if(nO['MENU_MASTER'] && nO['MENU_MASTER'].data) {
+                        let newMenu = nO['MENU_MASTER'].data;
+                        if (JSON.stringify(menuCuisine) !== JSON.stringify(newMenu)) {
+                            menuCuisine = newMenu;
+                            console.log("✅ Menu mis à jour depuis le bureau du Chef");
+                        }
+                    }
+                    renderFloor();
+                }
+            } catch(e) { console.error("Erreur Sync:", e); }
+        }
+
+        function renderFloor() {
+            // Ici se trouve ta logique d'affichage des tables
+            console.log("Mise à jour du plan de salle...");
+        }
+
+        function boot() {
+            syncData();
+            setInterval(syncData, 3000);
+            setInterval(() => {
+                document.getElementById('empire-clock').innerText = new Date().toLocaleTimeString('fr-FR');
+            }, 1000);
+        }
+
+        function logout() { location.reload(); }
+        
+        // --- STUBS POUR LES FONCTIONS MANQUANTES (À compléter avec ton code original) ---
+        function openQuickOrder() { alert("Prise de commande activée"); }
+        function toggleRushMode() { document.body.classList.toggle('rush-mode'); }
+        function openPlanningModal() { document.getElementById('dashboard-modal').classList.add('open'); }
+        function closeDashboard() { document.getElementById('dashboard-modal').classList.remove('open'); }
+    </script>
+</body>
+</html>
 
 <div id="admin-catalog-modal" class="modal">
         <h2 style="color:var(--gold); font-size: 2.2rem; margin-bottom: 20px; text-transform: uppercase; letter-spacing: 2px;">👑 GESTION PRIVÉE</h2>
