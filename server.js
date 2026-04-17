@@ -42,19 +42,16 @@ app.get('/verify-tenant/:tenantID', async (req, res) => {
         const tenant = await Tenant.findOne({ tenantID: req.params.tenantID });
         
         if (!tenant) {
-            // Sécurité : si le client n'existe pas, on bloque la porte.
             return res.status(404).json({ success: false, message: "🚨 RESTAURANT INCONNU DANS LA MATRICE." });
         }
 
-        // Le couperet automatique : vérification de la date d'essai
         let now = new Date();
         if (tenant.status === 'ESSAI' && tenant.trialEndDate && now > tenant.trialEndDate) {
             tenant.status = 'SUSPENDU'; 
-            await tenant.save(); // On sauvegarde la suspension dans la base
+            await tenant.save();
             console.log(`⚖️ COUPERET : La période d'essai de ${tenant.tenantID} est terminée. Suspendu.`);
         }
 
-        // Le blocage physique
         if (tenant.status === 'SUSPENDU') {
             console.log(`🔴 BLOCAGE : Tentative de connexion du resto ${tenant.tenantID} (SUSPENDU)`);
             return res.status(403).json({ 
@@ -63,7 +60,6 @@ app.get('/verify-tenant/:tenantID', async (req, res) => {
             });
         }
 
-        // Tout est en règle
         res.json({ success: true, clientName: tenant.clientName, status: tenant.status });
     } catch (error) {
         res.status(500).json({ error: "Erreur serveur interne." });
@@ -76,7 +72,7 @@ let globalState = { activeOrders: {} };
 // 🚦 REGLAGES DU SAS (Modifiables en temps réel)
 let sasConfig = { active: true, maxTables: 5, delaySeconds: 60 };
 let webOrderQueue = []; 
-let lastSasRelease = 0; // Chronomètre interne
+let lastSasRelease = 0;
 
 app.get('/get-current-state', (req, res) => {
     res.json({ activeOrders: globalState.activeOrders, sasConfig: sasConfig });
@@ -112,24 +108,21 @@ app.post('/update-sas', (req, res) => {
     res.json({ success: true, sasConfig });
 });
 
-// Le Métronome du SAS (Vérifie toutes les 5 secondes si le délai est écoulé)
 setInterval(() => {
     if (sasConfig.active && webOrderQueue.length > 0) {
         let now = Date.now();
         let requiredDelay = (sasConfig.delaySeconds || 60) * 1000;
         
-        // Si le temps exigé par le manager est écoulé
         if (now - lastSasRelease >= requiredDelay) {
             let activeWebCount = Object.values(globalState.activeOrders)
                 .filter(o => o.isWeb && o.items && o.items.some(i => !i.done)).length;
 
-            // Et que l'équipe a de la place
             if (activeWebCount < sasConfig.maxTables) {
                 let nextOrder = webOrderQueue.shift(); 
                 nextOrder.order.time = new Date().toLocaleTimeString('fr-FR', {hour:'2-digit', minute:'2-digit'});
                 if(nextOrder.order.items) nextOrder.order.items.forEach(i => { i.firedTime = Date.now(); i.itemId = Date.now(); });
                 globalState.activeOrders[nextOrder.tableId] = nextOrder.order;
-                lastSasRelease = now; // On réinitialise le chrono
+                lastSasRelease = now;
                 console.log(`🟢 SAS Libéré : Commande ${nextOrder.tableId} envoyée. Reste : ${webOrderQueue.length}`);
             }
         }
@@ -242,6 +235,7 @@ app.post('/analyse-ticket', async (req, res) => {
         res.status(500).json({ error: error.message });
     }
 });
+
 // ==========================================
 // 💳 PASSAGE EN CAISSE STRIPE
 // ==========================================
@@ -280,27 +274,23 @@ app.get('/', (req, res) => {
             <button style="background:#fbbf24; color:black; padding:15px 30px; margin-top:20px; font-weight:bold; border:none; border-radius:5px; cursor:pointer;" onclick="window.location.href='/create-checkout-session'">
                 Accéder au système (99€)
             </button>
+
+            <script>
+            const urlParams = new URLSearchParams(window.location.search);
+            if (urlParams.get('success') === 'true') {
+                document.body.innerHTML = '<div style="text-align: center; margin-top: 50px; font-family: sans-serif;">' +
+                    '<h1 style="color: #22c55e;">✅ Paiement Validé !</h1>' +
+                    '<p style="font-size: 1.2rem;">Bienvenue dans l\\'écosystème Empire OS.</p>' +
+                    '<p>Votre accès est en cours de configuration. Vous allez recevoir un e-mail de confirmation.</p>' +
+                    '<br><a href="/" style="color: #6366f1; text-decoration: none;">Retour à l\\'accueil</a>' +
+                '</div>';
+            }
+            </script>
         </body>
         </html>
     `);
 });
-<script>
-// On récupère les paramètres dans l'URL
-const urlParams = new URLSearchParams(window.location.search);
 
-// Si "success=true" est présent, on change l'affichage
-if (urlParams.get('success') === 'true') {
-    document.body.innerHTML = `
-        <div style="text-align: center; margin-top: 50px; font-family: sans-serif;">
-            <h1 style="color: #22c55e;">✅ Paiement Validé !</h1>
-            <p style="font-size: 1.2rem;">Bienvenue dans l'écosystème Empire OS.</p>
-            <p>Votre accès est en cours de configuration. Vous allez recevoir un e-mail de confirmation.</p>
-            <br>
-            <a href="/" style="color: #6366f1; text-decoration: none;">Retour à l'accueil</a>
-        </div>
-    `;
-}
-</script>
 // ==========================================
 // 🚀 DÉMARRAGE DU SERVEUR
 // ==========================================
