@@ -131,6 +131,7 @@
             flex: 1; 
             align-items: flex-start; 
             scroll-behavior: smooth;
+            /* La direction est gérée en JS (flex-direction: row ou row-reverse) */
         }
         .kds-grid::-webkit-scrollbar { height: 10px; width: 8px;}
         .kds-grid::-webkit-scrollbar-track { background: rgba(0,0,0,0.2); border-radius: 8px;}
@@ -224,8 +225,8 @@
         .undo-item:hover { background: rgba(239, 68, 68, 0.1); color: var(--alert); border-color: var(--alert); }
 
         /* PARAMÈTRES ET INPUTS */
-        input[type="text"], input[type="number"], textarea { background: #0f1523; border: 1px solid var(--border-strong); color: var(--text-main); padding: 10px 15px; border-radius: 8px; outline: none; font-family: 'Inter', sans-serif; transition: all 0.2s; font-size: 0.95rem;}
-        input:focus, textarea:focus { border-color: var(--gold); box-shadow: 0 0 0 3px var(--gold-dim); }
+        input[type="text"], input[type="number"], textarea, select { background: #0f1523; border: 1px solid var(--border-strong); color: var(--text-main); padding: 10px 15px; border-radius: 8px; outline: none; font-family: 'Inter', sans-serif; transition: all 0.2s; font-size: 0.95rem;}
+        input:focus, textarea:focus, select:focus { border-color: var(--gold); box-shadow: 0 0 0 3px var(--gold-dim); }
         .btn-del { background: transparent; border: none; color: var(--text-muted); width: 35px; height: 35px; border-radius: 8px; cursor: pointer; font-size: 1.1rem; display: flex; align-items: center; justify-content: center; transition: all 0.2s;}
         .btn-del:hover { background: var(--alert); color: #fff; }
 
@@ -234,7 +235,7 @@
             .nav-master { flex-wrap: wrap; justify-content: center; padding: 15px; }
             .header-actions { flex-wrap: wrap; justify-content: center; width: 100%; }
             .nav-btn { font-size: 0.75rem; padding: 8px 12px; }
-            .lane-wrapper { min-height: 250px; }
+            .lane-wrapper { min-height: 250px; } 
         }
     </style>
 </head>
@@ -244,9 +245,17 @@
 
     <div id="kds-config-modal" class="modal">
         <div style="background:var(--panel); padding:30px; border-radius:16px; width: 600px; max-width: 95%; border: 1px solid var(--border-strong); box-shadow: var(--shadow-deep); max-height: 90vh; display: flex; flex-direction: column;">
-            <h2 style="color:var(--text-main); margin-top:0; border-bottom: 1px solid var(--border-strong); padding-bottom: 15px; text-transform: uppercase; letter-spacing: 1px;">⚙️ Configuration des Étages</h2>
-            <p style="color:var(--text-muted); font-size: 0.9rem; margin-top:0;">Gérez l'ordre de sortie de vos menus dégustation (Max 7 étages). Les tickets peuvent être glissés de haut en bas.</p>
+            <h2 style="color:var(--text-main); margin-top:0; border-bottom: 1px solid var(--border-strong); padding-bottom: 15px; text-transform: uppercase; letter-spacing: 1px;">⚙️ Configuration du Pass</h2>
             
+            <div style="margin-bottom: 15px; background: rgba(0,0,0,0.2); padding: 15px; border-radius: 8px; border: 1px solid var(--border-strong);">
+                <label style="color:var(--gold); font-weight:900; display:block; margin-bottom:8px; text-transform: uppercase; font-size: 0.85rem;">Sens d'arrivée des Suites (Plats appelés) :</label>
+                <select id="cfg-direction" style="width:100%; cursor: pointer;">
+                    <option value="ltr">⬅️ Les urgences apparaissent à GAUCHE (Début du rail)</option>
+                    <option value="rtl">Les urgences apparaissent à DROITE (Fin du rail) ➡️</option>
+                </select>
+            </div>
+
+            <h3 style="color:var(--text-main); font-size:1rem; margin-bottom:10px;">Vos Étages (Glissez de haut en bas)</h3>
             <div id="kds-config-list" style="flex: 1; overflow-y: auto; padding-right: 10px; margin-bottom: 15px; display: flex; flex-direction: column; gap: 10px;">
                 </div>
             
@@ -373,19 +382,26 @@
             }
         });
 
-        // 🟢 LE MOTEUR DE CONFIGURATION DES RAILS (Jusqu'à 7)
+        // 🟢 LE MOTEUR DE CONFIGURATION DES RAILS & DIRECTION
         const DEFAULT_LANE_COLORS = ['#34d399', '#fbbf24', '#a78bfa', '#60a5fa', '#f87171', '#fb923c', '#e879f9'];
+        
         let kdsConfig = JSON.parse(localStorage.getItem('empire_kds_config')) || [
             { id: 1, name: "🥗 1ER ÉTAGE : ENTRÉES", color: "#34d399", timer: 15 },
             { id: 2, name: "🔥 2ÈME ÉTAGE : PLATS", color: "#fbbf24", timer: 20 },
             { id: 3, name: "🍰 3ÈME ÉTAGE : DESSERTS", color: "#a78bfa", timer: 10 }
         ];
+        
+        // Direction du Pass : LTR (Gauche à droite) ou RTL (Droite à gauche)
+        let kdsDirection = localStorage.getItem('empire_kds_direction') || 'ltr';
         let tempKdsConfig = [];
 
         function buildKdsLanesDOM() {
             const container = document.getElementById('kds-lanes-container');
             if(!container) return;
             
+            // Appliquer la direction Flexbox pour chaque Rail
+            let flexDir = kdsDirection === 'rtl' ? 'row-reverse' : 'row';
+
             container.innerHTML = kdsConfig.map(lane => `
                 <div class="lane-wrapper">
                     <div class="lane-header" style="color: ${lane.color}; border-bottom-color: ${lane.color};">
@@ -394,7 +410,7 @@
                             ⏱️ Alerte à <input type="number" onchange="updateLaneTimerInline(${lane.id}, this.value)" class="timer-input" style="color:${lane.color};" value="${lane.timer}"> min
                         </span>
                     </div>
-                    <div id="kds-grid-${lane.id}" class="kds-grid"></div>
+                    <div id="kds-grid-${lane.id}" class="kds-grid" style="flex-direction: ${flexDir};"></div>
                 </div>
             `).join('');
         }
@@ -413,6 +429,7 @@
 
         function openKdsConfig() {
             tempKdsConfig = JSON.parse(JSON.stringify(kdsConfig)); // Copie de travail
+            document.getElementById('cfg-direction').value = kdsDirection; // Set select
             renderKdsConfigList();
             document.getElementById('kds-config-modal').classList.add('open');
         }
@@ -455,7 +472,11 @@
         }
 
         function saveKdsConfig() {
-            // Appliquer les changements des inputs si l'utilisateur n'a pas déclenché "onchange"
+            // Sauvegarde de la direction
+            kdsDirection = document.getElementById('cfg-direction').value;
+            localStorage.setItem('empire_kds_direction', kdsDirection);
+
+            // Appliquer les changements des inputs
             tempKdsConfig.forEach((cfg, index) => {
                 let nameInput = document.getElementById(`cfg-name-${index}`);
                 let timerInput = document.getElementById(`cfg-timer-${index}`);
@@ -466,9 +487,10 @@
             kdsConfig = JSON.parse(JSON.stringify(tempKdsConfig));
             localStorage.setItem('empire_kds_config', JSON.stringify(kdsConfig));
             closeKdsConfig();
-            buildKdsLanesDOM(); // Reconstruire le HTML
+            
+            buildKdsLanesDOM(); // Reconstruire le HTML avec la bonne direction
             renderKDS(); // Remplir les tickets
-            showToast("✅ Configuration des étages enregistrée !");
+            showToast("✅ Configuration du pass enregistrée !");
         }
 
 
@@ -643,19 +665,16 @@
 
         // 🧠 LE CERVEAU D'ANALYSE DES PLATS ADAPTÉ AUX RAILS DYNAMIQUES
         function determineCourse(item) {
-            // 1. Si la salle a forcé l'info (depuis le bouton de la salle)
             if (item.course !== undefined && item.course !== null && item.course !== "") {
                 let pCourse = parseInt(item.course);
-                // Si ça correspond à un ID existant
                 if (kdsConfig.find(c => c.id === pCourse)) return pCourse;
             }
             
             let n = (item.n || "").toLowerCase();
             
-            // 2. Par défaut "intelligent" basé sur la taille de kdsConfig
             let firstLaneId = kdsConfig[0].id;
             let lastLaneId = kdsConfig[kdsConfig.length - 1].id;
-            let middleLaneId = kdsConfig.length > 1 ? kdsConfig[1].id : firstLaneId; // Le 2eme s'il y a, sinon le 1er
+            let middleLaneId = kdsConfig.length > 1 ? kdsConfig[1].id : firstLaneId; 
             
             if (/\b(entrée|entree|salade|soupe|planche|tapas|tartare|carpaccio|foie gras|huitres|huîtres|amuse|mise en bouche)\b/i.test(n)) return firstLaneId;
             if (/\b(dessert|glace|gâteau|gateau|tarte|tiramisu|mousse|fondant|crème|creme|sorbet|café gourmand|cafe gourmand)\b/i.test(n)) return lastLaneId;
@@ -664,7 +683,6 @@
         }
 
         function renderKDS() {
-            // Préparer les couloirs vides
             let lanes = {};
             kdsConfig.forEach(c => lanes[c.id] = []);
 
@@ -676,17 +694,15 @@
                 let pendingItems = orderData.items.filter(item => !item.done && (!item.dest || item.dest.toLowerCase() !== 'bar'));
                 if (pendingItems.length === 0) continue;
 
-                // Répartir les items
                 let groupedItems = {};
                 kdsConfig.forEach(c => groupedItems[c.id] = []);
                 
                 pendingItems.forEach(item => {
                     let targetId = determineCourse(item);
-                    if(!groupedItems[targetId]) targetId = kdsConfig[0].id; // Fallback
+                    if(!groupedItems[targetId]) targetId = kdsConfig[0].id; 
                     groupedItems[targetId].push(item);
                 });
 
-                // On regarde si l'étage précédent est terminé pour marquer "À la suite"
                 kdsConfig.forEach((cfg, index) => {
                     let cList = groupedItems[cfg.id];
                     if (cList.length === 0) return;
@@ -697,7 +713,6 @@
                     let isSuite = false;
                     let isDirect = false;
 
-                    // Si c'est au moins le 2ème étage, on vérifie l'étage précédent
                     if (index > 0) {
                         let prevLaneId = kdsConfig[index-1].id;
                         let prevItemsTotal = orderData.items.filter(i => (!i.dest || i.dest.toLowerCase() !== 'bar') && determineCourse(i) === prevLaneId);
@@ -705,9 +720,9 @@
                         let prevDone = prevItemsTotal.length > 0 && prevItemsTotal.every(i => i.done);
                         let isDirectly = prevItemsTotal.length === 0;
 
-                        if (prevDone) { priorityLevel = 4; isSuite = true; }
-                        else if (isDirectly) { priorityLevel = 2; isDirect = true; }
-                        else if (hasFired) { priorityLevel = 3; }
+                        if (prevDone) { priorityLevel = 4; isSuite = true; } // C'est une SUITE !
+                        else if (isDirectly) { priorityLevel = 2; isDirect = true; } // Direct
+                        else if (hasFired) { priorityLevel = 3; } // Réclamé
                     } else {
                         if (hasFired) priorityLevel = 3;
                     }
@@ -716,12 +731,14 @@
                 });
             }
 
-            // Trier les tickets dans chaque rail
+            // MOTEUR DE TRI (Ascendant ou Descendant selon le choix du Chef)
             kdsConfig.forEach(cfg => {
-                lanes[cfg.id].sort((a, b) => (b.priorityLevel !== a.priorityLevel) ? (b.priorityLevel - a.priorityLevel) : (a.time - b.time));
+                lanes[cfg.id].sort((a, b) => {
+                    if (b.priorityLevel !== a.priorityLevel) return b.priorityLevel - a.priorityLevel;
+                    return a.time - b.time; // Le plus vieux en premier
+                });
             });
 
-            // Construire le HTML
             let buildLaneHtml = (laneData, laneConfig) => {
                 let html = '';
                 let thresholdMs = (laneConfig.timer || 15) * 60000;
@@ -749,9 +766,7 @@
                         let isFired = item.fired === true;
                         let timeWaiting = isFired ? (Date.now() - (item.firedTime || item.itemId || Date.now())) : (Date.now() - (item.itemId || Date.now()));
                         
-                        // 🔴 DÉCLENCHEMENT DE L'ALERTE DU CHRONOMÈTRE
                         let isLate = timeWaiting > thresholdMs;
-                        // Est-ce qu'on doit animer cette ligne ?
                         let isFirstLane = laneConfig.id === kdsConfig[0].id;
                         let isActive = isFired || isDirect || isSuite || isFirstLane;
                         
@@ -765,7 +780,7 @@
                         <div class="ticket-item ${rowClass}" style="${!isActive ? 'opacity:0.4;':''}">
                             <div class="drag-handle" onmousedown="startTouchDrag(event, '${tableId}', ${item.id})" ontouchstart="startTouchDrag(event, '${tableId}', ${item.id})">☰</div>
                             <div class="item-details">
-                                <div><span class="item-qty">${item.qty||1}x</span><span class="item-name">${item.n.replace(/\[BR\]/g, ' ')}</span></div>
+                                <div><span class="item-qty">${item.qty||1}x</span><span class="item-name">${item.n.replace(/\[BR\]/g, '<br>')}</span></div>
                                 ${item.obs ? `<div class="item-sub-obs">${item.obs}</div>` : ''}
                             </div>
                             <div class="btn-ready" onclick="markItemReady('${tableId}', ${realIndex}, event)">✓</div>
@@ -776,7 +791,6 @@
                 return html;
             };
 
-            // Remplir le DOM généré dynamiquement
             kdsConfig.forEach(cfg => {
                 let gridEl = document.getElementById(`kds-grid-${cfg.id}`);
                 if(gridEl) {
@@ -802,45 +816,19 @@
             recentlyDoneItems = recentlyDoneItems.filter(i => (Date.now() - i.time) < 300000);
             if (recentlyDoneItems.length === 0) { bar.style.display = 'none'; return; }
             bar.style.display = 'flex';
-            bar.innerHTML = recentlyDoneItems.map((it, idx) => `<div class="undo-item" onclick="undoItemReady(${idx})">↩️ Repêcher : T.${it.tableId} - ${it.name}</div>`).join('');
+            bar.innerHTML = recentlyDoneItems.map((it, idx) => `<div class="undo-item" onclick="undoItemReady(${idx})">↩️ Repêcher : T.${it.tableId} - ${it.name.replace(/\[BR\]/g, ' ')}</div>`).join('');
         }
 
-        function renderHistory() {
-            const container = document.getElementById('history-container'); if(!container) return;
-            let html = `<h3 style="color:var(--text-main); border-bottom:1px solid var(--border-strong); padding-bottom:10px; margin-top:0;">🟢 PLATS ENVOYÉS AU PASSE</h3>`;
-            let hasRec = false;
-            for (let tId in activeOrders) {
-                if (tId.includes('MASTER') || tId.includes('BAR')) continue;
-                let doneItems = (activeOrders[tId].items || []).filter(i => i.done);
-                doneItems.forEach(item => {
-                    hasRec = true;
-                    html += `<div class="order-item"><div style="font-size: 1.05rem;"><b style="color:var(--text-main);">T.${tId}</b> <span style="color:var(--text-muted); margin: 0 10px;">|</span> ${item.n}</div><button class="nav-btn" style="border-color:var(--gold); color:var(--gold); padding: 8px 15px;" onclick="undoItemReadyFromHistory('${tId}', ${item.id})">↩️ REPÊCHER</button></div>`;
-                });
-            }
-            if(!hasRec) html += `<div style="color:var(--text-muted); font-style:italic; font-size:1.1rem; padding: 20px;">Aucun plat à repêcher pour l'instant.</div>`;
-            container.innerHTML = html;
+        function switchTab(tab) {
+            document.querySelectorAll('.module').forEach(m => m.classList.remove('active'));
+            document.querySelectorAll('.nav-btn').forEach(b => !b.classList.contains('haccp') && b.classList.remove('active'));
+            document.getElementById('mod-'+tab)?.classList.add('active');
+            document.getElementById('tab-'+tab)?.classList.add('active');
         }
 
-        async function undoItemReadyFromHistory(tId, itemId) {
-            let order = activeOrders[tId];
-            if (order) {
-                let item = order.items.find(i => i.id === itemId);
-                if (item) { item.done = false; await API.update(tId, order); showToast("✅ Plat remis en cuisine !"); switchTab('kds'); }
-            }
-        }
-
-        function updateStaffUI(staffData) {
-            if (!staffData) return;
-            ['lun', 'mar', 'mer', 'jeu', 'ven', 'sam', 'dim'].forEach(day => {
-                let el = document.getElementById(`staff-${day}`);
-                if(el && document.activeElement !== el) el.value = staffData[day] || "";
-            });
-        }
-
-        async function saveStaffPlanning() {
-            let staffData = {};
-            ['lun', 'mar', 'mer', 'jeu', 'ven', 'sam', 'dim'].forEach(day => staffData[day] = document.getElementById(`staff-${day}`).value);
-            await API.update('STAFF_PLANNING_MASTER', staffData); showToast("✅ Planning synchronisé !");
+        function showToast(msg) {
+            let t = document.createElement('div'); t.className = 'kds-toast'; t.innerText = msg;
+            document.getElementById('toast-container').appendChild(t); setTimeout(() => t.remove(), 3000);
         }
 
         function startTouchDrag(e, tableId, itemId) {
@@ -864,13 +852,12 @@
             let dropZone = document.elementFromPoint(touch.clientX, touch.clientY)?.closest('.kds-grid');
             
             if (dropZone && dragItemData) {
-                // Trouver l'ID dynamique du rail ciblé (ex: "kds-grid-3" -> 3)
                 let newCourseId = parseInt(dropZone.id.replace('kds-grid-', ''));
                 if (!isNaN(newCourseId)) {
                     let order = activeOrders[dragItemData.tableId];
                     let item = order?.items.find(i => i.id == dragItemData.itemId);
                     if (item) { 
-                        item.course = newCourseId; // Le plat a maintenant l'identifiant du nouvel étage
+                        item.course = newCourseId; 
                         await API.update(dragItemData.tableId, order); 
                         renderKDS(); 
                     }
@@ -881,11 +868,6 @@
         }
         document.addEventListener('mousemove', moveTouchDrag); document.addEventListener('touchmove', moveTouchDrag, {passive:false});
         document.addEventListener('mouseup', endTouchDrag); document.addEventListener('touchend', endTouchDrag);
-
-        function showToast(msg) {
-            let t = document.createElement('div'); t.className = 'kds-toast'; t.innerText = msg;
-            document.getElementById('toast-container').appendChild(t); setTimeout(() => t.remove(), 3000);
-        }
 
         async function boot() { 
             buildKdsLanesDOM();
