@@ -377,13 +377,15 @@
     <script>
         const API = {
             getState: async () => {
-                try { let r = await fetch('/get-current-state'); return r.ok ? await r.json() : { activeOrders: {} }; } 
-                catch(e) { return { activeOrders: {} }; }
+                let r = await fetch('/get-current-state');
+                if (!r.ok) throw new Error("Serveur injoignable");
+                return await r.json();
             },
             update: async (key, data) => {
-                if (window.location.protocol !== 'file:') {
-                    try { await fetch('/update-order', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ tableId: key, order: { data: data } }) }); } catch(e) {}
+                if (window.location.protocol === 'file:') {
+                    return alert("⚠️ ATTENTION : Vous êtes en mode fichier local (file://). La sauvegarde est impossible. Ouvrez via localhost:3000 ou Render.");
                 }
+                try { await fetch('/update-order', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ tableId: key, order: { data: data } }) }); } catch(e) {}
             }
         };
 
@@ -414,21 +416,27 @@
             if(btn) { btn.classList.add('active'); }
         }
 
+        // 🛡️ FONCTION BLINDÉE ANTI-CRASH
         async function fetchSystemState() {
             try {
+                if (window.location.protocol === 'file:') throw new Error("Mode fichier local bloqué");
+                
                 const state = await API.getState();
                 if (state && state.activeOrders) {
-                    if (state.activeOrders['RECIPES_MASTER']) recipesData = state.activeOrders['RECIPES_MASTER'].data;
-                    if (state.activeOrders['MENU_MASTER']) menuData = state.activeOrders['MENU_MASTER'].data;
-                    if (state.activeOrders['INVENTORY_MASTER']) stockGlobalData = state.activeOrders['INVENTORY_MASTER'].data;
+                    // Sécurité : On vérifie que la donnée est bien un tableau avant de l'injecter
+                    if (state.activeOrders['RECIPES_MASTER'] && Array.isArray(state.activeOrders['RECIPES_MASTER'].data)) recipesData = state.activeOrders['RECIPES_MASTER'].data;
+                    if (state.activeOrders['MENU_MASTER'] && typeof state.activeOrders['MENU_MASTER'].data === 'object') menuData = state.activeOrders['MENU_MASTER'].data;
+                    if (state.activeOrders['INVENTORY_MASTER'] && Array.isArray(state.activeOrders['INVENTORY_MASTER'].data)) stockGlobalData = state.activeOrders['INVENTORY_MASTER'].data;
                     
                     document.getElementById('sync-dot').classList.add('online');
-                    document.getElementById('sync-text').innerText = "SYNCHRONISÉ";
+                    document.getElementById('sync-text').innerText = "EN LIGNE";
+                    
                     renderMenu(); renderRecipes(); renderGlobalStock(); renderLiveStockPanel();
                 }
             } catch(e) { 
                 document.getElementById('sync-dot').classList.remove('online'); 
                 document.getElementById('sync-text').innerText = "HORS LIGNE";
+                console.warn("Raison de la déconnexion :", e.message);
             }
         }
 
@@ -822,7 +830,7 @@
         }
 
         // ==========================================
-        // 📋 GÉNÉRATEUR DE MENU DYNAMIQUE AVEC ALERTE STOCK
+        // 📋 GÉNÉRATEUR DE MENU DYNAMIQUE (LE MOTEUR BLINDÉ)
         // ==========================================
         function renderMenu() {
             const grid = document.getElementById('dynamic-menu-grid');
@@ -833,6 +841,7 @@
 
             for (let category in menuData) {
                 let items = menuData[category];
+                if (!Array.isArray(items)) continue; // 🛡️ SÉCURITÉ ANTI-CRASH
                 
                 let color = 'var(--ordered)';
                 let displayName = category;
@@ -847,7 +856,6 @@
                 let itemsHtml = items.map(item => {
                     let stockVal = item.stock !== undefined ? item.stock : 99;
                     
-                    // 🟢 LE MOTEUR D'ALERTE INTELLIGENT (Management Visuel)
                     let sBorder = "var(--gold)";
                     let sColor = "var(--gold)";
                     let sBg = "rgba(251, 191, 36, 0.1)";
@@ -873,7 +881,6 @@
                         <span class="item-name" style="width: 100%; font-size: 1.05rem; line-height: 1.3; cursor: pointer; transition: 0.2s;" onmouseover="this.style.opacity='0.6'" onmouseout="this.style.opacity='1'" onclick="editItemName('${category}', ${item.id})" title="Modifier le nom">${item.name}</span>
                         
                         <div style="display:flex; align-items:center; justify-content: space-between; width: 100%;">
-                            
                             <button onclick="updateDishStock('${category}', ${item.id})" style="background: ${sBg}; border: 1px solid ${sBorder}; color: ${sColor}; border-radius: 8px; padding: 8px 15px; font-size: 0.85rem; cursor: pointer; font-weight: 900; transition: 0.2s; letter-spacing: 1px; ${sAnim}" onmouseover="this.style.background='${sBorder}'; this.style.color='#000';" onmouseout="this.style.background='${sBg}'; this.style.color='${sColor}';">
                                 ${stockVal} PARTS
                             </button>
@@ -928,9 +935,6 @@
             }
         }
 
-        // ==========================================
-        // ✏️ ÉDITION INTUITIVE
-        // ==========================================
         async function editItemName(category, id) {
             let item = menuData[category].find(x => x.id === id);
             if(!item) return;
@@ -1034,6 +1038,5 @@
         }
 
         window.onload = bootSystem;
-    </script>
 </body>
 </html>
