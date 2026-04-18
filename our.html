@@ -131,7 +131,7 @@
             <button class="nav-btn" id="tab-stats" onclick="switchTab('stats')">📊 VENTES</button>
             <button class="nav-btn" onclick="switchTab('staff')">👥 STAFF</button>
             <button class="nav-btn" style="color: var(--alert); border-color: var(--alert-dim);" onclick="window.open('production.html', '_blank')">🔥 PROD</button>
-            <div class="sync-status"><div id="sync-dot" class="sync-dot"></div> <span id="sync-text">CONNEXION...</span></div>
+            <div class="sync-status"><div id="sync-dot" class="sync-dot"></div> <span id="sync-text" style="color:var(--text-main);">CONNEXION...</span></div>
         </div>
     </div>
 
@@ -265,7 +265,6 @@
                 </div>
 
                 <button id="btn-save-recipe" class="add-btn" style="background:var(--text-main); color:var(--bg); padding: 18px; font-size: 1.05rem;" onclick="saveRecipe()">🚀 SAUVEGARDER LE PLAT</button>
-                <button id="btn-cancel-edit" class="add-btn" style="display:none; background:transparent; border-color:var(--alert); color:var(--alert); margin-top:10px;" onclick="cancelEditRecipe()">❌ ANNULER LA MODIFICATION</button>
             </div>
 
             <div style="display:flex; flex-direction:column; gap:20px; overflow-y:auto; max-height: calc(100vh - 120px);">
@@ -363,23 +362,29 @@
     </div>
 
     <script>
+        // 🎯 CONNEXION AU SERVEUR
+        const SERVER_URL = "https://tableau-system.onrender.com";
+
         const API = {
             getState: async () => {
-                try { let r = await fetch('/get-current-state'); return r.ok ? await r.json() : { activeOrders: {} }; } 
-                catch(e) { return { activeOrders: {} }; }
+                let r = await fetch(SERVER_URL + '/get-current-state');
+                if (!r.ok) throw new Error("Serveur injoignable");
+                return await r.json();
             },
             update: async (key, data) => {
-                if (window.location.protocol !== 'file:') {
-                    try { await fetch('/update-order', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ tableId: key, order: { data: data } }) }); } catch(e) {}
-                }
+                try { 
+                    await fetch(SERVER_URL + '/update-order', { 
+                        method: 'POST', 
+                        headers: {'Content-Type': 'application/json'}, 
+                        body: JSON.stringify({ tableId: key, order: { data: data } }) 
+                    }); 
+                } catch(e) { console.error("Erreur Sync:", e); }
             }
         };
 
         let menuData = { menuJour: [], suggestions: [], entrees: [], plats: [], desserts: [] };
         let recipesData = [];
         let stockGlobalData = []; 
-        let pendingInvoiceItems = []; 
-        let editingRecipeId = null;
         let currentFolderCat = null;
 
         const CAT_SETTINGS = { 
@@ -391,46 +396,76 @@
         };
         const EXTRA_COLORS = ['var(--ordered)', 'var(--accent)', 'var(--purple)', 'var(--orange)'];
 
-        const STOCK_BADGES = { "feculents": "#60a5fa", "proteines": "#f87171", "bof": "#fbbf24", "sauces": "#a78bfa", "legumes": "#34d399", "economat": "#94a3b8" };
+        const STOCK_BADGES = { "feculents": "rgba(96, 165, 250, 0.2)", "proteines": "rgba(248, 113, 113, 0.2)", "bof": "rgba(251, 191, 36, 0.2)", "sauces": "rgba(167, 139, 250, 0.2)", "legumes": "rgba(52, 211, 153, 0.2)", "economat": "rgba(148, 163, 184, 0.2)" };
+        const STOCK_COLORS = { "feculents": "#60a5fa", "proteines": "#f87171", "bof": "#fbbf24", "sauces": "#a78bfa", "legumes": "#34d399", "economat": "#94a3b8" };
 
         function switchTab(tab) {
             document.querySelectorAll('.module').forEach(m => m.classList.remove('active'));
             document.querySelectorAll('.nav-btn').forEach(b => { 
-                if(b.id && b.id.startsWith('tab-')) { b.classList.remove('active'); b.style.borderColor = 'var(--border-strong)'; b.style.background = 'transparent'; }
+                if(b.id && b.id.startsWith('tab-')) { b.classList.remove('active'); }
             });
             document.getElementById('mod-' + tab).classList.add('active');
             let btn = document.getElementById('tab-' + tab);
-            if(btn) { 
-                btn.classList.add('active'); 
-                if(tab === 'inventaire') { btn.style.borderColor = 'var(--ordered)'; btn.style.background = 'rgba(96, 165, 250, 0.1)'; }
-                else { btn.style.borderColor = 'var(--gold)'; btn.style.background = 'var(--panel)'; }
-            }
+            if(btn) { btn.classList.add('active'); }
         }
 
+        // 🛡️ SÉPARATION DU RÉSEAU ET DE L'AFFICHAGE
         async function fetchSystemState() {
+            let state;
+            // 1. PHASE RÉSEAU : On teste juste si le serveur répond
             try {
-                const state = await API.getState();
-                if (state && state.activeOrders) {
-                    if (state.activeOrders['RECIPES_MASTER']) recipesData = state.activeOrders['RECIPES_MASTER'].data;
+                state = await API.getState();
+                // Si on passe cette ligne, le réseau est OK à 100%
+                document.getElementById('sync-dot').classList.add('online');
+                document.getElementById('sync-text').innerText = "EN LIGNE";
+                document.getElementById('sync-text').style.color = "var(--accent)";
+            } catch(netErr) { 
+                // Vraie coupure internet ou serveur down
+                document.getElementById('sync-dot').classList.remove('online'); 
+                document.getElementById('sync-text').innerText = "HORS LIGNE";
+                document.getElementById('sync-text').style.color = "var(--alert)";
+                return; // On arrête tout, pas de réseau
+            }
+
+            // 2. PHASE AFFICHAGE : On met à jour l'écran avec un "Pare-feu" anti-bug
+            if (state && state.activeOrders) {
+                try {
+                    // Récupération sécurisée des Recettes
+                    if (state.activeOrders['RECIPES_MASTER'] && Array.isArray(state.activeOrders['RECIPES_MASTER'].data)) {
+                        recipesData = state.activeOrders['RECIPES_MASTER'].data.filter(r => r != null);
+                    }
                     
-                    // Sécurité auto-réparation pour menuData
+                    // Récupération sécurisée des Stocks
+                    if (state.activeOrders['INVENTORY_MASTER'] && Array.isArray(state.activeOrders['INVENTORY_MASTER'].data)) {
+                        stockGlobalData = state.activeOrders['INVENTORY_MASTER'].data.filter(s => s != null);
+                    }
+                    
+                    // Récupération ultra-sécurisée du Menu
                     let sMenu = state.activeOrders['MENU_MASTER'];
                     if (sMenu && sMenu.data && typeof sMenu.data === 'object' && !Array.isArray(sMenu.data)) {
                         menuData = sMenu.data; 
+                        // Nettoyage interne des catégories corrompues
+                        for (let cat in menuData) {
+                            if (Array.isArray(menuData[cat])) {
+                                menuData[cat] = menuData[cat].filter(item => item != null && item.name != null);
+                            } else {
+                                menuData[cat] = [];
+                            }
+                        }
                     } else {
-                        // Si corrompu, on re-sauvegarde le format de base
-                        await API.update('MENU_MASTER', menuData); 
+                        menuData = { menuJour: [], suggestions: [], entrees: [], plats: [], desserts: [] };
                     }
-
-                    if (state.activeOrders['INVENTORY_MASTER']) stockGlobalData = state.activeOrders['INVENTORY_MASTER'].data;
                     
-                    document.getElementById('sync-dot').classList.add('online');
-                    document.getElementById('sync-text').innerText = "EN LIGNE";
-                    renderMenu(); renderRecipes(); renderGlobalStock(); renderLiveStockPanel();
+                    // Si on arrive ici, les données sont propres, on dessine l'écran.
+                    renderMenu(); 
+                    renderRecipes(); 
+                    renderGlobalStock(); 
+                    renderLiveStockPanel();
+                    
+                } catch(renderErr) { 
+                    // Un vieux plat buggé a fait planter l'affichage, mais on NE DÉCONNECTE PAS le voyant.
+                    console.error("Donnée ignorée car corrompue :", renderErr); 
                 }
-            } catch(e) { 
-                document.getElementById('sync-dot').classList.remove('online'); 
-                document.getElementById('sync-text').innerText = "HORS LIGNE";
             }
         }
 
@@ -439,9 +474,6 @@
             setInterval(async () => { await fetchSystemState(); }, 5000);
         }
 
-        // ==========================================
-        // 🎙️ GESTION DICTÉE VOCALE
-        // ==========================================
         function startMarketDictation(inputId, btnId) {
             const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
             if (!SpeechRecognition) return alert("Micro non supporté par votre navigateur.");
@@ -475,9 +507,6 @@
             recognition.start(); 
         }
 
-        // ==========================================
-        // 📦 LOGIQUE INVENTAIRE MANUEL
-        // ==========================================
         async function addManualStock() {
             let name = document.getElementById('manual-stock-name').value.trim();
             let qty = document.getElementById('manual-stock-qty').value.trim();
@@ -520,17 +549,19 @@
         function renderGlobalStock() {
             const tbody = document.getElementById('global-stock-list');
             if(!stockGlobalData || stockGlobalData.length === 0) {
-                tbody.innerHTML = `<tr><td colspan="5" style="text-align:center; padding:20px; color:var(--text-muted);">Le stock est vide.</td></tr>`;
+                tbody.innerHTML = `<tr><td colspan="5" style="text-align:center; padding:30px; color:var(--text-muted);">Le stock est vide. Ajoutez un produit pour l'initialiser.</td></tr>`;
                 return;
             }
 
             tbody.innerHTML = stockGlobalData.map((item, idx) => `
                 <tr>
-                    <td><span class="badge-cat" style="background:${STOCK_BADGES[item.cat]}">${item.cat.substring(0,3).toUpperCase()}</span></td>
-                    <td style="font-weight:bold; color:var(--text-main);">${item.name} <br><span style="font-size:0.7rem; color:var(--text-muted); font-weight:normal;">Dernier ajout: ${item.date}</span></td>
+                    <td><span class="badge-cat" style="background:${STOCK_BADGES[item.cat]}; color:${STOCK_COLORS[item.cat]}; border-color:${STOCK_COLORS[item.cat]}">${item.cat.substring(0,3)}</span></td>
+                    <td style="font-weight:bold; color:var(--text-main);">${item.name} <br><span style="font-size:0.75rem; color:var(--text-muted); font-weight:normal;">Dernier ajout: ${item.date}</span></td>
                     <td style="color:var(--text-main); font-weight:bold;">${item.qtyStr}</td>
-                    <td style="color:var(--gold); font-weight:bold;">${item.lastPrice}</td>
-                    <td><button style="background:transparent; border:none; color:var(--alert); font-size:1.2rem; cursor:pointer;" onclick="deleteStockItem(${idx})">✖</button></td>
+                    <td style="color:var(--text-main); font-weight:bold;">${item.lastPrice}</td>
+                    <td>
+                        <button style="background:transparent; border:none; color:var(--alert); font-size:1.2rem; cursor:pointer;" onclick="deleteStockItem(${idx})">✖</button>
+                    </td>
                 </tr>
             `).join('');
         }
@@ -560,7 +591,7 @@
             }
             
             textarea.style.transition = "0.3s";
-            textarea.style.backgroundColor = "rgba(251, 191, 36, 0.1)";
+            textarea.style.backgroundColor = "rgba(255, 255, 255, 0.1)";
             setTimeout(() => textarea.style.backgroundColor = "#0f1523", 500);
 
             calcSmartPlate();
@@ -570,27 +601,24 @@
             const panel = document.getElementById('live-stock-panel');
             if(!panel) return;
             if(!stockGlobalData || stockGlobalData.length === 0) {
-                panel.innerHTML = '<p style="color:var(--text-muted); text-align:center; margin: 10px 0;">Le stock est vide.</p>';
+                panel.innerHTML = '<p style="color:var(--text-muted); text-align:center; margin: 20px 0;">Le stock est vide.</p>';
                 return;
             }
             
             panel.innerHTML = stockGlobalData.map(item => `
-                <div class="stock-item-row" onclick="injectFromStock('${item.name.replace(/'/g, "\\'")}', '${item.lastPrice}', '${item.cat}')" style="display:flex; justify-content:space-between; align-items:center; background: rgba(255,255,255,0.02); padding: 8px; border-radius: 4px; border: 1px solid var(--border); transition: 0.2s;">
-                    <div style="display:flex; flex-direction:column; gap:2px;">
-                        <span style="font-weight:bold; color:var(--text-main);">${item.name}</span>
-                        <span style="color:var(--text-muted); font-size: 0.75rem;">Dispo: <b style="color:var(--accent);">${item.qtyStr}</b></span>
+                <div class="stock-item-row" onclick="injectFromStock('${item.name.replace(/'/g, "\\'")}', '${item.lastPrice}', '${item.cat}')" style="display:flex; justify-content:space-between; align-items:center; background: rgba(255,255,255,0.02); padding: 12px; border-radius: 8px; border: 1px solid var(--border); transition: 0.2s;">
+                    <div style="display:flex; flex-direction:column; gap:4px;">
+                        <span style="font-weight:bold; color:var(--text-main); font-size:0.95rem;">${item.name}</span>
+                        <span style="color:var(--text-muted); font-size: 0.8rem;">En réserve: <b style="color:var(--text-main);">${item.qtyStr}</b></span>
                     </div>
-                    <div style="display:flex; align-items:center; gap:10px;">
-                        <span style="color:var(--gold); font-weight:bold;">${item.lastPrice}</span>
-                        <span style="font-size:1rem; opacity:0.7;">➕</span>
+                    <div style="display:flex; align-items:center; gap:12px;">
+                        <span style="color:var(--text-main); font-weight:800;">${item.lastPrice}</span>
+                        <span style="font-size:1rem; opacity:0.5;">➕</span>
                     </div>
                 </div>
             `).join('');
         }
 
-        // ==========================================
-        // 🧮 LE MOTEUR MATHÉMATIQUE
-        // ==========================================
         function calcSmartPlate() {
             const calcBox = (prefix) => {
                 let el = document.getElementById(`market-${prefix}-raw`);
@@ -660,16 +688,13 @@
             }
         }
 
-        // ==========================================
-        // 🟢 GESTION DES RECETTES
-        // ==========================================
         function generateRecipeIngredients() {
             let paxCount = parseInt(document.getElementById('recipe-pax').value) || 1;
             let ingTextarea = document.getElementById('rec-ing');
             let generatedLines = [];
             
             const cats = ['fecu', 'prot', 'bof', 'sauc', 'legu', 'eco'];
-            const labels = {'fecu': 'FÉCULENTS', 'prot': 'PROTÉINES', 'bof': 'B.O.F / LAITIER', 'sauc': 'SAUCES', 'legu': 'LÉGUMES', 'eco': 'ÉCONOMAT'};
+            const labels = {'fecu': 'Féculents', 'prot': 'Protéines', 'bof': 'Laitier/BOF', 'sauc': 'Sauces', 'legu': 'Légumes', 'eco': 'Économat'};
 
             cats.forEach(k => {
                 let rawVal = document.getElementById(`market-${k}-raw`).value;
@@ -685,7 +710,7 @@
             if(generatedLines.length > 0) {
                 ingTextarea.value = "Ingrédients pour " + paxCount + " portions :\n" + generatedLines.join('\n');
             } else {
-                alert("⚠️ Remplissez d'abord les cases du marché.");
+                alert("⚠️ Remplissez d'abord les cases du laboratoire.");
             }
         }
 
@@ -740,12 +765,12 @@
             let r = recipesData.find(x => x.id === id);
             if(!r) return;
             
-            let pax = prompt(`🔪 PRODUCTION & VENTE\n\nCombien de portions de "${r.name}" avez-vous préparées ?`, "10");
+            let pax = prompt(`🔪 PRODUCTION & VENTE\n\nCombien de portions de "${r.name}" avez-vous préparées ?\n\nLe système va déduire mathématiquement les ingrédients du stock global.`, "10");
             pax = parseInt(pax);
             if(isNaN(pax) || pax <= 0) return;
 
             if(!r.structuredIngs || r.structuredIngs.length === 0) {
-                return alert("⚠️ Impossible : Aucune fiche technique détaillée trouvée.");
+                return alert("⚠️ Impossible : Aucune fiche technique détaillée trouvée pour cette recette.");
             }
 
             let log = `Bilan de la production de ${pax} portions de "${r.name}" :\n\n`;
@@ -779,11 +804,11 @@
 
             await API.update('INVENTORY_MASTER', stockGlobalData);
             renderGlobalStock(); renderLiveStockPanel();
-            alert(log + "\nInventaire mis à jour.");
+            alert(log + "\nInventaire mis à jour avec succès.");
         }
 
         async function deleteRecipe(id) { 
-            if(confirm("Supprimer cette recette ?")) { 
+            if(confirm("Supprimer définitivement cette fiche recette ?")) { 
                 recipesData = recipesData.filter(r => r.id !== id); 
                 renderRecipes(); await API.update('RECIPES_MASTER', recipesData); 
             } 
@@ -798,7 +823,7 @@
             ['menuJour', 'suggestions', 'entrees', 'plats', 'desserts'].forEach(cat => {
                 let count = recipesData.filter(r => r.cat === cat).length;
                 let displayName = CAT_SETTINGS[cat] ? CAT_SETTINGS[cat].name : cat;
-                html += `<div class="folder-card" onclick="openFolder('${cat}')"><div class="folder-title">${displayName}</div><div class="folder-count">${count} Fiches</div></div>`;
+                html += `<div class="folder-card" onclick="openFolder('${cat}')"><div class="folder-title">${displayName}</div><div class="folder-count">${count} Fiches Actives</div></div>`;
             });
             catView.innerHTML = html;
         }
@@ -817,22 +842,24 @@
         function renderFolderContents(cat) {
             const container = document.getElementById('recipes-list');
             let filtered = recipesData.filter(r => r.cat === cat);
-            if(filtered.length === 0) { container.innerHTML = "<p style='text-align:center; color:var(--text-muted);'>Vide.</p>"; return; }
+            if(filtered.length === 0) { container.innerHTML = "<p style='text-align:center; color:var(--text-muted); padding: 20px;'>Dossier vide.</p>"; return; }
             container.innerHTML = filtered.map(r => `
-                <div style="background: rgba(255,255,255,0.02); border:1px solid var(--border); padding:15px; border-radius:8px;">
+                <div style="background: rgba(255,255,255,0.02); border:1px solid var(--border); padding:20px; border-radius:12px; transition: 0.2s;">
                     <div style="display:flex; justify-content:space-between; align-items:center;">
-                        <span style="color:var(--text-main); font-weight:900;">${r.name}</span>
-                        <div style="display:flex; gap: 5px;">
+                        <span style="color:var(--text-main); font-weight:900; font-size:1.05rem;">${r.name}</span>
+                        <div style="display:flex; gap: 8px;">
                             <button class="btn-prod-folder" onclick="produceRecipe(${r.id})">🍳 PROD</button>
-                            <button class="btn-del" style="width:28px; height:28px; font-size:0.9rem;" onclick="deleteRecipe(${r.id})">✖</button>
+                            <button class="btn-del" style="background: rgba(255,255,255,0.05);" onclick="deleteRecipe(${r.id})">✖</button>
                         </div>
                     </div>
-                    <div style="margin-top:10px; color:var(--text-muted); font-size:0.85rem;">Coût: ${r.cost}€ | Prix: ${r.price}€ | FC: ${r.fc}%</div>
+                    <div style="margin-top:15px; color:var(--text-muted); font-size:0.85rem; background: rgba(0,0,0,0.2); padding: 8px 12px; border-radius: 6px; display: inline-block;">
+                        Coût de revient: <b style="color:var(--text-main);">${r.cost}€</b> &nbsp;|&nbsp; Prix de vente: <b style="color:var(--text-main);">${r.price}€</b> &nbsp;|&nbsp; Marge (FC): <b style="color:var(--ordered);">${r.fc}%</b>
+                    </div>
                 </div>`).join('');
         }
 
         // ==========================================
-        // 📋 GÉNÉRATEUR DE MENU DYNAMIQUE (LA NOUVELLE GRILLE PREMIUM)
+        // 📋 GÉNÉRATEUR DE MENU DYNAMIQUE + ALERTE COULEURS
         // ==========================================
         function renderMenu() {
             const grid = document.getElementById('dynamic-menu-grid');
@@ -863,20 +890,20 @@
                     let sBg = "rgba(251, 191, 36, 0.1)";
                     let sAnim = "";
 
-                    // ALERTE DE STOCK
+                    // 🚨 LE MANAGEMENT VISUEL DU STOCK 🚨
                     if (stockVal <= 2) {
                         sBorder = "var(--alert)";
                         sColor = "var(--alert)";
                         sBg = "rgba(248, 113, 113, 0.2)";
-                        sAnim = "animation: pulse 1s infinite;"; 
-                    } else if (stockVal <= 3) {
+                        sAnim = "animation: pulse 1s infinite;"; // Clignote
+                    } else if (stockVal === 3) {
                         sBorder = "var(--alert)";
                         sColor = "var(--alert)";
-                        sBg = "rgba(248, 113, 113, 0.1)"; 
+                        sBg = "rgba(248, 113, 113, 0.1)"; // Rouge Fixe
                     } else if (stockVal <= 5) {
                         sBorder = "var(--orange)";
                         sColor = "var(--orange)";
-                        sBg = "rgba(251, 146, 60, 0.1)"; 
+                        sBg = "rgba(251, 146, 60, 0.1)"; // Orange Fixe
                     }
 
                     return `
@@ -938,9 +965,6 @@
             }
         }
 
-        // ==========================================
-        // ✏️ ÉDITION INTUITIVE
-        // ==========================================
         async function editItemName(category, id) {
             let item = menuData[category].find(x => x.id === id);
             if(!item) return;
