@@ -71,14 +71,14 @@
         .module { display: none; flex: 1; overflow: hidden; }
         .module.active { display: flex; flex-direction: column; }
 
-        /* 🚀 NOUVELLE ARCHITECTURE KDS "RAIL" (HAUT VOLUME) 🚀 */
+        /* 🚀 ARCHITECTURE KDS "RAIL" HORIZONTAL 🚀 */
         #mod-kds { gap: 12px; padding: 5px 0; }
         
         .lane-wrapper { 
             display: flex; 
             flex-direction: column; 
             flex: 1; 
-            min-height: 0; /* Important pour que flex:1 marche avec scroll */
+            min-height: 0; 
             background: rgba(0,0,0,0.15); 
             border: 1px solid var(--border-strong); 
             border-radius: 12px; 
@@ -102,7 +102,6 @@
         .lane-plats { color: var(--gold); border-bottom-color: var(--gold); }
         .lane-desserts { color: var(--purple); border-bottom-color: var(--purple); }
 
-        /* DEFILEMENT HORIZONTAL */
         .kds-grid { 
             display: flex; 
             flex-wrap: nowrap; 
@@ -119,11 +118,10 @@
         .kds-grid::-webkit-scrollbar-thumb { background: var(--border-strong); border-radius: 8px;}
         .kds-grid::-webkit-scrollbar-thumb:hover { background: var(--text-muted); }
 
-        /* TICKETS BLOQUÉS À UNE LARGEUR FIXE (POUR NE PAS S'ÉCRASER) */
         .ticket { 
             min-width: 290px; 
             max-width: 290px; 
-            flex-shrink: 0; /* Empêche le ticket de rétrécir */
+            flex-shrink: 0; 
             background: var(--panel); 
             border: 1px solid var(--border-strong); 
             border-radius: 10px; 
@@ -227,7 +225,7 @@
             .nav-master { flex-wrap: wrap; justify-content: center; padding: 15px; }
             .header-actions { flex-wrap: wrap; justify-content: center; width: 100%; }
             .nav-btn { font-size: 0.75rem; padding: 8px 12px; }
-            .lane-wrapper { min-height: 250px; } /* Force une hauteur min sur mobile */
+            .lane-wrapper { min-height: 250px; }
         }
     </style>
 </head>
@@ -570,6 +568,27 @@
             }, 300);
         }
 
+        // 🧠 LE CERVEAU D'ANALYSE DES PLATS
+        function determineCourse(item) {
+            // Si la salle a déjà forcé le choix (1=Entrée, 2=Plat, 3=Dessert), on écoute la salle.
+            if (item.course !== undefined && item.course !== null && item.course !== "") return parseInt(item.course);
+            
+            let n = (item.n || "").toLowerCase();
+            
+            // 1. Analyse via la base de données Menu (Si c'est dans la catégorie Entrées, ça va aux entrées)
+            if (menuData) {
+                if (menuData.entrees && menuData.entrees.some(x => x.name.toLowerCase() === n)) return 1;
+                if (menuData.desserts && menuData.desserts.some(x => x.name.toLowerCase() === n)) return 3;
+            }
+            
+            // 2. Analyse par Mots-clés de secours (S'il ne trouve pas dans le menu, il cherche les mots)
+            if (/\b(entrée|entree|salade|soupe|planche|tapas|tartare|carpaccio|foie gras|huitres|huîtres)\b/i.test(n)) return 1;
+            if (/\b(dessert|glace|gâteau|gateau|tarte|tiramisu|mousse|fondant|crème|creme|sorbet|café gourmand|cafe gourmand)\b/i.test(n)) return 3;
+            
+            // 3. Si aucun mot clé n'est trouvé, ça part dans les PLATS par défaut.
+            return 2;
+        }
+
         function renderKDS() {
             let html1 = '', html2 = '', html3 = '';
             let lanes = { 1: [], 2: [], 3: [] };
@@ -582,12 +601,13 @@
                 let pendingItems = orderData.items.filter(item => !item.done && (!item.dest || item.dest.toLowerCase() !== 'bar'));
                 if (pendingItems.length === 0) continue;
 
-                let c1 = pendingItems.filter(i => i.course === 1 || i.course === 0);
-                let c2 = pendingItems.filter(i => i.course === 2 || i.course === undefined);
-                let c3 = pendingItems.filter(i => i.course === 3);
+                // 🚦 DISTRIBUTION INTELLIGENTE DANS LES ÉTAGES
+                let c1 = pendingItems.filter(i => determineCourse(i) === 1 || determineCourse(i) === 0);
+                let c2 = pendingItems.filter(i => determineCourse(i) === 2);
+                let c3 = pendingItems.filter(i => determineCourse(i) === 3);
 
-                let allEntrees = orderData.items.filter(i => (i.course === 1 || i.course === 0) && (!i.dest || i.dest.toLowerCase() !== 'bar'));
-                let allPlats = orderData.items.filter(i => (i.course === 2 || i.course === undefined) && (!i.dest || i.dest.toLowerCase() !== 'bar'));
+                let allEntrees = orderData.items.filter(i => (determineCourse(i) === 1 || determineCourse(i) === 0) && (!i.dest || i.dest.toLowerCase() !== 'bar'));
+                let allPlats = orderData.items.filter(i => (determineCourse(i) === 2) && (!i.dest || i.dest.toLowerCase() !== 'bar'));
 
                 let entreesDone = allEntrees.length > 0 && allEntrees.every(i => i.done); 
                 let platsDone = allPlats.length > 0 && allPlats.every(i => i.done);
