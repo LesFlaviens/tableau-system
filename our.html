@@ -51,7 +51,7 @@
         .item-list::-webkit-scrollbar { width: 4px; }
         .item-list::-webkit-scrollbar-thumb { background: var(--border-strong); border-radius: 4px; }
 
-        /* DESIGN DES PLATS */
+        /* DESIGN DES PLATS (MODE STACK / AÉRÉ) */
         .menu-item { background: rgba(255, 255, 255, 0.02); border: 1px solid var(--border); border-radius: 10px; display: flex; flex-direction: column; align-items: flex-start; gap: 15px; padding: 18px 16px; transition: all 0.2s; }
         .menu-item:hover { background: rgba(255, 255, 255, 0.04); border-color: var(--border-strong); transform: translateY(-2px);}
         .item-name { font-weight: 600; font-size: 1.05rem; color: var(--text-main); width: 100%; line-height: 1.3;}
@@ -107,6 +107,9 @@
         .btn-prod-folder { background: transparent; border: 1px solid var(--border-strong); color: var(--text-main); padding: 6px 12px; border-radius: 6px; cursor: pointer; font-weight: bold; font-size:0.8rem; transition: 0.2s;}
         .btn-prod-folder:hover { background: var(--text-main); color: var(--bg); }
 
+        /* Animation d'alerte critique */
+        @keyframes pulse { 0% { opacity: 1; transform: scale(1); } 50% { opacity: 0.7; transform: scale(1.02); } 100% { opacity: 1; transform: scale(1); } }
+
         ::-webkit-scrollbar { width: 8px; height: 8px; }
         ::-webkit-scrollbar-track { background: var(--bg); }
         ::-webkit-scrollbar-thumb { background: var(--border-strong); border-radius: 8px; }
@@ -128,12 +131,12 @@
             <button class="nav-btn" id="tab-market" onclick="switchTab('market')">📚 LABORATOIRE</button>
             <button class="nav-btn" id="tab-inventaire" onclick="switchTab('inventaire')">📦 INVENTAIRE</button>
             
-            <button class="btn-io export" onclick="exportData()">💾 SAUV.</button>
+            <button class="btn-io export" onclick="alert('Sauvegarde automatique active.')">💾 SAUV.</button>
             
             <button class="nav-btn" id="tab-stats" onclick="switchTab('stats')">📊 VENTES</button>
             <button class="nav-btn" onclick="switchTab('staff')">👥 STAFF</button>
             <button class="nav-btn" style="color: var(--alert); border-color: var(--alert-dim);" onclick="window.open('production.html', '_blank')">🔥 PROD</button>
-            <div class="sync-status"><div id="sync-dot" class="sync-dot"></div> <span id="sync-text" style="color:var(--text-main);">EN LIGNE</span></div>
+            <div class="sync-status"><div id="sync-dot" class="sync-dot"></div> <span id="sync-text" style="color:var(--text-main);">CONNEXION...</span></div>
         </div>
     </div>
 
@@ -382,9 +385,7 @@
                 return await r.json();
             },
             update: async (key, data) => {
-                if (window.location.protocol === 'file:') {
-                    return alert("⚠️ ATTENTION : Vous êtes en mode fichier local (file://). La sauvegarde est impossible. Ouvrez via localhost:3000 ou Render.");
-                }
+                if (window.location.protocol === 'file:') return;
                 try { await fetch('/update-order', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ tableId: key, order: { data: data } }) }); } catch(e) {}
             }
         };
@@ -416,17 +417,23 @@
             if(btn) { btn.classList.add('active'); }
         }
 
-        // 🛡️ FONCTION BLINDÉE ANTI-CRASH
+        // 🛡️ MOTEUR ANTI-CRASH ET AUTO-REPARATION DE LA BASE DE DONNEES
         async function fetchSystemState() {
             try {
-                if (window.location.protocol === 'file:') throw new Error("Mode fichier local bloqué");
+                if (window.location.protocol === 'file:') throw new Error("Mode Fichier Local bloqué");
                 
                 const state = await API.getState();
                 if (state && state.activeOrders) {
-                    // Sécurité : On vérifie que la donnée est bien un tableau avant de l'injecter
                     if (state.activeOrders['RECIPES_MASTER'] && Array.isArray(state.activeOrders['RECIPES_MASTER'].data)) recipesData = state.activeOrders['RECIPES_MASTER'].data;
-                    if (state.activeOrders['MENU_MASTER'] && typeof state.activeOrders['MENU_MASTER'].data === 'object') menuData = state.activeOrders['MENU_MASTER'].data;
                     if (state.activeOrders['INVENTORY_MASTER'] && Array.isArray(state.activeOrders['INVENTORY_MASTER'].data)) stockGlobalData = state.activeOrders['INVENTORY_MASTER'].data;
+                    
+                    // Nettoyage de sécurité
+                    let sMenu = state.activeOrders['MENU_MASTER'];
+                    if (sMenu && sMenu.data && typeof sMenu.data === 'object' && !Array.isArray(sMenu.data)) {
+                        menuData = sMenu.data; 
+                    } else {
+                        await API.update('MENU_MASTER', menuData); 
+                    }
                     
                     document.getElementById('sync-dot').classList.add('online');
                     document.getElementById('sync-text').innerText = "EN LIGNE";
@@ -436,7 +443,6 @@
             } catch(e) { 
                 document.getElementById('sync-dot').classList.remove('online'); 
                 document.getElementById('sync-text').innerText = "HORS LIGNE";
-                console.warn("Raison de la déconnexion :", e.message);
             }
         }
 
@@ -830,7 +836,7 @@
         }
 
         // ==========================================
-        // 📋 GÉNÉRATEUR DE MENU DYNAMIQUE (LE MOTEUR BLINDÉ)
+        // 📋 GÉNÉRATEUR DE MENU DYNAMIQUE + ALERTE COULEURS
         // ==========================================
         function renderMenu() {
             const grid = document.getElementById('dynamic-menu-grid');
@@ -861,19 +867,20 @@
                     let sBg = "rgba(251, 191, 36, 0.1)";
                     let sAnim = "";
 
+                    // 🚨 LE MANAGEMENT VISUEL DU STOCK 🚨
                     if (stockVal <= 2) {
                         sBorder = "var(--alert)";
                         sColor = "var(--alert)";
                         sBg = "rgba(248, 113, 113, 0.2)";
-                        sAnim = "animation: pulse 1s infinite;";
-                    } else if (stockVal === 3) {
+                        sAnim = "animation: pulse 1s infinite;"; // Clignote
+                    } else if (stockVal <= 3) {
                         sBorder = "var(--alert)";
                         sColor = "var(--alert)";
-                        sBg = "rgba(248, 113, 113, 0.1)";
+                        sBg = "rgba(248, 113, 113, 0.1)"; // Rouge Fixe
                     } else if (stockVal <= 5) {
                         sBorder = "var(--orange)";
                         sColor = "var(--orange)";
-                        sBg = "rgba(251, 146, 60, 0.1)";
+                        sBg = "rgba(251, 146, 60, 0.1)"; // Orange Fixe
                     }
 
                     return `
@@ -1038,5 +1045,6 @@
         }
 
         window.onload = bootSystem;
+    </script>
 </body>
 </html>
