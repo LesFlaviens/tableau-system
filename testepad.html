@@ -401,7 +401,6 @@
             }
         });
 
-        // 🟢 CONFIGURATION DES RAILS & DIRECTION
         const DEFAULT_LANE_COLORS = ['#34d399', '#fbbf24', '#a78bfa', '#60a5fa', '#f87171', '#fb923c', '#e879f9'];
         
         let kdsConfig = JSON.parse(localStorage.getItem('empire_kds_config')) || [
@@ -533,6 +532,42 @@
                 const state = await API.getState();
                 if (state && state.activeOrders) {
                     activeOrders = state.activeOrders;
+                    
+                    // 🔪 LE "HACHOIR" AUTOMATIQUE DE MENUS MULTILIGNES
+                    let hasGlobalUpdate = false;
+                    for (let tableId in activeOrders) {
+                        if (tableId.includes('MASTER') || tableId.includes('ARCHIVE') || tableId.includes('BAR') || tableId.includes('CUISINE') || tableId.includes('ALERTS') || tableId.includes('ARCHITECTURE')) continue;
+                        
+                        let orderData = activeOrders[tableId];
+                        if (!orderData || !orderData.items) continue;
+
+                        let needsUpdate = false;
+                        for (let i = orderData.items.length - 1; i >= 0; i--) {
+                            let item = orderData.items[i];
+                            let nameStr = item.n || "";
+                            nameStr = nameStr.replace(/\[BR\]/gi, '\n');
+                            
+                            if (nameStr.includes('\n')) {
+                                let lines = nameStr.split('\n').map(l => l.replace(/^[\-\*]\s*/, '').trim()).filter(l => l.length > 0);
+                                if (lines.length > 1) {
+                                    orderData.items.splice(i, 1);
+                                    lines.forEach((line, idx) => {
+                                        let newItem = { ...item };
+                                        newItem.id = item.id + '_' + idx + '_' + Math.floor(Math.random()*1000); 
+                                        newItem.n = line;
+                                        newItem.course = null; // 🚨 Force le trieur intelligent
+                                        if (idx > 0) newItem.price = 0; // Seule la première ligne garde le prix
+                                        orderData.items.splice(i + idx, 0, newItem);
+                                    });
+                                    needsUpdate = true;
+                                }
+                            }
+                        }
+                        if (needsUpdate) {
+                            API.update(tableId, orderData); // Met à jour silencieusement
+                        }
+                    }
+
                     if (activeOrders['MENU_MASTER']) menuData = activeOrders['MENU_MASTER'].data;
                     if (activeOrders['STAFF_PLANNING_MASTER']) updateStaffUI(activeOrders['STAFF_PLANNING_MASTER'].data);
                     
@@ -544,6 +579,7 @@
             } catch (e) {}
         }
 
+        // 🧮 FONCTION DU RÉCAPITULATIF PROD
         function openRecapModal() {
             buildRecap();
             document.getElementById('recap-modal').classList.add('open');
@@ -746,6 +782,7 @@
             }, 300);
         }
 
+        // 🧠 LE SCANNER INTELLIGENT DE PLATS
         function determineCourse(item) {
             if (item.course !== undefined && item.course !== null && item.course !== "") {
                 let pCourse = parseInt(item.course);
@@ -757,8 +794,8 @@
             let lastLaneId = kdsConfig[kdsConfig.length - 1].id;
             let middleLaneId = kdsConfig.length > 1 ? kdsConfig[1].id : firstLaneId; 
             
-            if (/\b(entrée|entree|salade|soupe|planche|tapas|tartare|carpaccio|foie gras|huitres|huîtres|amuse|mise en bouche)\b/i.test(n)) return firstLaneId;
-            if (/\b(dessert|glace|gâteau|gateau|tarte|tiramisu|mousse|fondant|crème|creme|sorbet|café gourmand|cafe gourmand)\b/i.test(n)) return lastLaneId;
+            if (/\b(entrée|entree|salade|soupe|planche|tapas|tartare|carpaccio|foie gras|huitres|huîtres|amuse|mise en bouche|velouté|veloute|oeuf|œuf|charcuterie|saumon fumé)\b/i.test(n)) return firstLaneId;
+            if (/\b(dessert|glace|gâteau|gateau|tarte|tiramisu|mousse|fondant|crème|creme|sorbet|café gourmand|cafe gourmand|meringue|chocolat|fruit|profiterole|macaron)\b/i.test(n)) return lastLaneId;
             
             return middleLaneId;
         }
