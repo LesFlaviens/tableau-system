@@ -43,10 +43,31 @@
         .pay-btn { cursor: pointer; border-radius: 8px; font-weight: bold; text-transform: uppercase; transition: 0.2s; border: 2px solid; }
         .pay-btn:active { transform: scale(0.98); }
 
-        .staff-card { background: #050505; border: 1px solid #222; padding: 12px; border-radius: 8px; cursor: pointer; margin-bottom: 8px; border-left: 4px solid var(--hr);}
-        .staff-card:hover { background: #111; border-color: #444; }
+        .staff-card { background: #050505; border: 1px solid #222; padding: 12px; border-radius: 8px; cursor: pointer; margin-bottom: 8px; border-left: 4px solid var(--hr); transition: 0.2s;}
+        .staff-card:hover { background: #111; border-color: var(--hr); transform: scale(1.02);}
+        .staff-card.active { background: rgba(41, 121, 255, 0.1); border-color: var(--hr); box-shadow: 0 0 10px rgba(41, 121, 255, 0.2); }
         .staff-name { font-size: 1rem; font-weight: 900; text-transform: uppercase; color: var(--hr);}
         .staff-role { font-size: 0.7rem; color: var(--sub); text-transform: uppercase; font-weight: bold;}
+        .counters { display: flex; justify-content: space-between; font-size: 0.7rem; background: #000; padding: 6px; border-radius: 4px; border: 1px solid #222; margin-top: 5px; }
+
+        /* TABLEAU PLANNING */
+        .table-container { flex: 1; overflow: auto; padding: 0; }
+        table { width: 100%; border-collapse: collapse; }
+        th { position: sticky; top: 0; background: #1a1a1a; padding: 8px; font-size: 0.65rem; color: var(--sub); text-transform: uppercase; border-bottom: 2px solid #333; z-index: 10;}
+        td { padding: 6px 5px; border-bottom: 1px solid #222; text-align: center; vertical-align: middle; }
+        #timesheet-table tr:hover { background: #161616; }
+        #timesheet-table tr.weekend { background: rgba(255, 255, 255, 0.02); }
+        .day-label { font-weight: 900; font-size: 0.85rem; }
+        .date-label { font-size: 0.65rem; color: var(--sub); }
+        .status-sel { background: #000; color: #fff; border: 1px solid #444; padding: 4px; border-radius: 4px; font-size: 0.75rem; font-weight: bold; cursor: pointer; width: 100px; }
+        .shift-inp { background: #000; border: 1px solid #333; color: var(--accent); padding: 4px; text-align: center; border-radius: 4px; font-weight: bold; font-size: 0.8rem; width: 80px;}
+        .pause-inp { background: #000; border: 1px solid #444; color: var(--warning); padding: 4px; text-align: center; border-radius: 4px; font-weight: bold; font-size: 0.8rem; width: 50px;}
+        .obs-inp { background: transparent; border: none; border-bottom: 1px dashed #444; color: #aaa; font-style: italic; font-size: 0.75rem; width: 90%; padding: 4px;}
+        
+        .smart-assistant { background: #0a0a0a; border-bottom: 1px solid #333; padding: 10px 20px; display: flex; justify-content: space-between; align-items: center; }
+        .stat-box { background: #000; border: 1px solid #222; padding: 5px 15px; border-radius: 6px; text-align: center; }
+        .stat-box label { display: block; font-size: 0.55rem; color: var(--sub); text-transform: uppercase; margin-bottom: 2px; font-weight: bold; }
+        .stat-box span { font-size: 1.1rem; font-weight: 900; }
     </style>
 </head>
 <body>
@@ -99,8 +120,12 @@
     <div id="hr-interface">
         <header>
             <h2 id="header-title" style="color:var(--hr); margin:0;">GÉRER LE PLANNING</h2>
-            <button class="btn-nav" onclick="backToHub()">🔙 RETOUR HUB</button>
+            <div style="display:flex; gap: 10px;">
+                <input type="month" id="month-selector" style="background:#000; border:1px solid var(--hr); color:#fff; padding:6px; border-radius:6px; font-weight:bold;" onchange="loadMonthData()">
+                <button class="btn-nav" onclick="backToHub()">🔙 RETOUR HUB</button>
+            </div>
         </header>
+        
         <div class="main-container">
             <div class="staff-sidebar">
                 <div style="padding:15px; border-bottom:1px solid #333;">
@@ -109,11 +134,38 @@
                 <div id="staff-list-render" style="flex:1; overflow-y:auto; padding:10px;">
                     </div>
             </div>
-            <div class="month-view">
-                <div style="padding:20px; text-align:center; color:#555; flex:1; display:flex; align-items:center; justify-content:center; flex-direction:column; background:#0a0a0a;">
-                    <span style="font-size:3rem;">📅</span>
-                    <h3>SÉLECTIONNEZ UN EMPLOYÉ À GAUCHE POUR AFFICHER SES HEURES</h3>
+            
+            <div class="month-view" id="month-view-container" style="display:none;">
+                <div class="smart-assistant">
+                    <h3 style="margin:0; color:var(--hr); text-transform:uppercase;" id="active-staff-badge">PLANNING DE L'EMPLOYÉ</h3>
+                    <div style="display:flex; gap:10px;">
+                        <button class="btn-nav" style="border-color:#ff9800; color:#ff9800;" onclick="autoPlanStaff()">⚡ AUTO-REMPLIR (LOI HCR)</button>
+                        <div class="stat-box"><label>Contrat</label><span id="stat-expected" style="color:var(--sub);">0h</span></div>
+                        <div class="stat-box"><label>Pointées net</label><span id="stat-actual" style="color:#fff;">0h</span></div>
+                        <div class="stat-box" style="border-color:var(--hr);"><label>Bilan (+/-)</label><span id="stat-diff" style="color:var(--hr);">0h</span></div>
+                    </div>
                 </div>
+                <div class="table-container">
+                    <table id="timesheet-table">
+                        <thead>
+                            <tr>
+                                <th style="width: 70px;">Date</th>
+                                <th style="width: 120px;">État</th>
+                                <th>Matin (S1)</th>
+                                <th>Soir (S2)</th>
+                                <th style="width: 60px; color:var(--warning);">Pause (min)</th>
+                                <th style="width: 70px;">Total</th>
+                                <th>Observations RH</th>
+                            </tr>
+                        </thead>
+                        <tbody id="timesheet-body"></tbody>
+                    </table>
+                </div>
+            </div>
+            
+            <div id="empty-state" style="flex:1; display:flex; justify-content:center; align-items:center; flex-direction:column; color:#555; background:#0a0a0a; border-radius:12px; border:1px solid #333;">
+                <span style="font-size:3rem;">📅</span>
+                <h3>CLIQUEZ SUR UN EMPLOYÉ À GAUCHE POUR AFFICHER SES HEURES</h3>
             </div>
         </div>
     </div>
@@ -146,17 +198,26 @@
     <script>
         let currentDept = null;
         let currentPin = "";
+        let currentStaffId = null;
         const MASTER_PIN = "9999";
+        const daysOfWeek = ["Dim", "Lun", "Mar", "Mer", "Jeu", "Ven", "Sam"];
 
         // Moteur de base de données local
         function getDirectory() { return JSON.parse(localStorage.getItem('empire_hr_directory')) || []; }
         function saveDirectory(dir) { localStorage.setItem('empire_hr_directory', JSON.stringify(dir)); }
+        function getTimesheets() { return JSON.parse(localStorage.getItem('empire_hr_timesheets')) || {}; }
+        function saveTimesheets(ts) { localStorage.setItem('empire_hr_timesheets', JSON.stringify(ts)); }
 
-        // --- NAVIGATION INITIALE ---
+        // Init date
+        window.onload = function() {
+            const today = new Date();
+            document.getElementById('month-selector').value = `${today.getFullYear()}-${String(today.getMonth()+1).padStart(2, '0')}`;
+        };
+
+        // --- NAVIGATION ---
         function openDeptSelection() { document.getElementById('dept-modal').style.display = 'flex'; }
         function closeDeptSelection() { document.getElementById('dept-modal').style.display = 'none'; }
 
-        // --- GESTION DU CODE PIN ---
         function showPinPad(dept) {
             currentDept = dept;
             currentPin = "";
@@ -184,8 +245,6 @@
                 document.getElementById('landing-portal').style.display = 'none';
                 document.getElementById('director-hub').style.display = 'flex';
                 document.getElementById('hub-dept-display').innerText = currentDept;
-                
-                // Précharge les données du département
                 refreshViews();
             } else {
                 alert("❌ CODE PIN INCORRECT");
@@ -194,11 +253,14 @@
             }
         }
 
-        // --- GESTION DU HUB ---
         function openInterface(type) {
             document.getElementById('director-hub').style.display = 'none';
             if(type === 'planning') {
                 document.getElementById('hr-interface').style.display = 'flex';
+                // Cache la table par défaut tant qu'on n'a pas cliqué sur un employé
+                currentStaffId = null;
+                document.getElementById('month-view-container').style.display = 'none';
+                document.getElementById('empty-state').style.display = 'flex';
             } else {
                 document.getElementById('pin-manager-interface').style.display = 'flex';
             }
@@ -214,9 +276,10 @@
             document.getElementById('director-hub').style.display = 'none';
             document.getElementById('landing-portal').style.display = 'flex';
             currentDept = null;
+            currentStaffId = null;
         }
 
-        // --- LOGIQUE RH (NOUVEAU CONTRAT & LISTE) ---
+        // --- GESTION STAFF ---
         function openStaffModal() { 
             document.getElementById('new-name').value = '';
             document.getElementById('new-role').value = '';
@@ -229,20 +292,10 @@
             const role = document.getElementById('new-role').value.trim();
             const contract = parseFloat(document.getElementById('new-contract').value) || 39;
             
-            if(!name || !role) {
-                alert("Erreur : Le nom et la fonction sont obligatoires.");
-                return;
-            }
+            if(!name || !role) return alert("Erreur : Le nom et la fonction sont obligatoires.");
 
             let dir = getDirectory();
-            dir.push({ 
-                id: Date.now(), 
-                name: name, 
-                role: role, 
-                dept: currentDept, 
-                contract: contract, 
-                pin: '0000' 
-            });
+            dir.push({ id: Date.now(), name: name, role: role, dept: currentDept, contract: contract, pin: '0000', balanceHours: 0, balanceCP: 0 });
             saveDirectory(dir);
             closeStaffModal();
             refreshViews();
@@ -252,36 +305,47 @@
             if(confirm(`Supprimer définitivement le dossier de ${name} ?`)) {
                 let dir = getDirectory().filter(s => s.id !== id);
                 saveDirectory(dir);
+                if(currentStaffId === id) {
+                    currentStaffId = null;
+                    document.getElementById('month-view-container').style.display = 'none';
+                    document.getElementById('empty-state').style.display = 'flex';
+                }
                 refreshViews();
             }
         }
 
-        // --- MOTEUR D'AFFICHAGE ---
+        // --- RENDU ET LOGIQUE DU PLANNING ---
         function refreshViews() {
             const dir = getDirectory().filter(s => s.dept === currentDept);
             
-            // 1. Rendu de la barre latérale (Planning)
+            // 1. Liste du personnel (Boutons cliquables)
             let staffHtml = '';
             if(dir.length === 0) {
-                staffHtml = `<div style="text-align:center; color:#555; font-style:italic; margin-top:20px;">Aucun employé dans l'équipe ${currentDept.toUpperCase()}</div>`;
+                staffHtml = `<div style="text-align:center; color:#555; font-style:italic;">Aucun employé dans l'équipe ${currentDept.toUpperCase()}</div>`;
             } else {
                 dir.forEach(staff => {
+                    const isActive = (staff.id === currentStaffId) ? 'active' : '';
+                    // L'ÉVÉNEMENT CLÉ EST ICI : onclick="selectStaff(id)"
                     staffHtml += `
-                    <div class="staff-card">
+                    <div class="staff-card ${isActive}" onclick="selectStaff(${staff.id})">
                         <div style="display:flex; justify-content:space-between;">
                             <span class="staff-name">${staff.name}</span>
-                            <button onclick="deleteStaff(${staff.id}, '${staff.name}')" style="background:none; border:none; color:#555; cursor:pointer;">✕</button>
+                            <button onclick="event.stopPropagation(); deleteStaff(${staff.id}, '${staff.name}')" style="background:none; border:none; color:#555; cursor:pointer;">✕</button>
                         </div>
                         <div class="staff-role">${staff.role} - ${staff.contract}h/sem</div>
+                        <div class="counters">
+                            <span>Solde: <b style="color:var(--accent);">${staff.balanceHours > 0 ? '+':''}${staff.balanceHours}h</b></span>
+                            <span>CP: <b>${staff.balanceCP}j</b></span>
+                        </div>
                     </div>`;
                 });
             }
             document.getElementById('staff-list-render').innerHTML = staffHtml;
 
-            // 2. Rendu de l'interface des codes PIN
+            // 2. Liste des codes PIN
             let pinHtml = '';
             if(dir.length === 0) {
-                pinHtml = `<div style="color:var(--sub); grid-column: 1 / -1;">Aucun compte généré. Allez dans GÉRER LE PLANNING pour créer des profils.</div>`;
+                pinHtml = `<div style="color:var(--sub); grid-column: 1 / -1;">Aucun compte généré. Créez des profils dans le planning.</div>`;
             } else {
                 dir.forEach(staff => {
                     pinHtml += `
@@ -300,22 +364,161 @@
             document.getElementById('pin-list-render').innerHTML = pinHtml;
         }
 
-        // --- GESTION DES CODES PIN ---
+        // Action lorsqu'on clique sur la carte d'un employé
+        function selectStaff(id) {
+            currentStaffId = id;
+            document.getElementById('empty-state').style.display = 'none';
+            document.getElementById('month-view-container').style.display = 'flex';
+            
+            const staff = getDirectory().find(s => s.id === id);
+            document.getElementById('active-staff-badge').innerText = `PLANNING DE ${staff.name}`;
+            
+            refreshViews(); // Met à jour l'état "actif" visuel du bouton
+            loadMonthData(); // Charge le tableau des heures
+        }
+
+        function initializeMonth(monthStr, daysInMonth, staffId) {
+            const ts = getTimesheets();
+            if(!ts[monthStr]) ts[monthStr] = {};
+            if(!ts[monthStr][staffId]) {
+                ts[monthStr][staffId] = {};
+                for(let d=1; d<=daysInMonth; d++) {
+                    ts[monthStr][staffId][d] = { status: 'present', s1: '09:00-14:00', s2: '18:00-22:00', pause: 0, obs: '' };
+                }
+                saveTimesheets(ts);
+            }
+            return ts;
+        }
+
+        function calculateH(shiftStr) {
+            if(!shiftStr || !shiftStr.includes('-')) return 0;
+            try {
+                const t = shiftStr.split('-');
+                const start = new Date(`2026-01-01T${t[0].trim()}:00`);
+                const end = new Date(`2026-01-01T${t[1].trim()}:00`);
+                let diff = (end - start) / (1000 * 60 * 60);
+                return diff < 0 ? diff + 24 : diff;
+            } catch(e) { return 0; }
+        }
+
+        function loadMonthData() {
+            if(!currentStaffId) return;
+            const monthStr = document.getElementById('month-selector').value;
+            if(!monthStr) return;
+            
+            const [year, month] = monthStr.split('-');
+            const daysInMonth = new Date(year, month, 0).getDate();
+            
+            const ts = initializeMonth(monthStr, daysInMonth, currentStaffId);
+            const staffData = ts[monthStr][currentStaffId];
+
+            let html = '';
+            let totalH = 0;
+
+            for(let d=1; d<=daysInMonth; d++) {
+                const dateObj = new Date(year, month-1, d);
+                const isWeekend = dateObj.getDay() === 0 || dateObj.getDay() === 6;
+                const p = staffData[d];
+                
+                let h = 0;
+                if (p.status === "present") h = calculateH(p.s1) + calculateH(p.s2);
+                else if (p.status === "off_matin") h = calculateH(p.s2);
+                else if (p.status === "off_soir") h = calculateH(p.s1);
+                
+                let pauseH = (parseFloat(p.pause) || 0) / 60;
+                h = Math.max(0, h - pauseH);
+                totalH += h;
+
+                html += `<tr class="${isWeekend ? 'weekend' : ''}">
+                    <td><div class="day-label">${daysOfWeek[dateObj.getDay()]}</div><div class="date-label">${String(d).padStart(2,'0')}/${String(month).padStart(2,'0')}</div></td>
+                    <td>
+                        <select class="status-sel" onchange="updateDay(${d}, 'status', this.value)">
+                            <option value="present" ${p.status==='present'?'selected':''}>Présent</option>
+                            <option value="off" ${p.status==='off'?'selected':''}>Repos</option>
+                            <option value="off_matin" ${p.status==='off_matin'?'selected':''}>Off Matin</option>
+                            <option value="off_soir" ${p.status==='off_soir'?'selected':''}>Off Soir</option>
+                            <option value="conge" ${p.status==='conge'?'selected':''}>Congé Payé</option>
+                            <option value="maladie" ${p.status==='maladie'?'selected':''}>Maladie</option>
+                        </select>
+                    </td>
+                    <td><input type="text" class="shift-inp" value="${p.s1}" onchange="updateDay(${d}, 's1', this.value)" ${p.status==='off'||p.status==='off_matin'||p.status==='conge'||p.status==='maladie'?'disabled':''}></td>
+                    <td><input type="text" class="shift-inp" value="${p.s2}" onchange="updateDay(${d}, 's2', this.value)" ${p.status==='off'||p.status==='off_soir'||p.status==='conge'||p.status==='maladie'?'disabled':''}></td>
+                    <td><input type="number" class="pause-inp" value="${p.pause}" onchange="updateDay(${d}, 'pause', this.value)" ${p.status==='off'||p.status==='conge'||p.status==='maladie'?'disabled':''}></td>
+                    <td class="day-total" style="color:${h>0?'var(--hr)':'#555'}">${h.toFixed(1)}h</td>
+                    <td><input type="text" class="obs-inp" value="${p.obs}" placeholder="Ajouter une note..." onchange="updateDay(${d}, 'obs', this.value)"></td>
+                </tr>`;
+            }
+            document.getElementById('timesheet-body').innerHTML = html;
+            
+            const staff = getDirectory().find(s => s.id === currentStaffId);
+            const expected = (staff.contract / 5) * 21; // Approximation contrat mensuel
+            document.getElementById('stat-expected').textContent = expected.toFixed(1) + 'h';
+            document.getElementById('stat-actual').textContent = totalH.toFixed(1) + 'h';
+            const diff = totalH - expected;
+            document.getElementById('stat-diff').textContent = (diff > 0 ? '+' : '') + diff.toFixed(1) + 'h';
+        }
+
+        function updateDay(day, field, value) {
+            const monthStr = document.getElementById('month-selector').value;
+            const ts = getTimesheets();
+            if(ts[monthStr] && ts[monthStr][currentStaffId]) {
+                ts[monthStr][currentStaffId][day][field] = value;
+                saveTimesheets(ts);
+                loadMonthData(); // Recharge la vue pour actualiser le total
+            }
+        }
+
+        function autoPlanStaff() {
+            if(!currentStaffId) return;
+            if(!confirm("⚡ Auto-remplir le planning selon le contrat et la loi HCR ?")) return;
+
+            const monthStr = document.getElementById('month-selector').value;
+            const [year, month] = monthStr.split('-');
+            const daysInMonth = new Date(year, month, 0).getDate();
+            const ts = getTimesheets();
+            const staff = getDirectory().find(s => s.id === currentStaffId);
+
+            const dailyTarget = staff.contract / 5; 
+            const legalPauseMins = (dailyTarget >= 6) ? 30 : 0;
+            const amplitudeBrute = dailyTarget + (legalPauseMins / 60);
+            const shiftHoursBrut = amplitudeBrute / 2; 
+
+            // Configuration heures génériques
+            const s1 = `10:00-${10+shiftHoursBrut}:00`;
+            const s2 = `18:00-${18+shiftHoursBrut}:00`;
+
+            for(let d=1; d<=daysInMonth; d++) {
+                const dateObj = new Date(year, month-1, d);
+                const dayOfWeek = dateObj.getDay(); 
+                
+                // Repos Lundi & Mardi
+                if(dayOfWeek === 1 || dayOfWeek === 2) {
+                    ts[monthStr][staff.id][d].status = 'off';
+                    ts[monthStr][staff.id][d].s1 = '';
+                    ts[monthStr][staff.id][d].s2 = '';
+                    ts[monthStr][staff.id][d].pause = 0;
+                } else {
+                    ts[monthStr][staff.id][d].status = 'present';
+                    ts[monthStr][staff.id][d].s1 = s1;
+                    ts[monthStr][staff.id][d].s2 = s2;
+                    ts[monthStr][staff.id][d].pause = legalPauseMins; 
+                }
+            }
+            saveTimesheets(ts);
+            loadMonthData();
+        }
+
+        // --- GESTION CODES PIN ---
         function saveStaffPin(staffId, staffName) {
             const newPin = document.getElementById(`pin-input-${staffId}`).value;
-            
-            if(!/^\d{4}$/.test(newPin)) {
-                alert("❌ Erreur : Le code doit contenir exactement 4 chiffres.");
-                return;
-            }
+            if(!/^\d{4}$/.test(newPin)) return alert("❌ Le code doit contenir 4 chiffres exacts.");
 
             let dir = getDirectory();
             let idx = dir.findIndex(s => s.id === staffId);
-            
             if(idx > -1) {
                 dir[idx].pin = newPin;
                 saveDirectory(dir);
-                alert(`✅ Le code d'accès de ${staffName.toUpperCase()} a été mis à jour.`);
+                alert(`✅ Code mis à jour pour ${staffName}.`);
             }
         }
     </script>
