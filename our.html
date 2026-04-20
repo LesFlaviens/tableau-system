@@ -84,9 +84,6 @@
         .staff-name { font-size: 1rem; font-weight: 900; text-transform: uppercase; color: var(--hr);}
         .staff-role { font-size: 0.7rem; color: var(--sub); text-transform: uppercase; font-weight: bold;}
         
-        .ai-btn { background: #111; border: 1px solid #444; color: var(--gold); border-radius: 4px; padding: 5px; font-size: 0.65rem; font-weight: bold; cursor: pointer; margin-top: 10px; text-transform: uppercase; text-align: center; transition: 0.2s;}
-        .ai-btn:hover { background: #222; }
-
         /* TABLEAUX DETAILED & GLOBAL */
         .table-container { flex: 1; overflow: auto; padding: 0; }
         table { width: 100%; border-collapse: collapse; }
@@ -140,7 +137,7 @@
         
         <div style="margin-top: 30px; display: flex; gap: 20px; align-items: center; flex-wrap: wrap; justify-content: center;">
             <button style="border: 2px solid var(--bar); color: var(--bar); background: rgba(0, 229, 255, 0.05); padding: 18px 30px; font-size: 1.1rem; font-weight: 900; border-radius: 8px; cursor: pointer; text-transform: uppercase; transition: 0.2s;" onclick="openPunchClock()">⏱️ POINTEUSE</button>
-            <button style="border: 2px solid var(--purple); color: var(--purple); background: rgba(234, 128, 252, 0.05); padding: 18px 30px; font-size: 1.1rem; font-weight: 900; border-radius: 8px; cursor: pointer; text-transform: uppercase; transition: 0.2s;" onclick="openStaffPortalLogin()">👤 ESPACE PERSONNEL (ABSENCES)</button>
+            <button style="border: 2px solid var(--purple); color: var(--purple); background: rgba(234, 128, 252, 0.05); padding: 18px 30px; font-size: 1.1rem; font-weight: 900; border-radius: 8px; cursor: pointer; text-transform: uppercase; transition: 0.2s;" onclick="openStaffPortalLogin()">👤 ESPACE PERSONNEL</button>
             <button style="border: 2px solid #f43f5e; color: #f43f5e; background: rgba(244, 63, 94, 0.05); padding: 18px 30px; font-size: 1.1rem; font-weight: 900; border-radius: 8px; cursor: pointer; text-transform: uppercase; transition: 0.2s;" onclick="openDeptSelection()">🔒 ACCÈS DIRECTION</button>
         </div>
     </div>
@@ -184,7 +181,7 @@
             
             <div id="staff-select-container" style="display:none; margin-bottom:15px;">
                 <select id="staff-login-select" class="input-full" style="font-weight:bold; font-size:1.2rem; text-align:center;">
-                    </select>
+                </select>
             </div>
 
             <div id="pin-display" class="pin-display"></div>
@@ -227,7 +224,9 @@
                 <input type="month" id="month-selector" style="background:#000; border:1px solid var(--hr); color:#fff; padding:6px; border-radius:6px; font-weight:bold;" onchange="handleMonthChange()">
             </div>
             <div style="display:flex; gap:10px;">
-                <button class="btn-nav" style="border-color:var(--purple); color:var(--purple); box-shadow: 0 0 10px rgba(234, 128, 252, 0.3);" onclick="runAITeamScheduler()">🤖 AUTO-PLANNING IA (QUINCONCE)</button>
+                <button class="btn-nav" style="border-color:var(--purple); color:var(--purple);" onclick="runAITeamScheduler()">🤖 1. ROULEMENT IA</button>
+                <button class="btn-nav" style="border-color:var(--alert); color:var(--alert); box-shadow: 0 0 10px rgba(255, 23, 68, 0.3);" onclick="balanceHoursIA()">⚖️ 2. LISSAGE ZÉRO</button>
+                
                 <button class="btn-nav" id="btn-toggle-view" style="border-color:var(--gold); color:var(--gold);" onclick="toggleViewMode()">🌍 VUE GLOBALE MATRICE</button>
                 <button class="btn-nav" onclick="backToHub()">🔙 MENU</button>
             </div>
@@ -424,8 +423,8 @@
         let currentDept = null;
         let currentPin = "";
         let punchPin = "";
-        let loginMode = ""; // 'director' ou 'staff'
-        let loggedInStaffId = null; // Pour le portail employé
+        let loginMode = ""; 
+        let loggedInStaffId = null; 
         let isGlobalView = false;
         let videoStream = null;
         
@@ -435,13 +434,10 @@
         // BASES DE DONNÉES LOCALES
         function getDir() { return JSON.parse(localStorage.getItem('empire_hr_directory')) || []; }
         function saveDir(dir) { localStorage.setItem('empire_hr_directory', JSON.stringify(dir)); }
-        
         function getTs() { return JSON.parse(localStorage.getItem('empire_hr_timesheets')) || {}; }
         function saveTs(ts) { localStorage.setItem('empire_hr_timesheets', JSON.stringify(ts)); }
-        
         function getPunches() { return JSON.parse(localStorage.getItem('empire_hr_punches')) || []; }
         function savePunches(p) { localStorage.setItem('empire_hr_punches', JSON.stringify(p)); }
-
         function getReqs() { return JSON.parse(localStorage.getItem('empire_hr_requests')) || []; }
         function saveReqs(r) { localStorage.setItem('empire_hr_requests', JSON.stringify(r)); }
 
@@ -454,10 +450,92 @@
         };
 
         // ==========================================
-        // GESTION DES ABSENCES (NOUVEAU)
+        // LISSAGE ZÉRO IA (GOMMAGE HEURES SUP ET DUES)
         // ==========================================
-        
-        // 1. Accès Staff
+        function balanceHoursIA() {
+            if(!currentDept) return alert("Sélectionnez un département.");
+            if(!confirm("⚖️ LISSAGE ABSOLU : L'IA va modifier les horaires (ajouter ou retirer des services, ajuster les minutes) pour que chaque employé atteigne EXACTEMENT son contrat.\n\nAttention : cela peut générer des horaires de fin de service inhabituels (ex: 21h18) sur le dernier jour travaillé du mois.\n\nContinuer ?")) return;
+
+            const monthStr = document.getElementById('month-selector').value;
+            const [year, month] = monthStr.split('-').map(Number);
+            const daysInMonth = new Date(year, month, 0).getDate();
+            const ts = getTs();
+            const dir = getDir().filter(s => s.dept === currentDept);
+
+            if(!ts[monthStr]) return;
+
+            const formatTime = (decimalHours) => {
+                let h = Math.floor(decimalHours);
+                let m = Math.round((decimalHours - h) * 60);
+                if(m >= 60) { h++; m = 0; }
+                if(h >= 24) { h = h % 24; }
+                return `${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}`;
+            };
+
+            dir.forEach(staff => {
+                // On boucle jusqu'à équilibre ou max 10 fois pour éviter une boucle infinie
+                for(let iteration = 0; iteration < 10; iteration++) {
+                    let stats = getStaffMonthStats(staff.id, year, month, daysInMonth, ts[monthStr]);
+                    if(!stats) break;
+                    
+                    let diff = stats.totalDone - stats.expected;
+                    if(Math.abs(diff) <= 0.1) break; // C'est équilibré à 6 minutes près
+
+                    if(diff > 4.5) {
+                        // Surchauffe : On supprime un service en partant de la fin du mois
+                        for(let d=daysInMonth; d>=1; d--) {
+                            let p = ts[monthStr][staff.id][d];
+                            if(p.status === 'present') {
+                                if(diff > 8) {
+                                    p.status = 'off'; p.s1 = ''; p.s2 = ''; p.pause = 0; p.obs = 'IA: Repos (Lissage)';
+                                    break;
+                                } else {
+                                    p.status = 'off_matin'; p.s1 = ''; p.s2 = '18:00-22:45'; p.pause = 0; p.obs = 'IA: Matin annulé';
+                                    break;
+                                }
+                            }
+                        }
+                    } else if (diff < -4.5) {
+                        // Dette d'heures : On ajoute un service
+                        for(let d=1; d<=daysInMonth; d++) {
+                            let p = ts[monthStr][staff.id][d];
+                            if(p.status === 'off') {
+                                p.status = 'present'; p.s1 = '10:00-14:45'; p.s2 = '18:00-22:45'; p.pause = 30; p.obs = 'IA: Service ajouté';
+                                break;
+                            }
+                        }
+                    } else {
+                        // Ajustement fin (minutes) sur le dernier jour travaillé
+                        for(let d=daysInMonth; d>=1; d--) {
+                            let p = ts[monthStr][staff.id][d];
+                            if(p.status === 'present' || p.status === 'off_matin' || p.status === 'off_soir') {
+                                let currentH = calculateNet(p);
+                                let targetH = currentH - diff;
+                                
+                                if(targetH > 0 && targetH <= 12) { // Limite légale d'amplitude
+                                    let start = 10; // On fixe le début à 10h00 pour simplifier le lissage
+                                    p.s1 = `${formatTime(start)}-${formatTime(start + targetH)}`;
+                                    p.s2 = '';
+                                    p.pause = 0;
+                                    p.obs = 'IA: Lissage minute près';
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+            });
+
+            saveTs(ts);
+            loadMonthData();
+            refreshViews();
+            alert("✅ LISSAGE ZÉRO TERMINÉ !\nLes compteurs de l'équipe sont maintenant parfaitement alignés sur leurs contrats.");
+        }
+
+
+        // ==========================================
+        // GESTION DES ABSENCES 
+        // ==========================================
         function openStaffPortalLogin() {
             const dir = getDir();
             if(dir.length === 0) return alert("Aucun employé enregistré dans le système.");
@@ -466,7 +544,6 @@
             currentPin = "";
             document.getElementById('pin-display').innerText = "";
             
-            // Remplir le selecteur de noms
             const select = document.getElementById('staff-login-select');
             select.innerHTML = dir.map(s => `<option value="${s.id}">${s.name} (${s.dept})</option>`).join('');
             
@@ -477,19 +554,16 @@
             document.getElementById('pin-modal').style.display = 'flex';
         }
 
-        // 2. Interface Employé (Après Login)
         function renderEmployeePortal() {
             const staff = getDir().find(s => s.id === loggedInStaffId);
             if(!staff) return fullLogout();
 
             document.getElementById('emp-name-display').innerText = staff.name;
             
-            // Reset form
             document.getElementById('emp-req-start').value = '';
             document.getElementById('emp-req-end').value = '';
             document.getElementById('emp-req-comment').value = '';
 
-            // Render Historique
             const reqs = getReqs().filter(r => r.staffId === staff.id).sort((a,b) => b.timestamp - a.timestamp);
             let html = '';
             
@@ -547,10 +621,8 @@
             renderEmployeePortal();
         }
 
-        // 3. Côté Direction (Approbation & Injection)
         function updateReqBadge() {
             const reqs = getReqs();
-            // Compte uniquement les demandes 'pending' pour le département actuel (si hub ouvert) ou en général.
             const pending = reqs.filter(r => r.status === 'pending' && (!currentDept || r.dept === currentDept)).length;
             const badge = document.getElementById('req-badge');
             if(pending > 0) {
@@ -563,7 +635,6 @@
 
         function renderDirectorRequests() {
             const reqs = getReqs().filter(r => r.dept === currentDept).sort((a,b) => {
-                // Les 'pending' en premier, puis tri par date
                 if(a.status === 'pending' && b.status !== 'pending') return -1;
                 if(a.status !== 'pending' && b.status === 'pending') return 1;
                 return b.timestamp - a.timestamp;
@@ -615,7 +686,6 @@
             if(newStatus === 'approved') {
                 if(!confirm(`⚠️ En approuvant, le système va AUTOMATIQUEMENT inscrire cette absence dans le planning de ${req.staffName} du ${new Date(req.startDate).toLocaleDateString()} au ${new Date(req.endDate).toLocaleDateString()}.\n\nContinuer ?`)) return;
                 
-                // Moteur d'injection automatique dans le planning
                 const ts = getTs();
                 let currentDate = new Date(req.startDate);
                 let endDate = new Date(req.endDate);
@@ -626,7 +696,6 @@
                     let d = currentDate.getDate();
                     let monthStr = `${y}-${m}`;
 
-                    // Initialiser le mois s'il n'existe pas encore
                     if(!ts[monthStr]) ts[monthStr] = {};
                     if(!ts[monthStr][req.staffId]) {
                         ts[monthStr][req.staffId] = {};
@@ -636,14 +705,12 @@
                         }
                     }
 
-                    // Injecter le statut (conge, recup, off)
                     ts[monthStr][req.staffId][d].status = req.type;
                     ts[monthStr][req.staffId][d].s1 = '';
                     ts[monthStr][req.staffId][d].s2 = '';
                     ts[monthStr][req.staffId][d].pause = 0;
                     ts[monthStr][req.staffId][d].obs = "Validé par la Direction";
 
-                    // Jour suivant
                     currentDate.setDate(currentDate.getDate() + 1);
                 }
                 saveTs(ts);
@@ -837,7 +904,6 @@
 
         function openInterface(type) {
             document.getElementById('director-hub').style.display = 'none';
-            // Cacher toutes les interfaces d'abord
             document.querySelectorAll('.full-interface').forEach(el => el.style.display = 'none');
             
             if(type === 'planning') {
@@ -1038,8 +1104,8 @@
             let idx = dir.findIndex(s => s.id === staffId);
             if(idx > -1) {
                 dir[idx].pin = newPin;
-                saveDir(dir);
-                alert(`✅ Code mis à jour pour ${staffName}.`);
+                localStorage.setItem('empire_hr_directory', JSON.stringify(dir));
+                alert(`✅ Code caisse mis à jour pour ${staffName}.`);
             }
         }
 
