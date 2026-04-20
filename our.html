@@ -121,7 +121,6 @@
         .status-select-cell:hover { background: rgba(255,255,255,0.05); }
         .status-select-cell option { background: #111; font-size: 1rem; }
         
-        .predictive-engine { background: #0a0a0a; border-bottom: 1px solid #333; padding: 10px 20px; display: flex; gap: 15px; align-items: flex-end; flex-wrap: wrap; }
         .empty-msg { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; color: #444; }
 
         /* LOGS TABLE */
@@ -290,7 +289,7 @@
         </div>
     </div>
 
-    <div id="pin-manager-interface" style="padding:20px; box-sizing:border-box;">
+    <div id="pin-manager-interface" style="display:none; padding:20px; box-sizing:border-box;">
         <header>
             <h2 style="color:var(--alert); margin:0;">SÉCURITÉ : CODES STAFF</h2>
             <button class="btn-nav" onclick="backToHub()">🔙 RETOUR HUB</button>
@@ -300,7 +299,7 @@
         </div>
     </div>
 
-    <div id="logs-interface" style="padding:20px; box-sizing:border-box;">
+    <div id="logs-interface" style="display:none; padding:20px; box-sizing:border-box;">
         <header>
             <h2 style="color:var(--bar); margin:0;">📸 PREUVES DE POINTAGE</h2>
             <div style="display: flex; gap: 10px;">
@@ -728,7 +727,6 @@
             }
         }
 
-        // --- ASSISTANT IA RENTABILITÉ ---
         function showAIAdvice(name, hours, type) {
             const modal = document.getElementById('ai-modal');
             const text = document.getElementById('ai-modal-text');
@@ -745,7 +743,9 @@
             modal.style.display = 'flex';
         }
 
-        // --- MOTEUR IA AUTO-PLANNING (LISSAGE D'ÉQUIPE) ---
+        // ==========================================
+        // MOTEUR AUTO-PLANNING IA (LISSAGE D'ÉQUIPE)
+        // ==========================================
         function runAITeamScheduler() {
             if(!currentDept) return alert("Sélectionnez d'abord un département.");
             if(!confirm("🤖 L'IA va générer le planning optimal pour ce mois.\n\nLes CP, Fériés, Récups et Maladies déjà saisis seront conservés. L'algorithme assurera une couverture 7j/7 et lissera les heures.\n\nContinuer ?")) return;
@@ -758,7 +758,7 @@
 
             if(dir.length === 0) return alert("Aucun employé dans cette section.");
 
-            // 1. Initialisation
+            // 1. Initialisation de la grille si vide
             if(!ts[monthStr]) ts[monthStr] = {};
             dir.forEach(staff => {
                 if(!ts[monthStr][staff.id]) {
@@ -769,40 +769,46 @@
                 }
             });
 
+            // Paramètres des shifts par défaut
             const s1 = '10:00-14:45';
             const s2 = '18:00-22:45';
             const pause = 30;
-            const shiftNetHours = ((14.75 - 10) + (22.75 - 18)) - (30/60); 
+            const shiftNetHours = ((14.75 - 10) + (22.75 - 18)) - (30/60); // 9h de travail net
 
-            // 2. Trackers de charge
+            // 2. Trackers de charge par employé
             let tracker = {};
             dir.forEach(s => {
                 tracker[s.id] = {
-                    target: (s.contract * 4.33),
-                    scheduled: 0,
-                    consecutiveDays: 0,
-                    daysOffThisWeek: 0
+                    target: (s.contract * 4.33), // Ce qu'il doit faire
+                    scheduled: 0,                // Ce qu'il a déjà de planifié
+                    consecutiveDays: 0,          // Jours de travail consécutifs
+                    daysOffThisWeek: 0           // Jours de repos cette semaine
                 };
             });
 
-            // 3. Passe 1 : Verrouillage des jours spéciaux et reset des autres
+            // 3. Passe 1 : Verrouillage des jours spéciaux (CP, Maladie...) et reset des jours normaux
             for(let d=1; d<=daysInMonth; d++) {
                 dir.forEach(staff => {
                     let status = ts[monthStr][staff.id][d].status;
                     if(['conge', 'maladie', 'ferie', 'recup'].includes(status)) {
-                        // Conserver et ne rien faire
+                        // C'est un jour verrouillé. On compte ça comme du repos pour la fatigue, 
+                        // et on ajoute les heures forfaitaires à son compteur de travail.
+                        tracker[staff.id].consecutiveDays = 0; 
+                        tracker[staff.id].scheduled += (staff.contract / 5);
                     } else {
-                        // Remise à zéro temporaire
+                        // C'est un jour normal, on remet à zéro pour laisser l'IA le remplir
                         ts[monthStr][staff.id][d] = { status: 'off', s1: '', s2: '', pause: 0, obs: '' };
                     }
                 });
             }
 
-            // 4. Passe 2 : Planification mathématique jour par jour
+            // 4. Passe 2 : Remplissage algorithmique jour par jour
             for(let d=1; d<=daysInMonth; d++) {
                 const dateObj = new Date(year, month-1, d);
                 const dayOfWeek = dateObj.getDay(); 
 
+                // Si on est lundi (jour 1 en js c'est lundi ? Non, 0=Dimanche, 1=Lundi)
+                // Remise à zéro des compteurs de repos hebdomadaires
                 if(dayOfWeek === 1) { 
                     dir.forEach(s => tracker[s.id].daysOffThisWeek = 0);
                 }
@@ -810,17 +816,15 @@
                 let available = [];
                 dir.forEach(staff => {
                     let status = ts[monthStr][staff.id][d].status;
-                    if(['conge', 'maladie', 'ferie', 'recup'].includes(status)) {
-                        tracker[staff.id].consecutiveDays = 0; 
-                    } else {
+                    if(!['conge', 'maladie', 'ferie', 'recup'].includes(status)) {
                         available.push(staff);
                     }
                 });
 
-                // Besoin de couverture : 60% minimum de l'équipe chaque jour
+                // Besoin de couverture : on estime qu'il faut au moins 60% de l'équipe chaque jour
                 let requiredPresences = Math.max(1, Math.ceil(dir.length * 0.6));
 
-                // Tri : Priorité à ceux qui ont le moins d'heures par rapport à leur cible
+                // Tri de l'équipe : On priorise ceux qui sont le plus en retard sur leur contrat
                 available.sort((a, b) => {
                     let ratioA = tracker[a.id].scheduled / tracker[a.id].target;
                     let ratioB = tracker[b.id].scheduled / tracker[b.id].target;
@@ -831,12 +835,12 @@
 
                 available.forEach(staff => {
                     let t = tracker[staff.id];
-                    let daysLeftInWeek = dayOfWeek === 0 ? 1 : 7 - dayOfWeek + 1;
+                    let daysLeftInWeek = dayOfWeek === 0 ? 1 : 7 - dayOfWeek + 1; // 0 = Dimanche (fin de semaine)
                     
-                    // Règle Légale : 2 jours de repos/semaine ET max 5 jours consécutifs
+                    // Règle de Repos Légal : 2 jours off obligatoires par semaine, et max 5 jours consécutifs
                     let mustHaveOff = (t.daysOffThisWeek < 2 && daysLeftInWeek <= (2 - t.daysOffThisWeek)) || t.consecutiveDays >= 5;
 
-                    // Règle Financière : Si équipe suffisante et heures atteintes = On met au repos pour économiser
+                    // Règle d'Économie : Si on a déjà assez de monde aujourd'hui ET que l'employé a déjà fait son quota mensuel
                     let costSavingOff = (presencesToday >= requiredPresences && t.scheduled >= t.target);
 
                     if(mustHaveOff || costSavingOff) {
@@ -852,10 +856,11 @@
                 });
             }
 
+            // Enregistrement et rafraîchissement
             saveTs(ts);
             loadMonthData();
             refreshViews();
-            alert("✅ PLANNING IA GÉNÉRÉ AVEC SUCCÈS !\nLe roulement a été lissé pour garantir la couverture 7j/7 et équilibrer les heures de l'équipe.");
+            alert("✅ AUTO-PLANNING IA TERMINÉ !\nL'algorithme a assuré la couverture 7j/7 et respecté les contraintes de repos et d'heures.");
         }
 
         function forceGlobalView() {
@@ -1062,7 +1067,6 @@
             refreshViews();  
         }
 
-        // --- MOTEUR DE PLANNING PUBLIC ---
         function loadPublicPlanning() {
             const today = new Date();
             const year = today.getFullYear();
