@@ -873,60 +873,168 @@
         <button onclick="attemptPadLogin()" style="background:#00e676; color:#000; font-weight:900; font-size:1.2rem; padding:15px 40px; border:none; border-radius:8px; cursor:pointer; text-transform:uppercase; transition:0.2s;">DÉVERROUILLER</button>
     </div>
     <script>
-        // --- VARIABLES GLOBALES EMPIRE OS ---
+// --- VARIABLES GLOBALES EMPIRE OS ---
         let activeOrders = {}; 
         let currentTable = null; 
         let ticketItems = []; 
         let previousOrdersState = {};
         let notifiedAlerts = new Set(); 
-// --- MOTEUR DE DÉVERROUILLAGE DU PAD (MODE DIAGNOSTIC) ---
+        
+        // Variables de Session
+        let currentUser = null; 
+        let inactivityTimer; 
+        const INACTIVITY_LIMIT = 120000;
+
+        // ==========================================
+        // 🔐 MOTEUR DE DÉVERROUILLAGE SÉCURISÉ
+        // ==========================================
         function attemptPadLogin() {
             const enteredPin = document.getElementById('pad-pin-input').value;
             
             if(enteredPin.length !== 6) {
-                alert("❌ ACCÈS REFUSÉ : Le code tapé ne fait pas 6 chiffres.");
+                alert("❌ ACCÈS REFUSÉ : Le code doit faire exactement 6 chiffres (tapé : " + enteredPin.length + ").");
                 return;
             }
 
-            // 1. Vérification si la base de données existe sur cet appareil
             const directoryStr = localStorage.getItem('empire_hr_directory');
             if (!directoryStr) {
-                alert("❌ ERREUR MÉMOIRE : Aucune base RH trouvée. Vous ne testez pas sur le même navigateur/ordinateur.");
+                alert("❌ ERREUR MÉMOIRE : Aucune base RH trouvée. Utilisez le même navigateur que le module RH.");
                 return;
             }
 
             const directory = JSON.parse(directoryStr);
-            
-            // 2. Recherche du collaborateur
             const staff = directory.find(s => s.pin === enteredPin);
 
             if (!staff) {
-                alert(`❌ ACCÈS REFUSÉ : Le code ${enteredPin} n'existe pas dans la base de données.`);
+                alert(`❌ ACCÈS REFUSÉ : Le code ${enteredPin} n'existe pas dans le système RH.`);
                 document.getElementById('pad-pin-input').value = '';
                 return;
             }
 
-            // 3. Barrière de sécurité par département
             if (staff.dept !== 'service' && staff.dept !== 'bar') {
-                alert(`❌ ALERTE SÉCURITÉ : [${staff.name.toUpperCase()}] appartient à la section [${staff.dept.toUpperCase()}]. Accès aux terminaux de commande strictement interdit.`);
+                alert(`❌ ALERTE SÉCURITÉ : [${staff.name.toUpperCase()}] est affecté(e) en [${staff.dept.toUpperCase()}]. Accès caisse interdit.`);
                 document.getElementById('pad-pin-input').value = '';
                 return;
             }
 
-            // 4. SUCCÈS
-        document.getElementById('pad-lock-screen').style.display = 'none';
-        alert(`✅ BIENVENUE ${staff.name.toUpperCase()} ! Session ouverte.`);
+            // SUCCÈS : Allumage du Pad
+            document.getElementById('pad-lock-screen').style.display = 'none';
+            currentUser = { name: staff.name, role: (staff.dept === 'service' ? 'Serveur' : 'Barman') };
+            document.getElementById('user-badge').innerText = `Badge: ${currentUser.name} (${currentUser.role})`;
+            
+            if (!sysAudioCtx) unlockAudio();
+            
+            renderRooms(); 
+            renderFloor(); 
+            connectEmpireH24(); 
+            resetInactivityTimer();
+            
+            document.getElementById('pad-pin-input').value = '';
+            alert(`✅ BIENVENUE ${staff.name.toUpperCase()} ! Session ouverte.`);
+        }
+
+        // ==========================================
+        // 🔒 GESTION DE L'INACTIVITÉ ET DÉCONNEXION
+        // ==========================================
+        function resetInactivityTimer() { 
+            clearTimeout(inactivityTimer); 
+            if(currentUser) inactivityTimer = setTimeout(logout, INACTIVITY_LIMIT); 
+        }
+
+        ['touchstart', 'click', 'mousemove', 'keypress'].forEach(e => document.addEventListener(e, resetInactivityTimer, {passive: true}));
+
+        function logout() { 
+            currentUser = null; 
+            document.getElementById('pad-lock-screen').style.display = 'flex'; 
+            closeOrder(); closeArchiMode(); closeAdminCatalog(); closePlanningModal(); closeDrawer('history-drawer'); closeAuditModal();
+            clearTimeout(inactivityTimer); 
+            
+            let resaModal = document.getElementById('admin-resa-manager-modal');
+            if(resaModal) resaModal.classList.remove('open');
+        }
         
-        // On vide la case de saisie pour le prochain serveur
-        document.getElementById('pad-pin-input').value = '';
+        // --- SUITE DE TON CODE (renderSeatBar, etc.) ---
+        let currentSeat = 0;// --- VARIABLES GLOBALES EMPIRE OS ---
+        let activeOrders = {}; 
+        let currentTable = null; 
+        let ticketItems = []; 
+        let previousOrdersState = {};
+        let notifiedAlerts = new Set(); 
+        
+        // Variables de Session
+        let currentUser = null; 
+        let inactivityTimer; 
+        const INACTIVITY_LIMIT = 120000;
 
-        // ---> ALLUMAGE DU PAD DE COMMANDE <---
-        // Décommente la ligne ci-dessous et mets le bon ID pour afficher ta caisse
-        // document.getElementById('METTRE_ICI_L_ID_DE_TON_PAD').style.display = 'block';
+        // ==========================================
+        // 🔐 MOTEUR DE DÉVERROUILLAGE SÉCURISÉ
+        // ==========================================
+        function attemptPadLogin() {
+            const enteredPin = document.getElementById('pad-pin-input').value;
+            
+            if(enteredPin.length !== 6) {
+                alert("❌ ACCÈS REFUSÉ : Le code doit faire exactement 6 chiffres (tapé : " + enteredPin.length + ").");
+                return;
+            }
 
-        // Optionnel : Garder le nom du serveur en mémoire pour l'imprimer sur ses tickets
-        // currentWaiter = staff.name;
-  
+            const directoryStr = localStorage.getItem('empire_hr_directory');
+            if (!directoryStr) {
+                alert("❌ ERREUR MÉMOIRE : Aucune base RH trouvée. Utilisez le même navigateur que le module RH.");
+                return;
+            }
+
+            const directory = JSON.parse(directoryStr);
+            const staff = directory.find(s => s.pin === enteredPin);
+
+            if (!staff) {
+                alert(`❌ ACCÈS REFUSÉ : Le code ${enteredPin} n'existe pas dans le système RH.`);
+                document.getElementById('pad-pin-input').value = '';
+                return;
+            }
+
+            if (staff.dept !== 'service' && staff.dept !== 'bar') {
+                alert(`❌ ALERTE SÉCURITÉ : [${staff.name.toUpperCase()}] est affecté(e) en [${staff.dept.toUpperCase()}]. Accès caisse interdit.`);
+                document.getElementById('pad-pin-input').value = '';
+                return;
+            }
+
+            // SUCCÈS : Allumage du Pad
+            document.getElementById('pad-lock-screen').style.display = 'none';
+            currentUser = { name: staff.name, role: (staff.dept === 'service' ? 'Serveur' : 'Barman') };
+            document.getElementById('user-badge').innerText = `Badge: ${currentUser.name} (${currentUser.role})`;
+            
+            if (!sysAudioCtx) unlockAudio();
+            
+            renderRooms(); 
+            renderFloor(); 
+            connectEmpireH24(); 
+            resetInactivityTimer();
+            
+            document.getElementById('pad-pin-input').value = '';
+            alert(`✅ BIENVENUE ${staff.name.toUpperCase()} ! Session ouverte.`);
+        }
+
+        // ==========================================
+        // 🔒 GESTION DE L'INACTIVITÉ ET DÉCONNEXION
+        // ==========================================
+        function resetInactivityTimer() { 
+            clearTimeout(inactivityTimer); 
+            if(currentUser) inactivityTimer = setTimeout(logout, INACTIVITY_LIMIT); 
+        }
+
+        ['touchstart', 'click', 'mousemove', 'keypress'].forEach(e => document.addEventListener(e, resetInactivityTimer, {passive: true}));
+
+        function logout() { 
+            currentUser = null; 
+            document.getElementById('pad-lock-screen').style.display = 'flex'; 
+            closeOrder(); closeArchiMode(); closeAdminCatalog(); closePlanningModal(); closeDrawer('history-drawer'); closeAuditModal();
+            clearTimeout(inactivityTimer); 
+            
+            let resaModal = document.getElementById('admin-resa-manager-modal');
+            if(resaModal) resaModal.classList.remove('open');
+        }
+        
+        // --- SUITE DE TON CODE (renderSeatBar, etc.) ---
         let currentSeat = 0;
 
     function renderSeatBar() { 
