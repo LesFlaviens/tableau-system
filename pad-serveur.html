@@ -922,11 +922,11 @@
             currentUser = { name: staff.name, role: (staff.dept === 'service' ? 'Serveur' : 'Barman') };
             document.getElementById('user-badge').innerText = `Badge: ${currentUser.name} (${currentUser.role})`;
             
-            if (!sysAudioCtx) unlockAudio();
+            if (typeof sysAudioCtx !== 'undefined' && !sysAudioCtx) unlockAudio();
             
-            renderRooms(); 
-            renderFloor(); 
-            connectEmpireH24(); 
+            if (typeof renderRooms === 'function') renderRooms(); 
+            if (typeof renderFloor === 'function') renderFloor(); 
+            if (typeof connectEmpireH24 === 'function') connectEmpireH24(); 
             resetInactivityTimer();
             
             document.getElementById('pad-pin-input').value = '';
@@ -946,105 +946,34 @@
         function logout() { 
             currentUser = null; 
             document.getElementById('pad-lock-screen').style.display = 'flex'; 
-            closeOrder(); closeArchiMode(); closeAdminCatalog(); closePlanningModal(); closeDrawer('history-drawer'); closeAuditModal();
+            
+            if (typeof closeOrder === 'function') closeOrder(); 
+            if (typeof closeArchiMode === 'function') closeArchiMode(); 
+            if (typeof closeAdminCatalog === 'function') closeAdminCatalog(); 
+            if (typeof closePlanningModal === 'function') closePlanningModal(); 
+            if (typeof closeDrawer === 'function') closeDrawer('history-drawer'); 
+            if (typeof closeAuditModal === 'function') closeAuditModal();
+            
             clearTimeout(inactivityTimer); 
             
             let resaModal = document.getElementById('admin-resa-manager-modal');
             if(resaModal) resaModal.classList.remove('open');
         }
         
-        // --- SUITE DE TON CODE (renderSeatBar, etc.) ---
-        let currentSeat = 0;// --- VARIABLES GLOBALES EMPIRE OS ---
-        let activeOrders = {}; 
-        let currentTable = null; 
-        let ticketItems = []; 
-        let previousOrdersState = {};
-        let notifiedAlerts = new Set(); 
-        
-        // Variables de Session
-        let currentUser = null; 
-        let inactivityTimer; 
-        const INACTIVITY_LIMIT = 120000;
-
         // ==========================================
-        // 🔐 MOTEUR DE DÉVERROUILLAGE SÉCURISÉ
+        // 🪑 GESTION DES CONVIVES (SEAT BAR)
         // ==========================================
-        function attemptPadLogin() {
-            const enteredPin = document.getElementById('pad-pin-input').value;
-            
-            if(enteredPin.length !== 6) {
-                alert("❌ ACCÈS REFUSÉ : Le code doit faire exactement 6 chiffres (tapé : " + enteredPin.length + ").");
-                return;
-            }
-
-            const directoryStr = localStorage.getItem('empire_hr_directory');
-            if (!directoryStr) {
-                alert("❌ ERREUR MÉMOIRE : Aucune base RH trouvée. Utilisez le même navigateur que le module RH.");
-                return;
-            }
-
-            const directory = JSON.parse(directoryStr);
-            const staff = directory.find(s => s.pin === enteredPin);
-
-            if (!staff) {
-                alert(`❌ ACCÈS REFUSÉ : Le code ${enteredPin} n'existe pas dans le système RH.`);
-                document.getElementById('pad-pin-input').value = '';
-                return;
-            }
-
-            if (staff.dept !== 'service' && staff.dept !== 'bar') {
-                alert(`❌ ALERTE SÉCURITÉ : [${staff.name.toUpperCase()}] est affecté(e) en [${staff.dept.toUpperCase()}]. Accès caisse interdit.`);
-                document.getElementById('pad-pin-input').value = '';
-                return;
-            }
-
-            // SUCCÈS : Allumage du Pad
-            document.getElementById('pad-lock-screen').style.display = 'none';
-            currentUser = { name: staff.name, role: (staff.dept === 'service' ? 'Serveur' : 'Barman') };
-            document.getElementById('user-badge').innerText = `Badge: ${currentUser.name} (${currentUser.role})`;
-            
-            if (!sysAudioCtx) unlockAudio();
-            
-            renderRooms(); 
-            renderFloor(); 
-            connectEmpireH24(); 
-            resetInactivityTimer();
-            
-            document.getElementById('pad-pin-input').value = '';
-            alert(`✅ BIENVENUE ${staff.name.toUpperCase()} ! Session ouverte.`);
-        }
-
-        // ==========================================
-        // 🔒 GESTION DE L'INACTIVITÉ ET DÉCONNEXION
-        // ==========================================
-        function resetInactivityTimer() { 
-            clearTimeout(inactivityTimer); 
-            if(currentUser) inactivityTimer = setTimeout(logout, INACTIVITY_LIMIT); 
-        }
-
-        ['touchstart', 'click', 'mousemove', 'keypress'].forEach(e => document.addEventListener(e, resetInactivityTimer, {passive: true}));
-
-        function logout() { 
-            currentUser = null; 
-            document.getElementById('pad-lock-screen').style.display = 'flex'; 
-            closeOrder(); closeArchiMode(); closeAdminCatalog(); closePlanningModal(); closeDrawer('history-drawer'); closeAuditModal();
-            clearTimeout(inactivityTimer); 
-            
-            let resaModal = document.getElementById('admin-resa-manager-modal');
-            if(resaModal) resaModal.classList.remove('open');
-        }
-        
-        // --- SUITE DE TON CODE (renderSeatBar, etc.) ---
         let currentSeat = 0;
-
-    function renderSeatBar() { 
 
         function renderSeatBar() {
             let pax = 2;
-            let obsInput = document.getElementById('order-obs').value;
-            let match = obsInput.match(/🍽️ (\d+) Couvert\(s\)/);
-            if(match) pax = parseInt(match[1]);
-            else {
+            let obsInput = document.getElementById('order-obs');
+            if(!obsInput) return;
+            
+            let match = obsInput.value.match(/🍽️ (\d+) Couvert\(s\)/);
+            if(match) {
+                pax = parseInt(match[1]);
+            } else {
                 let tObj = tables.find(t => t && t.label === currentTable);
                 if(tObj && tObj.pax) pax = tObj.pax;
             }
@@ -1072,7 +1001,29 @@
 
         function addExtraSeatToBar() {
             let maxC = 0;
-            let obsInput = document.getElementById('order-obs').value;
+            let obsInput = document.getElementById('order-obs');
+            if(!obsInput) return;
+            
+            let match = obsInput.value.match(/🍽️ (\d+) Couvert\(s\)/);
+            if(match) maxC = parseInt(match[1]);
+            
+            let newPax = maxC + 1;
+            let baseObs = obsInput.value.replace(/🍽️ \d+ Couvert\(s\)( \| )?/, '').replace(/ \| $/, '').trim();
+            
+            if (baseObs === "") {
+                obsInput.value = `🍽️ ${newPax} Couvert(s)`;
+            } else {
+                obsInput.value = `🍽️ ${newPax} Couvert(s) | ${baseObs}`;
+            }
+
+            let tObj = tables.find(t => t && t.label === currentTable);
+            if (tObj) {
+                tObj.pax = newPax;
+                if(typeof pushArchitecture === 'function') pushArchitecture();
+            }
+
+            setSeat(newPax);
+        }
    // 4. SUCCÈS
         document.getElementById('pad-lock-screen').style.display = 'none';
         alert(`✅ BIENVENUE ${staff.name.toUpperCase()} ! Session ouverte.`);
