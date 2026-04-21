@@ -2972,9 +2972,10 @@ function renderFloor() {
         let currentPayRemaining = 0;
         let currentPayHistory = [];
 
-       function openPaymentModal() {
+   function openPaymentModal() {
             if(ticketItems.length === 0) return alert("Table vide."); 
-            if(currentUser.role === 'Serveur') return alert("⛔ Demandez au Manager pour encaisser.");
+            
+            // On a supprimé le blocage du serveur. Il peut maintenant encaisser.
             
             let td = activeOrders[currentTable]; 
             if(!td || !td.items || td.items.length !== ticketItems.length) return alert("⚠️ IMPOSSIBLE D'ENCAISSER !\nSauvegardez les modifications avant d'encaisser.");
@@ -2990,7 +2991,6 @@ function renderFloor() {
                 currentPayRemaining = currentPayTotal;
                 currentPayHistory = [];
             }
-            // ----------------------------------------------------
             
             document.getElementById('pay-modal-title').innerText = "TABLE " + currentTable; 
             document.getElementById('pay-modal-total').innerText = currentPayTotal.toFixed(2) + " €";
@@ -3002,6 +3002,67 @@ function renderFloor() {
             document.getElementById('payment-modal').classList.add('open');
         }
 
+        async function processPartialPayment(method) {
+            let amtInput = document.getElementById('pay-custom-amount').value;
+            let amt = parseFloat(amtInput.replace(',', '.'));
+            
+            if(isNaN(amt) || amt <= 0) return alert("⚠️ Saisissez un montant valide.");
+            
+            let isVoucher = (method === 'TR' || method === 'CV');
+            if(!isVoucher && amt > currentPayRemaining + 0.05) return alert("⚠️ Le montant saisi dépasse le reste à payer.");
+
+            if (isVoucher && amt > currentPayRemaining) {
+                if (!confirm(`Montant supérieur au reste (${amt.toFixed(2)}€). On ne rend pas la monnaie sur les ${method}. Valider ?`)) return;
+            }
+
+            // 💶 GESTION SÉCURISÉE DES ESPÈCES (RENDU MONNAIE)
+            if (method === 'ESPÈCES') {
+                let cashGivenStr = prompt(`💵 Le client vous donne combien en espèces ?\n(Reste à payer : ${amt.toFixed(2)}€)`);
+                if (!cashGivenStr) return; // Le serveur a annulé
+                
+                let cashGiven = parseFloat(cashGivenStr.replace(',', '.'));
+                if (isNaN(cashGiven) || cashGiven < amt) {
+                    return alert("⚠️ ERREUR : Le montant donné par le client est invalide ou insuffisant.");
+                }
+                
+                let changeDue = cashGiven - amt;
+                if (changeDue > 0) {
+                    alert(`💰 MONNAIE À RENDRE AU CLIENT : ${changeDue.toFixed(2)} €\n\nValidation de l'encaissement en cours...`);
+                }
+            }
+
+            // 📱 GESTION DU QR CODE (Lien vers Portail Client)
+            if (method === 'QR/TEL') {
+                let serverUrl = window.location.origin; 
+                let lienPaiement = `${serverUrl}/portail-client?table=${currentTable}&montant=${amt.toFixed(2)}`;
+                let qrData = encodeURIComponent(lienPaiement);
+                let qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=250x250&data=${qrData}`;
+
+                document.getElementById('qr-code-img').src = qrUrl;
+                document.getElementById('qr-amount-display').innerText = amt.toFixed(2);
+
+                document.getElementById('pay-action-zone').style.display = 'none';
+                document.getElementById('qr-pay-zone').style.display = 'flex';
+                document.getElementById('qr-pay-zone').dataset.amt = amt;
+                return;
+            }
+            
+            // 💳 GESTION TPE SUMUP
+            if (method === 'CB') {
+                const go = confirm(`Envoyer ${amt.toFixed(2)}€ au terminal de paiement ?`);
+                if (!go) return;
+                const success = await triggerSumUpPayment(amt);
+                if (!success) return; 
+            }
+
+            // ENREGISTREMENT STANDARD DU PAIEMENT
+            currentPayHistory.push({ method: method, amount: amt });
+            currentPayRemaining -= amt;
+            if(currentPayRemaining < 0) currentPayRemaining = 0;
+            
+            updatePaymentUI();
+            logAction("ENCAISSEMENT", `${method} : ${amt.toFixed(2)}€ | Table: ${currentTable}`);
+        }
         function updatePaymentUI() {
             document.getElementById('pay-modal-remaining').innerText = currentPayRemaining.toFixed(2) + " €";
             document.getElementById('pay-custom-amount').value = currentPayRemaining.toFixed(2);
