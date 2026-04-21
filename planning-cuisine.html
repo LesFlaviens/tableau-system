@@ -2,26 +2,175 @@
 <html lang="fr">
 <head>
     <meta charset="UTF-8">
-    <title>PLANNING CUISINE</title>
-    <link rel="stylesheet" href="style.css"> <style>
-        body { background: #000; color: #fff; font-family: 'Segoe UI', sans-serif; margin: 0; padding: 20px; overflow: hidden; }
-        .header-planning { display: flex; justify-content: space-between; align-items: center; border-bottom: 2px solid var(--gold); padding-bottom: 15px; margin-bottom: 20px; }
-        .btn-retour { background: rgba(255,255,255,0.1); border: 1px solid var(--border-strong); color: var(--text-muted); padding: 10px 20px; border-radius: 8px; cursor: pointer; text-decoration: none; font-weight: bold; }
-        .btn-retour:hover { background: var(--gold); color: #000; }
-        #planning-container { height: calc(100vh - 100px); width: 100%; border-radius: 12px; overflow: hidden; background: var(--panel); }
-        h1 { color: var(--gold); margin: 0; text-transform: uppercase; letter-spacing: 2px; }
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Empire OS - Live Planning Cuisine</title>
+    <style>
+        :root { 
+            --bg: #090e17; 
+            --panel: #141c2f; 
+            --border: rgba(255, 255, 255, 0.05); 
+            --border-strong: rgba(255, 255, 255, 0.1);
+            --text-main: #f8fafc; 
+            --text-muted: #64748b; 
+            --gold: #fbbf24; 
+            --hr: #2979ff;
+        }
+
+        body { 
+            font-family: 'Inter', sans-serif; 
+            background: var(--bg); 
+            color: var(--text-main); 
+            margin: 0; 
+            padding: 20px; 
+            height: 100vh; 
+            display: flex; 
+            flex-direction: column; 
+            overflow: hidden; 
+        }
+
+        header { 
+            display: flex; 
+            justify-content: space-between; 
+            align-items: center; 
+            padding-bottom: 20px; 
+            border-bottom: 2px solid var(--gold); 
+            margin-bottom: 20px;
+        }
+
+        .logo-text { color: var(--gold); font-size: 1.5rem; font-weight: 900; letter-spacing: 2px; text-transform: uppercase; margin: 0; }
+        
+        .btn-retour { 
+            background: rgba(255, 255, 255, 0.05); 
+            border: 1px solid var(--border-strong); 
+            color: var(--text-main); 
+            padding: 10px 20px; 
+            border-radius: 8px; 
+            cursor: pointer; 
+            font-weight: 800; 
+            text-transform: uppercase; 
+            text-decoration: none;
+            transition: 0.2s;
+        }
+        .btn-retour:hover { background: var(--text-main); color: #000; }
+
+        .table-container { flex: 1; overflow: auto; background: var(--panel); border-radius: 12px; border: 1px solid var(--border-strong); }
+
+        table { width: 100%; border-collapse: collapse; table-layout: fixed; }
+        th, td { border: 1px solid var(--border-strong); text-align: center; padding: 12px 5px; min-width: 45px;}
+        th { background: rgba(0,0,0,0.3); color: var(--text-muted); font-size: 0.7rem; text-transform: uppercase; }
+        
+        .sticky-col { 
+            position: sticky; 
+            left: 0; 
+            background: var(--panel); 
+            z-index: 10; 
+            width: 150px; 
+            text-align: left; 
+            padding-left: 15px; 
+            font-weight: 900; 
+            color: var(--hr);
+            border-right: 2px solid var(--gold);
+        }
+
+        .day-num { font-size: 1.1rem; color: #fff; font-weight: 900; }
+        .day-name { font-size: 0.6rem; opacity: 0.6; }
+
+        .status-cell { font-size: 1.4rem; vertical-align: middle; }
+        
+        .sync-status { font-size: 0.7rem; color: var(--accent); display: flex; align-items: center; gap: 6px; font-weight: bold; }
+        .dot { width: 8px; height: 8px; background: #34d399; border-radius: 50%; box-shadow: 0 0 10px #34d399; }
     </style>
 </head>
 <body>
 
-    <div class="header-planning">
-        <h1>📅 Planning de la Brigade</h1>
+    <header>
+        <div style="display:flex; flex-direction:column; gap:5px;">
+            <h1 class="logo-text">📅 LIVE PLANNING CUISINE</h1>
+            <div class="sync-status"><div class="dot"></div> CONNEXION DIRECTE ACTIVE</div>
+        </div>
         <a href="pass.html" class="btn-retour">⬅️ RETOUR AU PASS</a>
+    </header>
+
+    <div class="table-container">
+        <table>
+            <thead id="planning-head"></thead>
+            <tbody id="planning-body"></tbody>
+        </table>
     </div>
 
-    <div id="planning-container">
-        <iframe src="TON_LIEN_GOOGLE_CALENDAR_ICI" style="border-width:0" width="100%" height="100%" frameborder="0" scrolling="no"></iframe>
-    </div>
+    <script>
+        const SERVER_URL = "https://tableau-system.onrender.com";
+        const daysOfWeek = ["Dim", "Lun", "Mar", "Mer", "Jeu", "Ven", "Sam"];
 
+        async function fetchPlanning() {
+            try {
+                const response = await fetch(SERVER_URL + '/get-current-state');
+                const state = await response.json();
+                
+                if (state && state.activeOrders) {
+                    renderPlanning(state.activeOrders);
+                }
+            } catch (e) {
+                console.error("Erreur de synchro planning:", e);
+            }
+        }
+
+        function renderPlanning(orders) {
+            const today = new Date();
+            const year = today.getFullYear();
+            const month = today.getMonth() + 1;
+            const daysInMonth = new Date(year, month, 0).getDate();
+            const monthStr = `${year}-${String(month).padStart(2, '0')}`;
+
+            // 1. Récupération des données RH
+            const directory = JSON.parse(localStorage.getItem('empire_hr_directory')) || [];
+            const timesheets = JSON.parse(localStorage.getItem('empire_hr_timesheets')) || {};
+            
+            // 2. Filtrage Uniquement Cuisine
+            const staffCuisine = directory.filter(s => s.dept === 'cuisine');
+            const monthData = timesheets[monthStr] || {};
+
+            // 3. Construction Entête
+            let headHtml = `<tr><th class="sticky-col">ÉQUIPE</th>`;
+            for (let d = 1; d <= daysInMonth; d++) {
+                const dateObj = new Date(year, month - 1, d);
+                headHtml += `<th><div class="day-name">${daysOfWeek[dateObj.getDay()]}</div><div class="day-num">${d}</div></th>`;
+            }
+            headHtml += `</tr>`;
+            document.getElementById('planning-head').innerHTML = headHtml;
+
+            // 4. Construction Corps (Lecture Seule)
+            let bodyHtml = '';
+            staffCuisine.forEach(staff => {
+                bodyHtml += `<tr><td class="sticky-col">${staff.name.toUpperCase()}</td>`;
+                
+                for (let d = 1; d <= daysInMonth; d++) {
+                    const dayData = (monthData[staff.id] && monthData[staff.id][d]) ? monthData[staff.id][d] : null;
+                    let icon = '-';
+                    
+                    if (dayData) {
+                        switch(dayData.status) {
+                            case 'present': icon = '🟢'; break;
+                            case 'off_matin': icon = '🌙'; break;
+                            case 'off_soir': icon = '☀️'; break;
+                            case 'off': icon = '✖️'; break;
+                            case 'conge': icon = '✈️'; break;
+                            case 'maladie': icon = '🤒'; break;
+                            case 'ferie': icon = '⭐'; break;
+                            case 'recup': icon = '⏳'; break;
+                        }
+                    }
+                    bodyHtml += `<td class="status-cell">${icon}</td>`;
+                }
+                bodyHtml += `</tr>`;
+            });
+
+            document.getElementById('planning-body').innerHTML = bodyHtml || '<tr><td colspan="100" style="padding:50px; opacity:0.5;">Aucun employé enregistré en cuisine.</td></tr>';
+        }
+
+        // Rafraîchissement automatique toutes les 5 secondes
+        fetchPlanning();
+        setInterval(fetchPlanning, 5000);
+    </script>
 </body>
 </html>
