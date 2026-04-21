@@ -53,29 +53,72 @@ app.get('/verify-tenant/:tenantID', async (req, res) => {
 });
 
 // ==========================================
-// 🚦 LOGIQUE SAS CUISINE (FLUX RÉGULÉS)
+// 💾 SAUVEGARDE PERMANENTE DES TABLES (MONGODB)
+// ==========================================
+const stateSchema = new mongoose.Schema({
+    id: { type: String, default: "MASTER_STATE" },
+    activeOrders: { type: Object, default: {} },
+    sasConfig: { type: Object, default: { active: true, maxTables: 5, delaySeconds: 60 } }
+});
+const EmpireState = mongoose.model('EmpireState', stateSchema);
+
+// ==========================================
+// 🚦 LOGIQUE SAS CUISINE & MÉMOIRE ACTIVE
 // ==========================================
 let globalState = { activeOrders: {} };
 let sasConfig = { active: true, maxTables: 5, delaySeconds: 60 };
 let webOrderQueue = []; 
 let lastSasRelease = 0;
 
+// 🔄 CHARGEMENT DU MOTEUR AU DÉMARRAGE DU SERVEUR
+EmpireState.findOne({ id: "MASTER_STATE" }).then(doc => {
+    if (doc) {
+        globalState.activeOrders = doc.activeOrders || {};
+        sasConfig = doc.sasConfig || sasConfig;
+        console.log("💾 SECURE : Commandes et Tables restaurées après redémarrage.");
+    } else {
+        new EmpireState({ id: "MASTER_STATE", activeOrders: {}, sasConfig }).save();
+    }
+}).catch(err => console.error("Erreur lecture DB State:", err));
+
 app.get('/get-current-state', (req, res) => res.json({ activeOrders: globalState.activeOrders, sasConfig }));
-app.post('/update-order', (req, res) => {
+
+app.post('/update-order', async (req, res) => {
     const { tableId, order } = req.body;
+    
+    // 1. Mise à jour de la mémoire vive
     if (order === null) delete globalState.activeOrders[tableId];
     else globalState.activeOrders[tableId] = order;
+    
+    // 2. Gravure immédiate dans la base de données (Cloud)
+    try {
+        await EmpireState.findOneAndUpdate(
+            { id: "MASTER_STATE" }, 
+            { activeOrders: globalState.activeOrders }, 
+            { upsert: true }
+        );
+    } catch (e) {
+        console.error("🔴 Erreur sauvegarde DB:", e);
+    }
+    
     res.json({ success: true });
 });
 
-app.post('/update-sas', (req, res) => {
+app.post('/update-sas', async (req, res) => {
     sasConfig = { ...sasConfig, ...req.body };
+    
     if (!sasConfig.active && webOrderQueue.length > 0) {
         while(webOrderQueue.length > 0) {
             let nextOrder = webOrderQueue.shift();
             globalState.activeOrders[nextOrder.tableId] = nextOrder.order;
         }
     }
+    
+    // Sauvegarde de la config SAS
+    try {
+        await EmpireState.findOneAndUpdate({ id: "MASTER_STATE" }, { sasConfig: sasConfig }, { upsert: true });
+    } catch(e) {}
+    
     res.json({ success: true, sasConfig });
 });
 
@@ -88,6 +131,9 @@ setInterval(() => {
                 let nextOrder = webOrderQueue.shift();
                 globalState.activeOrders[nextOrder.tableId] = nextOrder.order;
                 lastSasRelease = now;
+                
+                // Mettre à jour MongoDB après l'injection
+                EmpireState.findOneAndUpdate({ id: "MASTER_STATE" }, { activeOrders: globalState.activeOrders }, { upsert: true }).catch(()=>{});
             }
         }
     }
@@ -96,7 +142,7 @@ setInterval(() => {
 // ==========================================
 // 🛒 WEBHOOK WOOCOMMERCE 
 // ==========================================
-app.post('/woo-webhook', (req, res) => {
+app.post('/woo-webhook', async (req, res) => {
     try {
         const order = req.body;
         if (!order || !order.id) return res.status(400).send("Payload invalide");
@@ -160,6 +206,7 @@ app.post('/woo-webhook', (req, res) => {
         if (!sasConfig.active || activeWebCount < sasConfig.maxTables) {
             globalState.activeOrders[tableNum] = newOrder;
             console.log(`🚀 Commande Woo #${order.id} envoyée direct. En cours : ${activeWebCount + 1}`);
+            await EmpireState.findOneAndUpdate({ id: "MASTER_STATE" }, { activeOrders: globalState.activeOrders }, { upsert: true });
         } else {
             webOrderQueue.push({ tableId: tableNum, order: newOrder });
             console.log(`⚠️ Brigade chargée. Commande Woo #${order.id} mise dans le SAS.`);
