@@ -295,32 +295,7 @@
         <h2 style="color:var(--text-main); font-size: 1.5rem; letter-spacing: 1px; margin:0; border-bottom: 1px solid var(--border-strong); padding-bottom: 20px; text-transform: uppercase;">📋 GESTION DES STOCKS MINUTE (86)</h2>
         <div id="menu-stock-container" style="display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 20px; margin-top: 20px; align-content: start; overflow-y: auto; padding-bottom: 50px;"></div>
     </div>
-<script>
-        const urlParams = new URLSearchParams(window.location.search);
-        const tenantID = urlParams.get('tenantID') || 'MASTER_STATE';
-        const SERVER_URL = (window.location.protocol === 'file:') ? 'https://tableau-system.onrender.com' : '';
 
-        const API = {
-            getState: async () => {
-                let r = await fetch(`${SERVER_URL}/get-current-state?tenantID=${tenantID}`);
-                if (!r.ok) throw new Error("Serveur injoignable");
-                return await r.json();
-            },
-            update: async (key, data) => {
-                let isOrder = !key.includes('MASTER') && !key.includes('ARCHIVE') && !key.includes('SUPPLIER') && !key.includes('PLANNING') && !key.includes('MENU') && !key.includes('DIRECTORY') && !key.includes('ALERTS') && !key.includes('ARCHITECTURE');
-                let payload = isOrder ? data : { data: data };
-                try { 
-                    await fetch(`${SERVER_URL}/update-order?tenantID=${tenantID}`, { 
-                        method: 'POST', 
-                        headers: {'Content-Type': 'application/json'}, 
-                        body: JSON.stringify({ tableId: key, order: data === null ? null : payload }) 
-                    }); 
-                } catch(e) { console.error("Erreur Sync:", e); }
-            }
-        };
-
-        window.addEventListener('storage', (e) => {
-// ... la suite de ton code existant reste identique ...
     <script>
         const API = {
             getState: async () => {
@@ -488,7 +463,15 @@
                 const state = await API.getState();
                 if (state && state.activeOrders) {
                     activeOrders = state.activeOrders;
-                    if (activeOrders['MENU_MASTER']) menuData = activeOrders['MENU_MASTER'].data;
+                    if (activeOrders['MENU_MASTER']) {
+                        let newMenuData = activeOrders['MENU_MASTER'].data;
+                        if(JSON.stringify(menuData) !== JSON.stringify(newMenuData)) {
+                            menuData = newMenuData;
+                            if(document.getElementById('mod-menu').classList.contains('active')) {
+                                renderMenuStock();
+                            }
+                        }
+                    }
                     
                     if (activeOrders['RECIPES_MASTER'] && Array.isArray(activeOrders['RECIPES_MASTER'].data)) {
                         recipesData = activeOrders['RECIPES_MASTER'].data;
@@ -714,7 +697,14 @@
                     container.innerHTML = html;
                 }
             }
-            document.getElementById('resa-details-modal').classList.async function sendAlertToSalle(message) {
+            document.getElementById('resa-details-modal').classList.add('open');
+        }
+
+        function closeResaDetailsModal() { document.getElementById('resa-details-modal').classList.remove('open'); }
+        function openAlertModal(tableLabel) { tableInAlert = tableLabel; document.getElementById('alert-table-id').innerText = tableLabel; document.getElementById('chef-alert-modal').classList.add('open'); }
+        function closeAlertModal() { tableInAlert = null; document.getElementById('chef-alert-modal').classList.remove('open'); }
+
+        async function sendAlertToSalle(message) {
             if (!tableInAlert) return;
             let order = activeOrders[tableInAlert];
             if (order) { order.alerteRouge = message; await API.update(tableInAlert, order); renderKDS(); }
@@ -900,11 +890,64 @@
             }
         }
 
+        // 🟢 NOUVELLE FONCTION RENDU DES STOCKS (86) SUR LE PASS 🟢
+        function renderMenuStock() {
+            const container = document.getElementById('menu-stock-container');
+            if(!container) return;
+            if(!menuData || Object.keys(menuData).length === 0) {
+                container.innerHTML = '<div style="grid-column:1/-1; text-align:center; color:var(--text-muted); font-style:italic;">La carte est vide. Configurez-la depuis le Centre de Commandement.</div>';
+                return;
+            }
+
+            let html = '';
+            for(let cat in menuData) {
+                if(!Array.isArray(menuData[cat]) || menuData[cat].length === 0) continue;
+                
+                let catTitle = CAT_SETTINGS[cat] ? CAT_SETTINGS[cat].name : cat.toUpperCase();
+                let itemsHtml = menuData[cat].map(item => {
+                    let stock = item.stock !== undefined ? item.stock : 99;
+                    let bg = "rgba(255,255,255,0.02)";
+                    let borderColor = "var(--border-strong)";
+                    let textColor = "var(--text-main)";
+                    
+                    if (stock <= 2) { bg = "rgba(239,68,68,0.1)"; borderColor = "var(--alert)"; textColor = "var(--alert)"; }
+                    else if (stock <= 5) { bg = "rgba(249,115,22,0.1)"; borderColor = "var(--orange)"; textColor = "var(--orange)"; }
+                    
+                    return `
+                    <div style="background:${bg}; border:1px solid ${borderColor}; padding:15px; border-radius:8px; display:flex; justify-content:space-between; align-items:center; transition:0.2s;">
+                        <div style="font-weight:bold; color:var(--text-main); font-size:1.05rem;">${item.name}</div>
+                        <button onclick="updateStockFromPass('${cat}', ${item.id})" style="background:var(--panel); border:2px solid ${borderColor}; color:${textColor}; font-size:1.2rem; font-weight:900; padding:8px 20px; border-radius:6px; cursor:pointer; min-width:80px; transition:0.2s;">${stock}</button>
+                    </div>`;
+                }).join('');
+                
+                html += `<div style="grid-column:1/-1; margin-top:15px;"><h3 style="color:var(--text-muted); border-bottom:1px solid var(--border-strong); padding-bottom:5px;">${catTitle}</h3><div style="display:grid; grid-template-columns:repeat(auto-fill, minmax(280px, 1fr)); gap:15px; margin-top:15px;">${itemsHtml}</div></div>`;
+            }
+            container.innerHTML = html;
+        }
+
+        async function updateStockFromPass(cat, id) {
+            let item = menuData[cat].find(x => x.id === id);
+            if(!item) return;
+            let current = item.stock !== undefined ? item.stock : 99;
+            let n = prompt(`Mettre à jour le stock pour "${item.name}" :`, current);
+            if(n === null || n.trim() === '') return;
+            let val = parseInt(n);
+            if(isNaN(val) || val < 0) return alert("Valeur invalide.");
+            
+            item.stock = val;
+            renderMenuStock();
+            await API.update('MENU_MASTER', menuData);
+        }
+
         function switchTab(tab) {
             document.querySelectorAll('.module').forEach(m => m.classList.remove('active'));
             document.querySelectorAll('.nav-btn').forEach(b => !b.classList.contains('haccp') && b.classList.remove('active'));
             document.getElementById('mod-'+tab)?.classList.add('active');
             document.getElementById('tab-'+tab)?.classList.add('active');
+            
+            if (tab === 'menu') {
+                renderMenuStock();
+            }
         }
 
         function showToast(msg) { let t = document.createElement('div'); t.className = 'kds-toast'; t.innerText = msg; document.getElementById('toast-container').appendChild(t); setTimeout(() => t.remove(), 3000); }
@@ -951,7 +994,4 @@
         boot();
     </script>
 </body>
-</html>('open');
-     
-
-   
+</html>
