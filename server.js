@@ -9,7 +9,7 @@ const PORT = process.env.PORT || 10000;
 
 app.use(cors());
 app.use(express.json({ limit: '50mb' }));
-app.use(express.static(path.join(__dirname))); 
+app.use(express.static(path.join(__dirname)));
 
 // ==========================================
 // 🧠 CONNEXION MONGODB (COFFRE-FORT CLOUD)
@@ -53,87 +53,123 @@ app.get('/verify-tenant/:tenantID', async (req, res) => {
 });
 
 // ==========================================
-// 💾 SAUVEGARDE PERMANENTE DES TABLES (MONGODB)
+// 💾 SAUVEGARDE PERMANENTE (MONGODB) MULTI-TENANT
 // ==========================================
 const stateSchema = new mongoose.Schema({
-    id: { type: String, default: "MASTER_STATE" },
+    id: { type: String, required: true }, // Sera désormais le tenantID
     activeOrders: { type: Object, default: {} },
     sasConfig: { type: Object, default: { active: true, maxTables: 5, delaySeconds: 60 } }
 });
 const EmpireState = mongoose.model('EmpireState', stateSchema);
 
 // ==========================================
-// 🚦 LOGIQUE SAS CUISINE & MÉMOIRE ACTIVE
+// 🚦 LOGIQUE SAS CUISINE & MÉMOIRE ACTIVE MULTI-TENANT
 // ==========================================
-let globalState = { activeOrders: {} };
-let sasConfig = { active: true, maxTables: 5, delaySeconds: 60 };
-let webOrderQueue = []; 
-let lastSasRelease = 0;
+// La mémoire vive est désormais indexée par tenantID
+let tenantsState = {}; 
 
-// 🔄 CHARGEMENT DU MOTEUR AU DÉMARRAGE DU SERVEUR
-EmpireState.findOne({ id: "MASTER_STATE" }).then(doc => {
-    if (doc) {
-        globalState.activeOrders = doc.activeOrders || {};
-        sasConfig = doc.sasConfig || sasConfig;
-        console.log("💾 SECURE : Commandes et Tables restaurées après redémarrage.");
-    } else {
-        new EmpireState({ id: "MASTER_STATE", activeOrders: {}, sasConfig }).save();
+// Fonction pour initialiser un tenant en mémoire s'il n'existe pas
+async function initTenantState(tenantID) {
+    if (!tenantsState[tenantID]) {
+        try {
+            let doc = await EmpireState.findOne({ id: tenantID });
+            if (doc) {
+                tenantsState[tenantID] = {
+                    activeOrders: doc.activeOrders || {},
+                    sasConfig: doc.sasConfig || { active: true, maxTables: 5, delaySeconds: 60 },
+                    webOrderQueue: [],
+                    lastSasRelease: 0
+                };
+            } else {
+                tenantsState[tenantID] = {
+                    activeOrders: {},
+                    sasConfig: { active: true, maxTables: 5, delaySeconds: 60 },
+                    webOrderQueue: [],
+                    lastSasRelease: 0
+                };
+                await new EmpireState({ id: tenantID, activeOrders: {}, sasConfig: tenantsState[tenantID].sasConfig }).save();
+            }
+        } catch (err) {
+            console.error(`Erreur lecture DB State pour ${tenantID}:`, err);
+            // Fallback de sécurité
+            tenantsState[tenantID] = { activeOrders: {}, sasConfig: { active: true, maxTables: 5, delaySeconds: 60 }, webOrderQueue: [], lastSasRelease: 0 };
+        }
     }
-}).catch(err => console.error("Erreur lecture DB State:", err));
+    return tenantsState[tenantID];
+}
 
-app.get('/get-current-state', (req, res) => res.json({ activeOrders: globalState.activeOrders, sasConfig }));
+app.get('/get-current-state', async (req, res) => {
+    // 💡 Nouveau paramètre: tenantID requis
+    const tenantID = req.query.tenantID || 'MASTER_STATE'; // MASTER_STATE par défaut pour la compatibilité avec tes anciens tests
+    const state = await initTenantState(tenantID);
+    res.json({ activeOrders: state.activeOrders, sasConfig: state.sasConfig });
+});
 
 app.post('/update-order', async (req, res) => {
+    // 💡 Nouveau paramètre: tenantID requis
+    const tenantID = req.query.tenantID || 'MASTER_STATE';
     const { tableId, order } = req.body;
     
-    // 1. Mise à jour de la mémoire vive
-    if (order === null) delete globalState.activeOrders[tableId];
-    else globalState.activeOrders[tableId] = order;
+    const state = await initTenantState(tenantID);
+
+    // 1. Mise à jour de la mémoire vive pour ce tenant
+    if (order === null) {
+        delete state.activeOrders[tableId];
+    } else {
+        state.activeOrders[tableId] = order;
+    }
     
-    // 2. Gravure immédiate dans la base de données (Cloud)
+    // 2. Gravure immédiate dans la base de données pour ce tenant
     try {
         await EmpireState.findOneAndUpdate(
-            { id: "MASTER_STATE" }, 
-            { activeOrders: globalState.activeOrders }, 
+            { id: tenantID }, 
+            { activeOrders: state.activeOrders }, 
             { upsert: true }
         );
     } catch (e) {
-        console.error("🔴 Erreur sauvegarde DB:", e);
+        console.error(`🔴 Erreur sauvegarde DB pour ${tenantID}:`, e);
     }
     
     res.json({ success: true });
 });
 
 app.post('/update-sas', async (req, res) => {
-    sasConfig = { ...sasConfig, ...req.body };
+    const tenantID = req.query.tenantID || 'MASTER_STATE';
+    const state = await initTenantState(tenantID);
+
+    state.sasConfig = { ...state.sasConfig, ...req.body };
     
-    if (!sasConfig.active && webOrderQueue.length > 0) {
-        while(webOrderQueue.length > 0) {
-            let nextOrder = webOrderQueue.shift();
-            globalState.activeOrders[nextOrder.tableId] = nextOrder.order;
+    if (!state.sasConfig.active && state.webOrderQueue.length > 0) {
+        while(state.webOrderQueue.length > 0) {
+            let nextOrder = state.webOrderQueue.shift();
+            state.activeOrders[nextOrder.tableId] = nextOrder.order;
         }
     }
     
     // Sauvegarde de la config SAS
     try {
-        await EmpireState.findOneAndUpdate({ id: "MASTER_STATE" }, { sasConfig: sasConfig }, { upsert: true });
+        await EmpireState.findOneAndUpdate({ id: tenantID }, { sasConfig: state.sasConfig }, { upsert: true });
     } catch(e) {}
     
-    res.json({ success: true, sasConfig });
+    res.json({ success: true, sasConfig: state.sasConfig });
 });
 
 setInterval(() => {
-    if (sasConfig.active && webOrderQueue.length > 0) {
-        let now = Date.now();
-        if (now - lastSasRelease >= (sasConfig.delaySeconds * 1000)) {
-            let activeWebCount = Object.values(globalState.activeOrders).filter(o => o.isWeb).length;
-            if (activeWebCount < sasConfig.maxTables) {
-                let nextOrder = webOrderQueue.shift();
-                globalState.activeOrders[nextOrder.tableId] = nextOrder.order;
-                lastSasRelease = now;
-                
-                // Mettre à jour MongoDB après l'injection
-                EmpireState.findOneAndUpdate({ id: "MASTER_STATE" }, { activeOrders: globalState.activeOrders }, { upsert: true }).catch(()=>{});
+    // Boucle sur tous les tenants actifs en mémoire
+    for (let tenantID in tenantsState) {
+        let state = tenantsState[tenantID];
+        if (state.sasConfig.active && state.webOrderQueue.length > 0) {
+            let now = Date.now();
+            if (now - state.lastSasRelease >= (state.sasConfig.delaySeconds * 1000)) {
+                let activeWebCount = Object.values(state.activeOrders).filter(o => o && o.isWeb).length;
+                if (activeWebCount < state.sasConfig.maxTables) {
+                    let nextOrder = state.webOrderQueue.shift();
+                    state.activeOrders[nextOrder.tableId] = nextOrder.order;
+                    state.lastSasRelease = now;
+                    
+                    // Mettre à jour MongoDB après l'injection
+                    EmpireState.findOneAndUpdate({ id: tenantID }, { activeOrders: state.activeOrders }, { upsert: true }).catch(()=>{});
+                }
             }
         }
     }
@@ -144,6 +180,9 @@ setInterval(() => {
 // ==========================================
 app.post('/woo-webhook', async (req, res) => {
     try {
+        const tenantID = req.query.tenantID || 'MASTER_STATE';
+        const state = await initTenantState(tenantID);
+        
         const order = req.body;
         if (!order || !order.id) return res.status(400).send("Payload invalide");
 
@@ -200,16 +239,16 @@ app.post('/woo-webhook', async (req, res) => {
             });
         }
 
-        let activeWebCount = Object.values(globalState.activeOrders)
-            .filter(o => o.isWeb && o.items && o.items.some(i => !i.done)).length;
+        let activeWebCount = Object.values(state.activeOrders)
+            .filter(o => o && o.isWeb && o.items && o.items.some(i => !i.done)).length;
 
-        if (!sasConfig.active || activeWebCount < sasConfig.maxTables) {
-            globalState.activeOrders[tableNum] = newOrder;
-            console.log(`🚀 Commande Woo #${order.id} envoyée direct. En cours : ${activeWebCount + 1}`);
-            await EmpireState.findOneAndUpdate({ id: "MASTER_STATE" }, { activeOrders: globalState.activeOrders }, { upsert: true });
+        if (!state.sasConfig.active || activeWebCount < state.sasConfig.maxTables) {
+            state.activeOrders[tableNum] = newOrder;
+            console.log(`🚀 Commande Woo #${order.id} envoyée direct au tenant ${tenantID}. En cours : ${activeWebCount + 1}`);
+            await EmpireState.findOneAndUpdate({ id: tenantID }, { activeOrders: state.activeOrders }, { upsert: true });
         } else {
-            webOrderQueue.push({ tableId: tableNum, order: newOrder });
-            console.log(`⚠️ Brigade chargée. Commande Woo #${order.id} mise dans le SAS.`);
+            state.webOrderQueue.push({ tableId: tableNum, order: newOrder });
+            console.log(`⚠️ Brigade chargée. Commande Woo #${order.id} mise dans le SAS du tenant ${tenantID}.`);
         }
 
         res.status(200).send("OK");
@@ -220,14 +259,61 @@ app.post('/woo-webhook', async (req, res) => {
 });
 
 // ==========================================
-// 📱 PORTAIL QR CODE (L'ADDITION CLIENT)
+// 📱 PORTAIL QR CODE (L'ADDITION CLIENT VIA STRIPE)
 // ==========================================
-app.get('/portail-client', (req, res) => {
+app.get('/portail-client', async (req, res) => {
     const tableId = req.query.table;
-    const order = globalState.activeOrders[tableId];
-    if (!order) return res.send("Addition vide.");
-    const total = order.items.reduce((acc, i) => acc + (parseFloat(i.p) * (i.qty || 1)), 0);
-    res.send(`<!DOCTYPE html><html><body style="background:#0f172a;color:white;text-align:center;padding:50px;"><h1>Table ${tableId}</h1><h2>Total : ${total.toFixed(2)}€</h2><button style="padding:15px;background:#fbbf24;border:none;border-radius:10px;font-weight:bold;">PAYER MON ADITION</button></body></html>`);
+    const tenantID = req.query.tenantID || 'MASTER_STATE';
+    const montantStr = req.query.montant;
+    
+    const state = await initTenantState(tenantID);
+    const order = state.activeOrders[tableId];
+    
+    if (!order) return res.send("<body style='background:#0f172a;color:#f87171;text-align:center;padding:50px;font-family:sans-serif;'><h2>Addition introuvable ou table fermée.</h2></body>");
+    
+    let amountToPay = parseFloat(montantStr);
+    if (isNaN(amountToPay) || amountToPay <= 0) {
+         amountToPay = order.items.reduce((acc, i) => acc + (parseFloat(i.p) * (i.qty || 1)), 0);
+    }
+
+    try {
+        const session = await stripe.checkout.sessions.create({
+            payment_method_types: ['card'],
+            line_items: [{
+                price_data: {
+                    currency: 'eur',
+                    product_data: {
+                        name: `Empire OS - Table ${tableId} (${tenantID})`,
+                        description: 'Merci de votre visite.'
+                    },
+                    unit_amount: Math.round(amountToPay * 100),
+                },
+                quantity: 1,
+            }],
+            mode: 'payment',
+            success_url: `https://${req.get('host')}/paiement-succes?table=${tableId}&tenantID=${tenantID}`,
+            cancel_url: `https://${req.get('host')}/portail-client?table=${tableId}&montant=${amountToPay}&tenantID=${tenantID}`,
+        });
+
+        res.redirect(303, session.url);
+    } catch (error) {
+        console.error("Erreur Stripe :", error);
+        res.send("<body style='background:#0f172a;color:#f87171;text-align:center;padding:50px;font-family:sans-serif;'><h2>Erreur de connexion bancaire. Veuillez payer à la caisse.</h2></body>");
+    }
+});
+
+// Page de confirmation pour le client
+app.get('/paiement-succes', (req, res) => {
+    res.send(`
+        <!DOCTYPE html>
+        <html>
+        <body style="background:#0f172a;color:#34d399;text-align:center;padding:50px;font-family:sans-serif;">
+            <div style="font-size: 5rem; margin-bottom: 20px;">✅</div>
+            <h1>PAIEMENT VALIDÉ</h1>
+            <p style="color:#94a3b8; font-size: 1.2rem;">Merci ! Vous pouvez fermer cette page ou montrer cet écran à votre serveur.</p>
+        </body>
+        </html>
+    `);
 });
 
 // ==========================================
@@ -249,7 +335,7 @@ app.post('/analyse-ticket', async (req, res) => {
 });
 
 // ==========================================
-// 💳 TUNNEL DE PAIEMENT STRIPE
+// 💳 TUNNEL DE PAIEMENT STRIPE (ABONNEMENT SAAS)
 // ==========================================
 app.get('/create-checkout-session', async (req, res) => {
     try {
