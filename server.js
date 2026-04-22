@@ -396,21 +396,21 @@ app.get('/', (req, res) => {
         <body>
             <div class="container" id="main-content">
                 <div class="hero">
-                    <h1>Empire <span>OS</span></h1>
+                    <h1>I <span>chef</span></h1>
                     <p>L'infrastructure technologique absolue pour les restaurants à haut volume. Automatisez votre production, maîtrisez vos flux et encaissez sans friction.</p>
                     
                     <div class="features">
                         <div class="feature">
                             <div class="feature-icon">⚡</div>
                             <div class="feature-text">
-                                <h3>Core SAS Cuisine</h3>
-                                <p>Régulation algorithmique des commandes entrantes. Protégez votre brigade des surcharges mortelles.</p>
+                                <h3>Core SAS Cuisine bar et service </h3>
+                                <p>Régulation algorithmique des commandes entrantes. Protégez votre brigade des surcharges de travaille.</p>
                             </div>
                         </div>
                         <div class="feature">
                             <div class="feature-icon">👁️</div>
                             <div class="feature-text">
-                                <h3>Vision IA Gemini</h3>
+                                <h3>Vision i chef</h3>
                                 <p>Analyse instantanée des factures fournisseurs et gestion stricte des DLC pour un contrôle total.</p>
                             </div>
                         </div>
