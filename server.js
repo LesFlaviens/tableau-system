@@ -349,9 +349,8 @@ app.get('/create-checkout-session', async (req, res) => {
         res.redirect(303, session.url);
     } catch (error) { res.status(500).send("Erreur Stripe."); }
 });
-
 // ==========================================
-// 🏠 VITRINE DE VENTE & ONBOARDING (LANDING PAGE)
+// 🏠 VITRINE DE VENTE & ONBOARDING (LANDING PAGE PREMIUM)
 // ==========================================
 app.get('/', (req, res) => {
     res.send(`
@@ -360,79 +359,81 @@ app.get('/', (req, res) => {
         <head>
             <meta charset="UTF-8">
             <meta name="viewport" content="width=device-width, initial-scale=1.0">
-            <title>Empire OS - L'Infrastructure des Leaders</title>
+            <title>Empire OS - Infrastructure SaaS</title>
             <style>
-                @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;500;700;900&display=swap');
-                body { background: #090e17; color: #f8fafc; font-family: 'Inter', sans-serif; margin: 0; padding: 0; display: flex; justify-content: center; align-items: center; min-height: 100vh; }
-                .wrapper { max-width: 900px; width: 90%; margin: 40px auto; }
+                @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;900&display=swap');
+                :root { --bg: #09090b; --panel: #111827; --border: #1f2937; --gold: #fbbf24; --text: #f9fafb; --text-muted: #9ca3af; }
+                body { background-color: var(--bg); color: var(--text); font-family: 'Inter', sans-serif; margin: 0; padding: 0; display: flex; justify-content: center; align-items: center; min-height: 100vh; }
                 
-                .hero { text-align: center; margin-bottom: 40px; }
-                .hero h1 { color: #fbbf24; font-size: 3rem; font-weight: 900; letter-spacing: 2px; text-transform: uppercase; margin-bottom: 10px; text-shadow: 0 0 20px rgba(251, 191, 36, 0.3); }
-                .hero p { color: #94a3b8; font-size: 1.2rem; }
-
-                .glass-panel { background: rgba(30, 41, 59, 0.7); backdrop-filter: blur(10px); border: 1px solid rgba(255,255,255,0.1); border-radius: 24px; padding: 40px; box-shadow: 0 20px 40px rgba(0,0,0,0.5); }
+                .container { max-width: 1100px; width: 90%; margin: 50px auto; display: grid; grid-template-columns: 1.2fr 1fr; gap: 60px; align-items: center; }
+                @media (max-width: 900px) { .container { grid-template-columns: 1fr; gap: 40px; text-align: center; } .features { align-items: center; } .feature { text-align: left; } }
                 
-                .grid-features { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 20px; margin-bottom: 40px; }
-                .feature-card { background: #0f172a; border: 1px solid #334155; padding: 20px; border-radius: 16px; transition: transform 0.3s; position: relative; overflow: hidden; }
-                .feature-card::before { content: ''; position: absolute; top: 0; left: 0; width: 4px; height: 100%; background: #fbbf24; }
-                .feature-card:hover { transform: translateY(-5px); border-color: #fbbf24; }
-                .feature-card h3 { margin: 0 0 10px 0; color: #f8fafc; font-size: 1.2rem; display: flex; align-items: center; gap: 10px; }
-                .feature-card p { margin: 0; color: #64748b; font-size: 0.9rem; line-height: 1.5; }
-
-                .checkout-section { background: #0f172a; padding: 30px; border-radius: 16px; border: 1px solid #334155; }
-                .checkout-section h2 { color: #fbbf24; text-transform: uppercase; font-size: 1.2rem; margin-top: 0; margin-bottom: 20px; letter-spacing: 1px; display: flex; align-items: center; gap: 10px; }
+                .hero h1 { font-size: 4rem; font-weight: 900; margin: 0 0 15px 0; letter-spacing: -2px; line-height: 1; }
+                .hero h1 span { color: var(--gold); }
+                .hero p { font-size: 1.15rem; color: var(--text-muted); margin-bottom: 40px; line-height: 1.6; font-weight: 300; max-width: 90%; }
                 
-                .input-group { display: grid; grid-template-columns: 1fr 1fr; gap: 15px; margin-bottom: 20px; }
-                @media (max-width: 600px) { .input-group { grid-template-columns: 1fr; } }
+                .features { display: flex; flex-direction: column; gap: 20px; }
+                .feature { background: var(--panel); border: 1px solid var(--border); padding: 25px; border-radius: 16px; display: flex; gap: 20px; align-items: flex-start; transition: transform 0.3s ease, border-color 0.3s ease; }
+                .feature:hover { transform: translateX(8px); border-color: var(--gold); }
+                .feature-icon { background: rgba(251, 191, 36, 0.1); color: var(--gold); width: 45px; height: 45px; border-radius: 10px; display: flex; justify-content: center; align-items: center; font-weight: 900; flex-shrink: 0; font-size: 1.2rem; border: 1px solid rgba(251, 191, 36, 0.2); }
+                .feature-text h3 { margin: 0 0 8px 0; font-size: 1.2rem; font-weight: 600; letter-spacing: -0.5px; }
+                .feature-text p { margin: 0; color: var(--text-muted); font-size: 0.95rem; line-height: 1.5; }
                 
-                input { width: 100%; padding: 15px; box-sizing: border-box; border-radius: 10px; border: 1px solid #334155; background: #1e293b; color: white; font-family: 'Inter', sans-serif; font-size: 1rem; outline: none; transition: 0.3s; }
-                input:focus { border-color: #fbbf24; box-shadow: 0 0 0 3px rgba(251, 191, 36, 0.1); }
+                .checkout-box { background: var(--panel); border: 1px solid var(--border); padding: 40px; border-radius: 24px; box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.7); position: relative; overflow: hidden; }
+                .checkout-box::before { content: ''; position: absolute; top: 0; left: 0; right: 0; height: 4px; background: var(--gold); }
+                .checkout-box h2 { margin: 0 0 30px 0; font-size: 1.5rem; font-weight: 600; border-bottom: 1px solid var(--border); padding-bottom: 20px; letter-spacing: -0.5px; }
                 
-                .btn-pay { background: linear-gradient(135deg, #fbbf24 0%, #d97706 100%); color: #000; padding: 20px; border: none; border-radius: 12px; font-weight: 900; width: 100%; cursor: pointer; font-size: 1.1rem; text-transform: uppercase; letter-spacing: 1px; transition: 0.3s; box-shadow: 0 10px 20px rgba(251, 191, 36, 0.2); }
-                .btn-pay:hover { transform: scale(1.02); box-shadow: 0 15px 30px rgba(251, 191, 36, 0.4); }
+                .input-group { display: flex; flex-direction: column; gap: 15px; margin-bottom: 30px; }
+                input { background: rgba(0,0,0,0.3); border: 1px solid var(--border); color: var(--text); padding: 18px 20px; border-radius: 12px; font-size: 1rem; font-family: inherit; transition: 0.2s; outline: none; }
+                input::placeholder { color: #4b5563; }
+                input:focus { border-color: var(--gold); background: rgba(0,0,0,0.5); box-shadow: 0 0 0 4px rgba(251, 191, 36, 0.1); }
                 
-                .success-msg { text-align: center; padding: 40px; }
-                .success-msg h1 { color: #34d399; font-size: 3rem; margin-bottom: 10px; }
-                .success-msg p { color: #94a3b8; font-size: 1.2rem; margin-bottom: 30px; }
-                .btn-outline { display: inline-block; padding: 12px 30px; border: 2px solid #fbbf24; color: #fbbf24; text-decoration: none; border-radius: 8px; font-weight: bold; transition: 0.3s; }
-                .btn-outline:hover { background: #fbbf24; color: #000; }
+                .btn-submit { background: var(--gold); color: #000; border: none; padding: 22px; border-radius: 12px; font-weight: 900; font-size: 1.1rem; width: 100%; cursor: pointer; text-transform: uppercase; letter-spacing: 1px; transition: 0.2s; box-shadow: 0 10px 25px -5px rgba(251, 191, 36, 0.4); }
+                .btn-submit:hover { transform: translateY(-3px); box-shadow: 0 15px 30px -5px rgba(251, 191, 36, 0.5); }
+                .btn-submit:active { transform: translateY(0); box-shadow: none; }
             </style>
         </head>
         <body>
-            <div class="wrapper" id="main-content">
+            <div class="container" id="main-content">
                 <div class="hero">
-                    <h1>EMPIRE OS</h1>
-                    <p>L'Infrastructure d'Élite pour la Restauration Haut de Gamme.</p>
-                </div>
-                
-                <div class="glass-panel">
-                    <div class="grid-features">
-                        <div class="feature-card">
-                            <h3>⚡ KDS & SAS Cuisine</h3>
-                            <p>Régulation algorithmique des flux de commandes. Finis les coups de feu ingérables. Votre cuisine tourne à la perfection.</p>
+                    <h1>Empire <span>OS</span></h1>
+                    <p>L'infrastructure technologique absolue pour les restaurants à haut volume. Automatisez votre production, maîtrisez vos flux et encaissez sans friction.</p>
+                    
+                    <div class="features">
+                        <div class="feature">
+                            <div class="feature-icon">⚡</div>
+                            <div class="feature-text">
+                                <h3>Core SAS Cuisine</h3>
+                                <p>Régulation algorithmique des commandes entrantes. Protégez votre brigade des surcharges mortelles.</p>
+                            </div>
                         </div>
-                        <div class="feature-card">
-                            <h3>🤖 Bureau IA Gemini</h3>
-                            <p>Scan intelligent de vos factures et étiquettes DLC. Gestion documentaire automatisée.</p>
+                        <div class="feature">
+                            <div class="feature-icon">👁️</div>
+                            <div class="feature-text">
+                                <h3>Vision IA Gemini</h3>
+                                <p>Analyse instantanée des factures fournisseurs et gestion stricte des DLC pour un contrôle total.</p>
+                            </div>
                         </div>
-                        <div class="feature-card">
-                            <h3>💸 Portail Autonome</h3>
-                            <p>Encaissement sans friction via QR Code. Rotation des tables accélérée et augmentation immédiate de la rentabilité.</p>
+                        <div class="feature">
+                            <div class="feature-icon">💳</div>
+                            <div class="feature-text">
+                                <h3>Portail Autonome</h3>
+                                <p>Encaissement digitalisé et division d'addition sans attente. Maximisez la rotation de vos tables.</p>
+                            </div>
                         </div>
                     </div>
-
-                    <form class="checkout-section" action="/create-checkout-session" method="GET">
-                        <h2>🔒 Création de votre instance sécurisée</h2>
+                </div>
+                
+                <div class="checkout-box">
+                    <h2>Déployer votre instance</h2>
+                    <form action="/create-checkout-session" method="GET">
                         <div class="input-group">
-                            <input type="text" placeholder="Nom de l'Établissement" required>
-                            <input type="email" placeholder="Email du Dirigeant" required>
-                        </div>
-                        <div class="input-group">
+                            <input type="text" placeholder="Nom de l'établissement" required>
+                            <input type="email" placeholder="Email de la direction" required>
                             <input type="text" placeholder="Numéro SIRET" required>
-                            <input type="text" placeholder="Numéro de TVA Intracommunautaire">
                         </div>
-                        <button type="submit" class="btn-pay">INITIALISER MON SYSTÈME (99€/MOIS)</button>
-                        <p style="text-align:center; color:#64748b; font-size:0.8rem; margin-top:15px; margin-bottom:0;">Paiement sécurisé via Stripe. Sans engagement de durée.</p>
+                        <button type="submit" class="btn-submit">Activer l'accès (99€/mois)</button>
+                        <p style="text-align:center; color:var(--text-muted); font-size:0.85rem; margin-top:20px; margin-bottom:0;">Facturation mensuelle sécurisée via Stripe. Sans engagement.</p>
                     </form>
                 </div>
             </div>
@@ -440,12 +441,11 @@ app.get('/', (req, res) => {
                 const urlParams = new URLSearchParams(window.location.search);
                 if (urlParams.get('success') === 'true') {
                     document.getElementById('main-content').innerHTML = \`
-                        <div class="glass-panel success-msg">
-                            <h1>✅ PAIEMENT APPROUVÉ</h1>
-                            <p>Félicitations. Votre infrastructure est en cours de déploiement.</p>
-                            <p style="font-size: 0.9rem;">Vérifiez vos e-mails. Vous allez recevoir vos accès uniques et votre Master PIN dans quelques instants.</p>
-                            <br>
-                            <a href="/" class="btn-outline">Retour à l'accueil</a>
+                        <div style="grid-column: 1/-1; text-align: center; padding: 100px 20px; background: var(--panel); border: 1px solid var(--border); border-radius: 24px; box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5);">
+                            <div style="font-size: 5rem; margin-bottom: 20px;">✅</div>
+                            <h1 style="font-size: 3.5rem; margin-bottom: 15px; letter-spacing: -1px;">Paiement validé</h1>
+                            <p style="font-size: 1.2rem; color: var(--text-muted); max-width: 600px; margin: 0 auto 40px auto; line-height: 1.6;">Félicitations. Le déploiement de votre infrastructure Empire OS est en cours. Vos accès administrateurs stricts vous seront envoyés par e-mail dans quelques instants.</p>
+                            <a href="/" style="color: var(--gold); text-decoration: none; font-weight: 900; border: 2px solid var(--gold); padding: 15px 30px; border-radius: 10px; text-transform: uppercase; letter-spacing: 1px; transition: 0.2s;" onmouseover="this.style.background='var(--gold)'; this.style.color='#000';" onmouseout="this.style.background='transparent'; this.style.color='var(--gold)';">Retour à l'accueil</a>
                         </div>
                     \`;
                 }
@@ -453,4 +453,6 @@ app.get('/', (req, res) => {
         </body>
         </html>
     `);
-});> console.log("🚀 Empire OS est en ligne sur le port " + PORT));
+});
+
+app.listen(PORT, () => console.log("🚀 Empire OS est en ligne sur le port " + PORT));
