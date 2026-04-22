@@ -351,7 +351,7 @@ app.get('/create-checkout-session', async (req, res) => {
 });
 
 // ==========================================
-// 🏠 MISE EN RAYON : CATALOGUE & INFOS LÉGALES
+// 🏠 VITRINE DE VENTE & ONBOARDING (LANDING PAGE)
 // ==========================================
 app.get('/', (req, res) => {
     res.send(`
@@ -360,40 +360,97 @@ app.get('/', (req, res) => {
         <head>
             <meta charset="UTF-8">
             <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <title>Empire OS - L'Infrastructure des Leaders</title>
             <style>
-                body { background:#0f172a; color:#f8fafc; font-family: sans-serif; padding: 20px; }
-                .container { max-width: 800px; margin: 0 auto; background: #1e293b; padding: 40px; border-radius: 20px; border: 1px solid #fbbf24; }
-                h1 { color: #fbbf24; text-align: center; }
-                .module-card { background: #334155; padding: 15px; border-radius: 10px; margin-bottom: 15px; border-left: 5px solid #fbbf24; }
-                input { width: 100%; padding: 12px; margin: 10px 0; border-radius: 8px; border: none; background: #0f172a; color: white; }
-                .btn-pay { background: #fbbf24; color: black; padding: 20px; border: none; border-radius: 10px; font-weight: bold; width: 100%; cursor: pointer; font-size: 1.1rem; }
+                @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;500;700;900&display=swap');
+                body { background: #090e17; color: #f8fafc; font-family: 'Inter', sans-serif; margin: 0; padding: 0; display: flex; justify-content: center; align-items: center; min-height: 100vh; }
+                .wrapper { max-width: 900px; width: 90%; margin: 40px auto; }
+                
+                .hero { text-align: center; margin-bottom: 40px; }
+                .hero h1 { color: #fbbf24; font-size: 3rem; font-weight: 900; letter-spacing: 2px; text-transform: uppercase; margin-bottom: 10px; text-shadow: 0 0 20px rgba(251, 191, 36, 0.3); }
+                .hero p { color: #94a3b8; font-size: 1.2rem; }
+
+                .glass-panel { background: rgba(30, 41, 59, 0.7); backdrop-filter: blur(10px); border: 1px solid rgba(255,255,255,0.1); border-radius: 24px; padding: 40px; box-shadow: 0 20px 40px rgba(0,0,0,0.5); }
+                
+                .grid-features { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 20px; margin-bottom: 40px; }
+                .feature-card { background: #0f172a; border: 1px solid #334155; padding: 20px; border-radius: 16px; transition: transform 0.3s; position: relative; overflow: hidden; }
+                .feature-card::before { content: ''; position: absolute; top: 0; left: 0; width: 4px; height: 100%; background: #fbbf24; }
+                .feature-card:hover { transform: translateY(-5px); border-color: #fbbf24; }
+                .feature-card h3 { margin: 0 0 10px 0; color: #f8fafc; font-size: 1.2rem; display: flex; align-items: center; gap: 10px; }
+                .feature-card p { margin: 0; color: #64748b; font-size: 0.9rem; line-height: 1.5; }
+
+                .checkout-section { background: #0f172a; padding: 30px; border-radius: 16px; border: 1px solid #334155; }
+                .checkout-section h2 { color: #fbbf24; text-transform: uppercase; font-size: 1.2rem; margin-top: 0; margin-bottom: 20px; letter-spacing: 1px; display: flex; align-items: center; gap: 10px; }
+                
+                .input-group { display: grid; grid-template-columns: 1fr 1fr; gap: 15px; margin-bottom: 20px; }
+                @media (max-width: 600px) { .input-group { grid-template-columns: 1fr; } }
+                
+                input { width: 100%; padding: 15px; box-sizing: border-box; border-radius: 10px; border: 1px solid #334155; background: #1e293b; color: white; font-family: 'Inter', sans-serif; font-size: 1rem; outline: none; transition: 0.3s; }
+                input:focus { border-color: #fbbf24; box-shadow: 0 0 0 3px rgba(251, 191, 36, 0.1); }
+                
+                .btn-pay { background: linear-gradient(135deg, #fbbf24 0%, #d97706 100%); color: #000; padding: 20px; border: none; border-radius: 12px; font-weight: 900; width: 100%; cursor: pointer; font-size: 1.1rem; text-transform: uppercase; letter-spacing: 1px; transition: 0.3s; box-shadow: 0 10px 20px rgba(251, 191, 36, 0.2); }
+                .btn-pay:hover { transform: scale(1.02); box-shadow: 0 15px 30px rgba(251, 191, 36, 0.4); }
+                
+                .success-msg { text-align: center; padding: 40px; }
+                .success-msg h1 { color: #34d399; font-size: 3rem; margin-bottom: 10px; }
+                .success-msg p { color: #94a3b8; font-size: 1.2rem; margin-bottom: 30px; }
+                .btn-outline { display: inline-block; padding: 12px 30px; border: 2px solid #fbbf24; color: #fbbf24; text-decoration: none; border-radius: 8px; font-weight: bold; transition: 0.3s; }
+                .btn-outline:hover { background: #fbbf24; color: #000; }
             </style>
         </head>
         <body>
-            <div class="container" id="main-content">
-                <h1>EMPIRE OS : CATALOGUE</h1>
-                <div class="module-card"><h3>✅ Core SAS Cuisine</h3><p>Régulation automatique des flux de commandes.</p></div>
-                <div class="module-card"><h3>✅ Bureau IA Gemini</h3><p>Reconnaissance intelligente des factures et étiquettes DLC.</p></div>
-                <div class="module-card"><h3>✅ Portail QR Code</h3><p>Paiement digitalisé et addition autonome.</p></div>
+            <div class="wrapper" id="main-content">
+                <div class="hero">
+                    <h1>EMPIRE OS</h1>
+                    <p>L'Infrastructure d'Élite pour la Restauration Haut de Gamme.</p>
+                </div>
+                
+                <div class="glass-panel">
+                    <div class="grid-features">
+                        <div class="feature-card">
+                            <h3>⚡ KDS & SAS Cuisine</h3>
+                            <p>Régulation algorithmique des flux de commandes. Finis les coups de feu ingérables. Votre cuisine tourne à la perfection.</p>
+                        </div>
+                        <div class="feature-card">
+                            <h3>🤖 Bureau IA Gemini</h3>
+                            <p>Scan intelligent de vos factures et étiquettes DLC. Gestion documentaire automatisée.</p>
+                        </div>
+                        <div class="feature-card">
+                            <h3>💸 Portail Autonome</h3>
+                            <p>Encaissement sans friction via QR Code. Rotation des tables accélérée et augmentation immédiate de la rentabilité.</p>
+                        </div>
+                    </div>
 
-                <form action="/create-checkout-session" method="GET">
-                    <h2 style="color:#fbbf24; border-bottom:1px solid #334155;">Infos Légales</h2>
-                    <input type="text" placeholder="Nom de la Société" required>
-                    <input type="text" placeholder="Numéro SIRET" required>
-                    <input type="text" placeholder="Numéro de TVA" required>
-                    <input type="email" placeholder="Email de facturation" required>
-                    <button type="submit" class="btn-pay">ACTIVER MON ACCÈS (99€/MOIS)</button>
-                </form>
+                    <form class="checkout-section" action="/create-checkout-session" method="GET">
+                        <h2>🔒 Création de votre instance sécurisée</h2>
+                        <div class="input-group">
+                            <input type="text" placeholder="Nom de l'Établissement" required>
+                            <input type="email" placeholder="Email du Dirigeant" required>
+                        </div>
+                        <div class="input-group">
+                            <input type="text" placeholder="Numéro SIRET" required>
+                            <input type="text" placeholder="Numéro de TVA Intracommunautaire">
+                        </div>
+                        <button type="submit" class="btn-pay">INITIALISER MON SYSTÈME (99€/MOIS)</button>
+                        <p style="text-align:center; color:#64748b; font-size:0.8rem; margin-top:15px; margin-bottom:0;">Paiement sécurisé via Stripe. Sans engagement de durée.</p>
+                    </form>
+                </div>
             </div>
             <script>
                 const urlParams = new URLSearchParams(window.location.search);
                 if (urlParams.get('success') === 'true') {
-                    document.getElementById('main-content').innerHTML = '<h1 style="color:#22c55e;">✅ PAIEMENT VALIDÉ</h1><p>Bienvenue dans l\\'écosystème Flavien. Vos accès sont prêts.</p><br><a href="/" style="color:#fbbf24;">Retour à l\\'accueil</a>';
+                    document.getElementById('main-content').innerHTML = \`
+                        <div class="glass-panel success-msg">
+                            <h1>✅ PAIEMENT APPROUVÉ</h1>
+                            <p>Félicitations. Votre infrastructure est en cours de déploiement.</p>
+                            <p style="font-size: 0.9rem;">Vérifiez vos e-mails. Vous allez recevoir vos accès uniques et votre Master PIN dans quelques instants.</p>
+                            <br>
+                            <a href="/" class="btn-outline">Retour à l'accueil</a>
+                        </div>
+                    \`;
                 }
             </script>
         </body>
         </html>
     `);
-});
-
-app.listen(PORT, () => console.log("🚀 Empire OS est en ligne sur le port " + PORT));
+});> console.log("🚀 Empire OS est en ligne sur le port " + PORT));
