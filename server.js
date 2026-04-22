@@ -437,6 +437,14 @@ app.get('/', (req, res) => {
                     </form>
                 </div>
             </div>
+            const mongoose = require('mongoose');
+
+// Remplacez LE_MOT_DE_PASSE_COPIE par la clé que vous venez de générer à l'étape 2
+const mongoURI = "mongodb+srv://icheflavien_db_user:Pupuchurro79811981.cluster0.4w95d7m.mongodb.net/ichef_production?retryWrites=true&w=majority";
+
+mongoose.connect(mongoURI)
+  .then(() => console.log('🔥 Connexion Atlas réussie : Le fichier JSON est mort, l\'infrastructure est en ligne.'))
+  .catch(err => console.error('Erreur critique de base de données :', err));
             <script>
                 const urlParams = new URLSearchParams(window.location.search);
                 if (urlParams.get('success') === 'true') {
