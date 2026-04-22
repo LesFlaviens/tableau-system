@@ -14,14 +14,16 @@ app.use(express.static(path.join(__dirname)));
 // ==========================================
 // 🧠 CONNEXION MONGODB (COFFRE-FORT CLOUD)
 // ==========================================
-const MONGO_URI = process.env.MONGODB_URI;
-if (MONGO_URI) {
-    mongoose.connect(MONGO_URI)
-        .then(() => console.log('🟢 Base de données Cloud Empire OS connectée !'))
-        .catch(err => console.error('🔴 Erreur de connexion MongoDB :', err));
-}
+// RAPPEL : Insérez votre vrai mot de passe ci-dessous (gardez bien le @ après le mot de passe)
+const mongoURI = "mongodb+srv://icheflavien_db_user:VOTRE_MOT_DE_PASSE@cluster0.4w95d7m.mongodb.net/ichef_production?retryWrites=true&w=majority";
 
-// 🏗️ MODÈLE CLIENT (TENANT)
+mongoose.connect(mongoURI)
+    .then(() => console.log('🔥 Connexion Atlas réussie : Le fichier JSON est mort, l\'infrastructure est en ligne.'))
+    .catch(err => console.error('🔴 Erreur critique de base de données :', err));
+
+// ==========================================
+// 🏗️ MODÈLES DE BASE DE DONNÉES
+// ==========================================
 const tenantSchema = new mongoose.Schema({
     tenantID: { type: String, required: true, unique: true },
     clientName: String,
@@ -30,6 +32,13 @@ const tenantSchema = new mongoose.Schema({
     config: Object
 });
 const Tenant = mongoose.model('Tenant', tenantSchema);
+
+const stateSchema = new mongoose.Schema({
+    id: { type: String, required: true },
+    activeOrders: { type: Object, default: {} },
+    sasConfig: { type: Object, default: { active: true, maxTables: 5, delaySeconds: 60 } }
+});
+const EmpireState = mongoose.model('EmpireState', stateSchema);
 
 // ==========================================
 // 🛡️ SÉCURITÉ & VÉRIFICATION TENANT
@@ -53,22 +62,10 @@ app.get('/verify-tenant/:tenantID', async (req, res) => {
 });
 
 // ==========================================
-// 💾 SAUVEGARDE PERMANENTE (MONGODB) MULTI-TENANT
-// ==========================================
-const stateSchema = new mongoose.Schema({
-    id: { type: String, required: true }, // Sera désormais le tenantID
-    activeOrders: { type: Object, default: {} },
-    sasConfig: { type: Object, default: { active: true, maxTables: 5, delaySeconds: 60 } }
-});
-const EmpireState = mongoose.model('EmpireState', stateSchema);
-
-// ==========================================
 // 🚦 LOGIQUE SAS CUISINE & MÉMOIRE ACTIVE MULTI-TENANT
 // ==========================================
-// La mémoire vive est désormais indexée par tenantID
 let tenantsState = {}; 
 
-// Fonction pour initialiser un tenant en mémoire s'il n'existe pas
 async function initTenantState(tenantID) {
     if (!tenantsState[tenantID]) {
         try {
@@ -91,7 +88,6 @@ async function initTenantState(tenantID) {
             }
         } catch (err) {
             console.error(`Erreur lecture DB State pour ${tenantID}:`, err);
-            // Fallback de sécurité
             tenantsState[tenantID] = { activeOrders: {}, sasConfig: { active: true, maxTables: 5, delaySeconds: 60 }, webOrderQueue: [], lastSasRelease: 0 };
         }
     }
@@ -99,36 +95,25 @@ async function initTenantState(tenantID) {
 }
 
 app.get('/get-current-state', async (req, res) => {
-    // 💡 Nouveau paramètre: tenantID requis
-    const tenantID = req.query.tenantID || 'MASTER_STATE'; // MASTER_STATE par défaut pour la compatibilité avec tes anciens tests
+    const tenantID = req.query.tenantID || 'MASTER_STATE';
     const state = await initTenantState(tenantID);
     res.json({ activeOrders: state.activeOrders, sasConfig: state.sasConfig });
 });
 
 app.post('/update-order', async (req, res) => {
-    // 💡 Nouveau paramètre: tenantID requis
     const tenantID = req.query.tenantID || 'MASTER_STATE';
     const { tableId, order } = req.body;
-    
     const state = await initTenantState(tenantID);
 
-    // 1. Mise à jour de la mémoire vive pour ce tenant
     if (order === null) {
         delete state.activeOrders[tableId];
     } else {
         state.activeOrders[tableId] = order;
     }
     
-    // 2. Gravure immédiate dans la base de données pour ce tenant
     try {
-        await EmpireState.findOneAndUpdate(
-            { id: tenantID }, 
-            { activeOrders: state.activeOrders }, 
-            { upsert: true }
-        );
-    } catch (e) {
-        console.error(`🔴 Erreur sauvegarde DB pour ${tenantID}:`, e);
-    }
+        await EmpireState.findOneAndUpdate({ id: tenantID }, { activeOrders: state.activeOrders }, { upsert: true });
+    } catch (e) { console.error(`🔴 Erreur sauvegarde DB pour ${tenantID}:`, e); }
     
     res.json({ success: true });
 });
@@ -146,16 +131,12 @@ app.post('/update-sas', async (req, res) => {
         }
     }
     
-    // Sauvegarde de la config SAS
-    try {
-        await EmpireState.findOneAndUpdate({ id: tenantID }, { sasConfig: state.sasConfig }, { upsert: true });
-    } catch(e) {}
+    try { await EmpireState.findOneAndUpdate({ id: tenantID }, { sasConfig: state.sasConfig }, { upsert: true }); } catch(e) {}
     
     res.json({ success: true, sasConfig: state.sasConfig });
 });
 
 setInterval(() => {
-    // Boucle sur tous les tenants actifs en mémoire
     for (let tenantID in tenantsState) {
         let state = tenantsState[tenantID];
         if (state.sasConfig.active && state.webOrderQueue.length > 0) {
@@ -166,8 +147,6 @@ setInterval(() => {
                     let nextOrder = state.webOrderQueue.shift();
                     state.activeOrders[nextOrder.tableId] = nextOrder.order;
                     state.lastSasRelease = now;
-                    
-                    // Mettre à jour MongoDB après l'injection
                     EmpireState.findOneAndUpdate({ id: tenantID }, { activeOrders: state.activeOrders }, { upsert: true }).catch(()=>{});
                 }
             }
@@ -302,7 +281,6 @@ app.get('/portail-client', async (req, res) => {
     }
 });
 
-// Page de confirmation pour le client
 app.get('/paiement-succes', (req, res) => {
     res.send(`
         <!DOCTYPE html>
@@ -330,7 +308,7 @@ app.post('/analyse-ticket', async (req, res) => {
         const payload = { contents: [{ parts: [{ text: promptSysteme }, { inline_data: { mime_type: mimeType || "image/jpeg", data: image } }] }] };
         const response = await fetch("https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=" + API_KEY, { method: "POST", body: JSON.stringify(payload) });
         const data = await response.json();
-        res.json({ resultat: JSON.parse(data.candidates[0].content.parts[0].text.replace(/\\`\\`\\`json|\\`\\`\\`/g, '').trim()) });
+        res.json({ resultat: JSON.parse(data.candidates[0].content.parts[0].text.replace(/\`\`\`json|\`\`\`/g, '').trim()) });
     } catch (error) { res.status(500).json({ error: error.message }); }
 });
 
@@ -349,6 +327,7 @@ app.get('/create-checkout-session', async (req, res) => {
         res.redirect(303, session.url);
     } catch (error) { res.status(500).send("Erreur Stripe."); }
 });
+
 // ==========================================
 // 🏠 VITRINE DE VENTE & ONBOARDING (LANDING PAGE PREMIUM)
 // ==========================================
@@ -437,14 +416,7 @@ app.get('/', (req, res) => {
                     </form>
                 </div>
             </div>
-            const mongoose = require('mongoose');
-
-// Remplacez LE_MOT_DE_PASSE_COPIE par la clé que vous venez de générer à l'étape 2
-const mongoURI = "mongodb+srv://icheflavien_db_user:Pupuchurro79811981.cluster0.4w95d7m.mongodb.net/ichef_production?retryWrites=true&w=majority";
-
-mongoose.connect(mongoURI)
-  .then(() => console.log('🔥 Connexion Atlas réussie : Le fichier JSON est mort, l\'infrastructure est en ligne.'))
-  .catch(err => console.error('Erreur critique de base de données :', err));
+            
             <script>
                 const urlParams = new URLSearchParams(window.location.search);
                 if (urlParams.get('success') === 'true') {
