@@ -18,6 +18,9 @@
         .logo span { color: var(--gold); font-weight: 800; }
         #sync-status { font-size: 0.7rem; color: var(--success); letter-spacing: 1px; }
 
+        .btn-back { background: var(--danger); color: white; border: none; padding: 10px 20px; border-radius: 6px; font-weight: bold; cursor: pointer; transition: 0.2s; text-transform: uppercase; }
+        .btn-back:hover { filter: brightness(1.2); transform: scale(0.98); }
+
         .section { background: var(--panel); border: 1px solid var(--border); border-radius: 16px; padding: 25px; margin-bottom: 30px; }
         h2 { font-size: 0.8rem; text-transform: uppercase; letter-spacing: 2px; color: var(--gold); margin-top: 0; margin-bottom: 20px; }
 
@@ -49,8 +52,11 @@
 <body>
 
     <header>
-        <div class="logo">iCHEF<span>.</span> ADMIN</div>
-        <div id="sync-status">● SYNC SERVEUR LIVE</div>
+        <div>
+            <div class="logo">iCHEF<span>.</span> ADMIN</div>
+            <div id="sync-status">● SYNC SERVEUR LIVE</div>
+        </div>
+        <button class="btn-back" onclick="backToPad()">🔙 Retour au Service (PAD)</button>
     </header>
 
     <div class="section">
@@ -86,30 +92,45 @@
     </div>
 
     <script>
+        // --- CONFIGURATION CLIENT (MULTI-TENANT) ---
+        const urlParams = new URLSearchParams(window.location.search);
+        const tenantID = urlParams.get('tenantID') || 'MASTER_STATE';
         const SERVER_URL = "https://tableau-system.onrender.com";
-        const BASE_CLIENT_URL = window.location.href.replace('admin.html', 'menu-qr.html');
+        
+        // Base URL propre sans les paramètres existants pour créer le lien du QR Code
+        const BASE_CLIENT_URL = window.location.origin + window.location.pathname.replace('admin.html', 'menu-qr.html');
 
         let fullState = {};
         let currentTableNum = null;
-        let tableRegistry = JSON.parse(localStorage.getItem('ichef_registry') || '[]');
+        let currentQrUrlObj = null;
+        
+        // Séparation des données QR Codes par restaurant
+        const registryKey = 'ichef_registry_' + tenantID;
+        let tableRegistry = JSON.parse(localStorage.getItem(registryKey) || '[]');
+
+        // --- NAVIGATION ---
+        function backToPad() {
+            window.location.href = 'gestionnaire.html?tenantID=' + tenantID;
+        }
 
         // --- 1. GESTION DU PARC ---
         function previewQR() {
             currentTableNum = document.getElementById('table-num').value;
             if(!currentTableNum) return alert("Numéro requis");
 
-            const url = `${BASE_CLIENT_URL}?table=${currentTableNum}`;
-            const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=${encodeURIComponent(url)}`;
+            // Création de l'URL du QR Code attachée au compte du client
+            currentQrUrlObj = `${BASE_CLIENT_URL}?tenantID=${tenantID}&table=${currentTableNum}`;
+            const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=${encodeURIComponent(currentQrUrlObj)}`;
             
             document.getElementById('qr-preview').style.display = 'block';
             document.getElementById('qr-img').innerHTML = `<img src="${qrUrl}">`;
-            document.getElementById('qr-link-display').innerText = url;
+            document.getElementById('qr-link-display').innerText = currentQrUrlObj;
         }
 
         function registerTable() {
             if(tableRegistry.find(t => t.num == currentTableNum)) return alert("Déjà enregistrée");
-            tableRegistry.push({ num: currentTableNum, url: `${BASE_CLIENT_URL}?table=${currentTableNum}` });
-            localStorage.setItem('ichef_registry', JSON.stringify(tableRegistry));
+            tableRegistry.push({ num: currentTableNum, url: currentQrUrlObj });
+            localStorage.setItem(registryKey, JSON.stringify(tableRegistry));
             renderRegistry();
             document.getElementById('qr-preview').style.display = 'none';
         }
@@ -131,7 +152,7 @@
         function deleteTable(idx) {
             if(confirm("Supprimer cette table ?")) {
                 tableRegistry.splice(idx, 1);
-                localStorage.setItem('ichef_registry', JSON.stringify(tableRegistry));
+                localStorage.setItem(registryKey, JSON.stringify(tableRegistry));
                 renderRegistry();
             }
         }
@@ -148,13 +169,15 @@
                 </div>
             `);
             win.document.close();
-            win.print();
+            win.document.title = `Imprimer QR_Table_${num}`;
+            setTimeout(() => { win.print(); }, 500); // Laisse le temps à l'image de charger
         }
 
         // --- 2. GESTION DES STOCKS ---
         async function fetchLiveStocks() {
             try {
-                const r = await fetch(`${SERVER_URL}/get-current-state`);
+                // On récupère uniquement l'état du restaurant en cours (tenantID)
+                const r = await fetch(`${SERVER_URL}/get-current-state?tenantID=${tenantID}`);
                 fullState = await r.json();
                 renderStocks();
             } catch(e) { console.error("Erreur sync"); }
@@ -195,9 +218,9 @@
             fullState.activeOrders[sourceId].data[cat][idx].stock = currentlyOut ? 99 : 0;
             renderStocks(); // Feedback visuel instantané
 
-            // Push au serveur
+            // Push au serveur sur le compte du client
             try {
-                await fetch(`${SERVER_URL}/update-order`, {
+                await fetch(`${SERVER_URL}/update-order?tenantID=${tenantID}`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ 
@@ -205,7 +228,7 @@
                         order: { data: fullState.activeOrders[sourceId].data } 
                     })
                 });
-                console.log("🔥 Serveur mis à jour");
+                console.log("🔥 Serveur mis à jour pour " + tenantID);
             } catch(e) { alert("Erreur de synchronisation"); }
         }
 
