@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>iChef - Administration Business</title>
+    <style>
+        :root { --bg: #050505; --panel: #111; --gold: #d4af37; --text: #fff; --border: rgba(255,255,255,0.1); }
+        body { font-family: -apple-system, sans-serif; background: var(--bg); color: var(--text); margin: 0; padding: 20px; }
+        h1 { font-weight: 300; letter-spacing: 3px; text-transform: uppercase; color: var(--gold); border-bottom: 1px solid var(--border); padding-bottom: 10px; }
+        
+        .section { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 20px; margin-bottom: 25px; }
+        h2 { font-size: 1rem; text-transform: uppercase; letter-spacing: 1px; margin-top: 0; color: #888; }
+
+        /* GÉNÉRATEUR DE TABLES */
+        .grid-tool { display: flex; gap: 10px; margin-bottom: 20px; }
+        input { background: #000; border: 1px solid var(--border); color: #fff; padding: 12px; border-radius: 8px; flex: 1; outline: none; }
+        button { background: var(--gold); color: #000; border: none; padding: 12px 20px; border-radius: 8px; font-weight: bold; cursor: pointer; }
+        #qr-result { text-align: center; margin-top: 20px; display: none; background: #fff; padding: 20px; border-radius: 12px; color: #000; }
+
+        /* GESTION STOCK */
+        .item-row { display: flex; justify-content: space-between; align-items: center; padding: 15px 0; border-bottom: 1px solid var(--border); }
+        .item-info { flex: 1; }
+        .status-badge { padding: 5px 10px; border-radius: 20px; font-size: 0.7rem; font-weight: bold; text-transform: uppercase; }
+        .in-stock { background: rgba(0,255,0,0.1); color: #00ff00; border: 1px solid #00ff00; }
+        .out-of-stock { background: rgba(255,0,0,0.1); color: #ff0000; border: 1px solid #ff0000; }
+        .toggle-btn { background: transparent; border: 1px solid var(--gold); color: var(--gold); padding: 8px 15px; border-radius: 6px; cursor: pointer; font-size: 0.8rem; }
+    </style>
+</head>
+<body>
+
+    <h1>iChef<span>.</span> Admin</h1>
+
+    <div class="section">
+        <h2>Générateur de QR Table</h2>
+        <div class="grid-tool">
+            <input type="number" id="table-input" placeholder="Numéro de la table (ex: 12)">
+            <button onclick="generateTableQR()">Générer</button>
+        </div>
+        <div id="qr-result">
+            <div id="qr-code-img"></div>
+            <p id="qr-link" style="font-size: 0.8rem; word-break: break-all; margin-top: 15px; color: #666;"></p>
+            <button style="background:#000; color:#fff;" onclick="window.print()">Imprimer pour la table</button>
+        </div>
+    </div>
+
+    <div class="section">
+        <h2>Gestion de la Carte (Temps Réel)</h2>
+        <div id="stock-list">Chargement du menu...</div>
+    </div>
+
+    <script>
+        const SERVER_URL = "https://tableau-system.onrender.com";
+        const CLIENT_APP_URL = "https://TON-LIEN-VERS-MENU-QR.com/menu-qr.html"; // METTRE TON URL ICI
+
+        let currentMenu = {};
+
+        async function fetchMenu() {
+            try {
+                const response = await fetch(`${SERVER_URL}/get-current-state`);
+                const state = await response.json();
+                currentMenu = state.activeOrders['MENU_MASTER'].data;
+                renderStockManager();
+            } catch (e) { console.error("Erreur chargement menu", e); }
+        }
+
+        function renderStockManager() {
+            const container = document.getElementById('stock-list');
+            container.innerHTML = "";
+
+            for (let cat in currentMenu) {
+                let items = currentMenu[cat];
+                items.forEach((item, idx) => {
+                    let isAvailable = (item.stock !== 0 && item.stock !== "0");
+                    const div = document.createElement('div');
+                    div.className = "item-row";
+                    div.innerHTML = `
+                        <div class="item-info">
+                            <div style="font-weight:bold;">${item.name}</div>
+                            <div style="font-size:0.8rem; color:#888;">${cat}</div>
+                        </div>
+                        <div style="display:flex; align-items:center; gap:15px;">
+                            <span class="status-badge ${isAvailable ? 'in-stock' : 'out-of-stock'}">${isAvailable ? 'Disponible' : 'Épuisé'}</span>
+                            <button class="toggle-btn" onclick="toggleStock('${cat}', ${idx})">
+                                ${isAvailable ? 'Mettre en Épuisé' : 'Réactiver'}
+                            </button>
+                        </div>
+                    `;
+                    container.appendChild(div);
+                });
+            }
+        }
+
+        async function toggleStock(cat, index) {
+            let item = currentMenu[cat][index];
+            // On bascule entre 0 (épuisé) et 99 (en stock)
+            item.stock = (item.stock === 0 || item.stock === "0") ? 99 : 0;
+            
+            // Mise à jour immédiate sur le serveur
+            await fetch(`${SERVER_URL}/update-order`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ tableId: 'MENU_MASTER', order: { data: currentMenu } })
+            });
+            
+            renderStockManager();
+        }
+
+        function generateTableQR() {
+            const tableNum = document.getElementById('table-input').value;
+            if(!tableNum) return alert("Entrez un numéro");
+
+            const finalUrl = `${CLIENT_APP_URL}?table=${tableNum}`;
+            const qrImg = `https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=${encodeURIComponent(finalUrl)}`;
+
+            document.getElementById('qr-result').style.display = 'block';
+            document.getElementById('qr-code-img').innerHTML = `<img src="${qrImg}" alt="QR Code">`;
+            document.getElementById('qr-link').innerText = finalUrl;
+        }
+
+        window.onload = fetchMenu;
+    </script>
+</body>
+</html>
