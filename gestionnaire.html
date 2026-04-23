@@ -1008,29 +1008,67 @@ vérifier si il ya alter au manque de food
         </div>
     </div>
 
-    <script>
+<script>
     const urlParams = new URLSearchParams(window.location.search);
     const tenantID = urlParams.get('tenantID') || 'MASTER_STATE';
     const SERVER_URL = (window.location.protocol === 'file:') ? 'https://tableau-system.onrender.com' : '';
 
     const API = {
         getState: async () => {
-            let r = await fetch(`${SERVER_URL}/get-current-state?tenantID=${tenantID}`);
-            if (!r.ok) throw new Error("Serveur injoignable");
-            return await r.json();
+            let state = { activeOrders: {} };
+            try {
+                let url = (window.location.protocol === 'file:') ? `${SERVER_URL}/get-current-state?tenantID=${tenantID}` : `/get-current-state?tenantID=${tenantID}`;
+                let r = await fetch(url);
+                if(r.ok) {
+                    state = await r.json();
+                    let tag = document.getElementById('stock-tag');
+                    if (tag && (tag.innerText.includes('DÉCONNECTÉ') || tag.innerText.includes('ERREUR'))) {
+                        tag.innerHTML = '● LIAISON SÉCURISÉE';
+                        tag.style.background = 'var(--accent-dim)';
+                        tag.style.color = 'var(--accent)';
+                        tag.style.borderColor = 'var(--accent)';
+                    }
+                } else { throw new Error("HTTP " + r.status); }
+            } catch(e) {
+                state = JSON.parse(localStorage.getItem('EMPIRE_GLOBAL_SYNC')) || { activeOrders: {} };
+                let tag = document.getElementById('stock-tag');
+                if (tag && !tag.innerText.includes('DÉCONNECTÉ')) {
+                    tag.innerHTML = '🔴 SERVEUR DÉCONNECTÉ';
+                    tag.style.background = 'var(--alert-dim)';
+                    tag.style.color = 'var(--alert)';
+                    tag.style.borderColor = 'var(--alert)';
+                }
+            }
+            return state;
         },
-        update: async (key, data) => {
-            let isOrder = !key.includes('MASTER') && !key.includes('ARCHIVE') && !key.includes('SUPPLIER') && !key.includes('PLANNING') && !key.includes('MENU') && !key.includes('DIRECTORY') && !key.includes('ALERTS') && !key.includes('ARCHITECTURE');
+        update: async (key, data, isOrder = false) => {
             let payload = isOrder ? data : { data: data };
-            try { 
-                await fetch(`${SERVER_URL}/update-order?tenantID=${tenantID}`, { 
+            
+            let state = JSON.parse(localStorage.getItem('EMPIRE_GLOBAL_SYNC')) || { activeOrders: {} };
+            if (data === null) delete state.activeOrders[key];
+            else state.activeOrders[key] = payload;
+            localStorage.setItem('EMPIRE_GLOBAL_SYNC', JSON.stringify(state));
+            
+            let url = (window.location.protocol === 'file:') ? `${SERVER_URL}/update-order?tenantID=${tenantID}` : `/update-order?tenantID=${tenantID}`;
+            try {
+                let r = await fetch(url, { 
                     method: 'POST', 
                     headers: {'Content-Type': 'application/json'}, 
                     body: JSON.stringify({ tableId: key, order: data === null ? null : payload }) 
-                }); 
-            } catch(e) { console.error("Erreur Sync:", e); }
+                });
+                if (!r.ok) throw new Error("Update Failed");
+            } catch(e) {
+                let tag = document.getElementById('stock-tag');
+                if (tag) {
+                    tag.innerHTML = '🔴 ERREUR D\'ENVOI';
+                    tag.style.background = 'var(--alert-dim)';
+                    tag.style.color = 'var(--alert)';
+                    tag.style.borderColor = 'var(--alert)';
+                }
+            }
         }
     };
+
     // --- SYSTÈME D'IDENTIFICATION (PIN PAD) ---
     window.currentPin = window.currentPin || "";
     window.VALID_PINS = {
@@ -1251,236 +1289,6 @@ vérifier si il ya alter au manque de food
         input.value = val;
         if(typeof renderReviewItems === 'function') renderReviewItems(); 
     }
-            
-            let modal = document.getElementById('send-review-modal');
-            if(modal) modal.classList.add('open');
-        }
-
-        function closeSendReviewModal() {
-            let modal = document.getElementById('send-review-modal');
-            if(modal) modal.classList.remove('open');
-        }
-
-        function updateReviewPax() {
-            let select = document.getElementById('review-table-select');
-            if (!select) return;
-            let selectedTable = select.value;
-            if (selectedTable && typeof tables !== 'undefined') {
-                let tObj = tables.find(t => t && t.label === selectedTable);
-                if (tObj && tObj.pax) {
-                    let reviewPaxInput = document.getElementById('review-pax');
-                    if(reviewPaxInput) reviewPaxInput.value = tObj.pax;
-                    if(typeof renderReviewItems === 'function') renderReviewItems();
-                }
-            }
-        }
-
-        function changeReviewPax(delta) {
-            let input = document.getElementById('review-pax');
-            if (!input) return;
-            let val = parseInt(input.value) || 1;
-            val = Math.max(1, val + delta);
-            input.value = val;
-            if(typeof renderReviewItems === 'function') renderReviewItems(); 
-        }
-
-        async function confirmSendReview() {
-            let selectedTable = document.getElementById('review-table-select').value;
-            if (!selectedTable) return alert("Veuillez sélectionner une table pour cette commande.");
-
-            let pax = parseInt(document.getElementById('review-pax').value) || 1;
-            
-            if (currentTable !== selectedTable) {
-                if (currentTable && !currentTable.startsWith("ATTENTE_")) {
-                    await API.update(currentTable, null, true); 
-                }
-                currentTable = selectedTable;
-            }
-
-            let obsInput = document.getElementById('order-obs');
-            let baseObs = obsInput.value.replace(/🍽️ \d+ Couvert\(s\)( \| )?/, '').replace(/ \| $/, '').trim();
-            if (baseObs === "") {
-                obsInput.value = `🍽️ ${pax} Couvert(s)`;
-            } else {
-                obsInput.value = `🍽️ ${pax} Couvert(s) | ${baseObs}`;
-            }
-            
-            let tObj = tables.find(t => t && t.label === currentTable);
-            if (tObj && tObj.pax !== pax) {
-                tObj.pax = pax;
-                pushArchitecture();
-            }
-
-            closeSendReviewModal();
-            await executeSaveTableState(pendingFireAllNew, false);
-        }
-
-        async function autoAssignToday() {
-            if (!currentUser || currentUser.role !== 'Manager') return alert("⛔ Accès Manager requis");
-            
-            let todayStr = new Date().toISOString().split('T')[0];
-            let resasToAssign = reservationsData.filter(r => r.date === todayStr && r.status === 'confirmed' && !r.assignedTable);
-            
-            if (resasToAssign.length === 0) return alert("Aucune réservation confirmée en attente d'assignation pour aujourd'hui.");
-
-            const state = await API.getState();
-            let currentOrders = state.activeOrders || {};
-            let updatesCount = 0;
-
-            for (let resa of resasToAssign) {
-                let availableTables = tables.filter(t => {
-                    let o = currentOrders[t.label];
-                    if (o && (o.status === 'reserved' || (o.items && o.items.length > 0))) return false;
-                    if (t.isExtra) return false; 
-                    return t.pax >= resa.couverts;
-                });
-
-                if (availableTables.length > 0) {
-                    availableTables.sort((a, b) => a.pax - b.pax);
-                    let bestTable = availableTables[0];
-
-                    let tableData = {
-                        status: 'reserved',
-                        time: resa.time,
-                        clientName: resa.name,
-                        observations: `🍽️ ${resa.couverts} Couvert(s)` + (resa.obs ? ` | ⚠️ ${resa.obs}` : ''),
-                        items: []
-                    };
-
-                    currentOrders[bestTable.label] = { data: tableData }; 
-                    await API.update(bestTable.label, tableData, true);
-                    
-                    resa.assignedTable = bestTable.label;
-                    updatesCount++;
-                }
-            }
-
-            if (updatesCount > 0) {
-                await API.update('RESERVATIONS_MASTER', reservationsData);
-                showToast(`✅ ${updatesCount} table(s) assignée(s) automatiquement.`);
-                renderPlanning('today');
-                renderFloor();
-            } else {
-                alert("⚠️ Aucune table adéquate ou disponible n'a été trouvée pour les réservations en attente.");
-            }
-        }
-
-        async function modifyTableCovers() {
-            if (!currentTable) return;
-            
-            let currentPax = "?";
-            let obsInput = document.getElementById('order-obs');
-            let match = obsInput.value.match(/🍽️ (\d+) Couvert\(s\)/);
-            if(match) currentPax = match[1];
-
-            let newPaxStr = prompt(`Combien de couverts à la table ${currentTable} ?`, currentPax);
-            if (newPaxStr === null || newPaxStr.trim() === "") return; 
-            
-            let newPax = parseInt(newPaxStr);
-            if (isNaN(newPax) || newPax <= 0) return alert("Nombre invalide.");
-
-            let baseObs = obsInput.value.replace(/🍽️ \d+ Couvert\(s\)( \| )?/, '').replace(/ \| $/, '').trim();
-            if (baseObs === "") {
-                obsInput.value = `🍽️ ${newPax} Couvert(s)`;
-            } else {
-                obsInput.value = `🍽️ ${newPax} Couvert(s) | ${baseObs}`;
-            }
-
-            let tObj = tables.find(t => t && t.label === currentTable);
-            if (tObj) {
-                tObj.pax = newPax;
-                pushArchitecture();
-            }
-
-            await executeSaveTableState(false, true); 
-            renderSeatBar(); 
-            renderFloor();
-        }
-
-        function changeConfigPax(delta) {
-            let input = document.getElementById('config-table-pax');
-            let val = parseInt(input.value) || 2;
-            val = Math.max(1, val + delta);
-            input.value = val;
-        }
-
-        function closeOrder() { 
-            try {
-                if (currentTable && !currentTable.startsWith("ATTENTE_")) {
-                    let tObj = tables.find(t => t && t.label === currentTable && t.isExtra);
-                    if (tObj && ticketItems.length === 0) {
-                        tables = tables.filter(t => t && t.label !== currentTable);
-                        pushArchitecture();
-                        renderFloor();
-                    }
-                }
-            } catch(e) {
-                console.error("Erreur closeOrder: ", e);
-            }
-            
-            let drawer = document.getElementById('order-drawer');
-            if (drawer) drawer.classList.remove('open'); 
-            currentTable = null; 
-        }
-
-        function openDrawer(id) { document.getElementById(id).classList.add('open'); }
-        function closeDrawer(id) { document.getElementById(id).classList.remove('open'); }
-
-        const API = {
-            getState: async () => {
-                let state = { activeOrders: {} };
-                try {
-                    let url = (window.location.protocol === 'file:') ? 'https://tableau-system.onrender.com/get-current-state' : '/get-current-state';
-                    let r = await fetch(url);
-                    if(r.ok) {
-                        state = await r.json();
-                        let tag = document.getElementById('stock-tag');
-                        if (tag && tag.innerText.includes('DÉCONNECTÉ') || tag.innerText.includes('ERREUR')) {
-                            tag.innerHTML = '● LIAISON SÉCURISÉE';
-                            tag.style.background = 'var(--accent-dim)';
-                            tag.style.color = 'var(--accent)';
-                            tag.style.borderColor = 'var(--accent)';
-                        }
-                    } else { throw new Error("HTTP " + r.status); }
-                } catch(e) {
-                    state = JSON.parse(localStorage.getItem('EMPIRE_GLOBAL_SYNC')) || { activeOrders: {} };
-                    let tag = document.getElementById('stock-tag');
-                    if (tag && !tag.innerText.includes('DÉCONNECTÉ')) {
-                        tag.innerHTML = '🔴 SERVEUR DÉCONNECTÉ';
-                        tag.style.background = 'var(--alert-dim)';
-                        tag.style.color = 'var(--alert)';
-                        tag.style.borderColor = 'var(--alert)';
-                    }
-                }
-                return state;
-            },
-            update: async (key, data, isOrder = false) => {
-                let payload = isOrder ? data : { data: data };
-                
-                let state = JSON.parse(localStorage.getItem('EMPIRE_GLOBAL_SYNC')) || { activeOrders: {} };
-                if (data === null) delete state.activeOrders[key];
-                else state.activeOrders[key] = payload;
-                localStorage.setItem('EMPIRE_GLOBAL_SYNC', JSON.stringify(state));
-                
-                let url = (window.location.protocol === 'file:') ? 'https://tableau-system.onrender.com/update-order' : '/update-order';
-                try {
-                    let r = await fetch(url, { 
-                        method: 'POST', 
-                        headers: {'Content-Type': 'application/json'}, 
-                        body: JSON.stringify({ tableId: key, order: data === null ? null : payload }) 
-                    });
-                    if (!r.ok) throw new Error("Update Failed");
-                } catch(e) {
-                    let tag = document.getElementById('stock-tag');
-                    if (tag) {
-                        tag.innerHTML = '🔴 ERREUR D\'ENVOI';
-                        tag.style.background = 'var(--alert-dim)';
-                        tag.style.color = 'var(--alert)';
-                        tag.style.borderColor = 'var(--alert)';
-                    }
-                }
-            }
-        };
 
         window.addEventListener('storage', (e) => {
             if (e.key === 'EMPIRE_GLOBAL_SYNC') {
