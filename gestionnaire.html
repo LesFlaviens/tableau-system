@@ -1009,6 +1009,7 @@ vérifier si il ya alter au manque de food
     </div>
 
 <script>
+    // --- 1. CONFIGURATION & MOTEUR API ---
     const urlParams = new URLSearchParams(window.location.search);
     const tenantID = urlParams.get('tenantID') || 'MASTER_STATE';
     const SERVER_URL = (window.location.protocol === 'file:') ? 'https://tableau-system.onrender.com' : '';
@@ -1017,36 +1018,50 @@ vérifier si il ya alter au manque de food
         getState: async () => {
             let state = { activeOrders: {} };
             try {
-                let url = (window.location.protocol === 'file:') ? `${SERVER_URL}/get-current-state?tenantID=${tenantID}` : `/get-current-state?tenantID=${tenantID}`;
+                let url = `${SERVER_URL}/get-current-state?tenantID=${tenantID}`;
                 let r = await fetch(url);
                 if(r.ok) {
                     state = await r.json();
                     let tag = document.getElementById('stock-tag');
                     if (tag) {
                         tag.innerHTML = '● LIAISON SÉCURISÉE';
+                        tag.style.background = 'var(--accent-dim)';
                         tag.style.color = 'var(--accent)';
+                        tag.style.borderColor = 'var(--accent)';
                     }
                 }
-            } catch(e) { console.error("Erreur State:", e); }
+            } catch(e) {
+                console.error("Mode Hors-Ligne détecté");
+                state = JSON.parse(localStorage.getItem('EMPIRE_CACHE')) || { activeOrders: {} };
+            }
             return state;
         },
         update: async (key, data, isOrder = false) => {
             let payload = isOrder ? data : { data: data };
-            let url = (window.location.protocol === 'file:') ? `${SERVER_URL}/update-order?tenantID=${tenantID}` : `/update-order?tenantID=${tenantID}`;
+            
+            // Sauvegarde locale de sécurité
+            let cache = JSON.parse(localStorage.getItem('EMPIRE_CACHE')) || { activeOrders: {} };
+            if (data === null) delete cache.activeOrders[key];
+            else cache.activeOrders[key] = payload;
+            localStorage.setItem('EMPIRE_CACHE', JSON.stringify(cache));
+            
             try {
-                await fetch(url, { 
+                await fetch(`${SERVER_URL}/update-order?tenantID=${tenantID}`, { 
                     method: 'POST', 
                     headers: {'Content-Type': 'application/json'}, 
                     body: JSON.stringify({ tableId: key, order: data === null ? null : payload }) 
                 });
-            } catch(e) { console.error("Erreur Sync:", e); }
+            } catch(e) { console.error("Échec de synchronisation cloud"); }
         }
     };
 
-    // --- SYSTÈME D'IDENTIFICATION & SÉCURITÉ ---
+    // --- 2. SÉCURITÉ & ACCÈS DIRECTION ---
     window.currentPin = "";
     window.currentUser = null;
-    window.VALID_PINS = { "1234": "Serveur 1", "9999": "Flavien (Direction)" };
+    window.VALID_PINS = { 
+        "1234": "Serveur 1", 
+        "9999": "Flavien (Direction)" 
+    };
 
     window.appendPin = function(num) {
         if (window.currentPin.length < 4) {
@@ -1077,7 +1092,7 @@ vérifier si il ya alter au manque de food
                 role: userName.includes('Direction') ? 'Manager' : 'Serveur' 
             };
 
-            // Affiche le bouton GESTION uniquement pour la Direction
+            // Activation du bouton GESTION uniquement pour vous
             if (window.currentUser.role === 'Manager' && adminBtn) {
                 adminBtn.style.display = 'flex'; 
             }
@@ -1095,18 +1110,6 @@ vérifier si il ya alter au manque de food
         }
     };
 
-    // --- FONCTIONS DE GESTION (RESTAURÉES) ---
-    window.openAdminCatalog = function() {
-        if (!window.currentUser || window.currentUser.role !== 'Manager') {
-            return alert("Accès réservé à la Direction.");
-        }
-        document.getElementById('admin-catalog-modal').classList.add('open');
-    };
-
-    window.closeAdminCatalog = function() {
-        document.getElementById('admin-catalog-modal').classList.remove('open');
-    };
-
     window.logout = function() {
         window.currentUser = null;
         window.currentPin = "";
@@ -1115,14 +1118,24 @@ vérifier si il ya alter au manque de food
         window.updatePinDisplay();
     };
 
-    // --- VARIABLES GLOBALES ---
+    // --- 3. GESTION DU CATALOGUE & MODALES ---
+    window.openAdminCatalog = function() {
+        if (!window.currentUser || window.currentUser.role !== 'Manager') return;
+        document.getElementById('admin-catalog-modal').classList.add('open');
+    };
+
+    window.closeAdminCatalog = function() {
+        document.getElementById('admin-catalog-modal').classList.remove('open');
+    };
+
+    // --- 4. VARIABLES GLOBALES OPÉRATIONNELLES ---
     let activeOrders = {}; 
     let currentTable = null; 
     let ticketItems = []; 
     let currentSeat = 0;
     let pendingFireAllNew = false;
 
-    // --- FONCTIONS DE COMMANDE ---
+    // --- 5. LOGIQUE DE COMMANDE (UI) ---
     function openQuickOrder() {
         currentTable = "ATTENTE_" + Date.now(); 
         ticketItems = [];
@@ -1136,10 +1149,27 @@ vérifier si il ya alter au manque de food
     }
 
     function openSendReviewModal(fireAllNew) {
-        if (ticketItems.length === 0) return alert("Ticket vide.");
+        if (ticketItems.length === 0) return alert("Le ticket est vide.");
         pendingFireAllNew = fireAllNew;
-        document.getElementById('review-pax').value = 2; // Valeur par défaut
-        if(typeof renderReviewItems === 'function') renderReviewItems();
+        
+        const select = document.getElementById('review-table-select');
+        if(select) {
+            select.innerHTML = '<option value="">-- CHOISIR TABLE --</option>';
+            if (typeof rooms !== 'undefined' && typeof tables !== 'undefined') {
+                rooms.forEach(r => {
+                    let group = document.createElement('optgroup'); group.label = r;
+                    tables.filter(t => t && t.room === r).forEach(t => {
+                        let opt = document.createElement('option');
+                        opt.value = t.label; opt.innerText = t.label;
+                        if (activeOrders[t.label] && activeOrders[t.label].items?.length > 0 && t.label !== currentTable) {
+                            opt.innerText += " (Occupée)"; opt.disabled = true;
+                        }
+                        group.appendChild(opt);
+                    });
+                    select.appendChild(group);
+                });
+            }
+        }
         document.getElementById('send-review-modal').classList.add('open');
     }
 
@@ -1147,6 +1177,13 @@ vérifier si il ya alter au manque de food
         document.getElementById('send-review-modal').classList.remove('open');
     }
 
+    function changeReviewPax(delta) {
+        let input = document.getElementById('review-pax');
+        let val = parseInt(input.value) || 1;
+        input.value = Math.max(1, val + delta);
+        if(typeof renderReviewItems === 'function') renderReviewItems(); 
+    }
+</script>
     function changeReviewPax(delta) {
         let input = document.getElementById('review-pax');
         let val = parseInt(input.value) || 1;
