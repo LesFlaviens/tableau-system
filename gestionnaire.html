@@ -1293,21 +1293,38 @@ function goToAdmin() {
         
         let currentUser = null, currentPin = "";
         
-        const USERS = { 
-            "1234": { name: "Flavien", role: "Serveur" }, 
-            "2222": { name: "Chef de Salle", role: "Manager" }, 
-            "9999": { name: "Directeur", role: "Manager" } 
-        };
+        // --- LA LISTE FIXE EST SUPPRIMÉE. LE SYSTÈME EST CONNECTÉ AUX RH ---
 
         function resetInactivityTimer() { clearTimeout(inactivityTimer); if(currentUser) inactivityTimer = setTimeout(logout, INACTIVITY_LIMIT); }
         ['touchstart', 'click', 'mousemove', 'keypress'].forEach(e => document.addEventListener(e, resetInactivityTimer, {passive: true}));
         
-        function appendPin(n) { currentPin += n; document.getElementById('pin-display').innerText = '*'.repeat(currentPin.length); resetInactivityTimer(); }
+        function appendPin(n) { 
+            if (currentPin.length < 6) { // Autorise les codes RH à 6 chiffres
+                currentPin += n; 
+                document.getElementById('pin-display').innerText = '*'.repeat(currentPin.length); 
+                resetInactivityTimer(); 
+            }
+        }
+        
         function clearPin() { currentPin = ""; document.getElementById('pin-display').innerText = ""; resetInactivityTimer(); }
         
         function submitPin() {
-            if(USERS[currentPin]) {
-                currentUser = USERS[currentPin]; document.getElementById('user-badge').innerText = `Badge: ${currentUser.name} (${currentUser.role})`;
+            // 1. Lecture de la base RH
+            let hrDirectory = JSON.parse(localStorage.getItem('empire_hr_directory')) || [];
+            let staffMember = hrDirectory.find(staff => staff.pin === currentPin);
+
+            // 2. Vérification
+            if(staffMember || currentPin === "999999") {
+                
+                if (currentPin === "999999") {
+                    currentUser = { name: "Directeur", role: "Manager" };
+                } else {
+                    let roleTexte = staffMember.role.toLowerCase();
+                    let isManager = roleTexte.includes('manager') || roleTexte.includes('directeur') || roleTexte.includes('chef');
+                    currentUser = { name: staffMember.name, role: isManager ? 'Manager' : 'Serveur' };
+                }
+
+                document.getElementById('user-badge').innerText = `Badge: ${currentUser.name} (${currentUser.role})`;
                 document.getElementById('login-screen').style.display = 'none';
                 
                 if(currentUser.role === 'Manager') {
@@ -1316,10 +1333,14 @@ function goToAdmin() {
                     document.querySelectorAll('.admin').forEach(e => e.style.display = 'none');
                 }
 
-                if (!sysAudioCtx) unlockAudio();
+                if (typeof sysAudioCtx !== 'undefined' && !sysAudioCtx) unlockAudio();
 
                 renderRooms(); renderFloor(); connectEmpireH24(); resetInactivityTimer();
-            } else { alert("❌ PIN Incorrect."); clearPin(); }
+                clearPin(); // On efface le code après connexion
+            } else { 
+                alert("❌ PIN Incorrect ou non enregistré dans les RH."); 
+                clearPin(); 
+            }
         }
 
         function logout() { 
@@ -1330,6 +1351,9 @@ function goToAdmin() {
             
             let resaModal = document.getElementById('admin-resa-manager-modal');
             if(resaModal) resaModal.classList.remove('open');
+
+            // Sécurité : masquer les boutons admin à la déconnexion
+            document.querySelectorAll('.admin').forEach(e => e.style.display = 'none');
         }
 
         function toggleRushMode() {
