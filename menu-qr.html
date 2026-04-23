@@ -414,17 +414,61 @@
             document.getElementById('final-total-amount').innerText = finalAmount.toFixed(2) + " €";
         }
 
-        async function processPayment(method) {
+       async function processPayment(method) {
+            // 1. Fermeture du modal et affichage du loader de transition
             document.getElementById('cart-modal').classList.remove('open');
             const loader = document.getElementById('loader');
             loader.style.display = 'flex';
             loader.innerHTML = `
                 <div class="spinner"></div>
-                <div style="color: var(--text-main); font-weight: 300; letter-spacing: 1px; text-align:center;">
-                    Paiement sécurisé via Stripe...<br>
-                    <span style="font-size:0.8rem; color:var(--text-muted);">${finalAmount.toFixed(2)}€ via ${method}</span>
+                <div style="color: var(--gold); font-weight: 300; letter-spacing: 1px; text-align:center; margin-top:20px;">
+                    Connexion à la banque...<br>
+                    <span style="font-size:0.8rem; color:var(--text-muted);">Redirection en cours</span>
                 </div>
             `;
+
+            // 2. Auto-cadencement et préparation du ticket pour le Chef
+            let orderKey = "order_" + Date.now(); 
+            let foodItems = cart.filter(i => i.course > 0);
+            let firstFoodCourse = foodItems.length > 0 ? Math.min(...foodItems.map(i => i.course)) : 99;
+
+            let payload = {
+                data: {
+                    isWeb: true,
+                    status: "cooking", 
+                    time: new Date().toLocaleTimeString('fr-FR', {hour:'2-digit', minute:'2-digit'}),
+                    clientName: "Mobile " + tableNumber,
+                    totalStr: finalAmount.toFixed(2) + " €",
+                    observations: `⚠️ ATTENTE CONFIRMATION PAIEMENT (${method})`, 
+                    items: cart.map(i => {
+                        let shouldFire = (i.course === 0 || i.course === firstFoodCourse);
+                        return {
+                            id: Date.now() + Math.random(),
+                            itemId: Date.now(),
+                            n: i.n, p: i.p, qty: i.qty, course: i.course, dest: i.dest, 
+                            done: false, fired: shouldFire, firedTime: shouldFire ? Date.now() : null, isOffered: false
+                        };
+                    })
+                }
+            };
+
+            try {
+                // 3. ON TIRE LE BON EN CUISINE / BAR (Vital de le faire en premier)
+                await API.update(orderKey, payload);
+                await API.update('ALERTS_MASTER', { data: { type: 'PAYMENT', message: `💳 TABLE ${tableNumber} REDIRIGÉE VERS LE PAIEMENT`, timestamp: Date.now() } });
+                
+                // 4. LA REDIRECTION RÉELLE (L'encaissement)
+                // Remplace cette URL par ton vrai lien Stripe ou SumUp
+                window.location.href = "https://buy.stripe.com/TON_VRAI_LIEN_DE_PAIEMENT";
+                
+                // Note : Le code s'arrête ici car le client quitte la page.
+                // L'écran de succès n'est plus nécessaire sur iChef, c're Stripe/SumUp qui dira "Paiement Validé".
+
+            } catch (e) {
+                loader.style.display = 'none';
+                alert("Erreur réseau. Impossible de contacter la banque.");
+            }
+        }
 
             setTimeout(async () => {
                 let orderKey = "order_" + Date.now(); 
