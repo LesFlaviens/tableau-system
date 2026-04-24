@@ -1,4 +1,4 @@
-vérifier
+vérifier si il ya alter au manque de food
 
 <!DOCTYPE html>
 <html lang="fr">
@@ -3389,6 +3389,104 @@ if (method === 'QR/TEL') {
             renderRooms(); renderFloor(); 
             if(document.getElementById('admin-catalog-modal')) document.getElementById('admin-catalog-modal').classList.remove('open');
         };
+    </script>
+</body>
+</html>async function syncData() {
+            if (isArchiMode) return; 
+
+            try {
+                const state = await API.getState();
+                
+                if (state && state.activeOrders) {
+                    let nO = state.activeOrders;
+
+                    // 🟢 Synchronisation Menu Cuisine & Bar
+                    if(nO['MENU_MASTER']?.data) menuCuisine = nO['MENU_MASTER'].data;
+                    if(nO['MENU_MASTER_BAR']?.data) menuBar = nO['MENU_MASTER_BAR'].data;
+
+                    // 🚨 Radar d'alertes
+                    if(nO['ALERTS_MASTER']?.data) {
+                        let alertData = nO['ALERTS_MASTER'].data;
+                        if (alertData.timestamp > (window.lastGlobalAlertTime || 0)) {
+                            window.lastGlobalAlertTime = alertData.timestamp;
+                            playKlaxon();
+                            document.getElementById('global-alert-msg').innerText = alertData.message;
+                            document.getElementById('global-alert-modal').classList.add('open');
+                        }
+                    }
+
+                    // 🛡️ Traitement des tables et alertes
+                    for (let t in nO) { 
+                        if (t.includes('MASTER') || t.includes('ARCHIVE') || t.includes('ARCHITECTURE')) continue;
+                        
+                        if (nO[t]?.alerteRouge) {
+                            showToast(`⚠️ ALERTE TABLE ${t}`);
+                        }
+                    }
+
+                    activeOrders = nO;
+                    if(!isDraggingTable) renderFloor();
+                }
+            } catch(e) { console.error("Erreur Sync:", e); }
+        }
+
+        function connectEmpireH24() {
+            syncData(); 
+            setInterval(syncData, 3000);
+        }
+
+        // --- 💳 TON BLOC PAIEMENT (SYNTAXE RÉPARÉE) ---
+        async function triggerSumUpPayment(montant) {
+            try {
+                const API_TOKEN = 'TON_TOKEN_API'; 
+                const response = await fetch('https://api.sumup.com/v1.0/checkouts', {
+                    method: 'POST',
+                    headers: {
+                        'Authorization': `Bearer ${API_TOKEN}`,
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        amount: montant,
+                        currency: 'EUR',
+                        checkout_reference: `EMPIRE-${currentTable}-${Date.now()}`,
+                        description: `Table ${currentTable}`
+                    })
+                });
+
+                if (response.ok) {
+                    showToast("📡 TERMINAL ACTIVÉ...");
+                    return true;
+                } else {
+                    const err = await response.json();
+                    alert("❌ ERREUR SUMUP : " + (err.message || "Vérifiez la connexion"));
+                    return false;
+                }
+            } catch (error) {
+                alert("❌ ERREUR RÉSEAU : Connexion impossible.");
+                return false;
+            }
+        }
+
+        function cancelPayment() { 
+            if(currentPayHistory.length > 0 && currentPayRemaining > 0) {
+                if(!confirm("⚠️ Encaissements partiels en cours. Fermer quand même ?")) return;
+            }
+            document.getElementById('payment-modal').classList.remove('open'); 
+        }
+
+        async function finalizeTablePayment() {
+            document.getElementById('payment-modal').classList.remove('open');
+            window.print(); 
+            setTimeout(async () => {
+                await API.update(currentTable, null, true);
+                closeOrder(); 
+                renderFloor();
+            }, 300);
+        }
+
+        // Lancement au démarrage
+        document.addEventListener('DOMContentLoaded', connectEmpireH24);
+
     </script>
 
     <script>
