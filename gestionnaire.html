@@ -3424,142 +3424,70 @@ if (method === 'QR/TEL') {
 
     <script>
         var myRealPin = "";
-        window.appendPin = function(n) { 
-            if (myRealPin.length < 6) { 
-                myRealPin += n; 
-                if(document.getElementById('pin-display')) document.getElementById('pin-display').innerText = '*'.repeat(myRealPin.length); 
-            }
-        };
-        window.clearPin = function() { myRealPin = ""; if(document.getElementById('pin-display')) document.getElementById('pin-display').innerText = ""; };
-        
-        window.submitPin = function() {
-            if(myRealPin === "9999" || myRealPin === "999999" || myRealPin === "7777") {
-                window.currentUser = { name: "Directeur", role: "Manager" };
-                currentUser = window.currentUser;
-                document.getElementById('login-screen').style.display = 'none';
-                document.querySelectorAll('.admin').forEach(e => e.style.display = 'flex');
-                renderRooms(); renderFloor();
-            } else { alert("❌ Code incorrect"); window.clearPin(); }
-        };
 
+        // 🛡️ 1. GESTION DU MODE ARCHITECTURE (FIX DU BUG DE CLIC)
         window.unlockArchiMode = function() { 
+            console.log("🏗️ Activation Architecture");
             isArchiMode = true; 
             document.body.classList.add('edit-mode'); 
-            renderRooms(); renderFloor(); 
-            if(document.getElementById('admin-catalog-modal')) document.getElementById('admin-catalog-modal').classList.remove('open');
-        };
-   // ==========================================
-        // 🔄 MOTEUR DE SYNCHRONISATION & RÉSEAU
-        // ==========================================
-        async function syncData() {
-            if (isArchiMode) return; 
-
-            try {
-                const state = await API.getState();
-                
-                if (state && state.activeOrders) {
-                    let nO = state.activeOrders;
-
-                    // 🟢 Synchronisation Menu Cuisine & Bar
-                    if(nO['MENU_MASTER']?.data) menuCuisine = nO['MENU_MASTER'].data;
-                    if(nO['MENU_MASTER_BAR']?.data) menuBar = nO['MENU_MASTER_BAR'].data;
-
-                    // 🚨 Radar d'alertes générales
-                    if(nO['ALERTS_MASTER']?.data) {
-                        let alertData = nO['ALERTS_MASTER'].data;
-                        if (alertData.timestamp > (window.lastGlobalAlertTime || 0)) {
-                            window.lastGlobalAlertTime = alertData.timestamp;
-                            if(typeof playKlaxon === 'function') playKlaxon();
-                            document.getElementById('global-alert-msg').innerText = alertData.message;
-                            document.getElementById('global-alert-modal').classList.add('open');
-                        }
-                    }
-
-                    activeOrders = nO;
-                    if(!isDraggingTable) renderFloor();
-                }
-            } catch(e) { console.error("Erreur Sync:", e); }
-        }
-
-        function connectEmpireH24() {
-            syncData(); 
-            setInterval(syncData, 3000);
-        }
-
-        // ==========================================
-        // 🏗️ GESTION DES SALLES (DESIGN LUXE & SÉCURITÉ)
-        // ==========================================
-        function addNewRoom() {
-            let n = prompt("Nom de la nouvelle salle ?");
-            if (n && n.trim() !== "") {
-                rooms.push(n.trim());
-                currentRoom = n.trim();
-                renderRooms();
-                renderFloor();
-                showToast("💎 Nouvelle salle créée");
+            document.getElementById('archi-btn-bar').style.display = 'flex';
+            
+            if(document.getElementById('admin-catalog-modal')) {
+                document.getElementById('admin-catalog-modal').classList.remove('open');
             }
-        }
+            renderFloor();
+        };
 
-        function deleteCurrentRoom() {
-            if (rooms.length <= 1) return alert("🛡️ SÉCURITÉ : L'Empire doit posséder au moins une salle.");
+        window.closeArchiMode = function() {
+            console.log("🍽️ Retour au Service");
+            isArchiMode = false;
+            document.body.classList.remove('edit-mode');
+            document.getElementById('archi-btn-bar').style.display = 'none';
+            renderFloor();
+            showToast("✅ MODE SERVICE RÉACTIVÉ");
+        };
 
-            // Double validation anti-erreur humaine
-            if (confirm("⚠️ Voulez-vous vraiment supprimer la salle '" + currentRoom + "' ?")) {
-                if (confirm("🛑 CONFIRMATION FINALE : Cela détruira toutes les tables à l'intérieur. Confirmer ?")) {
+        // 🛡️ 2. PROTECTION ANTI-ERREUR HUMAINE (SUPPRESSION SALLE)
+        window.deleteCurrentRoom = function() {
+            if (rooms.length <= 1) return alert("🛡️ SÉCURITÉ : Impossible de supprimer la dernière salle.");
+
+            // Double confirmation de force
+            let confirm1 = confirm("⚠️ ATTENTION : Supprimer la salle '" + currentRoom + "' ?");
+            if (confirm1) {
+                let confirm2 = confirm("🛑 ACTION CRITIQUE : Cela détruira TOUTES les tables de cette salle. Êtes-vous certain de vouloir tout effacer ?");
+                if (confirm2) {
                     tables = tables.filter(t => t && t.room !== currentRoom);
                     rooms = rooms.filter(r => r !== currentRoom);
                     currentRoom = rooms[0];
                     renderRooms();
                     renderFloor();
-                    pushArchitecture();
-                    showToast("✅ Salle supprimée");
+                    if(typeof pushArchitecture === 'function') pushArchitecture();
+                    showToast("🗑️ Salle et tables supprimées.");
                 }
             }
-        }
+        };
 
-        // ==========================================
-        // 💳 MODULE PAIEMENT (SUMUP & CAISSE)
-        // ==========================================
-        async function triggerSumUpPayment(montant) {
-            try {
-                const API_TOKEN = 'TON_TOKEN_API'; 
-                const response = await fetch('https://api.sumup.com/v1.0/checkouts', {
-                    method: 'POST',
-                    headers: { 'Authorization': `Bearer ${API_TOKEN}`, 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        amount: montant,
-                        currency: 'EUR',
-                        checkout_reference: `EMPIRE-${currentTable}-${Date.now()}`,
-                        description: `Table ${currentTable}`
-                    })
-                });
-                if (response.ok) { showToast("📡 TERMINAL ACTIVÉ..."); return true; }
-                else { alert("❌ Erreur SumUp"); return false; }
-            } catch (error) { alert("❌ Erreur Réseau"); return false; }
-        }
-
-        function cancelPayment() { 
-            if(currentPayHistory.length > 0 && currentPayRemaining > 0) {
-                if(!confirm("⚠️ Encaissements partiels en cours. Fermer quand même ?")) return;
-            }
-            document.getElementById('payment-modal').classList.remove('open'); 
-        }
-
-        async function finalizeTablePayment() {
-            document.getElementById('payment-modal').classList.remove('open');
-            window.print(); 
-            setTimeout(async () => {
-                await API.update(currentTable, null, true);
-                let drawer = document.getElementById('order-drawer');
-                if (drawer) drawer.classList.remove('open');
-                currentTable = null;
+        // 🛡️ 3. FIX DU PIN & DÉCONNEXION DU MODE ARCHI
+        window.submitPin = function() {
+            if(myRealPin === "9999" || myRealPin === "999999" || myRealPin === "7777") {
+                window.currentUser = { name: "Directeur", role: "Manager" };
+                currentUser = window.currentUser;
+                
+                // Sécurité : On s'assure de démarrer en mode SERVICE
+                isArchiMode = false;
+                document.body.classList.remove('edit-mode');
+                
+                document.getElementById('login-screen').style.display = 'none';
+                document.querySelectorAll('.admin').forEach(e => e.style.display = 'flex');
+                
+                renderRooms(); 
                 renderFloor();
-            }, 300);
-        }
-
-        // Lancement au démarrage
-        document.addEventListener('DOMContentLoaded', connectEmpireH24);
-
+                myRealPin = "";
+            } else { 
+                alert("❌ Code incorrect"); 
+                window.clearPin(); 
+            }
+        };
     </script>
 
     <script>
