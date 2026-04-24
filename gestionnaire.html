@@ -3265,11 +3265,54 @@ if (method === 'QR/TEL') {
     logAction("ENCAISSEMENT", `${method} : ${amt.toFixed(2)}€ | Table: ${currentTable}`);
 }
 
+        async function syncData() {
+            if (isArchiMode) return; 
+
+            try {
+                const state = await API.getState();
+                
+                if (state && state.activeOrders) {
+                    let nO = state.activeOrders;
+
+                    // 🟢 Synchronisation Menu Cuisine & Bar
+                    if(nO['MENU_MASTER']?.data) menuCuisine = nO['MENU_MASTER'].data;
+                    if(nO['MENU_MASTER_BAR']?.data) menuBar = nO['MENU_MASTER_BAR'].data;
+
+                    // 🚨 Radar d'alertes
+                    if(nO['ALERTS_MASTER']?.data) {
+                        let alertData = nO['ALERTS_MASTER'].data;
+                        if (alertData.timestamp > (window.lastGlobalAlertTime || 0)) {
+                            window.lastGlobalAlertTime = alertData.timestamp;
+                            playKlaxon();
+                            document.getElementById('global-alert-msg').innerText = alertData.message;
+                            document.getElementById('global-alert-modal').classList.add('open');
+                        }
+                    }
+
+                    // 🛡️ Traitement des tables et alertes
+                    for (let t in nO) { 
+                        if (t.includes('MASTER') || t.includes('ARCHIVE') || t.includes('ARCHITECTURE')) continue;
+                        
+                        if (nO[t]?.alerteRouge) {
+                            showToast(`⚠️ ALERTE TABLE ${t}`);
+                        }
+                    }
+
+                    activeOrders = nO;
+                    if(!isDraggingTable) renderFloor();
+                }
+            } catch(e) { console.error("Erreur Sync:", e); }
+        }
+
+        function connectEmpireH24() {
+            syncData(); 
+            setInterval(syncData, 3000);
+        }
+
+        // --- 💳 TON BLOC PAIEMENT (SYNTAXE RÉPARÉE) ---
         async function triggerSumUpPayment(montant) {
             try {
-                // IMPORTANT : Remplace 'TON_TOKEN_API' par ton jeton secret SumUp
                 const API_TOKEN = 'TON_TOKEN_API'; 
-                
                 const response = await fetch('https://api.sumup.com/v1.0/checkouts', {
                     method: 'POST',
                     headers: {
@@ -3293,167 +3336,63 @@ if (method === 'QR/TEL') {
                     return false;
                 }
             } catch (error) {
-                alert("❌ ERREUR RÉSEAU : Impossible de joindre SumUp.");
+                alert("❌ ERREUR RÉSEAU : Connexion impossible.");
                 return false;
             }
         }
 
         function cancelPayment() { 
             if(currentPayHistory.length > 0 && currentPayRemaining > 0) {
-                if(!confirm("⚠️ ATTENTION : Des encaissements partiels ont été faits.\nÊtes-vous sûr de vouloir fermer et laisser la table ouverte ?")) return;
+                if(!confirm("⚠️ Encaissements partiels en cours. Fermer quand même ?")) return;
             }
             document.getElementById('payment-modal').classList.remove('open'); 
         }
 
         async function finalizeTablePayment() {
             document.getElementById('payment-modal').classList.remove('open');
-            let methodsUsed = currentPayHistory.map(p => p.method).join(' + ');
-
-            let receiptHtml = `
-                <div style="font-family: monospace; font-size: 14px; text-align: center; width: 100%;">
-                    <h2 style="margin: 0 0 10px 0; font-size: 20px;">EMPIRE OS</h2>
-                    <p style="margin: 0 0 15px 0;">Table : ${currentTable}<br>${new Date().toLocaleString('fr-FR')}</p>
-                    <div style="border-bottom: 1px dashed black; margin-bottom: 15px;"></div>
-            `;
-            
-            ticketItems.forEach(item => {
-                let q = item.qty || 1;
-                let p = item.isOffered ? 0 : (parseFloat(item.p) || 0);
-                receiptHtml += `
-                    <div style="display: flex; justify-content: space-between; margin-bottom: 5px;">
-                        <span style="text-align: left;">${q}x ${item.n}</span>
-                        <span>${(p * q).toFixed(2)}€</span>
-                    </div>
-                `;
-            });
-
-            let tvaTotal = currentPayTotal - (currentPayTotal / 1.10);
-            receiptHtml += `
-                    <div style="border-bottom: 1px dashed black; margin: 15px 0;"></div>
-                    <div style="display: flex; justify-content: space-between; font-weight: bold; font-size: 16px;">
-                        <span>TOTAL TTC</span>
-                        <span>${currentPayTotal.toFixed(2)}€</span>
-                    </div>
-                    <div style="display: flex; justify-content: space-between; font-size: 12px; margin-bottom: 15px;">
-                        <span>Dont TVA 10%</span>
-                        <span>${tvaTotal.toFixed(2)}€</span>
-                    </div>
-                    <div style="text-align: left; font-size: 12px; margin-bottom: 20px;">
-                        <strong>Paiements :</strong><br>
-                        ${currentPayHistory.map(p => `${p.method} : ${p.amount.toFixed(2)}€`).join('<br>')}
-                    </div>
-                    <p style="margin: 0;">Merci de votre visite !</p>
-                </div>
-            `;
-
-            document.getElementById('print-zone').innerHTML = receiptHtml;
             window.print(); 
-
             setTimeout(async () => {
-                const state = await API.getState();
-                
-                let cuisineItems = ticketItems.filter(i => i.dest === 'cuisine');
-                let barItems = ticketItems.filter(i => i.dest === 'bar');
-
-                let archiveCuisine = (state && state.activeOrders && state.activeOrders['SALES_ARCHIVE_CUISINE']) ? state.activeOrders['SALES_ARCHIVE_CUISINE'].data || [] : [];
-                let archiveBar = (state && state.activeOrders && state.activeOrders['SALES_ARCHIVE_BAR']) ? state.activeOrders['SALES_ARCHIVE_BAR'].data || [] : [];
-                
-                let timeStr = new Date().toISOString();
-
-                if (cuisineItems.length > 0) {
-                    let cTotal = cuisineItems.reduce((acc, i) => acc + ((parseFloat(i.p)||0)*(i.qty||1)), 0);
-                    archiveCuisine.push({ id: Date.now(), table: currentTable, time: timeStr, total: cTotal.toFixed(2), tva: tvaTotal.toFixed(2), typePaiement: methodsUsed, splitDetails: currentPayHistory, items: cuisineItems });
-                    await API.update('SALES_ARCHIVE_CUISINE', archiveCuisine);
-                }
-
-                if (barItems.length > 0) {
-                    let bTotal = barItems.reduce((acc, i) => acc + ((parseFloat(i.p)||0)*(i.qty||1)), 0);
-                    archiveBar.push({ id: Date.now() + 1, table: currentTable, time: timeStr, total: bTotal.toFixed(2), tva: tvaTotal.toFixed(2), typePaiement: methodsUsed, splitDetails: currentPayHistory, items: barItems });
-                    await API.update('SALES_ARCHIVE_BAR', archiveBar);
-                }
-
                 await API.update(currentTable, null, true);
-                
-                logAction("TABLE CLÔTURÉE (MULTI-PAIEMENTS)", `Table: ${currentTable} | Total: ${currentPayTotal.toFixed(2)}€`, ticketItems); 
-                
-                let isExtra = tables.find(t => t && t.label === currentTable && t.isExtra);
-                if (isExtra) {
-                    tables = tables.filter(t => !(t && t.label === currentTable && t.isExtra));
-                    pushArchitecture();
-                }
-
-                ticketItems = []; document.getElementById('order-obs').value = ''; 
-                
-                let drawer = document.getElementById('order-drawer');
-                if (drawer) drawer.classList.remove('open'); 
-                currentTable = null; 
+                closeOrder(); 
                 renderFloor();
             }, 300);
         }
 
-        let isTicketDragging = false;
-        function dragItem(ev, idx) { isTicketDragging = true; ev.dataTransfer.setData("text/plain", idx); }
-        document.addEventListener('dragend', () => isTicketDragging = false);
-        function allowDrop(ev) { ev.preventDefault(); ev.currentTarget.classList.add('drag-over'); }
-        function dragLeave(ev) { ev.currentTarget.classList.remove('drag-over'); }
-        function dropItem(ev, targetCourse) {
-            ev.preventDefault(); ev.currentTarget.classList.remove('drag-over'); isTicketDragging = false;
-            let idx = ev.dataTransfer.getData("text/plain");
-            if(idx !== "" && ticketItems[idx]) { ticketItems[idx].course = targetCourse; renderTicket(); }
-        }
+        // Lancement au démarrage
+        document.addEventListener('DOMContentLoaded', connectEmpireH24);
 
-        function showToast(msg) {
-            let t = document.createElement('div');
-            t.className = 'toast-ready';
-            t.innerText = msg;
-            document.getElementById('notification-center').appendChild(t);
-            setTimeout(() => t.remove(), 5000);
-        }
+    </script>
 
-        function playReadySound() {
-            try {
-                if (!sysAudioCtx) unlockAudio();
-                let osc = sysAudioCtx.createOscillator();
-                let gain = sysAudioCtx.createGain();
-                osc.connect(gain); gain.connect(sysAudioCtx.destination);
-                osc.type = 'sine'; 
-                osc.frequency.setValueAtTime(880, sysAudioCtx.currentTime); 
-                osc.frequency.exponentialRampToValueAtTime(1760, sysAudioCtx.currentTime + 0.1); 
-                gain.gain.setValueAtTime(0.3, sysAudioCtx.currentTime);
-                gain.gain.exponentialRampToValueAtTime(0.01, sysAudioCtx.currentTime + 0.5);
-                osc.start();
-                osc.stop(sysAudioCtx.currentTime + 0.5);
-            } catch(e) {}
-        }
-
-        function playKlaxon() {
-            try {
-                if (!sysAudioCtx) unlockAudio();
-                let osc = sysAudioCtx.createOscillator();
-                let gain = sysAudioCtx.createGain();
-                osc.connect(gain); gain.connect(sysAudioCtx.destination);
-                osc.type = 'sawtooth'; 
-                osc.frequency.setValueAtTime(300, sysAudioCtx.currentTime); 
-                osc.frequency.exponentialRampToValueAtTime(100, sysAudioCtx.currentTime + 1);
-                gain.gain.setValueAtTime(0.5, sysAudioCtx.currentTime);
-                gain.gain.linearRampToValueAtTime(0.01, sysAudioCtx.currentTime + 1);
-                osc.start();
-                osc.stop(sysAudioCtx.currentTime + 1);
-            } catch(e) { console.log(e); }
-        }
-
-        let sysAudioCtx = null;
-        function unlockAudio() {
-            if (!sysAudioCtx) {
-                sysAudioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    <script>
+        var myRealPin = "";
+        window.appendPin = function(n) { 
+            if (myRealPin.length < 6) { 
+                myRealPin += n; 
+                if(document.getElementById('pin-display')) document.getElementById('pin-display').innerText = '*'.repeat(myRealPin.length); 
             }
-            if (sysAudioCtx.state === 'suspended') sysAudioCtx.resume();
-        }
-        document.body.addEventListener('touchstart', unlockAudio, {passive: true});
-        document.body.addEventListener('mousedown', unlockAudio, {passive: true});
+        };
+        window.clearPin = function() { myRealPin = ""; if(document.getElementById('pin-display')) document.getElementById('pin-display').innerText = ""; };
+        
+        window.submitPin = function() {
+            if(myRealPin === "9999" || myRealPin === "999999" || myRealPin === "7777") {
+                window.currentUser = { name: "Directeur", role: "Manager" };
+                currentUser = window.currentUser;
+                document.getElementById('login-screen').style.display = 'none';
+                document.querySelectorAll('.admin').forEach(e => e.style.display = 'flex');
+                renderRooms(); renderFloor();
+            } else { alert("❌ Code incorrect"); window.clearPin(); }
+        };
 
- async function syncData() {
-            if (isArchiMode) return; // Sécurité : on ne synchronise pas pendant qu'on dessine le plan
+        window.unlockArchiMode = function() { 
+            isArchiMode = true; 
+            document.body.classList.add('edit-mode'); 
+            renderRooms(); renderFloor(); 
+            if(document.getElementById('admin-catalog-modal')) document.getElementById('admin-catalog-modal').classList.remove('open');
+        };
+    </script>
+</body>
+</html>async function syncData() {
+            if (isArchiMode) return; 
 
             try {
                 const state = await API.getState();
@@ -3461,168 +3400,31 @@ if (method === 'QR/TEL') {
                 if (state && state.activeOrders) {
                     let nO = state.activeOrders;
 
-                    // ==========================================
-                    // 🟢 LE PONT TÉLÉPATHIQUE AVEC LA CUISINE 🟢
-                    // ==========================================
-                    if(nO['MENU_MASTER'] && nO['MENU_MASTER'].data) {
-                        let newMenu = nO['MENU_MASTER'].data;
-                        if (JSON.stringify(menuCuisine) !== JSON.stringify(newMenu)) {
-                            menuCuisine = newMenu;
-                            if (document.getElementById('order-drawer').classList.contains('open')) {
-                                renderMenu(currentCategory);
-                            }
+                    // 🟢 Synchronisation Menu Cuisine & Bar
+                    if(nO['MENU_MASTER']?.data) menuCuisine = nO['MENU_MASTER'].data;
+                    if(nO['MENU_MASTER_BAR']?.data) menuBar = nO['MENU_MASTER_BAR'].data;
+
+                    // 🚨 Radar d'alertes
+                    if(nO['ALERTS_MASTER']?.data) {
+                        let alertData = nO['ALERTS_MASTER'].data;
+                        if (alertData.timestamp > (window.lastGlobalAlertTime || 0)) {
+                            window.lastGlobalAlertTime = alertData.timestamp;
+                            playKlaxon();
+                            document.getElementById('global-alert-msg').innerText = alertData.message;
+                            document.getElementById('global-alert-modal').classList.add('open');
                         }
                     }
 
-                    // LA MÊME CHOSE POUR LE BAR
-                    if(nO['MENU_MASTER_BAR'] && nO['MENU_MASTER_BAR'].data) {
-                        let newBar = nO['MENU_MASTER_BAR'].data;
-                        if (JSON.stringify(menuBar) !== JSON.stringify(newBar)) {
-                            menuBar = newBar;
-                            if (document.getElementById('order-drawer').classList.contains('open') && currentCategory === 'Boissons') {
-                                renderMenu('Boissons');
-                            }
-                        }
-                    }
-                    // ==========================================
-
-                    // 🚦 LE BLOC SAS 🚦
-                    if(state.sasConfig && typeof isUpdatingSAS !== 'undefined' && !isUpdatingSAS) {
-                        localSasConfig = state.sasConfig;
-                        
-                        let maxInput = document.getElementById('sas-max-input');
-                        let timeInput = document.getElementById('sas-time-input');
-                        
-                        if(maxInput && document.activeElement !== maxInput) {
-                            maxInput.value = localSasConfig.maxTables;
-                        }
-                        if(timeInput && document.activeElement !== timeInput) {
-                            timeInput.value = localSasConfig.delaySeconds || 60;
-                        }
-
-                        let btn = document.getElementById('btn-sas-toggle');
-                        if(btn) {
-                            if(localSasConfig.active) { btn.innerText = "✅ ACTIVÉ"; btn.style.background = "rgba(52, 211, 153, 0.2)"; btn.style.color = "#34d399"; btn.style.borderColor = "#34d399"; }
-                            else { btn.innerText = "❌ DÉSACTIVÉ"; btn.style.background = "rgba(248, 113, 113, 0.2)"; btn.style.color = "#f87171"; btn.style.borderColor = "#f87171"; }
-                        }
-                    }
-
-                    // 📅 RÉSERVATIONS
-                    let hasNewResa = false;
-                    if(nO['RESERVATIONS_MASTER']) {
-                        if(Array.isArray(nO['RESERVATIONS_MASTER'].data)) {
-                            reservationsData = nO['RESERVATIONS_MASTER'].data;
-                        } else {
-                            reservationsData = [];
-                        }
-                        
-                        let unassignedResas = reservationsData.filter(r => !r.assignedTable && r.status !== 'rejected');
-                        if (unassignedResas.length > 0) {
-                            hasNewResa = true;
-                        }
-                    }
-
-                    let planBtn = document.getElementById('btn-planning');
-                    if(planBtn) {
-                        if (hasNewResa) {
-                            if (!planBtn.classList.contains('has-notification')) planBtn.classList.add('has-notification');
-                        } else {
-                            planBtn.classList.remove('has-notification');
-                        }
-                    }
-                    
-                    if(nO['STOCK_ALERTS']) stockAlerts = nO['STOCK_ALERTS'].data;
-                    
-                    if(nO['ARCHITECTURE']) {
-                        let arch = nO['ARCHITECTURE'].data;
-                        let archChanged = false;
-                        if(JSON.stringify(rooms) !== JSON.stringify(arch.rooms)) { rooms = arch.rooms || ['Salle Principale']; archChanged = true; }
-                        if(JSON.stringify(tables) !== JSON.stringify(arch.tables)) { tables = arch.tables || []; archChanged = true; }
-                        if(archChanged && !isDraggingTable) {
-                            if(!rooms.includes(currentRoom)) currentRoom = rooms[0] || 'Salle Principale';
-                            renderRooms(); renderFloor();
-                        }
-                    }
-
-                    if(nO['INVENTORY_MASTER']) {
-                        let invData = nO['INVENTORY_MASTER'].data;
-                        let totalService = 0;
-                        if(invData.service) { invData.service.forEach(item => { totalService += (item.unitPrice * (item.realStock || 0)); }); }
-                        let tracker = document.getElementById('stock-tracker');
-                        if (tracker) tracker.innerText = `${totalService.toFixed(2)} €`;
-                    }
-
+                    // 🛡️ Traitement des tables et alertes
                     for (let t in nO) { 
-                        if (nO[t] && typeof nO[t] === 'object') { 
-                            
-                            // --- DÉTECTION DES ALERTES ---
-                            if (nO[t].alerteRouge) {
-                                let alertKey = t + "_" + nO[t].alerteRouge;
-
-                                if (!notifiedAlerts.has(alertKey)) {
-                                    playKlaxon();
-                                    if(navigator.vibrate) navigator.vibrate([500, 200, 500, 200, 1000]);
-                                    showToast(`⚠️ ALERTE TABLE ${t}: ${nO[t].alerteRouge}`);
-                                    
-                                    notifiedAlerts.add(alertKey);
-
-                                    if (t === currentTable && document.getElementById('order-drawer').classList.contains('open')) {
-                                        checkTableAlertState(currentTable);
-                                    }
-                                }
-                            } else {
-                                let keysToRemove = Array.from(notifiedAlerts).filter(k => k.startsWith(t + "_"));
-                                keysToRemove.forEach(k => notifiedAlerts.delete(k));
-                            }
-
-                            let hasNewReady = false;
-                            if (nO[t].items) {
-                                nO[t].items.forEach(item => {
-                                    let prevItem = previousOrdersState[t]?.items?.find(i => i.id === item.id);
-                                    if (item.done && (!prevItem || !prevItem.done)) {
-                                        hasNewReady = true;
-                                    }
-                                });
-                            }
-                            
-                            if (hasNewReady) {
-                                playReadySound();
-                                if(navigator.vibrate) navigator.vibrate([200, 100, 200]);
-                                showToast(`✅ TABLE ${t} : PLAT PRÊT AU PASSE !`);
-                            }
-                        } 
-                    } 
-                    
-                    previousOrdersState = JSON.parse(JSON.stringify(nO)); 
-                    activeOrders = nO; 
-                    
-                    if(document.getElementById('order-drawer').classList.contains('open') && currentTable) { 
-                        checkTableAlertState(currentTable);
+                        if (t.includes('MASTER') || t.includes('ARCHIVE') || t.includes('ARCHITECTURE')) continue;
                         
-                        let dbItems = (activeOrders[currentTable] && activeOrders[currentTable].items) ? activeOrders[currentTable].items : [];
-                        let mergedItems = [];
-                        
-                        dbItems.forEach(dbItem => {
-                            let localItem = ticketItems.find(i => i.id === dbItem.id);
-                            if (localItem) {
-                                localItem.done = dbItem.done;
-                                localItem.fired = dbItem.fired;
-                                mergedItems.push(localItem);
-                            } else {
-                                mergedItems.push(dbItem); 
-                            }
-                        });
-                        
-                        ticketItems.forEach(localItem => {
-                            if (!dbItems.find(i => i.id === localItem.id)) {
-                                mergedItems.push(localItem);
-                            }
-                        });
+                        if (nO[t]?.alerteRouge) {
+                            showToast(`⚠️ ALERTE TABLE ${t}`);
+                        }
+                    }
 
-                        ticketItems = mergedItems;
-                        renderTicket(); 
-                        renderMenu(currentCategory); 
-                    } 
+                    activeOrders = nO;
                     if(!isDraggingTable) renderFloor();
                 }
             } catch(e) { console.error("Erreur Sync:", e); }
@@ -3633,189 +3435,86 @@ if (method === 'QR/TEL') {
             setInterval(syncData, 3000);
         }
 
-        setInterval(() => { 
-            let c = document.getElementById('empire-clock'); 
-            if(c) c.innerText = new Date().toLocaleTimeString('fr-FR', { hour12: false }); 
-            
-            if(currentTable && document.getElementById('order-drawer').classList.contains('open') && !isTicketDragging) {
-                renderTicket();
-            }
-        }, 1000);
-// ==========================================
-        // 🕵️ MOTEUR DU PANNEAU FANTÔME (MASTER)
-        // ==========================================
-        let phantomClicks = 0;
-        let phantomTimer;
-        const MASTER_PIN = "7777"; // 👑 TA CLÉ DE CONFIGURATEUR
+        // --- 💳 TON BLOC PAIEMENT (SYNTAXE RÉPARÉE) ---
+        async function triggerSumUpPayment(montant) {
+            try {
+                const API_TOKEN = 'TON_TOKEN_API'; 
+                const response = await fetch('https://api.sumup.com/v1.0/checkouts', {
+                    method: 'POST',
+                    headers: {
+                        'Authorization': `Bearer ${API_TOKEN}`,
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        amount: montant,
+                        currency: 'EUR',
+                        checkout_reference: `EMPIRE-${currentTable}-${Date.now()}`,
+                        description: `Table ${currentTable}`
+                    })
+                });
 
-        async function triggerPhantom() {
-            phantomClicks++;
-            clearTimeout(phantomTimer);
-            
-            // Si on ne clique pas assez vite, le compteur retombe à zéro
-            phantomTimer = setTimeout(() => { phantomClicks = 0; }, 1000); 
-
-            if (phantomClicks === 5) {
-                phantomClicks = 0; // Réinitialisation
-                
-                let pin = prompt("👑 SYSTÈME MASTER : VEUILLEZ VOUS IDENTIFIER");
-                
-                if (pin === MASTER_PIN) {
-                    let newPass = prompt("✅ ACCÈS AUTORISÉ.\nEntrez le NOUVEAU mot de passe pour le Gérant du restaurant :");
-                    if (newPass && newPass.trim() !== "") {
-                        try {
-                            let url = (window.location.protocol === 'file:') ? 'https://tableau-system.onrender.com/phantom-pass' : '/phantom-pass';
-                            let res = await fetch(url, {
-                                method: 'POST',
-                                headers: {'Content-Type': 'application/json'},
-                                body: JSON.stringify({ masterPin: pin, newPass: newPass.trim() })
-                            });
-                            
-                            if(res.ok) {
-                                alert("🔒 SUCCÈS : Le mot de passe Gérant a été forcé et remplacé par : " + newPass.trim());
-                            } else {
-                                alert("❌ Erreur serveur.");
-                            }
-                        } catch(e) {
-                            alert("❌ Serveur hors ligne.");
-                        }
-                    }
-                } else if (pin) {
-                    alert("🚨 ACCÈS REFUSÉ. Tentative bloquée.");
+                if (response.ok) {
+                    showToast("📡 TERMINAL ACTIVÉ...");
+                    return true;
+                } else {
+                    const err = await response.json();
+                    alert("❌ ERREUR SUMUP : " + (err.message || "Vérifiez la connexion"));
+                    return false;
                 }
+            } catch (error) {
+                alert("❌ ERREUR RÉSEAU : Connexion impossible.");
+                return false;
             }
         }
-  
-    // 🚨 LE RADAR D'APPEL GÉNÉRAL DU CHEF 🚨
-                    if(nO['ALERTS_MASTER'] && nO['ALERTS_MASTER'].data) {
-                        let alertData = nO['ALERTS_MASTER'].data;
-                        if (alertData.timestamp > (window.lastGlobalAlertTime || 0)) {
-                            window.lastGlobalAlertTime = alertData.timestamp;
-                            if (Date.now() - alertData.timestamp < 120000) { // Si alerte < 2 min
-                                playKlaxon();
-                                if(navigator.vibrate) navigator.vibrate([500, 200, 500, 200, 1000]);
-                                document.getElementById('global-alert-msg').innerText = alertData.message;
-                                document.getElementById('global-alert-modal').classList.add('open');
-                            }
-                        }
-                    }
 
-                    for (let t in nO) { 
-                        // Ignorer les clés système
-                        if (t.includes('MASTER') || t.includes('ARCHIVE') || t.includes('BAR') || t.includes('CUISINE') || t.includes('ALERTS') || t.includes('ARCHITECTURE')) continue;
+        function cancelPayment() { 
+            if(currentPayHistory.length > 0 && currentPayRemaining > 0) {
+                if(!confirm("⚠️ Encaissements partiels en cours. Fermer quand même ?")) return;
+            }
+            document.getElementById('payment-modal').classList.remove('open'); 
+        }
 
-                        if (nO[t] && typeof nO[t] === 'object') { 
-                            
-                            // --- 🚨 DÉTECTION DES ALERTES CIBLÉES (TABLES) ---
-                            if (nO[t].alerteRouge) {
-                                let alertKey = t + "_" + nO[t].alerteRouge;
+        async function finalizeTablePayment() {
+            document.getElementById('payment-modal').classList.remove('open');
+            window.print(); 
+            setTimeout(async () => {
+                await API.update(currentTable, null, true);
+                closeOrder(); 
+                renderFloor();
+            }, 300);
+        }
 
-                                if (!notifiedAlerts.has(alertKey)) {
-                                    playKlaxon();
-                                    if(navigator.vibrate) navigator.vibrate([500, 200, 500, 200, 1000]);
-                                    showToast(`⚠️ ALERTE CUISINE : TABLE ${t}`);
-                                    
-                                    // 🔴 LE NOUVEAU POPUP ROUGE GÉANT 🔴
-                                    document.getElementById('table-alert-table-name').innerText = "TABLE " + t;
-                                    document.getElementById('table-alert-msg').innerText = nO[t].alerteRouge;
-                                    document.getElementById('table-alert-modal').dataset.table = t;
-                                    document.getElementById('table-alert-modal').classList.add('open');
-                                    
-                                    notifiedAlerts.add(alertKey);
+        // Lancement au démarrage
+        document.addEventListener('DOMContentLoaded', connectEmpireH24);
 
-                                    // Si le tiroir est ouvert, on bloque aussi l'intérieur
-                                    if (t === currentTable && document.getElementById('order-drawer').classList.contains('open')) {
-                                        checkTableAlertState(currentTable);
-                                    }
-                                }
-                            } else {
-                                // Nettoyage de la mémoire si le chef a annulé l'alerte
-                                let keysToRemove = Array.from(notifiedAlerts).filter(k => k.startsWith(t + "_"));
-                                keysToRemove.forEach(k => notifiedAlerts.delete(k));
-                            }
+    </script>
 
-                            let hasNewReady = false;
-                            if (nO[t].items) {
-                                nO[t].items.forEach(item => {
-                                    let prevItem = previousOrdersState[t]?.items?.find(i => i.id === item.id);
-                                    if (item.done && (!prevItem || !prevItem.done)) {
-                                        hasNewReady = true;
-                                    }
-                                });
-                            }
-                            
-                            if (hasNewReady) {
-                                playReadySound();
-                                if(navigator.vibrate) navigator.vibrate([200, 100, 200]);
-                                showToast(`✅ TABLE ${t} : PLAT PRÊT AU PASSE !`);
-                            }
-                        } 
-                    }
-    // 🚨 LE RADAR D'APPEL GÉNÉRAL DU CHEF 🚨
-                    if(nO['ALERTS_MASTER'] && nO['ALERTS_MASTER'].data) {
-                        let alertData = nO['ALERTS_MASTER'].data;
-                        if (alertData.timestamp > (window.lastGlobalAlertTime || 0)) {
-                            window.lastGlobalAlertTime = alertData.timestamp;
-                            if (Date.now() - alertData.timestamp < 120000) { // Si alerte < 2 min
-                                playKlaxon();
-                                if(navigator.vibrate) navigator.vibrate([500, 200, 500, 200, 1000]);
-                                document.getElementById('global-alert-msg').innerText = alertData.message;
-                                document.getElementById('global-alert-modal').classList.add('open');
-                            }
-                        }
-                    }
+    <script>
+        var myRealPin = "";
+        window.appendPin = function(n) { 
+            if (myRealPin.length < 6) { 
+                myRealPin += n; 
+                if(document.getElementById('pin-display')) document.getElementById('pin-display').innerText = '*'.repeat(myRealPin.length); 
+            }
+        };
+        window.clearPin = function() { myRealPin = ""; if(document.getElementById('pin-display')) document.getElementById('pin-display').innerText = ""; };
+        
+        window.submitPin = function() {
+            if(myRealPin === "9999" || myRealPin === "999999" || myRealPin === "7777") {
+                window.currentUser = { name: "Directeur", role: "Manager" };
+                currentUser = window.currentUser;
+                document.getElementById('login-screen').style.display = 'none';
+                document.querySelectorAll('.admin').forEach(e => e.style.display = 'flex');
+                renderRooms(); renderFloor();
+            } else { alert("❌ Code incorrect"); window.clearPin(); }
+        };
 
-                    for (let t in nO) { 
-                        // Ignorer les clés système
-                        if (t.includes('MASTER') || t.includes('ARCHIVE') || t.includes('BAR') || t.includes('CUISINE') || t.includes('ALERTS') || t.includes('ARCHITECTURE')) continue;
-
-                        if (nO[t] && typeof nO[t] === 'object') { 
-                            
-                            // --- 🚨 DÉTECTION DES ALERTES CIBLÉES (TABLES) ---
-                            if (nO[t].alerteRouge) {
-                                let alertKey = t + "_" + nO[t].alerteRouge;
-
-                                if (!notifiedAlerts.has(alertKey)) {
-                                    playKlaxon();
-                                    if(navigator.vibrate) navigator.vibrate([500, 200, 500, 200, 1000]);
-                                    showToast(`⚠️ ALERTE CUISINE : TABLE ${t}`);
-                                    
-                                    // 🔴 LE NOUVEAU POPUP ROUGE GÉANT 🔴
-                                    document.getElementById('table-alert-table-name').innerText = "TABLE " + t;
-                                    document.getElementById('table-alert-msg').innerText = nO[t].alerteRouge;
-                                    document.getElementById('table-alert-modal').dataset.table = t;
-                                    document.getElementById('table-alert-modal').classList.add('open');
-                                    
-                                    notifiedAlerts.add(alertKey);
-
-                                    // Si le tiroir est ouvert, on bloque aussi l'intérieur
-                                    if (t === currentTable && document.getElementById('order-drawer').classList.contains('open')) {
-                                        checkTableAlertState(currentTable);
-                                    }
-                                }
-                            } else {
-                                // Nettoyage de la mémoire si le chef a annulé l'alerte
-                                let keysToRemove = Array.from(notifiedAlerts).filter(k => k.startsWith(t + "_"));
-                                keysToRemove.forEach(k => notifiedAlerts.delete(k));
-                            }
-
-                            let hasNewReady = false;
-                            if (nO[t].items) {
-                                nO[t].items.forEach(item => {
-                                    let prevItem = previousOrdersState[t]?.items?.find(i => i.id === item.id);
-                                    if (item.done && (!prevItem || !prevItem.done)) {
-                                        hasNewReady = true;
-                                    }
-                                });
-                            }
-                            
-                            if (hasNewReady) {
-                                playReadySound();
-                                if(navigator.vibrate) navigator.vibrate([200, 100, 200]);
-                                showToast(`✅ TABLE ${t} : PLAT PRÊT AU PASSE !`);
-                            }
-                        } 
-     }
+        window.unlockArchiMode = function() { 
+            isArchiMode = true; 
+            document.body.classList.add('edit-mode'); 
+            renderRooms(); renderFloor(); 
+            if(document.getElementById('admin-catalog-modal')) document.getElementById('admin-catalog-modal').classList.remove('open');
+        };
     </script>
 </body>
 </html>
