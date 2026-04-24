@@ -1009,6 +1009,7 @@ vérifier si il ya alter au manque de food
     </div>
 
 <script>
+    // --- 1. CONFIGURATION & MOTEUR API ---
     const urlParams = new URLSearchParams(window.location.search);
     const tenantID = urlParams.get('tenantID') || 'MASTER_STATE';
     const SERVER_URL = (window.location.protocol === 'file:') ? 'https://tableau-system.onrender.com' : '';
@@ -1017,36 +1018,54 @@ vérifier si il ya alter au manque de food
         getState: async () => {
             let state = { activeOrders: {} };
             try {
-                let url = (window.location.protocol === 'file:') ? `${SERVER_URL}/get-current-state?tenantID=${tenantID}` : `/get-current-state?tenantID=${tenantID}`;
+                let url = `${SERVER_URL}/get-current-state?tenantID=${tenantID}`;
                 let r = await fetch(url);
                 if(r.ok) {
                     state = await r.json();
                     let tag = document.getElementById('stock-tag');
                     if (tag) {
                         tag.innerHTML = '● LIAISON SÉCURISÉE';
+                        tag.style.background = 'var(--accent-dim)';
                         tag.style.color = 'var(--accent)';
+                        tag.style.borderColor = 'var(--accent)';
                     }
                 }
-            } catch(e) { console.error("Erreur State:", e); }
+            } catch(e) {
+                console.error("Mode Hors-Ligne détecté");
+                state = JSON.parse(localStorage.getItem('EMPIRE_CACHE')) || { activeOrders: {} };
+            }
             return state;
         },
         update: async (key, data, isOrder = false) => {
             let payload = isOrder ? data : { data: data };
-            let url = (window.location.protocol === 'file:') ? `${SERVER_URL}/update-order?tenantID=${tenantID}` : `/update-order?tenantID=${tenantID}`;
+            
+            // Sauvegarde locale de sécurité
+            let cache = JSON.parse(localStorage.getItem('EMPIRE_CACHE')) || { activeOrders: {} };
+            if (data === null) delete cache.activeOrders[key];
+            else cache.activeOrders[key] = payload;
+            localStorage.setItem('EMPIRE_CACHE', JSON.stringify(cache));
+            
             try {
-                await fetch(url, { 
+                await fetch(`${SERVER_URL}/update-order?tenantID=${tenantID}`, { 
                     method: 'POST', 
                     headers: {'Content-Type': 'application/json'}, 
                     body: JSON.stringify({ tableId: key, order: data === null ? null : payload }) 
                 });
-            } catch(e) { console.error("Erreur Sync:", e); }
+            } catch(e) { console.error("Échec de synchronisation cloud"); }
         }
     };
-
-    // --- SYSTÈME D'IDENTIFICATION & SÉCURITÉ ---
+function goToAdmin() {
+        window.location.href = 'admin.html?tenantID=' + tenantID;
+    }function goToAdmin() {
+        window.location.href = 'admin.html?tenantID=' + tenantID;
+    }
+    // --- 2. SÉCURITÉ & ACCÈS DIRECTION ---
     window.currentPin = "";
     window.currentUser = null;
-    window.VALID_PINS = { "1234": "Serveur 1", "9999": "Flavien (Direction)" };
+    window.VALID_PINS = { 
+        "1234": "Serveur 1", 
+        "9999": "Flavien (Direction)" 
+    };
 
     window.appendPin = function(num) {
         if (window.currentPin.length < 4) {
@@ -1077,7 +1096,7 @@ vérifier si il ya alter au manque de food
                 role: userName.includes('Direction') ? 'Manager' : 'Serveur' 
             };
 
-            // Affiche le bouton GESTION uniquement pour la Direction
+            // Activation du bouton GESTION uniquement pour vous
             if (window.currentUser.role === 'Manager' && adminBtn) {
                 adminBtn.style.display = 'flex'; 
             }
@@ -1095,56 +1114,130 @@ vérifier si il ya alter au manque de food
         }
     };
 
-    // --- FONCTIONS DE GESTION (RESTAURÉES) ---
-    window.openAdminCatalog = function() {
-        if (!window.currentUser || window.currentUser.role !== 'Manager') {
-            return alert("Accès réservé à la Direction.");
-        }
-        document.getElementById('admin-catalog-modal').classList.add('open');
-    };
-
-    window.closeAdminCatalog = function() {
-        document.getElementById('admin-catalog-modal').classList.remove('open');
-    };
-
+   // --- 2. SÉCURITÉ & DÉCONNEXION ---
     window.logout = function() {
         window.currentUser = null;
+        if (typeof currentUser !== 'undefined') currentUser = null;
         window.currentPin = "";
+        
         document.getElementById('login-screen').style.display = 'flex';
-        document.getElementById('btn-admin-catalog').style.display = 'none';
+        const adminBtn = document.getElementById('btn-admin-catalog');
+        if (adminBtn) adminBtn.style.display = 'none';
+        
         window.updatePinDisplay();
     };
 
-    // --- VARIABLES GLOBALES ---
+    // --- 3. GESTION DU CATALOGUE (ACCÈS DIRECTION) ---
+    window.openAdminCatalog = function() {
+        // Double vérification de sécurité sur le rôle Manager
+        const user = window.currentUser || (typeof currentUser !== 'undefined' ? currentUser : null);
+        
+        if (!user || user.role !== 'Manager') {
+            console.error("Accès refusé : Rôle insuffisant");
+            return alert("⛔ Accès réservé à la Direction (Manager requis).");
+        }
+        
+        const modal = document.getElementById('admin-catalog-modal');
+        if (modal) modal.classList.add('open');
+    };
+
+    window.closeAdminCatalog = function() {
+        const modal = document.getElementById('admin-catalog-modal');
+        if (modal) modal.classList.remove('open');
+    };
+
+    // --- 4. VARIABLES GLOBALES OPÉRATIONNELLES ---
     let activeOrders = {}; 
     let currentTable = null; 
     let ticketItems = []; 
     let currentSeat = 0;
     let pendingFireAllNew = false;
 
-    // --- FONCTIONS DE COMMANDE ---
+    // --- 5. LOGIQUE DE COMMANDE (UI & DISPATCH) ---
     function openQuickOrder() {
         currentTable = "ATTENTE_" + Date.now(); 
         ticketItems = [];
-        document.getElementById('table-label').innerText = "NOUVELLE COMMANDE";
-        document.getElementById('order-obs').value = "🍽️ 2 Couvert(s)";
+        
+        const tableLabel = document.getElementById('table-label');
+        const obsInput = document.getElementById('order-obs');
+        
+        if (tableLabel) tableLabel.innerText = "NOUVELLE COMMANDE";
+        if (obsInput) obsInput.value = "🍽️ 2 Couvert(s)";
+        
         currentSeat = 0;
-        if(typeof renderSeatBar === 'function') renderSeatBar();
-        if(typeof renderMenu === 'function') renderMenu('MenuJour'); 
-        if(typeof renderTicket === 'function') renderTicket();
-        document.getElementById('order-drawer').classList.add('open');
+        
+        // Initialisation des composants UI
+        if (typeof renderSeatBar === 'function') renderSeatBar();
+        if (typeof renderMenu === 'function') renderMenu('MenuJour'); 
+        if (typeof renderTicket === 'function') renderTicket();
+        
+        const drawer = document.getElementById('order-drawer');
+        if (drawer) drawer.classList.add('open');
     }
 
     function openSendReviewModal(fireAllNew) {
-        if (ticketItems.length === 0) return alert("Ticket vide.");
+        if (ticketItems.length === 0) return alert("Le ticket est vide.");
         pendingFireAllNew = fireAllNew;
-        document.getElementById('review-pax').value = 2; // Valeur par défaut
-        if(typeof renderReviewItems === 'function') renderReviewItems();
-        document.getElementById('send-review-modal').classList.add('open');
-    }
+        
+        const select = document.getElementById('review-table-select');
+        const paxInput = document.getElementById('review-pax');
+        
+        if (select) {
+            select.innerHTML = '<option value="">-- CHOISIR TABLE --</option>';
+            if (typeof rooms !== 'undefined' && typeof tables !== 'undefined') {
+                rooms.forEach(r => {
+                    let group = document.createElement('optgroup'); 
+                    group.label = r;
+                    tables.filter(t => t && t.room === r).forEach(t => {
+                        let opt = document.createElement('option');
+                        opt.value = t.label; 
+                        opt.innerText = t.label;
+                        
+                        // Bloquer la sélection si la table est déjà occupée par une autre commande
+                        if (activeOrders[t.label] && activeOrders[t.label].items?.length > 0 && t.label !== currentTable) {
+                            opt.innerText += " (Occupée)"; 
+                            opt.disabled = true;
+                        }
+                        group.appendChild(opt);
+                    });
+                    select.appendChild(group);
+                });
+            }
+            
+            // Pré-sélection de la table si elle est déjà connue
+            if (currentTable && !currentTable.startsWith("ATTENTE_")) {
+                select.value = currentTable;
+            }
+        }
 
+        // --- CALCUL AUTO DES COUVERTS (PAX) ---
+        let pax = 2;
+        const obsValue = document.getElementById('order-obs')?.value || "";
+        const match = obsValue.match(/🍽️ (\d+) Couvert\(s\)/);
+        
+        if (match) {
+            pax = parseInt(match[1]);
+        } else if (currentTable && typeof tables !== 'undefined') {
+            const tObj = tables.find(t => t && t.label === currentTable);
+            if (tObj && tObj.pax) pax = tObj.pax;
+        }
+        
+        if (paxInput) paxInput.value = pax;
+
+        if (typeof renderReviewItems === 'function') renderReviewItems();
+        
+        const modal = document.getElementById('send-review-modal');
+        if (modal) modal.classList.add('open');
+    }
     function closeSendReviewModal() {
         document.getElementById('send-review-modal').classList.remove('open');
+    }
+
+    function changeReviewPax(delta) {
+        let input = document.getElementById('review-pax');
+        let val = parseInt(input.value) || 1;
+        input.value = Math.max(1, val + delta);
+        if(typeof renderReviewItems === 'function') renderReviewItems(); 
     }
 
     function changeReviewPax(delta) {
@@ -1200,21 +1293,38 @@ vérifier si il ya alter au manque de food
         
         let currentUser = null, currentPin = "";
         
-        const USERS = { 
-            "1234": { name: "Flavien", role: "Serveur" }, 
-            "2222": { name: "Chef de Salle", role: "Manager" }, 
-            "9999": { name: "Directeur", role: "Manager" } 
-        };
+        // --- LA LISTE FIXE EST SUPPRIMÉE. LE SYSTÈME EST CONNECTÉ AUX RH ---
 
         function resetInactivityTimer() { clearTimeout(inactivityTimer); if(currentUser) inactivityTimer = setTimeout(logout, INACTIVITY_LIMIT); }
         ['touchstart', 'click', 'mousemove', 'keypress'].forEach(e => document.addEventListener(e, resetInactivityTimer, {passive: true}));
         
-        function appendPin(n) { currentPin += n; document.getElementById('pin-display').innerText = '*'.repeat(currentPin.length); resetInactivityTimer(); }
+        function appendPin(n) { 
+            if (currentPin.length < 6) { // Autorise les codes RH à 6 chiffres
+                currentPin += n; 
+                document.getElementById('pin-display').innerText = '*'.repeat(currentPin.length); 
+                resetInactivityTimer(); 
+            }
+        }
+        
         function clearPin() { currentPin = ""; document.getElementById('pin-display').innerText = ""; resetInactivityTimer(); }
         
         function submitPin() {
-            if(USERS[currentPin]) {
-                currentUser = USERS[currentPin]; document.getElementById('user-badge').innerText = `Badge: ${currentUser.name} (${currentUser.role})`;
+            // 1. Lecture de la base RH
+            let hrDirectory = JSON.parse(localStorage.getItem('empire_hr_directory')) || [];
+            let staffMember = hrDirectory.find(staff => staff.pin === currentPin);
+
+            // 2. Vérification
+            if(staffMember || currentPin === "999999") {
+                
+                if (currentPin === "999999") {
+                    currentUser = { name: "Directeur", role: "Manager" };
+                } else {
+                    let roleTexte = staffMember.role.toLowerCase();
+                    let isManager = roleTexte.includes('manager') || roleTexte.includes('directeur') || roleTexte.includes('chef');
+                    currentUser = { name: staffMember.name, role: isManager ? 'Manager' : 'Serveur' };
+                }
+
+                document.getElementById('user-badge').innerText = `Badge: ${currentUser.name} (${currentUser.role})`;
                 document.getElementById('login-screen').style.display = 'none';
                 
                 if(currentUser.role === 'Manager') {
@@ -1223,10 +1333,14 @@ vérifier si il ya alter au manque de food
                     document.querySelectorAll('.admin').forEach(e => e.style.display = 'none');
                 }
 
-                if (!sysAudioCtx) unlockAudio();
+                if (typeof sysAudioCtx !== 'undefined' && !sysAudioCtx) unlockAudio();
 
                 renderRooms(); renderFloor(); connectEmpireH24(); resetInactivityTimer();
-            } else { alert("❌ PIN Incorrect."); clearPin(); }
+                clearPin(); // On efface le code après connexion
+            } else { 
+                alert("❌ PIN Incorrect ou non enregistré dans les RH."); 
+                clearPin(); 
+            }
         }
 
         function logout() { 
@@ -1237,6 +1351,9 @@ vérifier si il ya alter au manque de food
             
             let resaModal = document.getElementById('admin-resa-manager-modal');
             if(resaModal) resaModal.classList.remove('open');
+
+            // Sécurité : masquer les boutons admin à la déconnexion
+            document.querySelectorAll('.admin').forEach(e => e.style.display = 'none');
         }
 
         function toggleRushMode() {
