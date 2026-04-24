@@ -1,4 +1,5 @@
-teste
+vérifier si il ya alter au manque de food
+
 <!DOCTYPE html>
 <html lang="fr">
 <head>
@@ -490,6 +491,39 @@ teste
         #send-review-modal { z-index: 25000; }
         @keyframes shake { 0%, 100% {transform: translateX(0);} 10%, 30%, 50%, 70%, 90% {transform: translateX(-5px);} 20%, 40%, 60%, 80% {transform: translateX(5px);} }
         .modal-shake { animation: shake 0.6s cubic-bezier(.36,.07,.19,.97) both; }
+        /* 💎 BOUTONS GESTION SALLES LUXE ÉPURÉ 💎 */
+.btn-archi-luxe {
+    background: transparent;
+    border: 1px solid rgba(255, 255, 255, 0.15);
+    color: var(--text-main);
+    padding: 12px 24px;
+    font-size: 0.75rem;
+    font-weight: 300;
+    letter-spacing: 2px;
+    text-transform: uppercase;
+    transition: all 0.4s cubic-bezier(0.165, 0.84, 0.44, 1);
+    cursor: pointer;
+    border-radius: 2px;
+    backdrop-filter: blur(10px);
+}
+
+.btn-archi-luxe:hover {
+    border-color: var(--gold);
+    color: var(--gold);
+    box-shadow: 0 0 20px var(--gold-dim);
+    transform: translateY(-2px);
+}
+
+.btn-danger-luxe {
+    border-color: rgba(248, 113, 113, 0.2);
+    color: var(--alert);
+}
+
+.btn-danger-luxe:hover {
+    background: var(--alert-dim);
+    border-color: var(--alert);
+    box-shadow: 0 0 20px var(--alert-dim);
+}
     </style>
 </head>
 <body>
@@ -700,12 +734,12 @@ teste
         </div>
     </div>
 
-    <div id="archi-btn-bar">
-        <button class="btn-mini" style="border-color: var(--purple); color: var(--purple); padding: 12px 20px; font-size: 0.9rem;" onclick="addNewRoom()">+ NOUVELLE SALLE</button>
-        <button class="btn-mini" style="padding: 12px 20px; font-size: 0.9rem; border-color: var(--text-main); color: var(--text-main);" onclick="addNewTable()">+ NOUVELLE TABLE</button>
-        <button class="btn-mini gold" style="padding: 12px 20px; font-size: 0.9rem; background: var(--gold-dim);" onclick="saveArchitecture()">💾 SAUVEGARDER PLAN</button>
-        <button class="btn-mini sync" style="padding: 12px 20px; font-size: 0.9rem; background: var(--alert-dim);" onclick="closeArchiMode()">QUITTER SANS SAUVER</button>
-    </div>
+    <div id="archi-btn-bar" style="padding: 25px; background: rgba(5,5,5,0.9); border-bottom: 1px solid var(--border); display: none; align-items: center; gap: 20px;">
+    <button class="btn-archi-luxe" onclick="addNewRoom()">+ Ajouter une Salle</button>
+    <button class="btn-archi-luxe" onclick="addNewTable()">+ Nouvelle Table</button>
+    <div style="flex:1"></div> <button class="btn-archi-luxe" style="color:var(--gold); border-color:var(--gold); font-weight: 600;" onclick="saveArchitecture()">💾 Sauvegarder l'Empire</button>
+    <button class="btn-archi-luxe btn-danger-luxe" onclick="closeArchiMode()">Annuler</button>
+</div>
     
     <div class="room-tabs" id="room-tabs-container"></div>
 
@@ -1003,257 +1037,394 @@ teste
             <button class="cuisson-btn cuisson-biencuit" onclick="confirmCuisson('À point')">🟠 À POINT</button>
             <button class="cuisson-btn cuisson-tresbiencuit" onclick="confirmCuisson('Bien cuit')">🟤 BIEN CUIT</button>
             
-        <button class="pay-btn cancel" style="width: 100%; padding: 15px; font-size: 1rem; margin-top: 25px; background: var(--bg);" onclick="cancelCuisson()">❌ ANNULER L'AJOUT</button>
+            <button class="pay-btn cancel" style="width: 100%; padding: 15px; font-size: 1rem; margin-top: 25px; background: var(--bg);" onclick="cancelCuisson()">❌ ANNULER L'AJOUT</button>
         </div>
     </div>
+    <script>
+        // --- VARIABLES GLOBALES EMPIRE OS ---
+        let activeOrders = {}; 
+        let currentTable = null; 
+        let ticketItems = []; 
+        let previousOrdersState = {};
+        let notifiedAlerts = new Set(); // Mémoire des alertes pour éviter les klaxons en boucle
 
-<script>
-    // --- 1. CONFIGURATION & MOTEUR API ---
-    const urlParams = new URLSearchParams(window.location.search);
-    const tenantID = urlParams.get('tenantID') || 'MASTER_STATE';
-    const SERVER_URL = (window.location.protocol === 'file:') ? 'https://tableau-system.onrender.com' : '';
+        // 🟢 NOUVEAU SÉLECTEUR DE CONVIVES (NUMÉRIQUE) 🟢
+        let currentSeat = 0; 
 
-    const API = {
-        getState: async () => {
-            let state = { activeOrders: {} };
-            try {
-                let url = `${SERVER_URL}/get-current-state?tenantID=${tenantID}`;
-                let r = await fetch(url);
-                if(r.ok) {
-                    state = await r.json();
-                    let tag = document.getElementById('stock-tag');
-                    if (tag) {
-                        tag.innerHTML = '● LIAISON SÉCURISÉE';
-                        tag.style.background = 'var(--accent-dim)';
-                        tag.style.color = 'var(--accent)';
-                        tag.style.borderColor = 'var(--accent)';
+        function renderSeatBar() {
+            let pax = 2;
+            let obsInput = document.getElementById('order-obs').value;
+            let match = obsInput.match(/🍽️ (\d+) Couvert\(s\)/);
+            if(match) pax = parseInt(match[1]);
+            else {
+                let tObj = tables.find(t => t && t.label === currentTable);
+                if(tObj && tObj.pax) pax = tObj.pax;
+            }
+
+            let html = `<span style="color:var(--text-muted); font-size:0.8rem; font-weight:bold; align-self:center; margin-right:10px; text-transform:uppercase;">Cibler :</span>`;
+            
+            html += `<button class="btn-mini seat-btn ${currentSeat===0?'gold':''}" onclick="setSeat(0)" style="margin-right: 10px;">🍽️ CENTRE</button>`;
+            
+            for(let i=1; i<=pax; i++) {
+                html += `<button class="btn-mini seat-btn ${currentSeat===i?'gold':''}" onclick="setSeat(${i})">👤 ${i}</button>`;
+            }
+            
+            html += `<button class="btn-mini" style="background:var(--bg); border:1px dashed var(--border); display:flex; justify-content:center; align-items:center;" onclick="addExtraSeatToBar()">+</button>`;
+            
+            let container = document.getElementById('seat-bar-container');
+            if(container) {
+                container.innerHTML = html;
+            }
+        }
+
+        function setSeat(s) {
+            currentSeat = s;
+            renderSeatBar(); 
+        }
+
+        function addExtraSeatToBar() {
+            let maxC = 0;
+            let obsInput = document.getElementById('order-obs').value;
+            let match = obsInput.match(/🍽️ (\d+) Couvert\(s\)/);
+            if(match) maxC = parseInt(match[1]);
+            
+            let newPax = maxC + 1;
+            
+            let baseObs = obsInput.replace(/🍽️ \d+ Couvert\(s\)( \| )?/, '').replace(/ \| $/, '').trim();
+            if (baseObs === "") {
+                document.getElementById('order-obs').value = `🍽️ ${newPax} Couvert(s)`;
+            } else {
+                document.getElementById('order-obs').value = `🍽️ ${newPax} Couvert(s) | ${baseObs}`;
+            }
+
+            let tObj = tables.find(t => t && t.label === currentTable);
+            if (tObj) {
+                tObj.pax = newPax;
+                pushArchitecture();
+            }
+
+            setSeat(newPax);
+        }
+
+        function openQuickOrder() {
+            currentTable = "ATTENTE_" + Date.now(); 
+            ticketItems = [];
+            document.getElementById('table-label').innerText = "NOUVELLE COMMANDE";
+            document.getElementById('order-obs').value = "🍽️ 2 Couvert(s)";
+            
+            currentSeat = 0;
+            renderSeatBar();
+            renderMenu('MenuJour'); 
+            renderTicket();
+            
+            let banner = document.getElementById('drawer-alert-banner');
+            let body = document.getElementById('drawer-main-body');
+            let actions = document.getElementById('ticket-action-buttons');
+            banner.style.display = 'none';
+            body.style.pointerEvents = 'auto';
+            body.style.opacity = '1';
+            body.style.filter = 'none';
+            actions.style.display = 'flex';
+            
+            document.getElementById('order-drawer').classList.add('open');
+        }
+
+        let pendingFireAllNew = false;
+
+        function openSendReviewModal(fireAllNew) {
+            if (ticketItems.length === 0) return alert("Le ticket est vide.");
+            pendingFireAllNew = fireAllNew;
+            
+            let select = document.getElementById('review-table-select');
+            select.innerHTML = '<option value="">-- SÉLECTIONNER UNE TABLE --</option>';
+            
+            rooms.forEach(r => {
+                let optgroup = document.createElement('optgroup');
+                optgroup.label = r;
+                tables.filter(t => t && t.room === r).forEach(t => {
+                    let opt = document.createElement('option');
+                    opt.value = t.label;
+                    opt.innerText = t.label;
+                    
+                    if (activeOrders[t.label] && activeOrders[t.label].items && activeOrders[t.label].items.length > 0 && t.label !== currentTable) {
+                        opt.innerText += " (Occupée)";
+                        opt.disabled = true; 
                     }
-                }
-            } catch(e) {
-                console.error("Mode Hors-Ligne détecté");
-                state = JSON.parse(localStorage.getItem('EMPIRE_CACHE')) || { activeOrders: {} };
-            }
-            return state;
-        },
-        update: async (key, data, isOrder = false) => {
-            let payload = isOrder ? data : { data: data };
-            
-            // Sauvegarde locale de sécurité
-            let cache = JSON.parse(localStorage.getItem('EMPIRE_CACHE')) || { activeOrders: {} };
-            if (data === null) delete cache.activeOrders[key];
-            else cache.activeOrders[key] = payload;
-            localStorage.setItem('EMPIRE_CACHE', JSON.stringify(cache));
-            
-            try {
-                await fetch(`${SERVER_URL}/update-order?tenantID=${tenantID}`, { 
-                    method: 'POST', 
-                    headers: {'Content-Type': 'application/json'}, 
-                    body: JSON.stringify({ tableId: key, order: data === null ? null : payload }) 
+                    optgroup.appendChild(opt);
                 });
-            } catch(e) { console.error("Échec de synchronisation cloud"); }
-        }
-    };
-function goToAdmin() {
-        window.location.href = 'admin.html?tenantID=' + tenantID;
-    }function goToAdmin() {
-        window.location.href = 'admin.html?tenantID=' + tenantID;
-    }
-    // --- 2. SÉCURITÉ & ACCÈS DIRECTION ---
-    window.currentPin = "";
-    window.currentUser = null;
-    window.VALID_PINS = { 
-        "1234": "Serveur 1", 
-        "9999": "Flavien (Direction)" 
-    };
+                select.appendChild(optgroup);
+            });
 
-    window.appendPin = function(num) {
-        if (window.currentPin.length < 4) {
-            window.currentPin += num;
-            window.updatePinDisplay();
-        }
-    };
-
-    window.clearPin = function() {
-        window.currentPin = "";
-        window.updatePinDisplay();
-    };
-
-    window.updatePinDisplay = function() {
-        const display = document.getElementById('pin-display');
-        if(display) display.innerText = '*'.repeat(window.currentPin.length);
-    };
-
-    window.submitPin = function() {
-        const loginScreen = document.getElementById('login-screen');
-        const userBadge = document.getElementById('user-badge');
-        const adminBtn = document.getElementById('btn-admin-catalog');
-
-        if (window.VALID_PINS[window.currentPin]) {
-            let userName = window.VALID_PINS[window.currentPin];
-            window.currentUser = { 
-                name: userName, 
-                role: userName.includes('Direction') ? 'Manager' : 'Serveur' 
-            };
-
-            // Activation du bouton GESTION uniquement pour vous
-            if (window.currentUser.role === 'Manager' && adminBtn) {
-                adminBtn.style.display = 'flex'; 
-            }
-
-            if(userBadge) userBadge.innerText = `Utilisateur: ${userName}`;
-            if(loginScreen) loginScreen.style.display = 'none';
-            window.currentPin = ""; 
-            window.updatePinDisplay();
-        } else {
-            const pinPad = document.querySelector('.pin-pad');
-            if(pinPad) {
-                pinPad.style.animation = 'shake 0.5s';
-                setTimeout(() => { pinPad.style.animation = ''; window.clearPin(); }, 500);
-            }
-        }
-    };
-
-   // --- 2. SÉCURITÉ & DÉCONNEXION ---
-    window.logout = function() {
-        window.currentUser = null;
-        if (typeof currentUser !== 'undefined') currentUser = null;
-        window.currentPin = "";
-        
-        document.getElementById('login-screen').style.display = 'flex';
-        const adminBtn = document.getElementById('btn-admin-catalog');
-        if (adminBtn) adminBtn.style.display = 'none';
-        
-        window.updatePinDisplay();
-    };
-
-    // --- 3. GESTION DU CATALOGUE (ACCÈS DIRECTION) ---
-    window.openAdminCatalog = function() {
-        // Double vérification de sécurité sur le rôle Manager
-        const user = window.currentUser || (typeof currentUser !== 'undefined' ? currentUser : null);
-        
-        if (!user || user.role !== 'Manager') {
-            console.error("Accès refusé : Rôle insuffisant");
-            return alert("⛔ Accès réservé à la Direction (Manager requis).");
-        }
-        
-        const modal = document.getElementById('admin-catalog-modal');
-        if (modal) modal.classList.add('open');
-    };
-
-    window.closeAdminCatalog = function() {
-        const modal = document.getElementById('admin-catalog-modal');
-        if (modal) modal.classList.remove('open');
-    };
-
-    // --- 4. VARIABLES GLOBALES OPÉRATIONNELLES ---
-    let activeOrders = {}; 
-    let currentTable = null; 
-    let ticketItems = []; 
-    let currentSeat = 0;
-    let pendingFireAllNew = false;
-
-    // --- 5. LOGIQUE DE COMMANDE (UI & DISPATCH) ---
-    function openQuickOrder() {
-        currentTable = "ATTENTE_" + Date.now(); 
-        ticketItems = [];
-        
-        const tableLabel = document.getElementById('table-label');
-        const obsInput = document.getElementById('order-obs');
-        
-        if (tableLabel) tableLabel.innerText = "NOUVELLE COMMANDE";
-        if (obsInput) obsInput.value = "🍽️ 2 Couvert(s)";
-        
-        currentSeat = 0;
-        
-        // Initialisation des composants UI
-        if (typeof renderSeatBar === 'function') renderSeatBar();
-        if (typeof renderMenu === 'function') renderMenu('MenuJour'); 
-        if (typeof renderTicket === 'function') renderTicket();
-        
-        const drawer = document.getElementById('order-drawer');
-        if (drawer) drawer.classList.add('open');
-    }
-
-    function openSendReviewModal(fireAllNew) {
-        if (ticketItems.length === 0) return alert("Le ticket est vide.");
-        pendingFireAllNew = fireAllNew;
-        
-        const select = document.getElementById('review-table-select');
-        const paxInput = document.getElementById('review-pax');
-        
-        if (select) {
-            select.innerHTML = '<option value="">-- CHOISIR TABLE --</option>';
-            if (typeof rooms !== 'undefined' && typeof tables !== 'undefined') {
-                rooms.forEach(r => {
-                    let group = document.createElement('optgroup'); 
-                    group.label = r;
-                    tables.filter(t => t && t.room === r).forEach(t => {
-                        let opt = document.createElement('option');
-                        opt.value = t.label; 
-                        opt.innerText = t.label;
-                        
-                        // Bloquer la sélection si la table est déjà occupée par une autre commande
-                        if (activeOrders[t.label] && activeOrders[t.label].items?.length > 0 && t.label !== currentTable) {
-                            opt.innerText += " (Occupée)"; 
-                            opt.disabled = true;
-                        }
-                        group.appendChild(opt);
-                    });
-                    select.appendChild(group);
-                });
-            }
-            
-            // Pré-sélection de la table si elle est déjà connue
             if (currentTable && !currentTable.startsWith("ATTENTE_")) {
                 select.value = currentTable;
             }
+
+            let pax = 2;
+            let obsInput = document.getElementById('order-obs').value;
+            let match = obsInput.match(/🍽️ (\d+) Couvert\(s\)/);
+            if(match) pax = parseInt(match[1]);
+            else if (currentTable && !currentTable.startsWith("ATTENTE_")) {
+                let tObj = tables.find(t => t && t.label === currentTable);
+                if(tObj && tObj.pax) pax = tObj.pax;
+            }
+            document.getElementById('review-pax').value = pax;
+
+            renderReviewItems();
+            document.getElementById('send-review-modal').classList.add('open');
         }
 
-        // --- CALCUL AUTO DES COUVERTS (PAX) ---
-        let pax = 2;
-        const obsValue = document.getElementById('order-obs')?.value || "";
-        const match = obsValue.match(/🍽️ (\d+) Couvert\(s\)/);
-        
-        if (match) {
-            pax = parseInt(match[1]);
-        } else if (currentTable && typeof tables !== 'undefined') {
-            const tObj = tables.find(t => t && t.label === currentTable);
-            if (tObj && tObj.pax) pax = tObj.pax;
+        function closeSendReviewModal() {
+            document.getElementById('send-review-modal').classList.remove('open');
         }
-        
-        if (paxInput) paxInput.value = pax;
 
-        if (typeof renderReviewItems === 'function') renderReviewItems();
-        
-        const modal = document.getElementById('send-review-modal');
-        if (modal) modal.classList.add('open');
-    }
-    function closeSendReviewModal() {
-        document.getElementById('send-review-modal').classList.remove('open');
-    }
+        function updateReviewPax() {
+            let selectedTable = document.getElementById('review-table-select').value;
+            if (selectedTable) {
+                let tObj = tables.find(t => t && t.label === selectedTable);
+                if (tObj && tObj.pax) {
+                    document.getElementById('review-pax').value = tObj.pax;
+                    renderReviewItems();
+                }
+            }
+        }
 
-    function changeReviewPax(delta) {
-        let input = document.getElementById('review-pax');
-        let val = parseInt(input.value) || 1;
-        input.value = Math.max(1, val + delta);
-        if(typeof renderReviewItems === 'function') renderReviewItems(); 
-    }
+        function changeReviewPax(delta) {
+            let input = document.getElementById('review-pax');
+            let val = parseInt(input.value) || 1;
+            val = Math.max(1, val + delta);
+            input.value = val;
+            renderReviewItems(); 
+        }
 
-    function changeReviewPax(delta) {
-        let input = document.getElementById('review-pax');
-        let val = parseInt(input.value) || 1;
-        input.value = Math.max(1, val + delta);
-        if(typeof renderReviewItems === 'function') renderReviewItems(); 
-    }
+        // 🟢 LE SAS UTILISE LES NUMÉROS 🟢
+        function renderReviewItems() {
+            let pax = parseInt(document.getElementById('review-pax').value) || 2;
+            let container = document.getElementById('review-items-list');
+            
+            let html = '';
+            ticketItems.forEach((item, idx) => {
+                let seat = item.seat || 0;
+                
+                let seatBtns = `<button class="seat-btn-rev ${seat===0?'gold':''}" onclick="setReviewSeat(${idx}, 0)">🍽️ CENTRE</button>`;
+                
+                for(let i=1; i<=pax; i++) {
+                    seatBtns += `<button class="seat-btn-rev ${seat===i?'gold':''}" onclick="setReviewSeat(${idx}, ${i})">👤 ${i}</button>`;
+                }
 
-    function changeReviewPax(delta) {
-        let input = document.getElementById('review-pax');
-        if (!input) return;
-        let val = parseInt(input.value) || 1;
-        val = Math.max(1, val + delta);
-        input.value = val;
-        if(typeof renderReviewItems === 'function') renderReviewItems(); 
-    }
+                html += `
+                <div style="display:flex; justify-content:space-between; align-items:center; background:var(--bg); padding:10px; border-radius:8px; border:1px solid var(--border);">
+                    <div style="font-weight:bold; color:var(--text-main); font-size:1.1rem; width: 40%;">${item.qty>1?item.qty+'x ':''}${item.n.replace(/\[BR\]/g, ' ')}</div>
+                    <div style="display:flex; gap:10px; flex-wrap:wrap; width: 60%; justify-content:flex-end; align-items: center;" id="rev-seats-${idx}">
+                        ${seatBtns}
+                    </div>
+                </div>
+                `;
+            });
+            container.innerHTML = html;
+        }
+
+        function setReviewSeat(idx, seatNum) {
+            ticketItems[idx].seat = seatNum;
+            renderReviewItems();
+        }
+
+        async function confirmSendReview() {
+            let selectedTable = document.getElementById('review-table-select').value;
+            if (!selectedTable) return alert("Veuillez sélectionner une table pour cette commande.");
+
+            let pax = parseInt(document.getElementById('review-pax').value) || 1;
+            
+            if (currentTable !== selectedTable) {
+                if (currentTable && !currentTable.startsWith("ATTENTE_")) {
+                    await API.update(currentTable, null, true); 
+                }
+                currentTable = selectedTable;
+            }
+
+            let obsInput = document.getElementById('order-obs');
+            let baseObs = obsInput.value.replace(/🍽️ \d+ Couvert\(s\)( \| )?/, '').replace(/ \| $/, '').trim();
+            if (baseObs === "") {
+                obsInput.value = `🍽️ ${pax} Couvert(s)`;
+            } else {
+                obsInput.value = `🍽️ ${pax} Couvert(s) | ${baseObs}`;
+            }
+            
+            let tObj = tables.find(t => t && t.label === currentTable);
+            if (tObj && tObj.pax !== pax) {
+                tObj.pax = pax;
+                pushArchitecture();
+            }
+
+            closeSendReviewModal();
+            await executeSaveTableState(pendingFireAllNew, false);
+        }
+
+        async function autoAssignToday() {
+            if (!currentUser || currentUser.role !== 'Manager') return alert("⛔ Accès Manager requis");
+            
+            let todayStr = new Date().toISOString().split('T')[0];
+            let resasToAssign = reservationsData.filter(r => r.date === todayStr && r.status === 'confirmed' && !r.assignedTable);
+            
+            if (resasToAssign.length === 0) return alert("Aucune réservation confirmée en attente d'assignation pour aujourd'hui.");
+
+            const state = await API.getState();
+            let currentOrders = state.activeOrders || {};
+            let updatesCount = 0;
+
+            for (let resa of resasToAssign) {
+                let availableTables = tables.filter(t => {
+                    let o = currentOrders[t.label];
+                    if (o && (o.status === 'reserved' || (o.items && o.items.length > 0))) return false;
+                    if (t.isExtra) return false; 
+                    return t.pax >= resa.couverts;
+                });
+
+                if (availableTables.length > 0) {
+                    availableTables.sort((a, b) => a.pax - b.pax);
+                    let bestTable = availableTables[0];
+
+                    let tableData = {
+                        status: 'reserved',
+                        time: resa.time,
+                        clientName: resa.name,
+                        observations: `🍽️ ${resa.couverts} Couvert(s)` + (resa.obs ? ` | ⚠️ ${resa.obs}` : ''),
+                        items: []
+                    };
+
+                    currentOrders[bestTable.label] = { data: tableData }; 
+                    await API.update(bestTable.label, tableData, true);
+                    
+                    resa.assignedTable = bestTable.label;
+                    updatesCount++;
+                }
+            }
+
+            if (updatesCount > 0) {
+                await API.update('RESERVATIONS_MASTER', reservationsData);
+                showToast(`✅ ${updatesCount} table(s) assignée(s) automatiquement.`);
+                renderPlanning('today');
+                renderFloor();
+            } else {
+                alert("⚠️ Aucune table adéquate ou disponible n'a été trouvée pour les réservations en attente.");
+            }
+        }
+
+        async function modifyTableCovers() {
+            if (!currentTable) return;
+            
+            let currentPax = "?";
+            let obsInput = document.getElementById('order-obs');
+            let match = obsInput.value.match(/🍽️ (\d+) Couvert\(s\)/);
+            if(match) currentPax = match[1];
+
+            let newPaxStr = prompt(`Combien de couverts à la table ${currentTable} ?`, currentPax);
+            if (newPaxStr === null || newPaxStr.trim() === "") return; 
+            
+            let newPax = parseInt(newPaxStr);
+            if (isNaN(newPax) || newPax <= 0) return alert("Nombre invalide.");
+
+            let baseObs = obsInput.value.replace(/🍽️ \d+ Couvert\(s\)( \| )?/, '').replace(/ \| $/, '').trim();
+            if (baseObs === "") {
+                obsInput.value = `🍽️ ${newPax} Couvert(s)`;
+            } else {
+                obsInput.value = `🍽️ ${newPax} Couvert(s) | ${baseObs}`;
+            }
+
+            let tObj = tables.find(t => t && t.label === currentTable);
+            if (tObj) {
+                tObj.pax = newPax;
+                pushArchitecture();
+            }
+
+            await executeSaveTableState(false, true); 
+            renderSeatBar(); 
+            renderFloor();
+        }
+
+        function changeConfigPax(delta) {
+            let input = document.getElementById('config-table-pax');
+            let val = parseInt(input.value) || 2;
+            val = Math.max(1, val + delta);
+            input.value = val;
+        }
+
+        function closeOrder() { 
+            try {
+                if (currentTable && !currentTable.startsWith("ATTENTE_")) {
+                    let tObj = tables.find(t => t && t.label === currentTable && t.isExtra);
+                    if (tObj && ticketItems.length === 0) {
+                        tables = tables.filter(t => t && t.label !== currentTable);
+                        pushArchitecture();
+                        renderFloor();
+                    }
+                }
+            } catch(e) {
+                console.error("Erreur closeOrder: ", e);
+            }
+            
+            let drawer = document.getElementById('order-drawer');
+            if (drawer) drawer.classList.remove('open'); 
+            currentTable = null; 
+        }
+
+        function openDrawer(id) { document.getElementById(id).classList.add('open'); }
+        function closeDrawer(id) { document.getElementById(id).classList.remove('open'); }
+
+        const API = {
+            getState: async () => {
+                let state = { activeOrders: {} };
+                try {
+                    let url = (window.location.protocol === 'file:') ? 'https://tableau-system.onrender.com/get-current-state' : '/get-current-state';
+                    let r = await fetch(url);
+                    if(r.ok) {
+                        state = await r.json();
+                        let tag = document.getElementById('stock-tag');
+                        if (tag && tag.innerText.includes('DÉCONNECTÉ') || tag.innerText.includes('ERREUR')) {
+                            tag.innerHTML = '● LIAISON SÉCURISÉE';
+                            tag.style.background = 'var(--accent-dim)';
+                            tag.style.color = 'var(--accent)';
+                            tag.style.borderColor = 'var(--accent)';
+                        }
+                    } else { throw new Error("HTTP " + r.status); }
+                } catch(e) {
+                    state = JSON.parse(localStorage.getItem('EMPIRE_GLOBAL_SYNC')) || { activeOrders: {} };
+                    let tag = document.getElementById('stock-tag');
+                    if (tag && !tag.innerText.includes('DÉCONNECTÉ')) {
+                        tag.innerHTML = '🔴 SERVEUR DÉCONNECTÉ';
+                        tag.style.background = 'var(--alert-dim)';
+                        tag.style.color = 'var(--alert)';
+                        tag.style.borderColor = 'var(--alert)';
+                    }
+                }
+                return state;
+            },
+            update: async (key, data, isOrder = false) => {
+                let payload = isOrder ? data : { data: data };
+                
+                let state = JSON.parse(localStorage.getItem('EMPIRE_GLOBAL_SYNC')) || { activeOrders: {} };
+                if (data === null) delete state.activeOrders[key];
+                else state.activeOrders[key] = payload;
+                localStorage.setItem('EMPIRE_GLOBAL_SYNC', JSON.stringify(state));
+                
+                let url = (window.location.protocol === 'file:') ? 'https://tableau-system.onrender.com/update-order' : '/update-order';
+                try {
+                    let r = await fetch(url, { 
+                        method: 'POST', 
+                        headers: {'Content-Type': 'application/json'}, 
+                        body: JSON.stringify({ tableId: key, order: data === null ? null : payload }) 
+                    });
+                    if (!r.ok) throw new Error("Update Failed");
+                } catch(e) {
+                    let tag = document.getElementById('stock-tag');
+                    if (tag) {
+                        tag.innerHTML = '🔴 ERREUR D\'ENVOI';
+                        tag.style.background = 'var(--alert-dim)';
+                        tag.style.color = 'var(--alert)';
+                        tag.style.borderColor = 'var(--alert)';
+                    }
+                }
+            }
+        };
 
         window.addEventListener('storage', (e) => {
             if (e.key === 'EMPIRE_GLOBAL_SYNC') {
@@ -1292,22 +1463,34 @@ function goToAdmin() {
         
         let currentUser = null, currentPin = "";
         
-        // --- LA LISTE FIXE EST SUPPRIMÉE. LE SYSTÈME EST CONNECTÉ AUX RH ---
+        const USERS = { 
+            "1234": { name: "Flavien", role: "Serveur" }, 
+            "2222": { name: "Chef de Salle", role: "Manager" }, 
+            "9999": { name: "Directeur", role: "Manager" } 
+        };
 
         function resetInactivityTimer() { clearTimeout(inactivityTimer); if(currentUser) inactivityTimer = setTimeout(logout, INACTIVITY_LIMIT); }
         ['touchstart', 'click', 'mousemove', 'keypress'].forEach(e => document.addEventListener(e, resetInactivityTimer, {passive: true}));
         
-        function appendPin(n) { 
-            if (currentPin.length < 6) { // Autorise les codes RH à 6 chiffres
-                currentPin += n; 
-                document.getElementById('pin-display').innerText = '*'.repeat(currentPin.length); 
-                resetInactivityTimer(); 
-            }
-        }
-        
+        function appendPin(n) { currentPin += n; document.getElementById('pin-display').innerText = '*'.repeat(currentPin.length); resetInactivityTimer(); }
         function clearPin() { currentPin = ""; document.getElementById('pin-display').innerText = ""; resetInactivityTimer(); }
         
-        submitPin()
+        function submitPin() {
+            if(USERS[currentPin]) {
+                currentUser = USERS[currentPin]; document.getElementById('user-badge').innerText = `Badge: ${currentUser.name} (${currentUser.role})`;
+                document.getElementById('login-screen').style.display = 'none';
+                
+                if(currentUser.role === 'Manager') {
+                    document.querySelectorAll('.admin').forEach(e => e.style.display = 'block');
+                } else {
+                    document.querySelectorAll('.admin').forEach(e => e.style.display = 'none');
+                }
+
+                if (!sysAudioCtx) unlockAudio();
+
+                renderRooms(); renderFloor(); connectEmpireH24(); resetInactivityTimer();
+            } else { alert("❌ PIN Incorrect."); clearPin(); }
+        }
 
         function logout() { 
             currentUser = null; currentPin = ""; 
@@ -1317,9 +1500,6 @@ function goToAdmin() {
             
             let resaModal = document.getElementById('admin-resa-manager-modal');
             if(resaModal) resaModal.classList.remove('open');
-
-            // Sécurité : masquer les boutons admin à la déconnexion
-            document.querySelectorAll('.admin').forEach(e => e.style.display = 'none');
         }
 
         function toggleRushMode() {
@@ -3118,11 +3298,54 @@ if (method === 'QR/TEL') {
     logAction("ENCAISSEMENT", `${method} : ${amt.toFixed(2)}€ | Table: ${currentTable}`);
 }
 
+        async function syncData() {
+            if (isArchiMode) return; 
+
+            try {
+                const state = await API.getState();
+                
+                if (state && state.activeOrders) {
+                    let nO = state.activeOrders;
+
+                    // 🟢 Synchronisation Menu Cuisine & Bar
+                    if(nO['MENU_MASTER']?.data) menuCuisine = nO['MENU_MASTER'].data;
+                    if(nO['MENU_MASTER_BAR']?.data) menuBar = nO['MENU_MASTER_BAR'].data;
+
+                    // 🚨 Radar d'alertes
+                    if(nO['ALERTS_MASTER']?.data) {
+                        let alertData = nO['ALERTS_MASTER'].data;
+                        if (alertData.timestamp > (window.lastGlobalAlertTime || 0)) {
+                            window.lastGlobalAlertTime = alertData.timestamp;
+                            playKlaxon();
+                            document.getElementById('global-alert-msg').innerText = alertData.message;
+                            document.getElementById('global-alert-modal').classList.add('open');
+                        }
+                    }
+
+                    // 🛡️ Traitement des tables et alertes
+                    for (let t in nO) { 
+                        if (t.includes('MASTER') || t.includes('ARCHIVE') || t.includes('ARCHITECTURE')) continue;
+                        
+                        if (nO[t]?.alerteRouge) {
+                            showToast(`⚠️ ALERTE TABLE ${t}`);
+                        }
+                    }
+
+                    activeOrders = nO;
+                    if(!isDraggingTable) renderFloor();
+                }
+            } catch(e) { console.error("Erreur Sync:", e); }
+        }
+
+        function connectEmpireH24() {
+            syncData(); 
+            setInterval(syncData, 3000);
+        }
+
+        // --- 💳 TON BLOC PAIEMENT (SYNTAXE RÉPARÉE) ---
         async function triggerSumUpPayment(montant) {
             try {
-                // IMPORTANT : Remplace 'TON_TOKEN_API' par ton jeton secret SumUp
                 const API_TOKEN = 'TON_TOKEN_API'; 
-                
                 const response = await fetch('https://api.sumup.com/v1.0/checkouts', {
                     method: 'POST',
                     headers: {
@@ -3146,167 +3369,64 @@ if (method === 'QR/TEL') {
                     return false;
                 }
             } catch (error) {
-                alert("❌ ERREUR RÉSEAU : Impossible de joindre SumUp.");
+                alert("❌ ERREUR RÉSEAU : Connexion impossible.");
                 return false;
             }
         }
 
         function cancelPayment() { 
             if(currentPayHistory.length > 0 && currentPayRemaining > 0) {
-                if(!confirm("⚠️ ATTENTION : Des encaissements partiels ont été faits.\nÊtes-vous sûr de vouloir fermer et laisser la table ouverte ?")) return;
+                if(!confirm("⚠️ Encaissements partiels en cours. Fermer quand même ?")) return;
             }
             document.getElementById('payment-modal').classList.remove('open'); 
         }
 
         async function finalizeTablePayment() {
             document.getElementById('payment-modal').classList.remove('open');
-            let methodsUsed = currentPayHistory.map(p => p.method).join(' + ');
-
-            let receiptHtml = `
-                <div style="font-family: monospace; font-size: 14px; text-align: center; width: 100%;">
-                    <h2 style="margin: 0 0 10px 0; font-size: 20px;">EMPIRE OS</h2>
-                    <p style="margin: 0 0 15px 0;">Table : ${currentTable}<br>${new Date().toLocaleString('fr-FR')}</p>
-                    <div style="border-bottom: 1px dashed black; margin-bottom: 15px;"></div>
-            `;
-            
-            ticketItems.forEach(item => {
-                let q = item.qty || 1;
-                let p = item.isOffered ? 0 : (parseFloat(item.p) || 0);
-                receiptHtml += `
-                    <div style="display: flex; justify-content: space-between; margin-bottom: 5px;">
-                        <span style="text-align: left;">${q}x ${item.n}</span>
-                        <span>${(p * q).toFixed(2)}€</span>
-                    </div>
-                `;
-            });
-
-            let tvaTotal = currentPayTotal - (currentPayTotal / 1.10);
-            receiptHtml += `
-                    <div style="border-bottom: 1px dashed black; margin: 15px 0;"></div>
-                    <div style="display: flex; justify-content: space-between; font-weight: bold; font-size: 16px;">
-                        <span>TOTAL TTC</span>
-                        <span>${currentPayTotal.toFixed(2)}€</span>
-                    </div>
-                    <div style="display: flex; justify-content: space-between; font-size: 12px; margin-bottom: 15px;">
-                        <span>Dont TVA 10%</span>
-                        <span>${tvaTotal.toFixed(2)}€</span>
-                    </div>
-                    <div style="text-align: left; font-size: 12px; margin-bottom: 20px;">
-                        <strong>Paiements :</strong><br>
-                        ${currentPayHistory.map(p => `${p.method} : ${p.amount.toFixed(2)}€`).join('<br>')}
-                    </div>
-                    <p style="margin: 0;">Merci de votre visite !</p>
-                </div>
-            `;
-
-            document.getElementById('print-zone').innerHTML = receiptHtml;
             window.print(); 
-
             setTimeout(async () => {
-                const state = await API.getState();
-                
-                let cuisineItems = ticketItems.filter(i => i.dest === 'cuisine');
-                let barItems = ticketItems.filter(i => i.dest === 'bar');
-
-                let archiveCuisine = (state && state.activeOrders && state.activeOrders['SALES_ARCHIVE_CUISINE']) ? state.activeOrders['SALES_ARCHIVE_CUISINE'].data || [] : [];
-                let archiveBar = (state && state.activeOrders && state.activeOrders['SALES_ARCHIVE_BAR']) ? state.activeOrders['SALES_ARCHIVE_BAR'].data || [] : [];
-                
-                let timeStr = new Date().toISOString();
-
-                if (cuisineItems.length > 0) {
-                    let cTotal = cuisineItems.reduce((acc, i) => acc + ((parseFloat(i.p)||0)*(i.qty||1)), 0);
-                    archiveCuisine.push({ id: Date.now(), table: currentTable, time: timeStr, total: cTotal.toFixed(2), tva: tvaTotal.toFixed(2), typePaiement: methodsUsed, splitDetails: currentPayHistory, items: cuisineItems });
-                    await API.update('SALES_ARCHIVE_CUISINE', archiveCuisine);
-                }
-
-                if (barItems.length > 0) {
-                    let bTotal = barItems.reduce((acc, i) => acc + ((parseFloat(i.p)||0)*(i.qty||1)), 0);
-                    archiveBar.push({ id: Date.now() + 1, table: currentTable, time: timeStr, total: bTotal.toFixed(2), tva: tvaTotal.toFixed(2), typePaiement: methodsUsed, splitDetails: currentPayHistory, items: barItems });
-                    await API.update('SALES_ARCHIVE_BAR', archiveBar);
-                }
-
                 await API.update(currentTable, null, true);
-                
-                logAction("TABLE CLÔTURÉE (MULTI-PAIEMENTS)", `Table: ${currentTable} | Total: ${currentPayTotal.toFixed(2)}€`, ticketItems); 
-                
-                let isExtra = tables.find(t => t && t.label === currentTable && t.isExtra);
-                if (isExtra) {
-                    tables = tables.filter(t => !(t && t.label === currentTable && t.isExtra));
-                    pushArchitecture();
-                }
-
-                ticketItems = []; document.getElementById('order-obs').value = ''; 
-                
-                let drawer = document.getElementById('order-drawer');
-                if (drawer) drawer.classList.remove('open'); 
-                currentTable = null; 
+                closeOrder(); 
                 renderFloor();
             }, 300);
         }
 
-        let isTicketDragging = false;
-        function dragItem(ev, idx) { isTicketDragging = true; ev.dataTransfer.setData("text/plain", idx); }
-        document.addEventListener('dragend', () => isTicketDragging = false);
-        function allowDrop(ev) { ev.preventDefault(); ev.currentTarget.classList.add('drag-over'); }
-        function dragLeave(ev) { ev.currentTarget.classList.remove('drag-over'); }
-        function dropItem(ev, targetCourse) {
-            ev.preventDefault(); ev.currentTarget.classList.remove('drag-over'); isTicketDragging = false;
-            let idx = ev.dataTransfer.getData("text/plain");
-            if(idx !== "" && ticketItems[idx]) { ticketItems[idx].course = targetCourse; renderTicket(); }
-        }
+        // Lancement au démarrage
+        document.addEventListener('DOMContentLoaded', connectEmpireH24);
 
-        function showToast(msg) {
-            let t = document.createElement('div');
-            t.className = 'toast-ready';
-            t.innerText = msg;
-            document.getElementById('notification-center').appendChild(t);
-            setTimeout(() => t.remove(), 5000);
-        }
+    </script>
 
-        function playReadySound() {
-            try {
-                if (!sysAudioCtx) unlockAudio();
-                let osc = sysAudioCtx.createOscillator();
-                let gain = sysAudioCtx.createGain();
-                osc.connect(gain); gain.connect(sysAudioCtx.destination);
-                osc.type = 'sine'; 
-                osc.frequency.setValueAtTime(880, sysAudioCtx.currentTime); 
-                osc.frequency.exponentialRampToValueAtTime(1760, sysAudioCtx.currentTime + 0.1); 
-                gain.gain.setValueAtTime(0.3, sysAudioCtx.currentTime);
-                gain.gain.exponentialRampToValueAtTime(0.01, sysAudioCtx.currentTime + 0.5);
-                osc.start();
-                osc.stop(sysAudioCtx.currentTime + 0.5);
-            } catch(e) {}
-        }
-
-        function playKlaxon() {
-            try {
-                if (!sysAudioCtx) unlockAudio();
-                let osc = sysAudioCtx.createOscillator();
-                let gain = sysAudioCtx.createGain();
-                osc.connect(gain); gain.connect(sysAudioCtx.destination);
-                osc.type = 'sawtooth'; 
-                osc.frequency.setValueAtTime(300, sysAudioCtx.currentTime); 
-                osc.frequency.exponentialRampToValueAtTime(100, sysAudioCtx.currentTime + 1);
-                gain.gain.setValueAtTime(0.5, sysAudioCtx.currentTime);
-                gain.gain.linearRampToValueAtTime(0.01, sysAudioCtx.currentTime + 1);
-                osc.start();
-                osc.stop(sysAudioCtx.currentTime + 1);
-            } catch(e) { console.log(e); }
-        }
-
-        let sysAudioCtx = null;
-        function unlockAudio() {
-            if (!sysAudioCtx) {
-                sysAudioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    <script>
+        var myRealPin = "";
+        window.appendPin = function(n) { 
+            if (myRealPin.length < 6) { 
+                myRealPin += n; 
+                if(document.getElementById('pin-display')) document.getElementById('pin-display').innerText = '*'.repeat(myRealPin.length); 
             }
-            if (sysAudioCtx.state === 'suspended') sysAudioCtx.resume();
-        }
-        document.body.addEventListener('touchstart', unlockAudio, {passive: true});
-        document.body.addEventListener('mousedown', unlockAudio, {passive: true});
+        };
+        window.clearPin = function() { myRealPin = ""; if(document.getElementById('pin-display')) document.getElementById('pin-display').innerText = ""; };
+        
+        window.submitPin = function() {
+            if(myRealPin === "9999" || myRealPin === "999999" || myRealPin === "7777") {
+                window.currentUser = { name: "Directeur", role: "Manager" };
+                currentUser = window.currentUser;
+                document.getElementById('login-screen').style.display = 'none';
+                document.querySelectorAll('.admin').forEach(e => e.style.display = 'flex');
+                renderRooms(); renderFloor();
+            } else { alert("❌ Code incorrect"); window.clearPin(); }
+        };
 
- async function syncData() {
-            if (isArchiMode) return; // Sécurité : on ne synchronise pas pendant qu'on dessine le plan
+        window.unlockArchiMode = function() { 
+            isArchiMode = true; 
+            document.body.classList.add('edit-mode'); 
+            renderRooms(); renderFloor(); 
+            if(document.getElementById('admin-catalog-modal')) document.getElementById('admin-catalog-modal').classList.remove('open');
+        };
+   // ==========================================
+        // 🔄 MOTEUR DE SYNCHRONISATION & RÉSEAU
+        // ==========================================
+        async function syncData() {
+            if (isArchiMode) return; 
 
             try {
                 const state = await API.getState();
@@ -3314,168 +3434,22 @@ if (method === 'QR/TEL') {
                 if (state && state.activeOrders) {
                     let nO = state.activeOrders;
 
-                    // ==========================================
-                    // 🟢 LE PONT TÉLÉPATHIQUE AVEC LA CUISINE 🟢
-                    // ==========================================
-                    if(nO['MENU_MASTER'] && nO['MENU_MASTER'].data) {
-                        let newMenu = nO['MENU_MASTER'].data;
-                        if (JSON.stringify(menuCuisine) !== JSON.stringify(newMenu)) {
-                            menuCuisine = newMenu;
-                            if (document.getElementById('order-drawer').classList.contains('open')) {
-                                renderMenu(currentCategory);
-                            }
+                    // 🟢 Synchronisation Menu Cuisine & Bar
+                    if(nO['MENU_MASTER']?.data) menuCuisine = nO['MENU_MASTER'].data;
+                    if(nO['MENU_MASTER_BAR']?.data) menuBar = nO['MENU_MASTER_BAR'].data;
+
+                    // 🚨 Radar d'alertes générales
+                    if(nO['ALERTS_MASTER']?.data) {
+                        let alertData = nO['ALERTS_MASTER'].data;
+                        if (alertData.timestamp > (window.lastGlobalAlertTime || 0)) {
+                            window.lastGlobalAlertTime = alertData.timestamp;
+                            if(typeof playKlaxon === 'function') playKlaxon();
+                            document.getElementById('global-alert-msg').innerText = alertData.message;
+                            document.getElementById('global-alert-modal').classList.add('open');
                         }
                     }
 
-                    // LA MÊME CHOSE POUR LE BAR
-                    if(nO['MENU_MASTER_BAR'] && nO['MENU_MASTER_BAR'].data) {
-                        let newBar = nO['MENU_MASTER_BAR'].data;
-                        if (JSON.stringify(menuBar) !== JSON.stringify(newBar)) {
-                            menuBar = newBar;
-                            if (document.getElementById('order-drawer').classList.contains('open') && currentCategory === 'Boissons') {
-                                renderMenu('Boissons');
-                            }
-                        }
-                    }
-                    // ==========================================
-
-                    // 🚦 LE BLOC SAS 🚦
-                    if(state.sasConfig && typeof isUpdatingSAS !== 'undefined' && !isUpdatingSAS) {
-                        localSasConfig = state.sasConfig;
-                        
-                        let maxInput = document.getElementById('sas-max-input');
-                        let timeInput = document.getElementById('sas-time-input');
-                        
-                        if(maxInput && document.activeElement !== maxInput) {
-                            maxInput.value = localSasConfig.maxTables;
-                        }
-                        if(timeInput && document.activeElement !== timeInput) {
-                            timeInput.value = localSasConfig.delaySeconds || 60;
-                        }
-
-                        let btn = document.getElementById('btn-sas-toggle');
-                        if(btn) {
-                            if(localSasConfig.active) { btn.innerText = "✅ ACTIVÉ"; btn.style.background = "rgba(52, 211, 153, 0.2)"; btn.style.color = "#34d399"; btn.style.borderColor = "#34d399"; }
-                            else { btn.innerText = "❌ DÉSACTIVÉ"; btn.style.background = "rgba(248, 113, 113, 0.2)"; btn.style.color = "#f87171"; btn.style.borderColor = "#f87171"; }
-                        }
-                    }
-
-                    // 📅 RÉSERVATIONS
-                    let hasNewResa = false;
-                    if(nO['RESERVATIONS_MASTER']) {
-                        if(Array.isArray(nO['RESERVATIONS_MASTER'].data)) {
-                            reservationsData = nO['RESERVATIONS_MASTER'].data;
-                        } else {
-                            reservationsData = [];
-                        }
-                        
-                        let unassignedResas = reservationsData.filter(r => !r.assignedTable && r.status !== 'rejected');
-                        if (unassignedResas.length > 0) {
-                            hasNewResa = true;
-                        }
-                    }
-
-                    let planBtn = document.getElementById('btn-planning');
-                    if(planBtn) {
-                        if (hasNewResa) {
-                            if (!planBtn.classList.contains('has-notification')) planBtn.classList.add('has-notification');
-                        } else {
-                            planBtn.classList.remove('has-notification');
-                        }
-                    }
-                    
-                    if(nO['STOCK_ALERTS']) stockAlerts = nO['STOCK_ALERTS'].data;
-                    
-                    if(nO['ARCHITECTURE']) {
-                        let arch = nO['ARCHITECTURE'].data;
-                        let archChanged = false;
-                        if(JSON.stringify(rooms) !== JSON.stringify(arch.rooms)) { rooms = arch.rooms || ['Salle Principale']; archChanged = true; }
-                        if(JSON.stringify(tables) !== JSON.stringify(arch.tables)) { tables = arch.tables || []; archChanged = true; }
-                        if(archChanged && !isDraggingTable) {
-                            if(!rooms.includes(currentRoom)) currentRoom = rooms[0] || 'Salle Principale';
-                            renderRooms(); renderFloor();
-                        }
-                    }
-
-                    if(nO['INVENTORY_MASTER']) {
-                        let invData = nO['INVENTORY_MASTER'].data;
-                        let totalService = 0;
-                        if(invData.service) { invData.service.forEach(item => { totalService += (item.unitPrice * (item.realStock || 0)); }); }
-                        let tracker = document.getElementById('stock-tracker');
-                        if (tracker) tracker.innerText = `${totalService.toFixed(2)} €`;
-                    }
-
-                    for (let t in nO) { 
-                        if (nO[t] && typeof nO[t] === 'object') { 
-                            
-                            // --- DÉTECTION DES ALERTES ---
-                            if (nO[t].alerteRouge) {
-                                let alertKey = t + "_" + nO[t].alerteRouge;
-
-                                if (!notifiedAlerts.has(alertKey)) {
-                                    playKlaxon();
-                                    if(navigator.vibrate) navigator.vibrate([500, 200, 500, 200, 1000]);
-                                    showToast(`⚠️ ALERTE TABLE ${t}: ${nO[t].alerteRouge}`);
-                                    
-                                    notifiedAlerts.add(alertKey);
-
-                                    if (t === currentTable && document.getElementById('order-drawer').classList.contains('open')) {
-                                        checkTableAlertState(currentTable);
-                                    }
-                                }
-                            } else {
-                                let keysToRemove = Array.from(notifiedAlerts).filter(k => k.startsWith(t + "_"));
-                                keysToRemove.forEach(k => notifiedAlerts.delete(k));
-                            }
-
-                            let hasNewReady = false;
-                            if (nO[t].items) {
-                                nO[t].items.forEach(item => {
-                                    let prevItem = previousOrdersState[t]?.items?.find(i => i.id === item.id);
-                                    if (item.done && (!prevItem || !prevItem.done)) {
-                                        hasNewReady = true;
-                                    }
-                                });
-                            }
-                            
-                            if (hasNewReady) {
-                                playReadySound();
-                                if(navigator.vibrate) navigator.vibrate([200, 100, 200]);
-                                showToast(`✅ TABLE ${t} : PLAT PRÊT AU PASSE !`);
-                            }
-                        } 
-                    } 
-                    
-                    previousOrdersState = JSON.parse(JSON.stringify(nO)); 
-                    activeOrders = nO; 
-                    
-                    if(document.getElementById('order-drawer').classList.contains('open') && currentTable) { 
-                        checkTableAlertState(currentTable);
-                        
-                        let dbItems = (activeOrders[currentTable] && activeOrders[currentTable].items) ? activeOrders[currentTable].items : [];
-                        let mergedItems = [];
-                        
-                        dbItems.forEach(dbItem => {
-                            let localItem = ticketItems.find(i => i.id === dbItem.id);
-                            if (localItem) {
-                                localItem.done = dbItem.done;
-                                localItem.fired = dbItem.fired;
-                                mergedItems.push(localItem);
-                            } else {
-                                mergedItems.push(dbItem); 
-                            }
-                        });
-                        
-                        ticketItems.forEach(localItem => {
-                            if (!dbItems.find(i => i.id === localItem.id)) {
-                                mergedItems.push(localItem);
-                            }
-                        });
-
-                        ticketItems = mergedItems;
-                        renderTicket(); 
-                        renderMenu(currentCategory); 
-                    } 
+                    activeOrders = nO;
                     if(!isDraggingTable) renderFloor();
                 }
             } catch(e) { console.error("Erreur Sync:", e); }
@@ -3486,198 +3460,84 @@ if (method === 'QR/TEL') {
             setInterval(syncData, 3000);
         }
 
-        setInterval(() => { 
-            let c = document.getElementById('empire-clock'); 
-            if(c) c.innerText = new Date().toLocaleTimeString('fr-FR', { hour12: false }); 
-            
-            if(currentTable && document.getElementById('order-drawer').classList.contains('open') && !isTicketDragging) {
-                renderTicket();
-            }
-        }, 1000);
-// ==========================================
-        // 🕵️ MOTEUR DU PANNEAU FANTÔME (MASTER)
         // ==========================================
-        let phantomClicks = 0;
-        let phantomTimer;
-        const MASTER_PIN = "7777"; // 👑 TA CLÉ DE CONFIGURATEUR
+        // 🏗️ GESTION DES SALLES (DESIGN LUXE & SÉCURITÉ)
+        // ==========================================
+        function addNewRoom() {
+            let n = prompt("Nom de la nouvelle salle ?");
+            if (n && n.trim() !== "") {
+                rooms.push(n.trim());
+                currentRoom = n.trim();
+                renderRooms();
+                renderFloor();
+                showToast("💎 Nouvelle salle créée");
+            }
+        }
 
-        async function triggerPhantom() {
-            phantomClicks++;
-            clearTimeout(phantomTimer);
-            
-            // Si on ne clique pas assez vite, le compteur retombe à zéro
-            phantomTimer = setTimeout(() => { phantomClicks = 0; }, 1000); 
+        function deleteCurrentRoom() {
+            if (rooms.length <= 1) return alert("🛡️ SÉCURITÉ : L'Empire doit posséder au moins une salle.");
 
-            if (phantomClicks === 5) {
-                phantomClicks = 0; // Réinitialisation
-                
-                let pin = prompt("👑 SYSTÈME MASTER : VEUILLEZ VOUS IDENTIFIER");
-                
-                if (pin === MASTER_PIN) {
-                    let newPass = prompt("✅ ACCÈS AUTORISÉ.\nEntrez le NOUVEAU mot de passe pour le Gérant du restaurant :");
-                    if (newPass && newPass.trim() !== "") {
-                        try {
-                            let url = (window.location.protocol === 'file:') ? 'https://tableau-system.onrender.com/phantom-pass' : '/phantom-pass';
-                            let res = await fetch(url, {
-                                method: 'POST',
-                                headers: {'Content-Type': 'application/json'},
-                                body: JSON.stringify({ masterPin: pin, newPass: newPass.trim() })
-                            });
-                            
-                            if(res.ok) {
-                                alert("🔒 SUCCÈS : Le mot de passe Gérant a été forcé et remplacé par : " + newPass.trim());
-                            } else {
-                                alert("❌ Erreur serveur.");
-                            }
-                        } catch(e) {
-                            alert("❌ Serveur hors ligne.");
-                        }
-                    }
-                } else if (pin) {
-                    alert("🚨 ACCÈS REFUSÉ. Tentative bloquée.");
+            // Double validation anti-erreur humaine
+            if (confirm("⚠️ Voulez-vous vraiment supprimer la salle '" + currentRoom + "' ?")) {
+                if (confirm("🛑 CONFIRMATION FINALE : Cela détruira toutes les tables à l'intérieur. Confirmer ?")) {
+                    tables = tables.filter(t => t && t.room !== currentRoom);
+                    rooms = rooms.filter(r => r !== currentRoom);
+                    currentRoom = rooms[0];
+                    renderRooms();
+                    renderFloor();
+                    pushArchitecture();
+                    showToast("✅ Salle supprimée");
                 }
             }
         }
-  
-    // 🚨 LE RADAR D'APPEL GÉNÉRAL DU CHEF 🚨
-                    if(nO['ALERTS_MASTER'] && nO['ALERTS_MASTER'].data) {
-                        let alertData = nO['ALERTS_MASTER'].data;
-                        if (alertData.timestamp > (window.lastGlobalAlertTime || 0)) {
-                            window.lastGlobalAlertTime = alertData.timestamp;
-                            if (Date.now() - alertData.timestamp < 120000) { // Si alerte < 2 min
-                                playKlaxon();
-                                if(navigator.vibrate) navigator.vibrate([500, 200, 500, 200, 1000]);
-                                document.getElementById('global-alert-msg').innerText = alertData.message;
-                                document.getElementById('global-alert-modal').classList.add('open');
-                            }
-                        }
-                    }
 
-                    for (let t in nO) { 
-                        // Ignorer les clés système
-                        if (t.includes('MASTER') || t.includes('ARCHIVE') || t.includes('BAR') || t.includes('CUISINE') || t.includes('ALERTS') || t.includes('ARCHITECTURE')) continue;
-
-                        if (nO[t] && typeof nO[t] === 'object') { 
-                            
-                            // --- 🚨 DÉTECTION DES ALERTES CIBLÉES (TABLES) ---
-                            if (nO[t].alerteRouge) {
-                                let alertKey = t + "_" + nO[t].alerteRouge;
-
-                                if (!notifiedAlerts.has(alertKey)) {
-                                    playKlaxon();
-                                    if(navigator.vibrate) navigator.vibrate([500, 200, 500, 200, 1000]);
-                                    showToast(`⚠️ ALERTE CUISINE : TABLE ${t}`);
-                                    
-                                    // 🔴 LE NOUVEAU POPUP ROUGE GÉANT 🔴
-                                    document.getElementById('table-alert-table-name').innerText = "TABLE " + t;
-                                    document.getElementById('table-alert-msg').innerText = nO[t].alerteRouge;
-                                    document.getElementById('table-alert-modal').dataset.table = t;
-                                    document.getElementById('table-alert-modal').classList.add('open');
-                                    
-                                    notifiedAlerts.add(alertKey);
-
-                                    // Si le tiroir est ouvert, on bloque aussi l'intérieur
-                                    if (t === currentTable && document.getElementById('order-drawer').classList.contains('open')) {
-                                        checkTableAlertState(currentTable);
-                                    }
-                                }
-                            } else {
-                                // Nettoyage de la mémoire si le chef a annulé l'alerte
-                                let keysToRemove = Array.from(notifiedAlerts).filter(k => k.startsWith(t + "_"));
-                                keysToRemove.forEach(k => notifiedAlerts.delete(k));
-                            }
-
-                            let hasNewReady = false;
-                            if (nO[t].items) {
-                                nO[t].items.forEach(item => {
-                                    let prevItem = previousOrdersState[t]?.items?.find(i => i.id === item.id);
-                                    if (item.done && (!prevItem || !prevItem.done)) {
-                                        hasNewReady = true;
-                                    }
-                                });
-                            }
-                            
-                            if (hasNewReady) {
-                                playReadySound();
-                                if(navigator.vibrate) navigator.vibrate([200, 100, 200]);
-                                showToast(`✅ TABLE ${t} : PLAT PRÊT AU PASSE !`);
-                            }
-                        } 
-                    }
-    // 🚨 LE RADAR D'APPEL GÉNÉRAL DU CHEF 🚨
-                    if(nO['ALERTS_MASTER'] && nO['ALERTS_MASTER'].data) {
-                        let alertData = nO['ALERTS_MASTER'].data;
-                        if (alertData.timestamp > (window.lastGlobalAlertTime || 0)) {
-                            window.lastGlobalAlertTime = alertData.timestamp;
-                            if (Date.now() - alertData.timestamp < 120000) { // Si alerte < 2 min
-                                playKlaxon();
-                                if(navigator.vibrate) navigator.vibrate([500, 200, 500, 200, 1000]);
-                                document.getElementById('global-alert-msg').innerText = alertData.message;
-                                document.getElementById('global-alert-modal').classList.add('open');
-                            }
-                        }
-                    }
-
-                    for (let t in nO) { 
-                        // Ignorer les clés système
-                        if (t.includes('MASTER') || t.includes('ARCHIVE') || t.includes('BAR') || t.includes('CUISINE') || t.includes('ALERTS') || t.includes('ARCHITECTURE')) continue;
-
-                        if (nO[t] && typeof nO[t] === 'object') { 
-                            
-                            // --- 🚨 DÉTECTION DES ALERTES CIBLÉES (TABLES) ---
-                            if (nO[t].alerteRouge) {
-                                let alertKey = t + "_" + nO[t].alerteRouge;
-
-                                if (!notifiedAlerts.has(alertKey)) {
-                                    playKlaxon();
-                                    if(navigator.vibrate) navigator.vibrate([500, 200, 500, 200, 1000]);
-                                    showToast(`⚠️ ALERTE CUISINE : TABLE ${t}`);
-                                    
-                                    // 🔴 LE NOUVEAU POPUP ROUGE GÉANT 🔴
-                                    document.getElementById('table-alert-table-name').innerText = "TABLE " + t;
-                                    document.getElementById('table-alert-msg').innerText = nO[t].alerteRouge;
-                                    document.getElementById('table-alert-modal').dataset.table = t;
-                                    document.getElementById('table-alert-modal').classList.add('open');
-                                    
-                                    notifiedAlerts.add(alertKey);
-
-                                    // Si le tiroir est ouvert, on bloque aussi l'intérieur
-                                    if (t === currentTable && document.getElementById('order-drawer').classList.contains('open')) {
-                                        checkTableAlertState(currentTable);
-                                    }
-                                }
-                            } else {
-                                // Nettoyage de la mémoire si le chef a annulé l'alerte
-                                let keysToRemove = Array.from(notifiedAlerts).filter(k => k.startsWith(t + "_"));
-                                keysToRemove.forEach(k => notifiedAlerts.delete(k));
-                            }
-
-                            let hasNewReady = false;
-                            if (nO[t].items) {
-                                nO[t].items.forEach(item => {
-                                    let prevItem = previousOrdersState[t]?.items?.find(i => i.id === item.id);
-                                    if (item.done && (!prevItem || !prevItem.done)) {
-                                        hasNewReady = true;
-                                    }
-                                });
-                            }
-                            
-                            if (hasNewReady) {
-                                playReadySound();
-                                if(navigator.vibrate) navigator.vibrate([200, 100, 200]);
-                                showToast(`✅ TABLE ${t} : PLAT PRÊT AU PASSE !`);
-                            }
-                        } 
-                    }
-                }
-            } catch (e) { console.error("Erreur Sync:", e); }
+        // ==========================================
+        // 💳 MODULE PAIEMENT (SUMUP & CAISSE)
+        // ==========================================
+        async function triggerSumUpPayment(montant) {
+            try {
+                const API_TOKEN = 'TON_TOKEN_API'; 
+                const response = await fetch('https://api.sumup.com/v1.0/checkouts', {
+                    method: 'POST',
+                    headers: { 'Authorization': `Bearer ${API_TOKEN}`, 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        amount: montant,
+                        currency: 'EUR',
+                        checkout_reference: `EMPIRE-${currentTable}-${Date.now()}`,
+                        description: `Table ${currentTable}`
+                    })
+                });
+                if (response.ok) { showToast("📡 TERMINAL ACTIVÉ..."); return true; }
+                else { alert("❌ Erreur SumUp"); return false; }
+            } catch (error) { alert("❌ Erreur Réseau"); return false; }
         }
+
+        function cancelPayment() { 
+            if(currentPayHistory.length > 0 && currentPayRemaining > 0) {
+                if(!confirm("⚠️ Encaissements partiels en cours. Fermer quand même ?")) return;
+            }
+            document.getElementById('payment-modal').classList.remove('open'); 
+        }
+
+        async function finalizeTablePayment() {
+            document.getElementById('payment-modal').classList.remove('open');
+            window.print(); 
+            setTimeout(async () => {
+                await API.update(currentTable, null, true);
+                let drawer = document.getElementById('order-drawer');
+                if (drawer) drawer.classList.remove('open');
+                currentTable = null;
+                renderFloor();
+            }, 300);
+        }
+
+        // Lancement au démarrage
+        document.addEventListener('DOMContentLoaded', connectEmpireH24);
+
     </script>
 
     <script>
-        // 1. Mémoire isolée pour le PIN
         var myRealPin = "";
-
         window.appendPin = function(n) { 
             if (myRealPin.length < 6) { 
                 myRealPin += n; 
@@ -3685,58 +3545,34 @@ if (method === 'QR/TEL') {
                 if(disp) disp.innerText = '*'.repeat(myRealPin.length); 
             }
         };
-        appendPin = window.appendPin;
 
         window.clearPin = function() { 
             myRealPin = ""; 
-            let disp = document.getElementById('pin-display');
-            if(disp) disp.innerText = ""; 
+            if(document.getElementById('pin-display')) document.getElementById('pin-display').innerText = ""; 
         };
-        clearPin = window.clearPin;
-
-        // 2. Validation forcée (Code 9999 ou 999999)
+        
         window.submitPin = function() {
             if(myRealPin === "9999" || myRealPin === "999999" || myRealPin === "7777") {
                 let adminUser = { name: "Directeur", role: "Manager" };
                 window.currentUser = adminUser;
-                if(typeof currentUser !== 'undefined') currentUser = adminUser;
-
-                document.getElementById('user-badge').innerText = "Badge: Direction (Manager)";
+                currentUser = adminUser;
                 document.getElementById('login-screen').style.display = 'none';
-                
                 document.querySelectorAll('.admin, #btn-admin-catalog').forEach(e => e.style.display = 'flex');
-
                 if(typeof renderRooms === 'function') renderRooms(); 
-                if(typeof renderFloor === 'function') renderFloor(); 
-                if(typeof connectEmpireH24 === 'function') connectEmpireH24(); 
-                
+                if(typeof renderFloor === 'function') renderFloor();
                 myRealPin = "";
-                if(document.getElementById('pin-display')) document.getElementById('pin-display').innerText = "";
             } else { 
-                alert("❌ PIN Incorrect."); 
-                window.clearPin();
+                alert("❌ Code incorrect"); 
+                window.clearPin(); 
             }
         };
-        submitPin = window.submitPin;
 
-        // 3. Forçage du mode Architecture
         window.unlockArchiMode = function() { 
             isArchiMode = true; 
             document.body.classList.add('edit-mode'); 
-            if(typeof renderRooms === 'function') renderRooms(); 
-            if(typeof renderFloor === 'function') renderFloor(); 
-            
-            let modal = document.getElementById('admin-catalog-modal');
-            if(modal) modal.classList.remove('open');
+            renderRooms(); renderFloor(); 
+            if(document.getElementById('admin-catalog-modal')) document.getElementById('admin-catalog-modal').classList.remove('open');
         };
-        unlockArchiMode = window.unlockArchiMode;
-
-        // 4. Ouverture menu gestion
-        window.openAdminCatalog = function() {
-            let modal = document.getElementById('admin-catalog-modal');
-            if(modal) modal.classList.add('open');
-        };
-        openAdminCatalog = window.openAdminCatalog;
     </script>
 </body>
 </html>
