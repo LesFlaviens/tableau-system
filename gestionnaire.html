@@ -3389,9 +3389,10 @@ if (method === 'QR/TEL') {
             renderRooms(); renderFloor(); 
             if(document.getElementById('admin-catalog-modal')) document.getElementById('admin-catalog-modal').classList.remove('open');
         };
-    </script>
-</body>
-</html>async function syncData() {
+   // ==========================================
+        // 🔄 MOTEUR DE SYNCHRONISATION & RÉSEAU
+        // ==========================================
+        async function syncData() {
             if (isArchiMode) return; 
 
             try {
@@ -3404,23 +3405,14 @@ if (method === 'QR/TEL') {
                     if(nO['MENU_MASTER']?.data) menuCuisine = nO['MENU_MASTER'].data;
                     if(nO['MENU_MASTER_BAR']?.data) menuBar = nO['MENU_MASTER_BAR'].data;
 
-                    // 🚨 Radar d'alertes
+                    // 🚨 Radar d'alertes générales
                     if(nO['ALERTS_MASTER']?.data) {
                         let alertData = nO['ALERTS_MASTER'].data;
                         if (alertData.timestamp > (window.lastGlobalAlertTime || 0)) {
                             window.lastGlobalAlertTime = alertData.timestamp;
-                            playKlaxon();
+                            if(typeof playKlaxon === 'function') playKlaxon();
                             document.getElementById('global-alert-msg').innerText = alertData.message;
                             document.getElementById('global-alert-modal').classList.add('open');
-                        }
-                    }
-
-                    // 🛡️ Traitement des tables et alertes
-                    for (let t in nO) { 
-                        if (t.includes('MASTER') || t.includes('ARCHIVE') || t.includes('ARCHITECTURE')) continue;
-                        
-                        if (nO[t]?.alerteRouge) {
-                            showToast(`⚠️ ALERTE TABLE ${t}`);
                         }
                     }
 
@@ -3435,16 +3427,46 @@ if (method === 'QR/TEL') {
             setInterval(syncData, 3000);
         }
 
-        // --- 💳 TON BLOC PAIEMENT (SYNTAXE RÉPARÉE) ---
+        // ==========================================
+        // 🏗️ GESTION DES SALLES (DESIGN LUXE & SÉCURITÉ)
+        // ==========================================
+        function addNewRoom() {
+            let n = prompt("Nom de la nouvelle salle ?");
+            if (n && n.trim() !== "") {
+                rooms.push(n.trim());
+                currentRoom = n.trim();
+                renderRooms();
+                renderFloor();
+                showToast("💎 Nouvelle salle créée");
+            }
+        }
+
+        function deleteCurrentRoom() {
+            if (rooms.length <= 1) return alert("🛡️ SÉCURITÉ : L'Empire doit posséder au moins une salle.");
+
+            // Double validation anti-erreur humaine
+            if (confirm("⚠️ Voulez-vous vraiment supprimer la salle '" + currentRoom + "' ?")) {
+                if (confirm("🛑 CONFIRMATION FINALE : Cela détruira toutes les tables à l'intérieur. Confirmer ?")) {
+                    tables = tables.filter(t => t && t.room !== currentRoom);
+                    rooms = rooms.filter(r => r !== currentRoom);
+                    currentRoom = rooms[0];
+                    renderRooms();
+                    renderFloor();
+                    pushArchitecture();
+                    showToast("✅ Salle supprimée");
+                }
+            }
+        }
+
+        // ==========================================
+        // 💳 MODULE PAIEMENT (SUMUP & CAISSE)
+        // ==========================================
         async function triggerSumUpPayment(montant) {
             try {
                 const API_TOKEN = 'TON_TOKEN_API'; 
                 const response = await fetch('https://api.sumup.com/v1.0/checkouts', {
                     method: 'POST',
-                    headers: {
-                        'Authorization': `Bearer ${API_TOKEN}`,
-                        'Content-Type': 'application/json'
-                    },
+                    headers: { 'Authorization': `Bearer ${API_TOKEN}`, 'Content-Type': 'application/json' },
                     body: JSON.stringify({
                         amount: montant,
                         currency: 'EUR',
@@ -3452,19 +3474,9 @@ if (method === 'QR/TEL') {
                         description: `Table ${currentTable}`
                     })
                 });
-
-                if (response.ok) {
-                    showToast("📡 TERMINAL ACTIVÉ...");
-                    return true;
-                } else {
-                    const err = await response.json();
-                    alert("❌ ERREUR SUMUP : " + (err.message || "Vérifiez la connexion"));
-                    return false;
-                }
-            } catch (error) {
-                alert("❌ ERREUR RÉSEAU : Connexion impossible.");
-                return false;
-            }
+                if (response.ok) { showToast("📡 TERMINAL ACTIVÉ..."); return true; }
+                else { alert("❌ Erreur SumUp"); return false; }
+            } catch (error) { alert("❌ Erreur Réseau"); return false; }
         }
 
         function cancelPayment() { 
@@ -3479,7 +3491,9 @@ if (method === 'QR/TEL') {
             window.print(); 
             setTimeout(async () => {
                 await API.update(currentTable, null, true);
-                closeOrder(); 
+                let drawer = document.getElementById('order-drawer');
+                if (drawer) drawer.classList.remove('open');
+                currentTable = null;
                 renderFloor();
             }, 300);
         }
@@ -3494,19 +3508,30 @@ if (method === 'QR/TEL') {
         window.appendPin = function(n) { 
             if (myRealPin.length < 6) { 
                 myRealPin += n; 
-                if(document.getElementById('pin-display')) document.getElementById('pin-display').innerText = '*'.repeat(myRealPin.length); 
+                let disp = document.getElementById('pin-display');
+                if(disp) disp.innerText = '*'.repeat(myRealPin.length); 
             }
         };
-        window.clearPin = function() { myRealPin = ""; if(document.getElementById('pin-display')) document.getElementById('pin-display').innerText = ""; };
+
+        window.clearPin = function() { 
+            myRealPin = ""; 
+            if(document.getElementById('pin-display')) document.getElementById('pin-display').innerText = ""; 
+        };
         
         window.submitPin = function() {
             if(myRealPin === "9999" || myRealPin === "999999" || myRealPin === "7777") {
-                window.currentUser = { name: "Directeur", role: "Manager" };
-                currentUser = window.currentUser;
+                let adminUser = { name: "Directeur", role: "Manager" };
+                window.currentUser = adminUser;
+                currentUser = adminUser;
                 document.getElementById('login-screen').style.display = 'none';
-                document.querySelectorAll('.admin').forEach(e => e.style.display = 'flex');
-                renderRooms(); renderFloor();
-            } else { alert("❌ Code incorrect"); window.clearPin(); }
+                document.querySelectorAll('.admin, #btn-admin-catalog').forEach(e => e.style.display = 'flex');
+                if(typeof renderRooms === 'function') renderRooms(); 
+                if(typeof renderFloor === 'function') renderFloor();
+                myRealPin = "";
+            } else { 
+                alert("❌ Code incorrect"); 
+                window.clearPin(); 
+            }
         };
 
         window.unlockArchiMode = function() { 
