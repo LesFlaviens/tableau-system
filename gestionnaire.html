@@ -3290,40 +3290,67 @@ if (method === 'QR/TEL') {
             document.getElementById('print-zone').innerHTML = receiptHtml;
             window.print(); 
 
+           // --- 🏁 CLÔTURE DE TABLE ET ARCHIVAGE DES VENTES ---
             setTimeout(async () => {
                 const state = await API.getState();
                 
                 let cuisineItems = ticketItems.filter(i => i.dest === 'cuisine');
                 let barItems = ticketItems.filter(i => i.dest === 'bar');
 
+                // Récupération sécurisée des archives
                 let archiveCuisine = (state && state.activeOrders && state.activeOrders['SALES_ARCHIVE_CUISINE']) ? state.activeOrders['SALES_ARCHIVE_CUISINE'].data || [] : [];
                 let archiveBar = (state && state.activeOrders && state.activeOrders['SALES_ARCHIVE_BAR']) ? state.activeOrders['SALES_ARCHIVE_BAR'].data || [] : [];
                 
                 let timeStr = new Date().toISOString();
 
+                // Archivage Cuisine
                 if (cuisineItems.length > 0) {
                     let cTotal = cuisineItems.reduce((acc, i) => acc + ((parseFloat(i.p)||0)*(i.qty||1)), 0);
-                    archiveCuisine.push({ id: Date.now(), table: currentTable, time: timeStr, total: cTotal.toFixed(2), tva: tvaTotal.toFixed(2), typePaiement: methodsUsed, splitDetails: currentPayHistory, items: cuisineItems });
+                    archiveCuisine.push({ 
+                        id: Date.now(), 
+                        table: currentTable, 
+                        time: timeStr, 
+                        total: cTotal.toFixed(2), 
+                        tva: (typeof tvaTotal !== 'undefined' ? tvaTotal.toFixed(2) : "0.00"), 
+                        typePaiement: (typeof methodsUsed !== 'undefined' ? methodsUsed : "N/A"), 
+                        splitDetails: (typeof currentPayHistory !== 'undefined' ? currentPayHistory : []), 
+                        items: cuisineItems 
+                    });
                     await API.update('SALES_ARCHIVE_CUISINE', archiveCuisine);
                 }
 
+                // Archivage Bar
                 if (barItems.length > 0) {
                     let bTotal = barItems.reduce((acc, i) => acc + ((parseFloat(i.p)||0)*(i.qty||1)), 0);
-                    archiveBar.push({ id: Date.now() + 1, table: currentTable, time: timeStr, total: bTotal.toFixed(2), tva: tvaTotal.toFixed(2), typePaiement: methodsUsed, splitDetails: currentPayHistory, items: barItems });
+                    archiveBar.push({ 
+                        id: Date.now() + 1, 
+                        table: currentTable, 
+                        time: timeStr, 
+                        total: bTotal.toFixed(2), 
+                        tva: (typeof tvaTotal !== 'undefined' ? tvaTotal.toFixed(2) : "0.00"), 
+                        typePaiement: (typeof methodsUsed !== 'undefined' ? methodsUsed : "N/A"), 
+                        splitDetails: (typeof currentPayHistory !== 'undefined' ? currentPayHistory : []), 
+                        items: barItems 
+                    });
                     await API.update('SALES_ARCHIVE_BAR', archiveBar);
                 }
 
+                // Nettoyage de la table sur le serveur
                 await API.update(currentTable, null, true);
                 
-                logAction("TABLE CLÔTURÉE (MULTI-PAIEMENTS)", `Table: ${currentTable} | Total: ${currentPayTotal.toFixed(2)}€`, ticketItems); 
+                logAction("TABLE CLÔTURÉE", `Table: ${currentTable} | Total: ${currentPayTotal.toFixed(2)}€`, ticketItems); 
                 
+                // Gestion des tables éphémères (Extras)
                 let isExtra = tables.find(t => t && t.label === currentTable && t.isExtra);
                 if (isExtra) {
                     tables = tables.filter(t => !(t && t.label === currentTable && t.isExtra));
                     pushArchitecture();
                 }
 
-                ticketItems = []; document.getElementById('order-obs').value = ''; 
+                // Réinitialisation de l'interface
+                ticketItems = []; 
+                const obsField = document.getElementById('order-obs');
+                if(obsField) obsField.value = ''; 
                 
                 let drawer = document.getElementById('order-drawer');
                 if (drawer) drawer.classList.remove('open'); 
@@ -3332,6 +3359,7 @@ if (method === 'QR/TEL') {
             }, 300);
         }
 
+        // --- 🖱️ INTERFACE & DRAG (ORGANISATION DU TICKET) ---
         let isTicketDragging = false;
         function dragItem(ev, idx) { isTicketDragging = true; ev.dataTransfer.setData("text/plain", idx); }
         document.addEventListener('dragend', () => isTicketDragging = false);
@@ -3343,17 +3371,33 @@ if (method === 'QR/TEL') {
             if(idx !== "" && ticketItems[idx]) { ticketItems[idx].course = targetCourse; renderTicket(); }
         }
 
+        // --- 🔔 SYSTÈME DE NOTIFICATIONS VISUELLES ---
         function showToast(msg) {
+            let center = document.getElementById('notification-center');
+            if(!center) return;
             let t = document.createElement('div');
             t.className = 'toast-ready';
             t.innerText = msg;
-            document.getElementById('notification-center').appendChild(t);
+            center.appendChild(t);
             setTimeout(() => t.remove(), 5000);
         }
 
+        // --- 🔊 MOTEUR AUDIO (SYSTÈME EMPIRE) ---
+        let sysAudioCtx = null;
+        function unlockAudio() {
+            try {
+                if (!sysAudioCtx) {
+                    sysAudioCtx = new (window.AudioContext || window.webkitAudioContext)();
+                }
+                if (sysAudioCtx.state === 'suspended') sysAudioCtx.resume();
+            } catch(e) { console.error("Audio unlock failed", e); }
+        }
+        document.body.addEventListener('touchstart', unlockAudio, {passive: true});
+        document.body.addEventListener('mousedown', unlockAudio, {passive: true});
+
         function playReadySound() {
             try {
-                if (!sysAudioCtx) unlockAudio();
+                unlockAudio();
                 let osc = sysAudioCtx.createOscillator();
                 let gain = sysAudioCtx.createGain();
                 osc.connect(gain); gain.connect(sysAudioCtx.destination);
@@ -3362,14 +3406,13 @@ if (method === 'QR/TEL') {
                 osc.frequency.exponentialRampToValueAtTime(1760, sysAudioCtx.currentTime + 0.1); 
                 gain.gain.setValueAtTime(0.3, sysAudioCtx.currentTime);
                 gain.gain.exponentialRampToValueAtTime(0.01, sysAudioCtx.currentTime + 0.5);
-                osc.start();
-                osc.stop(sysAudioCtx.currentTime + 0.5);
+                osc.start(); osc.stop(sysAudioCtx.currentTime + 0.5);
             } catch(e) {}
         }
 
         function playKlaxon() {
             try {
-                if (!sysAudioCtx) unlockAudio();
+                unlockAudio();
                 let osc = sysAudioCtx.createOscillator();
                 let gain = sysAudioCtx.createGain();
                 osc.connect(gain); gain.connect(sysAudioCtx.destination);
@@ -3378,244 +3421,67 @@ if (method === 'QR/TEL') {
                 osc.frequency.exponentialRampToValueAtTime(100, sysAudioCtx.currentTime + 1);
                 gain.gain.setValueAtTime(0.5, sysAudioCtx.currentTime);
                 gain.gain.linearRampToValueAtTime(0.01, sysAudioCtx.currentTime + 1);
-                osc.start();
-                osc.stop(sysAudioCtx.currentTime + 1);
-            } catch(e) { console.log(e); }
+                osc.start(); osc.stop(sysAudioCtx.currentTime + 1);
+            } catch(e) { console.log("Klaxon error:", e); }
         }
 
-let sysAudioCtx = null;
-        function unlockAudio() {
-            if (!sysAudioCtx) {
-                sysAudioCtx = new (window.AudioContext || window.webkitAudioContext)();
-            }
-            if (sysAudioCtx.state === 'suspended') sysAudioCtx.resume();
-        }
-        document.body.addEventListener('touchstart', unlockAudio, {passive: true});
-        document.body.addEventListener('mousedown', unlockAudio, {passive: true});
-
-        // --- L'HORLOGE ET LE RAFRAÎCHISSEMENT DU TICKET ---
-    setInterval(() => { 
-        let c = document.getElementById('empire-clock'); 
-        if(c) c.innerText = new Date().toLocaleTimeString('fr-FR', { hour12: false }); 
-        
-        if(typeof currentTable !== 'undefined' && currentTable && document.getElementById('order-drawer') && document.getElementById('order-drawer').classList.contains('open')) {
-            if(typeof isTicketDragging !== 'undefined' && !isTicketDragging) {
-                renderTicket();
-            }
-        }
-    }, 1000);
-
-    // --- LE MOTEUR DE SYNCHRONISATION PRINCIPAL ---
-    async function syncData() {
-        if (typeof isArchiMode !== 'undefined' && isArchiMode) return; // Sécurité
-
-        try {
-            const state = await API.getState();
+        // --- 🕰️ HORLOGE & RAFRAÎCHISSEMENT TEMPS RÉEL ---
+        setInterval(() => { 
+            let c = document.getElementById('empire-clock'); 
+            if(c) c.innerText = new Date().toLocaleTimeString('fr-FR', { hour12: false }); 
             
-            if (state && state.activeOrders) {
-                let nO = state.activeOrders;
-
-                // 🟢 LE PONT TÉLÉPATHIQUE AVEC LA CUISINE 🟢
-                if(nO['MENU_MASTER'] && nO['MENU_MASTER'].data) {
-                    let newMenu = nO['MENU_MASTER'].data;
-                    if (JSON.stringify(menuCuisine) !== JSON.stringify(newMenu)) {
-                        menuCuisine = newMenu;
-                        if (document.getElementById('order-drawer') && document.getElementById('order-drawer').classList.contains('open')) {
-                            renderMenu(currentCategory);
-                        }
-                    }
-                }
-
-                // 🟢 LE PONT AVEC LE BAR 🟢
-                if(nO['MENU_MASTER_BAR'] && nO['MENU_MASTER_BAR'].data) {
-                    let newBar = nO['MENU_MASTER_BAR'].data;
-                    if (JSON.stringify(menuBar) !== JSON.stringify(newBar)) {
-                        menuBar = newBar;
-                        if (document.getElementById('order-drawer') && document.getElementById('order-drawer').classList.contains('open') && currentCategory === 'Boissons') {
-                            renderMenu('Boissons');
-                        }
-                    }
-                }
-
-                // 🚦 LE BLOC SAS 🚦
-                if(state.sasConfig && typeof isUpdatingSAS !== 'undefined' && !isUpdatingSAS) {
-                    localSasConfig = state.sasConfig;
-                    let maxInput = document.getElementById('sas-max-input');
-                    let timeInput = document.getElementById('sas-time-input');
-                    if(maxInput && document.activeElement !== maxInput) maxInput.value = localSasConfig.maxTables;
-                    if(timeInput && document.activeElement !== timeInput) timeInput.value = localSasConfig.delaySeconds || 60;
-
-                    let btn = document.getElementById('btn-sas-toggle');
-                    if(btn) {
-                        if(localSasConfig.active) { btn.innerText = "✅ ACTIVÉ"; btn.style.background = "rgba(52, 211, 153, 0.2)"; btn.style.color = "#34d399"; btn.style.borderColor = "#34d399"; }
-                        else { btn.innerText = "❌ DÉSACTIVÉ"; btn.style.background = "rgba(248, 113, 113, 0.2)"; btn.style.color = "#f87171"; btn.style.borderColor = "#f87171"; }
-                    }
-                }
-
-                // 📅 RÉSERVATIONS
-                let hasNewResa = false;
-                if(nO['RESERVATIONS_MASTER']) {
-                    let resData = Array.isArray(nO['RESERVATIONS_MASTER'].data) ? nO['RESERVATIONS_MASTER'].data : [];
-                    let unassignedResas = resData.filter(r => !r.assignedTable && r.status !== 'rejected');
-                    if (unassignedResas.length > 0) hasNewResa = true;
-                }
-                let planBtn = document.getElementById('btn-planning');
-                if(planBtn) {
-                    if (hasNewResa) {
-                        if (!planBtn.classList.contains('has-notification')) planBtn.classList.add('has-notification');
-                    } else {
-                        planBtn.classList.remove('has-notification');
-                    }
-                }
-                
-                if(nO['STOCK_ALERTS']) stockAlerts = nO['STOCK_ALERTS'].data;
-                
-                // 🏗️ ARCHITECTURE
-                if(nO['ARCHITECTURE']) {
-                    let arch = nO['ARCHITECTURE'].data;
-                    let archChanged = false;
-                    if(JSON.stringify(rooms) !== JSON.stringify(arch.rooms)) { rooms = arch.rooms || ['Salle Principale']; archChanged = true; }
-                    if(JSON.stringify(tables) !== JSON.stringify(arch.tables)) { tables = arch.tables || []; archChanged = true; }
-                    if(archChanged && typeof isDraggingTable !== 'undefined' && !isDraggingTable) {
-                        if(!rooms.includes(currentRoom)) currentRoom = rooms[0] || 'Salle Principale';
-                        renderRooms(); renderFloor();
-                    }
-                }
-
-                // 📦 INVENTAIRE SERVICE
-                if(nO['INVENTORY_MASTER']) {
-                    let invData = nO['INVENTORY_MASTER'].data;
-                    let totalService = 0;
-                    if(invData.service) { invData.service.forEach(item => { totalService += (item.unitPrice * (item.realStock || 0)); }); }
-                    let tracker = document.getElementById('stock-tracker');
-                    if (tracker) tracker.innerText = `${totalService.toFixed(2)} €`;
-                }
-
-                // 🚨 LE RADAR D'APPEL GÉNÉRAL DU CHEF 🚨
-                if(nO['ALERTS_MASTER'] && nO['ALERTS_MASTER'].data) {
-                    let alertData = nO['ALERTS_MASTER'].data;
-                    if (alertData.timestamp > (window.lastGlobalAlertTime || 0)) {
-                        window.lastGlobalAlertTime = alertData.timestamp;
-                        if (Date.now() - alertData.timestamp < 120000) { 
-                            if(typeof playKlaxon === 'function') playKlaxon();
-                            if(navigator.vibrate) navigator.vibrate([500, 200, 500, 200, 1000]);
-                            let alertMsgEl = document.getElementById('global-alert-msg');
-                            let alertModalEl = document.getElementById('global-alert-modal');
-                            if(alertMsgEl) alertMsgEl.innerText = alertData.message;
-                            if(alertModalEl) alertModalEl.classList.add('open');
-                        }
-                    }
-                }
-
-                // --- BOUCLE DE TRAITEMENT DES TABLES ---
-                for (let t in nO) { 
-                    // Ignorer les clés système
-                    if (t.includes('MASTER') || t.includes('ARCHIVE') || t.includes('BAR') || t.includes('CUISINE') || t.includes('ALERTS') || t.includes('ARCHITECTURE') || t.includes('STOCK')) continue;
-
-                    let currentOrder = nO[t];
-
-                    if (currentOrder && typeof currentOrder === 'object') { 
-                        
-                        // 1. Alertes ciblées (Popup Rouge Géant)
-                        if (currentOrder.alerteRouge) {
-                            let alertKey = t + "_" + currentOrder.alerteRouge;
-
-                            if (typeof notifiedAlerts !== 'undefined' && !notifiedAlerts.has(alertKey)) {
-                                if(typeof playKlaxon === 'function') playKlaxon();
-                                if(navigator.vibrate) navigator.vibrate([500, 200, 500, 200, 1000]);
-                                if(typeof showToast === 'function') showToast(`⚠️ ALERTE TABLE ${t}`);
-                                
-                                let alertName = document.getElementById('table-alert-table-name');
-                                let alertMsg = document.getElementById('table-alert-msg');
-                                let alertModal = document.getElementById('table-alert-modal');
-
-                                if(alertName) alertName.innerText = "TABLE " + t;
-                                if(alertMsg) alertMsg.innerText = currentOrder.alerteRouge;
-                                if(alertModal) {
-                                    alertModal.dataset.table = t;
-                                    alertModal.classList.add('open');
-                                }
-                                
-                                notifiedAlerts.add(alertKey);
-
-                                if (t === currentTable && document.getElementById('order-drawer') && document.getElementById('order-drawer').classList.contains('open')) {
-                                    if(typeof checkTableAlertState === 'function') checkTableAlertState(currentTable);
-                                }
-                            }
-                        } else {
-                            if (typeof notifiedAlerts !== 'undefined') {
-                                let keysToRemove = Array.from(notifiedAlerts).filter(k => k.startsWith(t + "_"));
-                                keysToRemove.forEach(k => notifiedAlerts.delete(k));
-                            }
-                        }
-
-                        // 2. Plats Prêts au passe
-                        let hasNewReady = false;
-                        if (currentOrder.items) {
-                            currentOrder.items.forEach(item => {
-                                let prevItem = previousOrdersState[t]?.items?.find(i => i.id === item.id);
-                                if (item.done && (!prevItem || !prevItem.done)) {
-                                    hasNewReady = true;
-                                }
-                            });
-                        }
-                        
-                        if (hasNewReady) {
-                            if(typeof playReadySound === 'function') playReadySound();
-                            if(navigator.vibrate) navigator.vibrate([200, 100, 200]);
-                            if(typeof showToast === 'function') showToast(`✅ TABLE ${t} : PLAT PRÊT AU PASSE !`);
-                        }
-                    } 
-                } 
-                
-                // --- MISE À JOUR DE L'INTERFACE ---
-                previousOrdersState = JSON.parse(JSON.stringify(nO)); 
-                activeOrders = nO; 
-                
-                if(document.getElementById('order-drawer') && document.getElementById('order-drawer').classList.contains('open') && typeof currentTable !== 'undefined' && currentTable) { 
-                    if(typeof checkTableAlertState === 'function') checkTableAlertState(currentTable);
-                    
-                    let dbItems = (activeOrders[currentTable] && activeOrders[currentTable].items) ? activeOrders[currentTable].items : [];
-                    let mergedItems = [];
-                    
-                    if (typeof ticketItems !== 'undefined') {
-                        dbItems.forEach(dbItem => {
-                            let localItem = ticketItems.find(i => i.id === dbItem.id);
-                            if (localItem) {
-                                localItem.done = dbItem.done;
-                                localItem.fired = dbItem.fired;
-                                mergedItems.push(localItem);
-                            } else {
-                                mergedItems.push(dbItem); 
-                            }
-                        });
-                        
-                        ticketItems.forEach(localItem => {
-                            if (!dbItems.find(i => i.id === localItem.id)) {
-                                mergedItems.push(localItem);
-                            }
-                        });
-
-                        ticketItems = mergedItems;
-                    }
-
-                    if(typeof renderTicket === 'function') renderTicket(); 
-                    if(typeof renderMenu === 'function') renderMenu(currentCategory); 
-                } 
-
-                if(typeof isDraggingTable !== 'undefined' && !isDraggingTable) {
-                    if(typeof renderFloor === 'function') renderFloor();
-                }
+            if(typeof currentTable !== 'undefined' && currentTable && document.getElementById('order-drawer')?.classList.contains('open')) {
+                if(!isTicketDragging) renderTicket();
             }
-        } catch(e) { console.error("Erreur Sync:", e); }
-    } // Fin stricte de syncData
+        }, 1000);
 
-    // --- LE MOTEUR TOURNANT DE L'EMPIRE ---
-    function connectEmpireH24() {
-        syncData(); 
-        setInterval(syncData, 3000);
-    }
+        // --- 🛰️ MOTEUR DE SYNCHRONISATION PRINCIPAL ---
+        async function syncData() {
+            if (typeof isArchiMode !== 'undefined' && isArchiMode) return; 
 
+            try {
+                const state = await API.getState();
+                if (state && state.activeOrders) {
+                    let nO = state.activeOrders; 
+
+                    // Pont Menu Cuisine
+                    if(nO['MENU_MASTER']?.data) {
+                        let newMenu = nO['MENU_MASTER'].data;
+                        if (JSON.stringify(menuCuisine) !== JSON.stringify(newMenu)) {
+                            menuCuisine = newMenu;
+                            if (document.getElementById('order-drawer')?.classList.contains('open')) renderMenu(currentCategory);
+                        }
+                    }
+
+                    // Radar Alertes & Plats Prêts
+                    for (let t in nO) {
+                        if (t.includes('MASTER') || t.includes('ARCHIVE')) continue;
+                        
+                        // Détection plats finis
+                        let tableData = nO[t];
+                        if (tableData?.items) {
+                            let hasNewReady = tableData.items.some(item => {
+                                let prevItem = previousOrdersState[t]?.items?.find(i => i.id === item.id);
+                                return item.done && (!prevItem || !prevItem.done);
+                            });
+                            if (hasNewReady) {
+                                playReadySound();
+                                showToast(`✅ TABLE ${t} : PLAT PRÊT !`);
+                            }
+                        }
+                    }
+
+                    previousOrdersState = JSON.parse(JSON.stringify(nO));
+                    activeOrders = nO; 
+                    if(!isDraggingTable) renderFloor();
+                }
+            } catch(e) { console.error("Sync Error:", e); }
+        }
+
+        function connectEmpireH24() {
+            syncData(); 
+            setInterval(syncData, 3000);
+        }
     </script>
 </body>
 </html>
