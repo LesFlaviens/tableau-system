@@ -3061,119 +3061,46 @@ if (method === 'QR/TEL') {
             renderRooms(); renderFloor(); 
             if(document.getElementById('admin-catalog-modal')) document.getElementById('admin-catalog-modal').classList.remove('open');
         };
-// ==========================================
-        // 🔄 MOTEUR DE SYNCHRONISATION & SENTINELLE
-        // ==========================================
-        async function syncData() {
-            if (isArchiMode) return; 
-            try {
-                const state = await API.getState();
-                if (state && state.activeOrders) {
-                    activeOrders = state.activeOrders;
-                    if(!isDraggingTable) renderFloor();
-                }
-                if (state.sasConfig) {
-                    localSasConfig = state.sasConfig;
-                    if(typeof updateSASButtonUI === 'function') updateSASButtonUI();
-                }
-            } catch(e) { console.error("Liaison serveur...", e); }
-        }
-
-        function connectEmpireH24() {
-            syncData(); 
-            setInterval(syncData, 3000);
-        }
-
-        // ==========================================
-        // 🏗️ GESTION ARCHITECTURE & SÉCURITÉ
-        // ==========================================
-        window.unlockArchiMode = function() { 
-            isArchiMode = true; 
-            document.body.classList.add('edit-mode'); 
-            const bar = document.getElementById('archi-btn-bar');
-            if(bar) bar.style.setProperty('display', 'flex', 'important');
-            closeAdminCatalog();
-            renderFloor();
-        };
-
-        window.closeArchiMode = function() {
-            isArchiMode = false;
-            document.body.classList.remove('edit-mode');
-            const bar = document.getElementById('archi-btn-bar');
-            if(bar) bar.style.setProperty('display', 'none', 'important');
-            renderFloor();
-        };
-
-        window.deleteCurrentRoom = function() {
-            if (rooms.length <= 1) return alert("🛡️ SÉCURITÉ : L'Empire doit garder une salle.");
-            if (confirm("⚠️ Supprimer la salle '" + currentRoom + "' ?")) {
-                if (confirm("🛑 ACTION IRRÉVERSIBLE : Supprimer toutes les tables à l'intérieur ?")) {
-                    tables = tables.filter(t => t && t.room !== currentRoom);
-                    rooms = rooms.filter(r => r !== currentRoom);
-                    currentRoom = rooms[0];
-                    renderRooms(); renderFloor(); 
-                    if(typeof pushArchitecture === 'function') pushArchitecture();
-                    showToast("✅ Salle supprimée");
-                }
-            }
-        };
-
-        window.toggleSAS = function() {
-            if(typeof localSasConfig === 'undefined') window.localSasConfig = { active: false };
-            localSasConfig.active = !localSasConfig.active;
-            if(typeof updateSASButtonUI === 'function') updateSASButtonUI();
-            if(typeof sendSASConfig === 'function') sendSASConfig();
-        };
-
-        window.updateSASButtonUI = function() {
-            const btn = document.getElementById('btn-sas-toggle');
-            if(!btn) return;
-            if(typeof localSasConfig !== 'undefined' && localSasConfig.active) {
-                btn.innerHTML = "✅ ACTIVÉ";
-                btn.style.borderColor = "#34d399"; btn.style.color = "#34d399"; btn.style.background = "rgba(52, 211, 153, 0.1)";
-            } else {
-                btn.innerHTML = "❌ DÉSACTIVÉ";
-                btn.style.borderColor = "#f87171"; btn.style.color = "#f87171"; btn.style.background = "rgba(248, 113, 113, 0.1)";
-            }
-        };
-
+// 🔓 CONNEXION DYNAMIQUE (RELIÉE À RH.HTML)
         window.submitPin = function() {
-            if(myRealPin === "9999" || myRealPin === "999999" || myRealPin === "7777") {
-                window.currentUser = { name: "Direction", role: "Manager" };
+            // 1. On cherche le PIN dans la base de données RH
+            let foundUser = null;
+            if (window.empireUsers && Array.isArray(window.empireUsers)) {
+                foundUser = window.empireUsers.find(u => u.pin === myRealPin);
+            }
+
+            // 2. Clé de secours absolue (Master Key Flavien)
+            let isMasterKey = (myRealPin === "999999" || myRealPin === "9999");
+
+            if(foundUser || isMasterKey) {
+                // Définition de l'utilisateur actif
+                window.currentUser = foundUser || { name: "Directeur", role: "Manager" };
                 currentUser = window.currentUser;
                 
+                // Mise à jour visuelle du badge
+                let badge = document.getElementById('user-badge');
+                if(badge) badge.innerText = `Utilisateur: ${currentUser.name} (${currentUser.role})`;
+                
+                // Sortie du mode archi pour éviter le bug des tables
                 isArchiMode = false;
                 document.body.classList.remove('edit-mode');
                 
                 document.getElementById('login-screen').style.display = 'none';
-                document.querySelectorAll('.admin, #btn-admin-catalog').forEach(e => e.style.display = 'flex');
+                
+                // Gestion des permissions (Seul le Manager voit la Gestion)
+                if (currentUser.role === 'Manager') {
+                    document.querySelectorAll('.admin, #btn-admin-catalog').forEach(e => e.style.display = 'flex');
+                } else {
+                    document.querySelectorAll('.admin, #btn-admin-catalog').forEach(e => e.style.display = 'none');
+                }
+                
                 renderFloor();
                 myRealPin = "";
-            } else { alert("❌ Code incorrect"); window.clearPin(); }
-        };
-
-        window.closeAdminCatalog = function() {
-            const modal = document.getElementById('admin-catalog-modal');
-            if(modal) modal.classList.remove('open');
-        };
-
-        var myRealPin = "";
-        window.appendPin = function(n) { myRealPin += n; let d = document.getElementById('pin-display'); if(d) d.innerText = '*'.repeat(myRealPin.length); };
-        window.clearPin = function() { myRealPin = ""; let d = document.getElementById('pin-display'); if(d) d.innerText = ""; };
-
-        setInterval(() => {
-            let now = new Date();
-            let clock = document.getElementById('empire-clock');
-            if(clock) clock.innerText = now.toLocaleTimeString('fr-FR', { hour12: false });
-            if (now.getHours() === 0 && now.getMinutes() === 0 && now.getSeconds() === 0) {
-                if (typeof localSasConfig !== 'undefined' && localSasConfig.active) {
-                    localSasConfig.active = false;
-                    if(typeof updateSASButtonUI === 'function') updateSASButtonUI();
-                    if(typeof sendSASConfig === 'function') sendSASConfig();
-                }
+            } else { 
+                alert("❌ Code incorrect ou inactif"); 
+                window.clearPin(); 
             }
-        }, 1000);
-
+        };
         document.addEventListener('DOMContentLoaded', connectEmpireH24);
     </script>
 </body>
