@@ -3421,8 +3421,8 @@ if (method === 'QR/TEL') {
             renderRooms(); renderFloor(); 
             if(document.getElementById('admin-catalog-modal')) document.getElementById('admin-catalog-modal').classList.remove('open');
         };
-  // ==========================================
-        // 🔄 MOTEUR DE SYNCHRONISATION & RÉSEAU
+// ==========================================
+        // 🔄 MOTEUR DE SYNCHRONISATION & SENTINELLE
         // ==========================================
         async function syncData() {
             if (isArchiMode) return; 
@@ -3432,15 +3432,21 @@ if (method === 'QR/TEL') {
                     activeOrders = state.activeOrders;
                     if(!isDraggingTable) renderFloor();
                 }
-                // Mise à jour visuelle du bouton SAS selon l'état serveur
                 if (state.sasConfig) {
                     localSasConfig = state.sasConfig;
-                    updateSASButtonUI();
+                    if(typeof updateSASButtonUI === 'function') updateSASButtonUI();
                 }
-            } catch(e) { console.error("Erreur Sync:", e); }
+            } catch(e) { console.error("Liaison serveur...", e); }
         }
 
+        function connectEmpireH24() {
+            syncData(); 
+            setInterval(syncData, 3000);
+        }
+
+        // ==========================================
         // 🏗️ GESTION ARCHITECTURE & SÉCURITÉ
+        // ==========================================
         window.unlockArchiMode = function() { 
             isArchiMode = true; 
             document.body.classList.add('edit-mode'); 
@@ -3458,61 +3464,77 @@ if (method === 'QR/TEL') {
             renderFloor();
         };
 
-        // 🛡️ DOUBLE VALIDATION ANTI-ERREUR (SUPPRIMER SALLE)
         window.deleteCurrentRoom = function() {
-            if (rooms.length <= 1) return alert("🛡️ SÉCURITÉ : L'Empire doit garder au moins une salle.");
+            if (rooms.length <= 1) return alert("🛡️ SÉCURITÉ : L'Empire doit garder une salle.");
             if (confirm("⚠️ Supprimer la salle '" + currentRoom + "' ?")) {
-                if (confirm("🛑 CONFIRMATION FINALE : Cela détruira TOUTES les tables à l'intérieur. Confirmer ?")) {
+                if (confirm("🛑 ACTION IRRÉVERSIBLE : Supprimer toutes les tables à l'intérieur ?")) {
                     tables = tables.filter(t => t && t.room !== currentRoom);
                     rooms = rooms.filter(r => r !== currentRoom);
                     currentRoom = rooms[0];
-                    renderRooms(); renderFloor(); pushArchitecture();
+                    renderRooms(); renderFloor(); 
+                    if(typeof pushArchitecture === 'function') pushArchitecture();
                     showToast("✅ Salle supprimée");
                 }
             }
         };
 
-        // 🚦 RÉGULATEUR SAS ON/OFF
         window.toggleSAS = function() {
+            if(typeof localSasConfig === 'undefined') window.localSasConfig = { active: false };
             localSasConfig.active = !localSasConfig.active;
-            updateSASButtonUI();
+            if(typeof updateSASButtonUI === 'function') updateSASButtonUI();
             if(typeof sendSASConfig === 'function') sendSASConfig();
         };
 
-        function updateSASButtonUI() {
+        window.updateSASButtonUI = function() {
             const btn = document.getElementById('btn-sas-toggle');
             if(!btn) return;
-            if(localSasConfig.active) {
+            if(typeof localSasConfig !== 'undefined' && localSasConfig.active) {
                 btn.innerHTML = "✅ ACTIVÉ";
                 btn.style.borderColor = "#34d399"; btn.style.color = "#34d399"; btn.style.background = "rgba(52, 211, 153, 0.1)";
             } else {
                 btn.innerHTML = "❌ DÉSACTIVÉ";
                 btn.style.borderColor = "#f87171"; btn.style.color = "#f87171"; btn.style.background = "rgba(248, 113, 113, 0.1)";
             }
-        }
+        };
 
-        // 🔓 CONNEXION & RESET BUG
         window.submitPin = function() {
             if(myRealPin === "9999" || myRealPin === "999999" || myRealPin === "7777") {
                 window.currentUser = { name: "Direction", role: "Manager" };
                 currentUser = window.currentUser;
-                isArchiMode = false; // RÉPARE LE BUG DES TABLES
+                
+                isArchiMode = false;
                 document.body.classList.remove('edit-mode');
+                
                 document.getElementById('login-screen').style.display = 'none';
-                document.querySelectorAll('.admin').forEach(e => e.style.display = 'flex');
+                document.querySelectorAll('.admin, #btn-admin-catalog').forEach(e => e.style.display = 'flex');
                 renderFloor();
                 myRealPin = "";
             } else { alert("❌ Code incorrect"); window.clearPin(); }
         };
 
-        function connectEmpireH24() { syncData(); setInterval(syncData, 3000); }
-        document.addEventListener('DOMContentLoaded', connectEmpireH24);
-    </script>
-    <script>
+        window.closeAdminCatalog = function() {
+            const modal = document.getElementById('admin-catalog-modal');
+            if(modal) modal.classList.remove('open');
+        };
+
         var myRealPin = "";
-        window.appendPin = function(n) { myRealPin += n; document.getElementById('pin-display').innerText = '*'.repeat(myRealPin.length); };
-        window.clearPin = function() { myRealPin = ""; document.getElementById('pin-display').innerText = ""; };
-        window.closeAdminCatalog = function() { document.getElementById('admin-catalog-modal').classList.remove('open'); };
+        window.appendPin = function(n) { myRealPin += n; let d = document.getElementById('pin-display'); if(d) d.innerText = '*'.repeat(myRealPin.length); };
+        window.clearPin = function() { myRealPin = ""; let d = document.getElementById('pin-display'); if(d) d.innerText = ""; };
+
+        setInterval(() => {
+            let now = new Date();
+            let clock = document.getElementById('empire-clock');
+            if(clock) clock.innerText = now.toLocaleTimeString('fr-FR', { hour12: false });
+            if (now.getHours() === 0 && now.getMinutes() === 0 && now.getSeconds() === 0) {
+                if (typeof localSasConfig !== 'undefined' && localSasConfig.active) {
+                    localSasConfig.active = false;
+                    if(typeof updateSASButtonUI === 'function') updateSASButtonUI();
+                    if(typeof sendSASConfig === 'function') sendSASConfig();
+                }
+            }
+        }, 1000);
+
+        document.addEventListener('DOMContentLoaded', connectEmpireH24);
     </script>
 </body>
 </html>
