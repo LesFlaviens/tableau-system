@@ -3040,7 +3040,140 @@ if (method === 'QR/TEL') {
             } else { alert("❌ Code incorrect"); window.clearPin(); }
         };
 
-     // 🏗️ GESTION ARCHITECTURE & SÉCURITÉ (DESIGN LUXE PRO-ACTIF)
+// ==========================================
+        // ⚙️ GESTION NOM DES TABLES (MODIFICATION)
+        // ==========================================
+        let currentTactileName = "";
+        
+        window.openTableConfigModal = function(id) {
+            let t = tables.find(x => x && x.label === id && x.room === currentRoom); 
+            if(!t) return;
+            configTableId = id; 
+            currentTactileName = t.label; 
+            let display = document.getElementById('config-table-name-display');
+            if(display) display.innerText = currentTactileName; 
+            let shapeInput = document.getElementById('config-table-shape');
+            if(shapeInput) shapeInput.value = t.shape || 'rect';
+            let paxInput = document.getElementById('config-table-pax');
+            if(paxInput) paxInput.value = t.pax || 4; 
+            let modal = document.getElementById('table-config-modal');
+            if(modal) modal.style.display = 'flex';
+        };
+
+        window.closeTableConfigModal = function() { 
+            configTableId = null; 
+            let modal = document.getElementById('table-config-modal');
+            if(modal) modal.style.display = 'none'; 
+        };
+
+        window.addTactileTableName = function(v) { 
+            if(v === 'CLEAR') {
+                currentTactileName = currentTactileName.slice(0, -1); 
+            } else {
+                currentTactileName += v; 
+            }
+            let display = document.getElementById('config-table-name-display');
+            if(display) display.innerText = currentTactileName; 
+        };
+
+        window.saveTableConfig = function() {
+            let t = tables.find(x => x && x.label === configTableId && x.room === currentRoom);
+            if(t) {
+                let n = currentTactileName.trim();
+                if(n && n !== t.label) { 
+                    // Transfert des commandes si on renomme une table occupée
+                    if(activeOrders && activeOrders[t.label]) { 
+                        activeOrders[n] = activeOrders[t.label]; 
+                        delete activeOrders[t.label]; 
+                    } 
+                    t.label = n; 
+                }
+                let shapeInput = document.getElementById('config-table-shape');
+                if(shapeInput) t.shape = shapeInput.value;
+                let paxInput = document.getElementById('config-table-pax');
+                if(paxInput) t.pax = parseInt(paxInput.value) || 4; 
+            }
+            closeTableConfigModal(); 
+            renderFloor(); 
+        };
+
+        window.deleteCurrentTable = function() { 
+            if(confirm("Supprimer cette table ?")) { 
+                tables = tables.filter(t => !(t && t.label === configTableId && t.room === currentRoom)); 
+                closeTableConfigModal(); 
+                renderFloor(); 
+            } 
+        };
+
+        // ==========================================
+        // ❌ GESTION ERREUR HUMAINE (ANNULATION PLAT)
+        // ==========================================
+        window.removeTicketItem = function(idx) { 
+            pendingCancelIndex = idx; 
+            let itemNameDisplay = document.getElementById('cancel-item-name');
+            if(itemNameDisplay) itemNameDisplay.innerText = `${ticketItems[idx].n.replace(/\n/g, ' ')}`; 
+            let modal = document.getElementById('cancel-modal');
+            if(modal) modal.style.display = 'flex'; 
+        };
+
+        window.abortCancelItem = function() { 
+            pendingCancelIndex = null; 
+            let modal = document.getElementById('cancel-modal');
+            if(modal) modal.style.display = 'none'; 
+        };
+
+        window.executeCancelItem = function(raison) {
+            if(pendingCancelIndex === null) return; 
+            let item = ticketItems[pendingCancelIndex];
+            
+            // Traçabilité de l'annulation (Audit)
+            if(typeof logAction === 'function') {
+                logAction(activeOrders[currentTable]?.items?.find(i => i?.id === item.id) ? "ANNULATION PLAT ENVOYÉ" : "SUPPRESSION AVANT ENVOI", `Table: ${currentTable} | Plat: ${item.n} | RAISON: ${raison}`);
+            }
+            
+            // Si quantité > 1, on enlève juste 1. Sinon on supprime la ligne.
+            if (ticketItems[pendingCancelIndex].qty > 1) {
+                ticketItems[pendingCancelIndex].qty -= 1; 
+            } else {
+                ticketItems.splice(pendingCancelIndex, 1);
+            }
+            
+            pendingCancelIndex = null; 
+            let modal = document.getElementById('cancel-modal');
+            if(modal) modal.style.display = 'none'; 
+            if(typeof renderTicket === 'function') renderTicket();
+        };
+
+        // ==========================================
+        // 🗑️ ANNULATION GLOBALE TICKET (ERREUR GLOBALE)
+        // ==========================================
+        window.confirmClearTicket = function() {
+            if(ticketItems.length === 0) return;
+            document.getElementById('clear-ticket-modal').classList.add('open');
+        };
+
+        window.abortClearTicket = function() {
+            document.getElementById('clear-ticket-modal').classList.remove('open');
+        };
+
+        window.executeClearTicket = async function(raison) {
+            if(typeof logAction === 'function') logAction("ANNULATION GLOBALE DE LA TABLE", `Table: ${currentTable} | RAISON: ${raison}`, ticketItems);
+            ticketItems = [];
+            if(typeof renderTicket === 'function') renderTicket();
+            
+            if(typeof API !== 'undefined' && API.update) await API.update(currentTable, null, true);
+            
+            document.getElementById('clear-ticket-modal').classList.remove('open');
+            if(typeof closeOrder === 'function') closeOrder();
+            renderFloor();
+        };
+
+
+
+
+
+        
+        // 🏗️ GESTION ARCHITECTURE & SÉCURITÉ (DESIGN LUXE PRO-ACTIF)
         window.unlockArchiMode = function() { 
             console.log("🏗️ Activation Architecture");
             isArchiMode = true; 
