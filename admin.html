@@ -46,6 +46,10 @@
         .btn-toggle { background: transparent; border: 1px solid var(--gold); color: var(--gold); padding: 8px 16px; border-radius: 6px; cursor: pointer; font-size: 0.75rem; min-width: 110px; }
         .btn-toggle.sold-out { border-color: var(--danger); color: var(--danger); }
 
+        /* LIVE ORDERS */
+        .order-card { background: rgba(255,255,255,0.02); padding: 15px; border-radius: 8px; border-left: 4px solid var(--gold); display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; border-top: 1px solid var(--border); border-right: 1px solid var(--border); border-bottom: 1px solid var(--border); }
+        .order-card.ready { border-left-color: var(--success); }
+        
         @media print { body * { visibility: hidden; } .print-area, .print-area * { visibility: visible; } .print-area { position: absolute; left: 0; top: 0; width: 100%; text-align: center; } }
     </style>
 </head>
@@ -58,6 +62,13 @@
         </div>
         <button class="btn-back" onclick="backToPad()">🔙 Retour au Service (PAD)</button>
     </header>
+
+    <div class="section">
+        <h2>📡 Monitoring en Direct (Traçabilité QR)</h2>
+        <div id="live-orders-container" style="display: flex; flex-direction: column; gap: 10px;">
+            <div style="color: var(--text-muted); font-size: 0.9rem; font-style: italic;">En attente de synchronisation...</div>
+        </div>
+    </div>
 
     <div class="section">
         <h2>Déploiement de Table</h2>
@@ -87,7 +98,7 @@
     </div>
 
     <div class="section">
-        <h2>Gestion des Stocks (Cuisine & Bar)</h2>
+        <h2>Gestion des Stocks Minute (Cuisine & Bar)</h2>
         <div id="stock-control-list" class="stock-grid">Chargement du menu...</div>
     </div>
 
@@ -170,21 +181,74 @@
             `);
             win.document.close();
             win.document.title = `Imprimer QR_Table_${num}`;
-            setTimeout(() => { win.print(); }, 500); // Laisse le temps à l'image de charger
+            setTimeout(() => { win.print(); }, 500); 
         }
 
-        // --- 2. GESTION DES STOCKS ---
+        // --- 2. TRAÇABILITÉ DES COMMANDES EN DIRECT ---
+        function renderLiveOrders() {
+            const container = document.getElementById('live-orders-container');
+            if(!fullState || !fullState.activeOrders) return;
+
+            let orders = [];
+            for(let key in fullState.activeOrders) {
+                if(key.startsWith('order_')) { // On cible la souche principale
+                    let data = fullState.activeOrders[key].data || fullState.activeOrders[key];
+                    orders.push({ key: key, data: data });
+                }
+            }
+
+            if(orders.length === 0) {
+                container.innerHTML = '<div style="color: var(--text-muted); font-size: 0.9rem;">Aucune commande active détectée.</div>';
+                return;
+            }
+
+            // Trier par timestamp décroissant (les plus récents en haut)
+            orders.sort((a,b) => {
+                let idA = parseInt(a.key.replace('order_', '')) || 0;
+                let idB = parseInt(b.key.replace('order_', '')) || 0;
+                return idB - idA;
+            });
+
+            let html = '';
+            orders.forEach(o => {
+                let isReady = o.data.status === 'ready';
+                let statusClass = isReady ? 'ready' : '';
+                let statusColor = isReady ? 'var(--success)' : 'var(--gold)';
+                let statusText = isReady ? 'PRODUIT / TERMINÉ' : 'EN PRODUCTION';
+                let total = o.data.totalStr || '0.00 €';
+                let time = o.data.time || '--:--';
+                let client = o.data.clientName || 'Client Inconnu';
+
+                html += `
+                <div class="order-card ${statusClass}">
+                    <div>
+                        <div style="font-weight: 800; font-size: 1.1rem; color: var(--text);">${client}</div>
+                        <div style="font-size: 0.75rem; color: var(--text-muted); margin-top: 6px; font-family: monospace;">ID: ${o.key} | ${time}</div>
+                    </div>
+                    <div style="text-align: right;">
+                        <div style="font-weight: 900; color: var(--gold); font-size: 1.3rem;">${total}</div>
+                        <div style="font-size: 0.7rem; color: ${statusColor}; font-weight: 800; margin-top: 6px; text-transform: uppercase; letter-spacing: 1px;">${statusText}</div>
+                    </div>
+                </div>`;
+            });
+            
+            container.innerHTML = html;
+        }
+
+        // --- 3. GESTION DES STOCKS (DATA SYNC) ---
         async function fetchLiveStocks() {
             try {
-                // On récupère uniquement l'état du restaurant en cours (tenantID)
                 const r = await fetch(`${SERVER_URL}/get-current-state?tenantID=${tenantID}`);
                 fullState = await r.json();
                 renderStocks();
+                renderLiveOrders();
             } catch(e) { console.error("Erreur sync"); }
         }
 
         function renderStocks() {
             const container = document.getElementById('stock-control-list');
+            if(!fullState || !fullState.activeOrders) return;
+            
             let html = "";
             const sources = [
                 { id: 'MENU_MASTER', label: 'CUISINE' },
@@ -194,13 +258,13 @@
             sources.forEach(src => {
                 const data = fullState.activeOrders[src.id]?.data || {};
                 if(Object.keys(data).length > 0) {
-                    html += `<div style="color:var(--gold); font-size:0.75rem; margin-top:20px; border-bottom:1px solid var(--border);">${src.label}</div>`;
+                    html += `<div style="color:var(--gold); font-size:0.75rem; margin-top:20px; border-bottom:1px solid var(--border); padding-bottom: 5px;">RÉSEAU : ${src.label}</div>`;
                     for(let cat in data) {
                         data[cat].forEach((item, idx) => {
                             const isOut = (item.stock === 0 || item.stock === "0");
                             html += `
                                 <div class="stock-item">
-                                    <div class="item-name">${item.name} <br><span style="font-size:0.7rem; color:#666;">${cat}</span></div>
+                                    <div class="item-name">${item.name} <br><span style="font-size:0.7rem; color:#666;">${cat.toUpperCase()}</span></div>
                                     <button class="btn-toggle ${isOut ? 'sold-out' : ''}" 
                                             onclick="updateStock('${src.id}', '${cat}', ${idx}, ${isOut})">
                                         ${isOut ? 'ÉPUISÉ' : 'EN STOCK'}
@@ -210,7 +274,7 @@
                     }
                 }
             });
-            container.innerHTML = html;
+            container.innerHTML = html || '<div style="color: var(--text-muted); font-size: 0.9rem;">Aucun menu détecté dans la base de données.</div>';
         }
 
         async function updateStock(sourceId, cat, idx, currentlyOut) {
@@ -218,7 +282,7 @@
             fullState.activeOrders[sourceId].data[cat][idx].stock = currentlyOut ? 99 : 0;
             renderStocks(); // Feedback visuel instantané
 
-            // Push au serveur sur le compte du client
+            // Push au serveur
             try {
                 await fetch(`${SERVER_URL}/update-order?tenantID=${tenantID}`, {
                     method: 'POST',
@@ -228,14 +292,13 @@
                         order: { data: fullState.activeOrders[sourceId].data } 
                     })
                 });
-                console.log("🔥 Serveur mis à jour pour " + tenantID);
-            } catch(e) { alert("Erreur de synchronisation"); }
+            } catch(e) { alert("Erreur de synchronisation réseau."); }
         }
 
         window.onload = () => {
             renderRegistry();
             fetchLiveStocks();
-            setInterval(fetchLiveStocks, 10000); // Sync toutes les 10s
+            setInterval(fetchLiveStocks, 5000); // Sync accélérée toutes les 5s pour le monitoring direct
         };
     </script>
 </body>
