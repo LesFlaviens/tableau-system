@@ -438,24 +438,66 @@
             const loaderText = document.getElementById('loader-text');
             loader.style.display = 'flex';
             
-            let orderKey = "order_" + Date.now(); 
+            // 1. CRÉATION DES IDENTIFIANTS DE TICKETS
+            let baseId = Date.now();
+            let masterKey = "order_" + baseId;      // Pour le Pad Serveur
+            let cuisineKey = "cuisine_" + baseId;   // Pour l'écran Cuisine
+            let barKey = "bar_" + baseId;           // Pour l'écran Bar
+
+            // 2. LE DISPATCHER (Séparation stricte des articles)
+            let itemsCuisine = cart.filter(i => i.dest === 'cuisine');
+            let itemsBar = cart.filter(i => i.dest === 'bar');
+
+            // Fonction pour formater les articles pour la base de données
+            const formatItems = (itemList) => itemList.map(i => {
+                // Si c'est de la cuisine, on gère les réclames (entrées d'abord)
+                let isCuisine = (i.dest === 'cuisine');
+                let firstFoodCourse = itemsCuisine.length > 0 ? Math.min(...itemsCuisine.filter(x => x.course > 0).map(x => x.course)) : 99;
+                let shouldFire = isCuisine ? (i.course === 0 || i.course === firstFoodCourse) : true;
+                
+                return { id: Date.now() + Math.random(), itemId: Date.now(), n: i.n, p: i.p, qty: i.qty, course: i.course, dest: i.dest, done: false, fired: shouldFire, firedTime: shouldFire ? Date.now() : null, isOffered: false };
+            });
 
             if (method === 'online') {
                 loaderText.innerHTML = `<div style="color: var(--gold); font-weight: 300; letter-spacing: 1px; text-align:center; margin-top:20px;">Connexion à la banque...<br><span style="font-size:0.8rem; color:var(--text-muted);">Redirection en cours</span></div>`;
-                let foodItems = cart.filter(i => i.course > 0);
-                let firstFoodCourse = foodItems.length > 0 ? Math.min(...foodItems.map(i => i.course)) : 99;
 
-                let payload = {
-                    data: {
-                        isWeb: true, status: "cooking", 
-                        time: new Date().toLocaleTimeString('fr-FR', {hour:'2-digit', minute:'2-digit'}),
-                        clientName: "Mobile " + tableNumber, totalStr: finalAmount.toFixed(2) + " €",
-                        observations: `⚠️ ATTENTE CONFIRMATION PAIEMENT LIGNE`, 
-                        items: cart.map(i => {
-                            let shouldFire = (i.course === 0 || i.course === firstFoodCourse);
-                            return { id: Date.now()+Math.random(), itemId: Date.now(), n: i.n, p: i.p, qty: i.qty, course: i.course, dest: i.dest, done: false, fired: shouldFire, firedTime: shouldFire ? Date.now() : null, isOffered: false };
-                        })
-                    }
+                let masterData = { isWeb: true, status: "cooking", time: new Date().toLocaleTimeString('fr-FR', {hour:'2-digit', minute:'2-digit'}), clientName: "Table " + tableNumber, totalStr: finalAmount.toFixed(2) + " €", observations: `⚠️ ATTENTE CONFIRMATION PAIEMENT`, items: formatItems(cart) };
+
+                try {
+                    // 3. ENVOI MULTIPLE AUX POSTES
+                    await API.update(masterKey, { data: masterData }); // Envoi Serveur (Tout)
+                    if(itemsCuisine.length > 0) await API.update(cuisineKey, { data: { ...masterData, items: formatItems(itemsCuisine) } }); // Envoi Cuisine
+                    if(itemsBar.length > 0) await API.update(barKey, { data: { ...masterData, items: formatItems(itemsBar) } }); // Envoi Bar
+
+                    await API.update('ALERTS_MASTER', { data: { type: 'PAYMENT', message: `💳 TABLE ${tableNumber} REDIRIGÉE VERS PAIEMENT`, timestamp: Date.now() } });
+                    window.location.href = "https://buy.stripe.com/TON_VRAI_LIEN_DE_PAIEMENT";
+                } catch (e) {
+                    loader.style.display = 'none';
+                    alert("Erreur réseau. Impossible de contacter la banque.");
+                }
+
+            } else if (method === 'server') {
+                loaderText.innerHTML = `<div style="color: var(--text-muted); font-weight: 300; letter-spacing: 2px; text-transform:uppercase; font-size:0.8rem; margin-top: 20px;">Transmission...</div>`;
+
+                let masterData = { isWeb: true, status: "hold", time: new Date().toLocaleTimeString('fr-FR', {hour:'2-digit', minute:'2-digit'}), clientName: "Table " + tableNumber, totalStr: finalAmount.toFixed(2) + " €", observations: `🙋‍♂️ À ENCAISSER PAR LE SERVEUR`, items: formatItems(cart) };
+
+                try {
+                    // 3. ENVOI MULTIPLE AUX POSTES
+                    await API.update(masterKey, { data: masterData }); // Envoi Serveur (Tout)
+                    if(itemsCuisine.length > 0) await API.update(cuisineKey, { data: { ...masterData, items: formatItems(itemsCuisine) } }); // Envoi Cuisine
+                    if(itemsBar.length > 0) await API.update(barKey, { data: { ...masterData, items: formatItems(itemsBar) } }); // Envoi Bar
+
+                    await API.update('ALERTS_MASTER', { data: { type: 'RING', message: `📱 NOUVELLE COMMANDE (Table ${tableNumber})`, timestamp: Date.now() } });
+                    
+                    loader.style.display = 'none';
+                    document.getElementById('success-screen').style.display = 'flex';
+                    cart = [];
+                } catch (e) {
+                    loader.style.display = 'none';
+                    alert("Erreur réseau. Consultez un serveur.");
+                }
+            }
+        }
                 };
 
                 try {
