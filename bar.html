@@ -526,15 +526,44 @@
 
             setTimeout(async () => {
                 if (!activeOrders[tableId] || !activeOrders[tableId].items[itemIndex]) return;
-                let item = activeOrders[tableId].items[itemIndex];
+                
+                let order = activeOrders[tableId];
+                let item = order.items[itemIndex];
                 item.done = true; 
                 
                 recentlyDoneItems.unshift({ tableId, itemIndex, name: item.n, time: Date.now() });
                 if (recentlyDoneItems.length > 10) recentlyDoneItems.pop(); 
                 localStorage.setItem('empire_recently_done_bar', JSON.stringify(recentlyDoneItems));
 
-                await API.update(tableId, activeOrders[tableId], true);
+                // 🚀 LE SIGNAL EMPIRE (BAR)
+                // 1. Vérifier si TOUTES les boissons de cette commande sont prêtes
+                let barItems = order.items.filter(i => i.dest && i.dest.toLowerCase() === 'bar');
+                let allBarDone = barItems.length > 0 && barItems.every(i => i.done === true);
+
+                if (allBarDone) {
+                    order.status = "ready"; // Le mot de passe pour le téléphone du client
+                    
+                    let isWeb = order.isWeb || tableId.startsWith('order_');
+                    let cleanTableId = tableId.replace('bar_', '').replace('order_', '');
+                    
+                    if (isWeb) {
+                        showToast("🍸 Client Notifié sur son téléphone !");
+                    } else {
+                        // Si ce n'est pas un QR code, on sonne le Pad Serveur !
+                        try {
+                            await API.update('ALERTS_MASTER', { 
+                                type: 'RING', 
+                                message: `🍸 BOISSONS PRÊTES AU COMPTOIR (Table ${cleanTableId})`, 
+                                timestamp: Date.now() 
+                            });
+                            showToast("🔔 Serveur appelé au bar !");
+                        } catch(e) { console.error("Erreur alerte serveur", e); }
+                    }
+                }
+
+                await API.update(tableId, order, true);
                 renderKDS();
+
             }, 300);
         }
 
