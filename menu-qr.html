@@ -110,14 +110,6 @@
         @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
 
         #success-screen { position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; background: var(--bg); z-index: 50000; display: none; flex-direction: column; align-items: center; justify-content: center; text-align: center; padding: 30px; }
-        
-        /* RADAR ALERTE BAR */
-        #ready-alert-screen { display:none; position:fixed; top:0; left:0; width:100vw; height:100vh; background:rgba(212, 175, 55, 0.95); z-index:100000; flex-direction:column; align-items:center; justify-content:center; text-align:center; padding:30px; animation: pulseAlert 2s infinite; }
-        @keyframes pulseAlert {
-            0% { background: rgba(212, 175, 55, 0.95); }
-            50% { background: rgba(255, 215, 0, 1); }
-            100% { background: rgba(212, 175, 55, 0.95); }
-        }
     </style>
 </head>
 <body>
@@ -201,13 +193,6 @@
         <button class="send-order-btn" style="margin-top: 50px; background: transparent; color: var(--gold); border: 1px solid var(--gold); width: auto; padding: 15px 30px;" onclick="location.reload()">Nouvelle commande</button>
     </div>
 
-    <div id="ready-alert-screen">
-        <div style="font-size:4rem; margin-bottom:20px;">🍸</div>
-        <h1 style="color:#000; font-size: 2rem; font-weight: 900; margin: 0 0 10px 0; text-transform: uppercase; letter-spacing: 2px;">C'EST PRÊT !</h1>
-        <p style="color:#222; font-size: 1.2rem; font-weight: 600;">Vos boissons vous attendent au bar.</p>
-        <button class="send-order-btn" style="margin-top: 40px; background: #000; color: var(--gold); border: none; width: auto; padding: 15px 40px;" onclick="closeReadyAlert()">J'y vais !</button>
-    </div>
-
     <script>
         const SERVER_URL = "https://tableau-system.onrender.com";
         const urlParams = new URLSearchParams(window.location.search);
@@ -247,6 +232,7 @@
         let currentTipPercentage = 0;
         window.lastRawData = null;
 
+        // 🚀 SYNCHRONISATION LIVE & GESTION D'ERREURS
         async function syncLiveState() {
             try {
                 const state = await API.getState();
@@ -256,7 +242,7 @@
                 const newRawData = { cuisine: rawCuisine, bar: rawBar };
 
                 if (Object.keys(rawCuisine).length === 0 && Object.keys(rawBar).length === 0) {
-                    return; 
+                    return; // Menu vide, on ignore
                 }
 
                 if (JSON.stringify(newRawData) !== JSON.stringify(window.lastRawData)) {
@@ -264,9 +250,10 @@
                     
                     globalMenu = [];
                     
+                    // Formatage Cuisine
                     for(let cat in rawCuisine) {
                         rawCuisine[cat].forEach(i => {
-                            let course = 2; 
+                            let course = 2; // Plat par défaut
                             let cL = cat.toLowerCase();
                             if(cL.includes('entree') || cL.includes('entrée') || cL.includes('tapas')) course = 1;
                             else if(cL.includes('dessert') || cL.includes('glace')) course = 3;
@@ -274,9 +261,10 @@
                         });
                     }
 
+                    // Formatage Bar
                     for(let cat in rawBar) {
                         rawBar[cat].forEach(i => {
-                            globalMenu.push({ ...i, category: cat, dest: 'bar', course: 0 }); 
+                            globalMenu.push({ ...i, category: cat, dest: 'bar', course: 0 }); // Boisson
                         });
                     }
                     
@@ -316,7 +304,7 @@
             const loader = document.getElementById('loader');
             if(loader) loader.style.display = 'none';
 
-            setInterval(syncLiveState, 4000); 
+            setInterval(syncLiveState, 4000); // Battement de cœur toutes les 4s
         }
 
         function renderCategoryNav() {
@@ -450,34 +438,28 @@
             const loaderText = document.getElementById('loader-text');
             loader.style.display = 'flex';
             
-            let baseId = Date.now();
-            let masterKey = "order_" + baseId;      
-            let cuisineKey = "cuisine_" + baseId;   
-            let barKey = "bar_" + baseId;           
-
-            window.currentOrderKey = barKey;
-
-            let itemsCuisine = cart.filter(i => i.dest === 'cuisine');
-            let itemsBar = cart.filter(i => i.dest === 'bar');
-
-            const formatItems = (itemList) => itemList.map(i => {
-                let isCuisine = (i.dest === 'cuisine');
-                let firstFoodCourse = itemsCuisine.length > 0 ? Math.min(...itemsCuisine.filter(x => x.course > 0).map(x => x.course)) : 99;
-                let shouldFire = isCuisine ? (i.course === 0 || i.course === firstFoodCourse) : true;
-                
-                return { id: Date.now() + Math.random(), itemId: Date.now(), n: i.n, p: i.p, qty: i.qty, course: i.course, dest: i.dest, done: false, fired: shouldFire, firedTime: shouldFire ? Date.now() : null, isOffered: false };
-            });
+            let orderKey = "order_" + Date.now(); 
 
             if (method === 'online') {
                 loaderText.innerHTML = `<div style="color: var(--gold); font-weight: 300; letter-spacing: 1px; text-align:center; margin-top:20px;">Connexion à la banque...<br><span style="font-size:0.8rem; color:var(--text-muted);">Redirection en cours</span></div>`;
+                let foodItems = cart.filter(i => i.course > 0);
+                let firstFoodCourse = foodItems.length > 0 ? Math.min(...foodItems.map(i => i.course)) : 99;
 
-                let masterData = { isWeb: true, status: "cooking", time: new Date().toLocaleTimeString('fr-FR', {hour:'2-digit', minute:'2-digit'}), clientName: "Table " + tableNumber, totalStr: finalAmount.toFixed(2) + " €", observations: `⚠️ ATTENTE CONFIRMATION PAIEMENT`, items: formatItems(cart) };
+                let payload = {
+                    data: {
+                        isWeb: true, status: "cooking", 
+                        time: new Date().toLocaleTimeString('fr-FR', {hour:'2-digit', minute:'2-digit'}),
+                        clientName: "Mobile " + tableNumber, totalStr: finalAmount.toFixed(2) + " €",
+                        observations: `⚠️ ATTENTE CONFIRMATION PAIEMENT LIGNE`, 
+                        items: cart.map(i => {
+                            let shouldFire = (i.course === 0 || i.course === firstFoodCourse);
+                            return { id: Date.now()+Math.random(), itemId: Date.now(), n: i.n, p: i.p, qty: i.qty, course: i.course, dest: i.dest, done: false, fired: shouldFire, firedTime: shouldFire ? Date.now() : null, isOffered: false };
+                        })
+                    }
+                };
 
                 try {
-                    await API.update(masterKey, { data: masterData }); 
-                    if(itemsCuisine.length > 0) await API.update(cuisineKey, { data: { ...masterData, items: formatItems(itemsCuisine) } }); 
-                    if(itemsBar.length > 0) await API.update(barKey, { data: { ...masterData, items: formatItems(itemsBar) } }); 
-
+                    await API.update(orderKey, payload);
                     await API.update('ALERTS_MASTER', { data: { type: 'PAYMENT', message: `💳 TABLE ${tableNumber} REDIRIGÉE VERS PAIEMENT`, timestamp: Date.now() } });
                     window.location.href = "https://buy.stripe.com/TON_VRAI_LIEN_DE_PAIEMENT";
                 } catch (e) {
@@ -488,13 +470,18 @@
             } else if (method === 'server') {
                 loaderText.innerHTML = `<div style="color: var(--text-muted); font-weight: 300; letter-spacing: 2px; text-transform:uppercase; font-size:0.8rem; margin-top: 20px;">Transmission...</div>`;
 
-                let masterData = { isWeb: true, status: "hold", time: new Date().toLocaleTimeString('fr-FR', {hour:'2-digit', minute:'2-digit'}), clientName: "Table " + tableNumber, totalStr: finalAmount.toFixed(2) + " €", observations: `🙋‍♂️ À ENCAISSER PAR LE SERVEUR`, items: formatItems(cart) };
+                let payload = {
+                    data: {
+                        isWeb: true, status: "hold", 
+                        time: new Date().toLocaleTimeString('fr-FR', {hour:'2-digit', minute:'2-digit'}),
+                        clientName: "Mobile " + tableNumber, totalStr: finalAmount.toFixed(2) + " €",
+                        observations: `🙋‍♂️ À ENCAISSER PAR LE SERVEUR`, 
+                        items: cart.map(i => ({ id: Date.now() + Math.random(), itemId: Date.now(), n: i.n, p: i.p, qty: i.qty, course: i.course, dest: i.dest, done: false, fired: false, isOffered: false }))
+                    }
+                };
 
                 try {
-                    await API.update(masterKey, { data: masterData }); 
-                    if(itemsCuisine.length > 0) await API.update(cuisineKey, { data: { ...masterData, items: formatItems(itemsCuisine) } }); 
-                    if(itemsBar.length > 0) await API.update(barKey, { data: { ...masterData, items: formatItems(itemsBar) } }); 
-
+                    await API.update(orderKey, payload);
                     await API.update('ALERTS_MASTER', { data: { type: 'RING', message: `📱 NOUVELLE COMMANDE (Table ${tableNumber})`, timestamp: Date.now() } });
                     
                     loader.style.display = 'none';
@@ -506,28 +493,6 @@
                 }
             }
         }
-
-        function closeReadyAlert() {
-             document.getElementById('ready-alert-screen').style.display = 'none';
-             if(navigator.vibrate) navigator.vibrate(0); 
-        }
-
-        // Le Radar qui tourne toutes les 3 secondes
-        setInterval(async () => {
-            if (!window.currentOrderKey) return; 
-            
-            try {
-                const state = await API.getState();
-                const myBarOrder = state.activeOrders[window.currentOrderKey];
-                
-                if (myBarOrder && myBarOrder.data && myBarOrder.data.status === "ready") {
-                    document.getElementById('ready-alert-screen').style.display = 'flex';
-                    if(navigator.vibrate) navigator.vibrate([500, 200, 500, 200, 1000]); 
-                    
-                    window.currentOrderKey = null; 
-                }
-            } catch(e) {}
-        }, 3000);
 
         window.onload = initApp;
     </script>
