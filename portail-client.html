@@ -298,7 +298,7 @@
             document.getElementById('final-total-amount').innerText = finalAmount.toFixed(2) + " €";
         }
 
-        async function processSimulatedPayment(methodName) {
+async function processSimulatedPayment(methodName) {
             // Affichage de l'écran de chargement
             document.getElementById('main-content').style.display = 'none';
             document.getElementById('fixed-bottom').style.display = 'none';
@@ -308,7 +308,7 @@
             loader.innerHTML = `
                 <div class="spinner"></div>
                 <div style="color: var(--text-main); font-weight: bold; letter-spacing: 1px; text-align:center;">
-                    Connexion sécurisée à Stripe...<br>
+                    Connexion sécurisée à la banque...<br>
                     <span style="font-size:0.8rem; color:var(--text-muted);">Traitement de ${finalAmount.toFixed(2)}€ via ${methodName}</span>
                 </div>
             `;
@@ -316,18 +316,45 @@
             // Simulation du délai de la banque (2 secondes)
             setTimeout(async () => {
                 try {
-                    // 🚨 ENVOI DE L'ALERTE AU PAD SERVEUR POUR CLÔTURER 🚨
-                    await API.update('ALERTS_MASTER', { 
-                        type: 'PAYMENT', 
-                        message: `💰 TABLE ${urlTable} RÉGLÉE EN LIGNE (${finalAmount.toFixed(2)}€ via ${methodName})`, 
-                        timestamp: Date.now() 
-                    });
+                    // 1. On récupère la commande actuelle depuis la base
+                    const state = await API.getState();
+                    if (state && state.activeOrders && state.activeOrders[urlTable]) {
+                        
+                        let order = state.activeOrders[urlTable];
+                        
+                        // 2. On formate le ticket pour les Archives Financières de l'Admin
+                        let archiveEntry = {
+                            table: urlTable,
+                            time: new Date().toISOString(), // L'heure exacte du paiement
+                            items: order.items || [], // Tous les plats mangés
+                            total: finalAmount.toFixed(2), // L'argent encaissé (avec pourboire)
+                            typePaiement: methodName, // Apple Pay, Google Pay, etc.
+                            pourboire: (finalAmount - baseAmount).toFixed(2)
+                        };
 
-                    // Optionnel: on pourrait modifier l'état de la table directement ici, 
-                    // mais c'est mieux que le serveur l'acquitte sur son écran pour garder le contrôle.
-                    
-                    loader.style.display = 'none';
-                    document.getElementById('success-screen').style.display = 'flex';
+                        // 3. On sauvegarde dans les archives de la Cuisine (CA global)
+                        let archiveCuisine = (state.activeOrders['SALES_ARCHIVE_CUISINE']) ? state.activeOrders['SALES_ARCHIVE_CUISINE'].data || [] : [];
+                        archiveCuisine.push(archiveEntry);
+                        await API.update('SALES_ARCHIVE_CUISINE', archiveCuisine);
+
+                        // 4. On détruit la commande en cours (libération de la table)
+                        await API.update(urlTable, null);
+
+                        // 5. 🚨 ENVOI DE L'ALERTE AU PAD SERVEUR 🚨
+                        await API.update('ALERTS_MASTER', { 
+                            type: 'PAYMENT', 
+                            message: `💰 TABLE ${urlTable} RÉGLÉE ET CLÔTURÉE (${finalAmount.toFixed(2)}€ via ${methodName})`, 
+                            timestamp: Date.now() 
+                        });
+                        
+                        // Succès Visuel Client
+                        loader.style.display = 'none';
+                        document.getElementById('success-screen').style.display = 'flex';
+                    } else {
+                        // La table était déjà vide
+                        loader.style.display = 'none';
+                        document.getElementById('success-screen').style.display = 'flex';
+                    }
 
                 } catch(e) {
                     alert("Une erreur de communication est survenue. Veuillez vérifier avec votre serveur.");
