@@ -263,36 +263,20 @@
         </div>
 
         <div class="footer">
-            Prix nets en euros — Service compris<br>
+            Prix nets en <span id="footer-currency">Euros</span> — Service compris<br>
             <span style="font-size: 0.6rem; opacity: 0.5; margin-top: 10px; display: block;">Propulsé par Empire OS</span>
         </div>
     </div>
-const urlParams = new URLSearchParams(window.location.search);
+
+    <script>
+        const urlParams = new URLSearchParams(window.location.search);
         const tenantID = urlParams.get('tenantID') || 'MASTER_STATE';
         const SERVER_URL = (window.location.protocol === 'file:') ? 'https://tableau-system.onrender.com' : '';
 
-        const API = {
-            getState: async () => {
-                let r = await fetch(`${SERVER_URL}/get-current-state?tenantID=${tenantID}`);
-                if (!r.ok) throw new Error("Serveur injoignable");
-                return await r.json();
-            },
-            update: async (key, data) => {
-                let isOrder = !key.includes('MASTER') && !key.includes('ARCHIVE') && !key.includes('SUPPLIER') && !key.includes('PLANNING') && !key.includes('MENU') && !key.includes('DIRECTORY') && !key.includes('ALERTS') && !key.includes('ARCHITECTURE');
-                let payload = isOrder ? data : { data: data };
-                try { 
-                    await fetch(`${SERVER_URL}/update-order?tenantID=${tenantID}`, { 
-                        method: 'POST', 
-                        headers: {'Content-Type': 'application/json'}, 
-                        body: JSON.stringify({ tableId: key, order: data === null ? null : payload }) 
-                    }); 
-                } catch(e) { console.error("Erreur Sync:", e); }
-            }
-        };
-    <script>
-        // -----------------------------------------
-        // MOTEUR DE SYNCHRONISATION
-        // -----------------------------------------
+        // 🌍 VARIABLE MULTIDEVISE GLOBALE
+        let currentCurrency = "€";
+        let currencyName = "Euros";
+
         const API = {
             getState: async () => {
                 let state = { activeOrders: {} };
@@ -308,10 +292,6 @@ const urlParams = new URLSearchParams(window.location.search);
             }
         };
 
-        window.addEventListener('storage', (e) => {
-            if (e.key === 'EMPIRE_GLOBAL_SYNC') fetchMenu();
-        });
-
         const categoriesMap = [
             { id: 'menuJour', label: 'Menu du Jour', isTasting: true },
             { id: 'suggestions', label: 'Suggestions', isTasting: false },
@@ -325,6 +305,21 @@ const urlParams = new URLSearchParams(window.location.search);
         async function fetchMenu() {
             try {
                 const state = await API.getState();
+                
+                // 🌍 LECTURE DE LA DEVISE SAAS
+                if (state.activeOrders['SETTINGS_MASTER'] && state.activeOrders['SETTINGS_MASTER'].data) {
+                    let savedCurrency = state.activeOrders['SETTINGS_MASTER'].data.currency;
+                    if (savedCurrency && savedCurrency !== currentCurrency) {
+                        currentCurrency = savedCurrency;
+                        // Traduction esthétique pour le bas de page
+                        let nameMap = {"€": "Euros", "CHF": "Francs Suisses", "$": "Dollars", "C$": "Dollars", "£": "Livres", "¥": "Yens", "MAD": "Dirhams", "CFA": "Francs CFA"};
+                        currencyName = nameMap[currentCurrency] || currentCurrency;
+                        document.getElementById('footer-currency').innerText = currencyName;
+                        currentMenuData = null; // Force le rafraîchissement
+                    }
+                }
+
+                // 🟢 LECTURE DU MENU CUISINE
                 if (state && state.activeOrders && state.activeOrders['MENU_MASTER']) {
                     let newDataStr = JSON.stringify(state.activeOrders['MENU_MASTER'].data);
                     
@@ -342,7 +337,8 @@ const urlParams = new URLSearchParams(window.location.search);
 
         function renderTastingMenu(item) {
             let cleanName = item.name.replace('🌟 ', '');
-            let priceStr = parseFloat(item.price) > 0 ? `${parseFloat(item.price).toFixed(2)} €` : '';
+            // 🌍 Utilisation de la devise dynamique
+            let priceStr = parseFloat(item.price) > 0 ? `${parseFloat(item.price).toFixed(2)} ${currentCurrency}` : '';
             
             if (cleanName.includes('[BR]')) {
                 let parts = cleanName.split('[BR]');
@@ -379,7 +375,8 @@ const urlParams = new URLSearchParams(window.location.search);
 
         function renderStandardItem(item) {
             let cleanName = item.name.replace('🌟 ', '');
-            let priceStr = parseFloat(item.price) > 0 ? `${parseFloat(item.price).toFixed(2)} €` : '';
+            // 🌍 Utilisation de la devise dynamique
+            let priceStr = parseFloat(item.price) > 0 ? `${parseFloat(item.price).toFixed(2)} ${currentCurrency}` : '';
             
             let mainName = cleanName;
             let description = '';
@@ -413,7 +410,8 @@ const urlParams = new URLSearchParams(window.location.search);
                 let items = currentMenuData[cat.id];
                 
                 if (items && Array.isArray(items)) {
-                    let availableItems = items.filter(item => item.stock !== 0);
+                    // Filtre les ruptures de stock
+                    let availableItems = items.filter(item => item.stock !== 0 && item.stock !== "0");
 
                     if (availableItems.length > 0) {
                         
@@ -445,6 +443,7 @@ const urlParams = new URLSearchParams(window.location.search);
             container.innerHTML = htmlContent;
         }
 
+        // Lancement au démarrage et rafraîchissement toutes les 3 secondes
         fetchMenu();
         setInterval(fetchMenu, 3000);
 
