@@ -27,7 +27,8 @@
         /* QR GENERATOR */
         .grid-tool { display: flex; gap: 10px; margin-bottom: 20px; }
         input { background: #000; border: 1px solid var(--border); color: #fff; padding: 15px; border-radius: 8px; flex: 1; outline: none; font-size: 1rem; }
-        .btn-gold { background: var(--gold); color: #000; border: none; padding: 15px 25px; border-radius: 8px; font-weight: 800; text-transform: uppercase; cursor: pointer; }
+        .btn-gold { background: var(--gold); color: #000; border: none; padding: 15px 25px; border-radius: 8px; font-weight: 800; text-transform: uppercase; cursor: pointer; transition: 0.2s;}
+        .btn-gold:active { transform: scale(0.95); }
 
         #qr-preview { display: none; text-align: center; background: #fff; padding: 20px; border-radius: 12px; margin-top: 20px; color: #000; }
         #qr-preview img { max-width: 150px; }
@@ -49,6 +50,9 @@
         /* LIVE ORDERS */
         .order-card { background: rgba(255,255,255,0.02); padding: 15px; border-radius: 8px; border-left: 4px solid var(--gold); display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; border-top: 1px solid var(--border); border-right: 1px solid var(--border); border-bottom: 1px solid var(--border); }
         .order-card.ready { border-left-color: var(--success); }
+
+        /* SETTINGS */
+        select.settings-input { background: #000; color: var(--gold); border: 1px solid var(--gold); padding: 12px; border-radius: 8px; font-size: 1.1rem; font-weight: bold; cursor: pointer; outline: none; }
         
         @media print { body * { visibility: hidden; } .print-area, .print-area * { visibility: visible; } .print-area { position: absolute; left: 0; top: 0; width: 100%; text-align: center; } }
     </style>
@@ -62,6 +66,24 @@
         </div>
         <button class="btn-back" onclick="backToPad()">🔙 Retour au Service (PAD)</button>
     </header>
+
+    <div class="section">
+        <h2>⚙️ Paramètres de l'Établissement</h2>
+        <div style="display: flex; gap: 15px; align-items: center; background: rgba(255,255,255,0.02); padding: 15px; border-radius: 8px; border: 1px solid var(--border); flex-wrap: wrap;">
+            <label style="color: var(--text-muted); font-weight: bold; text-transform: uppercase; font-size: 0.9rem;">Devise principale :</label>
+            <select id="currency-select" class="settings-input">
+                <option value="€">Euro (€)</option>
+                <option value="CHF">Franc Suisse (CHF)</option>
+                <option value="$">Dollar US ($)</option>
+                <option value="C$">Dollar Canadien (C$)</option>
+                <option value="£">Livre Sterling (£)</option>
+                <option value="¥">Yen / Yuan (¥)</option>
+                <option value="MAD">Dirham Marocain (MAD)</option>
+                <option value="CFA">Franc CFA (CFA)</option>
+            </select>
+            <button class="btn-gold" style="padding: 12px 20px; font-size: 0.9rem;" onclick="saveGlobalSettings()">💾 Appliquer à tout le système</button>
+        </div>
+    </div>
 
     <div class="section">
         <h2>📡 Monitoring en Direct (Traçabilité QR)</h2>
@@ -114,6 +136,7 @@
         let fullState = {};
         let currentTableNum = null;
         let currentQrUrlObj = null;
+        let globalCurrency = "€"; // Par défaut
         
         // Séparation des données QR Codes par restaurant
         const registryKey = 'ichef_registry_' + tenantID;
@@ -122,6 +145,26 @@
         // --- NAVIGATION ---
         function backToPad() {
             window.location.href = 'gestionnaire.html?tenantID=' + tenantID;
+        }
+
+        // --- 0. PARAMÈTRES GLOBAUX (DEVISE) ---
+        async function saveGlobalSettings() {
+            const selectedCurrency = document.getElementById('currency-select').value;
+            try {
+                await fetch(`${SERVER_URL}/update-order?tenantID=${tenantID}`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ 
+                        tableId: 'SETTINGS_MASTER', 
+                        order: { data: { currency: selectedCurrency } } 
+                    })
+                });
+                alert("✅ Paramètres mondiaux enregistrés.\nLa devise " + selectedCurrency + " est maintenant active sur tout le réseau de ce restaurant.");
+                globalCurrency = selectedCurrency;
+                renderLiveOrders(); // Met à jour l'affichage de l'admin
+            } catch(e) { 
+                alert("❌ Erreur de synchronisation réseau."); 
+            }
         }
 
         // --- 1. GESTION DU PARC ---
@@ -215,7 +258,10 @@
                 let statusClass = isReady ? 'ready' : '';
                 let statusColor = isReady ? 'var(--success)' : 'var(--gold)';
                 let statusText = isReady ? 'PRODUIT / TERMINÉ' : 'EN PRODUCTION';
-                let total = o.data.totalStr || '0.00 €';
+                
+                // Remplacement dynamique de la devise pour l'affichage de l'historique
+                let total = o.data.totalStr ? o.data.totalStr.replace('€', globalCurrency) : `0.00 ${globalCurrency}`;
+                
                 let time = o.data.time || '--:--';
                 let client = o.data.clientName || 'Client Inconnu';
 
@@ -240,6 +286,16 @@
             try {
                 const r = await fetch(`${SERVER_URL}/get-current-state?tenantID=${tenantID}`);
                 fullState = await r.json();
+                
+                // Chargement de la devise globale au démarrage
+                if(fullState.activeOrders && fullState.activeOrders['SETTINGS_MASTER'] && fullState.activeOrders['SETTINGS_MASTER'].data) {
+                    let savedCurrency = fullState.activeOrders['SETTINGS_MASTER'].data.currency;
+                    if(savedCurrency) {
+                        globalCurrency = savedCurrency;
+                        document.getElementById('currency-select').value = globalCurrency;
+                    }
+                }
+
                 renderStocks();
                 renderLiveOrders();
             } catch(e) { console.error("Erreur sync"); }
