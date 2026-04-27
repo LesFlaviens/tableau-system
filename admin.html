@@ -107,9 +107,11 @@
             text-transform:uppercase; font-size: 0.85rem; display:none; align-items:center; gap:10px;
         }
 
-        .stock-item { display: flex; justify-content: space-between; align-items: center; padding: 10px 0; border-bottom: 1px solid var(--border); font-size: 0.85rem;}
-        .btn-toggle { background: transparent; border: 1px solid var(--gold); color: var(--gold); padding: 4px 10px; border-radius: 4px; font-size: 0.7rem; font-weight:bold; }
+        .stock-item { display: flex; flex-direction: column; gap: 8px; padding: 12px 0; border-bottom: 1px solid var(--border); font-size: 0.85rem;}
+        .btn-toggle { background: transparent; border: 1px solid var(--gold); color: var(--gold); padding: 6px 10px; border-radius: 4px; font-size: 0.65rem; font-weight:bold; cursor: pointer; transition: 0.2s;}
+        .btn-toggle:hover { filter: brightness(1.2); }
         .btn-toggle.sold-out { border-color: var(--danger); color: var(--danger); }
+        .btn-toggle.hidden { border-color: var(--text-muted); color: var(--text-muted); }
     </style>
 </head>
 <body>
@@ -199,7 +201,7 @@
         </div>
 
         <div class="card">
-            <div class="card-header">🧊 Stocks Minute</div>
+            <div class="card-header">📝 Éditeur de la Carte & Stocks</div>
             <div class="card-content">
                 <div id="stock-control-list">Chargement...</div>
             </div>
@@ -272,8 +274,7 @@
 
             try {
                 await fetch(`${SERVER_URL}/update-order?tenantID=${tenantID}`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
+                    method: 'POST', headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ tableId: 'SETTINGS_MASTER', order: { data: { currency: selectedCurrency } } })
                 });
                 
@@ -298,20 +299,14 @@
         function setServiceActive(serviceName) {
             currentServiceActive = serviceName;
             
-            // Remettre tous les boutons à zéro
             const btnIds = ['btn-route-matin', 'btn-route-midi', 'btn-route-aprem', 'btn-route-soir'];
             btnIds.forEach(id => {
                 let btn = document.getElementById(id);
-                if(btn) {
-                    btn.className = "btn-action";
-                }
+                if(btn) { btn.className = "btn-action"; }
             });
             
-            // Activer le bouton cliqué
             let activeBtn = document.getElementById('btn-route-' + serviceName.toLowerCase());
-            if(activeBtn) {
-                activeBtn.className = "btn-action active";
-            }
+            if(activeBtn) { activeBtn.className = "btn-action active"; }
         }
 
         async function deployRouting() {
@@ -326,8 +321,7 @@
             };
             try {
                 await fetch(`${SERVER_URL}/update-order?tenantID=${tenantID}`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
+                    method: 'POST', headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ tableId: 'ROUTING_MASTER', order: { data: routingConfig } })
                 });
                 alert(`✅ Diffusion envoyée : Service ${currentServiceActive}`);
@@ -486,7 +480,7 @@
             document.getElementById('ca-annee').innerText = caAnnee.toFixed(2) + " " + globalCurrency;
         }
 
-        // --- 3. GESTION DES STOCKS ---
+        // --- 3. ÉDITEUR DE CARTE & STOCKS ---
         async function fetchLiveStocks() {
             try {
                 const r = await fetch(`${SERVER_URL}/get-current-state?tenantID=${tenantID}`);
@@ -506,25 +500,43 @@
             if(!fullState || !fullState.activeOrders) return;
             
             let html = "";
-            [{ id: 'MENU_MASTER', label: 'CUISINE' }, { id: 'MENU_MASTER_BAR', label: 'BAR' }].forEach(src => {
+            [{ id: 'MENU_MASTER', label: 'RÉSEAU CUISINE' }, { id: 'MENU_MASTER_BAR', label: 'RÉSEAU BAR' }].forEach(src => {
                 const data = fullState.activeOrders[src.id]?.data || {};
                 if(Object.keys(data).length > 0) {
                     html += `<div style="color:var(--gold); font-size:0.7rem; margin-top:10px; border-bottom:1px solid var(--border); padding-bottom:3px;">${src.label}</div>`;
                     for(let cat in data) {
                         data[cat].forEach((item, idx) => {
                             const isOut = (item.stock === 0 || item.stock === "0");
+                            const isHidden = (item.hidden === true); // Nouveau paramètre
+
                             html += `
                                 <div class="stock-item">
-                                    <div style="font-size:0.8rem; flex:1; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${item.name}</div>
-                                    <button class="btn-toggle ${isOut ? 'sold-out' : ''}" style="font-size:0.6rem; padding:4px 6px; min-width:60px;" onclick="updateStock('${src.id}', '${cat}', ${idx}, ${isOut})">
-                                        ${isOut ? 'ÉPUISÉ' : 'OK'}
-                                    </button>
+                                    <div style="font-size:0.85rem; font-weight:bold; margin-bottom: 5px; color: ${isHidden ? 'var(--text-muted)' : 'var(--text-main)'}; text-decoration: ${isHidden ? 'line-through' : 'none'};">${item.name}</div>
+                                    <div style="display:flex; gap:8px;">
+                                        <button class="btn-toggle ${isHidden ? 'hidden' : ''}" style="flex:1;" onclick="updateVisibility('${src.id}', '${cat}', ${idx}, ${isHidden})">
+                                            ${isHidden ? '🚫 MASQUÉ' : '👁️ À LA CARTE'}
+                                        </button>
+                                        <button class="btn-toggle ${isOut ? 'sold-out' : ''}" style="flex:1;" onclick="updateStock('${src.id}', '${cat}', ${idx}, ${isOut})">
+                                            ${isOut ? '❌ ÉPUISÉ' : '📦 EN STOCK'}
+                                        </button>
+                                    </div>
                                 </div>`;
                         });
                     }
                 }
             });
             container.innerHTML = html || '<div style="color:var(--text-muted); font-size:0.8rem;">Aucun menu.</div>';
+        }
+
+        async function updateVisibility(sourceId, cat, idx, currentlyHidden) {
+            fullState.activeOrders[sourceId].data[cat][idx].hidden = !currentlyHidden;
+            renderStocks(); 
+            try {
+                await fetch(`${SERVER_URL}/update-order?tenantID=${tenantID}`, {
+                    method: 'POST', headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ tableId: sourceId, order: { data: fullState.activeOrders[sourceId].data } })
+                });
+            } catch(e) {}
         }
 
         async function updateStock(sourceId, cat, idx, currentlyOut) {
