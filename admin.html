@@ -1,4 +1,3 @@
-flav
 <!DOCTYPE html>
 <html lang="fr">
 <head>
@@ -151,7 +150,7 @@ flav
             
             <div style="display:flex; gap:15px;">
                 <button style="flex:1; background:transparent; border:1px solid var(--border-strong); color:var(--text-main); padding:15px; border-radius:8px; cursor:pointer; font-weight:bold; font-size: 0.9rem;" onclick="closeRoutingModal()">ANNULER</button>
-                <button style="flex:1; background:var(--gold); border:none; color:#000; padding:15px; border-radius:8px; cursor:pointer; font-weight:900; font-size: 0.9rem; letter-spacing: 1px;" onclick="saveRoutingModal()">💾 VALIDER</button>
+                <button id="btn-valider-modal" style="flex:1; background:var(--gold); border:none; color:#000; padding:15px; border-radius:8px; cursor:pointer; font-weight:900; font-size: 0.9rem; letter-spacing: 1px;" onclick="saveRoutingModal()">💾 VALIDER</button>
             </div>
         </div>
     </div>
@@ -298,6 +297,7 @@ flav
         let categoriesBar = [];
         
         let modalCurrentContext = null;
+        let isModalOpen = false; // 🔒 VERROU ANTI-COLLISION DE DONNÉES
 
         const registryKey = 'ichef_registry_' + tenantID;
         let tableRegistry = JSON.parse(localStorage.getItem(registryKey) || '[]');
@@ -333,8 +333,10 @@ flav
             }
         }
 
-        // --- GESTION DU MODAL TACTILE ---
+        // --- GESTION DU MODAL TACTILE SÉCURISÉ ---
         function openRoutingModal(title, routingArray, targetArray) {
+            isModalOpen = true; // On bloque les mises à jour automatiques
+            
             document.getElementById('routing-modal-title').innerText = title;
             
             document.querySelectorAll('.route-toggle-btn.time-btn').forEach(b => {
@@ -353,6 +355,7 @@ flav
         function closeRoutingModal() {
             document.getElementById('routing-modal').style.display = 'none';
             modalCurrentContext = null;
+            isModalOpen = false; // On débloque les mises à jour
         }
 
         function toggleModalRoute(btn) {
@@ -371,10 +374,15 @@ flav
             if(newRouting.length === 0) return alert("❌ Interdit : Sélectionnez au moins un horaire.");
             if(newTargets.length === 0) return alert("❌ Interdit : Sélectionnez au moins un point de vente.");
 
+            let btn = document.getElementById('btn-valider-modal');
+            let originalText = btn.innerText;
+            btn.innerText = "⏳...";
+            btn.style.pointerEvents = 'none';
+
             if(modalCurrentContext.type === 'category') {
                 modalCurrentContext.catObj.routing = newRouting;
                 modalCurrentContext.catObj.targets = newTargets;
-                renderStocks(); 
+                
                 try {
                     await fetch(`${SERVER_URL}/update-order?tenantID=${tenantID}`, {
                         method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -385,7 +393,7 @@ flav
             else if (modalCurrentContext.type === 'item') {
                 modalCurrentContext.item.routing = newRouting;
                 modalCurrentContext.item.targets = newTargets;
-                renderStocks(); 
+                
                 try {
                     await fetch(`${SERVER_URL}/update-order?tenantID=${tenantID}`, {
                         method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -394,6 +402,9 @@ flav
                 } catch(e) { alert("❌ Erreur de sauvegarde."); }
             }
             
+            btn.innerText = originalText;
+            btn.style.pointerEvents = 'auto';
+            renderStocks(); // On rafraîchit visuellement
             closeRoutingModal();
         }
 
@@ -579,6 +590,8 @@ flav
 
         // --- GESTION ÉDITEUR & STOCKS (SUPER ADMIN) ---
         async function fetchLiveStocks() {
+            if(isModalOpen) return; // 🔒 BLOQUE LA SYNCHRO SI LE MODAL EST OUVERT
+
             try {
                 const r = await fetch(`${SERVER_URL}/get-current-state?tenantID=${tenantID}`);
                 fullState = await r.json();
@@ -677,7 +690,6 @@ flav
             container.innerHTML = html || '<div style="color:var(--text-muted); font-size:0.8rem;">Aucun menu.</div>';
         }
 
-        // --- OUVERTURE DES PANNEAUX TACTILES (CATÉGORIES ET PLATS) ---
         function adminEditCategoryRouting(sourceId, catId) {
             let catList = sourceId === 'MENU_MASTER' ? categoriesCuisine : categoriesBar;
             let dbKey = sourceId === 'MENU_MASTER' ? 'CATEGORIES_CUISINE' : 'CATEGORIES_BAR';
