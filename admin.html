@@ -54,10 +54,19 @@
         /* SETTINGS */
         select.settings-input { background: #000; color: var(--gold); border: 1px solid var(--gold); padding: 12px; border-radius: 8px; font-size: 1.1rem; font-weight: bold; cursor: pointer; outline: none; }
         
+        @keyframes dropDown {
+            from { top: -50px; opacity: 0; }
+            to { top: 20px; opacity: 1; }
+        }
+
         @media print { body * { visibility: hidden; } .print-area, .print-area * { visibility: visible; } .print-area { position: absolute; left: 0; top: 0; width: 100%; text-align: center; } }
     </style>
 </head>
 <body>
+
+    <div id="settings-success-overlay" style="display:none; position:fixed; top:20px; left:50%; transform:translateX(-50%); background:var(--success); color:#000; padding:15px 30px; border-radius:8px; font-weight:900; z-index:99999; box-shadow:0 10px 30px rgba(0,255,0,0.3); text-transform:uppercase; letter-spacing:1px; align-items:center; gap:10px; animation: dropDown 0.4s ease-out forwards;">
+        ✅ SYSTÈME MIS À JOUR : DEVISE PASSÉE EN <span id="success-currency-val" style="font-size: 1.2rem; background: #000; color: var(--success); padding: 2px 8px; border-radius: 4px; margin-left: 5px;"></span>
+    </div>
 
     <header>
         <div>
@@ -81,7 +90,7 @@
                 <option value="MAD">Dirham Marocain (MAD)</option>
                 <option value="CFA">Franc CFA (CFA)</option>
             </select>
-            <button class="btn-gold" style="padding: 12px 20px; font-size: 0.9rem;" onclick="saveGlobalSettings()">💾 Appliquer à tout le système</button>
+            <button id="btn-save-settings" class="btn-gold" style="padding: 12px 20px; font-size: 0.9rem;" onclick="saveGlobalSettings()">💾 Appliquer à tout le système</button>
         </div>
     </div>
 
@@ -150,6 +159,14 @@
         // --- 0. PARAMÈTRES GLOBAUX (DEVISE) ---
         async function saveGlobalSettings() {
             const selectedCurrency = document.getElementById('currency-select').value;
+            const btn = document.getElementById('btn-save-settings');
+            const originalText = btn.innerText;
+
+            // 1. Le bouton montre que ça travaille
+            btn.innerText = "⏳ DÉPLOIEMENT...";
+            btn.style.opacity = "0.5";
+            btn.style.pointerEvents = "none";
+
             try {
                 await fetch(`${SERVER_URL}/update-order?tenantID=${tenantID}`, {
                     method: 'POST',
@@ -159,10 +176,29 @@
                         order: { data: { currency: selectedCurrency } } 
                     })
                 });
-                alert("✅ Paramètres mondiaux enregistrés.\nLa devise " + selectedCurrency + " est maintenant active sur tout le réseau de ce restaurant.");
+                
                 globalCurrency = selectedCurrency;
-                renderLiveOrders(); // Met à jour l'affichage de l'admin
+                renderLiveOrders(); // Met à jour l'affichage de l'admin en arrière-plan
+
+                // 2. Le bouton revient à la normale
+                btn.innerText = originalText;
+                btn.style.opacity = "1";
+                btn.style.pointerEvents = "auto";
+
+                // 3. Déclenchement du Bandeau de Succès
+                const overlay = document.getElementById('settings-success-overlay');
+                document.getElementById('success-currency-val').innerText = selectedCurrency;
+                overlay.style.display = 'flex';
+                
+                // Disparition automatique après 4 secondes
+                setTimeout(() => {
+                    overlay.style.display = 'none';
+                }, 4000);
+
             } catch(e) { 
+                btn.innerText = originalText;
+                btn.style.opacity = "1";
+                btn.style.pointerEvents = "auto";
                 alert("❌ Erreur de synchronisation réseau."); 
             }
         }
@@ -260,7 +296,7 @@
                 let statusText = isReady ? 'PRODUIT / TERMINÉ' : 'EN PRODUCTION';
                 
                 // Remplacement dynamique de la devise pour l'affichage de l'historique
-                let total = o.data.totalStr ? o.data.totalStr.replace('€', globalCurrency) : `0.00 ${globalCurrency}`;
+                let total = o.data.totalStr ? o.data.totalStr.replace('€', globalCurrency).replace('$', globalCurrency).replace('CHF', globalCurrency) : `0.00 ${globalCurrency}`;
                 
                 let time = o.data.time || '--:--';
                 let client = o.data.clientName || 'Client Inconnu';
