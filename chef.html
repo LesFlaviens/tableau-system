@@ -416,6 +416,16 @@
         };
 
         let menuData = { menuJour: [], suggestions: [], entrees: [], plats: [], desserts: [] };
+        
+        // --- NOUVEAU : STRUCTURE DES CATEGORIES AVEC ROUTING ---
+        let categoriesData = [
+            { id: 'menuJour', label: 'Menu du Jour', routing: ['MATIN', 'MIDI', 'APREM', 'SOIR'] },
+            { id: 'suggestions', label: 'Suggestions', routing: ['MATIN', 'MIDI', 'APREM', 'SOIR'] },
+            { id: 'entrees', label: 'Entrées', routing: ['MIDI', 'SOIR'] },
+            { id: 'plats', label: 'Plats', routing: ['MIDI', 'SOIR'] },
+            { id: 'desserts', label: 'Desserts', routing: ['MIDI', 'APREM', 'SOIR'] }
+        ];
+
         let recipesData = [];
         let stockGlobalData = []; 
         let currentFolderCat = null;
@@ -424,7 +434,6 @@
         let lastStockHash = "";
         let lastRecipesHash = "";
 
-        // 🛑 BOUCLIER INTELLIGENT (Ne s'active que dans les zones de texte) 🛑
         let userIsActive = false;
         let activityTimeout = null;
         function keepAlive(e) {
@@ -438,17 +447,7 @@
         document.addEventListener('focusin', keepAlive);
         document.addEventListener('input', keepAlive);
 
-        const CAT_SETTINGS = { 
-            "menuJour": { name: "MENU DU JOUR", color: "var(--gold)" }, 
-            "suggestions": { name: "SUGGESTIONS", color: "var(--alert)" }, 
-            "entrees": { name: "ENTRÉES", color: "var(--text-main)" }, 
-            "plats": { name: "PLATS", color: "var(--text-main)" }, 
-            "desserts": { name: "DESSERTS", color: "var(--text-main)" } 
-        };
         const EXTRA_COLORS = ['var(--ordered)', 'var(--accent)', 'var(--purple)', 'var(--orange)'];
-
-        const STOCK_BADGES = { "feculents": "rgba(96, 165, 250, 0.2)", "proteines": "rgba(248, 113, 113, 0.2)", "bof": "rgba(251, 191, 36, 0.2)", "sauces": "rgba(167, 139, 250, 0.2)", "legumes": "rgba(52, 211, 153, 0.2)", "economat": "rgba(148, 163, 184, 0.2)" };
-        const STOCK_COLORS = { "feculents": "#60a5fa", "proteines": "#f87171", "bof": "#fbbf24", "sauces": "#a78bfa", "legumes": "#34d399", "economat": "#94a3b8" };
 
         function switchTab(tab) {
             document.querySelectorAll('.module').forEach(m => m.classList.remove('active'));
@@ -494,6 +493,11 @@
             if (state && state.activeOrders) {
                 try {
                     let dataChanged = false;
+
+                    // 📡 RÉCUPÉRATION DU ROUTING (Si des catégories ont été créées par l'admin ou le chef)
+                    if (state.activeOrders['CATEGORIES_CUISINE'] && Array.isArray(state.activeOrders['CATEGORIES_CUISINE'].data)) {
+                        categoriesData = state.activeOrders['CATEGORIES_CUISINE'].data;
+                    }
 
                     if (state.activeOrders['RECIPES_MASTER'] && Array.isArray(state.activeOrders['RECIPES_MASTER'].data)) {
                         let newRecipes = state.activeOrders['RECIPES_MASTER'].data.filter(r => r != null);
@@ -915,28 +919,32 @@
             if(!catView) return;
             catView.style.display = 'grid';
             let html = '';
-            ['menuJour', 'suggestions', 'entrees', 'plats', 'desserts'].forEach(cat => {
-                let count = recipesData.filter(r => r.cat === cat).length;
-                let displayName = CAT_SETTINGS[cat] ? CAT_SETTINGS[cat].name : cat;
-                html += `<div class="folder-card" onclick="openFolder('${cat}')"><div class="folder-title">${displayName}</div><div class="folder-count">${count} Fiches Actives</div></div>`;
+            
+            categoriesData.forEach(cat => {
+                let count = recipesData.filter(r => r.cat === cat.id).length;
+                html += `<div class="folder-card" onclick="openFolder('${cat.id}')"><div class="folder-title">${cat.label}</div><div class="folder-count">${count} Fiches Actives</div></div>`;
             });
+            
             catView.innerHTML = html;
         }
 
-        function openFolder(cat) {
-            currentFolderCat = cat;
+        function openFolder(catId) {
+            currentFolderCat = catId;
             document.getElementById('catalog-view').style.display = 'none';
             document.getElementById('folder-view').style.display = 'flex';
-            let displayName = CAT_SETTINGS[cat] ? CAT_SETTINGS[cat].name : cat;
+            
+            let catObj = categoriesData.find(c => c.id === catId);
+            let displayName = catObj ? catObj.label : catId;
+            
             document.getElementById('current-folder-title').innerText = "📂 " + displayName;
-            renderFolderContents(cat);
+            renderFolderContents(catId);
         }
 
         function closeFolder() { currentFolderCat = null; renderRecipes(); }
 
-        function renderFolderContents(cat) {
+        function renderFolderContents(catId) {
             const container = document.getElementById('recipes-list');
-            let filtered = recipesData.filter(r => r.cat === cat);
+            let filtered = recipesData.filter(r => r.cat === catId);
             if(filtered.length === 0) { container.innerHTML = "<p style='text-align:center; color:var(--text-muted); padding: 20px;'>Dossier vide.</p>"; return; }
             container.innerHTML = filtered.map(r => `
                 <div style="background: rgba(255,255,255,0.02); border:1px solid var(--border); padding:20px; border-radius:12px; transition: 0.2s;">
@@ -953,6 +961,7 @@
                 </div>`).join('');
         }
 
+        // 🟢 NOUVEAU RENDU DE MENU (AVEC ROUTING ET ÉDITION DE CATÉGORIES)
         function renderMenu() {
             const grid = document.getElementById('dynamic-menu-grid');
             if(!grid) return;
@@ -960,22 +969,22 @@
             let html = '';
             let colorIndex = 0;
 
-            for (let category in menuData) {
+            categoriesData.forEach(catObj => {
+                let category = catObj.id;
                 let items = menuData[category];
-                if (!Array.isArray(items)) continue; 
+                if (!Array.isArray(items)) items = []; 
                 
                 let catEscaped = String(category || '').replace(/'/g, "\\'");
+                let color = EXTRA_COLORS[colorIndex % EXTRA_COLORS.length];
+                let displayName = catObj.label;
                 
-                let color = 'var(--ordered)';
-                let displayName = category;
-                
-                if (CAT_SETTINGS[category]) {
-                    color = CAT_SETTINGS[category].color;
-                    displayName = CAT_SETTINGS[category].name;
-                } else {
-                    color = EXTRA_COLORS[colorIndex % EXTRA_COLORS.length];
-                }
-                
+                // Création des puces de routing (Matin, Midi, etc.)
+                let routingBadges = '';
+                if(catObj.routing.includes('MATIN')) routingBadges += `<span style="background:#f59e0b; color:#000; font-size:0.6rem; padding:2px 4px; border-radius:2px; font-weight:bold; margin-right:3px;">🌅 MATIN</span>`;
+                if(catObj.routing.includes('MIDI')) routingBadges += `<span style="background:#10b981; color:#000; font-size:0.6rem; padding:2px 4px; border-radius:2px; font-weight:bold; margin-right:3px;">☀️ MIDI</span>`;
+                if(catObj.routing.includes('APREM')) routingBadges += `<span style="background:#a855f7; color:#fff; font-size:0.6rem; padding:2px 4px; border-radius:2px; font-weight:bold; margin-right:3px;">☕ APREM</span>`;
+                if(catObj.routing.includes('SOIR')) routingBadges += `<span style="background:#3b82f6; color:#fff; font-size:0.6rem; padding:2px 4px; border-radius:2px; font-weight:bold; margin-right:3px;">🌙 SOIR</span>`;
+
                 let itemsHtml = items.map(item => {
                     let stockVal = item.stock !== undefined ? item.stock : 99;
                     let sBorder = "var(--gold)"; let sColor = "var(--gold)"; let sBg = "rgba(251, 191, 36, 0.1)"; let sAnim = "";
@@ -1005,11 +1014,17 @@
 
                 html += `
                 <div class="menu-category" style="border-top: 3px solid ${color};">
-                    <div class="category-header" style="color: ${color};">
-                        <span style="cursor:pointer; transition: 0.2s;" onmouseover="this.style.opacity='0.6'" onmouseout="this.style.opacity='1'" onclick="editCategoryName('${catEscaped}')" title="Renommer la catégorie">${displayName}</span>
-                        <div style="display:flex; align-items:center; gap:10px;">
-                            <span class="count-badge">${items.length}</span>
-                            <button style="background:transparent; border:none; color:var(--alert); cursor:pointer; font-size:1.1rem; padding:0; transition: 0.2s;" onmouseover="this.style.transform='scale(1.2)'" onmouseout="this.style.transform='scale(1)'" onclick="deleteCategory('${catEscaped}')" title="Supprimer la catégorie">✖</button>
+                    <div class="category-header" style="color: ${color}; flex-direction:column; align-items:flex-start; gap:10px;">
+                        <div style="display:flex; justify-content:space-between; width:100%; align-items:center;">
+                            <span style="cursor:pointer; transition: 0.2s;" onmouseover="this.style.opacity='0.6'" onmouseout="this.style.opacity='1'" onclick="editCategoryName('${catEscaped}')" title="Renommer la catégorie">${displayName}</span>
+                            <div style="display:flex; align-items:center; gap:10px;">
+                                <span class="count-badge">${items.length}</span>
+                                <button style="background:transparent; border:none; color:var(--alert); cursor:pointer; font-size:1.1rem; padding:0; transition: 0.2s;" onmouseover="this.style.transform='scale(1.2)'" onmouseout="this.style.transform='scale(1)'" onclick="deleteCategory('${catEscaped}')" title="Supprimer la catégorie">✖</button>
+                            </div>
+                        </div>
+                        <div style="display:flex; align-items:center; justify-content:space-between; width:100%;">
+                            <div style="display:flex; flex-wrap:wrap;">${routingBadges}</div>
+                            <button style="background:transparent; border:1px solid var(--border); color:var(--text-muted); font-size:0.6rem; padding:4px 8px; border-radius:4px; cursor:pointer;" onclick="editCategoryRouting('${catEscaped}')">⚙️ MODIFIER DIFFUSION</button>
                         </div>
                     </div>
                     <div class="item-list">${itemsHtml}</div>
@@ -1025,7 +1040,7 @@
                     </div>
                 </div>`;
                 colorIndex++;
-            }
+            });
 
             html += `
             <div class="menu-category" style="border: 2px dashed var(--border-strong); background: rgba(255,255,255,0.02); justify-content:center; align-items:center; padding: 40px; cursor:pointer; transition:0.2s;" onmouseover="this.style.background='rgba(255,255,255,0.05)'; this.style.borderColor='var(--gold)';" onmouseout="this.style.background='rgba(255,255,255,0.02)'; this.style.borderColor='var(--border-strong)';" onclick="addNewCategory()">
@@ -1036,10 +1051,9 @@
             grid.innerHTML = html;
             
             let selectHtml = '';
-            for (let cat in menuData) {
-                let displayName = CAT_SETTINGS[cat] ? CAT_SETTINGS[cat].name : cat;
-                selectHtml += `<option value="${cat}">${displayName}</option>`;
-            }
+            categoriesData.forEach(cat => {
+                selectHtml += `<option value="${cat.id}">${cat.label}</option>`;
+            });
             if(document.getElementById('market-category')) {
                 document.getElementById('market-category').innerHTML = selectHtml;
             }
@@ -1070,50 +1084,81 @@
             }
         }
 
-        async function editCategoryName(category) {
-            let currentName = CAT_SETTINGS[category] ? CAT_SETTINGS[category].name : category;
-            let newName = prompt("✏️ Renommer la catégorie :", currentName);
+        async function editCategoryName(categoryId) {
+            let catObj = categoriesData.find(c => c.id === categoryId);
+            if(!catObj) return;
             
-            if(newName && newName.trim() !== "" && newName !== currentName) {
-                let newKey = newName.trim();
-                if(menuData[newKey]) return alert("⚠️ Une catégorie porte déjà ce nom.");
+            let newName = prompt("✏️ Renommer la catégorie :", catObj.label);
+            
+            if(newName && newName.trim() !== "" && newName !== catObj.label) {
+                catObj.label = newName.trim();
+                renderMenu();
+                await API.update('CATEGORIES_CUISINE', categoriesData);
+            }
+        }
+
+        async function editCategoryRouting(categoryId) {
+            let catObj = categoriesData.find(c => c.id === categoryId);
+            if(!catObj) return;
+
+            let promptMsg = `Quand cette catégorie ("${catObj.label}") doit-elle être diffusée sur les menus ?\nTapez les numéros séparés par une virgule :\n\n`;
+            promptMsg += "1: 🌅 Matin (Petit-Déjeuner)\n";
+            promptMsg += "2: ☀️ Midi (Déjeuner)\n";
+            promptMsg += "3: ☕ Après-Midi (Tea Time)\n";
+            promptMsg += "4: 🌙 Soir (Dîner)";
+
+            let reponse = prompt(promptMsg, "2,4");
+            if(!reponse) return;
+
+            let newRouting = [];
+            if(reponse.includes("1")) newRouting.push("MATIN");
+            if(reponse.includes("2")) newRouting.push("MIDI");
+            if(reponse.includes("3")) newRouting.push("APREM");
+            if(reponse.includes("4")) newRouting.push("SOIR");
+
+            if(newRouting.length === 0) return alert("Erreur : La catégorie doit être assignée à au moins un service.");
+
+            catObj.routing = newRouting;
+            renderMenu();
+            await API.update('CATEGORIES_CUISINE', categoriesData);
+            alert(`✅ La diffusion de la catégorie "${catObj.label}" a été modifiée.`);
+        }
+
+        async function addNewCategory() {
+            let catName = prompt("🏷️ Nom de la nouvelle catégorie (ex: Brunch, Tapas...) :");
+            if(catName && catName.trim() !== "") {
+                let key = "cat_" + Date.now();
                 
-                menuData[newKey] = menuData[category];
-                delete menuData[category];
+                categoriesData.push({
+                    id: key,
+                    label: catName.trim(),
+                    routing: ['MIDI', 'SOIR'] // Par défaut, affiché midi et soir
+                });
                 
-                if (CAT_SETTINGS[category]) {
-                    CAT_SETTINGS[newKey] = { name: newKey.toUpperCase(), color: CAT_SETTINGS[category].color };
-                    delete CAT_SETTINGS[category];
-                }
+                menuData[key] = [];
                 
                 renderMenu();
+                await API.update('CATEGORIES_CUISINE', categoriesData);
                 await API.update('MENU_MASTER', menuData);
             }
         }
 
-        async function addNewCategory() {
-            let catName = prompt("🏷️ Nom de la nouvelle catégorie (ex: Vins, Tapas...) :");
-            if(catName && catName.trim() !== "") {
-                let key = catName.trim();
-                if(!menuData[key]) {
-                    menuData[key] = [];
-                    renderMenu();
-                    await API.update('MENU_MASTER', menuData);
-                } else {
-                    alert("⚠️ Cette catégorie existe déjà.");
-                }
-            }
-        }
+        async function deleteCategory(categoryId) {
+            let catObj = categoriesData.find(c => c.id === categoryId);
+            if(!catObj) return;
 
-        async function deleteCategory(category) {
-            if(menuData[category].length > 0) {
-                if(!confirm(`⚠️ ATTENTION : La catégorie "${category}" contient ${menuData[category].length} plats. Voulez-vous vraiment la supprimer avec tout son contenu ?`)) return;
+            if(menuData[categoryId] && menuData[categoryId].length > 0) {
+                if(!confirm(`⚠️ ATTENTION : La catégorie "${catObj.label}" contient ${menuData[categoryId].length} plats. Voulez-vous vraiment la supprimer avec tout son contenu ?`)) return;
             } else {
-                if(!confirm(`🗑️ Supprimer la catégorie "${category}" ?`)) return;
+                if(!confirm(`🗑️ Supprimer la catégorie "${catObj.label}" ?`)) return;
             }
-            delete menuData[category];
+            
+            delete menuData[categoryId];
+            categoriesData = categoriesData.filter(c => c.id !== categoryId);
+            
             renderMenu();
             await API.update('MENU_MASTER', menuData);
+            await API.update('CATEGORIES_CUISINE', categoriesData);
         }
 
         async function updateDishStock(category, id) {
