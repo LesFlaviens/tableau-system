@@ -43,7 +43,7 @@
         
         .dashboard-wrapper {
             display: grid;
-            grid-template-columns: repeat(3, 1fr);
+            grid-template-columns: repeat(2, 1fr); /* 🟢 PASSAGE EN 2 COLONNES (50/50) */
             grid-auto-rows: minmax(320px, auto);
             gap: 20px;
             flex: 1;
@@ -101,7 +101,7 @@
         .btn-action.active[data-service="MATIN"] { background: var(--warning); border-color: var(--warning); color: #000; box-shadow: 0 0 15px rgba(245, 158, 11, 0.4); }
         .btn-action.active[data-service="MIDI"] { background: var(--success); border-color: var(--success); color: #000; box-shadow: 0 0 15px rgba(16, 185, 129, 0.4); }
         .btn-action.active[data-service="APREM"] { background: var(--purple); border-color: var(--purple); color: #fff; box-shadow: 0 0 15px rgba(168, 85, 247, 0.4); }
-        .btn-action.active[data-service="SOIR"] { background: var(--ordered); border-color: var(--ordered); color: #fff; box-shadow: 0 0 15px rgba(59, 130, 246, 0.4); }
+        .btn-action.active[data-service="SOIR"] { background: var(--ordered); border-color: var(--ordered); color: #fff; box-shadow: 0 0 15px rgba(96, 165, 250, 0.4); }
 
         .order-card { background: rgba(0,0,0,0.3); padding: 15px; border-radius: 10px; border-left: 4px solid var(--gold); display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; border-top: 1px solid var(--border); border-right: 1px solid var(--border); border-bottom: 1px solid var(--border); }
         .order-card.ready { border-left-color: var(--success); }
@@ -264,6 +264,10 @@
                         <button class="ev-btn off" id="ev-btn-pad" style="background:var(--ordered); border-color:var(--ordered);" onclick="toggleEvBtn(this)" data-target="pad">💁‍♂️ Pad Staff</button>
                         <button class="ev-btn off" id="ev-btn-cuis" style="background:var(--success); border-color:var(--success);" onclick="toggleEvBtn(this)" data-target="cuisine">🍽️ Cuisine</button>
                         <button class="ev-btn off" id="ev-btn-bar" style="background:var(--warning); border-color:var(--warning); color:#000;" onclick="toggleEvBtn(this)" data-target="bar">🍸 Bar</button>
+                    </div>
+
+                    <div id="active-scenario-alert" style="display:none; font-size:0.7rem; color:var(--success); text-align:center; font-weight:bold; background:rgba(16, 185, 129, 0.1); padding:8px; border-radius:4px; margin-bottom:10px;">
+                        ⚠️ SCÉNARIO ACTIF ACTUELLEMENT ⚠️
                     </div>
                     
                     <button class="btn-gold" style="width:100%; background:var(--purple); color:#fff; font-size:0.85rem; padding: 12px;" onclick="deployRouting()">SAUVEGARDER LA RÉGIE</button>
@@ -543,7 +547,7 @@
             closeRoutingModal();
         }
 
-        // --- ROUTING CENTRALISÉ ---
+        // --- ROUTING CENTRALISÉ & SCÉNARIO ---
         function setServiceActive(serviceName) {
             currentServiceActive = serviceName;
             document.querySelectorAll('.btn-action[data-service]').forEach(btn => btn.classList.remove('active'));
@@ -583,8 +587,36 @@
                     method: 'POST', headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ tableId: 'ROUTING_MASTER', order: { data: routingConfig } })
                 });
-                alert("✅ Régie sauvegardée et déployée.");
+                
+                const overlay = document.getElementById('settings-success-overlay');
+                document.getElementById('success-currency-val').innerText = isAuto ? "SCÉNARIO SAUVEGARDÉ" : "RÉGIE APPLIQUÉE";
+                overlay.style.display = 'flex';
+                setTimeout(() => { overlay.style.display = 'none'; }, 3000);
+                
+                checkScenarioActive(scenario);
             } catch(e) { alert("❌ Échec."); }
+        }
+
+        function checkScenarioActive(scenario) {
+            let alertBox = document.getElementById('active-scenario-alert');
+            if(!scenario || !scenario.active || !scenario.date || !scenario.start || !scenario.end) {
+                alertBox.style.display = 'none';
+                return false;
+            }
+
+            let now = new Date();
+            let todayStr = now.toISOString().split('T')[0];
+            let hh = String(now.getHours()).padStart(2, '0');
+            let mm = String(now.getMinutes()).padStart(2, '0');
+            let currentTime = `${hh}:${mm}`;
+
+            if(todayStr === scenario.date && currentTime >= scenario.start && currentTime <= scenario.end) {
+                alertBox.style.display = 'block';
+                return true;
+            } else {
+                alertBox.style.display = 'none';
+                return false;
+            }
         }
 
         function previewQR() {
@@ -673,6 +705,7 @@
 
         async function executerClotureJournaliere() {
             if(!confirm("⚠️ Clôturer la journée et archiver le CA ?")) return;
+
             const meteo = document.getElementById('cloture-meteo').value;
             const event = document.getElementById('cloture-event').value || "Standard";
             const tvaMoyenne = parseFloat(document.getElementById('cloture-tva').value) || 10;
@@ -739,12 +772,28 @@
         function getAdvancedRouting(obj) {
             if (obj.advancedRouting) return obj.advancedRouting;
             
-            // Si on est sur l'ancienne méthode de sauvegarde, on la convertit en direct
+            // Rétrocompatibilité avec les données existantes (pour éviter que l'ancienne carte disparaisse)
             let advRouting = {};
             let oldR = obj.routing || ['MIDI', 'SOIR'];
             let oldT = obj.targets || ['qr', 'bar', 'resto', 'pad'];
             oldR.forEach(r => advRouting[r] = [...oldT]);
             return advRouting;
+        }
+
+        function getTargetIcon(targetKey) {
+            if(targetKey === 'qr') return '📱';
+            if(targetKey === 'bar') return '🍸';
+            if(targetKey === 'resto') return '🍽️';
+            if(targetKey === 'pad') return '💁‍♂️';
+            return '';
+        }
+
+        function getTargetLabel(targetKey) {
+            if(targetKey === 'qr') return 'Portail QR';
+            if(targetKey === 'bar') return 'QR Bar';
+            if(targetKey === 'resto') return 'QR Resto';
+            if(targetKey === 'pad') return 'Pad Staff';
+            return '';
         }
 
         function buildAdvancedBadges(advRouting) {
@@ -798,6 +847,8 @@
                             if(!rData.scenario.targets.cuisine) document.getElementById('ev-btn-cuis').classList.add('off'); else document.getElementById('ev-btn-cuis').classList.remove('off');
                             if(!rData.scenario.targets.bar) document.getElementById('ev-btn-bar').classList.add('off'); else document.getElementById('ev-btn-bar').classList.remove('off');
                         }
+
+                        checkScenarioActive(rData.scenario);
                     }
 
                     setServiceActive(rData.activeService || "MIDI");
