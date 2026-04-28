@@ -3630,7 +3630,146 @@ if (method === 'QR/TEL') {
 
         // Lancement automatique et sécurisé
         window.addEventListener('load', connectEmpireH24);
+<script>
+        // ==========================================
+        // 🔄 MOTEUR DE SYNCHRONISATION & RÉSEAU H24
+        // ==========================================
+        let staffAccessData = []; // Stockage sécurisé des codes PIN du staff
 
+        async function syncData() {
+            if (isArchiMode) return; 
+            try {
+                const state = await API.getState();
+                if (state && state.activeOrders) {
+                    let nO = state.activeOrders;
+
+                    // 1. MAJ Menus & Stocks
+                    if(nO['MENU_MASTER']?.data) menuCuisine = nO['MENU_MASTER'].data;
+                    if(nO['MENU_MASTER_BAR']?.data) menuBar = nO['MENU_MASTER_BAR'].data;
+
+                    // 2. MAJ Sécurité (Téléchargement des Codes PIN)
+                    if(nO['STAFF_ACCESS'] && Array.isArray(nO['STAFF_ACCESS'].data)) {
+                        staffAccessData = nO['STAFF_ACCESS'].data;
+                    }
+
+                    // 3. MAJ Routing (Matrice de diffusion)
+                    if(nO['ROUTING_MASTER'] && nO['ROUTING_MASTER'].data) {
+                        activeOrders['ROUTING_MASTER'] = { data: nO['ROUTING_MASTER'].data };
+                    }
+
+                    // 4. Alertes Chef (Klaxon)
+                    if(nO['ALERTS_MASTER']?.data) {
+                        let alertData = nO['ALERTS_MASTER'].data;
+                        if (alertData.timestamp > (window.lastGlobalAlertTime || 0)) {
+                            window.lastGlobalAlertTime = alertData.timestamp;
+                            document.getElementById('global-alert-msg').innerText = alertData.message;
+                            document.getElementById('global-alert-modal').classList.add('open');
+                            if(typeof playKlaxon === 'function') playKlaxon();
+                        }
+                    }
+
+                    activeOrders = nO;
+                    if(!isDraggingTable) renderFloor();
+                }
+            } catch(e) { console.error("Erreur Sync:", e); }
+        }
+
+        // Lancement du moteur
+        function connectEmpireH24() { 
+            syncData(); 
+            setInterval(syncData, 3000); 
+        }
+        document.addEventListener('DOMContentLoaded', connectEmpireH24);
+
+        // ==========================================
+        // 🔐 GESTION DU CLAVIER PIN & SÉCURITÉ
+        // ==========================================
+        var myRealPin = "";
+        
+        window.appendPin = function(n) { 
+            if (myRealPin.length < 6) { 
+                myRealPin += n; 
+                if(document.getElementById('pin-display')) document.getElementById('pin-display').innerText = '*'.repeat(myRealPin.length); 
+            }
+        };
+        
+        window.clearPin = function() { 
+            myRealPin = ""; 
+            if(document.getElementById('pin-display')) document.getElementById('pin-display').innerText = ""; 
+        };
+
+        window.submitPin = function() {
+            // 1. Accès Master (Secours absolu)
+            if(myRealPin === "9999" || myRealPin === "999999" || myRealPin === "7777") {
+                window.currentUser = { name: "Directeur", role: "Manager" };
+                currentUser = window.currentUser;
+                unlockPadInterface();
+                document.querySelectorAll('.admin').forEach(e => e.style.display = 'flex');
+                return;
+            }
+
+            // 2. Accès via la Base de Données (Admin -> STAFF_ACCESS)
+            let staffUser = staffAccessData.find(s => s.pin === myRealPin);
+            
+            if (staffUser) {
+                window.currentUser = { name: staffUser.name, role: staffUser.dept };
+                currentUser = window.currentUser;
+                unlockPadInterface();
+                
+                // Si l'utilisateur est de la direction, on montre le bouton Admin, sinon on le cache
+                if(staffUser.dept === 'admin') {
+                    document.querySelectorAll('.admin').forEach(e => e.style.display = 'flex');
+                } else {
+                    document.querySelectorAll('.admin').forEach(e => e.style.display = 'none');
+                }
+                
+                // Mise à jour du badge utilisateur en haut à gauche
+                if(document.getElementById('user-badge')) {
+                    document.getElementById('user-badge').innerText = `Badge: ${currentUser.name} (${currentUser.role})`;
+                }
+            } else { 
+                alert("❌ Code incorrect ou révoqué par la Direction."); 
+                window.clearPin(); 
+            }
+        };
+
+        function unlockPadInterface() {
+            isArchiMode = false;
+            document.body.classList.remove('edit-mode');
+            if(document.getElementById('login-screen')) document.getElementById('login-screen').style.display = 'none';
+            renderFloor();
+            myRealPin = "";
+        }
+
+        // ==========================================
+        // 🏗️ GESTION ARCHITECTURE DE SALLE
+        // ==========================================
+        window.unlockArchiMode = function() { 
+            isArchiMode = true; 
+            document.body.classList.add('edit-mode'); 
+            const bar = document.getElementById('archi-btn-bar');
+            if(bar) bar.style.setProperty('display', 'flex', 'important');
+            if(typeof closeAdminCatalog === "function") closeAdminCatalog();
+            renderFloor();
+        };
+
+        window.closeArchiMode = function() {
+            isArchiMode = false;
+            document.body.classList.remove('edit-mode');
+            const bar = document.getElementById('archi-btn-bar');
+            if(bar) bar.style.setProperty('display', 'none', 'important');
+            renderFloor();
+        };
+
+        window.closeAdminCatalog = function() { 
+            if(document.getElementById('admin-catalog-modal')) {
+                document.getElementById('admin-catalog-modal').classList.remove('open'); 
+            }
+        };
+        
+    </script>
+</body>
+</html>
     </script>
 </body>
 </html>
