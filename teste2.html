@@ -3473,31 +3473,127 @@ if (method === 'QR/TEL') {
             if(document.getElementById('admin-catalog-modal')) document.getElementById('admin-catalog-modal').classList.remove('open');
         };
  // ==========================================
-        // 🔄 MOTEUR DE SYNCHRONISATION & RÉSEAU
+        // 🔄 MOTEUR DE SYNCHRONISATION & RÉSEAU H24
         // ==========================================
+        let staffAccessData = []; // Stockage sécurisé des codes PIN du staff
+        let localSasConfig = { active: false }; // Configuration du SAS
+
         async function syncData() {
             if (isArchiMode) return; 
             try {
                 const state = await API.getState();
                 if (state && state.activeOrders) {
-                    activeOrders = state.activeOrders;
+                    let nO = state.activeOrders;
+
+                    // 1. MAJ Menus & Stocks
+                    if(nO['MENU_MASTER']?.data) menuCuisine = nO['MENU_MASTER'].data;
+                    if(nO['MENU_MASTER_BAR']?.data) menuBar = nO['MENU_MASTER_BAR'].data;
+
+                    // 2. MAJ Sécurité (Téléchargement des Codes PIN)
+                    if(nO['STAFF_ACCESS'] && Array.isArray(nO['STAFF_ACCESS'].data)) {
+                        staffAccessData = nO['STAFF_ACCESS'].data;
+                    }
+
+                    // 3. MAJ Routing (Matrice de diffusion)
+                    if(nO['ROUTING_MASTER'] && nO['ROUTING_MASTER'].data) {
+                        activeOrders['ROUTING_MASTER'] = { data: nO['ROUTING_MASTER'].data };
+                    }
+
+                    // 4. Alertes Chef (Klaxon)
+                    if(nO['ALERTS_MASTER']?.data) {
+                        let alertData = nO['ALERTS_MASTER'].data;
+                        if (alertData.timestamp > (window.lastGlobalAlertTime || 0)) {
+                            window.lastGlobalAlertTime = alertData.timestamp;
+                            document.getElementById('global-alert-msg').innerText = alertData.message;
+                            document.getElementById('global-alert-modal').classList.add('open');
+                            if(typeof playKlaxon === 'function') playKlaxon();
+                        }
+                    }
+
+                    // 5. Configuration SAS
+                    if (state.sasConfig) {
+                        localSasConfig = state.sasConfig;
+                        if(typeof updateSASButtonUI === 'function') updateSASButtonUI();
+                    }
+
+                    activeOrders = nO;
                     if(!isDraggingTable) renderFloor();
-                }
-                // Mise à jour visuelle du bouton SAS selon l'état serveur
-                if (state.sasConfig) {
-                    localSasConfig = state.sasConfig;
-                    updateSASButtonUI();
                 }
             } catch(e) { console.error("Erreur Sync:", e); }
         }
 
-        // 🏗️ GESTION ARCHITECTURE & SÉCURITÉ
+        // ==========================================
+        // 🔐 GESTION DU CLAVIER PIN & SÉCURITÉ
+        // ==========================================
+        var myRealPin = "";
+        
+        window.appendPin = function(n) { 
+            if (myRealPin.length < 6) { 
+                myRealPin += n; 
+                if(document.getElementById('pin-display')) document.getElementById('pin-display').innerText = '*'.repeat(myRealPin.length); 
+            }
+        };
+        
+        window.clearPin = function() { 
+            myRealPin = ""; 
+            if(document.getElementById('pin-display')) document.getElementById('pin-display').innerText = ""; 
+        };
+
+        window.submitPin = function() {
+            // 1. Accès Master (Secours absolu)
+            if(myRealPin === "9999" || myRealPin === "999999" || myRealPin === "7777") {
+                window.currentUser = { name: "Directeur", role: "Manager" };
+                currentUser = window.currentUser;
+                unlockPadInterface();
+                document.querySelectorAll('.admin').forEach(e => e.style.display = 'flex');
+                return;
+            }
+
+            // 2. Accès via la Base de Données (Admin -> STAFF_ACCESS)
+            let staffUser = staffAccessData.find(s => s.pin === myRealPin);
+            
+            if (staffUser) {
+                window.currentUser = { name: staffUser.name, role: staffUser.dept };
+                currentUser = window.currentUser;
+                unlockPadInterface();
+                
+                // Si l'utilisateur est de la direction, on montre le bouton Admin, sinon on le cache
+                if(staffUser.dept === 'admin') {
+                    document.querySelectorAll('.admin').forEach(e => e.style.display = 'flex');
+                } else {
+                    document.querySelectorAll('.admin').forEach(e => e.style.display = 'none');
+                }
+                
+                // Mise à jour du badge utilisateur en haut à gauche
+                if(document.getElementById('user-badge')) {
+                    document.getElementById('user-badge').innerText = `Badge: ${currentUser.name} (${currentUser.role})`;
+                }
+            } else { 
+                alert("❌ Code incorrect ou révoqué par la Direction."); 
+                window.clearPin(); 
+            }
+        };
+
+        function unlockPadInterface() {
+            isArchiMode = false;
+            document.body.classList.remove('edit-mode');
+            if(document.getElementById('login-screen')) document.getElementById('login-screen').style.display = 'none';
+            renderFloor();
+            myRealPin = "";
+            
+            // DÉVERROUILLE LE KLAXON AU MOMENT DE LA CONNEXION
+            if (typeof unlockAudio === 'function') unlockAudio();
+        }
+
+        // ==========================================
+        // 🏗️ GESTION ARCHITECTURE DE SALLE & UI
+        // ==========================================
         window.unlockArchiMode = function() { 
             isArchiMode = true; 
             document.body.classList.add('edit-mode'); 
             const bar = document.getElementById('archi-btn-bar');
             if(bar) bar.style.setProperty('display', 'flex', 'important');
-            closeAdminCatalog();
+            if(typeof closeAdminCatalog === "function") closeAdminCatalog();
             renderFloor();
         };
 
@@ -3509,6 +3605,12 @@ if (method === 'QR/TEL') {
             renderFloor();
         };
 
+        window.closeAdminCatalog = function() { 
+            if(document.getElementById('admin-catalog-modal')) {
+                document.getElementById('admin-catalog-modal').classList.remove('open'); 
+            }
+        };
+
         // 🛡️ DOUBLE VALIDATION ANTI-ERREUR (SUPPRIMER SALLE)
         window.deleteCurrentRoom = function() {
             if (rooms.length <= 1) return alert("🛡️ SÉCURITÉ : L'Empire doit garder au moins une salle.");
@@ -3518,7 +3620,7 @@ if (method === 'QR/TEL') {
                     rooms = rooms.filter(r => r !== currentRoom);
                     currentRoom = rooms[0];
                     renderRooms(); renderFloor(); pushArchitecture();
-                    showToast("✅ Salle supprimée");
+                    if(typeof showToast === 'function') showToast("✅ Salle supprimée");
                 }
             }
         };
@@ -3526,11 +3628,11 @@ if (method === 'QR/TEL') {
         // 🚦 RÉGULATEUR SAS ON/OFF
         window.toggleSAS = function() {
             localSasConfig.active = !localSasConfig.active;
-            updateSASButtonUI();
+            if(typeof updateSASButtonUI === 'function') updateSASButtonUI();
             if(typeof sendSASConfig === 'function') sendSASConfig();
         };
 
-        function updateSASButtonUI() {
+        window.updateSASButtonUI = function() {
             const btn = document.getElementById('btn-sas-toggle');
             if(!btn) return;
             if(localSasConfig.active) {
@@ -3540,37 +3642,10 @@ if (method === 'QR/TEL') {
                 btn.innerHTML = "❌ DÉSACTIVÉ";
                 btn.style.borderColor = "#f87171"; btn.style.color = "#f87171"; btn.style.background = "rgba(248, 113, 113, 0.1)";
             }
-        }
-
-        // 🔓 CONNEXION & KLAXON (Version Unique)
-        var myRealPin = "";
-        window.appendPin = function(n) { 
-            if (myRealPin.length < 6) { 
-                myRealPin += n; 
-                if(document.getElementById('pin-display')) document.getElementById('pin-display').innerText = '*'.repeat(myRealPin.length); 
-            }
-        };
-        window.clearPin = function() { myRealPin = ""; if(document.getElementById('pin-display')) document.getElementById('pin-display').innerText = ""; };
-        window.closeAdminCatalog = function() { document.getElementById('admin-catalog-modal').classList.remove('open'); };
-
-        window.submitPin = function() {
-            if(myRealPin === "9999" || myRealPin === "999999" || myRealPin === "7777") {
-                window.currentUser = { name: "Direction", role: "Manager" };
-                currentUser = window.currentUser;
-                isArchiMode = false; 
-                document.body.classList.remove('edit-mode');
-                document.getElementById('login-screen').style.display = 'none';
-                document.querySelectorAll('.admin').forEach(e => e.style.display = 'flex');
-                renderFloor();
-                myRealPin = "";
-                
-                // 🚀 DÉVERROUILLE LE KLAXON AU MOMENT DE LA CONNEXION
-                if (typeof unlockAudio === 'function') unlockAudio();
-            } else { alert("❌ Code incorrect"); window.clearPin(); }
         };
 
         // ==========================================
-        // 🕒 MOTEUR DE SYNCHRONISATION & HORLOGE
+        // 🕒 LANCEMENT DU SYSTÈME (HORLOGE + SYNC)
         // ==========================================
         function connectEmpireH24() { 
             console.log("🚀 Lancement d'Empire OS...");
