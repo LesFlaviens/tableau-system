@@ -662,7 +662,7 @@
             const [year, month] = monthStr.split('-').map(Number);
             const daysInMonth = new Date(year, month, 0).getDate();
             const ts = getTs();
-            const dir = getDir().filter(s => s.dept === currentDept);
+            const dir = getDir().filter(s => s.dept === currentDept && s.active !== false); // Ne lisser que les actifs
 
             if(!ts[monthStr]) return;
 
@@ -735,14 +735,17 @@
         // ==========================================
         function openStaffPortalLogin() {
             const dir = getDir();
-            if(dir.length === 0) return alert("Aucun employé enregistré dans le système.");
+            // On ne propose la connexion qu'aux employés actifs
+            const activeDir = dir.filter(s => s.active !== false);
+            
+            if(activeDir.length === 0) return alert("Aucun employé actif enregistré dans le système.");
             
             loginMode = 'staff';
             currentPin = "";
             document.getElementById('pin-display').innerText = "";
             
             const select = document.getElementById('staff-login-select');
-            select.innerHTML = dir.map(s => `<option value="${s.id}">${s.name} (${s.dept})</option>`).join('');
+            select.innerHTML = activeDir.map(s => `<option value="${s.id}">${s.name} (${s.dept})</option>`).join('');
             
             document.getElementById('staff-select-container').style.display = 'block';
             document.getElementById('pin-dept-title').innerText = "VOTRE CODE PIN";
@@ -753,7 +756,7 @@
 
         function renderEmployeePortal() {
             const staff = getDir().find(s => s.id === loggedInStaffId);
-            if(!staff) return fullLogout();
+            if(!staff || staff.active === false) return fullLogout();
 
             document.getElementById('emp-name-display').innerText = staff.name;
 
@@ -847,7 +850,6 @@
             if(!start || !end) return alert("Veuillez sélectionner les dates de début et de fin.");
             if(new Date(start) > new Date(end)) return alert("La date de fin ne peut pas être avant la date de début.");
             
-            // Obligation de remplir le motif pour TOUTES les demandes
             if(!comment) return alert("⚠️ Remplissez la case 'Commentaire / Motif'. C'est obligatoire pour soumettre la demande à la direction.");
 
             const staff = getDir().find(s => s.id === loggedInStaffId);
@@ -1006,10 +1008,11 @@
             if(punchPin.length !== 6) return;
 
             const dir = getDir();
-            const staff = dir.find(s => s.pin === punchPin);
+            // N'autoriser le pointage que pour les employés actifs
+            const staff = dir.find(s => s.pin === punchPin && s.active !== false);
 
             if(!staff) {
-                alert("❌ CODE PIN INVALIDE");
+                alert("❌ CODE PIN INVALIDE OU COMPTE DÉSACTIVÉ");
                 punchPin = "";
                 document.getElementById('punch-display').innerText = "";
                 return;
@@ -1127,7 +1130,8 @@
                 }
             } else if (loginMode === 'staff') {
                 const selectId = parseInt(document.getElementById('staff-login-select').value);
-                const staff = getDir().find(s => s.id === selectId);
+                // Le select a déjà filtré les inactifs, mais on revérifie au cas où
+                const staff = getDir().find(s => s.id === selectId && s.active !== false);
                 
                 if(staff && staff.pin === currentPin) {
                     loggedInStaffId = staff.id;
@@ -1136,7 +1140,7 @@
                     document.getElementById('employee-portal').style.display = 'flex';
                     renderEmployeePortal();
                 } else {
-                    alert("❌ CODE PIN EMPLOYÉ INCORRECT");
+                    alert("❌ CODE PIN EMPLOYÉ INCORRECT OU COMPTE DÉSACTIVÉ");
                     currentPin = "";
                     document.getElementById('pin-display').innerText = "";
                 }
@@ -1185,14 +1189,31 @@
             if(!name || !role) return alert("Erreur : Le nom et la fonction sont obligatoires.");
 
             let dir = getDir();
-            dir.push({ id: Date.now(), name: name, role: role, dept: currentDept, contract: contract, pin: '000000' });
+            dir.push({ id: Date.now(), name: name, role: role, dept: currentDept, contract: contract, pin: '000000', active: true });
             saveDir(dir);
             closeStaffModal();
             refreshViews();
         }
 
+        // FONCTION DE DÉSACTIVATION
+        function toggleStaffStatus(id) {
+            let dir = getDir();
+            let idx = dir.findIndex(s => s.id === id);
+            if (idx > -1) {
+                dir[idx].active = (dir[idx].active === false) ? true : false;
+                saveDir(dir);
+                if (currentStaffId === id && dir[idx].active === false) {
+                    currentStaffId = null;
+                    isGlobalView = true;
+                    toggleViewDisplay();
+                } else {
+                    refreshViews();
+                }
+            }
+        }
+
         function deleteStaff(id, name) {
-            if(confirm(`ARCHIVAGE : Supprimer définitivement le dossier de ${name} ?`)) {
+            if(confirm(`⚠️ SUPPRESSION DÉFINITIVE : Supprimer le dossier de ${name} ?\n(Note : Pour garder son historique, préférez le bouton DÉSACTIVER).`)) {
                 let dir = getDir().filter(s => s.id !== id);
                 saveDir(dir);
                 if(currentStaffId === id) {
@@ -1283,18 +1304,29 @@
                 staffHtml = `<div style="text-align:center; color:var(--sub); font-style:italic; padding:20px;">Aucun employé dans cette section.</div>`;
             } else {
                 dir.forEach(staff => {
-                    const isActive = (staff.id === currentStaffId && !isGlobalView) ? 'active' : '';
+                    const isSelected = (staff.id === currentStaffId && !isGlobalView) ? 'active' : '';
+                    
+                    let isActiveStaff = staff.active !== false;
+                    let opacity = isActiveStaff ? "1" : "0.5";
+                    let statusBadge = isActiveStaff ? "" : `<span style="background:var(--alert); color:#fff; font-size:0.6rem; padding:2px 6px; border-radius:4px; margin-left:10px;">INACTIF</span>`;
+                    let toggleBtnText = isActiveStaff ? "⏸️ DÉSACTIVER" : "▶️ RÉACTIVER";
                     
                     let stats = getStaffMonthStats(staff.id, year, month, daysInMonth, monthData);
                     if(!stats) stats = { expected: 0, totalDone: 0, extraHours: 0, totalRecup: 0, countCP: 0, countM: 0, countF: 0, missedHours: 0, missedOff: 0, cpRestants: 0 };
 
                     staffHtml += `
-                    <div class="staff-card ${isActive}" onclick="selectStaff(${staff.id})">
-                        <div style="display:flex; justify-content:space-between;">
-                            <span class="staff-name">${staff.name}</span>
-                            <button onclick="event.stopPropagation(); deleteStaff(${staff.id}, '${staff.name}')" style="background:none; border:none; color:var(--text-muted); cursor:pointer; font-weight:bold; font-size:1.1rem;">✕</button>
+                    <div class="staff-card ${isSelected}" onclick="selectStaff(${staff.id})" style="opacity: ${opacity};">
+                        <div style="display:flex; justify-content:space-between; align-items:flex-start;">
+                            <div>
+                                <span class="staff-name">${staff.name}</span>
+                                ${statusBadge}
+                                <div class="staff-role">${staff.role} - ${staff.contract}H/SEM</div>
+                            </div>
+                            <div style="display:flex; gap:10px; align-items:center;">
+                                <button onclick="event.stopPropagation(); toggleStaffStatus(${staff.id})" style="background:none; border:1px solid var(--border); color:var(--text-main); cursor:pointer; font-size:0.7rem; border-radius:4px; padding:4px 8px;">${toggleBtnText}</button>
+                                <button onclick="event.stopPropagation(); deleteStaff(${staff.id}, '${staff.name}')" style="background:none; border:none; color:var(--alert); cursor:pointer; font-weight:bold; font-size:1.1rem;">✕</button>
+                            </div>
                         </div>
-                        <div class="staff-role">${staff.role} - ${staff.contract}H/SEM</div>
                         
                         <div style="margin-top: 15px; display: grid; grid-template-columns: 1fr 1fr; gap: 8px; font-size: 0.7rem; font-weight: bold; background: rgba(0,0,0,0.3); padding: 12px; border-radius: 6px; border: 1px solid var(--border); cursor: help;">
                             <div style="color:var(--text-muted);" title="CONTRAT">CTR: <span style="float:right; color:var(--text-main);">${stats.expected.toFixed(1)}h</span></div>
@@ -1376,7 +1408,8 @@
                 headerControls.style.display = 'flex';
                 
                 const staff = getDir().find(s => s.id === currentStaffId);
-                document.getElementById('individual-title').innerText = `PLANNING : ${staff.name}`;
+                let badge = staff.active === false ? '<span style="color:var(--alert); font-size:0.8rem; margin-left:10px;">(INACTIF)</span>' : '';
+                document.getElementById('individual-title').innerHTML = `PLANNING : ${staff.name} ${badge}`;
                 
                 if(btnToggle) btnToggle.innerHTML = `🌍 VUE GLOBALE MATRICE`;
                 
@@ -1410,6 +1443,7 @@
             const [year, month] = monthStr.split('-');
             const daysInMonth = new Date(year, month, 0).getDate();
             const ts = getTs();
+            
             const dir = getDir().filter(s => s.dept === currentDept);
             
             if(!ts[monthStr]) ts[monthStr] = {};
@@ -1493,9 +1527,16 @@
 
             let bodyHtml = '';
             dir.forEach((staff) => {
-                bodyHtml += `<tr>
+                // On cache les inactifs dans la matrice globale, sauf s'ils ont travaillé ce mois-ci
+                let stats = getStaffMonthStats(staff.id, year, month, daysInMonth, monthData);
+                if (staff.active === false && stats && stats.totalDone === 0) return;
+
+                let opacity = staff.active === false ? "0.5" : "1";
+                let badge = staff.active === false ? '<br><span style="color:var(--alert); font-size:0.6rem;">INACTIF</span>' : '';
+
+                bodyHtml += `<tr style="opacity: ${opacity};">
                     <td class="sticky-col" style="cursor:pointer;" onclick="selectStaff(${staff.id})">
-                        <div style="font-weight:900; font-size:1.1rem; color:var(--text-main); text-transform:lowercase; font-variant:small-caps; letter-spacing:1px;">${staff.name}</div>
+                        <div style="font-weight:900; font-size:1.1rem; color:var(--text-main); text-transform:lowercase; font-variant:small-caps; letter-spacing:1px;">${staff.name} ${badge}</div>
                         <div style="font-size:0.7rem; color:var(--sub);">${staff.contract}h</div>
                     </td>`;
                 
@@ -1562,6 +1603,9 @@
             
             let dir = getDir(); 
             
+            // Ne garder que les employés actifs pour le planning public
+            dir = dir.filter(s => s.active !== false);
+            
             if (filterDept) {
                 dir = dir.filter(s => s.dept === filterDept);
                 const titleEl = document.querySelector('#landing-portal h1');
@@ -1575,7 +1619,7 @@
             const monthData = ts[monthStr] || {};
 
             if(dir.length === 0) {
-                document.getElementById('public-planning-render').innerHTML = '<div style="padding: 40px; text-align: center; color: var(--sub);">Aucun employé dans cette section.</div>';
+                document.getElementById('public-planning-render').innerHTML = '<div style="padding: 40px; text-align: center; color: var(--sub);">Aucun employé actif dans cette section.</div>';
                 return;
             }
 
