@@ -1206,49 +1206,12 @@
                 `;
             });
             
-            html += `
-            <div style="border: 2px dashed rgba(255,255,255,0.1); border-radius: 12px; display: flex; flex-direction: column; justify-content: center; align-items: center; min-height: 200px; cursor: pointer; transition: 0.2s; background: rgba(0,0,0,0.2);" onclick="addBasicCat()" onmouseover="this.style.borderColor='var(--purple)';" onmouseout="this.style.borderColor='rgba(255,255,255,0.1)';">
-                <span style="font-size: 3rem; color: var(--purple); margin-bottom: 10px;">+</span>
-                <span style="font-weight: 900; color: var(--text-main); text-transform: uppercase; letter-spacing: 1px;">NOUVELLE CATÉGORIE</span>
-            </div>
-            `;
-            
-            container.innerHTML = html;
-        }
-
-        function startDictation(catId) {
-            if (!('webkitSpeechRecognition' in window) && !('SpeechRecognition' in window)) {
-                alert("Votre navigateur ne supporte pas la dictée vocale.");
-                return;
-            }
-            const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-            const recognition = new SpeechRecognition();
-            recognition.lang = 'fr-FR';
-            recognition.interimResults = false;
-            recognition.maxAlternatives = 1;
-            
-            recognition.start();
-            let input = document.getElementById('basic-name-' + catId);
-            let oldPh = input.placeholder;
-            input.placeholder = "🎤 Écoute en cours...";
-            
-            recognition.onresult = function(event) {
-                let speechResult = event.results[0][0].transcript;
-                input.value += (input.value ? '\n' : '') + speechResult;
-                input.placeholder = oldPh;
-            };
-            recognition.onerror = function(event) {
-                input.placeholder = oldPh;
-            };
-            recognition.onend = function() {
-                input.placeholder = oldPh;
-            };
-        }
-
-        async function addBasicCat() {
+           async function addBasicCat() {
             let name = prompt("Nom de la nouvelle catégorie :");
             if(!name || name.trim() === '') return;
-            let id = name.trim().toLowerCase().replace(/\s+/g, '');
+            
+            // On sécurise la création : on force des lettres minuscules et on enlève les accents/espaces
+            let id = name.trim().toLowerCase().replace(/[^a-z0-9]/g, '');
             
             let cats = currentEditorType === 'cuisine' ? categoriesCuisine : categoriesBar;
             let menus = currentEditorType === 'cuisine' ? menuCuisine : menuBar;
@@ -1313,6 +1276,11 @@
             let cats = currentEditorType === 'cuisine' ? categoriesCuisine : categoriesBar;
             let menus = currentEditorType === 'cuisine' ? menuCuisine : menuBar;
 
+            // LE FORÇAGE LOCAL : On inscrit la donnée en dur dans la mémoire pour bloquer l'effacement
+            if(!fullState.activeOrders) fullState.activeOrders = {};
+            fullState.activeOrders[catTableId] = { data: cats };
+            fullState.activeOrders[menuTableId] = { data: menus };
+
             try {
                 await fetch(`${SERVER_URL}/update-order?tenantID=${tenantID}`, {
                     method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -1323,6 +1291,7 @@
                     body: JSON.stringify({ tableId: menuTableId, order: { data: menus } })
                 });
                 
+                // On met à jour l'écran immédiatement, sans attendre la boucle
                 renderBasicEditor();
                 renderStocks();
 
@@ -1331,277 +1300,3 @@
                 alert("Erreur réseau de sauvegarde.");
             }
         }
-
-        function getAdvancedRouting(obj) {
-            if (obj.advancedRouting) return obj.advancedRouting;
-            let advRouting = {};
-            let oldR = obj.routing || ['MIDI', 'SOIR'];
-            let oldT = obj.targets || ['qr', 'bar', 'resto', 'pad'];
-            oldR.forEach(r => advRouting[r] = [...oldT]);
-            return advRouting;
-        }
-
-        function buildAdvancedBadges(advRouting) {
-            let html = '';
-            SERVICES.forEach(s => {
-                if(advRouting[s.id] && advRouting[s.id].length > 0) {
-                    let targetsHtml = advRouting[s.id].map(t => `<span title="${getTargetLabel(t)}">${getTargetIcon(t)}</span>`).join('');
-                    html += `
-                    <div class="badge-route" style="border-left: 3px solid ${s.color};">
-                        <span class="time" style="color:${s.color};">${s.icon} ${s.id}</span>
-                        <span class="targets">${targetsHtml}</span>
-                    </div>`;
-                }
-            });
-            return `<div class="routing-badge-container">${html}</div>`;
-        }
-
-        function renderStocks() {
-            const container = document.getElementById('stock-control-list');
-            if(!fullState || !fullState.activeOrders) return;
-            
-            let html = "";
-            let now = new Date();
-            let todayStr = now.toISOString().split('T')[0];
-
-            [{ id: 'MENU_MASTER', label: 'RÉSEAU CUISINE' }, { id: 'MENU_MASTER_BAR', label: 'RÉSEAU BAR' }].forEach(src => {
-                const data = fullState.activeOrders[src.id]?.data || {};
-                let catDataList = src.id === 'MENU_MASTER' ? categoriesCuisine : categoriesBar;
-
-                if(Object.keys(data).length > 0) {
-                    html += `<div style="color:var(--text); background:rgba(255,255,255,0.05); padding:10px; border-radius:8px; font-weight:900; margin-top:20px; text-align:center; font-size:1.1rem; border:1px solid var(--border); width: 100%; grid-column: 1 / -1;">${src.label}</div>`;
-                    
-                    for(let cat in data) {
-                        let catObj = catDataList.find(c => c.id === cat);
-                        let catName = catObj ? catObj.label : cat.toUpperCase();
-                        
-                        let catAdvRouting = catObj ? getAdvancedRouting(catObj) : getAdvancedRouting({});
-                        let routingBadgesHtml = buildAdvancedBadges(catAdvRouting);
-
-                        let planningCatBadge = '';
-                        if (catObj && catObj.startDate && catObj.endDate) {
-                            if (todayStr >= catObj.startDate && todayStr <= catObj.endDate) {
-                                planningCatBadge = `<div style="font-size:0.65rem; color:var(--success); margin-top:5px;">📅 Actif (jusqu'au ${catObj.endDate.split('-').reverse().join('/')})</div>`;
-                            } else {
-                                planningCatBadge = `<div style="font-size:0.65rem; color:var(--danger); margin-top:5px;">📅 Inactif (${catObj.startDate.split('-').reverse().join('/')} - ${catObj.endDate.split('-').reverse().join('/')})</div>`;
-                            }
-                        }
-
-                        html += `
-                        <div style="background:rgba(0,0,0,0.4); padding: 20px; border-radius: 12px; border: 1px solid var(--border-strong); display:flex; flex-direction:column; gap:15px; height: fit-content; box-shadow: 0 5px 15px rgba(0,0,0,0.3);">
-                            <div style="display:flex; justify-content:space-between; align-items:flex-start; border-bottom: 1px solid var(--border); padding-bottom: 15px;">
-                                <div>
-                                    <div style="color:var(--gold); font-size:1.1rem; font-weight:900; text-transform:uppercase; letter-spacing:1px;">📁 ${catName}</div>
-                                    ${planningCatBadge}
-                                </div>
-                                <div style="display:flex; flex-direction:column; align-items:flex-end; gap:8px;">
-                                    ${routingBadgesHtml}
-                                    <button style="background:var(--ordered); border:none; color:#fff; font-size:0.65rem; padding:6px 12px; border-radius:6px; font-weight:900; cursor:pointer; margin-top:5px; transition:0.2s;" onmouseover="this.style.filter='brightness(1.2)'" onmouseout="this.style.filter='brightness(1)'" onclick="adminEditCategoryRouting('${src.id}', '${cat}')">⚙️ DIFFUSION CATÉGORIE</button>
-                                </div>
-                            </div>
-                            <div style="display:flex; flex-direction:column; gap:12px;">
-                        `;
-
-                        data[cat].forEach((item, idx) => {
-                            const isOut = (item.stock === 0 || item.stock === "0");
-                            const isHidden = (item.hidden === true); 
-                            
-                            let itemAdvRouting = item.advancedRouting ? item.advancedRouting : (item.routing ? getAdvancedRouting(item) : catAdvRouting);
-                            let itemRoutingBadgesHtml = buildAdvancedBadges(itemAdvRouting);
-
-                            let planningItemBadge = '';
-                            if (item.startDate && item.endDate) {
-                                if (todayStr >= item.startDate && todayStr <= item.endDate) {
-                                    planningItemBadge = `<span style="font-size:0.6rem; color:var(--success); border:1px solid var(--success); padding:2px 4px; border-radius:4px; margin-left:5px;">📅 ACTIF</span>`;
-                                } else {
-                                    planningItemBadge = `<span style="font-size:0.6rem; color:var(--danger); border:1px solid var(--danger); padding:2px 4px; border-radius:4px; margin-left:5px;">📅 INACTIF</span>`;
-                                }
-                            }
-
-                            html += `
-                                <div class="stock-item">
-                                    <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom: 10px;">
-                                        <div style="font-size:0.95rem; font-weight:900; color: ${isHidden ? 'var(--text-muted)' : 'var(--text-main)'}; text-decoration: ${isHidden ? 'line-through' : 'none'}; width: 45%;">
-                                            ${item.name} <div style="margin-top:5px;">${planningItemBadge}</div>
-                                        </div>
-                                        <div style="width: 55%;">
-                                            ${itemRoutingBadgesHtml}
-                                        </div>
-                                    </div>
-                                    <div style="display:flex; gap:8px; margin-top:8px;">
-                                        <button class="btn-toggle ${isHidden ? 'hidden' : ''}" style="flex:1;" onclick="updateVisibility('${src.id}', '${cat}', ${idx}, ${isHidden})">
-                                            ${isHidden ? '🚫 MASQUÉ' : '👁️ VISIBLE'}
-                                        </button>
-                                        <button class="btn-toggle ${isOut ? 'sold-out' : ''}" style="flex:1;" onclick="updateStock('${src.id}', '${cat}', ${idx}, ${isOut})">
-                                            ${isOut ? '❌ RUPTURE' : '📦 EN STOCK'}
-                                        </button>
-                                        <button class="btn-toggle" style="flex:0.5; color:var(--ordered); border-color:var(--ordered); display:flex; justify-content:center; align-items:center;" onclick="adminEditItemRouting('${src.id}', '${cat}', ${idx})">
-                                            ⚙️
-                                        </button>
-                                    </div>
-                                </div>`;
-                        });
-                        html += `</div></div>`;
-                    }
-                }
-            });
-            container.innerHTML = html || '<div style="color:var(--text-muted); font-size:0.8rem; grid-column: 1 / -1; text-align:center;">Aucun menu trouvé.</div>';
-        }
-
-        function adminEditCategoryRouting(sourceId, catId) {
-            let catList = sourceId === 'MENU_MASTER' ? categoriesCuisine : categoriesBar;
-            let dbKey = sourceId === 'MENU_MASTER' ? 'CATEGORIES_CUISINE' : 'CATEGORIES_BAR';
-            
-            let catObj = catList.find(c => c.id === catId);
-            if(!catObj) {
-                catObj = { id: catId, label: catId.toUpperCase() };
-                catList.push(catObj);
-            }
-
-            let advRouting = getAdvancedRouting(catObj);
-            modalCurrentContext = { type: 'category', sourceId, catId, catList, dbKey, catObj };
-            openRoutingModal(`Catégorie : ${catObj.label}`, advRouting, catObj.startDate, catObj.endDate);
-        }
-
-        function adminEditItemRouting(sourceId, catId, itemIdx) {
-            let item = fullState.activeOrders[sourceId].data[catId][itemIdx];
-            if(!item) return;
-
-            let catList = sourceId === 'MENU_MASTER' ? categoriesCuisine : categoriesBar;
-            let catObj = catList.find(c => c.id === catId);
-            
-            let catAdvRouting = catObj ? getAdvancedRouting(catObj) : getAdvancedRouting({});
-            let itemAdvRouting = item.advancedRouting ? item.advancedRouting : (item.routing ? getAdvancedRouting(item) : catAdvRouting);
-
-            modalCurrentContext = { type: 'item', sourceId, catId, itemIdx, item };
-            openRoutingModal(`Plat : ${item.name}`, itemAdvRouting, item.startDate, item.endDate);
-        }
-
-        async function updateVisibility(sourceId, cat, idx, currentlyHidden) {
-            fullState.activeOrders[sourceId].data[cat][idx].hidden = !currentlyHidden;
-            renderStocks(); 
-            try {
-                await fetch(`${SERVER_URL}/update-order?tenantID=${tenantID}`, {
-                    method: 'POST', headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ tableId: sourceId, order: { data: fullState.activeOrders[sourceId].data } })
-                });
-            } catch(e) {}
-        }
-
-        async function updateStock(sourceId, cat, idx, currentlyOut) {
-            fullState.activeOrders[sourceId].data[cat][idx].stock = currentlyOut ? 99 : 0;
-            renderStocks(); 
-            try {
-                await fetch(`${SERVER_URL}/update-order?tenantID=${tenantID}`, {
-                    method: 'POST', headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ tableId: sourceId, order: { data: fullState.activeOrders[sourceId].data } })
-                });
-            } catch(e) {}
-        }
-
-        async function fetchLiveStocks() {
-            if(isModalOpen) return; 
-
-            try {
-                const r = await fetch(`${SERVER_URL}/get-current-state?tenantID=${tenantID}`);
-                fullState = await r.json();
-                
-                if(fullState.activeOrders['SETTINGS_MASTER'] && fullState.activeOrders['SETTINGS_MASTER'].data) {
-                    let savedCurrency = fullState.activeOrders['SETTINGS_MASTER'].data.currency;
-                    if(savedCurrency) { globalCurrency = savedCurrency; document.getElementById('currency-select').value = globalCurrency; }
-                    
-                    let pSettings = fullState.activeOrders['SETTINGS_MASTER'].data.payment;
-                    if(pSettings) {
-                        document.getElementById('toggle-pay-online').checked = pSettings.online !== false;
-                        document.getElementById('toggle-pay-server').checked = pSettings.server !== false;
-                        document.getElementById('pay-date-start').value = pSettings.startDate || "";
-                        document.getElementById('pay-date-end').value = pSettings.endDate || "";
-                    }
-                }
-
-                if(fullState.activeOrders['STAFF_ACCESS'] && Array.isArray(fullState.activeOrders['STAFF_ACCESS'].data)) {
-                    staffAccessData = fullState.activeOrders['STAFF_ACCESS'].data;
-                    renderStaffAccess();
-                }
-
-                if(fullState.activeOrders['TABLE_REGISTRY'] && Array.isArray(fullState.activeOrders['TABLE_REGISTRY'].data)) {
-                    tableRegistry = fullState.activeOrders['TABLE_REGISTRY'].data;
-                }
-
-                if(fullState.activeOrders['ROUTING_MASTER'] && fullState.activeOrders['ROUTING_MASTER'].data) {
-                    let rData = fullState.activeOrders['ROUTING_MASTER'].data;
-                    
-                    if(!isUserTyping()) {
-                        document.getElementById('wait-time-input').value = rData.waitTime || 0;
-                    }
-
-                    if(rData.scenario) {
-                        document.getElementById('toggle-scenario-auto').checked = rData.scenario.active;
-                        document.getElementById('ev-date').value = rData.scenario.date || "";
-                        document.getElementById('ev-start').value = rData.scenario.start || "";
-                        document.getElementById('ev-end').value = rData.scenario.end || "";
-                        
-                        if(rData.scenario.targets) {
-                            if(!rData.scenario.targets.qr) document.getElementById('ev-btn-qr').classList.add('off'); else document.getElementById('ev-btn-qr').classList.remove('off');
-                            if(!rData.scenario.targets.pad) document.getElementById('ev-btn-pad').classList.add('off'); else document.getElementById('ev-btn-pad').classList.remove('off');
-                            if(!rData.scenario.targets.cuisine) document.getElementById('ev-btn-cuis').classList.add('off'); else document.getElementById('ev-btn-cuis').classList.remove('off');
-                            if(!rData.scenario.targets.bar) document.getElementById('ev-btn-bar').classList.add('off'); else document.getElementById('ev-btn-bar').classList.remove('off');
-                        }
-
-                        checkScenarioActive(rData.scenario);
-                    }
-
-                    setServiceActive(rData.activeService || "MIDI");
-                }
-
-                if(fullState.activeOrders['CATEGORIES_CUISINE']) categoriesCuisine = fullState.activeOrders['CATEGORIES_CUISINE'].data || [];
-                if(fullState.activeOrders['CATEGORIES_BAR']) categoriesBar = fullState.activeOrders['CATEGORIES_BAR'].data || [];
-                if(fullState.activeOrders['MENU_MASTER']) menuCuisine = fullState.activeOrders['MENU_MASTER'].data || {};
-                if(fullState.activeOrders['MENU_MASTER_BAR']) menuBar = fullState.activeOrders['MENU_MASTER_BAR'].data || {};
-
-                let autoPax = 0;
-                for(let key in fullState.activeOrders) {
-                    if(key.startsWith('order_')) {
-                        let o = fullState.activeOrders[key].data || fullState.activeOrders[key];
-                        autoPax += parseInt(o.pax) || parseInt(o.couverts) || 1;
-                    }
-                }
-                if (!isUserTyping()) {
-                    document.getElementById('cloture-pax').value = autoPax;
-                }
-
-                renderLiveOrders(); 
-                renderFinancialDashboard();
-                
-                if(!isUserTyping()) {
-                    renderBasicEditor();
-                    renderStocks();
-                    renderRegistry();
-                }
-            } catch(e) {}
-        }
-
-        window.onload = () => {
-            let localFallback = JSON.parse(localStorage.getItem(registryKey) || '[]');
-            if(localFallback.length > 0 && tableRegistry.length === 0) {
-                tableRegistry = localFallback;
-                saveTableRegistry();
-            }
-            renderRegistry();
-            fetchLiveStocks();
-            setInterval(fetchLiveStocks, 5000);
-            
-            if(categoriesCuisine.length === 0) {
-                categoriesCuisine = [
-                    {id: 'menujour', label: 'Menu du Jour'},
-                    {id: 'suggestions', label: 'Suggestions'},
-                    {id: 'entrees', label: 'Entrées'},
-                    {id: 'plats', label: 'Plats'},
-                    {id: 'desserts', label: 'Desserts'}
-                ];
-                categoriesCuisine.forEach(c => menuCuisine[c.id] = []);
-            }
-        };
-    </script>
-</body>
-</html>
