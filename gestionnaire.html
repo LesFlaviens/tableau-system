@@ -2626,19 +2626,45 @@ function renderFloor() {
             }
         }
 
-        async function acknowledgeChefAlert() {
-            if (!currentTable) return;
-            
-            let order = activeOrders[currentTable];
-            if (order) {
-                delete order.alerteRouge; // Supprime l'alerte
+      async function acknowledgeChefAlert() {
+    // 1. On coupe l'alarme visuelle immédiatement sur la tablette (grâce à ton ID)
+    const alertBox = document.getElementById('drawer-alert-banner');
+    if (alertBox) {
+        alertBox.style.display = 'none';
+    }
+
+    // 2. ON TUE LE PARASITE SUR LE SERVEUR CLOUD (Alerte globale)
+    try {
+        await fetch(`${SERVER_URL}/update-order?tenantID=${tenantID}`, {
+            method: 'POST', 
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ tableId: 'ALERTS_MASTER', order: { data: null } })
+        });
+    } catch(e) {
+        console.error("Impossible d'acquitter l'alerte globale sur le serveur.");
+    }
+
+    // 3. On garde ton ancienne sécurité pour les alertes spécifiques de table
+    if (typeof currentTable !== 'undefined' && currentTable && typeof activeOrders !== 'undefined' && activeOrders[currentTable]) {
+        let order = activeOrders[currentTable];
+        if (order && order.alerteRouge) {
+            delete order.alerteRouge; // Supprime l'alerte
+            if (typeof API !== 'undefined' && API.update) {
                 await API.update(currentTable, order, true); // Sync avec Render
-                
-                checkTableAlertState(currentTable); // Débloque l'interface
-                showToast("✅ Alerte traitée");
-                logAction("ALERTE RÉGLÉE", `Table ${currentTable} par ${currentUser.name}`);
+            }
+            if (typeof checkTableAlertState === 'function') checkTableAlertState(currentTable); // Débloque l'interface
+            if (typeof logAction === 'function') {
+                let uName = (typeof currentUser !== 'undefined' && currentUser.name) ? currentUser.name : "Staff";
+                logAction("ALERTE RÉGLÉE", `Table ${currentTable} par ${uName}`);
             }
         }
+    }
+
+    // 4. Notification de succès
+    if (typeof showToast === 'function') {
+        showToast("✅ Alerte traitée");
+    }
+}
 
         function openOrder(tableLabel) {
             currentTable = tableLabel;
