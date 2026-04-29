@@ -221,27 +221,6 @@
                     state = JSON.parse(localStorage.getItem('EMPIRE_GLOBAL_SYNC')) || { activeOrders: {} };
                 }
                 return state;
-            },
-            sendOrder: async (payload) => {
-                let state = JSON.parse(localStorage.getItem('EMPIRE_GLOBAL_SYNC')) || { activeOrders: {} };
-                if (!state.activeOrders) state.activeOrders = {};
-
-                if (payload.tableId === 'ALERTS_MASTER') {
-                    state.activeOrders['ALERTS_MASTER'] = { data: payload.order.data };
-                } else {
-                    state.activeOrders[payload.tableId] = payload.order;
-                }
-
-                localStorage.setItem('EMPIRE_GLOBAL_SYNC', JSON.stringify(state));
-                window.dispatchEvent(new Event('storage')); 
-
-                try {
-                    await fetch(`${SERVER_URL}/update-order?tenantID=${tenantID}`, {
-                        method: 'POST',
-                        headers: {'Content-Type': 'application/json'},
-                        body: JSON.stringify(payload)
-                    });
-                } catch(e) {}
             }
         };
 
@@ -334,12 +313,11 @@
             setTimeout(() => { processOrder("Payé en ligne"); }, 800);
         }
 
+        // 🔥 LA NOUVELLE FONCTION FURTIVE DE COMMANDE 🔥
         async function processOrder(paymentStatus) {
             if (cart.length === 0) return;
 
-            // 1. OPTIMISTIC UI : On affiche le succès immédiatement pour tuer l'effet "moulinage"
             document.getElementById('checkout-modal').classList.remove('open');
-            
             let successTimeText = globalWaitTime > 0 ? `~${globalWaitTime}` : "quelques";
             document.getElementById('success-wait-val').innerText = successTimeText;
             document.getElementById('success-screen').style.display = 'flex';
@@ -348,57 +326,52 @@
             cart = [];
             updateCartUI();
 
-            // 2. TRAITEMENT EN ARRIÈRE-PLAN
             try {
-                const state = await API.getState();
-                let orderId = tableNumber.startsWith('order_') ? tableNumber : `order_${tableNumber}`;
-                let numTablePropre = tableNumber.replace('order_', '');
+                let numPropre = tableNumber.replace('order_', '').replace('T', '').trim();
+                let orderId = `order_${numPropre}`;
                 
+                let oldData = {};
+                try {
+                    let r = await fetch(`${SERVER_URL}/get-current-state?tenantID=${tenantID}`);
+                    let state = await r.json();
+                    if (state.activeOrders && state.activeOrders[orderId]) {
+                        oldData = state.activeOrders[orderId].data || state.activeOrders[orderId];
+                    }
+                } catch(e) {}
+
                 let currentTableData = {
-                    status: 'hold',
+                    status: 'sent', 
                     time: new Date().toLocaleTimeString('fr-FR', {hour:'2-digit', minute:'2-digit'}),
-                    clientName: 'Client Web',
+                    clientName: 'Client QR',
                     isWeb: true,
                     typePaiement: paymentStatus,
-                    items: [],
-                    totalStr: "0.00 €",
-                    pax: 1
+                    items: oldData.items || [],
+                    pax: oldData.pax || 1
                 };
-
-                if (state.activeOrders && state.activeOrders[orderId]) {
-                    let oldData = state.activeOrders[orderId].data || state.activeOrders[orderId];
-                    if (oldData.items) currentTableData.items = oldData.items;
-                }
                 
                 currentTableData.items.push(...finalItems);
                 
                 let globalTotal = currentTableData.items.reduce((sum, i) => sum + (parseFloat(i.p||0) * (i.qty||1)), 0);
                 currentTableData.totalStr = `${globalTotal.toFixed(2)} ${currentCurrency}`;
-                
-                // Différenciation de l'alerte pour le Serveur (Surveillance)
-                let alertMessage = paymentStatus.includes("Serveur") 
-                    ? `💰 À ENCAISSER : TABLE ${numTablePropre}` 
-                    : `📱 NOUVELLE COMMANDE (${numTablePropre})`;
 
-                // Envoi en parallèle pour doubler la vitesse de traitement
-                await Promise.all([
-                    API.sendOrder({ tableId: orderId, order: { data: currentTableData } }),
-                    API.sendOrder({ tableId: 'ALERTS_MASTER', order: { data: { type: 'RING', message: alertMessage, timestamp: Date.now() } } })
-                ]);
+                await fetch(`${SERVER_URL}/update-order?tenantID=${tenantID}`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ tableId: orderId, order: { data: currentTableData } })
+                });
 
             } catch (e) {
-                console.error("Erreur d'envoi en arrière-plan", e);
+                console.error("Erreur", e);
             } finally {
-                document.querySelector('.btn-pay-now').innerHTML = `💳 PAYER MAINTENANT <br><span style="font-size:0.7rem; opacity:0.8;">(Apple Pay / CB)</span>`;
-                document.querySelector('.btn-pay-now').style.opacity = "1";
+                let btn = document.querySelector('.btn-pay-now');
+                if(btn) {
+                    btn.innerHTML = `💳 PAYER MAINTENANT <br><span style="font-size:0.7rem; opacity:0.8;">(Apple Pay / CB)</span>`;
+                    btn.style.opacity = "1";
+                }
             }
         }
 
         function closeSuccessScreen() { document.getElementById('success-screen').style.display = 'none'; }
-
-        window.addEventListener('storage', (e) => {
-            if (e.key === 'EMPIRE_GLOBAL_SYNC') fetchMenu();
-        });
 
         async function fetchMenu() {
             try {
