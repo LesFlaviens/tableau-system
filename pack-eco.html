@@ -470,6 +470,35 @@
         const registryKey = 'ichef_registry_' + tenantID;
         let tableRegistry = JSON.parse(localStorage.getItem(registryKey) || '[]');
 
+   const urlParams = new URLSearchParams(window.location.search);
+        const tenantID = urlParams.get('tenantID') || 'MASTER_STATE';
+        const SERVER_URL = "https://tableau-system.onrender.com";
+        const BASE_CLIENT_URL = window.location.origin + window.location.pathname.replace('admin.html', 'menu-qr.html');
+
+        let fullState = {};
+        let currentTableNum = null;
+        let currentQrUrlObj = null;
+        let globalCurrency = "€"; 
+        let financialHistory = [];
+        
+        let currentServiceActive = "MIDI";
+
+        let categoriesCuisine = [];
+        let categoriesBar = [];
+        let menuCuisine = {};
+        let menuBar = {};
+        let staffAccessData = [];
+        
+        let modalCurrentContext = null;
+        let isModalOpen = false;
+        
+        // Variables pour l'Éditeur Pack Éco
+        let currentEditorType = 'cuisine';
+        let isEditingMenu = false;
+
+        const registryKey = 'ichef_registry_' + tenantID;
+        let tableRegistry = JSON.parse(localStorage.getItem(registryKey) || '[]');
+
         // Détection pour ne pas écraser la saisie pendant un rafraîchissement
         document.addEventListener('focusin', (e) => { if(e.target.closest('#basic-editor-grid')) isEditingMenu = true; });
         document.addEventListener('focusout', (e) => { if(e.target.closest('#basic-editor-grid')) setTimeout(() => isEditingMenu = false, 200); });
@@ -691,6 +720,7 @@
             
             btn.innerText = originalText;
             btn.style.pointerEvents = 'auto';
+            renderStocks(); 
             closeRoutingModal();
         }
 
@@ -962,32 +992,22 @@
             const meteo = document.getElementById('cloture-meteo').value;
             const event = document.getElementById('cloture-event').value || "Standard";
             const tvaMoyenne = parseFloat(document.getElementById('cloture-tva').value) || 10;
+            const paxTotal = parseInt(document.getElementById('cloture-pax').value) || 0;
             
             let caBrutJour = 0;
-            let paxJour = 0;
             let todayStr = new Date().toISOString().split('T')[0];
             
             let archiveCuisine = (fullState.activeOrders && fullState.activeOrders['SALES_ARCHIVE_CUISINE']) ? fullState.activeOrders['SALES_ARCHIVE_CUISINE'].data || [] : [];
             let archiveBar = (fullState.activeOrders && fullState.activeOrders['SALES_ARCHIVE_BAR']) ? fullState.activeOrders['SALES_ARCHIVE_BAR'].data || [] : [];
             [...archiveCuisine, ...archiveBar].forEach(t => {
-                if (t.time && t.time.startsWith(todayStr)) {
-                    caBrutJour += parseFloat(t.total) || 0;
-                }
+                if (t.time && t.time.startsWith(todayStr)) caBrutJour += parseFloat(t.total) || 0;
             });
-
-            // Calcul simplifié du PAX via les commandes actives
-            for(let key in fullState.activeOrders) {
-                if(key.startsWith('order_')) {
-                    let o = fullState.activeOrders[key].data || fullState.activeOrders[key];
-                    paxJour += parseInt(o.pax) || parseInt(o.couverts) || 1;
-                }
-            }
 
             if(caBrutJour === 0) return alert("CA nul. Clôture impossible.");
 
             let archiveEntry = {
                 date: todayStr, brut: caBrutJour.toFixed(2), net: (caBrutJour / (1 + (tvaMoyenne / 100))).toFixed(2),
-                meteo: meteo, event: event, pax: paxJour
+                meteo: meteo, event: event, pax: paxTotal
             };
 
             try {
@@ -1216,6 +1236,173 @@
             }
         }
 
+        function getAdvancedRouting(obj) {
+            if (obj.advancedRouting) return obj.advancedRouting;
+            let advRouting = {};
+            let oldR = obj.routing || ['MIDI', 'SOIR'];
+            let oldT = obj.targets || ['qr', 'bar', 'resto', 'pad'];
+            oldR.forEach(r => advRouting[r] = [...oldT]);
+            return advRouting;
+        }
+
+        function buildAdvancedBadges(advRouting) {
+            let html = '';
+            SERVICES.forEach(s => {
+                if(advRouting[s.id] && advRouting[s.id].length > 0) {
+                    let targetsHtml = advRouting[s.id].map(t => `<span title="${getTargetLabel(t)}">${getTargetIcon(t)}</span>`).join('');
+                    html += `
+                    <div class="badge-route" style="border-left: 3px solid ${s.color};">
+                        <span class="time" style="color:${s.color};">${s.icon} ${s.id}</span>
+                        <span class="targets">${targetsHtml}</span>
+                    </div>`;
+                }
+            });
+            return `<div class="routing-badge-container">${html}</div>`;
+        }
+
+        function renderStocks() {
+            const container = document.getElementById('stock-control-list');
+            if(!fullState || !fullState.activeOrders) return;
+            
+            let html = "";
+            let now = new Date();
+            let todayStr = now.toISOString().split('T')[0];
+
+            [{ id: 'MENU_MASTER', label: 'RÉSEAU CUISINE' }, { id: 'MENU_MASTER_BAR', label: 'RÉSEAU BAR' }].forEach(src => {
+                const data = fullState.activeOrders[src.id]?.data || {};
+                let catDataList = src.id === 'MENU_MASTER' ? categoriesCuisine : categoriesBar;
+
+                if(Object.keys(data).length > 0) {
+                    html += `<div style="color:var(--text); background:rgba(255,255,255,0.05); padding:10px; border-radius:8px; font-weight:900; margin-top:20px; text-align:center; font-size:1.1rem; border:1px solid var(--border); width: 100%; grid-column: 1 / -1;">${src.label}</div>`;
+                    
+                    for(let cat in data) {
+                        let catObj = catDataList.find(c => c.id === cat);
+                        let catName = catObj ? catObj.label : cat.toUpperCase();
+                        
+                        let catAdvRouting = catObj ? getAdvancedRouting(catObj) : getAdvancedRouting({});
+                        let routingBadgesHtml = buildAdvancedBadges(catAdvRouting);
+
+                        let planningCatBadge = '';
+                        if (catObj && catObj.startDate && catObj.endDate) {
+                            if (todayStr >= catObj.startDate && todayStr <= catObj.endDate) {
+                                planningCatBadge = `<div style="font-size:0.65rem; color:var(--success); margin-top:5px;">📅 Actif (jusqu'au ${catObj.endDate.split('-').reverse().join('/')})</div>`;
+                            } else {
+                                planningCatBadge = `<div style="font-size:0.65rem; color:var(--danger); margin-top:5px;">📅 Inactif (${catObj.startDate.split('-').reverse().join('/')} - ${catObj.endDate.split('-').reverse().join('/')})</div>`;
+                            }
+                        }
+
+                        html += `
+                        <div style="background:rgba(0,0,0,0.4); padding: 20px; border-radius: 12px; border: 1px solid var(--border-strong); display:flex; flex-direction:column; gap:15px; height: fit-content; box-shadow: 0 5px 15px rgba(0,0,0,0.3);">
+                            <div style="display:flex; justify-content:space-between; align-items:flex-start; border-bottom: 1px solid var(--border); padding-bottom: 15px;">
+                                <div>
+                                    <div style="color:var(--gold); font-size:1.1rem; font-weight:900; text-transform:uppercase; letter-spacing:1px;">📁 ${catName}</div>
+                                    ${planningCatBadge}
+                                </div>
+                                <div style="display:flex; flex-direction:column; align-items:flex-end; gap:8px;">
+                                    ${routingBadgesHtml}
+                                    <button style="background:var(--ordered); border:none; color:#fff; font-size:0.65rem; padding:6px 12px; border-radius:6px; font-weight:900; cursor:pointer; margin-top:5px; transition:0.2s;" onmouseover="this.style.filter='brightness(1.2)'" onmouseout="this.style.filter='brightness(1)'" onclick="adminEditCategoryRouting('${src.id}', '${cat}')">⚙️ DIFFUSION CATÉGORIE</button>
+                                </div>
+                            </div>
+                            <div style="display:flex; flex-direction:column; gap:12px;">
+                        `;
+
+                        data[cat].forEach((item, idx) => {
+                            const isOut = (item.stock === 0 || item.stock === "0");
+                            const isHidden = (item.hidden === true); 
+                            
+                            let itemAdvRouting = item.advancedRouting ? item.advancedRouting : (item.routing ? getAdvancedRouting(item) : catAdvRouting);
+                            let itemRoutingBadgesHtml = buildAdvancedBadges(itemAdvRouting);
+
+                            let planningItemBadge = '';
+                            if (item.startDate && item.endDate) {
+                                if (todayStr >= item.startDate && todayStr <= item.endDate) {
+                                    planningItemBadge = `<span style="font-size:0.6rem; color:var(--success); border:1px solid var(--success); padding:2px 4px; border-radius:4px; margin-left:5px;">📅 ACTIF</span>`;
+                                } else {
+                                    planningItemBadge = `<span style="font-size:0.6rem; color:var(--danger); border:1px solid var(--danger); padding:2px 4px; border-radius:4px; margin-left:5px;">📅 INACTIF</span>`;
+                                }
+                            }
+
+                            html += `
+                                <div class="stock-item">
+                                    <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom: 10px;">
+                                        <div style="font-size:0.95rem; font-weight:900; color: ${isHidden ? 'var(--text-muted)' : 'var(--text-main)'}; text-decoration: ${isHidden ? 'line-through' : 'none'}; width: 45%;">
+                                            ${item.name} <div style="margin-top:5px;">${planningItemBadge}</div>
+                                        </div>
+                                        <div style="width: 55%;">
+                                            ${itemRoutingBadgesHtml}
+                                        </div>
+                                    </div>
+                                    <div style="display:flex; gap:8px; margin-top:8px;">
+                                        <button class="btn-toggle ${isHidden ? 'hidden' : ''}" style="flex:1;" onclick="updateVisibility('${src.id}', '${cat}', ${idx}, ${isHidden})">
+                                            ${isHidden ? '🚫 MASQUÉ' : '👁️ VISIBLE'}
+                                        </button>
+                                        <button class="btn-toggle ${isOut ? 'sold-out' : ''}" style="flex:1;" onclick="updateStock('${src.id}', '${cat}', ${idx}, ${isOut})">
+                                            ${isOut ? '❌ RUPTURE' : '📦 EN STOCK'}
+                                        </button>
+                                        <button class="btn-toggle" style="flex:0.5; color:var(--ordered); border-color:var(--ordered); display:flex; justify-content:center; align-items:center;" onclick="adminEditItemRouting('${src.id}', '${cat}', ${idx})">
+                                            ⚙️
+                                        </button>
+                                    </div>
+                                </div>`;
+                        });
+                        html += `</div></div>`;
+                    }
+                }
+            });
+            container.innerHTML = html || '<div style="color:var(--text-muted); font-size:0.8rem; grid-column: 1 / -1; text-align:center;">Aucun menu trouvé.</div>';
+        }
+
+        function adminEditCategoryRouting(sourceId, catId) {
+            let catList = sourceId === 'MENU_MASTER' ? categoriesCuisine : categoriesBar;
+            let dbKey = sourceId === 'MENU_MASTER' ? 'CATEGORIES_CUISINE' : 'CATEGORIES_BAR';
+            
+            let catObj = catList.find(c => c.id === catId);
+            if(!catObj) {
+                catObj = { id: catId, label: catId.toUpperCase() };
+                catList.push(catObj);
+            }
+
+            let advRouting = getAdvancedRouting(catObj);
+            modalCurrentContext = { type: 'category', sourceId, catId, catList, dbKey, catObj };
+            openRoutingModal(`Catégorie : ${catObj.label}`, advRouting, catObj.startDate, catObj.endDate);
+        }
+
+        function adminEditItemRouting(sourceId, catId, itemIdx) {
+            let item = fullState.activeOrders[sourceId].data[catId][itemIdx];
+            if(!item) return;
+
+            let catList = sourceId === 'MENU_MASTER' ? categoriesCuisine : categoriesBar;
+            let catObj = catList.find(c => c.id === catId);
+            
+            let catAdvRouting = catObj ? getAdvancedRouting(catObj) : getAdvancedRouting({});
+            let itemAdvRouting = item.advancedRouting ? item.advancedRouting : (item.routing ? getAdvancedRouting(item) : catAdvRouting);
+
+            modalCurrentContext = { type: 'item', sourceId, catId, itemIdx, item };
+            openRoutingModal(`Plat : ${item.name}`, itemAdvRouting, item.startDate, item.endDate);
+        }
+
+        async function updateVisibility(sourceId, cat, idx, currentlyHidden) {
+            fullState.activeOrders[sourceId].data[cat][idx].hidden = !currentlyHidden;
+            renderStocks(); 
+            try {
+                await fetch(`${SERVER_URL}/update-order?tenantID=${tenantID}`, {
+                    method: 'POST', headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ tableId: sourceId, order: { data: fullState.activeOrders[sourceId].data } })
+                });
+            } catch(e) {}
+        }
+
+        async function updateStock(sourceId, cat, idx, currentlyOut) {
+            fullState.activeOrders[sourceId].data[cat][idx].stock = currentlyOut ? 99 : 0;
+            renderStocks(); 
+            try {
+                await fetch(`${SERVER_URL}/update-order?tenantID=${tenantID}`, {
+                    method: 'POST', headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ tableId: sourceId, order: { data: fullState.activeOrders[sourceId].data } })
+                });
+            } catch(e) {}
+        }
+
         async function fetchLiveStocks() {
             if(isModalOpen) return; 
 
@@ -1268,6 +1455,17 @@
                 if(fullState.activeOrders['MENU_MASTER']) menuCuisine = fullState.activeOrders['MENU_MASTER'].data || {};
                 if(fullState.activeOrders['MENU_MASTER_BAR']) menuBar = fullState.activeOrders['MENU_MASTER_BAR'].data || {};
 
+                // Calcul auto du PAX pour le champ de clôture
+                let autoPax = 0;
+                for(let key in fullState.activeOrders) {
+                    if(key.startsWith('order_')) {
+                        let o = fullState.activeOrders[key].data || fullState.activeOrders[key];
+                        autoPax += parseInt(o.pax) || parseInt(o.couverts) || 1;
+                    }
+                }
+                document.getElementById('cloture-pax').value = autoPax;
+
+                renderStocks();
                 renderLiveOrders(); 
                 renderFinancialDashboard();
                 if(!isEditingMenu) renderBasicEditor();
