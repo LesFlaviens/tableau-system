@@ -445,6 +445,7 @@
         async function fetchSystemState() {
             let state;
             try {
+                // Utilisation du moteur API et de son décodeur
                 state = await API.getState();
                 document.getElementById('sync-dot').classList.add('online');
                 document.getElementById('sync-text').innerText = "EN LIGNE";
@@ -468,10 +469,12 @@
                 let savedCurrency = settingsData.currency;
                 if (savedCurrency && savedCurrency !== currentCurrency) {
                     currentCurrency = savedCurrency;
+                    
                     let priceInput = document.getElementById('market-price');
                     if(priceInput) priceInput.placeholder = "Prix Vente " + currentCurrency;
                     let manualPriceInput = document.getElementById('manual-stock-price');
                     if(manualPriceInput) manualPriceInput.placeholder = "Prix Total (" + currentCurrency + ")";
+                    
                     lastMenuHash = ""; 
                 }
             }
@@ -1143,6 +1146,82 @@
         async function deleteMenuItem(category, id) { 
             menuData[category] = menuData[category].filter(item => item.id !== id); 
             renderMenu(); await API.update('MENU_BAR', menuData); 
+        }
+
+        async function generateSalesStats() {
+            let caBrut = 0;
+            let coutTotal = 0;
+            let totalPlats = 0;
+            let salesMap = {};
+            
+            let state = await API.getState();
+            let activeOrders = state.activeOrders || {};
+
+            for (let tableId in activeOrders) {
+                if (tableId.includes('MASTER') || tableId.includes('ARCHIVE') || tableId.includes('BAR') || tableId.includes('CUISINE')) continue;
+                
+                let orderData = activeOrders[tableId];
+                if (orderData && orderData.data) orderData = orderData.data;
+
+                if (!orderData || !orderData.items) continue;
+                orderData.items.forEach(item => {
+                    if (item.done && item.dest === 'bar') {
+                        let qty = parseInt(item.qty) || 1;
+                        let price = parseFloat(item.price || item.p) || 0; 
+                        
+                        if (price === 0) {
+                            for(let cat in menuData) {
+                                let found = menuData[cat].find(m => m.name === item.n);
+                                if(found) price = found.price;
+                            }
+                        }
+
+                        let cost = 0;
+                        let recipe = recipesData.find(r => r.name === item.n);
+                        if(recipe) cost = recipe.cost;
+
+                        caBrut += (price * qty);
+                        coutTotal += (cost * qty);
+                        totalPlats += qty;
+
+                        if(!salesMap[item.n]) salesMap[item.n] = { qty: 0, rev: 0 };
+                        salesMap[item.n].qty += qty;
+                        salesMap[item.n].rev += (price * qty);
+                    }
+                });
+            }
+
+            let margeNette = caBrut - coutTotal;
+
+            document.getElementById('stat-ca').innerText = caBrut.toFixed(2) + " " + currentCurrency;
+            document.getElementById('stat-marge').innerText = margeNette.toFixed(2) + " " + currentCurrency;
+            document.getElementById('stat-qty').innerText = totalPlats;
+
+            let topSalesArray = Object.keys(salesMap).map(k => {
+                return { name: k, qty: salesMap[k].qty, rev: salesMap[k].rev };
+            });
+            topSalesArray.sort((a, b) => b.qty - a.qty);
+
+            let html = '';
+            if(topSalesArray.length === 0) {
+                html = '<p style="text-align:center; color:var(--text-muted); font-size: 0.9rem; font-style: italic;">Aucun article envoyé aujourd\'hui.</p>';
+            } else {
+                topSalesArray.forEach((s, idx) => {
+                    let medal = idx === 0 ? '🥇' : (idx === 1 ? '🥈' : (idx === 2 ? '🥉' : '🔹'));
+                    html += `
+                    <div style="display:flex; justify-content:space-between; align-items:center; background: rgba(255,255,255,0.02); padding: 15px; border-radius: 10px; border: 1px solid var(--border); transition: 0.2s;" onmouseover="this.style.background='rgba(255,255,255,0.05)'" onmouseout="this.style.background='rgba(255,255,255,0.02)'">
+                        <div style="display:flex; align-items:center; gap: 15px;">
+                            <span style="font-size:1.8rem;">${medal}</span>
+                            <span style="font-weight:900; color:var(--text-main); font-size:1.1rem;">${s.name}</span>
+                        </div>
+                        <div style="display:flex; gap: 30px; align-items:center;">
+                            <span style="color:var(--text-muted); font-size:0.85rem; text-transform:uppercase; font-weight:bold;">Envoyés: <b style="color:var(--ordered); font-size:1.2rem;">${s.qty}</b></span>
+                            <span style="color:var(--text-muted); font-size:0.85rem; text-transform:uppercase; font-weight:bold;">CA: <b style="color:var(--gold); font-size:1.2rem;">${s.rev.toFixed(2)} ${currentCurrency}</b></span>
+                        </div>
+                    </div>`;
+                });
+            }
+            document.getElementById('top-sales-list').innerHTML = html;
         }
 
         window.onload = bootSystem;
