@@ -396,7 +396,10 @@
         // 🌍 VARIABLE MULTIDEVISE
         let currentCurrency = "€";
 
-       const API = {
+        // ----------------------------------------------------
+        // 🚨 MOTEUR RÉSEAU & DÉCODEUR UNIVERSEL 🚨
+        // ----------------------------------------------------
+        const API = {
             getState: async () => {
                 let state = { activeOrders: {} };
                 try {
@@ -407,22 +410,30 @@
                         throw new Error("Serveur injoignable"); 
                     }
                 } catch(e) {
-                    // Fallback local en cas de micro-coupure réseau
                     state = JSON.parse(localStorage.getItem('EMPIRE_GLOBAL_SYNC')) || { activeOrders: {} };
+                }
+
+                // DÉCODEUR : Ouvre toutes les commandes QR Code
+                if (state && state.activeOrders) {
+                    for (let key in state.activeOrders) {
+                        if (key.startsWith('order_') || key.startsWith('W') || key.startsWith('T') || key.startsWith('WEB_')) {
+                            if (state.activeOrders[key] && state.activeOrders[key].data !== undefined && !Array.isArray(state.activeOrders[key].data)) {
+                                state.activeOrders[key] = state.activeOrders[key].data;
+                            }
+                        }
+                    }
                 }
                 return state;
             },
             update: async (key, data, isOrder = false) => {
-                // On s'assure que le Chef emballe la donnée exactement comme le Serveur
                 let payload = isOrder ? data : { data: data };
-                
-                // Sauvegarde de sécurité immédiate en local
                 let state = JSON.parse(localStorage.getItem('EMPIRE_GLOBAL_SYNC')) || { activeOrders: {} };
+                
                 if (data === null) delete state.activeOrders[key];
                 else state.activeOrders[key] = payload;
+                
                 localStorage.setItem('EMPIRE_GLOBAL_SYNC', JSON.stringify(state));
                 
-                // Envoi au Cloud
                 try {
                     await fetch(`${SERVER_URL}/update-order?tenantID=${tenantID}`, {
                         method: 'POST',
@@ -434,6 +445,7 @@
                 }
             }
         };
+
         let menuData = { menuJour: [], suggestions: [], entrees: [], plats: [], desserts: [] };
         let recipesData = [];
         let stockGlobalData = []; 
@@ -482,6 +494,7 @@
         async function fetchSystemState() {
             let state;
             try {
+                // Utilisation du moteur API et de son décodeur
                 state = await API.getState();
                 document.getElementById('sync-dot').classList.add('online');
                 document.getElementById('sync-text').innerText = "EN LIGNE";
@@ -594,20 +607,46 @@
         }
 
         function startDictation(inputId, btnId) {
+            if (!('webkitSpeechRecognition' in window) && !('SpeechRecognition' in window)) {
+                alert("Votre navigateur ne supporte pas la dictée vocale.");
+                return;
+            }
             const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-            if (!SpeechRecognition) return alert("Dictée non supportée par votre navigateur.");
-            const recognition = new SpeechRecognition(); recognition.lang = 'fr-FR'; recognition.interimResults = false;
-            const btn = document.getElementById(btnId); const input = document.getElementById(inputId);
+            const recognition = new SpeechRecognition();
+            
+            recognition.lang = 'fr-FR';
+            recognition.continuous = true; // 🔴 LE MICRO RESTE OUVERT
+            recognition.interimResults = false;
+            
+            let input = document.getElementById(inputId);
+            let btn = document.getElementById(btnId);
             const orig = btn.innerHTML;
+            let oldPh = input.placeholder;
+            input.placeholder = "🔴 Parlez (pause = saut de ligne)...";
+            
+            recognition.start();
+            
             recognition.onstart = () => { btn.classList.add('recording-active'); btn.innerHTML = '🔴'; };
-            recognition.onresult = (e) => { 
-                let sep = input.tagName.toLowerCase() === 'textarea' ? " \n" : " "; 
-                let text = e.results[0][0].transcript;
-                input.value += (input.value ? sep : "") + text.charAt(0).toUpperCase() + text.slice(1); 
+
+            recognition.onresult = function(event) {
+                // On récupère la dernière phrase prononcée
+                let speechResult = event.results[event.results.length - 1][0].transcript.trim();
+                
+                // On l'ajoute avec un saut de ligne automatique si le champ n'est pas vide
+                input.value += (input.value ? '\n' : '') + speechResult;
+                
+                // Fait défiler le texte vers le bas automatiquement
+                input.scrollTop = input.scrollHeight;
             };
-            recognition.onspeechend = () => { recognition.stop(); };
-            recognition.onend = () => { btn.classList.remove('recording-active'); btn.innerHTML = orig; };
-            recognition.start(); 
+            
+            // Le micro se coupe si on clique ailleurs ou sur "Ajouter"
+            input.addEventListener('blur', () => {
+                recognition.stop();
+                input.placeholder = oldPh;
+            }, {once: true});
+
+            recognition.onerror = function(event) { input.placeholder = oldPh; btn.classList.remove('recording-active'); btn.innerHTML = orig; };
+            recognition.onend = () => { btn.classList.remove('recording-active'); btn.innerHTML = orig; input.placeholder = oldPh; };
         }
 
         async function addManualStock() {
@@ -972,183 +1011,31 @@
                 </div>`).join('');
         }
 
-       function renderMenu(category) {
-            currentCategory = category;
-            let itemsToDisplay = [];
+        function renderMenu() {
+            const grid = document.getElementById('dynamic-menu-grid');
+            if(!grid) return;
             
-            // 🧠 INTELLIGENCE ARTIFICIELLE : Trouve la catégorie peu importe la casse (majuscule/minuscule)
-            const getItems = (menuObj, possibleKeys) => {
-                let res = [];
-                for(let k in menuObj) {
-                    if (possibleKeys.includes(k.toLowerCase().replace(/\s+/g, ''))) {
-                        res.push(...menuObj[k]);
-                    }
-                }
-                return res;
-            };
+            let html = '';
+            let colorIndex = 0;
 
-            if (category === 'MenuJour') {
-                currentCourseDefault = 2;
-                itemsToDisplay.push(...getItems(menuCuisine, ['menujour', 'menudujour']).map(i => ({...i, dest: 'cuisine', isMenuJour: true})));
-                itemsToDisplay.push(...getItems(menuCuisine, ['suggestions']).map(i => ({...i, dest: 'cuisine', isMenuJour: false})));
-            }
-            else if (category === 'Entrées') {
-                currentCourseDefault = 1;
-                itemsToDisplay.push(...getItems(menuCuisine, ['entrees', 'entrées', 'entree', 'entrée']).map(i => ({...i, dest: 'cuisine'})));
-            } 
-            else if (category === 'Plats') {
-                currentCourseDefault = 2;
-                itemsToDisplay.push(...getItems(menuCuisine, ['plats', 'plat']).map(i => ({...i, dest: 'cuisine'})));
-            } 
-            else if (category === 'Desserts') {
-                currentCourseDefault = 3;
-                itemsToDisplay.push(...getItems(menuCuisine, ['desserts', 'dessert']).map(i => ({...i, dest: 'cuisine'})));
-            } 
-            else if (category === 'Boissons') {
-                currentCourseDefault = 0;
-                for(let key in menuBar) {
-                    if(menuBar[key]) itemsToDisplay.push(...menuBar[key].map(i => ({...i, dest: 'bar'})));
-                }
-            }
+            for (let category in menuData) {
+                let items = menuData[category];
+                let displayName = CAT_SETTINGS[category] ? CAT_SETTINGS[category].name : category.toUpperCase();
+                let color = CAT_SETTINGS[category] ? CAT_SETTINGS[category].color : EXTRA_COLORS[colorIndex % EXTRA_COLORS.length];
+                let catEscaped = String(category).replace(/'/g, "\\'");
 
-            document.querySelectorAll('.drawer .menu-tab').forEach(b => {
-                b.classList.remove('gold');
-                b.style.background = 'transparent';
-                b.style.borderColor = 'var(--border)';
-                b.style.color = 'var(--text-main)';
-                
-                if(b.innerText.includes(category.toUpperCase()) || (category === 'MenuJour' && b.innerText.includes('MENU JOUR'))) {
-                    b.classList.add('gold');
-                    b.style.background = 'var(--gold-dim)';
-                    b.style.borderColor = 'var(--gold)';
-                    b.style.color = 'var(--gold)';
-                }
-            });
-
-            const container = document.getElementById('menu');
-            if (itemsToDisplay.length === 0) {
-                container.innerHTML = `<div style="grid-column:1/-1; text-align:center; color:var(--text-muted); padding:20px; font-size:1.1rem;">La carte est vide. Le chef n'a rien publié dans cette section.</div>`;
-                return;
-            }
-
-            container.innerHTML = itemsToDisplay.map(item => {
-                let isSoldOut = (item.stock === 0 || item.stock === "0");
-                let cleanName = item.name.replace(/\n/g, '<br>');
-                let escapedName = escapeQuotes(item.name);
-                let price = parseFloat(item.price) || 0;
-                
-                let stockHtml = '';
-                if (item.stock !== "" && item.stock !== undefined && item.stock > 0) {
-                    let badgeClass = 'stock-badge';
-                    if (item.stock <= stockAlerts.red) badgeClass += ' alert-red';
-                    else if (item.stock <= stockAlerts.orange) badgeClass += ' alert-orange';
-                    else if (item.stock <= stockAlerts.yellow) badgeClass += ' alert-yellow';
-                    else if (item.stock <= stockAlerts.green) badgeClass += ' alert-green';
-
-                    stockHtml = `<div class="${badgeClass}">${item.stock}</div>`;
-                }
-
-                let clickAction = (item.isMenuJour) 
-                    ? `addMenuToTicket('${escapedName}', ${price}, '${item.dest}')` 
-                    : `addToTicket('${escapedName}', ${price}, '${item.dest}')`;
-
-                return `
-                    <button class="btn-item ${isSoldOut ? 'sold-out' : ''}" onclick="${clickAction}">
-                        ${stockHtml}
-                        <span>${cleanName}</span>
-                        <span class="price">${price.toFixed(2)} €</span>
-                    </button>
-                `;
-            }).join('');
-        }function renderMenu(category) {
-            currentCategory = category;
-            let itemsToDisplay = [];
-            
-            // 🧠 INTELLIGENCE ARTIFICIELLE : Trouve la catégorie peu importe la casse (majuscule/minuscule)
-            const getItems = (menuObj, possibleKeys) => {
-                let res = [];
-                for(let k in menuObj) {
-                    if (possibleKeys.includes(k.toLowerCase().replace(/\s+/g, ''))) {
-                        res.push(...menuObj[k]);
-                    }
-                }
-                return res;
-            };
-
-            if (category === 'MenuJour') {
-                currentCourseDefault = 2;
-                itemsToDisplay.push(...getItems(menuCuisine, ['menujour', 'menudujour']).map(i => ({...i, dest: 'cuisine', isMenuJour: true})));
-                itemsToDisplay.push(...getItems(menuCuisine, ['suggestions']).map(i => ({...i, dest: 'cuisine', isMenuJour: false})));
-            }
-            else if (category === 'Entrées') {
-                currentCourseDefault = 1;
-                itemsToDisplay.push(...getItems(menuCuisine, ['entrees', 'entrées', 'entree', 'entrée']).map(i => ({...i, dest: 'cuisine'})));
-            } 
-            else if (category === 'Plats') {
-                currentCourseDefault = 2;
-                itemsToDisplay.push(...getItems(menuCuisine, ['plats', 'plat']).map(i => ({...i, dest: 'cuisine'})));
-            } 
-            else if (category === 'Desserts') {
-                currentCourseDefault = 3;
-                itemsToDisplay.push(...getItems(menuCuisine, ['desserts', 'dessert']).map(i => ({...i, dest: 'cuisine'})));
-            } 
-            else if (category === 'Boissons') {
-                currentCourseDefault = 0;
-                for(let key in menuBar) {
-                    if(menuBar[key]) itemsToDisplay.push(...menuBar[key].map(i => ({...i, dest: 'bar'})));
-                }
-            }
-
-            document.querySelectorAll('.drawer .menu-tab').forEach(b => {
-                b.classList.remove('gold');
-                b.style.background = 'transparent';
-                b.style.borderColor = 'var(--border)';
-                b.style.color = 'var(--text-main)';
-                
-                if(b.innerText.includes(category.toUpperCase()) || (category === 'MenuJour' && b.innerText.includes('MENU JOUR'))) {
-                    b.classList.add('gold');
-                    b.style.background = 'var(--gold-dim)';
-                    b.style.borderColor = 'var(--gold)';
-                    b.style.color = 'var(--gold)';
-                }
-            });
-
-            const container = document.getElementById('menu');
-            if (itemsToDisplay.length === 0) {
-                container.innerHTML = `<div style="grid-column:1/-1; text-align:center; color:var(--text-muted); padding:20px; font-size:1.1rem;">La carte est vide. Le chef n'a rien publié dans cette section.</div>`;
-                return;
-            }
-
-            container.innerHTML = itemsToDisplay.map(item => {
-                let isSoldOut = (item.stock === 0 || item.stock === "0");
-                let cleanName = item.name.replace(/\n/g, '<br>');
-                let escapedName = escapeQuotes(item.name);
-                let price = parseFloat(item.price) || 0;
-                
-                let stockHtml = '';
-                if (item.stock !== "" && item.stock !== undefined && item.stock > 0) {
-                    let badgeClass = 'stock-badge';
-                    if (item.stock <= stockAlerts.red) badgeClass += ' alert-red';
-                    else if (item.stock <= stockAlerts.orange) badgeClass += ' alert-orange';
-                    else if (item.stock <= stockAlerts.yellow) badgeClass += ' alert-yellow';
-                    else if (item.stock <= stockAlerts.green) badgeClass += ' alert-green';
-
-                    stockHtml = `<div class="${badgeClass}">${item.stock}</div>`;
-                }
-
-                let clickAction = (item.isMenuJour) 
-                    ? `addMenuToTicket('${escapedName}', ${price}, '${item.dest}')` 
-                    : `addToTicket('${escapedName}', ${price}, '${item.dest}')`;
-
-                return `
-                    <button class="btn-item ${isSoldOut ? 'sold-out' : ''}" onclick="${clickAction}">
-                        ${stockHtml}
-                        <span>${cleanName}</span>
-                        <span class="price">${price.toFixed(2)} €</span>
-                    </button>
-                `;
-            }).join('');
-        }
+                let itemsHtml = items.map(item => `
+                    <div class="menu-item">
+                        <div class="item-name">${item.name}</div>
+                        <div style="display:flex; justify-content:space-between; width:100%; align-items:center;">
+                            <div class="item-price" onclick="editItemPrice('${catEscaped}', ${item.id})" style="cursor:pointer;" title="Modifier le prix">${parseFloat(item.price||0).toFixed(2)} ${currentCurrency}</div>
+                            <div style="display:flex; gap: 8px;">
+                                <button class="btn-del" style="color:var(--gold); border:1px solid var(--border);" onclick="updateDishStock('${catEscaped}', ${item.id})" title="Modifier le Stock">📦</button>
+                                <button class="btn-del" onclick="deleteMenuItem('${catEscaped}', ${item.id})" title="Supprimer ce plat">✖</button>
+                            </div>
+                        </div>
+                    </div>
+                `).join('');
 
                 html += `
                 <div class="menu-category" style="border-top: 3px solid ${color};">
@@ -1309,14 +1196,9 @@
             for (let tableId in activeOrders) {
                 if (tableId.includes('MASTER') || tableId.includes('ARCHIVE') || tableId.includes('BAR') || tableId.includes('CUISINE')) continue;
                 
-               let orderData = activeOrders[tableId];
-        
-        // 🚨 LE DÉCODEUR : On déballe la commande si elle vient du QR Code
-        if (orderData && orderData.data !== undefined && !Array.isArray(orderData.data)) {
-            orderData = orderData.data;
-        }
+                let orderData = activeOrders[tableId];
 
-        if (!orderData || !orderData.items) continue;
+                if (!orderData || !orderData.items) continue;
                 orderData.items.forEach(item => {
                     if (item.done) {
                         let qty = parseInt(item.qty) || 1;
