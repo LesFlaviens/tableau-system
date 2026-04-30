@@ -2717,210 +2717,122 @@ function renderFloor() {
             document.getElementById('order-drawer').classList.add('open');
         }
 
-        function renderMenu(category) {
-            currentCategory = category;
-            let itemsToDisplay = [];
+      async function syncData() {
+            if (isArchiMode) return;
+            try {
+                const state = await API.getState();
+                if (state && state.activeOrders) {
+                    let nO = state.activeOrders;
+
+                    // 🚨 DÉCODEUR UNIVERSEL
+                    for (let key in nO) {
+                        if (nO[key] && nO[key].data !== undefined) {
+                            nO[key] = nO[key].data; 
+                        }
+                    }
+
+                    // 🚨 LE CORRECTIF EST ICI : Sécurité Anti-Texte (Parse forcé)
+                    menuCuisine = typeof nO['MENU_MASTER'] === 'string' ? JSON.parse(nO['MENU_MASTER']) : (nO['MENU_MASTER'] || {});
+                    menuBar = typeof nO['MENU_MASTER_BAR'] === 'string' ? JSON.parse(nO['MENU_MASTER_BAR']) : (nO['MENU_MASTER_BAR'] || {});
+
+                    // Génère les onglets uniquement si le tiroir est fermé pour ne pas faire clignoter l'UI
+                    if(!document.getElementById('order-drawer').classList.contains('open')) {
+                        renderDynamicTabs();
+                    }
+
+                    activeOrders = nO;
+                    if(!isDraggingTable) renderFloor();
+                    
+                    // Rafraîchissement en direct de la carte ouverte
+                    if(document.getElementById('order-drawer').classList.contains('open') && window.currentCategory) {
+                        renderMenu(window.currentCategory, window.currentMenuType || 'cuisine');
+                    }
+                }
+            } catch(e) { console.error("Erreur Sync:", e); }
+        }
+
+        // 🧠 GÉNÉRATEUR D'ONGLETS INTELLIGENT
+        function renderDynamicTabs() {
+            let container = document.getElementById('dynamic-menu-tabs');
+            if (!container) return;
             
-            if (category === 'MenuJour') {
-                currentCourseDefault = 2;
-                if(menuCuisine.menuJour) itemsToDisplay.push(...menuCuisine.menuJour.map(i => ({...i, dest: 'cuisine', isMenuJour: true})));
-                if(menuCuisine.suggestions) itemsToDisplay.push(...menuCuisine.suggestions.map(i => ({...i, dest: 'cuisine', isMenuJour: false})));
-            }
-            else if (category === 'Entrées') {
-                currentCourseDefault = 1;
-                if(menuCuisine.entrees) itemsToDisplay.push(...menuCuisine.entrees.map(i => ({...i, dest: 'cuisine'})));
-            } 
-            else if (category === 'Plats') {
-                currentCourseDefault = 2;
-                if(menuCuisine.plats) itemsToDisplay.push(...menuCuisine.plats.map(i => ({...i, dest: 'cuisine'})));
-            } 
-            else if (category === 'Desserts') {
-                currentCourseDefault = 3;
-                if(menuCuisine.desserts) itemsToDisplay.push(...menuCuisine.desserts.map(i => ({...i, dest: 'cuisine'})));
-            } 
-            else if (category === 'Boissons') {
-                currentCourseDefault = 0;
-                for(let key in menuBar) {
-                    if(menuBar[key]) itemsToDisplay.push(...menuBar[key].map(i => ({...i, dest: 'bar'})));
+            let html = '';
+            
+            // Onglets Cuisine
+            for (let k in menuCuisine) {
+                if (menuCuisine[k] && menuCuisine[k].length > 0) {
+                    html += `<button class="btn-mini menu-tab" style="flex:1; min-width: 100px; font-size:0.85rem; padding:10px;" onclick="renderMenu('${k}', 'cuisine')">${k.toUpperCase()}</button>`;
                 }
             }
+            
+            // Onglets Bar
+            for (let k in menuBar) {
+                if (menuBar[k] && menuBar[k].length > 0) {
+                    html += `<button class="btn-mini menu-tab" style="flex:1; min-width: 100px; font-size:0.85rem; padding:10px;" onclick="renderMenu('${k}', 'bar')">🍸 ${k.toUpperCase()}</button>`;
+                }
+            }
+            
+            if (html === '') {
+                html = `<span style="color:var(--alert); padding:10px; font-weight:bold;">Aucun plat n'a été publié dans l'Admin.</span>`;
+            }
 
+            container.innerHTML = html;
+        }
+
+        // 🟢 LECTURE ET AFFICHAGE DES PLATS ET STOCKS NUMÉRIQUES
+        function renderMenu(categoryKey, type = 'cuisine') {
+            window.currentCategory = categoryKey;
+            window.currentMenuType = type;
+            let itemsToDisplay = [];
+            
+            let sourceMenu = (type === 'bar') ? menuBar : menuCuisine;
+            
+            if (sourceMenu[categoryKey]) {
+                itemsToDisplay = sourceMenu[categoryKey].map(i => ({...i, dest: type}));
+            }
+
+            // Gestion visuelle des boutons d'onglets
             document.querySelectorAll('.drawer .menu-tab').forEach(b => {
-                b.classList.remove('gold');
-                b.style.background = 'transparent';
-                b.style.borderColor = 'var(--border)';
-                b.style.color = 'var(--text-main)';
-                
-                if(b.innerText.includes(category.toUpperCase()) || (category === 'MenuJour' && b.innerText.includes('MENU JOUR'))) {
-                    b.classList.add('gold');
-                    b.style.background = 'var(--gold-dim)';
-                    b.style.borderColor = 'var(--gold)';
-                    b.style.color = 'var(--gold)';
+                b.classList.remove('gold'); b.style.background = 'transparent'; b.style.color = 'var(--text-main)';
+                if(b.innerText.includes(categoryKey.toUpperCase())) {
+                    b.classList.add('gold'); b.style.background = 'var(--gold-dim)'; b.style.color = 'var(--gold)';
                 }
             });
 
             const container = document.getElementById('menu');
             if (itemsToDisplay.length === 0) {
-                container.innerHTML = `<div style="grid-column:1/-1; text-align:center; color:var(--text-muted); padding:20px; font-size:1.1rem;">La carte est vide. Le chef n'a rien publié dans cette section.</div>`;
+                container.innerHTML = `<div style="grid-column:1/-1; text-align:center; color:var(--text-muted); padding:20px;">Catégorie vide.</div>`;
                 return;
             }
 
             container.innerHTML = itemsToDisplay.map(item => {
-                let isSoldOut = (item.stock === 0);
-                let cleanName = item.name.replace(/\n/g, '<br>');
-                let escapedName = escapeQuotes(item.name);
+                let isSoldOut = (item.stock === 0 || item.stock === "0");
+                let cleanName = item.name ? item.name.replace(/\n/g, '<br>') : 'Inconnu';
+                let escapedName = item.name ? item.name.replace(/'/g, "\\'").replace(/"/g, '&quot;') : '';
                 let price = parseFloat(item.price) || 0;
                 
+                // 🚨 STOCKS EN CHIFFRES (Fini le carton 📦)
+                let stockVal = item.stock !== undefined ? item.stock : 99;
                 let stockHtml = '';
-                if (item.stock !== "" && item.stock !== undefined && item.stock > 0) {
+                
+                if (stockVal !== "" && stockVal !== undefined && stockVal > 0) {
                     let badgeClass = 'stock-badge';
-                    if (item.stock <= stockAlerts.red) badgeClass += ' alert-red';
-                    else if (item.stock <= stockAlerts.orange) badgeClass += ' alert-orange';
-                    else if (item.stock <= stockAlerts.yellow) badgeClass += ' alert-yellow';
-                    else if (item.stock <= stockAlerts.green) badgeClass += ' alert-green';
+                    if (stockVal <= 2) badgeClass += ' alert-red';
+                    else if (stockVal <= 5) badgeClass += ' alert-orange';
+                    else if (stockVal <= 10) badgeClass += ' alert-yellow';
+                    else badgeClass += ' alert-green';
 
-                    stockHtml = `<div class="${badgeClass}">${item.stock}</div>`;
+                    stockHtml = `<div class="${badgeClass}">${stockVal}</div>`;
                 }
 
-                let clickAction = (item.isMenuJour) 
-                    ? `addMenuToTicket('${escapedName}', ${price}, '${item.dest}')` 
-                    : `addToTicket('${escapedName}', ${price}, '${item.dest}')`;
-
                 return `
-                    <button class="btn-item ${isSoldOut ? 'sold-out' : ''}" onclick="${clickAction}">
+                    <button class="btn-item ${isSoldOut ? 'sold-out' : ''}" onclick="addToTicket('${escapedName}', ${price}, '${item.dest}')">
                         ${stockHtml}
                         <span>${cleanName}</span>
                         <span class="price">${price.toFixed(2)} €</span>
                     </button>
                 `;
             }).join('');
-        }
-
-        function openSurMesureModal() {
-            document.getElementById('sm-name').value = '';
-            document.getElementById('sm-price').value = '';
-            document.getElementById('sur-mesure-modal').classList.add('open');
-        }
-
-        function closeSurMesureModal() {
-            document.getElementById('sur-mesure-modal').classList.remove('open');
-        }
-
-        function addSurMesure() {
-            let n = document.getElementById('sm-name').value.trim();
-            let p = parseFloat(document.getElementById('sm-price').value) || 0;
-            let c = parseInt(document.getElementById('sm-course').value);
-            
-            if(!n) return alert("Veuillez entrer un nom pour la demande.");
-            
-            let dest = (c === 0) ? 'bar' : 'cuisine';
-            
-            executeAddToCart("✏️ " + n, p, dest, c);
-            closeSurMesureModal();
-        }
-
-        function addMenuToTicket(n, p, dest) {
-            let parts = n.split('[BR]');
-            
-            if (parts.length <= 1) {
-                let cleanN = n.replace('🌟 ', '').trim();
-                executeAddToCart("🥗 Entrée (" + cleanN + ")", 0, dest, 1, n);
-                executeAddToCart("🔥 Plat (" + cleanN + ")", p, dest, 2, n);
-                executeAddToCart("🍰 Dessert (" + cleanN + ")", 0, dest, 3, n);
-                return;
-            }
-
-            let entree = parts[0] ? "🥗 " + parts[0].trim() : null;
-            let plat = parts[1] ? "🔥 " + parts[1].trim() : null;
-            let dessert = parts[2] ? "🍰 " + parts[2].trim() : null;
-
-            if (entree) executeAddToCart(entree, 0, dest, 1, n); 
-            if (plat) executeAddToCart(plat, p, dest, 2, n);     
-            if (dessert) executeAddToCart(dessert, 0, dest, 3, n); 
-            
-            for(let i=3; i<parts.length; i++) {
-                if(parts[i].trim() !== '') executeAddToCart("🍰 " + parts[i].trim(), 0, dest, 3, n);
-            }
-        }
-
-        function getItemStock(name) {
-            let pureName = name.replace('🌟 ', '').trim().toLowerCase();
-            let foundStock = null;
-            ['entrees', 'plats', 'desserts', 'menuJour', 'suggestions'].forEach(cat => {
-                if(menuCuisine[cat]) {
-                    let match = menuCuisine[cat].find(i => i.name.replace('🌟 ', '').trim().toLowerCase() === pureName);
-                    if(match && match.stock !== "" && match.stock !== undefined) foundStock = match.stock;
-                }
-            });
-            for(let cat in menuBar) {
-                if(menuBar[cat]) {
-                    let match = menuBar[cat].find(i => i.name.replace('🌟 ', '').trim().toLowerCase() === pureName);
-                    if(match && match.stock !== "" && match.stock !== undefined) foundStock = match.stock;
-                }
-            }
-            return foundStock;
-        }
-
-        function showCriticalStockAlert(name, stock) {
-            document.getElementById('critical-stock-msg').innerHTML = `Il ne reste que <br><span style="color:var(--alert); font-size:4rem; font-weight:900;">${stock}</span><br> ${name}`;
-            document.getElementById('stock-critical-modal').classList.add('open');
-            if(navigator.vibrate) navigator.vibrate([200, 100, 200]); 
-        }
-
-        function closeCriticalStockAlert() {
-            document.getElementById('stock-critical-modal').classList.remove('open');
-        }
-
-        let pendingCuissonItem = null;
-        function addToTicket(n, p, dest) { 
-            let realName = n.replace(/\[BR\]/g, ' ');
-            let currentStock = getItemStock(realName);
-            
-            if (currentStock !== null && currentStock <= 3 && currentStock > 0) {
-                showCriticalStockAlert(realName, currentStock);
-            }
-
-            if(['entrecôte', 'entrecote', 'bœuf', 'boeuf', 'steak', 'burger', 'filet', 'canard', 'agneau', 'viande', 'tartare', 'onglet', 'bavette', 'côte', 'cote'].some(m => realName.toLowerCase().includes(m))) {
-                pendingCuissonItem = { n: realName, p, dest }; 
-                document.getElementById('cuisson-item-name').innerText = realName; 
-                document.getElementById('cuisson-modal').classList.add('open'); 
-                return;
-            }
-            executeAddToCart(realName, p, dest);
-        }
-
-        function confirmCuisson(niv) { 
-            if(pendingCuissonItem) { 
-                executeAddToCart(`${pendingCuissonItem.n} (${niv})`, pendingCuissonItem.p, pendingCuissonItem.dest); 
-                cancelCuisson(); 
-            } 
-        }
-        function cancelCuisson() { pendingCuissonItem = null; document.getElementById('cuisson-modal').classList.remove('open'); }
-        
-        function executeAddToCart(n, p, dest, courseOverride, originalName) { 
-            let cId = courseOverride !== undefined ? courseOverride : currentCourseDefault;
-            let seatId = currentSeat; 
-            
-            let e = ticketItems.find(i => i.n === n && !i.done && !i.fired && i.course === cId && !i.obs && !i.isOffered && (i.seat || 0) === seatId); 
-            if(e) e.qty = (e.qty||1)+1; 
-            else ticketItems.push({ 
-                id: Date.now()+Math.random(), 
-                itemId: Date.now(), 
-                n: n.replace(/\[BR\]/g, ' '), 
-                originalName: (originalName || n).replace(/\[BR\]/g, '\n'),
-                p, 
-                qty: 1, 
-                done: false, 
-                dest, 
-                fired: false, 
-                firedTime: null, 
-                savedToDB: false, 
-                isOffered: false, 
-                course: cId, 
-                obs: "",
-                seat: seatId
-            }); 
-            renderTicket(); 
         }
         
         let pendingCancelIndex = null;
