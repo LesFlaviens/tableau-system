@@ -141,7 +141,6 @@
             <h2 style="color:var(--accent); text-transform:uppercase; letter-spacing:2px; margin-top:0;">Finalisation</h2>
             <p style="color:var(--text-muted); font-size:0.9rem; margin-bottom: 25px;">Comment souhaitez-vous régler cette commande ?</p>
             
-            <!-- Ces boutons seront masqués ou affichés par le JavaScript selon tes réglages Admin -->
             <button id="btn-pay-now-ui" class="checkout-btn btn-pay-now" onclick="simulatePayment()">
                 💳 PAYER MAINTENANT <br><span style="font-size:0.7rem; opacity:0.8;">(Apple Pay / CB)</span>
             </button>
@@ -175,6 +174,41 @@
         let cart = []; 
 
         document.querySelectorAll('.currency-symbol').forEach(el => el.innerText = currentCurrency);
+
+        const API = {
+            getState: async () => {
+                let state = { activeOrders: {} };
+                try {
+                    let r = await fetch(`${SERVER_URL}/get-current-state?tenantID=${tenantID}`);
+                    if(r.ok) state = await r.json();
+                    else throw new Error("Erreur réseau");
+                } catch(e) {
+                    state = JSON.parse(localStorage.getItem('EMPIRE_GLOBAL_SYNC')) || { activeOrders: {} };
+                }
+                return state;
+            },
+            sendOrder: async (payload) => {
+                let state = JSON.parse(localStorage.getItem('EMPIRE_GLOBAL_SYNC')) || { activeOrders: {} };
+                if (!state.activeOrders) state.activeOrders = {};
+
+                if (payload.tableId === 'ALERTS_MASTER') {
+                    state.activeOrders['ALERTS_MASTER'] = { data: payload.order.data };
+                } else {
+                    state.activeOrders[payload.tableId] = payload.order;
+                }
+
+                localStorage.setItem('EMPIRE_GLOBAL_SYNC', JSON.stringify(state));
+                window.dispatchEvent(new Event('storage')); 
+
+                try {
+                    await fetch(`${SERVER_URL}/update-order?tenantID=${tenantID}`, {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify(payload)
+                    });
+                } catch(e) {}
+            }
+        };
 
         function addToCart(itemName, price, dest) {
             let existingItem = cart.find(i => i.n === itemName && i.obs === "");
@@ -281,14 +315,11 @@
                 let numPropre = tableNumber.replace('order_', '').replace('T', '').trim();
                 let orderId = `order_${numPropre}`;
                 
+                const state = await API.getState();
                 let oldData = {};
-                try {
-                    let r = await fetch(`${SERVER_URL}/get-current-state?tenantID=${tenantID}`);
-                    let state = await r.json();
-                    if (state.activeOrders && state.activeOrders[orderId]) {
-                        oldData = state.activeOrders[orderId].data || state.activeOrders[orderId];
-                    }
-                } catch(e) {}
+                if (state.activeOrders && state.activeOrders[orderId]) {
+                    oldData = state.activeOrders[orderId].data || state.activeOrders[orderId];
+                }
 
                 let currentTableData = {
                     status: 'sent', 
@@ -305,14 +336,17 @@
                 let globalTotal = currentTableData.items.reduce((sum, i) => sum + (parseFloat(i.p||0) * (i.qty||1)), 0);
                 currentTableData.totalStr = `${globalTotal.toFixed(2)} ${currentCurrency}`;
 
-                await fetch(`${SERVER_URL}/update-order?tenantID=${tenantID}`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ tableId: orderId, order: { data: currentTableData } })
-                });
+                let alertMessage = paymentStatus.includes("Serveur") 
+                    ? `💰 À ENCAISSER : TABLE ${numPropre}` 
+                    : `📱 NOUVELLE COMMANDE (${numPropre})`;
+
+                await Promise.all([
+                    API.sendOrder({ tableId: orderId, order: { data: currentTableData } }),
+                    API.sendOrder({ tableId: 'ALERTS_MASTER', order: { data: { type: 'NEW_ORDER', message: alertMessage, timestamp: Date.now() } } })
+                ]);
 
             } catch (e) {
-                console.error("Erreur", e);
+                console.error("Erreur de transmission", e);
             } finally {
                 let btn = document.querySelector('.btn-pay-now');
                 if(btn) {
@@ -361,11 +395,9 @@
                 let btnOnlineUi = document.getElementById('btn-pay-now-ui');
                 let btnServerUi = document.getElementById('btn-pay-later-ui');
                 
-                // On cache ou on affiche les boutons dynamiquement
                 if(btnOnlineUi) btnOnlineUi.style.display = payOnline ? 'flex' : 'none';
                 if(btnServerUi) btnServerUi.style.display = payServer ? 'flex' : 'none';
 
-                // Blocage total si aucun moyen n'est sélectionné
                 if (!payOnline && !payServer) {
                     document.getElementById('checkout-modal').innerHTML = `
                         <div class="checkout-box">
