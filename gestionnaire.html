@@ -2626,60 +2626,20 @@ function renderFloor() {
             }
         }
 
-    async function acknowledgeChefAlert() {
-    // 1. On coupe l'alarme visuelle immédiatement sur la tablette
-    const alertBox = document.getElementById('drawer-alert-banner');
-    if (alertBox) {
-        alertBox.style.display = 'none';
-    }
-
-    // 2. ON TUE L'ALERTE GLOBALE (avec un statut clair au lieu de "null")
-    try {
-        await fetch(`${SERVER_URL}/update-order?tenantID=${tenantID}`, {
-            method: 'POST', 
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ tableId: 'ALERTS_MASTER', order: { data: { cleared: true, timestamp: Date.now() } } })
-        });
-    } catch(e) {
-        console.error("Impossible d'acquitter l'alerte globale sur le serveur.");
-    }
-
-    // 3. LE TUEUR DE PARASITES : On nettoie TOUTES les tables qui sonnent
-    if (typeof activeOrders !== 'undefined') {
-        for (let tableId in activeOrders) {
-            let orderData = activeOrders[tableId].data || activeOrders[tableId];
+        async function acknowledgeChefAlert() {
+            if (!currentTable) return;
             
-            if (orderData && orderData.alerteRouge) {
-                delete orderData.alerteRouge; // On arrache le drapeau rouge de la table
+            let order = activeOrders[currentTable];
+            if (order) {
+                delete order.alerteRouge; // Supprime l'alerte
+                await API.update(currentTable, order, true); // Sync avec Render
                 
-                // On renvoie la commande propre et silencieuse au Cloud
-                try {
-                    if (typeof API !== 'undefined' && API.update) {
-                        await API.update(tableId, orderData, true);
-                    } else {
-                        await fetch(`${SERVER_URL}/update-order?tenantID=${tenantID}`, {
-                            method: 'POST', 
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({ tableId: tableId, order: { data: orderData } })
-                        });
-                    }
-                } catch(e) {
-                    console.error(`Impossible de nettoyer la table ${tableId}`);
-                }
+                checkTableAlertState(currentTable); // Débloque l'interface
+                showToast("✅ Alerte traitée");
+                logAction("ALERTE RÉGLÉE", `Table ${currentTable} par ${currentUser.name}`);
             }
         }
-    }
 
-    // 4. On débloque l'interface locale
-    if (typeof currentTable !== 'undefined' && currentTable) {
-        if (typeof checkTableAlertState === 'function') checkTableAlertState(currentTable);
-    }
-
-    // 5. Notification de succès
-    if (typeof showToast === 'function') {
-        showToast("✅ Alerte traitée et effacée du réseau");
-    }
-}
         function openOrder(tableLabel) {
             currentTable = tableLabel;
             document.getElementById('table-label').innerText = "TABLE " + tableLabel;
