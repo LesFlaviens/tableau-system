@@ -1426,20 +1426,16 @@ vérifier
         function openDrawer(id) { document.getElementById(id).classList.add('open'); }
         function closeDrawer(id) { document.getElementById(id).classList.remove('open'); }
 
-       // --- CONSTANTES RÉSEAU (LA FRÉQUENCE RADIO) ---
-        const tenantID = 'MASTER_STATE';
-        const SERVER_URL = "https://tableau-system.onrender.com";
-
         const API = {
             getState: async () => {
                 let state = { activeOrders: {} };
                 try {
-                    // Cible explicitement l'URL Render avec le TenantID
-                    let r = await fetch(`${SERVER_URL}/get-current-state?tenantID=${tenantID}`);
+                    let url = (window.location.protocol === 'file:') ? 'https://tableau-system.onrender.com/get-current-state' : '/get-current-state';
+                    let r = await fetch(url);
                     if(r.ok) {
                         state = await r.json();
                         let tag = document.getElementById('stock-tag');
-                        if (tag && (tag.innerText.includes('DÉCONNECTÉ') || tag.innerText.includes('ERREUR'))) {
+                        if (tag && tag.innerText.includes('DÉCONNECTÉ') || tag.innerText.includes('ERREUR')) {
                             tag.innerHTML = '● LIAISON SÉCURISÉE';
                             tag.style.background = 'var(--accent-dim)';
                             tag.style.color = 'var(--accent)';
@@ -1456,15 +1452,6 @@ vérifier
                         tag.style.borderColor = 'var(--alert)';
                     }
                 }
-                
-                // 🚨 LE DÉCODEUR UNIVERSEL DU PAD SERVEUR 🚨
-                if (state && state.activeOrders) {
-                    for (let key in state.activeOrders) {
-                        if (state.activeOrders[key] && state.activeOrders[key].data !== undefined && !Array.isArray(state.activeOrders[key].data)) {
-                            state.activeOrders[key] = state.activeOrders[key].data;
-                        }
-                    }
-                }
                 return state;
             },
             update: async (key, data, isOrder = false) => {
@@ -1475,9 +1462,9 @@ vérifier
                 else state.activeOrders[key] = payload;
                 localStorage.setItem('EMPIRE_GLOBAL_SYNC', JSON.stringify(state));
                 
+                let url = (window.location.protocol === 'file:') ? 'https://tableau-system.onrender.com/update-order' : '/update-order';
                 try {
-                    // Cible explicitement l'URL Render avec le TenantID
-                    let r = await fetch(`${SERVER_URL}/update-order?tenantID=${tenantID}`, { 
+                    let r = await fetch(url, { 
                         method: 'POST', 
                         headers: {'Content-Type': 'application/json'}, 
                         body: JSON.stringify({ tableId: key, order: data === null ? null : payload }) 
@@ -1495,11 +1482,6 @@ vérifier
             }
         };
 
-        window.addEventListener('storage', (e) => {
-            if (e.key === 'EMPIRE_GLOBAL_SYNC') {
-                if(typeof syncData === 'function') syncData();
-            }
-        });
         window.addEventListener('storage', (e) => {
             if (e.key === 'EMPIRE_GLOBAL_SYNC') {
                 if(typeof syncData === 'function') syncData();
@@ -2201,15 +2183,13 @@ function renderFloor() {
                         let tStatus = '';
                         let isActive = false;
 
-                    // 🧠 L'INTELLIGENCE DE MAPPING BLINDÉE (Fusionne order_2 avec T2)
-                        let orderKey = Object.keys(activeOrders).find(k => {
-                            // On nettoie le signal entrant (ex: "order_2" ou "order_T2" devient "2")
-                            let cleanK = k.toLowerCase().replace('order_', '').replace('web_', '').replace(/^t/, '').replace(/\s+/g, '');
-                            // On nettoie le nom de ta table physique (ex: "T2" ou "Table 2" devient "2")
-                            let cleanT = t.label.toLowerCase().replace(/^t/, '').replace('table', '').replace(/\s+/g, '');
-                            
-                            return cleanK === cleanT || k === t.label;
-                        });
+                        // 🧠 L'INTELLIGENCE DE MAPPING (Associe automatiquement "2" ou "Table 2" avec "T2")
+                        let orderKey = Object.keys(activeOrders).find(k => 
+                            k.toLowerCase() === t.label.toLowerCase() ||
+                            ('t' + k).toLowerCase() === t.label.toLowerCase() ||
+                            k.toLowerCase().replace(/[^a-z0-9]/gi, '') === t.label.toLowerCase().replace(/[^a-z0-9]/gi, '')
+                        );
+
                         let orderData = orderKey ? activeOrders[orderKey] : null;
                         if(orderData) orderData._isMapped = true; // Marque la commande web comme intégrée au plan !
 
@@ -2433,15 +2413,12 @@ function renderFloor() {
                         let tStatus = '';
                         let isActive = false;
 
-                       // 🧠 L'INTELLIGENCE DE MAPPING BLINDÉE (Fusionne order_2 avec T2)
-                        let orderKey = Object.keys(activeOrders).find(k => {
-                            // On nettoie le signal entrant (ex: "order_2" ou "order_T2" devient "2")
-                            let cleanK = k.toLowerCase().replace('order_', '').replace('web_', '').replace(/^t/, '').replace(/\s+/g, '');
-                            // On nettoie le nom de ta table physique (ex: "T2" ou "Table 2" devient "2")
-                            let cleanT = t.label.toLowerCase().replace(/^t/, '').replace('table', '').replace(/\s+/g, '');
-                            
-                            return cleanK === cleanT || k === t.label;
-                        });
+                        // 🧠 L'INTELLIGENCE DE MAPPING (Associe automatiquement "2" ou "Table 2" avec "T2")
+                        let orderKey = Object.keys(activeOrders).find(k => 
+                            k.toLowerCase() === t.label.toLowerCase() ||
+                            ('t' + k).toLowerCase() === t.label.toLowerCase() ||
+                            k.toLowerCase().replace(/[^a-z0-9]/gi, '') === t.label.toLowerCase().replace(/[^a-z0-9]/gi, '')
+                        );
 
                         let orderData = orderKey ? activeOrders[orderKey] : null;
                         if(orderData) orderData._isMapped = true; // Marque la commande web comme intégrée au plan !
@@ -2649,20 +2626,60 @@ function renderFloor() {
             }
         }
 
-        async function acknowledgeChefAlert() {
-            if (!currentTable) return;
+    async function acknowledgeChefAlert() {
+    // 1. On coupe l'alarme visuelle immédiatement sur la tablette
+    const alertBox = document.getElementById('drawer-alert-banner');
+    if (alertBox) {
+        alertBox.style.display = 'none';
+    }
+
+    // 2. ON TUE L'ALERTE GLOBALE (avec un statut clair au lieu de "null")
+    try {
+        await fetch(`${SERVER_URL}/update-order?tenantID=${tenantID}`, {
+            method: 'POST', 
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ tableId: 'ALERTS_MASTER', order: { data: { cleared: true, timestamp: Date.now() } } })
+        });
+    } catch(e) {
+        console.error("Impossible d'acquitter l'alerte globale sur le serveur.");
+    }
+
+    // 3. LE TUEUR DE PARASITES : On nettoie TOUTES les tables qui sonnent
+    if (typeof activeOrders !== 'undefined') {
+        for (let tableId in activeOrders) {
+            let orderData = activeOrders[tableId].data || activeOrders[tableId];
             
-            let order = activeOrders[currentTable];
-            if (order) {
-                delete order.alerteRouge; // Supprime l'alerte
-                await API.update(currentTable, order, true); // Sync avec Render
+            if (orderData && orderData.alerteRouge) {
+                delete orderData.alerteRouge; // On arrache le drapeau rouge de la table
                 
-                checkTableAlertState(currentTable); // Débloque l'interface
-                showToast("✅ Alerte traitée");
-                logAction("ALERTE RÉGLÉE", `Table ${currentTable} par ${currentUser.name}`);
+                // On renvoie la commande propre et silencieuse au Cloud
+                try {
+                    if (typeof API !== 'undefined' && API.update) {
+                        await API.update(tableId, orderData, true);
+                    } else {
+                        await fetch(`${SERVER_URL}/update-order?tenantID=${tenantID}`, {
+                            method: 'POST', 
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ tableId: tableId, order: { data: orderData } })
+                        });
+                    }
+                } catch(e) {
+                    console.error(`Impossible de nettoyer la table ${tableId}`);
+                }
             }
         }
+    }
 
+    // 4. On débloque l'interface locale
+    if (typeof currentTable !== 'undefined' && currentTable) {
+        if (typeof checkTableAlertState === 'function') checkTableAlertState(currentTable);
+    }
+
+    // 5. Notification de succès
+    if (typeof showToast === 'function') {
+        showToast("✅ Alerte traitée et effacée du réseau");
+    }
+}
         function openOrder(tableLabel) {
             currentTable = tableLabel;
             document.getElementById('table-label').innerText = "TABLE " + tableLabel;
@@ -2704,42 +2721,27 @@ function renderFloor() {
             currentCategory = category;
             let itemsToDisplay = [];
             
-            // 🧠 MOTEUR DE RECHERCHE INTELLIGENT (Casse la barrière des minuscules/majuscules)
-            const getItems = (menuObj, possibleKeys) => {
-                let res = [];
-                for(let k in menuObj) {
-                    if (possibleKeys.includes(k.toLowerCase().replace(/\s+/g, ''))) {
-                        res.push(...menuObj[k]);
-                    }
-                }
-                return res;
-            };
-
-            // On utilise l'IA pour chercher les catégories, peu importe comment elles ont été tapées dans l'Admin
             if (category === 'MenuJour') {
                 currentCourseDefault = 2;
-                itemsToDisplay.push(...getItems(menuCuisine, ['menujour', 'menudujour']).map(i => ({...i, dest: 'cuisine', isMenuJour: true})));
-                itemsToDisplay.push(...getItems(menuCuisine, ['suggestions', 'suggestion']).map(i => ({...i, dest: 'cuisine', isMenuJour: false})));
+                if(menuCuisine.menuJour) itemsToDisplay.push(...menuCuisine.menuJour.map(i => ({...i, dest: 'cuisine', isMenuJour: true})));
+                if(menuCuisine.suggestions) itemsToDisplay.push(...menuCuisine.suggestions.map(i => ({...i, dest: 'cuisine', isMenuJour: false})));
             }
             else if (category === 'Entrées') {
                 currentCourseDefault = 1;
-                itemsToDisplay.push(...getItems(menuCuisine, ['entrees', 'entrées', 'entree', 'entrée']).map(i => ({...i, dest: 'cuisine'})));
+                if(menuCuisine.entrees) itemsToDisplay.push(...menuCuisine.entrees.map(i => ({...i, dest: 'cuisine'})));
             } 
             else if (category === 'Plats') {
                 currentCourseDefault = 2;
-                itemsToDisplay.push(...getItems(menuCuisine, ['plats', 'plat']).map(i => ({...i, dest: 'cuisine'})));
+                if(menuCuisine.plats) itemsToDisplay.push(...menuCuisine.plats.map(i => ({...i, dest: 'cuisine'})));
             } 
             else if (category === 'Desserts') {
                 currentCourseDefault = 3;
-                itemsToDisplay.push(...getItems(menuCuisine, ['desserts', 'dessert']).map(i => ({...i, dest: 'cuisine'})));
+                if(menuCuisine.desserts) itemsToDisplay.push(...menuCuisine.desserts.map(i => ({...i, dest: 'cuisine'})));
             } 
             else if (category === 'Boissons') {
                 currentCourseDefault = 0;
-                // Le bar récupère tout !
                 for(let key in menuBar) {
-                    if(menuBar[key] && Array.isArray(menuBar[key])) {
-                        itemsToDisplay.push(...menuBar[key].map(i => ({...i, dest: 'bar'})));
-                    }
+                    if(menuBar[key]) itemsToDisplay.push(...menuBar[key].map(i => ({...i, dest: 'bar'})));
                 }
             }
 
@@ -2764,23 +2766,20 @@ function renderFloor() {
             }
 
             container.innerHTML = itemsToDisplay.map(item => {
-                let isSoldOut = (item.stock === 0 || item.stock === "0");
+                let isSoldOut = (item.stock === 0);
                 let cleanName = item.name.replace(/\n/g, '<br>');
                 let escapedName = escapeQuotes(item.name);
                 let price = parseFloat(item.price) || 0;
                 
-                // 🚨 AFFICHAGE DU STOCK EN CHIFFRE (Remplace le carton) 🚨
-                let stockVal = item.stock !== undefined ? item.stock : 99;
                 let stockHtml = '';
-                
-                if (stockVal !== "" && stockVal !== undefined && stockVal > 0) {
+                if (item.stock !== "" && item.stock !== undefined && item.stock > 0) {
                     let badgeClass = 'stock-badge';
-                    if (stockVal <= stockAlerts.red) badgeClass += ' alert-red';
-                    else if (stockVal <= stockAlerts.orange) badgeClass += ' alert-orange';
-                    else if (stockVal <= stockAlerts.yellow) badgeClass += ' alert-yellow';
-                    else if (stockVal <= stockAlerts.green) badgeClass += ' alert-green';
+                    if (item.stock <= stockAlerts.red) badgeClass += ' alert-red';
+                    else if (item.stock <= stockAlerts.orange) badgeClass += ' alert-orange';
+                    else if (item.stock <= stockAlerts.yellow) badgeClass += ' alert-yellow';
+                    else if (item.stock <= stockAlerts.green) badgeClass += ' alert-green';
 
-                    stockHtml = `<div class="${badgeClass}">${stockVal}</div>`;
+                    stockHtml = `<div class="${badgeClass}">${item.stock}</div>`;
                 }
 
                 let clickAction = (item.isMenuJour) 
@@ -3395,7 +3394,7 @@ if (method === 'QR/TEL') {
     logAction("ENCAISSEMENT", `${method} : ${amt.toFixed(2)}€ | Table: ${currentTable}`);
 }
 
-async function syncData() {
+        async function syncData() {
             if (isArchiMode) return; 
 
             try {
@@ -3404,75 +3403,36 @@ async function syncData() {
                 if (state && state.activeOrders) {
                     let nO = state.activeOrders;
 
-                    // 🚨 LE DÉCODEUR UNIVERSEL : Ouvre TOUTES les boîtes de données (Commandes, Menus, Accès...)
-                    for (let key in nO) {
-                        if (nO[key] && nO[key].data !== undefined) {
-                            nO[key] = nO[key].data; 
-                        }
-                    }
+                    // 🟢 Synchronisation Menu Cuisine & Bar
+                    if(nO['MENU_MASTER']?.data) menuCuisine = nO['MENU_MASTER'].data;
+                    if(nO['MENU_MASTER_BAR']?.data) menuBar = nO['MENU_MASTER_BAR'].data;
 
-                    // 1. MAJ Menus & Stocks (Lecture directe et déballée)
-                    if(nO['MENU_MASTER']) menuCuisine = nO['MENU_MASTER'];
-                    if(nO['MENU_MASTER_BAR']) menuBar = nO['MENU_MASTER_BAR'];
-
-                    // 2. MAJ Sécurité
-                    if(nO['STAFF_ACCESS'] && Array.isArray(nO['STAFF_ACCESS'])) {
-                        staffAccessData = nO['STAFF_ACCESS'];
-                    }
-
-                    // 3. MAJ Routing
-                    if(nO['ROUTING_MASTER']) {
-                        // On le remballe pour respecter la logique du reste du fichier
-                        activeOrders['ROUTING_MASTER'] = { data: nO['ROUTING_MASTER'] };
-                    }
-
-                    // 4. 🚨 RADAR D'ALERTES
-                    if(nO['ALERTS_MASTER']) {
-                        let alertData = nO['ALERTS_MASTER'];
-                        if (alertData.timestamp > (window.lastGlobalAlertTime || 0) && !alertData.cleared) {
+                    // 🚨 Radar d'alertes
+                    if(nO['ALERTS_MASTER']?.data) {
+                        let alertData = nO['ALERTS_MASTER'].data;
+                        if (alertData.timestamp > (window.lastGlobalAlertTime || 0)) {
                             window.lastGlobalAlertTime = alertData.timestamp;
-                            
-                            if (alertData.type === 'NEW_ORDER') {
-                                // 📱 COMMANDE WEB : Toast silencieux
-                                if(typeof showToast === 'function') showToast(alertData.message || "📱 Nouvelle commande client");
-                                if (navigator.vibrate) navigator.vibrate([100, 50, 100]);
-                            } else {
-                                // 👨‍🍳 APPEL CUISINE
-                                document.getElementById('global-alert-msg').innerText = alertData.message || "LE CHEF DEMANDE LA SALLE AU PASSE !";
-                                document.getElementById('global-alert-modal').classList.add('open');
-                                if(typeof playKlaxon === 'function') playKlaxon();
-                            }
+                            playKlaxon();
+                            document.getElementById('global-alert-msg').innerText = alertData.message;
+                            document.getElementById('global-alert-modal').classList.add('open');
                         }
                     }
 
-                    // 5. Configuration SAS
-                    if (state.sasConfig) {
-                        localSasConfig = state.sasConfig;
-                        if(typeof updateSASButtonUI === 'function') updateSASButtonUI();
-                    }
-
-                    // 6. Alertes de tables
+                    // 🛡️ Traitement des tables et alertes
                     for (let t in nO) { 
                         if (t.includes('MASTER') || t.includes('ARCHIVE') || t.includes('ARCHITECTURE')) continue;
                         
-                        if (nO[t]?.alerteRouge && (!activeOrders[t] || !activeOrders[t].alerteRouge)) {
-                            if(typeof showToast === 'function') showToast(`⚠️ ALERTE SUR LA TABLE ${t}`);
+                        if (nO[t]?.alerteRouge) {
+                            showToast(`⚠️ ALERTE TABLE ${t}`);
                         }
                     }
 
                     activeOrders = nO;
-                    
-                    if(!isDraggingTable && typeof renderFloor === 'function') renderFloor();
-                    
-                    // 🚨 ACTUALISATION EN DIRECT DE LA CARTE SI LE TIROIR EST OUVERT
-                    if(document.getElementById('order-drawer') && document.getElementById('order-drawer').classList.contains('open')) {
-                        if(typeof renderMenu === 'function' && typeof currentCategory !== 'undefined') {
-                            renderMenu(currentCategory);
-                        }
-                    }
+                    if(!isDraggingTable) renderFloor();
                 }
             } catch(e) { console.error("Erreur Sync:", e); }
         }
+
         // --- 💳 TON BLOC PAIEMENT (SYNTAXE RÉPARÉE) ---
         async function triggerSumUpPayment(montant) {
             try {
@@ -3553,23 +3513,7 @@ async function syncData() {
             renderRooms(); renderFloor(); 
             if(document.getElementById('admin-catalog-modal')) document.getElementById('admin-catalog-modal').classList.remove('open');
         };
-// 🍞 GESTION DES NOTIFICATIONS TOAST (Notifications silencieuses QR)
-        function showToast(msg) {
-            let container = document.getElementById('notification-center');
-            if (!container) {
-                container = document.createElement('div');
-                container.id = 'notification-center';
-                document.body.appendChild(container);
-            }
-            let toast = document.createElement('div');
-            toast.className = 'toast-ready';
-            toast.innerText = msg;
-            toast.onclick = () => toast.remove();
-            container.appendChild(toast);
-            setTimeout(() => { if (toast.parentElement) toast.remove(); }, 5000);
-        }
-
-        // ==========================================
+ // ==========================================
         // 🔄 MOTEUR DE SYNCHRONISATION & RÉSEAU H24
         // ==========================================
         let staffAccessData = []; // Stockage sécurisé des codes PIN du staff
@@ -3582,45 +3526,28 @@ async function syncData() {
                 if (state && state.activeOrders) {
                     let nO = state.activeOrders;
 
-                    // 🚨 LE DÉCODEUR : Ouvre les commandes provenant du QR Code 🚨
-                    for (let key in nO) {
-                        if (key.startsWith('order_') || key.startsWith('W') || key.startsWith('T') || key.startsWith('WEB_')) {
-                            if (nO[key] && nO[key].data !== undefined && !Array.isArray(nO[key].data)) {
-                                nO[key] = nO[key].data; 
-                            }
-                        }
-                    }
-
                     // 1. MAJ Menus & Stocks
                     if(nO['MENU_MASTER']?.data) menuCuisine = nO['MENU_MASTER'].data;
                     if(nO['MENU_MASTER_BAR']?.data) menuBar = nO['MENU_MASTER_BAR'].data;
 
-                    // 2. MAJ Sécurité
+                    // 2. MAJ Sécurité (Téléchargement des Codes PIN)
                     if(nO['STAFF_ACCESS'] && Array.isArray(nO['STAFF_ACCESS'].data)) {
                         staffAccessData = nO['STAFF_ACCESS'].data;
                     }
 
-                    // 3. MAJ Routing
+                    // 3. MAJ Routing (Matrice de diffusion)
                     if(nO['ROUTING_MASTER'] && nO['ROUTING_MASTER'].data) {
                         activeOrders['ROUTING_MASTER'] = { data: nO['ROUTING_MASTER'].data };
                     }
 
-                    // 4. 🚨 RADAR D'ALERTES (Sépare le Chef des commandes QR)
+                    // 4. Alertes Chef (Klaxon)
                     if(nO['ALERTS_MASTER']?.data) {
                         let alertData = nO['ALERTS_MASTER'].data;
-                        if (alertData.timestamp > (window.lastGlobalAlertTime || 0) && !alertData.cleared) {
+                        if (alertData.timestamp > (window.lastGlobalAlertTime || 0)) {
                             window.lastGlobalAlertTime = alertData.timestamp;
-                            
-                            if (alertData.type === 'NEW_ORDER') {
-                                // 📱 COMMANDE WEB : Toast silencieux
-                                if(typeof showToast === 'function') showToast(alertData.message || "📱 Nouvelle commande client");
-                                if (navigator.vibrate) navigator.vibrate([100, 50, 100]);
-                            } else {
-                                // 👨‍🍳 APPEL CUISINE
-                                document.getElementById('global-alert-msg').innerText = alertData.message || "LE CHEF DEMANDE LA SALLE AU PASSE !";
-                                document.getElementById('global-alert-modal').classList.add('open');
-                                if(typeof playKlaxon === 'function') playKlaxon();
-                            }
+                            document.getElementById('global-alert-msg').innerText = alertData.message;
+                            document.getElementById('global-alert-modal').classList.add('open');
+                            if(typeof playKlaxon === 'function') playKlaxon();
                         }
                     }
 
@@ -3630,19 +3557,12 @@ async function syncData() {
                         if(typeof updateSASButtonUI === 'function') updateSASButtonUI();
                     }
 
-                    // 6. Alertes de tables
-                    for (let t in nO) { 
-                        if (t.includes('MASTER') || t.includes('ARCHIVE') || t.includes('ARCHITECTURE')) continue;
-                        if (nO[t]?.alerteRouge && (!activeOrders[t] || !activeOrders[t].alerteRouge)) {
-                            if(typeof showToast === 'function') showToast(`⚠️ ALERTE SUR LA TABLE ${t}`);
-                        }
-                    }
-
                     activeOrders = nO;
-                    if(!isDraggingTable && typeof renderFloor === 'function') renderFloor();
+                    if(!isDraggingTable) renderFloor();
                 }
             } catch(e) { console.error("Erreur Sync:", e); }
         }
+
         // ==========================================
         // 🔐 GESTION DU CLAVIER PIN & SÉCURITÉ
         // ==========================================
