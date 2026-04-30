@@ -456,22 +456,17 @@
                 return; 
             }
 
-            // 🌍 MULTIDEVISE SAAS SÉCURISÉ
-            if (state && state.activeOrders && state.activeOrders['SETTINGS_MASTER']) {
-                let settingsData = state.activeOrders['SETTINGS_MASTER'];
-                if (typeof settingsData === 'string') {
-                    try { settingsData = JSON.parse(settingsData); } catch(e) {}
-                } else if (settingsData.data) {
-                    settingsData = settingsData.data;
-                }
-                
-                let savedCurrency = settingsData.currency;
+            // 🌍 MULTIDEVISE SAAS
+            if (state.activeOrders['SETTINGS_MASTER'] && state.activeOrders['SETTINGS_MASTER'].data) {
+                let savedCurrency = state.activeOrders['SETTINGS_MASTER'].data.currency;
                 if (savedCurrency && savedCurrency !== currentCurrency) {
                     currentCurrency = savedCurrency;
+                    // Mise à jour des placeholders
                     let priceInput = document.getElementById('market-price');
                     if(priceInput) priceInput.placeholder = "Prix Vente " + currentCurrency;
                     let manualPriceInput = document.getElementById('manual-stock-price');
                     if(manualPriceInput) manualPriceInput.placeholder = "Prix Total (" + currentCurrency + ")";
+                    // Forcer le rafraîchissement
                     lastMenuHash = ""; 
                 }
             }
@@ -481,60 +476,47 @@
             if (state && state.activeOrders) {
                 try {
                     let dataChanged = false;
-                    let nO = state.activeOrders;
 
-                    // 1. SYNC DES RECETTES BAR
-                    if (nO['RECIPES_BAR']) {
-                        let rData = typeof nO['RECIPES_BAR'] === 'string' ? JSON.parse(nO['RECIPES_BAR']) : (nO['RECIPES_BAR'].data || nO['RECIPES_BAR']);
-                        if (Array.isArray(rData)) {
-                            let newRecipes = rData.filter(r => r != null);
-                            let newRecHash = JSON.stringify(newRecipes);
-                            if(newRecHash !== lastRecipesHash) {
-                                recipesData = newRecipes;
-                                lastRecipesHash = newRecHash;
-                                dataChanged = true;
-                            }
+                    if (state.activeOrders['RECIPES_BAR'] && Array.isArray(state.activeOrders['RECIPES_BAR'].data)) {
+                        let newRecipes = state.activeOrders['RECIPES_BAR'].data.filter(r => r != null);
+                        let newRecHash = JSON.stringify(newRecipes);
+                        if(newRecHash !== lastRecipesHash) {
+                            recipesData = newRecipes;
+                            lastRecipesHash = newRecHash;
+                            dataChanged = true;
                         }
                     }
                     
-                    // 2. SYNC DE L'INVENTAIRE GLOBAL DU BAR
-                    if (nO['INVENTORY_BAR']) {
-                        let iData = typeof nO['INVENTORY_BAR'] === 'string' ? JSON.parse(nO['INVENTORY_BAR']) : (nO['INVENTORY_BAR'].data || nO['INVENTORY_BAR']);
-                        if (Array.isArray(iData)) {
-                            let newStock = iData.filter(s => s != null);
-                            let newStockHash = JSON.stringify(newStock);
-                            if(newStockHash !== lastStockHash) {
-                                stockGlobalData = newStock;
-                                lastStockHash = newStockHash;
-                                dataChanged = true;
-                            }
+                    if (state.activeOrders['INVENTORY_BAR'] && Array.isArray(state.activeOrders['INVENTORY_BAR'].data)) {
+                        let newStock = state.activeOrders['INVENTORY_BAR'].data.filter(s => s != null);
+                        let newStockHash = JSON.stringify(newStock);
+                        if(newStockHash !== lastStockHash) {
+                            stockGlobalData = newStock;
+                            lastStockHash = newStockHash;
+                            dataChanged = true;
                         }
                     }
                     
-                    // 3. SYNC DU MENU PUBLIÉ (Côté Client/Pad)
-                    if (nO['MENU_BAR']) {
-                        let mData = typeof nO['MENU_BAR'] === 'string' ? JSON.parse(nO['MENU_BAR']) : (nO['MENU_BAR'].data || nO['MENU_BAR']);
-                        if (mData && typeof mData === 'object' && !Array.isArray(mData)) {
-                            let newMenuHash = JSON.stringify(mData);
-                            if(newMenuHash !== lastMenuHash) {
-                                menuData = mData; 
-                                for (let cat in menuData) {
-                                    if (Array.isArray(menuData[cat])) {
-                                        menuData[cat] = menuData[cat].filter(item => item != null && item.name != null);
-                                    } else {
-                                        menuData[cat] = [];
-                                    }
+                    let sMenu = state.activeOrders['MENU_BAR'];
+                    if (sMenu && sMenu.data && typeof sMenu.data === 'object' && !Array.isArray(sMenu.data)) {
+                        let newMenuHash = JSON.stringify(sMenu.data);
+                        if(newMenuHash !== lastMenuHash) {
+                            menuData = sMenu.data; 
+                            for (let cat in menuData) {
+                                if (Array.isArray(menuData[cat])) {
+                                    menuData[cat] = menuData[cat].filter(item => item != null && item.name != null);
+                                } else {
+                                    menuData[cat] = [];
                                 }
-                                lastMenuHash = newMenuHash;
-                                dataChanged = true;
                             }
+                            lastMenuHash = newMenuHash;
+                            dataChanged = true;
                         }
                     }
                     
                     let activeEl = document.activeElement;
                     let isTyping = activeEl && ['INPUT', 'TEXTAREA', 'SELECT'].includes(String(activeEl.tagName).toUpperCase());
                     
-                    // 🔄 ACTUALISATION VISUELLE UNIQUEMENT SI LE BARMAN NE TAPE PAS
                     if (!isTyping && dataChanged) {
                         renderMenu(); 
                         renderRecipes(); 
@@ -543,7 +525,7 @@
                     }
                     
                 } catch(renderErr) { 
-                    console.error("Erreur de rendu Bar:", renderErr); 
+                    console.error("Erreur de rendu:", renderErr); 
                 }
             }
         }
@@ -1145,7 +1127,213 @@
             renderMenu(); await API.update('MENU_BAR', menuData); 
         }
 
-        window.onload = bootSystem;
+        // ==========================================
+        // 🔄 MOTEUR DE SYNCHRONISATION & RÉSEAU H24
+        // ==========================================
+        let staffAccessData = []; // Stockage sécurisé des codes PIN du staff
+        let localSasConfig = { active: false }; // Configuration du SAS
+
+        async function syncData() {
+            if (isArchiMode) return; 
+            try {
+                const state = await API.getState();
+                if (state && state.activeOrders) {
+                    let nO = state.activeOrders;
+
+                    // 1. MAJ Menus & Stocks
+                    if(nO['MENU_MASTER']?.data) menuCuisine = nO['MENU_MASTER'].data;
+                    if(nO['MENU_MASTER_BAR']?.data) menuBar = nO['MENU_MASTER_BAR'].data;
+
+                    // 2. MAJ Sécurité (Téléchargement des Codes PIN)
+                    if(nO['STAFF_ACCESS'] && Array.isArray(nO['STAFF_ACCESS'].data)) {
+                        staffAccessData = nO['STAFF_ACCESS'].data;
+                    }
+
+                    // 3. MAJ Routing (Matrice de diffusion)
+                    if(nO['ROUTING_MASTER'] && nO['ROUTING_MASTER'].data) {
+                        activeOrders['ROUTING_MASTER'] = { data: nO['ROUTING_MASTER'].data };
+                    }
+
+                    // 4. Alertes Chef (Klaxon)
+                    if(nO['ALERTS_MASTER']?.data) {
+                        let alertData = nO['ALERTS_MASTER'].data;
+                        if (alertData.timestamp > (window.lastGlobalAlertTime || 0)) {
+                            window.lastGlobalAlertTime = alertData.timestamp;
+                            document.getElementById('global-alert-msg').innerText = alertData.message;
+                            document.getElementById('global-alert-modal').classList.add('open');
+                            if(typeof playKlaxon === 'function') playKlaxon();
+                        }
+                    }
+
+                    // 5. Configuration SAS
+                    if (state.sasConfig) {
+                        localSasConfig = state.sasConfig;
+                        if(typeof updateSASButtonUI === 'function') updateSASButtonUI();
+                    }
+
+                    // 6. Inventaire et Recettes Bar
+                    if (nO['INVENTORY_BAR'] && Array.isArray(nO['INVENTORY_BAR'].data)) {
+                        stockGlobalData = nO['INVENTORY_BAR'].data.filter(s => s != null);
+                    }
+                    if (nO['RECIPES_BAR'] && Array.isArray(nO['RECIPES_BAR'].data)) {
+                        recipesData = nO['RECIPES_BAR'].data.filter(r => r != null);
+                    }
+
+                    activeOrders = nO;
+                    if(!isDraggingTable) renderFloor();
+                    renderMenu(); 
+                    renderLiveStockPanel();
+                }
+            } catch(e) { console.error("Erreur Sync:", e); }
+        }
+
+        // ==========================================
+        // 🔐 GESTION DU CLAVIER PIN & SÉCURITÉ
+        // ==========================================
+        var myRealPin = "";
+        
+        window.appendPin = function(n) { 
+            if (myRealPin.length < 6) { 
+                myRealPin += n; 
+                if(document.getElementById('pin-display')) document.getElementById('pin-display').innerText = '*'.repeat(myRealPin.length); 
+            }
+        };
+        
+        window.clearPin = function() { 
+            myRealPin = ""; 
+            if(document.getElementById('pin-display')) document.getElementById('pin-display').innerText = ""; 
+        };
+
+        window.submitPin = function() {
+            // 1. Accès Master (Secours absolu)
+            if(myRealPin === "9999" || myRealPin === "999999" || myRealPin === "7777") {
+                window.currentUser = { name: "Directeur", role: "Manager" };
+                currentUser = window.currentUser;
+                unlockPadInterface();
+                document.querySelectorAll('.admin').forEach(e => e.style.display = 'flex');
+                return;
+            }
+
+            // 2. Accès via la Base de Données (Admin -> STAFF_ACCESS)
+            let staffUser = staffAccessData.find(s => s.pin === myRealPin);
+            
+            if (staffUser) {
+                window.currentUser = { name: staffUser.name, role: staffUser.dept };
+                currentUser = window.currentUser;
+                unlockPadInterface();
+                
+                // Si l'utilisateur est de la direction, on montre le bouton Admin, sinon on le cache
+                if(staffUser.dept === 'admin') {
+                    document.querySelectorAll('.admin').forEach(e => e.style.display = 'flex');
+                } else {
+                    document.querySelectorAll('.admin').forEach(e => e.style.display = 'none');
+                }
+                
+                // Mise à jour du badge utilisateur en haut à gauche
+                if(document.getElementById('user-badge')) {
+                    document.getElementById('user-badge').innerText = `Badge: ${currentUser.name} (${currentUser.role})`;
+                }
+            } else { 
+                alert("❌ Code incorrect ou révoqué par la Direction."); 
+                window.clearPin(); 
+            }
+        };
+
+        function unlockPadInterface() {
+            isArchiMode = false;
+            document.body.classList.remove('edit-mode');
+            if(document.getElementById('login-screen')) document.getElementById('login-screen').style.display = 'none';
+            renderFloor();
+            myRealPin = "";
+            
+            // DÉVERROUILLE LE KLAXON AU MOMENT DE LA CONNEXION
+            if (typeof unlockAudio === 'function') unlockAudio();
+        }
+
+        // ==========================================
+        // 🏗️ GESTION ARCHITECTURE DE SALLE & UI
+        // ==========================================
+        window.unlockArchiMode = function() { 
+            isArchiMode = true; 
+            document.body.classList.add('edit-mode'); 
+            const bar = document.getElementById('archi-btn-bar');
+            if(bar) bar.style.setProperty('display', 'flex', 'important');
+            if(typeof closeAdminCatalog === "function") closeAdminCatalog();
+            renderFloor();
+        };
+
+        window.closeArchiMode = function() {
+            isArchiMode = false;
+            document.body.classList.remove('edit-mode');
+            const bar = document.getElementById('archi-btn-bar');
+            if(bar) bar.style.setProperty('display', 'none', 'important');
+            renderFloor();
+        };
+
+        window.closeAdminCatalog = function() { 
+            if(document.getElementById('admin-catalog-modal')) {
+                document.getElementById('admin-catalog-modal').classList.remove('open'); 
+            }
+        };
+
+        // 🛡️ DOUBLE VALIDATION ANTI-ERREUR (SUPPRIMER SALLE)
+        window.deleteCurrentRoom = function() {
+            if (rooms.length <= 1) return alert("🛡️ SÉCURITÉ : L'Empire doit garder au moins une salle.");
+            if (confirm("⚠️ Supprimer la salle '" + currentRoom + "' ?")) {
+                if (confirm("🛑 CONFIRMATION FINALE : Cela détruira TOUTES les tables à l'intérieur. Confirmer ?")) {
+                    tables = tables.filter(t => t && t.room !== currentRoom);
+                    rooms = rooms.filter(r => r !== currentRoom);
+                    currentRoom = rooms[0];
+                    renderRooms(); renderFloor(); pushArchitecture();
+                    if(typeof showToast === 'function') showToast("✅ Salle supprimée");
+                }
+            }
+        };
+
+        // 🚦 RÉGULATEUR SAS ON/OFF
+        window.toggleSAS = function() {
+            localSasConfig.active = !localSasConfig.active;
+            if(typeof updateSASButtonUI === 'function') updateSASButtonUI();
+            if(typeof sendSASConfig === 'function') sendSASConfig();
+        };
+
+        window.updateSASButtonUI = function() {
+            const btn = document.getElementById('btn-sas-toggle');
+            if(!btn) return;
+            if(localSasConfig.active) {
+                btn.innerHTML = "✅ ACTIVÉ";
+                btn.style.borderColor = "#34d399"; btn.style.color = "#34d399"; btn.style.background = "rgba(52, 211, 153, 0.1)";
+            } else {
+                btn.innerHTML = "❌ DÉSACTIVÉ";
+                btn.style.borderColor = "#f87171"; btn.style.color = "#f87171"; btn.style.background = "rgba(248, 113, 113, 0.1)";
+            }
+        };
+
+        // ==========================================
+        // 🕒 LANCEMENT DU SYSTÈME (HORLOGE + SYNC)
+        // ==========================================
+        function connectEmpireH24() { 
+            console.log("🚀 Lancement d'Empire OS...");
+
+            const updateClock = () => {
+                const clock = document.getElementById('empire-clock');
+                if(clock) {
+                    clock.innerText = new Date().toLocaleTimeString('fr-FR');
+                }
+            };
+
+            updateClock(); 
+            setInterval(updateClock, 1000); 
+
+            if (typeof syncData === 'function') {
+                syncData(); 
+                setInterval(syncData, 3000); 
+            }
+        }
+
+        // Lancement automatique et sécurisé
+        window.addEventListener('load', connectEmpireH24);
+
     </script>
 </body>
 </html>
