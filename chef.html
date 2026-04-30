@@ -972,55 +972,183 @@
                 </div>`).join('');
         }
 
-        function renderMenu() {
-            const grid = document.getElementById('dynamic-menu-grid');
-            if(!grid) return;
+       function renderMenu(category) {
+            currentCategory = category;
+            let itemsToDisplay = [];
             
-            let html = '';
-            let colorIndex = 0;
-
-            for (let category in menuData) {
-                let items = menuData[category];
-                if (!Array.isArray(items)) continue; 
-                
-                let catEscaped = String(category || '').replace(/'/g, "\\'");
-                
-                let color = 'var(--ordered)';
-                let displayName = category;
-                
-                if (CAT_SETTINGS[category]) {
-                    color = CAT_SETTINGS[category].color;
-                    displayName = CAT_SETTINGS[category].name;
-                } else {
-                    color = EXTRA_COLORS[colorIndex % EXTRA_COLORS.length];
+            // 🧠 INTELLIGENCE ARTIFICIELLE : Trouve la catégorie peu importe la casse (majuscule/minuscule)
+            const getItems = (menuObj, possibleKeys) => {
+                let res = [];
+                for(let k in menuObj) {
+                    if (possibleKeys.includes(k.toLowerCase().replace(/\s+/g, ''))) {
+                        res.push(...menuObj[k]);
+                    }
                 }
+                return res;
+            };
+
+            if (category === 'MenuJour') {
+                currentCourseDefault = 2;
+                itemsToDisplay.push(...getItems(menuCuisine, ['menujour', 'menudujour']).map(i => ({...i, dest: 'cuisine', isMenuJour: true})));
+                itemsToDisplay.push(...getItems(menuCuisine, ['suggestions']).map(i => ({...i, dest: 'cuisine', isMenuJour: false})));
+            }
+            else if (category === 'Entrées') {
+                currentCourseDefault = 1;
+                itemsToDisplay.push(...getItems(menuCuisine, ['entrees', 'entrées', 'entree', 'entrée']).map(i => ({...i, dest: 'cuisine'})));
+            } 
+            else if (category === 'Plats') {
+                currentCourseDefault = 2;
+                itemsToDisplay.push(...getItems(menuCuisine, ['plats', 'plat']).map(i => ({...i, dest: 'cuisine'})));
+            } 
+            else if (category === 'Desserts') {
+                currentCourseDefault = 3;
+                itemsToDisplay.push(...getItems(menuCuisine, ['desserts', 'dessert']).map(i => ({...i, dest: 'cuisine'})));
+            } 
+            else if (category === 'Boissons') {
+                currentCourseDefault = 0;
+                for(let key in menuBar) {
+                    if(menuBar[key]) itemsToDisplay.push(...menuBar[key].map(i => ({...i, dest: 'bar'})));
+                }
+            }
+
+            document.querySelectorAll('.drawer .menu-tab').forEach(b => {
+                b.classList.remove('gold');
+                b.style.background = 'transparent';
+                b.style.borderColor = 'var(--border)';
+                b.style.color = 'var(--text-main)';
                 
-                let itemsHtml = items.map(item => {
-                    let stockVal = item.stock !== undefined ? item.stock : 99;
-                    let sBorder = "var(--gold)"; let sColor = "var(--gold)"; let sBg = "rgba(251, 191, 36, 0.1)"; let sAnim = "";
+                if(b.innerText.includes(category.toUpperCase()) || (category === 'MenuJour' && b.innerText.includes('MENU JOUR'))) {
+                    b.classList.add('gold');
+                    b.style.background = 'var(--gold-dim)';
+                    b.style.borderColor = 'var(--gold)';
+                    b.style.color = 'var(--gold)';
+                }
+            });
 
-                    if (stockVal <= 2) { sBorder = "var(--alert)"; sColor = "var(--alert)"; sBg = "rgba(248, 113, 113, 0.2)"; sAnim = "animation: pulse 1s infinite;"; } 
-                    else if (stockVal <= 3) { sBorder = "var(--alert)"; sColor = "var(--alert)"; sBg = "rgba(248, 113, 113, 0.1)"; } 
-                    else if (stockVal <= 5) { sBorder = "var(--orange)"; sColor = "var(--orange)"; sBg = "rgba(251, 146, 60, 0.1)"; }
+            const container = document.getElementById('menu');
+            if (itemsToDisplay.length === 0) {
+                container.innerHTML = `<div style="grid-column:1/-1; text-align:center; color:var(--text-muted); padding:20px; font-size:1.1rem;">La carte est vide. Le chef n'a rien publié dans cette section.</div>`;
+                return;
+            }
 
-                    let nameEscaped = String(item.name || '').replace(/'/g, "\\'");
+            container.innerHTML = itemsToDisplay.map(item => {
+                let isSoldOut = (item.stock === 0 || item.stock === "0");
+                let cleanName = item.name.replace(/\n/g, '<br>');
+                let escapedName = escapeQuotes(item.name);
+                let price = parseFloat(item.price) || 0;
+                
+                let stockHtml = '';
+                if (item.stock !== "" && item.stock !== undefined && item.stock > 0) {
+                    let badgeClass = 'stock-badge';
+                    if (item.stock <= stockAlerts.red) badgeClass += ' alert-red';
+                    else if (item.stock <= stockAlerts.orange) badgeClass += ' alert-orange';
+                    else if (item.stock <= stockAlerts.yellow) badgeClass += ' alert-yellow';
+                    else if (item.stock <= stockAlerts.green) badgeClass += ' alert-green';
 
-                    return `
-                    <div class="menu-item" style="flex-direction: column; align-items: flex-start; gap: 15px; padding: 18px 16px;">
-                        <span class="item-name" style="width: 100%; font-size: 1.05rem; line-height: 1.5; white-space: pre-wrap; cursor: pointer; transition: 0.2s;" onmouseover="this.style.opacity='0.6'" onmouseout="this.style.opacity='1'" onclick="editItemName('${catEscaped}', ${item.id})" title="Modifier le nom">${item.name}</span>
-                        
-                        <div style="display:flex; align-items:center; justify-content: space-between; width: 100%;">
-                            <button onclick="updateDishStock('${catEscaped}', ${item.id})" style="background: ${sBg}; border: 1px solid ${sBorder}; color: ${sColor}; border-radius: 8px; padding: 8px 15px; font-size: 0.85rem; cursor: pointer; font-weight: 900; transition: 0.2s; letter-spacing: 1px; ${sAnim}" onmouseover="this.style.background='${sBorder}'; this.style.color='#000';" onmouseout="this.style.background='${sBg}'; this.style.color='${sColor}';">
-                                ${stockVal} PARTS
-                            </button>
+                    stockHtml = `<div class="${badgeClass}">${item.stock}</div>`;
+                }
 
-                            <div style="display:flex; align-items:center; gap: 10px;">
-                                <span class="item-price" style="margin: 0; background: rgba(0,0,0,0.3); border: 1px solid var(--border-strong); padding: 6px 12px; cursor: pointer; transition: 0.2s;" onmouseover="this.style.borderColor='var(--gold)'" onmouseout="this.style.borderColor='var(--border-strong)'" onclick="editItemPrice('${catEscaped}', ${item.id})" title="Modifier le prix">${parseFloat(item.price).toFixed(2)} ${currentCurrency}</span>
-                                <button class="btn-del" style="margin: 0; width: 35px; height: 35px;" onclick="deleteMenuItem('${catEscaped}', ${item.id})">✖</button>
-                            </div>
-                        </div>
-                    </div>`;
-                }).join('');
+                let clickAction = (item.isMenuJour) 
+                    ? `addMenuToTicket('${escapedName}', ${price}, '${item.dest}')` 
+                    : `addToTicket('${escapedName}', ${price}, '${item.dest}')`;
+
+                return `
+                    <button class="btn-item ${isSoldOut ? 'sold-out' : ''}" onclick="${clickAction}">
+                        ${stockHtml}
+                        <span>${cleanName}</span>
+                        <span class="price">${price.toFixed(2)} €</span>
+                    </button>
+                `;
+            }).join('');
+        }function renderMenu(category) {
+            currentCategory = category;
+            let itemsToDisplay = [];
+            
+            // 🧠 INTELLIGENCE ARTIFICIELLE : Trouve la catégorie peu importe la casse (majuscule/minuscule)
+            const getItems = (menuObj, possibleKeys) => {
+                let res = [];
+                for(let k in menuObj) {
+                    if (possibleKeys.includes(k.toLowerCase().replace(/\s+/g, ''))) {
+                        res.push(...menuObj[k]);
+                    }
+                }
+                return res;
+            };
+
+            if (category === 'MenuJour') {
+                currentCourseDefault = 2;
+                itemsToDisplay.push(...getItems(menuCuisine, ['menujour', 'menudujour']).map(i => ({...i, dest: 'cuisine', isMenuJour: true})));
+                itemsToDisplay.push(...getItems(menuCuisine, ['suggestions']).map(i => ({...i, dest: 'cuisine', isMenuJour: false})));
+            }
+            else if (category === 'Entrées') {
+                currentCourseDefault = 1;
+                itemsToDisplay.push(...getItems(menuCuisine, ['entrees', 'entrées', 'entree', 'entrée']).map(i => ({...i, dest: 'cuisine'})));
+            } 
+            else if (category === 'Plats') {
+                currentCourseDefault = 2;
+                itemsToDisplay.push(...getItems(menuCuisine, ['plats', 'plat']).map(i => ({...i, dest: 'cuisine'})));
+            } 
+            else if (category === 'Desserts') {
+                currentCourseDefault = 3;
+                itemsToDisplay.push(...getItems(menuCuisine, ['desserts', 'dessert']).map(i => ({...i, dest: 'cuisine'})));
+            } 
+            else if (category === 'Boissons') {
+                currentCourseDefault = 0;
+                for(let key in menuBar) {
+                    if(menuBar[key]) itemsToDisplay.push(...menuBar[key].map(i => ({...i, dest: 'bar'})));
+                }
+            }
+
+            document.querySelectorAll('.drawer .menu-tab').forEach(b => {
+                b.classList.remove('gold');
+                b.style.background = 'transparent';
+                b.style.borderColor = 'var(--border)';
+                b.style.color = 'var(--text-main)';
+                
+                if(b.innerText.includes(category.toUpperCase()) || (category === 'MenuJour' && b.innerText.includes('MENU JOUR'))) {
+                    b.classList.add('gold');
+                    b.style.background = 'var(--gold-dim)';
+                    b.style.borderColor = 'var(--gold)';
+                    b.style.color = 'var(--gold)';
+                }
+            });
+
+            const container = document.getElementById('menu');
+            if (itemsToDisplay.length === 0) {
+                container.innerHTML = `<div style="grid-column:1/-1; text-align:center; color:var(--text-muted); padding:20px; font-size:1.1rem;">La carte est vide. Le chef n'a rien publié dans cette section.</div>`;
+                return;
+            }
+
+            container.innerHTML = itemsToDisplay.map(item => {
+                let isSoldOut = (item.stock === 0 || item.stock === "0");
+                let cleanName = item.name.replace(/\n/g, '<br>');
+                let escapedName = escapeQuotes(item.name);
+                let price = parseFloat(item.price) || 0;
+                
+                let stockHtml = '';
+                if (item.stock !== "" && item.stock !== undefined && item.stock > 0) {
+                    let badgeClass = 'stock-badge';
+                    if (item.stock <= stockAlerts.red) badgeClass += ' alert-red';
+                    else if (item.stock <= stockAlerts.orange) badgeClass += ' alert-orange';
+                    else if (item.stock <= stockAlerts.yellow) badgeClass += ' alert-yellow';
+                    else if (item.stock <= stockAlerts.green) badgeClass += ' alert-green';
+
+                    stockHtml = `<div class="${badgeClass}">${item.stock}</div>`;
+                }
+
+                let clickAction = (item.isMenuJour) 
+                    ? `addMenuToTicket('${escapedName}', ${price}, '${item.dest}')` 
+                    : `addToTicket('${escapedName}', ${price}, '${item.dest}')`;
+
+                return `
+                    <button class="btn-item ${isSoldOut ? 'sold-out' : ''}" onclick="${clickAction}">
+                        ${stockHtml}
+                        <span>${cleanName}</span>
+                        <span class="price">${price.toFixed(2)} €</span>
+                    </button>
+                `;
+            }).join('');
+        }
 
                 html += `
                 <div class="menu-category" style="border-top: 3px solid ${color};">
