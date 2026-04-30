@@ -3381,7 +3381,7 @@ if (method === 'QR/TEL') {
     logAction("ENCAISSEMENT", `${method} : ${amt.toFixed(2)}€ | Table: ${currentTable}`);
 }
 
-        async function syncData() {
+       async function syncData() {
             if (isArchiMode) return; 
 
             try {
@@ -3390,32 +3390,72 @@ if (method === 'QR/TEL') {
                 if (state && state.activeOrders) {
                     let nO = state.activeOrders;
 
-                    // 🟢 Synchronisation Menu Cuisine & Bar
-                    if(nO['MENU_MASTER']?.data) menuCuisine = nO['MENU_MASTER'].data;
-                    if(nO['MENU_MASTER_BAR']?.data) menuBar = nO['MENU_MASTER_BAR'].data;
-
-                    // 🚨 Radar d'alertes
-                    if(nO['ALERTS_MASTER']?.data) {
-                        let alertData = nO['ALERTS_MASTER'].data;
-                        if (alertData.timestamp > (window.lastGlobalAlertTime || 0)) {
-                            window.lastGlobalAlertTime = alertData.timestamp;
-                            playKlaxon();
-                            document.getElementById('global-alert-msg').innerText = alertData.message;
-                            document.getElementById('global-alert-modal').classList.add('open');
+                    // 🚨 LE DÉCODEUR UNIVERSEL : Ouvre TOUTES les boîtes de données (Commandes, Menus, Accès...)
+                    for (let key in nO) {
+                        if (nO[key] && nO[key].data !== undefined) {
+                            nO[key] = nO[key].data; 
                         }
                     }
 
-                    // 🛡️ Traitement des tables et alertes
+                    // 1. MAJ Menus & Stocks (Lecture directe et déballée)
+                    if(nO['MENU_MASTER']) menuCuisine = nO['MENU_MASTER'];
+                    if(nO['MENU_MASTER_BAR']) menuBar = nO['MENU_MASTER_BAR'];
+
+                    // 2. MAJ Sécurité
+                    if(nO['STAFF_ACCESS'] && Array.isArray(nO['STAFF_ACCESS'])) {
+                        staffAccessData = nO['STAFF_ACCESS'];
+                    }
+
+                    // 3. MAJ Routing
+                    if(nO['ROUTING_MASTER']) {
+                        // On le remballe pour respecter la logique du reste du fichier
+                        activeOrders['ROUTING_MASTER'] = { data: nO['ROUTING_MASTER'] };
+                    }
+
+                    // 4. 🚨 RADAR D'ALERTES
+                    if(nO['ALERTS_MASTER']) {
+                        let alertData = nO['ALERTS_MASTER'];
+                        if (alertData.timestamp > (window.lastGlobalAlertTime || 0) && !alertData.cleared) {
+                            window.lastGlobalAlertTime = alertData.timestamp;
+                            
+                            if (alertData.type === 'NEW_ORDER') {
+                                // 📱 COMMANDE WEB : Toast silencieux
+                                if(typeof showToast === 'function') showToast(alertData.message || "📱 Nouvelle commande client");
+                                if (navigator.vibrate) navigator.vibrate([100, 50, 100]);
+                            } else {
+                                // 👨‍🍳 APPEL CUISINE
+                                document.getElementById('global-alert-msg').innerText = alertData.message || "LE CHEF DEMANDE LA SALLE AU PASSE !";
+                                document.getElementById('global-alert-modal').classList.add('open');
+                                if(typeof playKlaxon === 'function') playKlaxon();
+                            }
+                        }
+                    }
+
+                    // 5. Configuration SAS
+                    if (state.sasConfig) {
+                        localSasConfig = state.sasConfig;
+                        if(typeof updateSASButtonUI === 'function') updateSASButtonUI();
+                    }
+
+                    // 6. Alertes de tables
                     for (let t in nO) { 
                         if (t.includes('MASTER') || t.includes('ARCHIVE') || t.includes('ARCHITECTURE')) continue;
                         
-                        if (nO[t]?.alerteRouge) {
-                            showToast(`⚠️ ALERTE TABLE ${t}`);
+                        if (nO[t]?.alerteRouge && (!activeOrders[t] || !activeOrders[t].alerteRouge)) {
+                            if(typeof showToast === 'function') showToast(`⚠️ ALERTE SUR LA TABLE ${t}`);
                         }
                     }
 
                     activeOrders = nO;
-                    if(!isDraggingTable) renderFloor();
+                    
+                    if(!isDraggingTable && typeof renderFloor === 'function') renderFloor();
+                    
+                    // 🚨 ACTUALISATION EN DIRECT DE LA CARTE SI LE TIROIR EST OUVERT
+                    if(document.getElementById('order-drawer') && document.getElementById('order-drawer').classList.contains('open')) {
+                        if(typeof renderMenu === 'function' && typeof currentCategory !== 'undefined') {
+                            renderMenu(currentCategory);
+                        }
+                    }
                 }
             } catch(e) { console.error("Erreur Sync:", e); }
         }
