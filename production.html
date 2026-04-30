@@ -16,6 +16,7 @@
             --gold: #fbbf24; 
             --accent: #34d399; 
             --alert: #ef4444; 
+            --alert-dim: rgba(239, 68, 68, 0.15);
             --ordered: #60a5fa; 
             --purple: #a78bfa; 
             --orange: #fb923c; 
@@ -325,27 +326,47 @@
         const tenantID = urlParams.get('tenantID') || 'MASTER_STATE';
         const SERVER_URL = "https://tableau-system.onrender.com";
 
+        // 🚨 LE MOTEUR API INTÉGRANT LE DÉCODEUR UNIVERSEL 🚨
         const API = {
             getState: async () => {
                 let state = { activeOrders: {} };
                 try {
                     let url = (window.location.protocol === 'file:') ? 'https://tableau-system.onrender.com/get-current-state' : '/get-current-state';
-                    let r = await fetch(url);
+                    let r = await fetch(`${url}?tenantID=${tenantID}`);
                     if(r.ok) state = await r.json();
+                    else throw new Error("HTTP " + r.status);
                 } catch(e) {
                     state = JSON.parse(localStorage.getItem('EMPIRE_GLOBAL_SYNC')) || { activeOrders: {} };
+                }
+
+                // 🚨 LE DÉCODEUR UNIVERSEL : Ouvre toutes les boîtes (Commandes ET Menus)
+                if (state && state.activeOrders) {
+                    for (let key in state.activeOrders) {
+                        if (state.activeOrders[key] && state.activeOrders[key].data !== undefined && !Array.isArray(state.activeOrders[key].data)) {
+                            state.activeOrders[key] = state.activeOrders[key].data;
+                        }
+                    }
                 }
                 return state;
             },
             update: async (key, data) => {
+                // Détection de la source pour emballer correctement selon la logique existante
                 let isOrder = !key.includes('MASTER') && !key.includes('ARCHIVE') && !key.includes('SUPPLIER') && !key.includes('PLANNING') && !key.includes('MENU') && !key.includes('ACCESS');
                 let payload = isOrder ? data : { data: data };
                 let state = JSON.parse(localStorage.getItem('EMPIRE_GLOBAL_SYNC')) || { activeOrders: {} };
+                
                 if (data === null) delete state.activeOrders[key];
                 else state.activeOrders[key] = payload;
+                
                 localStorage.setItem('EMPIRE_GLOBAL_SYNC', JSON.stringify(state));
                 let url = (window.location.protocol === 'file:') ? 'https://tableau-system.onrender.com/update-order' : '/update-order';
-                try { await fetch(url, { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ tableId: key, order: data === null ? null : payload }) }); } catch(e) {}
+                try { 
+                    await fetch(`${url}?tenantID=${tenantID}`, { 
+                        method: 'POST', 
+                        headers: {'Content-Type': 'application/json'}, 
+                        body: JSON.stringify({ tableId: key, order: data === null ? null : payload }) 
+                    }); 
+                } catch(e) { console.error("Erreur de sauvegarde Cloud", e) }
             }
         };
 
@@ -480,8 +501,6 @@
             }
         }, 1000);
 
-        setInterval(fetchSystemState, 3000); 
-
         async function fetchSystemState() {
             if (isDragging) return; 
             try {
@@ -494,7 +513,7 @@
                     }
 
                     if (activeOrders['MENU_MASTER']) {
-                        let newMenuData = activeOrders['MENU_MASTER'].data;
+                        let newMenuData = activeOrders['MENU_MASTER'];
                         if(JSON.stringify(menuData) !== JSON.stringify(newMenuData)) {
                             menuData = newMenuData;
                             if(document.getElementById('mod-menu').classList.contains('active')) {
@@ -512,7 +531,9 @@
                         calculateReservations();
                     }
                 }
-            } catch (e) {}
+            } catch (e) {
+                console.error("Error fetching state: ", e);
+            }
         }
 
         // ==========================================
@@ -539,15 +560,17 @@
                 return;
             }
 
-            let staffUser = staffAccessData.find(s => s.pin === myRealPin && s.active !== false);
-            
-            if (staffUser && (staffUser.dept === 'cuisine' || staffUser.dept === 'admin')) {
-                currentUser = { name: staffUser.name, role: staffUser.dept };
-                unlockPadInterface();
-            } else { 
-                alert("❌ Code incorrect ou Accès refusé à la Cuisine."); 
-                window.clearPin(); 
+            if(staffAccessData && staffAccessData.length > 0) {
+                let staffUser = staffAccessData.find(s => s.pin === myRealPin && s.active !== false);
+                if (staffUser && (staffUser.dept === 'cuisine' || staffUser.dept === 'admin')) {
+                    currentUser = { name: staffUser.name, role: staffUser.dept };
+                    unlockPadInterface();
+                    return;
+                }
             }
+            
+            alert("❌ Code incorrect ou Accès refusé à la Cuisine."); 
+            window.clearPin(); 
         };
 
         function unlockPadInterface() {
@@ -1077,10 +1100,12 @@
             await fetchSystemState(); 
         }
         
-        window.addEventListener('load', () => {
+        // 🔄 BOUCLE DE SYNCHRONISATION H24 (PAD CUISINE)
+        window.onload = () => {
             document.getElementById('login-screen').style.display = 'flex';
-            boot();
-        });
+            boot(); // 1. Premier chargement immédiat
+            setInterval(fetchSystemState, 5000); // 2. Actualisation silencieuse toutes les 5 secondes
+        };
     </script>
 </body>
 </html>
