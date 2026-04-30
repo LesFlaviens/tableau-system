@@ -486,6 +486,50 @@ const urlParams = new URLSearchParams(window.location.search);
         let currentTableNum = null;
         let currentQrUrlObj = null;
         let globalCurrency = "€"; 
+        // ----------------------------------------------------
+        // 🚨 MOTEUR RÉSEAU & DÉCODEUR UNIVERSEL 🚨
+        // ----------------------------------------------------
+        const API = {
+            getState: async () => {
+                let state = { activeOrders: {} };
+                try {
+                    let r = await fetch(`${SERVER_URL}/get-current-state?tenantID=${tenantID}`);
+                    if(r.ok) state = await r.json();
+                    else throw new Error("HTTP " + r.status);
+                } catch(e) {
+                    state = JSON.parse(localStorage.getItem('EMPIRE_GLOBAL_SYNC')) || { activeOrders: {} };
+                }
+
+                // DÉCODEUR : Ouvre toutes les commandes QR Code
+                if (state && state.activeOrders) {
+                    for (let key in state.activeOrders) {
+                        if (key.startsWith('order_') || key.startsWith('W') || key.startsWith('T') || key.startsWith('WEB_')) {
+                            if (state.activeOrders[key] && state.activeOrders[key].data !== undefined && !Array.isArray(state.activeOrders[key].data)) {
+                                state.activeOrders[key] = state.activeOrders[key].data;
+                            }
+                        }
+                    }
+                }
+                return state;
+            },
+            update: async (key, data) => {
+                let payload = { data: data };
+                let state = JSON.parse(localStorage.getItem('EMPIRE_GLOBAL_SYNC')) || { activeOrders: {} };
+                
+                if (data === null) delete state.activeOrders[key];
+                else state.activeOrders[key] = payload;
+                
+                localStorage.setItem('EMPIRE_GLOBAL_SYNC', JSON.stringify(state));
+                
+                try {
+                    await fetch(`${SERVER_URL}/update-order?tenantID=${tenantID}`, { 
+                        method: 'POST', 
+                        headers: {'Content-Type': 'application/json'}, 
+                        body: JSON.stringify({ tableId: key, order: data === null ? null : payload }) 
+                    });
+                } catch(e) { console.error("Erreur d'envoi", e); }
+            }
+        };
         let financialHistory = [];
         
         let currentServiceActive = "MIDI";
