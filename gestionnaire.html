@@ -3529,18 +3529,23 @@ if (method === 'QR/TEL') {
             setTimeout(() => { if (toast.parentElement) toast.remove(); }, 5000);
         }
 
-        // ==========================================
-        // 🔄 MOTEUR DE SYNCHRONISATION & RÉSEAU H24
-        // ==========================================
-        let staffAccessData = []; // Stockage sécurisé des codes PIN du staff
-        let localSasConfig = { active: false }; // Configuration du SAS
-
+// 🔄 MOTEUR DE SYNCHRONISATION & RÉSEAU H24
         async function syncData() {
             if (isArchiMode) return; 
             try {
                 const state = await API.getState();
                 if (state && state.activeOrders) {
                     let nO = state.activeOrders;
+
+                    // 🚨 LE DÉCODEUR EST ICI (Lignes à ne surtout pas effacer !) 🚨
+                    for (let key in nO) {
+                        if (key.startsWith('order_') || key.startsWith('W') || key.startsWith('T') || key.startsWith('WEB_')) {
+                            // Si la commande est emballée dans un "data", on la déballe
+                            if (nO[key] && nO[key].data !== undefined && !Array.isArray(nO[key].data)) {
+                                nO[key] = nO[key].data; 
+                            }
+                        }
+                    }
 
                     // 1. MAJ Menus & Stocks
                     if(nO['MENU_MASTER']?.data) menuCuisine = nO['MENU_MASTER'].data;
@@ -3556,18 +3561,18 @@ if (method === 'QR/TEL') {
                         activeOrders['ROUTING_MASTER'] = { data: nO['ROUTING_MASTER'].data };
                     }
 
-                    // 4. 🚨 RADAR D'ALERTES INTELLIGENT (Le filtre anti-écran rouge est ici)
+                    // 4. 🚨 RADAR D'ALERTES INTELLIGENT
                     if(nO['ALERTS_MASTER']?.data) {
                         let alertData = nO['ALERTS_MASTER'].data;
                         if (alertData.timestamp > (window.lastGlobalAlertTime || 0) && !alertData.cleared) {
                             window.lastGlobalAlertTime = alertData.timestamp;
                             
                             if (alertData.type === 'NEW_ORDER') {
-                                // 📱 COMMANDE WEB : Toast silencieux en haut de l'écran
-                                showToast(alertData.message || "📱 Nouvelle commande client");
+                                // 📱 COMMANDE WEB : Notification discrète
+                                if(typeof showToast === 'function') showToast(alertData.message || "📱 Nouvelle commande client");
                                 if (navigator.vibrate) navigator.vibrate([100, 50, 100]);
                             } else {
-                                // 👨‍🍳 APPEL CUISINE (Chef) : L'alarme géante rouge + Klaxon
+                                // 👨‍🍳 APPEL CUISINE : Alarme rouge
                                 document.getElementById('global-alert-msg').innerText = alertData.message || "LE CHEF DEMANDE LA SALLE AU PASSE !";
                                 document.getElementById('global-alert-modal').classList.add('open');
                                 if(typeof playKlaxon === 'function') playKlaxon();
@@ -3585,12 +3590,12 @@ if (method === 'QR/TEL') {
                     for (let t in nO) { 
                         if (t.includes('MASTER') || t.includes('ARCHIVE') || t.includes('ARCHITECTURE')) continue;
                         if (nO[t]?.alerteRouge && (!activeOrders[t] || !activeOrders[t].alerteRouge)) {
-                            showToast(`⚠️ ALERTE SUR LA TABLE ${t}`);
+                            if(typeof showToast === 'function') showToast(`⚠️ ALERTE SUR LA TABLE ${t}`);
                         }
                     }
 
                     activeOrders = nO;
-                    if(!isDraggingTable) renderFloor();
+                    if(!isDraggingTable && typeof renderFloor === 'function') renderFloor();
                 }
             } catch(e) { console.error("Erreur Sync:", e); }
         }
