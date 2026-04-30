@@ -3477,7 +3477,23 @@ if (method === 'QR/TEL') {
             renderRooms(); renderFloor(); 
             if(document.getElementById('admin-catalog-modal')) document.getElementById('admin-catalog-modal').classList.remove('open');
         };
- // ==========================================
+// 🍞 GESTION DES NOTIFICATIONS TOAST (Notifications silencieuses QR)
+        function showToast(msg) {
+            let container = document.getElementById('notification-center');
+            if (!container) {
+                container = document.createElement('div');
+                container.id = 'notification-center';
+                document.body.appendChild(container);
+            }
+            let toast = document.createElement('div');
+            toast.className = 'toast-ready';
+            toast.innerText = msg;
+            toast.onclick = () => toast.remove();
+            container.appendChild(toast);
+            setTimeout(() => { if (toast.parentElement) toast.remove(); }, 5000);
+        }
+
+        // ==========================================
         // 🔄 MOTEUR DE SYNCHRONISATION & RÉSEAU H24
         // ==========================================
         let staffAccessData = []; // Stockage sécurisé des codes PIN du staff
@@ -3490,28 +3506,45 @@ if (method === 'QR/TEL') {
                 if (state && state.activeOrders) {
                     let nO = state.activeOrders;
 
+                    // 🚨 LE DÉCODEUR : Ouvre les commandes provenant du QR Code 🚨
+                    for (let key in nO) {
+                        if (key.startsWith('order_') || key.startsWith('W') || key.startsWith('T') || key.startsWith('WEB_')) {
+                            if (nO[key] && nO[key].data !== undefined && !Array.isArray(nO[key].data)) {
+                                nO[key] = nO[key].data; 
+                            }
+                        }
+                    }
+
                     // 1. MAJ Menus & Stocks
                     if(nO['MENU_MASTER']?.data) menuCuisine = nO['MENU_MASTER'].data;
                     if(nO['MENU_MASTER_BAR']?.data) menuBar = nO['MENU_MASTER_BAR'].data;
 
-                    // 2. MAJ Sécurité (Téléchargement des Codes PIN)
+                    // 2. MAJ Sécurité
                     if(nO['STAFF_ACCESS'] && Array.isArray(nO['STAFF_ACCESS'].data)) {
                         staffAccessData = nO['STAFF_ACCESS'].data;
                     }
 
-                    // 3. MAJ Routing (Matrice de diffusion)
+                    // 3. MAJ Routing
                     if(nO['ROUTING_MASTER'] && nO['ROUTING_MASTER'].data) {
                         activeOrders['ROUTING_MASTER'] = { data: nO['ROUTING_MASTER'].data };
                     }
 
-                    // 4. Alertes Chef (Klaxon)
+                    // 4. 🚨 RADAR D'ALERTES (Sépare le Chef des commandes QR)
                     if(nO['ALERTS_MASTER']?.data) {
                         let alertData = nO['ALERTS_MASTER'].data;
-                        if (alertData.timestamp > (window.lastGlobalAlertTime || 0)) {
+                        if (alertData.timestamp > (window.lastGlobalAlertTime || 0) && !alertData.cleared) {
                             window.lastGlobalAlertTime = alertData.timestamp;
-                            document.getElementById('global-alert-msg').innerText = alertData.message;
-                            document.getElementById('global-alert-modal').classList.add('open');
-                            if(typeof playKlaxon === 'function') playKlaxon();
+                            
+                            if (alertData.type === 'NEW_ORDER') {
+                                // 📱 COMMANDE WEB : Toast silencieux
+                                if(typeof showToast === 'function') showToast(alertData.message || "📱 Nouvelle commande client");
+                                if (navigator.vibrate) navigator.vibrate([100, 50, 100]);
+                            } else {
+                                // 👨‍🍳 APPEL CUISINE
+                                document.getElementById('global-alert-msg').innerText = alertData.message || "LE CHEF DEMANDE LA SALLE AU PASSE !";
+                                document.getElementById('global-alert-modal').classList.add('open');
+                                if(typeof playKlaxon === 'function') playKlaxon();
+                            }
                         }
                     }
 
@@ -3521,12 +3554,19 @@ if (method === 'QR/TEL') {
                         if(typeof updateSASButtonUI === 'function') updateSASButtonUI();
                     }
 
+                    // 6. Alertes de tables
+                    for (let t in nO) { 
+                        if (t.includes('MASTER') || t.includes('ARCHIVE') || t.includes('ARCHITECTURE')) continue;
+                        if (nO[t]?.alerteRouge && (!activeOrders[t] || !activeOrders[t].alerteRouge)) {
+                            if(typeof showToast === 'function') showToast(`⚠️ ALERTE SUR LA TABLE ${t}`);
+                        }
+                    }
+
                     activeOrders = nO;
-                    if(!isDraggingTable) renderFloor();
+                    if(!isDraggingTable && typeof renderFloor === 'function') renderFloor();
                 }
             } catch(e) { console.error("Erreur Sync:", e); }
         }
-
         // ==========================================
         // 🔐 GESTION DU CLAVIER PIN & SÉCURITÉ
         // ==========================================
