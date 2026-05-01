@@ -7,14 +7,21 @@ const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
 const app = express();
 const PORT = process.env.PORT || 10000;
 
-app.use(cors());
+// ==========================================
+// 🔓 OUVERTURE TOTALE DES PORTES (CORS)
+// ==========================================
+app.use(cors({
+    origin: '*', // Autorise Netlify, votre téléphone, votre PC...
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'Origin', 'Accept']
+}));
+
 app.use(express.json({ limit: '50mb' }));
 app.use(express.static(path.join(__dirname)));
 
 // ==========================================
 // 🧠 CONNEXION MONGODB (COFFRE-FORT CLOUD)
 // ==========================================
-// RAPPEL : Insérez votre vrai mot de passe ci-dessous (gardez bien le @ après le mot de passe)
 const mongoURI = "mongodb+srv://icheflavien_db_user:VOTRE_MOT_DE_PASSE@cluster0.4w95d7m.mongodb.net/ichef_production?retryWrites=true&w=majority";
 
 mongoose.connect(mongoURI)
