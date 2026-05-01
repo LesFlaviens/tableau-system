@@ -3212,7 +3212,7 @@ if (method === 'QR/TEL') {
     logAction("ENCAISSEMENT", `${method} : ${amt.toFixed(2)}€ | Table: ${currentTable}`);
 }
 
-       aasync function syncData() {
+       async function syncData() {
             if (isArchiMode) return; 
             try {
                 const state = await API.getState();
@@ -3242,16 +3242,18 @@ if (method === 'QR/TEL') {
                         activeOrders['ROUTING_MASTER'] = { data: nO['ROUTING_MASTER'].data };
                     }
 
-                    // 4. 🚨 RADAR D'ALERTES
+                    // 4. 🚨 RADAR D'ALERTES (Sépare le Chef des commandes QR)
                     if(nO['ALERTS_MASTER']?.data) {
                         let alertData = nO['ALERTS_MASTER'].data;
                         if (alertData.timestamp > (window.lastGlobalAlertTime || 0) && !alertData.cleared) {
                             window.lastGlobalAlertTime = alertData.timestamp;
                             
                             if (alertData.type === 'NEW_ORDER') {
+                                // 📱 COMMANDE WEB : Toast silencieux
                                 if(typeof showToast === 'function') showToast(alertData.message || "📱 Nouvelle commande client");
                                 if (navigator.vibrate) navigator.vibrate([100, 50, 100]);
                             } else {
+                                // 👨‍🍳 APPEL CUISINE
                                 document.getElementById('global-alert-msg').innerText = alertData.message || "LE CHEF DEMANDE LA SALLE AU PASSE !";
                                 document.getElementById('global-alert-modal').classList.add('open');
                                 if(typeof playKlaxon === 'function') playKlaxon();
@@ -3284,110 +3286,10 @@ if (method === 'QR/TEL') {
                             if (newArchiStr !== oldArchiStr) {
                                 rooms = archiData.rooms || ['Salle Principale'];
                                 tables = archiData.tables || [];
-                                
-                                // 💡 LA CORRECTION EST ICI 💡
-                                // Si le téléphone cherche une salle qui n'existe plus, on le force sur la Salle 1
-                                if (!rooms.includes(currentRoom)) {
-                                    currentRoom = rooms[0];
-                                }
-
                                 localStorage.setItem('empire_architecture', JSON.stringify(tables));
                                 localStorage.setItem('empire_rooms', JSON.stringify(rooms));
                                 
-                                if (typeof renderRooms === 'function') renderRooms(); // Mets à jour les boutons d'onglets (SALLE 1, SALLE 2)
-                                if (typeof renderFloor === 'function') renderFloor(); // Dessine les tables
-                            }
-                        }
-                    }
-
-                    activeOrders = nO;
-                    if(!isDraggingTable && typeof renderFloor === 'function') renderFloor();
-                }
-            } catch(e) { console.error("Erreur Sync:", e); }
-        }async function syncData() {
-            if (isArchiMode) return; 
-            try {
-                const state = await API.getState();
-                if (state && state.activeOrders) {
-                    let nO = state.activeOrders;
-
-                    // 🚨 LE DÉCODEUR : Ouvre les commandes provenant du QR Code 🚨
-                    for (let key in nO) {
-                        if (key.startsWith('order_') || key.startsWith('W') || key.startsWith('T') || key.startsWith('WEB_')) {
-                            if (nO[key] && nO[key].data !== undefined && !Array.isArray(nO[key].data)) {
-                                nO[key] = nO[key].data; 
-                            }
-                        }
-                    }
-
-                    // 1. MAJ Menus & Stocks
-                    if(nO['MENU_MASTER']?.data) menuCuisine = nO['MENU_MASTER'].data;
-                    if(nO['MENU_MASTER_BAR']?.data) menuBar = nO['MENU_MASTER_BAR'].data;
-
-                    // 2. MAJ Sécurité
-                    if(nO['STAFF_ACCESS'] && Array.isArray(nO['STAFF_ACCESS'].data)) {
-                        staffAccessData = nO['STAFF_ACCESS'].data;
-                    }
-
-                    // 3. MAJ Routing
-                    if(nO['ROUTING_MASTER'] && nO['ROUTING_MASTER'].data) {
-                        activeOrders['ROUTING_MASTER'] = { data: nO['ROUTING_MASTER'].data };
-                    }
-
-                    // 4. 🚨 RADAR D'ALERTES
-                    if(nO['ALERTS_MASTER']?.data) {
-                        let alertData = nO['ALERTS_MASTER'].data;
-                        if (alertData.timestamp > (window.lastGlobalAlertTime || 0) && !alertData.cleared) {
-                            window.lastGlobalAlertTime = alertData.timestamp;
-                            
-                            if (alertData.type === 'NEW_ORDER') {
-                                if(typeof showToast === 'function') showToast(alertData.message || "📱 Nouvelle commande client");
-                                if (navigator.vibrate) navigator.vibrate([100, 50, 100]);
-                            } else {
-                                document.getElementById('global-alert-msg').innerText = alertData.message || "LE CHEF DEMANDE LA SALLE AU PASSE !";
-                                document.getElementById('global-alert-modal').classList.add('open');
-                                if(typeof playKlaxon === 'function') playKlaxon();
-                            }
-                        }
-                    }
-
-                    // 5. Configuration SAS
-                    if (state.sasConfig) {
-                        localSasConfig = state.sasConfig;
-                        if(typeof updateSASButtonUI === 'function') updateSASButtonUI();
-                    }
-
-                    // 6. Alertes de tables
-                    for (let t in nO) { 
-                        if (t.includes('MASTER') || t.includes('ARCHIVE') || t.includes('ARCHITECTURE')) continue;
-                        if (nO[t]?.alerteRouge && (!activeOrders[t] || !activeOrders[t].alerteRouge)) {
-                            if(typeof showToast === 'function') showToast(`⚠️ ALERTE SUR LA TABLE ${t}`);
-                        }
-                    }
-
-                    // 7. 🏗️ SYNCHRONISATION LIVE DE L'ARCHITECTURE
-                    if (nO['ARCHITECTURE']) {
-                        let archiData = nO['ARCHITECTURE'].data !== undefined ? nO['ARCHITECTURE'].data : nO['ARCHITECTURE'];
-                        if (!isArchiMode && !isDraggingTable && archiData && archiData.tables) {
-                            let newArchiStr = JSON.stringify(archiData.tables);
-                            let oldArchiStr = JSON.stringify(tables);
-                            
-                            // Si le plan a changé sur un autre écran, on le met à jour
-                            if (newArchiStr !== oldArchiStr) {
-                                rooms = archiData.rooms || ['Salle Principale'];
-                                tables = archiData.tables || [];
-                                
-                                // 💡 LA CORRECTION EST ICI 💡
-                                // Si le téléphone cherche une salle qui n'existe plus, on le force sur la Salle 1
-                                if (!rooms.includes(currentRoom)) {
-                                    currentRoom = rooms[0];
-                                }
-
-                                localStorage.setItem('empire_architecture', JSON.stringify(tables));
-                                localStorage.setItem('empire_rooms', JSON.stringify(rooms));
-                                
-                                if (typeof renderRooms === 'function') renderRooms(); // Mets à jour les boutons d'onglets (SALLE 1, SALLE 2)
-                                if (typeof renderFloor === 'function') renderFloor(); // Dessine les tables
+                                if (typeof renderFloor === 'function') renderFloor();
                             }
                         }
                     }
