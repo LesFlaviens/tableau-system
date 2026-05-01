@@ -3194,99 +3194,62 @@ if (method === 'QR/TEL') {
     logAction("ENCAISSEMENT", `${method} : ${amt.toFixed(2)}€ | Table: ${currentTable}`);
 }
 
-        async function syncData() {
+      async function syncData() {
             if (isArchiMode) return; 
-
             try {
                 const state = await API.getState();
-                
                 if (state && state.activeOrders) {
                     let nO = state.activeOrders;
 
-                    // 🚨 LE DÉCODEUR UNIVERSEL
+                    // 🚨 LE DÉCODEUR : Ouvre les commandes provenant du QR Code 🚨
                     for (let key in nO) {
-                        if (nO[key] && nO[key].data !== undefined) {
-                            nO[key] = nO[key].data; 
+                        if (key.startsWith('order_') || key.startsWith('W') || key.startsWith('T') || key.startsWith('WEB_')) {
+                            if (nO[key] && nO[key].data !== undefined && !Array.isArray(nO[key].data)) {
+                                nO[key] = nO[key].data; 
+                            }
                         }
                     }
 
-                    menuCuisine = typeof nO['MENU_MASTER'] === 'string' ? JSON.parse(nO['MENU_MASTER']) : (nO['MENU_MASTER'] || {});
-                    menuBar = typeof nO['MENU_MASTER_BAR'] === 'string' ? JSON.parse(nO['MENU_MASTER_BAR']) : (nO['MENU_MASTER_BAR'] || {});
+                    // 1. MAJ Menus & Stocks
+                    if(nO['MENU_MASTER']?.data) menuCuisine = nO['MENU_MASTER'].data;
+                    if(nO['MENU_MASTER_BAR']?.data) menuBar = nO['MENU_MASTER_BAR'].data;
 
-                    if(document.getElementById('order-drawer') && !document.getElementById('order-drawer').classList.contains('open')) {
-                        if(typeof renderDynamicTabs === 'function') renderDynamicTabs();
+                    // 2. MAJ Sécurité
+                    if(nO['STAFF_ACCESS'] && Array.isArray(nO['STAFF_ACCESS'].data)) {
+                        staffAccessData = nO['STAFF_ACCESS'].data;
                     }
 
-                    if(nO['STAFF_ACCESS'] && Array.isArray(nO['STAFF_ACCESS'])) {
-                        staffAccessData = nO['STAFF_ACCESS'];
+                    // 3. MAJ Routing
+                    if(nO['ROUTING_MASTER'] && nO['ROUTING_MASTER'].data) {
+                        activeOrders['ROUTING_MASTER'] = { data: nO['ROUTING_MASTER'].data };
                     }
 
-                    if(nO['ROUTING_MASTER']) {
-                        activeOrders['ROUTING_MASTER'] = { data: nO['ROUTING_MASTER'] };
-                    }
-
-                    // 4. 🚨 RADAR D'ALERTES CIBLÉES
-                    if(nO['ALERTS_MASTER']) {
-                        let alertData = nO['ALERTS_MASTER'];
+                    // 4. 🚨 RADAR D'ALERTES (Sépare le Chef des commandes QR)
+                    if(nO['ALERTS_MASTER']?.data) {
+                        let alertData = nO['ALERTS_MASTER'].data;
                         if (alertData.timestamp > (window.lastGlobalAlertTime || 0) && !alertData.cleared) {
                             window.lastGlobalAlertTime = alertData.timestamp;
                             
-                            let msg = alertData.message || "";
-                            let tableMatch = msg.match(/\(Table (.*?)\)/i) || msg.match(/Table (.*?)$/i);
-                            
-                            if (alertData.type === 'NEW_ORDER' || msg.toUpperCase().includes('COMMANDE')) {
-                                if(typeof showToast === 'function') showToast(msg);
+                            if (alertData.type === 'NEW_ORDER') {
+                                // 📱 COMMANDE WEB : Toast silencieux
+                                if(typeof showToast === 'function') showToast(alertData.message || "📱 Nouvelle commande client");
                                 if (navigator.vibrate) navigator.vibrate([100, 50, 100]);
-                            } else if (tableMatch) {
-                                // 🎯 ALERTE SPÉCIFIQUE À UNE TABLE
-                                let tableName = tableMatch[1].trim();
-                                window.currentAlertTable = tableName; // Mémorisation pour fermer
-                                
-                                let titleEl = document.getElementById('table-alert-table-name');
-                                let modalEl = document.getElementById('table-alert-modal');
-                                
-                                if (msg.toUpperCase().includes('BOISSON') || msg.toUpperCase().includes('COMPTOIR') || msg.toUpperCase().includes('BAR')) {
-                                    if(titleEl) { titleEl.innerText = "🍸 TABLE " + tableName; titleEl.style.color = "#60a5fa"; }
-                                    modalEl.querySelector('div').style.borderColor = "#60a5fa";
-                                } else {
-                                    if(titleEl) { titleEl.innerText = "🔥 TABLE " + tableName; titleEl.style.color = "var(--alert)"; }
-                                    modalEl.querySelector('div').style.borderColor = "var(--alert)";
-                                }
-                                
-                                document.getElementById('table-alert-msg').innerText = msg;
-                                modalEl.classList.add('open');
-                                if(typeof playKlaxon === 'function') playKlaxon();
                             } else {
-                                // 🌍 ALERTE GLOBALE (Si aucune table n'est précisée)
-                                let titleEl = document.getElementById('global-alert-title');
-                                let iconEl = document.getElementById('global-alert-icon');
-                                let boxEl = document.getElementById('global-alert-box');
-                                let btnEl = document.getElementById('global-alert-btn');
-                                
-                                if (msg.toUpperCase().includes('BOISSON') || msg.toUpperCase().includes('COMPTOIR') || msg.toUpperCase().includes('BAR')) {
-                                    if(titleEl) { titleEl.innerText = "APPEL BAR"; titleEl.style.color = "#60a5fa"; }
-                                    if(iconEl) iconEl.innerText = "🍸";
-                                    if(boxEl) boxEl.style.borderColor = "#60a5fa";
-                                    if(btnEl) btnEl.style.background = "#60a5fa";
-                                } else {
-                                    if(titleEl) { titleEl.innerText = "APPEL CUISINE"; titleEl.style.color = "var(--alert)"; }
-                                    if(iconEl) iconEl.innerText = "🛎️";
-                                    if(boxEl) boxEl.style.borderColor = "var(--alert)";
-                                    if(btnEl) btnEl.style.background = "var(--alert)";
-                                }
-                                
-                                document.getElementById('global-alert-msg').innerText = msg;
+                                // 👨‍🍳 APPEL CUISINE
+                                document.getElementById('global-alert-msg').innerText = alertData.message || "LE CHEF DEMANDE LA SALLE AU PASSE !";
                                 document.getElementById('global-alert-modal').classList.add('open');
                                 if(typeof playKlaxon === 'function') playKlaxon();
                             }
                         }
                     }
 
+                    // 5. Configuration SAS
                     if (state.sasConfig) {
                         localSasConfig = state.sasConfig;
                         if(typeof updateSASButtonUI === 'function') updateSASButtonUI();
                     }
 
+                    // 6. Alertes de tables
                     for (let t in nO) { 
                         if (t.includes('MASTER') || t.includes('ARCHIVE') || t.includes('ARCHITECTURE')) continue;
                         if (nO[t]?.alerteRouge && (!activeOrders[t] || !activeOrders[t].alerteRouge)) {
@@ -3294,15 +3257,34 @@ if (method === 'QR/TEL') {
                         }
                     }
 
-                    activeOrders = nO;
-                    
-                    if(!isDraggingTable && typeof renderFloor === 'function') renderFloor();
-                    
-                    if(document.getElementById('order-drawer') && document.getElementById('order-drawer').classList.contains('open')) {
-                        if(typeof renderMenu === 'function' && typeof currentCategory !== 'undefined') {
-                            renderMenu(currentCategory, window.currentMenuType || 'cuisine');
+                    // 7. 🏗️ SYNCHRONISATION LIVE DE L'ARCHITECTURE
+                    if (nO['ARCHITECTURE']) {
+                        let archiData = nO['ARCHITECTURE'].data !== undefined ? nO['ARCHITECTURE'].data : nO['ARCHITECTURE'];
+                        if (!isArchiMode && !isDraggingTable && archiData && archiData.tables) {
+                            let newArchiStr = JSON.stringify(archiData.tables);
+                            let oldArchiStr = JSON.stringify(tables);
+                            
+                            // Si le plan a changé sur un autre écran, on le met à jour
+                            if (newArchiStr !== oldArchiStr) {
+                                rooms = archiData.rooms || ['Salle Principale'];
+                                tables = archiData.tables || [];
+                                
+                                // Si la salle actuelle a été supprimée sur un autre écran, revenir à la salle 1
+                                if (!rooms.includes(currentRoom)) {
+                                    currentRoom = rooms[0] || 'Salle Principale';
+                                }
+
+                                localStorage.setItem('empire_architecture', JSON.stringify(tables));
+                                localStorage.setItem('empire_rooms', JSON.stringify(rooms));
+                                
+                                if (typeof renderRooms === 'function') renderRooms();
+                                if (typeof renderFloor === 'function') renderFloor();
+                            }
                         }
                     }
+
+                    activeOrders = nO;
+                    if(!isDraggingTable && typeof renderFloor === 'function') renderFloor();
                 }
             } catch(e) { console.error("Erreur Sync:", e); }
         }
