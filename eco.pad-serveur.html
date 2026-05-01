@@ -1432,7 +1432,7 @@
         let staffAccessData = []; 
         let localSasConfig = { active: false }; 
 
-        async function syncData() {
+async function syncData() {
             if (isArchiMode) return; 
 
             try {
@@ -1441,36 +1441,59 @@
                 if (state && state.activeOrders) {
                     let nO = state.activeOrders;
 
-                    // 1. MAJ Menus & Stocks (Lecture directe et sécurisée)
+                    // 🚨 LE DÉCODEUR UNIVERSEL
+                    for (let key in nO) {
+                        if (nO[key] && nO[key].data !== undefined) {
+                            nO[key] = nO[key].data; 
+                        }
+                    }
+
                     menuCuisine = typeof nO['MENU_MASTER'] === 'string' ? JSON.parse(nO['MENU_MASTER']) : (nO['MENU_MASTER'] || {});
                     menuBar = typeof nO['MENU_MASTER_BAR'] === 'string' ? JSON.parse(nO['MENU_MASTER_BAR']) : (nO['MENU_MASTER_BAR'] || {});
 
-                    // Génère les onglets uniquement si le tiroir est fermé
                     if(document.getElementById('order-drawer') && !document.getElementById('order-drawer').classList.contains('open')) {
                         if(typeof renderDynamicTabs === 'function') renderDynamicTabs();
                     }
 
-                    // 2. MAJ Sécurité
                     if(nO['STAFF_ACCESS'] && Array.isArray(nO['STAFF_ACCESS'])) {
                         staffAccessData = nO['STAFF_ACCESS'];
                     }
 
-                    // 3. MAJ Routing
                     if(nO['ROUTING_MASTER']) {
                         activeOrders['ROUTING_MASTER'] = { data: nO['ROUTING_MASTER'] };
                     }
 
-                    // 4. RADAR D'ALERTES
+                    // 4. 🚨 RADAR D'ALERTES INTELLIGENT (BAR VS CUISINE)
                     if(nO['ALERTS_MASTER']) {
                         let alertData = nO['ALERTS_MASTER'];
                         if (alertData.timestamp > (window.lastGlobalAlertTime || 0) && !alertData.cleared) {
                             window.lastGlobalAlertTime = alertData.timestamp;
                             
-                            if (alertData.type === 'NEW_ORDER') {
-                                if(typeof showToast === 'function') showToast(alertData.message || "📱 Nouvelle commande client");
+                            let msg = alertData.message || "";
+                            
+                            if (alertData.type === 'NEW_ORDER' || msg.toUpperCase().includes('COMMANDE')) {
+                                if(typeof showToast === 'function') showToast(msg);
                                 if (navigator.vibrate) navigator.vibrate([100, 50, 100]);
                             } else {
-                                document.getElementById('global-alert-msg').innerText = alertData.message || "LE CHEF DEMANDE LA SALLE AU PASSE !";
+                                // IA : DÉTECTION BAR OU CUISINE
+                                let titleEl = document.getElementById('global-alert-title');
+                                let iconEl = document.getElementById('global-alert-icon');
+                                let boxEl = document.getElementById('global-alert-box');
+                                let btnEl = document.getElementById('global-alert-btn');
+                                
+                                if (msg.toUpperCase().includes('BOISSON') || msg.toUpperCase().includes('COMPTOIR') || msg.toUpperCase().includes('BAR')) {
+                                    if(titleEl) { titleEl.innerText = "APPEL BAR"; titleEl.style.color = "#60a5fa"; }
+                                    if(iconEl) iconEl.innerText = "🍸";
+                                    if(boxEl) boxEl.style.borderColor = "#60a5fa";
+                                    if(btnEl) btnEl.style.background = "#60a5fa";
+                                } else {
+                                    if(titleEl) { titleEl.innerText = "APPEL CUISINE"; titleEl.style.color = "var(--alert)"; }
+                                    if(iconEl) iconEl.innerText = "🛎️";
+                                    if(boxEl) boxEl.style.borderColor = "var(--alert)";
+                                    if(btnEl) btnEl.style.background = "var(--alert)";
+                                }
+                                
+                                document.getElementById('global-alert-msg').innerText = msg;
                                 document.getElementById('global-alert-modal').classList.add('open');
                                 if(typeof playKlaxon === 'function') playKlaxon();
                             }
@@ -1484,7 +1507,6 @@
 
                     for (let t in nO) { 
                         if (t.includes('MASTER') || t.includes('ARCHIVE') || t.includes('ARCHITECTURE')) continue;
-                        
                         if (nO[t]?.alerteRouge && (!activeOrders[t] || !activeOrders[t].alerteRouge)) {
                             if(typeof showToast === 'function') showToast(`⚠️ ALERTE SUR LA TABLE ${t}`);
                         }
@@ -1503,163 +1525,125 @@
             } catch(e) { console.error("Erreur Sync:", e); }
         }
 
-        function renderDynamicTabs() {
-            let container = document.getElementById('dynamic-menu-tabs');
-            if (!container) return;
-            
-            let html = '';
-            
-            for (let k in menuCuisine) {
-                if (menuCuisine[k] && menuCuisine[k].length > 0) {
-                    html += `<button class="btn-mini menu-tab" style="flex:1; min-width: 100px; font-size:0.85rem; padding:10px;" onclick="renderMenu('${k}', 'cuisine')">${k.toUpperCase()}</button>`;
+        // 🛡️ REPARE LE BOUTON "J'ARRIVE" POUR TOUS LES ÉCRANS
+        window.closeGlobalAlert = async function() {
+            document.getElementById('global-alert-modal').classList.remove('open');
+            try {
+                let state = await API.getState();
+                if(state && state.activeOrders && state.activeOrders['ALERTS_MASTER']) {
+                    let alertData = state.activeOrders['ALERTS_MASTER'].data !== undefined ? state.activeOrders['ALERTS_MASTER'].data : state.activeOrders['ALERTS_MASTER'];
+                    alertData.cleared = true;
+                    await API.update('ALERTS_MASTER', alertData); // Nettoie le Cloud
                 }
-            }
-            
-            for (let k in menuBar) {
-                if (menuBar[k] && menuBar[k].length > 0) {
-                    html += `<button class="btn-mini menu-tab" style="flex:1; min-width: 100px; font-size:0.85rem; padding:10px;" onclick="renderMenu('${k}', 'bar')">🍸 ${k.toUpperCase()}</button>`;
-                }
-            }
-            
-            if (html === '') {
-                html = `<span style="color:var(--text-muted); padding:10px; font-weight:bold;">Aucun menu disponible.</span>`;
-            }
+            } catch(e){}
+        };
+    </script>
+</body>
+</html>async function syncData() {
+            if (isArchiMode) return; 
 
-            container.innerHTML = html;
-        }
-
-        function renderMenu(categoryKey, type = 'cuisine') {
-            window.currentCategory = categoryKey;
-            window.currentMenuType = type;
-            let itemsToDisplay = [];
-            
-            let sourceMenu = (type === 'bar') ? menuBar : menuCuisine;
-            
-            if (sourceMenu[categoryKey]) {
-                itemsToDisplay = sourceMenu[categoryKey].map(i => ({...i, dest: type}));
-            }
-
-            document.querySelectorAll('.drawer .menu-tab').forEach(b => {
-                b.classList.remove('gold'); b.style.background = 'transparent'; b.style.color = 'var(--text-main)';
-                if(b.innerText.includes(categoryKey.toUpperCase())) {
-                    b.classList.add('gold'); b.style.background = 'var(--gold-dim)'; b.style.color = 'var(--gold)';
-                }
-            });
-
-            const container = document.getElementById('menu');
-            if (itemsToDisplay.length === 0) {
-                container.innerHTML = `<div style="grid-column:1/-1; text-align:center; color:var(--text-muted); padding:20px;">Catégorie vide.</div>`;
-                return;
-            }
-
-            container.innerHTML = itemsToDisplay.map(item => {
-                let isSoldOut = (item.stock === 0 || item.stock === "0");
-                let cleanName = item.name ? item.name.replace(/\n/g, '<br>') : 'Inconnu';
-                let escapedName = item.name ? item.name.replace(/'/g, "\\'").replace(/"/g, '&quot;') : '';
-                let price = parseFloat(item.price) || 0;
+            try {
+                const state = await API.getState();
                 
-                let stockVal = item.stock !== undefined ? item.stock : 99;
-                let stockHtml = '';
-                
-                if (stockVal !== "" && stockVal !== undefined && stockVal > 0) {
-                    let badgeClass = 'stock-badge';
-                    if (stockVal <= stockAlerts.red) badgeClass += ' alert-red';
-                    else if (stockVal <= stockAlerts.orange) badgeClass += ' alert-orange';
-                    else if (stockVal <= stockAlerts.yellow) badgeClass += ' alert-yellow';
-                    else badgeClass += ' alert-green';
+                if (state && state.activeOrders) {
+                    let nO = state.activeOrders;
 
-                    stockHtml = `<div class="${badgeClass}">${stockVal}</div>`;
-                }
-
-                let clickAction = (item.isMenuJour) 
-                    ? `addMenuToTicket('${escapedName}', ${price}, '${item.dest}')` 
-                    : `addToTicket('${escapedName}', ${price}, '${item.dest}')`;
-
-                return `
-                    <button class="btn-item ${isSoldOut ? 'sold-out' : ''}" onclick="${clickAction}">
-                        ${stockHtml}
-                        <span>${cleanName}</span>
-                        <span class="price">${price.toFixed(2)} €</span>
-                    </button>
-                `;
-            }).join('');
-        }
-
-        function openOrder(tableLabel) {
-            currentTable = tableLabel;
-            document.getElementById('table-label').innerText = "TABLE " + tableLabel;
-            
-            if(activeOrders[tableLabel] && activeOrders[tableLabel].status === 'reserved') {
-                ticketItems = [];
-                document.getElementById('order-obs').value = activeOrders[tableLabel].observations || '';
-            } else {
-                ticketItems = (activeOrders[tableLabel] && activeOrders[tableLabel].items) ? JSON.parse(JSON.stringify(activeOrders[tableLabel].items)) : [];
-                document.getElementById('order-obs').value = (activeOrders[tableLabel] && activeOrders[tableLabel].observations) ? activeOrders[tableLabel].observations : '';
-            }
-            
-            let tObj = tables.find(t => t && t.label === tableLabel && t.isExtra);
-            if (tObj && ticketItems.length === 0 && document.getElementById('order-obs').value === '') {
-                document.getElementById('order-obs').value = `🍽️ ${tObj.pax || 1} Couvert(s)`;
-            }
-            
-          let needsUpdate = false;
-            
-            // 🛡️ SÉCURITÉ : On vérifie que ticketItems est bien un tableau valide
-            if (Array.isArray(ticketItems)) {
-                ticketItems.forEach(i => {
-                    if (i && i.done && !i.served) {
-                        i.served = true;
-                        needsUpdate = true;
+                    // 🚨 LE DÉCODEUR UNIVERSEL
+                    for (let key in nO) {
+                        if (nO[key] && nO[key].data !== undefined) {
+                            nO[key] = nO[key].data; 
+                        }
                     }
-                });
-            }
 
-            if (needsUpdate && activeOrders[currentTable]) {
-                let updatedOrder = activeOrders[currentTable];
-                updatedOrder.items = ticketItems;
-                API.update(currentTable, updatedOrder, true);
-            }
-            renderSeatBar();
-            
-            // SIMULATION DE CLIC SUR LE PREMIER ONGLET DISPONIBLE
-            setTimeout(() => {
-                let firstTabBtn = document.querySelector('.drawer .menu-tab');
-                if(firstTabBtn) firstTabBtn.click();
-            }, 50);
-            
-            renderTicket();
-            checkTableAlertState(currentTable); 
-            document.getElementById('order-drawer').classList.add('open');
+                    menuCuisine = typeof nO['MENU_MASTER'] === 'string' ? JSON.parse(nO['MENU_MASTER']) : (nO['MENU_MASTER'] || {});
+                    menuBar = typeof nO['MENU_MASTER_BAR'] === 'string' ? JSON.parse(nO['MENU_MASTER_BAR']) : (nO['MENU_MASTER_BAR'] || {});
+
+                    if(document.getElementById('order-drawer') && !document.getElementById('order-drawer').classList.contains('open')) {
+                        if(typeof renderDynamicTabs === 'function') renderDynamicTabs();
+                    }
+
+                    if(nO['STAFF_ACCESS'] && Array.isArray(nO['STAFF_ACCESS'])) {
+                        staffAccessData = nO['STAFF_ACCESS'];
+                    }
+
+                    if(nO['ROUTING_MASTER']) {
+                        activeOrders['ROUTING_MASTER'] = { data: nO['ROUTING_MASTER'] };
+                    }
+
+                    // 4. 🚨 RADAR D'ALERTES INTELLIGENT (BAR VS CUISINE)
+                    if(nO['ALERTS_MASTER']) {
+                        let alertData = nO['ALERTS_MASTER'];
+                        if (alertData.timestamp > (window.lastGlobalAlertTime || 0) && !alertData.cleared) {
+                            window.lastGlobalAlertTime = alertData.timestamp;
+                            
+                            let msg = alertData.message || "";
+                            
+                            if (alertData.type === 'NEW_ORDER' || msg.toUpperCase().includes('COMMANDE')) {
+                                if(typeof showToast === 'function') showToast(msg);
+                                if (navigator.vibrate) navigator.vibrate([100, 50, 100]);
+                            } else {
+                                // IA : DÉTECTION BAR OU CUISINE
+                                let titleEl = document.getElementById('global-alert-title');
+                                let iconEl = document.getElementById('global-alert-icon');
+                                let boxEl = document.getElementById('global-alert-box');
+                                let btnEl = document.getElementById('global-alert-btn');
+                                
+                                if (msg.toUpperCase().includes('BOISSON') || msg.toUpperCase().includes('COMPTOIR') || msg.toUpperCase().includes('BAR')) {
+                                    if(titleEl) { titleEl.innerText = "APPEL BAR"; titleEl.style.color = "#60a5fa"; }
+                                    if(iconEl) iconEl.innerText = "🍸";
+                                    if(boxEl) boxEl.style.borderColor = "#60a5fa";
+                                    if(btnEl) btnEl.style.background = "#60a5fa";
+                                } else {
+                                    if(titleEl) { titleEl.innerText = "APPEL CUISINE"; titleEl.style.color = "var(--alert)"; }
+                                    if(iconEl) iconEl.innerText = "🛎️";
+                                    if(boxEl) boxEl.style.borderColor = "var(--alert)";
+                                    if(btnEl) btnEl.style.background = "var(--alert)";
+                                }
+                                
+                                document.getElementById('global-alert-msg').innerText = msg;
+                                document.getElementById('global-alert-modal').classList.add('open');
+                                if(typeof playKlaxon === 'function') playKlaxon();
+                            }
+                        }
+                    }
+
+                    if (state.sasConfig) {
+                        localSasConfig = state.sasConfig;
+                        if(typeof updateSASButtonUI === 'function') updateSASButtonUI();
+                    }
+
+                    for (let t in nO) { 
+                        if (t.includes('MASTER') || t.includes('ARCHIVE') || t.includes('ARCHITECTURE')) continue;
+                        if (nO[t]?.alerteRouge && (!activeOrders[t] || !activeOrders[t].alerteRouge)) {
+                            if(typeof showToast === 'function') showToast(`⚠️ ALERTE SUR LA TABLE ${t}`);
+                        }
+                    }
+
+                    activeOrders = nO;
+                    
+                    if(!isDraggingTable && typeof renderFloor === 'function') renderFloor();
+                    
+                    if(document.getElementById('order-drawer') && document.getElementById('order-drawer').classList.contains('open')) {
+                        if(typeof renderMenu === 'function' && typeof currentCategory !== 'undefined') {
+                            renderMenu(currentCategory, window.currentMenuType || 'cuisine');
+                        }
+                    }
+                }
+            } catch(e) { console.error("Erreur Sync:", e); }
         }
 
-        function openQuickOrder() {
-            currentTable = "ATTENTE_" + Date.now(); 
-            ticketItems = [];
-            document.getElementById('table-label').innerText = "NOUVELLE COMMANDE";
-            document.getElementById('order-obs').value = "🍽️ 2 Couvert(s)";
-            
-            currentSeat = 0;
-            renderSeatBar();
-            
-            // SIMULATION DE CLIC SUR LE PREMIER ONGLET DISPONIBLE
-            setTimeout(() => {
-                let firstTabBtn = document.querySelector('.drawer .menu-tab');
-                if(firstTabBtn) firstTabBtn.click();
-            }, 50);
-            
-            renderTicket();
-            
-            let banner = document.getElementById('drawer-alert-banner');
-            let body = document.getElementById('drawer-main-body');
-            let actions = document.getElementById('ticket-action-buttons');
-            banner.style.display = 'none';
-            body.style.pointerEvents = 'auto';
-            body.style.opacity = '1';
-            body.style.filter = 'none';
-            actions.style.display = 'flex';
-            
-            document.getElementById('order-drawer').classList.add('open');
-        }
+        // 🛡️ REPARE LE BOUTON "J'ARRIVE" POUR TOUS LES ÉCRANS
+        window.closeGlobalAlert = async function() {
+            document.getElementById('global-alert-modal').classList.remove('open');
+            try {
+                let state = await API.getState();
+                if(state && state.activeOrders && state.activeOrders['ALERTS_MASTER']) {
+                    let alertData = state.activeOrders['ALERTS_MASTER'].data !== undefined ? state.activeOrders['ALERTS_MASTER'].data : state.activeOrders['ALERTS_MASTER'];
+                    alertData.cleared = true;
+                    await API.update('ALERTS_MASTER', alertData); // Nettoie le Cloud
+                }
+            } catch(e){}
+        };
     </script>
 </body>
 </html>
