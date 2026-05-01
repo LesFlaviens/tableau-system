@@ -254,14 +254,14 @@
         .btn-assign { background: transparent; color: var(--gold); border: 1px solid var(--gold); padding: 6px 12px; font-weight: 300; cursor: pointer; text-transform: uppercase; font-size: 0.7rem; transition: 0.2s; border-radius: 2px;}
         .btn-assign:hover { background: var(--gold-dim); }
         
-        #assign-overlay { position: fixed; top: 30px; left: 50%; transform: translateX(-50%); background: rgba(0,0,0,0.8); backdrop-filter: var(--blur); color: var(--text-main); padding: 15px 25px; border: 1px solid var(--border); font-weight: 300; font-size: 0.9rem; letter-spacing: 1px; z-index: 50000; display: none; justify-content: center; align-items: center; gap: 20px; pointer-events: none; border-radius: 2px; box-shadow: none; animation: none;}
+        #assign-overlay { position: fixed; top: 30px; left: 50%; transform: translateX(-50%); background: rgba(0,0,0,0.8); backdrop-filter: var(--blur); -webkit-backdrop-filter: var(--blur); color: var(--text-main); padding: 15px 25px; border: 1px solid var(--border); font-weight: 300; font-size: 0.9rem; letter-spacing: 1px; z-index: 50000; display: none; justify-content: center; align-items: center; gap: 20px; pointer-events: none; border-radius: 2px; box-shadow: none; animation: none;}
 
         button, .room-tab, .table-obj, .btn-item, .ticket-item-row, .pin-btn, .pay-btn, .cancel-btn, .shape-btn, .cuisson-btn, .key-btn, .menu-tab { position: relative; overflow: hidden; }
         .ripple { position: absolute; border-radius: 50%; transform: scale(0); animation: ripple-effect-heavy 0.5s cubic-bezier(0.25, 0.46, 0.45, 0.94); background-color: rgba(255, 255, 255, 0.1); pointer-events: none; z-index: 9999; }
         @keyframes ripple-effect-heavy { 0% { transform: scale(0); opacity: 1; } 100% { transform: scale(6); opacity: 0; } }
 
         #notification-center { position: fixed; top: 20px; left: 50%; transform: translateX(-50%); z-index: 999999; display: flex; flex-direction: column; gap: 10px; pointer-events: none; }
-        .toast-ready { background: rgba(0,0,0,0.9); color: var(--gold); padding: 15px 30px; font-weight: 300; font-size: 1rem; border: 1px solid var(--gold); letter-spacing: 2px; animation: dropDownToast 0.5s, fadeOutToast 0.5s ease-in 4.5s forwards; pointer-events: auto; cursor: pointer; text-transform: uppercase; backdrop-filter: var(--blur); border-radius: 2px; box-shadow: none;}
+        .toast-ready { background: rgba(0,0,0,0.9); color: var(--gold); padding: 15px 30px; font-weight: 300; font-size: 1rem; border: 1px solid var(--gold); letter-spacing: 2px; animation: dropDownToast 0.5s, fadeOutToast 0.5s ease-in 4.5s forwards; pointer-events: auto; cursor: pointer; text-transform: uppercase; backdrop-filter: var(--blur); -webkit-backdrop-filter: var(--blur); border-radius: 2px; box-shadow: none;}
         @keyframes dropDownToast { from { transform: translateY(-20px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
         @keyframes fadeOutToast { to { opacity: 0; } }
 
@@ -297,7 +297,7 @@
         <button style="background: var(--alert); color: #fff; border: 1px solid #fff; padding: 5px 15px; border-radius: 20px; font-weight: bold; cursor: pointer; pointer-events: auto;" onclick="cancelAssignResa()">❌ ANNULER</button>
     </div>
     
-    <div id="global-alert-modal" class="modal" style="z-index: 9999999;">
+   <div id="global-alert-modal" class="modal" style="z-index: 9999999;">
         <div id="global-alert-box" style="background:var(--panel); padding:40px; border-radius:16px; text-align:center; box-shadow: 0 15px 40px rgba(0,0,0,0.9); border: 2px solid var(--alert); width: 90%; max-width: 450px;">
             <div id="global-alert-icon" style="font-size: 3.5rem; margin-bottom: 15px;">🛎️</div>
             <h1 id="global-alert-title" style="color:var(--alert); font-size: 2rem; margin:0 0 15px 0; text-transform: uppercase; letter-spacing: 2px;">APPEL CUISINE</h1>
@@ -898,7 +898,6 @@
             currentSeat = 0;
             renderSeatBar();
             
-            // Simule le clic sur le premier onglet dynamique pour ouvrir la première catégorie disponible
             setTimeout(() => {
                 let firstTabBtn = document.querySelector('.drawer .menu-tab');
                 if(firstTabBtn) firstTabBtn.click();
@@ -1381,6 +1380,52 @@
         }
 
         window.addEventListener('load', connectEmpireH24);
+        
+        window.closeGlobalAlert = async function() {
+            // 1. Fermeture immédiate de l'interface pour libérer le serveur
+            let modal = document.getElementById('global-alert-modal');
+            if(modal) modal.classList.remove('open');
+            
+            // 2. Nettoyage de l'alerte sur le Cloud pour éviter qu'elle ne revienne
+            try {
+                let state = await API.getState();
+                if(state && state.activeOrders && state.activeOrders['ALERTS_MASTER']) {
+                    let alertData = state.activeOrders['ALERTS_MASTER'];
+                    
+                    // Sécurité : on s'assure de taper dans les bonnes données
+                    if (alertData.data !== undefined) alertData = alertData.data;
+                    
+                    alertData.cleared = true; // On marque l'alerte comme lue
+                    await API.update('ALERTS_MASTER', alertData);
+                }
+            } catch(e) { 
+                console.error("Erreur lors de la fermeture de l'alerte :", e); 
+            }
+        };
+
+        window.ackTableAlertFromModal = async function() {
+            document.getElementById('table-alert-modal').classList.remove('open');
+            
+            try {
+                let state = await API.getState();
+                
+                // 1. Nettoyer l'alerte réseau
+                if(state && state.activeOrders && state.activeOrders['ALERTS_MASTER']) {
+                    let alertData = state.activeOrders['ALERTS_MASTER'].data !== undefined ? state.activeOrders['ALERTS_MASTER'].data : state.activeOrders['ALERTS_MASTER'];
+                    alertData.cleared = true;
+                    await API.update('ALERTS_MASTER', alertData); 
+                }
+                
+                // 2. Éteindre le clignotement rouge de la table sur le plan
+                if (window.currentAlertTable && state.activeOrders[window.currentAlertTable]) {
+                    let tOrder = state.activeOrders[window.currentAlertTable].data !== undefined ? state.activeOrders[window.currentAlertTable].data : state.activeOrders[window.currentAlertTable];
+                    if (tOrder.alerteRouge) {
+                        delete tOrder.alerteRouge;
+                        await API.update(window.currentAlertTable, tOrder, true);
+                    }
+                }
+            } catch(e){}
+        };
 
     </script>
 
@@ -1434,7 +1479,7 @@
                         activeOrders['ROUTING_MASTER'] = { data: nO['ROUTING_MASTER'] };
                     }
 
-                    // 4. 🚨 RADAR D'ALERTES CIBLÉES
+                    // 4. 🚨 RADAR D'ALERTES CIBLÉES INTÉGRAL
                     if(nO['ALERTS_MASTER']) {
                         let alertData = nO['ALERTS_MASTER'];
                         if (alertData.timestamp > (window.lastGlobalAlertTime || 0) && !alertData.cleared) {
@@ -1453,13 +1498,19 @@
                                 
                                 let titleEl = document.getElementById('table-alert-table-name');
                                 let modalEl = document.getElementById('table-alert-modal');
+                                let btnEl = document.getElementById('table-alert-btn');
+                                let iconEl = document.getElementById('table-alert-icon');
                                 
                                 if (msg.toUpperCase().includes('BOISSON') || msg.toUpperCase().includes('COMPTOIR') || msg.toUpperCase().includes('BAR')) {
-                                    if(titleEl) { titleEl.innerText = "🍸 TABLE " + tableName; titleEl.style.color = "#60a5fa"; }
-                                    modalEl.querySelector('div').style.borderColor = "#60a5fa";
+                                    if(titleEl) { titleEl.innerText = "APPEL BAR T" + tableName.replace('T',''); titleEl.style.color = "#60a5fa"; }
+                                    if(modalEl) modalEl.querySelector('div').style.borderColor = "#60a5fa";
+                                    if(btnEl) { btnEl.style.background = "#60a5fa"; btnEl.style.color = "#fff"; }
+                                    if(iconEl) iconEl.innerText = "🍸";
                                 } else {
-                                    if(titleEl) { titleEl.innerText = "🔥 TABLE " + tableName; titleEl.style.color = "var(--alert)"; }
-                                    modalEl.querySelector('div').style.borderColor = "var(--alert)";
+                                    if(titleEl) { titleEl.innerText = "APPEL CUISINE T" + tableName.replace('T',''); titleEl.style.color = "var(--alert)"; }
+                                    if(modalEl) modalEl.querySelector('div').style.borderColor = "var(--alert)";
+                                    if(btnEl) { btnEl.style.background = "var(--alert)"; btnEl.style.color = "#fff"; }
+                                    if(iconEl) iconEl.innerText = "🛎️";
                                 }
                                 
                                 document.getElementById('table-alert-msg').innerText = msg;
@@ -1476,12 +1527,12 @@
                                     if(titleEl) { titleEl.innerText = "APPEL BAR"; titleEl.style.color = "#60a5fa"; }
                                     if(iconEl) iconEl.innerText = "🍸";
                                     if(boxEl) boxEl.style.borderColor = "#60a5fa";
-                                    if(btnEl) btnEl.style.background = "#60a5fa";
+                                    if(btnEl) { btnEl.style.background = "#60a5fa"; btnEl.style.color = "#fff"; }
                                 } else {
                                     if(titleEl) { titleEl.innerText = "APPEL CUISINE"; titleEl.style.color = "var(--alert)"; }
                                     if(iconEl) iconEl.innerText = "🛎️";
                                     if(boxEl) boxEl.style.borderColor = "var(--alert)";
-                                    if(btnEl) btnEl.style.background = "var(--alert)";
+                                    if(btnEl) { btnEl.style.background = "var(--alert)"; btnEl.style.color = "#fff"; }
                                 }
                                 
                                 document.getElementById('global-alert-msg').innerText = msg;
@@ -1762,52 +1813,6 @@
             document.getElementById('ticket-items').innerHTML = finalHtml;
             document.getElementById('ticket-total').innerText = `Total TTC: ${t.toFixed(2)}€`;
         }
-
-        window.closeGlobalAlert = async function() {
-            // 1. Fermeture immédiate de l'interface pour libérer le serveur
-            let modal = document.getElementById('global-alert-modal');
-            if(modal) modal.classList.remove('open');
-            
-            // 2. Nettoyage de l'alerte sur le Cloud pour éviter qu'elle ne revienne
-            try {
-                let state = await API.getState();
-                if(state && state.activeOrders && state.activeOrders['ALERTS_MASTER']) {
-                    let alertData = state.activeOrders['ALERTS_MASTER'];
-                    
-                    // Sécurité : on s'assure de taper dans les bonnes données
-                    if (alertData.data !== undefined) alertData = alertData.data;
-                    
-                    alertData.cleared = true; // On marque l'alerte comme lue
-                    await API.update('ALERTS_MASTER', alertData);
-                }
-            } catch(e) { 
-                console.error("Erreur lors de la fermeture de l'alerte :", e); 
-            }
-        };
-
-        window.ackTableAlertFromModal = async function() {
-            document.getElementById('table-alert-modal').classList.remove('open');
-            
-            try {
-                let state = await API.getState();
-                
-                // 1. Nettoyer l'alerte réseau
-                if(state && state.activeOrders && state.activeOrders['ALERTS_MASTER']) {
-                    let alertData = state.activeOrders['ALERTS_MASTER'].data !== undefined ? state.activeOrders['ALERTS_MASTER'].data : state.activeOrders['ALERTS_MASTER'];
-                    alertData.cleared = true;
-                    await API.update('ALERTS_MASTER', alertData); 
-                }
-                
-                // 2. Éteindre le clignotement rouge de la table sur le plan
-                if (window.currentAlertTable && state.activeOrders[window.currentAlertTable]) {
-                    let tOrder = state.activeOrders[window.currentAlertTable].data !== undefined ? state.activeOrders[window.currentAlertTable].data : state.activeOrders[window.currentAlertTable];
-                    if (tOrder.alerteRouge) {
-                        delete tOrder.alerteRouge;
-                        await API.update(window.currentAlertTable, tOrder, true);
-                    }
-                }
-            } catch(e){}
-        };
     </script>
 </body>
 </html>
