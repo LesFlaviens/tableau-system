@@ -3367,36 +3367,109 @@ if (method === 'QR/TEL') {
                 if (state && state.activeOrders) {
                     let nO = state.activeOrders;
 
-                    // 🟢 Synchronisation Menu Cuisine & Bar
-                    if(nO['MENU_MASTER']?.data) menuCuisine = nO['MENU_MASTER'].data;
-                    if(nO['MENU_MASTER_BAR']?.data) menuBar = nO['MENU_MASTER_BAR'].data;
-
-                    // 🚨 Radar d'alertes
-                    if(nO['ALERTS_MASTER']?.data) {
-                        let alertData = nO['ALERTS_MASTER'].data;
-                        if (alertData.timestamp > (window.lastGlobalAlertTime || 0)) {
-                            window.lastGlobalAlertTime = alertData.timestamp;
-                            playKlaxon();
-                            document.getElementById('global-alert-msg').innerText = alertData.message;
-                            document.getElementById('global-alert-modal').classList.add('open');
+                    // 🚨 LE DÉCODEUR UNIVERSEL
+                    for (let key in nO) {
+                        if (nO[key] && nO[key].data !== undefined) {
+                            nO[key] = nO[key].data; 
                         }
                     }
 
-                    // 🛡️ Traitement des tables et alertes
+                    menuCuisine = typeof nO['MENU_MASTER'] === 'string' ? JSON.parse(nO['MENU_MASTER']) : (nO['MENU_MASTER'] || {});
+                    menuBar = typeof nO['MENU_MASTER_BAR'] === 'string' ? JSON.parse(nO['MENU_MASTER_BAR']) : (nO['MENU_MASTER_BAR'] || {});
+
+                    if(document.getElementById('order-drawer') && !document.getElementById('order-drawer').classList.contains('open')) {
+                        if(typeof renderDynamicTabs === 'function') renderDynamicTabs();
+                    }
+
+                    if(nO['STAFF_ACCESS'] && Array.isArray(nO['STAFF_ACCESS'])) {
+                        staffAccessData = nO['STAFF_ACCESS'];
+                    }
+
+                    if(nO['ROUTING_MASTER']) {
+                        activeOrders['ROUTING_MASTER'] = { data: nO['ROUTING_MASTER'] };
+                    }
+
+                    // 4. 🚨 RADAR D'ALERTES CIBLÉES
+                    if(nO['ALERTS_MASTER']) {
+                        let alertData = nO['ALERTS_MASTER'];
+                        if (alertData.timestamp > (window.lastGlobalAlertTime || 0) && !alertData.cleared) {
+                            window.lastGlobalAlertTime = alertData.timestamp;
+                            
+                            let msg = alertData.message || "";
+                            let tableMatch = msg.match(/\(Table (.*?)\)/i) || msg.match(/Table (.*?)$/i);
+                            
+                            if (alertData.type === 'NEW_ORDER' || msg.toUpperCase().includes('COMMANDE')) {
+                                if(typeof showToast === 'function') showToast(msg);
+                                if (navigator.vibrate) navigator.vibrate([100, 50, 100]);
+                            } else if (tableMatch) {
+                                // 🎯 ALERTE SPÉCIFIQUE À UNE TABLE
+                                let tableName = tableMatch[1].trim();
+                                window.currentAlertTable = tableName; // Mémorisation pour fermer
+                                
+                                let titleEl = document.getElementById('table-alert-table-name');
+                                let modalEl = document.getElementById('table-alert-modal');
+                                
+                                if (msg.toUpperCase().includes('BOISSON') || msg.toUpperCase().includes('COMPTOIR') || msg.toUpperCase().includes('BAR')) {
+                                    if(titleEl) { titleEl.innerText = "🍸 TABLE " + tableName; titleEl.style.color = "#60a5fa"; }
+                                    modalEl.querySelector('div').style.borderColor = "#60a5fa";
+                                } else {
+                                    if(titleEl) { titleEl.innerText = "🔥 TABLE " + tableName; titleEl.style.color = "var(--alert)"; }
+                                    modalEl.querySelector('div').style.borderColor = "var(--alert)";
+                                }
+                                
+                                document.getElementById('table-alert-msg').innerText = msg;
+                                modalEl.classList.add('open');
+                                if(typeof playKlaxon === 'function') playKlaxon();
+                            } else {
+                                // 🌍 ALERTE GLOBALE (Si aucune table n'est précisée)
+                                let titleEl = document.getElementById('global-alert-title');
+                                let iconEl = document.getElementById('global-alert-icon');
+                                let boxEl = document.getElementById('global-alert-box');
+                                let btnEl = document.getElementById('global-alert-btn');
+                                
+                                if (msg.toUpperCase().includes('BOISSON') || msg.toUpperCase().includes('COMPTOIR') || msg.toUpperCase().includes('BAR')) {
+                                    if(titleEl) { titleEl.innerText = "APPEL BAR"; titleEl.style.color = "#60a5fa"; }
+                                    if(iconEl) iconEl.innerText = "🍸";
+                                    if(boxEl) boxEl.style.borderColor = "#60a5fa";
+                                    if(btnEl) btnEl.style.background = "#60a5fa";
+                                } else {
+                                    if(titleEl) { titleEl.innerText = "APPEL CUISINE"; titleEl.style.color = "var(--alert)"; }
+                                    if(iconEl) iconEl.innerText = "🛎️";
+                                    if(boxEl) boxEl.style.borderColor = "var(--alert)";
+                                    if(btnEl) btnEl.style.background = "var(--alert)";
+                                }
+                                
+                                document.getElementById('global-alert-msg').innerText = msg;
+                                document.getElementById('global-alert-modal').classList.add('open');
+                                if(typeof playKlaxon === 'function') playKlaxon();
+                            }
+                        }
+                    }
+
+                    if (state.sasConfig) {
+                        localSasConfig = state.sasConfig;
+                        if(typeof updateSASButtonUI === 'function') updateSASButtonUI();
+                    }
+
                     for (let t in nO) { 
                         if (t.includes('MASTER') || t.includes('ARCHIVE') || t.includes('ARCHITECTURE')) continue;
-                        
-                        if (nO[t]?.alerteRouge) {
-                            showToast(`⚠️ ALERTE TABLE ${t}`);
+                        if (nO[t]?.alerteRouge && (!activeOrders[t] || !activeOrders[t].alerteRouge)) {
+                            if(typeof showToast === 'function') showToast(`⚠️ ALERTE SUR LA TABLE ${t}`);
                         }
                     }
 
                     activeOrders = nO;
-                    if(!isDraggingTable) renderFloor();
+                    
+                    if(!isDraggingTable && typeof renderFloor === 'function') renderFloor();
+                    
+                    if(document.getElementById('order-drawer') && document.getElementById('order-drawer').classList.contains('open')) {
+                        if(typeof renderMenu === 'function' && typeof currentCategory !== 'undefined') {
+                            renderMenu(currentCategory, window.currentMenuType || 'cuisine');
+                        }
+                    }
                 }
             } catch(e) { console.error("Erreur Sync:", e); }
         }
-
         // --- 💳 TON BLOC PAIEMENT (SYNTAXE RÉPARÉE) ---
         async function triggerSumUpPayment(montant) {
             try {
