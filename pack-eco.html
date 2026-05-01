@@ -3077,14 +3077,12 @@ function renderFloor() {
                 return;
             }
             
-           // 💳 GESTION TPE (TERMINAL CLASSIQUE DU CLIENT)
+            // 💳 GESTION TPE (TERMINAL CLASSIQUE DU CLIENT)
             if (method === 'CB') {
-                // Le système demande au serveur de confirmer qu'il a bien encaissé sur la machine externe
                 const go = confirm(`Avez-vous bien passé la carte de ${amt.toFixed(2)}€ sur le terminal bancaire du restaurant ?`);
-                if (!go) return; // Le serveur annule s'il y a eu un refus de carte
+                if (!go) return; 
                 
-                // Note pour plus tard : Si ton client décide de passer chez SumUp un jour, 
-                // tu n'auras qu'à décommenter les deux lignes ci-dessous pour réactiver le Bluetooth :
+                // Note: Si un jour vous connectez SumUp, décommentez ces lignes :
                 // const success = await triggerSumUpPayment(amt);
                 // if (!success) return; 
             }
@@ -3097,6 +3095,7 @@ function renderFloor() {
             updatePaymentUI();
             logAction("ENCAISSEMENT", `${method} : ${amt.toFixed(2)}€ | Table: ${currentTable}`);
         }
+
         function updatePaymentUI() {
             document.getElementById('pay-modal-remaining').innerText = currentPayRemaining.toFixed(2) + " €";
             document.getElementById('pay-custom-amount').value = currentPayRemaining.toFixed(2);
@@ -3134,159 +3133,6 @@ function renderFloor() {
             document.getElementById('pay-custom-amount').value = currentPayRemaining.toFixed(2);
         }
 
-  async function processPartialPayment(method) {
-    let amtInput = document.getElementById('pay-custom-amount').value;
-    let amt = parseFloat(amtInput.replace(',', '.'));
-    
-    if(isNaN(amt) || amt <= 0) return alert("⚠️ Saisissez un montant valide.");
-    
-    // Détection des Tickets Resto et Chèques Vacances
-    let isVoucher = (method === 'TR' || method === 'CV');
-    if(!isVoucher && amt > currentPayRemaining + 0.05) return alert("⚠️ Le montant dépasse le reste à payer.");
-
-    if (isVoucher && amt > currentPayRemaining) {
-        if (!confirm(`Montant supérieur au reste (${amt.toFixed(2)}€). On ne rend pas la monnaie sur les ${method}. Valider ?`)) return;
-    }
-
-  // 📱 GESTION DU QR CODE (Lien vers Portail Client)
-if (method === 'QR/TEL') {
-    // 1. On récupère dynamiquement l'adresse de ton serveur Render
-    let serverUrl = window.location.origin; 
-    
-    // 2. On crée l'URL qui sera ouverte par le client
-    // Elle contient le numéro de table et le montant pour que le portail affiche la bonne addition
-    let lienPaiement = `${serverUrl}/portail-client?table=${currentTable}&montant=${amt.toFixed(2)}`;
-    
-    // 3. On encode ce lien pour le transformer en image QR
-    let qrData = encodeURIComponent(lienPaiement);
-    let qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=250x250&data=${qrData}`;
-
-    // 4. Mise à jour de l'affichage
-    document.getElementById('qr-code-img').src = qrUrl;
-    document.getElementById('qr-amount-display').innerText = amt.toFixed(2);
-
-    // On bascule l'affichage pour montrer le QR au client
-    document.getElementById('pay-action-zone').style.display = 'none';
-    document.getElementById('qr-pay-zone').style.display = 'flex';
-
-    // On stocke le montant dans le dataset pour la validation manuelle
-    document.getElementById('qr-pay-zone').dataset.amt = amt;
-    
-    return; // On attend le scan client
-}
-    
-    // Logique SumUp pour la CB
-    if (method === 'CB') {
-        const go = confirm(`Envoyer ${amt.toFixed(2)}€ au terminal ?`);
-        if (!go) return;
-        const success = await triggerSumUpPayment(amt);
-        if (!success) return; 
-    }
-
-    // Enregistrement standard
-    currentPayHistory.push({ method: method, amount: amt });
-    currentPayRemaining -= amt;
-    if(currentPayRemaining < 0) currentPayRemaining = 0;
-    
-    updatePaymentUI();
-    logAction("ENCAISSEMENT", `${method} : ${amt.toFixed(2)}€ | Table: ${currentTable}`);
-}
-
-      async function syncData() {
-            if (isArchiMode) return; 
-            try {
-                const state = await API.getState();
-                if (state && state.activeOrders) {
-                    let nO = state.activeOrders;
-
-                    // 🚨 LE DÉCODEUR : Ouvre les commandes provenant du QR Code 🚨
-                    for (let key in nO) {
-                        if (key.startsWith('order_') || key.startsWith('W') || key.startsWith('T') || key.startsWith('WEB_')) {
-                            if (nO[key] && nO[key].data !== undefined && !Array.isArray(nO[key].data)) {
-                                nO[key] = nO[key].data; 
-                            }
-                        }
-                    }
-
-                    // 1. MAJ Menus & Stocks
-                    if(nO['MENU_MASTER']?.data) menuCuisine = nO['MENU_MASTER'].data;
-                    if(nO['MENU_MASTER_BAR']?.data) menuBar = nO['MENU_MASTER_BAR'].data;
-
-                    // 2. MAJ Sécurité
-                    if(nO['STAFF_ACCESS'] && Array.isArray(nO['STAFF_ACCESS'].data)) {
-                        staffAccessData = nO['STAFF_ACCESS'].data;
-                    }
-
-                    // 3. MAJ Routing
-                    if(nO['ROUTING_MASTER'] && nO['ROUTING_MASTER'].data) {
-                        activeOrders['ROUTING_MASTER'] = { data: nO['ROUTING_MASTER'].data };
-                    }
-
-                    // 4. 🚨 RADAR D'ALERTES (Sépare le Chef des commandes QR)
-                    if(nO['ALERTS_MASTER']?.data) {
-                        let alertData = nO['ALERTS_MASTER'].data;
-                        if (alertData.timestamp > (window.lastGlobalAlertTime || 0) && !alertData.cleared) {
-                            window.lastGlobalAlertTime = alertData.timestamp;
-                            
-                            if (alertData.type === 'NEW_ORDER') {
-                                // 📱 COMMANDE WEB : Toast silencieux
-                                if(typeof showToast === 'function') showToast(alertData.message || "📱 Nouvelle commande client");
-                                if (navigator.vibrate) navigator.vibrate([100, 50, 100]);
-                            } else {
-                                // 👨‍🍳 APPEL CUISINE
-                                document.getElementById('global-alert-msg').innerText = alertData.message || "LE CHEF DEMANDE LA SALLE AU PASSE !";
-                                document.getElementById('global-alert-modal').classList.add('open');
-                                if(typeof playKlaxon === 'function') playKlaxon();
-                            }
-                        }
-                    }
-
-                    // 5. Configuration SAS
-                    if (state.sasConfig) {
-                        localSasConfig = state.sasConfig;
-                        if(typeof updateSASButtonUI === 'function') updateSASButtonUI();
-                    }
-
-                    // 6. Alertes de tables
-                    for (let t in nO) { 
-                        if (t.includes('MASTER') || t.includes('ARCHIVE') || t.includes('ARCHITECTURE')) continue;
-                        if (nO[t]?.alerteRouge && (!activeOrders[t] || !activeOrders[t].alerteRouge)) {
-                            if(typeof showToast === 'function') showToast(`⚠️ ALERTE SUR LA TABLE ${t}`);
-                        }
-                    }
-
-                    // 7. 🏗️ SYNCHRONISATION LIVE DE L'ARCHITECTURE
-                    if (nO['ARCHITECTURE']) {
-                        let archiData = nO['ARCHITECTURE'].data !== undefined ? nO['ARCHITECTURE'].data : nO['ARCHITECTURE'];
-                        if (!isArchiMode && !isDraggingTable && archiData && archiData.tables) {
-                            let newArchiStr = JSON.stringify(archiData.tables);
-                            let oldArchiStr = JSON.stringify(tables);
-                            
-                            // Si le plan a changé sur un autre écran, on le met à jour
-                            if (newArchiStr !== oldArchiStr) {
-                                rooms = archiData.rooms || ['Salle Principale'];
-                                tables = archiData.tables || [];
-                                
-                                // Si la salle actuelle a été supprimée sur un autre écran, revenir à la salle 1
-                                if (!rooms.includes(currentRoom)) {
-                                    currentRoom = rooms[0] || 'Salle Principale';
-                                }
-
-                                localStorage.setItem('empire_architecture', JSON.stringify(tables));
-                                localStorage.setItem('empire_rooms', JSON.stringify(rooms));
-                                
-                                if (typeof renderRooms === 'function') renderRooms();
-                                if (typeof renderFloor === 'function') renderFloor();
-                            }
-                        }
-                    }
-
-                    activeOrders = nO;
-                    if(!isDraggingTable && typeof renderFloor === 'function') renderFloor();
-                }
-            } catch(e) { console.error("Erreur Sync:", e); }
-        }
-        // --- 💳 TON BLOC PAIEMENT (SYNTAXE RÉPARÉE) ---
         async function triggerSumUpPayment(montant) {
             try {
                 const API_TOKEN = 'TON_TOKEN_API'; 
@@ -3305,7 +3151,7 @@ if (method === 'QR/TEL') {
                 });
 
                 if (response.ok) {
-                    showToast("📡 TERMINAL ACTIVÉ...");
+                    if(typeof showToast === 'function') showToast("📡 TERMINAL ACTIVÉ...");
                     return true;
                 } else {
                     const err = await response.json();
@@ -3335,38 +3181,9 @@ if (method === 'QR/TEL') {
             }, 300);
         }
 
-        // Lancement au démarrage
-        document.addEventListener('DOMContentLoaded', connectEmpireH24);
-
-    </script>
-
-    <script>
-        var myRealPin = "";
-        window.appendPin = function(n) { 
-            if (myRealPin.length < 6) { 
-                myRealPin += n; 
-                if(document.getElementById('pin-display')) document.getElementById('pin-display').innerText = '*'.repeat(myRealPin.length); 
-            }
-        };
-        window.clearPin = function() { myRealPin = ""; if(document.getElementById('pin-display')) document.getElementById('pin-display').innerText = ""; };
-        
-        window.submitPin = function() {
-            if(myRealPin === "9999" || myRealPin === "999999" || myRealPin === "7777") {
-                window.currentUser = { name: "Directeur", role: "Manager" };
-                currentUser = window.currentUser;
-                document.getElementById('login-screen').style.display = 'none';
-                document.querySelectorAll('.admin').forEach(e => e.style.display = 'flex');
-                renderRooms(); renderFloor();
-            } else { alert("❌ Code incorrect"); window.clearPin(); }
-        };
-
-        window.unlockArchiMode = function() { 
-            isArchiMode = true; 
-            document.body.classList.add('edit-mode'); 
-            renderRooms(); renderFloor(); 
-            if(document.getElementById('admin-catalog-modal')) document.getElementById('admin-catalog-modal').classList.remove('open');
-        };
-// 🍞 GESTION DES NOTIFICATIONS TOAST (Notifications silencieuses QR)
+        // ==========================================
+        // 🍞 GESTION DES NOTIFICATIONS TOAST
+        // ==========================================
         function showToast(msg) {
             let container = document.getElementById('notification-center');
             if (!container) {
@@ -3385,8 +3202,8 @@ if (method === 'QR/TEL') {
         // ==========================================
         // 🔄 MOTEUR DE SYNCHRONISATION & RÉSEAU H24
         // ==========================================
-        let staffAccessData = []; // Stockage sécurisé des codes PIN du staff
-        let localSasConfig = { active: false }; // Configuration du SAS
+        let staffAccessData = []; 
+        let localSasConfig = { active: false }; 
 
         async function syncData() {
             if (isArchiMode) return; 
@@ -3395,7 +3212,7 @@ if (method === 'QR/TEL') {
                 if (state && state.activeOrders) {
                     let nO = state.activeOrders;
 
-                    // 🚨 LE DÉCODEUR : Ouvre les commandes provenant du QR Code 🚨
+                    // Décodeur commandes QR Code
                     for (let key in nO) {
                         if (key.startsWith('order_') || key.startsWith('W') || key.startsWith('T') || key.startsWith('WEB_')) {
                             if (nO[key] && nO[key].data !== undefined && !Array.isArray(nO[key].data)) {
@@ -3404,46 +3221,40 @@ if (method === 'QR/TEL') {
                         }
                     }
 
-                    // 1. MAJ Menus & Stocks
                     if(nO['MENU_MASTER']?.data) menuCuisine = nO['MENU_MASTER'].data;
                     if(nO['MENU_MASTER_BAR']?.data) menuBar = nO['MENU_MASTER_BAR'].data;
-
-                    // 2. MAJ Sécurité
+                    
                     if(nO['STAFF_ACCESS'] && Array.isArray(nO['STAFF_ACCESS'].data)) {
                         staffAccessData = nO['STAFF_ACCESS'].data;
                     }
 
-                    // 3. MAJ Routing
                     if(nO['ROUTING_MASTER'] && nO['ROUTING_MASTER'].data) {
                         activeOrders['ROUTING_MASTER'] = { data: nO['ROUTING_MASTER'].data };
                     }
 
-                    // 4. 🚨 RADAR D'ALERTES (Sépare le Chef des commandes QR)
                     if(nO['ALERTS_MASTER']?.data) {
                         let alertData = nO['ALERTS_MASTER'].data;
                         if (alertData.timestamp > (window.lastGlobalAlertTime || 0) && !alertData.cleared) {
                             window.lastGlobalAlertTime = alertData.timestamp;
                             
                             if (alertData.type === 'NEW_ORDER') {
-                                // 📱 COMMANDE WEB : Toast silencieux
                                 if(typeof showToast === 'function') showToast(alertData.message || "📱 Nouvelle commande client");
                                 if (navigator.vibrate) navigator.vibrate([100, 50, 100]);
                             } else {
-                                // 👨‍🍳 APPEL CUISINE
-                                document.getElementById('global-alert-msg').innerText = alertData.message || "LE CHEF DEMANDE LA SALLE AU PASSE !";
-                                document.getElementById('global-alert-modal').classList.add('open');
+                                let alertMsgObj = document.getElementById('global-alert-msg');
+                                if(alertMsgObj) alertMsgObj.innerText = alertData.message || "LE CHEF DEMANDE LA SALLE AU PASSE !";
+                                let globalModal = document.getElementById('global-alert-modal');
+                                if(globalModal) globalModal.classList.add('open');
                                 if(typeof playKlaxon === 'function') playKlaxon();
                             }
                         }
                     }
 
-                    // 5. Configuration SAS
                     if (state.sasConfig) {
                         localSasConfig = state.sasConfig;
                         if(typeof updateSASButtonUI === 'function') updateSASButtonUI();
                     }
 
-                    // 6. Alertes de tables
                     for (let t in nO) { 
                         if (t.includes('MASTER') || t.includes('ARCHIVE') || t.includes('ARCHITECTURE')) continue;
                         if (nO[t]?.alerteRouge && (!activeOrders[t] || !activeOrders[t].alerteRouge)) {
@@ -3451,19 +3262,16 @@ if (method === 'QR/TEL') {
                         }
                     }
 
-                    // 7. 🏗️ SYNCHRONISATION LIVE DE L'ARCHITECTURE
                     if (nO['ARCHITECTURE']) {
                         let archiData = nO['ARCHITECTURE'].data !== undefined ? nO['ARCHITECTURE'].data : nO['ARCHITECTURE'];
                         if (!isArchiMode && !isDraggingTable && archiData && archiData.tables) {
                             let newArchiStr = JSON.stringify(archiData.tables);
                             let oldArchiStr = JSON.stringify(tables);
                             
-                            // Si le plan a changé sur un autre écran, on le met à jour
                             if (newArchiStr !== oldArchiStr) {
                                 rooms = archiData.rooms || ['Salle Principale'];
                                 tables = archiData.tables || [];
                                 
-                                // Si la salle actuelle a été supprimée sur un autre écran, revenir à la salle 1
                                 if (!rooms.includes(currentRoom)) {
                                     currentRoom = rooms[0] || 'Salle Principale';
                                 }
@@ -3482,6 +3290,7 @@ if (method === 'QR/TEL') {
                 }
             } catch(e) { console.error("Erreur Sync:", e); }
         }
+
         // ==========================================
         // 🔐 GESTION DU CLAVIER PIN & SÉCURITÉ
         // ==========================================
@@ -3500,7 +3309,6 @@ if (method === 'QR/TEL') {
         };
 
         window.submitPin = function() {
-            // 1. Accès Master (Secours absolu)
             if(myRealPin === "9999" || myRealPin === "999999" || myRealPin === "7777") {
                 window.currentUser = { name: "Directeur", role: "Manager" };
                 currentUser = window.currentUser;
@@ -3509,7 +3317,6 @@ if (method === 'QR/TEL') {
                 return;
             }
 
-            // 2. Accès via la Base de Données (Admin -> STAFF_ACCESS)
             let staffUser = staffAccessData.find(s => s.pin === myRealPin);
             
             if (staffUser) {
@@ -3517,14 +3324,12 @@ if (method === 'QR/TEL') {
                 currentUser = window.currentUser;
                 unlockPadInterface();
                 
-                // Si l'utilisateur est de la direction, on montre le bouton Admin, sinon on le cache
                 if(staffUser.dept === 'admin') {
                     document.querySelectorAll('.admin').forEach(e => e.style.display = 'flex');
                 } else {
                     document.querySelectorAll('.admin').forEach(e => e.style.display = 'none');
                 }
                 
-                // Mise à jour du badge utilisateur en haut à gauche
                 if(document.getElementById('user-badge')) {
                     document.getElementById('user-badge').innerText = `Badge: ${currentUser.name} (${currentUser.role})`;
                 }
@@ -3541,7 +3346,6 @@ if (method === 'QR/TEL') {
             renderFloor();
             myRealPin = "";
             
-            // DÉVERROUILLE LE KLAXON AU MOMENT DE LA CONNEXION
             if (typeof unlockAudio === 'function') unlockAudio();
         }
 
@@ -3571,7 +3375,6 @@ if (method === 'QR/TEL') {
             }
         };
 
-        // 🛡️ DOUBLE VALIDATION ANTI-ERREUR (SUPPRIMER SALLE)
         window.deleteCurrentRoom = function() {
             if (rooms.length <= 1) return alert("🛡️ SÉCURITÉ : L'Empire doit garder au moins une salle.");
             if (confirm("⚠️ Supprimer la salle '" + currentRoom + "' ?")) {
@@ -3585,7 +3388,6 @@ if (method === 'QR/TEL') {
             }
         };
 
-        // 🚦 RÉGULATEUR SAS ON/OFF
         window.toggleSAS = function() {
             localSasConfig.active = !localSasConfig.active;
             if(typeof updateSASButtonUI === 'function') updateSASButtonUI();
@@ -3626,22 +3428,18 @@ if (method === 'QR/TEL') {
             }
         }
 
-        // Lancement automatique et sécurisé
-        window.addEventListener('load', connectEmpireH24);
-window.ackTableAlertFromModal = async function() {
+        window.ackTableAlertFromModal = async function() {
             document.getElementById('table-alert-modal').classList.remove('open');
             
             try {
                 let state = await API.getState();
                 
-                // 1. Nettoyer l'alerte réseau
                 if(state && state.activeOrders && state.activeOrders['ALERTS_MASTER']) {
                     let alertData = state.activeOrders['ALERTS_MASTER'].data !== undefined ? state.activeOrders['ALERTS_MASTER'].data : state.activeOrders['ALERTS_MASTER'];
                     alertData.cleared = true;
                     await API.update('ALERTS_MASTER', alertData); 
                 }
                 
-                // 2. Éteindre le clignotement rouge de la table sur le plan
                 if (window.currentAlertTable && state.activeOrders[window.currentAlertTable]) {
                     let tOrder = state.activeOrders[window.currentAlertTable].data !== undefined ? state.activeOrders[window.currentAlertTable].data : state.activeOrders[window.currentAlertTable];
                     if (tOrder.alerteRouge) {
@@ -3651,6 +3449,9 @@ window.ackTableAlertFromModal = async function() {
                 }
             } catch(e){}
         };
+
+        window.addEventListener('load', connectEmpireH24);
+
     </script>
 </body>
 </html>
