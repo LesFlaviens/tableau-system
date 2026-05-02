@@ -2950,71 +2950,90 @@ function renderFloor() {
             }
         }
 
-        async function executeSaveTableState(fireAllNew = false, keepOpen = false) {
+        function executeSaveTableState(fireAllNew = false, keepOpen = false) {
             if(ticketItems.length === 0 && !keepOpen) return;
             
-            const state = await API.getState();
-            let centralMenu = (state && state.activeOrders && state.activeOrders['MENU_MASTER']) ? state.activeOrders['MENU_MASTER'].data : null;
-            let barMenu = (state && state.activeOrders && state.activeOrders['MENU_MASTER_BAR']) ? state.activeOrders['MENU_MASTER_BAR'].data : null;
+            // 1. COPIE DES DONNÉES (Pour pouvoir fermer l'écran tout de suite)
+            let itemsToSave = JSON.parse(JSON.stringify(ticketItems));
+            let obsToSave = document.getElementById('order-obs').value.trim();
+            let targetTable = currentTable;
             
-            let menuChanged = false;
-            let barMenuChanged = false;
-
-            ticketItems.forEach(tItem => {
-                if(!tItem.savedToDB) { 
-                    let pureName = (tItem.originalName || tItem.n).replace('🌟 ', ''); 
-
-                    if(centralMenu && tItem.dest === 'cuisine') {
-                        for (let cat in centralMenu) {
-                            if(centralMenu[cat] && Array.isArray(centralMenu[cat])) {
-                                let mItem = centralMenu[cat].find(i => i.name && i.name.replace('🌟 ', '') === pureName);
-                                if (mItem && mItem.stock !== "" && mItem.stock !== undefined && mItem.stock > 0) {
-                                    mItem.stock = Math.max(0, mItem.stock - (tItem.qty || 1));
-                                    menuChanged = true;
-                                }
-                            }
-                        }
-                    }
-                    
-                    if(barMenu && tItem.dest === 'bar') {
-                        for (let cat in barMenu) {
-                            if(barMenu[cat] && Array.isArray(barMenu[cat])) {
-                                let mItem = barMenu[cat].find(i => i.name && i.name.replace('🌟 ', '') === pureName);
-                                if (mItem && mItem.stock !== "" && mItem.stock !== undefined && mItem.stock > 0) {
-                                    mItem.stock = Math.max(0, mItem.stock - (tItem.qty || 1));
-                                    barMenuChanged = true;
-                                }
-                            }
-                        }
-                    }
-                    tItem.savedToDB = true; 
-                }
-                if (fireAllNew && !tItem.fired) {
-                    tItem.fired = true;
-                    tItem.firedTime = Date.now(); 
-                }
-            });
-
-            if (menuChanged && centralMenu) await API.update('MENU_MASTER', centralMenu);
-            if (barMenuChanged && barMenu) await API.update('MENU_MASTER_BAR', barMenu);
-
-            await API.update(currentTable, { items: ticketItems, time: new Date().toLocaleTimeString('fr-FR', {hour:'2-digit', minute:'2-digit'}), status: 'pending', observations: document.getElementById('order-obs').value.trim() }, true);
-            
-            if (fireAllNew) {
-                logAction("ENVOI MASSIF", `Table: ${currentTable}`, ticketItems); 
-            } else {
-                logAction("SAUVEGARDE COMMANDE", `Table: ${currentTable}`, ticketItems);
-            }
-            
+            // 2. FERMETURE IMMÉDIATE DE L'INTERFACE (Zéro Latence pour le serveur)
             if(!keepOpen) {
                 closeOrder(); 
                 renderFloor();
+                if(typeof showToast === 'function') showToast("✅ Commande envoyée !");
             }
-        }
 
-        let currentPayTotal = 0;
-        let currentPayRemaining = 0;
-        let currentPayHistory = [];
+            // 3. ENVOI AU CLOUD EN ARRIÈRE-PLAN (Ne bloque plus l'iPad)
+            setTimeout(async () => {
+                try {
+                    const state = await API.getState();
+                    let centralMenu = (state && state.activeOrders && state.activeOrders['MENU_MASTER']) ? state.activeOrders['MENU_MASTER'].data : null;
+                    let barMenu = (state && state.activeOrders && state.activeOrders['MENU_MASTER_BAR']) ? state.activeOrders['MENU_MASTER_BAR'].data : null;
+                    
+                    let menuChanged = false;
+                    let barMenuChanged = false;
+
+                    itemsToSave.forEach(tItem => {
+                        if(!tItem.savedToDB) { 
+                            let pureName = (tItem.originalName || tItem.n).replace('🌟 ', ''); 
+
+                            if(centralMenu && tItem.dest === 'cuisine') {
+                                for (let cat in centralMenu) {
+                                    if(centralMenu[cat] && Array.isArray(centralMenu[cat])) {
+                                        let mItem = centralMenu[cat].find(i => i.name && i.name.replace('🌟 ', '') === pureName);
+                                        if (mItem && mItem.stock !== "" && mItem.stock !== undefined && mItem.stock > 0) {
+                                            mItem.stock = Math.max(0, mItem.stock - (tItem.qty || 1));
+                                            menuChanged = true;
+                                        }
+                                    }
+                                }
+                            }
+                            
+                            if(barMenu && tItem.dest === 'bar') {
+                                for (let cat in barMenu) {
+                                    if(barMenu[cat] && Array.isArray(barMenu[cat])) {
+                                        let mItem = barMenu[cat].find(i => i.name && i.name.replace('🌟 ', '') === pureName);
+                                        if (mItem && mItem.stock !== "" && mItem.stock !== undefined && mItem.stock > 0) {
+                                            mItem.stock = Math.max(0, mItem.stock - (tItem.qty || 1));
+                                            barMenuChanged = true;
+                                        }
+                                    }
+                                }
+                            }
+                            tItem.savedToDB = true; 
+                        }
+                        if (fireAllNew && !tItem.fired) {
+                            tItem.fired = true;
+                            tItem.firedTime = Date.now(); 
+                        }
+                    });
+
+                    // 🚀 On lance toutes les requêtes en parallèle pour aller 3x plus vite
+                    let promises = [];
+                    if (menuChanged && centralMenu) promises.push(API.update('MENU_MASTER', centralMenu));
+                    if (barMenuChanged && barMenu) promises.push(API.update('MENU_MASTER_BAR', barMenu));
+
+                    promises.push(API.update(targetTable, { 
+                        items: itemsToSave, 
+                        time: new Date().toLocaleTimeString('fr-FR', {hour:'2-digit', minute:'2-digit'}), 
+                        status: 'pending', 
+                        observations: obsToSave 
+                    }, true));
+
+                    await Promise.all(promises);
+                    
+                    if (fireAllNew) {
+                        logAction("ENVOI MASSIF", `Table: ${targetTable}`, itemsToSave); 
+                    } else {
+                        logAction("SAUVEGARDE COMMANDE", `Table: ${targetTable}`, itemsToSave);
+                    }
+                } catch(e) {
+                    console.error("Erreur de synchro en arrière-plan", e);
+                }
+            }, 10);
+        }
 
    function openPaymentModal() {
             if(ticketItems.length === 0) return alert("Table vide."); 
