@@ -115,7 +115,14 @@ app.post('/update-order', async (req, res) => {
     if (order === null) {
         delete state.activeOrders[tableId];
     } else {
-        state.activeOrders[tableId] = order;
+        // 🔥 CORRECTION : Tolérance universelle des formats (Pad V1, Pad V2, Web)
+        let cleanOrder = order;
+        if (order && order.data !== undefined && !Array.isArray(order.data)) {
+            cleanOrder = order.data; 
+        }
+        
+        // On sauvegarde en enveloppant proprement pour la DB Mongo
+        state.activeOrders[tableId] = { data: cleanOrder };
     }
     
     try {
@@ -124,7 +131,6 @@ app.post('/update-order', async (req, res) => {
     
     res.json({ success: true });
 });
-
 app.post('/update-sas', async (req, res) => {
     const tenantID = req.query.tenantID || 'MASTER_STATE';
     const state = await initTenantState(tenantID);
