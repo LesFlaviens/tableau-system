@@ -3281,54 +3281,92 @@ function renderFloor() {
             } catch(e) { console.error("Erreur Sync:", e); }
         }
 
-        // ==========================================
+       // ==========================================
         // 🔐 GESTION DU CLAVIER PIN & SÉCURITÉ
         // ==========================================
-        var myRealPin = "";
+        let currentUser = null;
+        let currentPin = "";
+        
+        // Base de secours locale (Si pas de connexion au réseau)
+        const USERS = { 
+            "1234": { name: "Flavien", role: "Serveur" }, 
+            "2222": { name: "Chef de Salle", role: "Manager" }, 
+            "9999": { name: "Directeur", role: "Manager" } 
+        };
+
+        function resetInactivityTimer() { 
+            clearTimeout(inactivityTimer); 
+            if(currentUser) inactivityTimer = setTimeout(logout, INACTIVITY_LIMIT); 
+        }
+        
+        ['touchstart', 'click', 'mousemove', 'keypress'].forEach(e => document.addEventListener(e, resetInactivityTimer, {passive: true}));
         
         window.appendPin = function(n) { 
-            if (myRealPin.length < 6) { 
-                myRealPin += n; 
-                if(document.getElementById('pin-display')) document.getElementById('pin-display').innerText = '*'.repeat(myRealPin.length); 
+            if (currentPin.length < 6) {
+                currentPin += n; 
+                let display = document.getElementById('pin-display');
+                if (display) display.innerText = '*'.repeat(currentPin.length); 
+                resetInactivityTimer(); 
             }
         };
         
         window.clearPin = function() { 
-            myRealPin = ""; 
-            if(document.getElementById('pin-display')) document.getElementById('pin-display').innerText = ""; 
+            currentPin = ""; 
+            let display = document.getElementById('pin-display');
+            if (display) display.innerText = ""; 
+            resetInactivityTimer(); 
         };
-
+        
         window.submitPin = function() {
-            if(myRealPin === "9999" || myRealPin === "999999" || myRealPin === "7777") {
-                window.currentUser = { name: "Directeur", role: "Manager" };
-                currentUser = window.currentUser;
-                unlockPadInterface();
-                document.querySelectorAll('.admin').forEach(e => e.style.display = 'flex');
-                return;
+            let userFound = null;
+
+            // 1. Cherche d'abord dans la base locale (ex: 1234 ou 9999)
+            if (USERS && USERS[currentPin]) {
+                userFound = USERS[currentPin];
+            } 
+            // 2. Sinon, cherche dans la base Cloud si le Pad est connecté
+            else if (typeof staffAccessData !== 'undefined' && staffAccessData.length > 0) {
+                let sUser = staffAccessData.find(s => s.pin === currentPin);
+                if (sUser) {
+                    userFound = { name: sUser.name, role: (sUser.dept === 'admin' ? 'Manager' : sUser.dept) };
+                }
+            }
+            // 3. Master Code en cas d'urgence absolue
+            else if (currentPin === "7777" || currentPin === "999999") {
+                userFound = { name: "Directeur", role: "Manager" };
             }
 
-            let staffUser = staffAccessData.find(s => s.pin === myRealPin);
-            
-            if (staffUser) {
-                window.currentUser = { name: staffUser.name, role: staffUser.dept };
-                currentUser = window.currentUser;
-                unlockPadInterface();
+            // Déverrouillage de l'écran
+            if (userFound) {
+                currentUser = userFound;
+                document.getElementById('user-badge').innerText = `Badge: ${currentUser.name} (${currentUser.role})`;
+                document.getElementById('login-screen').style.display = 'none';
                 
-                if(staffUser.dept === 'admin') {
+                // Affichage des droits d'administration
+                if (currentUser.role === 'Manager') {
                     document.querySelectorAll('.admin').forEach(e => e.style.display = 'flex');
                 } else {
                     document.querySelectorAll('.admin').forEach(e => e.style.display = 'none');
                 }
+
+                // Réveil du système audio pour les alertes
+                if (typeof unlockAudio === 'function' && !sysAudioCtx) unlockAudio();
+
+                // Sortie du mode édition de salle si activé
+                isArchiMode = false;
+                document.body.classList.remove('edit-mode');
+
+                // Lancement du tableau de bord
+                if (typeof renderRooms === 'function') renderRooms(); 
+                if (typeof renderFloor === 'function') renderFloor(); 
                 
-                if(document.getElementById('user-badge')) {
-                    document.getElementById('user-badge').innerText = `Badge: ${currentUser.name} (${currentUser.role})`;
-                }
+                resetInactivityTimer();
+                window.clearPin();
             } else { 
-                alert("❌ Code incorrect ou révoqué par la Direction."); 
+                alert("❌ Code PIN Incorrect ou accès révoqué."); 
                 window.clearPin(); 
             }
         };
-
         function unlockPadInterface() {
             isArchiMode = false;
             document.body.classList.remove('edit-mode');
