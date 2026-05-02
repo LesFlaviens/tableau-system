@@ -326,7 +326,7 @@
         const tenantID = urlParams.get('tenantID') || 'MASTER_STATE';
         const SERVER_URL = "https://tableau-system.onrender.com";
 
-    // 🚨 LE MOTEUR API INTÉGRANT LE DÉCODEUR UNIVERSEL 🚨
+     // 🚨 LE MOTEUR API INTÉGRANT LE DÉCODEUR UNIVERSEL 🚨
         const API = {
             getState: async () => {
                 let state = { activeOrders: {} };
@@ -365,7 +365,7 @@
                     }); 
                 } catch(e) { console.error("Erreur de sauvegarde", e) }
             }
-        }; // <-- CORRECTION ICI : UN SEUL POINT-VIRGULE !
+        }; // <-- ICI on ne met qu'un seul point-virgule final !
 
         window.addEventListener('storage', (e) => {
             if (e.key === 'EMPIRE_GLOBAL_SYNC') {
@@ -824,99 +824,34 @@
             } catch(e) {} 
         }
 
-       // 🚨 LE MOTEUR API INTÉGRANT LE DÉCODEUR UNIVERSEL 🚨
-        const API = {
-            getState: async () => {
-                let state = { activeOrders: {} };
-                try {
-                    let r = await fetch(`${SERVER_URL}/get-current-state?tenantID=${tenantID}`);
-                    if(r.ok) state = await r.json();
-                    else throw new Error("HTTP " + r.status);
-                } catch(e) {
-                    state = JSON.parse(localStorage.getItem('EMPIRE_GLOBAL_SYNC')) || { activeOrders: {} };
-                }
+        function markItemReady(tableId, itemIndex, currentEvent) {
+            currentEvent.stopPropagation(); 
+            let rect = currentEvent.currentTarget.getBoundingClientRect();
+            let circle = document.createElement('span');
+            circle.style.width = circle.style.height = Math.max(rect.width, rect.height) + 'px';
+            circle.style.left = (currentEvent.clientX - rect.left - rect.width/2) + 'px';
+            circle.style.top = (currentEvent.clientY - rect.top - rect.height/2) + 'px';
+            circle.className = 'ripple';
+            currentEvent.currentTarget.appendChild(circle);
 
-                if (state && state.activeOrders) {
-                    for (let key in state.activeOrders) {
-                        if (state.activeOrders[key] && state.activeOrders[key].data !== undefined && !Array.isArray(state.activeOrders[key].data)) {
-                            state.activeOrders[key] = state.activeOrders[key].data;
-                        }
-                    }
-                }
-                return state;
-            },
-            update: async (key, data) => {
-                let isOrder = !key.includes('MASTER') && !key.includes('ARCHIVE') && !key.includes('SUPPLIER') && !key.includes('PLANNING') && !key.includes('MENU') && !key.includes('ACCESS');
-                let payload = isOrder ? data : { data: data };
-                let state = JSON.parse(localStorage.getItem('EMPIRE_GLOBAL_SYNC')) || { activeOrders: {} };
+            setTimeout(async () => {
+                if (!activeOrders[tableId] || !activeOrders[tableId].items[itemIndex]) return;
+                let item = activeOrders[tableId].items[itemIndex];
+                item.done = true; 
+                recentlyDoneItems.unshift({ tableId, itemIndex, name: item.n, time: Date.now() });
+                if (recentlyDoneItems.length > 10) recentlyDoneItems.pop(); 
+                localStorage.setItem('empire_recently_done', JSON.stringify(recentlyDoneItems));
                 
-                if (data === null) delete state.activeOrders[key];
-                else state.activeOrders[key] = payload;
-                
-                localStorage.setItem('EMPIRE_GLOBAL_SYNC', JSON.stringify(state));
-                
-                try { 
-                    await fetch(`${SERVER_URL}/update-order?tenantID=${tenantID}`, { 
-                        method: 'POST', 
-                        headers: {'Content-Type': 'application/json'}, 
-                        body: JSON.stringify({ tableId: key, order: data === null ? null : payload }) 
-                    }); 
-                } catch(e) { console.error("Erreur de sauvegarde", e) }
-            }
-        }; // <-- CORRECTION ICI : UN SEUL POINT-VIRGULE !
-
-        window.addEventListener('storage', (e) => {
-            if (e.key === 'EMPIRE_GLOBAL_SYNC') {
-                fetchSystemState();
+                await API.update(tableId, activeOrders[tableId]);
                 renderKDS();
-            }
-        });// 🚨 LE MOTEUR API INTÉGRANT LE DÉCODEUR UNIVERSEL 🚨
-        const API = {
-            getState: async () => {
-                let state = { activeOrders: {} };
-                try {
-                    let r = await fetch(`${SERVER_URL}/get-current-state?tenantID=${tenantID}`);
-                    if(r.ok) state = await r.json();
-                    else throw new Error("HTTP " + r.status);
-                } catch(e) {
-                    state = JSON.parse(localStorage.getItem('EMPIRE_GLOBAL_SYNC')) || { activeOrders: {} };
-                }
+                
+                // 🔔 NOUVEAU : CONFIRMATION D'ENVOI AU SERVICE
+                let cleanName = item.n.replace(/\[BR\]/g, ' ');
+                showToast(`✅ ${cleanName} envoyé en salle !`);
+                
+            }, 300);
+        }
 
-                if (state && state.activeOrders) {
-                    for (let key in state.activeOrders) {
-                        if (state.activeOrders[key] && state.activeOrders[key].data !== undefined && !Array.isArray(state.activeOrders[key].data)) {
-                            state.activeOrders[key] = state.activeOrders[key].data;
-                        }
-                    }
-                }
-                return state;
-            },
-            update: async (key, data) => {
-                let isOrder = !key.includes('MASTER') && !key.includes('ARCHIVE') && !key.includes('SUPPLIER') && !key.includes('PLANNING') && !key.includes('MENU') && !key.includes('ACCESS');
-                let payload = isOrder ? data : { data: data };
-                let state = JSON.parse(localStorage.getItem('EMPIRE_GLOBAL_SYNC')) || { activeOrders: {} };
-                
-                if (data === null) delete state.activeOrders[key];
-                else state.activeOrders[key] = payload;
-                
-                localStorage.setItem('EMPIRE_GLOBAL_SYNC', JSON.stringify(state));
-                
-                try { 
-                    await fetch(`${SERVER_URL}/update-order?tenantID=${tenantID}`, { 
-                        method: 'POST', 
-                        headers: {'Content-Type': 'application/json'}, 
-                        body: JSON.stringify({ tableId: key, order: data === null ? null : payload }) 
-                    }); 
-                } catch(e) { console.error("Erreur de sauvegarde", e) }
-            }
-        }; // <-- CORRECTION ICI : UN SEUL POINT-VIRGULE !
-
-        window.addEventListener('storage', (e) => {
-            if (e.key === 'EMPIRE_GLOBAL_SYNC') {
-                fetchSystemState();
-                renderKDS();
-            }
-        });
         function determineCourse(item) {
             if (item.course !== undefined && item.course !== null && item.course !== "") {
                 let pCourse = parseInt(item.course);
@@ -1169,17 +1104,14 @@
         }
         
        // 🔄 BOUCLE DE SYNCHRONISATION H24 (PAD CUISINE)
-      window.onload = () => {
+        window.onload = () => {
+            // 1. On connecte automatiquement la cuisine
             currentUser = { name: "Cuisine", role: "cuisine" };
+            
             let userBadge = document.getElementById('user-badge');
-            if(userBadge) userBadge.innerText = `Chef: ${currentUser.name}`;
-            
-            let loginScreen = document.getElementById('login-screen');
-            if(loginScreen) loginScreen.style.display = 'none';
-            
-            boot(); 
-            setInterval(fetchSystemState, 5000); 
-        };
+            if (userBadge) {
+                userBadge.innerText = `Chef: ${currentUser.name}`;
+            }
             
             // 2. On s'assure que le clavier PIN est invisible
             let loginScreen = document.getElementById('login-screen');
