@@ -1166,7 +1166,7 @@
             rc.onend = () => inp.placeholder = old;
         }
 
-        async function addBasicCat() { 
+       async function addBasicCat() { 
             let n = prompt("Nom de la catégorie :"); 
             if(!n || n.trim() === '') return; 
             let id = n.trim().toLowerCase().replace(/\s+/g, ''); 
@@ -1191,14 +1191,11 @@
         async function addBasicItem(catId) { 
             let ni = document.getElementById(`basic-name-${catId}`); 
             let pi = document.getElementById(`basic-price-${catId}`); 
-            let btn = document.getElementById(`btn-add-${catId}`);
             
             let n = ni.value.trim().replace(/\n/g, '[BR]'); 
             let p = parseFloat(pi.value) || 0; 
             
             if(!n) return alert("❌ Le nom du plat est obligatoire !"); 
-            
-            if(btn) { btn.innerText = "⏳ ENVOI..."; btn.style.pointerEvents = "none"; }
             
             let menus = currentEditorType === 'cuisine' ? menuCuisine : menuBar; 
             if(!menus[catId]) menus[catId] = []; 
@@ -1220,20 +1217,31 @@
             let cats = currentEditorType === 'cuisine' ? categoriesCuisine : categoriesBar; 
             let menus = currentEditorType === 'cuisine' ? menuCuisine : menuBar; 
             
+            // 1. MISE À JOUR VISUELLE IMMÉDIATE (ZÉRO LATENCE)
+            renderBasicEditor(); 
+            
+            let ov = document.getElementById('settings-success-overlay');
+            if(ov) {
+                document.getElementById('success-currency-val').innerText = "CARTE SAUVEGARDÉE";
+                ov.style.display = 'flex';
+                // Disparaît au bout de 2 secondes
+                setTimeout(() => { ov.style.display = 'none'; }, 2000);
+            }
+            
+            // 2. ENVOI AU SERVEUR EN ARRIÈRE-PLAN (PARALLÉLISÉ = 2X PLUS VITE)
             try { 
-                await API.update(cId, cats); 
-                await API.update(mId, menus); 
-                renderBasicEditor(); 
-                
-                let ov = document.getElementById('settings-success-overlay');
-                if(ov) {
-                    document.getElementById('success-currency-val').innerText = "CARTE SAUVEGARDÉE";
-                    ov.style.display = 'flex';
-                    setTimeout(() => { ov.style.display = 'none'; }, 3000);
-                }
+                await Promise.all([
+                    API.update(cId, cats),
+                    API.update(mId, menus)
+                ]);
             } catch (e) {
-                alert("❌ Connexion perdue. Le plat a été sauvegardé sur l'iPad, mais n'est pas envoyé aux QR codes !");
-                renderBasicEditor(); 
+                console.error("Erreur de synchronisation silencieuse", e);
+                // On n'alerte que si le serveur crash vraiment en arrière-plan, via la pastille
+                let tag = document.getElementById('sync-status');
+                if (tag) { 
+                    tag.innerHTML = '<div class="sync-dot" style="background:var(--alert); box-shadow:0 0 8px var(--alert);"></div> ERREUR CLOUD'; 
+                    tag.style.color = 'var(--alert)'; 
+                }
             } 
         }
     </script>
