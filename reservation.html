@@ -52,8 +52,8 @@
     </div>
 
     <script>
-        const urlParams = new URLSearchParams(window.location.search);
-        const tenantID = urlParams.get('tenantID') || 'MASTER_STATE';
+        // LE MÊME IDENTIFIANT QUE SUR ADMIN.HTML
+        const tenantID = 'MASTER_STATE'; 
         const RENDER_URL = "https://tableau-system.onrender.com";
 
         async function submitReservation() {
@@ -85,40 +85,35 @@
             };
 
             try {
-                // 1. Récupérer l'état actuel des réservations
+                // 1. Récupérer l'état actuel des réservations sur le serveur
                 let response = await fetch(`${RENDER_URL}/get-current-state?tenantID=${tenantID}`);
                 if (!response.ok) throw new Error("Erreur de connexion au serveur");
                 let state = await response.json();
                 
                 let resas = [];
-                if (state.activeOrders && state.activeOrders['RESERVATIONS_MASTER'] && state.activeOrders['RESERVATIONS_MASTER'].data) {
-                     resas = state.activeOrders['RESERVATIONS_MASTER'].data;
+                // On fouille dans la structure de données pour trouver le coffre "RESERVATIONS_MASTER"
+                if (state.activeOrders && state.activeOrders['RESERVATIONS_MASTER']) {
+                    let rawData = state.activeOrders['RESERVATIONS_MASTER'];
+                    // On gère les deux formats possibles (avec ou sans ".data")
+                    if(rawData.data && Array.isArray(rawData.data)) {
+                        resas = rawData.data;
+                    } else if (Array.isArray(rawData)) {
+                        resas = rawData;
+                    }
                 }
 
                 // 2. Ajouter la nouvelle réservation
                 resas.push(resaData);
 
-                // 3. Sauvegarder sur le serveur
+                // 3. Sauvegarder sur le serveur, DANS LE MÊME FORMAT QUE L'ADMIN
                 await fetch(`${RENDER_URL}/update-order?tenantID=${tenantID}`, {
                     method: 'POST',
                     headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({ tableId: 'RESERVATIONS_MASTER', order: { data: resas } })
+                    body: JSON.stringify({ 
+                        tableId: 'RESERVATIONS_MASTER', 
+                        order: { data: resas } 
+                    })
                 });
-
-                // 4. Déclencher une alerte visuelle sur les Pads/Admins
-                try {
-                    let alertData = {
-                        type: 'NEW_ORDER',
-                        message: `🛎️ Nouvelle demande de réservation : ${name} (${pax} pax)`,
-                        timestamp: Date.now(),
-                        cleared: false
-                    };
-                    await fetch(`${RENDER_URL}/update-order?tenantID=${tenantID}`, {
-                        method: 'POST',
-                        headers: {'Content-Type': 'application/json'},
-                        body: JSON.stringify({ tableId: 'ALERTS_MASTER', order: { data: alertData } })
-                    });
-                } catch(e) {}
 
                 // Confirmation client
                 document.getElementById('booking-form').innerHTML = `
@@ -129,6 +124,7 @@
                     </div>
                 `;
             } catch (e) { 
+                console.error("Erreur d'envoi", e);
                 alert("Erreur serveur, veuillez réessayer plus tard.");
                 btn.innerText = "Soumettre la demande";
                 btn.disabled = false;
