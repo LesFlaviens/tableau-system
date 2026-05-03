@@ -520,16 +520,46 @@
         };
         window.logout = function() { currentUser = null; window.clearPin(); document.getElementById('login-screen').style.display = 'flex'; clearTimeout(inactivityTimer); };
 
-        // NETWORK SYNC
+        // NETWORK SYNC - AVEC CORRECTION DE LA PASTILLE !
+        const API = {
+            getState: async () => {
+                let state = { activeOrders: {} };
+                try {
+                    let r = await fetch(`${SERVER_URL}/get-current-state?tenantID=${tenantID}`);
+                    if(r.ok) {
+                        state = await r.json(); 
+                        let tag = document.getElementById('sync-status');
+                        if (tag && (tag.innerText.includes('DÉCONNECTÉ') || tag.innerText.includes('ERREUR'))) { 
+                            tag.innerHTML = '<div class="sync-dot"></div> SYNC SERVEUR LIVE'; 
+                            tag.style.color = 'var(--success)'; 
+                        }
+                    } else throw new Error("HTTP");
+                } catch(e) {
+                    state = JSON.parse(localStorage.getItem('EMPIRE_GLOBAL_SYNC')) || { activeOrders: {} };
+                    let tag = document.getElementById('sync-status');
+                    if (tag && !tag.innerText.includes('DÉCONNECTÉ')) { 
+                        tag.innerHTML = '<div class="sync-dot" style="background:var(--alert); box-shadow:0 0 8px var(--alert);"></div> DÉCONNECTÉ'; 
+                        tag.style.color = 'var(--alert)'; 
+                    }
+                }
+                return state;
+            },
+            update: async (key, data, isOrder = false) => {
+                let payload = isOrder ? data : { data: data };
+                let state = JSON.parse(localStorage.getItem('EMPIRE_GLOBAL_SYNC')) || { activeOrders: {} };
+                if (data === null) delete state.activeOrders[key]; else state.activeOrders[key] = payload;
+                localStorage.setItem('EMPIRE_GLOBAL_SYNC', JSON.stringify(state));
+                try {
+                    await fetch(`${SERVER_URL}/update-order?tenantID=${tenantID}`, { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ tableId: key, order: data === null ? null : payload }) });
+                } catch(e) {}
+            }
+        };
+
         async function fetchLiveStocks() {
             if(isEditingMenu) return; 
             try {
-                const r = await fetch(`${SERVER_URL}/get-current-state?tenantID=${tenantID}`);
-                fullState = await r.json();
+                fullState = await API.getState();
                 
-                let tag = document.getElementById('sync-status');
-                if (tag && tag.innerText.includes('DÉCONNECTÉ')) { tag.innerHTML = '<div class="sync-dot"></div> SYNC SERVEUR LIVE'; tag.style.color = 'var(--accent)'; }
-
                 if(fullState.activeOrders['SETTINGS_MASTER']?.data) {
                     let savedCurrency = fullState.activeOrders['SETTINGS_MASTER'].data.currency;
                     if(savedCurrency) { globalCurrency = savedCurrency; document.getElementById('currency-select').value = globalCurrency; }
@@ -571,10 +601,7 @@
                 document.getElementById('cloture-pax').value = autoPax;
 
                 renderLiveOrders(); renderFinancialDashboard(); renderBasicEditor();
-            } catch(e) { 
-                let tag = document.getElementById('sync-status');
-                if (tag && !tag.innerText.includes('DÉCONNECTÉ')) { tag.innerHTML = '<div class="sync-dot" style="background:var(--alert); box-shadow:0 0 8px var(--alert);"></div> DÉCONNECTÉ'; tag.style.color = 'var(--alert)'; }
-            }
+            } catch(e) {}
         }
         window.onload = () => { renderRegistry(); fetchLiveStocks(); setInterval(fetchLiveStocks, 3000); };
 
@@ -583,7 +610,7 @@
             const cur = document.getElementById('currency-select').value; const btn = document.getElementById('btn-save-settings'); let orig = btn.innerText; btn.innerText = "⏳...";
             try {
                 let set = fullState.activeOrders['SETTINGS_MASTER'] ? fullState.activeOrders['SETTINGS_MASTER'].data : {}; set.currency = cur;
-                await fetch(`${SERVER_URL}/update-order?tenantID=${tenantID}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ tableId: 'SETTINGS_MASTER', order: { data: set } }) });
+                await API.update('SETTINGS_MASTER', set);
                 globalCurrency = cur; renderLiveOrders(); renderFinancialDashboard();
                 let ov = document.getElementById('settings-success-overlay'); document.getElementById('success-currency-val').innerText = "DEVISE APPLIQUÉE"; ov.style.display = 'flex'; setTimeout(() => { ov.style.display = 'none'; }, 3000);
             } catch(e) {} btn.innerText = orig;
@@ -594,7 +621,7 @@
             s.payment = { online: document.getElementById('toggle-pay-online').checked, server: document.getElementById('toggle-pay-server').checked, startDate: document.getElementById('pay-date-start').value, endDate: document.getElementById('pay-date-end').value };
             let btn = event.target; let orig = btn.innerText; btn.innerText = "⏳...";
             try {
-                await fetch(`${SERVER_URL}/update-order?tenantID=${tenantID}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ tableId: 'SETTINGS_MASTER', order: { data: s } }) });
+                await API.update('SETTINGS_MASTER', s);
                 let ov = document.getElementById('settings-success-overlay'); document.getElementById('success-currency-val').innerText = "PAIEMENTS APPLIQUÉS"; ov.style.display = 'flex'; setTimeout(() => { ov.style.display = 'none'; }, 3000);
             } catch(e) {} btn.innerText = orig;
         }
@@ -602,7 +629,7 @@
         async function updateWaitTime(btn) {
             let r = fullState.activeOrders['ROUTING_MASTER'] ? fullState.activeOrders['ROUTING_MASTER'].data : {}; r.waitTime = parseInt(document.getElementById('wait-time-input').value) || 0;
             let orig = btn.innerText; btn.innerText = "⏳...";
-            try { await fetch(`${SERVER_URL}/update-order?tenantID=${tenantID}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ tableId: 'ROUTING_MASTER', order: { data: r } }) }); btn.innerText = "✅ OK"; } catch(e) { btn.innerText = "❌ ERREUR"; } setTimeout(() => { btn.innerText = orig; }, 2000);
+            try { await API.update('ROUTING_MASTER', r); btn.innerText = "✅ OK"; } catch(e) { btn.innerText = "❌ ERREUR"; } setTimeout(() => { btn.innerText = orig; }, 2000);
         }
 
         function setServiceActive(serviceName) { currentServiceActive = serviceName; document.querySelectorAll('.btn-action[data-service]').forEach(btn => btn.classList.remove('active')); let b = document.querySelector(`.btn-action[data-service="${serviceName}"]`); if(b) b.classList.add('active'); }
@@ -613,7 +640,7 @@
                 scenario: { active: document.getElementById('toggle-scenario-auto').checked, date: document.getElementById('ev-date').value, start: document.getElementById('ev-start').value, end: document.getElementById('ev-end').value, targets: { qr: !document.getElementById('ev-btn-qr').classList.contains('off'), pad: !document.getElementById('ev-btn-pad').classList.contains('off'), cuisine: !document.getElementById('ev-btn-cuis').classList.contains('off'), bar: !document.getElementById('ev-btn-bar').classList.contains('off') } }
             };
             try {
-                await fetch(`${SERVER_URL}/update-order?tenantID=${tenantID}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ tableId: 'ROUTING_MASTER', order: { data: r } }) });
+                await API.update('ROUTING_MASTER', r);
                 let ov = document.getElementById('settings-success-overlay'); document.getElementById('success-currency-val').innerText = "RÉGIE SAUVEGARDÉE"; ov.style.display = 'flex'; setTimeout(() => { ov.style.display = 'none'; }, 3000);
             } catch(e) {}
         }
@@ -621,7 +648,7 @@
         // STAFF
         function renderStaffAccess() {
             const tb = document.getElementById('staff-access-list');
-            if(staffAccessData.length === 0) { tb.innerHTML = '<tr><td colspan="4" style="text-align:center; color:var(--text-muted);">Aucun accès.</td></tr>'; return; }
+            if(staffAccessData.length === 0) { tb.innerHTML = '<tr><td colspan="4" style="text-align:center; color:var(--text-muted); padding:15px;">Aucun accès configuré.</td></tr>'; return; }
             tb.innerHTML = [...staffAccessData].sort((a,b) => a.name.localeCompare(b.name)).map(s => {
                 let c = s.dept === 'cuisine' ? 'var(--success)' : s.dept === 'bar' ? 'var(--warning)' : s.dept === 'admin' ? 'var(--gold)' : 'var(--ordered)';
                 let a = s.active !== false; let o = a ? '1' : '0.4';
@@ -639,11 +666,11 @@
         }
         async function toggleStaffAccess(id) { let i = staffAccessData.findIndex(s => s.id === id); if(i > -1) { staffAccessData[i].active = staffAccessData[i].active === false; renderStaffAccess(); await saveStaffToCloud(); } }
         async function deleteStaffAccess(id) { if(!confirm("Supprimer ?")) return; staffAccessData = staffAccessData.filter(s => s.id !== id); renderStaffAccess(); await saveStaffToCloud(); }
-        async function saveStaffToCloud() { try { await fetch(`${SERVER_URL}/update-order?tenantID=${tenantID}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ tableId: 'STAFF_ACCESS', order: { data: staffAccessData } }) }); } catch(e) {} }
+        async function saveStaffToCloud() { try { await API.update('STAFF_ACCESS', staffAccessData); } catch(e) {} }
 
         // QR
-        function previewQR() { currentTableNum = document.getElementById('table-num').value; if(!currentTableNum) return alert("N° requis"); currentQrUrlObj = `${BASE_CLIENT_URL}?tenantID=${tenantID}&table=${currentTableNum}`; const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=${encodeURIComponent(currentQrUrlObj)}`; document.getElementById('qr-preview').style.display = 'block'; document.getElementById('qr-img').innerHTML = `<img src="${qrUrl}" style="width:120px; border-radius:8px;">`; }
-        function registerTable() { if(tableRegistry.find(t => t.num == currentTableNum)) return alert("Déjà là"); tableRegistry.push({ num: currentTableNum, url: currentQrUrlObj }); localStorage.setItem(registryKey, JSON.stringify(tableRegistry)); renderRegistry(); document.getElementById('qr-preview').style.display = 'none'; document.getElementById('table-num').value = ''; }
+        function previewQR() { currentTableNum = document.getElementById('table-num').value; if(!currentTableNum) return alert("N° requis"); currentQrUrlObj = `${BASE_CLIENT_URL}?tenantID=${tenantID}&table=${currentTableNum}`; const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=${encodeURIComponent(currentQrUrlObj)}`; document.getElementById('qr-preview').style.display = 'block'; document.getElementById('qr-img').innerHTML = `<img src="${qrUrl}" style="width:120px; border-radius:8px; border:2px solid #fff;">`; }
+        function registerTable() { if(tableRegistry.find(t => t.num == currentTableNum)) return alert("Déjà enregistrée"); tableRegistry.push({ num: currentTableNum, url: currentQrUrlObj }); localStorage.setItem(registryKey, JSON.stringify(tableRegistry)); renderRegistry(); document.getElementById('qr-preview').style.display = 'none'; document.getElementById('table-num').value = ''; }
         function renderRegistry() { document.getElementById('table-registry-body').innerHTML = tableRegistry.sort((a,b) => a.num - b.num).map((t, idx) => `<tr><td style="color:var(--gold); font-weight:bold;">T${t.num}</td><td style="text-align:right;"><button class="btn-action" style="padding:8px 12px; width:auto; display:inline-block; margin-right:5px;" onclick="printTable('${t.url}', '${t.num}')">🖨️ IMPRIMER</button><button class="btn-action" style="color:var(--danger); padding:8px 12px; width:auto; display:inline-block;" onclick="tableRegistry.splice(${idx}, 1); localStorage.setItem(registryKey, JSON.stringify(tableRegistry)); renderRegistry();">✖</button></td></tr>`).join(''); }
         function printTable(url, num) { const win = window.open('', '_blank'); win.document.write(`<div style="text-align:center; font-family:sans-serif; padding:50px;"><h2>TABLE ${num}</h2><img src="https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=${encodeURIComponent(url)}"></div>`); win.document.close(); setTimeout(() => { win.print(); }, 500); }
 
@@ -670,7 +697,7 @@
             let entry = { date: d, brut: ca.toFixed(2), net: (ca / (1 + (tva / 100))).toFixed(2), meteo: m, event: ev, pax: pax };
             try {
                 let hist = fullState.activeOrders['FINANCE_ARCHIVE_10Y']?.data || []; hist = hist.filter(h => h.date !== d); hist.unshift(entry); 
-                await fetch(`${SERVER_URL}/update-order?tenantID=${tenantID}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ tableId: 'FINANCE_ARCHIVE_10Y', order: { data: hist } }) });
+                await API.update('FINANCE_ARCHIVE_10Y', hist);
                 alert(`✅ Clôturé: ${ca.toFixed(2)} ${globalCurrency}`); fetchLiveStocks(); 
             } catch(e) {}
         }
@@ -692,7 +719,7 @@
             let html = '';
             cats.forEach((cat, idx) => {
                 let items = menus[cat.id] || []; let col = (cat.id === 'menujour' || cat.id.includes('jour')) ? 'var(--gold)' : (cat.id === 'suggestions' || cat.id.includes('sugg') ? '#ff6b6b' : '#ffffff');
-                html += `<div style="background:var(--panel); border:1px solid var(--border); border-radius:4px;"><div style="display:flex; justify-content:space-between; padding:15px; border-bottom:1px solid var(--border);"><span style="font-weight:900; color:${col};">${cat.label}</span><button style="background:transparent; border:none; color:var(--danger);" onclick="deleteBasicCat('${cat.id}')">✖</button></div><div style="padding:15px; max-height:250px; overflow-y:auto;">${items.map((item, i) => `<div style="background:rgba(255,255,255,0.02); padding:10px; border-radius:4px; margin-bottom:5px;"><div style="font-weight:bold;">${item.name.replace(/\[BR\]/g, ' ')}</div><div style="display:flex; justify-content:space-between; margin-top:5px;"><span style="color:var(--gold); font-size:0.8rem;">Stock: ${item.stock !== undefined ? item.stock : 99}</span><span>${parseFloat(item.price||0).toFixed(2)} ${globalCurrency} <button onclick="deleteBasicItem('${cat.id}', ${i})" style="background:transparent; border:none; color:var(--text-muted);">✖</button></span></div></div>`).join('')}</div><div style="padding:15px; border-top:1px solid var(--border); display:flex; flex-direction:column; gap:10px;"><div style="display:flex; gap:10px;"><textarea id="basic-name-${cat.id}" class="basic-input" placeholder="Nom du plat"></textarea><button class="btn-action" style="width:auto;" onclick="startDictation('${cat.id}')">🎤</button></div><input type="number" id="basic-price-${cat.id}" class="basic-input" placeholder="Prix"><button class="btn-gold" onclick="addBasicItem('${cat.id}')">AJOUTER</button></div></div>`;
+                html += `<div style="background:var(--panel); border:1px solid var(--border); border-radius:4px;"><div style="display:flex; justify-content:space-between; padding:15px; border-bottom:1px solid var(--border);"><span style="font-weight:900; color:${col}; text-transform:uppercase;">${cat.label}</span><button style="background:transparent; border:none; color:var(--danger);" onclick="deleteBasicCat('${cat.id}')">✖</button></div><div style="padding:15px; max-height:250px; overflow-y:auto;">${items.map((item, i) => `<div style="background:rgba(255,255,255,0.02); padding:10px; border-radius:4px; margin-bottom:5px;"><div style="font-weight:bold;">${item.name.replace(/\[BR\]/g, ' ')}</div><div style="display:flex; justify-content:space-between; margin-top:5px;"><span style="color:var(--gold); font-size:0.8rem;">Stock: ${item.stock !== undefined ? item.stock : 99}</span><span>${parseFloat(item.price||0).toFixed(2)} ${globalCurrency} <button onclick="deleteBasicItem('${cat.id}', ${i})" style="background:transparent; border:none; color:var(--text-muted);">✖</button></span></div></div>`).join('')}</div><div style="padding:15px; border-top:1px solid var(--border); display:flex; flex-direction:column; gap:10px;"><div style="display:flex; gap:10px;"><textarea id="basic-name-${cat.id}" class="basic-input" placeholder="Nom du plat"></textarea><button class="btn-action" style="width:auto;" onclick="startDictation('${cat.id}')">🎤</button></div><input type="number" id="basic-price-${cat.id}" class="basic-input" placeholder="Prix"><button class="btn-gold" onclick="addBasicItem('${cat.id}')">AJOUTER</button></div></div>`;
             });
             html += `<div style="border:2px dashed var(--border); border-radius:4px; display:flex; justify-content:center; align-items:center; min-height:200px; cursor:pointer;" onclick="addBasicCat()"><span style="color:var(--text-muted); font-weight:bold;">+ NOUVELLE CATÉGORIE</span></div>`;
             document.getElementById('basic-editor-grid').innerHTML = html;
@@ -708,7 +735,7 @@
         async function deleteBasicCat(catId) { if(!confirm("Supprimer ?")) return; let cats = currentEditorType === 'cuisine' ? categoriesCuisine : categoriesBar; let menus = currentEditorType === 'cuisine' ? menuCuisine : menuBar; let idx = cats.findIndex(c => c.id === catId); if(idx > -1) cats.splice(idx, 1); delete menus[catId]; await saveBasicEditor(); }
         async function addBasicItem(catId) { let ni = document.getElementById(`basic-name-${catId}`); let pi = document.getElementById(`basic-price-${catId}`); let n = ni.value.trim().replace(/\n/g, '[BR]'); let p = parseFloat(pi.value) || 0; if(!n) return; let menus = currentEditorType === 'cuisine' ? menuCuisine : menuBar; if(!menus[catId]) menus[catId] = []; menus[catId].push({id: Date.now(), name: n, price: p, stock: 99}); await saveBasicEditor(); }
         async function deleteBasicItem(catId, itemIdx) { if(!confirm("Supprimer ?")) return; let menus = currentEditorType === 'cuisine' ? menuCuisine : menuBar; menus[catId].splice(itemIdx, 1); await saveBasicEditor(); }
-        async function saveBasicEditor() { let cId = currentEditorType === 'cuisine' ? 'CATEGORIES_CUISINE' : 'CATEGORIES_BAR'; let mId = currentEditorType === 'cuisine' ? 'MENU_MASTER' : 'MENU_MASTER_BAR'; let cats = currentEditorType === 'cuisine' ? categoriesCuisine : categoriesBar; let menus = currentEditorType === 'cuisine' ? menuCuisine : menuBar; try { await fetch(`${SERVER_URL}/update-order?tenantID=${tenantID}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ tableId: cId, order: { data: cats } }) }); await fetch(`${SERVER_URL}/update-order?tenantID=${tenantID}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ tableId: mId, order: { data: menus } }) }); renderBasicEditor(); } catch (e) {} }
+        async function saveBasicEditor() { let cId = currentEditorType === 'cuisine' ? 'CATEGORIES_CUISINE' : 'CATEGORIES_BAR'; let mId = currentEditorType === 'cuisine' ? 'MENU_MASTER' : 'MENU_MASTER_BAR'; let cats = currentEditorType === 'cuisine' ? categoriesCuisine : categoriesBar; let menus = currentEditorType === 'cuisine' ? menuCuisine : menuBar; try { await API.update(cId, cats); await API.update(mId, menus); renderBasicEditor(); } catch (e) {} }
     </script>
 </body>
 </html>
