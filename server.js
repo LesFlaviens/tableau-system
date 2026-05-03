@@ -115,14 +115,14 @@ app.post('/update-order', async (req, res) => {
     if (order === null) {
         delete state.activeOrders[tableId];
     } else {
-        // 🔥 CORRECTION : Tolérance universelle des formats (Pad V1, Pad V2, Web)
-        let cleanOrder = order;
-        if (order && order.data !== undefined && !Array.isArray(order.data)) {
-            cleanOrder = order.data; 
+        // 🔥 CORRECTION CRITIQUE DU BUG DE SYNCHRONISATION
+        // On empêche le serveur de rajouter un "data: {}" en trop qui rendait
+        // la commande illisible par la cuisine et l'admin.
+        if (order.data !== undefined) {
+             state.activeOrders[tableId] = order;
+        } else {
+             state.activeOrders[tableId] = { data: order };
         }
-        
-        // On sauvegarde en enveloppant proprement pour la DB Mongo
-        state.activeOrders[tableId] = { data: cleanOrder };
     }
     
     try {
@@ -131,6 +131,7 @@ app.post('/update-order', async (req, res) => {
     
     res.json({ success: true });
 });
+
 app.post('/update-sas', async (req, res) => {
     const tenantID = req.query.tenantID || 'MASTER_STATE';
     const state = await initTenantState(tenantID);
@@ -235,11 +236,11 @@ app.post('/woo-webhook', async (req, res) => {
             .filter(o => o && o.isWeb && o.items && o.items.some(i => !i.done)).length;
 
         if (!state.sasConfig.active || activeWebCount < state.sasConfig.maxTables) {
-            state.activeOrders[tableNum] = newOrder;
+            state.activeOrders[tableNum] = { data: newOrder };
             console.log(`🚀 Commande Woo #${order.id} envoyée direct au tenant ${tenantID}. En cours : ${activeWebCount + 1}`);
             await EmpireState.findOneAndUpdate({ id: tenantID }, { activeOrders: state.activeOrders }, { upsert: true });
         } else {
-            state.webOrderQueue.push({ tableId: tableNum, order: newOrder });
+            state.webOrderQueue.push({ tableId: tableNum, order: { data: newOrder } });
             console.log(`⚠️ Brigade chargée. Commande Woo #${order.id} mise dans le SAS du tenant ${tenantID}.`);
         }
 
@@ -259,7 +260,9 @@ app.get('/portail-client', async (req, res) => {
     const montantStr = req.query.montant;
     
     const state = await initTenantState(tenantID);
-    const order = state.activeOrders[tableId];
+    const orderData = state.activeOrders[tableId];
+    // Gère le déballage si nécessaire
+    const order = orderData && orderData.data ? orderData.data : orderData;
     
     if (!order) return res.send("<body style='background:#0f172a;color:#f87171;text-align:center;padding:50px;font-family:sans-serif;'><h2>Addition introuvable ou table fermée.</h2></body>");
     
