@@ -354,7 +354,7 @@
                 <div class="card-header">📲 Parc QR & Tables</div>
                 <div class="card-content" style="display: flex; flex-direction: column;">
                     <div style="display: flex; gap: 15px; margin-bottom: 25px;">
-                        <input type="number" id="table-num" class="basic-input" placeholder="N° Table" style="padding:12px;">
+                        <input type="text" id="table-num" class="basic-input" placeholder="N° Table" style="padding:12px;">
                         <button class="btn-gold" style="padding:12px 20px;" onclick="previewQR()">GÉNÉRER</button>
                     </div>
                     <div id="qr-preview" style="display: none; text-align: center; margin-bottom: 25px; background: rgba(255,255,255,0.05); padding: 20px; border-radius: 12px; border: 1px solid var(--border);">
@@ -956,7 +956,8 @@
 
         // QR
         function previewQR() { 
-            currentTableNum = document.getElementById('table-num').value; 
+            let tNum = document.getElementById('table-num').value.trim();
+            currentTableNum = tNum; 
             if(!currentTableNum) return alert("N° requis"); 
             currentQrUrlObj = `${BASE_CLIENT_URL}?tenantID=${tenantID}&table=${currentTableNum}`; 
             const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=${encodeURIComponent(currentQrUrlObj)}`; 
@@ -965,8 +966,20 @@
         }
         
         function registerTable() { 
-            if(tableRegistry.find(t => t.num == currentTableNum)) return alert("Déjà enregistrée"); 
-            tableRegistry.push({ num: currentTableNum, url: currentQrUrlObj }); 
+            if(!currentTableNum || currentTableNum.trim() === '') return;
+            
+            // Formatage intelligent "1" -> "T1", "EXT 1" -> "EXT1"
+            let formattedNum = currentTableNum.toUpperCase().replace(/\s+/g, '');
+            if (/^\d+$/.test(formattedNum)) {
+                formattedNum = "T" + formattedNum;
+            }
+
+            if(tableRegistry.find(t => t.num === formattedNum)) return alert("Cette table est déjà enregistrée !"); 
+            
+            // On met à jour l'URL avec le format propre
+            let cleanUrl = `${BASE_CLIENT_URL}?tenantID=${tenantID}&table=${formattedNum}`;
+
+            tableRegistry.push({ num: formattedNum, url: cleanUrl }); 
             localStorage.setItem(registryKey, JSON.stringify(tableRegistry)); 
             renderRegistry(); 
             document.getElementById('qr-preview').style.display = 'none'; 
@@ -974,19 +987,26 @@
         }
         
         function renderRegistry() { 
-            document.getElementById('table-registry-body').innerHTML = tableRegistry.sort((a,b) => a.num - b.num).map((t, idx) => {
+            // Tri intelligent qui comprend les lettres et les chiffres (ex: T1, T2, EXT1)
+            let sortedRegistry = [...tableRegistry].sort((a,b) => String(a.num).localeCompare(String(b.num), undefined, {numeric: true}));
+
+            document.getElementById('table-registry-body').innerHTML = sortedRegistry.map((t, idx) => {
                 let qrMiniature = `https://api.qrserver.com/v1/create-qr-code/?size=50x50&data=${encodeURIComponent(t.url)}`;
+                
+                // On doit retrouver l'index réel dans le tableau original pour la suppression
+                let realIdx = tableRegistry.findIndex(orig => orig.num === t.num);
+
                 return `
                 <tr>
                     <td>
                         <div style="display:flex; align-items:center; gap:15px;">
                             <img src="${qrMiniature}" style="width:40px; height:40px; border-radius:4px; border:1px solid var(--border); cursor:pointer;" onclick="printTable('${t.url}', '${t.num}')" title="Cliquez pour imprimer">
-                            <span style="color:var(--gold); font-weight:bold; font-size:1.1rem;">T${t.num}</span>
+                            <span style="color:var(--gold); font-weight:bold; font-size:1.1rem;">${t.num}</span>
                         </div>
                     </td>
                     <td style="text-align:right;">
                         <button class="btn-action" style="padding:8px 12px; width:auto; display:inline-block; margin-right:5px;" onclick="printTable('${t.url}', '${t.num}')">🖨️ IMPRIMER</button>
-                        <button class="btn-action" style="color:var(--danger); padding:8px 12px; width:auto; display:inline-block;" onclick="tableRegistry.splice(${idx}, 1); localStorage.setItem(registryKey, JSON.stringify(tableRegistry)); renderRegistry();">✖</button>
+                        <button class="btn-action" style="color:var(--danger); padding:8px 12px; width:auto; display:inline-block;" onclick="tableRegistry.splice(${realIdx}, 1); localStorage.setItem(registryKey, JSON.stringify(tableRegistry)); renderRegistry();">✖</button>
                     </td>
                 </tr>`;
             }).join(''); 
@@ -1130,10 +1150,16 @@
                         ${items.map((item, i) => `
                         <div style="background:rgba(255,255,255,0.02); padding:10px; border-radius:4px; margin-bottom:5px;">
                             <div style="font-weight:bold;">${item.name.replace(/\[BR\]/g, ' ')}</div>
-                            <div style="display:flex; justify-content:space-between; margin-top:5px;">
-                                <span style="color:var(--gold); font-size:0.8rem;">Stock: ${item.stock !== undefined ? item.stock : 99}</span>
+                            <div style="display:flex; justify-content:space-between; align-items:center; margin-top:8px;">
+                                
+                                <div style="display:flex; align-items:center; gap:5px;">
+                                    <button onclick="updateBasicStock('${cat.id}', ${i}, -1)" style="background:var(--alert-dim); color:var(--alert); border:1px solid var(--alert); border-radius:4px; width:24px; height:24px; cursor:pointer; font-weight:bold; display:flex; justify-content:center; align-items:center;">-</button>
+                                    <span style="color:var(--gold); font-size:0.85rem; font-weight:bold; min-width:60px; text-align:center;">Stock: ${item.stock !== undefined ? item.stock : 99}</span>
+                                    <button onclick="updateBasicStock('${cat.id}', ${i}, 1)" style="background:var(--accent-dim); color:var(--accent); border:1px solid var(--accent); border-radius:4px; width:24px; height:24px; cursor:pointer; font-weight:bold; display:flex; justify-content:center; align-items:center;">+</button>
+                                </div>
+
                                 <span>${parseFloat(item.price||0).toFixed(2)} ${globalCurrency} 
-                                    <button onclick="deleteBasicItem('${cat.id}', ${i})" style="background:transparent; border:none; color:var(--text-muted);">✖</button>
+                                    <button onclick="deleteBasicItem('${cat.id}', ${i})" style="background:transparent; border:none; color:var(--text-muted); margin-left:10px;">✖</button>
                                 </span>
                             </div>
                         </div>`).join('')}
@@ -1151,6 +1177,19 @@
             
             html += `<div style="border:2px dashed var(--border); border-radius:4px; display:flex; justify-content:center; align-items:center; min-height:200px; cursor:pointer;" onclick="addBasicCat()"><span style="color:var(--text-muted); font-weight:bold;">+ NOUVELLE CATÉGORIE</span></div>`;
             document.getElementById('basic-editor-grid').innerHTML = html;
+        }
+
+        async function updateBasicStock(catId, itemIdx, delta) {
+            let menus = currentEditorType === 'cuisine' ? menuCuisine : menuBar;
+            if (menus[catId] && menus[catId][itemIdx]) {
+                let currentStock = menus[catId][itemIdx].stock;
+                if (currentStock === undefined || currentStock === "") currentStock = 99;
+                
+                let newStock = Math.max(0, parseInt(currentStock) + delta);
+                menus[catId][itemIdx].stock = newStock;
+                
+                await saveBasicEditor();
+            }
         }
 
         function startDictation(catId) {
@@ -1244,6 +1283,38 @@
                 }
             } 
         }
+        
+        // Affiche les QR codes dès le chargement de la page
+        renderRegistry();
+
+        // 🔄 Lancer le système (Récupération des données du serveur)
+        async function fetchLiveStocks() {
+            fullState = await API.getState();
+            if(fullState.activeOrders) {
+                if(fullState.activeOrders['CATEGORIES_CUISINE']) categoriesCuisine = fullState.activeOrders['CATEGORIES_CUISINE'].data || [];
+                if(fullState.activeOrders['CATEGORIES_BAR']) categoriesBar = fullState.activeOrders['CATEGORIES_BAR'].data || [];
+                if(fullState.activeOrders['MENU_MASTER']) menuCuisine = fullState.activeOrders['MENU_MASTER'].data || {};
+                if(fullState.activeOrders['MENU_MASTER_BAR']) menuBar = fullState.activeOrders['MENU_MASTER_BAR'].data || {};
+                
+                if(fullState.activeOrders['SETTINGS_MASTER'] && fullState.activeOrders['SETTINGS_MASTER'].data) {
+                    globalCurrency = fullState.activeOrders['SETTINGS_MASTER'].data.currency || '€';
+                    document.getElementById('currency-select').value = globalCurrency;
+                }
+                
+                if(fullState.activeOrders['STAFF_ACCESS'] && Array.isArray(fullState.activeOrders['STAFF_ACCESS'].data)) {
+                    staffAccessData = fullState.activeOrders['STAFF_ACCESS'].data;
+                }
+            }
+            
+            if(!isEditingMenu) renderBasicEditor();
+            renderLiveOrders();
+            renderFinancialDashboard();
+            renderStaffAccess();
+        }
+
+        setInterval(fetchLiveStocks, 3000);
+        fetchLiveStocks();
+
     </script>
 </body>
 </html>
