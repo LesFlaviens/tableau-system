@@ -890,8 +890,8 @@
             else window.open(`sms:${cleanPhone}?body=${encodeURIComponent(msg)}`, '_blank');
         }
 
-        // ==========================================
-        // 🔄 Lancer le système (Récupération serveur)
+// ==========================================
+        // 🔄 Lancer le système (Récupération serveur & Calculs)
         // ==========================================
         async function fetchLiveStocks() {
             fullState = await API.getState();
@@ -915,12 +915,14 @@
                     document.getElementById('currency-select').value = globalCurrency;
                 }
                 
-                // 🛡️ BOUCLIER PAIEMENT & HORAIRES : On ne met à jour ces cases QUE si on n'est pas en train d'écrire dedans !
+                // 🛡️ BOUCLIER PAIEMENT & HORAIRES
                 if (!shouldPauseEditorSync()) {
                     if(settingsData.payment) {
                         document.getElementById('toggle-pay-online').checked = settingsData.payment.online !== false;
                         document.getElementById('toggle-pay-server').checked = settingsData.payment.server !== false;
-                        document.getElementById('stripe-link-input').value = settingsData.payment.stripeLink || "";
+                        if (document.activeElement.id !== 'stripe-link-input') {
+                            document.getElementById('stripe-link-input').value = settingsData.payment.stripeLink || "";
+                        }
                     }
                     
                     let routingData = extractData('ROUTING_MASTER', {});
@@ -943,12 +945,40 @@
 
                 let rawResas = extractData('RESERVATIONS_MASTER', []);
                 if(Array.isArray(rawResas)) reservationsData = rawResas;
+
+                // 📈 SYNCHRONISATION DU BILAN FINANCIER (Capture 1 et 2)
+                let archiveCuisine = extractData('SALES_ARCHIVE_CUISINE', []);
+                let archiveBar = extractData('SALES_ARCHIVE_BAR', []);
+                let allClosed = [...archiveCuisine, ...archiveBar];
+
+                let todayStr = new Date().toISOString().split('T')[0];
+                let todayCA = 0;
+                let weekCA = 0;
+                
+                let sevenDaysAgo = new Date();
+                sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
+
+                allClosed.forEach(t => {
+                    let amt = parseFloat(t.total) || 0;
+                    if (t.time && t.time.startsWith(todayStr)) {
+                        todayCA += amt;
+                    }
+                    let tDate = new Date(t.time);
+                    if (!isNaN(tDate) && tDate >= sevenDaysAgo) {
+                        weekCA += amt;
+                    }
+                });
+
+                // Mise à jour de l'affichage dans l'Admin (Capture 2)
+                let caJourEl = document.getElementById('ca-jour');
+                let caSemaineEl = document.getElementById('ca-semaine');
+                if (caJourEl) caJourEl.innerText = todayCA.toFixed(2) + ' ' + globalCurrency;
+                if (caSemaineEl) caSemaineEl.innerText = weekCA.toFixed(2) + ' ' + globalCurrency;
             }
             
             let newMenuHash = JSON.stringify({c: categoriesCuisine, b: categoriesBar, mc: menuCuisine, mb: menuBar});
             
             if (!isSavingMenu && newMenuHash !== lastMenuHash) {
-                // 🛡️ METHODE INFAILLIBLE : On ne met à jour l'éditeur que si on n'est PAS sur l'onglet Carte
                 if (currentActiveModule !== 'carte') {
                     renderBasicEditor();
                     lastMenuHash = newMenuHash;
