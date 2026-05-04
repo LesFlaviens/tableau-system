@@ -135,7 +135,7 @@
 
     <!-- TABS SCROLLABLES -->
     <div class="cat-scroll" id="cat-tabs">
-        <div style="color:var(--text-muted); padding:10px;">Connexion au menu...</div>
+        <div style="color:var(--text-muted); padding:10px;">Chargement ultra-rapide...</div>
     </div>
 
     <!-- ZONE 1 : MENU PRODUITS -->
@@ -194,7 +194,6 @@
             </div>
             
             <div style="display:flex; flex-direction:column; gap:12px;">
-                <!-- Les boutons s'affichent ou se cachent selon les réglages de ton Admin -->
                 <button class="btn-checkout btn-online" id="btn-pay-online" onclick="processPayment('online')">💳 PAYER EN LIGNE</button>
                 <button class="btn-checkout btn-server" id="btn-pay-server" onclick="processPayment('server')">💁‍♂️ PAYER AU SERVEUR</button>
             </div>
@@ -216,7 +215,6 @@
         let currentTable = urlParams.get('table');
         const SERVER_URL = "https://tableau-system.onrender.com";
 
-        // Affichage de la table
         document.getElementById('table-display').innerText = currentTable ? currentTable : 'WEB';
         if(!currentTable) currentTable = "WEB_" + Math.floor(Math.random()*10000);
 
@@ -226,7 +224,22 @@
         let lastMenuCat = ''; 
         let lastMenuHash = "";
 
-        // 🟢 MOTEUR DE SYNCHRONISATION H24 
+        // ⚡ CACHE INSTA-LOAD : Affiche immédiatement le dernier menu connu
+        const cacheKey = `empire_menu_cache_${tenantID}`;
+        let cachedMenuStr = localStorage.getItem(cacheKey);
+        
+        if (cachedMenuStr) {
+            try {
+                menuData = JSON.parse(cachedMenuStr);
+                lastMenuHash = JSON.stringify(menuData); // On simule que c'est notre dernière version
+                renderTabs();
+                if (menuData.length > 0) selectCategory(menuData[0].id, true);
+            } catch(e) {
+                console.warn("Cache invalide, attente du serveur.");
+            }
+        }
+
+        // 🟢 MOTEUR DE SYNCHRONISATION H24 (Met à jour le cache silencieusement)
         async function fetchMenuH24() {
             try {
                 let r = await fetch(`${SERVER_URL}/get-current-state?tenantID=${tenantID}`);
@@ -238,7 +251,7 @@
                 let mCuis = activeOrders['MENU_MASTER']?.data || activeOrders['MENU_MASTER'] || {};
                 let mBar = activeOrders['MENU_MASTER_BAR']?.data || activeOrders['MENU_MASTER_BAR'] || {};
 
-                // 💳 Synchronisation des options de paiement depuis l'Admin
+                // 💳 Synchronisation Paiement
                 let settingsData = activeOrders['SETTINGS_MASTER']?.data || activeOrders['SETTINGS_MASTER'] || {};
                 if (settingsData.payment) {
                     const btnOnline = document.getElementById('btn-pay-online');
@@ -252,24 +265,29 @@
                 catsBar.forEach(cat => { if(mBar[cat.id]) newMenuData.push({ category: "🍸 " + cat.label, id: cat.id, items: mBar[cat.id].map(i => ({...i, dest: 'bar'})) }); });
 
                 let newHash = JSON.stringify(newMenuData);
+                
+                // Si nouveauté détectée par rapport au cache ou au dernier fetch
                 if (newHash !== lastMenuHash) {
                     menuData = newMenuData;
                     lastMenuHash = newHash;
+                    localStorage.setItem(cacheKey, newHash); // ⚡ On sauvegarde dans le téléphone
                     
-                    if(document.getElementById('cat-tabs').innerHTML.includes('Connexion')) {
+                    if(document.getElementById('cat-tabs').innerHTML.includes('Chargement')) {
                         renderTabs();
                         if (menuData.length > 0) selectCategory(menuData[0].id);
                     } else {
+                        // Mise à jour de la grille en live (si par exemple un produit vient d'être mis en rupture)
                         if(currentCat && currentCat !== 'resa') selectCategory(currentCat, true);
                     }
                 }
             } catch (e) {
-                console.log("Sync en attente...");
+                console.log("Mode hors-ligne ou attente réseau...");
             }
         }
 
-        setInterval(fetchMenuH24, 4000);
+        // 1er appel immédiat, puis toutes les 4 secondes
         fetchMenuH24();
+        setInterval(fetchMenuH24, 4000);
 
         // --- AFFICHAGE ---
         function renderTabs() {
@@ -407,14 +425,12 @@
 
             if (method === 'online') {
                 btnOnline.innerText = "⏳ REDIRECTION SÉCURISÉE...";
-                
-                // Simulation d'une redirection vers Stripe ou Apple Pay
                 setTimeout(() => {
-                    sendOrder(true); // true = la commande est payée
+                    sendOrder(true); 
                 }, 1500);
             } else {
                 btnServer.innerText = "⏳ ENVOI EN CUISINE...";
-                sendOrder(false); // false = le client paiera à la fin
+                sendOrder(false); 
             }
         }
 
@@ -434,7 +450,6 @@
                 currentOrderData.status = 'cooking'; 
                 currentOrderData.isWeb = true;
                 
-                // On met à jour le statut du paiement
                 if(isPaidOnline) currentOrderData.paid = true;
                 
                 currentOrderData.totalStr = (cart.reduce((a,b)=>a+(b.p*b.qty),0)).toFixed(2) + ' €';
@@ -446,7 +461,6 @@
                 document.getElementById('cat-tabs').style.display = 'none';
                 document.getElementById('menu-grid').style.display = 'none';
                 
-                // Modification de l'écran de succès selon le paiement
                 document.getElementById('success-emoji').innerText = isPaidOnline ? "💳" : "👨‍🍳";
                 document.getElementById('success-title').innerText = isPaidOnline ? "Paiement Validé !" : "Commande en préparation";
                 document.getElementById('success-desc').innerText = isPaidOnline 
