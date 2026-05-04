@@ -115,14 +115,9 @@ app.post('/update-order', async (req, res) => {
     if (order === null) {
         delete state.activeOrders[tableId];
     } else {
-        // 🔥 CORRECTION CRITIQUE DU BUG DE SYNCHRONISATION
-        // On empêche le serveur de rajouter un "data: {}" en trop qui rendait
-        // la commande illisible par la cuisine et l'admin.
-        if (order.data !== undefined) {
-             state.activeOrders[tableId] = order;
-        } else {
-             state.activeOrders[tableId] = { data: order };
-        }
+        // 🔥 CORRECTION DE LA STRUCTURE DE DONNÉES
+        // On respecte fidèlement le format envoyé par le client
+        state.activeOrders[tableId] = order;
     }
     
     try {
