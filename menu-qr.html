@@ -14,6 +14,7 @@
             --text-main: #ffffff; 
             --text-muted: #888888; 
             --gold: #d4af37; 
+            --gold-dim: rgba(212, 175, 55, 0.15);
             --accent: #10b981; 
             --alert: #ef4444;
         }
@@ -114,8 +115,12 @@
         .cart-item-controls { display: flex; align-items: center; gap: 15px; background: var(--bg); padding: 5px; border-radius: 8px; border: 1px solid var(--border);}
         .ctrl-btn { background: transparent; color: var(--gold); border: none; font-size: 1.2rem; width: 30px; height: 30px; font-weight: bold; cursor: pointer;}
         
+        /* ZONE PAIEMENT PANIER */
         .checkout-zone { padding: 25px; background: var(--panel); border-top: 1px solid var(--border); }
-        .btn-checkout { background: var(--accent); color: #000; border: none; width: 100%; padding: 20px; font-weight: 900; font-size: 1.2rem; border-radius: 12px; text-transform: uppercase; letter-spacing: 2px; cursor: pointer;}
+        .btn-checkout { color: #000; border: none; width: 100%; padding: 18px; font-weight: 900; font-size: 1.1rem; border-radius: 12px; text-transform: uppercase; letter-spacing: 2px; cursor: pointer; transition: 0.2s;}
+        .btn-checkout:active { transform: scale(0.98); }
+        .btn-online { background: var(--gold); box-shadow: 0 10px 20px var(--gold-dim); }
+        .btn-server { background: transparent; border: 2px solid var(--gold); color: var(--gold); }
 
         /* Écran Succès */
         #success-screen { position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; background: var(--bg); z-index: 3000; display: none; flex-direction: column; justify-content: center; align-items: center; text-align: center; padding: 20px; box-sizing: border-box;}
@@ -175,7 +180,7 @@
         <div class="cart-total" id="cart-total">0.00 €</div>
     </div>
 
-    <!-- MODALE PANIER -->
+    <!-- MODALE PANIER AVEC OPTIONS DE PAIEMENT -->
     <div class="modal" id="cart-modal">
         <div class="modal-header">
             <h2 class="modal-title">Votre Commande</h2>
@@ -187,7 +192,13 @@
                 <span>TOTAL :</span>
                 <span id="modal-total" style="color:var(--gold); font-size:1.5rem; font-weight:900;">0.00 €</span>
             </div>
-            <button class="btn-checkout" id="btn-send-order" onclick="sendOrder()">🚀 ENVOYER EN CUISINE</button>
+            
+            <div style="display:flex; flex-direction:column; gap:12px;">
+                <!-- Les boutons s'affichent ou se cachent selon les réglages de ton Admin -->
+                <button class="btn-checkout btn-online" id="btn-pay-online" onclick="processPayment('online')">💳 PAYER EN LIGNE</button>
+                <button class="btn-checkout btn-server" id="btn-pay-server" onclick="processPayment('server')">💁‍♂️ PAYER AU SERVEUR</button>
+            </div>
+
         </div>
     </div>
 
@@ -212,7 +223,7 @@
         let menuData = [];
         let cart = [];
         let currentCat = '';
-        let lastMenuCat = ''; // 🛡️ MÉMOIRE DE L'ONGLET PRECEDENT 🛡️
+        let lastMenuCat = ''; 
         let lastMenuHash = "";
 
         // 🟢 MOTEUR DE SYNCHRONISATION H24 
@@ -227,11 +238,19 @@
                 let mCuis = activeOrders['MENU_MASTER']?.data || activeOrders['MENU_MASTER'] || {};
                 let mBar = activeOrders['MENU_MASTER_BAR']?.data || activeOrders['MENU_MASTER_BAR'] || {};
 
+                // 💳 Synchronisation des options de paiement depuis l'Admin
+                let settingsData = activeOrders['SETTINGS_MASTER']?.data || activeOrders['SETTINGS_MASTER'] || {};
+                if (settingsData.payment) {
+                    const btnOnline = document.getElementById('btn-pay-online');
+                    const btnServer = document.getElementById('btn-pay-server');
+                    if(btnOnline) btnOnline.style.display = settingsData.payment.online ? 'block' : 'none';
+                    if(btnServer) btnServer.style.display = settingsData.payment.server ? 'block' : 'none';
+                }
+
                 let newMenuData = [];
                 catsCuis.forEach(cat => { if(mCuis[cat.id]) newMenuData.push({ category: cat.label, id: cat.id, items: mCuis[cat.id].map(i => ({...i, dest: 'cuisine'})) }); });
                 catsBar.forEach(cat => { if(mBar[cat.id]) newMenuData.push({ category: "🍸 " + cat.label, id: cat.id, items: mBar[cat.id].map(i => ({...i, dest: 'bar'})) }); });
 
-                // Vérifier si le menu a changé
                 let newHash = JSON.stringify(newMenuData);
                 if (newHash !== lastMenuHash) {
                     menuData = newMenuData;
@@ -241,7 +260,6 @@
                         renderTabs();
                         if (menuData.length > 0) selectCategory(menuData[0].id);
                     } else {
-                        // Mise à jour silencieuse si on est sur la grille
                         if(currentCat && currentCat !== 'resa') selectCategory(currentCat, true);
                     }
                 }
@@ -250,7 +268,6 @@
             }
         }
 
-        // Lancement de la boucle de synchronisation toutes les 4s
         setInterval(fetchMenuH24, 4000);
         fetchMenuH24();
 
@@ -270,29 +287,23 @@
             document.getElementById('floating-cart').style.display = 'none';
         }
 
-        // 🛡️ CORRECTION DU BOUTON RETOUR 🛡️
         function backToMenu() {
-            // On cache la résa, on affiche la grille
             document.getElementById('reservation-view').style.display = 'none';
             document.getElementById('menu-grid').style.display = 'grid';
-            
-            // On remet le panier s'il n'est pas vide
             if(cart.length > 0) document.getElementById('floating-cart').style.display = 'flex';
 
-            // On retourne à l'onglet en mémoire, sinon au premier onglet dispo
             if (lastMenuCat) {
                 selectCategory(lastMenuCat);
             } else if (menuData.length > 0) {
                 selectCategory(menuData[0].id);
             } else {
-                // Securité si tout est vide
                 document.querySelectorAll('.cat-tab').forEach(b => b.classList.remove('active'));
             }
         }
 
         function selectCategory(catId, silentUpdate = false) {
             currentCat = catId;
-            if (catId !== 'resa') lastMenuCat = catId; // On mémorise la catégorie visitée
+            if (catId !== 'resa') lastMenuCat = catId;
 
             document.querySelectorAll('.cat-tab').forEach(b => b.classList.remove('active'));
             const activeTab = document.getElementById(`tab-${catId}`);
@@ -312,7 +323,6 @@
                 return;
             }
 
-            // 🎯 FILTRE D'EFFACEMENT AUTO : On enlève complètement les items avec stock === 0
             let itemsEnStock = catData.items.filter(item => {
                 if (item.stock === undefined || item.stock === null || item.stock === "") return true; 
                 return parseInt(item.stock) > 0;
@@ -323,7 +333,6 @@
                 return;
             }
 
-            // On affiche uniquement les items en stock
             grid.innerHTML = itemsEnStock.map((item) => {
                 let price = parseFloat(item.price || 0).toFixed(2);
                 let cleanName = item.name.replace(/\[BR\]/g, ' ');
@@ -386,17 +395,35 @@
         function openCart() { document.getElementById('cart-modal').classList.add('open'); }
         function closeCart() { document.getElementById('cart-modal').classList.remove('open'); }
 
-        // --- ENVOI DE LA COMMANDE ---
-        async function sendOrder() {
+        // --- PROCESSUS DE PAIEMENT ---
+        async function processPayment(method) {
             if (cart.length === 0) return;
-            const btn = document.getElementById('btn-send-order');
-            btn.innerText = "⏳ ENVOI EN COURS..."; btn.style.pointerEvents = "none";
 
+            const btnOnline = document.getElementById('btn-pay-online');
+            const btnServer = document.getElementById('btn-pay-server');
+            
+            btnOnline.disabled = true; 
+            btnServer.disabled = true;
+
+            if (method === 'online') {
+                btnOnline.innerText = "⏳ REDIRECTION SÉCURISÉE...";
+                
+                // Simulation d'une redirection vers Stripe ou Apple Pay
+                setTimeout(() => {
+                    sendOrder(true); // true = la commande est payée
+                }, 1500);
+            } else {
+                btnServer.innerText = "⏳ ENVOI EN CUISINE...";
+                sendOrder(false); // false = le client paiera à la fin
+            }
+        }
+
+        async function sendOrder(isPaidOnline) {
             try {
                 let r = await fetch(`${SERVER_URL}/get-current-state?tenantID=${tenantID}`);
                 let state = await r.json();
                 let targetTable = state.activeOrders[currentTable];
-                let currentOrderData = targetTable ? (targetTable.data !== undefined ? targetTable.data : targetTable) : { status: 'cooking', items: [], time: new Date().toLocaleTimeString('fr-FR', {hour:'2-digit', minute:'2-digit'}), isWeb: true };
+                let currentOrderData = targetTable ? (targetTable.data !== undefined ? targetTable.data : targetTable) : { status: 'cooking', items: [], time: new Date().toLocaleTimeString('fr-FR', {hour:'2-digit', minute:'2-digit'}), isWeb: true, paid: false };
 
                 let newItems = cart.map(i => ({
                     id: Date.now() + Math.random(), itemId: Date.now(), n: "📱 " + i.n, p: i.p, qty: i.qty,
@@ -404,7 +431,12 @@
                 }));
 
                 currentOrderData.items = [...(currentOrderData.items || []), ...newItems];
-                currentOrderData.status = 'cooking'; currentOrderData.isWeb = true;
+                currentOrderData.status = 'cooking'; 
+                currentOrderData.isWeb = true;
+                
+                // On met à jour le statut du paiement
+                if(isPaidOnline) currentOrderData.paid = true;
+                
                 currentOrderData.totalStr = (cart.reduce((a,b)=>a+(b.p*b.qty),0)).toFixed(2) + ' €';
 
                 await fetch(`${SERVER_URL}/update-order?tenantID=${tenantID}`, { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ tableId: currentTable, order: { data: currentOrderData } }) });
@@ -414,12 +446,20 @@
                 document.getElementById('cat-tabs').style.display = 'none';
                 document.getElementById('menu-grid').style.display = 'none';
                 
-                document.getElementById('success-emoji').innerText = "👨‍🍳";
-                document.getElementById('success-title').innerText = "Commande en préparation";
-                document.getElementById('success-desc').innerText = "Notre équipe prépare votre commande. Vous pourrez régler l'addition auprès de votre serveur.";
+                // Modification de l'écran de succès selon le paiement
+                document.getElementById('success-emoji').innerText = isPaidOnline ? "💳" : "👨‍🍳";
+                document.getElementById('success-title').innerText = isPaidOnline ? "Paiement Validé !" : "Commande en préparation";
+                document.getElementById('success-desc').innerText = isPaidOnline 
+                    ? "Votre commande a été réglée avec succès et part directement en cuisine." 
+                    : "Notre équipe prépare votre commande. Vous pourrez régler l'addition auprès de votre serveur.";
+                
                 document.getElementById('success-screen').style.display = 'flex';
             } catch (e) {
-                alert("Erreur de connexion."); btn.innerText = "🚀 ENVOYER EN CUISINE"; btn.style.pointerEvents = "auto";
+                alert("Erreur de connexion."); 
+                document.getElementById('btn-pay-online').disabled = false;
+                document.getElementById('btn-pay-server').disabled = false;
+                document.getElementById('btn-pay-online').innerText = "💳 PAYER EN LIGNE";
+                document.getElementById('btn-pay-server').innerText = "💁‍♂️ PAYER AU SERVEUR";
             }
         }
 
