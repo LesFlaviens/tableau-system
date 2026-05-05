@@ -69,8 +69,10 @@
         .kpi-title { color: var(--text-muted); font-size: 0.7rem; text-transform: uppercase; font-weight: bold; margin-bottom: 8px; letter-spacing: 0.5px;}
         .kpi-val { font-size: 1.8rem; font-weight: 900; }
 
+        /* MODIFICATION: textarea added here */
         input, textarea, select.basic-input { background: rgba(0,0,0,0.4); border: 1px solid var(--border-strong); color: #fff; padding: 12px 15px; border-radius: 8px; width: 100%; box-sizing: border-box; font-size: 0.9rem; outline: none; transition: 0.2s;}
         input:focus, textarea:focus, select.basic-input:focus { border-color: var(--ordered); }
+        textarea { resize: vertical; min-height: 80px; } /* Ajustement pour la zone de texte multi-lignes */
         input[type="date"]::-webkit-calendar-picker-indicator, input[type="time"]::-webkit-calendar-picker-indicator { filter: invert(1); cursor: pointer; opacity: 0.6; }
         
         .compact-table { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
@@ -158,7 +160,6 @@
                     <div style="background: rgba(0,0,0,0.3); border: 1px solid var(--border); padding: 20px; border-radius: 10px;">
                         <div style="font-size: 0.8rem; color: var(--text-muted); margin-bottom: 15px; font-weight: 800; text-transform: uppercase; letter-spacing: 1px;">1. Forcer le Service Actuel</div>
                         
-                        <!-- 🎯 GRILLE DES 5 SERVICES (Incluant Room Service) -->
                         <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(100px, 1fr)); gap: 10px;">
                             <button class="btn-action" data-service="MATIN" id="btn-route-matin" onclick="setServiceActive('MATIN')">🌅 MATIN</button>
                             <button class="btn-action" data-service="MIDI" id="btn-route-midi" onclick="setServiceActive('MIDI')">☀️ MIDI</button>
@@ -168,7 +169,6 @@
                         </div>
                     </div>
 
-                    <!-- 🎯 NOUVELLE CARTE : RÉGLAGE DES HORAIRES -->
                     <div style="background: rgba(0,0,0,0.3); border: 1px solid var(--border); padding: 20px; border-radius: 10px;">
                         <div style="font-size: 0.85rem; color: var(--gold); font-weight: 800; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 15px;">⏱️ Horaires des Services</div>
                         
@@ -373,7 +373,7 @@
                 if (document.activeElement) {
                     const tag = document.activeElement.tagName;
                     if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') {
-                        return true; // Le focus est dans un champ de texte ! On met la synchro en pause.
+                        return true; 
                     }
                 }
             } catch(e) {}
@@ -664,8 +664,46 @@
         }
 
         // ==========================================
-        // ÉDITEUR DE CARTE (PACK ÉCO)
+        // ÉDITEUR DE CARTE (Nouveau design amélioré)
         // ==========================================
+
+        // 🔄 FONCTION POUR RENOMMER UNE CATÉGORIE SANS PERDRE LES PLATS
+        async function renameCategory(oldName, type) {
+            let newName = prompt(`Nouveau nom pour la catégorie "${oldName}" :`, oldName);
+            if (!newName || newName.trim() === "" || newName === oldName) return; 
+            
+            newName = newName.trim();
+            let newId = newName.toLowerCase().replace(/\s+/g, '');
+
+            if (type === 'cuisine') {
+                if (categoriesCuisine.find(c => c.id === newId)) return alert("Ce nom de catégorie existe déjà !");
+                let idx = categoriesCuisine.findIndex(c => c.id === oldName);
+                if (idx > -1) {
+                    categoriesCuisine[idx].id = newId;
+                    categoriesCuisine[idx].label = newName;
+                }
+                
+                if (menuCuisine[oldName]) {
+                    menuCuisine[newId] = menuCuisine[oldName];
+                    delete menuCuisine[oldName];
+                }
+                await saveBasicEditor();
+            } else {
+                if (categoriesBar.find(c => c.id === newId)) return alert("Ce nom de catégorie existe déjà !");
+                let idx = categoriesBar.findIndex(c => c.id === oldName);
+                if (idx > -1) {
+                    categoriesBar[idx].id = newId;
+                    categoriesBar[idx].label = newName;
+                }
+                
+                if (menuBar[oldName]) {
+                    menuBar[newId] = menuBar[oldName];
+                    delete menuBar[oldName];
+                }
+                await saveBasicEditor();
+            }
+        }
+
         function renderBasicEditor() {
             let cats = currentEditorType === 'cuisine' ? categoriesCuisine : categoriesBar; 
             let menus = currentEditorType === 'cuisine' ? menuCuisine : menuBar;
@@ -677,14 +715,17 @@
                 
                 html += `
                 <div style="background:var(--panel); border:1px solid var(--border); border-radius:4px;">
-                    <div style="display:flex; justify-content:space-between; padding:15px; border-bottom:1px solid var(--border);">
-                        <span style="font-weight:900; color:${col}; text-transform:uppercase;">${cat.label}</span>
-                        <button style="background:transparent; border:none; color:var(--danger);" onclick="deleteBasicCat('${cat.id}')">✖</button>
+                    <div style="display:flex; justify-content:space-between; align-items:center; padding:15px; border-bottom:1px solid var(--border);">
+                        <span style="font-weight:900; color:${col}; text-transform:uppercase; flex:1;">${cat.label}</span>
+                        <div style="display:flex; gap:10px;">
+                            <button style="background:transparent; border:none; color:var(--text-muted); font-size:1.1rem; cursor:pointer;" onclick="renameCategory('${cat.id}', '${currentEditorType}')" title="Renommer">✏️</button>
+                            <button style="background:transparent; border:none; color:var(--danger); font-size:1.1rem; cursor:pointer;" onclick="deleteBasicCat('${cat.id}')" title="Supprimer">✖</button>
+                        </div>
                     </div>
-                    <div style="padding:15px; max-height:250px; overflow-y:auto;">
+                    <div style="padding:15px; max-height:300px; overflow-y:auto;">
                         ${items.map((item, i) => `
                         <div style="background:rgba(255,255,255,0.02); padding:10px; border-radius:4px; margin-bottom:5px;">
-                            <div style="font-weight:bold;">${item.name.replace(/\[BR\]/g, ' ')}</div>
+                            <div style="font-weight:bold; white-space:pre-wrap;">${item.name.replace(/\[BR\]/g, '\n')}</div>
                             <div style="display:flex; justify-content:space-between; align-items:center; margin-top:8px;">
                                 <div style="display:flex; align-items:center; gap:5px;">
                                     <button onclick="updateBasicStock('${cat.id}', ${i}, -1)" style="background:var(--alert-dim); color:var(--alert); border:1px solid var(--alert); border-radius:4px; width:24px; height:24px; cursor:pointer; font-weight:bold; display:flex; justify-content:center; align-items:center;">-</button>
@@ -692,20 +733,21 @@
                                     <button onclick="updateBasicStock('${cat.id}', ${i}, 1)" style="background:var(--accent-dim); color:var(--accent); border:1px solid var(--accent); border-radius:4px; width:24px; height:24px; cursor:pointer; font-weight:bold; display:flex; justify-content:center; align-items:center;">+</button>
                                 </div>
                                 <span>${parseFloat(item.price||0).toFixed(2)} ${globalCurrency} 
-                                    <button onclick="deleteBasicItem('${cat.id}', ${i})" style="background:transparent; border:none; color:var(--text-muted); margin-left:10px;">✖</button>
+                                    <button onclick="deleteBasicItem('${cat.id}', ${i})" style="background:transparent; border:none; color:var(--text-muted); margin-left:10px; cursor:pointer;">✖</button>
                                 </span>
                             </div>
                         </div>`).join('')}
                     </div>
                     <div style="padding:15px; border-top:1px solid var(--border); display:flex; flex-direction:column; gap:10px;">
-                        <input type="text" id="basic-name-${cat.id}" class="basic-input" placeholder="Nom du produit">
+                        <!-- 🎯 ICI LE TEXTAREA QUI PERMET LES SAUTS DE LIGNE (Menu complet) -->
+                        <textarea id="basic-name-${cat.id}" class="basic-input" placeholder="Nom du produit ou description de menu (Appuyez sur Entrée pour aller à la ligne)"></textarea>
                         <input type="number" id="basic-price-${cat.id}" class="basic-input" placeholder="Prix">
-                        <button class="btn-gold" id="btn-add-${cat.id}" onclick="addBasicItem('${cat.id}')">AJOUTER</button>
+                        <button class="btn-gold" id="btn-add-${cat.id}" onclick="addBasicItem('${cat.id}')">AJOUTER À LA CARTE</button>
                     </div>
                 </div>`;
             });
             
-            html += `<div style="border:2px dashed var(--border); border-radius:4px; display:flex; justify-content:center; align-items:center; min-height:200px; cursor:pointer;" onclick="addBasicCat()"><span style="color:var(--text-muted); font-weight:bold;">+ NOUVELLE CATÉGORIE</span></div>`;
+            html += `<div style="border:2px dashed var(--border); border-radius:4px; display:flex; justify-content:center; align-items:center; min-height:200px; cursor:pointer; transition:0.2s;" onmouseover="this.style.borderColor='var(--gold)';" onmouseout="this.style.borderColor='var(--border)';" onclick="addBasicCat()"><span style="color:var(--text-muted); font-weight:bold;">+ NOUVELLE CATÉGORIE</span></div>`;
             document.getElementById('basic-editor-grid').innerHTML = html;
         }
 
@@ -744,7 +786,7 @@
         async function addBasicItem(catId) { 
             let ni = document.getElementById(`basic-name-${catId}`); 
             let pi = document.getElementById(`basic-price-${catId}`); 
-            let n = ni.value.trim().replace(/\n/g, '[BR]'); 
+            let n = ni.value.trim().replace(/\n/g, '[BR]'); // 🔄 Remplace les vrais sauts de ligne par notre balise spéciale
             let p = parseFloat(pi.value) || 0; 
             if(!n) return alert("❌ Le nom du produit est obligatoire !"); 
             
@@ -890,7 +932,7 @@
             else window.open(`sms:${cleanPhone}?body=${encodeURIComponent(msg)}`, '_blank');
         }
 
-// ==========================================
+        // ==========================================
         // 🔄 Lancer le système (Récupération serveur & Calculs)
         // ==========================================
         async function fetchLiveStocks() {
@@ -969,7 +1011,6 @@
                     }
                 });
 
-                // Mise à jour de l'affichage dans l'Admin (Capture 2)
                 let caJourEl = document.getElementById('ca-jour');
                 let caSemaineEl = document.getElementById('ca-semaine');
                 if (caJourEl) caJourEl.innerText = todayCA.toFixed(2) + ' ' + globalCurrency;
