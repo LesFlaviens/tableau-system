@@ -2,7 +2,10 @@ const express = require('express');
 const cors = require('cors');
 const path = require('path');
 const mongoose = require('mongoose');
-const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
+
+// 🛡️ ANTI-CRASH STRIPE : Met une fausse clé si la vraie n'est pas encore sur Render
+const stripeKey = process.env.STRIPE_SECRET_KEY || 'sk_test_dummy_key_pour_eviter_le_crash';
+const stripe = require('stripe')(stripeKey);
 
 const app = express();
 const PORT = process.env.PORT || 10000;
@@ -22,11 +25,12 @@ app.use(express.static(path.join(__dirname)));
 // ==========================================
 // 🧠 CONNEXION MONGODB (COFFRE-FORT CLOUD)
 // ==========================================
-const mongoURI = "mongodb+srv://icheflavien_db_user:VOTRE_MOT_DE_PASSE@cluster0.4w95d7m.mongodb.net/ichef_production?retryWrites=true&w=majority";
+// ⚠️ IMPORTANT : Remplaces bien VOTRE_MOT_DE_PASSE par ton vrai mot de passe Mongo (sans les espaces)
+const mongoURI = process.env.MONGO_URI || "mongodb+srv://icheflavien_db_user:VOTRE_MOT_DE_PASSE@cluster0.4w95d7m.mongodb.net/ichef_production?retryWrites=true&w=majority";
 
 mongoose.connect(mongoURI)
-    .then(() => console.log('🔥 Connexion Atlas réussie : Le fichier JSON est mort, l\'infrastructure est en ligne.'))
-    .catch(err => console.error('🔴 Erreur critique de base de données :', err));
+    .then(() => console.log('🔥 Connexion Atlas réussie : L\'infrastructure est en ligne.'))
+    .catch(err => console.error('🔴 Attention, erreur MongoDB (Vérifiez le mot de passe) :', err.message));
 
 // ==========================================
 // 🏗️ MODÈLES DE BASE DE DONNÉES
@@ -94,7 +98,7 @@ async function initTenantState(tenantID) {
                 await new EmpireState({ id: tenantID, activeOrders: {}, sasConfig: tenantsState[tenantID].sasConfig }).save();
             }
         } catch (err) {
-            console.error(`Erreur lecture DB State pour ${tenantID}:`, err);
+            console.error(`Erreur lecture DB State pour ${tenantID}:`, err.message);
             tenantsState[tenantID] = { activeOrders: {}, sasConfig: { active: true, maxTables: 5, delaySeconds: 60 }, webOrderQueue: [], lastSasRelease: 0 };
         }
     }
@@ -115,14 +119,12 @@ app.post('/update-order', async (req, res) => {
     if (order === null) {
         delete state.activeOrders[tableId];
     } else {
-        // 🔥 CORRECTION DE LA STRUCTURE DE DONNÉES
-        // On respecte fidèlement le format envoyé par le client
         state.activeOrders[tableId] = order;
     }
     
     try {
         await EmpireState.findOneAndUpdate({ id: tenantID }, { activeOrders: state.activeOrders }, { upsert: true });
-    } catch (e) { console.error(`🔴 Erreur sauvegarde DB pour ${tenantID}:`, e); }
+    } catch (e) { console.error(`🔴 Erreur sauvegarde DB pour ${tenantID}:`, e.message); }
     
     res.json({ success: true });
 });
@@ -287,7 +289,7 @@ app.get('/portail-client', async (req, res) => {
 
         res.redirect(303, session.url);
     } catch (error) {
-        console.error("Erreur Stripe :", error);
+        console.error("Erreur Stripe :", error.message);
         res.send("<body style='background:#0f172a;color:#f87171;text-align:center;padding:50px;font-family:sans-serif;'><h2>Erreur de connexion bancaire. Veuillez payer à la caisse.</h2></body>");
     }
 });
