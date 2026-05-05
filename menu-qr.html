@@ -239,7 +239,7 @@
             }
         }
 
-        // 🟢 MOTEUR DE SYNCHRONISATION H24 
+        // 🟢 MOTEUR DE SYNCHRONISATION H24 (INCLUT LE DESIGN MAINTENANT !)
         async function fetchMenuH24() {
             try {
                 let r = await fetch(`${SERVER_URL}/get-current-state?tenantID=${tenantID}`);
@@ -262,6 +262,7 @@
                     restaurantStripeLink = settingsData.payment.stripeLink || "";
                     
                     if(btnOnline) {
+                        // SÉCURITÉ : On n'affiche le bouton Payer en Ligne QUE si le restaurateur l'a coché ET qu'il a bien rentré un lien Stripe !
                         btnOnline.style.display = (settingsData.payment.online && restaurantStripeLink !== "") ? 'block' : 'none';
                     }
                     if(btnServer) btnServer.style.display = settingsData.payment.server ? 'block' : 'none';
@@ -279,7 +280,7 @@
                     });
                 }
 
-                // --- MENU ---
+                // --- MENU & STOCKS ---
                 let newMenuData = [];
                 catsCuis.forEach(cat => { if(mCuis[cat.id]) newMenuData.push({ category: cat.label, id: cat.id, items: mCuis[cat.id].map(i => ({...i, dest: 'cuisine'})) }); });
                 catsBar.forEach(cat => { if(mBar[cat.id]) newMenuData.push({ category: "🍸 " + cat.label, id: cat.id, items: mBar[cat.id].map(i => ({...i, dest: 'bar'})) }); });
@@ -295,6 +296,7 @@
                         renderTabs();
                         if (menuData.length > 0) selectCategory(menuData[0].id);
                     } else {
+                        // Rafraîchir la vue actuelle pour appliquer les changements de stock (Épuisé)
                         if(currentCat && currentCat !== 'resa') selectCategory(currentCat, true);
                     }
                 }
@@ -304,7 +306,7 @@
         }
 
         fetchMenuH24();
-        setInterval(fetchMenuH24, 4000);
+        setInterval(fetchMenuH24, 4000); // ⏱️ Rafraîchissement silencieux toutes les 4 secondes
 
         // --- AFFICHAGE ---
         function renderTabs() {
@@ -358,28 +360,25 @@
                 return;
             }
 
-            let itemsEnStock = catData.items.filter(item => {
-                if (item.stock === undefined || item.stock === null || item.stock === "") return true; 
-                return parseInt(item.stock) > 0;
-            });
-
-            if (itemsEnStock.length === 0) {
-                grid.innerHTML = '<div style="grid-column:1/-1; text-align:center; color:var(--text-muted); padding:30px;">Tous les produits de cette catégorie sont actuellement épuisés.</div>';
-                return;
-            }
-
-            grid.innerHTML = itemsEnStock.map((item) => {
+            grid.innerHTML = catData.items.map((item) => {
                 let price = parseFloat(item.price || 0).toFixed(2);
                 let cleanName = item.name.replace(/\[BR\]/g, ' ');
                 let escapedName = cleanName.replace(/'/g, "\\'").replace(/"/g, '&quot;');
+                
+                // 🛑 NOUVELLE GESTION RUPTURE DE STOCK (S'affiche en gris avec bouton ÉPUISÉ)
+                let isSoldOut = (item.stock !== undefined && item.stock !== null && item.stock !== "" && parseInt(item.stock) === 0);
+                
+                let cardStyle = isSoldOut ? 'opacity: 0.5; pointer-events: none; filter: grayscale(100%);' : '';
+                let btnText = isSoldOut ? 'ÉPUISÉ' : '+';
+                let btnStyle = isSoldOut ? 'background: var(--alert); color: #fff; font-size: 0.7rem; width: auto; padding: 0 10px; border-radius: 8px;' : '';
 
                 return `
-                <div class="item-card" onclick="addToCart('${escapedName}', ${price}, '${item.dest}')">
+                <div class="item-card" style="${cardStyle}" onclick="${isSoldOut ? '' : `addToCart('${escapedName}', ${price}, '${item.dest}')`}">
                     <div class="item-info">
                         <span class="item-name">${cleanName}</span>
-                        <span class="item-price">${price} €</span>
+                        <span class="item-price" style="${isSoldOut ? 'text-decoration: line-through; color: var(--alert);' : ''}">${price} €</span>
                     </div>
-                    <button class="add-btn">+</button>
+                    <button class="add-btn" style="${btnStyle}">${btnText}</button>
                 </div>`;
             }).join('');
         }
