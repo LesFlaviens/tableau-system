@@ -162,6 +162,12 @@ app.post('/create-commission-checkout', async (req, res) => {
     try {
         const { montant, tenantID } = req.body;
         const tenant = await Tenant.findOne({ tenantID });
+
+        // 🛡️ LE BOUCLIER EST ICI :
+        if (!tenant || !tenant.config || !tenant.config.stripeConnectedId) {
+            return res.status(400).json({ error: "Ce restaurant n'est pas configuré pour recevoir des paiements Stripe Connect." });
+        }
+
         const session = await stripe.checkout.sessions.create({
             payment_method_types: ['card'],
             line_items: [{ price_data: { currency: 'eur', product_data: { name: 'Commande I CHEF' }, unit_amount: montant }, quantity: 1 }],
@@ -170,12 +176,15 @@ app.post('/create-commission-checkout', async (req, res) => {
                 transfer_data: { destination: tenant.config.stripeConnectedId },
             },
             mode: 'payment',
-            success_url: '...', cancel_url: '...',
+            success_url: 'https://ton-site.com/?success=true', // Pense à mettre ta vraie URL ici
+            cancel_url: 'https://ton-site.com/?canceled=true',
         });
         res.json({ url: session.url });
-    } catch (error) { res.status(500).send("Erreur."); }
+    } catch (error) { 
+        console.error("Erreur Checkout Commission:", error);
+        res.status(500).send("Erreur interne du serveur."); 
+    }
 });
-
 // ==========================================
 // 🏠 VITRINE I CHEF
 // ==========================================
