@@ -39,7 +39,7 @@ app.use(express.json({ limit: '50mb' }));
 app.use(express.static(path.join(__dirname)));
 
 // ==========================================
-// 🧠 BASE DE DONNÉES & MODÈLES (INCHANGÉS)
+// 🧠 BASE DE DONNÉES
 // ==========================================
 const mongoURI = process.env.MONGO_URI || "mongodb+srv://icheflavien_db_user:MOT_DE_PASSE@cluster0.4w95d7m.mongodb.net/ichef_production?retryWrites=true&w=majority";
 mongoose.connect(mongoURI).then(() => console.log('🔥 I CHEF Online')).catch(err => console.error(err.message));
@@ -49,7 +49,10 @@ const tenantSchema = new mongoose.Schema({
     clientName: String,
     status: { type: String, enum: ['ACTIF', 'ESSAI', 'SUSPENDU'], default: 'ESSAI' },
     trialEndDate: Date,
-    config: Object
+    config: {
+        stripeCustomerId: String,
+        stripeConnectedId: String 
+    }
 });
 const Tenant = mongoose.model('Tenant', tenantSchema);
 
@@ -61,8 +64,28 @@ const stateSchema = new mongoose.Schema({
 const EmpireState = mongoose.model('EmpireState', stateSchema);
 
 // ==========================================
-// 🚦 LOGIQUE MÉTIER (SAS & VÉRIFICATION)
+// 🚦 LOGIQUE MÉTIER & SAS CUISINE (TON MOTEUR)
 // ==========================================
+let tenantsState = {}; 
+
+async function initTenantState(tenantID) {
+    if (!tenantsState[tenantID]) {
+        let doc = await EmpireState.findOne({ id: tenantID });
+        tenantsState[tenantID] = doc ? { 
+            activeOrders: doc.activeOrders || {}, 
+            sasConfig: doc.sasConfig || { active: true, maxTables: 5, delaySeconds: 60 }, 
+            webOrderQueue: [], 
+            lastSasRelease: 0 
+        } : { 
+            activeOrders: {}, 
+            sasConfig: { active: true, maxTables: 5, delaySeconds: 60 }, 
+            webOrderQueue: [], 
+            lastSasRelease: 0 
+        };
+    }
+    return tenantsState[tenantID];
+}
+
 app.get('/verify-tenant/:tenantID', async (req, res) => {
     try {
         const tenant = await Tenant.findOne({ tenantID: req.params.tenantID });
@@ -71,16 +94,6 @@ app.get('/verify-tenant/:tenantID', async (req, res) => {
         res.json({ success: true, clientName: tenant.clientName, status: tenant.status });
     } catch (error) { res.status(500).json({ error: "Erreur serveur." }); }
 });
-
-let tenantsState = {}; 
-async function initTenantState(tenantID) {
-    if (!tenantsState[tenantID]) {
-        let doc = await EmpireState.findOne({ id: tenantID });
-        tenantsState[tenantID] = doc ? { activeOrders: doc.activeOrders || {}, sasConfig: doc.sasConfig || { active: true, maxTables: 5, delaySeconds: 60 }, webOrderQueue: [], lastSasRelease: 0 } 
-        : { activeOrders: {}, sasConfig: { active: true, maxTables: 5, delaySeconds: 60 }, webOrderQueue: [], lastSasRelease: 0 };
-    }
-    return tenantsState[tenantID];
-}
 
 app.get('/get-current-state', async (req, res) => {
     const state = await initTenantState(req.query.tenantID || 'MASTER_STATE');
@@ -96,8 +109,41 @@ app.post('/update-order', async (req, res) => {
     res.json({ success: true });
 });
 
+app.post('/update-sas', async (req, res) => {
+    const tenantID = req.query.tenantID || 'MASTER_STATE';
+    const state = await initTenantState(tenantID);
+    state.sasConfig = { ...state.sasConfig, ...req.body };
+    if (!state.sasConfig.active && state.webOrderQueue.length > 0) {
+        while(state.webOrderQueue.length > 0) {
+            let nextOrder = state.webOrderQueue.shift();
+            state.activeOrders[nextOrder.tableId] = nextOrder.order;
+        }
+    }
+    await EmpireState.findOneAndUpdate({ id: tenantID }, { sasConfig: state.sasConfig }, { upsert: true });
+    res.json({ success: true, sasConfig: state.sasConfig });
+});
+
+// ⏳ LE COEUR DU SYSTÈME : Gestion des flux toutes les 5 secondes
+setInterval(() => {
+    for (let tenantID in tenantsState) {
+        let state = tenantsState[tenantID];
+        if (state.sasConfig.active && state.webOrderQueue.length > 0) {
+            let now = Date.now();
+            if (now - state.lastSasRelease >= (state.sasConfig.delaySeconds * 1000)) {
+                let activeWebCount = Object.values(state.activeOrders).filter(o => o && o.isWeb).length;
+                if (activeWebCount < state.sasConfig.maxTables) {
+                    let nextOrder = state.webOrderQueue.shift();
+                    state.activeOrders[nextOrder.tableId] = nextOrder.order;
+                    state.lastSasRelease = now;
+                    EmpireState.findOneAndUpdate({ id: tenantID }, { activeOrders: state.activeOrders }, { upsert: true }).catch(()=>{});
+                }
+            }
+        }
+    }
+}, 5000);
+
 // ==========================================
-// 💳 STRIPE & VITRINE I CHEF
+// 💳 STRIPE : OFFRE 1 (ABONNEMENT) & OFFRE 2 (COMMISSION)
 // ==========================================
 app.get('/create-checkout-session', async (req, res) => {
     try {
@@ -112,6 +158,27 @@ app.get('/create-checkout-session', async (req, res) => {
     } catch (error) { res.status(500).send("Erreur Stripe."); }
 });
 
+app.post('/create-commission-checkout', async (req, res) => {
+    try {
+        const { montant, tenantID } = req.body;
+        const tenant = await Tenant.findOne({ tenantID });
+        const session = await stripe.checkout.sessions.create({
+            payment_method_types: ['card'],
+            line_items: [{ price_data: { currency: 'eur', product_data: { name: 'Commande I CHEF' }, unit_amount: montant }, quantity: 1 }],
+            payment_intent_data: {
+                application_fee_amount: Math.round(montant * 0.015),
+                transfer_data: { destination: tenant.config.stripeConnectedId },
+            },
+            mode: 'payment',
+            success_url: '...', cancel_url: '...',
+        });
+        res.json({ url: session.url });
+    } catch (error) { res.status(500).send("Erreur."); }
+});
+
+// ==========================================
+// 🏠 VITRINE I CHEF
+// ==========================================
 app.get('/', (req, res) => {
     res.send(`
         <!DOCTYPE html>
@@ -131,7 +198,7 @@ app.get('/', (req, res) => {
                 .pricing-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
                 .card { background: var(--panel); border: 1px solid var(--border); border-radius: 24px; padding: 40px 25px; text-align: center; }
                 .price { font-size: 3.2rem; font-weight: 900; color: var(--gold); }
-                .btn { background: var(--gold); color: #000; text-decoration: none; padding: 18px; border-radius: 14px; font-weight: 900; display: block; margin-top: 20px; text-transform: uppercase; }
+                .btn { background: var(--gold); color: #000; text-decoration: none; padding: 18px; border-radius: 14px; font-weight: 900; display: block; margin-top: 20px; text-transform: uppercase; cursor:pointer; }
             </style>
         </head>
         <body>
@@ -153,13 +220,13 @@ app.get('/', (req, res) => {
                         <div class="price">0€<span style="font-size:1rem;">/mois</span></div>
                         <p style="font-weight:bold;">1.5% de commission sur CA</p>
                         <p style="color:#f87171; font-weight:bold;">+ 300€ Installation & Formation</p>
-                        <a href="#" class="btn" style="background:transparent; color:#fff; border:1px solid var(--border);" onclick="alert('Contactez-nous pour l\\'offre Partenaire.')">Nous Contacter</a>
+                        <button class="btn" style="background:transparent; color:#fff; border:1px solid var(--border);" onclick="alert('Contactez-nous pour configurer votre compte partenaire.')">Nous Contacter</button>
                     </div>
                 </div>
             </div>
             <script>
                 if (new URLSearchParams(window.location.search).get('success') === 'true') {
-                    document.getElementById('main-content').innerHTML = '<div style="text-align:center; padding:100px; background:var(--panel); border-radius:30px; border:1px solid var(--gold);"><h1>✅ Dossier Validé</h1><p>Infrastructure I CHEF réservée. Nous arrivons pour l\\'installation et la formation.</p><a href="/" class="btn" style="display:inline-block; padding:15px 40px;">Retour</a></div>';
+                    document.getElementById('main-content').innerHTML = '<div style="text-align:center; padding:100px; background:var(--panel); border-radius:30px; border:1px solid var(--gold);"><h1>✅ Dossier Validé</h1><p>Infrastructure I CHEF réservée. Nous arrivons pour l\\'installation et la formation.</p><a href="/" class="btn" style="display:inline-block; padding:15px 40px; text-decoration:none;">Retour</a></div>';
                 }
             </script>
         </body>
