@@ -109,6 +109,40 @@ app.post('/update-order', async (req, res) => {
     res.json({ success: true });
 });
 
+// ==========================================
+// 📥 ENTRÉE DES COMMANDES CLIENTS (VERS LE SAS)
+// ==========================================
+app.post('/add-web-order', async (req, res) => {
+    try {
+        const tenantID = req.query.tenantID || req.body.tenantID || 'MASTER_STATE';
+        const { tableId, order } = req.body;
+
+        // 1. On vérifie que la commande est complète
+        if (!tableId || !order) {
+            return res.status(400).json({ error: "🚨 Il manque la table ou la commande." });
+        }
+
+        // 2. On ajoute une "étiquette" pour que le SAS reconnaisse que c'est une commande Web
+        order.isWeb = true;
+
+        // 3. On récupère l'état de la cuisine du restaurant
+        const state = await initTenantState(tenantID);
+
+        // 4. On met la commande dans la file d'attente (webOrderQueue)
+        state.webOrderQueue.push({ tableId, order });
+
+        // On répond au téléphone du client que tout est bon !
+        res.json({ 
+            success: true, 
+            message: "✅ Commande reçue et placée dans le SAS." 
+        });
+
+    } catch (error) {
+        console.error("Erreur add-web-order:", error);
+        res.status(500).json({ error: "Erreur serveur lors de la commande." });
+    }
+});
+
 app.post('/update-sas', async (req, res) => {
     const tenantID = req.query.tenantID || 'MASTER_STATE';
     const state = await initTenantState(tenantID);
@@ -185,6 +219,7 @@ app.post('/create-commission-checkout', async (req, res) => {
         res.status(500).send("Erreur interne du serveur."); 
     }
 });
+
 // ==========================================
 // 🏠 VITRINE I CHEF
 // ==========================================
