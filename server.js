@@ -49,10 +49,7 @@ const tenantSchema = new mongoose.Schema({
     clientName: String,
     status: { type: String, enum: ['ACTIF', 'ESSAI', 'SUSPENDU'], default: 'ESSAI' },
     trialEndDate: Date,
-    config: {
-        stripeCustomerId: String,
-        stripeConnectedId: String 
-    }
+    config: { stripeCustomerId: String, stripeConnectedId: String }
 });
 const Tenant = mongoose.model('Tenant', tenantSchema);
 
@@ -109,25 +106,18 @@ app.post('/update-order', async (req, res) => {
     res.json({ success: true });
 });
 
-// ==========================================
-// 📥 ENTRÉE DES COMMANDES CLIENTS (VERS LE SAS)
-// ==========================================
 app.post('/add-web-order', async (req, res) => {
     try {
         const tenantID = req.query.tenantID || req.body.tenantID || 'MASTER_STATE';
         const { tableId, order } = req.body;
-
-        if (!tableId || !order) return res.status(400).json({ error: "🚨 Il manque la table ou la commande." });
-
+        if (!tableId || !order) return res.status(400).json({ error: "Il manque la table ou la commande." });
+        
         order.isWeb = true;
         const state = await initTenantState(tenantID);
         state.webOrderQueue.push({ tableId, order });
-
-        res.json({ success: true, message: "✅ Commande reçue et placée dans le SAS." });
-    } catch (error) {
-        console.error("Erreur add-web-order:", error);
-        res.status(500).json({ error: "Erreur serveur lors de la commande." });
-    }
+        
+        res.json({ success: true, message: "Commande dans le SAS." });
+    } catch (error) { res.status(500).json({ error: "Erreur serveur." }); }
 });
 
 app.post('/update-sas', async (req, res) => {
@@ -144,7 +134,7 @@ app.post('/update-sas', async (req, res) => {
     res.json({ success: true, sasConfig: state.sasConfig });
 });
 
-// ⏳ LE COEUR DU SYSTÈME : Gestion des flux toutes les 5 secondes
+// ⏳ LE COEUR DU SYSTÈME (Toutes les 5 sec)
 setInterval(() => {
     for (let tenantID in tenantsState) {
         let state = tenantsState[tenantID];
@@ -164,7 +154,7 @@ setInterval(() => {
 }, 5000);
 
 // ==========================================
-// 💳 STRIPE : OFFRE 1 (ABONNEMENT) & OFFRE 2 (COMMISSION)
+// 💳 STRIPE 
 // ==========================================
 app.get('/create-checkout-session', async (req, res) => {
     try {
@@ -200,48 +190,7 @@ app.post('/create-commission-checkout', async (req, res) => {
             cancel_url: 'https://ton-site.com/?canceled=true',
         });
         res.json({ url: session.url });
-    } catch (error) { 
-        console.error("Erreur Checkout Commission:", error);
-        res.status(500).send("Erreur interne du serveur."); 
-    }
-});
-
-// ==========================================
-// 👑 ROUTE ADMIN : CRÉATION DE RESTAURANT
-// ==========================================
-app.post('/admin/create-tenant', async (req, res) => {
-    try {
-        const { tenantID, clientName, stripeConnectedId } = req.body;
-
-        if (!tenantID || !clientName) {
-            return res.status(400).json({ success: false, error: "ID et Nom obligatoires." });
-        }
-
-        // Vérifier si ce restaurant existe déjà
-        const existing = await Tenant.findOne({ tenantID });
-        if (existing) {
-            return res.status(400).json({ success: false, error: "Cet ID de restaurant existe déjà." });
-        }
-
-        // Créer le client dans MongoDB
-        const newTenant = new Tenant({
-            tenantID,
-            clientName,
-            status: 'ACTIF', // Activé direct !
-            config: {
-                stripeConnectedId: stripeConnectedId || ""
-            }
-        });
-        await newTenant.save();
-
-        // Préparer sa cuisine dans MongoDB
-        await EmpireState.create({ id: tenantID });
-
-        res.json({ success: true, message: `✅ Le restaurant ${clientName} est créé et activé !` });
-    } catch (error) {
-        console.error("Erreur Admin:", error);
-        res.status(500).json({ success: false, error: "Erreur serveur." });
-    }
+    } catch (error) { res.status(500).send("Erreur interne du serveur."); }
 });
 
 // ==========================================
@@ -294,7 +243,7 @@ app.get('/', (req, res) => {
             </div>
             <script>
                 if (new URLSearchParams(window.location.search).get('success') === 'true') {
-                    document.getElementById('main-content').innerHTML = '<div style="text-align:center; padding:100px; background:var(--panel); border-radius:30px; border:1px solid var(--gold);"><h1>✅ Dossier Validé</h1><p>Infrastructure I CHEF réservée. Nous arrivons pour l\\'installation et la formation.</p><a href="/" class="btn" style="display:inline-block; padding:15px 40px; text-decoration:none;">Retour</a></div>';
+                    document.getElementById('main-content').innerHTML = '<div style="text-align:center; padding:100px; background:var(--panel); border-radius:30px; border:1px solid var(--gold);"><h1>✅ Dossier Validé</h1><p>Infrastructure I CHEF réservée.</p><a href="/" class="btn" style="display:inline-block; padding:15px 40px; text-decoration:none;">Retour</a></div>';
                 }
             </script>
         </body>
