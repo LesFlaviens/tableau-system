@@ -325,4 +325,4 @@ app.get('/', (req, res) => {
     `);
 });
 
-app.listen(PORT, () => console.log("🚀 Empire OS est en ligne sur le port " + PORT));
+app.listen(PORT, () => console.log("iCHEFest en ligne sur le port " + PORT));
