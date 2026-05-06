@@ -117,26 +117,13 @@ app.post('/add-web-order', async (req, res) => {
         const tenantID = req.query.tenantID || req.body.tenantID || 'MASTER_STATE';
         const { tableId, order } = req.body;
 
-        // 1. On vérifie que la commande est complète
-        if (!tableId || !order) {
-            return res.status(400).json({ error: "🚨 Il manque la table ou la commande." });
-        }
+        if (!tableId || !order) return res.status(400).json({ error: "🚨 Il manque la table ou la commande." });
 
-        // 2. On ajoute une "étiquette" pour que le SAS reconnaisse que c'est une commande Web
         order.isWeb = true;
-
-        // 3. On récupère l'état de la cuisine du restaurant
         const state = await initTenantState(tenantID);
-
-        // 4. On met la commande dans la file d'attente (webOrderQueue)
         state.webOrderQueue.push({ tableId, order });
 
-        // On répond au téléphone du client que tout est bon !
-        res.json({ 
-            success: true, 
-            message: "✅ Commande reçue et placée dans le SAS." 
-        });
-
+        res.json({ success: true, message: "✅ Commande reçue et placée dans le SAS." });
     } catch (error) {
         console.error("Erreur add-web-order:", error);
         res.status(500).json({ error: "Erreur serveur lors de la commande." });
@@ -197,7 +184,6 @@ app.post('/create-commission-checkout', async (req, res) => {
         const { montant, tenantID } = req.body;
         const tenant = await Tenant.findOne({ tenantID });
 
-        // 🛡️ LE BOUCLIER EST ICI :
         if (!tenant || !tenant.config || !tenant.config.stripeConnectedId) {
             return res.status(400).json({ error: "Ce restaurant n'est pas configuré pour recevoir des paiements Stripe Connect." });
         }
@@ -210,13 +196,51 @@ app.post('/create-commission-checkout', async (req, res) => {
                 transfer_data: { destination: tenant.config.stripeConnectedId },
             },
             mode: 'payment',
-            success_url: 'https://ton-site.com/?success=true', // Pense à mettre ta vraie URL ici
+            success_url: 'https://ton-site.com/?success=true',
             cancel_url: 'https://ton-site.com/?canceled=true',
         });
         res.json({ url: session.url });
     } catch (error) { 
         console.error("Erreur Checkout Commission:", error);
         res.status(500).send("Erreur interne du serveur."); 
+    }
+});
+
+// ==========================================
+// 👑 ROUTE ADMIN : CRÉATION DE RESTAURANT
+// ==========================================
+app.post('/admin/create-tenant', async (req, res) => {
+    try {
+        const { tenantID, clientName, stripeConnectedId } = req.body;
+
+        if (!tenantID || !clientName) {
+            return res.status(400).json({ success: false, error: "ID et Nom obligatoires." });
+        }
+
+        // Vérifier si ce restaurant existe déjà
+        const existing = await Tenant.findOne({ tenantID });
+        if (existing) {
+            return res.status(400).json({ success: false, error: "Cet ID de restaurant existe déjà." });
+        }
+
+        // Créer le client dans MongoDB
+        const newTenant = new Tenant({
+            tenantID,
+            clientName,
+            status: 'ACTIF', // Activé direct !
+            config: {
+                stripeConnectedId: stripeConnectedId || ""
+            }
+        });
+        await newTenant.save();
+
+        // Préparer sa cuisine dans MongoDB
+        await EmpireState.create({ id: tenantID });
+
+        res.json({ success: true, message: `✅ Le restaurant ${clientName} est créé et activé !` });
+    } catch (error) {
+        console.error("Erreur Admin:", error);
+        res.status(500).json({ success: false, error: "Erreur serveur." });
     }
 });
 
