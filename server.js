@@ -1,6 +1,5 @@
 Gemini
 Connexion Menu Pad Serveur
-Nouvelle discussion
 Mes contenus
 Gems
 Discussions
