@@ -163,27 +163,34 @@
     </div>
 
     <script>
+        // Extraction des données de l'URL
+        const urlParams = new URLSearchParams(window.location.search);
+        const tenantID = urlParams.get('tenantID') || 'MASTER_STATE';
+        
+        // 🚀 CONNEXION À TON SERVEUR RENDER ICI 🚀
         const SERVER_URL = "https://tableau-system.onrender.com";
 
+        // Moteur de communication avec ton serveur Render
         const API = {
             getState: async () => {
-                let r = await fetch(SERVER_URL + '/get-current-state');
+                let r = await fetch(`${SERVER_URL}/get-current-state?tenantID=${tenantID}`);
                 if (!r.ok) throw new Error("Serveur injoignable");
                 return await r.json();
             },
             update: async (key, data) => {
+                // Filtre vital : distingue une commande (Table) d'une sauvegarde de base de données (ARCHIVE/ALERTS)
+                let isOrder = !key.includes('MASTER') && !key.includes('ARCHIVE') && !key.includes('SUPPLIER') && !key.includes('PLANNING') && !key.includes('MENU') && !key.includes('DIRECTORY') && !key.includes('ALERTS') && !key.includes('ARCHITECTURE');
+                let payload = isOrder ? data : { data: data };
                 try { 
-                    await fetch(SERVER_URL + '/update-order', { 
+                    await fetch(`${SERVER_URL}/update-order?tenantID=${tenantID}`, { 
                         method: 'POST', 
                         headers: {'Content-Type': 'application/json'}, 
-                        body: JSON.stringify({ tableId: key, order: data }) 
+                        body: JSON.stringify({ tableId: key, order: data === null ? null : payload }) 
                     }); 
                 } catch(e) { console.error("Erreur Sync:", e); }
             }
         };
 
-        // Extraction des données de l'URL
-        const urlParams = new URLSearchParams(window.location.search);
         const urlTable = urlParams.get('table');
         const urlMontant = parseFloat(urlParams.get('montant'));
 
@@ -206,7 +213,9 @@
                 // On va chercher les détails de l'addition sur le serveur
                 const state = await API.getState();
                 if (state && state.activeOrders && state.activeOrders[urlTable]) {
-                    const tableData = state.activeOrders[urlTable];
+                    // Les tables "Normales" ont les items dans data.items, les tables du portail peuvent les avoir à la racine
+                    const tableData = state.activeOrders[urlTable].data || state.activeOrders[urlTable];
+                    
                     if (tableData.items && Array.isArray(tableData.items)) {
                         orderItems = tableData.items;
                     }
@@ -298,7 +307,7 @@
             document.getElementById('final-total-amount').innerText = finalAmount.toFixed(2) + " €";
         }
 
-async function processSimulatedPayment(methodName) {
+        async function processSimulatedPayment(methodName) {
             // Affichage de l'écran de chargement
             document.getElementById('main-content').style.display = 'none';
             document.getElementById('fixed-bottom').style.display = 'none';
@@ -320,7 +329,7 @@ async function processSimulatedPayment(methodName) {
                     const state = await API.getState();
                     if (state && state.activeOrders && state.activeOrders[urlTable]) {
                         
-                        let order = state.activeOrders[urlTable];
+                        let order = state.activeOrders[urlTable].data || state.activeOrders[urlTable];
                         
                         // 2. On formate le ticket pour les Archives Financières de l'Admin
                         let archiveEntry = {
@@ -351,7 +360,7 @@ async function processSimulatedPayment(methodName) {
                         loader.style.display = 'none';
                         document.getElementById('success-screen').style.display = 'flex';
                     } else {
-                        // La table était déjà vide
+                        // La table était déjà vide ou introuvable
                         loader.style.display = 'none';
                         document.getElementById('success-screen').style.display = 'flex';
                     }
