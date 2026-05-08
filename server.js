@@ -46,7 +46,7 @@ app.use(express.static(path.join(__dirname)));
 // 🧠 BASE DE DONNÉES
 // ==========================================
 // Tes identifiants ont été insérés ici 👇
-const mongoURI = process.env.MONGO_URI || "mongodb+srv://iche.flavien%40ichef.ch:Tamere58.@cluster0.4w95d7m.mongodb.net/ichef_production?retryWrites=true&w=majority";
+const mongoURI = process.env.MONGO_URI || "mongodb+srv://icheflavien_db_user:Tamere58.@cluster0.4w95d7m.mongodb.net/ichef_production?retryWrites=true&w=majority";
 mongoose.connect(mongoURI).then(() => console.log('🔥 I CHEF Online')).catch(err => console.error(err.message));
 
 const tenantSchema = new mongoose.Schema({
