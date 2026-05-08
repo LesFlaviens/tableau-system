@@ -232,13 +232,15 @@ app.get('/create-checkout-session', async (req, res) => {
     try {
         const session = await stripe.checkout.sessions.create({
             payment_method_types: ['card'],
-            line_items: [{ price: process.env.STRIPE_PRICE_ID, quantity: 1 }],
+            // C'est ici qu'on met ton identifiant de prix 👇
+            line_items: [{ price: 'price_1TN8NPQ9Dw3nOFa4jBaO1Gib', quantity: 1 }],
             mode: 'subscription',
             success_url: 'https://tableau-system.onrender.com/?success=true',
             cancel_url: 'https://tableau-system.onrender.com/?canceled=true',
         });
         res.redirect(303, session.url);
-    } catch (error) { res.status(500).send("Erreur Stripe."); }
+    } catch (error) { 
+        console.error(error);
+        res.status(500).send("Erreur Stripe."); 
+    }
 });
-
-app.listen(PORT, () => console.log("🚀 I CHEF est en ligne sur le port " + PORT));
