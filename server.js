@@ -4,7 +4,6 @@ const path = require('path');
 const mongoose = require('mongoose');
 
 // 🛡️ CONFIGURATION STRIPE
-// RAPPEL: Remplacer 'sk_test_dummy_key' par ta vraie clé secrète Stripe (sk_test_...) plus tard !
 const stripeKey = process.env.STRIPE_SECRET_KEY || 'sk_test_51TN80JQ9Dw3nOFa4i3XTXP15FR4ddYmU9Jw2pGmfaaeABz2P6wazK8RMzHw2Xi1u1LxXFmY2oEDgau4TcScOF9WK00ajIEuweB';
 const stripe = require('stripe')(stripeKey);
 
@@ -36,9 +35,6 @@ app.post('/webhook', express.raw({type: 'application/json'}), async (req, res) =
     res.json({received: true});
 });
 
-// ==========================================
-// ⚙️ MIDDLEWARES STANDARDS
-// ==========================================
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true }));
 app.use(express.static(path.join(__dirname)));
@@ -69,28 +65,8 @@ const stateSchema = new mongoose.Schema({
 const EmpireState = mongoose.model('EmpireState', stateSchema);
 
 // ==========================================
-// 🚦 LOGIQUE MÉTIER & SAS CUISINE
+// 🚦 LOGIQUE MÉTIER
 // ==========================================
-let tenantsState = {}; 
-
-async function initTenantState(tenantID) {
-    if (!tenantsState[tenantID]) {
-        let doc = await EmpireState.findOne({ id: tenantID });
-        tenantsState[tenantID] = doc ? { 
-            activeOrders: doc.activeOrders || {}, 
-            sasConfig: doc.sasConfig || { active: true, maxTables: 5, delaySeconds: 60 }, 
-            webOrderQueue: [], 
-            lastSasRelease: 0 
-        } : { 
-            activeOrders: {}, 
-            sasConfig: { active: true, maxTables: 5, delaySeconds: 60 }, 
-            webOrderQueue: [], 
-            lastSasRelease: 0 
-        };
-    }
-    return tenantsState[tenantID];
-}
-
 app.get('/verify-tenant/:tenantID', async (req, res) => {
     try {
         const tenant = await Tenant.findOne({ tenantID: req.params.tenantID });
@@ -101,14 +77,13 @@ app.get('/verify-tenant/:tenantID', async (req, res) => {
 });
 
 // ==========================================
-// 💳 STRIPE CONNECT : CRÉATION DE COMPTE CLIENT (NOUVEAU)
+// 💳 STRIPE CONNECT
 // ==========================================
 app.get('/onboard-stripe/:tenantID', async (req, res) => {
     try {
         const tenant = await Tenant.findOne({ tenantID: req.params.tenantID });
         if (!tenant) return res.status(404).send('Restaurant introuvable');
 
-        // 1. On crée le "sous-compte" Stripe si le restaurant n'en a pas encore
         let accountId = tenant.config.stripeConnectedId;
         if (!accountId) {
             const account = await stripe.accounts.create({ type: 'standard' });
@@ -116,30 +91,28 @@ app.get('/onboard-stripe/:tenantID', async (req, res) => {
             await Tenant.findOneAndUpdate({ tenantID: req.params.tenantID }, { "config.stripeConnectedId": accountId });
         }
 
-        // 2. On génère le lien sécurisé pour que le restaurateur entre son RIB/IBAN
         const accountLink = await stripe.accountLinks.create({
             account: accountId,
             refresh_url: `http://localhost:10000/onboard-stripe/${req.params.tenantID}`,
-            return_url: `http://localhost:10000/panel-ichef?pass=Empire2026`, // Retour au panel quand c'est fini
+            return_url: `http://localhost:10000/panel-ichef?pass=Empire2026`,
             type: 'account_onboarding',
         });
 
-        // 3. On redirige vers la page de configuration Stripe
         res.redirect(accountLink.url);
     } catch (error) {
         console.error(error);
-        res.status(500).send("Erreur Stripe Connect. Vérifie que ta clé secrète Stripe est valide dans le code.");
+        res.status(500).send("Erreur Stripe Connect.");
     }
 });
 
 // ==========================================
-// 👑 PANEL ADMINISTRATEUR I CHEF (SECRET)
+// 👑 PANEL ADMINISTRATEUR
 // ==========================================
-const ADMIN_PASS = process.env.ADMIN_PASS || 'Empire2026';
+const ADMIN_PASS = 'Empire2026';
 
 app.get('/panel-ichef', async (req, res) => {
     const pass = req.query.pass;
-    if (pass !== ADMIN_PASS) return res.status(401).send('<h1 style="color:red; text-align:center; margin-top:50px;">🔒 ACCÈS REFUSÉ</h1>');
+    if (pass !== ADMIN_PASS) return res.status(401).send('🔒 ACCÈS REFUSÉ');
 
     const tenants = await Tenant.find({});
     
@@ -148,26 +121,21 @@ app.get('/panel-ichef', async (req, res) => {
     <html lang="fr">
     <head>
         <meta charset="UTF-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
         <title>Command Center - I CHEF</title>
         <style>
-            body { background: #09090b; color: #fff; font-family: 'Inter', sans-serif; padding: 20px; max-width: 900px; margin: 0 auto; }
+            body { background: #09090b; color: #fff; font-family: sans-serif; padding: 20px; max-width: 900px; margin: 0 auto; }
             .card { background: #11141d; padding: 20px; border-radius: 12px; border: 1px solid #2d313a; margin-bottom: 20px; }
-            input, button { padding: 15px; margin: 8px 0; width: 100%; box-sizing: border-box; background:#1c1f26; color:#fff; border:1px solid #2d313a; border-radius:8px; font-size: 1rem; }
-            button { background: #fbbf24; color: #000; font-weight: 900; cursor: pointer; text-transform: uppercase; border: none; }
-            table { width: 100%; border-collapse: collapse; margin-top: 15px; font-size: 0.9rem; }
-            th, td { border-bottom: 1px solid #2d313a; padding: 15px 10px; text-align: left; }
-            .status-ACTIF { color: #4ade80; font-weight: bold; }
-            .status-SUSPENDU { color: #f87171; font-weight: bold; }
-            .btn-action { width: auto; padding: 8px 12px; font-size: 0.8rem; border-radius: 6px; }
-            .btn-stripe { background: #6366f1; color: white; padding: 8px 12px; text-decoration: none; border-radius: 6px; font-size: 0.8rem; display: inline-block; font-weight: bold; }
+            input, button { padding: 12px; margin: 8px 0; width: 100%; background:#1c1f26; color:#fff; border:1px solid #2d313a; border-radius:8px; }
+            button { background: #fbbf24; color: #000; font-weight: bold; cursor: pointer; border: none; }
+            table { width: 100%; border-collapse: collapse; }
+            th, td { border-bottom: 1px solid #2d313a; padding: 10px; text-align: left; }
+            .btn-stripe { background: #6366f1; color: white; padding: 5px 10px; text-decoration: none; border-radius: 4px; font-size: 0.8rem; }
         </style>
     </head>
     <body>
-        <h1 style="color:#fbbf24; text-transform:uppercase; letter-spacing:-1px;">👑 I CHEF - Command Center</h1>
-        
+        <h1 style="color:#fbbf24;">👑 I CHEF - Command Center</h1>
         <div class="card">
-            <h2 style="margin-top:0;">➕ Nouveau Restaurant</h2>
+            <h2>➕ Nouveau Restaurant</h2>
             <form action="/panel-ichef/add" method="POST">
                 <input type="hidden" name="pass" value="${ADMIN_PASS}">
                 <input type="text" name="tenantID" placeholder="ID (ex: le_bistrot)" required>
@@ -175,30 +143,15 @@ app.get('/panel-ichef', async (req, res) => {
                 <button type="submit">Ouvrir l'accès</button>
             </form>
         </div>
-
         <div class="card">
-            <h2 style="margin-top:0;">📋 Flotte Active</h2>
+            <h2>📋 Flotte Active</h2>
             <table>
-                <tr><th>ID Client</th><th>Statut</th><th>Banque (Stripe)</th><th>Action</th></tr>
+                <tr><th>ID Client</th><th>Statut</th><th>Banque</th></tr>
                 ${tenants.map(t => `
                     <tr>
-                        <td><strong>${t.tenantID}</strong><br><span style="color:#9ca3af; font-size:0.8rem;">${t.clientName}</span></td>
-                        <td class="status-${t.status}">${t.status}</td>
-                        <td>
-                            <a href="/onboard-stripe/${t.tenantID}" target="_blank" class="btn-stripe">
-                                ${t.config && t.config.stripeConnectedId ? '✅ Gérer le compte' : '💳 Lier IBAN'}
-                            </a>
-                        </td>
-                        <td>
-                            <form action="/panel-ichef/toggle" method="POST" style="margin:0;">
-                                <input type="hidden" name="pass" value="${ADMIN_PASS}">
-                                <input type="hidden" name="tenantID" value="${t.tenantID}">
-                                <input type="hidden" name="newStatus" value="${t.status === 'ACTIF' ? 'SUSPENDU' : 'ACTIF'}">
-                                <button type="submit" class="btn-action" style="background: ${t.status === 'ACTIF' ? '#f87171' : '#4ade80'}; color:${t.status === 'ACTIF' ? '#fff' : '#000'};">
-                                    ${t.status === 'ACTIF' ? 'Couper' : 'Réactiver'}
-                                </button>
-                            </form>
-                        </td>
+                        <td>${t.tenantID}</td>
+                        <td>${t.status}</td>
+                        <td><a href="/onboard-stripe/${t.tenantID}" class="btn-stripe">💳 Lier IBAN</a></td>
                     </tr>
                 `).join('')}
             </table>
@@ -211,36 +164,24 @@ app.get('/panel-ichef', async (req, res) => {
 
 app.post('/panel-ichef/add', async (req, res) => {
     if (req.body.pass !== ADMIN_PASS) return res.status(401).send('Refusé');
-    try {
-        await Tenant.create({ tenantID: req.body.tenantID, clientName: req.body.clientName, status: 'ACTIF' });
-        res.redirect('/panel-ichef?pass=' + ADMIN_PASS);
-    } catch (err) {
-        res.send('Erreur: Cet ID existe déjà. <a href="/panel-ichef?pass=' + ADMIN_PASS + '">Retour</a>');
-    }
-});
-
-app.post('/panel-ichef/toggle', async (req, res) => {
-    if (req.body.pass !== ADMIN_PASS) return res.status(401).send('Refusé');
-    await Tenant.findOneAndUpdate({ tenantID: req.body.tenantID }, { status: req.body.newStatus });
+    await Tenant.create({ tenantID: req.body.tenantID, clientName: req.body.clientName, status: 'ACTIF' });
     res.redirect('/panel-ichef?pass=' + ADMIN_PASS);
 });
 
 // ==========================================
-// 💳 STRIPE : PAIEMENTS ET COMMISSIONS
+// 💳 STRIPE : PAIEMENTS
 // ==========================================
 app.get('/create-checkout-session', async (req, res) => {
     try {
         const session = await stripe.checkout.sessions.create({
             payment_method_types: ['card'],
-            // C'est ici qu'on met ton identifiant de prix 👇
             line_items: [{ price: 'price_1TN8NPQ9Dw3nOFa4jBaO1Gib', quantity: 1 }],
             mode: 'subscription',
             success_url: 'https://tableau-system.onrender.com/?success=true',
             cancel_url: 'https://tableau-system.onrender.com/?canceled=true',
         });
         res.redirect(303, session.url);
-    } catch (error) { 
-        console.error(error);
-        res.status(500).send("Erreur Stripe."); 
-    }
+    } catch (error) { res.status(500).send("Erreur Stripe."); }
 });
+
+app.listen(PORT, () => console.log("🚀 I CHEF est en ligne sur le port " + PORT));
