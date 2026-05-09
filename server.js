@@ -5,7 +5,7 @@ const mongoose = require('mongoose');
 
 // 🛡️ CONFIGURATION STRIPE
 // RAPPEL: Remplacer 'sk_test_dummy_key' par ta vraie clé secrète Stripe (sk_test_...) plus tard !
-const stripeKey = 'pk_test_51TN80JQ9Dw3nOFa4hqTSWbnGRhWF75RnOrmMNapqcGRtRx67uqsj8VbJqPOKh2qTaf2TFrMsO4he0aNal0ebqY3v00VN1nlQdO';
+const stripeKey = 'pk_live_51TN80JQ9Dw3nOFa4ameASLnJZqs9S6rbeT7MersVEC4DcPUfPG45BGvXtDOTQ2FbaxeitgNYxFbuq2UxlgobSsLW00aLYm9lXZ';
 const stripe = require('stripe')(stripeKey);
 
 const app = express();
