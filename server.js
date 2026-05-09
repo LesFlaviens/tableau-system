@@ -4,8 +4,8 @@ const path = require('path');
 const mongoose = require('mongoose');
 
 // 🛡️ CONFIGURATION STRIPE
-// RAPPEL: Remplacer 'sk_test_dummy_key' par ta vraie clé secrète Stripe (sk_test_...) plus tard !
-const stripeKey = 'https://buy.stripe.com/test_9B600j5VVfLE3NSb4T1Nu00https://buy.stripe.com/test_9B600j5VVfLE3NSb4T1Nu00';
+// RAPPEL: Remplacer par ta vraie clé secrète Stripe (sk_test_...)
+const stripeKey = process.env.STRIPE_SECRET_KEY || 'sk_test_REMPLACE_PAR_TA_VRAIE_CLE_SECRETE';
 const stripe = require('stripe')(stripeKey);
 
 const app = express();
@@ -16,23 +16,27 @@ app.use(cors({ origin: '*', methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS']
 // ==========================================
 // 🚨 WEBHOOK : SÉCURITÉ ANTI-IMPAYÉS (AUTO)
 // ==========================================
+const endpointSecret = process.env.STRIPE_WEBHOOK_SECRET || 'whsec_REMPLACE_PAR_TA_CLE_SECRETE_WHSEC';
+
 app.post('/webhook', express.raw({type: 'application/json'}), async (req, res) => {
     const sig = req.headers['stripe-signature'];
     let event;
-    try {
-        event = stripe.webhooks.constructEvent(req.body, sig, process.env.STRIPE_WEBHOOK_SECRET);
-    } catch (err) { return res.status(400).send(`Webhook Error: ${err.message}`); }
 
-    if (event.type === 'customer.subscription.deleted') {
-        const stripeCustomerId = event.data.object.customer;
-        await Tenant.findOneAndUpdate({ "config.stripeCustomerId": stripeCustomerId }, { status: 'SUSPENDU' });
+    try {
+        event = stripe.webhooks.constructEvent(req.body, sig, endpointSecret);
+    } catch (err) { 
+        console.error(`❌ Erreur de signature Webhook : ${err.message}`);
+        return res.status(400).send(`Webhook Error: ${err.message}`); 
     }
-    if (event.type === 'customer.subscription.created' || event.type === 'customer.subscription.updated') {
-        const subscription = event.data.object;
-        if (subscription.status === 'active') {
-            await Tenant.findOneAndUpdate({ "config.stripeCustomerId": subscription.customer }, { status: 'ACTIF' });
-        }
+
+    if (event.type === 'checkout.session.completed') {
+        const session = event.data.object;
+        console.log(`💰 PAIEMENT REÇU ! Session ID : ${session.id}`);
+        
+        // Logique d'activation à lier avec l'ID client
+        // await Tenant.findOneAndUpdate({ "config.stripeCustomerId": session.customer }, { status: 'ACTIF' });
     }
+
     res.json({received: true});
 });
 
@@ -127,9 +131,9 @@ app.get('/onboard-stripe/:tenantID', async (req, res) => {
         // 3. On redirige vers la page de configuration Stripe
         res.redirect(accountLink.url);
    } catch (error) {
-        console.error("🛑 ERREUR STRIPE EXACTE :", error.message);
-        res.status(500).send("Erreur Stripe : " + error.message);
-    }
+        console.error("🛑 ERREUR STRIPE EXACTE :", error.message);
+        res.status(500).send("Erreur Stripe : " + error.message);
+    }
 });
 
 // ==========================================
