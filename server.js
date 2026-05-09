@@ -5,7 +5,7 @@ const mongoose = require('mongoose');
 
 // 🛡️ CONFIGURATION STRIPE (Hardcodée pour éviter toute erreur)
 // Si l'erreur persiste, il faudra copier à nouveau la clé depuis ton dashboard Stripe
-const stripeKey = 'sk_test_51TN80JQ9Dw3nOFa4i3XTXP15FR4ddYmU9Jw2pGmfaaeABz2P6wazK8RMzHw2Xi1u1LxXFmY2oEDgau4TcScOF9WK00ajIEuweB';
+const stripeKey = 'pk_test_51TN80JQ9Dw3nOFa4RVOOBfLtCRBRyIYM3oYJU5YctfzM48KSxwSExtPRnJMZKAMTdMHw837y4TnrbqNJD0Ps2sXl00XCoVYSIZ';
 const stripe = require('stripe')(stripeKey);
 
 const app = express();
