@@ -126,10 +126,10 @@ app.get('/onboard-stripe/:tenantID', async (req, res) => {
 
         // 3. On redirige vers la page de configuration Stripe
         res.redirect(accountLink.url);
-    } catch (error) {
-        console.error(error);
-        res.status(500).send("Erreur Stripe Connect. Vérifie que ta clé secrète Stripe est valide dans le code.");
-    }
+   } catch (error) {
+        console.error("🛑 ERREUR STRIPE EXACTE :", error.message);
+        res.status(500).send("Erreur Stripe : " + error.message);
+    }
 });
 
 // ==========================================
