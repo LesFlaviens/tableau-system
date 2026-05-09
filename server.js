@@ -16,7 +16,7 @@ app.use(cors({ origin: '*', methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS']
 // ==========================================
 // 🚨 WEBHOOK : SÉCURITÉ ANTI-IMPAYÉS (AUTO)
 // ==========================================
-const endpointSecret = process.env.STRIPE_WEBHOOK_SECRET || 'whsec_REMPLACE_PAR_TA_CLE_SECRETE_WHSEC';
+const endpointSecret = process.env.STRIPE_WEBHOOK_SECRET || 'whsec_nI2AzPVxFYqsXcuOzZoHG6jcGT8jWRk0';
 
 app.post('/webhook', express.raw({type: 'application/json'}), async (req, res) => {
     const sig = req.headers['stripe-signature'];
