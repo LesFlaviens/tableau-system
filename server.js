@@ -358,57 +358,23 @@ const Tenant = mongoose.model('Tenant', tenantSchema);
 // 🔒 VÉRIFICATION DU CODE PIN (NOUVELLE ROUTE)
 // ==========================================
 app.post('/api/verify-pin', async (req, res) => {
-    const { tenantID, pin } = req.body;
-    try {
-        const tenant = await Tenant.findOne({ tenantID: tenantID });
-        if (!tenant) return res.status(404).json({ success: false, error: "Restaurant introuvable." });
-        
-        if (tenant.pin === pin) {
-            res.json({ success: true });
-        } else {
-            res.status(401).json({ success: false, error: "Code incorrect." });
-        }
-    } catch (error) {
-        res.status(500).json({ success: false, error: "Erreur serveur." });
-    }
+    const { tenantID, pin } = req.body;
+    try {
+        const tenant = await Tenant.findOne({ tenantID: tenantID });
+        if (!tenant) return res.status(404).json({ success: false, error: "Restaurant introuvable." });
+        
+        // 🛠️ LE CORRECTIF EST ICI : Si le compte est ancien et n'a pas de PIN, on lui donne 9999 par défaut
+        const dbPin = tenant.pin || '9999'; 
+
+        if (dbPin === pin) {
+            res.json({ success: true });
+        } else {
+            res.status(401).json({ success: false, error: "Code incorrect." });
+        }
+    } catch (error) {
+        res.status(500).json({ success: false, error: "Erreur serveur." });
+    }
 });
-
-app.get('/verify-tenant/:tenantID', async (req, res) => {
-    try {
-        const tenant = await Tenant.findOne({ tenantID: req.params.tenantID });
-        if (!tenant) return res.status(404).json({ success: false, message: "🚨 INCONNU." });
-        if (tenant.status === 'SUSPENDU') return res.status(403).json({ success: false, message: "🚨 ACCÈS SUSPENDU." });
-        res.json({ success: true, clientName: tenant.clientName, status: tenant.status });
-    } catch (error) { res.status(500).json({ error: "Erreur serveur." }); }
-});
-
-// ==========================================
-// 👑 PANEL ADMINISTRATEUR I CHEF
-// ==========================================
-const ADMIN_PASS = process.env.ADMIN_PASS || 'Empire2026';
-
-app.get('/panel-ichef', async (req, res) => {
-    const pass = req.query.pass;
-    if (pass !== ADMIN_PASS) return res.status(401).send('<h1 style="color:red; text-align:center; margin-top:50px;">🔒 ACCÈS REFUSÉ</h1>');
-
-    const tenants = await Tenant.find({});
-    
-    let html = `
-    <!DOCTYPE html>
-    <html lang="fr">
-    <head><meta charset="UTF-8"><title>Command Center</title><style>body{background:#09090b;color:#fff;font-family:sans-serif;padding:20px;}table{width:100%;text-align:left;}</style></head>
-    <body>
-        <h1>👑 I CHEF - Command Center</h1>
-        <table border="1" cellpadding="10" cellspacing="0" style="border-color:#333;">
-            <tr><th>ID Client</th><th>Nom</th><th>Statut</th><th>PIN Actuel</th></tr>
-            ${tenants.map(t => `<tr><td>${t.tenantID}</td><td>${t.clientName}</td><td>${t.status}</td><td>${t.pin}</td></tr>`).join('')}
-        </table>
-    </body>
-    </html>
-    `;
-    res.send(html);
-});
-
 // ==========================================
 // 💳 STRIPE : PAIEMENTS
 // ==========================================
