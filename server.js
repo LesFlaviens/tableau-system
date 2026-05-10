@@ -18,286 +18,20 @@ app.use(cors({ origin: '*', methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS']
 const endpointSecret = process.env.STRIPE_WEBHOOK_SECRET || 'whsec_nI2AzPVxFYqsXcuOzZoHG6jcGT8jWRk0';
 
 app.post('/webhook', express.raw({type: 'application/json'}), async (req, res) => {
-    const sig = req.headers['stripe-signature'];
-    let event;
+    const sig = req.headers['stripe-signature'];
+    let event;
 
-    try {
-        event = stripe.webhooks.constructEvent(req.body, sig, endpointSecret);
-    } catch (err) { 
-        console.error(`❌ Erreur de signature Webhook : ${err.message}`);
-        return res.status(400).send(`Webhook Error: ${err.message}`); 
-    }
+    try {
+        event = stripe.webhooks.constructEvent(req.body, sig, endpointSecret);
+    } catch (err) { 
+        console.error(`❌ Erreur Webhook : ${err.message}`);
+        return res.status(400).send(`Webhook Error: ${err.message}`); 
+    }
 
-    if (event.type === 'checkout.session.completed') {
-        const session = event.data.object;
-        console.log(`💰 PAIEMENT REÇU ! Session ID : ${session.id}`);
-    }
-
-    res.json({received: true});
-});
-
-// ==========================================
-// ⚙️ MIDDLEWARES STANDARDS (DOIT ÊTRE ICI !)
-// ==========================================
-app.use(express.json({ limit: '50mb' }));
-app.use(express.urlencoded({ extended: true }));
-app.use(express.static(path.join(__dirname)));
-
-// ==========================================
-// 🚀 ACTIVATION AUTOMATIQUE POST-PAIEMENT
-// ==========================================
-app.post('/api/activate', async (req, res) => {
-    const { sessionId, clientName, tenantID, password } = req.body;
-
-    try {
-        if (!sessionId) return res.status(400).json({ error: "Lien d'activation invalide ou expiré." });
-
-        const session = await stripe.checkout.sessions.retrieve(sessionId);
-        if (session.payment_status !== 'paid') return res.status(403).json({ error: "Paiement non validé par la banque." });
-
-        const existingTenant = await Tenant.findOne({ tenantID: tenantID });
-        if (existingTenant) return res.status(400).json({ error: "Cet identifiant est déjà utilisé." });
-
-        await Tenant.create({
-            tenantID: tenantID,
-            clientName: clientName,
-            status: 'ACTIF',
-            config: { stripeCustomerId: session.customer }
-        });
-        
-        console.log(`✅ NOUVEL EMPIRE DÉPLOYÉ : ${clientName} (${tenantID})`);
-        res.json({ success: true });
-
-    } catch (error) {
-        console.error("❌ ERREUR ACTIVATION :", error.message);
-        res.status(500).json({ error: "Erreur serveur lors du déploiement." });
-    }
-});
-
-// ==========================================
-// 🧠 BASE DE DONNÉES
-// ==========================================
-const mongoURI = process.env.MONGO_URI || "mongodb+srv://icheflavien_db_user:Tamere58.@cluster0.4w95d7m.mongodb.net/ichef_production?retryWrites=true&w=majority";
-mongoose.connect(mongoURI).then(() => console.log('🔥 I CHEF Online')).catch(err => console.error(err.message));
-
-const tenantSchema = new mongoose.Schema({
-    tenantID: { type: String, required: true, unique: true },
-    clientName: String,
-    status: { type: String, enum: ['ACTIF', 'ESSAI', 'SUSPENDU'], default: 'ESSAI' },
-    trialEndDate: Date,
-    config: { stripeCustomerId: String, stripeConnectedId: String }
-});
-const Tenant = mongoose.model('Tenant', tenantSchema);
-
-const stateSchema = new mongoose.Schema({
-    id: { type: String, required: true },
-    activeOrders: { type: Object, default: {} },
-    sasConfig: { type: Object, default: { active: true, maxTables: 5, delaySeconds: 60 } }
-});
-const EmpireState = mongoose.model('EmpireState', stateSchema);
-
-// ==========================================
-// 🚦 LOGIQUE MÉTIER & SAS CUISINE
-// ==========================================
-let tenantsState = {}; 
-
-async function initTenantState(tenantID) {
-    if (!tenantsState[tenantID]) {
-        let doc = await EmpireState.findOne({ id: tenantID });
-        tenantsState[tenantID] = doc ? { 
-            activeOrders: doc.activeOrders || {}, 
-            sasConfig: doc.sasConfig || { active: true, maxTables: 5, delaySeconds: 60 }, 
-            webOrderQueue: [], lastSasRelease: 0 
-        } : { 
-            activeOrders: {}, 
-            sasConfig: { active: true, maxTables: 5, delaySeconds: 60 }, 
-            webOrderQueue: [], lastSasRelease: 0 
-        };
-    }
-    return tenantsState[tenantID];
-}
-
-app.get('/verify-tenant/:tenantID', async (req, res) => {
-    try {
-        const tenant = await Tenant.findOne({ tenantID: req.params.tenantID });
-        if (!tenant) return res.status(404).json({ success: false, message: "🚨 INCONNU." });
-        if (tenant.status === 'SUSPENDU') return res.status(403).json({ success: false, message: "🚨 ACCÈS SUSPENDU." });
-        res.json({ success: true, clientName: tenant.clientName, status: tenant.status });
-    } catch (error) { res.status(500).json({ error: "Erreur serveur." }); }
-});
-
-// ==========================================
-// 💳 STRIPE CONNECT : CRÉATION DE COMPTE CLIENT (NOUVEAU)
-// ==========================================
-app.get('/onboard-stripe/:tenantID', async (req, res) => {
-    try {
-        const tenant = await Tenant.findOne({ tenantID: req.params.tenantID });
-        if (!tenant) return res.status(404).send('Restaurant introuvable');
-
-        let accountId = tenant.config.stripeConnectedId;
-        if (!accountId) {
-            const account = await stripe.accounts.create({ type: 'standard' });
-            accountId = account.id;
-            await Tenant.findOneAndUpdate({ tenantID: req.params.tenantID }, { "config.stripeConnectedId": accountId });
-        }
-
-        const accountLink = await stripe.accountLinks.create({
-            account: accountId,
-            refresh_url: `http://localhost:10000/onboard-stripe/${req.params.tenantID}`,
-            return_url: `http://localhost:10000/panel-ichef?pass=Empire2026`, 
-            type: 'account_onboarding',
-        });
-
-        res.redirect(accountLink.url);
-   } catch (error) {
-        console.error("🛑 ERREUR STRIPE EXACTE :", error.message);
-        res.status(500).send("Erreur Stripe : " + error.message);
-    }
-});
-
-// ==========================================
-// 👑 PANEL ADMINISTRATEUR I CHEF (SECRET)
-// ==========================================
-const ADMIN_PASS = process.env.ADMIN_PASS || 'Empire2026';
-
-app.get('/panel-ichef', async (req, res) => {
-    const pass = req.query.pass;
-    if (pass !== ADMIN_PASS) return res.status(401).send('<h1 style="color:red; text-align:center; margin-top:50px;">🔒 ACCÈS REFUSÉ</h1>');
-
-    const tenants = await Tenant.find({});
-    
-    let html = `
-    <!DOCTYPE html>
-    <html lang="fr">
-    <head>
-        <meta charset="UTF-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>Command Center - I CHEF</title>
-        <style>
-            body { background: #09090b; color: #fff; font-family: 'Inter', sans-serif; padding: 20px; max-width: 900px; margin: 0 auto; }
-            .card { background: #11141d; padding: 20px; border-radius: 12px; border: 1px solid #2d313a; margin-bottom: 20px; }
-            input, button { padding: 15px; margin: 8px 0; width: 100%; box-sizing: border-box; background:#1c1f26; color:#fff; border:1px solid #2d313a; border-radius:8px; font-size: 1rem; }
-            button { background: #fbbf24; color: #000; font-weight: 900; cursor: pointer; text-transform: uppercase; border: none; }
-            table { width: 100%; border-collapse: collapse; margin-top: 15px; font-size: 0.9rem; }
-            th, td { border-bottom: 1px solid #2d313a; padding: 15px 10px; text-align: left; }
-            .status-ACTIF { color: #4ade80; font-weight: bold; }
-            .status-SUSPENDU { color: #f87171; font-weight: bold; }
-            .btn-action { width: auto; padding: 8px 12px; font-size: 0.8rem; border-radius: 6px; }
-            .btn-stripe { background: #6366f1; color: white; padding: 8px 12px; text-decoration: none; border-radius: 6px; font-size: 0.8rem; display: inline-block; font-weight: bold; }
-        </style>
-    </head>
-    <body>
-        <h1 style="color:#fbbf24; text-transform:uppercase; letter-spacing:-1px;">👑 I CHEF - Command Center</h1>
-        
-        <div class="card">
-            <h2 style="margin-top:0;">➕ Nouveau Restaurant</h2>
-            <form action="/panel-ichef/add" method="POST">
-                <input type="hidden" name="pass" value="${ADMIN_PASS}">
-                <input type="text" name="tenantID" placeholder="ID (ex: le_bistrot)" required>
-                <input type="text" name="clientName" placeholder="Nom complet du Restaurant" required>
-                <button type="submit">Ouvrir l'accès</button>
-            </form>
-        </div>
-
-        <div class="card">
-            <h2 style="margin-top:0;">📋 Flotte Active</h2>
-            <table>
-                <tr><th>ID Client</th><th>Statut</th><th>Banque (Stripe)</th><th>Action</th></tr>
-                ${tenants.map(t => `
-                    <tr>
-                        <td><strong>${t.tenantID}</strong><br><span style="color:#9ca3af; font-size:0.8rem;">${t.clientName}</span></td>
-                        <td class="status-${t.status}">${t.status}</td>
-                        <td>
-                            <a href="/onboard-stripe/${t.tenantID}" target="_blank" class="btn-stripe">
-                                ${t.config && t.config.stripeConnectedId ? '✅ Gérer le compte' : '💳 Lier IBAN'}
-                            </a>
-                        </td>
-                        <td>
-                            <form action="/panel-ichef/toggle" method="POST" style="margin:0;">
-                                <input type="hidden" name="pass" value="${ADMIN_PASS}">
-                                <input type="hidden" name="tenantID" value="${t.tenantID}">
-                                <input type="hidden" name="newStatus" value="${t.status === 'ACTIF' ? 'SUSPENDU' : 'ACTIF'}">
-                                <button type="submit" class="btn-action" style="background: ${t.status === 'ACTIF' ? '#f87171' : '#4ade80'}; color:${t.status === 'ACTIF' ? '#fff' : '#000'};">
-                                    ${t.status === 'ACTIF' ? 'Couper' : 'Réactiver'}
-                                </button>
-                            </form>
-                        </td>
-                    </tr>
-                `).join('')}
-            </table>
-        </div>
-    </body>
-    </html>
-    `;
-    res.send(html);
-});
-
-app.post('/panel-ichef/add', async (req, res) => {
-    if (req.body.pass !== ADMIN_PASS) return res.status(401).send('Refusé');
-    try {
-        await Tenant.create({ tenantID: req.body.tenantID, clientName: req.body.clientName, status: 'ACTIF' });
-        res.redirect('/panel-ichef?pass=' + ADMIN_PASS);
-    } catch (err) {
-        res.send('Erreur: Cet ID existe déjà. <a href="/panel-ichef?pass=' + ADMIN_PASS + '">Retour</a>');
-    }
-});
-
-app.post('/panel-ichef/toggle', async (req, res) => {
-    if (req.body.pass !== ADMIN_PASS) return res.status(401).send('Refusé');
-    await Tenant.findOneAndUpdate({ tenantID: req.body.tenantID }, { status: req.body.newStatus });
-    res.redirect('/panel-ichef?pass=' + ADMIN_PASS);
-});
-
-// ==========================================
-// 💳 STRIPE : PAIEMENTS ET COMMISSIONS
-// ==========================================
-app.get('/create-checkout-session', async (req, res) => {
-    try {
-        const session = await stripe.checkout.sessions.create({
-            payment_method_types: ['card'],
-            line_items: [{ price: process.env.STRIPE_PRICE_ID, quantity: 1 }],
-            mode: 'subscription',
-            success_url: 'https://tableau-system.onrender.com/?success=true',
-            cancel_url: 'https://tableau-system.onrender.com/?canceled=true',
-        });
-        res.redirect(303, session.url);
-    } catch (error) { res.status(500).send("Erreur Stripe."); }
-});
-
-app.listen(PORT, () => console.log("🚀 I CHEF est en ligne sur le port " + PORT)); a metre jours avec cela const express = require('express');
-const cors = require('cors');
-const path = require('path');
-const mongoose = require('mongoose');
-
-// 🛡️ CONFIGURATION STRIPE
-const stripeKey = process.env.STRIPE_SECRET_KEY || 'sk_test_REMPLACE_PAR_TA_VRAIE_CLE_SECRETE';
-const stripe = require('stripe')(stripeKey);
-
-const app = express();
-const PORT = process.env.PORT || 10000;
-
-app.use(cors({ origin: '*', methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'], allowedHeaders: ['Content-Type', 'Authorization', 'Origin', 'Accept'] }));
-
-// ==========================================
-// 🚨 WEBHOOK : SÉCURITÉ ANTI-IMPAYÉS (AUTO)
-// ==========================================
-const endpointSecret = process.env.STRIPE_WEBHOOK_SECRET || 'whsec_nI2AzPVxFYqsXcuOzZoHG6jcGT8jWRk0';
-
-app.post('/webhook', express.raw({type: 'application/json'}), async (req, res) => {
-    const sig = req.headers['stripe-signature'];
-    let event;
-
-    try {
-        event = stripe.webhooks.constructEvent(req.body, sig, endpointSecret);
-    } catch (err) { 
-        console.error(`❌ Erreur Webhook : ${err.message}`);
-        return res.status(400).send(`Webhook Error: ${err.message}`); 
-    }
-
-    if (event.type === 'checkout.session.completed') {
-        console.log(`💰 PAIEMENT REÇU ! Session ID : ${event.data.object.id}`);
-    }
-    res.json({received: true});
+    if (event.type === 'checkout.session.completed') {
+        console.log(`💰 PAIEMENT REÇU ! Session ID : ${event.data.object.id}`);
+    }
+    res.json({received: true});
 });
 
 // ==========================================
@@ -308,54 +42,53 @@ app.use(express.urlencoded({ extended: true }));
 app.use(express.static(path.join(__dirname)));
 
 // ==========================================
-// 🚀 ACTIVATION AUTOMATIQUE POST-PAIEMENT
-// ==========================================
-app.post('/api/activate', async (req, res) => {
-    const { sessionId, clientName, tenantID, password } = req.body;
-
-    try {
-        if (!sessionId) return res.status(400).json({ error: "Lien d'activation invalide ou expiré." });
-
-        const session = await stripe.checkout.sessions.retrieve(sessionId);
-        if (session.payment_status !== 'paid') return res.status(403).json({ error: "Paiement non validé par la banque." });
-
-        const existingTenant = await Tenant.findOne({ tenantID: tenantID });
-        if (existingTenant) return res.status(400).json({ error: "Cet identifiant est déjà utilisé." });
-
-        // Création avec le PIN par défaut "9999" (le client pourra le changer plus tard)
-        await Tenant.create({
-            tenantID: tenantID,
-            clientName: clientName,
-            status: 'ACTIF',
-            pin: '9999',
-            config: { stripeCustomerId: session.customer }
-        });
-        
-        console.log(`✅ NOUVEL EMPIRE DÉPLOYÉ : ${clientName} (${tenantID})`);
-        res.json({ success: true });
-    } catch (error) {
-        res.status(500).json({ error: "Erreur serveur lors du déploiement." });
-    }
-});
-
-// ==========================================
-// 🧠 BASE DE DONNÉES (AJOUT DU CHAMP PIN)
+// 🧠 BASE DE DONNÉES & MODÈLES
 // ==========================================
 const mongoURI = process.env.MONGO_URI || "mongodb+srv://icheflavien_db_user:Tamere58.@cluster0.4w95d7m.mongodb.net/ichef_production?retryWrites=true&w=majority";
 mongoose.connect(mongoURI).then(() => console.log('🔥 I CHEF Online')).catch(err => console.error(err.message));
 
 const tenantSchema = new mongoose.Schema({
-    tenantID: { type: String, required: true, unique: true },
-    clientName: String,
-    status: { type: String, enum: ['ACTIF', 'ESSAI', 'SUSPENDU'], default: 'ESSAI' },
-    trialEndDate: Date,
-    pin: { type: String, default: '9999' }, // <- LE VERROU INDÉPENDANT EST ICI
-    config: { stripeCustomerId: String, stripeConnectedId: String }
+    tenantID: { type: String, required: true, unique: true },
+    clientName: String,
+    status: { type: String, enum: ['ACTIF', 'ESSAI', 'SUSPENDU'], default: 'ESSAI' },
+    trialEndDate: Date,
+    pin: { type: String, default: '9999' }, 
+    config: { stripeCustomerId: String, stripeConnectedId: String }
 });
 const Tenant = mongoose.model('Tenant', tenantSchema);
 
 // ==========================================
-// 🔒 VÉRIFICATION DU CODE PIN (NOUVELLE ROUTE)
+// 🚀 ACTIVATION AUTOMATIQUE POST-PAIEMENT
+// ==========================================
+app.post('/api/activate', async (req, res) => {
+    const { sessionId, clientName, tenantID, password } = req.body;
+
+    try {
+        if (!sessionId) return res.status(400).json({ error: "Lien d'activation invalide ou expiré." });
+
+        const session = await stripe.checkout.sessions.retrieve(sessionId);
+        if (session.payment_status !== 'paid') return res.status(403).json({ error: "Paiement non validé par la banque." });
+
+        const existingTenant = await Tenant.findOne({ tenantID: tenantID });
+        if (existingTenant) return res.status(400).json({ error: "Cet identifiant est déjà utilisé." });
+
+        await Tenant.create({
+            tenantID: tenantID,
+            clientName: clientName,
+            status: 'ACTIF',
+            pin: '9999',
+            config: { stripeCustomerId: session.customer }
+        });
+        
+        console.log(`✅ NOUVEL EMPIRE DÉPLOYÉ : ${clientName} (${tenantID})`);
+        res.json({ success: true });
+    } catch (error) {
+        res.status(500).json({ error: "Erreur serveur lors du déploiement." });
+    }
+});
+
+// ==========================================
+// 🔒 ROUTE : VÉRIFICATION DU CODE PIN
 // ==========================================
 app.post('/api/verify-pin', async (req, res) => {
     const { tenantID, pin } = req.body;
@@ -363,7 +96,7 @@ app.post('/api/verify-pin', async (req, res) => {
         const tenant = await Tenant.findOne({ tenantID: tenantID });
         if (!tenant) return res.status(404).json({ success: false, error: "Restaurant introuvable." });
         
-        // 🛠️ LE CORRECTIF EST ICI : Si le compte est ancien et n'a pas de PIN, on lui donne 9999 par défaut
+        // Sécurité pour les anciens comptes sans code PIN
         const dbPin = tenant.pin || '9999'; 
 
         if (dbPin === pin) {
@@ -375,20 +108,88 @@ app.post('/api/verify-pin', async (req, res) => {
         res.status(500).json({ success: false, error: "Erreur serveur." });
     }
 });
+
 // ==========================================
-// 💳 STRIPE : PAIEMENTS
+// 🔑 ROUTE : VÉRIFICATION D'IDENTITÉ (CONNEXION)
+// ==========================================
+app.get('/verify-tenant/:tenantID', async (req, res) => {
+    try {
+        const tenant = await Tenant.findOne({ tenantID: req.params.tenantID });
+        if (!tenant) return res.status(404).json({ success: false, message: "🚨 INCONNU." });
+        if (tenant.status === 'SUSPENDU') return res.status(403).json({ success: false, message: "🚨 ACCÈS SUSPENDU." });
+        res.json({ success: true, clientName: tenant.clientName, status: tenant.status });
+    } catch (error) { res.status(500).json({ error: "Erreur serveur." }); }
+});
+
+// ==========================================
+// 💳 STRIPE CONNECT : COMPTE RESTAURANT
+// ==========================================
+app.get('/onboard-stripe/:tenantID', async (req, res) => {
+    try {
+        const tenant = await Tenant.findOne({ tenantID: req.params.tenantID });
+        if (!tenant) return res.status(404).send('Restaurant introuvable');
+
+        let accountId = tenant.config.stripeConnectedId;
+        if (!accountId) {
+            const account = await stripe.accounts.create({ type: 'standard' });
+            accountId = account.id;
+            await Tenant.findOneAndUpdate({ tenantID: req.params.tenantID }, { "config.stripeConnectedId": accountId });
+        }
+
+        const accountLink = await stripe.accountLinks.create({
+            account: accountId,
+            refresh_url: `https://tableau-system.onrender.com/onboard-stripe/${req.params.tenantID}`,
+            return_url: `https://tableau-system.onrender.com/panel-ichef?pass=Empire2026`, 
+            type: 'account_onboarding',
+        });
+
+        res.redirect(accountLink.url);
+   } catch (error) {
+        res.status(500).send("Erreur Stripe : " + error.message);
+    }
+});
+
+// ==========================================
+// 👑 PANEL ADMINISTRATEUR I CHEF
+// ==========================================
+const ADMIN_PASS = process.env.ADMIN_PASS || 'Empire2026';
+
+app.get('/panel-ichef', async (req, res) => {
+    const pass = req.query.pass;
+    if (pass !== ADMIN_PASS) return res.status(401).send('<h1 style="color:red; text-align:center; margin-top:50px;">🔒 ACCÈS REFUSÉ</h1>');
+
+    const tenants = await Tenant.find({});
+    
+    let html = `
+    <!DOCTYPE html>
+    <html lang="fr">
+    <head><meta charset="UTF-8"><title>Command Center</title><style>body{background:#09090b;color:#fff;font-family:sans-serif;padding:20px;}table{width:100%;text-align:left;}</style></head>
+    <body>
+        <h1>👑 I CHEF - Command Center</h1>
+        <table border="1" cellpadding="10" cellspacing="0" style="border-color:#333;">
+            <tr><th>ID Client</th><th>Nom</th><th>Statut</th><th>PIN Actuel</th></tr>
+            ${tenants.map(t => `<tr><td>${t.tenantID}</td><td>${t.clientName}</td><td>${t.status}</td><td>${t.pin || '9999'}</td></tr>`).join('')}
+        </table>
+    </body>
+    </html>
+    `;
+    res.send(html);
+});
+
+// ==========================================
+// 💳 STRIPE : PAIEMENT ABONNEMENT
 // ==========================================
 app.get('/create-checkout-session', async (req, res) => {
-    try {
-        const session = await stripe.checkout.sessions.create({
-            payment_method_types: ['card'],
-            line_items: [{ price: process.env.STRIPE_PRICE_ID, quantity: 1 }],
-            mode: 'subscription',
-            success_url: 'https://tableau-system.onrender.com/?success=true',
-            cancel_url: 'https://tableau-system.onrender.com/?canceled=true',
-        });
-        res.redirect(303, session.url);
-    } catch (error) { res.status(500).send("Erreur Stripe."); }
+    try {
+        const session = await stripe.checkout.sessions.create({
+            payment_method_types: ['card'],
+            line_items: [{ price: process.env.STRIPE_PRICE_ID, quantity: 1 }],
+            mode: 'subscription',
+            success_url: 'https://tableau-system.onrender.com/?success=true',
+            cancel_url: 'https://tableau-system.onrender.com/?canceled=true',
+        });
+        res.redirect(303, session.url);
+    } catch (error) { res.status(500).send("Erreur Stripe."); }
 });
 
 app.listen(PORT, () => console.log("🚀 I CHEF est en ligne sur le port " + PORT));
