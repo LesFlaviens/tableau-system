@@ -32,12 +32,55 @@ app.post('/webhook', express.raw({type: 'application/json'}), async (req, res) =
     if (event.type === 'checkout.session.completed') {
         const session = event.data.object;
         console.log(`💰 PAIEMENT REÇU ! Session ID : ${session.id}`);
-        
-        // Logique d'activation à lier avec l'ID client
-        // await Tenant.findOneAndUpdate({ "config.stripeCustomerId": session.customer }, { status: 'ACTIF' });
+        // L'activation se fait désormais via le client lui-même sur la page /activation.html
     }
 
     res.json({received: true});
+});
+
+// ==========================================
+// 🚀 ACTIVATION AUTOMATIQUE POST-PAIEMENT
+// ==========================================
+app.post('/api/activate', async (req, res) => {
+    const { sessionId, clientName, tenantID, password } = req.body;
+
+    try {
+        // 1. Vérification de la présence de la preuve d'achat
+        if (!sessionId) {
+            return res.status(400).json({ error: "Lien d'activation invalide ou expiré." });
+        }
+
+        // 2. Interrogation de la banque Stripe pour confirmer l'encaissement
+        const session = await stripe.checkout.sessions.retrieve(sessionId);
+        if (session.payment_status !== 'paid') {
+            return res.status(403).json({ error: "Paiement non validé par la banque." });
+        }
+
+        // 3. Vérification de la disponibilité de l'identifiant
+        const existingTenant = await Tenant.findOne({ tenantID: tenantID });
+        if (existingTenant) {
+            return res.status(400).json({ error: "Cet identifiant est déjà utilisé." });
+        }
+
+        // 4. Déploiement de l'infrastructure en base de données
+        await Tenant.create({
+            tenantID: tenantID,
+            clientName: clientName,
+            status: 'ACTIF',
+            config: {
+                stripeCustomerId: session.customer
+            }
+        });
+
+        // (Note: Le mot de passe devra être géré dans ta logique de connexion habituelle)
+        
+        console.log(`✅ NOUVEL EMPIRE DÉPLOYÉ : ${clientName} (${tenantID})`);
+        res.json({ success: true });
+
+    } catch (error) {
+        console.error("❌ ERREUR ACTIVATION :", error.message);
+        res.status(500).json({ error: "Erreur serveur lors du déploiement." });
+    }
 });
 
 // ==========================================
@@ -112,7 +155,6 @@ app.get('/onboard-stripe/:tenantID', async (req, res) => {
         const tenant = await Tenant.findOne({ tenantID: req.params.tenantID });
         if (!tenant) return res.status(404).send('Restaurant introuvable');
 
-        // 1. On crée le "sous-compte" Stripe si le restaurant n'en a pas encore
         let accountId = tenant.config.stripeConnectedId;
         if (!accountId) {
             const account = await stripe.accounts.create({ type: 'standard' });
@@ -120,15 +162,13 @@ app.get('/onboard-stripe/:tenantID', async (req, res) => {
             await Tenant.findOneAndUpdate({ tenantID: req.params.tenantID }, { "config.stripeConnectedId": accountId });
         }
 
-        // 2. On génère le lien sécurisé pour que le restaurateur entre son RIB/IBAN
         const accountLink = await stripe.accountLinks.create({
             account: accountId,
             refresh_url: `http://localhost:10000/onboard-stripe/${req.params.tenantID}`,
-            return_url: `http://localhost:10000/panel-ichef?pass=Empire2026`, // Retour au panel quand c'est fini
+            return_url: `http://localhost:10000/panel-ichef?pass=Empire2026`, 
             type: 'account_onboarding',
         });
 
-        // 3. On redirige vers la page de configuration Stripe
         res.redirect(accountLink.url);
    } catch (error) {
         console.error("🛑 ERREUR STRIPE EXACTE :", error.message);
