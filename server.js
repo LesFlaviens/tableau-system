@@ -61,26 +61,34 @@ const Tenant = mongoose.model('Tenant', tenantSchema);
 // ==========================================
 app.post('/api/activate', async (req, res) => {
     const { sessionId, clientName, tenantID, password } = req.body;
+
     try {
-        if (!sessionId) return res.status(400).json({ error: "Lien d'activation invalide ou expiré." });
+        if (!sessionId) return res.status(400).json({ error: "Lien d'activation invalide." });
+
         const session = await stripe.checkout.sessions.retrieve(sessionId);
-        if (session.payment_status !== 'paid') return res.status(403).json({ error: "Paiement non validé par la banque." });
+        if (session.payment_status !== 'paid') return res.status(403).json({ error: "Paiement non validé." });
 
         const existingTenant = await Tenant.findOne({ tenantID: tenantID });
-        if (existingTenant) return res.status(400).json({ error: "Cet identifiant est déjà utilisé." });
+        if (existingTenant) return res.status(400).json({ error: "Identifiant déjà pris." });
+
+        // 🎲 GÉNÉRATION DU PIN DÉDICACÉ (4 chiffres aléatoires)
+        const randomPin = Math.floor(1000 + Math.random() * 9000).toString();
 
         await Tenant.create({
             tenantID: tenantID,
             clientName: clientName,
             status: 'ACTIF',
-            pin: '9999',
+            pin: randomPin, // <- Le client reçoit son propre code unique
             config: { stripeCustomerId: session.customer }
         });
         
-        console.log(`✅ NOUVEL EMPIRE DÉPLOYÉ : ${clientName}`);
-        res.json({ success: true });
+        console.log(`✅ EMPIRE DÉPLOYÉ : ${clientName} | PIN : ${randomPin}`);
+        
+        // On renvoie le PIN au navigateur pour l'afficher au client
+        res.json({ success: true, dedicatedPin: randomPin });
+
     } catch (error) {
-        res.status(500).json({ error: "Erreur serveur lors du déploiement." });
+        res.status(500).json({ error: "Erreur lors du déploiement." });
     }
 });
 
