@@ -4,7 +4,6 @@ const path = require('path');
 const mongoose = require('mongoose');
 
 // 🛡️ CONFIGURATION STRIPE
-// RAPPEL: Remplacer par ta vraie clé secrète Stripe (sk_test_...)
 const stripeKey = process.env.STRIPE_SECRET_KEY || 'sk_test_REMPLACE_PAR_TA_VRAIE_CLE_SECRETE';
 const stripe = require('stripe')(stripeKey);
 
@@ -32,7 +31,6 @@ app.post('/webhook', express.raw({type: 'application/json'}), async (req, res) =
     if (event.type === 'checkout.session.completed') {
         const session = event.data.object;
         console.log(`💰 PAIEMENT REÇU ! Session ID : ${session.id}`);
-        // L'activation se fait désormais via le client lui-même sur la page /activation.html
     }
 
     res.json({received: true});
@@ -45,34 +43,20 @@ app.post('/api/activate', async (req, res) => {
     const { sessionId, clientName, tenantID, password } = req.body;
 
     try {
-        // 1. Vérification de la présence de la preuve d'achat
-        if (!sessionId) {
-            return res.status(400).json({ error: "Lien d'activation invalide ou expiré." });
-        }
+        if (!sessionId) return res.status(400).json({ error: "Lien d'activation invalide ou expiré." });
 
-        // 2. Interrogation de la banque Stripe pour confirmer l'encaissement
         const session = await stripe.checkout.sessions.retrieve(sessionId);
-        if (session.payment_status !== 'paid') {
-            return res.status(403).json({ error: "Paiement non validé par la banque." });
-        }
+        if (session.payment_status !== 'paid') return res.status(403).json({ error: "Paiement non validé par la banque." });
 
-        // 3. Vérification de la disponibilité de l'identifiant
         const existingTenant = await Tenant.findOne({ tenantID: tenantID });
-        if (existingTenant) {
-            return res.status(400).json({ error: "Cet identifiant est déjà utilisé." });
-        }
+        if (existingTenant) return res.status(400).json({ error: "Cet identifiant est déjà utilisé." });
 
-        // 4. Déploiement de l'infrastructure en base de données
         await Tenant.create({
             tenantID: tenantID,
             clientName: clientName,
             status: 'ACTIF',
-            config: {
-                stripeCustomerId: session.customer
-            }
+            config: { stripeCustomerId: session.customer }
         });
-
-        // (Note: Le mot de passe devra être géré dans ta logique de connexion habituelle)
         
         console.log(`✅ NOUVEL EMPIRE DÉPLOYÉ : ${clientName} (${tenantID})`);
         res.json({ success: true });
@@ -101,10 +85,7 @@ const tenantSchema = new mongoose.Schema({
     clientName: String,
     status: { type: String, enum: ['ACTIF', 'ESSAI', 'SUSPENDU'], default: 'ESSAI' },
     trialEndDate: Date,
-    config: {
-        stripeCustomerId: String,
-        stripeConnectedId: String 
-    }
+    config: { stripeCustomerId: String, stripeConnectedId: String }
 });
 const Tenant = mongoose.model('Tenant', tenantSchema);
 
@@ -126,13 +107,11 @@ async function initTenantState(tenantID) {
         tenantsState[tenantID] = doc ? { 
             activeOrders: doc.activeOrders || {}, 
             sasConfig: doc.sasConfig || { active: true, maxTables: 5, delaySeconds: 60 }, 
-            webOrderQueue: [], 
-            lastSasRelease: 0 
+            webOrderQueue: [], lastSasRelease: 0 
         } : { 
             activeOrders: {}, 
             sasConfig: { active: true, maxTables: 5, delaySeconds: 60 }, 
-            webOrderQueue: [], 
-            lastSasRelease: 0 
+            webOrderQueue: [], lastSasRelease: 0 
         };
     }
     return tenantsState[tenantID];
