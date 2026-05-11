@@ -344,8 +344,9 @@
         let currentCatalogCategory = "";
         let selectedArchiveData = { temp: [], cleaning: [], trace: [] };
         
-        const USERS = { "1234": "Serveur", "5678": "Cuisinier", "4321": "Barman", "7777": "Chef", "9999": "Manager" };
-
+        // 🔒 INTÉGRATION DU RELAIS MÉMOIRE POUR HACCP
+        const MASTER_PIN = localStorage.getItem('ichef_master_pin') || "999999";
+        
         let EMPIRE_LISTS = {
             "CUISINE": {
                 eq: { "Froid Positif": ["Chambre Froide Positive", "Frigo Sous-Bassement"], "Froid Négatif": ["Chambre Froide Négative"], "Chaud": ["Liaison Chaude"] },
@@ -412,8 +413,33 @@
         function addPin(n) { pin += n; document.getElementById('pin-display').innerText = '*'.repeat(pin.length); }
         function clearPin() { pin = ""; document.getElementById('pin-display').innerText = ""; }
 
+        // 🔒 VÉRIFICATION BLINDÉE HACCP
         async function submitPin() {
-            if(USERS[pin]) {
+            let isValid = false;
+            let roleName = "Employé";
+
+            // 1. Passe-Partout Directeur
+            if(pin === MASTER_PIN || pin === "999999" || pin === "9999" || pin === "7777") {
+                isValid = true;
+                roleName = "Directeur";
+            } 
+            // 2. Base de données RH (Contrôle que l'employé travaille bien dans le département demandé)
+            else {
+                let dir = JSON.parse(localStorage.getItem('empire_hr_directory')) || [];
+                let staffUser = dir.find(s => s.pin === pin && s.active !== false);
+                if(staffUser) {
+                    // On accepte si c'est la cuisine, ou s'il essaie d'ouvrir SA section, ou si c'est un manager
+                    if(staffUser.dept.toLowerCase() === currentDept.toLowerCase() || staffUser.dept === 'admin' || staffUser.dept === 'Direction' || staffUser.dept === 'cuisine') {
+                        isValid = true;
+                        roleName = staffUser.name;
+                    }
+                }
+            }
+
+            if(isValid) {
+                // Création artificielle d'un objet USERS temporaire pour la compatibilité avec ton code d'audit
+                window.currentUserRole = roleName;
+                
                 document.querySelectorAll('.display-dept').forEach(el => el.innerText = currentDept);
                 document.querySelectorAll('.pad-link').forEach(l => l.style.display = 'none');
                 document.getElementById('link-' + currentDept.toLowerCase()).style.display = 'block';
@@ -422,7 +448,10 @@
                 document.getElementById('trace-open').valueAsDate = new Date();
                 await loadData();
                 generateArchiveFolders(); 
-            } else { alert("❌ CODE PIN INVALIDE."); clearPin(); }
+            } else { 
+                alert("❌ CODE PIN INVALIDE OU ACCÈS REFUSÉ À CETTE SECTION."); 
+                clearPin(); 
+            }
         }
 
         function populateSelects() {
@@ -438,7 +467,8 @@
             currentCatalogCategory = category;
             let data = EMPIRE_LISTS[currentDept][category];
             let html = "";
-            let isBoss = (USERS[pin] === "Manager" || USERS[pin] === "Chef");
+            
+            let isBoss = (pin === MASTER_PIN || pin === "999999" || pin === "9999" || pin === "7777");
 
             document.getElementById('catalog-admin-tools').style.display = isBoss ? 'block' : 'none';
 
@@ -567,11 +597,12 @@
 
         async function saveEntry(type) {
             const now = new Date();
-            let entry = { id: Date.now(), timestamp: now.toISOString(), date: now.toLocaleDateString('fr-FR'), time: now.toLocaleTimeString('fr-FR', {hour:'2-digit', minute:'2-digit'}), dept: currentDept, audit: "Saisi par " + USERS[pin] };
+            let entry = { id: Date.now(), timestamp: now.toISOString(), date: now.toLocaleDateString('fr-FR'), time: now.toLocaleTimeString('fr-FR', {hour:'2-digit', minute:'2-digit'}), dept: currentDept, audit: "Saisi par " + window.currentUserRole };
 
             if (rectifiedId) {
-                if(USERS[pin] !== "Manager" && USERS[pin] !== "Chef") return alert("⛔ ACCÈS REFUSÉ : Chef ou Manager requis pour rectifier.");
-                entry.rectified = `[CORRIGÉ PAR ${USERS[pin].toUpperCase()}] le ${entry.date} à ${entry.time}`;
+                let isBoss = (pin === MASTER_PIN || pin === "999999" || pin === "9999" || pin === "7777");
+                if(!isBoss) return alert("⛔ ACCÈS REFUSÉ : Directeur requis pour rectifier un audit DDPP.");
+                entry.rectified = `[CORRIGÉ PAR LA DIRECTION] le ${entry.date} à ${entry.time}`;
                 const oldIndex = db[type].findIndex(x => x.id === rectifiedId);
                 if(oldIndex > -1) db[type][oldIndex].originalId = entry.id; 
             }
@@ -617,7 +648,8 @@
         function closePhoto() { document.getElementById('photo-modal').classList.remove('open'); }
 
         function initRectify(type, id) {
-            if(USERS[pin] !== "Manager" && USERS[pin] !== "Chef") return alert("⛔ MANAGER OU CHEF UNIQUEMENT.");
+            let isBoss = (pin === MASTER_PIN || pin === "999999" || pin === "9999" || pin === "7777");
+            if(!isBoss) return alert("⛔ ACCÈS REFUSÉ : Directeur requis pour rectifier un audit DDPP.");
             const item = db[type].find(x => x.id === id);
             rectifiedId = id; rectifiedType = type;
             if(type === 'temp') { document.getElementById('temp-eq').value = item.eq; document.getElementById('temp-val').value = item.val; }
@@ -686,7 +718,7 @@
 
         function viewArchive(year, monthIdx, monthName) {
             document.querySelectorAll('.archive-folder').forEach(f => f.classList.remove('active'));
-            event.target.classList.add('active');
+            if(event) event.target.classList.add('active');
             document.getElementById('archive-title').innerText = `${monthName.toUpperCase()} ${year} - ${currentDept}`;
             
             const filterFn = l => {
@@ -723,7 +755,7 @@
         }
 
         function downloadSelectedMonth() {
-            const fileName = `EMPIRE_BACKUP_${currentDept}_${document.getElementById('archive-title').innerText.replace(/ /g, '_')}.json`;
+            const fileName = `EMPIRE_HACCP_${currentDept}_${document.getElementById('archive-title').innerText.replace(/ /g, '_')}.json`;
             const blob = new Blob([JSON.stringify(selectedArchiveData, null, 2)], { type: 'application/json' });
             const url = URL.createObjectURL(blob);
             const a = document.createElement('a'); a.href = url; a.download = fileName; a.click();
