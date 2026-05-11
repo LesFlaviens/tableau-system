@@ -4,6 +4,12 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>Empire OS - KDS (Le Pass Cuisine)</title>
+    
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="mobile-web-app-capable" content="yes">
+    <meta name="theme-color" content="#090e17">
+
     <style>
         /* 💎 DESIGN ULTRA-PREMIUM & ÉPURÉ 💎 */
         :root { 
@@ -551,7 +557,7 @@
         setInterval(() => { 
             document.getElementById('clock').innerText = new Date().toLocaleTimeString('fr-FR', {hour12:false}); 
             
-            // Mise à jour des chronos des plats toutes les 10 secondes (uniquement si on ne touche pas l'écran)
+            // Mise à jour des chronos des plats toutes les 10 secondes
             let s = new Date().getSeconds();
             if (s % 10 === 0 && !isDragging && !window.isTouching && document.getElementById('mod-kds').classList.contains('active')) {
                 renderKDS(); 
@@ -575,24 +581,54 @@
             if(document.getElementById('pin-display')) document.getElementById('pin-display').innerText = ""; 
         };
 
-        window.submitPin = function() {
-            if(myRealPin === "9999" || myRealPin === "999999" || myRealPin === "7777") {
-                currentUser = { name: "Directeur", role: "Manager" };
-                unlockPadInterface();
-                return;
-            }
+        window.submitPin = async function() {
+            let isValid = false;
+            let roleName = "Chef";
 
-            if(staffAccessData && staffAccessData.length > 0) {
+            if(myRealPin === "9999" || myRealPin === "999999" || myRealPin === "7777") {
+                isValid = true;
+                roleName = "Directeur";
+            } else if (staffAccessData && staffAccessData.length > 0) {
                 let staffUser = staffAccessData.find(s => s.pin === myRealPin && s.active !== false);
                 if (staffUser && (staffUser.dept === 'cuisine' || staffUser.dept === 'admin')) {
-                    currentUser = { name: staffUser.name, role: staffUser.dept };
-                    unlockPadInterface();
-                    return;
+                    isValid = true;
+                    roleName = staffUser.name;
                 }
             }
             
-            alert("❌ Code incorrect ou Accès refusé à la Cuisine."); 
-            window.clearPin(); 
+            if (!isValid) {
+                alert("❌ Code incorrect ou Accès refusé à la Cuisine."); 
+                window.clearPin(); 
+                return;
+            }
+
+            // Vérification de la licence de l'écran KDS
+            let deviceID = localStorage.getItem('ichef_device_id');
+            if (!deviceID) {
+                deviceID = 'device_' + Math.random().toString(36).substr(2, 9) + '_' + Date.now();
+                localStorage.setItem('ichef_device_id', deviceID);
+            }
+
+            try {
+                const response = await fetch(`${SERVER_URL}/api/register-device`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ tenantID: tenantID, deviceID: deviceID })
+                });
+
+                const result = await response.json();
+
+                if (result.success) {
+                    currentUser = { name: roleName, role: "cuisine" };
+                    unlockPadInterface();
+                } else {
+                    alert("❌ " + (result.error || "Accès refusé. Limite de licences d'écrans atteinte."));
+                    window.clearPin();
+                }
+            } catch (error) {
+                alert("❌ Erreur de connexion au serveur de licences.");
+                window.clearPin();
+            }
         };
 
         function unlockPadInterface() {
@@ -601,8 +637,7 @@
                 document.getElementById('user-badge').innerText = `Chef: ${currentUser.name}`;
             }
             myRealPin = "";
-            buildKdsLanesDOM(); 
-            renderKDS(); 
+            boot(); // Démarre le rendu et la boucle de synchronisation
         }
 
         function logout() {
@@ -835,7 +870,6 @@
                         
                         let safeName = item.n ? item.n.replace(/\[BR\]/g, '<br>') : 'Plat inconnu';
 
-                        // ONCLICK REMPLACÉ PAR ONMOUSEDOWN / ONTOUCHSTART
                         tHtml += `<div class="ticket-item ${rowClass}" style="${!isActive ? 'opacity:0.4;':''}"><div class="drag-handle" onmousedown="startTouchDrag(event, '${tableId}', ${item.id})" ontouchstart="startTouchDrag(event, '${tableId}', ${item.id})">☰</div><div class="item-details"><div><span class="item-qty">${item.qty||1}x</span><span class="item-name">${safeName}</span></div>${item.obs ? `<div class="item-sub-obs">${item.obs}</div>` : ''}</div><div class="btn-ready" onmousedown="markItemReady('${tableId}', ${realIndex}, event)" ontouchstart="markItemReady('${tableId}', ${realIndex}, event)">✓</div></div>`;
                     });
                     tHtml += `</div>`; html += tHtml;
@@ -1037,26 +1071,21 @@
 
         async function boot() { 
             buildKdsLanesDOM(); 
-            await fetchSystemState(); 
+            renderKDS();
             
             // 🔥 LE MOTEUR DE SYNCHRO TEMPS RÉEL EST LÀ 🔥
             setInterval(fetchSystemState, 3000);
         }
         
-        window.onload = () => {
-            currentUser = { name: "Cuisine", role: "cuisine" };
-            
-            let userBadge = document.getElementById('user-badge');
-            if (userBadge) {
-                userBadge.innerText = `Chef: ${currentUser.name}`;
-            }
-            
+        window.onload = async () => {
+            // Afficher le login au démarrage
             let loginScreen = document.getElementById('login-screen');
             if (loginScreen) {
-                loginScreen.style.display = 'none';
+                loginScreen.style.display = 'flex';
             }
             
-            boot(); 
+            // Charger l'état une première fois pour obtenir les PINs du personnel
+            await fetchSystemState(); 
         };
 
         // ⛶ LOGIQUE DU MODE KIOSQUE
@@ -1067,7 +1096,7 @@
                 if (elem.requestFullscreen) elem.requestFullscreen();
                 else if (elem.webkitRequestFullscreen) elem.webkitRequestFullscreen(); 
                 else if (elem.msRequestFullscreen) elem.msRequestFullscreen(); 
-                btn.innerText = "✕";
+                btn.innerText = "✕ QUITTER";
             } else {
                 if (document.exitFullscreen) document.exitFullscreen();
                 else if (document.webkitExitFullscreen) document.webkitExitFullscreen();
