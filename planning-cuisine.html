@@ -4,6 +4,12 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>Empire OS - Live Planning Cuisine</title>
+    
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="mobile-web-app-capable" content="yes">
+    <meta name="theme-color" content="#090e17">
+
     <style>
         :root { 
             --bg: #090e17; 
@@ -26,6 +32,7 @@
             display: flex; 
             flex-direction: column; 
             overflow: hidden; 
+            box-sizing: border-box;
         }
 
         header { 
@@ -96,8 +103,20 @@
 
         .status-cell { font-size: 1.4rem; vertical-align: middle; }
         
-        .sync-status { font-size: 0.7rem; color: var(--accent); display: flex; align-items: center; gap: 6px; font-weight: bold; }
+        .sync-status { font-size: 0.7rem; color: #34d399; display: flex; align-items: center; gap: 6px; font-weight: bold; }
         .dot { width: 8px; height: 8px; background: #34d399; border-radius: 50%; box-shadow: 0 0 10px #34d399; }
+        
+        .legende {
+            display: flex;
+            gap: 15px;
+            padding: 15px;
+            background: rgba(0,0,0,0.3);
+            border-radius: 8px;
+            font-size: 0.8rem;
+            color: var(--text-muted);
+            justify-content: center;
+            margin-top: 20px;
+        }
     </style>
 </head>
 <body>
@@ -105,3 +124,460 @@
     <header>
         <div style="display:flex; flex-direction:column; gap:5px;">
             <h1 class="logo-text">📅 LIVE PLANNING CUISINE</h1>
+            <div class="sync-status"><div class="dot" id="sync-dot"></div> <span id="sync-text">SYNCHRONISÉ - TEMPS RÉEL</span></div>
+        </div>
+        <div style="display:flex; gap: 10px;">
+            <button id="btn-kiosk" class="btn-kiosk">⛶ MODE KIOSQUE</button>
+            <a href="chef.html" class="btn-retour">🔙 RETOUR AU PASS</a>
+        </div>
+    </header>
+
+    <div class="table-container">
+        <table id="planning-table">
+            <thead id="planning-head"></thead>
+            <tbody id="planning-body"></tbody>
+        </table>
+    </div>
+
+    <div class="legende">
+        <span>🟢 Présent</span>
+        <span>☀️ Matin</span>
+        <span>🌙 Soir</span>
+        <span>✖️ Repos</span>
+        <span>✈️ Congé</span>
+        <span>🤒 Maladie</span>
+        <span>⭐ Férié</span>
+        <span>⏳ Récup.</span>
+    </div>
+
+    <script>
+        const urlParams = new URLSearchParams(window.location.search);
+        const tenantID = urlParams.get('tenantID') || 'MASTER_STATE';
+        
+        const SERVER_URL = (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1" || window.location.protocol === "file:") 
+    ? "http://localhost:10000" 
+    : "https://tableau-system.onrender.com";
+
+        const API = {
+            getState: async () => {
+                let r = await fetch(`${SERVER_URL}/get-current-state?tenantID=${tenantID}`);
+                if (!r.ok) throw new Error("Serveur injoignable");
+                return await r.json();
+            }
+        };
+
+        const daysOfWeek = ["Dim", "Lun", "Mar", "Mer", "Jeu", "Ven", "Sam"];
+
+        async function fetchAndRenderPlanning() {
+            try {
+                const state = await API.getState();
+                const dot = document.getElementById('sync-dot');
+                const text = document.getElementById('sync-text');
+                
+                dot.style.background = '#34d399';
+                dot.style.boxShadow = '0 0 10px #34d399';
+                text.innerText = "SYNCHRONISÉ - TEMPS RÉEL";
+                text.style.color = '#34d399';
+
+                let activeOrders = state.activeOrders || {};
+                
+                let dir = [];
+                if (activeOrders['DIRECTORY_MASTER'] && activeOrders['DIRECTORY_MASTER'].data) {
+                    dir = activeOrders['DIRECTORY_MASTER'].data;
+                }
+                
+                let ts = {};
+                if (activeOrders['TIMESHEETS_MASTER'] && activeOrders['TIMESHEETS_MASTER'].data) {
+                    ts = activeOrders['TIMESHEETS_MASTER'].data;
+                }
+
+                // Filtrer uniquement les cuisiniers actifs
+                let cuisineStaff = dir.filter(s => s.dept === 'cuisine' && s.active !== false);
+
+                const today = new Date();
+                const year = today.getFullYear();
+                const month = today.getMonth() + 1;
+                const daysInMonth = new Date(year, month, 0).getDate();
+                const monthStr = `${year}-${String(month).padStart(2, '0')}`;
+                
+                let monthData = ts[monthStr] || {};
+
+                // --- CONSTRUCTION DU HEAD ---
+                let headHtml = `<tr><th class="sticky-col" style="background:#090e17; z-index:20;">BRIGADE</th>`;
+                for(let d=1; d<=daysInMonth; d++) {
+                    const dateObj = new Date(year, month-1, d);
+                    const isToday = (d === today.getDate());
+                    const bgStyle = isToday ? 'background: rgba(251, 191, 36, 0.2); color: var(--gold); border-bottom: 2px solid var(--gold);' : '';
+                    
+                    headHtml += `<th style="${bgStyle}">
+                        <div class="day-name">${daysOfWeek[dateObj.getDay()]}</div>
+                        <div class="day-num">${d}</div>
+                    </th>`;
+                }
+                headHtml += `</tr>`;
+                document.getElementById('planning-head').innerHTML = headHtml;
+
+                // --- CONSTRUCTION DU BODY ---
+                if(cuisineStaff.length === 0) {
+                    document.getElementById('planning-body').innerHTML = `<tr><td colspan="${daysInMonth + 1}" style="padding: 50px; color: var(--text-muted);">Aucun cuisinier enregistré dans la base de données.</td></tr>`;
+                    return;
+                }
+
+                let bodyHtml = '';
+                cuisineStaff.forEach(staff => {
+                    bodyHtml += `<tr><td class="sticky-col">${staff.name}</td>`;
+                    
+                    for(let d=1; d<=daysInMonth; d++) {
+                        const dayData = (monthData[staff.id] && monthData[staff.id][d]) ? monthData[staff.id][d] : null;
+                        const isToday = (d === today.getDate());
+                        const bgStyle = isToday ? 'background: rgba(251, 191, 36, 0.05);' : '';
+                        
+                        let icon = '-';
+                        if(dayData) {
+                            switch(dayData.status) {
+                                case 'present': icon = '🟢'; break;
+                                case 'off_matin': icon = '🌙'; break;
+                                case 'off_soir': icon = '☀️'; break;
+                                case 'off': icon = '✖️'; break;
+                                case 'conge': icon = '✈️'; break;
+                                case 'maladie': icon = '🤒'; break;
+                                case 'ferie': icon = '⭐'; break;
+                                case 'recup': icon = '⏳'; break;
+                            }
+                        }
+                        bodyHtml += `<td class="status-cell" style="${bgStyle}">${icon}</td>`;
+                    }
+                    bodyHtml += `</tr>`;
+                });
+                
+                document.getElementById('planning-body').innerHTML = bodyHtml;
+
+            } catch (e) {
+                console.error("Erreur Sync", e);
+                const dot = document.getElementById('sync-dot');
+                const text = document.getElementById('sync-text');
+                dot.style.background = '#ef4444';
+                dot.style.boxShadow = '0 0 10px #ef4444';
+                text.innerText = "HORS LIGNE - TENTATIVE DE RECONNEXION...";
+                text.style.color = '#ef4444';
+            }
+        }
+
+        // Lancement immédiat puis toutes les 5 secondes
+        fetchAndRenderPlanning();
+        setInterval(fetchAndRenderPlanning, 5000);
+
+        // ⛶ LOGIQUE DU MODE KIOSQUE
+        document.getElementById('btn-kiosk').addEventListener('click', () => {
+            const elem = document.documentElement;
+            const btn = document.getElementById('btn-kiosk');
+            if (!document.fullscreenElement) {
+                if (elem.requestFullscreen) elem.requestFullscreen();
+                else if (elem.webkitRequestFullscreen) elem.webkitRequestFullscreen(); 
+                else if (elem.msRequestFullscreen) elem.msRequestFullscreen(); 
+                btn.innerText = "✕ QUITTER LE KIOSQUE";
+                btn.style.color = "var(--gold)";
+                btn.style.borderColor = "var(--gold)";
+            } else {
+                if (document.exitFullscreen) document.exitFullscreen();
+                else if (document.webkitExitFullscreen) document.webkitExitFullscreen();
+                btn.innerText = "⛶ MODE KIOSQUE";
+                btn.style.color = "var(--text-muted)";
+                btn.style.borderColor = "var(--border-strong)";
+            }
+        });
+
+    </script>
+</body>
+</html><!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Empire OS - Live Planning Cuisine</title>
+    
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="mobile-web-app-capable" content="yes">
+    <meta name="theme-color" content="#090e17">
+
+    <style>
+        :root { 
+            --bg: #090e17; 
+            --panel: #141c2f; 
+            --border: rgba(255, 255, 255, 0.05); 
+            --border-strong: rgba(255, 255, 255, 0.1);
+            --text-main: #f8fafc; 
+            --text-muted: #64748b; 
+            --gold: #fbbf24; 
+            --hr: #2979ff;
+        }
+
+        body { 
+            font-family: 'Inter', sans-serif; 
+            background: var(--bg); 
+            color: var(--text-main); 
+            margin: 0; 
+            padding: 20px; 
+            height: 100vh; 
+            display: flex; 
+            flex-direction: column; 
+            overflow: hidden; 
+            box-sizing: border-box;
+        }
+
+        header { 
+            display: flex; 
+            justify-content: space-between; 
+            align-items: center; 
+            padding-bottom: 20px; 
+            border-bottom: 2px solid var(--gold); 
+            margin-bottom: 20px;
+        }
+
+        .logo-text { color: var(--gold); font-size: 1.5rem; font-weight: 900; letter-spacing: 2px; text-transform: uppercase; margin: 0; }
+        
+        .btn-retour { 
+            background: rgba(255, 255, 255, 0.05); 
+            border: 1px solid var(--border-strong); 
+            color: var(--text-main); 
+            padding: 10px 20px; 
+            border-radius: 8px; 
+            cursor: pointer; 
+            font-weight: 800; 
+            text-transform: uppercase; 
+            text-decoration: none;
+            transition: 0.2s;
+        }
+        .btn-retour:hover { background: var(--text-main); color: #000; }
+
+        /* ⛶ BOUTON KIOSQUE ⛶ */
+        .btn-kiosk {
+            background: transparent;
+            border: 1px solid var(--border-strong);
+            color: var(--text-muted);
+            padding: 10px 15px;
+            border-radius: 8px;
+            cursor: pointer;
+            font-weight: 800;
+            text-transform: uppercase;
+            font-size: 0.8rem;
+            transition: 0.2s;
+        }
+        .btn-kiosk:hover {
+            color: var(--gold);
+            border-color: var(--gold);
+            background: rgba(251, 191, 36, 0.1);
+        }
+
+        .table-container { flex: 1; overflow: auto; background: var(--panel); border-radius: 12px; border: 1px solid var(--border-strong); }
+
+        table { width: 100%; border-collapse: collapse; table-layout: fixed; }
+        th, td { border: 1px solid var(--border-strong); text-align: center; padding: 12px 5px; min-width: 45px;}
+        th { background: rgba(0,0,0,0.3); color: var(--text-muted); font-size: 0.7rem; text-transform: uppercase; }
+        
+        .sticky-col { 
+            position: sticky; 
+            left: 0; 
+            background: var(--panel); 
+            z-index: 10; 
+            width: 150px; 
+            text-align: left; 
+            padding-left: 15px; 
+            font-weight: 900; 
+            color: var(--hr);
+            border-right: 2px solid var(--gold);
+        }
+
+        .day-num { font-size: 1.1rem; color: #fff; font-weight: 900; }
+        .day-name { font-size: 0.6rem; opacity: 0.6; }
+
+        .status-cell { font-size: 1.4rem; vertical-align: middle; }
+        
+        .sync-status { font-size: 0.7rem; color: #34d399; display: flex; align-items: center; gap: 6px; font-weight: bold; }
+        .dot { width: 8px; height: 8px; background: #34d399; border-radius: 50%; box-shadow: 0 0 10px #34d399; }
+        
+        .legende {
+            display: flex;
+            gap: 15px;
+            padding: 15px;
+            background: rgba(0,0,0,0.3);
+            border-radius: 8px;
+            font-size: 0.8rem;
+            color: var(--text-muted);
+            justify-content: center;
+            margin-top: 20px;
+        }
+    </style>
+</head>
+<body>
+
+    <header>
+        <div style="display:flex; flex-direction:column; gap:5px;">
+            <h1 class="logo-text">📅 LIVE PLANNING CUISINE</h1>
+            <div class="sync-status"><div class="dot" id="sync-dot"></div> <span id="sync-text">SYNCHRONISÉ - TEMPS RÉEL</span></div>
+        </div>
+        <div style="display:flex; gap: 10px;">
+            <button id="btn-kiosk" class="btn-kiosk">⛶ MODE KIOSQUE</button>
+            <a href="chef.html" class="btn-retour">🔙 RETOUR AU PASS</a>
+        </div>
+    </header>
+
+    <div class="table-container">
+        <table id="planning-table">
+            <thead id="planning-head"></thead>
+            <tbody id="planning-body"></tbody>
+        </table>
+    </div>
+
+    <div class="legende">
+        <span>🟢 Présent</span>
+        <span>☀️ Matin</span>
+        <span>🌙 Soir</span>
+        <span>✖️ Repos</span>
+        <span>✈️ Congé</span>
+        <span>🤒 Maladie</span>
+        <span>⭐ Férié</span>
+        <span>⏳ Récup.</span>
+    </div>
+
+    <script>
+        const urlParams = new URLSearchParams(window.location.search);
+        const tenantID = urlParams.get('tenantID') || 'MASTER_STATE';
+        
+        const SERVER_URL = (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1" || window.location.protocol === "file:") 
+    ? "http://localhost:10000" 
+    : "https://tableau-system.onrender.com";
+
+        const API = {
+            getState: async () => {
+                let r = await fetch(`${SERVER_URL}/get-current-state?tenantID=${tenantID}`);
+                if (!r.ok) throw new Error("Serveur injoignable");
+                return await r.json();
+            }
+        };
+
+        const daysOfWeek = ["Dim", "Lun", "Mar", "Mer", "Jeu", "Ven", "Sam"];
+
+        async function fetchAndRenderPlanning() {
+            try {
+                const state = await API.getState();
+                const dot = document.getElementById('sync-dot');
+                const text = document.getElementById('sync-text');
+                
+                dot.style.background = '#34d399';
+                dot.style.boxShadow = '0 0 10px #34d399';
+                text.innerText = "SYNCHRONISÉ - TEMPS RÉEL";
+                text.style.color = '#34d399';
+
+                let activeOrders = state.activeOrders || {};
+                
+                let dir = [];
+                if (activeOrders['DIRECTORY_MASTER'] && activeOrders['DIRECTORY_MASTER'].data) {
+                    dir = activeOrders['DIRECTORY_MASTER'].data;
+                }
+                
+                let ts = {};
+                if (activeOrders['TIMESHEETS_MASTER'] && activeOrders['TIMESHEETS_MASTER'].data) {
+                    ts = activeOrders['TIMESHEETS_MASTER'].data;
+                }
+
+                // Filtrer uniquement les cuisiniers actifs
+                let cuisineStaff = dir.filter(s => s.dept === 'cuisine' && s.active !== false);
+
+                const today = new Date();
+                const year = today.getFullYear();
+                const month = today.getMonth() + 1;
+                const daysInMonth = new Date(year, month, 0).getDate();
+                const monthStr = `${year}-${String(month).padStart(2, '0')}`;
+                
+                let monthData = ts[monthStr] || {};
+
+                // --- CONSTRUCTION DU HEAD ---
+                let headHtml = `<tr><th class="sticky-col" style="background:#090e17; z-index:20;">BRIGADE</th>`;
+                for(let d=1; d<=daysInMonth; d++) {
+                    const dateObj = new Date(year, month-1, d);
+                    const isToday = (d === today.getDate());
+                    const bgStyle = isToday ? 'background: rgba(251, 191, 36, 0.2); color: var(--gold); border-bottom: 2px solid var(--gold);' : '';
+                    
+                    headHtml += `<th style="${bgStyle}">
+                        <div class="day-name">${daysOfWeek[dateObj.getDay()]}</div>
+                        <div class="day-num">${d}</div>
+                    </th>`;
+                }
+                headHtml += `</tr>`;
+                document.getElementById('planning-head').innerHTML = headHtml;
+
+                // --- CONSTRUCTION DU BODY ---
+                if(cuisineStaff.length === 0) {
+                    document.getElementById('planning-body').innerHTML = `<tr><td colspan="${daysInMonth + 1}" style="padding: 50px; color: var(--text-muted);">Aucun cuisinier enregistré dans la base de données.</td></tr>`;
+                    return;
+                }
+
+                let bodyHtml = '';
+                cuisineStaff.forEach(staff => {
+                    bodyHtml += `<tr><td class="sticky-col">${staff.name}</td>`;
+                    
+                    for(let d=1; d<=daysInMonth; d++) {
+                        const dayData = (monthData[staff.id] && monthData[staff.id][d]) ? monthData[staff.id][d] : null;
+                        const isToday = (d === today.getDate());
+                        const bgStyle = isToday ? 'background: rgba(251, 191, 36, 0.05);' : '';
+                        
+                        let icon = '-';
+                        if(dayData) {
+                            switch(dayData.status) {
+                                case 'present': icon = '🟢'; break;
+                                case 'off_matin': icon = '🌙'; break;
+                                case 'off_soir': icon = '☀️'; break;
+                                case 'off': icon = '✖️'; break;
+                                case 'conge': icon = '✈️'; break;
+                                case 'maladie': icon = '🤒'; break;
+                                case 'ferie': icon = '⭐'; break;
+                                case 'recup': icon = '⏳'; break;
+                            }
+                        }
+                        bodyHtml += `<td class="status-cell" style="${bgStyle}">${icon}</td>`;
+                    }
+                    bodyHtml += `</tr>`;
+                });
+                
+                document.getElementById('planning-body').innerHTML = bodyHtml;
+
+            } catch (e) {
+                console.error("Erreur Sync", e);
+                const dot = document.getElementById('sync-dot');
+                const text = document.getElementById('sync-text');
+                dot.style.background = '#ef4444';
+                dot.style.boxShadow = '0 0 10px #ef4444';
+                text.innerText = "HORS LIGNE - TENTATIVE DE RECONNEXION...";
+                text.style.color = '#ef4444';
+            }
+        }
+
+        // Lancement immédiat puis toutes les 5 secondes
+        fetchAndRenderPlanning();
+        setInterval(fetchAndRenderPlanning, 5000);
+
+        // ⛶ LOGIQUE DU MODE KIOSQUE
+        document.getElementById('btn-kiosk').addEventListener('click', () => {
+            const elem = document.documentElement;
+            const btn = document.getElementById('btn-kiosk');
+            if (!document.fullscreenElement) {
+                if (elem.requestFullscreen) elem.requestFullscreen();
+                else if (elem.webkitRequestFullscreen) elem.webkitRequestFullscreen(); 
+                else if (elem.msRequestFullscreen) elem.msRequestFullscreen(); 
+                btn.innerText = "✕ QUITTER LE KIOSQUE";
+                btn.style.color = "var(--gold)";
+                btn.style.borderColor = "var(--gold)";
+            } else {
+                if (document.exitFullscreen) document.exitFullscreen();
+                else if (document.webkitExitFullscreen) document.webkitExitFullscreen();
+                btn.innerText = "⛶ MODE KIOSQUE";
+                btn.style.color = "var(--text-muted)";
+                btn.style.borderColor = "var(--border-strong)";
+            }
+        });
+
+    </script>
+</body>
+</html>
