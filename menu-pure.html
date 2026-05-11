@@ -9,9 +9,9 @@
     <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,300;0,400;0,600;1,400&family=Montserrat:wght@300;400;500&display=swap" rel="stylesheet">
     
     <style>
-        /* 🟢 DESIGN HAUTE COUTURE - ÉCRAN CHEVALET A4 🟢 */
+        /* 🟢 DESIGN HAUTE COUTURE - Variables Dynamiques 🟢 */
         :root { 
-            --bg-color: #050505;           
+            --bg-color: #050505;            
             --text-main: #f5f5f5;    
             --text-muted: #888888;   
             --gold: #d4af37;
@@ -30,6 +30,7 @@
             display: flex;
             justify-content: center;
             -webkit-font-smoothing: antialiased;
+            transition: background-color 0.5s, color 0.5s;
         }
 
         /* Le conteneur format A4 / Chevalet Vertical */
@@ -37,7 +38,7 @@
             width: 100%;
             max-width: 1080px; 
             min-height: 100vh;
-            background: #080808;
+            background: var(--bg-color);
             box-shadow: 0 0 50px rgba(0,0,0,0.8);
             position: relative;
         }
@@ -45,7 +46,7 @@
         header { 
             text-align: center; 
             padding: 60px 20px 40px; 
-            background: radial-gradient(circle at center, #111111 0%, #080808 100%);
+            background: radial-gradient(circle at center, rgba(255,255,255,0.05) 0%, transparent 100%);
             border-bottom: 1px solid var(--border-color);
             position: relative;
         }
@@ -102,7 +103,7 @@
         /* 🟢 LES CADRES POUR CHAQUE CATÉGORIE 🟢 */
         .category-section, .tasting-menu-box {
             position: relative;
-            background: #0a0a0a;
+            background: rgba(0,0,0,0.3);
             border: 1px solid var(--border-color);
             padding: 50px 60px;
             margin-bottom: 50px;
@@ -139,14 +140,14 @@
             top: -25px;
             left: 50%;
             transform: translateX(-50%);
-            background: #080808;
+            background: var(--bg-color);
             padding: 0 30px;
             white-space: nowrap;
         }
 
         /* 🟢 MISE EN SCÈNE SPÉCIFIQUE AU MENU DU JOUR 🟢 */
         .tasting-menu-box {
-            background: linear-gradient(180deg, #0f0f0f 0%, #0a0a0a 100%);
+            background: linear-gradient(180deg, rgba(255,255,255,0.02) 0%, transparent 100%);
             border-color: rgba(212, 175, 55, 0.3);
             text-align: center;
         }
@@ -258,6 +259,7 @@
             font-family: var(--font-text);
             color: rgba(255,255,255,0.2);
             font-size: 0.8rem;
+            border-top: 1px solid var(--border-color);
             letter-spacing: 2px;
             text-transform: uppercase;
         }
@@ -330,21 +332,37 @@
         ];
 
         let currentMenuData = null;
+        let lastDesignHash = "";
 
         async function fetchMenu() {
             try {
                 const state = await API.getState();
                 
-                // 🌍 LECTURE DE LA DEVISE SAAS
+                // 🌍 LECTURE DE LA DEVISE ET DU DESIGN SAAS
                 if (state.activeOrders && state.activeOrders['SETTINGS_MASTER'] && state.activeOrders['SETTINGS_MASTER'].data) {
-                    let savedCurrency = state.activeOrders['SETTINGS_MASTER'].data.currency;
-                    if (savedCurrency && savedCurrency !== currentCurrency) {
-                        currentCurrency = savedCurrency;
-                        // Traduction esthétique pour le bas de page
+                    let settings = state.activeOrders['SETTINGS_MASTER'].data;
+                    
+                    if (settings.currency && settings.currency !== currentCurrency) {
+                        currentCurrency = settings.currency;
                         let nameMap = {"€": "Euros", "CHF": "Francs Suisses", "$": "Dollars", "C$": "Dollars", "£": "Livres", "¥": "Yens", "MAD": "Dirhams", "CFA": "Francs CFA"};
                         currencyName = nameMap[currentCurrency] || currentCurrency;
                         document.getElementById('footer-currency').innerText = currencyName;
                         currentMenuData = null; // Force le rafraîchissement
+                    }
+
+                    if (settings.design) {
+                        let designHash = JSON.stringify(settings.design);
+                        if(designHash !== lastDesignHash) {
+                            document.documentElement.style.setProperty('--bg-color', settings.design.bgColor || '#050505');
+                            document.documentElement.style.setProperty('--text-main', settings.design.textColor || '#f5f5f5');
+                            
+                            // Appliquer les polices personnalisées si sélectionnées
+                            if (settings.design.fontFamily) {
+                                document.documentElement.style.setProperty('--font-title', settings.design.fontFamily);
+                                document.documentElement.style.setProperty('--font-text', settings.design.fontFamily);
+                            }
+                            lastDesignHash = designHash;
+                        }
                     }
                 }
 
@@ -366,7 +384,6 @@
 
         function renderTastingMenu(item) {
             let cleanName = item.name.replace('🌟 ', '');
-            // 🌍 Utilisation de la devise dynamique
             let priceStr = parseFloat(item.price) > 0 ? `${parseFloat(item.price).toFixed(2)} ${currentCurrency}` : '';
             
             if (cleanName.includes('[BR]')) {
@@ -404,7 +421,6 @@
 
         function renderStandardItem(item) {
             let cleanName = item.name.replace('🌟 ', '');
-            // 🌍 Utilisation de la devise dynamique
             let priceStr = parseFloat(item.price) > 0 ? `${parseFloat(item.price).toFixed(2)} ${currentCurrency}` : '';
             
             let mainName = cleanName;
@@ -439,8 +455,8 @@
                 let items = currentMenuData[cat.id];
                 
                 if (items && Array.isArray(items)) {
-                    // Filtre les ruptures de stock
-                    let availableItems = items.filter(item => item.stock !== 0 && item.stock !== "0");
+                    // 🛡️ Filtre les ruptures de stock ET les plats masqués par le Chef
+                    let availableItems = items.filter(item => item.stock !== 0 && item.stock !== "0" && item.hidden !== true);
 
                     if (availableItems.length > 0) {
                         
