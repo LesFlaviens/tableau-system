@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>Le Bar - Notre Sélection</title>
     <style>
-        /* 🟢 DESIGN LUXE ÉPURÉ (Noir & Or/Bleu Nuit) 🟢 */
+        /* 🟢 DESIGN LUXE ÉPURÉ (Variables dynamiques) 🟢 */
         :root { 
             --bg-color: #050505;           
             --text-main: #f8fafc;    
@@ -22,6 +22,7 @@
             margin: 0; 
             padding: 0;
             -webkit-font-smoothing: antialiased;
+            transition: background-color 0.5s, color 0.5s; /* Transition douce lors du changement de design */
         }
 
         /* En-tête de la carte */
@@ -29,7 +30,7 @@
             text-align: center; 
             padding: 50px 20px 30px; 
             border-bottom: 1px solid var(--border-color);
-            background: linear-gradient(to bottom, #0a0f16 0%, var(--bg-color) 100%);
+            background: linear-gradient(to bottom, rgba(0,0,0,0.5) 0%, var(--bg-color) 100%);
             position: relative;
         }
 
@@ -227,6 +228,17 @@
     </div>
 
     <script>
+        // 🎨 CHARGEMENT DES POLICES DE DESIGN
+        const fontsToLoad = [
+            'Playfair Display', 'Montserrat', 'Roboto', 'Cinzel', 'Oswald', 
+            'Lato', 'Great Vibes', 'Lora', 'Cormorant Garamond', 'Josefin Sans', 
+            'Nunito', 'PT Serif', 'Merriweather', 'Abril Fatface'
+        ];
+        const fontLink = document.createElement('link');
+        fontLink.rel = 'stylesheet';
+        fontLink.href = `https://fonts.googleapis.com/css2?${fontsToLoad.map(f => `family=${f.replace(/ /g, '+')}:wght@400;500;600;900`).join('&')}&display=swap`;
+        document.head.appendChild(fontLink);
+
         const urlParams = new URLSearchParams(window.location.search);
         const tenantID = urlParams.get('tenantID') || 'MASTER_STATE';
         
@@ -262,21 +274,34 @@
         ];
 
         let currentMenuData = null;
+        let lastDesignHash = "";
 
         async function fetchMenu() {
             try {
                 const state = await API.getState();
                 
-                // 🌍 LECTURE DE LA DEVISE SAAS
+                // 🎨 LECTURE DE LA DEVISE ET DU DESIGN SAAS
                 if (state.activeOrders && state.activeOrders['SETTINGS_MASTER'] && state.activeOrders['SETTINGS_MASTER'].data) {
-                    let savedCurrency = state.activeOrders['SETTINGS_MASTER'].data.currency;
-                    if (savedCurrency && savedCurrency !== currentCurrency) {
-                        currentCurrency = savedCurrency;
-                        // Traduction esthétique pour le bas de page
+                    let settings = state.activeOrders['SETTINGS_MASTER'].data;
+                    
+                    // Gestion de la devise
+                    if (settings.currency && settings.currency !== currentCurrency) {
+                        currentCurrency = settings.currency;
                         let nameMap = {"€": "Euros", "CHF": "Francs Suisses", "$": "Dollars", "C$": "Dollars", "£": "Livres", "¥": "Yens", "MAD": "Dirhams", "CFA": "Francs CFA"};
                         currencyName = nameMap[currentCurrency] || currentCurrency;
                         document.getElementById('footer-currency').innerText = currencyName;
                         currentMenuData = null; // Force le rafraîchissement
+                    }
+
+                    // Gestion de la personnalisation du Design (Couleurs & Police)
+                    if (settings.design) {
+                        let designHash = JSON.stringify(settings.design);
+                        if(designHash !== lastDesignHash) {
+                            document.documentElement.style.setProperty('--bg-color', settings.design.bgColor || '#050505');
+                            document.documentElement.style.setProperty('--text-main', settings.design.textColor || '#ffffff');
+                            document.body.style.fontFamily = settings.design.fontFamily || "'Helvetica Neue', Optima, Arial, sans-serif";
+                            lastDesignHash = designHash;
+                        }
                     }
                 }
 
@@ -322,9 +347,9 @@
             categoriesMap.forEach((cat, index) => {
                 let items = currentMenuData[cat.id];
                 
-                // Filtre des ruptures de stock
+                // Filtre des ruptures de stock et des éléments masqués (hidden)
                 if (items && Array.isArray(items)) {
-                    let availableItems = items.filter(item => item.stock !== 0 && item.stock !== "0");
+                    let availableItems = items.filter(item => item.stock !== 0 && item.stock !== "0" && item.hidden !== true);
 
                     if (availableItems.length > 0) {
                         navHtml += `<a href="#section-${cat.id}" class="nav-link">${cat.label}</a>`;
@@ -335,7 +360,6 @@
                         `;
 
                         availableItems.forEach(item => {
-                            // 🌍 Utilisation de currentCurrency au lieu de €
                             let priceStr = parseFloat(item.price) > 0 ? `${parseFloat(item.price).toFixed(2)} ${currentCurrency}` : '';
                             let formattedHtml = formatItemName(item.name);
 
