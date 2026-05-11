@@ -69,7 +69,7 @@ app.post('/api/activate', async (req, res) => {
         if (session.payment_status !== 'paid') return res.status(403).json({ error: "Paiement non validé." });
 
         const existingTenant = await Tenant.findOne({ tenantID: tenantID });
-        if (existingTenant) return res.status(400).json({ error: "Identifiant déjà pris." });
+        if (existingTenant) return res.status(400).json({ error: "Cet identifiant est déjà utilisé." });
 
         // 🎲 GÉNÉRATION DU PIN DÉDICACÉ (4 chiffres aléatoires)
         const randomPin = Math.floor(1000 + Math.random() * 9000).toString();
@@ -78,13 +78,11 @@ app.post('/api/activate', async (req, res) => {
             tenantID: tenantID,
             clientName: clientName,
             status: 'ACTIF',
-            pin: randomPin, // <- Le client reçoit son propre code unique
+            pin: randomPin,
             config: { stripeCustomerId: session.customer }
         });
         
-        console.log(`✅ EMPIRE DÉPLOYÉ : ${clientName} | PIN : ${randomPin}`);
-        
-        // On renvoie le PIN au navigateur pour l'afficher au client
+        console.log(`✅ NOUVEL EMPIRE DÉPLOYÉ : ${clientName} | PIN : ${randomPin}`);
         res.json({ success: true, dedicatedPin: randomPin });
 
     } catch (error) {
@@ -102,13 +100,18 @@ app.post('/api/verify-pin', async (req, res) => {
         if (!tenant) return res.status(404).json({ success: false, error: "Restaurant introuvable." });
         
         const dbPin = tenant.pin || '9999'; 
-        if (dbPin === pin) res.json({ success: true });
-        else res.status(401).json({ success: false, error: "Code incorrect." });
-    } catch (error) { res.status(500).json({ success: false, error: "Erreur serveur." }); }
+        if (dbPin === pin) {
+            res.json({ success: true });
+        } else {
+            res.status(401).json({ success: false, error: "Code incorrect." });
+        }
+    } catch (error) {
+        res.status(500).json({ success: false, error: "Erreur serveur." });
+    }
 });
 
 // ==========================================
-// 🛠️ ROUTE : MODIFICATION DU CODE PIN (NOUVEAU)
+// 🛠️ ROUTE : MODIFICATION DU CODE PIN
 // ==========================================
 app.post('/api/update-pin', async (req, res) => {
     const { tenantID, newPin } = req.body;
@@ -167,11 +170,75 @@ app.get('/panel-ichef', async (req, res) => {
     if (pass !== ADMIN_PASS) return res.status(401).send('<h1 style="color:red; text-align:center; margin-top:50px;">🔒 ACCÈS REFUSÉ</h1>');
 
     const tenants = await Tenant.find({});
+    
     let html = `
-    <!DOCTYPE html><html lang="fr"><head><meta charset="UTF-8"><title>Command Center</title><style>body{background:#09090b;color:#fff;font-family:sans-serif;padding:20px;}table{width:100%;text-align:left;}</style></head>
-    <body><h1>👑 I CHEF - Command Center</h1><table border="1" cellpadding="10" cellspacing="0" style="border-color:#333;"><tr><th>ID Client</th><th>Nom</th><th>Statut</th><th>PIN Actuel</th></tr>
-    ${tenants.map(t => `<tr><td>${t.tenantID}</td><td>${t.clientName}</td><td>${t.status}</td><td>${t.pin || '9999'}</td></tr>`).join('')}</table></body></html>`;
+    <!DOCTYPE html>
+    <html lang="fr">
+    <head>
+        <meta charset="UTF-8">
+        <title>Command Center</title>
+        <style>
+            body { background: #09090b; color: #fff; font-family: sans-serif; padding: 20px; }
+            table { width: 100%; text-align: left; border-collapse: collapse; margin-top: 20px; }
+            th, td { border: 1px solid #333; padding: 12px; }
+            th { background: #11141d; color: #fbbf24; text-transform: uppercase; letter-spacing: 1px; }
+            .status-actif { color: #4ade80; font-weight: bold; }
+            .status-suspendu { color: #f87171; font-weight: bold; }
+            .btn { padding: 8px 12px; border: none; border-radius: 6px; cursor: pointer; font-weight: bold; color: #000; text-transform: uppercase; font-size: 0.8rem; margin-right: 5px; }
+            .btn-block { background: #f59e0b; } /* Orange */
+            .btn-unblock { background: #4ade80; } /* Vert */
+            .btn-delete { background: #dc2626; color: white; } /* Rouge foncé */
+            form { display: inline; }
+        </style>
+    </head>
+    <body>
+        <h1>👑 I CHEF - Command Center</h1>
+        <table>
+            <tr><th>ID Client</th><th>Nom</th><th>Statut</th><th>PIN Actuel</th><th>Actions de Contrôle</th></tr>
+            ${tenants.map(t => `
+                <tr>
+                    <td>${t.tenantID}</td>
+                    <td>${t.clientName}</td>
+                    <td class="${t.status === 'ACTIF' ? 'status-actif' : 'status-suspendu'}">${t.status}</td>
+                    <td style="font-family: monospace; font-size: 1.1rem;">${t.pin || '9999'}</td>
+                    <td>
+                        <form action="/panel-ichef/action" method="POST" onsubmit="return confirm('Exécuter cette action sur le restaurant ${t.clientName} ?');">
+                            <input type="hidden" name="pass" value="${pass}">
+                            <input type="hidden" name="tenantID" value="${t.tenantID}">
+                            ${t.status === 'ACTIF' 
+                                ? `<button type="submit" name="action" value="suspend" class="btn btn-block">Bloquer</button>` 
+                                : `<button type="submit" name="action" value="activate" class="btn btn-unblock">Débloquer</button>`
+                            }
+                            <button type="submit" name="action" value="delete" class="btn btn-delete">Éliminer</button>
+                        </form>
+                    </td>
+                </tr>
+            `).join('')}
+        </table>
+    </body>
+    </html>
+    `;
     res.send(html);
+});
+
+// ⚡ ROUTE POUR TRAITER LES ACTIONS DU COMMAND CENTER
+app.post('/panel-ichef/action', async (req, res) => {
+    const { pass, tenantID, action } = req.body;
+    if (pass !== ADMIN_PASS) return res.status(401).send('Refusé');
+
+    try {
+        if (action === 'suspend') {
+            await Tenant.findOneAndUpdate({ tenantID: tenantID }, { status: 'SUSPENDU' });
+        } else if (action === 'activate') {
+            await Tenant.findOneAndUpdate({ tenantID: tenantID }, { status: 'ACTIF' });
+        } else if (action === 'delete') {
+            await Tenant.findOneAndDelete({ tenantID: tenantID });
+        }
+        // Redirige vers le panel pour voir la mise à jour immédiate
+        res.redirect('/panel-ichef?pass=' + ADMIN_PASS);
+    } catch (err) {
+        res.status(500).send("Erreur lors de l'exécution de l'ordre.");
+    }
 });
 
 // ==========================================
