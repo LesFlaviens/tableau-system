@@ -53,6 +53,25 @@
         }
         .btn-retour:hover { background: var(--text-main); color: #000; }
 
+        /* ⛶ BOUTON KIOSQUE ⛶ */
+        .btn-kiosk {
+            background: transparent;
+            border: 1px solid var(--border-strong);
+            color: var(--text-muted);
+            padding: 10px 15px;
+            border-radius: 8px;
+            cursor: pointer;
+            font-weight: 800;
+            text-transform: uppercase;
+            font-size: 0.8rem;
+            transition: 0.2s;
+        }
+        .btn-kiosk:hover {
+            color: var(--gold);
+            border-color: var(--gold);
+            background: rgba(251, 191, 36, 0.1);
+        }
+
         .table-container { flex: 1; overflow: auto; background: var(--panel); border-radius: 12px; border: 1px solid var(--border-strong); }
 
         table { width: 100%; border-collapse: collapse; table-layout: fixed; }
@@ -86,124 +105,3 @@
     <header>
         <div style="display:flex; flex-direction:column; gap:5px;">
             <h1 class="logo-text">📅 LIVE PLANNING CUISINE</h1>
-            <div class="sync-status"><div class="dot"></div> CONNEXION DIRECTE ACTIVE</div>
-        </div>
-        <a href="pass.html" class="btn-retour">⬅️ RETOUR AU PASS</a>
-    </header>
-
-    <div class="table-container">
-        <table>
-            <thead id="planning-head"></thead>
-            <tbody id="planning-body"></tbody>
-        </table>
-    </div>
-
-    <script>
-        const urlParams = new URLSearchParams(window.location.search);
-        const tenantID = urlParams.get('tenantID') || 'MASTER_STATE';
-        
-        // 🚀 CONNEXION À TON SERVEUR RENDER ICI 🚀
-       const SERVER_URL = (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1" || window.location.protocol === "file:") 
-    ? "http://localhost:10000" 
-    : "https://tableau-system.onrender.com";
-
-        const API = {
-            getState: async () => {
-                let r = await fetch(`${SERVER_URL}/get-current-state?tenantID=${tenantID}`);
-                if (!r.ok) throw new Error("Serveur injoignable");
-                return await r.json();
-            },
-            update: async (key, data) => {
-                let isOrder = !key.includes('MASTER') && !key.includes('ARCHIVE') && !key.includes('SUPPLIER') && !key.includes('PLANNING') && !key.includes('MENU') && !key.includes('DIRECTORY') && !key.includes('ALERTS') && !key.includes('ARCHITECTURE');
-                let payload = isOrder ? data : { data: data };
-                try { 
-                    await fetch(`${SERVER_URL}/update-order?tenantID=${tenantID}`, { 
-                        method: 'POST', 
-                        headers: {'Content-Type': 'application/json'}, 
-                        body: JSON.stringify({ tableId: key, order: data === null ? null : payload }) 
-                    }); 
-                } catch(e) { console.error("Erreur Sync:", e); }
-            }
-        };
-
-        const daysOfWeek = ["Dim", "Lun", "Mar", "Mer", "Jeu", "Ven", "Sam"];
-
-        async function fetchPlanning() {
-            try {
-                const state = await API.getState();
-                
-                if (state && state.activeOrders) {
-                    // Récupération des données RH serveur si elles existent
-                    if (state.activeOrders['DIRECTORY_MASTER']) {
-                        localStorage.setItem('empire_hr_directory', JSON.stringify(state.activeOrders['DIRECTORY_MASTER'].data));
-                    }
-                    if (state.activeOrders['TIMESHEETS_MASTER']) {
-                        localStorage.setItem('empire_hr_timesheets', JSON.stringify(state.activeOrders['TIMESHEETS_MASTER'].data));
-                    }
-                    
-                    renderPlanning();
-                }
-            } catch (e) {
-                console.error("Erreur de synchro planning:", e);
-            }
-        }
-
-        function renderPlanning() {
-            const today = new Date();
-            const year = today.getFullYear();
-            const month = today.getMonth() + 1;
-            const daysInMonth = new Date(year, month, 0).getDate();
-            const monthStr = `${year}-${String(month).padStart(2, '0')}`;
-
-            // 1. Récupération des données RH
-            const directory = JSON.parse(localStorage.getItem('empire_hr_directory')) || [];
-            const timesheets = JSON.parse(localStorage.getItem('empire_hr_timesheets')) || {};
-            
-            // 2. Filtrage Uniquement Cuisine
-            const staffCuisine = directory.filter(s => s.dept === 'cuisine');
-            const monthData = timesheets[monthStr] || {};
-
-            // 3. Construction Entête
-            let headHtml = `<tr><th class="sticky-col">ÉQUIPE</th>`;
-            for (let d = 1; d <= daysInMonth; d++) {
-                const dateObj = new Date(year, month - 1, d);
-                headHtml += `<th><div class="day-name">${daysOfWeek[dateObj.getDay()]}</div><div class="day-num">${d}</div></th>`;
-            }
-            headHtml += `</tr>`;
-            document.getElementById('planning-head').innerHTML = headHtml;
-
-            // 4. Construction Corps (Lecture Seule)
-            let bodyHtml = '';
-            staffCuisine.forEach(staff => {
-                bodyHtml += `<tr><td class="sticky-col">${staff.name.toUpperCase()}</td>`;
-                
-                for (let d = 1; d <= daysInMonth; d++) {
-                    const dayData = (monthData[staff.id] && monthData[staff.id][d]) ? monthData[staff.id][d] : null;
-                    let icon = '-';
-                    
-                    if (dayData) {
-                        switch(dayData.status) {
-                            case 'present': icon = '🟢'; break;
-                            case 'off_matin': icon = '🌙'; break;
-                            case 'off_soir': icon = '☀️'; break;
-                            case 'off': icon = '✖️'; break;
-                            case 'conge': icon = '✈️'; break;
-                            case 'maladie': icon = '🤒'; break;
-                            case 'ferie': icon = '⭐'; break;
-                            case 'recup': icon = '⏳'; break;
-                        }
-                    }
-                    bodyHtml += `<td class="status-cell">${icon}</td>`;
-                }
-                bodyHtml += `</tr>`;
-            });
-
-            document.getElementById('planning-body').innerHTML = bodyHtml || '<tr><td colspan="100" style="padding:50px; opacity:0.5;">Aucun employé enregistré en cuisine.</td></tr>';
-        }
-
-        // Rafraîchissement automatique toutes les 5 secondes
-        fetchPlanning();
-        setInterval(fetchPlanning, 5000);
-    </script>
-</body>
-</html>
