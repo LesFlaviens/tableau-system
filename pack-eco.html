@@ -705,28 +705,51 @@
         function appendPin(n) { currentPin += n; document.getElementById('pin-display').innerText = '*'.repeat(currentPin.length); resetInactivityTimer(); }
         function clearPin() { currentPin = ""; document.getElementById('pin-display').innerText = ""; resetInactivityTimer(); }
         
-       function submitPin() {
-        // 👑 1. RÉCUPÉRATION DU CODE DIRECTEUR (Sauvegardé lors de l'activation)
-        let masterPin = localStorage.getItem('ichef_master_pin') || "999999";
-
-        // 👑 2. VÉRIFICATION DU PASSE-PARTOUT
+      async function submitPin() {
+        // 1. Vérification des codes de secours locaux (Urgence)
+        let masterPin = localStorage.getItem('ichef_master_pin');
         if(currentPin === masterPin || currentPin === "9999" || currentPin === "999999" || currentPin === "7777") {
             currentUser = { name: "Directeur", role: "Manager" };
             unlockPadWithUser(currentUser); 
             return;
         }
 
-        // 👤 3. VÉRIFICATION DES EMPLOYÉS (Base de données RH)
-        let staffUser = staffAccessData.find(s => s.pin === currentPin);
-        if (staffUser) {
-            if (staffUser.active === false) { alert("❌ Accès suspendu."); clearPin(); return; }
-            let userRole = (staffUser.dept === 'admin' || staffUser.dept === 'Direction') ? 'Manager' : 'Serveur';
-            currentUser = { name: staffUser.name, role: userRole };
-            unlockPadWithUser(currentUser);
-        } else { 
-            alert("❌ Code PIN Incorrect."); 
-            clearPin(); 
+        // 🚀 2. VÉRIFICATION EN DIRECT SUR TON SERVEUR RENDER (LE VRAI CODE CLIENT)
+        try {
+            const response = await fetch(`${SERVER_URL}/api/verify-pin`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ tenantID: tenantID, pin: currentPin })
+            });
+            const data = await response.json();
+
+            if (data.success) {
+                // ✅ Le serveur confirme que c'est le vrai code du client !
+                // On le sauvegarde dans la tablette pour qu'il marche même sans internet demain
+                localStorage.setItem('ichef_master_pin', currentPin);
+                currentUser = { name: "Directeur", role: "Manager" };
+                unlockPadWithUser(currentUser);
+                return;
+            }
+        } catch(e) {
+            console.warn("Serveur injoignable, vérification locale uniquement.");
         }
+
+        // 👤 3. VÉRIFICATION DES EMPLOYÉS (Base de données RH locale)
+        if (typeof staffAccessData !== 'undefined') {
+            let staffUser = staffAccessData.find(s => s.pin === currentPin);
+            if (staffUser) {
+                if (staffUser.active === false) { alert("❌ Accès suspendu."); clearPin(); return; }
+                let userRole = (staffUser.dept === 'admin' || staffUser.dept === 'Direction') ? 'Manager' : 'Serveur';
+                currentUser = { name: staffUser.name, role: userRole };
+                unlockPadWithUser(currentUser);
+                return;
+            }
+        }
+
+        // ❌ Si on arrive ici, c'est que le code est faux.
+        alert("❌ Code PIN Incorrect."); 
+        clearPin(); 
     }
         function unlockPadWithUser(user) {
             document.getElementById('user-badge').innerText = `Badge: ${user.name} (${user.role})`;
