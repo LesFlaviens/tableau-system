@@ -147,6 +147,73 @@ app.post('/api/register-device', async (req, res) => {
 });
 
 // ==========================================
+// 🛠️ MODULES D'ADMINISTRATION CLIENT
+// ==========================================
+
+// MISE À JOUR DU CODE PIN PAR LE CLIENT
+app.post('/api/update-pin', async (req, res) => {
+    const { tenantID, newPin } = req.body;
+    try {
+        const tenant = await Tenant.findOne({ tenantID });
+        if (!tenant) return res.status(404).json({ success: false, error: "Identifiant introuvable." });
+        
+        tenant.pin = newPin;
+        await tenant.save();
+        
+        res.json({ success: true });
+    } catch (error) { 
+        res.status(500).json({ success: false, error: "Erreur lors de la sauvegarde." }); 
+    }
+});
+
+// Informations du tableau de bord (Appareils)
+app.get('/api/dashboard-info', async (req, res) => {
+    const { tenantID } = req.query;
+    try {
+        const tenant = await Tenant.findOne({ tenantID });
+        if (!tenant) return res.status(404).json({ success: false });
+        res.json({ 
+            success: true, 
+            activeDevices: tenant.registeredDevices.length, 
+            maxScreens: tenant.maxScreens 
+        });
+    } catch (e) { res.status(500).json({ success: false }); }
+});
+
+// Kill Switch (Déconnecter tout)
+app.post('/api/kill-switch', async (req, res) => {
+    const { tenantID } = req.body;
+    try {
+        const tenant = await Tenant.findOne({ tenantID });
+        if (!tenant) return res.status(404).json({ success: false, error: "Identifiant introuvable." });
+        
+        tenant.registeredDevices = []; 
+        await tenant.save();
+        res.json({ success: true });
+    } catch (e) { res.status(500).json({ success: false }); }
+});
+
+// Génération du lien Portail Stripe
+app.post('/api/billing-portal', async (req, res) => {
+    const { tenantID } = req.body;
+    try {
+        const tenant = await Tenant.findOne({ tenantID });
+        if (!tenant || !tenant.config || !tenant.config.stripeCustomerId) {
+            return res.status(400).json({ success: false, error: "Aucun profil de facturation Stripe trouvé." });
+        }
+
+        const session = await stripe.billingPortal.sessions.create({
+            customer: tenant.config.stripeCustomerId,
+            return_url: `${req.headers.origin}/admin.html?tenantID=${tenantID}`,
+        });
+
+        res.json({ success: true, url: session.url });
+    } catch (e) { 
+        res.status(500).json({ success: false, error: "Erreur de connexion à Stripe." }); 
+    }
+});
+
+// ==========================================
 // 📡 SYNCHRONISATION
 // ==========================================
 app.get('/get-current-state', async (req, res) => {
