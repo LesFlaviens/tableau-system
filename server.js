@@ -100,15 +100,37 @@ app.post('/api/scan-invoice', async (req, res) => {
 // ==========================================
 // 🚀 ACTIVATION & CONNEXION
 // ==========================================
+// ==========================================
+// 🚀 ACTIVATION & CONNEXION
+// ==========================================
 app.post('/api/activate', async (req, res) => {
-    const { sessionId, clientName, tenantID } = req.body;
+    const { sessionId, clientName, tenantID, plan } = req.body; // <-- Le serveur écoute le plan
     try {
         const session = await stripe.checkout.sessions.retrieve(sessionId);
         if (session.payment_status !== 'paid') return res.status(403).json({ error: "Paiement non validé." });
+        
         const existingTenant = await Tenant.findOne({ tenantID });
         if (existingTenant) return res.status(400).json({ error: "Identifiant déjà pris." });
+        
         const randomPin = Math.floor(1000 + Math.random() * 9000).toString();
-        await Tenant.create({ tenantID, clientName, status: 'ACTIF', pin: randomPin, config: { stripeCustomerId: session.customer } });
+        const finalPlan = plan || 'ECO';
+
+        // Attribution automatique de la limite d'écrans selon le plan
+        let limit = 1;
+        if (finalPlan === 'BUSINESS') limit = 5;
+        if (finalPlan === 'PREMIUM') limit = 15;
+
+        // Création du compte avec le bon plan
+        await Tenant.create({ 
+            tenantID, 
+            clientName, 
+            status: 'ACTIF', 
+            plan: finalPlan, 
+            maxScreens: limit,
+            pin: randomPin, 
+            config: { stripeCustomerId: session.customer } 
+        });
+        
         await AppState.create({ tenantID, activeOrders: {} });
         res.json({ success: true, dedicatedPin: randomPin });
     } catch (error) { res.status(500).json({ error: "Erreur serveur." }); }
