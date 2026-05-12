@@ -110,18 +110,17 @@ app.post('/api/activate', async (req, res) => {
         if (existingTenant) return res.status(400).json({ error: "Identifiant déjà pris." });
         
         const randomPin = Math.floor(1000 + Math.random() * 9000).toString();
-        const finalPlan = plan || 'ECO';
-
-        // APPLICATION STRICTE DE TES RÈGLES D'ÉCRANS
-        let limit = 1; // Par défaut : CHEF (1) et ECO (1)
-        if (finalPlan === 'BUSINESS') limit = 5; // PACK 3
-        if (finalPlan === 'PREMIUM') limit = 200; // PACK 4
+        
+        // LOGIQUE DES 4 ROUTES
+        let limit = 1; 
+        if (plan === 'BUSINESS') limit = 5;
+        if (plan === 'PREMIUM') limit = 200;
 
         await Tenant.create({ 
             tenantID, 
             clientName, 
             status: 'ACTIF', 
-            plan: finalPlan, 
+            plan: plan || 'ECO', 
             maxScreens: limit,
             pin: randomPin, 
             config: { stripeCustomerId: session.customer } 
@@ -131,7 +130,6 @@ app.post('/api/activate', async (req, res) => {
         res.json({ success: true, dedicatedPin: randomPin });
     } catch (error) { res.status(500).json({ error: "Erreur serveur." }); }
 });
-
 app.get('/api/check-license', async (req, res) => {
     const { tenantID } = req.query;
     try {
