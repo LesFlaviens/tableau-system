@@ -98,13 +98,10 @@ app.post('/api/scan-invoice', async (req, res) => {
 });
 
 // ==========================================
-// 🚀 ACTIVATION & CONNEXION
-// ==========================================
-// ==========================================
-// 🚀 ACTIVATION & CONNEXION
+// 🚀 ACTIVATION & CONNEXION (LES 4 ROUTES)
 // ==========================================
 app.post('/api/activate', async (req, res) => {
-    const { sessionId, clientName, tenantID, plan } = req.body; // <-- Le serveur écoute le plan
+    const { sessionId, clientName, tenantID, plan } = req.body;
     try {
         const session = await stripe.checkout.sessions.retrieve(sessionId);
         if (session.payment_status !== 'paid') return res.status(403).json({ error: "Paiement non validé." });
@@ -115,12 +112,11 @@ app.post('/api/activate', async (req, res) => {
         const randomPin = Math.floor(1000 + Math.random() * 9000).toString();
         const finalPlan = plan || 'ECO';
 
-        // Attribution automatique de la limite d'écrans selon le plan
-        let limit = 1;
-        if (finalPlan === 'BUSINESS') limit = 5;
-        if (finalPlan === 'PREMIUM') limit = 15;
+        // APPLICATION STRICTE DE TES RÈGLES D'ÉCRANS
+        let limit = 1; // Par défaut : CHEF (1) et ECO (1)
+        if (finalPlan === 'BUSINESS') limit = 5; // PACK 3
+        if (finalPlan === 'PREMIUM') limit = 200; // PACK 4
 
-        // Création du compte avec le bon plan
         await Tenant.create({ 
             tenantID, 
             clientName, 
