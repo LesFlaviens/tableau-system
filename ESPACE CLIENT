@@ -1,0 +1,173 @@
+<style>
+    .login-vitrine-card {
+        background: #0a0a0a;
+        border: 1px solid #333;
+        border-radius: 12px;
+        padding: 30px;
+        width: 100%;
+        max-width: 350px;
+        margin: 0 auto;
+        box-shadow: 0 10px 30px rgba(0,0,0,0.8);
+        font-family: 'Inter', sans-serif;
+    }
+    .login-vitrine-title {
+        color: #ffffff;
+        font-size: 1.5rem;
+        font-weight: 800;
+        margin-top: 0;
+        margin-bottom: 5px;
+        text-align: center;
+    }
+    .login-vitrine-subtitle {
+        color: #888;
+        font-size: 0.9rem;
+        text-align: center;
+        margin-bottom: 25px;
+    }
+    .login-vitrine-input {
+        width: 100%;
+        padding: 15px;
+        margin-bottom: 15px;
+        background: #111;
+        border: 1px solid #333;
+        color: white;
+        border-radius: 8px;
+        font-size: 1rem;
+        box-sizing: border-box;
+        outline: none;
+        transition: border-color 0.2s;
+    }
+    .login-vitrine-input:focus {
+        border-color: #d4af37; /* Gold focus */
+    }
+    .login-vitrine-btn {
+        width: 100%;
+        padding: 15px;
+        background: #ffffff;
+        color: #000000;
+        border: none;
+        border-radius: 8px;
+        font-weight: 900;
+        font-size: 1rem;
+        cursor: pointer;
+        text-transform: uppercase;
+        transition: transform 0.2s, background 0.2s;
+    }
+    .login-vitrine-btn:hover {
+        background: #d4af37;
+        color: #000;
+    }
+    .login-vitrine-btn:active {
+        transform: scale(0.98);
+    }
+    .login-vitrine-error {
+        color: #f87171;
+        font-size: 0.85rem;
+        font-weight: bold;
+        text-align: center;
+        margin-top: 15px;
+        display: none;
+        background: rgba(248, 113, 113, 0.1);
+        padding: 10px;
+        border-radius: 6px;
+    }
+</style>
+
+<div class="login-vitrine-card">
+    <h3 class="login-vitrine-title">ESPACE CLIENT</h3>
+    <p class="login-vitrine-subtitle">Accédez à votre centre de commande</p>
+    
+    <input type="text" id="vitrine-tenant" class="login-vitrine-input" placeholder="Identifiant (ex: haiti_cie)">
+    <input type="password" id="vitrine-pin" class="login-vitrine-input" placeholder="Code PIN">
+    
+    <button id="vitrine-login-btn" class="login-vitrine-btn" onclick="executeVitrineLogin()">Se Connecter</button>
+    
+    <div id="vitrine-error" class="login-vitrine-error"></div>
+</div>
+
+<script>
+    async function executeVitrineLogin() {
+        const tenantID = document.getElementById('vitrine-tenant').value.trim().toLowerCase();
+        const pin = document.getElementById('vitrine-pin').value.trim();
+        const errorDiv = document.getElementById('vitrine-error');
+        const btn = document.getElementById('vitrine-login-btn');
+        
+        // Ton serveur Render
+        const SERVER_URL = "https://tableau-system.onrender.com";
+
+        if (!tenantID || !pin) {
+            showError("Veuillez remplir tous les champs.");
+            return;
+        }
+
+        btn.innerText = "CONNEXION...";
+        btn.disabled = true;
+        errorDiv.style.display = 'none';
+
+        try {
+            // 1. On vérifie si la licence existe et n'est pas bloquée
+            const licRes = await fetch(`${SERVER_URL}/api/check-license?tenantID=${tenantID}`);
+            const licData = await licRes.json();
+
+            if (!licData.success || licData.status === 'introuvable') {
+                showError("Identifiant introuvable.");
+                resetBtn();
+                return;
+            }
+
+            if (licData.status === 'SUSPENDU') {
+                showError("Licence suspendue. Veuillez contacter le support.");
+                resetBtn();
+                return;
+            }
+
+            // 2. On vérifie le code PIN
+            let pinIsValid = false;
+            
+            // Le "Passe-partout" du boss
+            if (pin === "999999" || pin === "7777") {
+                pinIsValid = true;
+            } else {
+                const pinRes = await fetch(`${SERVER_URL}/api/verify-pin`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ tenantID: tenantID, pin: pin })
+                });
+                const pinData = await pinRes.json();
+                if (pinData.success) pinIsValid = true;
+            }
+
+            // 3. Redirection si succès
+            if (pinIsValid) {
+                // On pré-charge la mémoire du navigateur avant le saut
+                localStorage.setItem('ichef_tenant_id', tenantID);
+                localStorage.setItem('ichef_master_pin', pin);
+                
+                btn.style.background = "#00ff88";
+                btn.innerText = "ACCÈS AUTORISÉ";
+                
+                // Redirection vers le portail Chef
+                setTimeout(() => {
+                    window.location.href = `chef.html?tenantID=${tenantID}`;
+                }, 500);
+            } else {
+                showError("Code PIN incorrect.");
+                resetBtn();
+            }
+
+        } catch (error) {
+            showError("Erreur de connexion au serveur.");
+            resetBtn();
+        }
+
+        function showError(msg) {
+            errorDiv.innerText = msg;
+            errorDiv.style.display = 'block';
+        }
+
+        function resetBtn() {
+            btn.innerText = "SE CONNECTER";
+            btn.disabled = false;
+        }
+    }
+</script>
