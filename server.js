@@ -11,6 +11,9 @@ const app = express();
 const PORT = process.env.PORT || 10000;
 
 app.use(cors({ origin: '*', methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'], allowedHeaders: ['Content-Type', 'Authorization', 'Origin', 'Accept'] }));
+app.use(express.json({ limit: '50mb' }));
+app.use(express.urlencoded({ extended: true }));
+app.use(express.static(path.join(__dirname)));
 
 // ==========================================
 // 🚨 WEBHOOK : SÉCURITÉ ANTI-IMPAYÉS
@@ -23,10 +26,6 @@ app.post('/webhook', express.raw({type: 'application/json'}), async (req, res) =
     if (event.type === 'checkout.session.completed') console.log(`💰 PAIEMENT REÇU !`);
     res.json({received: true});
 });
-
-app.use(express.json({ limit: '50mb' }));
-app.use(express.urlencoded({ extended: true }));
-app.use(express.static(path.join(__dirname)));
 
 // ==========================================
 // 🧠 BASE DE DONNÉES : INFRASTRUCTURE iCHEF
@@ -52,9 +51,55 @@ const AppState = mongoose.model('AppState', new mongoose.Schema({
 }, { minimize: false }));
 
 // ==========================================
+// 🤖 MOTEUR IA : RECONNAISSANCE DE FACTURES
+// ==========================================
+const { GoogleGenerativeAI } = require('@google/generative-ai');
+const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY || 'CLE_MANQUANTE');
+
+app.post('/api/scan-invoice', async (req, res) => {
+    const { imageBase64, mimeType } = req.body;
+    
+    if (!imageBase64) return res.status(400).json({ success: false, error: "Aucune image fournie." });
+    if (!process.env.GEMINI_API_KEY) return res.status(500).json({ success: false, error: "Clé API IA non configurée sur le serveur." });
+
+    try {
+        const base64Data = imageBase64.includes(',') ? imageBase64.split(',')[1] : imageBase64;
+        const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+
+        const prompt = `
+        Tu es l'assistant d'un chef de cuisine. Analyse cette image de facture ou de ticket de caisse.
+        Extrais les informations suivantes et renvoie UNIQUEMENT un objet JSON valide, sans texte avant ni après, sans balises markdown.
+        Structure attendue :
+        {
+            "fournisseur": "Nom du fournisseur",
+            "date": "JJ/MM/AAAA",
+            "totalHT": 0.00,
+            "tva": 0.00,
+            "totalTTC": 0.00,
+            "articles": [
+                { "nom": "Nom du produit", "quantite": 0, "prixUnitaire": 0.00 }
+            ]
+        }
+        Si tu ne trouves pas une info, mets null ou 0.`;
+
+        const imagePart = { inlineData: { data: base64Data, mimeType: mimeType || "image/jpeg" } };
+        const result = await model.generateContent([prompt, imagePart]);
+        const responseText = result.response.text();
+        
+        const cleanJson = responseText.replace(/```json/gi, '').replace(/```/gi, '').trim();
+        const data = JSON.parse(cleanJson);
+
+        res.json({ success: true, data: data });
+
+    } catch (error) {
+        console.error("❌ ERREUR IA :", error);
+        res.status(500).json({ success: false, error: "L'IA n'a pas pu analyser cette facture." });
+    }
+});
+
+// ==========================================
 // 🚀 ACTIVATION & CONNEXION
 // ==========================================
-
 app.post('/api/activate', async (req, res) => {
     const { sessionId, clientName, tenantID } = req.body;
     try {
