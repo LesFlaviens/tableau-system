@@ -1,108 +1,101 @@
-<!DOCTYPE html>
-<html lang="fr">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>iCHEF OS - Activation de votre compte</title>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;800;900&display=swap" rel="stylesheet">
-    <style>
-        body { background: #09090b; color: #fff; font-family: 'Inter', sans-serif; display: flex; justify-content: center; align-items: center; min-height: 100vh; margin: 0; }
-        .card { background: #11141d; border: 1px solid #2d313a; padding: 40px; border-radius: 16px; width: 100%; max-width: 450px; box-shadow: 0 10px 40px rgba(0,0,0,0.8); text-align: center; }
-        h1 { color: #fbbf24; margin-top: 0; font-size: 1.8rem; text-transform: uppercase; }
-        p { color: #9ca3af; font-size: 0.95rem; margin-bottom: 30px; }
-        .input-field { width: 100%; padding: 15px; margin-bottom: 15px; background: #000; border: 1px solid #333; color: white; border-radius: 8px; font-size: 1rem; box-sizing: border-box; outline: none; }
-        .input-field:focus { border-color: #fbbf24; }
-        .btn { width: 100%; padding: 15px; background: #10b981; color: #000; border: none; border-radius: 8px; font-weight: 900; font-size: 1rem; cursor: pointer; text-transform: uppercase; transition: 0.2s; }
-        .btn:hover { transform: scale(1.02); }
-        .error { color: #f87171; background: rgba(248, 113, 113, 0.1); padding: 10px; border-radius: 6px; font-weight: bold; margin-bottom: 15px; display: none; }
-        
-        /* État de succès */
-        #success-state { display: none; }
-        .pin-display { font-size: 3rem; font-weight: 900; color: #10b981; letter-spacing: 5px; background: rgba(16, 185, 129, 0.1); padding: 20px; border-radius: 12px; margin: 20px 0; }
-    </style>
-</head>
-<body>
+const express = require('express');
+const cors = require('cors');
+const path = require('path');
+const mongoose = require('mongoose');
 
-    <div class="card">
-        <div id="setup-state">
-            <h1>Activation iCHEF</h1>
-            <p>Paiement confirmé. Veuillez configurer les identifiants de votre restaurant.</p>
-            
-            <div id="error-msg" class="error"></div>
+// 🛡️ CONFIGURATION STRIPE
+const stripeKey = process.env.STRIPE_SECRET_KEY || 'sk_test_REMPLACE_PAR_TA_VRAIE_CLE_SECRETE';
+const stripe = require('stripe')(stripeKey);
 
-            <input type="text" id="client-name" class="input-field" placeholder="Nom du Restaurant (ex: Le Petit Bistro)">
-            <input type="text" id="tenant-id" class="input-field" placeholder="Identifiant de connexion (ex: bistro_paris)" style="text-transform: lowercase;">
-            
-            <button id="activate-btn" class="btn" onclick="activateAccount()">Créer mon accès</button>
-        </div>
+const app = express();
+const PORT = process.env.PORT || 10000;
 
-        <div id="success-state">
-            <h1>Félicitations !</h1>
-            <p>Votre compte est actif. Voici le code PIN secret de votre restaurant. <b>Notez-le précieusement.</b></p>
-            
-            <div class="pin-display" id="final-pin">----</div>
-            
-            <button class="btn" style="background: #fbbf24;" onclick="window.location.href='vitrine.html'">Aller à l'espace de connexion</button>
-        </div>
-    </div>
+app.use(cors({ origin: '*', methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'], allowedHeaders: ['Content-Type', 'Authorization', 'Origin', 'Accept'] }));
 
-    <script>
-        const SERVER_URL = "https://tableau-system.onrender.com";
-        const urlParams = new URLSearchParams(window.location.search);
-        const sessionId = urlParams.get('session_id'); // Stripe passe cet ID dans l'URL
+app.use(express.json({ limit: '50mb' }));
+app.use(express.urlencoded({ extended: true }));
+app.use(express.static(path.join(__dirname)));
 
-        // Sécurité : S'il n'y a pas d'ID de session Stripe, on bloque la page
-        if (!sessionId) {
-            document.getElementById('setup-state').innerHTML = "<h2 style='color:#f87171;'>Accès non autorisé</h2><p>Veuillez passer par le lien de paiement.</p>";
-        }
+// 🧠 BASE DE DONNÉES
+const mongoURI = process.env.MONGO_URI || "mongodb+srv://icheflavien_db_user:Tamere58.@cluster0.4w95d7m.mongodb.net/ichef_production?retryWrites=true&w=majority";
+mongoose.connect(mongoURI).then(() => console.log('🔥 I CHEF Online')).catch(err => console.error(err.message));
 
-        async function activateAccount() {
-            const clientName = document.getElementById('client-name').value.trim();
-            const tenantID = document.getElementById('tenant-id').value.trim().toLowerCase().replace(/[^a-z0-9_]/g, '');
-            const btn = document.getElementById('activate-btn');
-            const errorMsg = document.getElementById('error-msg');
+const tenantSchema = new mongoose.Schema({
+    tenantID: { type: String, required: true, unique: true },
+    clientName: String,
+    status: { type: String, enum: ['ACTIF', 'ESSAI', 'SUSPENDU'], default: 'ACTIF' },
+    pin: { type: String, default: '9999' }, 
+    maxScreens: { type: Number, default: 1 }, 
+    registeredDevices: [String], 
+    config: { stripeCustomerId: String, stripeConnectedId: String }
+});
+const Tenant = mongoose.model('Tenant', tenantSchema);
 
-            if (!clientName || !tenantID) {
-                showError("Veuillez remplir tous les champs.");
-                return;
-            }
+const stateSchema = new mongoose.Schema({
+    tenantID: { type: String, required: true, unique: true },
+    activeOrders: { type: Object, default: {} }
+}, { minimize: false });
+const AppState = mongoose.model('AppState', stateSchema);
 
-            btn.innerText = "Création en cours...";
-            btn.disabled = true;
-            errorMsg.style.display = 'none';
+// ==========================================
+// 🔑 ROUTES API : CONNEXION VITRINE & CHEF
+// ==========================================
 
-            try {
-                // On appelle la route d'activation de ton server.js
-                const response = await fetch(`${SERVER_URL}/api/activate`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ sessionId, clientName, tenantID })
-                });
+// 1. Vérifier si le compte existe et est actif
+app.get('/api/check-license', async (req, res) => {
+    const { tenantID } = req.query;
+    try {
+        const tenant = await Tenant.findOne({ tenantID: tenantID });
+        if (!tenant) return res.status(404).json({ success: false, status: 'introuvable' });
+        res.json({ success: true, status: tenant.status });
+    } catch (error) {
+        res.status(500).json({ success: false, error: "Erreur serveur" });
+    }
+});
 
-                const data = await response.json();
+// 2. Vérifier le code PIN
+app.post('/api/verify-pin', async (req, res) => {
+    const { tenantID, pin } = req.body;
+    try {
+        const tenant = await Tenant.findOne({ tenantID: tenantID });
+        if (!tenant) return res.status(404).json({ success: false, error: "Restaurant introuvable." });
+        if (tenant.pin === pin) res.json({ success: true });
+        else res.status(401).json({ success: false, error: "Code incorrect." });
+    } catch (error) { res.status(500).json({ success: false, error: "Erreur serveur." }); }
+});
 
-                if (data.success) {
-                    // Succès ! On cache le formulaire et on affiche le PIN généré par ton serveur
-                    document.getElementById('setup-state').style.display = 'none';
-                    document.getElementById('success-state').style.display = 'block';
-                    document.getElementById('final-pin').innerText = data.dedicatedPin;
-                } else {
-                    showError(data.error || "Erreur lors de l'activation.");
-                    btn.innerText = "Créer mon accès";
-                    btn.disabled = false;
-                }
-            } catch (err) {
-                showError("Impossible de joindre le serveur central.");
-                btn.innerText = "Créer mon accès";
-                btn.disabled = false;
-            }
-        }
+// 📡 MOTEUR DE SYNCHRONISATION
+app.get('/get-current-state', async (req, res) => {
+    try {
+        const tenantID = req.query.tenantID || 'MASTER_STATE';
+        let state = await AppState.findOne({ tenantID });
+        if (!state) state = await AppState.create({ tenantID, activeOrders: {} });
+        res.json(state);
+    } catch (e) { res.status(500).json({ error: "Erreur" }); }
+});
 
-        function showError(msg) {
-            const errorMsg = document.getElementById('error-msg');
-            errorMsg.innerText = msg;
-            errorMsg.style.display = 'block';
-        }
-    </script>
-</body>
-</html>
+app.post('/update-order', async (req, res) => {
+    try {
+        const tenantID = req.query.tenantID || 'MASTER_STATE';
+        const { tableId, order } = req.body;
+        let state = await AppState.findOne({ tenantID });
+        if (!state) state = new AppState({ tenantID, activeOrders: {} });
+        if (order === null) delete state.activeOrders[tableId];
+        else state.activeOrders[tableId] = order;
+        state.markModified('activeOrders');
+        await state.save();
+        res.json({ success: true });
+    } catch (e) { res.status(500).json({ error: "Erreur" }); }
+});
+
+// 👑 ADMIN PANEL
+const ADMIN_PASS = 'Empire2026';
+app.get('/panel-ichef', async (req, res) => {
+    const pass = req.query.pass;
+    if (pass !== ADMIN_PASS) return res.status(401).send('🔒 ACCÈS REFUSÉ');
+    const tenants = await Tenant.find({});
+    // ... (Ton code HTML du panel que tu as déjà) ...
+    res.send("Panneau chargé (utilise le code de ton message précédent)");
+});
+
+app.listen(PORT, () => console.log("🚀 Empire iCHEF sur port " + PORT));
