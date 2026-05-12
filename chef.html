@@ -123,16 +123,21 @@
     </style>
 </head>
 <body>
+
+    <div id="security-overlay" style="position:fixed; top:0; left:0; width:100%; height:100%; background:#0a0a0a; z-index:9999; display:flex; flex-direction:column; align-items:center; justify-content:center;">
+        <h2 style="color:white; font-family:sans-serif; margin-bottom:20px;">iCHEF OS - ACCÈS RESTREINT</h2>
+        <input type="password" id="pin-input" placeholder="Entrez le code PIN" style="padding:15px; border-radius:8px; border:1px solid #333; background:#111; color:white; width:200px; text-align:center; font-size:1.2rem; margin-bottom:15px; outline:none;">
+        <button onclick="checkPin()" style="padding:15px 40px; border-radius:8px; border:none; background:white; color:black; font-weight:900; cursor:pointer; font-size:1.1rem; transition:0.2s;">DÉVERROUILLER</button>
+        <p id="error-msg" style="color:#f87171; margin-top:20px; font-weight:bold; display:none; background:rgba(248,113,113,0.1); padding:10px 20px; border-radius:6px;">❌ Code PIN incorrect.</p>
+    </div>
+
     <div class="nav-master">
         <div class="header-brand"><h1 class="logo-text">iCHEF.CH</h1></div>
         <div class="header-actions">
             <button class="nav-btn active" id="tab-menu" onclick="switchTab('menu')">📋 CARTE</button>
             <button class="nav-btn" id="tab-market" onclick="switchTab('market')">📚 LABORATOIRE</button>
             <button class="nav-btn" id="tab-inventaire" onclick="switchTab('inventaire')">📦 INVENTAIRE</button>
-            <button class="btn-io export" onclick="alert('Sauvegarde automatique sur le Cloud active.')">💾 SAUV.</button>
             <button class="nav-btn" id="tab-stats" onclick="switchTab('stats')">📊 VENTES</button>
-            <button class="nav-btn" style="color: var(--alert); border-color: var(--alert-dim);" onclick="window.open('chef.html', '_blank')">🔥 PROD</button>
-            <button class="nav-btn" style="border-color: var(--purple); color: var(--purple); background: rgba(167, 139, 250, 0.1);" onclick="window.open('rh.html?dept=cuisine', '_blank');">👥 GESTION RH</button>
             <div class="sync-status"><div id="sync-dot" class="sync-dot"></div> <span id="sync-text" style="color:var(--text-main);">CONNEXION...</span></div>
         </div>
     </div>
@@ -146,7 +151,6 @@
             <div class="menu-category" style="padding:25px; overflow-y: auto; border-top: none;">
                 <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:20px;">
                     <h3 style="margin:0; color:var(--text-main); font-size: 1.2rem; text-transform: uppercase; letter-spacing: 1px;">🛠️ LABORATOIRE DE CRÉATION</h3>
-                    <span style="font-size:0.85rem; color:var(--text-muted);">Saisissez vos ingrédients pour calculer la rentabilité</span>
                 </div>
 
                 <div class="market-cost-grid">
@@ -237,6 +241,7 @@
                     <input type="text" id="market-name" placeholder="Nom du plat..." style="flex:1; font-weight:bold; font-size:1.1rem; min-width:250px; padding: 15px;">
                     <button class="btn-mic" style="padding:0 20px;" onclick="startDictation('market-name', this.id)" id="mic-recette-nom">🎙️</button>
                     <input type="number" id="market-price" placeholder="Prix Vente (€)" data-autofilled="true" style="display:flex; width:150px; font-weight:bold; color:var(--gold); background: var(--panel); border: 2px solid var(--gold); font-size: 1.1rem; text-align: center; border-radius: 8px;" oninput="this.dataset.autofilled='false';">
+                    <select id="market-category" style="width:150px; border:1px solid var(--border-strong); background:#0f1523; color:white; border-radius:8px;">
                         <option value="plats" selected>PLATS</option>
                     </select>
                 </div>
@@ -389,32 +394,64 @@
 
     <script>
         const urlParams = new URLSearchParams(window.location.search);
-        const tenantID = urlParams.get('tenantID') || 'MASTER_STATE';
-       const SERVER_URL = (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1" || window.location.protocol === "file:") 
-    ? "http://localhost:10000" 
-    : "https://tableau-system.onrender.com";
+        let tenantID = urlParams.get('tenantID') || localStorage.getItem('ichef_tenant_id') || 'fra';
+        const SERVER_URL = (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1" || window.location.protocol === "file:") 
+        ? "http://localhost:10000" 
+        : "https://tableau-system.onrender.com";
 
-        // 🌍 VARIABLE MULTIDEVISE
         let currentCurrency = "€";
 
-        // ----------------------------------------------------
-        // 🚨 MOTEUR RÉSEAU & DÉCODEUR UNIVERSEL 🚨
-        // ----------------------------------------------------
+        // 🔒 SÉCURITÉ DE CONNEXION AU SERVEUR
+        async function checkPin() {
+            const pin = document.getElementById('pin-input').value;
+            if(!pin) return;
+
+            document.getElementById('error-msg').style.display = 'none';
+
+            // Master Overrides (Code d'urgence)
+            if(pin === "999999" || pin === "7777" || pin === "9999") {
+                document.getElementById('security-overlay').style.display = 'none';
+                bootSystem();
+                return;
+            }
+
+            try {
+                const pinRes = await fetch(`${SERVER_URL}/api/verify-pin`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ tenantID: tenantID, pin: pin })
+                });
+                const pinData = await pinRes.json();
+
+                if (pinData.success) {
+                    document.getElementById('security-overlay').style.display = 'none';
+                    bootSystem(); // DÉMARRE LE SYSTÈME UNE FOIS DÉVERROUILLÉ
+                } else {
+                    document.getElementById('error-msg').style.display = 'block';
+                    document.getElementById('error-msg').innerText = "❌ Code PIN incorrect.";
+                }
+            } catch(e) {
+                document.getElementById('error-msg').style.display = 'block';
+                document.getElementById('error-msg').innerText = "📡 Erreur serveur.";
+            }
+        }
+
+        document.getElementById('pin-input').addEventListener('keypress', function (e) {
+            if (e.key === 'Enter') checkPin();
+        });
+
+        // 🚨 MOTEUR RÉSEAU & DÉCODEUR UNIVERSEL
         const API = {
             getState: async () => {
                 let state = { activeOrders: {} };
                 try {
                     let r = await fetch(`${SERVER_URL}/get-current-state?tenantID=${tenantID}`);
-                    if(r.ok) {
-                        state = await r.json();
-                    } else { 
-                        throw new Error("Serveur injoignable"); 
-                    }
+                    if(r.ok) { state = await r.json(); } 
+                    else { throw new Error("Serveur injoignable"); }
                 } catch(e) {
                     state = JSON.parse(localStorage.getItem('EMPIRE_GLOBAL_SYNC')) || { activeOrders: {} };
                 }
 
-                // DÉCODEUR : Ouvre toutes les commandes QR Code
                 if (state && state.activeOrders) {
                     for (let key in state.activeOrders) {
                         if (key.startsWith('order_') || key.startsWith('W') || key.startsWith('T') || key.startsWith('WEB_')) {
@@ -429,21 +466,16 @@
             update: async (key, data, isOrder = false) => {
                 let payload = isOrder ? data : { data: data };
                 let state = JSON.parse(localStorage.getItem('EMPIRE_GLOBAL_SYNC')) || { activeOrders: {} };
-                
                 if (data === null) delete state.activeOrders[key];
                 else state.activeOrders[key] = payload;
-                
                 localStorage.setItem('EMPIRE_GLOBAL_SYNC', JSON.stringify(state));
-                
                 try {
                     await fetch(`${SERVER_URL}/update-order?tenantID=${tenantID}`, {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({ tableId: key, order: data === null ? null : payload })
                     });
-                } catch(e) { 
-                    console.error("Erreur Sync:", e); 
-                }
+                } catch(e) { console.error("Erreur Sync:", e); }
             }
         };
 
@@ -451,14 +483,12 @@
         let recipesData = [];
         let stockGlobalData = []; 
         let currentFolderCat = null;
-        
         let lastMenuHash = "";
         let lastStockHash = "";
         let lastRecipesHash = "";
-
-        // 🛑 BOUCLIER INTELLIGENT (Ne s'active que dans les zones de texte) 🛑
         let userIsActive = false;
         let activityTimeout = null;
+
         function keepAlive(e) {
             if (e && e.target && ['INPUT', 'TEXTAREA', 'SELECT'].includes(String(e.target.tagName).toUpperCase())) {
                 userIsActive = true;
@@ -478,7 +508,6 @@
             "desserts": { name: "DESSERTS", color: "var(--text-main)" } 
         };
         const EXTRA_COLORS = ['var(--ordered)', 'var(--accent)', 'var(--purple)', 'var(--orange)'];
-
         const STOCK_BADGES = { "feculents": "rgba(96, 165, 250, 0.2)", "proteines": "rgba(248, 113, 113, 0.2)", "bof": "rgba(251, 191, 36, 0.2)", "sauces": "rgba(167, 139, 250, 0.2)", "legumes": "rgba(52, 211, 153, 0.2)", "economat": "rgba(148, 163, 184, 0.2)" };
         const STOCK_COLORS = { "feculents": "#60a5fa", "proteines": "#f87171", "bof": "#fbbf24", "sauces": "#a78bfa", "legumes": "#34d399", "economat": "#94a3b8" };
 
@@ -495,7 +524,6 @@
         async function fetchSystemState() {
             let state;
             try {
-                // Utilisation du moteur API et de son décodeur
                 state = await API.getState();
                 document.getElementById('sync-dot').classList.add('online');
                 document.getElementById('sync-text').innerText = "EN LIGNE";
@@ -507,17 +535,14 @@
                 return; 
             }
 
-            // 🌍 MULTIDEVISE SAAS
             if (state.activeOrders['SETTINGS_MASTER'] && state.activeOrders['SETTINGS_MASTER'].data) {
                 let savedCurrency = state.activeOrders['SETTINGS_MASTER'].data.currency;
                 if (savedCurrency && savedCurrency !== currentCurrency) {
                     currentCurrency = savedCurrency;
-                    
                     let priceInput = document.getElementById('market-price');
                     if(priceInput) priceInput.placeholder = "Prix Vente " + currentCurrency;
                     let manualPriceInput = document.getElementById('manual-stock-price');
                     if(manualPriceInput) manualPriceInput.placeholder = "Prix Total (" + currentCurrency + ")";
-                    
                     lastMenuHash = ""; 
                 }
             }
@@ -532,9 +557,7 @@
                         let newRecipes = state.activeOrders['RECIPES_MASTER'].data.filter(r => r != null);
                         let newRecHash = JSON.stringify(newRecipes);
                         if(newRecHash !== lastRecipesHash) {
-                            recipesData = newRecipes;
-                            lastRecipesHash = newRecHash;
-                            dataChanged = true;
+                            recipesData = newRecipes; lastRecipesHash = newRecHash; dataChanged = true;
                         }
                     }
                     
@@ -542,9 +565,7 @@
                         let newStock = state.activeOrders['INVENTORY_MASTER'].data.filter(s => s != null);
                         let newStockHash = JSON.stringify(newStock);
                         if(newStockHash !== lastStockHash) {
-                            stockGlobalData = newStock;
-                            lastStockHash = newStockHash;
-                            dataChanged = true;
+                            stockGlobalData = newStock; lastStockHash = newStockHash; dataChanged = true;
                         }
                     }
                     
@@ -556,12 +577,9 @@
                             for (let cat in menuData) {
                                 if (Array.isArray(menuData[cat])) {
                                     menuData[cat] = menuData[cat].filter(item => item != null && item.name != null);
-                                } else {
-                                    menuData[cat] = [];
-                                }
+                                } else { menuData[cat] = []; }
                             }
-                            lastMenuHash = newMenuHash;
-                            dataChanged = true;
+                            lastMenuHash = newMenuHash; dataChanged = true;
                         }
                     }
                     
@@ -569,15 +587,9 @@
                     let isTyping = activeEl && ['INPUT', 'TEXTAREA', 'SELECT'].includes(String(activeEl.tagName).toUpperCase());
                     
                     if (!isTyping && dataChanged) {
-                        renderMenu(); 
-                        renderRecipes(); 
-                        renderGlobalStock(); 
-                        renderLiveStockPanel();
+                        renderMenu(); renderRecipes(); renderGlobalStock(); renderLiveStockPanel();
                     }
-                    
-                } catch(renderErr) { 
-                    console.error("Erreur de rendu:", renderErr); 
-                }
+                } catch(renderErr) { console.error("Erreur de rendu:", renderErr); }
             }
         }
 
@@ -586,14 +598,13 @@
             renderRecipes();
             renderGlobalStock();
             renderLiveStockPanel();
-
             await fetchSystemState();
             setInterval(async () => { await fetchSystemState(); }, 5000);
         }
 
         function startMarketDictation(inputId, btnId) {
             const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-            if (!SpeechRecognition) return alert("Micro non supporté par votre navigateur.");
+            if (!SpeechRecognition) return alert("Micro non supporté.");
             const recognition = new SpeechRecognition(); recognition.lang = 'fr-FR'; recognition.interimResults = false;
             const btn = document.getElementById(btnId); const input = document.getElementById(inputId);
             const orig = btn.innerHTML;
@@ -608,38 +619,21 @@
         }
 
         function startDictation(inputId, btnId) {
-            if (!('webkitSpeechRecognition' in window) && !('SpeechRecognition' in window)) {
-                alert("Votre navigateur ne supporte pas la dictée vocale.");
-                return;
-            }
             const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+            if (!SpeechRecognition) return alert("Non supporté.");
             const recognition = new SpeechRecognition();
-            
-            recognition.lang = 'fr-FR';
-            recognition.continuous = true; 
-            recognition.interimResults = false;
-            
-            let input = document.getElementById(inputId);
-            let btn = document.getElementById(btnId);
-            const orig = btn.innerHTML;
-            let oldPh = input.placeholder;
+            recognition.lang = 'fr-FR'; recognition.continuous = true; recognition.interimResults = false;
+            let input = document.getElementById(inputId); let btn = document.getElementById(btnId);
+            const orig = btn.innerHTML; let oldPh = input.placeholder;
             input.placeholder = "🔴 Parlez (pause = saut de ligne)...";
-            
             recognition.start();
-            
             recognition.onstart = () => { btn.classList.add('recording-active'); btn.innerHTML = '🔴'; };
-
             recognition.onresult = function(event) {
                 let speechResult = event.results[event.results.length - 1][0].transcript.trim();
                 input.value += (input.value ? '\n' : '') + speechResult;
                 input.scrollTop = input.scrollHeight;
             };
-            
-            input.addEventListener('blur', () => {
-                recognition.stop();
-                input.placeholder = oldPh;
-            }, {once: true});
-
+            input.addEventListener('blur', () => { recognition.stop(); input.placeholder = oldPh; }, {once: true});
             recognition.onerror = function(event) { input.placeholder = oldPh; btn.classList.remove('recording-active'); btn.innerHTML = orig; };
             recognition.onend = () => { btn.classList.remove('recording-active'); btn.innerHTML = orig; input.placeholder = oldPh; };
         }
@@ -649,38 +643,19 @@
             let qty = document.getElementById('manual-stock-qty').value.trim();
             let price = parseFloat(document.getElementById('manual-stock-price').value.replace(',', '.'));
             let cat = document.getElementById('manual-stock-cat').value;
-
-            if(!name || !qty || isNaN(price)) return alert("⚠️ Veuillez remplir le nom, la quantité et un prix valide.");
-
+            if(!name || !qty || isNaN(price)) return alert("⚠️ Remplissez nom, quantité et prix.");
             let unitPriceStr = price.toFixed(2) + " " + currentCurrency;
-            
             let wNumMatch = qty.match(/[\d.]+/);
             if(wNumMatch) {
                 let wNum = parseFloat(wNumMatch[0]);
                 if(wNum > 0) unitPriceStr = (price / wNum).toFixed(2) + " " + currentCurrency + " / " + qty.replace(/[\d.]+/,'').trim();
             }
-
             let existing = stockGlobalData.find(x => x.name.toLowerCase() === name.toLowerCase());
-            if (existing) {
-                existing.lastPrice = unitPriceStr;
-                existing.qtyStr = qty;
-                existing.date = new Date().toLocaleDateString();
-            } else {
-                stockGlobalData.unshift({
-                    id: Date.now(), name: name, cat: cat, 
-                    qtyStr: qty, lastPrice: unitPriceStr, 
-                    date: new Date().toLocaleDateString()
-                });
-            }
-
+            if (existing) { existing.lastPrice = unitPriceStr; existing.qtyStr = qty; existing.date = new Date().toLocaleDateString(); } 
+            else { stockGlobalData.unshift({ id: Date.now(), name: name, cat: cat, qtyStr: qty, lastPrice: unitPriceStr, date: new Date().toLocaleDateString() }); }
             await API.update('INVENTORY_MASTER', stockGlobalData);
-            
-            document.getElementById('manual-stock-name').value = '';
-            document.getElementById('manual-stock-qty').value = '';
-            document.getElementById('manual-stock-price').value = '';
-            
-            renderGlobalStock(); renderLiveStockPanel();
-            alert("✅ Produit ajouté à la matrice de stock !");
+            document.getElementById('manual-stock-name').value = ''; document.getElementById('manual-stock-qty').value = ''; document.getElementById('manual-stock-price').value = '';
+            renderGlobalStock(); renderLiveStockPanel(); alert("✅ Ajouté au stock !");
         }
 
         function renderGlobalStock() {
@@ -689,16 +664,13 @@
                 tbody.innerHTML = `<tr><td colspan="5" style="text-align:center; padding:30px; color:var(--text-muted);">Le stock est vide. Ajoutez un produit pour l'initialiser.</td></tr>`;
                 return;
             }
-
             tbody.innerHTML = stockGlobalData.map((item, idx) => `
                 <tr>
                     <td><span class="badge-cat" style="background:${STOCK_BADGES[item.cat]}; color:${STOCK_COLORS[item.cat]}; border-color:${STOCK_COLORS[item.cat]}">${item.cat.substring(0,3)}</span></td>
                     <td style="font-weight:bold; color:var(--text-main);">${item.name} <br><span style="font-size:0.75rem; color:var(--text-muted); font-weight:normal;">Dernier ajout: ${item.date}</span></td>
                     <td style="color:var(--text-main); font-weight:bold;">${item.qtyStr}</td>
                     <td style="color:var(--text-main); font-weight:bold;">${item.lastPrice}</td>
-                    <td>
-                        <button style="background:transparent; border:none; color:var(--alert); font-size:1.2rem; cursor:pointer;" onclick="deleteStockItem(${idx})">✖</button>
-                    </td>
+                    <td><button style="background:transparent; border:none; color:var(--alert); font-size:1.2rem; cursor:pointer;" onclick="deleteStockItem(${idx})">✖</button></td>
                 </tr>
             `).join('');
         }
@@ -715,22 +687,13 @@
             const catMap = { 'feculents': 'fecu', 'proteines': 'prot', 'bof': 'bof', 'sauces': 'sauc', 'legumes': 'legu', 'economat': 'eco' };
             let prefix = catMap[cat];
             if(!prefix) return;
-
             let textarea = document.getElementById(`market-${prefix}-raw`);
             if(!textarea) return;
-
             let newLine = `${name} ${price}`;
-            
-            if(textarea.value.trim() === "") {
-                textarea.value = newLine;
-            } else {
-                textarea.value += "\n" + newLine;
-            }
-            
-            textarea.style.transition = "0.3s";
-            textarea.style.backgroundColor = "rgba(255, 255, 255, 0.1)";
+            if(textarea.value.trim() === "") textarea.value = newLine;
+            else textarea.value += "\n" + newLine;
+            textarea.style.transition = "0.3s"; textarea.style.backgroundColor = "rgba(255, 255, 255, 0.1)";
             setTimeout(() => textarea.style.backgroundColor = "#0f1523", 500);
-
             calcSmartPlate();
         }
 
@@ -738,13 +701,10 @@
             const panel = document.getElementById('live-stock-panel');
             if(!panel) return;
             if(!stockGlobalData || stockGlobalData.length === 0) {
-                panel.innerHTML = '<p style="color:var(--text-muted); text-align:center; margin: 20px 0;">Le stock est vide.</p>';
-                return;
+                panel.innerHTML = '<p style="color:var(--text-muted); text-align:center; margin: 20px 0;">Le stock est vide.</p>'; return;
             }
-            
             panel.innerHTML = stockGlobalData.map(item => {
-                let nameEsc = String(item.name || '').replace(/'/g, "\\'");
-                let catEsc = String(item.cat || '');
+                let nameEsc = String(item.name || '').replace(/'/g, "\\'"); let catEsc = String(item.cat || '');
                 return `
                 <div class="stock-item-row" onclick="injectFromStock('${nameEsc}', '${item.lastPrice}', '${catEsc}')" style="display:flex; justify-content:space-between; align-items:center; background: rgba(255,255,255,0.02); padding: 12px; border-radius: 8px; border: 1px solid var(--border); transition: 0.2s;">
                     <div style="display:flex; flex-direction:column; gap:4px;">
@@ -763,68 +723,46 @@
             const calcBox = (prefix) => {
                 let el = document.getElementById(`market-${prefix}-raw`);
                 if(!el) return 0;
-                
                 let lines = el.value.toLowerCase().replace(/,/g, '.').split('\n');
                 let portion = parseFloat(document.getElementById(`gram-${prefix}`).value) || 1;
                 let cost = 0;
-                
                 lines.forEach(line => {
                     let cleanLine = line.replace(/\([^)]+\)/g, '').replace(/dispo:.*$/i, '').trim();
                     if(cleanLine === "") return;
-                    
                     let unitPriceMatch = cleanLine.match(/(\d+(?:\.\d+)?)\s*(?:€|euros?|\$|chf|mad|£|¥)\s*(?:\/|au|le|la)\s*(kg|kilo|l|litre|pce|piece|pièce|g|gr|ml|cl)/i);
-                    
                     if (unitPriceMatch) {
-                        let p = parseFloat(unitPriceMatch[1]);
-                        let u = unitPriceMatch[2];
-                        if (u.startsWith('k') || (u.startsWith('l') && !u.includes('ml') && !u.includes('cl'))) {
-                            cost += (p / 1000) * portion; 
-                        } else if (u.includes('g') || u.includes('ml') || u.includes('cl')) {
-                            cost += p * portion; 
-                        } else {
-                            cost += p * portion; 
-                        }
+                        let p = parseFloat(unitPriceMatch[1]); let u = unitPriceMatch[2];
+                        if (u.startsWith('k') || (u.startsWith('l') && !u.includes('ml') && !u.includes('cl'))) cost += (p / 1000) * portion; 
+                        else cost += p * portion; 
                         return; 
                     }
-                    
                     let priceMatch = cleanLine.match(/(\d+(?:\.\d+)?)\s*(?:€|euros?|\$|chf|mad|£|¥)/i);
                     let weightMatch = cleanLine.match(/(\d+(?:\.\d+)?)\s*(kg|kilo|g|gr|l|cl|ml|pce|piece|pièce)/i);
-                    
                     if (priceMatch) {
                         let p = parseFloat(priceMatch[1]);
                         if (weightMatch) {
-                            let w = parseFloat(weightMatch[1]);
-                            let u = weightMatch[2];
-                            if (u.startsWith('k') || (u.startsWith('l') && !u.includes('ml') && !u.includes('cl'))) {
-                                cost += (p / (w * 1000)) * portion; 
-                            } else {
-                                cost += (p / w) * portion; 
-                            }
-                        } else {
-                            cost += p / portion; 
-                        }
+                            let w = parseFloat(weightMatch[1]); let u = weightMatch[2];
+                            if (u.startsWith('k') || (u.startsWith('l') && !u.includes('ml') && !u.includes('cl'))) cost += (p / (w * 1000)) * portion; 
+                            else cost += (p / w) * portion; 
+                        } else cost += p / portion; 
                     }
                 });
-
                 let costDisplay = document.getElementById(`cost-${prefix}`);
                 if (costDisplay) costDisplay.innerText = cost.toFixed(2) + " " + currentCurrency;
                 return cost;
             };
 
             let total = ['fecu', 'prot', 'bof', 'sauc', 'legu', 'eco'].reduce((sum, k) => sum + calcBox(k), 0);
-            
             let totalEl = document.getElementById('market-total-cost');
             if (totalEl) totalEl.value = total.toFixed(2) + " " + currentCurrency;
             let margin = parseFloat(document.getElementById('market-margin').value) || 3.5;
             let rec = total * margin;
-            
             let recEl = document.getElementById('market-recommended');
             if (recEl) recEl.innerText = rec.toFixed(2) + " " + currentCurrency;
 
             let priceInput = document.getElementById('market-price');
             if (priceInput && (priceInput.value === "" || priceInput.dataset.autofilled === "true")) {
-                priceInput.value = rec.toFixed(2);
-                priceInput.dataset.autofilled = "true";
+                priceInput.value = rec.toFixed(2); priceInput.dataset.autofilled = "true";
             }
         }
 
@@ -832,7 +770,6 @@
             let paxCount = parseInt(document.getElementById('recipe-pax').value) || 1;
             let ingTextarea = document.getElementById('rec-ing');
             let generatedLines = [];
-            
             const cats = ['fecu', 'prot', 'bof', 'sauc', 'legu', 'eco'];
             const labels = {'fecu': 'Féculents', 'prot': 'Protéines', 'bof': 'Laitier/BOF', 'sauc': 'Sauces', 'legu': 'Légumes', 'eco': 'Économat'};
 
@@ -840,18 +777,13 @@
                 let rawVal = document.getElementById(`market-${k}-raw`).value;
                 if (rawVal && rawVal.trim() !== "") {
                     let gram = parseFloat(document.getElementById(`gram-${k}`).value) || 1;
-                    let names = rawVal.split('\n').map(line => {
-                        return line.replace(/\([^)]+\)/g, '').replace(/dispo:.*$/i, '').trim().replace(/(\d+(?:\.\d+)?)\s*(?:€|euros?|\$|chf|mad|£|¥).*/i, '').trim();
-                    }).filter(n => n !== "").join(', ');
+                    let names = rawVal.split('\n').map(line => line.replace(/\([^)]+\)/g, '').replace(/dispo:.*$/i, '').trim().replace(/(\d+(?:\.\d+)?)\s*(?:€|euros?|\$|chf|mad|£|¥).*/i, '').trim()).filter(n => n !== "").join(', ');
                     if(names !== "") generatedLines.push(`- ${labels[k]} : ${gram * paxCount}g/pce (${names})`);
                 }
             });
 
-            if(generatedLines.length > 0) {
-                ingTextarea.value = "Ingrédients pour " + paxCount + " portions :\n" + generatedLines.join('\n');
-            } else {
-                alert("⚠️ Remplissez d'abord les cases du laboratoire.");
-            }
+            if(generatedLines.length > 0) ingTextarea.value = "Ingrédients pour " + paxCount + " portions :\n" + generatedLines.join('\n');
+            else alert("⚠️ Remplissez d'abord les cases du laboratoire.");
         }
 
         async function saveRecipe() {
@@ -859,12 +791,10 @@
             let price = parseFloat(document.getElementById('market-price').value);
             let category = document.getElementById('market-category').value;
             let unitCost = parseFloat(document.getElementById('market-total-cost').value) || 0; 
-            
             let ing = document.getElementById('rec-ing') ? document.getElementById('rec-ing').value : '';
             let prep = document.getElementById('rec-prep') ? document.getElementById('rec-prep').value : '';
 
             if(!name || isNaN(price)) return alert("⚠️ Nom et Prix obligatoires.");
-
             let fc = 0; if(price > 0 && unitCost > 0) fc = parseFloat(((unitCost / price) * 100).toFixed(1));
             
             let structuredIngs = [];
@@ -873,12 +803,11 @@
                 let rawVal = document.getElementById(`market-${k}-raw`).value;
                 let portion = parseFloat(document.getElementById(`gram-${k}`).value) || 1;
                 if (rawVal && rawVal.trim() !== "") {
-                    let lines = rawVal.split('\n');
-                    lines.forEach(line => {
+                    rawVal.split('\n').forEach(line => {
                         let cleanLine = line.replace(/\([^)]+\)/g, '').replace(/dispo:.*$/i, '').trim();
                         if(cleanLine === "") return;
                         let nameOnly = cleanLine.replace(/(\d+(?:\.\d+)?)\s*(?:€|euros?|\$|chf|mad|£|¥).*/i, '').trim();
-                        if (nameOnly) { structuredIngs.push({ name: nameOnly, qtyPerPortion: portion, cat: k }); }
+                        if (nameOnly) structuredIngs.push({ name: nameOnly, qtyPerPortion: portion, cat: k }); 
                     });
                 }
             });
@@ -904,69 +833,50 @@
         async function produceRecipe(id) {
             let r = recipesData.find(x => x.id === id);
             if(!r) return;
-            
             let pax = prompt(`🔪 PRODUCTION & VENTE\n\nCombien de portions de "${r.name}" avez-vous préparées ?\n\nLe système va déduire mathématiquement les ingrédients du stock global.`, "10");
             pax = parseInt(pax);
             if(isNaN(pax) || pax <= 0) return;
 
-            if(!r.structuredIngs || r.structuredIngs.length === 0) {
-                return alert("⚠️ Impossible : Aucune fiche technique détaillée trouvée pour cette recette.");
-            }
+            if(!r.structuredIngs || r.structuredIngs.length === 0) return alert("⚠️ Impossible : Aucune fiche technique détaillée trouvée pour cette recette.");
 
             let log = `Bilan de la production de ${pax} portions de "${r.name}" :\n\n`;
             
             r.structuredIngs.forEach(ing => {
                 let totalNeeded = ing.qtyPerPortion * pax;
                 let stockItem = stockGlobalData.find(s => s.name.toLowerCase() === ing.name.toLowerCase());
-                
                 if(stockItem) {
                     let stockQtyNumMatch = stockItem.qtyStr.toString().replace(',','.').match(/[\d.]+/);
                     if(stockQtyNumMatch) {
                         let stockQtyNum = parseFloat(stockQtyNumMatch[0]);
                         let stockUnit = stockItem.qtyStr.toString().replace(/[\d.]+/,'').trim().toLowerCase();
-
                         if(stockUnit.startsWith('k') || (stockUnit.startsWith('l') && !stockUnit.includes('m') && !stockUnit.includes('c'))) {
-                            stockQtyNum -= (totalNeeded / 1000);
-                            stockItem.qtyStr = stockQtyNum.toFixed(3) + " " + stockUnit;
+                            stockQtyNum -= (totalNeeded / 1000); stockItem.qtyStr = stockQtyNum.toFixed(3) + " " + stockUnit;
                             log += `✅ ${ing.name} : -${(totalNeeded/1000)} ${stockUnit} déduits.\n`;
                         } else {
-                            stockQtyNum -= totalNeeded;
-                            stockItem.qtyStr = stockQtyNum.toFixed(1) + " " + stockUnit;
+                            stockQtyNum -= totalNeeded; stockItem.qtyStr = stockQtyNum.toFixed(1) + " " + stockUnit;
                             log += `✅ ${ing.name} : -${totalNeeded} ${stockUnit} déduits.\n`;
                         }
-                    } else {
-                        log += `⚠️ ${ing.name} : Unité de stock illisible.\n`;
-                    }
-                } else {
-                    log += `❌ ${ing.name} : Introuvable dans le stock global !\n`;
-                }
+                    } else log += `⚠️ ${ing.name} : Unité de stock illisible.\n`;
+                } else log += `❌ ${ing.name} : Introuvable dans le stock global !\n`;
             });
-
             await API.update('INVENTORY_MASTER', stockGlobalData);
-            renderGlobalStock(); renderLiveStockPanel();
-            alert(log + "\nInventaire mis à jour avec succès.");
+            renderGlobalStock(); renderLiveStockPanel(); alert(log + "\nInventaire mis à jour avec succès.");
         }
 
         async function deleteRecipe(id) { 
             if(confirm("Supprimer définitivement cette fiche recette ?")) { 
-                recipesData = recipesData.filter(r => r.id !== id); 
-                renderRecipes(); await API.update('RECIPES_MASTER', recipesData); 
+                recipesData = recipesData.filter(r => r.id !== id); renderRecipes(); await API.update('RECIPES_MASTER', recipesData); 
             } 
         }
 
         function renderRecipes() {
-            if (!currentFolderCat) {
-                renderFolders();
-            } else {
-                renderFolderContents(currentFolderCat);
-            }
+            if (!currentFolderCat) renderFolders(); else renderFolderContents(currentFolderCat);
         }
 
         function renderFolders() {
             document.getElementById('folder-view').style.display = 'none';
             const catView = document.getElementById('catalog-view');
-            if(!catView) return;
-            catView.style.display = 'grid';
+            if(!catView) return; catView.style.display = 'grid';
             let html = '';
             ['menuJour', 'suggestions', 'entrees', 'plats', 'desserts'].forEach(cat => {
                 let count = recipesData.filter(r => r.cat === cat).length;
@@ -977,12 +887,9 @@
         }
 
         function openFolder(cat) {
-            currentFolderCat = cat;
-            document.getElementById('catalog-view').style.display = 'none';
-            document.getElementById('folder-view').style.display = 'flex';
+            currentFolderCat = cat; document.getElementById('catalog-view').style.display = 'none'; document.getElementById('folder-view').style.display = 'flex';
             let displayName = CAT_SETTINGS[cat] ? CAT_SETTINGS[cat].name : cat;
-            document.getElementById('current-folder-title').innerText = "📂 " + displayName;
-            renderFolderContents(cat);
+            document.getElementById('current-folder-title').innerText = "📂 " + displayName; renderFolderContents(cat);
         }
 
         function closeFolder() { currentFolderCat = null; renderRecipes(); }
@@ -1006,12 +913,10 @@
                 </div>`).join('');
         }
 
-     function renderMenu() {
+        function renderMenu() {
             const grid = document.getElementById('dynamic-menu-grid');
             if(!grid) return;
-            
-            let html = '';
-            let colorIndex = 0;
+            let html = ''; let colorIndex = 0;
 
             for (let category in menuData) {
                 let items = menuData[category];
@@ -1020,11 +925,9 @@
                 let catEscaped = String(category).replace(/'/g, "\\'");
 
                 let itemsHtml = items.map(item => {
-                    // 🚨 GESTION DU STOCK EN CHIFFRE
                     let stockVal = item.stock !== undefined ? item.stock : 99;
                     let stockColor = stockVal <= 0 ? 'var(--alert)' : 'var(--gold)';
                     let stockBorder = stockVal <= 0 ? 'var(--alert)' : 'var(--border)';
-
                     return `
                     <div class="menu-item">
                         <div class="item-name">${item.name}</div>
@@ -1035,8 +938,7 @@
                                 <button class="btn-del" onclick="deleteMenuItem('${catEscaped}', ${item.id})" title="Supprimer ce plat">✖</button>
                             </div>
                         </div>
-                    </div>
-                    `;
+                    </div>`;
                 }).join('');
 
                 html += `
@@ -1051,7 +953,7 @@
                     <div class="item-list">${itemsHtml}</div>
                     <div class="add-row">
                         <div style="display:flex; gap:10px;">
-                            <textarea id="add-name-${colorIndex}" placeholder="Plat ou Menu complet (Entrée + Plat...)" style="flex:1; min-height: 50px; resize: vertical; font-family: inherit;"></textarea>
+                            <textarea id="add-name-${colorIndex}" placeholder="Plat ou Menu" style="flex:1; min-height: 50px; resize: vertical;"></textarea>
                             <button class="btn-mic" onclick="startDictation('add-name-${colorIndex}', 'mic-${colorIndex}')" id="mic-${colorIndex}">🎙️</button>
                         </div>
                         <div style="display:flex; gap:10px;">
@@ -1068,7 +970,6 @@
                 <div style="font-size: 3rem; color: var(--text-muted); margin-bottom: 15px;">➕</div>
                 <div style="font-weight: 800; color: var(--text-main); letter-spacing: 1px; text-align:center;">NOUVELLE CATÉGORIE</div>
             </div>`;
-
             grid.innerHTML = html;
             
             let selectHtml = '';
@@ -1076,234 +977,147 @@
                 let displayName = CAT_SETTINGS[cat] ? CAT_SETTINGS[cat].name : cat;
                 selectHtml += `<option value="${cat}">${displayName}</option>`;
             }
-            if(document.getElementById('market-category')) {
-                document.getElementById('market-category').innerHTML = selectHtml;
-            }
+            const marketCat = document.getElementById('market-category');
+            if(marketCat) marketCat.innerHTML = selectHtml;
         }
         
         async function editItemName(category, id) {
             let item = menuData[category].find(x => x.id === id);
             if(!item) return;
-            let newName = prompt("✏️ Modifier le nom (utilisez le bouton + pour refaire un menu complet) :", item.name);
-            if(newName !== null && newName.trim() !== "") {
-                item.name = newName.trim();
-                renderMenu();
-                await API.update('MENU_MASTER', menuData);
-            }
+            let newName = prompt("✏️ Modifier le nom :", item.name);
+            if(newName && newName.trim() !== "") { item.name = newName.trim(); renderMenu(); await API.update('MENU_MASTER', menuData); }
         }
 
         async function editItemPrice(category, id) {
             let item = menuData[category].find(x => x.id === id);
             if(!item) return;
             let newPrice = prompt(`💰 Modifier le prix (${currentCurrency}) :`, item.price);
-            if(newPrice !== null && newPrice.trim() !== "") {
+            if(newPrice && newPrice.trim() !== "") {
                 let parsed = parseFloat(newPrice.replace(',', '.'));
-                if(!isNaN(parsed)) {
-                    item.price = parsed;
-                    renderMenu();
-                    await API.update('MENU_MASTER', menuData);
-                }
+                if(!isNaN(parsed)) { item.price = parsed; renderMenu(); await API.update('MENU_MASTER', menuData); }
             }
         }
 
         async function editCategoryName(category) {
             let currentName = CAT_SETTINGS[category] ? CAT_SETTINGS[category].name : category;
             let newName = prompt("✏️ Renommer la catégorie :", currentName);
-            
             if(newName && newName.trim() !== "" && newName !== currentName) {
                 let newKey = newName.trim();
-                if(menuData[newKey]) return alert("⚠️ Une catégorie porte déjà ce nom.");
-                
-                menuData[newKey] = menuData[category];
-                delete menuData[category];
-                
-                if (CAT_SETTINGS[category]) {
-                    CAT_SETTINGS[newKey] = { name: newKey.toUpperCase(), color: CAT_SETTINGS[category].color };
-                    delete CAT_SETTINGS[category];
-                }
-                
-                renderMenu();
-                await API.update('MENU_MASTER', menuData);
+                if(menuData[newKey]) return alert("⚠️ Catégorie existante.");
+                menuData[newKey] = menuData[category]; delete menuData[category];
+                if (CAT_SETTINGS[category]) { CAT_SETTINGS[newKey] = { name: newKey.toUpperCase(), color: CAT_SETTINGS[category].color }; delete CAT_SETTINGS[category]; }
+                renderMenu(); await API.update('MENU_MASTER', menuData);
             }
         }
 
         async function addNewCategory() {
-            let catName = prompt("🏷️ Nom de la nouvelle catégorie (ex: Vins, Tapas...) :");
+            let catName = prompt("🏷️ Nom de la nouvelle catégorie :");
             if(catName && catName.trim() !== "") {
                 let key = catName.trim();
-                if(!menuData[key]) {
-                    menuData[key] = [];
-                    renderMenu();
-                    await API.update('MENU_MASTER', menuData);
-                } else {
-                    alert("⚠️ Cette catégorie existe déjà.");
-                }
+                if(!menuData[key]) { menuData[key] = []; renderMenu(); await API.update('MENU_MASTER', menuData); } 
+                else alert("⚠️ Catégorie existante.");
             }
         }
 
         async function deleteCategory(category) {
-            if(menuData[category].length > 0) {
-                if(!confirm(`⚠️ ATTENTION : La catégorie "${category}" contient ${menuData[category].length} plats. Voulez-vous vraiment la supprimer avec tout son contenu ?`)) return;
-            } else {
-                if(!confirm(`🗑️ Supprimer la catégorie "${category}" ?`)) return;
-            }
-            delete menuData[category];
-            renderMenu();
-            await API.update('MENU_MASTER', menuData);
+            if(menuData[category].length > 0) { if(!confirm(`⚠️ Supprimer la catégorie avec ses ${menuData[category].length} plats ?`)) return; } 
+            else { if(!confirm(`🗑️ Supprimer la catégorie ?`)) return; }
+            delete menuData[category]; renderMenu(); await API.update('MENU_MASTER', menuData);
         }
 
         async function updateDishStock(category, id) {
             let item = menuData[category].find(x => x.id === id);
             if(!item) return;
-            let currentStock = item.stock !== undefined ? item.stock : 99;
-            let newStock = prompt(`📦 Combien de portions de "${item.name}" avez-vous prêtes à envoyer ?`, currentStock);
+            let newStock = prompt(`📦 Quantité prête ?`, item.stock !== undefined ? item.stock : 99);
             if(newStock === null || newStock.trim() === "") return; 
             let parsedStock = parseInt(newStock);
             if(isNaN(parsedStock) || parsedStock < 0) return alert("⚠️ Nombre invalide.");
-            
-            item.stock = parsedStock;
-            renderMenu();
-            await API.update('MENU_MASTER', menuData);
+            item.stock = parsedStock; renderMenu(); await API.update('MENU_MASTER', menuData);
         }
 
         async function addMenuItem(category, inputIndex) {
-            const nameInput = document.getElementById(`add-name-${inputIndex}`); 
-            const priceInput = document.getElementById(`add-price-${inputIndex}`); 
+            const nameInput = document.getElementById(`add-name-${inputIndex}`); const priceInput = document.getElementById(`add-price-${inputIndex}`); 
             if (!nameInput.value || !priceInput.value) return;
-            
             if(!menuData[category]) menuData[category] = [];
             menuData[category].push({ id: Date.now(), name: nameInput.value, price: parseFloat(priceInput.value), stock: 99 });
-            
-            nameInput.value = ''; priceInput.value = '';
-            renderMenu(); await API.update('MENU_MASTER', menuData);
+            nameInput.value = ''; priceInput.value = ''; renderMenu(); await API.update('MENU_MASTER', menuData);
         }
 
         async function deleteMenuItem(category, id) { 
-            menuData[category] = menuData[category].filter(item => item.id !== id); 
-            renderMenu(); await API.update('MENU_MASTER', menuData); 
+            menuData[category] = menuData[category].filter(item => item.id !== id); renderMenu(); await API.update('MENU_MASTER', menuData); 
         }
 
         // ==========================================
-        // 📊 MOTEUR DE STATISTIQUES ET RENTABILITÉ
+        // 📊 STATS
         // ==========================================
         async function generateSalesStats() {
-            let caBrut = 0;
-            let coutTotal = 0;
-            let totalPlats = 0;
-            let salesMap = {};
-            
-            let state = await API.getState();
-            let activeOrders = state.activeOrders || {};
+            let caBrut = 0; let coutTotal = 0; let totalPlats = 0; let salesMap = {};
+            let state = await API.getState(); let activeOrders = state.activeOrders || {};
 
             for (let tableId in activeOrders) {
                 if (tableId.includes('MASTER') || tableId.includes('ARCHIVE') || tableId.includes('BAR') || tableId.includes('CUISINE')) continue;
-                
                 let orderData = activeOrders[tableId];
-
                 if (!orderData || !orderData.items) continue;
+                
                 orderData.items.forEach(item => {
                     if (item.done) {
-                        let qty = parseInt(item.qty) || 1;
-                        let price = parseFloat(item.price) || 0; 
-                        
-                        if (price === 0) {
-                            for(let cat in menuData) {
-                                let found = menuData[cat].find(m => m.name === item.n);
-                                if(found) price = found.price;
-                            }
-                        }
-
-                        let cost = 0;
-                        let recipe = recipesData.find(r => r.name === item.n);
-                        if(recipe) cost = recipe.cost;
-
-                        caBrut += (price * qty);
-                        coutTotal += (cost * qty);
-                        totalPlats += qty;
-
+                        let qty = parseInt(item.qty) || 1; let price = parseFloat(item.price) || 0; 
+                        if (price === 0) { for(let cat in menuData) { let found = menuData[cat].find(m => m.name === item.n); if(found) price = found.price; } }
+                        let cost = 0; let recipe = recipesData.find(r => r.name === item.n); if(recipe) cost = recipe.cost;
+                        caBrut += (price * qty); coutTotal += (cost * qty); totalPlats += qty;
                         if(!salesMap[item.n]) salesMap[item.n] = { qty: 0, rev: 0 };
-                        salesMap[item.n].qty += qty;
-                        salesMap[item.n].rev += (price * qty);
+                        salesMap[item.n].qty += qty; salesMap[item.n].rev += (price * qty);
                     }
                 });
             }
 
-            let margeNette = caBrut - coutTotal;
-
             document.getElementById('stat-ca').innerText = caBrut.toFixed(2) + " " + currentCurrency;
-            document.getElementById('stat-marge').innerText = margeNette.toFixed(2) + " " + currentCurrency;
+            document.getElementById('stat-marge').innerText = (caBrut - coutTotal).toFixed(2) + " " + currentCurrency;
             document.getElementById('stat-qty').innerText = totalPlats;
 
-            let topSalesArray = Object.keys(salesMap).map(k => {
-                return { name: k, qty: salesMap[k].qty, rev: salesMap[k].rev };
+            let topSalesArray = Object.keys(salesMap).map(k => ({ name: k, qty: salesMap[k].qty, rev: salesMap[k].rev })).sort((a, b) => b.qty - a.qty);
+            let html = topSalesArray.length === 0 ? '<p style="text-align:center; color:var(--text-muted); font-style: italic;">Aucun article envoyé.</p>' : '';
+            
+            topSalesArray.forEach((s, idx) => {
+                let medal = idx === 0 ? '🥇' : (idx === 1 ? '🥈' : (idx === 2 ? '🥉' : '🔹'));
+                html += `
+                <div style="display:flex; justify-content:space-between; align-items:center; background: rgba(255,255,255,0.02); padding: 15px; border-radius: 10px; border: 1px solid var(--border); transition: 0.2s;">
+                    <div style="display:flex; align-items:center; gap: 15px;"><span style="font-size:1.8rem;">${medal}</span><span style="font-weight:900; color:var(--text-main); font-size:1.1rem;">${s.name}</span></div>
+                    <div style="display:flex; gap: 30px; align-items:center;">
+                        <span style="color:var(--text-muted); font-size:0.85rem; font-weight:bold;">Envoyés: <b style="color:var(--ordered); font-size:1.2rem;">${s.qty}</b></span>
+                        <span style="color:var(--text-muted); font-size:0.85rem; font-weight:bold;">CA: <b style="color:var(--gold); font-size:1.2rem;">${s.rev.toFixed(2)} ${currentCurrency}</b></span>
+                    </div>
+                </div>`;
             });
-            topSalesArray.sort((a, b) => b.qty - a.qty);
-
-            let html = '';
-            if(topSalesArray.length === 0) {
-                html = '<p style="text-align:center; color:var(--text-muted); font-size: 0.9rem; font-style: italic;">Aucun article envoyé aujourd\'hui.</p>';
-            } else {
-                topSalesArray.forEach((s, idx) => {
-                    let medal = idx === 0 ? '🥇' : (idx === 1 ? '🥈' : (idx === 2 ? '🥉' : '🔹'));
-                    html += `
-                    <div style="display:flex; justify-content:space-between; align-items:center; background: rgba(255,255,255,0.02); padding: 15px; border-radius: 10px; border: 1px solid var(--border); transition: 0.2s;" onmouseover="this.style.background='rgba(255,255,255,0.05)'" onmouseout="this.style.background='rgba(255,255,255,0.02)'">
-                        <div style="display:flex; align-items:center; gap: 15px;">
-                            <span style="font-size:1.8rem;">${medal}</span>
-                            <span style="font-weight:900; color:var(--text-main); font-size:1.1rem;">${s.name}</span>
-                        </div>
-                        <div style="display:flex; gap: 30px; align-items:center;">
-                            <span style="color:var(--text-muted); font-size:0.85rem; text-transform:uppercase; font-weight:bold;">Envoyés: <b style="color:var(--ordered); font-size:1.2rem;">${s.qty}</b></span>
-                            <span style="color:var(--text-muted); font-size:0.85rem; text-transform:uppercase; font-weight:bold;">CA: <b style="color:var(--gold); font-size:1.2rem;">${s.rev.toFixed(2)} ${currentCurrency}</b></span>
-                        </div>
-                    </div>`;
-                });
-            }
             document.getElementById('top-sales-list').innerHTML = html;
         }
 
         // ==========================================
-        // 👁️ VISION I CHEF (IA SCANNER) CONNECTÉ À RENDER
+        // 👁️ VISION I CHEF (IA SCANNER)
         // ==========================================
         document.getElementById('cameraInput').addEventListener('change', async function(e) {
             const file = e.target.files[0];
             if (!file) return;
 
             const resultBox = document.getElementById('scanResult');
-            resultBox.style.display = 'block';
-            resultBox.innerHTML = "⏳ Analyse IA en cours. Le cerveau Gemini lit la facture...";
+            resultBox.style.display = 'block'; resultBox.innerHTML = "⏳ Analyse IA en cours...";
 
             const reader = new FileReader();
             reader.onloadend = async function() {
-                const base64String = reader.result.split(',')[1];
-                const mimeType = file.type;
-
                 try {
-                    // Connexion à ton nouveau serveur Render
                     const response = await fetch(`${SERVER_URL}/api/scan-invoice`, {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({
-                            imageBase64: base64String, // La clé attendue par ton serveur
-                            mimeType: mimeType
-                        })
+                        body: JSON.stringify({ imageBase64: reader.result.split(',')[1], mimeType: file.type })
                     });
-
                     const resData = await response.json();
-                    
                     if (!resData.success) throw new Error(resData.error);
-
-                    // Affichage des données extraites par l'IA
-                    resultBox.innerHTML = "<span style='color: var(--gold);'>✅ Extraction réussie :</span><br><br>" + 
-                                          JSON.stringify(resData.data, null, 2).replace(/\n/g, '<br>').replace(/ /g, '&nbsp;');
-                } catch (err) {
-                    resultBox.innerHTML = "<span style='color: var(--alert);'>❌ Erreur de lecture : " + err.message + "</span>";
-                }
+                    resultBox.innerHTML = "<span style='color: var(--gold);'>✅ Extraction réussie :</span><br><br>" + JSON.stringify(resData.data, null, 2).replace(/\n/g, '<br>').replace(/ /g, '&nbsp;');
+                } catch (err) { resultBox.innerHTML = "<span style='color: var(--alert);'>❌ Erreur : " + err.message + "</span>"; }
             };
             reader.readAsDataURL(file);
         });
 
-        window.onload = bootSystem;
-        
-</script>
+    </script>
 </body>
 </html>
