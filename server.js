@@ -30,7 +30,7 @@ app.post('/webhook', express.raw({type: 'application/json'}), async (req, res) =
 // ==========================================
 // 🧠 BASE DE DONNÉES : INFRASTRUCTURE iCHEF
 // ==========================================
-const mongoURI = process.env.MONGO_URI || "mongodb+srv://icheflavien_db_user:Tamere58.@cluster0.4w95d7m.mongodb.net/ichef_production?retryWrites=true&w=majority";
+const mongoURI = process.env.MONGO_URI || "mongodb+srv://icheflavien_db_user:<db_password>@cluster0.4w95d7m.mongodb.net/?appName=Cluster0";
 mongoose.connect(mongoURI).then(() => console.log('🔥 I CHEF Infrastructure Online')).catch(err => console.error(err.message));
 
 // AJOUT DES 5 PLANS
