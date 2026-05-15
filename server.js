@@ -94,18 +94,45 @@ app.post('/api/scan-invoice', async (req, res) => {
             "gemini-1.0-pro-vision-latest"
         ];
 
-        for (let modelName of modelsToTry) {
-            try {
-                console.log("Tentative IA avec le modèle :", modelName);
-                const model = genAI.getGenerativeModel({ model: modelName });
-                result = await model.generateContent([prompt, imagePart]);
-                console.log("Succès avec le modèle :", modelName);
-                break; // Le modèle a fonctionné, on arrête de chercher !
-            } catch (err) {
-                console.error(`Échec avec ${modelName} :`, err.message);
-                lastError = err.message;
-            }
-        }
+      let result;
+let lastError = null;
+
+const modelsToTry = [
+    "gemini-2.0-flash",
+    "gemini-1.5-flash",
+    "gemini-1.5-pro"
+];
+
+for (let modelName of modelsToTry) {
+    try {
+        console.log("Tentative IA avec le modèle :", modelName);
+
+        const model = genAI.getGenerativeModel({
+            model: modelName
+        });
+
+        result = await model.generateContent([
+            prompt,
+            imagePart
+        ]);
+
+        console.log("Succès avec le modèle :", modelName);
+
+        break;
+
+    } catch (err) {
+
+        console.error(`Échec avec ${modelName} :`, err.message);
+
+        lastError = err.message;
+    }
+}
+
+if (!result) {
+    throw new Error(
+        "Tous les modèles Google sont inaccessibles : " + lastError
+    );
+}
 
         if (!result) {
             throw new Error("Tous les modèles Google sont inaccessibles. Erreur finale : " + lastError);
