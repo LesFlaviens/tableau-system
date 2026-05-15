@@ -52,7 +52,7 @@ const AppState = mongoose.model('AppState', new mongoose.Schema({
 }, { minimize: false }));
 
 // ==========================================
-// 🤖 MOTEUR IA : RECONNAISSANCE DE FACTURES (MULTI-MODÈLES & DEBUG)
+// 🤖 MOTEUR IA : RECONNAISSANCE DE FACTURES
 // ==========================================
 const { GoogleGenerativeAI } = require('@google/generative-ai');
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY || 'CLE_MANQUANTE');
@@ -61,12 +61,15 @@ app.post('/api/scan-invoice', async (req, res) => {
     const { imageBase64, mimeType } = req.body;
     
     if (!imageBase64) return res.status(400).json({ success: false, error: "Aucune image fournie." });
-    if (!process.env.GEMINI_API_KEY) return res.status(500).json({ success: false, error: "Clé API IA non configurée sur Render." });
+    if (!process.env.GEMINI_API_KEY) return res.status(500).json({ success: false, error: "Clé API IA non configurée." });
 
     try {
         const base64Data = imageBase64.includes(',') ? imageBase64.split(',')[1] : imageBase64;
         const imagePart = { inlineData: { data: base64Data, mimeType: mimeType || "image/jpeg" } };
         
+        // 🔥 Lancement du modèle nouvelle génération officiel
+        const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+
         const prompt = `
         Tu es l'assistant d'un chef de cuisine. Analyse cette image de facture ou de ticket de caisse.
         Extrais les informations suivantes et renvoie UNIQUEMENT un objet JSON valide, sans texte avant ni après, sans balises markdown.
@@ -83,31 +86,9 @@ app.post('/api/scan-invoice', async (req, res) => {
         }
         Si tu ne trouves pas une info, mets null ou 0.`;
 
-        let result;
-        let googleErrorMsg = "";
-        
-        // 🛡️ CASCADE DE SÉCURITÉ
-        try {
-            const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
-            result = await model.generateContent([prompt, imagePart]);
-        } catch (e1) {
-            googleErrorMsg = e1.message;
-            try {
-                const model = genAI.getGenerativeModel({ model: "gemini-1.5-pro" });
-                result = await model.generateContent([prompt, imagePart]);
-            } catch (e2) {
-                googleErrorMsg = e2.message;
-                try {
-                    const model = genAI.getGenerativeModel({ model: "gemini-1.0-pro-vision-latest" });
-                    result = await model.generateContent([prompt, imagePart]);
-                } catch (e3) {
-                    googleErrorMsg = e3.message;
-                    throw new Error(googleErrorMsg); // On déclenche l'erreur finale
-                }
-            }
-        }
-
+        const result = await model.generateContent([prompt, imagePart]);
         const responseText = result.response.text();
+        
         const cleanJson = responseText.replace(/```json/gi, '').replace(/```/gi, '').trim();
         const data = JSON.parse(cleanJson);
 
@@ -115,9 +96,10 @@ app.post('/api/scan-invoice', async (req, res) => {
 
     } catch (error) {
         console.error("Échec IA Google:", error);
-        res.status(500).json({ success: false, error: "Refus de Google : " + error.message });
+        res.status(500).json({ success: false, error: "Erreur IA : " + error.message });
     }
 });
+
 // ==========================================
 // 🚀 ACTIVATION & CONNEXION (LES 5 ROUTES)
 // ==========================================
@@ -154,7 +136,7 @@ app.post('/api/activate', async (req, res) => {
 // 🔒 SÉCURITÉ : VÉRIFICATION LICENCE & PIN
 // ==========================================
 
-// Route 1 : Vérification de la validité de la licence (utilisée par la vitrine)
+// Route 1 : Vérification de la validité de la licence
 app.get('/api/check-license', async (req, res) => {
     const { tenantID } = req.query;
     try {
@@ -166,7 +148,7 @@ app.get('/api/check-license', async (req, res) => {
     }
 });
 
-// Route 2 : Vérification du Code PIN Maître (utilisée par vitrine.html et chef.html)
+// Route 2 : Vérification du Code PIN Maître
 app.post('/api/verify-pin', async (req, res) => {
     const { tenantID, pin } = req.body;
     try {
