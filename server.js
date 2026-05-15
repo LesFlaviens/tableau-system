@@ -54,6 +54,9 @@ const AppState = mongoose.model('AppState', new mongoose.Schema({
 // ==========================================
 // 🤖 MOTEUR IA : RECONNAISSANCE DE FACTURES
 // ==========================================
+// ==========================================
+// 🤖 MOTEUR IA : RECONNAISSANCE DE FACTURES (MODE DIAGNOSTIC ACTIF)
+// ==========================================
 const { GoogleGenerativeAI } = require('@google/generative-ai');
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY || 'CLE_MANQUANTE');
 
@@ -61,10 +64,13 @@ app.post('/api/scan-invoice', async (req, res) => {
     const { imageBase64, mimeType } = req.body;
     
     if (!imageBase64) return res.status(400).json({ success: false, error: "Aucune image fournie." });
-    if (!process.env.GEMINI_API_KEY) return res.status(500).json({ success: false, error: "Clé API IA non configurée sur le serveur." });
+    if (!process.env.GEMINI_API_KEY || process.env.GEMINI_API_KEY === 'CLE_MANQUANTE') {
+        return res.status(500).json({ success: false, error: "🚨 CRITIQUE : Clé GEMINI_API_KEY introuvable dans Render." });
+    }
 
     try {
         const base64Data = imageBase64.includes(',') ? imageBase64.split(',')[1] : imageBase64;
+        // On force la version la plus stable de Flash
         const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
 
         const prompt = `
@@ -84,6 +90,8 @@ app.post('/api/scan-invoice', async (req, res) => {
         Si tu ne trouves pas une info, mets null ou 0.`;
 
         const imagePart = { inlineData: { data: base64Data, mimeType: mimeType || "image/jpeg" } };
+        
+        console.log("Transmission de l'image à Google Gemini...");
         const result = await model.generateContent([prompt, imagePart]);
         const responseText = result.response.text();
         
@@ -93,7 +101,9 @@ app.post('/api/scan-invoice', async (req, res) => {
         res.json({ success: true, data: data });
 
     } catch (error) {
-        res.status(500).json({ success: false, error: "L'IA n'a pas pu analyser cette facture." });
+        console.error("🔥 CRASH IA GOOGLE :", error.message);
+        // C'est ICI la magie : on renvoie la vraie erreur à l'écran du site
+        res.status(500).json({ success: false, error: "ERREUR GOOGLE : " + error.message });
     }
 });
 
