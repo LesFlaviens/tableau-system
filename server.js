@@ -52,7 +52,7 @@ const AppState = mongoose.model('AppState', new mongoose.Schema({
 }, { minimize: false }));
 
 // ==========================================
-// 🤖 MOTEUR IA : RECONNAISSANCE DE FACTURES
+// 🤖 MOTEUR IA : RECONNAISSANCE FACTURES (MULTI-MODÈLES AUTO-ADAPTABLE)
 // ==========================================
 const { GoogleGenerativeAI } = require('@google/generative-ai');
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY || 'CLE_MANQUANTE');
@@ -61,15 +61,12 @@ app.post('/api/scan-invoice', async (req, res) => {
     const { imageBase64, mimeType } = req.body;
     
     if (!imageBase64) return res.status(400).json({ success: false, error: "Aucune image fournie." });
-    if (!process.env.GEMINI_API_KEY) return res.status(500).json({ success: false, error: "Clé API IA non configurée." });
+    if (!process.env.GEMINI_API_KEY || process.env.GEMINI_API_KEY === 'CLE_MANQUANTE') return res.status(500).json({ success: false, error: "Clé API IA non configurée." });
 
     try {
         const base64Data = imageBase64.includes(',') ? imageBase64.split(',')[1] : imageBase64;
         const imagePart = { inlineData: { data: base64Data, mimeType: mimeType || "image/jpeg" } };
         
-        // 🔥 Lancement du modèle nouvelle génération officiel
-        const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
-
         const prompt = `
         Tu es l'assistant d'un chef de cuisine. Analyse cette image de facture ou de ticket de caisse.
         Extrais les informations suivantes et renvoie UNIQUEMENT un objet JSON valide, sans texte avant ni après, sans balises markdown.
@@ -86,16 +83,42 @@ app.post('/api/scan-invoice', async (req, res) => {
         }
         Si tu ne trouves pas une info, mets null ou 0.`;
 
-        const result = await model.generateContent([prompt, imagePart]);
+        let result = null;
+        let lastError = "";
+        // 🚀 BÉLIER : Teste les modèles un par un de façon ultra-agressive
+        const modelsToTry = [
+            "gemini-1.5-flash", 
+            "gemini-1.5-flash-latest", 
+            "gemini-1.5-pro", 
+            "gemini-pro-vision", 
+            "gemini-1.0-pro-vision-latest"
+        ];
+
+        for (let modelName of modelsToTry) {
+            try {
+                console.log("Tentative IA avec le modèle :", modelName);
+                const model = genAI.getGenerativeModel({ model: modelName });
+                result = await model.generateContent([prompt, imagePart]);
+                console.log("Succès avec le modèle :", modelName);
+                break; // Le modèle a fonctionné, on arrête de chercher !
+            } catch (err) {
+                console.error(`Échec avec ${modelName} :`, err.message);
+                lastError = err.message;
+            }
+        }
+
+        if (!result) {
+            throw new Error("Tous les modèles Google sont inaccessibles. Erreur finale : " + lastError);
+        }
+
         const responseText = result.response.text();
-        
         const cleanJson = responseText.replace(/```json/gi, '').replace(/```/gi, '').trim();
         const data = JSON.parse(cleanJson);
 
         res.json({ success: true, data: data });
 
     } catch (error) {
-        console.error("Échec IA Google:", error);
+        console.error("Échec Critique IA:", error);
         res.status(500).json({ success: false, error: "Erreur IA : " + error.message });
     }
 });
@@ -115,7 +138,6 @@ app.post('/api/activate', async (req, res) => {
         const randomPin = Math.floor(1000 + Math.random() * 9000).toString();
         const finalPlan = plan || 'ESSENTIEL';
 
-        // GESTION DES 5 LIMITES D'ÉCRANS
         let limit = 1; 
         if (finalPlan === 'BUSINESS') limit = 5;
         if (finalPlan === 'EXCUTIF') limit = 25;
@@ -135,8 +157,6 @@ app.post('/api/activate', async (req, res) => {
 // ==========================================
 // 🔒 SÉCURITÉ : VÉRIFICATION LICENCE & PIN
 // ==========================================
-
-// Route 1 : Vérification de la validité de la licence
 app.get('/api/check-license', async (req, res) => {
     const { tenantID } = req.query;
     try {
@@ -148,7 +168,6 @@ app.get('/api/check-license', async (req, res) => {
     }
 });
 
-// Route 2 : Vérification du Code PIN Maître
 app.post('/api/verify-pin', async (req, res) => {
     const { tenantID, pin } = req.body;
     try {
@@ -168,68 +187,48 @@ app.post('/api/verify-pin', async (req, res) => {
 // ==========================================
 // 🛠️ MODULES D'ADMINISTRATION CLIENT
 // ==========================================
-
-// MISE À JOUR DU CODE PIN PAR LE CLIENT
 app.post('/api/update-pin', async (req, res) => {
     const { tenantID, newPin } = req.body;
     try {
         const tenant = await Tenant.findOne({ tenantID });
         if (!tenant) return res.status(404).json({ success: false, error: "Identifiant introuvable." });
-        
         tenant.pin = newPin;
         await tenant.save();
-        
         res.json({ success: true });
-    } catch (error) { 
-        res.status(500).json({ success: false, error: "Erreur lors de la sauvegarde." }); 
-    }
+    } catch (error) { res.status(500).json({ success: false, error: "Erreur sauvegarde." }); }
 });
 
-// Informations du tableau de bord (Appareils)
 app.get('/api/dashboard-info', async (req, res) => {
     const { tenantID } = req.query;
     try {
         const tenant = await Tenant.findOne({ tenantID });
         if (!tenant) return res.status(404).json({ success: false });
-        res.json({ 
-            success: true, 
-            activeDevices: tenant.registeredDevices.length, 
-            maxScreens: tenant.maxScreens 
-        });
+        res.json({ success: true, activeDevices: tenant.registeredDevices.length, maxScreens: tenant.maxScreens });
     } catch (e) { res.status(500).json({ success: false }); }
 });
 
-// Kill Switch (Déconnecter tout)
 app.post('/api/kill-switch', async (req, res) => {
     const { tenantID } = req.body;
     try {
         const tenant = await Tenant.findOne({ tenantID });
         if (!tenant) return res.status(404).json({ success: false, error: "Identifiant introuvable." });
-        
         tenant.registeredDevices = []; 
         await tenant.save();
         res.json({ success: true });
     } catch (e) { res.status(500).json({ success: false }); }
 });
 
-// Génération du lien Portail Stripe
 app.post('/api/billing-portal', async (req, res) => {
     const { tenantID } = req.body;
     try {
         const tenant = await Tenant.findOne({ tenantID });
-        if (!tenant || !tenant.config || !tenant.config.stripeCustomerId) {
-            return res.status(400).json({ success: false, error: "Aucun profil de facturation Stripe trouvé." });
-        }
-
+        if (!tenant || !tenant.config || !tenant.config.stripeCustomerId) return res.status(400).json({ success: false, error: "Aucun profil Stripe." });
         const session = await stripe.billingPortal.sessions.create({
             customer: tenant.config.stripeCustomerId,
             return_url: `${req.headers.origin}/admin.html?tenantID=${tenantID}`,
         });
-
         res.json({ success: true, url: session.url });
-    } catch (e) { 
-        res.status(500).json({ success: false, error: "Erreur de connexion à Stripe." }); 
-    }
+    } catch (e) { res.status(500).json({ success: false, error: "Erreur Stripe." }); }
 });
 
 // ==========================================
@@ -268,92 +267,25 @@ app.get('/panel-ichef', async (req, res) => {
     if (pass !== ADMIN_PASS) return res.status(401).send('🔒 ACCÈS REFUSÉ');
     const tenants = await Tenant.find({});
     
-    let html = `
-    <!DOCTYPE html>
-    <html lang="fr">
-    <head>
-        <meta charset="UTF-8">
-        <title>COMMAND CENTER - iCHEF</title>
-        <style>
-            body { background: #050505; color: #fff; font-family: sans-serif; padding: 20px; }
-            table { width: 100%; border-collapse: collapse; background: #0a0a0a; margin-top: 20px; }
-            th, td { border: 1px solid #222; padding: 12px; text-align: left; }
-            th { background: #111; color: #fbbf24; text-transform: uppercase; font-size: 0.75rem; }
-            .plan-badge { padding: 4px 8px; border-radius: 4px; font-weight: 800; font-size: 0.7rem; }
-            .plan-CHEF { background: rgba(16, 185, 129, 0.1); color: #10b981; border: 1px solid #10b981; }
-            .plan-ECO { background: rgba(59, 130, 246, 0.1); color: #3b82f6; border: 1px solid #3b82f6; }
-            .plan-BUSINESS { background: rgba(168, 85, 247, 0.1); color: #a855f7; border: 1px solid #a855f7; }
-            .plan-EXCUTIF { background: rgba(156, 163, 175, 0.1); color: #9ca3af; border: 1px solid #9ca3af; }
-            .plan-PREMIUM { background: rgba(239, 68, 68, 0.1); color: #ef4444; border: 1px solid #ef4444; }
-            .btn { padding: 8px 12px; border: none; border-radius: 6px; cursor: pointer; font-weight: 800; text-transform: uppercase; font-size: 0.65rem; transition: 0.2s; }
-            .badge-screens { background: #111; color: #fbbf24; padding: 5px 10px; border-radius: 4px; font-weight: 900; }
-        </style>
-    </head>
-    <body>
-        <h1>👑 iCHEF <span style="color:#fbbf24">COMMAND CENTER</span></h1>
-        <table>
-            <tr>
-                <th>Restaurant</th>
-                <th>Pack Actuel</th>
-                <th>Code PIN</th>
-                <th>Écrans (Actifs / Max)</th>
-                <th>Pilotage Commercial</th>
-            </tr>
-            ${tenants.map(t => `
-                <tr>
-                    <td><b>${t.clientName}</b><br><small style="color:#666">${t.tenantID}</small></td>
-                    <td><span class="plan-badge plan-${t.plan}">${t.plan}</span></td>
-                    <td style="color:#4ade80; font-weight:bold; font-size:1.2rem;">${t.pin}</td>
-                    <td><span class="badge-screens">${t.registeredDevices.length} / ${t.maxScreens}</span></td>
-                    <td>
-                        <form action="/panel-ichef/action" method="POST" style="display:inline;">
-                            <input type="hidden" name="pass" value="${pass}"><input type="hidden" name="tenantID" value="${t.tenantID}">
-                            
-                            <select name="newPlan" onchange="this.form.submit()" style="background:#222; color:#fff; padding:6px; border-radius:4px; border:1px solid #444;">
-                                <option value="ECO" ${t.plan === 'ECO' ? 'selected' : ''}>Essentiel (1 Écran)</option>
-                                <option value="CHEF" ${t.plan === 'CHEF' ? 'selected' : ''}>Chef IA (1 Écran)</option>
-                                <option value="BUSINESS" ${t.plan === 'BUSINESS' ? 'selected' : ''}>Business (5 Écrans)</option>
-                                <option value="EXCUTIF" ${t.plan === 'EXCUTIF' ? 'selected' : ''}>Exécutif (25 Écrans)</option>
-                                <option value="PREMIUM" ${t.plan === 'PREMIUM' ? 'selected' : ''}>Palace (200 Écrans)</option>
-                            </select>
+    let html = `<!DOCTYPE html><html lang="fr"><head><meta charset="UTF-8"><title>COMMAND CENTER</title><style>body { background:#050505; color:#fff; font-family:sans-serif; padding:20px; } table { width:100%; border-collapse:collapse; background:#0a0a0a; margin-top:20px; } th, td { border:1px solid #222; padding:12px; text-align:left; } th { background:#111; color:#fbbf24; text-transform:uppercase; font-size:0.75rem; } .plan-badge { padding:4px 8px; border-radius:4px; font-weight:800; font-size:0.7rem; } .plan-CHEF { background:rgba(16,185,129,0.1); color:#10b981; border:1px solid #10b981; } .plan-ECO { background:rgba(59,130,246,0.1); color:#3b82f6; border:1px solid #3b82f6; } .plan-BUSINESS { background:rgba(168,85,247,0.1); color:#a855f7; border:1px solid #a855f7; } .plan-EXCUTIF { background:rgba(156,163,175,0.1); color:#9ca3af; border:1px solid #9ca3af; } .plan-PREMIUM { background:rgba(239,68,68,0.1); color:#ef4444; border:1px solid #ef4444; } .btn { padding:8px 12px; border:none; border-radius:6px; cursor:pointer; font-weight:800; text-transform:uppercase; font-size:0.65rem; transition:0.2s; } .badge-screens { background:#111; color:#fbbf24; padding:5px 10px; border-radius:4px; font-weight:900; }</style></head><body><h1>👑 iCHEF <span style="color:#fbbf24">COMMAND CENTER</span></h1><table><tr><th>Restaurant</th><th>Pack Actuel</th><th>Code PIN</th><th>Écrans (Actifs / Max)</th><th>Pilotage Commercial</th></tr>${tenants.map(t => `<tr><td><b>${t.clientName}</b><br><small style="color:#666">${t.tenantID}</small></td><td><span class="plan-badge plan-${t.plan}">${t.plan}</span></td><td style="color:#4ade80; font-weight:bold; font-size:1.2rem;">${t.pin}</td><td><span class="badge-screens">${t.registeredDevices.length} / ${t.maxScreens}</span></td><td><form action="/panel-ichef/action" method="POST" style="display:inline;"><input type="hidden" name="pass" value="${pass}"><input type="hidden" name="tenantID" value="${t.tenantID}"><select name="newPlan" onchange="this.form.submit()" style="background:#222; color:#fff; padding:6px; border-radius:4px; border:1px solid #444;"><option value="ECO" ${t.plan==='ECO'?'selected':''}>Essentiel</option><option value="CHEF" ${t.plan==='CHEF'?'selected':''}>Chef IA</option><option value="BUSINESS" ${t.plan==='BUSINESS'?'selected':''}>Business</option><option value="EXCUTIF" ${t.plan==='EXCUTIF'?'selected':''}>Exécutif</option><option value="PREMIUM" ${t.plan==='PREMIUM'?'selected':''}>Palace</option></select><button type="submit" name="action" value="add_screen" class="btn" style="background:#fbbf24; color:#000;">+1 📺</button><button type="submit" name="action" value="reset_devices" class="btn" style="background:#3b82f6; color:#fff;">Reset Appareils</button><button type="submit" name="action" value="${t.status === 'ACTIF' ? 'suspend' : 'activate'}" class="btn" style="background:#444; color:#fff;">${t.status === 'ACTIF' ? 'Bloquer' : 'Débloquer'}</button><button type="submit" name="action" value="delete" class="btn" style="background:#b91c1c; color:#fff;" onclick="return confirm('Supprimer ce client ?')">🗑️</button></form></td></tr>`).join('')}</table></body></html>`;
+        res.send(html);
+    });
 
-                            <button type="submit" name="action" value="add_screen" class="btn" style="background:#fbbf24; color:#000;">+1 📺</button>
-                            <button type="submit" name="action" value="reset_devices" class="btn" style="background:#3b82f6; color:#fff;">Reset Appareils</button>
-                            <button type="submit" name="action" value="${t.status === 'ACTIF' ? 'suspend' : 'activate'}" class="btn" style="background:#444; color:#fff;">
-                                ${t.status === 'ACTIF' ? 'Bloquer Compte' : 'Débloquer Compte'}
-                            </button>
-                            <button type="submit" name="action" value="delete" class="btn" style="background:#b91c1c; color:#fff;" onclick="return confirm('Supprimer ce client ?')">🗑️</button>
-                        </form>
-                    </td>
-                </tr>
-            `).join('')}
-        </table>
-    </body>
-    </html>`;
-    res.send(html);
-});
+    app.post('/panel-ichef/action', async (req, res) => {
+        const { pass, tenantID, action, newPlan } = req.body;
+        if (pass !== ADMIN_PASS) return res.status(401).send('Interdit');
+        try {
+            if (newPlan) {
+                let limit = 1; if (newPlan === 'BUSINESS') limit = 5; if (newPlan === 'EXCUTIF') limit = 25; if (newPlan === 'PREMIUM') limit = 200;
+                await Tenant.findOneAndUpdate({ tenantID }, { plan: newPlan, maxScreens: limit });
+            }
+            if (action === 'add_screen') await Tenant.findOneAndUpdate({ tenantID }, { $inc: { maxScreens: 1 } });
+            if (action === 'reset_devices') await Tenant.findOneAndUpdate({ tenantID }, { registeredDevices: [] });
+            if (action === 'suspend') await Tenant.findOneAndUpdate({ tenantID }, { status: 'SUSPENDU' });
+            if (action === 'activate') await Tenant.findOneAndUpdate({ tenantID }, { status: 'ACTIF' });
+            if (action === 'delete') { await Tenant.findOneAndDelete({ tenantID }); await AppState.findOneAndDelete({ tenantID }); }
+            res.redirect('/panel-ichef?pass=' + ADMIN_PASS);
+        } catch (err) { res.status(500).send("Erreur."); }
+    });
 
-app.post('/panel-ichef/action', async (req, res) => {
-    const { pass, tenantID, action, newPlan } = req.body;
-    if (pass !== ADMIN_PASS) return res.status(401).send('Interdit');
-    try {
-        // AUTOMATISATION DES ÉCRANS SELON LE PACK
-        if (newPlan) {
-            let limit = 1;
-            if (newPlan === 'BUSINESS') limit = 5;
-            if (newPlan === 'EXCUTIF') limit = 25;
-            if (newPlan === 'PREMIUM') limit = 200;
-            await Tenant.findOneAndUpdate({ tenantID }, { plan: newPlan, maxScreens: limit });
-        }
-        
-        if (action === 'add_screen') await Tenant.findOneAndUpdate({ tenantID }, { $inc: { maxScreens: 1 } });
-        if (action === 'reset_devices') await Tenant.findOneAndUpdate({ tenantID }, { registeredDevices: [] });
-        if (action === 'suspend') await Tenant.findOneAndUpdate({ tenantID }, { status: 'SUSPENDU' });
-        if (action === 'activate') await Tenant.findOneAndUpdate({ tenantID }, { status: 'ACTIF' });
-        if (action === 'delete') { await Tenant.findOneAndDelete({ tenantID }); await AppState.findOneAndDelete({ tenantID }); }
-        
-        res.redirect('/panel-ichef?pass=' + ADMIN_PASS);
-    } catch (err) { res.status(500).send("Erreur."); }
-});
-
-app.listen(PORT, () => console.log("🚀 Empire iCHEF en ligne sur port " + PORT));
+    app.listen(PORT, () => console.log("🚀 Empire iCHEF en ligne sur port " + PORT));
