@@ -93,10 +93,10 @@ app.post('/api/scan-invoice', async (req, res) => {
         res.json({ success: true, data: data });
 
     } catch (error) {
-        res.status(500).json({ success: false, error: "L'IA n'a pas pu analyser cette facture." });
+        console.error("Erreur IA complète:", error);
+        res.status(500).json({ success: false, error: "Détail de l'erreur IA : " + error.message });
     }
 });
-
 // ==========================================
 // 🚀 ACTIVATION & CONNEXION (LES 5 ROUTES)
 // ==========================================
