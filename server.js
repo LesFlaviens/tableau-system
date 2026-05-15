@@ -52,7 +52,7 @@ const AppState = mongoose.model('AppState', new mongoose.Schema({
 }, { minimize: false }));
 
 // ==========================================
-// 🤖 MOTEUR IA : RECONNAISSANCE DE FACTURES (MULTI-MODÈLES)
+// 🤖 MOTEUR IA : RECONNAISSANCE DE FACTURES
 // ==========================================
 const { GoogleGenerativeAI } = require('@google/generative-ai');
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY || 'CLE_MANQUANTE');
@@ -61,12 +61,12 @@ app.post('/api/scan-invoice', async (req, res) => {
     const { imageBase64, mimeType } = req.body;
     
     if (!imageBase64) return res.status(400).json({ success: false, error: "Aucune image fournie." });
-    if (!process.env.GEMINI_API_KEY) return res.status(500).json({ success: false, error: "Clé API IA non configurée." });
+    if (!process.env.GEMINI_API_KEY) return res.status(500).json({ success: false, error: "Clé API IA non configurée sur le serveur." });
 
     try {
         const base64Data = imageBase64.includes(',') ? imageBase64.split(',')[1] : imageBase64;
-        const imagePart = { inlineData: { data: base64Data, mimeType: mimeType || "image/jpeg" } };
-        
+        const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+
         const prompt = `
         Tu es l'assistant d'un chef de cuisine. Analyse cette image de facture ou de ticket de caisse.
         Extrais les informations suivantes et renvoie UNIQUEMENT un objet JSON valide, sans texte avant ni après, sans balises markdown.
@@ -83,36 +83,20 @@ app.post('/api/scan-invoice', async (req, res) => {
         }
         Si tu ne trouves pas une info, mets null ou 0.`;
 
-        let result;
-        
-        // 🛡️ CASCADE DE SÉCURITÉ : On teste les modèles de Google un par un jusqu'à forcer le passage
-        try {
-            // Tentative 1 : Le modèle nouvelle génération (rapide)
-            const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
-            result = await model.generateContent([prompt, imagePart]);
-        } catch (e1) {
-            try {
-                // Tentative 2 : Le modèle Pro
-                const model = genAI.getGenerativeModel({ model: "gemini-1.5-pro" });
-                result = await model.generateContent([prompt, imagePart]);
-            } catch (e2) {
-                // Tentative 3 : Le modèle Universel Mondial (Jamais bloqué)
-                const model = genAI.getGenerativeModel({ model: "gemini-1.0-pro-vision-latest" });
-                result = await model.generateContent([prompt, imagePart]);
-            }
-        }
-
+        const imagePart = { inlineData: { data: base64Data, mimeType: mimeType || "image/jpeg" } };
+        const result = await model.generateContent([prompt, imagePart]);
         const responseText = result.response.text();
+        
         const cleanJson = responseText.replace(/```json/gi, '').replace(/```/gi, '').trim();
         const data = JSON.parse(cleanJson);
 
         res.json({ success: true, data: data });
 
     } catch (error) {
-        console.error("Échec critique de l'IA:", error);
-        res.status(500).json({ success: false, error: "Toutes les portes Google sont verrouillées. Vous devez recréer une nouvelle clé API gratuite sur Google AI Studio." });
+        res.status(500).json({ success: false, error: "L'IA n'a pas pu analyser cette facture." });
     }
 });
+
 // ==========================================
 // 🚀 ACTIVATION & CONNEXION (LES 5 ROUTES)
 // ==========================================
