@@ -573,11 +573,17 @@
             }
         }
 
-        // === STATISTIQUES DE VENTES ===
+     // === STATISTIQUES DE VENTES : CLASSEMENT ET COMPTABILISATION TOTALES ===
         async function generateSalesStats() {
-            let caBrut = 0; let coutTotal = 0; let totalPlats = 0; let salesMap = {};
-            let state = await API.get(); let activeOrders = state.activeOrders || {};
+            let caBrut = 0; 
+            let coutTotal = 0; 
+            let totalPlatsVendus = 0; // Compteur pour le total des ventes cumulées
+            let salesMap = {};
+            
+            let state = await API.get(); 
+            let activeOrders = state.activeOrders || {};
 
+            // 1. Parcours de toutes les tables pour extraire les ventes validées
             for (let tableId in activeOrders) {
                 if (tableId.includes('MASTER') || tableId.includes('ARCHIVE') || tableId.includes('BAR') || tableId.includes('CUISINE')) continue;
                 let orderData = activeOrders[tableId];
@@ -585,35 +591,70 @@
                 
                 orderData.items.forEach(item => {
                     if (item.done) {
-                        let qty = parseInt(item.qty) || 1; let price = parseFloat(item.price) || 0; 
-                        if (price === 0) { for(let cat in menuData) { let found = menuData[cat].find(m => m.name === item.n); if(found) price = found.price; } }
-                        let cost = 0; let recipe = recipesData.find(r => r.name === item.n); if(recipe) cost = recipe.cost;
+                        let qty = parseInt(item.qty) || 1; 
+                        let price = parseFloat(item.price) || 0; 
                         
-                        caBrut += (price * qty); coutTotal += (cost * qty); totalPlats += qty;
+                        // Si le prix n'est pas présent dans la commande, on le cherche dans la carte
+                        if (price === 0) { 
+                            for(let cat in menuData) { 
+                                let found = menuData[cat].find(m => m.name === item.n); 
+                                if(found) price = found.price; 
+                            } 
+                        }
+                        
+                        // Extraction du coût de revient depuis les fiches techniques
+                        let cost = 0; 
+                        let recipe = recipesData.find(r => r.name === item.n); 
+                        if(recipe) cost = recipe.cost;
+                        
+                        caBrut += (price * qty); 
+                        coutTotal += (cost * qty); 
+                        totalPlatsVendus += qty; // On incrémente le nombre total de ventes
+
+                        // Enregistrement et cumul par article
                         if(!salesMap[item.n]) salesMap[item.n] = { qty: 0, rev: 0 };
-                        salesMap[item.n].qty += qty; salesMap[item.n].rev += (price * qty);
+                        salesMap[item.n].qty += qty; 
+                        salesMap[item.n].rev += (price * qty);
                     }
                 });
             }
 
+            // 2. Mise à jour des compteurs financiers en haut de l'écran
             document.getElementById('stat-ca').innerText = caBrut.toFixed(2) + " €";
             document.getElementById('stat-marge').innerText = (caBrut - coutTotal).toFixed(2) + " €";
-            document.getElementById('stat-qty').innerText = totalPlats;
+            document.getElementById('stat-qty').innerText = totalPlatsVendus; // Affiche le nombre de vente Total
 
-            let topSalesArray = Object.keys(salesMap).map(k => ({ name: k, qty: salesMap[k].qty, rev: salesMap[k].rev })).sort((a, b) => b.qty - a.qty);
-            let html = topSalesArray.length === 0 ? '<p style="text-align:center; color:var(--text-muted); font-style: italic;">Aucune vente enregistrée.</p>' : '';
+            // 3. Tri chirurgical : Meilleure vente en PREMIÈRE position (trié par quantité)
+            let topSalesArray = Object.keys(salesMap).map(k => ({
+                name: k, 
+                qty: salesMap[k].qty, 
+                rev: salesMap[k].rev
+            })).sort((a, b) => b.qty - a.qty); // Classement décroissant
+
+            // 4. Génération visuelle de la liste triée
+            let html = topSalesArray.length === 0 ? '<p style="text-align:center; color:var(--text-muted); font-style: italic;">Aucune vente enregistrée pour le moment.</p>' : '';
             
             topSalesArray.forEach((s, idx) => {
+                // Attribution des médailles pour les 3 meilleurs générateurs de cash
                 let medal = idx === 0 ? '🥇' : (idx === 1 ? '🥈' : (idx === 2 ? '🥉' : '🔹'));
+                let highlightStyle = idx === 0 ? 'border: 2px solid var(--gold); background: var(--gold-dim);' : 'background: var(--bg); border: 1px solid var(--border-strong);';
+                
                 html += `
-                <div style="display:flex; justify-content:space-between; align-items:center; background: var(--bg); padding: 15px; border-radius: 10px; border: 1px solid var(--border-strong); margin-bottom:10px;">
-                    <div style="display:flex; align-items:center; gap: 15px;"><span style="font-size:1.8rem;">${medal}</span><span style="font-weight:900; color:var(--text-main); font-size:1.1rem; max-width:200px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${s.name}</span></div>
+                <div style="display:flex; justify-content:space-between; align-items:center; padding: 15px; border-radius: 10px; margin-bottom:10px; ${highlightStyle}">
+                    <div style="display:flex; align-items:center; gap: 15px;">
+                        <span style="font-size:1.8rem;">${medal}</span>
+                        <div style="display:flex; flex-direction:column;">
+                            <span style="font-weight:900; color:var(--text-main); font-size:1.1rem;">${s.name}</span>
+                            <span style="font-size:0.75rem; color:var(--text-muted); font-weight:bold; text-transform:uppercase;">Rang #${idx + 1}</span>
+                        </div>
+                    </div>
                     <div style="display:flex; gap: 30px; align-items:center;">
-                        <span style="color:var(--text-muted); font-size:0.85rem; font-weight:bold;">Envoyés: <b style="color:var(--slate); font-size:1.2rem;">${s.qty}</b></span>
-                        <span style="color:var(--text-muted); font-size:0.85rem; font-weight:bold;">CA: <b style="color:var(--gold); font-size:1.2rem;">${s.rev.toFixed(2)} €</b></span>
+                        <span style="color:var(--text-muted); font-size:0.85rem; font-weight:bold;">Unités vendues: <b style="color:var(--slate); font-size:1.2rem;">${s.qty}</b></span>
+                        <span style="color:var(--text-muted); font-size:0.85rem; font-weight:bold;">Volume CA: <b style="color:var(--gold); font-size:1.2rem;">${s.rev.toFixed(2)} €</b></span>
                     </div>
                 </div>`;
             });
+            
             document.getElementById('top-sales-list').innerHTML = html;
         }
 
