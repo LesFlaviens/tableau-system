@@ -412,8 +412,29 @@
         const SERVER_URL = (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1" || window.location.protocol === "file:") 
         ? "http://localhost:10000" 
         : "https://tableau-system.onrender.com";
+let currentCurrency = "€";
 
-        let currentCurrency = "€";
+        // ==========================================
+        // 💉 INJECTION DYNAMIQUE : DE L'IA VERS LA MATRICE
+        // ==========================================
+        function injecterStock(donneesIA) {
+            const matrice = document.getElementById('matrice-stock-body'); 
+            if (!matrice) {
+                console.error("Erreur HTML : L'ID 'matrice-stock-body' est introuvable.");
+                return;
+            }
+            donneesIA.articles.forEach(article => {
+                const ligne = document.createElement('tr');
+                const total = (article.quantite * article.prixUnitaire).toFixed(2);
+                ligne.innerHTML = `
+                    <td style="padding: 12px; border-bottom: 1px solid #222;">${article.nom || 'Produit'}</td>
+                    <td style="padding: 12px; border-bottom: 1px solid #222; font-weight: bold;">${article.quantite || 0}</td>
+                    <td style="padding: 12px; border-bottom: 1px solid #222;">${(article.prixUnitaire || 0).toFixed(2)} €</td>
+                    <td style="padding: 12px; border-bottom: 1px solid #222; color: #4ade80; font-weight: 900;">${total} €</td>
+                `;
+                matrice.appendChild(ligne);
+            });
+        }
 
         // ==========================================
         // 🔒 LOGIQUE DE DÉMARRAGE
@@ -425,291 +446,56 @@
                 document.querySelectorAll('.module').forEach(m => m.style.display = 'none');
                 loadSharedRecipe(sharedFicheID);
             }
-        };
 
-        async function checkPin() {
-            if (sharedFicheID) return; 
-            const pin = document.getElementById('pin-input').value;
-            if(!pin) return;
+            // --- NOUVEAU BRANCHEMENT IA ---
+            // On cherche le bouton jaune (assure-toi d'ajouter id="btn-scan" sur ton bouton HTML)
+            const btnScan = document.getElementById('btn-scan');
+            if(btnScan) {
+                btnScan.addEventListener('click', async () => {
+                    const fileInput = document.getElementById('ton-input-file'); // L'ID de ton <input type="file">
+                    if(!fileInput || !fileInput.files[0]) {
+                        alert("Veuillez d'abord sélectionner une image.");
+                        return;
+                    }
 
-            const errorMsg = document.getElementById('error-msg');
-            const btn = document.querySelector('#security-overlay button');
-            
-            errorMsg.style.display = 'none';
-            btn.innerText = "VÉRIFICATION...";
-            btn.disabled = true;
+                    // On lit l'image
+                    const reader = new FileReader();
+                    reader.onload = async (e) => {
+                        const imageBase64 = e.target.result;
+                        const mimeType = fileInput.files[0].type;
+                        
+                        btnScan.innerText = "ANALYSE EN COURS...";
+                        btnScan.disabled = true;
 
-            try {
-                const pinRes = await fetch(`${SERVER_URL}/api/verify-pin`, {
-                    method: 'POST', headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ tenantID: tenantID, pin: pin })
-                });
-                
-                const responseText = await pinRes.text();
-                
-                if (responseText.trim().startsWith('<')) {
-                    throw new Error("Initialisation du serveur... Veuillez réessayer dans 30 secondes.");
-                }
-
-                const pinData = JSON.parse(responseText);
-
-                if (pinData.success) {
-                    document.getElementById('security-overlay').style.display = 'none';
-                    bootSystem(); 
-                } else {
-                    errorMsg.innerText = "❌ Code PIN incorrect.";
-                    errorMsg.style.display = 'block';
-                    btn.innerText = "DÉVERROUILLER";
-                    btn.disabled = false;
-                }
-            } catch(e) { 
-                errorMsg.innerText = "📡 " + e.message; 
-                errorMsg.style.display = 'block'; 
-                btn.innerText = "DÉVERROUILLER";
-                btn.disabled = false;
-            }
-        }
-
-        document.getElementById('pin-input').addEventListener('keypress', function (e) { if (e.key === 'Enter') checkPin(); });
-
-        // ==========================================
-        // 🚀 MOTEUR PRINCIPAL
-        // ==========================================
-        const API = {
-            getState: async () => {
-                let state = { activeOrders: {} };
-                try {
-                    let r = await fetch(`${SERVER_URL}/get-current-state?tenantID=${tenantID}`);
-                    if(r.ok) state = await r.json(); else throw new Error("Serveur injoignable");
-                } catch(e) { state = JSON.parse(localStorage.getItem('EMPIRE_GLOBAL_SYNC')) || { activeOrders: {} }; }
-                if (state && state.activeOrders) {
-                    for (let key in state.activeOrders) {
-                        if (state.activeOrders[key] && state.activeOrders[key].data !== undefined && !Array.isArray(state.activeOrders[key].data)) {
-                            state.activeOrders[key] = state.activeOrders[key].data;
+                        try {
+                            // On tire sur ton API Render
+                            const res = await fetch('/api/scan-invoice', {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify({ imageBase64, mimeType })
+                            });
+                            
+                            const result = await res.json();
+                            
+                            if (result.success) {
+                                // On injecte directement dans le tableau !
+                                injecterStock(result.data);
+                                btnScan.innerText = "SCANNER UNE FACTURE";
+                            } else {
+                                alert("Erreur IA : " + result.error);
+                                btnScan.innerText = "SCANNER UNE FACTURE";
+                            }
+                        } catch (err) {
+                            alert("Crash réseau : " + err.message);
+                            btnScan.innerText = "SCANNER UNE FACTURE";
                         }
-                    }
-                }
-                return state;
-            },
-            update: async (key, data) => {
-                let state = JSON.parse(localStorage.getItem('EMPIRE_GLOBAL_SYNC')) || { activeOrders: {} };
-                state.activeOrders[key] = { data: data };
-                localStorage.setItem('EMPIRE_GLOBAL_SYNC', JSON.stringify(state));
-                try {
-                    await fetch(`${SERVER_URL}/update-order?tenantID=${tenantID}`, {
-                        method: 'POST', headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ tableId: key, order: { data: data } })
-                    });
-                } catch(e) {}
+                        btnScan.disabled = false;
+                    };
+                    reader.readAsDataURL(fileInput.files[0]);
+                });
             }
+            // ------------------------------
         };
-
-        let menuData = { menuJour: [], suggestions: [], entrees: [], plats: [], desserts: [] };
-        let recipesData = [];
-        let stockGlobalData = []; 
-        let customStockCategories = []; 
-        let currentFolderCat = null;
-        let lastMenuHash = "", lastStockHash = "", lastRecipesHash = "";
-        let userIsActive = false, activityTimeout = null;
-
-        function keepAlive(e) {
-            if (e && e.target && ['INPUT', 'TEXTAREA', 'SELECT'].includes(String(e.target.tagName).toUpperCase())) {
-                userIsActive = true; clearTimeout(activityTimeout); activityTimeout = setTimeout(() => { userIsActive = false; }, 10000);
-            }
-        }
-        document.addEventListener('keydown', keepAlive); document.addEventListener('focusin', keepAlive); document.addEventListener('input', keepAlive);
-
-        const CAT_SETTINGS = { 
-            "menuJour": { name: "MENU DU JOUR", color: "var(--gold)" }, 
-            "suggestions": { name: "SUGGESTIONS", color: "var(--slate)" }, 
-            "entrees": { name: "ENTRÉES", color: "var(--text-main)" }, 
-            "plats": { name: "PLATS", color: "var(--text-main)" }, 
-            "desserts": { name: "DESSERTS", color: "var(--text-main)" } 
-        };
-
-        function switchTab(tab) {
-            document.querySelectorAll('.module').forEach(m => m.classList.remove('active'));
-            document.querySelectorAll('.nav-btn').forEach(b => { if(b.id && b.id.startsWith('tab-')) b.classList.remove('active'); });
-            document.getElementById('mod-' + tab).classList.add('active');
-            let btn = document.getElementById('tab-' + tab); if(btn) btn.classList.add('active');
-        }
-
-        async function fetchSystemState() {
-            let state;
-            try {
-                state = await API.getState();
-                document.getElementById('sync-dot').classList.add('online');
-                document.getElementById('sync-text').innerText = "EN LIGNE";
-            } catch(netErr) { 
-                document.getElementById('sync-dot').classList.remove('online'); 
-                document.getElementById('sync-text').innerText = "HORS LIGNE"; return; 
-            }
-
-            if (userIsActive) return; 
-
-            if (state && state.activeOrders) {
-                let dataChanged = false;
-                
-                if (state.activeOrders['STOCK_CATEGORIES'] && Array.isArray(state.activeOrders['STOCK_CATEGORIES'].data)) {
-                    let newCustomCats = state.activeOrders['STOCK_CATEGORIES'].data;
-                    if(JSON.stringify(newCustomCats) !== JSON.stringify(customStockCategories)) {
-                        customStockCategories = newCustomCats;
-                        renderStockCategoryDropdown();
-                    }
-                }
-
-                if (state.activeOrders['RECIPES_MASTER'] && Array.isArray(state.activeOrders['RECIPES_MASTER'].data)) {
-                    let newRecipes = state.activeOrders['RECIPES_MASTER'].data.filter(r => r != null);
-                    let newRecHash = JSON.stringify(newRecipes);
-                    if(newRecHash !== lastRecipesHash) { recipesData = newRecipes; lastRecipesHash = newRecHash; dataChanged = true; }
-                }
-                
-                if (state.activeOrders['INVENTORY_MASTER'] && Array.isArray(state.activeOrders['INVENTORY_MASTER'].data)) {
-                    let newStock = state.activeOrders['INVENTORY_MASTER'].data.filter(s => s != null);
-                    let newStockHash = JSON.stringify(newStock);
-                    if(newStockHash !== lastStockHash) { stockGlobalData = newStock; lastStockHash = newStockHash; dataChanged = true; }
-                }
-                
-                let sMenu = state.activeOrders['MENU_MASTER'];
-                if (sMenu && sMenu.data && typeof sMenu.data === 'object' && !Array.isArray(sMenu.data)) {
-                    let newMenuHash = JSON.stringify(sMenu.data);
-                    if(newMenuHash !== lastMenuHash) {
-                        menuData = sMenu.data; lastMenuHash = newMenuHash; dataChanged = true;
-                    }
-                }
-                if (dataChanged) { renderMenu(); renderRecipes(); renderGlobalStock(); renderLiveStockPanel(); }
-            }
-        }
-
-        async function bootSystem() {
-            renderStockCategoryDropdown();
-            renderMenu(); renderRecipes(); renderGlobalStock(); renderLiveStockPanel();
-            await fetchSystemState(); setInterval(async () => { await fetchSystemState(); }, 5000);
-        }
-
-        // ==========================================
-        // 🔗 LECTURE PARTAGE SÉCURISÉ & PDF
-        // ==========================================
-        async function loadSharedRecipe(id) {
-            const viewerOverlay = document.getElementById('recipe-viewer-overlay');
-            const viewerContent = document.getElementById('viewer-content');
-            viewerOverlay.style.display = 'block';
-
-            try {
-                let state = await API.getState();
-                let recipes = state.activeOrders['RECIPES_MASTER']?.data || [];
-                let r = recipes.find(x => x.id.toString() === id);
-
-                if(!r) { viewerContent.innerHTML = "<h2 style='color:var(--alert); text-align:center;'>Fiche technique introuvable.</h2>"; return; }
-
-                let ingHTML = r.ing.split('\n').map(line => `<li style="padding:10px 0; border-bottom:1px solid var(--border);">${line}</li>`).join('');
-                let prepHTML = r.prep.split('\n').map(line => `<p style="padding:10px; background:var(--bg); border-radius:8px; border:1px solid var(--border); line-height:1.6;">${line}</p>`).join('');
-
-                viewerContent.innerHTML = `
-                    <div style="text-align:center; margin-bottom: 40px;">
-                        <h1 class="viewer-title">${r.name}</h1>
-                        <span style="background:var(--slate); color:#fff; padding:5px 15px; border-radius:20px; font-size:0.8rem; text-transform:uppercase; font-weight:bold;">FICHE OFFICIELLE</span>
-                    </div>
-                    <div style="display:grid; grid-template-columns: 1fr 1fr; gap:40px;">
-                        <div>
-                            <h3 style="color:var(--slate); border-bottom:2px solid var(--slate); padding-bottom:10px; text-transform:uppercase; letter-spacing:1px;">📝 Ingrédients</h3>
-                            <ul style="list-style-type:none; padding:0; margin:0; color:var(--text-main); font-size:1rem;">${ingHTML || '<i>Aucun détail.</i>'}</ul>
-                        </div>
-                        <div>
-                            <h3 style="color:var(--slate); border-bottom:2px solid var(--slate); padding-bottom:10px; text-transform:uppercase; letter-spacing:1px;">👨‍🍳 Déroulé</h3>
-                            <div style="color:var(--text-main); font-size:1rem;">${prepHTML || '<i>Aucune étape.</i>'}</div>
-                        </div>
-                    </div>
-                    <div style="text-align:center; margin-top:50px; font-size:0.8rem; color:var(--text-muted);">Généré par iChef OS.</div>
-                `;
-            } catch(e) { viewerContent.innerHTML = "<h2 style='color:var(--alert); text-align:center;'>Erreur de connexion.</h2>"; }
-        }
-
-        function shareRecipe(id) {
-            let link = `${window.location.origin}${window.location.pathname}?tenantID=${tenantID}&fiche=${id}`;
-            navigator.clipboard.writeText(link).then(() => {
-                alert("🔗 Lien sécurisé copié dans le presse-papier !");
-            }).catch(() => { alert("Impossible de copier le lien : " + link); });
-        }
-
-        async function exportRecipePDF(id) {
-            let r = recipesData.find(x => x.id === id);
-            if(!r) return;
-
-            let ingHTML = r.ing.split('\n').map(line => `<li style="padding:8px 0; border-bottom:1px solid #eee;">${line}</li>`).join('');
-            let prepHTML = r.prep.split('\n').map(line => `<p style="padding:10px; background:#fafafa; border-radius:8px; border:1px solid #eee;">${line}</p>`).join('');
-
-            let printWindow = window.open('', '', 'width=800,height=900');
-            printWindow.document.write(`
-                <html>
-                    <head>
-                        <title>Fiche Technique - ${r.name}</title>
-                        <style>
-                            body { font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; color: #1A1A18; padding: 40px; margin:0; }
-                            h1 { color: #111; border-bottom: 2px solid #D4AF37; padding-bottom: 10px; margin-bottom: 10px;}
-                            .badge { background: #4A5568; color: #fff; padding: 4px 12px; border-radius: 12px; font-size: 0.8rem; text-transform: uppercase; }
-                            .grid { display: flex; gap: 40px; margin-top: 30px; }
-                            .col { flex: 1; }
-                            .section-title { color: #4A5568; text-transform: uppercase; font-size: 1.1rem; border-bottom: 1px solid #4A5568; padding-bottom: 5px; }
-                            .footer { margin-top: 50px; font-size: 0.8rem; color: #999; text-align: center; border-top: 1px solid #eee; padding-top: 20px;}
-                            .costs { margin-top: 20px; padding: 15px; background: #f9f9f9; border: 1px solid #ddd; border-radius: 8px; font-size: 0.9rem; }
-                            @media print { body { padding: 0; } }
-                        </style>
-                    </head>
-                    <body>
-                        <h1>${r.name}</h1>
-                        <span class="badge">Fiche Technique Officielle</span>
-                        <div class="costs"><b>Coût:</b> ${r.cost} ${currentCurrency} &nbsp;|&nbsp; <b>Prix:</b> ${r.price} ${currentCurrency} &nbsp;|&nbsp; <b>Marge:</b> ${r.fc}%</div>
-                        <div class="grid">
-                            <div class="col"><h3 class="section-title">Ingrédients</h3><ul style="list-style:none; padding:0; margin:0;">${ingHTML}</ul></div>
-                            <div class="col"><h3 class="section-title">Préparation</h3><div>${prepHTML}</div></div>
-                        </div>
-                        <div class="footer">Généré par iChef OS - ${new Date().toLocaleDateString()}</div>
-                        <script>window.onload = () => { setTimeout(() => { window.print(); window.close(); }, 500); }<\\/script>
-                    </body>
-                </html>
-            `);
-            printWindow.document.close();
-        }
-
-        // ==========================================
-        // 🎙️ DICTÉE VOCALE
-        // ==========================================
-        function startMarketDictation(inputId, btnId) {
-            const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-            if (!SpeechRecognition) return alert("Micro non supporté.");
-            const recognition = new SpeechRecognition(); recognition.lang = 'fr-FR'; recognition.interimResults = false;
-            const btn = document.getElementById(btnId); const input = document.getElementById(inputId);
-            const orig = btn.innerHTML;
-            recognition.onstart = () => { btn.classList.add('recording-active'); btn.innerHTML = '🔴'; };
-            recognition.onresult = (e) => { 
-                let text = e.results[0][0].transcript;
-                input.value += (input.value ? "\n" : "") + text.charAt(0).toUpperCase() + text.slice(1); 
-                calcSmartPlate();
-            };
-            recognition.onend = () => { btn.classList.remove('recording-active'); btn.innerHTML = orig; };
-            recognition.start(); 
-        }
-
-        function startDictation(inputId, btnId) {
-            const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-            if (!SpeechRecognition) return alert("Non supporté.");
-            const recognition = new SpeechRecognition();
-            recognition.lang = 'fr-FR'; recognition.continuous = true; recognition.interimResults = false;
-            let input = document.getElementById(inputId); let btn = document.getElementById(btnId);
-            const orig = btn.innerHTML; let oldPh = input.placeholder;
-            input.placeholder = "🔴 Parlez...";
-            recognition.start();
-            recognition.onstart = () => { btn.classList.add('recording-active'); btn.innerHTML = '🔴'; };
-            recognition.onresult = function(event) {
-                let speechResult = event.results[event.results.length - 1][0].transcript.trim();
-                input.value += (input.value ? '\n' : '') + speechResult;
-            };
-            input.addEventListener('blur', () => { recognition.stop(); input.placeholder = oldPh; }, {once: true});
-            recognition.onerror = function() { input.placeholder = oldPh; btn.classList.remove('recording-active'); btn.innerHTML = orig; };
-            recognition.onend = () => { btn.classList.remove('recording-active'); btn.innerHTML = orig; input.placeholder = oldPh; };
-        }
-
         // ==========================================
         // 📦 GESTION DU STOCK ET CATÉGORIES DYNAMIQUES
         // ==========================================
