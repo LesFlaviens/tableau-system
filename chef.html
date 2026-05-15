@@ -330,19 +330,24 @@
                         ➕ ENTRÉE MANUELLE
                     </h2>
                     <div style="display:flex; flex-direction:column; gap:15px; margin-top: 20px;">
-                        <input type="text" id="manual-stock-name" placeholder="Nom du produit (ex: Farine T55)..." style="width:100%;">
+                        <div style="display:flex; gap:8px;">
+                            <input type="text" id="manual-stock-name" placeholder="Nom du produit (ex: Farine T55)..." style="flex:1;">
+                            <button class="btn-mic" onclick="startDictation('manual-stock-name', this.id)" id="mic-stock-name">🎙️</button>
+                        </div>
                         <div style="display:flex; gap:15px; flex-wrap:wrap;">
-                            <input type="text" id="manual-stock-qty" placeholder="Qté (ex: 5 kg, 10 pce)" style="flex:1; min-width:120px;">
+                            <div style="display:flex; gap:8px; flex:1; min-width:160px;">
+                                <input type="text" id="manual-stock-qty" placeholder="Qté (ex: 5 kg)" style="flex:1; min-width:80px;">
+                                <button class="btn-mic" onclick="startDictation('manual-stock-qty', this.id)" id="mic-stock-qty">🎙️</button>
+                            </div>
                             <input type="number" id="manual-stock-price" placeholder="Prix Total" step="0.01" style="flex:1; min-width:120px;">
                         </div>
-                        <select id="manual-stock-cat" style="width:100%;">
-                            <option value="feculents">🍝 Féculents</option>
-                            <option value="proteines">🥩 Protéines</option>
-                            <option value="bof">🧀 B.O.F (Laitiers)</option>
-                            <option value="sauces">🥣 Sauces & Bases</option>
-                            <option value="legumes">🥗 Légumes</option>
-                            <option value="economat">📦 Économat</option>
-                        </select>
+                        
+                        <div style="display:flex; gap:8px; align-items:center;">
+                            <select id="manual-stock-cat" style="flex:1; font-weight: bold;"></select>
+                            <button class="nav-btn" style="padding: 12px; border: 1px solid var(--border-strong);" onclick="addStockCategory()" title="Ajouter une catégorie">➕</button>
+                            <button class="nav-btn" style="padding: 12px; border: 1px solid var(--border-strong); color: var(--alert);" onclick="removeStockCategory()" title="Supprimer la catégorie">➖</button>
+                        </div>
+
                         <button class="add-btn" style="background:var(--slate); margin-top: 10px;" onclick="addManualStock()">
                             ✅ AJOUTER AU STOCK
                         </button>
@@ -502,6 +507,7 @@
         let menuData = { menuJour: [], suggestions: [], entrees: [], plats: [], desserts: [] };
         let recipesData = [];
         let stockGlobalData = []; 
+        let customStockCategories = []; // Nouvelles catégories perso
         let currentFolderCat = null;
         let lastMenuHash = "", lastStockHash = "", lastRecipesHash = "";
         let userIsActive = false, activityTimeout = null;
@@ -543,6 +549,16 @@
 
             if (state && state.activeOrders) {
                 let dataChanged = false;
+                
+                // Vérif catégories personnalisées de stock
+                if (state.activeOrders['STOCK_CATEGORIES'] && Array.isArray(state.activeOrders['STOCK_CATEGORIES'].data)) {
+                    let newCustomCats = state.activeOrders['STOCK_CATEGORIES'].data;
+                    if(JSON.stringify(newCustomCats) !== JSON.stringify(customStockCategories)) {
+                        customStockCategories = newCustomCats;
+                        renderStockCategoryDropdown();
+                    }
+                }
+
                 if (state.activeOrders['RECIPES_MASTER'] && Array.isArray(state.activeOrders['RECIPES_MASTER'].data)) {
                     let newRecipes = state.activeOrders['RECIPES_MASTER'].data.filter(r => r != null);
                     let newRecHash = JSON.stringify(newRecipes);
@@ -567,6 +583,7 @@
         }
 
         async function bootSystem() {
+            renderStockCategoryDropdown();
             renderMenu(); renderRecipes(); renderGlobalStock(); renderLiveStockPanel();
             await fetchSystemState(); setInterval(async () => { await fetchSystemState(); }, 5000);
         }
@@ -616,7 +633,6 @@
             }).catch(() => { alert("Impossible de copier le lien : " + link); });
         }
 
-        // NOUVELLE FONCTION : EXPORT PDF NATIF
         async function exportRecipePDF(id) {
             let r = recipesData.find(x => x.id === id);
             if(!r) return;
@@ -624,7 +640,6 @@
             let ingHTML = r.ing.split('\n').map(line => `<li style="padding:8px 0; border-bottom:1px solid #eee;">${line}</li>`).join('');
             let prepHTML = r.prep.split('\n').map(line => `<p style="padding:10px; background:#fafafa; border-radius:8px; border:1px solid #eee;">${line}</p>`).join('');
 
-            // On crée une page virtuelle propre pour l'impression A4/Mobile
             let printWindow = window.open('', '', 'width=800,height=900');
             printWindow.document.write(`
                 <html>
@@ -717,14 +732,47 @@
         }
 
         // ==========================================
-        // 📦 GESTION DU STOCK
+        // 📦 GESTION DU STOCK ET CATÉGORIES DYNAMIQUES
         // ==========================================
+        function renderStockCategoryDropdown() {
+            const select = document.getElementById('manual-stock-cat');
+            if(!select) return;
+            let defaultCats = ['🍝 Féculents', '🥩 Protéines', '🧀 B.O.F (Laitiers)', '🥣 Sauces & Bases', '🥗 Légumes', '📦 Économat'];
+            let allCats = [...defaultCats, ...customStockCategories];
+            select.innerHTML = allCats.map(c => `<option value="${c}">${c}</option>`).join('');
+        }
+
+        async function addStockCategory() {
+            let newCat = prompt("➕ NOM DE LA NOUVELLE CATÉGORIE (ex: 🍷 Cave à Vins) :");
+            if(newCat && newCat.trim() !== "") {
+                if(!customStockCategories.includes(newCat.trim())) {
+                    customStockCategories.push(newCat.trim());
+                    await API.update('STOCK_CATEGORIES', customStockCategories);
+                    renderStockCategoryDropdown();
+                }
+            }
+        }
+
+        async function removeStockCategory() {
+            let catToRemove = document.getElementById('manual-stock-cat').value;
+            let defaultCats = ['🍝 Féculents', '🥩 Protéines', '🧀 B.O.F (Laitiers)', '🥣 Sauces & Bases', '🥗 Légumes', '📦 Économat'];
+            if(defaultCats.includes(catToRemove)) {
+                return alert("⚠️ Vous ne pouvez pas supprimer les catégories par défaut de la matrice.");
+            }
+            if(confirm(`🗑️ Supprimer la catégorie "${catToRemove}" ? (Les produits déjà ajoutés la conserveront).`)) {
+                customStockCategories = customStockCategories.filter(c => c !== catToRemove);
+                await API.update('STOCK_CATEGORIES', customStockCategories);
+                renderStockCategoryDropdown();
+            }
+        }
+
         async function addManualStock() {
             let name = document.getElementById('manual-stock-name').value.trim();
             let qty = document.getElementById('manual-stock-qty').value.trim();
             let price = parseFloat(document.getElementById('manual-stock-price').value.replace(',', '.'));
-            let cat = document.getElementById('manual-stock-cat').value;
+            let cat = document.getElementById('manual-stock-cat').value; // Récupère la string exacte
             if(!name || !qty || isNaN(price)) return alert("⚠️ Remplissez nom, quantité et prix.");
+            
             let unitPriceStr = price.toFixed(2) + " " + currentCurrency;
             let wNumMatch = qty.match(/[\d.]+/);
             if(wNumMatch) {
@@ -734,6 +782,7 @@
             let existing = stockGlobalData.find(x => x.name.toLowerCase() === name.toLowerCase());
             if (existing) { existing.lastPrice = unitPriceStr; existing.qtyStr = qty; existing.date = new Date().toLocaleDateString(); } 
             else { stockGlobalData.unshift({ id: Date.now(), name: name, cat: cat, qtyStr: qty, lastPrice: unitPriceStr, date: new Date().toLocaleDateString() }); }
+            
             await API.update('INVENTORY_MASTER', stockGlobalData);
             document.getElementById('manual-stock-name').value = ''; document.getElementById('manual-stock-qty').value = ''; document.getElementById('manual-stock-price').value = '';
             renderGlobalStock(); renderLiveStockPanel(); alert("✅ Ajouté au stock !");
@@ -760,9 +809,16 @@
             }
         }
 
+        // Auto-Routage Intelligent vers les textareas du laboratoire
         function injectFromStock(name, price, cat) {
-            const catMap = { 'feculents': 'fecu', 'proteines': 'prot', 'bof': 'bof', 'sauces': 'sauc', 'legumes': 'legu', 'economat': 'eco' };
-            let prefix = catMap[cat];
+            let prefix = 'eco'; // Par défaut, on l'envoie dans l'économat
+            let c = String(cat).toLowerCase();
+            if(c.includes('fecu') || c.includes('fécu')) prefix = 'fecu';
+            else if(c.includes('prot') || c.includes('viande') || c.includes('poisson')) prefix = 'prot';
+            else if(c.includes('bof') || c.includes('lait') || c.includes('fromage')) prefix = 'bof';
+            else if(c.includes('sauc')) prefix = 'sauc';
+            else if(c.includes('legu') || c.includes('légu') || c.includes('fruit')) prefix = 'legu';
+            
             let textarea = document.getElementById(`market-${prefix}-raw`);
             if(!textarea) return;
             let newLine = `${name} ${price}`;
