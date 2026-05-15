@@ -50,9 +50,8 @@ const AppState = mongoose.model('AppState', new mongoose.Schema({
     tenantID: { type: String, required: true, unique: true },
     activeOrders: { type: Object, default: {} }
 }, { minimize: false }));
-
 // ==========================================
-// 🤖 MOTEUR IA : RECONNAISSANCE DE FACTURES (MULTI-MODÈLES BLINDÉ)
+// 🤖 MOTEUR IA : RECONNAISSANCE DE FACTURES (MULTI-MODÈLES 2026)
 // ==========================================
 const { GoogleGenerativeAI } = require('@google/generative-ai');
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY || 'CLE_MANQUANTE');
@@ -87,8 +86,14 @@ app.post('/api/scan-invoice', async (req, res) => {
 
         console.log("Transmission de l'image à Google Gemini...");
 
-        // 🛡️ LA BOUCLE DE FORÇAGE (LE CHASSEUR)
-        const modelsToTry = ["gemini-1.5-flash-latest", "gemini-1.5-pro-latest", "gemini-pro-vision"];
+        // 🛡️ L'ARSENAL NOUVELLE GÉNÉRATION
+        const modelsToTry = [
+            "gemini-2.5-flash", 
+            "gemini-2.0-flash", 
+            "gemini-1.5-flash", 
+            "gemini-flash"
+        ];
+        
         let result = null;
         let lastError = "";
 
@@ -98,7 +103,7 @@ app.post('/api/scan-invoice', async (req, res) => {
                 const model = genAI.getGenerativeModel({ model: modelName });
                 result = await model.generateContent([prompt, imagePart]);
                 console.log("✅ Succès avec :", modelName);
-                break; // Dès qu'un modèle marche, on casse la boucle et on continue !
+                break; 
             } catch (err) {
                 console.error(`❌ Échec avec ${modelName} :`, err.message);
                 lastError = err.message;
@@ -106,7 +111,7 @@ app.post('/api/scan-invoice', async (req, res) => {
         }
 
         if (!result) {
-            throw new Error("Tous les modèles de Google ont été refusés. Raison finale : " + lastError);
+            throw new Error("Tous les modèles ont été refusés. Raison finale : " + lastError);
         }
 
         const responseText = result.response.text();
