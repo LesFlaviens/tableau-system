@@ -73,43 +73,7 @@ app.post('/api/scan-invoice', async (req, res) => {
         Extrais les informations et pour CHAQUE article, classe-le strictement dans l'une de ces catégories : 
         'Fruits', 'Légumes', 'Glucides', 'Protéines', 'B.O.F', 'Économat', 'Clarification'.
 
-       const prompt = `
-        Tu es l'assistant et expert en gestion de stocks d'un grand chef de cuisine. Analyse cette image de facture ou de ticket de caisse.
-        Extrais les informations suivantes et CLASSIFIE OBLIGATOIREMENT chaque article dans l'une de ces catégories exactes selon les règles strictes ci-dessous.
-
-        Règles de classification :
-        - Fruits : Tous les fruits frais, Pomme, Poire, Banane, Orange, Mandarine, Clémentine, Citron, Lime, Pamplemousse, Raisin, Fraise, Framboise, Myrtille, Mûre, Cerise, Abricot, Pêche, Nectarine, Prune, Mirabelle, Quetsche, Kiwi, Melon, Pastèque, Figue, Datte, Coing, Rhubarbe, Mangue, Ananas, Papaye, Fruit de la passion, Litchi, Ramboutan, Durian, Goyave, Carambole, Noix de coco, Pitaya, Mangoustan, Jackfruit, Longane, Kumquat, Yuzu, Corossol, Groseille, Cassis, Airelle, Bergamote, Cédrat, Noix, Amande, Noisette, Pistache, Noix de cajou, Noix de macadamia, Pécan, Châtaigne, Noix du Brésil, Pignon, Maracuja, Olive, Grenade, Kaki, Nèfle.
-        - Surgelés : toutes les glaces, Frites surgelées, Pommes noisettes, dauphines, Hash browns, Nuggets, Tenders, Cordon bleu, Steak haché surgelé, Burger, Escalope panée, Poisson pané, Cabillaud surgelé, Saumon surgelé, Crevettes, Moules, Calamars surgelés, Pizza, Lasagnes, Raviolis, Légumes surgelés (Haricots verts, Petits pois, Brocolis, Épinards, Mélange wok), Fruits rouges surgelés, Mangue, Framboises, Glaces, Sorbets, Viennoiseries surgelées (Croissants, Pains précuits), Pâte feuilletée, Pâte à pizza, Tartes, Cheesecake, Gaufres, Falafels, Kebabs, Wraps, Riz cantonais surgelé, Gratins, Purée, Soupe, Sauce, Herbes aromatiques surgelées.
-        - Fruits Secs : Raisin sec, Abricot sec, Figue sèche, Datte sèche, Pruneau, Banane séchée, Mangue séchée, Ananas séché, Papaye séchée, Pomme séchée, Poire séchée, Noix de coco séchée, Cranberry séchée, Myrtille séchée, Cerise séchée, Fraise séchée, Kiwi séché, Orange séchée, Citron séché, Tomate séchée, Noix, Amande, Noisette, Pistache, Noix de cajou, Noix de macadamia, Noix du Brésil, Pécan, Pignon, Châtaigne sèche, Cacahuète, Graine de tournesol, Graine de courge, chia, lin, Sésame, Baie de goji, Physalis séché, Coco râpée, Dattes Medjool, Raisin golden, Mélange étudiant, Fruits confits.
-        - Légumes : Tous les légumes frais ou transformés, Carotte, Pomme de terre, Patate douce, Tomate, Oignon, Échalote, Ail, Poireau, Céleri, Navet, Betterave, Radis, Rutabaga, Panais, Choux (vert, rouge, blanc, fleur, romanesco, Bruxelles, Kale, chinois, pak choï), Épinard, Blettes, Laitues (Batavia, Roquette, Mâche), Endive, Chicorée, Fenouil, Asperge, Artichaut, Courgette, Aubergine, Poivrons, Concombre, Cornichon, Haricots (vert, beurre), Petit pois, Fève, Maïs, Champignons (Paris, Girolle, Cèpe, Pleurote, Shiitaké), Avocat, Courges (Potimarron, Butternut, Potiron, Citrouille), Manioc, Igname, Gingembre, Curcuma, Piment, Herbes fraîches (Persil, Coriandre, Basilic, Menthe, Ciboulette, Estragon, Thym, Romarin, Laurier, Aneth, Oseille), Topinambour, Salsifis, Okra, Pousses de soja, Bambou, Algues (wakamé, nori), Lentilles, Pois chiches, Haricots secs, Flageolets, Pois cassés, Soja, Olive verte, Olive noire.
-        - Glucides : Banane plantain, Châtaigne, Millet, Igname, Tapioca, Maïs, Gnocchis, Raviolis, Lasagnes, Riz, pâtes, farines, pains, pommes de terre, Patate douce, Manioc.
-        - Viande : boeuf (Limousine, Charolaise, Aubrac, Kobé, Galice, Angus, Criolla, Hereford), poulet, brest, porc, veau, steak, steak haché, Highland, osso buco, Bavette, Onglet, Hampe, Rumsteck, Entrecôte, Côte de bœuf, Faux-filet, gite, Paleron, Macreuse, Jarret, Gîte, Joue, Basses côtes, Poitrine, Abats (Foie, cœur, rognons, langue).
-        - Poisson : fera, omble, cabillaux, truite, dorade, Poissons blancs, Cabillaud, Colin, Merlan, Lieu noir/jaune, Églefin, Merlu, Bar, Loup de mer, Dorade (royale, grise, sauvage), Turbot (sauvage), Barbue, Sole (de ligne), Limande, Saint-Pierre, Mulet, Tacaud, Flétan (noir), Pangasius, Tilapia, Haddock, Julienne, Vivaneau (rouge), Mérou, Ombrine, Sandre, Perche, Brochet, Silure, Saumon, Maquereau, Sardine, Hareng, Thon, Bonite, Espadon, Anguille, Anchois, Rouget barbet, Esturgeon, Caviar, Sar, Pageot, Denti, Rascasse, Girelle, Oblade, Chinchard, Poisson-lion, Poisson-chat, Snakehead, Barramundi, Milkfish, Grouper, Poisson-perroquet, Pomfret, Carpe, Truites (fario, arc-en-ciel), Omble chevalier, Black bass, Éperlan, Ablette, Goujon, Sprat.
-        - Crustacés : huitre, moules, Crevette, Gambas, Langoustine, Crabe, Tourteau, Araignée de mer, Homard (bleu), Langouste, Huître, Palourde, Coque, Praire, Saint-Jacques, Bulot, Bigorneau, Oursin, Calamar, Encornet, Poulpe, Seiche.
-        - B.O.F : Beurre (salé, doux, clarifié, Ghee), Fromages, Produits laitiers, Crème (fraîche, liquide, épaisse, Chantilly, dessert), Lait (entier, demi-écrémé, écrémé, sans lactose, concentré, poudre), Yaourt (nature, grec, aux fruits), Fromage blanc, Petit suisse, Faisselle, Mascarpone, Ricotta, Mozzarella, Burrata, Parmesan, Emmental, Comté, Gruyère, Beaufort, Reblochon, Camembert, Brie, Roquefort, Bleu d’Auvergne, Chèvre frais, Feta, Raclette, Tartiflette, Gouda, Cheddar, Edam, Saint-Nectaire, Tome, Cancoillotte, Œufs (Blanc, Jaune), Margarine, Kéfir, Skyr, Fromage râpé, Fromage fondu, Cottage cheese, Halloumi, Flan.
-        - Clarification : Tous les agents de clarification, gélifiants (agar-agar), ou produits destinés à cette technique.
-        - Économat : Huiles, épices, café en poudre, conserves, serviette, serviette en papier, dentelle.
-        - Produits Sec : fond de veau, bouillon, tous les fonds, Riz (blanc, complet, basmati, thaï, arborio), Pâtes (Spaghetti, Penne, Tagliatelles, Nouilles, Vermicelles), Semoule, Couscous, Boulgour, Quinoa, Avoine (Flocons), Pain blanc, Pain complet, Baguette, Pain de mie, Brioche, Tortilla, Wrap, Pita, Polenta, Farines (blé, complète, riz, maïs), Lentilles, Pois chiches, Haricots (rouges, blancs), Flageolets, Pois cassés, Fèves, Orge, Seigle, Épeautre, Sarrasin, Croûtons, Crackers, Biscottes, Muesli, Céréales, Granola, Sucres (blanc, roux), Miel, Sirop d’érable, Confiture, sel, poivre, condiments, chapelure, panko, fruits secs, amande, noisette.
-        - Produit Entretien : Liquide vaisselle, Produit lave-vaisselle, Dégraissant cuisine, Nettoyant multi-surfaces, Désinfectant (alimentaire, sol, air), Nettoyant (inox, vitres, four, sanitaires, vapeur, frigo), Décapant four, Détartrant, Eau de javel, Gel WC, Déboucheur, Savon mains/antibactérien, Gel hydroalcoolique, Lessive (liquide, poudre), Assouplissant, Produit anti-calcaire/anti-graisse/anti-nuisibles, Désodorisant, Détergent (sol, professionnel), Lingettes désinfectantes, Éponge, Tampon à récurer, Chiffon microfibre, Papier essuie-tout, Papier toilette, Sac poubelle (renforcé), Gants (jetables, ménage), Balai, Serpillière, Raclette sol, Seau, Brosse (WC, nettoyage), Pulvérisateur, Insecticide, Produit pour hotte/machine à café/friteuse, Cristaux de soude, Vinaigre blanc, Bicarbonate de soude, Produit HACCP.
-
-        Renvoie UNIQUEMENT un objet JSON valide, sans texte avant ni après, sans balises markdown.
-        Structure attendue :
-        {
-            "fournisseur": "Nom du fournisseur",
-            "date": "JJ/MM/AAAA",
-            "totalHT": 0.00,
-            "tva": 0.00,
-            "totalTTC": 0.00,
-            "articles": [
-                { 
-                    "nom": "Nom du produit", 
-                    "quantite": 0, 
-                    "prixUnitaire": 0.00, 
-                    "categorie": "Catégorie Exacte (Ex: B.O.F, Fruits Secs, etc.)" 
-                }
-            ]
-        }
-        Si tu ne trouves pas une info, mets null ou 0.`;
+const prompt = `
         console.log("Transmission de l'image à l'Intelligence iCHEF...");
 
         // 🛡️ L'ARSENAL NOUVELLE GÉNÉRATION
