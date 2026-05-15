@@ -1,316 +1,375 @@
-const express = require('express');
-const cors = require('cors');
-const path = require('path');
-const mongoose = require('mongoose');
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>iChef OS | L'Excellence à 5 Étoiles</title>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@200;400;600;900&family=Playfair+Display:ital,wght@0,600;1,400&display=swap');
+        
+        :root { 
+            --bg: #030303; 
+            --panel: #0a0a0a; 
+            
+            /* LA NOUVELLE PALETTE PALACE */
+            --color-chef: #E8E6E1;      /* Ivoire / Gris Perle (Doux et classe) */
+            --color-essentiel: #FFFFFF; /* Blanc Pur (Minimaliste) */
+            --color-business: #5D8AA8;  /* Bleu Saphir Mat (Proactivité douce) */
+            --color-executif: #8C92AC;  /* Titane / Argent (Puissance volume) */
+            --color-premium: #D4AF37;   /* Or Champagne (Réservé à l'élite) */
+            
+            --text-main: #ffffff; 
+            --text-muted: #737373; 
+        }
+        
+        body { background-color: var(--bg); color: #fff; font-family: 'Inter', sans-serif; margin: 0; }
+        
+        .header-nav { padding: 20px 40px; display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid rgba(255,255,255,0.05); background: rgba(3,3,3,0.9); position: sticky; top: 0; z-index: 1000; backdrop-filter: blur(15px); }
+        .logo { font-family: 'Playfair Display', serif; font-size: 1.5rem; letter-spacing: 2px; }
+        .logo span { color: var(--color-premium); }
 
-// 🛡️ CONFIGURATION STRIPE
-const stripeKey = process.env.STRIPE_SECRET_KEY || 'sk_test_51...';
-const stripe = require('stripe')(stripeKey);
+        .login-mini { display: flex; gap: 10px; }
+        .login-mini input { padding: 10px; background: transparent; border: 1px solid #222; color: white; border-radius: 4px; width: 130px; font-size: 0.8rem; outline: none; transition: 0.3s;}
+        .login-mini input:focus { border-color: var(--color-premium); }
+        .login-mini button { padding: 10px 20px; background: #fff; color: #000; border: none; border-radius: 4px; font-weight: 800; cursor: pointer; text-transform: uppercase; font-size: 0.7rem; transition: 0.3s;}
+        .login-mini button:hover { background: var(--color-premium); }
 
-const app = express();
-const PORT = process.env.PORT || 10000;
+        .container { max-width: 1400px; width: 95%; margin: 60px auto; text-align: center; }
+        .hero h1 { font-family: 'Playfair Display', serif; font-size: 3.5rem; margin-bottom: 50px; font-weight: 400; letter-spacing: -1px;}
 
-app.use(cors({ origin: '*', methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'], allowedHeaders: ['Content-Type', 'Authorization', 'Origin', 'Accept'] }));
-app.use(express.json({ limit: '50mb' }));
-app.use(express.urlencoded({ extended: true }));
-app.use(express.static(path.join(__dirname)));
+        .pricing-grid { display: grid; grid-template-columns: repeat(5, 1fr); gap: 15px; }
+        
+        .card { background: var(--panel); border: 1px solid rgba(255,255,255,0.05); border-radius: 8px; padding: 40px 20px; display: flex; flex-direction: column; transition: 0.4s; position: relative; }
+        .card:hover { transform: translateY(-10px); }
 
-// ==========================================
-// 🚨 WEBHOOK : SÉCURITÉ ANTI-IMPAYÉS
-// ==========================================
-app.post('/webhook', express.raw({type: 'application/json'}), async (req, res) => {
-    const sig = req.headers['stripe-signature'];
-    let event;
-    try { event = stripe.webhooks.constructEvent(req.body, sig, process.env.STRIPE_WEBHOOK_SECRET); } 
-    catch (err) { return res.status(400).send(`Webhook Error: ${err.message}`); }
-    if (event.type === 'checkout.session.completed') console.log(`💰 PAIEMENT REÇU !`);
-    res.json({received: true});
-});
+        /* APPLICATION DES COULEURS */
+        .card.chef { border-color: rgba(232, 230, 225, 0.3); }
+        .card.chef h3 { color: var(--color-chef); }
+        .chef .btn-buy { background: var(--color-chef); color: #000; border: none; }
 
-// ==========================================
-// 🧠 BASE DE DONNÉES : INFRASTRUCTURE iCHEF
-// ==========================================
-const mongoURI = process.env.MONGO_URI || "mongodb+srv://icheflavien_db_user:Tamere58.@cluster0.4w95d7m.mongodb.net/ichef_production?retryWrites=true&w=majority";
-mongoose.connect(mongoURI).then(() => console.log('🔥 I CHEF Infrastructure Online')).catch(err => console.error(err.message));
+        .card.essentiel { border-color: rgba(255,255,255,0.1); }
+        .card.essentiel h3 { color: var(--color-essentiel); }
+        .essentiel .btn-buy { background: transparent; color: #fff; border: 1px solid #fff; }
 
-// AJOUT DES 4 PLANS : CHEF, ECO, BUSINESS, PREMIUM
-const tenantSchema = new mongoose.Schema({
-    tenantID: { type: String, required: true, unique: true },
-    clientName: String,
-    status: { type: String, enum: ['ACTIF', 'SUSPENDU'], default: 'ACTIF' },
-    plan: { type: String, enum: ['CHEF', 'ECO', 'BUSINESS', 'PREMIUM'], default: 'ECO' },
-    pin: { type: String, default: '9999' }, 
-    maxScreens: { type: Number, default: 1 }, 
-    registeredDevices: [String], 
-    config: { stripeCustomerId: String }
-});
-const Tenant = mongoose.model('Tenant', tenantSchema);
+        .card.business { border-color: rgba(93, 138, 168, 0.5); }
+        .card.business h3 { color: var(--color-business); }
+        .business .btn-buy { background: var(--color-business); color: #fff; border: none; }
 
-const AppState = mongoose.model('AppState', new mongoose.Schema({
-    tenantID: { type: String, required: true, unique: true },
-    activeOrders: { type: Object, default: {} }
-}, { minimize: false }));
+        .card.executif { border-color: rgba(140, 146, 172, 0.3); }
+        .card.executif h3 { color: var(--color-executif); }
+        .executif .btn-buy { background: transparent; color: var(--color-executif); border: 1px solid var(--color-executif); }
 
-// ==========================================
-// 🤖 MOTEUR IA : RECONNAISSANCE DE FACTURES
-// ==========================================
-const { GoogleGenerativeAI } = require('@google/generative-ai');
-const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY || 'CLE_MANQUANTE');
+        .card.premium { border-color: var(--color-premium); box-shadow: 0 0 30px rgba(212, 175, 55, 0.15); background: linear-gradient(180deg, #0a0a0a 0%, #1a1608 100%);}
+        .card.premium h3 { color: var(--color-premium); }
+        .premium .btn-buy { background: var(--color-premium); color: #000; border: none; }
 
-app.post('/api/scan-invoice', async (req, res) => {
-    const { imageBase64, mimeType } = req.body;
+        h3 { text-transform: uppercase; letter-spacing: 2px; font-size: 0.75rem; margin-bottom: 20px; font-weight: 800;}
+        .price { font-family: 'Playfair Display', serif; font-size: 2.2rem; margin: 20px 0; color: #fff;}
+        .price span { font-size: 0.85rem; font-family: 'Inter'; opacity: 0.5; font-weight: 300;}
+
+        ul { text-align: left; font-size: 0.75rem; padding: 0; list-style: none; margin: 30px 0; flex-grow: 1; color: #a3a3a3;}
+        li { margin-bottom: 12px; border-bottom: 1px solid rgba(255,255,255,0.03); padding-bottom: 8px; }
+
+        .btn-buy { padding: 15px; border-radius: 4px; text-decoration: none; font-weight: 800; font-size: 0.7rem; text-transform: uppercase; letter-spacing: 1px; transition: 0.3s; margin-top: 20px; text-align: center; }
+        .btn-buy:hover { transform: scale(1.03); }
+
+        @media (max-width: 1100px) { .pricing-grid { grid-template-columns: repeat(2, 1fr); } }
+        @media (max-width: 768px) { .pricing-grid { grid-template-columns: 1fr; } .header-nav { flex-direction: column; gap: 15px; padding: 20px; } }
+    </style>
+</head>
+<body>
+    <div class="header-nav">
+        <div class="logo">iCHEF<span>.</span></div>
+        <div class="login-mini">
+            <input type="text" id="vitrine-tenant" placeholder="Identifiant">
+            <input type="password" id="vitrine-pin" placeholder="PIN">
+            <button onclick="executeVitrineLogin()">Accéder</button>
+        </div>
+    </div>
     
-    if (!imageBase64) return res.status(400).json({ success: false, error: "Aucune image fournie." });
-    if (!process.env.GEMINI_API_KEY) return res.status(500).json({ success: false, error: "Clé API IA non configurée sur le serveur." });
+    <div class="container">
+        <div class="hero">
+            <h1>Sélectionnez votre infrastructure.</h1>
+        </div>
 
-    try {
-        const base64Data = imageBase64.includes(',') ? imageBase64.split(',')[1] : imageBase64;
-        const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+        <div class="pricing-grid">
+            <div class="card chef">
+                <h3>Pack Chef IA</h3>
+                <p style="font-size:0.8rem; opacity:0.6; height: 35px;">Le laboratoire du Chef.</p>
+                <div class="price">19€<span>/ht/mois</span></div>
+                <ul>
+                    <li>1 Écran de contrôle</li>
+                    <li>IA Gemini Scan Factures</li>
+                    <li>Gestion de Production</li>
+                </ul>
+                <a href="https://buy.stripe.com/test_7sY4gBa419xT0pl7V31kA00" class="btn-buy">Activer Chef</a>
+            </div>
 
-        const prompt = `
-        Tu es l'assistant d'un chef de cuisine. Analyse cette image de facture ou de ticket de caisse.
-        Extrais les informations suivantes et renvoie UNIQUEMENT un objet JSON valide, sans texte avant ni après, sans balises markdown.
-        Structure attendue :
-        {
-            "fournisseur": "Nom du fournisseur",
-            "date": "JJ/MM/AAAA",
-            "totalHT": 0.00,
-            "tva": 0.00,
-            "totalTTC": 0.00,
-            "articles": [
-                { "nom": "Nom du produit", "quantite": 0, "prixUnitaire": 0.00 }
-            ]
+            <div class="card essentiel">
+                <h3>Pack Essentiel</h3>
+                <p style="font-size:0.8rem; opacity:0.6; height: 35px;">Simplicité & Clarté.</p>
+                <div class="price">29€<span>/ht/mois</span></div>
+                <ul>
+                    <li>1 Écran Caisse Rapide</li>
+                    <li>Synchronisation Cloud</li>
+                    <li>Rapports Journaliers</li>
+                </ul>
+                <a href="#" class="btn-buy">Choisir Essentiel</a>
+            </div>
+
+            <div class="card business">
+                <h3>Pack Business</h3>
+                <p style="font-size:0.8rem; opacity:0.6; height: 35px;">Le standard de l'Empire.</p>
+                <div class="price">49€<span>/ht/mois</span></div>
+                <ul>
+                    <li>5 Écrans simultanés</li>
+                    <li>Multi-Postes Cuisine</li>
+                    <li>Gestion des Stocks</li>
+                </ul>
+                <a href="#" class="btn-buy">Déployer Business</a>
+            </div>
+
+            <div class="card executif">
+                <h3>Pack Exécutif</h3>
+                <p style="font-size:0.8rem; opacity:0.6; height: 35px;">Puissance & Volume.</p>
+                <div class="price">99€<span>/ht/mois</span></div>
+                <ul>
+                    <li>25 Écrans max</li>
+                    <li>Support Prioritaire</li>
+                    <li>Analyses Financières</li>
+                </ul>
+                <a href="#" class="btn-buy">Passer Exécutif</a>
+            </div>
+
+            <div class="card premium">
+                <h3>Pack Palace</h3>
+                <p style="font-size:0.8rem; opacity:0.6; height: 35px;">L'Infrastructure Ultime.</p>
+                <div class="price" style="color: var(--color-premium);">199€<span style="color: rgba(212, 175, 55, 0.5);">/ht/mois</span></div>
+                <ul>
+                    <li>200 Écrans illimités</li>
+                    <li>Plan de salle / Résas</li>
+                    <li>Conciergerie Technique</li>
+                </ul>
+                <a href="#" class="btn-buy">Accéder au Palace</a>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        async function executeVitrineLogin() {
+            const tenantID = document.getElementById('vitrine-tenant').value.trim().toLowerCase();
+            const pin = document.getElementById('vitrine-pin').value.trim();
+            const SERVER_URL = "https://tableau-system.onrender.com";
+            
+            if (!tenantID || !pin) { alert("Identification requise."); return; }
+
+            try {
+                const licRes = await fetch(`${SERVER_URL}/api/check-license?tenantID=${tenantID}`);
+                const licData = await licRes.json();
+                
+                if (!licData.success) { alert("Identifiant inconnu."); return; }
+                if (licData.status === 'SUSPENDU') { alert("Accès bloqué."); return; }
+
+                const pinRes = await fetch(`${SERVER_URL}/api/verify-pin`, {
+                    method: 'POST', headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ tenantID, pin })
+                });
+                const pinData = await pinRes.json();
+
+                if (pinData.success) {
+                    localStorage.setItem('ichef_tenant_id', tenantID);
+                    if (licData.plan === 'CHEF') window.location.href = `chef.html?tenantID=${tenantID}`;
+                    else window.location.href = `pack-eco.html?tenantID=${tenantID}`;
+                } else { alert("PIN erroné."); }
+            } catch (e) { alert("Erreur réseau."); }
         }
-        Si tu ne trouves pas une info, mets null ou 0.`;
-
-        const imagePart = { inlineData: { data: base64Data, mimeType: mimeType || "image/jpeg" } };
-        const result = await model.generateContent([prompt, imagePart]);
-        const responseText = result.response.text();
+    </script>
+</body>
+</html><!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>iChef OS | L'Excellence à 5 Étoiles</title>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@200;400;600;900&family=Playfair+Display:ital,wght@0,600;1,400&display=swap');
         
-        const cleanJson = responseText.replace(/```json/gi, '').replace(/```/gi, '').trim();
-        const data = JSON.parse(cleanJson);
-
-        res.json({ success: true, data: data });
-
-    } catch (error) {
-        res.status(500).json({ success: false, error: "L'IA n'a pas pu analyser cette facture." });
-    }
-});
-
-// ==========================================
-// 🚀 ACTIVATION & CONNEXION (LES 4 ROUTES)
-// ==========================================
-app.post('/api/activate', async (req, res) => {
-    const { sessionId, clientName, tenantID, plan } = req.body;
-    try {
-        const session = await stripe.checkout.sessions.retrieve(sessionId);
-        if (session.payment_status !== 'paid') return res.status(403).json({ error: "Paiement requis." });
-        
-        const randomPin = Math.floor(1000 + Math.random() * 9000).toString();
-        const finalPlan = plan || 'ESSENTIEL';
-
-        // GESTION DES 5 LIMITES D'ÉCRANS
-        let limit = 1; 
-        if (finalPlan === 'BUSINESS') limit = 5;
-        if (finalPlan === 'EXCUTIF') limit = 25;
-        if (finalPlan === 'PREMIUM') limit = 200;
-
-        await Tenant.create({ 
-            tenantID, clientName, status: 'ACTIF', 
-            plan: finalPlan, maxScreens: limit, pin: randomPin, 
-            config: { stripeCustomerId: session.customer } 
-        });
-        
-        await AppState.create({ tenantID, activeOrders: {} });
-        res.json({ success: true, dedicatedPin: randomPin });
-    } catch (error) { res.status(500).json({ error: "Erreur serveur." }); }
-});
-// ==========================================
-// 🛠️ MODULES D'ADMINISTRATION CLIENT
-// ==========================================
-
-// MISE À JOUR DU CODE PIN PAR LE CLIENT
-app.post('/api/update-pin', async (req, res) => {
-    const { tenantID, newPin } = req.body;
-    try {
-        const tenant = await Tenant.findOne({ tenantID });
-        if (!tenant) return res.status(404).json({ success: false, error: "Identifiant introuvable." });
-        
-        tenant.pin = newPin;
-        await tenant.save();
-        
-        res.json({ success: true });
-    } catch (error) { 
-        res.status(500).json({ success: false, error: "Erreur lors de la sauvegarde." }); 
-    }
-});
-
-// Informations du tableau de bord (Appareils)
-app.get('/api/dashboard-info', async (req, res) => {
-    const { tenantID } = req.query;
-    try {
-        const tenant = await Tenant.findOne({ tenantID });
-        if (!tenant) return res.status(404).json({ success: false });
-        res.json({ 
-            success: true, 
-            activeDevices: tenant.registeredDevices.length, 
-            maxScreens: tenant.maxScreens 
-        });
-    } catch (e) { res.status(500).json({ success: false }); }
-});
-
-// Kill Switch (Déconnecter tout)
-app.post('/api/kill-switch', async (req, res) => {
-    const { tenantID } = req.body;
-    try {
-        const tenant = await Tenant.findOne({ tenantID });
-        if (!tenant) return res.status(404).json({ success: false, error: "Identifiant introuvable." });
-        
-        tenant.registeredDevices = []; 
-        await tenant.save();
-        res.json({ success: true });
-    } catch (e) { res.status(500).json({ success: false }); }
-});
-
-// Génération du lien Portail Stripe
-app.post('/api/billing-portal', async (req, res) => {
-    const { tenantID } = req.body;
-    try {
-        const tenant = await Tenant.findOne({ tenantID });
-        if (!tenant || !tenant.config || !tenant.config.stripeCustomerId) {
-            return res.status(400).json({ success: false, error: "Aucun profil de facturation Stripe trouvé." });
+        :root { 
+            --bg: #030303; 
+            --panel: #0a0a0a; 
+            
+            /* LA NOUVELLE PALETTE PALACE */
+            --color-chef: #E8E6E1;      /* Ivoire / Gris Perle (Doux et classe) */
+            --color-essentiel: #FFFFFF; /* Blanc Pur (Minimaliste) */
+            --color-business: #5D8AA8;  /* Bleu Saphir Mat (Proactivité douce) */
+            --color-executif: #8C92AC;  /* Titane / Argent (Puissance volume) */
+            --color-premium: #D4AF37;   /* Or Champagne (Réservé à l'élite) */
+            
+            --text-main: #ffffff; 
+            --text-muted: #737373; 
         }
+        
+        body { background-color: var(--bg); color: #fff; font-family: 'Inter', sans-serif; margin: 0; }
+        
+        .header-nav { padding: 20px 40px; display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid rgba(255,255,255,0.05); background: rgba(3,3,3,0.9); position: sticky; top: 0; z-index: 1000; backdrop-filter: blur(15px); }
+        .logo { font-family: 'Playfair Display', serif; font-size: 1.5rem; letter-spacing: 2px; }
+        .logo span { color: var(--color-premium); }
 
-        const session = await stripe.billingPortal.sessions.create({
-            customer: tenant.config.stripeCustomerId,
-            return_url: `${req.headers.origin}/admin.html?tenantID=${tenantID}`,
-        });
+        .login-mini { display: flex; gap: 10px; }
+        .login-mini input { padding: 10px; background: transparent; border: 1px solid #222; color: white; border-radius: 4px; width: 130px; font-size: 0.8rem; outline: none; transition: 0.3s;}
+        .login-mini input:focus { border-color: var(--color-premium); }
+        .login-mini button { padding: 10px 20px; background: #fff; color: #000; border: none; border-radius: 4px; font-weight: 800; cursor: pointer; text-transform: uppercase; font-size: 0.7rem; transition: 0.3s;}
+        .login-mini button:hover { background: var(--color-premium); }
 
-        res.json({ success: true, url: session.url });
-    } catch (e) { 
-        res.status(500).json({ success: false, error: "Erreur de connexion à Stripe." }); 
-    }
-});
+        .container { max-width: 1400px; width: 95%; margin: 60px auto; text-align: center; }
+        .hero h1 { font-family: 'Playfair Display', serif; font-size: 3.5rem; margin-bottom: 50px; font-weight: 400; letter-spacing: -1px;}
 
-// ==========================================
-// 📡 SYNCHRONISATION
-// ==========================================
-app.get('/get-current-state', async (req, res) => {
-    try {
-        const tenantID = req.query.tenantID || 'MASTER_STATE';
-        let state = await AppState.findOne({ tenantID });
-        if (!state) state = await AppState.create({ tenantID, activeOrders: {} });
-        res.json(state);
-    } catch (e) { res.status(500).json({ error: "Sync Error" }); }
-});
+        .pricing-grid { display: grid; grid-template-columns: repeat(5, 1fr); gap: 15px; }
+        
+        .card { background: var(--panel); border: 1px solid rgba(255,255,255,0.05); border-radius: 8px; padding: 40px 20px; display: flex; flex-direction: column; transition: 0.4s; position: relative; }
+        .card:hover { transform: translateY(-10px); }
 
-app.post('/update-order', async (req, res) => {
-    try {
-        const tenantID = req.query.tenantID || 'MASTER_STATE';
-        const { tableId, order } = req.body;
-        let state = await AppState.findOne({ tenantID });
-        if (!state) state = new AppState({ tenantID, activeOrders: {} });
-        if (order === null) delete state.activeOrders[tableId];
-        else state.activeOrders[tableId] = order;
-        state.markModified('activeOrders');
-        await state.save();
-        res.json({ success: true });
-    } catch (e) { res.status(500).json({ error: "Save Error" }); }
-});
+        /* APPLICATION DES COULEURS */
+        .card.chef { border-color: rgba(232, 230, 225, 0.3); }
+        .card.chef h3 { color: var(--color-chef); }
+        .chef .btn-buy { background: var(--color-chef); color: #000; border: none; }
 
-// ==========================================
-// 👑 COMMAND CENTER (ADMIN)
-// ==========================================
-const ADMIN_PASS = 'Empire2026';
+        .card.essentiel { border-color: rgba(255,255,255,0.1); }
+        .card.essentiel h3 { color: var(--color-essentiel); }
+        .essentiel .btn-buy { background: transparent; color: #fff; border: 1px solid #fff; }
 
-app.get('/panel-ichef', async (req, res) => {
-    const pass = req.query.pass;
-    if (pass !== ADMIN_PASS) return res.status(401).send('🔒 ACCÈS REFUSÉ');
-    const tenants = await Tenant.find({});
+        .card.business { border-color: rgba(93, 138, 168, 0.5); }
+        .card.business h3 { color: var(--color-business); }
+        .business .btn-buy { background: var(--color-business); color: #fff; border: none; }
+
+        .card.executif { border-color: rgba(140, 146, 172, 0.3); }
+        .card.executif h3 { color: var(--color-executif); }
+        .executif .btn-buy { background: transparent; color: var(--color-executif); border: 1px solid var(--color-executif); }
+
+        .card.premium { border-color: var(--color-premium); box-shadow: 0 0 30px rgba(212, 175, 55, 0.15); background: linear-gradient(180deg, #0a0a0a 0%, #1a1608 100%);}
+        .card.premium h3 { color: var(--color-premium); }
+        .premium .btn-buy { background: var(--color-premium); color: #000; border: none; }
+
+        h3 { text-transform: uppercase; letter-spacing: 2px; font-size: 0.75rem; margin-bottom: 20px; font-weight: 800;}
+        .price { font-family: 'Playfair Display', serif; font-size: 2.2rem; margin: 20px 0; color: #fff;}
+        .price span { font-size: 0.85rem; font-family: 'Inter'; opacity: 0.5; font-weight: 300;}
+
+        ul { text-align: left; font-size: 0.75rem; padding: 0; list-style: none; margin: 30px 0; flex-grow: 1; color: #a3a3a3;}
+        li { margin-bottom: 12px; border-bottom: 1px solid rgba(255,255,255,0.03); padding-bottom: 8px; }
+
+        .btn-buy { padding: 15px; border-radius: 4px; text-decoration: none; font-weight: 800; font-size: 0.7rem; text-transform: uppercase; letter-spacing: 1px; transition: 0.3s; margin-top: 20px; text-align: center; }
+        .btn-buy:hover { transform: scale(1.03); }
+
+        @media (max-width: 1100px) { .pricing-grid { grid-template-columns: repeat(2, 1fr); } }
+        @media (max-width: 768px) { .pricing-grid { grid-template-columns: 1fr; } .header-nav { flex-direction: column; gap: 15px; padding: 20px; } }
+    </style>
+</head>
+<body>
+    <div class="header-nav">
+        <div class="logo">iCHEF<span>.</span></div>
+        <div class="login-mini">
+            <input type="text" id="vitrine-tenant" placeholder="Identifiant">
+            <input type="password" id="vitrine-pin" placeholder="PIN">
+            <button onclick="executeVitrineLogin()">Accéder</button>
+        </div>
+    </div>
     
-    let html = `
-    <!DOCTYPE html>
-    <html lang="fr">
-    <head>
-        <meta charset="UTF-8">
-        <title>COMMAND CENTER - iCHEF</title>
-        <style>
-            body { background: #050505; color: #fff; font-family: sans-serif; padding: 20px; }
-            table { width: 100%; border-collapse: collapse; background: #0a0a0a; margin-top: 20px; }
-            th, td { border: 1px solid #222; padding: 12px; text-align: left; }
-            th { background: #111; color: #fbbf24; text-transform: uppercase; font-size: 0.75rem; }
-            .plan-badge { padding: 4px 8px; border-radius: 4px; font-weight: 800; font-size: 0.7rem; }
-            .plan-CHEF { background: rgba(16, 185, 129, 0.1); color: #10b981; border: 1px solid #10b981; }
-            .plan-ECO { background: rgba(59, 130, 246, 0.1); color: #3b82f6; border: 1px solid #3b82f6; }
-            .plan-BUSINESS { background: rgba(168, 85, 247, 0.1); color: #a855f7; border: 1px solid #a855f7; }
-            .plan-PREMIUM { background: rgba(239, 68, 68, 0.1); color: #ef4444; border: 1px solid #ef4444; }
-            .btn { padding: 8px 12px; border: none; border-radius: 6px; cursor: pointer; font-weight: 800; text-transform: uppercase; font-size: 0.65rem; transition: 0.2s; }
-            .badge-screens { background: #111; color: #fbbf24; padding: 5px 10px; border-radius: 4px; font-weight: 900; }
-        </style>
-    </head>
-    <body>
-        <h1>👑 iCHEF <span style="color:#fbbf24">COMMAND CENTER</span></h1>
-        <table>
-            <tr>
-                <th>Restaurant</th>
-                <th>Pack Actuel</th>
-                <th>Code PIN</th>
-                <th>Écrans (Actifs / Max)</th>
-                <th>Pilotage Commercial</th>
-            </tr>
-            ${tenants.map(t => `
-                <tr>
-                    <td><b>${t.clientName}</b><br><small style="color:#666">${t.tenantID}</small></td>
-                    <td><span class="plan-badge plan-${t.plan}">${t.plan}</span></td>
-                    <td style="color:#4ade80; font-weight:bold; font-size:1.2rem;">${t.pin}</td>
-                    <td><span class="badge-screens">${t.registeredDevices.length} / ${t.maxScreens}</span></td>
-                    <td>
-                        <form action="/panel-ichef/action" method="POST" style="display:inline;">
-                            <input type="hidden" name="pass" value="${pass}"><input type="hidden" name="tenantID" value="${t.tenantID}">
-                            
-                            <select name="newPlan" onchange="this.form.submit()" style="background:#222; color:#fff; padding:6px; border-radius:4px; border:1px solid #444;">
-                                <option value="ECO" ${t.plan === 'ECO' ? 'selected' : ''}>Eco Pack (1 Écran)</option>
-                                <option value="CHEF" ${t.plan === 'CHEF' ? 'selected' : ''}>Chef IA (1 Écran)</option>
-                                <option value="BUSINESS" ${t.plan === 'BUSINESS' ? 'selected' : ''}>Business (5 Écrans)</option>
-                                <option value="PREMIUM" ${t.plan === 'PREMIUM' ? 'selected' : ''}>Premium (15 Écrans)</option>
-                            </select>
+    <div class="container">
+        <div class="hero">
+            <h1>Sélectionnez votre infrastructure.</h1>
+        </div>
 
-                            <button type="submit" name="action" value="add_screen" class="btn" style="background:#fbbf24; color:#000;">+1 📺</button>
-                            <button type="submit" name="action" value="reset_devices" class="btn" style="background:#3b82f6; color:#fff;">Reset Appareils</button>
-                            <button type="submit" name="action" value="${t.status === 'ACTIF' ? 'suspend' : 'activate'}" class="btn" style="background:#444; color:#fff;">
-                                ${t.status === 'ACTIF' ? 'Bloquer Compte' : 'Débloquer Compte'}
-                            </button>
-                            <button type="submit" name="action" value="delete" class="btn" style="background:#b91c1c; color:#fff;" onclick="return confirm('Supprimer ce client ?')">🗑️</button>
-                        </form>
-                    </td>
-                </tr>
-            `).join('')}
-        </table>
-    </body>
-    </html>`;
-    res.send(html);
-});
+        <div class="pricing-grid">
+            <div class="card chef">
+                <h3>Pack Chef IA</h3>
+                <p style="font-size:0.8rem; opacity:0.6; height: 35px;">Le laboratoire du Chef.</p>
+                <div class="price">19€<span>/ht/mois</span></div>
+                <ul>
+                    <li>1 Écran de contrôle</li>
+                    <li>IA Gemini Scan Factures</li>
+                    <li>Gestion de Production</li>
+                </ul>
+                <a href="https://buy.stripe.com/test_7sY4gBa419xT0pl7V31kA00" class="btn-buy">Activer Chef</a>
+            </div>
 
-app.post('/panel-ichef/action', async (req, res) => {
-    const { pass, tenantID, action, newPlan } = req.body;
-    if (pass !== ADMIN_PASS) return res.status(401).send('Interdit');
-    try {
-        // AUTOMATISATION DES ÉCRANS SELON LE PACK
-        if (newPlan) {
-            let limit = 1;
-            if (newPlan === 'BUSINESS') limit = 5;
-            if (newPlan === 'PREMIUM') limit = 15;
-            await Tenant.findOneAndUpdate({ tenantID }, { plan: newPlan, maxScreens: limit });
+            <div class="card essentiel">
+                <h3>Pack Essentiel</h3>
+                <p style="font-size:0.8rem; opacity:0.6; height: 35px;">Simplicité & Clarté.</p>
+                <div class="price">29€<span>/ht/mois</span></div>
+                <ul>
+                    <li>1 Écran Caisse Rapide</li>
+                    <li>Synchronisation Cloud</li>
+                    <li>Rapports Journaliers</li>
+                </ul>
+                <a href="#" class="btn-buy">Choisir Essentiel</a>
+            </div>
+
+            <div class="card business">
+                <h3>Pack Business</h3>
+                <p style="font-size:0.8rem; opacity:0.6; height: 35px;">Le standard de l'Empire.</p>
+                <div class="price">49€<span>/ht/mois</span></div>
+                <ul>
+                    <li>5 Écrans simultanés</li>
+                    <li>Multi-Postes Cuisine</li>
+                    <li>Gestion des Stocks</li>
+                </ul>
+                <a href="#" class="btn-buy">Déployer Business</a>
+            </div>
+
+            <div class="card executif">
+                <h3>Pack Exécutif</h3>
+                <p style="font-size:0.8rem; opacity:0.6; height: 35px;">Puissance & Volume.</p>
+                <div class="price">99€<span>/ht/mois</span></div>
+                <ul>
+                    <li>25 Écrans max</li>
+                    <li>Support Prioritaire</li>
+                    <li>Analyses Financières</li>
+                </ul>
+                <a href="#" class="btn-buy">Passer Exécutif</a>
+            </div>
+
+            <div class="card premium">
+                <h3>Pack Palace</h3>
+                <p style="font-size:0.8rem; opacity:0.6; height: 35px;">L'Infrastructure Ultime.</p>
+                <div class="price" style="color: var(--color-premium);">199€<span style="color: rgba(212, 175, 55, 0.5);">/ht/mois</span></div>
+                <ul>
+                    <li>200 Écrans illimités</li>
+                    <li>Plan de salle / Résas</li>
+                    <li>Conciergerie Technique</li>
+                </ul>
+                <a href="#" class="btn-buy">Accéder au Palace</a>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        async function executeVitrineLogin() {
+            const tenantID = document.getElementById('vitrine-tenant').value.trim().toLowerCase();
+            const pin = document.getElementById('vitrine-pin').value.trim();
+            const SERVER_URL = "https://tableau-system.onrender.com";
+            
+            if (!tenantID || !pin) { alert("Identification requise."); return; }
+
+            try {
+                const licRes = await fetch(`${SERVER_URL}/api/check-license?tenantID=${tenantID}`);
+                const licData = await licRes.json();
+                
+                if (!licData.success) { alert("Identifiant inconnu."); return; }
+                if (licData.status === 'SUSPENDU') { alert("Accès bloqué."); return; }
+
+                const pinRes = await fetch(`${SERVER_URL}/api/verify-pin`, {
+                    method: 'POST', headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ tenantID, pin })
+                });
+                const pinData = await pinRes.json();
+
+                if (pinData.success) {
+                    localStorage.setItem('ichef_tenant_id', tenantID);
+                    if (licData.plan === 'CHEF') window.location.href = `chef.html?tenantID=${tenantID}`;
+                    else window.location.href = `pack-eco.html?tenantID=${tenantID}`;
+                } else { alert("PIN erroné."); }
+            } catch (e) { alert("Erreur réseau."); }
         }
-        
-        if (action === 'add_screen') await Tenant.findOneAndUpdate({ tenantID }, { $inc: { maxScreens: 1 } });
-        if (action === 'reset_devices') await Tenant.findOneAndUpdate({ tenantID }, { registeredDevices: [] });
-        if (action === 'suspend') await Tenant.findOneAndUpdate({ tenantID }, { status: 'SUSPENDU' });
-        if (action === 'activate') await Tenant.findOneAndUpdate({ tenantID }, { status: 'ACTIF' });
-        if (action === 'delete') { await Tenant.findOneAndDelete({ tenantID }); await AppState.findOneAndDelete({ tenantID }); }
-        
-        res.redirect('/panel-ichef?pass=' + ADMIN_PASS);
-    } catch (err) { res.status(500).send("Erreur."); }
-});
-
-app.listen(PORT, () => console.log("🚀 Empire iCHEF en ligne sur port " + PORT));
+    </script>
+</body>
+</html>
