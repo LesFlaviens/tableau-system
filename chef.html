@@ -104,9 +104,12 @@
         .btn-prod-folder { background: var(--bg); border: 1px solid var(--border-strong); color: var(--slate); padding: 8px 12px; border-radius: 6px; cursor: pointer; font-weight: 800; font-size:0.75rem; transition: 0.2s; text-transform: uppercase;}
         .btn-prod-folder:hover { background: var(--slate); color: var(--panel); }
         
-        /* BOUTON PARTAGE SÉCURISÉ */
+        /* BOUTONS ACTIONS FICHES */
         .btn-share { background: transparent; border: 1px solid var(--gold); color: var(--gold); padding: 8px 12px; border-radius: 6px; cursor: pointer; font-weight: 800; font-size:0.75rem; transition: 0.2s; text-transform: uppercase;}
         .btn-share:hover { background: var(--gold); color: var(--panel); }
+
+        .btn-pdf { background: transparent; border: 1px solid var(--text-main); color: var(--text-main); padding: 8px 12px; border-radius: 6px; cursor: pointer; font-weight: 800; font-size:0.75rem; transition: 0.2s; text-transform: uppercase;}
+        .btn-pdf:hover { background: var(--text-main); color: var(--panel); }
 
         ::-webkit-scrollbar { width: 8px; height: 8px; }
         ::-webkit-scrollbar-track { background: var(--bg); }
@@ -399,7 +402,7 @@
   <script>
         const urlParams = new URLSearchParams(window.location.search);
         let tenantID = urlParams.get('tenantID') || localStorage.getItem('ichef_tenant_id');
-        let sharedFicheID = urlParams.get('fiche'); // Détection du mode Partage Sécurisé
+        let sharedFicheID = urlParams.get('fiche'); 
         
         const SERVER_URL = (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1" || window.location.protocol === "file:") 
         ? "http://localhost:10000" 
@@ -412,7 +415,6 @@
         // ==========================================
         window.onload = () => {
             if (sharedFicheID) {
-                // TÉLÉPORTATION VERS LE MODE LECTURE SEULE (PAS DE PIN REQUIS)
                 document.getElementById('security-overlay').style.display = 'none';
                 document.querySelector('.nav-master').style.display = 'none';
                 document.querySelectorAll('.module').forEach(m => m.style.display = 'none');
@@ -420,8 +422,8 @@
             }
         };
 
-async function checkPin() {
-            if (sharedFicheID) return; // Sécurité anti-conflit
+        async function checkPin() {
+            if (sharedFicheID) return; 
             const pin = document.getElementById('pin-input').value;
             if(!pin) return;
 
@@ -438,15 +440,12 @@ async function checkPin() {
                     body: JSON.stringify({ tenantID: tenantID, pin: pin })
                 });
                 
-                // 1. On lit la réponse brute du serveur
                 const responseText = await pinRes.text();
                 
-                // 2. Si la réponse commence par "<", c'est une page d'erreur Render, pas du JSON
                 if (responseText.trim().startsWith('<')) {
                     throw new Error("Initialisation du serveur... Veuillez réessayer dans 30 secondes.");
                 }
 
-                // 3. Si c'est bien du JSON, on le traduit
                 const pinData = JSON.parse(responseText);
 
                 if (pinData.success) {
@@ -465,6 +464,9 @@ async function checkPin() {
                 btn.disabled = false;
             }
         }
+
+        document.getElementById('pin-input').addEventListener('keypress', function (e) { if (e.key === 'Enter') checkPin(); });
+
         // ==========================================
         // 🚀 MOTEUR PRINCIPAL
         // ==========================================
@@ -570,7 +572,7 @@ async function checkPin() {
         }
 
         // ==========================================
-        // 🔗 LECTURE PARTAGE SÉCURISÉ (COMMIS/BRIGADE)
+        // 🔗 LECTURE PARTAGE SÉCURISÉ & PDF
         // ==========================================
         async function loadSharedRecipe(id) {
             const viewerOverlay = document.getElementById('recipe-viewer-overlay');
@@ -612,6 +614,67 @@ async function checkPin() {
             navigator.clipboard.writeText(link).then(() => {
                 alert("🔗 Lien sécurisé copié dans le presse-papier !\n\nVous pouvez l'envoyer à votre brigade. Les coûts financiers seront masqués.");
             }).catch(() => { alert("Impossible de copier le lien : " + link); });
+        }
+
+        // NOUVELLE FONCTION : EXPORT PDF NATIF
+        async function exportRecipePDF(id) {
+            let r = recipesData.find(x => x.id === id);
+            if(!r) return;
+
+            let ingHTML = r.ing.split('\n').map(line => `<li style="padding:8px 0; border-bottom:1px solid #eee;">${line}</li>`).join('');
+            let prepHTML = r.prep.split('\n').map(line => `<p style="padding:10px; background:#fafafa; border-radius:8px; border:1px solid #eee;">${line}</p>`).join('');
+
+            // On crée une page virtuelle propre pour l'impression A4/Mobile
+            let printWindow = window.open('', '', 'width=800,height=900');
+            printWindow.document.write(`
+                <html>
+                    <head>
+                        <title>Fiche Technique - ${r.name}</title>
+                        <style>
+                            body { font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; color: #1A1A18; padding: 40px; margin:0; }
+                            h1 { color: #111; border-bottom: 2px solid #D4AF37; padding-bottom: 10px; margin-bottom: 10px;}
+                            .badge { background: #4A5568; color: #fff; padding: 4px 12px; border-radius: 12px; font-size: 0.8rem; text-transform: uppercase; }
+                            .grid { display: flex; gap: 40px; margin-top: 30px; }
+                            .col { flex: 1; }
+                            .section-title { color: #4A5568; text-transform: uppercase; font-size: 1.1rem; border-bottom: 1px solid #4A5568; padding-bottom: 5px; }
+                            .footer { margin-top: 50px; font-size: 0.8rem; color: #999; text-align: center; border-top: 1px solid #eee; padding-top: 20px;}
+                            .costs { margin-top: 20px; padding: 15px; background: #f9f9f9; border: 1px solid #ddd; border-radius: 8px; font-size: 0.9rem; }
+                            @media print { body { padding: 0; } }
+                        </style>
+                    </head>
+                    <body>
+                        <h1>${r.name}</h1>
+                        <span class="badge">Fiche Technique Officielle</span>
+                        
+                        <div class="costs">
+                            <b>Coût de revient:</b> ${r.cost} ${currentCurrency} &nbsp;|&nbsp; 
+                            <b>Prix de vente:</b> ${r.price} ${currentCurrency} &nbsp;|&nbsp; 
+                            <b>Marge (FC):</b> ${r.fc}%
+                        </div>
+
+                        <div class="grid">
+                            <div class="col">
+                                <h3 class="section-title">Ingrédients</h3>
+                                <ul style="list-style:none; padding:0; margin:0;">${ingHTML}</ul>
+                            </div>
+                            <div class="col">
+                                <h3 class="section-title">Préparation</h3>
+                                <div>${prepHTML}</div>
+                            </div>
+                        </div>
+                        <div class="footer">Généré par iChef OS - ${new Date().toLocaleDateString()}</div>
+                        <script>
+                            window.onload = () => { 
+                                setTimeout(() => {
+                                    window.print(); 
+                                    window.close();
+                                }, 500);
+                            }
+                        </script>
+                    </body>
+                </html>
+            `);
+            printWindow.document.close();
         }
 
 
@@ -906,6 +969,7 @@ async function checkPin() {
                     <div style="display:flex; justify-content:space-between; align-items:center;">
                         <span style="color:var(--text-main); font-weight:900; font-size:1.1rem; font-family:'Playfair Display', serif;">${r.name}</span>
                         <div style="display:flex; gap: 8px;">
+                            <button class="btn-pdf" onclick="exportRecipePDF(${r.id})">📄 PDF</button>
                             <button class="btn-share" onclick="shareRecipe(${r.id})">🔗 PARTAGER</button>
                             <button class="btn-prod-folder" onclick="produceRecipe(${r.id})">🍳 PROD</button>
                             <button class="btn-del" style="background: var(--bg);" onclick="deleteRecipe(${r.id})">✖</button>
