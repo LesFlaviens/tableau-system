@@ -61,11 +61,13 @@ app.post('/api/scan-invoice', async (req, res) => {
     const { imageBase64, mimeType } = req.body;
     
     if (!imageBase64) return res.status(400).json({ success: false, error: "Aucune image fournie." });
-    if (!process.env.GEMINI_API_KEY) return res.status(500).json({ success: false, error: "Clé API IA non configurée sur le serveur." });
+    if (!process.env.GEMINI_API_KEY) return res.status(500).json({ success: false, error: "Clé API IA non configurée." });
 
     try {
         const base64Data = imageBase64.includes(',') ? imageBase64.split(',')[1] : imageBase64;
-        const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+        
+        // 🛠️ CORRECTION : Utilisation du nom "latest" ou du modèle universel pour éviter l'erreur 404 Google
+        const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash-latest" });
 
         const prompt = `
         Tu es l'assistant d'un chef de cuisine. Analyse cette image de facture ou de ticket de caisse.
@@ -94,7 +96,13 @@ app.post('/api/scan-invoice', async (req, res) => {
 
     } catch (error) {
         console.error("Erreur IA complète:", error);
-        res.status(500).json({ success: false, error: "Détail de l'erreur IA : " + error.message });
+        
+        // Si l'erreur 404 persiste, on bascule en mode secours automatique dans le message d'erreur
+        if (error.message.includes("404")) {
+            res.status(500).json({ success: false, error: "Modèle IA non disponible sur votre compte Google. Veuillez vérifier que votre clé autorise 'gemini-1.5-flash-latest'." });
+        } else {
+            res.status(500).json({ success: false, error: "Détail : " + error.message });
+        }
     }
 });
 // ==========================================
