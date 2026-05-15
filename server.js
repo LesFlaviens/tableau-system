@@ -71,7 +71,7 @@ app.post('/api/scan-invoice', async (req, res) => {
         const prompt = `
         Tu es l'expert en gestion de stocks d'un restaurant gastronomique. Analyse cette image de facture.
         Extrais les informations et pour CHAQUE article, classe-le strictement dans l'une de ces catégories : 
-        'Fruits', 'Légumes', 'Glucides', 'Protéines', 'B.O.F', 'Économat', 'Clarification'.
+        'Fruits', 'Légumes', 'Glucides', 'Protéines', 'B.O.F', 'Économat', 'Alcool'.
 
 const prompt = `
         console.log("Transmission de l'image à l'Intelligence iCHEF...");
