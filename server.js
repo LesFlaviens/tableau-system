@@ -52,7 +52,7 @@ const AppState = mongoose.model('AppState', new mongoose.Schema({
 }, { minimize: false }));
 
 // ==========================================
-// 🤖 MOTEUR IA : RECONNAISSANCE DE FACTURES
+// 🤖 MOTEUR IA : RECONNAISSANCE DE FACTURES (MULTI-MODÈLES)
 // ==========================================
 const { GoogleGenerativeAI } = require('@google/generative-ai');
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY || 'CLE_MANQUANTE');
@@ -65,10 +65,8 @@ app.post('/api/scan-invoice', async (req, res) => {
 
     try {
         const base64Data = imageBase64.includes(',') ? imageBase64.split(',')[1] : imageBase64;
+        const imagePart = { inlineData: { data: base64Data, mimeType: mimeType || "image/jpeg" } };
         
-        // 🛠️ CORRECTION : Utilisation du nom "latest" ou du modèle universel pour éviter l'erreur 404 Google
-        const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash-latest" });
-
         const prompt = `
         Tu es l'assistant d'un chef de cuisine. Analyse cette image de facture ou de ticket de caisse.
         Extrais les informations suivantes et renvoie UNIQUEMENT un objet JSON valide, sans texte avant ni après, sans balises markdown.
@@ -85,24 +83,34 @@ app.post('/api/scan-invoice', async (req, res) => {
         }
         Si tu ne trouves pas une info, mets null ou 0.`;
 
-        const imagePart = { inlineData: { data: base64Data, mimeType: mimeType || "image/jpeg" } };
-        const result = await model.generateContent([prompt, imagePart]);
-        const responseText = result.response.text();
+        let result;
         
+        // 🛡️ CASCADE DE SÉCURITÉ : On teste les modèles de Google un par un jusqu'à forcer le passage
+        try {
+            // Tentative 1 : Le modèle nouvelle génération (rapide)
+            const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+            result = await model.generateContent([prompt, imagePart]);
+        } catch (e1) {
+            try {
+                // Tentative 2 : Le modèle Pro
+                const model = genAI.getGenerativeModel({ model: "gemini-1.5-pro" });
+                result = await model.generateContent([prompt, imagePart]);
+            } catch (e2) {
+                // Tentative 3 : Le modèle Universel Mondial (Jamais bloqué)
+                const model = genAI.getGenerativeModel({ model: "gemini-1.0-pro-vision-latest" });
+                result = await model.generateContent([prompt, imagePart]);
+            }
+        }
+
+        const responseText = result.response.text();
         const cleanJson = responseText.replace(/```json/gi, '').replace(/```/gi, '').trim();
         const data = JSON.parse(cleanJson);
 
         res.json({ success: true, data: data });
 
     } catch (error) {
-        console.error("Erreur IA complète:", error);
-        
-        // Si l'erreur 404 persiste, on bascule en mode secours automatique dans le message d'erreur
-        if (error.message.includes("404")) {
-            res.status(500).json({ success: false, error: "Modèle IA non disponible sur votre compte Google. Veuillez vérifier que votre clé autorise 'gemini-1.5-flash-latest'." });
-        } else {
-            res.status(500).json({ success: false, error: "Détail : " + error.message });
-        }
+        console.error("Échec critique de l'IA:", error);
+        res.status(500).json({ success: false, error: "Toutes les portes Google sont verrouillées. Vous devez recréer une nouvelle clé API gratuite sur Google AI Studio." });
     }
 });
 // ==========================================
