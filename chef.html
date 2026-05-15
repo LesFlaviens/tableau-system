@@ -414,575 +414,14 @@
         : "https://tableau-system.onrender.com";
 let currentCurrency = "€";
 
-        // ==========================================
-        // 💉 INJECTION DYNAMIQUE : DE L'IA VERS LA MATRICE
-        // ==========================================
-        function injecterStock(donneesIA) {
-            const matrice = document.getElementById('matrice-stock-body'); 
-            if (!matrice) {
-                console.error("Erreur HTML : L'ID 'matrice-stock-body' est introuvable.");
-                return;
-            }
-            donneesIA.articles.forEach(article => {
-                const ligne = document.createElement('tr');
-                const total = (article.quantite * article.prixUnitaire).toFixed(2);
-                ligne.innerHTML = `
-                    <td style="padding: 12px; border-bottom: 1px solid #222;">${article.nom || 'Produit'}</td>
-                    <td style="padding: 12px; border-bottom: 1px solid #222; font-weight: bold;">${article.quantite || 0}</td>
-                    <td style="padding: 12px; border-bottom: 1px solid #222;">${(article.prixUnitaire || 0).toFixed(2)} €</td>
-                    <td style="padding: 12px; border-bottom: 1px solid #222; color: #4ade80; font-weight: 900;">${total} €</td>
-                `;
-                matrice.appendChild(ligne);
-            });
-        }
-
-        // ==========================================
-        // 🔒 LOGIQUE DE DÉMARRAGE
-        // ==========================================
-        window.onload = () => {
-            if (sharedFicheID) {
-                document.getElementById('security-overlay').style.display = 'none';
-                document.querySelector('.nav-master').style.display = 'none';
-                document.querySelectorAll('.module').forEach(m => m.style.display = 'none');
-                loadSharedRecipe(sharedFicheID);
-            }
-
-            // --- NOUVEAU BRANCHEMENT IA ---
-            // On cherche le bouton jaune (assure-toi d'ajouter id="btn-scan" sur ton bouton HTML)
-            const btnScan = document.getElementById('btn-scan');
-            if(btnScan) {
-                btnScan.addEventListener('click', async () => {
-                    const fileInput = document.getElementById('ton-input-file'); // L'ID de ton <input type="file">
-                    if(!fileInput || !fileInput.files[0]) {
-                        alert("Veuillez d'abord sélectionner une image.");
-                        return;
-                    }
-
-                    // On lit l'image
-                    const reader = new FileReader();
-                    reader.onload = async (e) => {
-                        const imageBase64 = e.target.result;
-                        const mimeType = fileInput.files[0].type;
-                        
-                        btnScan.innerText = "ANALYSE EN COURS...";
-                        btnScan.disabled = true;
-
-                        try {
-                            // On tire sur ton API Render
-                            const res = await fetch('/api/scan-invoice', {
-                                method: 'POST',
-                                headers: { 'Content-Type': 'application/json' },
-                                body: JSON.stringify({ imageBase64, mimeType })
-                            });
-                            
-                            const result = await res.json();
-                            
-                            if (result.success) {
-                                // On injecte directement dans le tableau !
-                                injecterStock(result.data);
-                                btnScan.innerText = "SCANNER UNE FACTURE";
-                            } else {
-                                alert("Erreur IA : " + result.error);
-                                btnScan.innerText = "SCANNER UNE FACTURE";
-                            }
-                        } catch (err) {
-                            alert("Crash réseau : " + err.message);
-                            btnScan.innerText = "SCANNER UNE FACTURE";
-                        }
-                        btnScan.disabled = false;
-                    };
-                    reader.readAsDataURL(fileInput.files[0]);
-                });
-            }
-            // ------------------------------
-        };
-        // ==========================================
-        // 📦 GESTION DU STOCK ET CATÉGORIES DYNAMIQUES
-        // ==========================================
-        function renderStockCategoryDropdown() {
-            const select = document.getElementById('manual-stock-cat');
-            if(!select) return;
-            let defaultCats = ['🍝 Féculents', '🥩 Protéines', '🧀 B.O.F (Laitiers)', '🥣 Sauces & Bases', '🥗 Légumes', '📦 Économat'];
-            let allCats = [...defaultCats, ...customStockCategories];
-            select.innerHTML = allCats.map(c => `<option value="${c}">${c}</option>`).join('');
-        }
-
-        async function addStockCategory() {
-            let newCat = prompt("➕ NOM DE LA NOUVELLE CATÉGORIE (ex: 🍷 Cave à Vins) :");
-            if(newCat && newCat.trim() !== "") {
-                if(!customStockCategories.includes(newCat.trim())) {
-                    customStockCategories.push(newCat.trim());
-                    await API.update('STOCK_CATEGORIES', customStockCategories);
-                    renderStockCategoryDropdown();
-                }
-            }
-        }
-
-        async function removeStockCategory() {
-            let catToRemove = document.getElementById('manual-stock-cat').value;
-            let defaultCats = ['🍝 Féculents', '🥩 Protéines', '🧀 B.O.F (Laitiers)', '🥣 Sauces & Bases', '🥗 Légumes', '📦 Économat'];
-            if(defaultCats.includes(catToRemove)) {
-                return alert("⚠️ Vous ne pouvez pas supprimer les catégories par défaut de la matrice.");
-            }
-            if(confirm(`🗑️ Supprimer la catégorie "${catToRemove}" ? (Les produits déjà ajoutés la conserveront).`)) {
-                customStockCategories = customStockCategories.filter(c => c !== catToRemove);
-                await API.update('STOCK_CATEGORIES', customStockCategories);
-                renderStockCategoryDropdown();
-            }
-        }
-
-        async function addManualStock() {
-            let name = document.getElementById('manual-stock-name').value.trim();
-            let qty = document.getElementById('manual-stock-qty').value.trim();
-            let price = parseFloat(document.getElementById('manual-stock-price').value.replace(',', '.'));
-            let cat = document.getElementById('manual-stock-cat').value; 
-            if(!name || !qty || isNaN(price)) return alert("⚠️ Remplissez nom, quantité et prix.");
-            
-            let unitPriceStr = price.toFixed(2) + " " + currentCurrency;
-            let wNumMatch = qty.match(/[\d.]+/);
-            if(wNumMatch) {
-                let wNum = parseFloat(wNumMatch[0]);
-                if(wNum > 0) unitPriceStr = (price / wNum).toFixed(2) + " " + currentCurrency + " / " + qty.replace(/[\d.]+/,'').trim();
-            }
-            let existing = stockGlobalData.find(x => x.name.toLowerCase() === name.toLowerCase());
-            if (existing) { existing.lastPrice = unitPriceStr; existing.qtyStr = qty; existing.date = new Date().toLocaleDateString(); } 
-            else { stockGlobalData.unshift({ id: Date.now(), name: name, cat: cat, qtyStr: qty, lastPrice: unitPriceStr, date: new Date().toLocaleDateString() }); }
-            
-            await API.update('INVENTORY_MASTER', stockGlobalData);
-            document.getElementById('manual-stock-name').value = ''; document.getElementById('manual-stock-qty').value = ''; document.getElementById('manual-stock-price').value = '';
-            renderGlobalStock(); renderLiveStockPanel(); alert("✅ Ajouté au stock !");
-        }
-
-        function renderGlobalStock() {
-            const tbody = document.getElementById('global-stock-list');
-            if(!stockGlobalData || stockGlobalData.length === 0) { tbody.innerHTML = `<tr><td colspan="5" style="text-align:center; padding:30px; color:var(--text-muted);">Le stock est vide.</td></tr>`; return; }
-            tbody.innerHTML = stockGlobalData.map((item, idx) => `
-                <tr>
-                    <td><span class="badge-cat">${item.cat.substring(0,3)}</span></td>
-                    <td style="font-weight:bold; color:var(--text-main);">${item.name} <br><span style="font-size:0.75rem; color:var(--text-muted); font-weight:normal;">Dernier ajout: ${item.date}</span></td>
-                    <td style="color:var(--text-main); font-weight:bold;">${item.qtyStr}</td>
-                    <td style="color:var(--text-main); font-weight:bold;">${item.lastPrice}</td>
-                    <td><button style="background:transparent; border:none; color:var(--alert); font-size:1.2rem; cursor:pointer;" onclick="deleteStockItem(${idx})">✖</button></td>
-                </tr>
-            `).join('');
-        }
-
-        async function deleteStockItem(idx) {
-            if(confirm("Supprimer ce produit du stock ?")) {
-                stockGlobalData.splice(idx, 1); await API.update('INVENTORY_MASTER', stockGlobalData);
-                renderGlobalStock(); renderLiveStockPanel();
-            }
-        }
-
-        function injectFromStock(name, price, cat) {
-            let prefix = 'eco'; 
-            let c = String(cat).toLowerCase();
-            if(c.includes('fecu') || c.includes('fécu')) prefix = 'fecu';
-            else if(c.includes('prot') || c.includes('viande') || c.includes('poisson')) prefix = 'prot';
-            else if(c.includes('bof') || c.includes('lait') || c.includes('fromage')) prefix = 'bof';
-            else if(c.includes('sauc')) prefix = 'sauc';
-            else if(c.includes('legu') || c.includes('légu') || c.includes('fruit')) prefix = 'legu';
-            
-            let textarea = document.getElementById(`market-${prefix}-raw`);
-            if(!textarea) return;
-            let newLine = `${name} ${price}`;
-            if(textarea.value.trim() === "") textarea.value = newLine; else textarea.value += "\n" + newLine;
-            calcSmartPlate();
-        }
-
-        function renderLiveStockPanel() {
-            const panel = document.getElementById('live-stock-panel');
-            if(!panel) return;
-            if(!stockGlobalData || stockGlobalData.length === 0) { panel.innerHTML = '<p style="color:var(--text-muted); text-align:center; margin: 20px 0;">Stock vide.</p>'; return; }
-            panel.innerHTML = stockGlobalData.map(item => {
-                let nameEsc = String(item.name || '').replace(/'/g, "\\'"); let catEsc = String(item.cat || '');
-                return `
-                <div class="stock-item-row" onclick="injectFromStock('${nameEsc}', '${item.lastPrice}', '${catEsc}')" style="display:flex; justify-content:space-between; align-items:center; background: var(--panel); padding: 12px; border-radius: 8px; border: 1px solid var(--border-strong); transition: 0.2s;">
-                    <div style="display:flex; flex-direction:column; gap:4px;">
-                        <span style="font-weight:bold; color:var(--text-main); font-size:0.95rem;">${item.name}</span>
-                        <span style="color:var(--text-muted); font-size: 0.8rem;">En réserve: <b style="color:var(--text-main);">${item.qtyStr}</b></span>
-                    </div>
-                    <div style="display:flex; align-items:center; gap:12px;">
-                        <span style="color:var(--slate); font-weight:800;">${item.lastPrice}</span>
-                        <span style="font-size:1rem; opacity:0.5;">➕</span>
-                    </div>
-                </div>`;
-            }).join('');
-        }
-
-        // ==========================================
-        // 🧪 CRÉATION RECETTES
-        // ==========================================
-        function calcSmartPlate() {
-            const calcBox = (prefix) => {
-                let el = document.getElementById(`market-${prefix}-raw`); if(!el) return 0;
-                let lines = el.value.toLowerCase().replace(/,/g, '.').split('\n');
-                let portion = parseFloat(document.getElementById(`gram-${prefix}`).value) || 1;
-                let cost = 0;
-                lines.forEach(line => {
-                    let cleanLine = line.replace(/\([^)]+\)/g, '').replace(/dispo:.*$/i, '').trim();
-                    if(cleanLine === "") return;
-                    let unitPriceMatch = cleanLine.match(/(\d+(?:\.\d+)?)\s*(?:€|euros?|\$|chf|mad|£|¥)\s*(?:\/|au|le|la)\s*(kg|kilo|l|litre|pce|piece|pièce|g|gr|ml|cl)/i);
-                    if (unitPriceMatch) {
-                        let p = parseFloat(unitPriceMatch[1]); let u = unitPriceMatch[2];
-                        if (u.startsWith('k') || (u.startsWith('l') && !u.includes('ml') && !u.includes('cl'))) cost += (p / 1000) * portion; 
-                        else cost += p * portion; 
-                        return; 
-                    }
-                    let priceMatch = cleanLine.match(/(\d+(?:\.\d+)?)\s*(?:€|euros?|\$|chf|mad|£|¥)/i);
-                    let weightMatch = cleanLine.match(/(\d+(?:\.\d+)?)\s*(kg|kilo|g|gr|l|cl|ml|pce|piece|pièce)/i);
-                    if (priceMatch) {
-                        let p = parseFloat(priceMatch[1]);
-                        if (weightMatch) {
-                            let w = parseFloat(weightMatch[1]); let u = weightMatch[2];
-                            if (u.startsWith('k') || (u.startsWith('l') && !u.includes('ml') && !u.includes('cl'))) cost += (p / (w * 1000)) * portion; 
-                            else cost += (p / w) * portion; 
-                        } else cost += p / portion; 
-                    }
-                });
-                let costDisplay = document.getElementById(`cost-${prefix}`);
-                if (costDisplay) costDisplay.innerText = cost.toFixed(2) + " " + currentCurrency;
-                return cost;
-            };
-
-            let total = ['fecu', 'prot', 'bof', 'sauc', 'legu', 'eco'].reduce((sum, k) => sum + calcBox(k), 0);
-            let totalEl = document.getElementById('market-total-cost');
-            if (totalEl) totalEl.value = total.toFixed(2) + " " + currentCurrency;
-            let margin = parseFloat(document.getElementById('market-margin').value) || 3.5;
-            let rec = total * margin;
-            let recEl = document.getElementById('market-recommended');
-            if (recEl) recEl.innerText = rec.toFixed(2) + " " + currentCurrency;
-
-            let priceInput = document.getElementById('market-price');
-            if (priceInput && (priceInput.value === "" || priceInput.dataset.autofilled === "true")) {
-                priceInput.value = rec.toFixed(2); priceInput.dataset.autofilled = "true";
-            }
-        }
-
-        function generateRecipeIngredients() {
-            let paxCount = parseInt(document.getElementById('recipe-pax').value) || 1;
-            let ingTextarea = document.getElementById('rec-ing');
-            let generatedLines = [];
-            const cats = ['fecu', 'prot', 'bof', 'sauc', 'legu', 'eco'];
-            const labels = {'fecu': 'Féculents', 'prot': 'Protéines', 'bof': 'Laitier/BOF', 'sauc': 'Sauces', 'legu': 'Légumes', 'eco': 'Économat'};
-
-            cats.forEach(k => {
-                let rawVal = document.getElementById(`market-${k}-raw`).value;
-                if (rawVal && rawVal.trim() !== "") {
-                    let gram = parseFloat(document.getElementById(`gram-${k}`).value) || 1;
-                    let names = rawVal.split('\n').map(line => line.replace(/\([^)]+\)/g, '').replace(/dispo:.*$/i, '').trim().replace(/(\d+(?:\.\d+)?)\s*(?:€|euros?|\$|chf|mad|£|¥).*/i, '').trim()).filter(n => n !== "").join(', ');
-                    if(names !== "") generatedLines.push(`- ${labels[k]} : ${gram * paxCount}g/pce (${names})`);
-                }
-            });
-
-            if(generatedLines.length > 0) ingTextarea.value = "Ingrédients pour " + paxCount + " portions :\n" + generatedLines.join('\n');
-            else alert("⚠️ Remplissez d'abord les cases du laboratoire.");
-        }
-
-        async function saveRecipe() {
-            let name = document.getElementById('market-name').value.trim();
-            let price = parseFloat(document.getElementById('market-price').value);
-            let category = document.getElementById('market-category').value;
-            let unitCost = parseFloat(document.getElementById('market-total-cost').value) || 0; 
-            let ing = document.getElementById('rec-ing') ? document.getElementById('rec-ing').value : '';
-            let prep = document.getElementById('rec-prep') ? document.getElementById('rec-prep').value : '';
-
-            if(!name || isNaN(price)) return alert("⚠️ Nom et Prix obligatoires.");
-            let fc = 0; if(price > 0 && unitCost > 0) fc = parseFloat(((unitCost / price) * 100).toFixed(1));
-            
-            let structuredIngs = [];
-            ['fecu', 'prot', 'bof', 'sauc', 'legu', 'eco'].forEach(k => {
-                let rawVal = document.getElementById(`market-${k}-raw`).value;
-                let portion = parseFloat(document.getElementById(`gram-${k}`).value) || 1;
-                if (rawVal && rawVal.trim() !== "") {
-                    rawVal.split('\n').forEach(line => {
-                        let cleanLine = line.replace(/\([^)]+\)/g, '').replace(/dispo:.*$/i, '').trim();
-                        if(cleanLine === "") return;
-                        let nameOnly = cleanLine.replace(/(\d+(?:\.\d+)?)\s*(?:€|euros?|\$|chf|mad|£|¥).*/i, '').trim();
-                        if (nameOnly) structuredIngs.push({ name: nameOnly, qtyPerPortion: portion, cat: k }); 
-                    });
-                }
-            });
-
-            let recipeObj = { id: Date.now(), name: name, cat: category, price: price, cost: unitCost, fc: fc, ing: ing, prep: prep, structuredIngs: structuredIngs };
-            let newItem = { id: Date.now(), name: name, price: price, stock: 99 };
-
-            recipesData.unshift(recipeObj);
-            if(!menuData[category]) menuData[category] = [];
-            menuData[category].unshift(newItem);
-
-            await API.update('MENU_MASTER', menuData);
-            await API.update('RECIPES_MASTER', recipesData); 
-            renderMenu(); renderRecipes();
-            
-            document.getElementById('market-name').value = '';
-            if(document.getElementById('rec-ing')) document.getElementById('rec-ing').value = '';
-            if(document.getElementById('rec-prep')) document.getElementById('rec-prep').value = '';
-            
-            alert(`✅ Plat "${name}" publié !`);
-        }
-
-        async function produceRecipe(id) {
-            let r = recipesData.find(x => x.id === id); if(!r) return;
-            let pax = parseInt(prompt(`🔪 PRODUCTION\nCombien de portions de "${r.name}" avez-vous préparées ?`, "10"));
-            if(isNaN(pax) || pax <= 0) return;
-            if(!r.structuredIngs || r.structuredIngs.length === 0) return alert("⚠️ Impossible : Aucune fiche technique détaillée.");
-
-            let log = `Bilan de production :\n\n`;
-            r.structuredIngs.forEach(ing => {
-                let totalNeeded = ing.qtyPerPortion * pax;
-                let stockItem = stockGlobalData.find(s => s.name.toLowerCase() === ing.name.toLowerCase());
-                if(stockItem) {
-                    let stockQtyNumMatch = stockItem.qtyStr.toString().replace(',','.').match(/[\d.]+/);
-                    if(stockQtyNumMatch) {
-                        let stockQtyNum = parseFloat(stockQtyNumMatch[0]);
-                        let stockUnit = stockItem.qtyStr.toString().replace(/[\d.]+/,'').trim().toLowerCase();
-                        if(stockUnit.startsWith('k') || (stockUnit.startsWith('l') && !stockUnit.includes('m') && !stockUnit.includes('c'))) {
-                            stockQtyNum -= (totalNeeded / 1000); stockItem.qtyStr = stockQtyNum.toFixed(3) + " " + stockUnit;
-                            log += `✅ ${ing.name} : -${(totalNeeded/1000)} ${stockUnit} déduits.\n`;
-                        } else {
-                            stockQtyNum -= totalNeeded; stockItem.qtyStr = stockQtyNum.toFixed(1) + " " + stockUnit;
-                            log += `✅ ${ing.name} : -${totalNeeded} ${stockUnit} déduits.\n`;
-                        }
-                    }
-                }
-            });
-            await API.update('INVENTORY_MASTER', stockGlobalData);
-            renderGlobalStock(); renderLiveStockPanel(); alert(log);
-        }
-
-        async function deleteRecipe(id) { 
-            if(confirm("Supprimer définitivement cette fiche recette ?")) { 
-                recipesData = recipesData.filter(r => r.id !== id); renderRecipes(); await API.update('RECIPES_MASTER', recipesData); 
-            } 
-        }
-
-        function renderRecipes() { if (!currentFolderCat) renderFolders(); else renderFolderContents(currentFolderCat); }
-
-        function renderFolders() {
-            document.getElementById('folder-view').style.display = 'none';
-            const catView = document.getElementById('catalog-view');
-            if(!catView) return; catView.style.display = 'grid';
-            let html = '';
-            ['menuJour', 'suggestions', 'entrees', 'plats', 'desserts'].forEach(cat => {
-                let count = recipesData.filter(r => r.cat === cat).length;
-                let displayName = CAT_SETTINGS[cat] ? CAT_SETTINGS[cat].name : cat;
-                html += `<div class="folder-card" onclick="openFolder('${cat}')"><div class="folder-title">${displayName}</div><div class="folder-count">${count} Fiches</div></div>`;
-            });
-            catView.innerHTML = html;
-        }
-
-        function openFolder(cat) {
-            currentFolderCat = cat; document.getElementById('catalog-view').style.display = 'none'; document.getElementById('folder-view').style.display = 'flex';
-            let displayName = CAT_SETTINGS[cat] ? CAT_SETTINGS[cat].name : cat;
-            document.getElementById('current-folder-title').innerText = "📂 " + displayName; renderFolderContents(cat);
-        }
-
-        function closeFolder() { currentFolderCat = null; renderRecipes(); }
-
-        function renderFolderContents(cat) {
-            const container = document.getElementById('recipes-list');
-            let filtered = recipesData.filter(r => r.cat === cat);
-            if(filtered.length === 0) { container.innerHTML = "<p style='text-align:center; color:var(--text-muted); padding: 20px;'>Dossier vide.</p>"; return; }
-            container.innerHTML = filtered.map(r => `
-                <div style="background: var(--panel); border:1px solid var(--border-strong); padding:20px; border-radius:12px; transition: 0.2s; box-shadow: var(--shadow-subtle);">
-                    <div style="display:flex; justify-content:space-between; align-items:center;">
-                        <span style="color:var(--text-main); font-weight:900; font-size:1.1rem; font-family:'Playfair Display', serif;">${r.name}</span>
-                        <div style="display:flex; gap: 8px;">
-                            <button class="btn-pdf" onclick="exportRecipePDF(${r.id})">📄 PDF</button>
-                            <button class="btn-share" onclick="shareRecipe(${r.id})">🔗 PARTAGER</button>
-                            <button class="btn-prod-folder" onclick="produceRecipe(${r.id})">🍳 PROD</button>
-                            <button class="btn-del" style="background: var(--bg);" onclick="deleteRecipe(${r.id})">✖</button>
-                        </div>
-                    </div>
-                    <div style="margin-top:15px; color:var(--text-muted); font-size:0.85rem; background: var(--bg); padding: 8px 12px; border-radius: 6px; display: inline-block; border: 1px solid var(--border);">
-                        Coût de revient: <b style="color:var(--text-main);">${r.cost} ${currentCurrency}</b> &nbsp;|&nbsp; Prix de vente: <b style="color:var(--text-main);">${r.price} ${currentCurrency}</b> &nbsp;|&nbsp; Marge (FC): <b style="color:var(--accent);">${r.fc}%</b>
-                    </div>
-                </div>`).join('');
-        }
-
-        // ==========================================
-        // 📋 CARTE (MENU)
-        // ==========================================
-        function renderMenu() {
-            const grid = document.getElementById('dynamic-menu-grid');
-            if(!grid) return;
-            let html = '';
-            for (let category in menuData) {
-                let items = menuData[category];
-                let displayName = CAT_SETTINGS[category] ? CAT_SETTINGS[category].name : category.toUpperCase();
-                let catEscaped = String(category).replace(/'/g, "\\'");
-
-                let itemsHtml = items.map(item => {
-                    let stockVal = item.stock !== undefined ? item.stock : 99;
-                    let stockColor = stockVal <= 0 ? 'var(--alert)' : 'var(--gold)';
-                    let stockBorder = stockVal <= 0 ? 'var(--alert)' : 'var(--border)';
-                    return `
-                    <div class="menu-item">
-                        <div class="item-name">${item.name}</div>
-                        <div style="display:flex; justify-content:space-between; width:100%; align-items:center;">
-                            <div class="item-price" onclick="editItemPrice('${catEscaped}', ${item.id})" style="cursor:pointer;" title="Modifier le prix">${parseFloat(item.price||0).toFixed(2)} ${currentCurrency}</div>
-                            <div style="display:flex; gap: 8px;">
-                                <button class="btn-del" style="color:${stockColor}; border:1px solid ${stockBorder}; font-weight:900; font-size:1.1rem; background: var(--panel);" onclick="updateDishStock('${catEscaped}', ${item.id})" title="Modifier le Stock">${stockVal}</button>
-                                <button class="btn-del" onclick="deleteMenuItem('${catEscaped}', ${item.id})">✖</button>
-                            </div>
-                        </div>
-                    </div>`;
-                }).join('');
-
-                html += `
-                <div class="menu-category" style="border-top: 4px solid var(--slate);">
-                    <div class="category-header">
-                        <span style="cursor:pointer; color: var(--slate);" onclick="editCategoryName('${catEscaped}')">${displayName}</span>
-                        <div style="display:flex; align-items:center; gap:10px;">
-                            <span class="count-badge">${items.length}</span>
-                            <button style="background:transparent; border:none; color:var(--alert); cursor:pointer; font-size:1.1rem; padding:0;" onclick="deleteCategory('${catEscaped}')">✖</button>
-                        </div>
-                    </div>
-                    <div class="item-list">${itemsHtml}</div>
-                    <div class="add-row">
-                        <div style="display:flex; gap:10px;">
-                            <textarea id="add-name-${category}" placeholder="Plat ou Menu" style="flex:1; min-height: 50px; resize: vertical;"></textarea>
-                        </div>
-                        <div style="display:flex; gap:10px;">
-                            <input type="number" id="add-price-${category}" placeholder="Prix ${currentCurrency}" style="flex:1;">
-                        </div>
-                        <button class="add-btn" onclick="addMenuItem('${catEscaped}', '${category}')">AJOUTER</button>
-                    </div>
-                </div>`;
-            }
-
-            html += `
-            <div class="menu-category" style="border: 2px dashed var(--border-strong); background: var(--bg); justify-content:center; align-items:center; padding: 40px; cursor:pointer;" onclick="addNewCategory()">
-                <div style="font-size: 3rem; color: var(--text-muted); margin-bottom: 15px;">➕</div>
-                <div style="font-weight: 800; color: var(--slate); letter-spacing: 1px; text-align:center;">NOUVELLE CATÉGORIE</div>
-            </div>`;
-            grid.innerHTML = html;
-            
-            let selectHtml = '';
-            for (let cat in menuData) {
-                let displayName = CAT_SETTINGS[cat] ? CAT_SETTINGS[cat].name : cat;
-                selectHtml += `<option value="${cat}">${displayName}</option>`;
-            }
-            const marketCat = document.getElementById('market-category');
-            if(marketCat) marketCat.innerHTML = selectHtml;
-        }
-        
-        async function editItemName(category, id) {
-            let item = menuData[category].find(x => x.id === id); if(!item) return;
-            let newName = prompt("✏️ Modifier le nom :", item.name);
-            if(newName && newName.trim() !== "") { item.name = newName.trim(); renderMenu(); await API.update('MENU_MASTER', menuData); }
-        }
-
-        async function editItemPrice(category, id) {
-            let item = menuData[category].find(x => x.id === id); if(!item) return;
-            let newPrice = prompt(`💰 Modifier le prix (${currentCurrency}) :`, item.price);
-            if(newPrice && newPrice.trim() !== "") {
-                let parsed = parseFloat(newPrice.replace(',', '.'));
-                if(!isNaN(parsed)) { item.price = parsed; renderMenu(); await API.update('MENU_MASTER', menuData); }
-            }
-        }
-
-        async function editCategoryName(category) {
-            let currentName = CAT_SETTINGS[category] ? CAT_SETTINGS[category].name : category;
-            let newName = prompt("✏️ Renommer la catégorie :", currentName);
-            if(newName && newName.trim() !== "" && newName !== currentName) {
-                let newKey = newName.trim();
-                if(menuData[newKey]) return alert("⚠️ Catégorie existante.");
-                menuData[newKey] = menuData[category]; delete menuData[category];
-                if (CAT_SETTINGS[category]) { CAT_SETTINGS[newKey] = { name: newKey.toUpperCase(), color: CAT_SETTINGS[category].color }; delete CAT_SETTINGS[category]; }
-                renderMenu(); await API.update('MENU_MASTER', menuData);
-            }
-        }
-
-        async function addNewCategory() {
-            let catName = prompt("🏷️ Nom de la nouvelle catégorie :");
-            if(catName && catName.trim() !== "") {
-                let key = catName.trim();
-                if(!menuData[key]) { menuData[key] = []; renderMenu(); await API.update('MENU_MASTER', menuData); } 
-                else alert("⚠️ Catégorie existante.");
-            }
-        }
-
-        async function deleteCategory(category) {
-            if(menuData[category].length > 0) { if(!confirm(`⚠️ Supprimer la catégorie avec ses ${menuData[category].length} plats ?`)) return; } 
-            else { if(!confirm(`🗑️ Supprimer la catégorie ?`)) return; }
-            delete menuData[category]; renderMenu(); await API.update('MENU_MASTER', menuData);
-        }
-
-        async function updateDishStock(category, id) {
-            let item = menuData[category].find(x => x.id === id); if(!item) return;
-            let newStock = prompt(`📦 Quantité prête ?`, item.stock !== undefined ? item.stock : 99);
-            if(newStock === null || newStock.trim() === "") return; 
-            let parsedStock = parseInt(newStock);
-            if(isNaN(parsedStock) || parsedStock < 0) return alert("⚠️ Nombre invalide.");
-            item.stock = parsedStock; renderMenu(); await API.update('MENU_MASTER', menuData);
-        }
-
-        async function addMenuItem(category, inputIndex) {
-            const nameInput = document.getElementById(`add-name-${inputIndex}`); const priceInput = document.getElementById(`add-price-${inputIndex}`); 
-            if (!nameInput.value || !priceInput.value) return;
-            if(!menuData[category]) menuData[category] = [];
-            menuData[category].push({ id: Date.now(), name: nameInput.value, price: parseFloat(priceInput.value), stock: 99 });
-            nameInput.value = ''; priceInput.value = ''; renderMenu(); await API.update('MENU_MASTER', menuData);
-        }
-
-        async function deleteMenuItem(category, id) { 
-            menuData[category] = menuData[category].filter(item => item.id !== id); renderMenu(); await API.update('MENU_MASTER', menuData); 
-        }
-
-        // ==========================================
-        // 📊 STATS
-        // ==========================================
-        async function generateSalesStats() {
-            let caBrut = 0; let coutTotal = 0; let totalPlats = 0; let salesMap = {};
-            let state = await API.getState(); let activeOrders = state.activeOrders || {};
-
-            for (let tableId in activeOrders) {
-                if (tableId.includes('MASTER') || tableId.includes('ARCHIVE') || tableId.includes('BAR') || tableId.includes('CUISINE')) continue;
-                let orderData = activeOrders[tableId];
-                if (!orderData || !orderData.items) continue;
-                
-                orderData.items.forEach(item => {
-                    if (item.done) {
-                        let qty = parseInt(item.qty) || 1; let price = parseFloat(item.price) || 0; 
-                        if (price === 0) { for(let cat in menuData) { let found = menuData[cat].find(m => m.name === item.n); if(found) price = found.price; } }
-                        let cost = 0; let recipe = recipesData.find(r => r.name === item.n); if(recipe) cost = recipe.cost;
-                        caBrut += (price * qty); coutTotal += (cost * qty); totalPlats += qty;
-                        if(!salesMap[item.n]) salesMap[item.n] = { qty: 0, rev: 0 };
-                        salesMap[item.n].qty += qty; salesMap[item.n].rev += (price * qty);
-                    }
-                });
-            }
-
-            document.getElementById('stat-ca').innerText = caBrut.toFixed(2) + " " + currentCurrency;
-            document.getElementById('stat-marge').innerText = (caBrut - coutTotal).toFixed(2) + " " + currentCurrency;
-            document.getElementById('stat-qty').innerText = totalPlats;
-
-            let topSalesArray = Object.keys(salesMap).map(k => ({ name: k, qty: salesMap[k].qty, rev: salesMap[k].rev })).sort((a, b) => b.qty - a.qty);
-            let html = topSalesArray.length === 0 ? '<p style="text-align:center; color:var(--text-muted); font-style: italic;">Aucun article envoyé.</p>' : '';
-            
-            topSalesArray.forEach((s, idx) => {
-                let medal = idx === 0 ? '🥇' : (idx === 1 ? '🥈' : (idx === 2 ? '🥉' : '🔹'));
-                html += `
-                <div style="display:flex; justify-content:space-between; align-items:center; background: var(--panel); padding: 15px; border-radius: 10px; border: 1px solid var(--border-strong); margin-bottom:10px; box-shadow: var(--shadow-subtle);">
-                    <div style="display:flex; align-items:center; gap: 15px;"><span style="font-size:1.8rem;">${medal}</span><span style="font-weight:900; color:var(--text-main); font-size:1.1rem;">${s.name}</span></div>
-                    <div style="display:flex; gap: 30px; align-items:center;">
-                        <span style="color:var(--text-muted); font-size:0.85rem; font-weight:bold;">Envoyés: <b style="color:var(--slate); font-size:1.2rem;">${s.qty}</b></span>
-                        <span style="color:var(--text-muted); font-size:0.85rem; font-weight:bold;">CA: <b style="color:var(--gold); font-size:1.2rem;">${s.rev.toFixed(2)} ${currentCurrency}</b></span>
-                    </div>
-                </div>`;
-            });
-            document.getElementById('top-sales-list').innerHTML = html;
-        }
-
-        // ==========================================
+     // ==========================================
         // 👁️ IA SCANNER
         // ==========================================
         document.getElementById('cameraInput').addEventListener('change', async function(e) {
             const file = e.target.files[0]; if (!file) return;
             const resultBox = document.getElementById('scanResult');
-            resultBox.style.display = 'block'; resultBox.innerHTML = "⏳ Analyse IA en cours...";
+            resultBox.style.display = 'block'; 
+            resultBox.innerHTML = "⏳ Analyse IA en cours... Le cerveau traite la facture.";
 
             const reader = new FileReader();
             reader.onloadend = async function() {
@@ -992,13 +431,52 @@ let currentCurrency = "€";
                         body: JSON.stringify({ imageBase64: reader.result.split(',')[1], mimeType: file.type })
                     });
                     const resData = await response.json();
+                    
                     if (!resData.success) throw new Error(resData.error);
-                    resultBox.innerHTML = "<span style='color: var(--gold); font-weight:bold;'>✅ Extraction réussie :</span><br><br>" + JSON.stringify(resData.data, null, 2).replace(/\n/g, '<br>').replace(/ /g, '&nbsp;');
-                } catch (err) { resultBox.innerHTML = "<span style='color: var(--alert); font-weight:bold;'>❌ Erreur : " + err.message + "</span>"; }
+                    
+                    // 💉 INJECTION DANS LA MATRICE
+                    injecterStock(resData.data);
+                    
+                    // ✅ Affichage propre (on cache le code JSON)
+                    resultBox.innerHTML = `<span style='color: #4ade80; font-weight:bold;'>✅ Facture du fournisseur "${resData.data.fournisseur || 'Inconnu'}" extraite avec succès ! Les produits ont été ajoutés à la matrice.</span>`;
+                    
+                } catch (err) { 
+                    resultBox.innerHTML = "<span style='color: var(--alert); font-weight:bold;'>❌ Erreur : " + err.message + "</span>"; 
+                }
+            };
+            reader.readAsDataURL(file);
+        });// ==========================================
+        // 👁️ IA SCANNER
+        // ==========================================
+        document.getElementById('cameraInput').addEventListener('change', async function(e) {
+            const file = e.target.files[0]; if (!file) return;
+            const resultBox = document.getElementById('scanResult');
+            resultBox.style.display = 'block'; 
+            resultBox.innerHTML = "⏳ Analyse IA en cours... Le cerveau traite la facture.";
+
+            const reader = new FileReader();
+            reader.onloadend = async function() {
+                try {
+                    const response = await fetch(`${SERVER_URL}/api/scan-invoice`, {
+                        method: 'POST', headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ imageBase64: reader.result.split(',')[1], mimeType: file.type })
+                    });
+                    const resData = await response.json();
+                    
+                    if (!resData.success) throw new Error(resData.error);
+                    
+                    // 💉 INJECTION DANS LA MATRICE
+                    injecterStock(resData.data);
+                    
+                    // ✅ Affichage propre (on cache le code JSON)
+                    resultBox.innerHTML = `<span style='color: #4ade80; font-weight:bold;'>✅ Facture du fournisseur "${resData.data.fournisseur || 'Inconnu'}" extraite avec succès ! Les produits ont été ajoutés à la matrice.</span>`;
+                    
+                } catch (err) { 
+                    resultBox.innerHTML = "<span style='color: var(--alert); font-weight:bold;'>❌ Erreur : " + err.message + "</span>"; 
+                }
             };
             reader.readAsDataURL(file);
         });
-
     </script>
 </body>
 </html>
