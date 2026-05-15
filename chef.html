@@ -420,30 +420,48 @@
             }
         };
 
-        async function checkPin() {
+async function checkPin() {
             if (sharedFicheID) return; // Sécurité anti-conflit
             const pin = document.getElementById('pin-input').value;
             if(!pin) return;
 
-            document.getElementById('error-msg').style.display = 'none';
+            const errorMsg = document.getElementById('error-msg');
+            const btn = document.querySelector('#security-overlay button');
+            
+            errorMsg.style.display = 'none';
+            btn.innerText = "VÉRIFICATION...";
+            btn.disabled = true;
 
             try {
                 const pinRes = await fetch(`${SERVER_URL}/api/verify-pin`, {
                     method: 'POST', headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ tenantID: tenantID, pin: pin })
                 });
+                
+                // Si le serveur Render est en train de redémarrer (Erreur 502/503)
+                if (!pinRes.ok && pinRes.status >= 500) {
+                    throw new Error("Le serveur central redémarre. Réessayez dans 10 secondes.");
+                }
+
                 const pinData = await pinRes.json();
 
                 if (pinData.success) {
                     document.getElementById('security-overlay').style.display = 'none';
                     bootSystem(); 
                 } else {
-                    document.getElementById('error-msg').style.display = 'block';
+                    errorMsg.innerText = "❌ Code PIN incorrect.";
+                    errorMsg.style.display = 'block';
+                    btn.innerText = "DÉVERROUILLER";
+                    btn.disabled = false;
                 }
-            } catch(e) { document.getElementById('error-msg').innerText = "📡 Erreur serveur."; document.getElementById('error-msg').style.display = 'block'; }
+            } catch(e) { 
+                // Affiche l'erreur exacte pour faciliter le diagnostic
+                errorMsg.innerText = "📡 " + e.message; 
+                errorMsg.style.display = 'block'; 
+                btn.innerText = "DÉVERROUILLER";
+                btn.disabled = false;
+            }
         }
-
-        document.getElementById('pin-input').addEventListener('keypress', function (e) { if (e.key === 'Enter') checkPin(); });
 
         // ==========================================
         // 🚀 MOTEUR PRINCIPAL
