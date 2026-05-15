@@ -104,25 +104,20 @@ app.post('/api/activate', async (req, res) => {
     const { sessionId, clientName, tenantID, plan } = req.body;
     try {
         const session = await stripe.checkout.sessions.retrieve(sessionId);
-        if (session.payment_status !== 'paid') return res.status(403).json({ error: "Paiement non validé." });
-        
-        const existingTenant = await Tenant.findOne({ tenantID });
-        if (existingTenant) return res.status(400).json({ error: "Identifiant déjà pris." });
+        if (session.payment_status !== 'paid') return res.status(403).json({ error: "Paiement requis." });
         
         const randomPin = Math.floor(1000 + Math.random() * 9000).toString();
-        
-        // LOGIQUE DES 4 ROUTES
+        const finalPlan = plan || 'ESSENTIEL';
+
+        // GESTION DES 5 LIMITES D'ÉCRANS
         let limit = 1; 
-        if (plan === 'BUSINESS') limit = 5;
-        if (plan === 'PREMIUM') limit = 200;
+        if (finalPlan === 'BUSINESS') limit = 5;
+        if (finalPlan === 'EXCUTIF') limit = 25;
+        if (finalPlan === 'PREMIUM') limit = 200;
 
         await Tenant.create({ 
-            tenantID, 
-            clientName, 
-            status: 'ACTIF', 
-            plan: plan || 'ECO', 
-            maxScreens: limit,
-            pin: randomPin, 
+            tenantID, clientName, status: 'ACTIF', 
+            plan: finalPlan, maxScreens: limit, pin: randomPin, 
             config: { stripeCustomerId: session.customer } 
         });
         
@@ -130,38 +125,6 @@ app.post('/api/activate', async (req, res) => {
         res.json({ success: true, dedicatedPin: randomPin });
     } catch (error) { res.status(500).json({ error: "Erreur serveur." }); }
 });
-app.get('/api/check-license', async (req, res) => {
-    const { tenantID } = req.query;
-    try {
-        const tenant = await Tenant.findOne({ tenantID });
-        if (!tenant) return res.status(404).json({ success: false, status: 'introuvable' });
-        res.json({ success: true, status: tenant.status, plan: tenant.plan });
-    } catch (error) { res.status(500).json({ success: false }); }
-});
-
-app.post('/api/verify-pin', async (req, res) => {
-    const { tenantID, pin } = req.body;
-    try {
-        const tenant = await Tenant.findOne({ tenantID });
-        if (tenant && tenant.pin === pin) res.json({ success: true });
-        else res.status(401).json({ success: false });
-    } catch (error) { res.status(500).json({ success: false }); }
-});
-
-app.post('/api/register-device', async (req, res) => {
-    const { tenantID, deviceID } = req.body;
-    try {
-        const tenant = await Tenant.findOne({ tenantID });
-        if (!tenant) return res.status(404).json({ success: false });
-        if (tenant.status === 'SUSPENDU') return res.status(403).json({ success: false });
-        if (tenant.registeredDevices.includes(deviceID)) return res.json({ success: true });
-        if (tenant.registeredDevices.length >= tenant.maxScreens) return res.status(403).json({ success: false });
-        tenant.registeredDevices.push(deviceID);
-        await tenant.save();
-        res.json({ success: true });
-    } catch (error) { res.status(500).json({ success: false }); }
-});
-
 // ==========================================
 // 🛠️ MODULES D'ADMINISTRATION CLIENT
 // ==========================================
