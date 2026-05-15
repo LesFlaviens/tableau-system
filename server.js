@@ -33,12 +33,12 @@ app.post('/webhook', express.raw({type: 'application/json'}), async (req, res) =
 const mongoURI = process.env.MONGO_URI || "mongodb+srv://icheflavien_db_user:Tamere58.@cluster0.4w95d7m.mongodb.net/ichef_production?retryWrites=true&w=majority";
 mongoose.connect(mongoURI).then(() => console.log('🔥 I CHEF Infrastructure Online')).catch(err => console.error(err.message));
 
-// AJOUT DES 4 PLANS : CHEF, ECO, BUSINESS, PREMIUM
+// AJOUT DES 5 PLANS
 const tenantSchema = new mongoose.Schema({
     tenantID: { type: String, required: true, unique: true },
     clientName: String,
     status: { type: String, enum: ['ACTIF', 'SUSPENDU'], default: 'ACTIF' },
-    plan: { type: String, enum: ['CHEF', 'ECO', 'BUSINESS', 'PREMIUM'], default: 'ECO' },
+    plan: { type: String, enum: ['CHEF', 'ECO', 'BUSINESS', 'EXCUTIF', 'PREMIUM'], default: 'ECO' },
     pin: { type: String, default: '9999' }, 
     maxScreens: { type: Number, default: 1 }, 
     registeredDevices: [String], 
@@ -98,7 +98,7 @@ app.post('/api/scan-invoice', async (req, res) => {
 });
 
 // ==========================================
-// 🚀 ACTIVATION & CONNEXION (LES 4 ROUTES)
+// 🚀 ACTIVATION & CONNEXION (LES 5 ROUTES)
 // ==========================================
 app.post('/api/activate', async (req, res) => {
     const { sessionId, clientName, tenantID, plan } = req.body;
@@ -106,6 +106,9 @@ app.post('/api/activate', async (req, res) => {
         const session = await stripe.checkout.sessions.retrieve(sessionId);
         if (session.payment_status !== 'paid') return res.status(403).json({ error: "Paiement requis." });
         
+        const existingTenant = await Tenant.findOne({ tenantID });
+        if (existingTenant) return res.status(400).json({ error: "Identifiant réseau déjà pris." });
+
         const randomPin = Math.floor(1000 + Math.random() * 9000).toString();
         const finalPlan = plan || 'ESSENTIEL';
 
@@ -125,6 +128,40 @@ app.post('/api/activate', async (req, res) => {
         res.json({ success: true, dedicatedPin: randomPin });
     } catch (error) { res.status(500).json({ error: "Erreur serveur." }); }
 });
+
+// ==========================================
+// 🔒 SÉCURITÉ : VÉRIFICATION LICENCE & PIN
+// ==========================================
+
+// Route 1 : Vérification de la validité de la licence (utilisée par la vitrine)
+app.get('/api/check-license', async (req, res) => {
+    const { tenantID } = req.query;
+    try {
+        const tenant = await Tenant.findOne({ tenantID });
+        if (!tenant) return res.status(404).json({ success: false, error: "Identifiant introuvable." });
+        res.json({ success: true, status: tenant.status, plan: tenant.plan });
+    } catch (e) {
+        res.status(500).json({ success: false });
+    }
+});
+
+// Route 2 : Vérification du Code PIN Maître (utilisée par vitrine.html et chef.html)
+app.post('/api/verify-pin', async (req, res) => {
+    const { tenantID, pin } = req.body;
+    try {
+        const tenant = await Tenant.findOne({ tenantID });
+        if (!tenant) return res.status(404).json({ success: false, error: "Identifiant inconnu." });
+
+        if (tenant.pin === pin) {
+            return res.json({ success: true, plan: tenant.plan });
+        } else {
+            return res.status(401).json({ success: false, error: "Code PIN incorrect." });
+        }
+    } catch (error) {
+        res.status(500).json({ success: false, error: "Erreur interne du serveur." });
+    }
+});
+
 // ==========================================
 // 🛠️ MODULES D'ADMINISTRATION CLIENT
 // ==========================================
@@ -243,6 +280,7 @@ app.get('/panel-ichef', async (req, res) => {
             .plan-CHEF { background: rgba(16, 185, 129, 0.1); color: #10b981; border: 1px solid #10b981; }
             .plan-ECO { background: rgba(59, 130, 246, 0.1); color: #3b82f6; border: 1px solid #3b82f6; }
             .plan-BUSINESS { background: rgba(168, 85, 247, 0.1); color: #a855f7; border: 1px solid #a855f7; }
+            .plan-EXCUTIF { background: rgba(156, 163, 175, 0.1); color: #9ca3af; border: 1px solid #9ca3af; }
             .plan-PREMIUM { background: rgba(239, 68, 68, 0.1); color: #ef4444; border: 1px solid #ef4444; }
             .btn { padding: 8px 12px; border: none; border-radius: 6px; cursor: pointer; font-weight: 800; text-transform: uppercase; font-size: 0.65rem; transition: 0.2s; }
             .badge-screens { background: #111; color: #fbbf24; padding: 5px 10px; border-radius: 4px; font-weight: 900; }
@@ -269,10 +307,11 @@ app.get('/panel-ichef', async (req, res) => {
                             <input type="hidden" name="pass" value="${pass}"><input type="hidden" name="tenantID" value="${t.tenantID}">
                             
                             <select name="newPlan" onchange="this.form.submit()" style="background:#222; color:#fff; padding:6px; border-radius:4px; border:1px solid #444;">
-                                <option value="ECO" ${t.plan === 'ECO' ? 'selected' : ''}>Eco Pack (1 Écran)</option>
+                                <option value="ECO" ${t.plan === 'ECO' ? 'selected' : ''}>Essentiel (1 Écran)</option>
                                 <option value="CHEF" ${t.plan === 'CHEF' ? 'selected' : ''}>Chef IA (1 Écran)</option>
                                 <option value="BUSINESS" ${t.plan === 'BUSINESS' ? 'selected' : ''}>Business (5 Écrans)</option>
-                                <option value="PREMIUM" ${t.plan === 'PREMIUM' ? 'selected' : ''}>Premium (15 Écrans)</option>
+                                <option value="EXCUTIF" ${t.plan === 'EXCUTIF' ? 'selected' : ''}>Exécutif (25 Écrans)</option>
+                                <option value="PREMIUM" ${t.plan === 'PREMIUM' ? 'selected' : ''}>Palace (200 Écrans)</option>
                             </select>
 
                             <button type="submit" name="action" value="add_screen" class="btn" style="background:#fbbf24; color:#000;">+1 📺</button>
@@ -299,7 +338,8 @@ app.post('/panel-ichef/action', async (req, res) => {
         if (newPlan) {
             let limit = 1;
             if (newPlan === 'BUSINESS') limit = 5;
-            if (newPlan === 'PREMIUM') limit = 15;
+            if (newPlan === 'EXCUTIF') limit = 25;
+            if (newPlan === 'PREMIUM') limit = 200;
             await Tenant.findOneAndUpdate({ tenantID }, { plan: newPlan, maxScreens: limit });
         }
         
