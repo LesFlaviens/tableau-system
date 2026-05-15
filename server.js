@@ -52,10 +52,7 @@ const AppState = mongoose.model('AppState', new mongoose.Schema({
 }, { minimize: false }));
 
 // ==========================================
-// 🤖 MOTEUR IA : RECONNAISSANCE DE FACTURES
-// ==========================================
-// ==========================================
-// 🤖 MOTEUR IA : RECONNAISSANCE DE FACTURES (MODE DIAGNOSTIC ACTIF)
+// 🤖 MOTEUR IA : RECONNAISSANCE DE FACTURES (MULTI-MODÈLES BLINDÉ)
 // ==========================================
 const { GoogleGenerativeAI } = require('@google/generative-ai');
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY || 'CLE_MANQUANTE');
@@ -70,8 +67,7 @@ app.post('/api/scan-invoice', async (req, res) => {
 
     try {
         const base64Data = imageBase64.includes(',') ? imageBase64.split(',')[1] : imageBase64;
-        // On force la version la plus stable de Flash
-        const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+        const imagePart = { inlineData: { data: base64Data, mimeType: mimeType || "image/jpeg" } };
 
         const prompt = `
         Tu es l'assistant d'un chef de cuisine. Analyse cette image de facture ou de ticket de caisse.
@@ -89,12 +85,31 @@ app.post('/api/scan-invoice', async (req, res) => {
         }
         Si tu ne trouves pas une info, mets null ou 0.`;
 
-        const imagePart = { inlineData: { data: base64Data, mimeType: mimeType || "image/jpeg" } };
-        
         console.log("Transmission de l'image à Google Gemini...");
-        const result = await model.generateContent([prompt, imagePart]);
+
+        // 🛡️ LA BOUCLE DE FORÇAGE (LE CHASSEUR)
+        const modelsToTry = ["gemini-1.5-flash-latest", "gemini-1.5-pro-latest", "gemini-pro-vision"];
+        let result = null;
+        let lastError = "";
+
+        for (let modelName of modelsToTry) {
+            try {
+                console.log("Tentative avec :", modelName);
+                const model = genAI.getGenerativeModel({ model: modelName });
+                result = await model.generateContent([prompt, imagePart]);
+                console.log("✅ Succès avec :", modelName);
+                break; // Dès qu'un modèle marche, on casse la boucle et on continue !
+            } catch (err) {
+                console.error(`❌ Échec avec ${modelName} :`, err.message);
+                lastError = err.message;
+            }
+        }
+
+        if (!result) {
+            throw new Error("Tous les modèles de Google ont été refusés. Raison finale : " + lastError);
+        }
+
         const responseText = result.response.text();
-        
         const cleanJson = responseText.replace(/```json/gi, '').replace(/```/gi, '').trim();
         const data = JSON.parse(cleanJson);
 
@@ -102,11 +117,9 @@ app.post('/api/scan-invoice', async (req, res) => {
 
     } catch (error) {
         console.error("🔥 CRASH IA GOOGLE :", error.message);
-        // C'est ICI la magie : on renvoie la vraie erreur à l'écran du site
         res.status(500).json({ success: false, error: "ERREUR GOOGLE : " + error.message });
     }
 });
-
 // ==========================================
 // 🚀 ACTIVATION & CONNEXION (LES 5 ROUTES)
 // ==========================================
