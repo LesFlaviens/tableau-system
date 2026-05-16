@@ -138,6 +138,9 @@
             <button class="nav-btn" id="tab-market" onclick="switchTab('market')">📚 LABORATOIRE</button>
             <button class="nav-btn" id="tab-inventaire" onclick="switchTab('inventaire')">📦 INVENTAIRE</button>
             <button class="nav-btn" id="tab-stats" onclick="switchTab('stats')">📊 VENTES</button>
+            
+            <button class="nav-btn" onclick="changePin()" style="border: 1px solid var(--border-strong);" title="Modifier le code d'accès">🔑 PIN</button>
+            
             <div class="sync-status"><div id="sync-dot" class="sync-dot"></div> <span id="sync-text" style="color:var(--text-main);">CONNEXION...</span></div>
         </div>
     </div>
@@ -151,7 +154,10 @@
             <div class="menu-category" style="padding:25px; overflow-y: auto; border-top: none;">
                 <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:20px;">
                     <h3 style="margin:0; color:var(--text-main); font-size: 1.2rem; text-transform: uppercase; letter-spacing: 1px;">🛠️ LABORATOIRE DE CRÉATION</h3>
+                    <button class="add-btn" style="width:auto; padding:8px 15px; min-height:auto; background:var(--accent); color:#000; font-size:0.8rem;" onclick="calculatePotential()">🧠 ANALYSE IA : POTENTIEL</button>
                 </div>
+                
+                <div id="ai-potential-result" style="display:none; padding:15px; background:rgba(0,0,0,0.2); border:1px solid var(--accent); border-radius:8px; margin-bottom:20px; color:var(--text-main); font-weight:bold;"></div>
 
                 <div class="market-cost-grid">
                     <div class="cost-box" style="border-color: rgba(96, 165, 250, 0.3);">
@@ -276,6 +282,11 @@
             <div style="display:flex; flex-direction:column; gap:20px; overflow-y:auto; max-height: calc(100vh - 120px);">
                 
                 <div class="menu-category" style="padding:20px; border:none; background: rgba(255,255,255,0.02);">
+                    <div style="display:flex; gap:10px; margin-bottom: 20px;">
+                        <input type="file" id="import-file" accept=".json" style="display:none;" onchange="importRecipes(event)">
+                        <button class="nav-btn" style="flex:1; background:var(--panel); border:1px solid var(--border-strong);" onclick="triggerImport()">📥 IMPORTER</button>
+                        <button class="nav-btn" style="flex:1; background:var(--panel); border:1px solid var(--border-strong);" onclick="exportRecipes()">📤 EXPORTER</button>
+                    </div>
                     <h3 style="margin:0 0 15px 0; color:var(--text-main); font-size:0.9rem; letter-spacing: 1px; text-transform: uppercase; display: flex; justify-content: space-between; align-items: center;">
                         <span>📦 STOCKS EN DIRECT</span>
                         <button class="nav-btn" style="padding: 6px 12px; font-size: 0.7rem;" onclick="renderLiveStockPanel()">🔄 ACTUALISER</button>
@@ -341,24 +352,31 @@
                 </div>
             </div>
 
-            <div class="menu-category" style="padding: 25px; border: none; background: rgba(255,255,255,0.02);">
-                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:25px;">
-                    <h2 style="color:var(--text-main); margin:0; font-size: 1.2rem; letter-spacing: 1px;">📊 MATRICE STOCK GLOBAL</h2>
+            <div style="display: flex; flex-direction: column; gap: 20px; height: 100%;">
+                
+                <div id="stock-summary" style="display: flex; gap: 15px; overflow-x: auto; padding-bottom: 10px; -webkit-overflow-scrolling: touch; scrollbar-width: none;"></div>
+
+                <div class="menu-category" style="margin: 0; flex: 1; display: flex; flex-direction: column; overflow: hidden; background: rgba(255,255,255,0.02);">
+                    <div class="category-header" style="background: transparent; color: white; border-bottom: none; padding: 15px 20px;">
+                        <span style="letter-spacing: 1px;">📊 MATRICE STOCK GLOBAL</span>
+                    </div>
+                    <div class="table-responsive-wrapper">
+                        <table class="inv-table" style="border: none; border-radius: 0;">
+                            <thead>
+                                <tr>
+                                    <th style="padding-left: 20px;">NOM DU PRODUIT</th>
+                                    <th>VALEUR UNITAIRE</th>
+                                    <th>QUANTITÉ</th>
+                                    <th>VALEUR TOTALE</th>
+                                    <th style="text-align: right; padding-right: 20px;">CHOIX</th>
+                                </tr>
+                            </thead>
+                            <tbody id="global-stock-list">
+                                <tr><td colspan="5" style="text-align:center; padding:30px; color:var(--text-muted);">Le stock est vide. Ajoutez un produit pour l'initialiser.</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
                 </div>
-                <table class="inv-table">
-                    <thead>
-                        <tr>
-                            <th>Cat.</th>
-                            <th>Produit</th>
-                            <th>Quantité</th>
-                            <th>Prix Unitaire</th>
-                            <th>Action</th>
-                        </tr>
-                    </thead>
-                    <tbody id="global-stock-list">
-                        <tr><td colspan="5" style="text-align:center; padding:30px; color:var(--text-muted);">Le stock est vide. Ajoutez un produit pour l'initialiser.</td></tr>
-                    </tbody>
-                </table>
             </div>
         </div>
     </div>
@@ -400,6 +418,17 @@
         : "https://tableau-system.onrender.com";
 
         let currentCurrency = "€";
+
+        // === OUTIL : EXTRACTION DES POIDS ET UNITÉS ===
+        function parseQuantity(str) {
+            if (!str) return { val: 1, unit: 'u' };
+            let match = String(str).match(/([\d.,]+)\s*(.*)/);
+            if(match) {
+                let val = parseFloat(match[1].replace(',', '.'));
+                return { val: isNaN(val) ? 1 : val, unit: match[2].trim() || 'u' };
+            }
+            return { val: 1, unit: 'u' };
+        }
 
         // 🔒 SÉCURITÉ DE CONNEXION AU SERVEUR
         async function checkPin() {
@@ -602,6 +631,59 @@
             setInterval(async () => { await fetchSystemState(); }, 5000);
         }
 
+        // === IMPORT / EXPORT ===
+        function exportRecipes() {
+            const backupData = { recipes: recipesData, menu: menuData };
+            const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(backupData, null, 2));
+            const downloadNode = document.createElement('a');
+            downloadNode.setAttribute("href", dataStr);
+            downloadNode.setAttribute("download", `ichef_recettes_${new Date().toISOString().slice(0,10)}.json`);
+            document.body.appendChild(downloadNode);
+            downloadNode.click();
+            downloadNode.remove();
+        }
+
+        function triggerImport() { document.getElementById('import-file').click(); }
+
+        async function importRecipes(event) {
+            const file = event.target.files[0]; if (!file) return;
+            const reader = new FileReader();
+            reader.onload = async (e) => {
+                try {
+                    const imported = JSON.parse(e.target.result);
+                    if (imported.recipes && imported.menu) {
+                        if(confirm("⚠️ L'import va fusionner/écraser votre carte et fiches techniques. Confirmer ?")) {
+                            recipesData = imported.recipes; menuData = imported.menu;
+                            await API.update('RECIPES_MASTER', recipesData); 
+                            await API.update('MENU_MASTER', menuData);
+                            renderMenu(); renderRecipes(); alert("✅ Base importée avec succès.");
+                        }
+                    } else alert("❌ Fichier invalide.");
+                } catch(err) { alert("❌ Erreur de lecture."); }
+                event.target.value = ''; 
+            };
+            reader.readAsText(file);
+        }
+
+        // === SÉCURITÉ ===
+        async function changePin() {
+            let newPin = prompt("🔑 Entrez le nouveau code PIN (4 chiffres) :");
+            if (newPin && newPin.trim() !== "") {
+                if (confirm(`⚠️ Confirmez le nouveau code PIN : ${newPin.trim()} ?`)) {
+                    try {
+                        const res = await fetch(`${SERVER_URL}/api/update-pin`, {
+                            method: 'POST', headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ tenantID: tenantID, newPin: newPin.trim() })
+                        });
+                        const data = await res.json();
+                        if (data.success) alert("✅ Code PIN mis à jour.");
+                        else alert("❌ Erreur du serveur : " + data.error);
+                    } catch (error) { alert("❌ Erreur de connexion avec l'Empire."); }
+                }
+            }
+        }
+
+        // === DICTAPHONES ===
         function startMarketDictation(inputId, btnId) {
             const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
             if (!SpeechRecognition) return alert("Micro non supporté.");
@@ -638,21 +720,22 @@
             recognition.onend = () => { btn.classList.remove('recording-active'); btn.innerHTML = orig; input.placeholder = oldPh; };
         }
 
+        // === STOCKS & MATRICE 4 COLONNES ===
         async function addManualStock() {
             let name = document.getElementById('manual-stock-name').value.trim();
-            let qty = document.getElementById('manual-stock-qty').value.trim();
+            let qtyStr = document.getElementById('manual-stock-qty').value.trim();
             let price = parseFloat(document.getElementById('manual-stock-price').value.replace(',', '.'));
             let cat = document.getElementById('manual-stock-cat').value;
-            if(!name || !qty || isNaN(price)) return alert("⚠️ Remplissez nom, quantité et prix.");
-            let unitPriceStr = price.toFixed(2) + " " + currentCurrency;
-            let wNumMatch = qty.match(/[\d.]+/);
-            if(wNumMatch) {
-                let wNum = parseFloat(wNumMatch[0]);
-                if(wNum > 0) unitPriceStr = (price / wNum).toFixed(2) + " " + currentCurrency + " / " + qty.replace(/[\d.]+/,'').trim();
-            }
-            let existing = stockGlobalData.find(x => x.name.toLowerCase() === name.toLowerCase());
-            if (existing) { existing.lastPrice = unitPriceStr; existing.qtyStr = qty; existing.date = new Date().toLocaleDateString(); } 
-            else { stockGlobalData.unshift({ id: Date.now(), name: name, cat: cat, qtyStr: qty, lastPrice: unitPriceStr, date: new Date().toLocaleDateString() }); }
+            if(!name || !qtyStr || isNaN(price)) return alert("⚠️ Remplissez nom, quantité et prix.");
+
+            let parsedQty = parseQuantity(qtyStr);
+            let unitPrice = parsedQty.val > 0 ? (price / parsedQty.val) : price;
+
+            stockGlobalData.unshift({ 
+                id: Date.now(), name: name, cat: cat, 
+                qtyStr: qtyStr, initialQty: parsedQty.val, currentQty: parsedQty.val, unit: parsedQty.unit,
+                totalPrice: price, unitPrice: unitPrice, date: new Date().toLocaleDateString() 
+            });
             await API.update('INVENTORY_MASTER', stockGlobalData);
             document.getElementById('manual-stock-name').value = ''; document.getElementById('manual-stock-qty').value = ''; document.getElementById('manual-stock-price').value = '';
             renderGlobalStock(); renderLiveStockPanel(); alert("✅ Ajouté au stock !");
@@ -660,19 +743,111 @@
 
         function renderGlobalStock() {
             const tbody = document.getElementById('global-stock-list');
+            const summaryContainer = document.getElementById('stock-summary');
+            if(!tbody) return;
+
             if(!stockGlobalData || stockGlobalData.length === 0) {
-                tbody.innerHTML = `<tr><td colspan="5" style="text-align:center; padding:30px; color:var(--text-muted);">Le stock est vide. Ajoutez un produit pour l'initialiser.</td></tr>`;
+                tbody.innerHTML = `<tr><td colspan="5" style="text-align:center; padding:30px; color:var(--text-muted);">Le stock est vide. Ajoutez un produit.</td></tr>`;
+                if(summaryContainer) summaryContainer.innerHTML = '';
                 return;
             }
-            tbody.innerHTML = stockGlobalData.map((item, idx) => `
-                <tr>
-                    <td><span class="badge-cat" style="background:${STOCK_BADGES[item.cat]}; color:${STOCK_COLORS[item.cat]}; border-color:${STOCK_COLORS[item.cat]}">${item.cat.substring(0,3)}</span></td>
-                    <td style="font-weight:bold; color:var(--text-main);">${item.name} <br><span style="font-size:0.75rem; color:var(--text-muted); font-weight:normal;">Dernier ajout: ${item.date}</span></td>
-                    <td style="color:var(--text-main); font-weight:bold;">${item.qtyStr}</td>
-                    <td style="color:var(--text-main); font-weight:bold;">${item.lastPrice}</td>
-                    <td><button style="background:transparent; border:none; color:var(--alert); font-size:1.2rem; cursor:pointer;" onclick="deleteStockItem(${idx})">✖</button></td>
-                </tr>
-            `).join('');
+
+            let stockByCategory = {}; let totalGlobal = 0;
+
+            stockGlobalData.forEach((item, idx) => {
+                let cat = item.cat || '📦 NON CLASSÉ';
+                if (!stockByCategory[cat]) stockByCategory[cat] = { items: [], totalValue: 0 };
+                
+                let tPrice = item.totalPrice !== undefined ? item.totalPrice : parseFloat(String(item.lastPrice).replace(',', '.').replace(/[^\d.-]/g, '')) || 0;
+                let parsed = parseQuantity(item.qtyStr);
+                let initialQ = item.initialQty !== undefined ? item.initialQty : parsed.val;
+                let currentQ = item.currentQty !== undefined ? item.currentQty : initialQ;
+                let unit = item.unit !== undefined ? item.unit : parsed.unit;
+                let uPrice = item.unitPrice !== undefined ? item.unitPrice : (initialQ > 0 ? tPrice / initialQ : tPrice);
+                
+                let currentActualValue = uPrice * currentQ;
+
+                stockByCategory[cat].items.push({ ...item, originalIndex: idx, tPrice, initialQ, currentQ, unit, uPrice, currentActualValue });
+                stockByCategory[cat].totalValue += currentActualValue; 
+                totalGlobal += currentActualValue;
+            });
+
+            let summaryHtml = `
+                <div style="background: rgba(251, 191, 36, 0.1); color: var(--gold); border: 1px solid var(--gold); padding: 15px 20px; border-radius: 10px; white-space: nowrap; box-shadow: var(--shadow-subtle);">
+                    <div style="font-size: 0.7rem; font-weight: bold; text-transform: uppercase; opacity: 0.8; margin-bottom: 5px;">CAPITAL IMMOBILISÉ</div>
+                    <div style="font-size: 1.4rem; font-weight: 900;">${totalGlobal.toFixed(2)} ${currentCurrency}</div>
+                </div>`;
+                
+            for (let cat in stockByCategory) {
+                let cleanCatName = cat.replace(/[\u1000-\uFFFF]+/g, '').trim(); 
+                let catColor = STOCK_COLORS[cat] || "var(--text-muted)";
+                summaryHtml += `
+                <div style="background: var(--panel); border: 1px solid var(--border-strong); padding: 15px 20px; border-radius: 10px; white-space: nowrap; box-shadow: var(--shadow-subtle);">
+                    <div style="font-size: 0.7rem; color: ${catColor}; font-weight: bold; text-transform: uppercase; margin-bottom: 5px;">${cleanCatName}</div>
+                    <div style="font-size: 1.2rem; color: var(--text-main); font-weight: 800;">${stockByCategory[cat].totalValue.toFixed(2)} ${currentCurrency}</div>
+                </div>`;
+            }
+            if(summaryContainer) summaryContainer.innerHTML = summaryHtml;
+
+            let tableHtml = '';
+            for (let cat in stockByCategory) {
+                let catColor = STOCK_COLORS[cat] || "var(--text-main)";
+                tableHtml += `
+                    <tr>
+                        <td colspan="5" style="background: rgba(255,255,255,0.02); padding: 12px 20px; border-bottom: 1px solid var(--border-strong);">
+                            <div style="display: flex; justify-content: space-between; align-items: center;">
+                                <span style="font-weight: 800; color: ${catColor}; text-transform: uppercase; font-size: 0.85rem;">${cat}</span>
+                                <span style="font-weight: 900; color: var(--text-main); font-size: 0.95rem;">${stockByCategory[cat].totalValue.toFixed(2)} ${currentCurrency}</span>
+                            </div>
+                        </td>
+                    </tr>
+                `;
+                stockByCategory[cat].items.forEach(i => {
+                    let ratio = i.initialQ > 0 ? (i.currentQ / i.initialQ) : 1;
+                    let alertStyle = ratio <= 0.2 ? 'color: var(--alert); font-weight: 900; background: rgba(248, 113, 113, 0.1); padding: 6px 10px; border-radius: 6px; border: 1px solid var(--alert);' : 'color: var(--text-main); font-weight: 600; background: rgba(255,255,255,0.05); padding: 6px 10px; border-radius: 6px; border: 1px solid var(--border-strong);';
+                    let alertIcon = ratio <= 0.2 ? ' ⚠️' : '';
+
+                    tableHtml += `
+                    <tr class="stock-item-row">
+                        <td style="padding: 15px 20px; border-bottom: 1px solid var(--border); color: var(--text-main);"><b>${i.name}</b></td>
+                        <td style="padding: 15px; border-bottom: 1px solid var(--border); color: var(--text-muted); font-size: 0.85rem; white-space: nowrap;">${i.uPrice.toFixed(2)} ${currentCurrency} / ${i.unit}</td>
+                        <td style="padding: 15px; border-bottom: 1px solid var(--border); cursor: pointer;" onclick="editStockQty(${i.originalIndex})" title="Cliquez pour déduire la quantité">
+                            <span style="${alertStyle}">${i.currentQ} ${i.unit}${alertIcon}</span>
+                        </td>
+                        <td style="padding: 15px; border-bottom: 1px solid var(--border); color: var(--text-main); font-weight: 900; white-space: nowrap;">${i.currentActualValue.toFixed(2)} ${currentCurrency}</td>
+                        <td style="padding: 15px 20px; border-bottom: 1px solid var(--border); text-align: right;">
+                            <button class="btn-del" onclick="deleteStockItem(${i.originalIndex})">✖</button>
+                        </td>
+                    </tr>`;
+                });
+            }
+            tbody.innerHTML = tableHtml;
+        }
+
+        async function editStockQty(idx) {
+            let item = stockGlobalData[idx];
+            let parsed = parseQuantity(item.qtyStr);
+            let initialQ = item.initialQty !== undefined ? item.initialQty : parsed.val;
+            let currentQ = item.currentQty !== undefined ? item.currentQty : initialQ;
+            let unit = item.unit !== undefined ? item.unit : parsed.unit;
+            
+            let newQty = prompt(`📦 Quantité RESTANTE en stock pour ${item.name} (en ${unit}) :`, currentQ);
+            if (newQty !== null && newQty.trim() !== "") {
+                let parsedNew = parseFloat(newQty.replace(',', '.'));
+                if (!isNaN(parsedNew) && parsedNew >= 0) {
+                    if (item.initialQty === undefined) item.initialQty = initialQ; 
+                    if (item.unitPrice === undefined) {
+                        let tPrice = parseFloat(String(item.lastPrice).replace(',', '.').replace(/[^\d.-]/g, '')) || 0;
+                        item.totalPrice = tPrice;
+                        item.unitPrice = initialQ > 0 ? tPrice / initialQ : tPrice;
+                        item.unit = unit;
+                    }
+                    item.currentQty = parsedNew;
+                    item.qtyStr = parsedNew + " " + unit;
+                    await API.update('INVENTORY_MASTER', stockGlobalData);
+                    renderGlobalStock(); renderLiveStockPanel();
+                } else alert("⚠️ Quantité invalide.");
+            }
         }
 
         async function deleteStockItem(idx) {
@@ -681,6 +856,29 @@
                 await API.update('INVENTORY_MASTER', stockGlobalData);
                 renderGlobalStock(); renderLiveStockPanel();
             }
+        }
+
+        function renderLiveStockPanel() {
+            const panel = document.getElementById('live-stock-panel');
+            if(!panel) return;
+            if(!stockGlobalData || stockGlobalData.length === 0) {
+                panel.innerHTML = '<p style="color:var(--text-muted); text-align:center; margin: 20px 0;">Le stock est vide.</p>'; return;
+            }
+            panel.innerHTML = stockGlobalData.map(item => {
+                let nameEsc = String(item.name || '').replace(/'/g, "\\'"); let catEsc = String(item.cat || '');
+                let unit = item.unit || parseQuantity(item.qtyStr).unit;
+                let currentQ = item.currentQty !== undefined ? item.currentQty : parseQuantity(item.qtyStr).val;
+                return `
+                <div class="stock-item-row" onclick="injectFromStock('${nameEsc}', '${item.unitPrice ? item.unitPrice : parseFloat(item.lastPrice) }', '${catEsc}')" style="display:flex; justify-content:space-between; align-items:center; background: rgba(255,255,255,0.02); padding: 12px; border-radius: 8px; border: 1px solid var(--border); transition: 0.2s;">
+                    <div style="display:flex; flex-direction:column; gap:4px;">
+                        <span style="font-weight:bold; color:var(--text-main); font-size:0.95rem;">${item.name}</span>
+                        <span style="color:var(--text-muted); font-size: 0.8rem;">En réserve: <b style="color:var(--text-main);">${currentQ} ${unit}</b></span>
+                    </div>
+                    <div style="display:flex; align-items:center; gap:12px;">
+                        <span style="font-size:1rem; opacity:0.5;">➕</span>
+                    </div>
+                </div>`;
+            }).join('');
         }
 
         function injectFromStock(name, price, cat) {
@@ -697,28 +895,68 @@
             calcSmartPlate();
         }
 
-        function renderLiveStockPanel() {
-            const panel = document.getElementById('live-stock-panel');
-            if(!panel) return;
-            if(!stockGlobalData || stockGlobalData.length === 0) {
-                panel.innerHTML = '<p style="color:var(--text-muted); text-align:center; margin: 20px 0;">Le stock est vide.</p>'; return;
+        // === IA PRÉDICTIVE ===
+        function calculatePotential() {
+            const boxes = ['fecu', 'prot', 'bof', 'legu', 'sauc', 'eco'];
+            let bottlenecks = [];
+            let minPlates = Infinity;
+            let foundAny = false;
+
+            boxes.forEach(box => {
+                let el = document.getElementById(`market-${box}-raw`);
+                if(!el) return;
+                let txt = el.value.toLowerCase();
+                if (!txt.trim()) return;
+
+                let requiredGram = parseFloat(document.getElementById(`gram-${box}`).value) || 0;
+                if (requiredGram <= 0) return;
+
+                let matchedStock = null;
+                let bestMatchScore = 0;
+
+                stockGlobalData.forEach(item => {
+                    let score = 0;
+                    let itemName = item.name.toLowerCase();
+                    let words = txt.split(/[\s,]+/);
+                    words.forEach(w => { if (w.length > 2 && itemName.includes(w)) score++; });
+                    if (score > bestMatchScore) { bestMatchScore = score; matchedStock = item; }
+                });
+
+                if (matchedStock && box !== 'eco') {
+                    foundAny = true;
+                    let unit = (matchedStock.unit || 'u').toLowerCase();
+                    let stockInGrams = matchedStock.currentQty;
+                    if (unit === 'kg' || unit === 'l' || unit === 'litre') stockInGrams = matchedStock.currentQty * 1000;
+                    
+                    let possiblePlates = Math.floor(stockInGrams / requiredGram);
+                    bottlenecks.push({ name: matchedStock.name, plates: possiblePlates, avail: stockInGrams, unit: unit });
+                    if (possiblePlates < minPlates) minPlates = possiblePlates;
+                }
+            });
+
+            const resDiv = document.getElementById('ai-potential-result');
+            resDiv.style.display = 'block';
+
+            if (!foundAny) {
+                resDiv.innerHTML = "⚠️ Impossible d'évaluer. Écrivez le nom exact d'un produit en stock dans les cases.";
+                resDiv.style.borderColor = "var(--alert)";
+                resDiv.style.color = "var(--alert)";
+                return;
             }
-            panel.innerHTML = stockGlobalData.map(item => {
-                let nameEsc = String(item.name || '').replace(/'/g, "\\'"); let catEsc = String(item.cat || '');
-                return `
-                <div class="stock-item-row" onclick="injectFromStock('${nameEsc}', '${item.lastPrice}', '${catEsc}')" style="display:flex; justify-content:space-between; align-items:center; background: rgba(255,255,255,0.02); padding: 12px; border-radius: 8px; border: 1px solid var(--border); transition: 0.2s;">
-                    <div style="display:flex; flex-direction:column; gap:4px;">
-                        <span style="font-weight:bold; color:var(--text-main); font-size:0.95rem;">${item.name}</span>
-                        <span style="color:var(--text-muted); font-size: 0.8rem;">En réserve: <b style="color:var(--text-main);">${item.qtyStr}</b></span>
-                    </div>
-                    <div style="display:flex; align-items:center; gap:12px;">
-                        <span style="color:var(--text-main); font-weight:800;">${item.lastPrice}</span>
-                        <span style="font-size:1rem; opacity:0.5;">➕</span>
-                    </div>
-                </div>`;
-            }).join('');
+
+            if (minPlates === 0) {
+                resDiv.innerHTML = `❌ <b>Rupture critique.</b> Capacité : 0 portion.`;
+                resDiv.style.borderColor = "var(--alert)";
+                resDiv.style.color = "var(--alert)";
+            } else {
+                let limit = bottlenecks.find(b => b.plates === minPlates);
+                resDiv.innerHTML = `🧠 <b>Capacité de Production : ${minPlates} Portions.</b><br><span style="font-size:0.85rem; color:var(--text-muted);">Facteur limitant actuel : ${limit.name} (${limit.avail} g/ml restants).</span>`;
+                resDiv.style.borderColor = "var(--accent)";
+                resDiv.style.color = "var(--accent)";
+            }
         }
 
+        // === CALCUL LABORATOIRE ===
         function calcSmartPlate() {
             const calcBox = (prefix) => {
                 let el = document.getElementById(`market-${prefix}-raw`);
@@ -729,6 +967,13 @@
                 lines.forEach(line => {
                     let cleanLine = line.replace(/\([^)]+\)/g, '').replace(/dispo:.*$/i, '').trim();
                     if(cleanLine === "") return;
+                    
+                    if (prefix === 'eco') {
+                        let priceMatch = cleanLine.match(/(\d+(?:\.\d+)?)/);
+                        if(priceMatch && portion > 0) cost += (parseFloat(priceMatch[1]) / portion);
+                        return;
+                    }
+
                     let unitPriceMatch = cleanLine.match(/(\d+(?:\.\d+)?)\s*(?:€|euros?|\$|chf|mad|£|¥)\s*(?:\/|au|le|la)\s*(kg|kilo|l|litre|pce|piece|pièce|g|gr|ml|cl)/i);
                     if (unitPriceMatch) {
                         let p = parseFloat(unitPriceMatch[1]); let u = unitPriceMatch[2];
@@ -748,17 +993,17 @@
                     }
                 });
                 let costDisplay = document.getElementById(`cost-${prefix}`);
-                if (costDisplay) costDisplay.innerText = cost.toFixed(2) + " " + currentCurrency;
+                if (costDisplay) costDisplay.innerText = cost.toFixed(2);
                 return cost;
             };
 
             let total = ['fecu', 'prot', 'bof', 'sauc', 'legu', 'eco'].reduce((sum, k) => sum + calcBox(k), 0);
             let totalEl = document.getElementById('market-total-cost');
-            if (totalEl) totalEl.value = total.toFixed(2) + " " + currentCurrency;
+            if (totalEl) totalEl.value = total.toFixed(2);
             let margin = parseFloat(document.getElementById('market-margin').value) || 3.5;
             let rec = total * margin;
             let recEl = document.getElementById('market-recommended');
-            if (recEl) recEl.innerText = rec.toFixed(2) + " " + currentCurrency;
+            if (recEl) recEl.innerText = rec.toFixed(2);
 
             let priceInput = document.getElementById('market-price');
             if (priceInput && (priceInput.value === "" || priceInput.dataset.autofilled === "true")) {
@@ -766,6 +1011,7 @@
             }
         }
 
+        // === RECETTES ===
         function generateRecipeIngredients() {
             let paxCount = parseInt(document.getElementById('recipe-pax').value) || 1;
             let ingTextarea = document.getElementById('rec-ing');
@@ -778,7 +1024,10 @@
                 if (rawVal && rawVal.trim() !== "") {
                     let gram = parseFloat(document.getElementById(`gram-${k}`).value) || 1;
                     let names = rawVal.split('\n').map(line => line.replace(/\([^)]+\)/g, '').replace(/dispo:.*$/i, '').trim().replace(/(\d+(?:\.\d+)?)\s*(?:€|euros?|\$|chf|mad|£|¥).*/i, '').trim()).filter(n => n !== "").join(', ');
-                    if(names !== "") generatedLines.push(`- ${labels[k]} : ${gram * paxCount}g/pce (${names})`);
+                    if(names !== "") {
+                        if(k === 'eco') generatedLines.push(`- ${labels[k]} : (Diviseur ${gram}) (${names})`);
+                        else generatedLines.push(`- ${labels[k]} : ${gram * paxCount}g/pce (${names})`);
+                    }
                 }
             });
 
@@ -837,26 +1086,24 @@
             pax = parseInt(pax);
             if(isNaN(pax) || pax <= 0) return;
 
-            if(!r.structuredIngs || r.structuredIngs.length === 0) return alert("⚠️ Impossible : Aucune fiche technique détaillée trouvée pour cette recette.");
+            if(!r.structuredIngs || r.structuredIngs.length === 0) return alert("⚠️ Impossible : Aucune fiche technique détaillée trouvée.");
 
             let log = `Bilan de la production de ${pax} portions de "${r.name}" :\n\n`;
             
             r.structuredIngs.forEach(ing => {
+                if(ing.cat === 'eco') return; // On ne déduit pas le sel/poivre automatiquement
                 let totalNeeded = ing.qtyPerPortion * pax;
                 let stockItem = stockGlobalData.find(s => s.name.toLowerCase() === ing.name.toLowerCase());
                 if(stockItem) {
-                    let stockQtyNumMatch = stockItem.qtyStr.toString().replace(',','.').match(/[\d.]+/);
-                    if(stockQtyNumMatch) {
-                        let stockQtyNum = parseFloat(stockQtyNumMatch[0]);
-                        let stockUnit = stockItem.qtyStr.toString().replace(/[\d.]+/,'').trim().toLowerCase();
-                        if(stockUnit.startsWith('k') || (stockUnit.startsWith('l') && !stockUnit.includes('m') && !stockUnit.includes('c'))) {
-                            stockQtyNum -= (totalNeeded / 1000); stockItem.qtyStr = stockQtyNum.toFixed(3) + " " + stockUnit;
-                            log += `✅ ${ing.name} : -${(totalNeeded/1000)} ${stockUnit} déduits.\n`;
-                        } else {
-                            stockQtyNum -= totalNeeded; stockItem.qtyStr = stockQtyNum.toFixed(1) + " " + stockUnit;
-                            log += `✅ ${ing.name} : -${totalNeeded} ${stockUnit} déduits.\n`;
-                        }
-                    } else log += `⚠️ ${ing.name} : Unité de stock illisible.\n`;
+                    let stockQtyNum = stockItem.currentQty;
+                    let stockUnit = (stockItem.unit || 'u').toLowerCase();
+                    if(stockUnit === 'kg' || stockUnit === 'l' || stockUnit === 'litre') {
+                        stockQtyNum -= (totalNeeded / 1000); stockItem.currentQty = stockQtyNum; stockItem.qtyStr = stockQtyNum.toFixed(3) + " " + stockUnit;
+                        log += `✅ ${ing.name} : -${(totalNeeded/1000)} ${stockUnit} déduits.\n`;
+                    } else {
+                        stockQtyNum -= totalNeeded; stockItem.currentQty = stockQtyNum; stockItem.qtyStr = stockQtyNum.toFixed(1) + " " + stockUnit;
+                        log += `✅ ${ing.name} : -${totalNeeded} ${stockUnit} déduits.\n`;
+                    }
                 } else log += `❌ ${ing.name} : Introuvable dans le stock global !\n`;
             });
             await API.update('INVENTORY_MASTER', stockGlobalData);
@@ -869,50 +1116,58 @@
             } 
         }
 
-        function renderRecipes() {
-            if (!currentFolderCat) renderFolders(); else renderFolderContents(currentFolderCat);
-        }
+        // === IA SCANNER (INJECTION STOCK) ===
+        function injecterStockIA(dataIA) {
+            const dicoCategories = {
+                'Fruits': 'legumes', 'Légumes': 'legumes', 'Glucides': 'feculents', 'Protéines': 'proteines',
+                'Viande': 'proteines', 'Poisson': 'proteines', 'Crustacés': 'proteines', 'B.O.F': 'bof',
+                'Surgelés': 'economat', 'Fruits Secs': 'economat', 'Produits Sec': 'economat',
+                'Économat': 'economat', 'Clarification': 'economat', 'Produit Entretien': 'economat'
+            };
+            dataIA.articles.forEach(art => {
+                let catATrouver = art.categorie;
+                let finalCat = dicoCategories[catATrouver] || 'economat';
+                
+                let qtyRaw = art.quantite || '1';
+                let parsedQty = parseQuantity(qtyRaw);
+                let totalPrice = parseFloat(art.prixUnitaire) || 0;
+                let unitPrice = parsedQty.val > 0 ? (totalPrice / parsedQty.val) : totalPrice;
 
-        function renderFolders() {
-            document.getElementById('folder-view').style.display = 'none';
-            const catView = document.getElementById('catalog-view');
-            if(!catView) return; catView.style.display = 'grid';
-            let html = '';
-            ['menuJour', 'suggestions', 'entrees', 'plats', 'desserts'].forEach(cat => {
-                let count = recipesData.filter(r => r.cat === cat).length;
-                let displayName = CAT_SETTINGS[cat] ? CAT_SETTINGS[cat].name : cat;
-                html += `<div class="folder-card" onclick="openFolder('${cat}')"><div class="folder-title">${displayName}</div><div class="folder-count">${count} Fiches Actives</div></div>`;
+                stockGlobalData.unshift({
+                    id: Date.now() + Math.random(), name: art.nom || 'Produit IA', cat: finalCat,
+                    qtyStr: qtyRaw, initialQty: parsedQty.val, currentQty: parsedQty.val, unit: parsedQty.unit,
+                    totalPrice: totalPrice, unitPrice: unitPrice, date: new Date().toLocaleDateString()
+                });
             });
-            catView.innerHTML = html;
+            API.update('INVENTORY_MASTER', stockGlobalData).then(() => {
+                renderGlobalStock(); renderLiveStockPanel();
+            });
         }
 
-        function openFolder(cat) {
-            currentFolderCat = cat; document.getElementById('catalog-view').style.display = 'none'; document.getElementById('folder-view').style.display = 'flex';
-            let displayName = CAT_SETTINGS[cat] ? CAT_SETTINGS[cat].name : cat;
-            document.getElementById('current-folder-title').innerText = "📂 " + displayName; renderFolderContents(cat);
-        }
+        document.getElementById('cameraInput').addEventListener('change', async function(e) {
+            const file = e.target.files[0];
+            if (!file) return;
 
-        function closeFolder() { currentFolderCat = null; renderRecipes(); }
+            const resultBox = document.getElementById('scanResult');
+            resultBox.style.display = 'block'; resultBox.innerHTML = "⏳ Analyse IA en cours...";
 
-        function renderFolderContents(cat) {
-            const container = document.getElementById('recipes-list');
-            let filtered = recipesData.filter(r => r.cat === cat);
-            if(filtered.length === 0) { container.innerHTML = "<p style='text-align:center; color:var(--text-muted); padding: 20px;'>Dossier vide.</p>"; return; }
-            container.innerHTML = filtered.map(r => `
-                <div style="background: rgba(255,255,255,0.02); border:1px solid var(--border); padding:20px; border-radius:12px; transition: 0.2s;">
-                    <div style="display:flex; justify-content:space-between; align-items:center;">
-                        <span style="color:var(--text-main); font-weight:900; font-size:1.05rem;">${r.name}</span>
-                        <div style="display:flex; gap: 8px;">
-                            <button class="btn-prod-folder" onclick="produceRecipe(${r.id})">🍳 PROD</button>
-                            <button class="btn-del" style="background: rgba(255,255,255,0.05);" onclick="deleteRecipe(${r.id})">✖</button>
-                        </div>
-                    </div>
-                    <div style="margin-top:15px; color:var(--text-muted); font-size:0.85rem; background: rgba(0,0,0,0.2); padding: 8px 12px; border-radius: 6px; display: inline-block;">
-                        Coût de revient: <b style="color:var(--text-main);">${r.cost} ${currentCurrency}</b> &nbsp;|&nbsp; Prix de vente: <b style="color:var(--text-main);">${r.price} ${currentCurrency}</b> &nbsp;|&nbsp; Marge (FC): <b style="color:var(--ordered);">${r.fc}%</b>
-                    </div>
-                </div>`).join('');
-        }
+            const reader = new FileReader();
+            reader.onloadend = async function() {
+                try {
+                    const response = await fetch(`${SERVER_URL}/api/scan-invoice`, {
+                        method: 'POST', headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ imageBase64: reader.result.split(',')[1], mimeType: file.type })
+                    });
+                    const resData = await response.json();
+                    if (!resData.success) throw new Error(resData.error);
+                    injecterStockIA(resData.data);
+                    resultBox.innerHTML = "<span style='color: var(--accent);'>✅ Extraction et injection réussies !</span><br><br>" + JSON.stringify(resData.data, null, 2).replace(/\n/g, '<br>').replace(/ /g, '&nbsp;');
+                } catch (err) { resultBox.innerHTML = "<span style='color: var(--alert);'>❌ Erreur : " + err.message + "</span>"; }
+            };
+            reader.readAsDataURL(file);
+        });
 
+        // === CARTE & MENU ===
         function renderMenu() {
             const grid = document.getElementById('dynamic-menu-grid');
             if(!grid) return;
@@ -1047,9 +1302,7 @@
             menuData[category] = menuData[category].filter(item => item.id !== id); renderMenu(); await API.update('MENU_MASTER', menuData); 
         }
 
-        // ==========================================
-        // 📊 STATS
-        // ==========================================
+        // === STATS ===
         async function generateSalesStats() {
             let caBrut = 0; let coutTotal = 0; let totalPlats = 0; let salesMap = {};
             let state = await API.getState(); let activeOrders = state.activeOrders || {};
@@ -1091,32 +1344,6 @@
             });
             document.getElementById('top-sales-list').innerHTML = html;
         }
-
-        // ==========================================
-        // 👁️ VISION I CHEF (IA SCANNER)
-        // ==========================================
-        document.getElementById('cameraInput').addEventListener('change', async function(e) {
-            const file = e.target.files[0];
-            if (!file) return;
-
-            const resultBox = document.getElementById('scanResult');
-            resultBox.style.display = 'block'; resultBox.innerHTML = "⏳ Analyse IA en cours...";
-
-            const reader = new FileReader();
-            reader.onloadend = async function() {
-                try {
-                    const response = await fetch(`${SERVER_URL}/api/scan-invoice`, {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ imageBase64: reader.result.split(',')[1], mimeType: file.type })
-                    });
-                    const resData = await response.json();
-                    if (!resData.success) throw new Error(resData.error);
-                    resultBox.innerHTML = "<span style='color: var(--gold);'>✅ Extraction réussie :</span><br><br>" + JSON.stringify(resData.data, null, 2).replace(/\n/g, '<br>').replace(/ /g, '&nbsp;');
-                } catch (err) { resultBox.innerHTML = "<span style='color: var(--alert);'>❌ Erreur : " + err.message + "</span>"; }
-            };
-            reader.readAsDataURL(file);
-        });
 
     </script>
 </body>
