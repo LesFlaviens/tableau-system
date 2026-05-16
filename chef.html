@@ -569,18 +569,83 @@
             renderAll(); alert(`✅ PLAT PUBLIÉ`);
         }
 
-        function calcSmartPlate() {
+       function calcSmartPlate() {
             let total = 0;
-            ['fecu', 'prot', 'bof', 'legu'].forEach(c => {
+            ['fecu', 'prot', 'bof', 'legu', 'sauc', 'econ'].forEach(c => {
                 let txt = document.getElementById(`market-${c}-raw`)?.value || "";
-                let price = parseFloat(txt.match(/(\d+(?:\.\d+)?)/)?.[0] || 0);
-                let gram = parseFloat(document.getElementById(`gram-${c}`)?.value || 100);
-                let cost = (price / 1000) * gram;
+                let priceMatch = txt.match(/(\d+(?:\.\d+)?)/);
+                let price = priceMatch ? parseFloat(priceMatch[1]) : 0;
+                let gramOrDiv = parseFloat(document.getElementById(`gram-${c}`)?.value || 1);
+                
+                let cost = 0;
+                if (c === 'econ') {
+                    cost = gramOrDiv > 0 ? (price / gramOrDiv) : 0; // L'économat utilise un diviseur
+                } else {
+                    cost = (price / 1000) * gramOrDiv; // Les autres sont au gramme
+                }
+                
                 if(document.getElementById(`cost-${c}`)) document.getElementById(`cost-${c}`).innerText = cost.toFixed(2);
                 total += cost;
             });
             document.getElementById('market-total-cost').value = total.toFixed(2);
             document.getElementById('market-recommended').innerText = (total * parseFloat(document.getElementById('market-margin').value)).toFixed(2);
+        }
+
+        // === IA PRÉDICTIVE : POTENTIEL DE PRODUCTION ===
+        function calculatePotential() {
+            const boxes = ['fecu', 'prot', 'bof', 'legu', 'sauc', 'econ'];
+            let bottlenecks = [];
+            let minPlates = Infinity;
+            let foundAny = false;
+
+            boxes.forEach(box => {
+                let txt = document.getElementById(`market-${box}-raw`).value.toLowerCase();
+                if (!txt.trim()) return;
+
+                let requiredGram = parseFloat(document.getElementById(`gram-${box}`).value) || 0;
+                if (requiredGram <= 0) return;
+
+                // Scanner la matrice de stock globale
+                let matchedStock = null;
+                let bestMatchScore = 0;
+
+                stockGlobalData.forEach(item => {
+                    let score = 0;
+                    let itemName = item.name.toLowerCase();
+                    let words = txt.split(/[\s,]+/);
+                    words.forEach(w => { if (w.length > 2 && itemName.includes(w)) score++; });
+                    if (score > bestMatchScore) { bestMatchScore = score; matchedStock = item; }
+                });
+
+                if (matchedStock && box !== 'econ') {
+                    foundAny = true;
+                    let unit = (matchedStock.unit || 'u').toLowerCase();
+                    let stockInGrams = matchedStock.currentQty;
+                    if (unit === 'kg' || unit === 'l' || unit === 'litre') stockInGrams = matchedStock.currentQty * 1000;
+                    
+                    let possiblePlates = Math.floor(stockInGrams / requiredGram);
+                    bottlenecks.push({ name: matchedStock.name, plates: possiblePlates, avail: stockInGrams, unit: unit });
+                    if (possiblePlates < minPlates) minPlates = possiblePlates;
+                }
+            });
+
+            const resDiv = document.getElementById('ai-potential-result');
+            resDiv.style.display = 'block';
+
+            if (!foundAny) {
+                resDiv.innerHTML = "⚠️ Impossible d'évaluer. Écrivez le nom exact d'un produit en stock dans les cases.";
+                resDiv.style.borderColor = "var(--alert)";
+                return;
+            }
+
+            if (minPlates === 0) {
+                resDiv.innerHTML = `❌ <b>Rupture critique.</b> Capacité : 0 portion.`;
+                resDiv.style.borderColor = "var(--alert)";
+            } else {
+                let limit = bottlenecks.find(b => b.plates === minPlates);
+                resDiv.innerHTML = `🧠 <b>Capacité de Production : ${minPlates} Portions.</b><br><span style="font-size:0.85rem; color:var(--text-muted);">Facteur limitant actuel : ${limit.name} (${limit.avail} g/ml restants).</span>`;
+                resDiv.style.borderColor = "var(--accent)";
+            }
         }
 
         // === FICHES TECHNIQUES ===
