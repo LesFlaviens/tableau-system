@@ -50,6 +50,7 @@ const AppState = mongoose.model('AppState', new mongoose.Schema({
     tenantID: { type: String, required: true, unique: true },
     activeOrders: { type: Object, default: {} }
 }, { minimize: false }));
+
 // ==========================================
 // 🤖 MOTEUR IA : RECONNAISSANCE DE FACTURES (MULTI-MODÈLES 2026)
 // ==========================================
@@ -68,12 +69,53 @@ app.post('/api/scan-invoice', async (req, res) => {
         const base64Data = imageBase64.includes(',') ? imageBase64.split(',')[1] : imageBase64;
         const imagePart = { inlineData: { data: base64Data, mimeType: mimeType || "image/jpeg" } };
 
+        // LE NOUVEAU CERVEAU SÉCURISÉ
         const prompt = `
-        Tu es l'expert en gestion de stocks d'un restaurant gastronomique. Analyse cette image de facture.
-        Extrais les informations et pour CHAQUE article, classe-le strictement dans l'une de ces catégories : 
-        'Fruits', 'Légumes', 'Glucides', 'Protéines', 'B.O.F', 'Économat', 'Alcool'.
+        Analyse cette image de facture ou de ticket de caisse.
+        Extrais les informations suivantes et CLASSIFIE OBLIGATOIREMENT chaque article dans l'une de ces catégories exactes.
 
-const prompt = `
+        🚨 RÈGLE ABSOLUE POUR LES QUANTITÉS ET POIDS :
+        - Si un produit est vendu au poids (ex: "1.520 kg x 2.99 €/kg"), la "quantite" DOIT ÊTRE le poids exact avec son unité (ex: "1.520 kg"). Ne mets SURTOUT PAS "1".
+        - Si le produit est vendu à l'unité, mets le nombre (ex: "3").
+        - Le "prixUnitaire" doit correspondre au prix TOTAL payé pour cette ligne d'article.
+
+        Règles de classification :
+        - Fruits : Tous les fruits frais, Pomme, Poire, Banane, Orange, Mandarine, Clémentine, Citron, Lime, Pamplemousse, Raisin, Fraise, Framboise, Myrtille, Mûre, Cerise, Abricot, Pêche, Nectarine, Prune, Mirabelle, Quetsche, Kiwi, Melon, Pastèque, Figue, Datte, Coing, Rhubarbe, Mangue, Ananas, Papaye, Fruit de la passion, Litchi, Ramboutan, Durian, Goyave, Carambole, Noix de coco, Pitaya, Mangoustan, Jackfruit, Longane, Kumquat, Yuzu, Corossol, Groseille, Cassis, Airelle, Bergamote, Cédrat, Noix, Amande, Noisette, Pistache, Noix de cajou, Noix de macadamia, Pécan, Châtaigne, Noix du Brésil, Pignon, Maracuja, Olive, Grenade, Kaki, Nèfle.
+        - Surgelés : toutes les glaces, Frites surgelées, Pommes noisettes, dauphines, Hash browns, Nuggets, Tenders, Cordon bleu, Steak haché surgelé, Burger, Escalope panée, Poisson pané, Cabillaud surgelé, Saumon surgelé, Crevettes, Moules, Calamars surgelés, Pizza, Lasagnes, Raviolis, Légumes surgelés (Haricots verts, Petits pois, Brocolis, Épinards, Mélange wok), Fruits rouges surgelés, Mangue, Framboises, Glaces, Sorbets, Viennoiseries surgelées (Croissants, Pains précuits), Pâte feuilletée, Pâte à pizza, Tartes, Cheesecake, Gaufres, Falafels, Kebabs, Wraps, Riz cantonais surgelé, Gratins, Purée, Soupe, Sauce, Herbes aromatiques surgelées.
+        - Fruits Secs : Raisin sec, Abricot sec, Figue sèche, Datte sèche, Pruneau, Banane séchée, Mangue séchée, Ananas séché, Papaye séchée, Pomme séchée, Poire séchée, Noix de coco séchée, Cranberry séchée, Myrtille séchée, Cerise séchée, Fraise séchée, Kiwi séché, Orange séchée, Citron séché, Tomate séchée, Noix, Amande, Noisette, Pistache, Noix de cajou, Noix de macadamia, Noix du Brésil, Pécan, Pignon, Châtaigne sèche, Cacahuète, Graine de tournesol, Graine de courge, chia, lin, Sésame, Baie de goji, Physalis séché, Coco râpée, Dattes Medjool, Raisin golden, Mélange étudiant, Fruits confits.
+        - Légumes : Tous les légumes frais ou transformés, Carotte, Pomme de terre, Patate douce, Tomate, Oignon, Échalote, Ail, Poireau, Céleri, Navet, Betterave, Radis, Rutabaga, Panais, Choux (vert, rouge, blanc, fleur, romanesco, Bruxelles, Kale, chinois, pak choï), Épinard, Blettes, Laitues (Batavia, Roquette, Mâche), Endive, Chicorée, Fenouil, Asperge, Artichaut, Courgette, Aubergine, Poivrons, Concombre, Cornichon, Haricots (vert, beurre), Petit pois, Fève, Maïs, Champignons (Paris, Girolle, Cèpe, Pleurote, Shiitaké), Avocat, Courges (Potimarron, Butternut, Potiron, Citrouille), Manioc, Igname, Gingembre, Curcuma, Piment, Herbes fraîches (Persil, Coriandre, Basilic, Menthe, Ciboulette, Estragon, Thym, Romarin, Laurier, Aneth, Oseille), Topinambour, Salsifis, Okra, Pousses de soja, Bambou, Algues (wakamé, nori), Lentilles, Pois chiches, Haricots secs, Flageolets, Pois cassés, Soja, Olive verte, Olive noire.
+        - Glucides : Banane plantain, Châtaigne, Millet, Igname, Tapioca, Maïs, Gnocchis, Raviolis, Lasagnes, Riz, pâtes, farines, pains, pommes de terre, Patate douce, Manioc.
+        - Viande : boeuf (Limousine, Charolaise, Aubrac, Kobé, Galice, Angus, Criolla, Hereford), poulet, brest, porc, veau, steak, steak haché, Highland, osso buco, Bavette, Onglet, Hampe, Rumsteck, Entrecôte, Côte de bœuf, Faux-filet, gite, Paleron, Macreuse, Jarret, Gîte, Joue, Basses côtes, Poitrine, Abats (Foie, cœur, rognons, langue).
+        - Poisson : fera, omble, cabillaux, truite, dorade, Poissons blancs, Cabillaud, Colin, Merlan, Lieu noir/jaune, Églefin, Merlu, Bar, Loup de mer, Dorade (royale, grise, sauvage), Turbot (sauvage), Barbue, Sole (de ligne), Limande, Saint-Pierre, Mulet, Tacaud, Flétan (noir), Pangasius, Tilapia, Haddock, Julienne, Vivaneau (rouge), Mérou, Ombrine, Sandre, Perche, Brochet, Silure, Saumon, Maquereau, Sardine, Hareng, Thon, Bonite, Espadon, Anguille, Anchois, Rouget barbet, Esturgeon, Caviar, Sar, Pageot, Denti, Rascasse, Girelle, Oblade, Chinchard, Poisson-lion, Poisson-chat, Snakehead, Barramundi, Milkfish, Grouper, Poisson-perroquet, Pomfret, Carpe, Truites (fario, arc-en-ciel), Omble chevalier, Black bass, Éperlan, Ablette, Goujon, Sprat.
+        - Crustacés : huitre, moules, Crevette, Gambas, Langoustine, Crabe, Tourteau, Araignée de mer, Homard (bleu), Langouste, Huître, Palourde, Coque, Praire, Saint-Jacques, Bulot, Bigorneau, Oursin, Calamar, Encornet, Poulpe, Seiche.
+        - B.O.F : Beurre (salé, doux, clarifié, Ghee), Fromages, Produits laitiers, Crème (fraîche, liquide, épaisse, Chantilly, dessert), Lait (entier, demi-écrémé, écrémé, sans lactose, concentré, poudre), Yaourt (nature, grec, aux fruits), Fromage blanc, Petit suisse, Faisselle, Mascarpone, Ricotta, Mozzarella, Burrata, Parmesan, Emmental, Comté, Gruyère, Beaufort, Reblochon, Camembert, Brie, Roquefort, Bleu d’Auvergne, Chèvre frais, Feta, Raclette, Tartiflette, Gouda, Cheddar, Edam, Saint-Nectaire, Tome, Cancoillotte, Œufs (Blanc, Jaune), Margarine, Kéfir, Skyr, Fromage râpé, Fromage fondu, Cottage cheese, Halloumi, Flan.
+        - Clarification : Tous les agents de clarification, gélifiants (agar-agar), ou produits destinés à cette technique.
+        - Économat : Huiles, épices, café en poudre, conserves, serviette, serviette en papier, dentelle.
+        - Produits Sec : fond de veau, bouillon, tous les fonds, Riz (blanc, complet, basmati, thaï, arborio), Pâtes (Spaghetti, Penne, Tagliatelles, Nouilles, Vermicelles), Semoule, Couscous, Boulgour, Quinoa, Avoine (Flocons), Pain blanc, Pain complet, Baguette, Pain de mie, Brioche, Tortilla, Wrap, Pita, Polenta, Farines (blé, complète, riz, maïs), Lentilles, Pois chiches, Haricots (rouges, blancs), Flageolets, Pois cassés, Fèves, Orge, Seigle, Épeautre, Sarrasin, Croûtons, Crackers, Biscottes, Muesli, Céréales, Granola, Sucres (blanc, roux), Miel, Sirop d’érable, Confiture, sel, poivre, condiments, chapelure, panko, fruits secs, amande, noisette.
+        - Produit Entretien : Liquide vaisselle, Produit lave-vaisselle, Dégraissant cuisine, Nettoyant multi-surfaces, Désinfectant (alimentaire, sol, air), Nettoyant (inox, vitres, four, sanitaires, vapeur, frigo), Décapant four, Détartrant, Eau de javel, Gel WC, Déboucheur, Savon mains/antibactérien, Gel hydroalcoolique, Lessive (liquide, poudre), Assouplissant, Produit anti-calcaire/anti-graisse/anti-nuisibles, Désodorisant, Détergent (sol, professionnel), Lingettes désinfectantes, Éponge, Tampon à récurer, Chiffon microfibre, Papier essuie-tout, Papier toilette, Sac poubelle (renforcé), Gants (jetables, ménage), Balai, Serpillière, Raclette sol, Seau, Brosse (WC, nettoyage), Pulvérisateur, Insecticide, Produit pour hotte/machine à café/friteuse, Cristaux de soude, Vinaigre blanc, Bicarbonate de soude, Produit HACCP.
+
+        ⚠️ DIRECTIVE DE SÉCURITÉ CRITIQUE ⚠️
+        Tu es une machine. INTERDICTION ABSOLUE de dire "Bonjour", "En tant qu'assistant", ou "Voici le résultat".
+        Tu ne dois générer AUCUN texte, AUCUNE explication, AUCUNE balise markdown (pas de \`\`\`json).
+        Ton premier caractère DOIT être { et ton dernier caractère DOIT être }.
+
+        Structure JSON stricte exigée :
+        {
+            "fournisseur": "Nom",
+            "date": "JJ/MM/AAAA",
+            "totalHT": 0.00,
+            "tva": 0.00,
+            "totalTTC": 0.00,
+            "articles": [
+                { 
+                    "nom": "Nom du produit", 
+                    "quantite": "1.520 kg", 
+                    "prixUnitaire": 4.54, 
+                    "categorie": "Catégorie Exacte" 
+                }
+            ]
+        }`;
+
         console.log("Transmission de l'image à l'Intelligence iCHEF...");
 
         // 🛡️ L'ARSENAL NOUVELLE GÉNÉRATION
@@ -104,9 +146,19 @@ const prompt = `
             throw new Error("Tous les modèles ont été refusés. Raison finale : " + lastError);
         }
 
-        const responseText = result.response.text();
-        const cleanJson = responseText.replace(/```json/gi, '').replace(/```/gi, '').trim();
-        const data = JSON.parse(cleanJson);
+        // LE FILET DE SÉCURITÉ (Nettoyage de la réponse)
+        let responseText = result.response.text().trim();
+        responseText = responseText.replace(/```json/gi, '').replace(/```/gi, '').trim();
+        
+        // Sécurité ultime au cas où l'IA bavarde quand même ("En tant que...")
+        if (!responseText.startsWith("{")) {
+            const firstBrace = responseText.indexOf("{");
+            if (firstBrace !== -1) {
+                responseText = responseText.substring(firstBrace);
+            }
+        }
+        
+        const data = JSON.parse(responseText);
 
         res.json({ success: true, data: data });
 
@@ -115,6 +167,7 @@ const prompt = `
         res.status(500).json({ success: false, error: "ERREUR GOOGLE : " + error.message });
     }
 });
+
 // ==========================================
 // 🚀 ACTIVATION & CONNEXION (LES 5 ROUTES)
 // ==========================================
@@ -151,7 +204,6 @@ app.post('/api/activate', async (req, res) => {
 // 🔒 SÉCURITÉ : VÉRIFICATION LICENCE & PIN
 // ==========================================
 
-// Route 1 : Vérification de la validité de la licence (utilisée par la vitrine)
 app.get('/api/check-license', async (req, res) => {
     const { tenantID } = req.query;
     try {
@@ -163,7 +215,6 @@ app.get('/api/check-license', async (req, res) => {
     }
 });
 
-// Route 2 : Vérification du Code PIN Maître (utilisée par vitrine.html et chef.html)
 app.post('/api/verify-pin', async (req, res) => {
     const { tenantID, pin } = req.body;
     try {
@@ -184,7 +235,6 @@ app.post('/api/verify-pin', async (req, res) => {
 // 🛠️ MODULES D'ADMINISTRATION CLIENT
 // ==========================================
 
-// MISE À JOUR DU CODE PIN PAR LE CLIENT
 app.post('/api/update-pin', async (req, res) => {
     const { tenantID, newPin } = req.body;
     try {
@@ -200,7 +250,6 @@ app.post('/api/update-pin', async (req, res) => {
     }
 });
 
-// Informations du tableau de bord (Appareils)
 app.get('/api/dashboard-info', async (req, res) => {
     const { tenantID } = req.query;
     try {
@@ -214,7 +263,6 @@ app.get('/api/dashboard-info', async (req, res) => {
     } catch (e) { res.status(500).json({ success: false }); }
 });
 
-// Kill Switch (Déconnecter tout)
 app.post('/api/kill-switch', async (req, res) => {
     const { tenantID } = req.body;
     try {
@@ -227,7 +275,6 @@ app.post('/api/kill-switch', async (req, res) => {
     } catch (e) { res.status(500).json({ success: false }); }
 });
 
-// Génération du lien Portail Stripe
 app.post('/api/billing-portal', async (req, res) => {
     const { tenantID } = req.body;
     try {
@@ -352,7 +399,6 @@ app.post('/panel-ichef/action', async (req, res) => {
     const { pass, tenantID, action, newPlan } = req.body;
     if (pass !== ADMIN_PASS) return res.status(401).send('Interdit');
     try {
-        // AUTOMATISATION DES ÉCRANS SELON LE PACK
         if (newPlan) {
             let limit = 1;
             if (newPlan === 'BUSINESS') limit = 5;
