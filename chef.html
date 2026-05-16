@@ -45,7 +45,7 @@
         
         /* TABLEAUX RESPONSIVES */
         .table-responsive-wrapper { overflow-x: auto; -webkit-overflow-scrolling: touch; width: 100%; }
-        .inv-table { width: 100%; border-collapse: collapse; background: var(--panel); font-size: 0.95rem; min-width: 500px;}
+        .inv-table { width: 100%; border-collapse: collapse; background: var(--panel); font-size: 0.95rem; min-width: 600px;}
         .inv-table th { background: #FAFAFA; padding: 15px; text-align: left; font-size: 0.8rem; text-transform: uppercase; border-bottom: 1px solid var(--border-strong); }
         .inv-table td { padding: 15px; border-bottom: 1px solid var(--border); }
 
@@ -59,27 +59,16 @@
         .folder-card { background: var(--panel); border: 1px solid var(--border-strong); padding: 20px; border-radius: 12px; display: flex; flex-direction: column; align-items: center; cursor: pointer; transition: 0.3s; box-shadow: var(--shadow-subtle); gap: 10px; }
         .folder-card:hover { transform: translateY(-4px); border-color: var(--gold); }
 
-        /* 📱 RESPONSIVE DESIGN ANDROID/IOS 📱 */
         @media (max-width: 768px) {
             .nav-master { padding: 10px 15px; }
             .header-brand { width: 100%; text-align: center; margin-bottom: 10px; }
             .header-actions { width: 100%; justify-content: flex-start; }
             .module { padding: 15px; }
-            
-            /* Empiler les grilles */
-            .market-layout { grid-template-columns: 1fr; height: auto !important; }
-            .inventaire-layout { grid-template-columns: 1fr; height: auto !important; }
-            .stats-layout { grid-template-columns: 1fr; }
-            
-            /* Ajustements internes */
-            .menu-category { padding: 15px !important; }
-            .cost-box { padding: 15px !important; padding-top: 25px !important; }
+            .market-layout, .inventaire-layout, .stats-layout { grid-template-columns: 1fr; height: auto !important; }
+            .menu-category, .cost-box { padding: 15px !important; }
+            .cost-box { padding-top: 25px !important; }
             .cost-box-title { font-size: 0.7rem; }
-            
-            /* Les grilles internes 2 colonnes passent en 1 colonne sur mobile */
             .grid-2col-mobile { grid-template-columns: 1fr !important; }
-            
-            /* Réduire la taille des polices Stats */
             #stat-ca, #stat-marge, #stat-qty { font-size: 2rem !important; }
         }
     </style>
@@ -193,7 +182,7 @@
                         <input type="text" id="manual-stock-name" placeholder="Nom du produit...">
                         <div style="display: flex; gap: 10px;">
                             <input type="text" id="manual-stock-qty" placeholder="Qté (ex: 5kg)" style="flex: 1;">
-                            <input type="number" id="manual-stock-price" placeholder="Prix €" style="flex: 1;">
+                            <input type="number" id="manual-stock-price" placeholder="Prix Total €" style="flex: 1;">
                         </div>
                         <div style="display: flex; gap: 10px; align-items: center;">
                             <select id="manual-stock-cat" style="flex: 1; font-weight: bold;"></select>
@@ -211,16 +200,17 @@
 
                 <div class="menu-category" style="margin: 0; flex: 1; display: flex; flex-direction: column; overflow: hidden;">
                     <div class="category-header" style="background: var(--slate); color: white; border-bottom: none; padding: 15px 20px;">
-                        <span style="letter-spacing: 1px;">📊 MATRICE DE STOCK</span>
+                        <span style="letter-spacing: 1px;">📊 MATRICE DE STOCK GLOBALE</span>
                     </div>
                     <div class="table-responsive-wrapper">
                         <table class="inv-table" style="border: none; border-radius: 0;">
                             <thead>
                                 <tr>
                                     <th style="padding-left: 20px;">PRODUIT</th>
-                                    <th>QTÉ</th>
-                                    <th>VALEUR</th>
-                                    <th style="text-align: right; padding-right: 20px;">ACTION</th>
+                                    <th>VALEUR ACHAT</th>
+                                    <th>VAL. UNITAIRE</th>
+                                    <th>QUANTITÉ</th>
+                                    <th style="text-align: right; padding-right: 20px;">CHOIX</th>
                                 </tr>
                             </thead>
                             <tbody id="global-stock-list"></tbody>
@@ -252,6 +242,17 @@
         let stockGlobalData = [];
         let stockCategories = ['🍎 Fruits', '🥗 Légumes', '🍝 Glucides', '🥩 Protéines', '🥩 Viande', '🐟 Poisson', '🦞 Crustacés', '🧀 B.O.F', '❄️ Surgelés', '🥜 Fruits Secs', '🥫 Produits Secs', '📦 Économat', '🫧 Clarification', '🧼 Entretien'];
         let currentFolderCat = null;
+
+        // Fonction Utilitaire pour extraire le chiffre et l'unité d'une chaine de caractère
+        function parseQuantity(str) {
+            if (!str) return { val: 1, unit: 'u' };
+            let match = String(str).match(/([\d.,]+)\s*(.*)/);
+            if(match) {
+                let val = parseFloat(match[1].replace(',', '.'));
+                return { val: isNaN(val) ? 1 : val, unit: match[2].trim() || 'u' };
+            }
+            return { val: 1, unit: 'u' };
+        }
 
         async function checkPin() {
             const pin = document.getElementById('pin-input').value;
@@ -295,32 +296,22 @@
             downloadNode.remove();
         }
 
-        function triggerImport() {
-            document.getElementById('import-file').click();
-        }
+        function triggerImport() { document.getElementById('import-file').click(); }
 
         async function importRecipes(event) {
-            const file = event.target.files[0];
-            if (!file) return;
+            const file = event.target.files[0]; if (!file) return;
             const reader = new FileReader();
             reader.onload = async (e) => {
                 try {
                     const imported = JSON.parse(e.target.result);
                     if (imported.recipes && imported.menu) {
                         if(confirm("⚠️ ATTENTION : L'import va fusionner/écraser votre carte et vos fiches techniques actuelles. Confirmer ?")) {
-                            recipesData = imported.recipes;
-                            menuData = imported.menu;
-                            await API.save('RECIPES_MASTER', recipesData);
-                            await API.save('MENU_MASTER', menuData);
-                            renderAll();
-                            alert("✅ Base de données importée et synchronisée avec succès.");
+                            recipesData = imported.recipes; menuData = imported.menu;
+                            await API.save('RECIPES_MASTER', recipesData); await API.save('MENU_MASTER', menuData);
+                            renderAll(); alert("✅ Base de données importée et synchronisée avec succès.");
                         }
-                    } else {
-                        alert("❌ Fichier invalide. Ce n'est pas un export système iCHEF valide.");
-                    }
-                } catch(err) {
-                    alert("❌ Erreur de lecture du fichier.");
-                }
+                    } else alert("❌ Fichier invalide. Ce n'est pas un export système iCHEF valide.");
+                } catch(err) { alert("❌ Erreur de lecture du fichier."); }
                 event.target.value = ''; 
             };
             reader.readAsText(file);
@@ -328,8 +319,7 @@
 
         // === GESTION CATÉGORIES (CARTE) ===
         function renderRecipeCategoryDropdown() {
-            const select = document.getElementById('market-category');
-            if (!select) return;
+            const select = document.getElementById('market-category'); if (!select) return;
             select.innerHTML = Object.keys(menuData).map(cat => `<option value="${cat}">${cat.toUpperCase()}</option>`).join('');
         }
 
@@ -337,73 +327,49 @@
             let newCat = prompt("🏷️ Nom de la nouvelle catégorie de la carte (ex: TAPAS) :");
             if(newCat && newCat.trim() !== "") {
                 let key = newCat.trim().toLowerCase();
-                if(!menuData[key]) { 
-                    menuData[key] = []; 
-                    renderAll(); 
-                    await API.save('MENU_MASTER', menuData); 
+                if(!menuData[key]) { menuData[key] = []; renderAll(); await API.save('MENU_MASTER', menuData); 
                 } else alert("⚠️ Cette catégorie existe déjà.");
             }
         }
 
         async function removeCurrentDropdownCategory() {
-            let select = document.getElementById('market-category');
-            let catToRemove = select ? select.value : null;
-            if(!catToRemove) return;
-            if(menuData[catToRemove].length > 0) {
-                if(!confirm(`⚠️ Supprimer "${catToRemove.toUpperCase()}" et ses ${menuData[catToRemove].length} plats ?`)) return;
+            let select = document.getElementById('market-category'); let catToRemove = select ? select.value : null; if(!catToRemove) return;
+            if(menuData[catToRemove].length > 0) { if(!confirm(`⚠️ Supprimer "${catToRemove.toUpperCase()}" et ses ${menuData[catToRemove].length} plats ?`)) return;
             } else if(!confirm(`🗑️ Supprimer "${catToRemove.toUpperCase()}" ?`)) return;
-            delete menuData[catToRemove];
-            renderAll();
-            await API.save('MENU_MASTER', menuData);
+            delete menuData[catToRemove]; renderAll(); await API.save('MENU_MASTER', menuData);
         }
 
         async function removeRecipeCategory(catToRemove) {
-            if(menuData[catToRemove].length > 0) {
-                if(!confirm(`⚠️ Supprimer "${catToRemove.toUpperCase()}" et ses ${menuData[catToRemove].length} plats ?`)) return;
+            if(menuData[catToRemove].length > 0) { if(!confirm(`⚠️ Supprimer "${catToRemove.toUpperCase()}" et ses ${menuData[catToRemove].length} plats ?`)) return;
             } else if(!confirm(`🗑️ Supprimer "${catToRemove.toUpperCase()}" ?`)) return;
-            delete menuData[catToRemove];
-            renderAll();
-            await API.save('MENU_MASTER', menuData);
+            delete menuData[catToRemove]; renderAll(); await API.save('MENU_MASTER', menuData);
         }
 
         // === GESTION CATÉGORIES (STOCKS) ===
         function renderStockCategoryDropdown() {
-            const select = document.getElementById('manual-stock-cat');
-            if(!select) return;
+            const select = document.getElementById('manual-stock-cat'); if(!select) return;
             select.innerHTML = stockCategories.map(c => `<option value="${c}">${c}</option>`).join('');
         }
 
         async function addStockCategory() {
             let newCat = prompt("➕ Nom de la catégorie de stock (ex: 🍷 Cave) :");
             if(newCat && newCat.trim() !== "") {
-                if(!stockCategories.includes(newCat.trim())) {
-                    stockCategories.push(newCat.trim());
-                    renderAll();
-                    await API.save('STOCK_CATS', stockCategories);
-                }
+                if(!stockCategories.includes(newCat.trim())) { stockCategories.push(newCat.trim()); renderAll(); await API.save('STOCK_CATS', stockCategories); }
             }
         }
 
         async function removeStockCategory() {
             let cat = document.getElementById('manual-stock-cat').value;
-            if(confirm(`🗑️ Supprimer la catégorie de stock "${cat}" ?`)) {
-                stockCategories = stockCategories.filter(c => c !== cat);
-                renderAll();
-                await API.save('STOCK_CATS', stockCategories);
-            }
+            if(confirm(`🗑️ Supprimer la catégorie de stock "${cat}" ?`)) { stockCategories = stockCategories.filter(c => c !== cat); renderAll(); await API.save('STOCK_CATS', stockCategories); }
         }
 
         // === CARTE VISUELLE ===
         function renderMenu() {
-            const grid = document.getElementById('dynamic-menu-grid');
-            if(!grid) return;
-            let html = '';
-            
+            const grid = document.getElementById('dynamic-menu-grid'); if(!grid) return; let html = '';
             for (let cat in menuData) {
                 let itemsCount = menuData[cat].length;
                 let itemsHtml = menuData[cat].map(i => {
-                    let currentStock = i.stock !== undefined ? i.stock : 99;
-                    let stockColor = currentStock <= 5 ? 'var(--alert)' : 'var(--slate)';
+                    let currentStock = i.stock !== undefined ? i.stock : 99; let stockColor = currentStock <= 5 ? 'var(--alert)' : 'var(--slate)';
                     return `
                     <div style="background:var(--bg); border:1px solid var(--border); border-radius:8px; padding:12px; margin-bottom: 8px; display:flex; flex-direction:column; gap:10px;">
                         <div style="display:flex; justify-content:space-between; align-items:flex-start; flex-wrap:wrap; gap:10px;">
@@ -419,13 +385,7 @@
 
                 html += `
                 <div class="menu-category">
-                    <div class="category-header">
-                        <div style="display:flex; align-items:center; gap:10px;">
-                            ${cat.toUpperCase()}
-                            <span class="count-badge">${itemsCount}</span>
-                        </div>
-                        <button onclick="removeRecipeCategory('${cat}')" style="background:transparent; border:none; color:var(--alert); cursor:pointer; font-size:1.2rem;">✖</button>
-                    </div>
+                    <div class="category-header"><div style="display:flex; align-items:center; gap:10px;">${cat.toUpperCase()}<span class="count-badge">${itemsCount}</span></div><button onclick="removeRecipeCategory('${cat}')" style="background:transparent; border:none; color:var(--alert); cursor:pointer; font-size:1.2rem;">✖</button></div>
                     <div style="padding:15px; display:flex; flex-direction:column;">
                         ${itemsHtml}
                         <div style="display:flex; flex-direction:column; gap:10px; margin-top: 10px; border-top: 1px dashed var(--border-strong); padding-top: 15px;">
@@ -439,45 +399,28 @@
                     </div>
                 </div>`;
             }
-            
-            html += `
-            <div class="menu-category" style="border: 2px dashed var(--border-strong); background: transparent; justify-content:center; align-items:center; padding: 40px; cursor:pointer; box-shadow:none;" onclick="addRecipeCategory()">
-                <div style="font-size: 3rem; color: var(--text-muted); margin-bottom: 15px;">➕</div>
-                <div style="font-weight: 800; color: var(--slate); letter-spacing: 1px; text-align:center;">NOUVELLE CATÉGORIE</div>
-            </div>`;
+            html += `<div class="menu-category" style="border: 2px dashed var(--border-strong); background: transparent; justify-content:center; align-items:center; padding: 40px; cursor:pointer; box-shadow:none;" onclick="addRecipeCategory()"><div style="font-size: 3rem; color: var(--text-muted); margin-bottom: 15px;">➕</div><div style="font-weight: 800; color: var(--slate); letter-spacing: 1px; text-align:center;">NOUVELLE CATÉGORIE</div></div>`;
             grid.innerHTML = html;
         }
 
         async function addMenuItem(cat) {
-            const nameInput = document.getElementById(`add-name-${cat}`);
-            const priceInput = document.getElementById(`add-price-${cat}`);
-            const stockInput = document.getElementById(`add-stock-${cat}`);
+            const nameInput = document.getElementById(`add-name-${cat}`); const priceInput = document.getElementById(`add-price-${cat}`); const stockInput = document.getElementById(`add-stock-${cat}`);
             if (!nameInput.value || !priceInput.value) return alert("Nom et prix requis.");
             let stockVal = stockInput.value ? parseInt(stockInput.value) : 99;
             menuData[cat].push({ id: Date.now(), name: nameInput.value.trim(), price: parseFloat(priceInput.value), stock: stockVal });
-            nameInput.value = ''; priceInput.value = ''; stockInput.value = '';
-            renderAll(); await API.save('MENU_MASTER', menuData);
+            nameInput.value = ''; priceInput.value = ''; stockInput.value = ''; renderAll(); await API.save('MENU_MASTER', menuData);
         }
 
         async function updateDishStock(cat, id) {
             let item = menuData[cat].find(x => x.id === id); if(!item) return;
-            let shortName = item.name.split('\n')[0]; 
-            let newStock = prompt(`📦 Portions disponibles pour :\n"${shortName}" ?`, item.stock !== undefined ? item.stock : 99);
-            if(newStock !== null && newStock.trim() !== "") {
-                let parsedStock = parseInt(newStock);
-                if(!isNaN(parsedStock) && parsedStock >= 0) {
-                    item.stock = parsedStock; renderAll(); await API.save('MENU_MASTER', menuData);
-                } else alert("⚠️ Quantité invalide.");
-            }
+            let shortName = item.name.split('\n')[0]; let newStock = prompt(`📦 Portions disponibles pour :\n"${shortName}" ?`, item.stock !== undefined ? item.stock : 99);
+            if(newStock !== null && newStock.trim() !== "") { let parsedStock = parseInt(newStock); if(!isNaN(parsedStock) && parsedStock >= 0) { item.stock = parsedStock; renderAll(); await API.save('MENU_MASTER', menuData); } else alert("⚠️ Quantité invalide."); }
         }
 
         async function editItemPrice(cat, id) {
             let item = menuData[cat].find(x => x.id === id); if(!item) return;
             let newPrice = prompt(`💰 Nouveau prix pour "${item.name.split('\n')[0]}" :`, item.price);
-            if(newPrice && newPrice.trim() !== "") {
-                let parsed = parseFloat(newPrice.replace(',', '.'));
-                if(!isNaN(parsed)) { item.price = parsed; renderAll(); await API.save('MENU_MASTER', menuData); }
-            }
+            if(newPrice && newPrice.trim() !== "") { let parsed = parseFloat(newPrice.replace(',', '.')); if(!isNaN(parsed)) { item.price = parsed; renderAll(); await API.save('MENU_MASTER', menuData); } }
         }
 
         async function editItemName(cat, id) {
@@ -486,12 +429,7 @@
             if(newName && newName.trim() !== "") { item.name = newName.trim(); renderAll(); await API.save('MENU_MASTER', menuData); }
         }
 
-        async function deleteMenuItem(cat, id) {
-            if(confirm("Supprimer ce plat de la carte ?")) {
-                menuData[cat] = menuData[cat].filter(item => item.id !== id);
-                renderAll(); await API.save('MENU_MASTER', menuData);
-            }
-        }
+        async function deleteMenuItem(cat, id) { if(confirm("Supprimer ce plat de la carte ?")) { menuData[cat] = menuData[cat].filter(item => item.id !== id); renderAll(); await API.save('MENU_MASTER', menuData); } }
 
         // === IA : INJECTION DANS LA MATRICE ===
         function injecterStockIA(dataIA) {
@@ -506,11 +444,18 @@
                 if(catATrouver === 'Fruit sec' || catATrouver === 'fruits secs') catATrouver = 'Fruits Secs';
                 if(catATrouver === 'produits secs' || catATrouver === 'Produit sec') catATrouver = 'Produits Sec';
                 if(catATrouver === 'Produits entretien' || catATrouver === 'produit entretien') catATrouver = 'Produit Entretien';
-
                 let finalCat = dicoCategories[catATrouver] || ('📦 ' + (art.categorie || 'NON CLASSÉ'));
+                
+                // Parse pour injecter les données structurées (Prix, Qty init)
+                let qtyRaw = art.quantite || '1';
+                let parsedQty = parseQuantity(qtyRaw);
+                let totalPrice = parseFloat(art.prixUnitaire) || 0;
+                let unitPrice = parsedQty.val > 0 ? (totalPrice / parsedQty.val) : totalPrice;
+
                 stockGlobalData.unshift({
                     id: Date.now() + Math.random(), name: art.nom || 'Produit IA', cat: finalCat,
-                    qtyStr: art.quantite || '1', lastPrice: (art.prixUnitaire || 0).toFixed(2) + " €", date: new Date().toLocaleDateString()
+                    qtyStr: qtyRaw, initialQty: parsedQty.val, currentQty: parsedQty.val, unit: parsedQty.unit,
+                    totalPrice: totalPrice, unitPrice: unitPrice, date: new Date().toLocaleDateString()
                 });
             });
             renderAll(); API.save('INVENTORY_MASTER', stockGlobalData);
@@ -518,39 +463,152 @@
 
         document.getElementById('cameraInput').addEventListener('change', async function(e) {
             const file = e.target.files[0]; if(!file) return;
-            const resBox = document.getElementById('scanResult');
-            resBox.style.display='block'; resBox.innerHTML="⏳ L'IA ANALYSE LA FACTURE...";
+            const resBox = document.getElementById('scanResult'); resBox.style.display='block'; resBox.innerHTML="⏳ L'IA ANALYSE LA FACTURE...";
             const reader = new FileReader();
             reader.onloadend = async () => {
                 try {
-                    const r = await fetch(`${SERVER_URL}/api/scan-invoice`, {
-                        method: 'POST', headers: {'Content-Type':'application/json'},
-                        body: JSON.stringify({ imageBase64: reader.result.split(',')[1], mimeType: file.type })
-                    });
+                    const r = await fetch(`${SERVER_URL}/api/scan-invoice`, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ imageBase64: reader.result.split(',')[1], mimeType: file.type }) });
                     const d = await r.json();
-                    if(d.success) {
-                        injecterStockIA(d.data); resBox.innerHTML = `<span style="color:var(--accent);">✅ FACTURE TRAITÉE.</span>`;
-                    } else throw new Error(d.error);
+                    if(d.success) { injecterStockIA(d.data); resBox.innerHTML = `<span style="color:var(--accent);">✅ FACTURE TRAITÉE.</span>`; } else throw new Error(d.error);
                 } catch(err) { resBox.innerHTML = `<span style="color:var(--alert);">❌ ERREUR : ${err.message}</span>`; }
-            };
-            reader.readAsDataURL(file);
+            }; reader.readAsDataURL(file);
         });
 
         // === AJOUT MANUEL STOCK ===
         async function addManualStock() {
             const name = document.getElementById('manual-stock-name').value.trim();
-            const qty = document.getElementById('manual-stock-qty').value.trim();
+            const qtyStr = document.getElementById('manual-stock-qty').value.trim();
             const price = parseFloat(document.getElementById('manual-stock-price').value);
             const cat = document.getElementById('manual-stock-cat').value;
 
-            if(!name || !qty || isNaN(price)) return alert("Remplissez tous les champs.");
-            stockGlobalData.unshift({ id: Date.now(), name, cat, qtyStr: qty, lastPrice: price.toFixed(2) + " €", date: new Date().toLocaleDateString() });
+            if(!name || !qtyStr || isNaN(price)) return alert("Remplissez tous les champs.");
 
-            document.getElementById('manual-stock-name').value = '';
-            document.getElementById('manual-stock-qty').value = '';
-            document.getElementById('manual-stock-price').value = '';
-            
+            let parsedQty = parseQuantity(qtyStr);
+            let unitPrice = parsedQty.val > 0 ? (price / parsedQty.val) : price;
+
+            stockGlobalData.unshift({ 
+                id: Date.now(), name, cat, 
+                qtyStr: qtyStr, initialQty: parsedQty.val, currentQty: parsedQty.val, unit: parsedQty.unit,
+                totalPrice: price, unitPrice: unitPrice, date: new Date().toLocaleDateString() 
+            });
+
+            document.getElementById('manual-stock-name').value = ''; document.getElementById('manual-stock-qty').value = ''; document.getElementById('manual-stock-price').value = '';
             renderAll(); await API.save('INVENTORY_MASTER', stockGlobalData);
+        }
+
+        // === MATRICE STOCKS : NOUVEAU RENDU (AVEC 20% ALERTE & 4 COLONNES) ===
+        function renderGlobalStock() {
+            const listContainer = document.getElementById('global-stock-list');
+            const summaryContainer = document.getElementById('stock-summary');
+            if(!listContainer) return;
+
+            let stockByCategory = {}; let totalGlobal = 0;
+
+            stockGlobalData.forEach((item, idx) => {
+                let cat = item.cat || '📦 NON CLASSÉ';
+                if (!stockByCategory[cat]) stockByCategory[cat] = { items: [], totalValue: 0 };
+                
+                // Rétrocompatibilité pour les anciens produits
+                let tPrice = item.totalPrice !== undefined ? item.totalPrice : parseFloat(String(item.lastPrice).replace(',', '.').replace(/[^\d.-]/g, '')) || 0;
+                let initialQ = item.initialQty !== undefined ? item.initialQty : parseQuantity(item.qtyStr).val;
+                let currentQ = item.currentQty !== undefined ? item.currentQty : initialQ;
+                let unit = item.unit !== undefined ? item.unit : parseQuantity(item.qtyStr).unit;
+                let uPrice = item.unitPrice !== undefined ? item.unitPrice : (initialQ > 0 ? tPrice / initialQ : tPrice);
+                
+                // Calcul de la valeur ACTUELLE du stock
+                let currentActualValue = uPrice * currentQ;
+
+                stockByCategory[cat].items.push({ ...item, originalIndex: idx, tPrice, initialQ, currentQ, unit, uPrice, currentActualValue });
+                
+                stockByCategory[cat].totalValue += currentActualValue; 
+                totalGlobal += currentActualValue;
+            });
+
+            // Ruban Financier
+            let summaryHtml = `
+                <div style="background: var(--text-main); color: var(--gold); border: 1px solid var(--text-main); padding: 15px 20px; border-radius: 10px; white-space: nowrap; box-shadow: var(--shadow-subtle);">
+                    <div style="font-size: 0.7rem; font-weight: bold; text-transform: uppercase; opacity: 0.8; margin-bottom: 5px;">CAPITAL IMMOBILISÉ</div>
+                    <div style="font-size: 1.4rem; font-weight: 900;">${totalGlobal.toFixed(2)} €</div>
+                </div>`;
+                
+            for (let cat in stockByCategory) {
+                let cleanCatName = cat.replace(/[\u1000-\uFFFF]+/g, '').trim(); 
+                summaryHtml += `
+                <div style="background: var(--panel); border: 1px solid var(--border-strong); padding: 15px 20px; border-radius: 10px; white-space: nowrap; box-shadow: var(--shadow-subtle);">
+                    <div style="font-size: 0.7rem; color: var(--text-muted); font-weight: bold; text-transform: uppercase; margin-bottom: 5px;">${cleanCatName}</div>
+                    <div style="font-size: 1.2rem; color: var(--slate); font-weight: 800;">${stockByCategory[cat].totalValue.toFixed(2)} €</div>
+                </div>`;
+            }
+            if(summaryContainer) summaryContainer.innerHTML = summaryHtml;
+
+            // Tableau
+            let tableHtml = '';
+            for (let cat in stockByCategory) {
+                tableHtml += `
+                    <tr>
+                        <td colspan="5" style="background: #F4F4F2; padding: 12px 20px; border-bottom: 1px solid var(--border-strong);">
+                            <div style="display: flex; justify-content: space-between; align-items: center;">
+                                <span style="font-weight: 800; color: var(--slate); text-transform: uppercase; font-size: 0.85rem;">${cat}</span>
+                                <span style="font-weight: 900; color: var(--gold); font-size: 0.95rem;">${stockByCategory[cat].totalValue.toFixed(2)} €</span>
+                            </div>
+                        </td>
+                    </tr>
+                `;
+                stockByCategory[cat].items.forEach(i => {
+                    // Logique d'alerte des 20%
+                    let ratio = i.initialQ > 0 ? (i.currentQ / i.initialQ) : 1;
+                    let alertStyle = ratio <= 0.2 ? 'color: var(--alert); font-weight: 900; background: rgba(239, 68, 68, 0.1); padding: 4px 8px; border-radius: 4px;' : 'color: var(--text-main); font-weight: 600; background: var(--bg); padding: 4px 8px; border-radius: 4px;';
+                    let alertIcon = ratio <= 0.2 ? ' ⚠️' : '';
+
+                    tableHtml += `
+                    <tr style="transition: background 0.2s;" onmouseover="this.style.background='#FAFAFA'" onmouseout="this.style.background='transparent'">
+                        <td style="padding: 15px 20px; border-bottom: 1px solid var(--border);"><b>${i.name}</b></td>
+                        <td style="padding: 15px; border-bottom: 1px solid var(--border); color: var(--slate); font-weight: 900; white-space: nowrap;">${i.tPrice.toFixed(2)} €</td>
+                        <td style="padding: 15px; border-bottom: 1px solid var(--border); color: var(--text-muted); font-size: 0.85rem; white-space: nowrap;">${i.uPrice.toFixed(2)} €/${i.unit}</td>
+                        <td style="padding: 15px; border-bottom: 1px solid var(--border); cursor: pointer;" onclick="editStockQty(${i.originalIndex})">
+                            <span style="${alertStyle}">${i.currentQ} ${i.unit}${alertIcon}</span>
+                        </td>
+                        <td style="padding: 15px 20px; border-bottom: 1px solid var(--border); text-align: right;">
+                            <button onclick="deleteStockItem(${i.originalIndex})" style="background: var(--panel); border: 1px solid var(--border-strong); border-radius: 6px; color: var(--alert); padding: 8px 12px; cursor: pointer;">✖</button>
+                        </td>
+                    </tr>`;
+                });
+            }
+
+            if(Object.keys(stockByCategory).length === 0) tableHtml = `<tr><td colspan="5" style="text-align: center; padding: 30px;">Stock vide.</td></tr>`;
+            listContainer.innerHTML = tableHtml;
+        }
+
+        async function editStockQty(idx) {
+            let item = stockGlobalData[idx];
+            let initialQ = item.initialQty !== undefined ? item.initialQty : parseQuantity(item.qtyStr).val;
+            let currentQ = item.currentQty !== undefined ? item.currentQty : initialQ;
+            let unit = item.unit !== undefined ? item.unit : parseQuantity(item.qtyStr).unit;
+            
+            let newQty = prompt(`📦 Nouvelle quantité restante pour ${item.name} (en ${unit}) :`, currentQ);
+            if (newQty !== null && newQty.trim() !== "") {
+                let parsed = parseFloat(newQty.replace(',', '.'));
+                if (!isNaN(parsed) && parsed >= 0) {
+                    if (item.initialQty === undefined) item.initialQty = initialQ; // Retro-compatibilité
+                    if (item.unitPrice === undefined) {
+                        let tPrice = parseFloat(String(item.lastPrice).replace(',', '.').replace(/[^\d.-]/g, '')) || 0;
+                        item.totalPrice = tPrice;
+                        item.unitPrice = initialQ > 0 ? tPrice / initialQ : tPrice;
+                        item.unit = unit;
+                    }
+                    
+                    item.currentQty = parsed;
+                    item.qtyStr = parsed + " " + unit;
+                    renderAll();
+                    await API.save('INVENTORY_MASTER', stockGlobalData);
+                } else alert("⚠️ Quantité invalide.");
+            }
+        }
+
+        async function deleteStockItem(idx) {
+            if(confirm("Supprimer ce produit du stock ?")) {
+                stockGlobalData.splice(idx, 1); renderAll(); await API.save('INVENTORY_MASTER', stockGlobalData);
+            }
         }
 
         // === CREATION RECETTE ===
@@ -563,9 +621,7 @@
             if(!name || isNaN(price)) return alert("NOM ET PRIX REQUIS");
 
             const margin = ((price - cost) / price) * 100;
-            if(margin < 70) {
-                if(!confirm(`🚨 ALERTE : Marge à ${margin.toFixed(1)}%. L'empire exige 70%. Continuer ?`)) return;
-            }
+            if(margin < 70) { if(!confirm(`🚨 ALERTE : Marge à ${margin.toFixed(1)}%. L'empire exige 70%. Continuer ?`)) return; }
 
             const recipe = { id:Date.now(), name, price, cost, cat:category, fc: ((cost/price)*100).toFixed(1), ing: document.getElementById('rec-ing').value, prep: document.getElementById('rec-prep').value, margin: margin.toFixed(1) };
             recipesData.unshift(recipe);
@@ -589,73 +645,6 @@
             });
             document.getElementById('market-total-cost').value = total.toFixed(2);
             document.getElementById('market-recommended').innerText = (total * parseFloat(document.getElementById('market-margin').value)).toFixed(2);
-        }
-
-        // === MATRICE STOCKS ===
-        function renderGlobalStock() {
-            const listContainer = document.getElementById('global-stock-list');
-            const summaryContainer = document.getElementById('stock-summary');
-            if(!listContainer) return;
-
-            let stockByCategory = {}; let totalGlobal = 0;
-
-            stockGlobalData.forEach((item, idx) => {
-                let cat = item.cat || '📦 NON CLASSÉ';
-                if (!stockByCategory[cat]) stockByCategory[cat] = { items: [], totalValue: 0 };
-                stockByCategory[cat].items.push({ ...item, originalIndex: idx });
-                let priceVal = parseFloat(String(item.lastPrice).replace(',', '.').replace(/[^\d.-]/g, '')) || 0;
-                stockByCategory[cat].totalValue += priceVal; totalGlobal += priceVal;
-            });
-
-            let summaryHtml = `
-                <div style="background: var(--text-main); color: var(--gold); border: 1px solid var(--text-main); padding: 15px 20px; border-radius: 10px; white-space: nowrap; box-shadow: var(--shadow-subtle);">
-                    <div style="font-size: 0.7rem; font-weight: bold; text-transform: uppercase; opacity: 0.8; margin-bottom: 5px;">CAPITAL IMMOBILISÉ</div>
-                    <div style="font-size: 1.4rem; font-weight: 900;">${totalGlobal.toFixed(2)} €</div>
-                </div>`;
-                
-            for (let cat in stockByCategory) {
-                let cleanCatName = cat.replace(/[\u1000-\uFFFF]+/g, '').trim(); 
-                summaryHtml += `
-                <div style="background: var(--panel); border: 1px solid var(--border-strong); padding: 15px 20px; border-radius: 10px; white-space: nowrap; box-shadow: var(--shadow-subtle);">
-                    <div style="font-size: 0.7rem; color: var(--text-muted); font-weight: bold; text-transform: uppercase; margin-bottom: 5px;">${cleanCatName}</div>
-                    <div style="font-size: 1.2rem; color: var(--slate); font-weight: 800;">${stockByCategory[cat].totalValue.toFixed(2)} €</div>
-                </div>`;
-            }
-            if(summaryContainer) summaryContainer.innerHTML = summaryHtml;
-
-            let tableHtml = '';
-            for (let cat in stockByCategory) {
-                tableHtml += `
-                    <tr>
-                        <td colspan="4" style="background: #F4F4F2; padding: 12px 20px; border-bottom: 1px solid var(--border-strong);">
-                            <div style="display: flex; justify-content: space-between; align-items: center;">
-                                <span style="font-weight: 800; color: var(--slate); text-transform: uppercase; font-size: 0.85rem;">${cat}</span>
-                                <span style="font-weight: 900; color: var(--gold); font-size: 0.95rem;">${stockByCategory[cat].totalValue.toFixed(2)} €</span>
-                            </div>
-                        </td>
-                    </tr>
-                `;
-                stockByCategory[cat].items.forEach(i => {
-                    tableHtml += `
-                    <tr>
-                        <td style="padding: 15px 20px; border-bottom: 1px solid var(--border);"><b>${i.name}</b></td>
-                        <td style="padding: 15px; border-bottom: 1px solid var(--border); color: var(--text-muted); white-space: nowrap;">${i.qtyStr}</td>
-                        <td style="padding: 15px; border-bottom: 1px solid var(--border); font-weight: 600; white-space: nowrap;">${i.lastPrice}</td>
-                        <td style="padding: 15px 20px; border-bottom: 1px solid var(--border); text-align: right;">
-                            <button onclick="deleteStockItem(${i.originalIndex})" style="background: var(--panel); border: 1px solid var(--border-strong); border-radius: 6px; color: var(--alert); padding: 8px 12px; cursor: pointer;">✖</button>
-                        </td>
-                    </tr>`;
-                });
-            }
-
-            if(Object.keys(stockByCategory).length === 0) tableHtml = `<tr><td colspan="4" style="text-align: center; padding: 30px;">Stock vide.</td></tr>`;
-            listContainer.innerHTML = tableHtml;
-        }
-
-        async function deleteStockItem(idx) {
-            if(confirm("Supprimer ce produit ?")) {
-                stockGlobalData.splice(idx, 1); renderAll(); await API.save('INVENTORY_MASTER', stockGlobalData);
-            }
         }
 
         // === FICHES TECHNIQUES ===
