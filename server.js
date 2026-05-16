@@ -1,717 +1,372 @@
-<!DOCTYPE html>
-<html lang="fr">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>iChef OS - Empire Flavien</title>
-    <style>
-        /* 💎 DESIGN IVOIRE / GRIS PERLE (PALACE) 💎 */
-        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;800;900&family=Playfair+Display:ital,wght@0,600;1,400&display=swap');
+const express = require('express');
+const cors = require('cors');
+const path = require('path');
+const mongoose = require('mongoose');
 
-        :root { 
-            --bg: #F7F7F5; --panel: #FFFFFF; --border: #E8E8E3; --border-strong: #D1D1C7; 
-            --text-main: #1A1A18; --text-muted: #7A7A75; --gold: #D4AF37; --gold-dim: rgba(212, 175, 55, 0.15); 
-            --accent: #10B981; --alert: #EF4444; --slate: #4A5568; --shadow-subtle: 0 4px 20px rgba(0, 0, 0, 0.04);
-            --shadow-deep: 0 10px 30px rgba(0, 0, 0, 0.08);
-        }
-        
-        body { background: var(--bg); color: var(--text-main); font-family: 'Inter', sans-serif; margin: 0; display: flex; flex-direction: column; height: 100vh; overflow: hidden; letter-spacing: 0.3px;}
-        
-        /* NAVIGATION */
-        .nav-master { background: rgba(255, 255, 255, 0.95); backdrop-filter: blur(10px); padding: 12px 25px; display: flex; gap: 15px; border-bottom: 1px solid var(--border-strong); align-items: center; z-index: 100; justify-content: space-between; flex-wrap: wrap; box-shadow: var(--shadow-subtle); }
-        .logo-text { color: var(--gold); font-family: 'Playfair Display', serif; font-size: 1.6rem; font-weight: 600; letter-spacing: 2px; text-transform: uppercase; margin: 0;}
-        .header-actions { display: flex; gap: 10px; align-items: center; overflow-x: auto; white-space: nowrap; padding-bottom: 5px; -webkit-overflow-scrolling: touch; scrollbar-width: none;}
-        .header-actions::-webkit-scrollbar { display: none; }
-        
-        .nav-btn { background: transparent; border: 1px solid transparent; color: var(--text-muted); padding: 8px 16px; cursor: pointer; font-weight: 700; border-radius: 8px; font-size: 0.85rem; text-transform: uppercase; transition: all 0.3s ease; white-space: nowrap;}
-        .nav-btn.active { border-color: var(--border-strong); color: var(--gold); background: var(--panel); box-shadow: var(--shadow-subtle); }
-        
-        .module { display: none; flex: 1; overflow-y: auto; padding: 25px; width: 100%; box-sizing: border-box; -webkit-overflow-scrolling: touch;}
-        .module.active { display: block; }
-        
-        /* GRILLES DE BASE */
-        .grid-menu { display: grid !important; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)) !important; gap: 25px !important; width: 100% !important; align-items: start !important; }
-        .market-layout { display: grid; grid-template-columns: 1.5fr 1fr; gap: 25px; align-items: start; }
-        .inventaire-layout { display: grid; grid-template-columns: 350px 1fr; gap: 30px; align-items: start; }
-        .stats-layout { display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px; }
+// 🛡️ CONFIGURATION STRIPE
+const stripeKey = process.env.STRIPE_SECRET_KEY || 'sk_test_51...';
+const stripe = require('stripe')(stripeKey);
 
-        /* ÉLÉMENTS UI */
-        .menu-category { background: var(--panel); border-radius: 12px; border: 1px solid var(--border); display: flex; flex-direction: column; box-shadow: var(--shadow-subtle); overflow: hidden; margin-bottom: 20px;}
-        .category-header { background: #FAFAFA; border-bottom: 1px solid var(--border); padding: 18px 20px; font-weight: 800; text-transform: uppercase; display: flex; justify-content: space-between; align-items: center; }
-        .count-badge { background: var(--bg); padding: 4px 10px; border-radius: 20px; border: 1px solid var(--border-strong); font-size: 0.8rem; color: var(--text-muted); font-weight: bold;}
+const app = express();
+const PORT = process.env.PORT || 10000;
 
-        .cost-box { border: 1px solid var(--border-strong); padding: 20px; padding-top: 25px; border-radius: 12px; display: flex; flex-direction: column; gap: 12px; background: var(--panel); position: relative; box-shadow: var(--shadow-subtle);}
-        .cost-box-title { position: absolute; top: -14px; left: 15px; background: var(--panel); padding: 4px 12px; font-size: 0.8rem; font-weight: 800; text-transform: uppercase; border: 1px solid var(--border-strong); border-radius: 6px; color: var(--slate);}
-        
-        /* TABLEAUX RESPONSIVES */
-        .table-responsive-wrapper { overflow-x: auto; -webkit-overflow-scrolling: touch; width: 100%; }
-        .inv-table { width: 100%; border-collapse: collapse; background: var(--panel); font-size: 0.95rem; min-width: 500px;}
-        .inv-table th { background: #FAFAFA; padding: 15px; text-align: left; font-size: 0.8rem; text-transform: uppercase; border-bottom: 1px solid var(--border-strong); }
-        .inv-table td { padding: 15px; border-bottom: 1px solid var(--border); }
+app.use(cors({ origin: '*', methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'], allowedHeaders: ['Content-Type', 'Authorization', 'Origin', 'Accept'] }));
+app.use(express.json({ limit: '50mb' }));
+app.use(express.urlencoded({ extended: true }));
+app.use(express.static(path.join(__dirname)));
 
-        .btn-mic { background: var(--bg); border: 1px solid var(--border-strong); padding: 10px; border-radius: 8px; cursor: pointer; display: flex; align-items: center; justify-content: center; min-width: 44px;}
-        .recording-active { background-color: var(--alert) !important; color: white !important; }
-        .add-btn { background: var(--slate); color: #fff; border: none; padding: 14px; font-weight: 800; border-radius: 8px; cursor: pointer; text-transform: uppercase; letter-spacing: 1px; width: 100%; transition: 0.2s; min-height: 48px;}
-        .add-btn:hover { background: var(--text-main); }
-        
-        input, select, textarea { background: var(--panel); border: 1px solid var(--border-strong); color: var(--text-main); padding: 12px; border-radius: 8px; outline: none; font-family: 'Inter', sans-serif; width: 100%; box-sizing: border-box; min-height: 44px;}
-        
-        .folder-card { background: var(--panel); border: 1px solid var(--border-strong); padding: 20px; border-radius: 12px; display: flex; flex-direction: column; align-items: center; cursor: pointer; transition: 0.3s; box-shadow: var(--shadow-subtle); gap: 10px; }
-        .folder-card:hover { transform: translateY(-4px); border-color: var(--gold); }
+// ==========================================
+// 🚨 WEBHOOK : SÉCURITÉ ANTI-IMPAYÉS
+// ==========================================
+app.post('/webhook', express.raw({type: 'application/json'}), async (req, res) => {
+    const sig = req.headers['stripe-signature'];
+    let event;
+    try { event = stripe.webhooks.constructEvent(req.body, sig, process.env.STRIPE_WEBHOOK_SECRET); } 
+    catch (err) { return res.status(400).send(`Webhook Error: ${err.message}`); }
+    if (event.type === 'checkout.session.completed') console.log(`💰 PAIEMENT REÇU !`);
+    res.json({received: true});
+});
 
-        /* 📱 RESPONSIVE DESIGN ANDROID/IOS 📱 */
-        @media (max-width: 768px) {
-            .nav-master { padding: 10px 15px; }
-            .header-brand { width: 100%; text-align: center; margin-bottom: 10px; }
-            .header-actions { width: 100%; justify-content: flex-start; }
-            .module { padding: 15px; }
-            
-            /* Empiler les grilles */
-            .market-layout { grid-template-columns: 1fr; height: auto !important; }
-            .inventaire-layout { grid-template-columns: 1fr; height: auto !important; }
-            .stats-layout { grid-template-columns: 1fr; }
-            
-            /* Ajustements internes */
-            .menu-category { padding: 15px !important; }
-            .cost-box { padding: 15px !important; padding-top: 25px !important; }
-            .cost-box-title { font-size: 0.7rem; }
-            
-            /* Les grilles internes 2 colonnes passent en 1 colonne sur mobile */
-            .grid-2col-mobile { grid-template-columns: 1fr !important; }
-            
-            /* Réduire la taille des polices Stats */
-            #stat-ca, #stat-marge, #stat-qty { font-size: 2rem !important; }
-        }
-    </style>
-</head>
-<body>
+// ==========================================
+// 🧠 BASE DE DONNÉES : INFRASTRUCTURE iCHEF
+// ==========================================
+const mongoURI = process.env.MONGO_URI || "mongodb+srv://icheflavien_db_user:Tamere58.@cluster0.4w95d7m.mongodb.net/ichef_production?retryWrites=true&w=majority";
+mongoose.connect(mongoURI).then(() => console.log('🔥 I CHEF Infrastructure Online')).catch(err => console.error(err.message));
 
-    <div id="security-overlay" style="position:fixed; top:0; left:0; width:100%; height:100%; background:var(--panel); z-index:9999; display:flex; flex-direction:column; align-items:center; justify-content:center; padding: 20px;">
-        <h2 style="font-family:'Playfair Display', serif; font-size: 1.8rem; margin-bottom:20px; text-align: center;">iCHEF OS - Accès Réservé</h2>
-        <input type="password" id="pin-input" placeholder="CODE PIN" style="width:100%; max-width: 250px; text-align:center; font-size:1.5rem; letter-spacing:5px; margin-bottom:20px;">
-        <button onclick="checkPin()" class="add-btn" style="width:100%; max-width: 250px;">ENTRER</button>
-        <p id="error-msg" style="color:var(--alert); display:none; margin-top:20px;">❌ Code PIN incorrect.</p>
-    </div>
+const tenantSchema = new mongoose.Schema({
+    tenantID: { type: String, required: true, unique: true },
+    clientName: String,
+    status: { type: String, enum: ['ACTIF', 'SUSPENDU'], default: 'ACTIF' },
+    plan: { type: String, enum: ['CHEF', 'ECO', 'BUSINESS', 'EXCUTIF', 'PREMIUM'], default: 'ECO' },
+    pin: { type: String, default: '9999' }, 
+    maxScreens: { type: Number, default: 1 }, 
+    registeredDevices: [String], 
+    config: { stripeCustomerId: String }
+});
+const Tenant = mongoose.model('Tenant', tenantSchema);
 
-    <div class="nav-master">
-        <div class="header-brand"><h1 class="logo-text">iCHEF.</h1></div>
-        <div class="header-actions">
-            <button class="nav-btn active" id="tab-menu" onclick="switchTab('menu')">📋 CARTE</button>
-            <button class="nav-btn" id="tab-market" onclick="switchTab('market')">🧪 LABO</button>
-            <button class="nav-btn" id="tab-inventaire" onclick="switchTab('inventaire')">📦 STOCKS</button>
-            <button class="nav-btn" id="tab-stats" onclick="switchTab('stats')">📊 VENTES</button>
-            <div class="sync-status" style="display:inline-flex; align-items:center; gap:5px; margin-left:5px;">
-                <div id="sync-dot" style="width:8px; height:8px; border-radius:50%; background:red;"></div>
-            </div>
-        </div>
-    </div>
+const AppState = mongoose.model('AppState', new mongoose.Schema({
+    tenantID: { type: String, required: true, unique: true },
+    activeOrders: { type: Object, default: {} }
+}, { minimize: false }));
 
-    <div id="mod-menu" class="module active"><div id="dynamic-menu-grid" class="grid-menu"></div></div>
+// ==========================================
+// 🤖 MOTEUR IA : RECONNAISSANCE DE FACTURES
+// ==========================================
+const { GoogleGenerativeAI } = require('@google/generative-ai');
+const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY || 'CLE_MANQUANTE');
 
-    <div id="mod-market" class="module">
-        <div class="market-layout">
-            <div class="menu-category" style="padding:25px;">
-                <h3 style="margin-top:0; color:var(--slate); font-weight: 900;">🧪 CRÉATION RECETTE</h3>
-                
-                <div class="grid-2col-mobile" style="display:grid; grid-template-columns: 1fr 1fr; gap:15px; margin-bottom:20px;">
-                    <div class="cost-box">
-                        <div class="cost-box-title">🍝 Féculents</div>
-                        <div style="display:flex; gap:5px;"><textarea id="market-fecu-raw" oninput="calcSmartPlate()" style="height:44px;"></textarea><button class="btn-mic" id="mic-fecu" onclick="startMarketDictation('market-fecu-raw', this.id)">🎙️</button></div>
-                        <div style="display:flex; justify-content:space-between; align-items:center;">
-                            <label style="font-size:0.8rem; display:flex; align-items:center; gap:5px;">g: <input type="number" id="gram-fecu" value="100" oninput="calcSmartPlate()" style="width:60px; padding:5px; min-height:30px;"></label>
-                            <div style="font-weight:bold;"><span id="cost-fecu">0.00</span> €</div>
-                        </div>
-                    </div>
-                    <div class="cost-box">
-                        <div class="cost-box-title">🥩 Protéines</div>
-                        <div style="display:flex; gap:5px;"><textarea id="market-prot-raw" oninput="calcSmartPlate()" style="height:44px;"></textarea><button class="btn-mic" id="mic-prot" onclick="startMarketDictation('market-prot-raw', this.id)">🎙️</button></div>
-                        <div style="display:flex; justify-content:space-between; align-items:center;">
-                            <label style="font-size:0.8rem; display:flex; align-items:center; gap:5px;">g: <input type="number" id="gram-prot" value="150" oninput="calcSmartPlate()" style="width:60px; padding:5px; min-height:30px;"></label>
-                            <div style="font-weight:bold;"><span id="cost-prot">0.00</span> €</div>
-                        </div>
-                    </div>
-                    <div class="cost-box"><div class="cost-box-title">🧀 B.O.F</div><textarea id="market-bof-raw" oninput="calcSmartPlate()"></textarea><input type="number" id="gram-bof" value="30" hidden><div id="cost-bof" style="font-weight:bold; text-align:right;">0.00 €</div></div>
-                    <div class="cost-box"><div class="cost-box-title">🥗 Légumes</div><textarea id="market-legu-raw" oninput="calcSmartPlate()"></textarea><input type="number" id="gram-legu" value="100" hidden><div id="cost-legu" style="font-weight:bold; text-align:right;">0.00 €</div></div>
-                </div>
+app.post('/api/scan-invoice', async (req, res) => {
+    const { imageBase64, mimeType } = req.body;
+    
+    if (!imageBase64) return res.status(400).json({ success: false, error: "Aucune image fournie." });
+    if (!process.env.GEMINI_API_KEY || process.env.GEMINI_API_KEY === 'CLE_MANQUANTE') {
+        return res.status(500).json({ success: false, error: "🚨 CRITIQUE : Clé GEMINI_API_KEY introuvable dans Render." });
+    }
 
-                <div style="background: #FAFAFA; padding:15px; border-radius:12px; margin-bottom: 25px; display:flex; flex-wrap:wrap; gap: 10px; justify-content:space-between; align-items:center; border: 1px solid var(--border);">
-                    <div style="display:flex; align-items:center; gap:5px;">COÛT: <input type="text" id="market-total-cost" readonly value="0.00 €" style="border:none; background:transparent; font-weight:900; font-size:1.2rem; width:80px; padding:0;"></div>
-                    <div style="display:flex; align-items:center; gap:5px;">MARGE: <input type="number" id="market-margin" value="3.5" step="0.1" oninput="calcSmartPlate()" style="width:60px; font-weight:bold; padding:5px;"></div>
-                    <div style="color:var(--gold); font-weight:900; width:100%; text-align:right;">IDÉAL: <span id="market-recommended" style="font-size:1.2rem;">0.00</span> €</div>
-                </div>
-                
-                <input type="text" id="market-name" placeholder="Nom du plat..." style="margin-bottom:10px; font-weight:bold;">
-                <input type="number" id="market-price" placeholder="Prix Vente Définitif €" style="margin-bottom:15px; border:2px solid var(--gold);">
-                
-                <div style="display:flex; gap:10px; margin-bottom:15px; align-items:center;">
-                    <select id="market-category" style="flex:1; font-weight:bold; text-transform:uppercase;"></select>
-                    <button class="nav-btn" style="padding: 12px; border: 1px solid var(--border-strong); background: var(--bg);" onclick="addRecipeCategory()" title="Ajouter catégorie">➕</button>
-                    <button class="nav-btn" style="padding: 12px; border: 1px solid var(--border-strong); color: var(--alert); background: var(--bg);" onclick="removeCurrentDropdownCategory()" title="Supprimer">➖</button>
-                </div>
+    try {
+        const base64Data = imageBase64.includes(',') ? imageBase64.split(',')[1] : imageBase64;
+        const imagePart = { inlineData: { data: base64Data, mimeType: mimeType || "image/jpeg" } };
 
-                <div class="grid-2col-mobile" style="display:grid; grid-template-columns: 1fr 1fr; gap:10px; margin-bottom:15px;">
-                    <textarea id="rec-ing" placeholder="Ingrédients détaillés..." style="height:80px;"></textarea>
-                    <textarea id="rec-prep" placeholder="Préparation..." style="height:80px;"></textarea>
-                </div>
-                <button class="add-btn" style="background:var(--gold); color:black;" onclick="saveRecipe()">🚀 PUBLIER SUR LA CARTE</button>
-            </div>
-            
-            <div id="recipe-catalog-container">
-                <div id="catalog-view" class="grid-2col-mobile" style="display:grid; grid-template-columns:1fr 1fr; gap:15px;"></div>
-                <div id="folder-view" style="display:none;">
-                    <button class="nav-btn active" onclick="closeFolder()" style="margin-bottom:15px; width:100%;">🔙 RETOUR AUX DOSSIERS</button>
-                    <h3 id="current-folder-title" style="color:var(--gold);"></h3>
-                    <div id="recipes-list" style="display:flex; flex-direction:column; gap:10px;"></div>
-                </div>
-            </div>
-        </div>
-    </div>
+        const prompt = `
+        Analyse cette image de facture ou de ticket de caisse.
+        Extrais les informations suivantes et CLASSIFIE OBLIGATOIREMENT chaque article dans l'une de ces catégories exactes.
 
-    <div id="mod-inventaire" class="module">
-        <div class="inventaire-layout">
-            
-            <div style="display: flex; flex-direction: column; gap: 20px;">
-                
-                <div class="menu-category" style="padding: 25px; border-top: 4px solid var(--gold); margin: 0;">
-                    <h3 style="margin-top: 0; color: var(--gold); font-size: 1.1rem; text-transform: uppercase;">👁️ Vision iChef (IA)</h3>
-                    <p style="font-size: 0.85rem; color: var(--text-muted); margin-bottom: 15px;">Importation automatique via scan.</p>
-                    <input type="file" id="cameraInput" accept="image/*" capture="environment" style="display:none;">
-                    <button class="add-btn" onclick="document.getElementById('cameraInput').click()" style="background: var(--gold); color: black;">📸 SCANNER FACTURE</button>
-                    <div id="scanResult" style="margin-top: 15px; background: #FAFAFA; padding: 12px; border-radius: 8px; display: none; border: 1px solid var(--border-strong); font-size: 0.85rem; font-weight: bold; text-align: center;"></div>
-                </div>
+        🚨 RÈGLE ABSOLUE POUR LES QUANTITÉS ET POIDS :
+        - Si un produit est vendu au poids (ex: "1.520 kg x 2.99 €/kg"), la "quantite" DOIT ÊTRE le poids exact avec son unité (ex: "1.520 kg"). Ne mets SURTOUT PAS "1".
+        - Si le produit est vendu à l'unité, mets le nombre (ex: "3").
+        - Le "prixUnitaire" doit correspondre au prix TOTAL payé pour cette ligne d'article.
 
-                <div class="menu-category" style="padding: 25px; border-top: 4px solid var(--slate); margin: 0;">
-                    <h3 style="margin-top: 0; color: var(--slate); font-size: 1.1rem; text-transform: uppercase;">✍️ Saisie Manuelle</h3>
-                    
-                    <div style="display: flex; flex-direction: column; gap: 12px; margin-bottom: 15px;">
-                        <input type="text" id="manual-stock-name" placeholder="Nom du produit...">
-                        <div style="display: flex; gap: 10px;">
-                            <input type="text" id="manual-stock-qty" placeholder="Qté (ex: 5kg)" style="flex: 1;">
-                            <input type="number" id="manual-stock-price" placeholder="Prix €" style="flex: 1;">
-                        </div>
-                        <div style="display: flex; gap: 10px; align-items: center;">
-                            <select id="manual-stock-cat" style="flex: 1; font-weight: bold;"></select>
-                            <button class="nav-btn" style="padding: 12px; border: 1px solid var(--border-strong); background: var(--bg);" onclick="addStockCategory()">➕</button>
-                            <button class="nav-btn" style="padding: 12px; border: 1px solid var(--border-strong); color: var(--alert); background: var(--bg);" onclick="removeStockCategory()">➖</button>
-                        </div>
-                    </div>
-                    <button class="add-btn" onclick="addManualStock()">✅ AJOUTER AU STOCK</button>
-                </div>
-            </div>
+        Règles de classification :
+        - Fruits : Tous les fruits frais, Pomme, Poire, Banane, Orange, Citron...
+        - Surgelés : Frites surgelées, glaces, poissons panés...
+        - Fruits Secs : Raisin sec, Abricot sec, Noix, Amande, Noisette...
+        - Légumes : Tous les légumes frais, Carotte, Tomate, Pomme de terre...
+        - Glucides : Banane plantain, Châtaigne, Riz, pâtes...
+        - Viande : boeuf, poulet, porc, veau, steak...
+        - Poisson : Poissons blancs, Cabillaud, Saumon, Dorade...
+        - Crustacés : Crevette, Gambas, Crabe, Homard, Huître...
+        - B.O.F : Beurre, Fromages, Crème, Lait, Œufs...
+        - Clarification : Tous les agents de clarification, gélifiants...
+        - Économat : Huiles, épices, café, serviette, papier...
+        - Produits Sec : fond de veau, bouillon, Riz, Pâtes, Farine...
+        - Produit Entretien : Liquide vaisselle, javel, sac poubelle...
 
-            <div style="display: flex; flex-direction: column; gap: 20px; height: 100%;">
-                
-                <div id="stock-summary" style="display: flex; gap: 15px; overflow-x: auto; padding-bottom: 10px; -webkit-overflow-scrolling: touch; scrollbar-width: none;"></div>
+        ⚠️ DIRECTIVE DE SÉCURITÉ CRITIQUE ⚠️
+        Tu es une machine. INTERDICTION ABSOLUE de dire "Bonjour", "En tant qu'assistant", ou "Voici le résultat".
+        Tu ne dois générer AUCUN texte, AUCUNE explication, AUCUNE balise markdown (pas de \`\`\`json).
+        Ton premier caractère DOIT être { et ton dernier caractère DOIT être }.
 
-                <div class="menu-category" style="margin: 0; flex: 1; display: flex; flex-direction: column; overflow: hidden;">
-                    <div class="category-header" style="background: var(--slate); color: white; border-bottom: none; padding: 15px 20px;">
-                        <span style="letter-spacing: 1px;">📊 MATRICE DE STOCK</span>
-                    </div>
-                    <div class="table-responsive-wrapper">
-                        <table class="inv-table" style="border: none; border-radius: 0;">
-                            <thead>
-                                <tr>
-                                    <th style="padding-left: 20px;">PRODUIT</th>
-                                    <th>QTÉ</th>
-                                    <th>VALEUR</th>
-                                    <th style="text-align: right; padding-right: 20px;">ACTION</th>
-                                </tr>
-                            </thead>
-                            <tbody id="global-stock-list"></tbody>
-                        </table>
-                    </div>
-                </div>
-            </div>
-        </div>
-    </div>
-
-    <div id="mod-stats" class="module">
-        <div class="stats-layout">
-            <div class="menu-category" style="padding:20px; text-align:center;">CA BRUT<div id="stat-ca" style="font-size:2.5rem; font-weight:900; color:var(--gold);">0.00 €</div></div>
-            <div class="menu-category" style="padding:20px; text-align:center;">MARGE EST.<div id="stat-marge" style="font-size:2.5rem; font-weight:900; color:var(--accent);">0.00 €</div></div>
-            <div class="menu-category" style="padding:20px; text-align:center;">UNITÉS VENDUES<div id="stat-qty" style="font-size:2.5rem; font-weight:900;">0</div></div>
-        </div>
-        <button class="add-btn" style="margin-top:20px;" onclick="generateSalesStats()">🔄 ACTUALISER PERFORMANCE</button>
-        <div id="top-sales-list" style="margin-top:20px;"></div>
-    </div>
-
-    <script>
-        const urlParams = new URLSearchParams(window.location.search);
-        let tenantID = urlParams.get('tenantID') || 'cheftour';
-        const SERVER_URL = "https://tableau-system.onrender.com";
-        let currentCurrency = "€";
-
-        let menuData = { "entrées": [], "plats": [], "desserts": [] };
-        let recipesData = [];
-        let stockGlobalData = [];
-        let stockCategories = ['🍎 Fruits', '🥗 Légumes', '🍝 Glucides', '🥩 Protéines', '🥩 Viande', '🐟 Poisson', '🦞 Crustacés', '🧀 B.O.F', '❄️ Surgelés', '🥜 Fruits Secs', '🥫 Produits Secs', '📦 Économat', '🫧 Clarification', '🧼 Entretien'];
-        let currentFolderCat = null;
-
-        async function checkPin() {
-            const pin = document.getElementById('pin-input').value;
-            const res = await fetch(`${SERVER_URL}/api/verify-pin`, {
-                method: 'POST', headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({ tenantID, pin })
-            });
-            const data = await res.json();
-            if(data.success) { document.getElementById('security-overlay').style.display='none'; bootSystem(); }
-            else document.getElementById('error-msg').style.display='block';
-        }
-
-        async function bootSystem() {
-            const state = await API.get();
-            if(state.activeOrders['INVENTORY_MASTER']) stockGlobalData = state.activeOrders['INVENTORY_MASTER'].data;
-            if(state.activeOrders['RECIPES_MASTER']) recipesData = state.activeOrders['RECIPES_MASTER'].data;
-            if(state.activeOrders['MENU_MASTER']) menuData = state.activeOrders['MENU_MASTER'].data;
-            if(state.activeOrders['STOCK_CATS']) stockCategories = state.activeOrders['STOCK_CATS'].data;
-            
-            renderAll();
-            document.getElementById('sync-dot').style.background = '#10B981';
-        }
-
-        function renderAll() { 
-            renderMenu(); 
-            renderRecipeCategoryDropdown(); 
-            renderStockCategoryDropdown();
-            renderRecipes(); 
-            renderGlobalStock(); 
-        }
-
-        // === GESTION CATÉGORIES (CARTE) ===
-        function renderRecipeCategoryDropdown() {
-            const select = document.getElementById('market-category');
-            if (!select) return;
-            select.innerHTML = Object.keys(menuData).map(cat => `<option value="${cat}">${cat.toUpperCase()}</option>`).join('');
-        }
-
-        async function addRecipeCategory() {
-            let newCat = prompt("🏷️ Nom de la nouvelle catégorie de la carte (ex: TAPAS) :");
-            if(newCat && newCat.trim() !== "") {
-                let key = newCat.trim().toLowerCase();
-                if(!menuData[key]) { 
-                    menuData[key] = []; 
-                    renderAll(); 
-                    await API.save('MENU_MASTER', menuData); 
-                } else alert("⚠️ Cette catégorie existe déjà.");
-            }
-        }
-
-        async function removeCurrentDropdownCategory() {
-            let select = document.getElementById('market-category');
-            let catToRemove = select ? select.value : null;
-            if(!catToRemove) return;
-            if(menuData[catToRemove].length > 0) {
-                if(!confirm(`⚠️ Supprimer "${catToRemove.toUpperCase()}" et ses ${menuData[catToRemove].length} plats ?`)) return;
-            } else if(!confirm(`🗑️ Supprimer "${catToRemove.toUpperCase()}" ?`)) return;
-            delete menuData[catToRemove];
-            renderAll();
-            await API.save('MENU_MASTER', menuData);
-        }
-
-        async function removeRecipeCategory(catToRemove) {
-            if(menuData[catToRemove].length > 0) {
-                if(!confirm(`⚠️ Supprimer "${catToRemove.toUpperCase()}" et ses ${menuData[catToRemove].length} plats ?`)) return;
-            } else if(!confirm(`🗑️ Supprimer "${catToRemove.toUpperCase()}" ?`)) return;
-            delete menuData[catToRemove];
-            renderAll();
-            await API.save('MENU_MASTER', menuData);
-        }
-
-        // === GESTION CATÉGORIES (STOCKS) ===
-        function renderStockCategoryDropdown() {
-            const select = document.getElementById('manual-stock-cat');
-            if(!select) return;
-            select.innerHTML = stockCategories.map(c => `<option value="${c}">${c}</option>`).join('');
-        }
-
-        async function addStockCategory() {
-            let newCat = prompt("➕ Nom de la catégorie de stock (ex: 🍷 Cave) :");
-            if(newCat && newCat.trim() !== "") {
-                if(!stockCategories.includes(newCat.trim())) {
-                    stockCategories.push(newCat.trim());
-                    renderAll();
-                    await API.save('STOCK_CATS', stockCategories);
+        Structure JSON stricte exigée :
+        {
+            "fournisseur": "Nom",
+            "date": "JJ/MM/AAAA",
+            "totalHT": 0.00,
+            "tva": 0.00,
+            "totalTTC": 0.00,
+            "articles": [
+                { 
+                    "nom": "Nom du produit", 
+                    "quantite": "1.520 kg", 
+                    "prixUnitaire": 4.54, 
+                    "categorie": "Catégorie Exacte" 
                 }
+            ]
+        }`;
+
+        console.log("Transmission de l'image à l'Intelligence iCHEF...");
+
+        const modelsToTry = ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash", "gemini-flash"];
+        let result = null;
+        let lastError = "";
+
+        for (let modelName of modelsToTry) {
+            try {
+                const model = genAI.getGenerativeModel({ model: modelName });
+                result = await model.generateContent([prompt, imagePart]);
+                break; 
+            } catch (err) {
+                lastError = err.message;
             }
         }
 
-        async function removeStockCategory() {
-            let cat = document.getElementById('manual-stock-cat').value;
-            if(confirm(`🗑️ Supprimer la catégorie de stock "${cat}" ?`)) {
-                stockCategories = stockCategories.filter(c => c !== cat);
-                renderAll();
-                await API.save('STOCK_CATS', stockCategories);
-            }
+        if (!result) throw new Error("Tous les modèles ont été refusés. Raison finale : " + lastError);
+
+        let responseText = result.response.text().trim();
+        responseText = responseText.replace(/```json/gi, '').replace(/```/gi, '').trim();
+        if (!responseText.startsWith("{")) {
+            const firstBrace = responseText.indexOf("{");
+            if (firstBrace !== -1) responseText = responseText.substring(firstBrace);
         }
+        
+        const data = JSON.parse(responseText);
+        res.json({ success: true, data: data });
 
-        // === CARTE VISUELLE ===
-        function renderMenu() {
-            const grid = document.getElementById('dynamic-menu-grid');
-            if(!grid) return;
-            let html = '';
-            
-            for (let cat in menuData) {
-                let itemsCount = menuData[cat].length;
-                let itemsHtml = menuData[cat].map(i => {
-                    let currentStock = i.stock !== undefined ? i.stock : 99;
-                    let stockColor = currentStock <= 5 ? 'var(--alert)' : 'var(--slate)';
-                    return `
-                    <div style="background:var(--bg); border:1px solid var(--border); border-radius:8px; padding:12px; margin-bottom: 8px; display:flex; flex-direction:column; gap:10px;">
-                        <div style="display:flex; justify-content:space-between; align-items:flex-start; flex-wrap:wrap; gap:10px;">
-                            <b onclick="editItemName('${cat}', ${i.id})" style="cursor:pointer; color:var(--text-main); white-space:pre-wrap; line-height:1.5; flex:1; min-width:150px;" title="Modifier le texte">${i.name}</b>
-                            <div style="display:flex; gap:5px; align-items:center; flex-wrap:wrap;">
-                                <span style="color:${stockColor}; font-weight:800; cursor:pointer; background:var(--panel); padding:6px 10px; border-radius:6px; border:1px solid var(--border-strong); font-size:0.8rem;" onclick="updateDishStock('${cat}', ${i.id})">Dispo: ${currentStock}</span>
-                                <span style="color:var(--gold); font-weight:800; cursor:pointer; background:var(--panel); padding:6px 10px; border-radius:6px; border:1px solid var(--border-strong);" onclick="editItemPrice('${cat}', ${i.id})">${parseFloat(i.price||0).toFixed(2)} €</span>
-                                <button onclick="deleteMenuItem('${cat}', ${i.id})" style="background:var(--panel); border:1px solid var(--border-strong); border-radius:6px; color:var(--alert); padding:6px 10px; cursor:pointer; font-weight:bold;">✖</button>
-                            </div>
-                        </div>
-                    </div>`;
-                }).join('');
+    } catch (error) {
+        console.error("🔥 CRASH IA GOOGLE :", error.message);
+        res.status(500).json({ success: false, error: "ERREUR GOOGLE : " + error.message });
+    }
+});
 
-                html += `
-                <div class="menu-category">
-                    <div class="category-header">
-                        <div style="display:flex; align-items:center; gap:10px;">
-                            ${cat.toUpperCase()}
-                            <span class="count-badge">${itemsCount}</span>
-                        </div>
-                        <button onclick="removeRecipeCategory('${cat}')" style="background:transparent; border:none; color:var(--alert); cursor:pointer; font-size:1.2rem;">✖</button>
-                    </div>
-                    <div style="padding:15px; display:flex; flex-direction:column;">
-                        ${itemsHtml}
-                        <div style="display:flex; flex-direction:column; gap:10px; margin-top: 10px; border-top: 1px dashed var(--border-strong); padding-top: 15px;">
-                            <textarea id="add-name-${cat}" placeholder="Nom / description..." style="width:100%; min-height: 60px; resize:vertical; padding:10px;"></textarea>
-                            <div style="display:flex; flex-wrap:wrap; gap:10px; align-items:center;">
-                                <input type="number" id="add-stock-${cat}" placeholder="Qté" style="flex:1; min-width:70px;">
-                                <input type="number" id="add-price-${cat}" placeholder="Prix €" style="flex:1; min-width:80px;">
-                                <button class="add-btn" style="flex:2; min-width:120px;" onclick="addMenuItem('${cat}')">➕ AJOUTER</button>
-                            </div>
-                        </div>
-                    </div>
-                </div>`;
-            }
-            
-            html += `
-            <div class="menu-category" style="border: 2px dashed var(--border-strong); background: transparent; justify-content:center; align-items:center; padding: 40px; cursor:pointer; box-shadow:none;" onclick="addRecipeCategory()">
-                <div style="font-size: 3rem; color: var(--text-muted); margin-bottom: 15px;">➕</div>
-                <div style="font-weight: 800; color: var(--slate); letter-spacing: 1px; text-align:center;">NOUVELLE CATÉGORIE</div>
-            </div>`;
-            grid.innerHTML = html;
-        }
+// ==========================================
+// 🚀 ACTIVATION & CONNEXION (LES 5 ROUTES)
+// ==========================================
+app.post('/api/activate', async (req, res) => {
+    const { sessionId, clientName, tenantID, plan } = req.body;
+    try {
+        const session = await stripe.checkout.sessions.retrieve(sessionId);
+        if (session.payment_status !== 'paid') return res.status(403).json({ error: "Paiement requis." });
+        
+        const existingTenant = await Tenant.findOne({ tenantID });
+        if (existingTenant) return res.status(400).json({ error: "Identifiant réseau déjà pris." });
 
-        async function addMenuItem(cat) {
-            const nameInput = document.getElementById(`add-name-${cat}`);
-            const priceInput = document.getElementById(`add-price-${cat}`);
-            const stockInput = document.getElementById(`add-stock-${cat}`);
-            if (!nameInput.value || !priceInput.value) return alert("Nom et prix requis.");
-            let stockVal = stockInput.value ? parseInt(stockInput.value) : 99;
-            menuData[cat].push({ id: Date.now(), name: nameInput.value.trim(), price: parseFloat(priceInput.value), stock: stockVal });
-            nameInput.value = ''; priceInput.value = ''; stockInput.value = '';
-            renderAll(); await API.save('MENU_MASTER', menuData);
-        }
+        const randomPin = Math.floor(1000 + Math.random() * 9000).toString();
+        const finalPlan = plan || 'ECO';
 
-        async function updateDishStock(cat, id) {
-            let item = menuData[cat].find(x => x.id === id); if(!item) return;
-            let shortName = item.name.split('\n')[0]; 
-            let newStock = prompt(`📦 Portions disponibles pour :\n"${shortName}" ?`, item.stock !== undefined ? item.stock : 99);
-            if(newStock !== null && newStock.trim() !== "") {
-                let parsedStock = parseInt(newStock);
-                if(!isNaN(parsedStock) && parsedStock >= 0) {
-                    item.stock = parsedStock; renderAll(); await API.save('MENU_MASTER', menuData);
-                } else alert("⚠️ Quantité invalide.");
-            }
-        }
+        let limit = 1; 
+        if (finalPlan === 'BUSINESS') limit = 5;
+        if (finalPlan === 'EXCUTIF') limit = 25;
+        if (finalPlan === 'PREMIUM') limit = 200;
 
-        async function editItemPrice(cat, id) {
-            let item = menuData[cat].find(x => x.id === id); if(!item) return;
-            let newPrice = prompt(`💰 Nouveau prix pour "${item.name.split('\n')[0]}" :`, item.price);
-            if(newPrice && newPrice.trim() !== "") {
-                let parsed = parseFloat(newPrice.replace(',', '.'));
-                if(!isNaN(parsed)) { item.price = parsed; renderAll(); await API.save('MENU_MASTER', menuData); }
-            }
-        }
-
-        async function editItemName(cat, id) {
-            let item = menuData[cat].find(x => x.id === id); if(!item) return;
-            let newName = prompt(`✏️ Nouveau nom / description :`, item.name);
-            if(newName && newName.trim() !== "") { item.name = newName.trim(); renderAll(); await API.save('MENU_MASTER', menuData); }
-        }
-
-        async function deleteMenuItem(cat, id) {
-            if(confirm("Supprimer ce plat de la carte ?")) {
-                menuData[cat] = menuData[cat].filter(item => item.id !== id);
-                renderAll(); await API.save('MENU_MASTER', menuData);
-            }
-        }
-
-        // === IA : INJECTION DANS LA MATRICE ===
-        function injecterStockIA(dataIA) {
-            const dicoCategories = {
-                'Fruits': '🍎 Fruits', 'Légumes': '🥗 Légumes', 'Glucides': '🍝 Glucides', 'Protéines': '🥩 Protéines',
-                'Viande': '🥩 Viande', 'Poisson': '🐟 Poisson', 'Crustacés': '🦞 Crustacés', 'B.O.F': '🧀 B.O.F',
-                'Surgelés': '❄️ Surgelés', 'Fruits Secs': '🥜 Fruits Secs', 'Produits Sec': '🥫 Produits Secs',
-                'Économat': '📦 Économat', 'Clarification': '🫧 Clarification', 'Produit Entretien': '🧼 Entretien'
-            };
-            dataIA.articles.forEach(art => {
-                let catATrouver = art.categorie;
-                if(catATrouver === 'Fruit sec' || catATrouver === 'fruits secs') catATrouver = 'Fruits Secs';
-                if(catATrouver === 'produits secs' || catATrouver === 'Produit sec') catATrouver = 'Produits Sec';
-                if(catATrouver === 'Produits entretien' || catATrouver === 'produit entretien') catATrouver = 'Produit Entretien';
-
-                let finalCat = dicoCategories[catATrouver] || ('📦 ' + (art.categorie || 'NON CLASSÉ'));
-                stockGlobalData.unshift({
-                    id: Date.now() + Math.random(), name: art.nom || 'Produit IA', cat: finalCat,
-                    qtyStr: art.quantite || '1', lastPrice: (art.prixUnitaire || 0).toFixed(2) + " €", date: new Date().toLocaleDateString()
-                });
-            });
-            renderAll(); API.save('INVENTORY_MASTER', stockGlobalData);
-        }
-
-        document.getElementById('cameraInput').addEventListener('change', async function(e) {
-            const file = e.target.files[0]; if(!file) return;
-            const resBox = document.getElementById('scanResult');
-            resBox.style.display='block'; resBox.innerHTML="⏳ L'IA ANALYSE LA FACTURE...";
-            const reader = new FileReader();
-            reader.onloadend = async () => {
-                try {
-                    const r = await fetch(`${SERVER_URL}/api/scan-invoice`, {
-                        method: 'POST', headers: {'Content-Type':'application/json'},
-                        body: JSON.stringify({ imageBase64: reader.result.split(',')[1], mimeType: file.type })
-                    });
-                    const d = await r.json();
-                    if(d.success) {
-                        injecterStockIA(d.data); resBox.innerHTML = `<span style="color:var(--accent);">✅ FACTURE TRAITÉE.</span>`;
-                    } else throw new Error(d.error);
-                } catch(err) { resBox.innerHTML = `<span style="color:var(--alert);">❌ ERREUR : ${err.message}</span>`; }
-            };
-            reader.readAsDataURL(file);
+        await Tenant.create({ 
+            tenantID, clientName, status: 'ACTIF', 
+            plan: finalPlan, maxScreens: limit, pin: randomPin, 
+            config: { stripeCustomerId: session.customer } 
         });
+        
+        await AppState.create({ tenantID, activeOrders: {} });
+        res.json({ success: true, dedicatedPin: randomPin });
+    } catch (error) { res.status(500).json({ error: "Erreur serveur." }); }
+});
 
-        // === AJOUT MANUEL STOCK ===
-        async function addManualStock() {
-            const name = document.getElementById('manual-stock-name').value.trim();
-            const qty = document.getElementById('manual-stock-qty').value.trim();
-            const price = parseFloat(document.getElementById('manual-stock-price').value);
-            const cat = document.getElementById('manual-stock-cat').value;
+// ==========================================
+// 🔒 SÉCURITÉ : VÉRIFICATION LICENCE & PIN
+// ==========================================
+app.get('/api/check-license', async (req, res) => {
+    const { tenantID } = req.query;
+    try {
+        const tenant = await Tenant.findOne({ tenantID });
+        if (!tenant) return res.status(404).json({ success: false, error: "Identifiant introuvable." });
+        res.json({ success: true, status: tenant.status, plan: tenant.plan });
+    } catch (e) { res.status(500).json({ success: false }); }
+});
 
-            if(!name || !qty || isNaN(price)) return alert("Remplissez tous les champs.");
-            stockGlobalData.unshift({ id: Date.now(), name, cat, qtyStr: qty, lastPrice: price.toFixed(2) + " €", date: new Date().toLocaleDateString() });
+app.post('/api/verify-pin', async (req, res) => {
+    const { tenantID, pin } = req.body;
+    try {
+        const tenant = await Tenant.findOne({ tenantID });
+        if (!tenant) return res.status(404).json({ success: false, error: "Identifiant inconnu." });
+        if (tenant.pin === pin) { return res.json({ success: true, plan: tenant.plan }); } 
+        else { return res.status(401).json({ success: false, error: "Code PIN incorrect." }); }
+    } catch (error) { res.status(500).json({ success: false, error: "Erreur interne du serveur." }); }
+});
 
-            document.getElementById('manual-stock-name').value = '';
-            document.getElementById('manual-stock-qty').value = '';
-            document.getElementById('manual-stock-price').value = '';
-            
-            renderAll(); await API.save('INVENTORY_MASTER', stockGlobalData);
+// ==========================================
+// 🛠️ MODULES D'ADMINISTRATION CLIENT
+// ==========================================
+app.post('/api/update-pin', async (req, res) => {
+    const { tenantID, newPin } = req.body;
+    try {
+        const tenant = await Tenant.findOne({ tenantID });
+        if (!tenant) return res.status(404).json({ success: false, error: "Identifiant introuvable." });
+        tenant.pin = newPin;
+        await tenant.save();
+        res.json({ success: true });
+    } catch (error) { res.status(500).json({ success: false, error: "Erreur lors de la sauvegarde." }); }
+});
+
+app.get('/api/dashboard-info', async (req, res) => {
+    const { tenantID } = req.query;
+    try {
+        const tenant = await Tenant.findOne({ tenantID });
+        if (!tenant) return res.status(404).json({ success: false });
+        res.json({ success: true, activeDevices: tenant.registeredDevices.length, maxScreens: tenant.maxScreens });
+    } catch (e) { res.status(500).json({ success: false }); }
+});
+
+app.post('/api/kill-switch', async (req, res) => {
+    const { tenantID } = req.body;
+    try {
+        const tenant = await Tenant.findOne({ tenantID });
+        if (!tenant) return res.status(404).json({ success: false, error: "Identifiant introuvable." });
+        tenant.registeredDevices = []; 
+        await tenant.save();
+        res.json({ success: true });
+    } catch (e) { res.status(500).json({ success: false }); }
+});
+
+app.post('/api/billing-portal', async (req, res) => {
+    const { tenantID } = req.body;
+    try {
+        const tenant = await Tenant.findOne({ tenantID });
+        if (!tenant || !tenant.config || !tenant.config.stripeCustomerId) {
+            return res.status(400).json({ success: false, error: "Aucun profil Stripe." });
         }
+        const session = await stripe.billingPortal.sessions.create({
+            customer: tenant.config.stripeCustomerId,
+            return_url: `${req.headers.origin}/admin.html?tenantID=${tenantID}`,
+        });
+        res.json({ success: true, url: session.url });
+    } catch (e) { res.status(500).json({ success: false, error: "Erreur Stripe." }); }
+});
 
-        // === CREATION RECETTE ===
-        async function saveRecipe() {
-            const name = document.getElementById('market-name').value;
-            const price = parseFloat(document.getElementById('market-price').value);
-            const cost = parseFloat(document.getElementById('market-total-cost').value);
-            const category = document.getElementById('market-category').value;
+// ==========================================
+// 📡 SYNCHRONISATION
+// ==========================================
+app.get('/get-current-state', async (req, res) => {
+    try {
+        const tenantID = req.query.tenantID || 'MASTER_STATE';
+        let state = await AppState.findOne({ tenantID });
+        if (!state) state = await AppState.create({ tenantID, activeOrders: {} });
+        res.json(state);
+    } catch (e) { res.status(500).json({ error: "Sync Error" }); }
+});
 
-            if(!name || isNaN(price)) return alert("NOM ET PRIX REQUIS");
+app.post('/update-order', async (req, res) => {
+    try {
+        const tenantID = req.query.tenantID || 'MASTER_STATE';
+        const { tableId, order } = req.body;
+        let state = await AppState.findOne({ tenantID });
+        if (!state) state = new AppState({ tenantID, activeOrders: {} });
+        if (order === null) delete state.activeOrders[tableId];
+        else state.activeOrders[tableId] = order;
+        state.markModified('activeOrders');
+        await state.save();
+        res.json({ success: true });
+    } catch (e) { res.status(500).json({ error: "Save Error" }); }
+});
 
-            const margin = ((price - cost) / price) * 100;
-            if(margin < 70) {
-                if(!confirm(`🚨 ALERTE : Marge à ${margin.toFixed(1)}%. L'empire exige 70%. Continuer ?`)) return;
-            }
+// ==========================================
+// 👑 COMMAND CENTER (ADMIN)
+// ==========================================
+const ADMIN_PASS = 'Empire2026';
 
-            const recipe = { id:Date.now(), name, price, cost, cat:category, fc: ((cost/price)*100).toFixed(1), ing: document.getElementById('rec-ing').value, prep: document.getElementById('rec-prep').value, margin: margin.toFixed(1) };
-            recipesData.unshift(recipe);
-            if(!menuData[category]) menuData[category] = [];
-            menuData[category].push({ id: Date.now(), name, price, stock: 99 });
+app.get('/panel-ichef', async (req, res) => {
+    const pass = req.query.pass;
+    if (pass !== ADMIN_PASS) return res.status(401).send('🔒 ACCÈS REFUSÉ');
+    const tenants = await Tenant.find({});
+    
+    let html = `
+    <!DOCTYPE html>
+    <html lang="fr">
+    <head>
+        <meta charset="UTF-8">
+        <title>COMMAND CENTER - iCHEF</title>
+        <style>
+            body { background: #050505; color: #fff; font-family: sans-serif; padding: 20px; }
+            table { width: 100%; border-collapse: collapse; background: #0a0a0a; margin-top: 20px; }
+            th, td { border: 1px solid #222; padding: 12px; text-align: left; }
+            th { background: #111; color: #fbbf24; text-transform: uppercase; font-size: 0.75rem; }
+            .plan-badge { padding: 4px 8px; border-radius: 4px; font-weight: 800; font-size: 0.7rem; }
+            .plan-CHEF { background: rgba(16, 185, 129, 0.1); color: #10b981; border: 1px solid #10b981; }
+            .plan-ECO { background: rgba(59, 130, 246, 0.1); color: #3b82f6; border: 1px solid #3b82f6; }
+            .plan-BUSINESS { background: rgba(168, 85, 247, 0.1); color: #a855f7; border: 1px solid #a855f7; }
+            .plan-EXCUTIF { background: rgba(156, 163, 175, 0.1); color: #9ca3af; border: 1px solid #9ca3af; }
+            .plan-PREMIUM { background: rgba(239, 68, 68, 0.1); color: #ef4444; border: 1px solid #ef4444; }
+            .btn { padding: 8px 12px; border: none; border-radius: 6px; cursor: pointer; font-weight: 800; text-transform: uppercase; font-size: 0.65rem; transition: 0.2s; }
+            .badge-screens { background: #111; color: #fbbf24; padding: 5px 10px; border-radius: 4px; font-weight: 900; }
+        </style>
+    </head>
+    <body>
+        <h1>👑 iCHEF <span style="color:#fbbf24">COMMAND CENTER</span></h1>
+        <table>
+            <tr>
+                <th>Restaurant</th>
+                <th>Pack Actuel</th>
+                <th>Code PIN</th>
+                <th>Écrans (Actifs / Max)</th>
+                <th>Pilotage Commercial</th>
+            </tr>
+            ${tenants.map(t => `
+                <tr>
+                    <td><b>${t.clientName}</b><br><small style="color:#666">${t.tenantID}</small></td>
+                    <td><span class="plan-badge plan-${t.plan}">${t.plan}</span></td>
+                    <td style="color:#4ade80; font-weight:bold; font-size:1.2rem;">${t.pin}</td>
+                    <td><span class="badge-screens">${t.registeredDevices.length} / ${t.maxScreens}</span></td>
+                    <td>
+                        <form action="/panel-ichef/action" method="POST" style="display:inline;">
+                            <input type="hidden" name="pass" value="${pass}"><input type="hidden" name="tenantID" value="${t.tenantID}">
+                            <select name="newPlan" onchange="this.form.submit()" style="background:#222; color:#fff; padding:6px; border-radius:4px; border:1px solid #444;">
+                                <option value="ECO" ${t.plan === 'ECO' ? 'selected' : ''}>Essentiel (1 Écran)</option>
+                                <option value="CHEF" ${t.plan === 'CHEF' ? 'selected' : ''}>Chef IA (1 Écran)</option>
+                                <option value="BUSINESS" ${t.plan === 'BUSINESS' ? 'selected' : ''}>Business (5 Écrans)</option>
+                                <option value="EXCUTIF" ${t.plan === 'EXCUTIF' ? 'selected' : ''}>Exécutif (25 Écrans)</option>
+                                <option value="PREMIUM" ${t.plan === 'PREMIUM' ? 'selected' : ''}>Palace (200 Écrans)</option>
+                            </select>
+                            <button type="submit" name="action" value="add_screen" class="btn" style="background:#fbbf24; color:#000;">+1 📺</button>
+                            <button type="submit" name="action" value="reset_devices" class="btn" style="background:#3b82f6; color:#fff;">Reset Appareils</button>
+                            <button type="submit" name="action" value="${t.status === 'ACTIF' ? 'suspend' : 'activate'}" class="btn" style="background:#444; color:#fff;">
+                                ${t.status === 'ACTIF' ? 'Bloquer Compte' : 'Débloquer Compte'}
+                            </button>
+                            <button type="submit" name="action" value="delete" class="btn" style="background:#b91c1c; color:#fff;" onclick="return confirm('Supprimer ce client ?')">🗑️</button>
+                        </form>
+                    </td>
+                </tr>
+            `).join('')}
+        </table>
+    </body>
+    </html>`;
+    res.send(html);
+});
 
-            await API.save('RECIPES_MASTER', recipesData); await API.save('MENU_MASTER', menuData);
-            document.getElementById('market-name').value = ""; document.getElementById('market-price').value = "";
-            renderAll(); alert(`✅ PLAT PUBLIÉ`);
+app.post('/panel-ichef/action', async (req, res) => {
+    const { pass, tenantID, action, newPlan } = req.body;
+    if (pass !== ADMIN_PASS) return res.status(401).send('Interdit');
+    try {
+        if (newPlan) {
+            let limit = 1;
+            if (newPlan === 'BUSINESS') limit = 5;
+            if (newPlan === 'EXCUTIF') limit = 25;
+            if (newPlan === 'PREMIUM') limit = 200;
+            await Tenant.findOneAndUpdate({ tenantID }, { plan: newPlan, maxScreens: limit });
         }
+        if (action === 'add_screen') await Tenant.findOneAndUpdate({ tenantID }, { $inc: { maxScreens: 1 } });
+        if (action === 'reset_devices') await Tenant.findOneAndUpdate({ tenantID }, { registeredDevices: [] });
+        if (action === 'suspend') await Tenant.findOneAndUpdate({ tenantID }, { status: 'SUSPENDU' });
+        if (action === 'activate') await Tenant.findOneAndUpdate({ tenantID }, { status: 'ACTIF' });
+        if (action === 'delete') { await Tenant.findOneAndDelete({ tenantID }); await AppState.findOneAndDelete({ tenantID }); }
+        res.redirect('/panel-ichef?pass=' + ADMIN_PASS);
+    } catch (err) { res.status(500).send("Erreur."); }
+});
 
-        function calcSmartPlate() {
-            let total = 0;
-            ['fecu', 'prot', 'bof', 'legu'].forEach(c => {
-                let txt = document.getElementById(`market-${c}-raw`)?.value || "";
-                let price = parseFloat(txt.match(/(\d+(?:\.\d+)?)/)?.[0] || 0);
-                let gram = parseFloat(document.getElementById(`gram-${c}`)?.value || 100);
-                let cost = (price / 1000) * gram;
-                if(document.getElementById(`cost-${c}`)) document.getElementById(`cost-${c}`).innerText = cost.toFixed(2);
-                total += cost;
-            });
-            document.getElementById('market-total-cost').value = total.toFixed(2);
-            document.getElementById('market-recommended').innerText = (total * parseFloat(document.getElementById('market-margin').value)).toFixed(2);
-        }
-
-        // === MATRICE STOCKS ===
-        function renderGlobalStock() {
-            const listContainer = document.getElementById('global-stock-list');
-            const summaryContainer = document.getElementById('stock-summary');
-            if(!listContainer) return;
-
-            let stockByCategory = {}; let totalGlobal = 0;
-
-            stockGlobalData.forEach((item, idx) => {
-                let cat = item.cat || '📦 NON CLASSÉ';
-                if (!stockByCategory[cat]) stockByCategory[cat] = { items: [], totalValue: 0 };
-                stockByCategory[cat].items.push({ ...item, originalIndex: idx });
-                let priceVal = parseFloat(String(item.lastPrice).replace(',', '.').replace(/[^\d.-]/g, '')) || 0;
-                stockByCategory[cat].totalValue += priceVal; totalGlobal += priceVal;
-            });
-
-            let summaryHtml = `
-                <div style="background: var(--text-main); color: var(--gold); border: 1px solid var(--text-main); padding: 15px 20px; border-radius: 10px; white-space: nowrap; box-shadow: var(--shadow-subtle);">
-                    <div style="font-size: 0.7rem; font-weight: bold; text-transform: uppercase; opacity: 0.8; margin-bottom: 5px;">CAPITAL IMMOBILISÉ</div>
-                    <div style="font-size: 1.4rem; font-weight: 900;">${totalGlobal.toFixed(2)} €</div>
-                </div>`;
-                
-            for (let cat in stockByCategory) {
-                let cleanCatName = cat.replace(/[\u1000-\uFFFF]+/g, '').trim(); 
-                summaryHtml += `
-                <div style="background: var(--panel); border: 1px solid var(--border-strong); padding: 15px 20px; border-radius: 10px; white-space: nowrap; box-shadow: var(--shadow-subtle);">
-                    <div style="font-size: 0.7rem; color: var(--text-muted); font-weight: bold; text-transform: uppercase; margin-bottom: 5px;">${cleanCatName}</div>
-                    <div style="font-size: 1.2rem; color: var(--slate); font-weight: 800;">${stockByCategory[cat].totalValue.toFixed(2)} €</div>
-                </div>`;
-            }
-            if(summaryContainer) summaryContainer.innerHTML = summaryHtml;
-
-            let tableHtml = '';
-            for (let cat in stockByCategory) {
-                tableHtml += `
-                    <tr>
-                        <td colspan="4" style="background: #F4F4F2; padding: 12px 20px; border-bottom: 1px solid var(--border-strong);">
-                            <div style="display: flex; justify-content: space-between; align-items: center;">
-                                <span style="font-weight: 800; color: var(--slate); text-transform: uppercase; font-size: 0.85rem;">${cat}</span>
-                                <span style="font-weight: 900; color: var(--gold); font-size: 0.95rem;">${stockByCategory[cat].totalValue.toFixed(2)} €</span>
-                            </div>
-                        </td>
-                    </tr>
-                `;
-                stockByCategory[cat].items.forEach(i => {
-                    tableHtml += `
-                    <tr>
-                        <td style="padding: 15px 20px; border-bottom: 1px solid var(--border);"><b>${i.name}</b></td>
-                        <td style="padding: 15px; border-bottom: 1px solid var(--border); color: var(--text-muted); white-space: nowrap;">${i.qtyStr}</td>
-                        <td style="padding: 15px; border-bottom: 1px solid var(--border); font-weight: 600; white-space: nowrap;">${i.lastPrice}</td>
-                        <td style="padding: 15px 20px; border-bottom: 1px solid var(--border); text-align: right;">
-                            <button onclick="deleteStockItem(${i.originalIndex})" style="background: var(--panel); border: 1px solid var(--border-strong); border-radius: 6px; color: var(--alert); padding: 8px 12px; cursor: pointer;">✖</button>
-                        </td>
-                    </tr>`;
-                });
-            }
-
-            if(Object.keys(stockByCategory).length === 0) tableHtml = `<tr><td colspan="4" style="text-align: center; padding: 30px;">Stock vide.</td></tr>`;
-            listContainer.innerHTML = tableHtml;
-        }
-
-        async function deleteStockItem(idx) {
-            if(confirm("Supprimer ce produit ?")) {
-                stockGlobalData.splice(idx, 1); renderAll(); await API.save('INVENTORY_MASTER', stockGlobalData);
-            }
-        }
-
-        // === FICHES TECHNIQUES ===
-        function renderRecipes() {
-            document.getElementById('catalog-view').innerHTML = Object.keys(menuData).map(k => `
-                <div class="folder-card" onclick="openFolder('${k}')">
-                    <h3 style="margin:0; color:var(--slate); text-transform:uppercase;">${k}</h3>
-                    <small style="color:var(--text-muted); font-weight:bold;">${recipesData.filter(r=>r.cat===k).length} Fiches</small>
-                </div>
-            `).join('');
-        }
-
-        function openFolder(cat) {
-            currentFolderCat = cat; document.getElementById('catalog-view').style.display='none'; document.getElementById('folder-view').style.display='block';
-            document.getElementById('current-folder-title').innerText = cat.toUpperCase();
-            document.getElementById('recipes-list').innerHTML = recipesData.filter(r=>r.cat===cat).map(r=>`
-                <div class="menu-item" style="display:flex; justify-content:space-between; align-items:center; background:var(--bg); padding:15px; border-radius:8px; border:1px solid var(--border);">
-                    <div><b style="font-size:1.1rem;">${r.name}</b><br><small style="color:var(--text-muted); font-weight:bold;">Marge: <span style="color:var(--accent);">${r.margin}%</span> | Coût: ${r.cost}€</small></div>
-                    <button onclick="deleteRecipe(${r.id})" style="background:var(--panel); border:1px solid var(--border-strong); color:var(--alert); cursor:pointer; font-weight:bold; font-size:1.1rem; padding: 10px 15px; border-radius:8px;">✖</button>
-                </div>
-            `).join('');
-        }
-
-        function closeFolder() { currentFolderCat = null; renderAll(); document.getElementById('catalog-view').style.display='grid'; document.getElementById('folder-view').style.display='none'; }
-
-        async function deleteRecipe(id) {
-            if(confirm("Supprimer définitivement cette fiche ?")) {
-                recipesData = recipesData.filter(r => r.id !== id); await API.save('RECIPES_MASTER', recipesData); openFolder(currentFolderCat);
-            }
-        }
-
-        // === STATISTIQUES VENTES ===
-        async function generateSalesStats() {
-            let caBrut = 0; let coutTotal = 0; let totalPlatsVendus = 0; let salesMap = {};
-            let state = await API.get(); let activeOrders = state.activeOrders || {};
-
-            for (let tableId in activeOrders) {
-                if (tableId.includes('MASTER') || tableId.includes('ARCHIVE') || tableId.includes('BAR') || tableId.includes('CUISINE')) continue;
-                let orderData = activeOrders[tableId]; if (!orderData || !orderData.items) continue;
-                
-                orderData.items.forEach(item => {
-                    if (item.done) {
-                        let qty = parseInt(item.qty) || 1; let price = parseFloat(item.price) || 0; 
-                        if (price === 0) { for(let cat in menuData) { let found = menuData[cat].find(m => m.name === item.n); if(found) price = found.price; } }
-                        let cost = 0; let recipe = recipesData.find(r => r.name === item.n); if(recipe) cost = recipe.cost;
-                        
-                        caBrut += (price * qty); coutTotal += (cost * qty); totalPlatsVendus += qty;
-                        if(!salesMap[item.n]) salesMap[item.n] = { qty: 0, rev: 0 };
-                        salesMap[item.n].qty += qty; salesMap[item.n].rev += (price * qty);
-                    }
-                });
-            }
-
-            document.getElementById('stat-ca').innerText = caBrut.toFixed(2) + " €";
-            document.getElementById('stat-marge').innerText = (caBrut - coutTotal).toFixed(2) + " €";
-            document.getElementById('stat-qty').innerText = totalPlatsVendus;
-
-            let topSalesArray = Object.keys(salesMap).map(k => ({ name: k, qty: salesMap[k].qty, rev: salesMap[k].rev })).sort((a, b) => b.qty - a.qty);
-            let html = topSalesArray.length === 0 ? '<p style="text-align:center;">Aucune vente.</p>' : '';
-            
-            topSalesArray.forEach((s, idx) => {
-                let medal = idx === 0 ? '🥇' : (idx === 1 ? '🥈' : (idx === 2 ? '🥉' : '🔹'));
-                let highlightStyle = idx === 0 ? 'border: 2px solid var(--gold); background: var(--gold-dim);' : 'background: var(--bg); border: 1px solid var(--border-strong);';
-                html += `
-                <div style="display:flex; flex-wrap:wrap; justify-content:space-between; align-items:center; padding: 15px; border-radius: 10px; margin-bottom:10px; gap: 10px; ${highlightStyle}">
-                    <div style="display:flex; align-items:center; gap: 15px;">
-                        <span style="font-size:1.8rem;">${medal}</span>
-                        <div style="display:flex; flex-direction:column;">
-                            <span style="font-weight:900; color:var(--text-main); font-size:1.1rem;">${s.name}</span>
-                            <span style="font-size:0.75rem; color:var(--text-muted); font-weight:bold; text-transform:uppercase;">Rang #${idx + 1}</span>
-                        </div>
-                    </div>
-                    <div style="display:flex; gap: 15px; align-items:center;">
-                        <span style="background:var(--panel); padding:8px 12px; border-radius:8px; border:1px solid var(--border-strong); color:var(--slate); font-weight:900;">${s.qty} x</span>
-                        <span style="color:var(--gold); font-weight:900; font-size:1.2rem;">${s.rev.toFixed(2)} €</span>
-                    </div>
-                </div>`;
-            });
-            document.getElementById('top-sales-list').innerHTML = html;
-        }
-
-        // === UTILITAIRES ===
-        function switchTab(t) {
-            document.querySelectorAll('.module').forEach(m => m.classList.remove('active'));
-            document.querySelectorAll('.nav-btn').forEach(b => b.classList.remove('active'));
-            document.getElementById('mod-'+t).classList.add('active');
-            document.getElementById('tab-'+t).classList.add('active');
-        }
-
-        function startMarketDictation(id, btnId) {
-            const S = window.SpeechRecognition || window.webkitSpeechRecognition;
-            if(!S) return; const r = new S(); r.lang='fr-FR';
-            r.onstart = () => document.getElementById(btnId).classList.add('recording-active');
-            r.onresult = (e) => { document.getElementById(id).value = e.results[0][0].transcript; calcSmartPlate(); };
-            r.onend = () => document.getElementById(btnId).classList.remove('recording-active');
-            r.start();
-        }
-
-        const API = {
-            get: async () => (await fetch(`${SERVER_URL}/get-current-state?tenantID=${tenantID}`)).json(),
-            save: async (k, d) => fetch(`${SERVER_URL}/update-order?tenantID=${tenantID}`, {
-                method:'POST', headers:{'Content-Type':'application/json'},
-                body: JSON.stringify({ tableId:k, order:{data:d} })
-            })
-        };
-    </script>
-</body>
-</html>
+app.listen(PORT, () => console.log("🚀 Empire iCHEF en ligne sur port " + PORT));
