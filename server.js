@@ -70,27 +70,12 @@ app.post('/api/scan-invoice', async (req, res) => {
 
         const prompt = `
         Analyse cette image de facture ou de ticket de caisse.
-        Extrais les informations suivantes et CLASSIFIE OBLIGATOIREMENT chaque article dans l'une de ces catégories exactes.
+        Extrais les informations suivantes et CLASSIFIE OBLIGATOIREMENT chaque article.
 
         🚨 RÈGLE ABSOLUE POUR LES QUANTITÉS ET POIDS :
         - Si un produit est vendu au poids (ex: "1.520 kg x 2.99 €/kg"), la "quantite" DOIT ÊTRE le poids exact avec son unité (ex: "1.520 kg"). Ne mets SURTOUT PAS "1".
         - Si le produit est vendu à l'unité, mets le nombre (ex: "3").
         - Le "prixUnitaire" doit correspondre au prix TOTAL payé pour cette ligne d'article.
-
-        Règles de classification :
-        - Fruits : Tous les fruits frais, Pomme, Poire, Banane, Orange, Citron...
-        - Surgelés : Frites surgelées, glaces, poissons panés...
-        - Fruits Secs : Raisin sec, Abricot sec, Noix, Amande, Noisette...
-        - Légumes : Tous les légumes frais, Carotte, Tomate, Pomme de terre...
-        - Glucides : Banane plantain, Châtaigne, Riz, pâtes...
-        - Viande : boeuf, poulet, porc, veau, steak...
-        - Poisson : Poissons blancs, Cabillaud, Saumon, Dorade...
-        - Crustacés : Crevette, Gambas, Crabe, Homard, Huître...
-        - B.O.F : Beurre, Fromages, Crème, Lait, Œufs...
-        - Clarification : Tous les agents de clarification, gélifiants...
-        - Économat : Huiles, épices, café, serviette, papier...
-        - Produits Sec : fond de veau, bouillon, Riz, Pâtes, Farine...
-        - Produit Entretien : Liquide vaisselle, javel, sac poubelle...
 
         ⚠️ DIRECTIVE DE SÉCURITÉ CRITIQUE ⚠️
         Tu es une machine. INTERDICTION ABSOLUE de dire "Bonjour", "En tant qu'assistant", ou "Voici le résultat".
@@ -109,7 +94,7 @@ app.post('/api/scan-invoice', async (req, res) => {
                     "nom": "Nom du produit", 
                     "quantite": "1.520 kg", 
                     "prixUnitaire": 4.54, 
-                    "categorie": "Catégorie Exacte" 
+                    "categorie": "Légumes" 
                 }
             ]
         }`;
@@ -277,7 +262,7 @@ app.post('/update-order', async (req, res) => {
 });
 
 // ==========================================
-// 👑 COMMAND CENTER (ADMIN)
+// 👑 COMMAND CENTER (ADMIN - DESIGN ÉPURÉ)
 // ==========================================
 const ADMIN_PASS = 'Empire2026';
 
@@ -292,26 +277,42 @@ app.get('/panel-ichef', async (req, res) => {
     <head>
         <meta charset="UTF-8">
         <title>COMMAND CENTER - iCHEF</title>
+        <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;800;900&display=swap" rel="stylesheet">
         <style>
-            body { background: #050505; color: #fff; font-family: sans-serif; padding: 20px; }
-            table { width: 100%; border-collapse: collapse; background: #0a0a0a; margin-top: 20px; }
-            th, td { border: 1px solid #222; padding: 12px; text-align: left; }
-            th { background: #111; color: #fbbf24; text-transform: uppercase; font-size: 0.75rem; }
-            .plan-badge { padding: 4px 8px; border-radius: 4px; font-weight: 800; font-size: 0.7rem; }
-            .plan-CHEF { background: rgba(16, 185, 129, 0.1); color: #10b981; border: 1px solid #10b981; }
-            .plan-ECO { background: rgba(59, 130, 246, 0.1); color: #3b82f6; border: 1px solid #3b82f6; }
-            .plan-BUSINESS { background: rgba(168, 85, 247, 0.1); color: #a855f7; border: 1px solid #a855f7; }
-            .plan-EXCUTIF { background: rgba(156, 163, 175, 0.1); color: #9ca3af; border: 1px solid #9ca3af; }
-            .plan-PREMIUM { background: rgba(239, 68, 68, 0.1); color: #ef4444; border: 1px solid #ef4444; }
-            .btn { padding: 8px 12px; border: none; border-radius: 6px; cursor: pointer; font-weight: 800; text-transform: uppercase; font-size: 0.65rem; transition: 0.2s; }
-            .badge-screens { background: #111; color: #fbbf24; padding: 5px 10px; border-radius: 4px; font-weight: 900; }
+            body { background: #F8FAFC; color: #0F172A; font-family: 'Inter', sans-serif; padding: 40px; margin: 0; }
+            h1 { color: #0F172A; font-weight: 900; text-transform: uppercase; letter-spacing: -1px; margin-bottom: 30px; }
+            table { width: 100%; border-collapse: separate; border-spacing: 0; background: #FFFFFF; border-radius: 12px; overflow: hidden; box-shadow: 0 4px 20px rgba(15, 23, 42, 0.05); border: 1px solid #E2E8F0; }
+            th, td { padding: 18px 20px; text-align: left; border-bottom: 1px solid #E2E8F0; vertical-align: middle; }
+            th { background: #F1F5F9; color: #64748B; text-transform: uppercase; font-size: 0.75rem; font-weight: 800; letter-spacing: 1px; }
+            tr:last-child td { border-bottom: none; }
+            tr:hover { background: #F8FAFC; }
+            
+            .plan-badge { padding: 6px 10px; border-radius: 6px; font-weight: 800; font-size: 0.75rem; text-transform: uppercase; }
+            .plan-CHEF { background: rgba(5, 150, 105, 0.1); color: #059669; }
+            .plan-ECO { background: rgba(37, 99, 235, 0.1); color: #2563EB; }
+            .plan-BUSINESS { background: rgba(99, 102, 241, 0.1); color: #6366F1; }
+            .plan-EXCUTIF { background: rgba(71, 85, 105, 0.1); color: #475569; }
+            .plan-PREMIUM { background: rgba(220, 38, 38, 0.1); color: #DC2626; }
+            
+            .btn { padding: 8px 14px; border: none; border-radius: 6px; cursor: pointer; font-weight: 800; text-transform: uppercase; font-size: 0.75rem; transition: 0.2s; white-space: nowrap; }
+            .btn-reset { background: #E2E8F0; color: #0F172A; }
+            .btn-reset:hover { background: #CBD5E1; }
+            .btn-block { background: #FEF2F2; color: #DC2626; border: 1px solid #FECACA; }
+            .btn-block:hover { background: #FEE2E2; }
+            .btn-delete { background: #DC2626; color: white; }
+            
+            .badge-screens { background: #F8FAFC; color: #0F172A; padding: 6px 12px; border-radius: 6px; font-weight: 900; border: 1px solid #E2E8F0; }
+            .input-screens { width: 60px; padding: 8px; border: 1px solid #CBD5E1; border-radius: 6px; font-weight: 900; text-align: center; color: #0F172A; background: #FFFFFF; }
+            .input-screens:focus { outline: none; border-color: #D97706; }
+            .btn-save { background: #D97706; color: white; margin-left: 5px; }
+            .btn-save:hover { background: #B45309; }
         </style>
     </head>
     <body>
-        <h1>👑 iCHEF <span style="color:#fbbf24">COMMAND CENTER</span></h1>
+        <h1>👑 iCHEF <span style="color:#D97706">COMMAND CENTER</span></h1>
         <table>
             <tr>
-                <th>Restaurant</th>
+                <th>Restaurant / Identifiant</th>
                 <th>Pack Actuel</th>
                 <th>Code PIN</th>
                 <th>Écrans (Actifs / Max)</th>
@@ -319,26 +320,33 @@ app.get('/panel-ichef', async (req, res) => {
             </tr>
             ${tenants.map(t => `
                 <tr>
-                    <td><b>${t.clientName}</b><br><small style="color:#666">${t.tenantID}</small></td>
+                    <td><b style="font-size: 1.1rem; color: #0F172A;">${t.clientName}</b><br><small style="color:#64748B; font-weight:600;">${t.tenantID}</small></td>
                     <td><span class="plan-badge plan-${t.plan}">${t.plan}</span></td>
-                    <td style="color:#4ade80; font-weight:bold; font-size:1.2rem;">${t.pin}</td>
+                    <td style="color:#059669; font-weight:900; font-size:1.3rem;">${t.pin}</td>
                     <td><span class="badge-screens">${t.registeredDevices.length} / ${t.maxScreens}</span></td>
                     <td>
-                        <form action="/panel-ichef/action" method="POST" style="display:inline;">
-                            <input type="hidden" name="pass" value="${pass}"><input type="hidden" name="tenantID" value="${t.tenantID}">
-                            <select name="newPlan" onchange="this.form.submit()" style="background:#222; color:#fff; padding:6px; border-radius:4px; border:1px solid #444;">
-                                <option value="ECO" ${t.plan === 'ECO' ? 'selected' : ''}>Essentiel (1 Écran)</option>
-                                <option value="CHEF" ${t.plan === 'CHEF' ? 'selected' : ''}>Chef IA (1 Écran)</option>
-                                <option value="BUSINESS" ${t.plan === 'BUSINESS' ? 'selected' : ''}>Business (5 Écrans)</option>
-                                <option value="EXCUTIF" ${t.plan === 'EXCUTIF' ? 'selected' : ''}>Exécutif (25 Écrans)</option>
-                                <option value="PREMIUM" ${t.plan === 'PREMIUM' ? 'selected' : ''}>Palace (200 Écrans)</option>
+                        <form action="/panel-ichef/action" method="POST" style="display:flex; gap:10px; align-items:center; flex-wrap: wrap;">
+                            <input type="hidden" name="pass" value="${pass}">
+                            <input type="hidden" name="tenantID" value="${t.tenantID}">
+                            
+                            <select name="newPlan" onchange="this.form.submit()" style="padding:8px; border-radius:6px; border:1px solid #CBD5E1; font-weight:600; color:#0F172A; background:#FFFFFF; cursor:pointer;">
+                                <option value="ECO" ${t.plan === 'ECO' ? 'selected' : ''}>Essentiel</option>
+                                <option value="CHEF" ${t.plan === 'CHEF' ? 'selected' : ''}>Chef IA</option>
+                                <option value="BUSINESS" ${t.plan === 'BUSINESS' ? 'selected' : ''}>Business</option>
+                                <option value="EXCUTIF" ${t.plan === 'EXCUTIF' ? 'selected' : ''}>Exécutif</option>
+                                <option value="PREMIUM" ${t.plan === 'PREMIUM' ? 'selected' : ''}>Palace</option>
                             </select>
-                            <button type="submit" name="action" value="add_screen" class="btn" style="background:#fbbf24; color:#000;">+1 📺</button>
-                            <button type="submit" name="action" value="reset_devices" class="btn" style="background:#3b82f6; color:#fff;">Reset Appareils</button>
-                            <button type="submit" name="action" value="${t.status === 'ACTIF' ? 'suspend' : 'activate'}" class="btn" style="background:#444; color:#fff;">
-                                ${t.status === 'ACTIF' ? 'Bloquer Compte' : 'Débloquer Compte'}
+
+                            <div style="display:flex; align-items:center; border-left: 2px solid #E2E8F0; padding-left: 10px; margin-left: 5px;">
+                                <input type="number" name="manualScreens" class="input-screens" value="${t.maxScreens}" title="Changer la limite maximale d'écrans">
+                                <button type="submit" name="action" value="set_screens" class="btn btn-save" title="Valider la limite">OK</button>
+                            </div>
+
+                            <button type="submit" name="action" value="reset_devices" class="btn btn-reset" title="Déconnecter tous les appareils de ce client">Reset Appareils</button>
+                            <button type="submit" name="action" value="${t.status === 'ACTIF' ? 'suspend' : 'activate'}" class="btn btn-block">
+                                ${t.status === 'ACTIF' ? 'Bloquer' : 'Débloquer'}
                             </button>
-                            <button type="submit" name="action" value="delete" class="btn" style="background:#b91c1c; color:#fff;" onclick="return confirm('Supprimer ce client ?')">🗑️</button>
+                            <button type="submit" name="action" value="delete" class="btn btn-delete" onclick="return confirm('⚠️ ATTENTION : Voulez-vous vraiment supprimer définitivement ce client et toutes ses données ?')">✖</button>
                         </form>
                     </td>
                 </tr>
@@ -350,23 +358,29 @@ app.get('/panel-ichef', async (req, res) => {
 });
 
 app.post('/panel-ichef/action', async (req, res) => {
-    const { pass, tenantID, action, newPlan } = req.body;
+    const { pass, tenantID, action, newPlan, manualScreens } = req.body;
     if (pass !== ADMIN_PASS) return res.status(401).send('Interdit');
     try {
-        if (newPlan) {
+        // Validation manuelle de la limite d'écrans
+        if (action === 'set_screens' && manualScreens) {
+            await Tenant.findOneAndUpdate({ tenantID }, { maxScreens: parseInt(manualScreens) });
+        } 
+        // Changement de plan via le menu déroulant
+        else if (newPlan && !action) { 
             let limit = 1;
             if (newPlan === 'BUSINESS') limit = 5;
             if (newPlan === 'EXCUTIF') limit = 25;
             if (newPlan === 'PREMIUM') limit = 200;
             await Tenant.findOneAndUpdate({ tenantID }, { plan: newPlan, maxScreens: limit });
         }
-        if (action === 'add_screen') await Tenant.findOneAndUpdate({ tenantID }, { $inc: { maxScreens: 1 } });
+        
         if (action === 'reset_devices') await Tenant.findOneAndUpdate({ tenantID }, { registeredDevices: [] });
         if (action === 'suspend') await Tenant.findOneAndUpdate({ tenantID }, { status: 'SUSPENDU' });
         if (action === 'activate') await Tenant.findOneAndUpdate({ tenantID }, { status: 'ACTIF' });
         if (action === 'delete') { await Tenant.findOneAndDelete({ tenantID }); await AppState.findOneAndDelete({ tenantID }); }
+        
         res.redirect('/panel-ichef?pass=' + ADMIN_PASS);
-    } catch (err) { res.status(500).send("Erreur."); }
+    } catch (err) { res.status(500).send("Erreur système."); }
 });
 
 app.listen(PORT, () => console.log("🚀 Empire iCHEF en ligne sur port " + PORT));
