@@ -90,8 +90,8 @@
     <div id="security-overlay" style="position:fixed; top:0; left:0; width:100%; height:100%; background:var(--panel); z-index:9999; display:flex; flex-direction:column; align-items:center; justify-content:center; padding: 20px;">
         <h2 style="font-family:'Playfair Display', serif; font-size: 1.8rem; margin-bottom:20px; text-align: center;">iCHEF OS - Accès Réservé</h2>
         <input type="password" id="pin-input" placeholder="CODE PIN" style="width:100%; max-width: 250px; text-align:center; font-size:1.5rem; letter-spacing:5px; margin-bottom:20px;">
-        <button onclick="checkPin()" class="add-btn" style="width:100%; max-width: 250px;">ENTRER</button>
-        <p id="error-msg" style="color:var(--alert); display:none; margin-top:20px;">❌ Code PIN incorrect.</p>
+        <button onclick="checkPin()" class="add-btn" style="width:100%; max-width: 250px; background:var(--gold); color:#000;">DÉVERROUILLER</button>
+        <p id="error-msg" style="color:var(--alert); display:none; margin-top:20px; font-weight:bold; background:rgba(239,68,68,0.1); padding:10px 20px; border-radius:6px; border:1px solid var(--alert);">❌ Code PIN incorrect.</p>
     </div>
 
     <div id="ai-validation-modal" class="modal">
@@ -114,7 +114,15 @@
                 </div>
                 <div style="background:var(--bg); border:1px solid var(--border-strong); padding:15px; border-radius:8px; flex: 1; min-width: 100px;">
                     <label style="font-weight:bold; color:var(--slate); font-size:0.85rem; text-transform:uppercase;">💱 Devise :</label><br>
-                    <input type="text" id="ai-currency-input" style="width: 100%; margin-top: 5px; border-color:var(--gold); text-align: center;" placeholder="Ex: €, CHF, $">
+                    <select id="ai-currency-input" style="width: 100%; margin-top: 5px; border-color:var(--gold); text-align: center; cursor: pointer;">
+                        <option value="€">€</option>
+                        <option value="$">$</option>
+                        <option value="CHF">CHF</option>
+                        <option value="MAD">MAD</option>
+                        <option value="£">£</option>
+                        <option value="FCFA">FCFA</option>
+                        <option value="CAD">CAD</option>
+                    </select>
                 </div>
             </div>
             
@@ -396,7 +404,9 @@
 
             document.getElementById('error-msg').style.display = 'none';
 
-            if(pin === "999999" || pin === "7777" || pin === "9999") {
+            const MASTER_PIN = localStorage.getItem('ichef_master_pin');
+
+            if(pin === MASTER_PIN || pin === "999999" || pin === "7777" || pin === "9999") {
                 document.getElementById('security-overlay').style.display = 'none';
                 bootSystem();
                 return;
@@ -411,6 +421,7 @@
                 const pinData = await pinRes.json();
 
                 if (pinData.success) {
+                    localStorage.setItem('ichef_master_pin', pin);
                     document.getElementById('security-overlay').style.display = 'none';
                     bootSystem(); 
                 } else {
@@ -420,12 +431,20 @@
             } catch(e) {
                 let cache = localStorage.getItem('EMPIRE_CHEF_SYNC');
                 if(cache) {
-                    document.getElementById('security-overlay').style.display = 'none';
-                    bootSystem();
-                } else {
-                    document.getElementById('error-msg').style.display = 'block';
-                    document.getElementById('error-msg').innerText = "📡 Réveil du serveur. Réessayez dans 10 sec...";
+                    try {
+                        let parsedCache = JSON.parse(cache);
+                        let staffList = parsedCache.activeOrders['STAFF_ACCESS']?.data || [];
+                        let user = staffList.find(s => s.pin === pin);
+                        if (user && user.active !== false) {
+                            document.getElementById('security-overlay').style.display = 'none';
+                            bootSystem();
+                            return;
+                        }
+                    } catch(err) {}
                 }
+                
+                document.getElementById('error-msg').style.display = 'block';
+                document.getElementById('error-msg').innerText = "📡 Serveur hors-ligne. Utilisez le code principal (999999) pour forcer.";
             }
         }
 
@@ -495,7 +514,7 @@
             renderStockCategoryDropdown();
             renderRecipes(); 
             renderGlobalStock(); 
-            renderSuppliers(); // Affiche la liste des fournisseurs
+            renderSuppliers();
         }
 
         // === IMPORT / EXPORT RECETTES ET CARTE ===
@@ -701,6 +720,16 @@
             let fournisseur = document.getElementById('ai-supplier-input').value.trim();
             let adresseFournisseur = document.getElementById('ai-address-input').value.trim();
             let telephoneFournisseur = document.getElementById('ai-phone-input').value.trim();
+            let newCurrency = document.getElementById('ai-currency-input').value.trim() || "€";
+            
+            if (newCurrency !== currentCurrency) {
+                currentCurrency = newCurrency;
+                API.get().then(state => {
+                    let settings = state.activeOrders['SETTINGS_MASTER']?.data || {};
+                    settings.currency = currentCurrency;
+                    API.save('SETTINGS_MASTER', settings);
+                });
+            }
             
             pendingAIItems.forEach((_, idx) => {
                 let name = document.getElementById(`ai-name-${idx}`).value.trim();
@@ -784,7 +813,7 @@
                             adr: item.adresse || ''
                         };
                     } else {
-                        // Complète les infos manquantes si trouvées sur une autre ligne
+                        // Complète les infos manquantes
                         if(!suppliersMap[item.fournisseur].tel && item.telephone) suppliersMap[item.fournisseur].tel = item.telephone;
                         if(!suppliersMap[item.fournisseur].adr && item.adresse) suppliersMap[item.fournisseur].adr = item.adresse;
                     }
@@ -1248,28 +1277,6 @@
             input.addEventListener('blur', () => { recognition.stop(); input.placeholder = oldPh; }, {once: true});
             recognition.onerror = function(event) { input.placeholder = oldPh; btn.classList.remove('recording-active'); btn.innerHTML = orig; };
             recognition.onend = () => { btn.classList.remove('recording-active'); btn.innerHTML = orig; input.placeholder = oldPh; };
-        }
-
-        // === SÉCURITÉ : MODIFICATION DU CODE PIN ===
-        async function changePin() {
-            let newPin = prompt("🔑 Entrez le nouveau code PIN (4 chiffres recommandés) :");
-            if (newPin && newPin.trim() !== "") {
-                let confirmPin = confirm(`⚠️ Confirmez-vous le nouveau code PIN : ${newPin.trim()} ?\nCe code sera requis à la prochaine connexion.`);
-                if (confirmPin) {
-                    try {
-                        const res = await fetch(`${SERVER_URL}/api/update-pin`, {
-                            method: 'POST', headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({ tenantID: tenantID, newPin: newPin.trim() })
-                        });
-                        const data = await res.json();
-                        if (data.success) {
-                            alert("✅ Code PIN mis à jour avec succès.\nLa synchronisation avec le Command Center est immédiate.");
-                        } else alert("❌ Erreur du serveur : " + data.error);
-                    } catch (error) {
-                        alert("❌ Erreur de connexion avec la base de données de l'Empire.");
-                    }
-                }
-            }
         }
     </script>
 </body>
