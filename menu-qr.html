@@ -112,7 +112,7 @@
         /* --- STYLES RESERVATION --- */
         .input-group { margin-bottom: 20px; }
         .input-group label { display: block; font-size: 0.75rem; color: var(--text-muted); text-transform: uppercase; font-weight: 600; margin-bottom: 8px; letter-spacing: 1px; }
-        input[type="text"], input[type="tel"], input[type="date"], input[type="time"], input[type="number"], select, textarea { width: 100%; padding: 15px; background: var(--panel); border: 1px solid var(--border); color: var(--text-main); border-radius: 8px; font-size: 1rem; font-family: var(--font-family); box-sizing: border-box; outline: none; transition: 0.3s; }
+        input[type="text"], input[type="tel"], input[type="date"], input[type="time"], input[type="number"], select, textarea { width: 100%; padding: 15px; background: var(--panel); border: 1px solid var(--border); color: var(--text-main); border-radius: 8px; font-size: 1rem; font-family: var(--font-family); box-sizing: border-box; outline: none; transition: 0.3s; color-scheme: dark;}
         input:focus, select:focus, textarea:focus { border-color: var(--gold); }
         ::-webkit-calendar-picker-indicator { filter: invert(1); cursor: pointer; opacity: 0.6; }
         .flex-row { display: flex; gap: 15px; margin-bottom: 15px; }
@@ -150,13 +150,31 @@
 </head>
 <body>
 
+    <script>
+        // 1. Aspiration des données du QR Code AVANT L'AFFICHAGE DU CONTENU
+        const urlParams = new URLSearchParams(window.location.search);
+        const tenantID = urlParams.get('tenantID');
+        const tableLabel = urlParams.get('table');
+
+        // 2. Sécurité : Vérifier que le QR code n'est pas falsifié ou incomplet
+        if (!tenantID || !tableLabel) {
+            document.body.innerHTML = `
+                <div style="display:flex; height:100vh; width:100vw; background:#000; color:#ef4444; justify-content:center; align-items:center; flex-direction:column; font-family:sans-serif; text-align:center; padding:20px; box-sizing:border-box;">
+                    <h1 style="font-size:3rem; margin-bottom:10px;">⚠️</h1>
+                    <h2>QR CODE INVALIDE</h2>
+                    <p style="color:#777;">Impossible d'identifier le restaurant ou la table. Veuillez scanner le QR code présent sur votre table.</p>
+                </div>`;
+            throw new Error("Arrêt du script : QR Code invalide.");
+        }
+    </script>
+
     <div class="header">
         <h1 class="header-title" id="main-restaurant-title">EMPIRE</h1>
-        <div class="table-badge" id="table-display">WEB</div>
+        <div class="table-badge" id="table-display">TABLE</div>
     </div>
 
     <div class="cat-scroll" id="cat-tabs">
-        <div style="color:var(--text-muted); padding:10px;">Chargement ultra-rapide...</div>
+        <div style="color:var(--text-muted); padding:10px;">Chargement du menu...</div>
     </div>
 
     <div class="main-zone menu-grid" id="menu-grid"></div>
@@ -225,29 +243,13 @@
     </div>
 
     <script>
-        // --- 1. SÉCURITÉ ET IDENTIFICATION (QR CODE) ---
-        const urlParams = new URLSearchParams(window.location.search);
-        const tenantID = urlParams.get('tenantID');
-        let currentTable = urlParams.get('table');
-
-        // Si quelqu'un ouvre le lien sans les bons paramètres, on bloque.
-        if (!tenantID || !currentTable) {
-            document.body.innerHTML = `
-                <div style="display:flex; height:100vh; width:100vw; background:#000; color:#ef4444; justify-content:center; align-items:center; flex-direction:column; font-family:sans-serif; text-align:center; padding:20px; box-sizing:border-box;">
-                    <h1 style="font-size:3rem; margin-bottom:10px;">⚠️</h1>
-                    <h2>QR CODE INVALIDE</h2>
-                    <p style="color:#777;">Impossible d'identifier le restaurant ou la table. Veuillez scanner le QR code présent sur votre table.</p>
-                </div>`;
-            throw new Error("Arrêt du script : QR Code invalide.");
-        }
-
-        // Affichage du badge de la table
-        document.getElementById('table-display').innerText = currentTable;
-
-        // --- 2. CONFIGURATION DU SERVEUR ---
+        // --- CONFIGURATION DU SERVEUR ---
         const SERVER_URL = (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1" || window.location.protocol === "file:") 
         ? "http://localhost:10000" 
         : "https://tableau-system.onrender.com";
+
+        // Affichage du numéro de table sur le menu
+        document.getElementById('table-display').innerText = "TABLE " + tableLabel.toUpperCase();
 
         // 🌍 VARIABLE MULTIDEVISE GLOBALE
         let currentCurrency = "€";
@@ -366,7 +368,7 @@
                         renderTabs();
                         if (menuData.length > 0) selectCategory(menuData[0].id);
                     } else {
-                        // Rafraîchir la vue actuelle pour appliquer les changements de stock (Épuisé)
+                        // Rafraîchir la vue actuelle pour appliquer les changements de stock (Épuisé / Disparition)
                         if(currentCat && currentCat !== 'resa') selectCategory(currentCat, true);
                     }
                 }
@@ -431,29 +433,30 @@
             }
 
             grid.innerHTML = catData.items.map((item) => {
-                // 🛑 On n'affiche pas le plat s'il est masqué par l'admin !
-                if (item.hidden === true) return '';
+                let isSoldOut = (item.stock !== undefined && item.stock !== null && item.stock !== "" && parseInt(item.stock) === 0);
+                
+                // 🛑 RÈGLE D'OR : On n'affiche RIEN si c'est masqué par l'admin OU si c'est en rupture (stock = 0)
+                if (item.hidden === true || isSoldOut) return '';
                 
                 let price = parseFloat(item.price || 0).toFixed(2);
                 let cleanName = item.name.replace(/\[BR\]/g, ' ');
                 let escapedName = cleanName.replace(/'/g, "\\'").replace(/"/g, '&quot;');
-                
-                // 🛑 GESTION RUPTURE DE STOCK (S'affiche en gris avec bouton ÉPUISÉ)
-                let isSoldOut = (item.stock !== undefined && item.stock !== null && item.stock !== "" && parseInt(item.stock) === 0);
-                
-                let cardStyle = isSoldOut ? 'opacity: 0.5; pointer-events: none; filter: grayscale(100%);' : '';
-                let btnText = isSoldOut ? 'ÉPUISÉ' : '+';
-                let btnStyle = isSoldOut ? 'background: var(--alert); color: #fff; font-size: 0.7rem; width: auto; padding: 0 10px; border-radius: 8px;' : '';
 
+                // L'affichage de la carte ne contient plus la notion de quantité ni de bouton épuisé
                 return `
-                <div class="item-card" style="${cardStyle}" onclick="${isSoldOut ? '' : `addToCart('${escapedName}', ${price}, '${item.dest}')`}">
+                <div class="item-card" onclick="addToCart('${escapedName}', ${price}, '${item.dest}')">
                     <div class="item-info">
                         <span class="item-name">${cleanName}</span>
-                        <span class="item-price" style="${isSoldOut ? 'text-decoration: line-through; color: var(--alert);' : ''}">${price} ${currentCurrency}</span>
+                        <span class="item-price">${price} ${currentCurrency}</span>
                     </div>
-                    <button class="add-btn" style="${btnStyle}">${btnText}</button>
+                    <button class="add-btn">+</button>
                 </div>`;
             }).join('');
+
+            // Si la catégorie est vide après filtrage des ruptures/masqués
+            if (grid.innerHTML.trim() === '') {
+                grid.innerHTML = '<div style="grid-column:1/-1; text-align:center; color:var(--text-muted); padding:30px; font-style:italic;">Tous les articles de cette catégorie sont actuellement indisponibles.</div>';
+            }
         }
 
         // --- GESTION PANIER ---
@@ -517,7 +520,7 @@
                 
                 // 1. Sauvegarde du panier dans le téléphone du client
                 localStorage.setItem('empire_pending_cart_' + tenantID, JSON.stringify(cart));
-                localStorage.setItem('empire_pending_table_' + tenantID, currentTable);
+                localStorage.setItem('empire_pending_table_' + tenantID, tableLabel); // On sauvegarde le label de la table
                 
                 // 2. Redirection vers Stripe (La commande n'est PAS encore en cuisine)
                 window.location.href = restaurantStripeLink; 
@@ -534,8 +537,8 @@
                 let r = await fetch(`${SERVER_URL}/get-current-state?tenantID=${tenantID}`);
                 let state = await r.json();
                 
-                // Récupérer la table ou en créer une nouvelle
-                let orderTableId = `WEB_${currentTable}`;
+                // Création d'une commande unique ciblée sur cette table précise
+                let orderTableId = `WEB_${tableLabel}`;
                 let targetTable = state.activeOrders[orderTableId];
                 
                 let currentOrderData = targetTable ? (targetTable.data !== undefined ? targetTable.data : targetTable) : { status: 'cooking', items: [], time: new Date().toLocaleTimeString('fr-FR', {hour:'2-digit', minute:'2-digit'}), isWeb: true, paid: false };
@@ -556,7 +559,7 @@
                 
                 currentOrderData.totalStr = (cart.reduce((a,b)=>a+(b.p*b.qty),0)).toFixed(2) + ` ${currentCurrency}`;
 
-                // Envoi au Cloud
+                // L'ordre d'envoi ciblé avec les bonnes Query Strings
                 await fetch(`${SERVER_URL}/update-order?tenantID=${tenantID}`, { 
                     method: 'POST', 
                     headers: {'Content-Type': 'application/json'}, 
@@ -597,13 +600,11 @@
                 let savedCart = localStorage.getItem('empire_pending_cart_' + tenantID);
                 let savedTable = localStorage.getItem('empire_pending_table_' + tenantID);
                 
-                if (savedCart && savedTable) {
+                if (savedCart && savedTable === tableLabel) { // Sécurité renforcée : vérifier que c'est la bonne table
                     // On masque le menu pendant l'envoi
                     document.getElementById('menu-grid').innerHTML = '<h2 style="text-align:center; margin-top:50px; color:var(--gold);">Validation de votre paiement... ⏳</h2>';
                     
                     cart = JSON.parse(savedCart);
-                    currentTable = savedTable;
-                    document.getElementById('table-display').innerText = currentTable;
                     
                     // On envoie la commande en cuisine en déclarant qu'elle est payée
                     await sendOrder(true);
