@@ -262,7 +262,7 @@ app.post('/update-order', async (req, res) => {
 });
 
 // ==========================================
-// 👑 COMMAND CENTER (ADMIN - DESIGN ÉPURÉ)
+// 👑 COMMAND CENTER (ADMIN - DESIGN ÉPURÉ & FORCE-PIN)
 // ==========================================
 const ADMIN_PASS = 'Empire2026';
 
@@ -306,6 +306,8 @@ app.get('/panel-ichef', async (req, res) => {
             .input-screens:focus { outline: none; border-color: #D97706; }
             .btn-save { background: #D97706; color: white; margin-left: 5px; }
             .btn-save:hover { background: #B45309; }
+            .btn-pin { background: #059669; color: white; margin-left: 5px; }
+            .btn-pin:hover { background: #047857; }
         </style>
     </head>
     <body>
@@ -314,15 +316,15 @@ app.get('/panel-ichef', async (req, res) => {
             <tr>
                 <th>Restaurant / Identifiant</th>
                 <th>Pack Actuel</th>
-                <th>Code PIN</th>
+                <th>Code PIN en Direct</th>
                 <th>Écrans (Actifs / Max)</th>
-                <th>Pilotage Commercial</th>
+                <th>Pilotage Commercial & Sécurité</th>
             </tr>
             ${tenants.map(t => `
                 <tr>
                     <td><b style="font-size: 1.1rem; color: #0F172A;">${t.clientName}</b><br><small style="color:#64748B; font-weight:600;">${t.tenantID}</small></td>
                     <td><span class="plan-badge plan-${t.plan}">${t.plan}</span></td>
-                    <td style="color:#059669; font-weight:900; font-size:1.3rem;">${t.pin}</td>
+                    <td style="color:#059669; font-weight:900; font-size:1.4rem; letter-spacing: 2px;">${t.pin}</td>
                     <td><span class="badge-screens">${t.registeredDevices.length} / ${t.maxScreens}</span></td>
                     <td>
                         <form action="/panel-ichef/action" method="POST" style="display:flex; gap:10px; align-items:center; flex-wrap: wrap;">
@@ -337,16 +339,21 @@ app.get('/panel-ichef', async (req, res) => {
                                 <option value="PREMIUM" ${t.plan === 'PREMIUM' ? 'selected' : ''}>Palace</option>
                             </select>
 
-                            <div style="display:flex; align-items:center; border-left: 2px solid #E2E8F0; padding-left: 10px; margin-left: 5px;">
-                                <input type="number" name="manualScreens" class="input-screens" value="${t.maxScreens}" title="Changer la limite maximale d'écrans">
-                                <button type="submit" name="action" value="set_screens" class="btn btn-save" title="Valider la limite">OK</button>
+                            <div style="display:flex; align-items:center; border-left: 2px solid #E2E8F0; padding-left: 10px;">
+                                <input type="number" name="manualScreens" class="input-screens" value="${t.maxScreens}" title="Changer la limite de connexions">
+                                <button type="submit" name="action" value="set_screens" class="btn btn-save">Écrans</button>
                             </div>
 
-                            <button type="submit" name="action" value="reset_devices" class="btn btn-reset" title="Déconnecter tous les appareils de ce client">Reset Appareils</button>
+                            <div style="display:flex; align-items:center; border-left: 2px solid #E2E8F0; padding-left: 10px;">
+                                <input type="text" name="manualPin" class="input-screens" style="width:75px; letter-spacing:1px;" value="${t.pin}" title="Forcer ou réinitialiser le code PIN">
+                                <button type="submit" name="action" value="set_pin" class="btn btn-pin">PIN</button>
+                            </div>
+
+                            <button type="submit" name="action" value="reset_devices" class="btn btn-reset" style="margin-left:10px;">Reset Appareils</button>
                             <button type="submit" name="action" value="${t.status === 'ACTIF' ? 'suspend' : 'activate'}" class="btn btn-block">
                                 ${t.status === 'ACTIF' ? 'Bloquer' : 'Débloquer'}
                             </button>
-                            <button type="submit" name="action" value="delete" class="btn btn-delete" onclick="return confirm('⚠️ ATTENTION : Voulez-vous vraiment supprimer définitivement ce client et toutes ses données ?')">✖</button>
+                            <button type="submit" name="action" value="delete" class="btn btn-delete" onclick="return confirm('⚠️ CRITIQUE : Supprimer définitivement ce client et détruire ses données ?')">✖</button>
                         </form>
                     </td>
                 </tr>
@@ -358,14 +365,18 @@ app.get('/panel-ichef', async (req, res) => {
 });
 
 app.post('/panel-ichef/action', async (req, res) => {
-    const { pass, tenantID, action, newPlan, manualScreens } = req.body;
+    const { pass, tenantID, action, newPlan, manualScreens, manualPin } = req.body;
     if (pass !== ADMIN_PASS) return res.status(401).send('Interdit');
     try {
-        // Validation manuelle de la limite d'écrans
+        // Validation de la limite manuelle de connexions
         if (action === 'set_screens' && manualScreens) {
             await Tenant.findOneAndUpdate({ tenantID }, { maxScreens: parseInt(manualScreens) });
         } 
-        // Changement de plan via le menu déroulant
+        // Identification de sécurité : Modification / Forçage du code PIN oublié
+        else if (action === 'set_pin' && manualPin) {
+            await Tenant.findOneAndUpdate({ tenantID }, { pin: manualPin.trim() });
+        }
+        // Changement de plan automatique
         else if (newPlan && !action) { 
             let limit = 1;
             if (newPlan === 'BUSINESS') limit = 5;
