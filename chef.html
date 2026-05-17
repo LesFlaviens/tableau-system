@@ -65,6 +65,10 @@
         .sync-status { display: inline-flex; align-items: center; gap: 5px; margin-left: 5px; background: #FAFAFA; border: 1px solid var(--border-strong); padding: 5px 10px; border-radius: 20px; font-size: 0.8rem; font-weight: bold;}
         .sync-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--alert); transition: 0.3s;}
 
+        /* MODALES */
+        .modal { position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; background: rgba(0,0,0,0.8); z-index: 20000; display: none; align-items: center; justify-content: center; backdrop-filter: blur(5px); padding: 20px; box-sizing: border-box;}
+        .modal-content { background: var(--panel); border: 1px solid var(--border-strong); border-radius: 12px; padding: 30px; max-height: 90vh; overflow-y: auto; width: 100%; max-width: 900px; box-shadow: var(--shadow-deep); }
+
         /* 📱 RESPONSIVE DESIGN ANDROID/IOS 📱 */
         @media (max-width: 768px) {
             .nav-master { padding: 10px 15px; }
@@ -88,6 +92,38 @@
         <input type="password" id="pin-input" placeholder="CODE PIN" style="width:100%; max-width: 250px; text-align:center; font-size:1.5rem; letter-spacing:5px; margin-bottom:20px;">
         <button onclick="checkPin()" class="add-btn" style="width:100%; max-width: 250px;">ENTRER</button>
         <p id="error-msg" style="color:var(--alert); display:none; margin-top:20px;">❌ Code PIN incorrect.</p>
+    </div>
+
+    <div id="ai-validation-modal" class="modal">
+        <div class="modal-content">
+            <h2 style="color:var(--gold); margin-top:0; font-family:'Playfair Display', serif;">🧠 Validation IA & Fournisseur</h2>
+            <p style="color:var(--text-muted); font-size:0.9rem;">Vérifiez et corrigez les données extraites avant de les intégrer au stock global.</p>
+            
+            <div style="background:var(--bg); border:1px solid var(--border-strong); padding:15px; border-radius:8px; margin-bottom: 20px;">
+                <label style="font-weight:bold; color:var(--slate); font-size:0.85rem; text-transform:uppercase;">🏢 Fournisseur détecté :</label><br>
+                <input type="text" id="ai-supplier-input" style="width: 100%; max-width: 400px; margin-top: 5px; border-color:var(--gold);">
+            </div>
+            
+            <div class="table-responsive-wrapper" style="border: 1px solid var(--border); border-radius: 8px;">
+                <table class="inv-table">
+                    <thead>
+                        <tr>
+                            <th>Produit</th>
+                            <th>Catégorie</th>
+                            <th>Qté (ex: 5kg)</th>
+                            <th>Prix Total (€)</th>
+                            <th>🗑️</th>
+                        </tr>
+                    </thead>
+                    <tbody id="ai-validation-list"></tbody>
+                </table>
+            </div>
+            
+            <div style="display: flex; gap: 15px; margin-top: 25px;">
+                <button class="add-btn" style="background:var(--bg); border:1px solid var(--border-strong); color:var(--text-main); flex:1;" onclick="document.getElementById('ai-validation-modal').style.display='none'">❌ ANNULER</button>
+                <button class="add-btn" style="background:var(--accent); color:#000; flex:2;" onclick="confirmAIValidation()">✅ VALIDER ET AJOUTER AU STOCK</button>
+            </div>
+        </div>
     </div>
 
     <div class="nav-master">
@@ -220,7 +256,7 @@
                 
                 <div class="menu-category" style="padding: 25px; border-top: 4px solid var(--gold); margin: 0;">
                     <h3 style="margin-top: 0; color: var(--gold); font-size: 1.1rem; text-transform: uppercase;">👁️ Vision iChef (IA)</h3>
-                    <p style="font-size: 0.85rem; color: var(--text-muted); margin-bottom: 15px;">Importation automatique via scan.</p>
+                    <p style="font-size: 0.85rem; color: var(--text-muted); margin-bottom: 15px;">Importation automatique via scan de facture.</p>
                     <input type="file" id="cameraInput" accept="image/*" capture="environment" style="display:none;">
                     <button class="add-btn" onclick="document.getElementById('cameraInput').click()" style="background: var(--gold); color: black;">📸 SCANNER FACTURE</button>
                     <div id="scanResult" style="margin-top: 15px; background: #FAFAFA; padding: 12px; border-radius: 8px; display: none; border: 1px solid var(--border-strong); font-size: 0.85rem; font-weight: bold; text-align: center;"></div>
@@ -293,6 +329,7 @@
         let stockGlobalData = [];
         let stockCategories = ['🍎 Fruits', '🥗 Légumes', '🍝 Glucides', '🥩 Protéines', '🥩 Viande', '🐟 Poisson', '🦞 Crustacés', '🧀 B.O.F', '❄️ Surgelés', '🥜 Fruits Secs', '🥫 Produits Secs', '📦 Économat', '🫧 Clarification', '🧼 Entretien'];
         let currentFolderCat = null;
+        let pendingAIItems = [];
 
         // === OUTIL : EXTRACTION DES POIDS ET UNITÉS ===
         function parseQuantity(str) {
@@ -313,17 +350,14 @@
                     if(r.ok) return await r.json();
                     throw new Error("Serveur injoignable");
                 } catch(e) {
-                    // Si le serveur est endormi, on charge immédiatement le cache local
                     return JSON.parse(localStorage.getItem('EMPIRE_CHEF_SYNC')) || { activeOrders: {} };
                 }
             },
             save: async (k, d) => {
-                // 1. Sauvegarde locale immédiate
                 let state = JSON.parse(localStorage.getItem('EMPIRE_CHEF_SYNC')) || { activeOrders: {} };
                 state.activeOrders[k] = { data: d };
                 localStorage.setItem('EMPIRE_CHEF_SYNC', JSON.stringify(state));
                 
-                // 2. Envoi silencieux au serveur
                 try {
                     await fetch(`${SERVER_URL}/update-order?tenantID=${tenantID}`, {
                         method:'POST', headers:{'Content-Type':'application/json'},
@@ -340,7 +374,6 @@
 
             document.getElementById('error-msg').style.display = 'none';
 
-            // Master Overrides (Code d'urgence)
             if(pin === "999999" || pin === "7777" || pin === "9999") {
                 document.getElementById('security-overlay').style.display = 'none';
                 bootSystem();
@@ -363,7 +396,6 @@
                     document.getElementById('error-msg').innerText = "❌ Code PIN incorrect.";
                 }
             } catch(e) {
-                // Si le serveur est endormi, on bypass par sécurité si un cache existe
                 let cache = localStorage.getItem('EMPIRE_CHEF_SYNC');
                 if(cache) {
                     document.getElementById('security-overlay').style.display = 'none';
@@ -399,11 +431,10 @@
                 }
                 
                 renderAll();
-                document.getElementById('sync-dot').style.background = '#10B981'; // Vert
+                document.getElementById('sync-dot').style.background = '#10B981'; 
                 document.getElementById('sync-text').innerText = "EN LIGNE";
                 document.getElementById('sync-text').style.color = "var(--text-main)";
 
-                // Ping de réveil (Polling en arrière-plan)
                 setInterval(async () => {
                     try {
                         let r = await fetch(`${SERVER_URL}/get-current-state?tenantID=${tenantID}`);
@@ -579,35 +610,7 @@
 
         async function deleteMenuItem(cat, id) { if(confirm("Supprimer ce plat de la carte ?")) { menuData[cat] = menuData[cat].filter(item => item.id !== id); renderAll(); await API.save('MENU_MASTER', menuData); } }
 
-        // === IA : INJECTION DANS LA MATRICE ===
-        function injecterStockIA(dataIA) {
-            const dicoCategories = {
-                'Fruits': '🍎 Fruits', 'Légumes': '🥗 Légumes', 'Glucides': '🍝 Glucides', 'Protéines': '🥩 Protéines',
-                'Viande': '🥩 Viande', 'Poisson': '🐟 Poisson', 'Crustacés': '🦞 Crustacés', 'B.O.F': '🧀 B.O.F',
-                'Surgelés': '❄️ Surgelés', 'Fruits Secs': '🥜 Fruits Secs', 'Produits Sec': '🥫 Produits Secs',
-                'Économat': '📦 Économat', 'Clarification': '🫧 Clarification', 'Produit Entretien': '🧼 Entretien'
-            };
-            dataIA.articles.forEach(art => {
-                let catATrouver = art.categorie;
-                if(catATrouver === 'Fruit sec' || catATrouver === 'fruits secs') catATrouver = 'Fruits Secs';
-                if(catATrouver === 'produits secs' || catATrouver === 'Produit sec') catATrouver = 'Produits Sec';
-                if(catATrouver === 'Produits entretien' || catATrouver === 'produit entretien') catATrouver = 'Produit Entretien';
-                let finalCat = dicoCategories[catATrouver] || ('📦 ' + (art.categorie || 'NON CLASSÉ'));
-                
-                let qtyRaw = art.quantite || '1';
-                let parsedQty = parseQuantity(qtyRaw);
-                let totalPrice = parseFloat(art.prixUnitaire) || 0;
-                let unitPrice = parsedQty.val > 0 ? (totalPrice / parsedQty.val) : totalPrice;
-
-                stockGlobalData.unshift({
-                    id: Date.now() + Math.random(), name: art.nom || 'Produit IA', cat: finalCat,
-                    qtyStr: qtyRaw, initialQty: parsedQty.val, currentQty: parsedQty.val, unit: parsedQty.unit,
-                    totalPrice: totalPrice, unitPrice: unitPrice, date: new Date().toLocaleDateString()
-                });
-            });
-            renderAll(); API.save('INVENTORY_MASTER', stockGlobalData);
-        }
-
+        // === IA : INJECTION ET VALIDATION (NOUVEAU) ===
         document.getElementById('cameraInput').addEventListener('change', async function(e) {
             const file = e.target.files[0]; if(!file) return;
             const resBox = document.getElementById('scanResult'); resBox.style.display='block'; resBox.innerHTML="⏳ L'IA ANALYSE LA FACTURE...";
@@ -616,10 +619,88 @@
                 try {
                     const r = await fetch(`${SERVER_URL}/api/scan-invoice`, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ imageBase64: reader.result.split(',')[1], mimeType: file.type }) });
                     const d = await r.json();
-                    if(d.success) { injecterStockIA(d.data); resBox.innerHTML = `<span style="color:var(--accent);">✅ FACTURE TRAITÉE.</span>`; } else throw new Error(d.error);
+                    if(d.success) { 
+                        resBox.innerHTML = `<span style="color:var(--accent);">✅ FACTURE TRAITÉE. EN ATTENTE DE VALIDATION.</span>`;
+                        showAIValidation(d.data); 
+                    } else throw new Error(d.error);
                 } catch(err) { resBox.innerHTML = `<span style="color:var(--alert);">❌ ERREUR : ${err.message}</span>`; }
             }; reader.readAsDataURL(file);
         });
+
+        function showAIValidation(data) {
+            document.getElementById('ai-validation-modal').style.display = 'flex';
+            document.getElementById('ai-supplier-input').value = data.fournisseur || "Fournisseur Inconnu";
+            
+            pendingAIItems = data.articles || [];
+            renderAIValidationTable();
+        }
+
+        function renderAIValidationTable() {
+            let tbody = document.getElementById('ai-validation-list');
+            let catOptions = stockCategories.map(c => `<option value="${c}">${c}</option>`).join('');
+            
+            tbody.innerHTML = pendingAIItems.map((art, idx) => `
+                <tr>
+                    <td style="padding: 5px;"><input type="text" id="ai-name-${idx}" value="${art.nom}" style="padding:8px; min-height: 35px; border-color: var(--border-strong); background: var(--bg);"></td>
+                    <td style="padding: 5px;">
+                        <select id="ai-cat-${idx}" style="padding:8px; min-height: 35px; border-color: var(--border-strong); background: var(--bg);">
+                            <option value="${art.categorie}">${art.categorie} (IA)</option>
+                            ${catOptions}
+                        </select>
+                    </td>
+                    <td style="padding: 5px;"><input type="text" id="ai-qty-${idx}" value="${art.quantite || '1'}" style="padding:8px; width:80px; min-height: 35px; border-color: var(--border-strong); background: var(--bg);"></td>
+                    <td style="padding: 5px;"><input type="number" step="0.01" id="ai-price-${idx}" value="${art.prixUnitaire || 0}" style="padding:8px; width:80px; min-height: 35px; border-color: var(--border-strong); background: var(--bg);"></td>
+                    <td style="padding: 5px; text-align: center;"><button onclick="removeAIPendingItem(${idx})" style="background:transparent; border:none; color:var(--alert); cursor:pointer; font-size:1.2rem;">✖</button></td>
+                </tr>
+            `).join('');
+        }
+
+        function removeAIPendingItem(idx) {
+            pendingAIItems.splice(idx, 1);
+            renderAIValidationTable();
+        }
+
+        function confirmAIValidation() {
+            let fournisseur = document.getElementById('ai-supplier-input').value.trim();
+            
+            pendingAIItems.forEach((_, idx) => {
+                let name = document.getElementById(`ai-name-${idx}`).value.trim();
+                let catRaw = document.getElementById(`ai-cat-${idx}`).value;
+                let qtyStr = document.getElementById(`ai-qty-${idx}`).value.trim();
+                let price = parseFloat(document.getElementById(`ai-price-${idx}`).value) || 0;
+                
+                const dicoCategories = {
+                    'Fruits': '🍎 Fruits', 'Légumes': '🥗 Légumes', 'Glucides': '🍝 Glucides', 'Protéines': '🥩 Protéines',
+                    'Viande': '🥩 Viande', 'Poisson': '🐟 Poisson', 'Crustacés': '🦞 Crustacés', 'B.O.F': '🧀 B.O.F',
+                    'Surgelés': '❄️ Surgelés', 'Fruits Secs': '🥜 Fruits Secs', 'Produits Sec': '🥫 Produits Secs',
+                    'Économat': '📦 Économat', 'Clarification': '🫧 Clarification', 'Produit Entretien': '🧼 Entretien'
+                };
+                let finalCat = stockCategories.includes(catRaw) ? catRaw : (dicoCategories[catRaw] || ('📦 ' + (catRaw || 'NON CLASSÉ')));
+                
+                let parsedQty = parseQuantity(qtyStr);
+                let unitPrice = parsedQty.val > 0 ? (price / parsedQty.val) : price;
+
+                stockGlobalData.unshift({
+                    id: Date.now() + Math.random(), 
+                    name: name, 
+                    cat: finalCat,
+                    fournisseur: fournisseur,
+                    qtyStr: qtyStr, 
+                    initialQty: parsedQty.val, 
+                    currentQty: parsedQty.val, 
+                    unit: parsedQty.unit,
+                    totalPrice: price, 
+                    unitPrice: unitPrice, 
+                    date: new Date().toLocaleDateString()
+                });
+            });
+
+            document.getElementById('ai-validation-modal').style.display = 'none';
+            renderAll();
+            API.save('INVENTORY_MASTER', stockGlobalData);
+            document.getElementById('scanResult').innerHTML = `<span style="color:var(--accent);">✅ ${pendingAIItems.length} produits ajoutés au stock avec succès.</span>`;
+            pendingAIItems = [];
+        }
 
         // === AJOUT MANUEL STOCK ===
         async function addManualStock() {
@@ -702,11 +783,14 @@
                     let ratio = i.initialQ > 0 ? (i.currentQ / i.initialQ) : 1;
                     let alertStyle = ratio <= 0.2 ? 'color: var(--alert); font-weight: 900; background: rgba(239, 68, 68, 0.1); padding: 6px 10px; border-radius: 6px; border: 1px solid var(--alert);' : 'color: var(--text-main); font-weight: 600; background: var(--bg); padding: 6px 10px; border-radius: 6px; border: 1px solid var(--border-strong);';
                     let alertIcon = ratio <= 0.2 ? ' ⚠️' : '';
+                    let fournisseurHtml = i.fournisseur ? `<br><span style="font-size:0.75rem; color:var(--text-muted); font-weight:bold;">🏢 ${i.fournisseur}</span>` : '';
 
-                    // L'ORDRE STRICT : Nom | Unitaire | Quantité | Valeur Totale | Action
                     tableHtml += `
                     <tr style="transition: background 0.2s;" onmouseover="this.style.background='#FAFAFA'" onmouseout="this.style.background='transparent'">
-                        <td style="padding: 15px 20px; border-bottom: 1px solid var(--border);"><b>${i.name}</b></td>
+                        <td style="padding: 15px 20px; border-bottom: 1px solid var(--border);">
+                            <b>${i.name}</b>
+                            ${fournisseurHtml}
+                        </td>
                         <td style="padding: 15px; border-bottom: 1px solid var(--border); color: var(--text-muted); font-size: 0.85rem; white-space: nowrap;">${i.uPrice.toFixed(2)} € / ${i.unit}</td>
                         <td style="padding: 15px; border-bottom: 1px solid var(--border); cursor: pointer;" onclick="editStockQty(${i.originalIndex})" title="Cliquez pour déduire la quantité">
                             <span style="${alertStyle}">${i.currentQ} ${i.unit}${alertIcon}</span>
