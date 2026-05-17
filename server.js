@@ -72,6 +72,12 @@ app.post('/api/scan-invoice', async (req, res) => {
         Analyse cette image de facture ou de ticket de caisse.
         Extrais les informations suivantes et CLASSIFIE OBLIGATOIREMENT chaque article.
 
+        🚨 RÈGLES STRICTES POUR LE FOURNISSEUR ET LES COORDONNÉES :
+        1. Le fournisseur (l'émetteur de la facture) se trouve souvent en haut, parfois écrit à la verticale sur le côté gauche ou droit. Lis bien tous les textes orientés.
+        2. Ne confonds pas l'adresse de facturation/livraison (ex: "Hotel Royal-Savoy", "Restaurant...") avec le nom du fournisseur.
+        3. Ne confonds pas la marque d'un produit (ex: "Moulin de Sévery") inscrite sur la ligne de description de l'article avec le nom du fournisseur global de la facture.
+        4. Cherche activement l'email, le numéro de téléphone (Tél, prof, portable) et l'adresse postale qui sont associés à l'émetteur, pas au client.
+
         🚨 RÈGLE ABSOLUE POUR LES QUANTITÉS ET POIDS :
         - Si un produit est vendu au poids (ex: "1.520 kg x 2.99 €/kg"), la "quantite" DOIT ÊTRE le poids exact avec son unité (ex: "1.520 kg"). Ne mets SURTOUT PAS "1".
         - Si le produit est vendu à l'unité, mets le nombre (ex: "3").
@@ -85,6 +91,10 @@ app.post('/api/scan-invoice', async (req, res) => {
         Structure JSON stricte exigée :
         {
             "fournisseur": "Nom",
+            "adresse": "Adresse complète",
+            "telephone": "Numéro de tel",
+            "email": "Adresse email",
+            "devise": "€, CHF, $",
             "date": "JJ/MM/AAAA",
             "totalHT": 0.00,
             "tva": 0.00,
