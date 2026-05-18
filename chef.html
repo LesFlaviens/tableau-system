@@ -148,6 +148,35 @@
         </div>
     </div>
 
+    <div id="edit-supplier-modal" class="modal">
+        <div class="modal-content" style="width: 450px;">
+            <h2 style="margin-top: 0; color: var(--gold); font-family: 'Playfair Display', serif; text-transform: uppercase; letter-spacing: 1px;">🏢 Fiche Fournisseur</h2>
+            <p style="color:var(--text-muted); font-size:0.85rem; margin-bottom: 20px;">Modifiez les coordonnées ici. La mise à jour s'appliquera sur tous les produits liés.</p>
+            
+            <input type="hidden" id="edit-supplier-old-name">
+            
+            <div style="display: flex; flex-direction: column; gap: 15px;">
+                <div>
+                    <label style="font-weight:bold; color:var(--slate); font-size:0.85rem; text-transform:uppercase;">Nom du fournisseur :</label>
+                    <input type="text" id="edit-supplier-name" style="margin-top: 5px;">
+                </div>
+                <div>
+                    <label style="font-weight:bold; color:var(--slate); font-size:0.85rem; text-transform:uppercase;">Téléphone :</label>
+                    <input type="text" id="edit-supplier-phone" style="margin-top: 5px;" placeholder="Ex: 06 12 34 56 78">
+                </div>
+                <div>
+                    <label style="font-weight:bold; color:var(--slate); font-size:0.85rem; text-transform:uppercase;">Adresse :</label>
+                    <textarea id="edit-supplier-address" rows="2" style="margin-top: 5px;" placeholder="Ex: 12 Rue de la Paix..."></textarea>
+                </div>
+            </div>
+            
+            <div style="display: flex; gap: 15px; margin-top: 25px;">
+                <button class="add-btn" style="background:var(--bg); border:1px solid var(--border-strong); color:var(--text-main); flex:1;" onclick="document.getElementById('edit-supplier-modal').style.display='none'">Annuler</button>
+                <button class="add-btn" style="background:var(--gold); color:#000; flex:2;" onclick="saveSupplierEdit()">💾 Enregistrer</button>
+            </div>
+        </div>
+    </div>
+
     <div class="nav-master">
         <div class="header-brand"><h1 class="logo-text">iCHEF.</h1></div>
         <div class="header-actions">
@@ -305,8 +334,8 @@
 
                 <div class="menu-category" style="padding: 25px; border-top: 4px solid var(--purple); margin: 0;">
                     <h3 style="margin-top: 0; color: var(--purple); font-size: 1.1rem; text-transform: uppercase;">🏢 Annuaire Fournisseurs</h3>
-                    <p style="font-size: 0.85rem; color: var(--text-muted); margin-bottom: 15px;">Généré automatiquement via l'IA et vos saisies.</p>
-                    <div id="supplier-directory-list" style="display: flex; flex-direction: column; gap: 10px; max-height: 250px; overflow-y: auto; padding-right: 5px;"></div>
+                    <p style="font-size: 0.85rem; color: var(--text-muted); margin-bottom: 15px;">Cliquez sur un fournisseur pour modifier ses coordonnées.</p>
+                    <div id="supplier-directory-list" style="display: flex; flex-direction: column; gap: 10px; max-height: 350px; overflow-y: auto; padding-right: 5px;"></div>
                 </div>
 
             </div>
@@ -798,7 +827,7 @@
             renderAll(); await API.save('INVENTORY_MASTER', stockGlobalData);
         }
 
-        // === ANNUAIRE FOURNISSEURS ===
+        // === ANNUAIRE FOURNISSEURS (CLICQUABLE ET MODIFIABLE) ===
         function renderSuppliers() {
             const container = document.getElementById('supplier-directory-list');
             if(!container) return;
@@ -813,7 +842,6 @@
                             adr: item.adresse || ''
                         };
                     } else {
-                        // Complète les infos manquantes si trouvées sur une autre ligne
                         if(!suppliersMap[item.fournisseur].tel && item.telephone) suppliersMap[item.fournisseur].tel = item.telephone;
                         if(!suppliersMap[item.fournisseur].adr && item.adresse) suppliersMap[item.fournisseur].adr = item.adresse;
                     }
@@ -826,16 +854,72 @@
                 return;
             }
             
-            container.innerHTML = suppliers.map(s => `
-                <div style="background:var(--bg); border:1px solid var(--border-strong); padding:15px; border-radius:8px;">
-                    <div style="font-weight:bold; color:var(--text-main); font-size:0.95rem;">${s.nom}</div>
+            container.innerHTML = suppliers.map(s => {
+                let safeName = s.nom.replace(/'/g, "\\'").replace(/"/g, '&quot;');
+                return `
+                <div style="background:var(--panel); border:1px solid var(--border-strong); padding:15px; border-radius:8px; cursor:pointer; transition:0.3s; box-shadow:var(--shadow-subtle);" 
+                     onmouseover="this.style.borderColor='var(--gold)'; this.style.transform='translateY(-2px)';" 
+                     onmouseout="this.style.borderColor='var(--border-strong)'; this.style.transform='translateY(0)';"
+                     onclick="editSupplier('${safeName}')" title="Cliquez pour modifier les coordonnées">
+                    <div style="display:flex; justify-content:space-between; align-items:start;">
+                        <div style="font-weight:bold; color:var(--text-main); font-size:0.95rem;">${s.nom}</div>
+                        <span style="font-size:0.8rem; color:var(--gold);">✏️</span>
+                    </div>
                     ${s.tel ? `<div style="font-size:0.75rem; color:var(--slate); margin-top:6px; font-weight:600;">📞 ${s.tel}</div>` : ''}
                     ${s.adr ? `<div style="font-size:0.75rem; color:var(--text-muted); margin-top:4px;">📍 ${s.adr}</div>` : ''}
                 </div>
-            `).join('');
+                `;
+            }).join('');
         }
 
-        // === MATRICE STOCKS : 4 COLONNES ET ALERTE ===
+        // --- FONCTIONS DE MODIFICATION DU FOURNISSEUR ---
+        function editSupplier(supplierName) {
+            let supplierItems = stockGlobalData.filter(i => i.fournisseur === supplierName);
+            if (supplierItems.length === 0) return;
+            
+            let tel = "";
+            let adr = "";
+            for (let item of supplierItems) {
+                if (!tel && item.telephone) tel = item.telephone;
+                if (!adr && item.adresse) adr = item.adresse;
+            }
+
+            document.getElementById('edit-supplier-old-name').value = supplierName;
+            document.getElementById('edit-supplier-name').value = supplierName;
+            document.getElementById('edit-supplier-phone').value = tel;
+            document.getElementById('edit-supplier-address').value = adr;
+            
+            document.getElementById('edit-supplier-modal').style.display = 'flex';
+        }
+
+        async function saveSupplierEdit() {
+            let oldName = document.getElementById('edit-supplier-old-name').value;
+            let newName = document.getElementById('edit-supplier-name').value.trim();
+            let newTel = document.getElementById('edit-supplier-phone').value.trim();
+            let newAdr = document.getElementById('edit-supplier-address').value.trim();
+
+            if (!newName) return alert("Le nom du fournisseur est obligatoire.");
+
+            let updatedCount = 0;
+            stockGlobalData.forEach(item => {
+                if (item.fournisseur === oldName) {
+                    item.fournisseur = newName;
+                    item.telephone = newTel;
+                    item.adresse = newAdr;
+                    updatedCount++;
+                }
+            });
+
+            document.getElementById('edit-supplier-modal').style.display = 'none';
+            
+            if (updatedCount > 0) {
+                renderAll();
+                await API.save('INVENTORY_MASTER', stockGlobalData);
+                alert(`✅ Les coordonnées de ${newName} ont été mises à jour pour ${updatedCount} produit(s).`);
+            }
+        }
+
+        // === MATRICE STOCKS : ÉPURÉE AVEC FOURNISSEUR DISCRET ===
         function renderGlobalStock() {
             const listContainer = document.getElementById('global-stock-list');
             const summaryContainer = document.getElementById('stock-summary');
@@ -897,6 +981,7 @@
                     
                     let fournisseurHtml = '';
                     if (i.fournisseur && i.fournisseur !== "Fournisseur Inconnu") {
+                        // ON AFFICHE UNIQUEMENT LE NOM DU FOURNISSEUR POUR ÉPURER LE TABLEAU
                         fournisseurHtml = `<div style="margin-top: 6px;"><span style="font-size:0.75rem; color:var(--slate); font-weight:700; letter-spacing: 0.5px; text-transform: uppercase;">🏢 ${i.fournisseur}</span></div>`;
                     }
 
@@ -1275,28 +1360,6 @@
             input.addEventListener('blur', () => { recognition.stop(); input.placeholder = oldPh; }, {once: true});
             recognition.onerror = function(event) { input.placeholder = oldPh; btn.classList.remove('recording-active'); btn.innerHTML = orig; };
             recognition.onend = () => { btn.classList.remove('recording-active'); btn.innerHTML = orig; input.placeholder = oldPh; };
-        }
-
-        // === SÉCURITÉ : MODIFICATION DU CODE PIN ===
-        async function changePin() {
-            let newPin = prompt("🔑 Entrez le nouveau code PIN (4 chiffres recommandés) :");
-            if (newPin && newPin.trim() !== "") {
-                let confirmPin = confirm(`⚠️ Confirmez-vous le nouveau code PIN : ${newPin.trim()} ?\nCe code sera requis à la prochaine connexion.`);
-                if (confirmPin) {
-                    try {
-                        const res = await fetch(`${SERVER_URL}/api/update-pin`, {
-                            method: 'POST', headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({ tenantID: tenantID, newPin: newPin.trim() })
-                        });
-                        const data = await res.json();
-                        if (data.success) {
-                            alert("✅ Code PIN mis à jour avec succès.\nLa synchronisation avec le Command Center est immédiate.");
-                        } else alert("❌ Erreur du serveur : " + data.error);
-                    } catch (error) {
-                        alert("❌ Erreur de connexion avec la base de données de l'Empire.");
-                    }
-                }
-            }
         }
     </script>
 </body>
