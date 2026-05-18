@@ -233,23 +233,32 @@
     </div>
 
     <div id="matrice-modal" class="modal">
-        <div class="modal-content dark-modal" style="max-width: 95vw; height: 95vh; padding: 15px;">
-            <h3>📊 MATRICE GLOBALE</h3>
-            <div class="table-wrapper">
-                <table class="dark-table inv-table">
-                    <thead>
-                        <tr>
-                            <th style="padding-left: 15px;">PRODUIT</th>
-                            <th>UNITAIRE</th>
-                            <th>QUANTITÉ</th>
-                            <th>TOTAL</th>
-                            <th style="text-align: center; padding-right: 15px;">CHOIX</th>
-                        </tr>
-                    </thead>
-                    <tbody id="global-stock-list"></tbody>
-                </table>
+        <div class="modal-content dark-modal" style="max-width: 95vw; height: 95vh; padding: 15px; display: flex; flex-direction: column;">
+            <h3 style="color: var(--gold); flex-shrink: 0;">📊 MATRICE GLOBALE</h3>
+            
+            <div id="stock-cat-folder-container" style="flex: 1; overflow-y: auto; padding-right: 5px;">
+                <div id="stock-category-folders-grid" style="display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 15px;"></div>
             </div>
-            <button class="add-btn" style="background: transparent; border: 1px solid var(--dark-border); color: var(--dark-text); flex-shrink: 0; margin-top: 10px;" onclick="closeInvModal('matrice-modal')">Retour au Cockpit</button>
+
+            <div id="stock-cat-detail-container" style="display: none; flex: 1; flex-direction: column; overflow: hidden;">
+                <button class="add-btn" style="background: transparent; border: 1px solid var(--dark-border); color: var(--gold); margin-bottom: 15px; flex-shrink: 0;" onclick="closeCategoryStock()">🔙 RETOUR AUX DOSSIERS</button>
+                <div class="table-wrapper" style="flex: 1; overflow-y: auto;">
+                    <table class="dark-table inv-table">
+                        <thead>
+                            <tr>
+                                <th style="padding-left: 15px;">PRODUIT</th>
+                                <th>UNITAIRE</th>
+                                <th>QUANTITÉ</th>
+                                <th>TOTAL</th>
+                                <th style="text-align: right; padding-right: 15px;">CHOIX</th>
+                            </tr>
+                        </thead>
+                        <tbody id="global-stock-list"></tbody>
+                    </table>
+                </div>
+            </div>
+
+            <button class="add-btn" style="background: transparent; border: 1px solid var(--dark-border); color: var(--dark-text); flex-shrink: 0; margin-top: 10px;" onclick="closeCategoryStock(); closeInvModal('matrice-modal');">Retour au Cockpit</button>
         </div>
     </div>
 
@@ -266,7 +275,7 @@
                 <div id="supplier-order-content" style="flex: 1; overflow-y: auto; padding-right: 5px;"></div>
             </div>
 
-            <button class="add-btn" style="background: transparent; border: 1px solid var(--dark-border); color: var(--dark-text); flex-shrink: 0; margin-top: 15px;" onclick="closeInvModal('orders-modal')">Retour au Cockpit</button>
+            <button class="add-btn" style="background: transparent; border: 1px solid var(--dark-border); color: var(--dark-text); flex-shrink: 0; margin-top: 15px;" onclick="closeSupplierOrder(); closeInvModal('orders-modal');">Retour au Cockpit</button>
         </div>
     </div>
 
@@ -465,14 +474,14 @@
                 <div class="bento-title">Annuaire<br>Fournisseurs</div>
             </div>
 
-            <div class="bento-card" onclick="openInvModal('orders-modal')">
-                <div class="bento-icon">🚚</div>
-                <div class="bento-title">Bons de<br>Commande</div>
-            </div>
-
             <div class="bento-card" onclick="openInvModal('matrice-modal')">
                 <div class="bento-icon">📊</div>
                 <div class="bento-title">Matrice<br>Globale</div>
+            </div>
+
+            <div class="bento-card" onclick="openInvModal('orders-modal')">
+                <div class="bento-icon">🚚</div>
+                <div class="bento-title">Bons de<br>Commande</div>
             </div>
 
             <div class="bento-card" onclick="openInvModal('capital-modal')">
@@ -506,7 +515,8 @@
         let stockCategories = ['🍎 Fruits', '🥗 Légumes', '🍝 Glucides', '🥩 Protéines', '🥩 Viande', '🐟 Poisson', '🦞 Crustacés', '🧀 B.O.F', '❄️ Surgelés', '🥜 Fruits Secs', '🥫 Produits Secs', '📦 Économat', '🫧 Clarification', '🧼 Entretien'];
         let currentFolderCat = null;
         let pendingAIItems = [];
-        let currentSupplierMatrix = {}; // Stocke l'état des commandes
+        let currentSupplierMatrix = {}; 
+        let currentStockCategoryOpen = null; // Mémorise le dossier de catégorie ouvert
 
         // === OUTIL : EXTRACTION DES POIDS ET UNITÉS ===
         function parseQuantity(str) {
@@ -1040,18 +1050,16 @@
             }).catch(err => { alert("❌ Erreur lors de la copie."); });
         };
 
-        // === MATRICE STOCKS : GLOBALE & PAR FOURNISSEUR (BENTO LOGIC) ===
+        // === MATRICE STOCKS : GLOBALE & PAR FOURNISSEUR (DOSSIERS) ===
         function renderGlobalStock() {
-            const listContainer = document.getElementById('global-stock-list');
+            const folderGrid = document.getElementById('stock-category-folders-grid');
             const summaryContainer = document.getElementById('capital-breakdown-list');
             const bentoCapital = document.getElementById('bento-capital-total');
             const supplierFoldersGrid = document.getElementById('supplier-folders-grid');
             
-            if(!listContainer) return;
-
             let stockByCategory = {}; 
             let totalGlobal = 0;
-            currentSupplierMatrix = {}; // Stocké globalement pour l'ouverture des dossiers
+            currentSupplierMatrix = {}; // Stocké globalement pour l'ouverture des dossiers fournisseurs
 
             stockGlobalData.forEach((item, idx) => {
                 let cat = item.cat || '📦 NON CLASSÉ';
@@ -1093,48 +1101,30 @@
             }
             if(summaryContainer) summaryContainer.innerHTML = summaryHtml;
 
-            // --- 3. MATRICE GLOBALE (DANS MODALE) ---
-            let tableHtml = '';
-            for (let cat in stockByCategory) {
-                tableHtml += `
-                    <tr class="category-row" style="background: transparent;">
-                        <td colspan="5" style="padding: 15px 0 5px 0; border: none;">
-                            <div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid var(--dark-border); padding-bottom: 5px;">
-                                <span style="font-weight: 800; color: var(--gold); text-transform: uppercase; font-size: 0.8rem; letter-spacing: 1px;">${cat}</span>
-                                <span style="font-weight: 900; color: #FFF; font-size: 0.85rem;">${stockByCategory[cat].totalValue.toFixed(2)} ${currentCurrency}</span>
-                            </div>
-                        </td>
-                    </tr>
-                `;
-                stockByCategory[cat].items.forEach(i => {
-                    let ratio = i.initialQ > 0 ? (i.currentQ / i.initialQ) : 1;
-                    let alertStyle = ratio <= 0.2 ? 'color: #EF4444; font-weight: 900; background: rgba(239, 68, 68, 0.1); padding: 4px 8px; border-radius: 4px; border: 1px solid #EF4444;' : 'color: #10B981; font-weight: 600; background: rgba(16, 185, 129, 0.1); padding: 4px 8px; border-radius: 4px; border: 1px solid rgba(16, 185, 129, 0.3);';
-                    let alertIcon = ratio <= 0.2 ? ' ⚠️' : '';
-                    
-                    let fournisseurHtml = '';
-                    if (i.fournisseur && i.fournisseur !== "Fournisseur Inconnu" && i.fournisseur !== "Non assigné") {
-                        fournisseurHtml = `<div style="margin-top: 4px; font-size:0.7rem; color:#888; font-weight:600; letter-spacing: 0.5px; text-transform: uppercase;">🏢 ${i.fournisseur}</div>`;
-                    }
-
-                    tableHtml += `
-                    <tr style="transition: background 0.2s;" onmouseover="this.style.background='#1A1D27'" onmouseout="this.style.background='var(--dark-panel)'">
-                        <td data-label="Produit" style="padding: 10px 15px; border-bottom: 1px solid #1A1D27;">
-                            <div style="font-weight: 700; font-size: 0.9rem; color: #FFF;">${i.name}</div>
-                            ${fournisseurHtml}
-                        </td>
-                        <td data-label="Unitaire" style="padding: 10px 15px; border-bottom: 1px solid #1A1D27; color: var(--dark-muted); font-size: 0.8rem; white-space: nowrap;">${i.uPrice.toFixed(2)} ${currentCurrency} / ${i.unit}</td>
-                        <td data-label="Quantité" style="padding: 10px 15px; border-bottom: 1px solid #1A1D27; cursor: pointer;" onclick="editStockQty(${i.originalIndex})" title="Modifier la quantité">
-                            <span style="${alertStyle}">${i.currentQ} ${i.unit}${alertIcon}</span>
-                        </td>
-                        <td data-label="Total" style="padding: 10px 15px; border-bottom: 1px solid #1A1D27; color: #FFF; font-weight: 800; font-size: 0.9rem; white-space: nowrap;">${i.currentActualValue.toFixed(2)} ${currentCurrency}</td>
-                        <td style="padding: 10px 15px; border-bottom: none; text-align: right;">
-                            <button onclick="deleteStockItem(${i.originalIndex})" style="background: transparent; border: none; color: #EF4444; font-size: 1.1rem; cursor: pointer; padding: 5px;">✖</button>
-                        </td>
-                    </tr>`;
-                });
+            // --- 3. MATRICE GLOBALE (VUE DOSSIERS) ---
+            if (folderGrid) {
+                let folderHtml = '';
+                for (let cat in stockByCategory) {
+                    let catData = stockByCategory[cat];
+                    let safeCat = cat.replace(/'/g, "\\'").replace(/"/g, '&quot;');
+                    folderHtml += `
+                    <div class="folder-card" style="background: #141722; border: 1px solid #2D3748; justify-content:center; text-align:center;" 
+                         onclick="openCategoryStock('${safeCat}')">
+                        <div style="font-size: 2rem; margin-bottom: 5px;">📁</div>
+                        <h3 style="margin:0; color:var(--gold); font-size: 0.85rem; border: none; padding: 0;">${cat}</h3>
+                        <small style="color:var(--dark-text); font-weight:bold; margin-top: 5px;">${catData.items.length} Réf | ${catData.totalValue.toFixed(2)} ${currentCurrency}</small>
+                    </div>`;
+                }
+                if (Object.keys(stockByCategory).length === 0) {
+                    folderHtml = `<div style="grid-column: 1/-1; text-align:center; color:var(--dark-muted); padding: 40px;">Le stock est vide.</div>`;
+                }
+                folderGrid.innerHTML = folderHtml;
             }
-            if(Object.keys(stockByCategory).length === 0) tableHtml = `<tr><td colspan="5" style="text-align: center; color: #888; padding: 30px;">Le stock est vide.</td></tr>`;
-            listContainer.innerHTML = tableHtml;
+
+            // Si un dossier de catégorie est déjà ouvert, on le met à jour
+            if (currentStockCategoryOpen) {
+                openCategoryStock(currentStockCategoryOpen);
+            }
 
             // --- 4. COMMANDES FOURNISSEURS (DOSSIERS) ---
             if(supplierFoldersGrid) {
@@ -1158,7 +1148,69 @@
             }
         }
 
-        // --- OUVERTURE D'UN DOSSIER DE COMMANDE ---
+        // --- OUVERTURE D'UN DOSSIER DE CATÉGORIE (MATRICE GLOBALE) ---
+        window.openCategoryStock = function(catName) {
+            currentStockCategoryOpen = catName;
+            document.getElementById('stock-cat-folder-container').style.display = 'none';
+            document.getElementById('stock-cat-detail-container').style.display = 'flex';
+            
+            let listContainer = document.getElementById('global-stock-list');
+            let tableHtml = '';
+            
+            let itemsInCat = [];
+            stockGlobalData.forEach((item, idx) => {
+                let c = item.cat || '📦 NON CLASSÉ';
+                if (c === catName) {
+                    let tPrice = item.totalPrice !== undefined ? item.totalPrice : parseFloat(String(item.lastPrice).replace(',', '.').replace(/[^\d.-]/g, '')) || 0;
+                    let parsed = parseQuantity(item.qtyStr);
+                    let initialQ = item.initialQty !== undefined ? item.initialQty : parsed.val;
+                    let currentQ = item.currentQty !== undefined ? item.currentQty : initialQ;
+                    let unit = item.unit !== undefined ? item.unit : parsed.unit;
+                    let uPrice = item.unitPrice !== undefined ? item.unitPrice : (initialQ > 0 ? tPrice / initialQ : tPrice);
+                    let currentActualValue = uPrice * currentQ;
+
+                    itemsInCat.push({ ...item, originalIndex: idx, tPrice, initialQ, currentQ, unit, uPrice, currentActualValue });
+                }
+            });
+
+            itemsInCat.forEach(i => {
+                let ratio = i.initialQ > 0 ? (i.currentQ / i.initialQ) : 1;
+                let alertStyle = ratio <= 0.2 ? 'color: #EF4444; font-weight: 900; background: rgba(239, 68, 68, 0.1); padding: 4px 8px; border-radius: 4px; border: 1px solid #EF4444;' : 'color: #10B981; font-weight: 600; background: rgba(16, 185, 129, 0.1); padding: 4px 8px; border-radius: 4px; border: 1px solid rgba(16, 185, 129, 0.3);';
+                let alertIcon = ratio <= 0.2 ? ' ⚠️' : '';
+                
+                let fournisseurHtml = '';
+                if (i.fournisseur && i.fournisseur !== "Fournisseur Inconnu" && i.fournisseur !== "Non assigné") {
+                    fournisseurHtml = `<div style="margin-top: 4px; font-size:0.7rem; color:#888; font-weight:600; letter-spacing: 0.5px; text-transform: uppercase;">🏢 ${i.fournisseur}</div>`;
+                }
+
+                tableHtml += `
+                <tr style="transition: background 0.2s;" onmouseover="this.style.background='#1A1D27'" onmouseout="this.style.background='var(--dark-panel)'">
+                    <td data-label="Produit" style="padding: 10px 15px; border-bottom: 1px solid #1A1D27;">
+                        <div style="font-weight: 700; font-size: 0.9rem; color: #FFF;">${i.name}</div>
+                        ${fournisseurHtml}
+                    </td>
+                    <td data-label="Unitaire" style="padding: 10px 15px; border-bottom: 1px solid #1A1D27; color: var(--dark-muted); font-size: 0.8rem; white-space: nowrap;">${i.uPrice.toFixed(2)} ${currentCurrency} / ${i.unit}</td>
+                    <td data-label="Quantité" style="padding: 10px 15px; border-bottom: 1px solid #1A1D27; cursor: pointer;" onclick="editStockQty(${i.originalIndex})" title="Modifier la quantité">
+                        <span style="${alertStyle}">${i.currentQ} ${i.unit}${alertIcon}</span>
+                    </td>
+                    <td data-label="Total" style="padding: 10px 15px; border-bottom: 1px solid #1A1D27; color: #FFF; font-weight: 800; font-size: 0.9rem; white-space: nowrap;">${i.currentActualValue.toFixed(2)} ${currentCurrency}</td>
+                    <td style="padding: 10px 15px; border-bottom: none; text-align: right;">
+                        <button onclick="deleteStockItem(${i.originalIndex})" style="background: transparent; border: none; color: #EF4444; font-size: 1.1rem; cursor: pointer; padding: 5px;">✖</button>
+                    </td>
+                </tr>`;
+            });
+            
+            if(itemsInCat.length === 0) tableHtml = `<tr><td colspan="5" style="text-align: center; color: #888; padding: 30px;">Catégorie vide.</td></tr>`;
+            listContainer.innerHTML = tableHtml;
+        };
+
+        window.closeCategoryStock = function() {
+            currentStockCategoryOpen = null;
+            document.getElementById('stock-cat-folder-container').style.display = 'block';
+            document.getElementById('stock-cat-detail-container').style.display = 'none';
+        };
+
+        // --- OUVERTURE D'UN DOSSIER DE COMMANDE (FOURNISSEUR) ---
         window.openSupplierOrder = function(suppName) {
             document.getElementById('orders-folder-container').style.display = 'none';
             document.getElementById('orders-detail-container').style.display = 'flex';
