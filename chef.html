@@ -366,7 +366,7 @@
 
                 <div class="menu-category" style="margin: 0; display: flex; flex-direction: column; overflow: hidden; min-height: 300px; border-top: 4px solid var(--purple);">
                     <div class="category-header" style="background: var(--panel); border-bottom: 1px solid var(--border-strong); padding: 15px 20px;">
-                        <span style="color: var(--purple); letter-spacing: 1px;">🚚 COMMANDES PAR FOURNISSEUR</span>
+                        <span style="color: var(--purple); letter-spacing: 1px; font-weight: 900;">🚚 COMMANDES PAR FOURNISSEUR</span>
                     </div>
                     <div id="supplier-matrix-list" style="padding: 20px; display: flex; flex-direction: column; gap: 20px; overflow-y: auto; background: var(--bg);">
                         </div>
@@ -928,6 +928,30 @@
             }
         }
 
+        // --- FONCTION : COPIER LE BON DE COMMANDE ---
+        window.copySupplierOrder = function(suppName) {
+            let text = `📦 BON DE COMMANDE - ${suppName}\nDate : ${new Date().toLocaleDateString('fr-FR')}\n\n`;
+            
+            let hasItems = false;
+            stockGlobalData.forEach(i => {
+                if (i.fournisseur === suppName) {
+                    hasItems = true;
+                    let parsed = parseQuantity(i.qtyStr);
+                    let q = i.currentQty !== undefined ? i.currentQty : (i.initialQty !== undefined ? i.initialQty : parsed.val);
+                    let u = i.unit !== undefined ? i.unit : parsed.unit;
+                    text += `• ${q} ${u} - ${i.name}\n`;
+                }
+            });
+            
+            if(!hasItems) return alert("Aucun produit pour ce fournisseur.");
+
+            navigator.clipboard.writeText(text).then(() => {
+                alert(`✅ Bon de commande pour ${suppName} copié !\nPrêt à être collé dans un mail ou WhatsApp.`);
+            }).catch(err => {
+                alert("❌ Erreur lors de la copie.");
+            });
+        };
+
         // === MATRICE STOCKS : GLOBALE & PAR FOURNISSEUR ===
         function renderGlobalStock() {
             const listContainer = document.getElementById('global-stock-list');
@@ -939,7 +963,6 @@
             let stockByCategory = {}; 
             let totalGlobal = 0;
             
-            // Nouvelle structure pour regrouper par Fournisseur
             let supplierMatrix = {};
 
             stockGlobalData.forEach((item, idx) => {
@@ -1027,38 +1050,52 @@
             if(Object.keys(stockByCategory).length === 0) tableHtml = `<tr><td colspan="5" style="text-align: center; padding: 30px;">Le stock est vide.</td></tr>`;
             listContainer.innerHTML = tableHtml;
 
-            // --- 3. NOUVELLE MATRICE PAR FOURNISSEUR ---
+            // --- 3. MATRICE PAR FOURNISSEUR (BONS DE COMMANDE) ---
             if(supplierMatrixContainer) {
                 let suppHtml = '';
                 for (let suppName in supplierMatrix) {
-                    if (suppName === "Non assigné") continue; // On masque ce qui n'a pas de fournisseur dans cette vue
+                    if (suppName === "Non assigné") continue; 
                     
                     let suppData = supplierMatrix[suppName];
-                    suppHtml += `
-                    <div style="border: 1px solid var(--border-strong); border-radius: 8px; background: var(--panel); overflow: hidden;">
-                        <div style="background: #FAFAFA; padding: 12px 20px; border-bottom: 1px solid var(--border-strong); display: flex; justify-content: space-between; align-items: center;">
-                            <span style="font-weight: 800; color: var(--purple); text-transform: uppercase;">🏢 ${suppName}</span>
-                            <span style="font-weight: 900; color: var(--gold);">${suppData.totalValue.toFixed(2)} ${currentCurrency}</span>
-                        </div>
-                        <div style="padding: 15px;">`;
+                    let safeSuppName = suppName.replace(/'/g, "\\'").replace(/"/g, '&quot;');
 
+                    let rowsHtml = '';
                     for (let catName in suppData.cats) {
-                        suppHtml += `<div style="margin-bottom: 15px;">
-                            <div style="font-size: 0.8rem; font-weight: bold; color: var(--text-muted); text-transform: uppercase; border-bottom: 1px dashed var(--border); padding-bottom: 5px; margin-bottom: 8px;">${catName}</div>
-                            <div style="display: flex; flex-direction: column; gap: 8px; padding-left: 10px;">`;
+                        rowsHtml += `<tr style="background: var(--bg);"><td colspan="3" style="padding: 8px 15px; font-size: 0.75rem; color: var(--text-muted); text-transform: uppercase; font-weight: 800; border-bottom: 1px solid var(--border);">${catName}</td></tr>`;
                         
                         suppData.cats[catName].forEach(i => {
-                            suppHtml += `<div style="display: flex; justify-content: space-between; font-size: 0.9rem; align-items: center;">
-                                <span><b style="color: var(--text-main);">${i.name}</b> <span style="color: var(--slate); font-size: 0.8rem; margin-left: 5px;">(${i.currentQ} ${i.unit})</span></span>
-                                <span style="color: var(--text-muted); font-weight: 600; font-size: 0.85rem;">${i.value.toFixed(2)} ${currentCurrency}</span>
-                            </div>`;
+                            rowsHtml += `
+                            <tr style="transition: background 0.2s;" onmouseover="this.style.background='#FAFAFA'" onmouseout="this.style.background='transparent'">
+                                <td style="padding: 10px 15px; border-bottom: 1px solid var(--border); font-weight: 600; color: var(--text-main); font-size: 0.9rem;">${i.name}</td>
+                                <td style="padding: 10px 15px; border-bottom: 1px solid var(--border); font-weight: 800; color: var(--slate); font-size: 0.9rem;">${i.currentQ} <span style="font-size: 0.75rem; font-weight: normal;">${i.unit}</span></td>
+                                <td style="padding: 10px 15px; border-bottom: 1px solid var(--border); font-weight: 800; color: var(--text-muted); font-size: 0.9rem; text-align: right;">${i.value.toFixed(2)} ${currentCurrency}</td>
+                            </tr>`;
                         });
-                        suppHtml += `</div></div>`;
                     }
-                    suppHtml += `</div></div>`;
+
+                    suppHtml += `
+                    <div style="border: 1px solid var(--border-strong); border-radius: 8px; background: var(--panel); overflow: hidden; box-shadow: var(--shadow-subtle);">
+                        <div style="background: #FAFAFA; padding: 15px 20px; border-bottom: 1px solid var(--border-strong); display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px;">
+                            <div style="display: flex; align-items: center; gap: 10px;">
+                                <span style="font-size: 1.5rem;">🏢</span>
+                                <div>
+                                    <div style="font-weight: 900; color: var(--purple); text-transform: uppercase; letter-spacing: 1px; font-size: 1.1rem;">${suppName}</div>
+                                    <div style="font-size: 0.8rem; color: var(--text-muted); font-weight: 600; margin-top: 3px;">TOTAL COMMANDE : <span style="color: var(--gold);">${suppData.totalValue.toFixed(2)} ${currentCurrency}</span></div>
+                                </div>
+                            </div>
+                            <div style="display: flex; gap: 10px;">
+                                <button onclick="copySupplierOrder('${safeSuppName}')" style="background: var(--bg); border: 1px solid var(--border-strong); color: var(--text-main); padding: 8px 15px; border-radius: 6px; cursor: pointer; font-size: 0.8rem; font-weight: 600; transition: 0.2s;" onmouseover="this.style.borderColor='var(--gold)'" onmouseout="this.style.borderColor='var(--border-strong)'">📋 COPIER LE BON</button>
+                            </div>
+                        </div>
+                        <div class="table-responsive-wrapper">
+                            <table style="width: 100%; border-collapse: collapse; text-align: left;">
+                                ${rowsHtml}
+                            </table>
+                        </div>
+                    </div>`;
                 }
 
-                if(suppHtml === '') suppHtml = `<div style="text-align:center; color:var(--text-muted); padding:20px;">Aucun fournisseur répertorié.</div>`;
+                if(suppHtml === '') suppHtml = `<div style="text-align:center; color:var(--text-muted); padding:40px; font-style: italic;">Aucun fournisseur répertorié pour le moment.</div>`;
                 supplierMatrixContainer.innerHTML = suppHtml;
             }
         }
