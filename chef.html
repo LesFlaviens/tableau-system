@@ -344,7 +344,7 @@
                 
                 <div id="stock-summary" style="display: flex; gap: 15px; overflow-x: auto; padding-bottom: 10px; -webkit-overflow-scrolling: touch; scrollbar-width: none;"></div>
 
-                <div class="menu-category" style="margin: 0; flex: 1; display: flex; flex-direction: column; overflow: hidden;">
+                <div class="menu-category" style="margin: 0; flex: 1; display: flex; flex-direction: column; overflow: hidden; min-height: 300px;">
                     <div class="category-header" style="background: var(--slate); color: white; border-bottom: none; padding: 15px 20px;">
                         <span style="letter-spacing: 1px;">📊 MATRICE DE STOCK GLOBALE</span>
                     </div>
@@ -363,6 +363,15 @@
                         </table>
                     </div>
                 </div>
+
+                <div class="menu-category" style="margin: 0; display: flex; flex-direction: column; overflow: hidden; min-height: 300px; border-top: 4px solid var(--purple);">
+                    <div class="category-header" style="background: var(--panel); border-bottom: 1px solid var(--border-strong); padding: 15px 20px;">
+                        <span style="color: var(--purple); letter-spacing: 1px;">🚚 COMMANDES PAR FOURNISSEUR</span>
+                    </div>
+                    <div id="supplier-matrix-list" style="padding: 20px; display: flex; flex-direction: column; gap: 20px; overflow-y: auto; background: var(--bg);">
+                        </div>
+                </div>
+
             </div>
         </div>
     </div>
@@ -401,7 +410,7 @@
             return { val: 1, unit: 'u' };
         }
 
-        // === MOTEUR RÉSEAU BLINDÉ (MODE SURVIE INCLUS) ===
+        // === MOTEUR RÉSEAU BLINDÉ ===
         const API = {
             get: async () => {
                 try {
@@ -715,6 +724,7 @@
             document.getElementById('ai-supplier-input').value = data.fournisseur || "Fournisseur Inconnu";
             document.getElementById('ai-address-input').value = data.adresse || data.address || "";
             document.getElementById('ai-phone-input').value = data.telephone || data.phone || "";
+            document.getElementById('ai-currency-input').value = data.devise || currentCurrency;
             
             pendingAIItems = data.articles || [];
             renderAIValidationTable();
@@ -915,21 +925,30 @@
             if (updatedCount > 0) {
                 renderAll();
                 await API.save('INVENTORY_MASTER', stockGlobalData);
-                alert(`✅ Les coordonnées de ${newName} ont été mises à jour pour ${updatedCount} produit(s).`);
             }
         }
 
-        // === MATRICE STOCKS : ÉPURÉE AVEC FOURNISSEUR DISCRET ===
+        // === MATRICE STOCKS : GLOBALE & PAR FOURNISSEUR ===
         function renderGlobalStock() {
             const listContainer = document.getElementById('global-stock-list');
             const summaryContainer = document.getElementById('stock-summary');
+            const supplierMatrixContainer = document.getElementById('supplier-matrix-list');
+            
             if(!listContainer) return;
 
-            let stockByCategory = {}; let totalGlobal = 0;
+            let stockByCategory = {}; 
+            let totalGlobal = 0;
+            
+            // Nouvelle structure pour regrouper par Fournisseur
+            let supplierMatrix = {};
 
             stockGlobalData.forEach((item, idx) => {
                 let cat = item.cat || '📦 NON CLASSÉ';
+                let f = (item.fournisseur && item.fournisseur.trim() !== "" && item.fournisseur !== "Fournisseur Inconnu") ? item.fournisseur : "Non assigné";
+
                 if (!stockByCategory[cat]) stockByCategory[cat] = { items: [], totalValue: 0 };
+                if (!supplierMatrix[f]) supplierMatrix[f] = { totalValue: 0, cats: {} };
+                if (!supplierMatrix[f].cats[cat]) supplierMatrix[f].cats[cat] = [];
                 
                 let tPrice = item.totalPrice !== undefined ? item.totalPrice : parseFloat(String(item.lastPrice).replace(',', '.').replace(/[^\d.-]/g, '')) || 0;
                 let parsed = parseQuantity(item.qtyStr);
@@ -941,11 +960,14 @@
                 let currentActualValue = uPrice * currentQ;
 
                 stockByCategory[cat].items.push({ ...item, originalIndex: idx, tPrice, initialQ, currentQ, unit, uPrice, currentActualValue });
+                supplierMatrix[f].cats[cat].push({ name: item.name, currentQ: currentQ, unit: unit, value: currentActualValue });
                 
                 stockByCategory[cat].totalValue += currentActualValue; 
+                supplierMatrix[f].totalValue += currentActualValue;
                 totalGlobal += currentActualValue;
             });
 
+            // --- 1. RÉSUMÉ FINANCIER HAUT DE PAGE ---
             let summaryHtml = `
                 <div style="background: var(--text-main); color: var(--gold); border: 1px solid var(--text-main); padding: 15px 20px; border-radius: 10px; white-space: nowrap; box-shadow: var(--shadow-subtle);">
                     <div style="font-size: 0.7rem; font-weight: bold; text-transform: uppercase; opacity: 0.8; margin-bottom: 5px;">CAPITAL IMMOBILISÉ</div>
@@ -962,6 +984,7 @@
             }
             if(summaryContainer) summaryContainer.innerHTML = summaryHtml;
 
+            // --- 2. MATRICE GLOBALE CLASSIQUE ---
             let tableHtml = '';
             for (let cat in stockByCategory) {
                 tableHtml += `
@@ -980,9 +1003,8 @@
                     let alertIcon = ratio <= 0.2 ? ' ⚠️' : '';
                     
                     let fournisseurHtml = '';
-                    if (i.fournisseur && i.fournisseur !== "Fournisseur Inconnu") {
-                        // ON AFFICHE UNIQUEMENT LE NOM DU FOURNISSEUR POUR ÉPURER LE TABLEAU
-                        fournisseurHtml = `<div style="margin-top: 6px;"><span style="font-size:0.75rem; color:var(--slate); font-weight:700; letter-spacing: 0.5px; text-transform: uppercase;">🏢 ${i.fournisseur}</span></div>`;
+                    if (i.fournisseur && i.fournisseur !== "Fournisseur Inconnu" && i.fournisseur !== "Non assigné") {
+                        fournisseurHtml = `<div style="margin-top: 6px;"><span style="font-size:0.7rem; color:var(--slate); font-weight:700; letter-spacing: 0.5px; text-transform: uppercase;">🏢 ${i.fournisseur}</span></div>`;
                     }
 
                     tableHtml += `
@@ -1002,9 +1024,43 @@
                     </tr>`;
                 });
             }
-
             if(Object.keys(stockByCategory).length === 0) tableHtml = `<tr><td colspan="5" style="text-align: center; padding: 30px;">Le stock est vide.</td></tr>`;
             listContainer.innerHTML = tableHtml;
+
+            // --- 3. NOUVELLE MATRICE PAR FOURNISSEUR ---
+            if(supplierMatrixContainer) {
+                let suppHtml = '';
+                for (let suppName in supplierMatrix) {
+                    if (suppName === "Non assigné") continue; // On masque ce qui n'a pas de fournisseur dans cette vue
+                    
+                    let suppData = supplierMatrix[suppName];
+                    suppHtml += `
+                    <div style="border: 1px solid var(--border-strong); border-radius: 8px; background: var(--panel); overflow: hidden;">
+                        <div style="background: #FAFAFA; padding: 12px 20px; border-bottom: 1px solid var(--border-strong); display: flex; justify-content: space-between; align-items: center;">
+                            <span style="font-weight: 800; color: var(--purple); text-transform: uppercase;">🏢 ${suppName}</span>
+                            <span style="font-weight: 900; color: var(--gold);">${suppData.totalValue.toFixed(2)} ${currentCurrency}</span>
+                        </div>
+                        <div style="padding: 15px;">`;
+
+                    for (let catName in suppData.cats) {
+                        suppHtml += `<div style="margin-bottom: 15px;">
+                            <div style="font-size: 0.8rem; font-weight: bold; color: var(--text-muted); text-transform: uppercase; border-bottom: 1px dashed var(--border); padding-bottom: 5px; margin-bottom: 8px;">${catName}</div>
+                            <div style="display: flex; flex-direction: column; gap: 8px; padding-left: 10px;">`;
+                        
+                        suppData.cats[catName].forEach(i => {
+                            suppHtml += `<div style="display: flex; justify-content: space-between; font-size: 0.9rem; align-items: center;">
+                                <span><b style="color: var(--text-main);">${i.name}</b> <span style="color: var(--slate); font-size: 0.8rem; margin-left: 5px;">(${i.currentQ} ${i.unit})</span></span>
+                                <span style="color: var(--text-muted); font-weight: 600; font-size: 0.85rem;">${i.value.toFixed(2)} ${currentCurrency}</span>
+                            </div>`;
+                        });
+                        suppHtml += `</div></div>`;
+                    }
+                    suppHtml += `</div></div>`;
+                }
+
+                if(suppHtml === '') suppHtml = `<div style="text-align:center; color:var(--text-muted); padding:20px;">Aucun fournisseur répertorié.</div>`;
+                supplierMatrixContainer.innerHTML = suppHtml;
+            }
         }
 
         async function editStockQty(idx) {
@@ -1360,6 +1416,28 @@
             input.addEventListener('blur', () => { recognition.stop(); input.placeholder = oldPh; }, {once: true});
             recognition.onerror = function(event) { input.placeholder = oldPh; btn.classList.remove('recording-active'); btn.innerHTML = orig; };
             recognition.onend = () => { btn.classList.remove('recording-active'); btn.innerHTML = orig; input.placeholder = oldPh; };
+        }
+
+        // === SÉCURITÉ : MODIFICATION DU CODE PIN ===
+        async function changePin() {
+            let newPin = prompt("🔑 Entrez le nouveau code PIN (4 chiffres recommandés) :");
+            if (newPin && newPin.trim() !== "") {
+                let confirmPin = confirm(`⚠️ Confirmez-vous le nouveau code PIN : ${newPin.trim()} ?\nCe code sera requis à la prochaine connexion.`);
+                if (confirmPin) {
+                    try {
+                        const res = await fetch(`${SERVER_URL}/api/update-pin`, {
+                            method: 'POST', headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ tenantID: tenantID, newPin: newPin.trim() })
+                        });
+                        const data = await res.json();
+                        if (data.success) {
+                            alert("✅ Code PIN mis à jour avec succès.\nLa synchronisation avec le Command Center est immédiate.");
+                        } else alert("❌ Erreur du serveur : " + data.error);
+                    } catch (error) {
+                        alert("❌ Erreur de connexion avec la base de données de l'Empire.");
+                    }
+                }
+            }
         }
     </script>
 </body>
