@@ -27,7 +27,8 @@ app.get('/', (req, res) => {
 
 app.get('/panel-ichef', (req, res) => {
     if (req.query.pass === ADMIN_PASS) {
-        res.sendFile(path.join(__dirname, 'admin.html'));
+        // 👇 ICI : REDIRECTION VERS TON NOUVEAU COCKPIT SUPER-ADMIN
+        res.sendFile(path.join(__dirname, 'empire.html'));
     } else {
         res.status(403).send('🔒 Accès Refusé.');
     }
