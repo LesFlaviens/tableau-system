@@ -1569,6 +1569,38 @@ async function saveProfile() {
                 }
             });
 
+            // ==========================================
+        // 🍳 SAUVEGARDE DE LA RECETTE ET FICHE TECHNIQUE
+        // ==========================================
+        async function saveRecipe() {
+            let name = document.getElementById('market-name').value.trim();
+            let price = parseFloat(document.getElementById('market-price').value);
+            let category = document.getElementById('market-category').value;
+            let unitCost = parseFloat(document.getElementById('market-total-cost').value) || 0; 
+            let ing = document.getElementById('rec-ing') ? document.getElementById('rec-ing').value : '';
+            let prep = document.getElementById('rec-prep') ? document.getElementById('rec-prep').value : '';
+
+            if(!name || isNaN(price)) return alert("⚠️ Nom et Prix obligatoires.");
+            
+            // Calcul du FoodCost (%)
+            let fc = 0; 
+            if(price > 0 && unitCost > 0) fc = parseFloat(((unitCost / price) * 100).toFixed(1));
+            
+            let structuredIngs = [];
+            const cats = ['fecu', 'prot', 'bof', 'sauc', 'legu', 'eco'];
+            cats.forEach(k => {
+                let rawVal = document.getElementById(`market-${k}-raw`).value;
+                let portion = parseFloat(document.getElementById(`gram-${k}`).value) || 1;
+                if (rawVal && rawVal.trim() !== "") {
+                    rawVal.split('\n').forEach(line => {
+                        let cleanLine = line.replace(/\([^)]+\)/g, '').replace(/dispo:.*$/i, '').trim();
+                        if(cleanLine === "") return;
+                        let nameOnly = cleanLine.replace(/(\d+(?:\.\d+)?)\s*(?:€|euros?|\$|chf|mad|£|¥).*/i, '').trim();
+                        if (nameOnly) structuredIngs.push({ name: nameOnly, qtyPerPortion: portion, cat: k }); 
+                    });
+                }
+            });
+
             let recipeObj = { id: Date.now(), name: name, cat: category, price: price, cost: unitCost, fc: fc, ing: ing, prep: prep, structuredIngs: structuredIngs };
             let newItem = { id: Date.now(), name: name, price: price, stock: 99 };
 
@@ -1578,16 +1610,18 @@ async function saveProfile() {
 
             await API.save('MENU_MASTER', menuData);
             await API.save('RECIPES_MASTER', recipesData); 
-            renderMenu(); renderRecipes();
+            renderMenu(); 
+            renderRecipes();
             
+            // On vide les champs après publication
             document.getElementById('market-name').value = '';
             if(document.getElementById('rec-ing')) document.getElementById('rec-ing').value = '';
             if(document.getElementById('rec-prep')) document.getElementById('rec-prep').value = '';
             
-            alert(`✅ Plat "${name}" publié !`);
+            alert(`✅ Plat "${name}" publié avec succès !`);
         }
 
-        // === FICHES TECHNIQUES ===
+        // === FICHES TECHNIQUES (AFFICHAGE) ===
         function renderRecipes() {
             document.getElementById('catalog-view').innerHTML = Object.keys(menuData).map(k => `
                 <div class="folder-card" onclick="openFolder('${k}')">
@@ -1598,127 +1632,33 @@ async function saveProfile() {
         }
 
         function openFolder(cat) {
-            currentFolderCat = cat; document.getElementById('catalog-view').style.display='none'; document.getElementById('folder-view').style.display='block';
+            currentFolderCat = cat; 
+            document.getElementById('catalog-view').style.display='none'; 
+            document.getElementById('folder-view').style.display='block';
             document.getElementById('current-folder-title').innerText = cat.toUpperCase();
+            
             document.getElementById('recipes-list').innerHTML = recipesData.filter(r=>r.cat===cat).map(r=>`
                 <div class="menu-item" style="display:flex; justify-content:space-between; align-items:center; background:var(--panel); padding:15px; border-radius:8px; border:1px solid var(--border-strong);">
-                    <div><b style="font-size:1.1rem; color:var(--text-main);">${r.name}</b><br><small style="color:var(--text-muted); font-weight:bold;">Marge: <span style="color:var(--accent);">${r.margin}%</span> | Coût: <span style="color:var(--gold);">${r.cost} ${currentCurrency}</span></small></div>
+                    <div>
+                        <b style="font-size:1.1rem; color:var(--text-main);">${r.name}</b><br>
+                        <small style="color:var(--text-muted); font-weight:bold;">FoodCost: <span style="color:var(--accent);">${r.fc !== undefined ? r.fc : 0}%</span> | Coût: <span style="color:var(--gold);">${r.cost} ${currentCurrency}</span></small>
+                    </div>
                     <button onclick="deleteRecipe(${r.id})" style="background:var(--bg); border:1px solid var(--border-strong); color:var(--alert); cursor:pointer; font-weight:bold; font-size:1.1rem; padding: 10px 15px; border-radius:8px;">✖</button>
                 </div>
             `).join('');
         }
 
-        function closeFolder() { currentFolderCat = null; renderAll(); document.getElementById('catalog-view').style.display='grid'; document.getElementById('folder-view').style.display='none'; }
+        function closeFolder() { 
+            currentFolderCat = null; 
+            renderAll(); 
+            document.getElementById('catalog-view').style.display='grid'; 
+            document.getElementById('folder-view').style.display='none'; 
+        }
 
         async function deleteRecipe(id) {
-            if(confirm("Supprimer définitivement cette fiche ?")) {
-                recipesData = recipesData.filter(r => r.id !== id); await API.save('RECIPES_MASTER', recipesData); openFolder(currentFolderCat);
+            if(confirm("Supprimer définitivement cette fiche technique ?")) {
+                recipesData = recipesData.filter(r => r.id !== id); 
+                await API.save('RECIPES_MASTER', recipesData); 
+                openFolder(currentFolderCat);
             }
         }
-
-        // === STATISTIQUES VENTES ===
-        async function generateSalesStats() {
-            let caBrut = 0; let coutTotal = 0; let totalPlatsVendus = 0; let salesMap = {};
-            let state = await API.get(); let activeOrders = state.activeOrders || {};
-
-            for (let tableId in activeOrders) {
-                if (tableId.includes('MASTER') || tableId.includes('ARCHIVE') || tableId.includes('BAR') || tableId.includes('CUISINE')) continue;
-                let orderData = activeOrders[tableId]; if (!orderData || !orderData.items) continue;
-                
-                orderData.items.forEach(item => {
-                    if (item.done) {
-                        let qty = parseInt(item.qty) || 1; let price = parseFloat(item.price) || 0; 
-                        if (price === 0) { for(let cat in menuData) { let found = menuData[cat].find(m => m.name === item.n); if(found) price = found.price; } }
-                        let cost = 0; let recipe = recipesData.find(r => r.name === item.n); if(recipe) cost = recipe.cost;
-                        
-                        caBrut += (price * qty); coutTotal += (cost * qty); totalPlatsVendus += qty;
-                        if(!salesMap[item.n]) salesMap[item.n] = { qty: 0, rev: 0 };
-                        salesMap[item.n].qty += qty; salesMap[item.n].rev += (price * qty);
-                    }
-                });
-            }
-
-            document.getElementById('stat-ca').innerText = caBrut.toFixed(2) + " " + currentCurrency;
-            document.getElementById('stat-marge').innerText = (caBrut - coutTotal).toFixed(2) + " " + currentCurrency;
-            document.getElementById('stat-qty').innerText = totalPlatsVendus;
-
-            let topSalesArray = Object.keys(salesMap).map(k => ({ name: k, qty: salesMap[k].qty, rev: salesMap[k].rev })).sort((a, b) => b.qty - a.qty);
-            let html = topSalesArray.length === 0 ? '<p style="text-align:center;">Aucune vente.</p>' : '';
-            
-            topSalesArray.forEach((s, idx) => {
-                let medal = idx === 0 ? '🥇' : (idx === 1 ? '🥈' : (idx === 2 ? '🥉' : '🔹'));
-                let highlightStyle = idx === 0 ? 'border: 1px solid var(--gold); background: var(--bg);' : 'background: var(--panel); border: 1px solid var(--border-strong);';
-                html += `
-                <div style="display:flex; flex-wrap:wrap; justify-content:space-between; align-items:center; padding: 15px; border-radius: 8px; margin-bottom:10px; gap: 10px; ${highlightStyle}">
-                    <div style="display:flex; align-items:center; gap: 15px;">
-                        <span style="font-size:1.8rem;">${medal}</span>
-                        <div style="display:flex; flex-direction:column;">
-                            <span style="font-weight:700; color:var(--text-main); font-size:1.1rem;">${s.name}</span>
-                            <span style="font-size:0.75rem; color:var(--text-muted); font-weight:600; text-transform:uppercase; margin-top:2px;">Rang #${idx + 1}</span>
-                        </div>
-                    </div>
-                    <div style="display:flex; gap: 15px; align-items:center;">
-                        <span style="background:var(--bg); padding:6px 10px; border-radius:6px; border:1px solid var(--border-strong); color:var(--text-muted); font-weight:800; font-size:0.85rem;">${s.qty} x</span>
-                        <span style="color:var(--gold); font-weight:900; font-size:1.1rem;">${s.rev.toFixed(2)} ${currentCurrency}</span>
-                    </div>
-                </div>`;
-            });
-            document.getElementById('top-sales-list').innerHTML = html;
-        }
-
-        // === UTILITAIRES ===
-        function switchTab(t) {
-            // Sécurité anti-superposition absolue
-            document.querySelectorAll('.module').forEach(m => { m.classList.remove('active'); });
-            document.querySelectorAll('.nav-btn').forEach(b => { b.classList.remove('active'); });
-            
-            document.getElementById('mod-'+t).classList.add('active');
-            document.getElementById('tab-'+t).classList.add('active');
-        }
-
-        function startMarketDictation(id, btnId) {
-            const S = window.SpeechRecognition || window.webkitSpeechRecognition;
-            if(!S) return; const r = new S(); r.lang='fr-FR';
-            r.onstart = () => document.getElementById(btnId).classList.add('recording-active');
-            r.onresult = (e) => { document.getElementById(id).value = e.results[0][0].transcript; calcSmartPlate(); };
-            r.onend = () => document.getElementById(btnId).classList.remove('recording-active');
-            r.start();
-        }
-
-        function startDictation(inputId, btnId) {
-            const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-            if (!SpeechRecognition) return alert("Non supporté.");
-            const recognition = new SpeechRecognition();
-            recognition.lang = 'fr-FR'; recognition.continuous = true; recognition.interimResults = false;
-            let input = document.getElementById(inputId); let btn = document.getElementById(btnId);
-            const orig = btn.innerHTML; let oldPh = input.placeholder;
-            input.placeholder = "🔴 Parlez (pause = saut de ligne)...";
-            recognition.start();
-            recognition.onstart = () => { btn.classList.add('recording-active'); btn.innerHTML = '🔴'; };
-            recognition.onresult = function(event) {
-                let speechResult = event.results[event.results.length - 1][0].transcript.trim();
-                input.value += (input.value ? '\n' : '') + speechResult;
-                input.scrollTop = input.scrollHeight;
-            };
-            input.addEventListener('blur', () => { recognition.stop(); input.placeholder = oldPh; }, {once: true});
-            recognition.onerror = function(event) { input.placeholder = oldPh; btn.classList.remove('recording-active'); btn.innerHTML = orig; };
-            recognition.onend = () => { btn.classList.remove('recording-active'); btn.innerHTML = orig; input.placeholder = oldPh; };
-        }
-    </script>
-    <div id="profile-modal" class="modal">
-    <div class="modal-content" style="max-width: 400px;">
-        <h3>👤 Mon Profil</h3>
-        <div style="display: flex; flex-direction: column; gap: 15px; margin-bottom: 25px;">
-            <input type="text" id="prof-nom" placeholder="Nom">
-            <input type="text" id="prof-prenom" placeholder="Prénom">
-            <input type="email" id="prof-email" placeholder="Email (@fr)">
-            <input type="text" id="prof-adresse" placeholder="Adresse complète">
-        </div>
-        <div style="display: flex; gap: 15px;">
-            <button class="add-btn" onclick="closeInvModal('profile-modal')">Annuler</button>
-            <button class="add-btn primary" onclick="saveProfile()">Enregistrer</button>
-        </div>
-    </div>
-</div>
-</body>
-</html>
