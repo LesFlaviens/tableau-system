@@ -57,7 +57,7 @@ const tenantSchema = new mongoose.Schema({
     email: String,
     phone: String,
     status: { type: String, enum: ['ACTIF', 'SUSPENDU'], default: 'ACTIF' },
-    plan: { type: String, enum: ['CHEF', 'ECO', 'BUSINESS', 'EXCUTIF', 'PREMIUM'], default: 'ECO' },
+    plan: { type: String, enum: ['CHEF', 'ECO', 'BUSINESS', 'PREMIUM'], default: 'ECO' },
     pin: { type: String, default: '9999' }, 
     maxScreens: { type: Number, default: 1 }, 
     registeredDevices: [String], 
@@ -231,10 +231,11 @@ app.post('/api/activate', async (req, res) => {
         const randomPin = Math.floor(1000 + Math.random() * 9000).toString();
         const finalPlan = plan || 'ECO';
 
+        // 🛡️ NOUVELLES LIMITES D'ÉCRANS STRICTES SELON TES PACKS
         let limit = 1; 
-        if (finalPlan === 'BUSINESS') limit = 5;
-        if (finalPlan === 'EXCUTIF') limit = 25;
-        if (finalPlan === 'PREMIUM') limit = 200;
+        if (finalPlan === 'CHEF') limit = 1;        // Pack 14€ : 1 écran max
+        if (finalPlan === 'BUSINESS') limit = 5;    // Pack 45€ : 5 écrans max
+        if (finalPlan === 'PREMIUM') limit = 50;    // Pack 129€ : 50 écrans max
 
         await Tenant.create({ 
             tenantID, clientName, email, phone, status: 'ACTIF', 
@@ -402,7 +403,11 @@ app.post('/api/admin-action', async (req, res) => {
             await Tenant.findOneAndUpdate({ tenantID }, { pin: manualPin.trim(), registeredDevices: [] });
         }
         else if (action === 'set_plan' && newPlan) { 
-            let limit = 1; if (newPlan === 'BUSINESS') limit = 5; if (newPlan === 'EXCUTIF') limit = 25; if (newPlan === 'PREMIUM') limit = 200;
+            // 🛡️ NOUVELLES LIMITES D'ÉCRANS STRICTES LORS D'UN CHANGEMENT DE PACK
+            let limit = 1; 
+            if (newPlan === 'CHEF') limit = 1; 
+            if (newPlan === 'BUSINESS') limit = 5; 
+            if (newPlan === 'PREMIUM') limit = 50; 
             await Tenant.findOneAndUpdate({ tenantID }, { plan: newPlan, maxScreens: limit });
         }
         else if (action === 'reset_devices') {
