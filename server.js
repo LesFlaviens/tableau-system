@@ -54,6 +54,8 @@ mongoose.connect(mongoURI).then(() => console.log('🔥 I CHEF Infrastructure On
 const tenantSchema = new mongoose.Schema({
     tenantID: { type: String, required: true, unique: true },
     clientName: String,
+    email: String,      // ➕ Ajouté pour l'annuaire créateur
+    phone: String,      // ➕ Ajouté pour l'annuaire créateur
     status: { type: String, enum: ['ACTIF', 'SUSPENDU'], default: 'ACTIF' },
     plan: { type: String, enum: ['CHEF', 'ECO', 'BUSINESS', 'EXCUTIF', 'PREMIUM'], default: 'ECO' },
     pin: { type: String, default: '9999' }, 
@@ -126,10 +128,7 @@ app.post('/api/scan-invoice', async (req, res) => {
         if (!result) throw new Error("Tous les modèles ont été refusés. Raison : " + lastError);
 
         let responseText = result.response.text().trim();
-        
-        // CORRECTION DE L'ERREUR DE SYNTAXE (Ligne regroupée)
         responseText = responseText.replace(/```json/gi, '').replace(/```/gi, '').trim();
-        
         if (!responseText.startsWith("{")) responseText = responseText.substring(responseText.indexOf("{"));
         
         res.json({ success: true, data: JSON.parse(responseText) });
@@ -185,11 +184,9 @@ app.post('/api/smart-reservation', async (req, res) => {
         
         const decision = JSON.parse(responseText);
 
-        // 🚨 NOUVEAU : SAUVEGARDE EN BDD POUR KDS ET SALLE 🚨
         if (decision.acceptee && decision.tableAllouee) {
             let state = await AppState.findOne({ tenantID });
             if (!state) state = new AppState({ tenantID, activeOrders: {} });
-
             if (!state.activeOrders) state.activeOrders = {};
 
             let reservations = [];
@@ -223,7 +220,7 @@ app.post('/api/smart-reservation', async (req, res) => {
 // 🚀 ACTIVATION & CONNEXION CLIENTS
 // ==========================================
 app.post('/api/activate', async (req, res) => {
-    const { sessionId, clientName, tenantID, plan } = req.body;
+    const { sessionId, clientName, tenantID, plan, email, phone } = req.body;
     try {
         const session = await stripe.checkout.sessions.retrieve(sessionId);
         if (session.payment_status !== 'paid') return res.status(403).json({ error: "Paiement requis." });
@@ -240,7 +237,7 @@ app.post('/api/activate', async (req, res) => {
         if (finalPlan === 'PREMIUM') limit = 200;
 
         await Tenant.create({ 
-            tenantID, clientName, status: 'ACTIF', 
+            tenantID, clientName, email, phone, status: 'ACTIF', 
             plan: finalPlan, maxScreens: limit, pin: randomPin, 
             config: { stripeCustomerId: session.customer } 
         });
@@ -345,7 +342,7 @@ app.post('/update-order', async (req, res) => {
 });
 
 // ==========================================
-// 👑 MASTER CONTROL API
+// 👑 MASTER CONTROL API (CORRIGÉ & ENRICHI)
 // ==========================================
 app.post('/api/get-all-tenants-admin', async (req, res) => {
     const { masterKey } = req.body;
@@ -354,8 +351,15 @@ app.post('/api/get-all-tenants-admin', async (req, res) => {
     try {
         const tenantsData = await Tenant.find({});
         const formattedTenants = tenantsData.map(t => ({
-            id: t.tenantID, name: t.clientName || "Client Sans Nom", pack: t.plan, pin: t.pin,
-            maxScreens: t.maxScreens, activeScreens: t.registeredDevices ? t.registeredDevices.length : 0, status: t.status
+            id: t.tenantID, 
+            name: t.clientName || "Client Sans Nom", 
+            email: t.email || "Non renseigné",   // ➕ Transmis à l'interface
+            phone: t.phone || "Non renseigné",   // ➕ Transmis à l'interface
+            pack: t.plan, 
+            pin: t.pin,
+            maxScreens: t.maxScreens, 
+            activeScreens: t.registeredDevices ? t.registeredDevices.length : 0, 
+            status: t.status
         }));
         res.json({ success: true, tenants: formattedTenants });
     } catch(err) { res.status(500).json({ success: false, error: "Erreur BDD" }); }
