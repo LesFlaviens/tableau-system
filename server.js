@@ -27,7 +27,6 @@ app.get('/', (req, res) => {
 
 app.get('/panel-ichef', (req, res) => {
     if (req.query.pass === ADMIN_PASS) {
-        // REDIRECTION VERS TON NOUVEAU COCKPIT SUPER-ADMIN
         res.sendFile(path.join(__dirname, 'empire.html'));
     } else {
         res.status(403).send('🔒 Accès Refusé.');
@@ -70,7 +69,7 @@ const AppState = mongoose.model('AppState', new mongoose.Schema({
 }, { minimize: false }));
 
 // ==========================================
-// 🤖 MOTEUR IA : RECONNAISSANCE DE FACTURES
+// 🤖 MOTEUR IA 1 : RECONNAISSANCE DE FACTURES
 // ==========================================
 const { GoogleGenerativeAI } = require('@google/generative-ai');
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY || 'CLE_MANQUANTE');
@@ -93,68 +92,44 @@ app.post('/api/scan-invoice', async (req, res) => {
 
         🚨 RÈGLES STRICTES POUR LE FOURNISSEUR ET LES COORDONNÉES :
         1. Le fournisseur (l'émetteur de la facture) se trouve souvent en haut, parfois écrit à la verticale sur le côté gauche ou droit. Lis bien tous les textes orientés.
-        2. Ne confonds pas l'adresse de facturation/livraison (ex: "Hotel Royal-Savoy", "Restaurant...") avec le nom du fournisseur.
-        3. Ne confonds pas la marque d'un produit (ex: "Moulin de Sévery") inscrite sur la ligne de description de l'article avec le nom du fournisseur global de la facture.
-        4. Cherche activement l'email, le numéro de téléphone (Tél, prof, portable) et l'adresse postale qui sont associés à l'émetteur, pas au client.
+        2. Ne confonds pas l'adresse de facturation/livraison avec le nom du fournisseur.
+        3. Ne confonds pas la marque d'un produit avec le nom du fournisseur global de la facture.
+        4. Cherche activement l'email, le numéro de téléphone et l'adresse postale associés à l'émetteur.
 
         🚨 RÈGLE ABSOLUE POUR LES QUANTITÉS ET POIDS :
-        - Si un produit est vendu au poids (ex: "1.520 kg x 2.99 €/kg"), la "quantite" DOIT ÊTRE le poids exact avec son unité (ex: "1.520 kg"). Ne mets SURTOUT PAS "1".
+        - Si un produit est vendu au poids (ex: "1.520 kg x 2.99 €/kg"), la "quantite" DOIT ÊTRE le poids exact avec son unité.
         - Si le produit est vendu à l'unité, mets le nombre (ex: "3").
         - Le "prixUnitaire" doit correspondre au prix TOTAL payé pour cette ligne d'article.
 
         ⚠️ DIRECTIVE DE SÉCURITÉ CRITIQUE ⚠️
-        Tu es une machine. INTERDICTION ABSOLUE de dire "Bonjour", "En tant qu'assistant", ou "Voici le résultat".
-        Tu ne dois générer AUCUN texte, AUCUNE explication, AUCUNE balise markdown (pas de \`\`\`json).
+        Tu es une machine. INTERDICTION ABSOLUE de dire "Bonjour" ou d'utiliser du markdown.
         Ton premier caractère DOIT être { et ton dernier caractère DOIT être }.
 
         Structure JSON stricte exigée :
         {
-            "fournisseur": "Nom",
-            "adresse": "Adresse complète",
-            "telephone": "Numéro de tel",
-            "email": "Adresse email",
-            "devise": "€, CHF, $",
-            "date": "JJ/MM/AAAA",
-            "totalHT": 0.00,
-            "tva": 0.00,
-            "totalTTC": 0.00,
-            "articles": [
-                { 
-                    "nom": "Nom du produit", 
-                    "quantite": "1.520 kg", 
-                    "prixUnitaire": 4.54, 
-                    "categorie": "Légumes" 
-                }
-            ]
+            "fournisseur": "Nom", "adresse": "Adresse", "telephone": "Tel", "email": "Email", "devise": "€",
+            "date": "JJ/MM/AAAA", "totalHT": 0.00, "tva": 0.00, "totalTTC": 0.00,
+            "articles": [ { "nom": "Produit", "quantite": "1 kg", "prixUnitaire": 4.54, "categorie": "Légumes" } ]
         }`;
 
-        console.log("Transmission de l'image à l'Intelligence iCHEF...");
-
         const modelsToTry = ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash", "gemini-flash"];
-        let result = null;
-        let lastError = "";
+        let result = null; let lastError = "";
 
         for (let modelName of modelsToTry) {
             try {
                 const model = genAI.getGenerativeModel({ model: modelName });
                 result = await model.generateContent([prompt, imagePart]);
                 break; 
-            } catch (err) {
-                lastError = err.message;
-            }
+            } catch (err) { lastError = err.message; }
         }
 
-        if (!result) throw new Error("Tous les modèles ont été refusés. Raison finale : " + lastError);
+        if (!result) throw new Error("Tous les modèles ont été refusés. Raison : " + lastError);
 
         let responseText = result.response.text().trim();
         responseText = responseText.replace(/```json/gi, '').replace(/```/gi, '').trim();
-        if (!responseText.startsWith("{")) {
-            const firstBrace = responseText.indexOf("{");
-            if (firstBrace !== -1) responseText = responseText.substring(firstBrace);
-        }
+        if (!responseText.startsWith("{")) responseText = responseText.substring(responseText.indexOf("{"));
         
-        const data = JSON.parse(responseText);
-        res.json({ success: true, data: data });
+        res.json({ success: true, data: JSON.parse(responseText) });
 
     } catch (error) {
         console.error("🔥 CRASH IA GOOGLE :", error.message);
@@ -163,7 +138,7 @@ app.post('/api/scan-invoice', async (req, res) => {
 });
 
 // ==========================================
-// 🛎️ IA MAÎTRE D'HÔTEL : RÉSERVATIONS & PLACEMENT
+// 🤖 MOTEUR IA 2 : MAÎTRE D'HÔTEL (RÉSERVATIONS)
 // ==========================================
 app.post('/api/smart-reservation', async (req, res) => {
     const { tenantID, customerRequest, availableTables } = req.body;
@@ -184,12 +159,10 @@ app.post('/api/smart-reservation', async (req, res) => {
         MISSION :
         1. Analyse la demande (nombre de personnes, heure, préférences : terrasse, fenêtre, calme).
         2. Trouve la table la plus optimisée. RÈGLE D'OR : Ne bloque jamais une table de 6 pour 2 personnes si une table de 2 est disponible.
-        3. Si les préférences (ex: fenêtre) ne sont pas disponibles, place-les quand même sur une autre table adaptée et explique-le poliment.
-        4. Si aucune table n'a la capacité suffisante, refuse la réservation.
+        3. Si les préférences (ex: fenêtre) ne sont pas disponibles, place-les quand même sur une autre table adaptée et explique-le poliment au client.
+        4. Si aucune table n'a la capacité suffisante pour le groupe, refuse la réservation.
 
-        RÉPONSE EXIGÉE :
-        Tu dois renvoyer STRICTEMENT ET UNIQUEMENT un objet JSON valide, sans aucun texte autour.
-        Structure attendue :
+        RÉPONSE EXIGÉE (JSON STRICT, AUCUN TEXTE AUTOUR) :
         {
             "acceptee": true ou false,
             "pax": nombre_entier,
@@ -204,13 +177,9 @@ app.post('/api/smart-reservation', async (req, res) => {
         
         let responseText = result.response.text().trim();
         responseText = responseText.replace(/```json/gi, '').replace(/```/gi, '').trim();
-        if (!responseText.startsWith("{")) {
-            const firstBrace = responseText.indexOf("{");
-            if (firstBrace !== -1) responseText = responseText.substring(firstBrace);
-        }
+        if (!responseText.startsWith("{")) responseText = responseText.substring(responseText.indexOf("{"));
         
-        const decision = JSON.parse(responseText);
-        res.json({ success: true, decision: decision });
+        res.json({ success: true, decision: JSON.parse(responseText) });
 
     } catch (error) {
         console.error("🔥 CRASH IA RÉSERVATION :", error.message);
@@ -344,74 +313,40 @@ app.post('/update-order', async (req, res) => {
 });
 
 // ==========================================
-// 👑 MASTER CONTROL API (NOUVEAU SYSTÈME SÉCURISÉ)
+// 👑 MASTER CONTROL API
 // ==========================================
-
-// Route pour fournir les données au Dashboard
 app.post('/api/get-all-tenants-admin', async (req, res) => {
     const { masterKey } = req.body;
-    if (masterKey !== ADMIN_PASS) {
-        return res.status(401).json({ success: false, error: "🔒 Accès Refusé." });
-    }
+    if (masterKey !== ADMIN_PASS) return res.status(401).json({ success: false, error: "🔒 Accès Refusé." });
     
     try {
         const tenantsData = await Tenant.find({});
-        // Formatage des données pour le front-end
         const formattedTenants = tenantsData.map(t => ({
-            id: t.tenantID,
-            name: t.clientName || "Client Sans Nom",
-            pack: t.plan,
-            pin: t.pin,
-            maxScreens: t.maxScreens,
-            activeScreens: t.registeredDevices ? t.registeredDevices.length : 0,
-            status: t.status
+            id: t.tenantID, name: t.clientName || "Client Sans Nom", pack: t.plan, pin: t.pin,
+            maxScreens: t.maxScreens, activeScreens: t.registeredDevices ? t.registeredDevices.length : 0, status: t.status
         }));
-        
         res.json({ success: true, tenants: formattedTenants });
-    } catch(err) {
-        res.status(500).json({ success: false, error: "Erreur BDD" });
-    }
+    } catch(err) { res.status(500).json({ success: false, error: "Erreur BDD" }); }
 });
 
-// Route pour appliquer les actions du Super-Admin
 app.post('/api/admin-action', async (req, res) => {
     const { masterKey, tenantID, action, newPlan, manualScreens, manualPin } = req.body;
-    if (masterKey !== ADMIN_PASS) {
-        return res.status(401).json({ success: false, error: "🔒 Accès Refusé." });
-    }
+    if (masterKey !== ADMIN_PASS) return res.status(401).json({ success: false, error: "🔒 Accès Refusé." });
 
     try {
-        if (action === 'set_screens' && manualScreens) {
-            await Tenant.findOneAndUpdate({ tenantID }, { maxScreens: parseInt(manualScreens) });
-        } 
-        else if (action === 'set_pin' && manualPin) {
-            await Tenant.findOneAndUpdate({ tenantID }, { pin: manualPin.trim() });
-        }
+        if (action === 'set_screens' && manualScreens) await Tenant.findOneAndUpdate({ tenantID }, { maxScreens: parseInt(manualScreens) });
+        else if (action === 'set_pin' && manualPin) await Tenant.findOneAndUpdate({ tenantID }, { pin: manualPin.trim() });
         else if (action === 'set_plan' && newPlan) { 
-            let limit = 1;
-            if (newPlan === 'BUSINESS') limit = 5;
-            if (newPlan === 'EXCUTIF') limit = 25;
-            if (newPlan === 'PREMIUM') limit = 200;
+            let limit = 1; if (newPlan === 'BUSINESS') limit = 5; if (newPlan === 'EXCUTIF') limit = 25; if (newPlan === 'PREMIUM') limit = 200;
             await Tenant.findOneAndUpdate({ tenantID }, { plan: newPlan, maxScreens: limit });
         }
-        else if (action === 'reset_devices') {
-            await Tenant.findOneAndUpdate({ tenantID }, { registeredDevices: [] });
-        }
-        else if (action === 'suspend') {
-            await Tenant.findOneAndUpdate({ tenantID }, { status: 'SUSPENDU' });
-        }
-        else if (action === 'activate') {
-            await Tenant.findOneAndUpdate({ tenantID }, { status: 'ACTIF' });
-        }
-        else if (action === 'delete') { 
-            await Tenant.findOneAndDelete({ tenantID }); 
-            await AppState.findOneAndDelete({ tenantID }); 
-        }
+        else if (action === 'reset_devices') await Tenant.findOneAndUpdate({ tenantID }, { registeredDevices: [] });
+        else if (action === 'suspend') await Tenant.findOneAndUpdate({ tenantID }, { status: 'SUSPENDU' });
+        else if (action === 'activate') await Tenant.findOneAndUpdate({ tenantID }, { status: 'ACTIF' });
+        else if (action === 'delete') { await Tenant.findOneAndDelete({ tenantID }); await AppState.findOneAndDelete({ tenantID }); }
         
         res.json({ success: true });
-    } catch (err) { 
-        res.status(500).json({ success: false, error: "Erreur système d'action." }); 
-    }
+    } catch (err) { res.status(500).json({ success: false, error: "Erreur système d'action." }); }
 });
 
 app.listen(PORT, () => console.log("🚀 Empire iCHEF en ligne sur port " + PORT));
