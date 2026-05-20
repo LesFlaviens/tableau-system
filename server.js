@@ -126,7 +126,8 @@ app.post('/api/scan-invoice', async (req, res) => {
         if (!result) throw new Error("Tous les modèles ont été refusés. Raison : " + lastError);
 
         let responseText = result.response.text().trim();
-        responseText = responseText.replace(/```json/gi, '').replace(/```/gi, '').trim();
+        responseText = responseText.replace(/```json/gi, '').replace(/
+```/gi, '').trim();
         if (!responseText.startsWith("{")) responseText = responseText.substring(responseText.indexOf("{"));
         
         res.json({ success: true, data: JSON.parse(responseText) });
@@ -161,6 +162,7 @@ app.post('/api/smart-reservation', async (req, res) => {
         2. Trouve la table la plus optimisée. RÈGLE D'OR : Ne bloque jamais une table de 6 pour 2 personnes si une table de 2 est disponible.
         3. Si les préférences (ex: fenêtre) ne sont pas disponibles, place-les quand même sur une autre table adaptée et explique-le poliment au client.
         4. Si aucune table n'a la capacité suffisante pour le groupe, refuse la réservation.
+        5. Détecte si le client mentionne un statut VIP ou une allergie importante (mets-le dans optimisationInfo).
 
         RÉPONSE EXIGÉE (JSON STRICT, AUCUN TEXTE AUTOUR) :
         {
@@ -169,7 +171,7 @@ app.post('/api/smart-reservation', async (req, res) => {
             "heure": "HH:MM",
             "tableAllouee": "ID_DE_LA_TABLE_CHOISIE" (ou null si refusé),
             "messageClient": "Votre réponse professionnelle et chaleureuse à envoyer au client.",
-            "optimisationInfo": "Note interne pour le gérant expliquant pourquoi cette table a été choisie."
+            "optimisationInfo": "Note interne pour la brigade (ex: VIP, Allergie, etc.)"
         }`;
 
         const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
@@ -179,7 +181,35 @@ app.post('/api/smart-reservation', async (req, res) => {
         responseText = responseText.replace(/```json/gi, '').replace(/```/gi, '').trim();
         if (!responseText.startsWith("{")) responseText = responseText.substring(responseText.indexOf("{"));
         
-        res.json({ success: true, decision: JSON.parse(responseText) });
+        const decision = JSON.parse(responseText);
+
+        // 🚨 NOUVEAU : SAUVEGARDE EN BDD POUR KDS ET SALLE 🚨
+        if (decision.acceptee && decision.tableAllouee) {
+            let state = await AppState.findOne({ tenantID });
+            if (!state) state = new AppState({ tenantID, activeOrders: {} });
+
+            if (!state.activeOrders) state.activeOrders = {};
+
+            let reservations = [];
+            if (state.activeOrders['RESERVATIONS_MASTER'] && state.activeOrders['RESERVATIONS_MASTER'].data) {
+                reservations = state.activeOrders['RESERVATIONS_MASTER'].data;
+            }
+
+            reservations.push({
+                id: 'resa_' + Date.now(),
+                pax: decision.pax,
+                heure: decision.heure,
+                table: decision.tableAllouee,
+                info: decision.optimisationInfo,
+                timestamp: Date.now()
+            });
+
+            state.activeOrders['RESERVATIONS_MASTER'] = { data: reservations };
+            state.markModified('activeOrders');
+            await state.save();
+        }
+
+        res.json({ success: true, decision });
 
     } catch (error) {
         console.error("🔥 CRASH IA RÉSERVATION :", error.message);
