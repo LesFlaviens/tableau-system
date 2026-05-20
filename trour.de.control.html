@@ -9,7 +9,7 @@
         :root { 
             --bg: #050505; 
             --panel: #111111; 
-            --accent: #8b5cf6; /* Violet Tech pour te différencier de tes clients */
+            --accent: #8b5cf6; 
             --text-main: #f8fafc; 
             --text-dim: #94a3b8; 
             --border-color: #1e293b; 
@@ -37,8 +37,8 @@
         .btn-primary:hover { opacity: 0.9; transform: scale(1.02); }
         
         /* Table Clients */
-        .table-container { background: var(--panel); border: 1px solid var(--border-color); border-radius: 12px; overflow: hidden; }
-        table { width: 100%; border-collapse: collapse; text-align: left; }
+        .table-container { background: var(--panel); border: 1px solid var(--border-color); border-radius: 12px; overflow: hidden; overflow-x: auto; }
+        table { width: 100%; border-collapse: collapse; text-align: left; min-width: 900px; }
         th { background: rgba(255,255,255,0.02); padding: 15px 20px; color: var(--text-dim); font-size: 0.8rem; text-transform: uppercase; font-weight: 800; letter-spacing: 1px; border-bottom: 1px solid var(--border-color); }
         td { padding: 15px 20px; border-bottom: 1px solid var(--border-color); font-size: 0.95rem; font-weight: 500; }
         tr:last-child td { border-bottom: none; }
@@ -79,6 +79,7 @@
             <input type="text" id="new-tenant-id" placeholder="ID Unique (ex: le-bistrot-paris)">
             <input type="text" id="new-tenant-name" placeholder="Nom de l'établissement">
             <input type="email" id="new-tenant-email" placeholder="Email du gérant">
+            <input type="text" id="new-tenant-phone" placeholder="Téléphone">
             <select id="new-tenant-plan">
                 <option value="ECO">Pack ECO (19€/m)</option>
                 <option value="CHEF">Pack BRIGADE (45€/m)</option>
@@ -123,8 +124,10 @@
                 <thead>
                     <tr>
                         <th>Établissement</th>
-                        <th>ID Licence (Tenant)</th>
+                        <th>ID Licence</th>
+                        <th>Contact</th>
                         <th>Forfait</th>
+                        <th>Écrans</th>
                         <th>Statut</th>
                         <th>Actions</th>
                     </tr>
@@ -196,7 +199,7 @@
 
             const tbody = document.getElementById('clients-table-body');
             if (clients.length === 0) {
-                tbody.innerHTML = `<tr><td colspan="5" style="text-align:center; color:var(--text-dim); padding: 30px;">Aucun client dans la base de données.</td></tr>`;
+                tbody.innerHTML = `<tr><td colspan="7" style="text-align:center; color:var(--text-dim); padding: 30px;">Aucun client dans la base de données.</td></tr>`;
                 return;
             }
 
@@ -209,11 +212,25 @@
                     ? `<a class="action-link action-danger" onclick="toggleStatus('${c.id}', 'suspend')">Suspendre</a>`
                     : `<a class="action-link" style="color:var(--success);" onclick="toggleStatus('${c.id}', 'activate')">Réactiver</a>`;
 
+                // Champs de contact (Si vides, on affiche "Non renseigné")
+                let emailDisplay = c.email || "Email non renseigné";
+                let phoneDisplay = c.phone || "Tél non renseigné";
+
                 return `
                 <tr>
                     <td><strong style="color:white;">${c.name}</strong></td>
                     <td style="font-family:monospace; color:var(--text-dim);">${c.id}</td>
+                    <td>
+                        <div style="font-size:0.85rem; color:var(--text-dim);">${emailDisplay}</div>
+                        <div style="font-size:0.85rem; color:var(--text-dim); margin-top:4px;">${phoneDisplay}</div>
+                    </td>
                     <td><span style="color:var(--accent); font-weight:800;">${c.pack}</span></td>
+                    <td>
+                        <div style="display:flex; align-items:center; gap:8px;">
+                            <span style="font-weight:bold; color:var(--text-main);">${c.activeScreens} / ${c.maxScreens}</span>
+                            <button onclick="editScreens('${c.id}', ${c.maxScreens})" style="background:transparent; border:none; cursor:pointer; font-size:1rem; padding:0;" title="Modifier limite d'écrans">✏️</button>
+                        </div>
+                    </td>
                     <td>${badge}</td>
                     <td>
                         <a class="action-link" onclick="window.open('vitrine.html?tenantID=${c.id}', '_blank')">Accéder</a>
@@ -225,14 +242,38 @@
             }).join('');
         }
 
+        // === ACTIONS ===
         function openModal() { document.getElementById('add-client-modal').style.display = 'flex'; }
         function closeModal() { document.getElementById('add-client-modal').style.display = 'none'; }
 
         function createNewClient() {
-            // Uniquement manuel s'ils ne passent pas par le site. 
-            // S'ils paient sur le site vitrine via Stripe, ça se fait tout seul !
             alert("La création manuelle est désactivée. Demandez au client de s'inscrire via la page des offres pour valider le mandat SEPA Stripe.");
             closeModal();
+        }
+
+        // MODIFIER LES ÉCRANS
+        function editScreens(tenantID, currentMax) {
+            let newVal = prompt(`Combien d'écrans maximum autorisés pour ${tenantID} ?`, currentMax);
+            if (newVal !== null && newVal.trim() !== "") {
+                let parsed = parseInt(newVal);
+                if (!isNaN(parsed) && parsed > 0) {
+                    fetch(`${SERVER_URL}/api/admin-action`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ masterKey: 'Empire2026', tenantID: tenantID, action: 'set_screens', manualScreens: parsed })
+                    })
+                    .then(res => res.json())
+                    .then(data => {
+                        if(data.success) {
+                            loadClientsList();
+                        } else {
+                            alert("Erreur lors de la modification des écrans.");
+                        }
+                    });
+                } else {
+                    alert("Valeur invalide.");
+                }
+            }
         }
 
         function toggleStatus(tenantID, action) {
