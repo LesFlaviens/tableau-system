@@ -126,8 +126,10 @@ app.post('/api/scan-invoice', async (req, res) => {
         if (!result) throw new Error("Tous les modèles ont été refusés. Raison : " + lastError);
 
         let responseText = result.response.text().trim();
-        responseText = responseText.replace(/```json/gi, '').replace(/
-```/gi, '').trim();
+        
+        // CORRECTION DE L'ERREUR DE SYNTAXE (Ligne regroupée)
+        responseText = responseText.replace(/```json/gi, '').replace(/```/gi, '').trim();
+        
         if (!responseText.startsWith("{")) responseText = responseText.substring(responseText.indexOf("{"));
         
         res.json({ success: true, data: JSON.parse(responseText) });
