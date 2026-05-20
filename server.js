@@ -54,8 +54,8 @@ mongoose.connect(mongoURI).then(() => console.log('🔥 I CHEF Infrastructure On
 const tenantSchema = new mongoose.Schema({
     tenantID: { type: String, required: true, unique: true },
     clientName: String,
-    email: String,      // ➕ Ajouté pour l'annuaire créateur
-    phone: String,      // ➕ Ajouté pour l'annuaire créateur
+    email: String,
+    phone: String,
     status: { type: String, enum: ['ACTIF', 'SUSPENDU'], default: 'ACTIF' },
     plan: { type: String, enum: ['CHEF', 'ECO', 'BUSINESS', 'EXCUTIF', 'PREMIUM'], default: 'ECO' },
     pin: { type: String, default: '9999' }, 
@@ -93,7 +93,7 @@ app.post('/api/scan-invoice', async (req, res) => {
         Extrais les informations suivantes et CLASSIFIE OBLIGATOIREMENT chaque article.
 
         🚨 RÈGLES STRICTES POUR LE FOURNISSEUR ET LES COORDONNÉES :
-        1. Le fournisseur (l'émetteur de la facture) se trouve souvent en haut, parfois écrit à la verticale sur le côté gauche ou droit. Lis bien tous les textes orientés.
+        1. Le fournisseur se trouve souvent en haut.
         2. Ne confonds pas l'adresse de facturation/livraison avec le nom du fournisseur.
         3. Ne confonds pas la marque d'un produit avec le nom du fournisseur global de la facture.
         4. Cherche activement l'email, le numéro de téléphone et l'adresse postale associés à l'émetteur.
@@ -159,11 +159,11 @@ app.post('/api/smart-reservation', async (req, res) => {
         ${JSON.stringify(availableTables)}
 
         MISSION :
-        1. Analyse la demande (nombre de personnes, heure, préférences : terrasse, fenêtre, calme).
-        2. Trouve la table la plus optimisée. RÈGLE D'OR : Ne bloque jamais une table de 6 pour 2 personnes si une table de 2 est disponible.
-        3. Si les préférences (ex: fenêtre) ne sont pas disponibles, place-les quand même sur une autre table adaptée et explique-le poliment au client.
-        4. Si aucune table n'a la capacité suffisante pour le groupe, refuse la réservation.
-        5. Détecte si le client mentionne un statut VIP ou une allergie importante (mets-le dans optimisationInfo).
+        1. Analyse la demande.
+        2. Trouve la table la plus optimisée.
+        3. Explique poliment.
+        4. Refuse si pas de place.
+        5. Détecte VIP/Allergie.
 
         RÉPONSE EXIGÉE (JSON STRICT, AUCUN TEXTE AUTOUR) :
         {
@@ -264,17 +264,23 @@ app.post('/api/verify-pin', async (req, res) => {
     try {
         const tenant = await Tenant.findOne({ tenantID });
         if (!tenant) return res.status(404).json({ success: false, error: "Identifiant inconnu." });
+        
+        // Sécurité renforcée : Bloquer si le compte est suspendu
+        if (tenant.status === 'SUSPENDU') return res.status(403).json({ success: false, error: "Licence suspendue." });
+
         if (tenant.pin === pin) { return res.json({ success: true, plan: tenant.plan }); } 
         else { return res.status(401).json({ success: false, error: "Code PIN incorrect." }); }
-    } catch (error) { res.status(500).json({ success: false, error: "Erreur interne du serveur." }); }
+    } catch (error) { res.status(500).json({ success: false, error: "Erreur interne." }); }
 });
 
 app.post('/api/update-pin', async (req, res) => {
     const { tenantID, newPin } = req.body;
     try {
+        // En cas de changement de PIN par le client, on force la déconnexion des écrans existants
         const tenant = await Tenant.findOne({ tenantID });
         if (!tenant) return res.status(404).json({ success: false, error: "Identifiant introuvable." });
         tenant.pin = newPin;
+        tenant.registeredDevices = []; // 🔥 Déconnexion automatique forcée !
         await tenant.save();
         res.json({ success: true });
     } catch (error) { res.status(500).json({ success: false, error: "Erreur lors de la sauvegarde." }); }
@@ -309,18 +315,27 @@ app.post('/api/billing-portal', async (req, res) => {
         }
         const session = await stripe.billingPortal.sessions.create({
             customer: tenant.config.stripeCustomerId,
-            return_url: `${req.headers.origin}/admin.html?tenantID=${tenantID}`,
+            return_url: `${req.headers.origin}/portail-client.html?tenantID=${tenantID}`,
         });
         res.json({ success: true, url: session.url });
     } catch (e) { res.status(500).json({ success: false, error: "Erreur Stripe." }); }
 });
 
 // ==========================================
-// 📡 SYNCHRONISATION DES DONNÉES
+// 📡 SYNCHRONISATION DES DONNÉES (RENFORCÉE)
 // ==========================================
 app.get('/get-current-state', async (req, res) => {
     try {
         const tenantID = req.query.tenantID || 'MASTER_STATE';
+        
+        // Bloque le transfert des données si le client a été suspendu par le Super Admin
+        if (tenantID !== 'MASTER_STATE') {
+            const tenant = await Tenant.findOne({ tenantID });
+            if (tenant && tenant.status === 'SUSPENDU') {
+                return res.status(403).json({ error: "Licence suspendue" });
+            }
+        }
+
         let state = await AppState.findOne({ tenantID });
         if (!state) state = await AppState.create({ tenantID, activeOrders: {} });
         res.json(state);
@@ -330,6 +345,15 @@ app.get('/get-current-state', async (req, res) => {
 app.post('/update-order', async (req, res) => {
     try {
         const tenantID = req.query.tenantID || 'MASTER_STATE';
+        
+        // Bloque les mises à jour si le client est suspendu
+        if (tenantID !== 'MASTER_STATE') {
+            const tenant = await Tenant.findOne({ tenantID });
+            if (tenant && tenant.status === 'SUSPENDU') {
+                return res.status(403).json({ error: "Licence suspendue" });
+            }
+        }
+
         const { tableId, order } = req.body;
         let state = await AppState.findOne({ tenantID });
         if (!state) state = new AppState({ tenantID, activeOrders: {} });
@@ -353,8 +377,8 @@ app.post('/api/get-all-tenants-admin', async (req, res) => {
         const formattedTenants = tenantsData.map(t => ({
             id: t.tenantID, 
             name: t.clientName || "Client Sans Nom", 
-            email: t.email || "Non renseigné",   // ➕ Transmis à l'interface
-            phone: t.phone || "Non renseigné",   // ➕ Transmis à l'interface
+            email: t.email || "Non renseigné",
+            phone: t.phone || "Non renseigné",
             pack: t.plan, 
             pin: t.pin,
             maxScreens: t.maxScreens, 
@@ -370,16 +394,31 @@ app.post('/api/admin-action', async (req, res) => {
     if (masterKey !== ADMIN_PASS) return res.status(401).json({ success: false, error: "🔒 Accès Refusé." });
 
     try {
-        if (action === 'set_screens' && manualScreens) await Tenant.findOneAndUpdate({ tenantID }, { maxScreens: parseInt(manualScreens) });
-        else if (action === 'set_pin' && manualPin) await Tenant.findOneAndUpdate({ tenantID }, { pin: manualPin.trim() });
+        if (action === 'set_screens' && manualScreens) {
+            await Tenant.findOneAndUpdate({ tenantID }, { maxScreens: parseInt(manualScreens) });
+        }
+        else if (action === 'set_pin' && manualPin) {
+            // 🔥 Déclenche un Kill Switch si le Super Admin modifie le PIN à la main
+            await Tenant.findOneAndUpdate({ tenantID }, { pin: manualPin.trim(), registeredDevices: [] });
+        }
         else if (action === 'set_plan' && newPlan) { 
             let limit = 1; if (newPlan === 'BUSINESS') limit = 5; if (newPlan === 'EXCUTIF') limit = 25; if (newPlan === 'PREMIUM') limit = 200;
             await Tenant.findOneAndUpdate({ tenantID }, { plan: newPlan, maxScreens: limit });
         }
-        else if (action === 'reset_devices') await Tenant.findOneAndUpdate({ tenantID }, { registeredDevices: [] });
-        else if (action === 'suspend') await Tenant.findOneAndUpdate({ tenantID }, { status: 'SUSPENDU' });
-        else if (action === 'activate') await Tenant.findOneAndUpdate({ tenantID }, { status: 'ACTIF' });
-        else if (action === 'delete') { await Tenant.findOneAndDelete({ tenantID }); await AppState.findOneAndDelete({ tenantID }); }
+        else if (action === 'reset_devices') {
+            await Tenant.findOneAndUpdate({ tenantID }, { registeredDevices: [] });
+        }
+        else if (action === 'suspend') {
+            // 🔥 Déclenche un Kill Switch si le compte est suspendu
+            await Tenant.findOneAndUpdate({ tenantID }, { status: 'SUSPENDU', registeredDevices: [] });
+        }
+        else if (action === 'activate') {
+            await Tenant.findOneAndUpdate({ tenantID }, { status: 'ACTIF' });
+        }
+        else if (action === 'delete') { 
+            await Tenant.findOneAndDelete({ tenantID }); 
+            await AppState.findOneAndDelete({ tenantID }); 
+        }
         
         res.json({ success: true });
     } catch (err) { res.status(500).json({ success: false, error: "Erreur système d'action." }); }
