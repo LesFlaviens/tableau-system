@@ -215,10 +215,9 @@
 
         <div id="success-screen" class="success-view">
             <div class="success-icon">✓</div>
-            <h2 style="color:var(--gold); font-size: 2rem; margin-bottom: 10px; text-transform: uppercase; letter-spacing: 2px;">Demande Envoyée</h2>
-            <p style="color:var(--text-muted); line-height: 1.6; font-size: 1.1rem; max-width: 400px; margin: 0 auto;">
-                L'équipe de l'Empire a bien reçu votre demande de réservation.<br><br>
-                Notre Maître d'Hôtel va traiter votre demande. <b>Vous recevrez très vite un SMS de confirmation.</b>
+            <h2 style="color:var(--gold); font-size: 2rem; margin-bottom: 10px; text-transform: uppercase; letter-spacing: 2px;">Demande Traitée</h2>
+            <p id="success-message" style="color:var(--text-muted); line-height: 1.6; font-size: 1.1rem; max-width: 400px; margin: 0 auto;">
+                L'équipe de l'Empire a bien reçu votre demande de réservation.
             </p>
         </div>
     </div>
@@ -241,7 +240,7 @@
                     await fetch(`${SERVER_URL}/update-order?tenantID=${tenantID}`, { 
                         method: 'POST', 
                         headers: {'Content-Type': 'application/json'}, 
-                        body: JSON.stringify({ tableId: key, order: { data: data } }) // Standardisation { data: ... }
+                        body: JSON.stringify({ tableId: key, order: { data: data } })
                     }); 
                 } catch(e) { console.error("Erreur Sync:", e); }
             }
@@ -265,7 +264,7 @@
                 return alert("Veuillez renseigner votre Nom, votre Téléphone, le nombre de couverts et choisir une Date.");
             }
 
-            btn.innerText = "Validation en cours...";
+            btn.innerText = "Analyse par le Maître d'Hôtel...";
             btn.disabled = true;
 
             let finalObs = rawObs;
@@ -273,39 +272,85 @@
                 finalObs = `[${eventType.toUpperCase()}] ${rawObs}`;
             }
 
-            const resaData = {
-                id: Date.now(),
-                date: date,
-                time: time,
-                name: name,
-                phone: phone,
-                couverts: pax,
-                obs: finalObs.trim(),
-                status: 'pending',
-                timestamp: new Date().toISOString()
-            };
-
             try {
                 let state = await API.getState();
                 
-                let resas = [];
-                if (state.activeOrders && state.activeOrders['RESERVATIONS_MASTER']) {
-                    let rawData = state.activeOrders['RESERVATIONS_MASTER'];
-                    if (Array.isArray(rawData)) resas = rawData;
-                    else if (rawData.data && Array.isArray(rawData.data)) resas = rawData.data;
+                // 1. Récupérer les tables disponibles (soit via l'architecture configurée, soit par défaut)
+                let availableTables = [];
+                if (state.activeOrders && state.activeOrders['ARCHITECTURE'] && state.activeOrders['ARCHITECTURE'].data) {
+                    let tables = state.activeOrders['ARCHITECTURE'].data;
+                    availableTables = tables.map(t => ({ id: t.id, maxPax: t.pax, zone: t.zone }));
+                } else {
+                    // Plan de salle par défaut pour aider l'IA s'il n'y a pas d'architecture configurée
+                    availableTables = [
+                        { id: "Table 1", maxPax: 2, zone: "Intérieur" }, { id: "Table 2", maxPax: 2, zone: "Intérieur" },
+                        { id: "Table 3", maxPax: 4, zone: "Intérieur" }, { id: "Table 4", maxPax: 4, zone: "Fenêtre" },
+                        { id: "Table 5", maxPax: 6, zone: "Terrasse" }, { id: "Table VIP", maxPax: 8, zone: "Isolée" }
+                    ];
                 }
 
-                resas.push(resaData);
+                // 2. Construire la requête textuelle pour l'IA
+                let customerRequest = `Nom: ${name}. Téléphone: ${phone}. Réservation pour ${pax} personnes, le ${date} à ${time}. Occasion: ${eventType || 'Standard'}. Notes du client: ${rawObs || 'Aucune'}.`;
 
-                // Envoi des données via le moteur API standard
-                await API.update('RESERVATIONS_MASTER', resas);
+                // 3. Demander l'avis au Maître d'Hôtel IA
+                let response = await fetch(`${SERVER_URL}/api/smart-reservation`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        tenantID: tenantID,
+                        customerRequest: customerRequest,
+                        availableTables: availableTables
+                    })
+                });
 
-                document.getElementById('booking-form').style.display = 'none';
-                document.getElementById('success-screen').style.display = 'flex';
+                let result = await response.json();
+
+                if (!result.success || !result.decision) {
+                    throw new Error(result.error || "L'IA n'a pas pu traiter la demande.");
+                }
+
+                // 4. Traitement de la réponse de l'IA
+                if (result.decision.acceptee) {
+                    // L'IA a accepté. Le backend a déjà créé l'entrée, mais on va l'enrichir avec le Nom et le Téléphone
+                    let newState = await API.getState();
+                    if (newState.activeOrders && newState.activeOrders['RESERVATIONS_MASTER']) {
+                        let resas = Array.isArray(newState.activeOrders['RESERVATIONS_MASTER']) 
+                                    ? newState.activeOrders['RESERVATIONS_MASTER'] 
+                                    : newState.activeOrders['RESERVATIONS_MASTER'].data;
+                        
+                        if (resas && resas.length > 0) {
+                            // On prend la dernière réservation ajoutée par le backend et on la complète
+                            let lastResa = resas[resas.length - 1]; 
+                            lastResa.name = name;
+                            lastResa.phone = phone;
+                            lastResa.date = date;
+                            lastResa.obs = finalObs;
+                            lastResa.status = 'confirmée';
+                            
+                            await API.update('RESERVATIONS_MASTER', resas);
+                        }
+                    }
+
+                    // Bascule de l'interface vers le succès
+                    document.getElementById('booking-form').style.display = 'none';
+                    document.getElementById('success-screen').style.display = 'flex';
+                    
+                    // Injection du message personnalisé de l'IA
+                    document.getElementById('success-message').innerHTML = `
+                        <b style="color: #ffffff;">Réservation Confirmée !</b><br><br>
+                        ${result.decision.messageClient}<br><br>
+                        <i style="color: var(--accent); font-size: 0.9rem;">Une table vous a été assignée (${result.decision.tableAllouee}).</i>
+                    `;
+                } else {
+                    // L'IA a refusé la réservation (pas de place, groupe trop grand, etc.)
+                    alert(`Message du Maître d'Hôtel :\n\n${result.decision.messageClient}`);
+                    btn.innerText = "Demander ma table";
+                    btn.disabled = false;
+                }
                 
             } catch (e) { 
                 console.error("Erreur détaillée :", e);
-                alert("Une erreur de communication est survenue. Veuillez réessayer.");
+                alert("Une erreur de communication est survenue. L'Empire est actuellement indisponible.");
                 btn.innerText = "Demander ma table";
                 btn.disabled = false;
             }
