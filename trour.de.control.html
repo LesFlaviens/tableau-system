@@ -38,7 +38,7 @@
         
         /* Table Clients */
         .table-container { background: var(--panel); border: 1px solid var(--border-color); border-radius: 12px; overflow: hidden; overflow-x: auto; }
-        table { width: 100%; border-collapse: collapse; text-align: left; min-width: 950px; }
+        table { width: 100%; border-collapse: collapse; text-align: left; min-width: 1000px; }
         th { background: rgba(255,255,255,0.02); padding: 15px 20px; color: var(--text-dim); font-size: 0.8rem; text-transform: uppercase; font-weight: 800; letter-spacing: 1px; border-bottom: 1px solid var(--border-color); }
         td { padding: 15px 20px; border-bottom: 1px solid var(--border-color); font-size: 0.95rem; font-weight: 500; }
         tr:last-child td { border-bottom: none; }
@@ -52,6 +52,14 @@
         .action-link:hover { color: white; }
         .action-danger { color: var(--danger); }
         
+        /* Modal Add Client */
+        .modal { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.9); z-index: 10000; display: none; align-items: center; justify-content: center; padding: 20px; box-sizing: border-box;}
+        .modal-content { background: var(--panel); border: 1px solid var(--border-color); border-radius: 12px; padding: 30px; width: 100%; max-width: 500px; }
+        .modal-content h2 { margin-top: 0; color: white; margin-bottom: 25px; }
+        
+        input, select { width: 100%; padding: 15px; background: var(--bg); border: 1px solid var(--border-color); color: white; border-radius: 8px; box-sizing: border-box; font-size: 1rem; margin-bottom: 15px; font-family: 'Inter', sans-serif;}
+        input:focus, select:focus { outline: none; border-color: var(--accent); }
+
         /* Login Overlay */
         #super-login-overlay { position:fixed; top:0; left:0; width:100%; height:100%; background:var(--bg); z-index:99999; display:flex; flex-direction:column; align-items:center; justify-content:center; padding: 20px; box-sizing: border-box; }
     </style>
@@ -63,6 +71,25 @@
         <p style="color:var(--text-dim); margin-bottom:30px;">Accès restreint au créateur de la solution.</p>
         <input type="password" id="super-pwd-input" placeholder="Clé Maître..." style="max-width: 300px; text-align: center; margin-bottom: 20px; letter-spacing: 2px;">
         <button class="btn btn-primary" style="max-width: 300px; width: 100%;" onclick="verifySuperAdmin()">DÉVERROUILLER</button>
+    </div>
+
+    <div id="add-client-modal" class="modal">
+        <div class="modal-content">
+            <h2>Créer une nouvelle licence</h2>
+            <input type="text" id="new-tenant-id" placeholder="ID Unique (ex: le-bistrot-paris)">
+            <input type="text" id="new-tenant-name" placeholder="Nom de l'établissement">
+            <input type="email" id="new-tenant-email" placeholder="Email du gérant">
+            <input type="text" id="new-tenant-phone" placeholder="Téléphone">
+            <select id="new-tenant-plan">
+                <option value="ECO">Pack ECO (19€/m)</option>
+                <option value="CHEF">Pack BRIGADE (45€/m)</option>
+                <option value="PREMIUM">Pack EXÉCUTIF (99€/m)</option>
+            </select>
+            <div style="display:flex; gap:10px; margin-top: 10px;">
+                <button class="btn" style="background:transparent; border:1px solid var(--border-color); color:white; flex:1;" onclick="closeModal()">Annuler</button>
+                <button class="btn btn-primary" style="flex:2;" onclick="createNewClient()">Générer la licence</button>
+            </div>
+        </div>
     </div>
 
     <div class="navbar">
@@ -97,15 +124,16 @@
                     <tr>
                         <th>Établissement</th>
                         <th>ID Licence</th>
-                        <th>Coordonnées Contact</th>
+                        <th>Contact</th>
                         <th>Forfait</th>
-                        <th>Bornes / Écrans</th>
-                        <th>Statut Network</th>
+                        <th>PIN Maître</th>
+                        <th>Écrans</th>
+                        <th>Statut</th>
                         <th>Actions</th>
                     </tr>
                 </thead>
                 <tbody id="clients-table-body">
-                    <tr><td colspan="7" style="text-align:center; color:var(--text-dim); padding: 30px;">Connexion au serveur...</td></tr>
+                    <tr><td colspan="8" style="text-align:center; color:var(--text-dim); padding: 30px;">Connexion au serveur...</td></tr>
                 </tbody>
             </table>
         </div>
@@ -151,7 +179,7 @@
             })
             .catch(err => {
                 console.error("Erreur réseau backend", err);
-                document.getElementById('clients-table-body').innerHTML = `<tr><td colspan="7" style="text-align:center; color:var(--danger); padding:30px;">❌ Impossible de joindre la base de données.</td></tr>`;
+                document.getElementById('clients-table-body').innerHTML = `<tr><td colspan="8" style="text-align:center; color:var(--danger); padding:30px;">❌ Impossible de joindre la base de données.</td></tr>`;
             });
         }
 
@@ -159,12 +187,11 @@
             const activeClients = clients.filter(c => c.status === 'ACTIF');
             const suspendedClients = clients.filter(c => c.status === 'SUSPENDU');
             
-            // Calcul automatique et dynamique du MRR global
             let totalMrr = 0;
             activeClients.forEach(c => {
                 if(c.pack === 'PREMIUM' || c.pack === 'EXCUTIF') totalMrr += 99;
                 else if(c.pack === 'CHEF' || c.pack === 'BUSINESS') totalMrr += 45;
-                else totalMrr += 19; // Forfaits Eco / Petite Restauration
+                else totalMrr += 19; 
             });
 
             document.getElementById('total-clients').innerText = activeClients.length;
@@ -173,7 +200,7 @@
 
             const tbody = document.getElementById('clients-table-body');
             if (clients.length === 0) {
-                tbody.innerHTML = `<tr><td colspan="7" style="text-align:center; color:var(--text-dim); padding: 30px;">Aucun client trouvé dans le Cluster iCHEF.</td></tr>`;
+                tbody.innerHTML = `<tr><td colspan="8" style="text-align:center; color:var(--text-dim); padding: 30px;">Aucun client trouvé dans le Cluster iCHEF.</td></tr>`;
                 return;
             }
 
@@ -186,24 +213,35 @@
                     ? `<a class="action-link action-danger" onclick="toggleStatus('${c.id}', 'suspend')">Suspendre</a>`
                     : `<a class="action-link" style="color:var(--success);" onclick="toggleStatus('${c.id}', 'activate')">Réactiver</a>`;
 
+                let emailDisplay = c.email || "Non renseigné";
+                let phoneDisplay = c.phone || "Non renseigné";
+
                 return `
                 <tr>
                     <td><strong style="color:white; font-size:1.05rem;">${c.name}</strong></td>
                     <td style="font-family:monospace; color:var(--accent); font-weight:600;">${c.id}</td>
                     <td>
-                        <div style="font-size:0.85rem; color:white;">📩 ${c.email}</div>
-                        <div style="font-size:0.85rem; color:var(--text-dim); margin-top:4px;">📞 ${c.phone}</div>
+                        <div style="font-size:0.85rem; color:white;">📩 ${emailDisplay}</div>
+                        <div style="font-size:0.85rem; color:var(--text-dim); margin-top:4px;">📞 ${phoneDisplay}</div>
                     </td>
                     <td><span style="font-weight:800; color:var(--accent);">${c.pack}</span></td>
+                    
+                    <td>
+                        <div style="display:flex; align-items:center; gap:10px;">
+                            <span style="font-family:monospace; font-size:1.1rem; color:white; background:rgba(255,255,255,0.1); padding:4px 8px; border-radius:4px;">${c.pin}</span>
+                            <button onclick="editPin('${c.id}')" style="background:transparent; border:none; cursor:pointer; font-size:1rem; padding:0;" title="Modifier le PIN du client">✏️</button>
+                        </div>
+                    </td>
+
                     <td>
                         <div style="display:flex; align-items:center; gap:10px;">
                             <span style="font-weight:bold;">${c.activeScreens} / ${c.maxScreens}</span>
-                            <button onclick="editScreens('${c.id}', ${c.maxScreens})" style="background:transparent; border:none; cursor:pointer; font-size:0.9rem;" title="Ajuster la limite">✏️</button>
+                            <button onclick="editScreens('${c.id}', ${c.maxScreens})" style="background:transparent; border:none; cursor:pointer; font-size:0.9rem; padding:0;" title="Ajuster la limite">✏️</button>
                         </div>
                     </td>
                     <td>${badge}</td>
                     <td>
-                        <a class="action-link" onclick="window.open('vitrine.html?tenantID=${c.id}', '_blank')">Ouvrir</a>
+                        <a class="action-link" onclick="window.open('vitrine.html?tenantID=${c.id}', '_blank')">Accéder</a>
                         ${toggleAction}
                         <a class="action-link action-danger" onclick="toggleStatus('${c.id}', 'delete')">Supprimer</a>
                     </td>
@@ -213,6 +251,25 @@
         }
 
         // === ACTIONS DIRECTES SUR LA BASE DE DONNÉES ===
+
+        // MODIFIER LE PIN
+        function editPin(tenantID) {
+            let newVal = prompt(`Nouveau code PIN Maître pour la licence "${tenantID}" (4 à 6 chiffres) :`);
+            if (newVal !== null && newVal.trim() !== "") {
+                fetch(`${SERVER_URL}/api/admin-action`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ masterKey: 'Empire2026', tenantID: tenantID, action: 'set_pin', manualPin: newVal })
+                })
+                .then(res => res.json())
+                .then(data => {
+                    if(data.success) loadClientsList();
+                    else alert("Le serveur a refusé la modification.");
+                });
+            }
+        }
+
+        // MODIFIER LES ÉCRANS
         function editScreens(tenantID, currentMax) {
             let newVal = prompt(`Modifier le nombre d'écrans maximum autorisés pour la licence "${tenantID}" :`, currentMax);
             if (newVal !== null && newVal.trim() !== "") {
