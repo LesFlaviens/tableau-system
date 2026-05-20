@@ -27,7 +27,7 @@ app.get('/', (req, res) => {
 
 app.get('/panel-ichef', (req, res) => {
     if (req.query.pass === ADMIN_PASS) {
-        // 👇 ICI : REDIRECTION VERS TON NOUVEAU COCKPIT SUPER-ADMIN
+        // REDIRECTION VERS TON NOUVEAU COCKPIT SUPER-ADMIN
         res.sendFile(path.join(__dirname, 'empire.html'));
     } else {
         res.status(403).send('🔒 Accès Refusé.');
@@ -159,6 +159,62 @@ app.post('/api/scan-invoice', async (req, res) => {
     } catch (error) {
         console.error("🔥 CRASH IA GOOGLE :", error.message);
         res.status(500).json({ success: false, error: "ERREUR GOOGLE : " + error.message });
+    }
+});
+
+// ==========================================
+// 🛎️ IA MAÎTRE D'HÔTEL : RÉSERVATIONS & PLACEMENT
+// ==========================================
+app.post('/api/smart-reservation', async (req, res) => {
+    const { tenantID, customerRequest, availableTables } = req.body;
+    
+    if (!process.env.GEMINI_API_KEY || process.env.GEMINI_API_KEY === 'CLE_MANQUANTE') {
+        return res.status(500).json({ success: false, error: "Clé IA manquante." });
+    }
+
+    try {
+        const prompt = `
+        Tu es le Maître d'Hôtel virtuel d'un établissement de luxe (Système iCHEF).
+        
+        DEMANDE CLIENT : "${customerRequest}"
+        
+        TABLES DISPONIBLES (Format JSON) : 
+        ${JSON.stringify(availableTables)}
+
+        MISSION :
+        1. Analyse la demande (nombre de personnes, heure, préférences : terrasse, fenêtre, calme).
+        2. Trouve la table la plus optimisée. RÈGLE D'OR : Ne bloque jamais une table de 6 pour 2 personnes si une table de 2 est disponible.
+        3. Si les préférences (ex: fenêtre) ne sont pas disponibles, place-les quand même sur une autre table adaptée et explique-le poliment.
+        4. Si aucune table n'a la capacité suffisante, refuse la réservation.
+
+        RÉPONSE EXIGÉE :
+        Tu dois renvoyer STRICTEMENT ET UNIQUEMENT un objet JSON valide, sans aucun texte autour.
+        Structure attendue :
+        {
+            "acceptee": true ou false,
+            "pax": nombre_entier,
+            "heure": "HH:MM",
+            "tableAllouee": "ID_DE_LA_TABLE_CHOISIE" (ou null si refusé),
+            "messageClient": "Votre réponse professionnelle et chaleureuse à envoyer au client.",
+            "optimisationInfo": "Note interne pour le gérant expliquant pourquoi cette table a été choisie."
+        }`;
+
+        const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+        const result = await model.generateContent(prompt);
+        
+        let responseText = result.response.text().trim();
+        responseText = responseText.replace(/```json/gi, '').replace(/```/gi, '').trim();
+        if (!responseText.startsWith("{")) {
+            const firstBrace = responseText.indexOf("{");
+            if (firstBrace !== -1) responseText = responseText.substring(firstBrace);
+        }
+        
+        const decision = JSON.parse(responseText);
+        res.json({ success: true, decision: decision });
+
+    } catch (error) {
+        console.error("🔥 CRASH IA RÉSERVATION :", error.message);
+        res.status(500).json({ success: false, error: "Erreur de traitement IA." });
     }
 });
 
