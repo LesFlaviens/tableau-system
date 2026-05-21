@@ -117,12 +117,9 @@
 
             <div class="card" style="border-color: var(--accent);">
                 <h2 style="color:var(--accent);">🚀 Apps Connectées</h2>
-                <p>Accédez instantanément à vos différents modules logiciels sans perdre votre session sécurisée.</p>
-                <div style="display: flex; flex-direction: column; gap: 10px;">
-                    <button class="btn btn-outline" style="border-color: var(--accent); color: var(--accent);" onclick="window.location.href='chef.html?tenantID=' + currentTenantID">👨‍🍳 Espace Chef</button>
-                    <button class="btn btn-outline" style="border-color: #a78bfa; color: #a78bfa;" onclick="window.open('menu-pure.html?tenantID=' + currentTenantID, '_blank')">📱 Menu Pure</button>
-                    <button class="btn btn-outline" style="border-color: #ef4444; color: #ef4444;" onclick="window.open('production.html?tenantID=' + currentTenantID, '_blank')">🔥 KDS Cuisine</button>
-                </div>
+                <p>Vos modules logiciels selon votre forfait (<strong id="badge-plan" style="color:var(--accent);"></strong>).</p>
+                <div id="dynamic-apps-list" style="display: flex; flex-direction: column; gap: 10px;">
+                    </div>
             </div>
             
             <div class="card" style="border-color: #a78bfa;">
@@ -175,6 +172,7 @@
         : "https://tableau-system.onrender.com";
 
         let currentTenantID = null;
+        let currentPlan = null; // Mémoire du forfait
         let staffList = [];
 
         // === GESTION DES MESSAGES FLOTTANTS ===
@@ -218,10 +216,9 @@
                     const pinData = await pinRes.json();
 
                     if (pinData.success) {
-                        // Mot de passe correct côté serveur !
                         successLogin(id, data.plan, pwd);
                     } else {
-                        // En cas d'échec serveur, on tente le cache local par sécurité
+                        // Secours si API PIN bug : cache local
                         const localMasterPin = localStorage.getItem('ichef_master_pin');
                         if (pwd === localMasterPin && localMasterPin != null) {
                             successLogin(id, data.plan, pwd);
@@ -236,14 +233,14 @@
                     document.getElementById('login-error').style.display = 'block';
                 }
             } catch(e) {
-                // 📡 MODE HORS-LIGNE (Si le serveur Render dort ou coupe)
+                // 📡 MODE HORS-LIGNE
                 const localMasterPin = localStorage.getItem('ichef_master_pin');
                 const localId = localStorage.getItem('ichef_tenant_id');
                 
                 if (id === localId && pwd === localMasterPin && localMasterPin != null) {
                     successLogin(id, "CHEF", pwd); // Connexion de survie
                 } else {
-                    document.getElementById('login-error').innerText = "📡 Serveur injoignable. Impossible de vérifier vos identifiants.";
+                    document.getElementById('login-error').innerText = "📡 Serveur injoignable. Vérifiez votre connexion.";
                     document.getElementById('login-error').style.display = 'block';
                 }
             }
@@ -251,22 +248,51 @@
 
         function successLogin(id, plan, pin) {
             currentTenantID = id;
+            currentPlan = plan || 'CHEF'; // Sauvegarde du pack
             localStorage.setItem('ichef_tenant_id', id);
-            localStorage.setItem('ichef_master_pin', pin); // Sauvegarde pour le mode hors-ligne
+            localStorage.setItem('ichef_master_pin', pin);
             document.getElementById('login-error').style.display = 'none';
-            showDashboard(id, plan);
+            showDashboard(id, currentPlan);
             loadData();
         }
 
+        // === AFFICHAGE INTELLIGENT DU TABLEAU DE BORD ===
         function showDashboard(id, plan) {
             document.getElementById('login-section').style.display = 'none';
             document.getElementById('dashboard-section').style.display = 'block';
             document.getElementById('btn-logout').style.display = 'block';
             document.getElementById('display-name').innerText = id.replace(/-/g, ' ').toUpperCase();
+            
+            // On met à jour le texte du badge
+            document.getElementById('badge-plan').innerText = plan || "INCONNU";
+            
+            // On construit la liste des applications en fonction du PACK CLIENT
+            let appsHtml = '';
+            
+            if (plan === 'CHEF') {
+                appsHtml += `<button class="btn btn-outline" style="border-color: var(--accent); color: var(--accent);" onclick="window.location.href='chef.html?tenantID=' + currentTenantID">👨‍🍳 Chef Cuisine</button>`;
+                appsHtml += `<button class="btn btn-outline" style="border-color: #a78bfa; color: #a78bfa;" onclick="window.location.href='chef-patissier.html?tenantID=' + currentTenantID">🍰 Chef Pâtissier</button>`;
+                appsHtml += `<button class="btn btn-outline" style="border-color: #3b82f6; color: #3b82f6;" onclick="window.location.href='chef-bar.html?tenantID=' + currentTenantID">🍸 Chef Bar</button>`;
+            } 
+            else if (plan === 'BUSINESS') {
+                appsHtml += `<button class="btn btn-outline" style="border-color: var(--accent); color: var(--accent);" onclick="window.location.href='pack-eco.html?tenantID=' + currentTenantID">💻 Caisse Business</button>`;
+                appsHtml += `<button class="btn btn-outline" style="border-color: #a78bfa; color: #a78bfa;" onclick="window.open('menu-pure.html?tenantID=' + currentTenantID, '_blank')">📱 Menu Digital Pure</button>`;
+                appsHtml += `<button class="btn btn-outline" style="border-color: #3b82f6; color: #3b82f6;" onclick="window.open('menu-qr.html?tenantID=' + currentTenantID, '_blank')">📱 Menu QR Salle</button>`;
+            } 
+            else { // PREMIUM 
+                appsHtml += `<button class="btn btn-outline" style="border-color: var(--accent); color: var(--accent);" onclick="window.location.href='index.html?tenantID=' + currentTenantID">👑 Caisse Premium</button>`;
+                appsHtml += `<button class="btn btn-outline" style="border-color: #f59e0b; color: #f59e0b;" onclick="window.location.href='chef.html?tenantID=' + currentTenantID">👨‍🍳 Espace Chef</button>`;
+                appsHtml += `<button class="btn btn-outline" style="border-color: #a78bfa; color: #a78bfa;" onclick="window.open('menu-pure.html?tenantID=' + currentTenantID, '_blank')">📱 Menu Digital Pure</button>`;
+                appsHtml += `<button class="btn btn-outline" style="border-color: #ef4444; color: #ef4444;" onclick="window.open('production.html?tenantID=' + currentTenantID, '_blank')">🔥 KDS Cuisine</button>`;
+            }
+            
+            // On injecte les bons boutons
+            document.getElementById('dynamic-apps-list').innerHTML = appsHtml;
         }
 
         function logout() {
             currentTenantID = null;
+            currentPlan = null;
             document.getElementById('login-id').value = '';
             document.getElementById('login-pwd').value = '';
             document.getElementById('login-section').style.display = 'flex';
@@ -274,15 +300,12 @@
             document.getElementById('btn-logout').style.display = 'none';
         }
 
-        async function goBackToApp() {
+        // Le bouton de retour général
+        function goBackToApp() {
             if(!currentTenantID) return;
-            try {
-                const licRes = await fetch(`${SERVER_URL}/api/check-license?tenantID=${currentTenantID}`);
-                const licData = await licRes.json();
-                if (licData.plan === 'CHEF') window.location.href = `chef.html?tenantID=${currentTenantID}`;
-                else if (licData.plan === 'PREMIUM') window.location.href = `index.html?tenantID=${currentTenantID}`;
-                else window.location.href = `pack-eco.html?tenantID=${currentTenantID}`;
-            } catch(e) { window.location.href = `pack-eco.html?tenantID=${currentTenantID}`; }
+            if (currentPlan === 'CHEF') window.location.href = `chef.html?tenantID=${currentTenantID}`;
+            else if (currentPlan === 'PREMIUM') window.location.href = `index.html?tenantID=${currentTenantID}`;
+            else window.location.href = `pack-eco.html?tenantID=${currentTenantID}`;
         }
 
         // === CHARGEMENT DES DONNÉES GLOBALES ===
