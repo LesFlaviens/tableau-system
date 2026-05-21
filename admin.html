@@ -758,17 +758,55 @@
                 red: parseInt(document.getElementById('setting-stock-red').value) || 2
             };
 
+       // --- SYNCHRONISATION CLOUD iCHEF ---
+        async function sauvegarderDansLeCloud() {
             try {
+                // 🛠️ FUSION STRATÉGIQUE DES PLATS POUR LE MENU CLIENT QR
+                // On regroupe proprement les plats Cuisine et Bar pour la clé MENU_ARCHITECTURE
+                let architectureConsolidee = {};
+                
+                // Intégration de la Cuisine
+                for (let catId in menuCuisine) {
+                    architectureConsolidee[catId] = menuCuisine[catId];
+                }
+                // Intégration du Bar
+                for (let catId in menuBar) {
+                    architectureConsolidee[catId] = menuBar[catId];
+                }
+
+                // 📡 ENVOI PARALLÈLE STRICT SUR LES BONNES CLÉS MONGO
                 await Promise.all([
+                    // Sauvegarde du menu Cuisine pour les écrans Cuisine (KDS)
                     fetch(`${SERVER_URL}/update-order?tenantID=${tenantID}`, { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ tableId: 'MENU_MASTER', order: { data: menuCuisine } }) }),
+                    
+                    // Sauvegarde du menu Bar pour l'écran Chef Bar
                     fetch(`${SERVER_URL}/update-order?tenantID=${tenantID}`, { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ tableId: 'MENU_MASTER_BAR', order: { data: menuBar } }) }),
+                    
+                    // Sauvegarde de l'équipe et des codes PIN
                     fetch(`${SERVER_URL}/update-order?tenantID=${tenantID}`, { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ tableId: 'STAFF_ACCESS', order: { data: staffAccess } }) }),
+                    
+                    // Sauvegarde des paramètres système globaux
                     fetch(`${SERVER_URL}/update-order?tenantID=${tenantID}`, { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ tableId: 'SETTINGS_MASTER', order: { data: systemSettings } }) }),
+                    
+                    // Sauvegarde des listes de catégories
                     fetch(`${SERVER_URL}/update-order?tenantID=${tenantID}`, { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ tableId: 'CATEGORIES_CUISINE', order: { data: categoriesCuisine } }) }),
-                    fetch(`${SERVER_URL}/update-order?tenantID=${tenantID}`, { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ tableId: 'CATEGORIES_BAR', order: { data: categoriesBar } }) })
+                    fetch(`${SERVER_URL}/update-order?tenantID=${tenantID}`, { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ tableId: 'CATEGORIES_BAR', order: { data: categoriesBar } }) }),
+                    
+                    // 👑 LE LIEN MANQUANT : Envoi de la carte unifiée pour le menu-qr.html !
+                    fetch(`${SERVER_URL}/update-order?tenantID=${tenantID}`, { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ tableId: 'MENU_ARCHITECTURE', order: { data: architectureConsolidee } }) })
                 ]);
+                
                 markSaved();
-            } catch(e) { alert("Erreur de sauvegarde dans le Cloud."); }
+                // Utilisation du système d'affichage natif au lieu d'un vieux bandeau moche
+                if(typeof showMessage === 'function') {
+                    showMessage("✅ Tout a été synchronisé avec le Cloud !");
+                } else {
+                    alert("✅ Tout a été synchronisé avec le Cloud !");
+                }
+            } catch(e) { 
+                console.error("Erreur Cloud Sync:", e);
+                alert("❌ Erreur de sauvegarde dans le Cloud."); 
+            }
         }
 
         function forceSync() {
@@ -790,6 +828,7 @@
             listCuisine.innerHTML = categoriesCuisine.map(c => makeCatHtml(c, false)).join('');
             listBar.innerHTML = categoriesBar.map(c => makeCatHtml(c, true)).join('');
         }
+        
         function addCategory() {
             let name = document.getElementById('new-cat-name').value.trim();
             let type = document.getElementById('new-cat-type').value;
@@ -803,6 +842,7 @@
             }
             document.getElementById('new-cat-name').value = ''; markUnsaved(); updateCategoryDropdowns(); renderCategoryModalLists();
         }
+        
         function deleteCategory(id, isBar) {
             let menuRef = isBar ? menuBar : menuCuisine;
             if (menuRef[id] && menuRef[id].length > 0) return alert("⚠️ Impossible: cette catégorie contient des plats.");
@@ -811,6 +851,7 @@
                 delete menuRef[id]; markUnsaved(); updateCategoryDropdowns(); renderCategoryModalLists(); renderMenuList();
             }
         }
+        
         function updateCategoryDropdowns() {
             const filterSelect = document.getElementById('menu-filter-cat'); const itemSelect = document.getElementById('item-cat');
             let optionsCuisine = categoriesCuisine.map(c => `<option value="${c.id}">${c.label}</option>`).join('');
@@ -826,7 +867,6 @@
             const container = document.getElementById('admin-menu-list');
             let html = '';
             
-            // On récupère les seuils actuels pour l'affichage
             let yellowLimit = parseInt(document.getElementById('setting-stock-yellow').value) || 10;
             let orangeLimit = parseInt(document.getElementById('setting-stock-orange').value) || 5;
             let redLimit = parseInt(document.getElementById('setting-stock-red').value) || 2;
@@ -887,19 +927,18 @@
             container.innerHTML = html;
         }
 
-        // Nouvelle fonction : Rupture Rapide
         function toggleRupture(name, cat, isBar) {
             let menuRef = isBar ? menuBar : menuCuisine;
             let item = menuRef[cat].find(i => i.name === name);
             if (item) {
                 if (item.stock === 0 || item.stock === "0") {
-                    item.stock = ""; // Remet en stock illimité
+                    item.stock = ""; 
                 } else {
-                    item.stock = 0; // Passe en rupture
+                    item.stock = 0; 
                 }
                 markUnsaved(); 
                 renderMenuList(); 
-                updateDashboardStats();
+                if(typeof updateDashboardStats === 'function') updateDashboardStats();
             }
         }
 
