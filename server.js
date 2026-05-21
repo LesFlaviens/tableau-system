@@ -34,14 +34,43 @@ app.get('/panel-ichef', (req, res) => {
 });
 
 // ==========================================
-// 🚨 WEBHOOK : SÉCURITÉ ANTI-IMPAYÉS
+// 🚨 WEBHOOK : SÉCURITÉ ANTI-IMPAYÉS & CRÉATION AUTO
 // ==========================================
 app.post('/webhook', express.raw({type: 'application/json'}), async (req, res) => {
     const sig = req.headers['stripe-signature'];
     let event;
     try { event = stripe.webhooks.constructEvent(req.body, sig, process.env.STRIPE_WEBHOOK_SECRET); } 
     catch (err) { return res.status(400).send(`Webhook Error: ${err.message}`); }
-    if (event.type === 'checkout.session.completed') console.log(`💰 PAIEMENT REÇU !`);
+    
+    if (event.type === 'checkout.session.completed') {
+        console.log(`💰 PAIEMENT REÇU ! Création de licence en cours...`);
+        const session = event.data.object;
+        
+        try {
+            // Tentative de récupération des données si passées dans metadata
+            const tenantID = session.client_reference_id || "nouveau_client_" + Date.now();
+            // Par défaut, si non spécifié, on l'attribue au forfait PREMIUM
+            const finalPlan = "PREMIUM"; 
+
+            // Si c'est un test ou un paiement via lien bridge, on le force dans MongoDB
+            await Tenant.updateOne(
+                { tenantID: tenantID },
+                { 
+                    $set: { 
+                        status: 'ACTIF', 
+                        plan: finalPlan, 
+                        maxScreens: 50, // Limite Premium
+                        config: { stripeCustomerId: session.customer } 
+                    },
+                    $setOnInsert: { pin: Math.floor(1000 + Math.random() * 9000).toString() }
+                },
+                { upsert: true }
+            );
+            console.log(`✅ Licence MongoDB mise à jour pour : ${tenantID}`);
+        } catch(e) {
+            console.error("❌ Erreur d'insertion MongoDB Webhook :", e);
+        }
+    }
     res.json({received: true});
 });
 
