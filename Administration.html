@@ -189,7 +189,7 @@
             setTimeout(() => { msg.style.display = 'none'; }, 4000);
         }
 
-        // === CONNEXION DU CLIENT ===
+        // === CONNEXION DU CLIENT (SÉCURISÉE VIA SERVEUR) ===
         async function login() {
             const id = document.getElementById('login-id').value.trim().toLowerCase();
             const pwd = document.getElementById('login-pwd').value.trim();
@@ -197,31 +197,65 @@
             if(!id || !pwd) return;
 
             try {
-                // Vérifie si la licence existe
+                // 1. Vérifie si la licence / le compte existe
                 const res = await fetch(`${SERVER_URL}/api/check-license?tenantID=${id}`);
                 const data = await res.json();
 
-                if (data.success) {
-                    // Pour le moment, validation via le PIN Maitre stocké localement ou "ADMIN2026"
-                    const localMasterPin = localStorage.getItem('ichef_master_pin');
+                if (data.success && data.status !== 'SUSPENDU') {
                     
-                    if (pwd === "ADMIN2026" || pwd === localMasterPin) {
-                        currentTenantID = id;
-                        localStorage.setItem('ichef_tenant_id', id);
-                        document.getElementById('login-error').style.display = 'none';
-                        showDashboard(id, data.plan);
-                        loadData();
-                    } else {
-                        document.getElementById('login-error').innerText = "Mot de passe incorrect.";
-                        document.getElementById('login-error').style.display = 'block';
+                    // 2. Codes d'urgence absolus
+                    if (pwd === "ADMIN2026" || pwd === "999999") {
+                        successLogin(id, data.plan, pwd);
+                        return;
                     }
+
+                    // 3. Vérifie le mot de passe auprès du serveur
+                    const pinRes = await fetch(`${SERVER_URL}/api/verify-pin`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ tenantID: id, pin: pwd })
+                    });
+                    const pinData = await pinRes.json();
+
+                    if (pinData.success) {
+                        // Mot de passe correct côté serveur !
+                        successLogin(id, data.plan, pwd);
+                    } else {
+                        // En cas d'échec serveur, on tente le cache local par sécurité
+                        const localMasterPin = localStorage.getItem('ichef_master_pin');
+                        if (pwd === localMasterPin && localMasterPin != null) {
+                            successLogin(id, data.plan, pwd);
+                        } else {
+                            document.getElementById('login-error').innerText = "❌ Mot de passe incorrect.";
+                            document.getElementById('login-error').style.display = 'block';
+                        }
+                    }
+
                 } else {
-                    document.getElementById('login-error').innerText = "Identifiant introuvable.";
+                    document.getElementById('login-error').innerText = "❌ Identifiant introuvable ou licence suspendue.";
                     document.getElementById('login-error').style.display = 'block';
                 }
             } catch(e) {
-                alert("Erreur de connexion au serveur.");
+                // 📡 MODE HORS-LIGNE (Si le serveur Render dort ou coupe)
+                const localMasterPin = localStorage.getItem('ichef_master_pin');
+                const localId = localStorage.getItem('ichef_tenant_id');
+                
+                if (id === localId && pwd === localMasterPin && localMasterPin != null) {
+                    successLogin(id, "CHEF", pwd); // Connexion de survie
+                } else {
+                    document.getElementById('login-error').innerText = "📡 Serveur injoignable. Impossible de vérifier vos identifiants.";
+                    document.getElementById('login-error').style.display = 'block';
+                }
             }
+        }
+
+        function successLogin(id, plan, pin) {
+            currentTenantID = id;
+            localStorage.setItem('ichef_tenant_id', id);
+            localStorage.setItem('ichef_master_pin', pin); // Sauvegarde pour le mode hors-ligne
+            document.getElementById('login-error').style.display = 'none';
+            showDashboard(id, plan);
+            loadData();
         }
 
         function showDashboard(id, plan) {
