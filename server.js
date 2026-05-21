@@ -249,14 +249,27 @@ app.post('/api/smart-reservation', async (req, res) => {
 // 🚀 ACTIVATION & CONNEXION CLIENTS
 // ==========================================
 app.post('/api/activate', async (req, res) => {
-    const { sessionId, clientName, tenantID, plan, email, phone } = req.body;
-    try {
-        const session = await stripe.checkout.sessions.retrieve(sessionId);
-        if (session.payment_status !== 'paid') return res.status(403).json({ error: "Paiement requis." });
-        
-        const existingTenant = await Tenant.findOne({ tenantID });
-        if (existingTenant) return res.status(400).json({ error: "Identifiant réseau déjà pris." });
+    const { sessionId, clientName, tenantID, plan, email } = req.body;
+    
+    // Si pas de session ID, c'est une tentative de fraude
+    if (!sessionId) {
+        return res.status(403).json({ error: "Session de paiement invalide." });
+    }
 
+    try {
+        // Validation Stripe stricte
+        const session = await stripe.checkout.sessions.retrieve(sessionId);
+        if (session.payment_status !== 'paid') {
+            return res.status(403).json({ error: "Paiement non validé par Stripe." });
+        }
+        
+        // Vérification des doublons
+        const existingTenant = await Tenant.findOne({ tenantID });
+        if (existingTenant) {
+            return res.status(400).json({ error: "Cet identifiant est déjà pris. Veuillez en choisir un autre." });
+        }
+
+        // Création du client officiel
         const randomPin = Math.floor(1000 + Math.random() * 9000).toString();
         const finalPlan = plan || 'ECO';
 
@@ -267,14 +280,17 @@ app.post('/api/activate', async (req, res) => {
         if (finalPlan === 'PREMIUM') limit = 50;    // Pack 129€ : 50 écrans max
 
         await Tenant.create({ 
-            tenantID, clientName, email, phone, status: 'ACTIF', 
+            tenantID, clientName, email, status: 'ACTIF', 
             plan: finalPlan, maxScreens: limit, pin: randomPin, 
             config: { stripeCustomerId: session.customer } 
         });
         
         await AppState.create({ tenantID, activeOrders: {} });
         res.json({ success: true, dedicatedPin: randomPin });
-    } catch (error) { res.status(500).json({ error: "Erreur serveur." }); }
+    } catch (error) { 
+        console.error(error);
+        res.status(500).json({ error: "Erreur d'activation." }); 
+    }
 });
 
 // ==========================================
