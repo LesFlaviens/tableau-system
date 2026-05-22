@@ -28,18 +28,14 @@
                 if (plan === 'CHEF' || plan === 'CHEF_CUISINE' || plan === 'CHEF_PATISSIER' || plan === 'CHEF_BAR') {
                     alert(`⛔ ACCÈS REFUSÉ :\nVotre forfait actuel (${plan}) n'inclut pas ce module Menu.\nVeuillez upgrader votre offre pour y accéder.`);
                     
-                    // Tente de fermer l'onglet (utile s'il a été ouvert via target="_blank")
                     try {
                         window.close();
                     } catch(e) {}
                     
-                    // Si l'onglet refuse de se fermer, on le renvoie de force au portail client
                     setTimeout(() => {
                         window.location.href = `portail-client.html?tenantID=${tenantID}`;
                     }, 100);
                 }
-                // Si c'est ECO, BUSINESS ou PREMIUM, le script ne fait rien et laisse la page s'afficher !
-
             } catch(e) {
                 console.log("Mode hors-ligne actif. Vérification des accès retardée.");
             }
@@ -357,10 +353,10 @@
         const urlParams = new URLSearchParams(window.location.search);
         const tenantID = urlParams.get('tenantID') || 'MASTER_STATE';
         
-        // 🚀 CONNEXION À TON SERVEUR RENDER ICI 🚀
-       const SERVER_URL = (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1" || window.location.protocol === "file:") 
-    ? "http://localhost:10000" 
-    : "https://tableau-system.onrender.com";
+        // 🚀 CONNEXION À TON SERVEUR RENDER
+        const SERVER_URL = (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1" || window.location.protocol === "file:") 
+            ? "http://localhost:10000" 
+            : "https://tableau-system.onrender.com";
 
         // 🌍 VARIABLE MULTIDEVISE GLOBALE
         let currentCurrency = "€";
@@ -379,14 +375,8 @@
             }
         };
 
-        const categoriesMap = [
-            { id: 'menuJour', label: 'Menu du Jour', isTasting: true },
-            { id: 'suggestions', label: 'Suggestions', isTasting: false },
-            { id: 'entrees', label: 'Entrées', isTasting: false },
-            { id: 'plats', label: 'Plats', isTasting: false },
-            { id: 'desserts', label: 'Desserts', isTasting: false }
-        ];
-
+        // 🧠 Liste dynamique générée à la volée d'après la base MongoDB
+        let categoriesMap = [];
         let currentMenuData = null;
         let lastDesignHash = "";
 
@@ -403,7 +393,7 @@
                         let nameMap = {"€": "Euros", "CHF": "Francs Suisses", "$": "Dollars", "C$": "Dollars", "£": "Livres", "¥": "Yens", "MAD": "Dirhams", "CFA": "Francs CFA"};
                         currencyName = nameMap[currentCurrency] || currentCurrency;
                         document.getElementById('footer-currency').innerText = currencyName;
-                        currentMenuData = null; // Force le rafraîchissement
+                        currentMenuData = null; // Force la reconstruction complète
                     }
 
                     if (settings.design) {
@@ -422,12 +412,24 @@
                     }
                 }
 
-                // 🟢 LECTURE DU MENU CUISINE
-                if (state && state.activeOrders && state.activeOrders['MENU_MASTER']) {
-                    let newDataStr = JSON.stringify(state.activeOrders['MENU_MASTER'].data);
+                // 👑 INTERROGATION DU LIEN CONSOLIDÉ DE LA CAISSE (CUISINE + BAR FUSIONNÉS)
+                if (state && state.activeOrders && state.activeOrders['MENU_ARCHITECTURE']) {
+                    let rawArchitecture = state.activeOrders['MENU_ARCHITECTURE'].data || state.activeOrders['MENU_ARCHITECTURE'];
+                    let newDataStr = JSON.stringify(rawArchitecture);
                     
                     if (newDataStr !== JSON.stringify(currentMenuData)) {
                         currentMenuData = JSON.parse(newDataStr);
+                        
+                        // 🛠️ FIX ULTIME : On lit directement les catégories de la base de données
+                        // Plus de décalage si elles s'appellent "Entrées" ou "entrees" !
+                        categoriesMap = Object.keys(currentMenuData).map(key => {
+                            return { 
+                                id: key, 
+                                label: key, 
+                                isTasting: key.toLowerCase().replace(/[^a-z]/g, '').includes('jour') 
+                            };
+                        });
+
                         renderClientMenu();
                     }
                 } else if (!currentMenuData) {
@@ -511,11 +513,10 @@
                 let items = currentMenuData[cat.id];
                 
                 if (items && Array.isArray(items)) {
-                    // 🛡️ Filtre les ruptures de stock ET les plats masqués par le Chef
+                    // 🛡️ Filtre les ruptures de stock ET les plats masqués par le gérant
                     let availableItems = items.filter(item => item.stock !== 0 && item.stock !== "0" && item.hidden !== true);
 
                     if (availableItems.length > 0) {
-                        
                         if (cat.isTasting) {
                             availableItems.forEach(item => {
                                 htmlContent += renderTastingMenu(item);
@@ -563,7 +564,6 @@
                 btn.innerText = "⛶";
             }
         });
-
     </script>
 </body>
 </html>
