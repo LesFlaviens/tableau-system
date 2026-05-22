@@ -782,12 +782,50 @@
             clearTimeout(inactivityTimer); 
         }
 
-        // --- SYNCHRO H24 ---
-        function connectEmpireH24() { 
-            const updateClock = () => { const c = document.getElementById('empire-clock'); if(c) c.innerText = new Date().toLocaleTimeString('fr-FR', {hour: '2-digit', minute: '2-digit'}); };
-            updateClock(); setInterval(updateClock, 1000); 
-            if (typeof syncData === 'function') { syncData(); setInterval(syncData, 3000); }
+       // 🚨 MOTEUR DE SCAN : Détecte si un plat attend au passe de la cuisine/bar
+async function verifierPlatsPretsAuPasse() {
+    try {
+        let r = await fetch(`${SERVER_URL}/get-current-state?tenantID=${tenantID}&_t=${Date.now()}`);
+        if (!r.ok) return;
+        
+        let state = await r.json();
+        let orders = state.activeOrders || {};
+
+        for (let tableId in orders) {
+            if (tableId.includes('MASTER') || tableId.includes('ARCHIVE') || tableId.includes('STAFF')) continue;
+
+            let order = orders[tableId];
+            if (!order || !order.items) continue;
+
+            let aUnPlatAuPasse = order.items.some(item => item.done === true);
+            let boutonTable = document.getElementById(`table-${tableId}`) || document.getElementById(`btn-table-${tableId}`);
+
+            if (boutonTable) {
+                if (aUnPlatAuPasse) {
+                    boutonTable.classList.add('table-ready-flash');
+                } else {
+                    boutonTable.classList.remove('table-ready-flash');
+                }
+            }
         }
+    } catch (e) { console.log("Erreur scan passe cuisine."); }
+}
+
+
+// --- SYNCHRO H24 ---
+function connectEmpireH24() {
+    const updateClock = () => { const c = document.getElementById('empire-clock'); if(c) c.innerText = new Date().toLocaleTimeString('fr-FR', {hour: '2-digit', minute: '2-digit'}); };
+    updateClock(); setInterval(updateClock, 1000);
+    
+    if (typeof syncData === 'function') { 
+        syncData(); 
+        setInterval(syncData, 3000); 
+    }
+
+    // 👇 C'EST ICI QU'ON ALLUME LE MOTEUR DU CLIGNOTEMENT 👇
+    verifierPlatsPretsAuPasse();
+    setInterval(verifierPlatsPretsAuPasse, 3000);
+}
 
         async function syncData() {
             if (isArchiMode) return; 
