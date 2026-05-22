@@ -112,7 +112,7 @@
             .category-section, .tasting-menu-box { padding: 40px 20px; margin-bottom: 40px; }
             .logo-text { font-size: 2.5rem; }
             .category-title { font-size: 1.8rem; padding: 0 15px; top: -18px; }
-            .item-name { font-size: 1.4rem; white-space: normal; }
+            .item-name { font-size: 1.2rem; white-space: normal; }
             .item-dots { display: none; }
             .item-row { flex-direction: column; gap: 5px; }
             .item-price { align-self: flex-start; }
@@ -130,7 +130,7 @@
         </header>
 
         <div class="menu-container" id="menu-container">
-            <div class="loading-screen">Connexion au serveur...</div>
+            <div class="loading-screen">Mise à jour des créations du Chef...</div>
         </div>
 
         <div class="footer">
@@ -155,7 +155,7 @@
                     <span>Total</span>
                     <span id="cart-total-price" style="color: var(--gold);">0.00 €</span>
                 </div>
-                <button class="btn-checkout" onclick="checkout()">Envoyer en Cuisine</button>
+                <button class="btn-checkout" onclick="checkout()">🛎️ Envoyer en Cuisine</button>
             </div>
         </div>
     </div>
@@ -193,7 +193,7 @@
                 const state = await API.getState();
                 let activeOrders = state.activeOrders || {};
                 
-                // 1. LECTURE PARAMÈTRES
+                // 1. LECTURE PARAMÈTRES ET CONFIGURATION DU PAIEMENT
                 if (activeOrders['SETTINGS_MASTER'] && activeOrders['SETTINGS_MASTER'].data) {
                     systemSettings = activeOrders['SETTINGS_MASTER'].data;
                     if (systemSettings.currency && systemSettings.currency !== currentCurrency) {
@@ -236,6 +236,7 @@
                             return { id: key, label: key, isTasting: key.toLowerCase().replace(/[^a-z]/gi, '').includes('jour') };
                         });
                         renderClientMenu();
+                        updateCartUI(); // Met à jour le bouton de paiement
                     }
                 } else {
                     currentMenuData = null;
@@ -265,9 +266,22 @@
         function updateCartUI() {
             let totalItems = cart.reduce((sum, item) => sum + item.qty, 0);
             let totalPrice = cart.reduce((sum, item) => sum + (item.price * item.qty), 0);
+            
             document.getElementById('cart-badge').innerText = totalItems;
             document.getElementById('cart-total-price').innerText = totalPrice.toFixed(2) + ' ' + currentCurrency;
             document.getElementById('cart-fab').style.display = totalItems > 0 ? 'flex' : 'none';
+            
+            // 🧠 INTELLIGENCE ARTIFICIELLE DU BOUTON (Stripe VS Serveur)
+            let btnCheckout = document.querySelector('.btn-checkout');
+            if(btnCheckout) {
+                let isOnlinePayment = systemSettings.payment && systemSettings.payment.online;
+                if (isOnlinePayment && systemSettings.payment.stripeLink) {
+                    btnCheckout.innerHTML = `💳 Payer ${totalPrice.toFixed(2)} ${currentCurrency}`;
+                } else {
+                    btnCheckout.innerHTML = `🛎️ Envoyer en Cuisine`;
+                }
+            }
+
             if (document.getElementById('cart-modal').style.display === 'flex') renderCartModal();
         }
 
@@ -295,24 +309,54 @@
             else if (cart.length > 0) { renderCartModal(); modal.style.display = 'flex'; }
         };
 
-        // ENVOI KDS / STRIPE
+        // 🚀 ENVOI KDS ET REDIRECTION STRIPE DYNAMIQUE
         window.checkout = async function() {
             if (cart.length === 0) return;
-            const btn = document.querySelector('.btn-checkout'); btn.innerText = "Transmission..."; btn.disabled = true;
+            const btn = document.querySelector('.btn-checkout'); 
+            btn.innerText = "Transmission en cours..."; 
+            btn.disabled = true;
+
             let total = cart.reduce((sum, i) => sum + (i.price * i.qty), 0);
+            
+            // Format compris par le Pad Caisse et le KDS Cuisine
             let itemsFormattees = cart.map(item => { return { n: item.name, p: item.price, qty: item.qty }; });
+            
+            // On vérifie le choix de l'administrateur
             let isOnlinePayment = systemSettings.payment && systemSettings.payment.online;
             let stripeLink = systemSettings.payment ? systemSettings.payment.stripeLink : "";
 
-            let orderData = { items: itemsFormattees, total: total, time: Date.now(), table: tableNum, status: isOnlinePayment ? "EN ATTENTE PAIEMENT" : "NOUVELLE COMMANDE", typePaiement: isOnlinePayment ? "Stripe" : "À table", source: "QR Code" };
+            let orderData = { 
+                items: itemsFormattees, 
+                total: total, 
+                time: Date.now(), 
+                table: tableNum, 
+                status: isOnlinePayment ? "EN ATTENTE PAIEMENT" : "NOUVELLE COMMANDE", 
+                typePaiement: isOnlinePayment ? "Stripe" : "À table", 
+                source: "QR Code" 
+            };
+            
             let ticketId = `WEB_${tableNum.replace(/\s+/g, '')}_${Math.floor(Math.random() * 10000)}`;
 
             try {
+                // 📡 1. On injecte la commande dans la base MongoDB (Pad Serveur)
                 await fetch(`${SERVER_URL}/update-order?tenantID=${tenantID}`, { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ tableId: ticketId, order: orderData }) });
-                if (isOnlinePayment && stripeLink) { alert("Redirection vers le paiement."); window.location.href = stripeLink; } 
-                else { alert("✅ Votre commande a bien été envoyée en cuisine !"); cart = []; updateCartUI(); toggleCart(); }
-            } catch(e) { alert("❌ Erreur de transmission."); } 
-            finally { btn.innerText = "Envoyer en Cuisine"; btn.disabled = false; }
+                
+                // 💳 2. Aiguillage selon le mode choisi par le client
+                if (isOnlinePayment && stripeLink) { 
+                    window.location.href = stripeLink; // Redirection
+                } 
+                else { 
+                    alert("✅ Votre commande a bien été transmise à l'équipe !"); 
+                    cart = []; 
+                    updateCartUI(); 
+                    toggleCart(); 
+                }
+            } catch(e) { 
+                alert("❌ Erreur réseau. Veuillez prévenir un serveur."); 
+            } finally { 
+                updateCartUI(); // Remet le bouton à son état initial
+                btn.disabled = false; 
+            }
         };
 
         // RENDU HTML (AVEC CORRECTION DES RETOURS A LA LIGNE)
