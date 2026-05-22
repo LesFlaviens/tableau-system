@@ -1,0 +1,250 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <script>
+        // 🛡️ GARDE DU CORPS SÉCURITÉ : EXCLUSIVITÉ FORFAIT PREMIUM 45€
+        (async function checkAccess() {
+            const urlParams = new URLSearchParams(window.location.search);
+            const tenantID = urlParams.get('tenantID') || localStorage.getItem('ichef_tenant_id');
+            const SERVER_URL = (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1" || window.location.protocol === "file:") 
+                ? "http://localhost:10000" : "https://tableau-system.onrender.com";
+            
+            if(!tenantID) return window.location.href = 'portail-client.html';
+
+            try {
+                const res = await fetch(`${SERVER_URL}/api/check-license?tenantID=${tenantID}`);
+                const data = await res.json();
+                
+                // 1. Contrôle de validité de base
+                if(!data.success || data.status === 'SUSPENDU') {
+                    alert("⛔ LICENCE SUSPENDUE OU INVALIDE.");
+                    return window.location.href = 'portail-client.html';
+                }
+
+                // 2. VERROU STRICT : Seul le plan 'PREMIUM' (Forfait à 45€) a le droit d'entrer
+                const plan = data.plan ? data.plan.toString().toUpperCase() : '';
+                if (plan !== 'PREMIUM') {
+                    alert(`⛔ MODULE VERROUILLÉ :\nL'Écran de Contrôle Production (Pass Cuisine/Bar) est réservé aux abonnés du Pack Élite à 45€/mois.\n\nVeuillez upgrader votre offre depuis votre espace client.`);
+                    return window.location.href = `portail-client.html?tenantID=${tenantID}`;
+                }
+
+            } catch(e) { 
+                console.log("Mode hors-ligne actif."); 
+            }
+        })();
+    </script>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>iCHEF - Écran de Contrôle Production</title>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&family=Playfair+Display:wght@600;700&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --bg: #000000;
+            --panel: #0A0A0A;
+            --border: rgba(250, 240, 230, 0.12);
+            --text-main: #FAF0E6;
+            --text-muted: #8A857D;
+            --gold: #C5A059;
+            --gold-dim: rgba(197, 160, 89, 0.08);
+            --cuisine-color: #ff7675;
+            --bar-color: #74b9ff;
+            --ready-color: #10b981;
+        }
+
+        body { font-family: 'Inter', sans-serif; background: var(--bg); color: var(--text-main); margin: 0; height: 100vh; display: flex; flex-direction: column; overflow: hidden; }
+        
+        header { background: var(--panel); border-bottom: 1px solid var(--border); padding: 15px 30px; display: flex; justify-content: space-between; align-items: center; }
+        .logo-title { font-family: 'Playfair Display', serif; font-size: 1.4rem; color: var(--gold); letter-spacing: 1px; }
+        .status-badge { font-size: 0.75rem; color: var(--gold); border: 1px solid var(--border); padding: 6px 12px; border-radius: 4px; letter-spacing: 1px; }
+        #clock { font-family: 'Playfair Display', serif; color: var(--text-main); font-size: 1.2rem; letter-spacing: 1px; }
+
+        .pass-container { flex: 1; display: flex; overflow: hidden; width: 100vw; }
+        .pass-column { flex: 1; display: flex; flex-direction: column; height: 100%; overflow: hidden; box-sizing: border-box; }
+        .pass-column:first-child { border-right: 1px solid var(--border); }
+        
+        .column-header { padding: 15px 25px; display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid var(--border); font-family: 'Playfair Display', serif; font-size: 1.3rem; letter-spacing: 2px; }
+        .cuisine-header { background: rgba(255, 118, 117, 0.04); color: var(--cuisine-color); }
+        .bar-header { background: rgba(116, 185, 255, 0.04); color: var(--bar-color); }
+        
+        .ticket-counter { font-size: 0.85rem; font-family: 'Inter', sans-serif; background: rgba(255,255,255,0.05); color: var(--text-main); padding: 4px 10px; border-radius: 20px; border: 1px solid var(--border); }
+
+        .tickets-scroll { flex: 1; overflow-y: auto; padding: 20px; display: flex; flex-direction: column; gap: 15px; background: rgba(0,0,0,0.2); }
+        .tickets-scroll::-webkit-scrollbar { display: none; }
+
+        .ticket-card { background: var(--panel); border: 1px solid var(--border); border-radius: 6px; display: flex; flex-direction: column; animation: slideIn 0.3s ease-out; box-shadow: 0 10px 30px rgba(0,0,0,0.5); }
+        @keyframes slideIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+        
+        .ticket-top { padding: 12px 20px; display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid var(--border); background: rgba(255,255,255,0.01); }
+        .ticket-table { font-family: 'Playfair Display', serif; font-size: 1.2rem; font-weight: 600; color: var(--text-main); }
+        .ticket-time { font-size: 0.8rem; color: var(--text-muted); }
+        .ticket-source { font-size: 0.65rem; padding: 3px 6px; border-radius: 3px; font-weight: bold; background: var(--gold); color: #000; letter-spacing: 0.5px; }
+
+        .ticket-middle { padding: 15px 20px; display: flex; flex-direction: column; gap: 10px; flex: 1; }
+        .ticket-item-row { display: flex; justify-content: space-between; align-items: flex-start; padding: 6px 0; border-bottom: 1px dashed rgba(255,255,255,0.05); }
+        .ticket-item-row:last-child { border-bottom: none; }
+        
+        .item-info { display: flex; flex-direction: column; gap: 4px; }
+        .item-title { font-size: 1rem; color: var(--text-main); font-weight: 500; }
+        .item-obs { font-size: 0.8rem; color: var(--gold); font-weight: 500; }
+        .item-seat { font-size: 0.75rem; color: var(--text-muted); }
+        
+        .item-qty { color: var(--gold); font-weight: bold; font-size: 1.1rem; margin-right: 12px; }
+
+        .btn-ready { background: transparent; border: 1px solid var(--gold); color: var(--gold); padding: 8px 14px; border-radius: 4px; font-size: 0.8rem; font-weight: 600; text-transform: uppercase; cursor: pointer; transition: 0.2s; letter-spacing: 0.5px; }
+        .btn-ready:hover { background: var(--gold); color: #000; }
+        .btn-ready:active { transform: scale(0.96); }
+
+        .empty-msg { color: var(--text-muted); text-align: center; padding: 60px 20px; font-style: italic; font-weight: 300; font-size: 0.95rem; }
+    </style>
+</head>
+<body>
+
+    <header>
+        <div class="logo-title">iCHEF 👑 DIRECT PRODUCTION PASS</div>
+        <div id="clock">00:00:00</div>
+        <div class="status-badge">● LIVE SYNCHRO CONNECTED</div>
+    </header>
+
+    <div class="pass-container">
+        <div class="pass-column">
+            <div class="column-header cuisine-header">
+                <span>🔥 PASS CUISINE</span>
+                <span id="counter-cuisine" class="ticket-counter">0 Bons</span>
+            </div>
+            <div id="scroll-cuisine" class="tickets-scroll"></div>
+        </div>
+
+        <div class="pass-column">
+            <div class="column-header bar-header">
+                <span>🍸 PASS BAR</span>
+                <span id="counter-bar" class="ticket-counter">0 Bons</span>
+            </div>
+            <div id="scroll-bar" class="tickets-scroll"></div>
+        </div>
+    </div>
+
+    <script>
+        const urlParams = new URLSearchParams(window.location.search);
+        let tenantID = urlParams.get('tenantID') || localStorage.getItem('ichef_tenant_id') || 'MASTER_STATE';
+
+        const SERVER_URL = (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1" || window.location.protocol === "file:") 
+            ? "http://localhost:10000" : "https://tableau-system.onrender.com";
+
+        let activeOrders = {};
+
+        setInterval(() => {
+            const clockEl = document.getElementById('clock');
+            if(clockEl) clockEl.innerText = new Date().toLocaleTimeString('fr-FR');
+        }, 1000);
+
+        async function fetchProductionState() {
+            try {
+                let r = await fetch(`${SERVER_URL}/get-current-state?tenantID=${tenantID}&_t=${Date.now()}`, { cache: 'no-store' });
+                if(r.ok) {
+                    let state = await r.json();
+                    activeOrders = state.activeOrders || {};
+                    dispatchTickets();
+                }
+            } catch(e) { console.error("Erreur Synchro KDS"); }
+        }
+
+        function dispatchTickets() {
+            let cuisineTickets = [];
+            let barTickets = [];
+
+            for (let tableId in activeOrders) {
+                let order = activeOrders[tableId];
+                if (!order || !order.items || order.items.length === 0 || order.status === 'reserved' || order.status === 'EN ATTENTE PAIEMENT') continue;
+
+                let pendingCuisine = order.items.filter(i => i.dest === 'cuisine' && !i.done);
+                if (pendingCuisine.length > 0) {
+                    cuisineTickets.push({ tableId: tableId, time: order.time || '12:00', source: order.source || 'Salle', items: pendingCuisine });
+                }
+
+                let pendingBar = order.items.filter(i => i.dest === 'bar' && !i.done);
+                if (pendingBar.length > 0) {
+                    barTickets.push({ tableId: tableId, time: order.time || '12:00', source: order.source || 'Salle', items: pendingBar });
+                }
+            }
+
+            cuisineTickets.sort((a, b) => a.tableId.localeCompare(b.tableId));
+            barTickets.sort((a, b) => a.tableId.localeCompare(b.tableId));
+
+            renderColumn('scroll-cuisine', 'counter-cuisine', cuisineTickets);
+            renderColumn('scroll-bar', 'counter-bar', barTickets);
+        }
+
+        function renderColumn(scrollId, counterId, tickets) {
+            document.getElementById(counterId).innerText = `${tickets.length} Bon${tickets.length > 1 ? 's' : ''}`;
+            const container = document.getElementById(scrollId);
+            
+            if (tickets.length === 0) {
+                container.innerHTML = '<div class="empty-msg">Aucun bon en attente pour le moment. ✨</div>';
+                return;
+            }
+
+            container.innerHTML = tickets.map(ticket => {
+                let tableTitle = ticket.tableId.startsWith('WEB_') ? `📱 CLIENT WEB` : `TABLE ${ticket.tableId}`;
+                
+                let itemsHtml = ticket.items.map(item => {
+                    let obsHtml = item.obs ? `<span class="item-obs">⚠️ ${item.obs}</span>` : '';
+                    let seatHtml = (item.seat && item.seat > 0) ? `<span class="item-seat">👤 Siège ${item.seat}</span>` : '';
+                    
+                    return `
+                        <div class="ticket-item-row">
+                            <div class="item-info">
+                                <div class="item-title"><span class="item-qty">${item.qty}x</span>${item.n}</div>
+                                ${obsHtml}${seatHtml}
+                            </div>
+                            <button class="btn-ready" onclick="markItemAsReady('${ticket.tableId}', '${item.id || item.itemId}')">✔ PRÊT</button>
+                        </div>
+                    `;
+                }).join('');
+
+                return `
+                    <div class="ticket-card">
+                        <div class="ticket-top">
+                            <span class="ticket-table">${tableTitle}</span>
+                            <span class="ticket-time">🛎️ ${ticket.time}</span>
+                            <span class="ticket-source">${ticket.source}</span>
+                        </div>
+                        <div class="ticket-middle">
+                            ${itemsHtml}
+                        </div>
+                    </div>
+                `;
+            }).join('');
+        }
+
+        async function markItemAsReady(tableId, itemId) {
+            let order = activeOrders[tableId];
+            if (!order || !order.items) return;
+
+            let targetItem = order.items.find(i => (i.id == itemId || i.itemId == itemId) && !i.done);
+            if (targetItem) {
+                targetItem.done = true;
+
+                let totalRestant = order.items.filter(i => !i.done).length;
+                if(tableId.startsWith('WEB_') && totalRestant === 0) {
+                    await fetch(`${SERVER_URL}/update-order?tenantID=${tenantID}`, {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify({ tableId: tableId, order: null })
+                    });
+                } else {
+                    await fetch(`${SERVER_URL}/update-order?tenantID=${tenantID}`, {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify({ tableId: tableId, order: order })
+                    });
+                }
+                
+                fetchProductionState();
+            }
+        }
+
+        fetchProductionState();
+        setInterval(fetchProductionState, 3000);
+    </script>
+</body>
+</html>
