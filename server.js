@@ -88,7 +88,7 @@ const tenantSchema = new mongoose.Schema({
     plan: { type: String, enum: ['CHEF', 'ECO', 'BUSINESS', 'PREMIUM'], default: 'ECO' },
     specialite: { type: String, enum: ['cuisine', 'patisserie', 'bar'], default: 'cuisine' },
     pin: { type: String, default: '9999' }, 
-    maxScreens: { type: Number, default: 1 }, 
+    maxScreens: { type: Number, default: 2 }, 
     registeredDevices: [String], 
     config: { stripeCustomerId: String }
 });
@@ -222,8 +222,10 @@ app.post('/api/activate', async (req, res) => {
         const finalPlan = plan || 'ECO';
         const finalSpec = specialite || 'cuisine';
 
-        let limit = 1; 
+        // 👑 GESTION DES LIMITES D'ÉCRANS SELON LE FORFAIT
+        let limit = 2; 
         if (finalPlan === 'CHEF') limit = 1;        
+        if (finalPlan === 'ECO') limit = 2;     
         if (finalPlan === 'BUSINESS') limit = 5;    
         if (finalPlan === 'PREMIUM') limit = 50;    
 
@@ -440,8 +442,9 @@ app.post('/api/admin-action', async (req, res) => {
             await Tenant.findOneAndUpdate({ tenantID }, { pin: manualPin.trim(), registeredDevices: [] });
         }
         else if (action === 'set_plan' && newPlan) { 
-            let limit = 1; 
+            let limit = 2; 
             if (newPlan === 'CHEF') limit = 1; 
+            if (newPlan === 'ECO') limit = 2; 
             if (newPlan === 'BUSINESS') limit = 5; 
             if (newPlan === 'PREMIUM') limit = 50; 
             await Tenant.findOneAndUpdate({ tenantID }, { plan: newPlan, maxScreens: limit });
