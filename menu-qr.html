@@ -2,7 +2,7 @@
 <html lang="fr">
 <head>
     <script>
-        // 🛡️ GARDE DU CORPS iCHEF (Vérification de la licence du restaurant)
+        // 🛡️ GARDE DU CORPS iCHEF
         (async function checkAccess() {
             const urlParams = new URLSearchParams(window.location.search);
             const tenantID = urlParams.get('tenantID') || localStorage.getItem('ichef_tenant_id');
@@ -19,17 +19,7 @@
                     alert("⛔ LICENCE SUSPENDUE OU INVALIDE.");
                     return window.location.href = 'portail-client.html';
                 }
-
-                const plan = data.plan ? data.plan.toString().toUpperCase() : '';
-
-                if (plan === 'CHEF' || plan === 'CHEF_CUISINE' || plan === 'CHEF_PATISSIER' || plan === 'CHEF_BAR') {
-                    alert(`⛔ ACCÈS REFUSÉ :\nVotre forfait actuel (${plan}) n'inclut pas ce module Menu.\nVeuillez upgrader votre offre pour y accéder.`);
-                    try { window.close(); } catch(e) {}
-                    setTimeout(() => { window.location.href = `portail-client.html?tenantID=${tenantID}`; }, 100);
-                }
-            } catch(e) {
-                console.log("Mode hors-ligne actif.");
-            }
+            } catch(e) { console.log("Mode hors-ligne actif."); }
         })();
     </script>
     <meta charset="UTF-8">
@@ -92,7 +82,6 @@
         .cart-footer { padding-top: 20px; border-top: 1px solid var(--border-color); }
         .cart-total-row { display: flex; justify-content: space-between; font-family: var(--font-title); font-size: 2rem; margin-bottom: 20px; }
         
-        /* Boutons de Paiement Omnicanal */
         .checkout-buttons-container { display: flex; flex-direction: column; gap: 12px; }
         .btn-checkout { width: 100%; border: none; padding: 18px; border-radius: 8px; font-weight: 600; font-size: 1.1rem; text-transform: uppercase; cursor: pointer; transition: transform 0.2s; }
         .btn-checkout:active { transform: scale(0.98); }
@@ -124,7 +113,7 @@
 
         <div class="footer">
             Prix nets en <span id="footer-currency">Euros</span> — Service compris<br>
-            <span style="font-size: 0.6rem; opacity: 0.5;">Propulsé par I CHEF - v6 (SaaS Pay)</span>
+            <span style="font-size: 0.6rem; opacity: 0.5;">Propulsé par I CHEF - Routing KDS Actif</span>
         </div>
     </div>
 
@@ -161,19 +150,30 @@
         const tenantID = urlParams.get('tenantID') || 'MASTER_STATE';
         const tableNum = urlParams.get('table') || 'Non Précisée';
         const paiementStatus = urlParams.get('paiement');
+        
+        const SERVER_URL = (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1" || window.location.protocol === "file:") 
+            ? "http://localhost:10000" : "https://tableau-system.onrender.com";
 
-        // GESTION DES RETOURS DE PAIEMENT STRIPE
+        // 🚨 GESTION RETOUR STRIPE : Feu vert pour la cuisine
         if (paiementStatus === 'ok') { 
-            alert("✅ Paiement accepté ! Votre commande part en cuisine."); 
+            alert("✅ Paiement accepté ! Votre commande part immédiatement en cuisine."); 
+            // On valide la commande pour que les PADs l'affichent
+            fetch(`${SERVER_URL}/get-current-state?tenantID=${tenantID}`).then(r=>r.json()).then(stateData => {
+                if(stateData.activeOrders && stateData.activeOrders[tableNum]) {
+                    let order = stateData.activeOrders[tableNum];
+                    order.status = "NOUVELLE COMMANDE";
+                    fetch(`${SERVER_URL}/update-order?tenantID=${tenantID}`, { 
+                        method: 'POST', headers: {'Content-Type': 'application/json'}, 
+                        body: JSON.stringify({ tableId: tableNum, order: order }) 
+                    });
+                }
+            });
             window.history.replaceState({}, document.title, window.location.pathname + "?tenantID=" + tenantID + "&table=" + tableNum); 
         }
         if (paiementStatus === 'annule') { 
-            alert("❌ Paiement annulé. Vous pouvez réessayer ou payer au serveur."); 
+            alert("❌ Paiement annulé. Vous pouvez réessayer ou commander avec paiement à table."); 
             window.history.replaceState({}, document.title, window.location.pathname + "?tenantID=" + tenantID + "&table=" + tableNum); 
         }
-
-        const SERVER_URL = (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1" || window.location.protocol === "file:") 
-            ? "http://localhost:10000" : "https://tableau-system.onrender.com";
 
         let currentCurrency = "€"; let currencyName = "Euros";
         let systemSettings = {}; let categoriesMap = []; let currentMenuData = null; let cart = []; let lastDesignHash = "";
@@ -184,13 +184,11 @@
                 let state = await r.json();
                 let activeOrders = state.activeOrders || {};
                 
-                // LECTURE DU DESIGN ET DE LA MONNAIE
                 if (activeOrders['SETTINGS_MASTER'] && activeOrders['SETTINGS_MASTER'].data) {
                     systemSettings = activeOrders['SETTINGS_MASTER'].data;
                     if (systemSettings.currency && systemSettings.currency !== currentCurrency) {
                         currentCurrency = systemSettings.currency;
-                        let nameMap = {"€": "Euros", "CHF": "Francs Suisses", "$": "Dollars", "C$": "Dollars", "£": "Livres", "¥": "Yens", "MAD": "Dirhams", "CFA": "Francs CFA"};
-                        currencyName = nameMap[currentCurrency] || currentCurrency;
+                        currencyName = {"€": "Euros", "CHF": "Francs Suisses", "$": "Dollars", "C$": "Dollars", "£": "Livres", "¥": "Yens"}[currentCurrency] || currentCurrency;
                         document.getElementById('footer-currency').innerText = currencyName;
                         currentMenuData = null; 
                     }
@@ -208,13 +206,21 @@
                     }
                 }
 
-                // RÉCUPÉRATION DU MENU COMPLET
-                let rawMenu = { ...(activeOrders['MENU_ARCHITECTURE']?.data || {}), ...(activeOrders['MENU_MASTER']?.data || {}), ...(activeOrders['MENU_MASTER_BAR']?.data || {}) };
-                for(let cat in rawMenu) if(!rawMenu[cat] || rawMenu[cat].length === 0) delete rawMenu[cat];
+                // 🧠 L'AIGUILLAGE MAGIQUE : On taggue chaque plat pour dire où il doit aller (cuisine ou bar)
+                let rawCuisine = activeOrders['MENU_MASTER']?.data || {};
+                let rawBar = activeOrders['MENU_MASTER_BAR']?.data || {};
+                let rawArchi = activeOrders['MENU_ARCHITECTURE']?.data || {};
 
-                if (Object.keys(rawMenu).length > 0) {
-                    if (JSON.stringify(rawMenu) !== JSON.stringify(currentMenuData)) {
-                        currentMenuData = rawMenu;
+                let newMenuData = {};
+                for(let cat in rawCuisine) newMenuData[cat] = rawCuisine[cat].map(i => ({...i, destination: 'cuisine'}));
+                for(let cat in rawBar) newMenuData[cat] = rawBar[cat].map(i => ({...i, destination: 'bar'}));
+                for(let cat in rawArchi) newMenuData[cat] = rawArchi[cat].map(i => ({...i, destination: 'cuisine'}));
+                
+                for(let cat in newMenuData) if(!newMenuData[cat] || newMenuData[cat].length === 0) delete newMenuData[cat];
+
+                if (Object.keys(newMenuData).length > 0) {
+                    if (JSON.stringify(newMenuData) !== JSON.stringify(currentMenuData)) {
+                        currentMenuData = newMenuData;
                         categoriesMap = Object.keys(currentMenuData).map(key => ({ id: key, label: key, isTasting: key.toLowerCase().includes('jour') }));
                         renderClientMenu();
                         updateCartUI(); 
@@ -226,11 +232,11 @@
             } catch(e) { console.error("Erreur Sync:", e); }
         }
 
-        // GESTION DU PANIER
-        window.addToCart = function(encodedName, safePrice) {
+        // PANIER AVEC DESTINATION
+        window.addToCart = function(encodedName, safePrice, dest) {
             let name = decodeURIComponent(encodedName); let price = parseFloat(safePrice) || 0;
             let existing = cart.find(i => i.name === name);
-            if (existing) existing.qty++; else cart.push({ name: name, price: price, qty: 1 });
+            if (existing) existing.qty++; else cart.push({ name: name, price: price, qty: 1, destination: dest });
             updateCartUI();
             let fab = document.getElementById('cart-fab');
             fab.style.transform = 'translateX(-50%) scale(1.1)';
@@ -252,7 +258,6 @@
             document.getElementById('cart-total-price').innerText = totalPrice.toFixed(2) + ' ' + currentCurrency;
             document.getElementById('cart-fab').style.display = totalItems > 0 ? 'flex' : 'none';
             
-            // INTELLIGENCE DU BOUTON MULTI-TENANTS
             let checkoutContainer = document.getElementById('checkout-buttons-container');
             if(checkoutContainer) {
                 let isOnlinePaymentActive = systemSettings.payment && systemSettings.payment.online;
@@ -287,101 +292,87 @@
             modal.style.display = (modal.style.display === 'flex') ? 'none' : (cart.length > 0 ? 'flex' : 'none');
         };
 
-        // 🚀 ENVOI DES COMMANDES (AVEC SYNCHRONISATION SECRÈTE DU TENANT_ID)
+        // 🚀 ENVOI VERS LES PADS (AVEC FUSION DE TABLE ET AIGUILLAGE)
         window.checkout = async function(mode) {
             if (cart.length === 0) return;
             document.querySelectorAll('.btn-checkout').forEach(btn => { btn.innerText = "Transmission..."; btn.disabled = true; });
 
             let total = cart.reduce((sum, i) => sum + (i.price * i.qty), 0);
             let isOnlineChoice = (mode === 'online');
-            
-            let orderData = { 
-                items: cart.map(item => ({ n: item.name, p: item.price, qty: item.qty })), 
-                total: total, 
-                time: Date.now(), 
-                table: tableNum, 
-                status: isOnlineChoice ? "EN ATTENTE PAIEMENT" : "NOUVELLE COMMANDE", 
-                typePaiement: isOnlineChoice ? "En Ligne" : "À table", 
-                source: "QR Code" 
-            };
-            
-            let ticketId = `WEB_${tableNum.replace(/\s+/g, '')}_${Math.floor(Math.random() * 10000)}`;
 
             try {
-                // 1. Enregistre la commande sur le PAD du Serveur (En attente ou Validée)
+                // On lit la table pour AJOUTER la commande sans écraser ce que le serveur a déjà tapé
+                let r = await fetch(`${SERVER_URL}/get-current-state?tenantID=${tenantID}`);
+                let stateData = await r.json();
+                let existingOrder = (stateData.activeOrders && stateData.activeOrders[tableNum]) ? stateData.activeOrders[tableNum] : { items: [], total: 0 };
+                
+                // Formatage précis exigé par tes PADs (name, price, qty, category)
+                let newItems = cart.map(item => ({ name: item.name, price: item.price, qty: item.qty, category: item.destination }));
+                
+                let orderData = { 
+                    items: [...(existingOrder.items || []), ...newItems], 
+                    total: (existingOrder.total || 0) + total, 
+                    time: Date.now(), 
+                    table: tableNum, 
+                    status: isOnlineChoice ? "EN ATTENTE PAIEMENT" : "NOUVELLE COMMANDE", 
+                    typePaiement: isOnlineChoice ? "En Ligne" : "À table", 
+                    source: "QR Code" 
+                };
+                
+                // Envoi avec le VRAI nom de la table (ex: T1)
                 await fetch(`${SERVER_URL}/update-order?tenantID=${tenantID}`, { 
                     method: 'POST', 
                     headers: {'Content-Type': 'application/json'}, 
-                    body: JSON.stringify({ tableId: ticketId, order: orderData }) 
+                    body: JSON.stringify({ tableId: tableNum, order: orderData }) 
                 });
                 
-                // 2. Si Paiement en ligne, on demande au serveur de nous créer une facture bloquée avec la clé du Restaurateur
                 if (isOnlineChoice) { 
                     let stripeRes = await fetch(`${SERVER_URL}/api/create-checkout`, {
-                        method: 'POST', 
-                        headers: {'Content-Type': 'application/json'},
-                        // ON ENVOIE LE TENANTID ICI POUR QUE LE SERVEUR TROUVE LA BONNE CLE !
+                        method: 'POST', headers: {'Content-Type': 'application/json'},
                         body: JSON.stringify({ total: total, table: tableNum, tenantID: tenantID })
                     });
-                    
                     let stripeData = await stripeRes.json();
-                    
-                    if(stripeData.url) {
-                        window.location.href = stripeData.url; // Redirection magique vers Stripe
-                    } else {
-                        alert("Erreur Paiement : " + stripeData.error);
-                    }
+                    if(stripeData.url) window.location.href = stripeData.url;
+                    else alert("Erreur Paiement : " + stripeData.error);
                 } else { 
                     alert("✅ Votre commande a bien été transmise à l'équipe !"); 
-                    cart = []; 
-                    updateCartUI(); 
-                    toggleCart(); 
+                    cart = []; updateCartUI(); toggleCart(); 
                 }
             } catch(e) { 
                 alert("❌ Erreur réseau. Veuillez prévenir l'équipe."); 
             } finally { 
-                updateCartUI(); 
-                document.querySelectorAll('.btn-checkout').forEach(btn => btn.disabled = false); 
+                updateCartUI(); document.querySelectorAll('.btn-checkout').forEach(btn => btn.disabled = false); 
             }
         };
 
-        // RENDU HTML : NETTOYAGE DES NOMS POUR LE PANIER
         function renderTastingMenu(item) {
             let cleanName = item.name ? item.name.replace('🌟 ', '') : "Plat inconnu";
             let mainName = cleanName.includes('[BR]') ? cleanName.split('[BR]')[0].trim() : cleanName;
-            
             let priceStr = parseFloat(item.price) > 0 ? `${parseFloat(item.price).toFixed(2)} ${currentCurrency}` : '';
             let encodedName = encodeURIComponent(mainName).replace(/'/g, "%27"); 
             let safePrice = parseFloat(item.price) || 0;
+            let dest = item.destination || 'cuisine';
             
             if (cleanName.includes('[BR]')) {
                 let parts = cleanName.split('[BR]');
-                let html = `<div class="tasting-menu-box menu-item" onclick="addToCart('${encodedName}', ${safePrice})"><h2 class="category-title">${parts[0].trim()}</h2><div class="tasting-price">${priceStr} <span class="add-badge">+ Ajouter</span></div>`;
+                let html = `<div class="tasting-menu-box menu-item" onclick="addToCart('${encodedName}', ${safePrice}, '${dest}')"><h2 class="category-title">${parts[0].trim()}</h2><div class="tasting-price">${priceStr} <span class="add-badge">+ Ajouter</span></div>`;
                 let labels = ['Entrée', 'Plat', 'Dessert', 'Fromage / Suite'];
-                for(let i = 1; i < parts.length; i++) {
-                    if (parts[i].trim() !== '') html += `<div class="tasting-course"><span class="tasting-course-label">${labels[i-1]||''}</span>${parts[i].trim()}</div>`;
-                }
+                for(let i = 1; i < parts.length; i++) if (parts[i].trim() !== '') html += `<div class="tasting-course"><span class="tasting-course-label">${labels[i-1]||''}</span>${parts[i].trim()}</div>`;
                 return html + `</div>`;
             }
-            return `<div class="tasting-menu-box menu-item" onclick="addToCart('${encodedName}', ${safePrice})"><h2 class="category-title">Menu du Jour</h2><div class="tasting-price">${priceStr} <span class="add-badge">+ Ajouter</span></div><div class="tasting-course">${cleanName}</div></div>`;
+            return `<div class="tasting-menu-box menu-item" onclick="addToCart('${encodedName}', ${safePrice}, '${dest}')"><h2 class="category-title">Menu du Jour</h2><div class="tasting-price">${priceStr} <span class="add-badge">+ Ajouter</span></div><div class="tasting-course">${cleanName}</div></div>`;
         }
 
         function renderStandardItem(item) {
             let cleanName = item.name ? item.name.replace('🌟 ', '') : "Plat inconnu";
             let mainName = cleanName.includes('[BR]') ? cleanName.split('[BR]')[0].trim() : cleanName;
-            
             let priceStr = parseFloat(item.price) > 0 ? `${parseFloat(item.price).toFixed(2)} ${currentCurrency}` : '';
             let encodedName = encodeURIComponent(mainName).replace(/'/g, "%27"); 
             let safePrice = parseFloat(item.price) || 0;
+            let dest = item.destination || 'cuisine';
             
-            let description = '';
-            if (cleanName.includes('[BR]')) { 
-                let parts = cleanName.split('[BR]'); 
-                description = parts.slice(1).join('<br>').trim(); 
-            }
-            let descHtml = description ? `<div class="item-desc">${description}</div>` : '';
-
-            return `<div class="menu-item" onclick="addToCart('${encodedName}', ${safePrice})"><div class="item-row"><div class="item-name">${mainName}</div><div class="item-dots"></div><div class="item-price">${priceStr} <span class="add-badge">+ Ajouter</span></div></div>${descHtml}</div>`;
+            let description = cleanName.includes('[BR]') ? `<div class="item-desc">${cleanName.split('[BR]').slice(1).join('<br>').trim()}</div>` : '';
+            return `<div class="menu-item" onclick="addToCart('${encodedName}', ${safePrice}, '${dest}')"><div class="item-row"><div class="item-name">${mainName}</div><div class="item-dots"></div><div class="item-price">${priceStr} <span class="add-badge">+ Ajouter</span></div></div>${description}</div>`;
         }
 
         function renderClientMenu() {
