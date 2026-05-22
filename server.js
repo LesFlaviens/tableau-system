@@ -4,7 +4,7 @@ const path = require('path');
 const mongoose = require('mongoose');
 
 // 🛡️ CONFIGURATION STRIPE
-const stripeKey = process.env.STRIPE_SECRET_KEY || 'sk_test_51...'; // Mets ta vraie clé secrète Stripe dans Render
+const stripeKey = process.env.STRIPE_SECRET_KEY || 'sk_test_51...'; 
 const stripe = require('stripe')(stripeKey);
 
 const app = express();
@@ -51,7 +51,6 @@ app.post('/webhook', express.raw({type: 'application/json'}), async (req, res) =
         const session = event.data.object;
         
         try {
-            // Sauvegarde de sécurité au cas où le client ferme la page avant la redirection
             const tenantID = session.client_reference_id || "client_attente_" + Date.now();
             
             await Tenant.updateOne(
@@ -80,7 +79,6 @@ app.post('/webhook', express.raw({type: 'application/json'}), async (req, res) =
 const mongoURI = process.env.MONGO_URI || "mongodb+srv://icheflavien_db_user:Tamere58.@cluster0.4w95d7m.mongodb.net/ichef_production?retryWrites=true&w=majority";
 mongoose.connect(mongoURI).then(() => console.log('🔥 Base de données iCHEF Online')).catch(err => console.error(err.message));
 
-// Schéma des Licences / Restaurants
 const tenantSchema = new mongoose.Schema({
     tenantID: { type: String, required: true, unique: true },
     clientName: String,
@@ -88,7 +86,7 @@ const tenantSchema = new mongoose.Schema({
     phone: String,
     status: { type: String, enum: ['ACTIF', 'SUSPENDU'], default: 'ACTIF' },
     plan: { type: String, enum: ['CHEF', 'ECO', 'BUSINESS', 'PREMIUM'], default: 'ECO' },
-    specialite: { type: String, enum: ['cuisine', 'patisserie', 'bar'], default: 'cuisine' }, // Nouvelle gestion des métiers
+    specialite: { type: String, enum: ['cuisine', 'patisserie', 'bar'], default: 'cuisine' },
     pin: { type: String, default: '9999' }, 
     maxScreens: { type: Number, default: 1 }, 
     registeredDevices: [String], 
@@ -96,14 +94,13 @@ const tenantSchema = new mongoose.Schema({
 });
 const Tenant = mongoose.model('Tenant', tenantSchema);
 
-// Schéma de l'état en temps réel (Commandes, Tables, Réservations)
 const AppState = mongoose.model('AppState', new mongoose.Schema({
     tenantID: { type: String, required: true, unique: true },
     activeOrders: { type: Object, default: {} }
 }, { minimize: false }));
 
 // ==========================================
-// 🤖 MOTEUR IA 1 : RECONNAISSANCE DE FACTURES (GEMINI)
+// 🤖 MOTEUR IA 1 : RECONNAISSANCE DE FACTURES
 // ==========================================
 const { GoogleGenerativeAI } = require('@google/generative-ai');
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY || 'CLE_MANQUANTE');
@@ -189,19 +186,15 @@ app.post('/api/smart-reservation', async (req, res) => {
         const decision = JSON.parse(responseText);
 
         if (decision.acceptee && decision.tableAllouee) {
-            let state = await AppState.findOne({ tenantID });
-            if (!state) state = new AppState({ tenantID, activeOrders: {} });
-            if (!state.activeOrders) state.activeOrders = {};
-
-            let reservations = state.activeOrders['RESERVATIONS_MASTER']?.data || [];
-            reservations.push({
-                id: 'resa_' + Date.now(), pax: decision.pax, heure: decision.heure, 
-                table: decision.tableAllouee, info: decision.optimisationInfo, timestamp: Date.now()
-            });
-
-            state.activeOrders['RESERVATIONS_MASTER'] = { data: reservations };
-            state.markModified('activeOrders');
-            await state.save();
+            let updateQuery = { 
+                $push: { 
+                    "activeOrders.RESERVATIONS_MASTER.data": {
+                        id: 'resa_' + Date.now(), pax: decision.pax, heure: decision.heure, 
+                        table: decision.tableAllouee, info: decision.optimisationInfo, timestamp: Date.now()
+                    }
+                } 
+            };
+            await AppState.findOneAndUpdate({ tenantID }, updateQuery, { upsert: true });
         }
 
         res.json({ success: true, decision });
@@ -216,26 +209,23 @@ app.post('/api/smart-reservation', async (req, res) => {
 // ==========================================
 app.post('/api/activate', async (req, res) => {
     const { sessionId, clientName, tenantID, email, phone, plan, specialite } = req.body;
-    
     if (!sessionId) return res.status(403).json({ error: "Session de paiement invalide." });
 
     try {
-        // Validation stricte auprès de Stripe
         const session = await stripe.checkout.sessions.retrieve(sessionId);
-        if (session.payment_status !== 'paid') return res.status(403).json({ error: "Paiement non validé par la banque." });
+        if (session.payment_status !== 'paid') return res.status(403).json({ error: "Paiement non validé." });
         
         const existingTenant = await Tenant.findOne({ tenantID });
-        if (existingTenant) return res.status(400).json({ error: "Identifiant déjà pris. Choisissez-en un autre." });
+        if (existingTenant) return res.status(400).json({ error: "Identifiant déjà pris." });
 
         const randomPin = Math.floor(1000 + Math.random() * 9000).toString();
         const finalPlan = plan || 'ECO';
         const finalSpec = specialite || 'cuisine';
 
-        // 🛡️ LIMITES D'ÉCRANS STRICTES
         let limit = 1; 
-        if (finalPlan === 'CHEF') limit = 1;        // Pack 14€
-        if (finalPlan === 'BUSINESS') limit = 5;    // Pack 45€
-        if (finalPlan === 'PREMIUM') limit = 50;    // Pack 129€
+        if (finalPlan === 'CHEF') limit = 1;        
+        if (finalPlan === 'BUSINESS') limit = 5;    
+        if (finalPlan === 'PREMIUM') limit = 50;    
 
         await Tenant.create({ 
             tenantID, clientName, email, phone, status: 'ACTIF', 
@@ -246,8 +236,7 @@ app.post('/api/activate', async (req, res) => {
         await AppState.create({ tenantID, activeOrders: {} });
         res.json({ success: true, dedicatedPin: randomPin });
     } catch (error) { 
-        console.error("Erreur d'activation:", error);
-        res.status(500).json({ error: "Erreur lors de la création de la base de données." }); 
+        res.status(500).json({ error: "Erreur BDD." }); 
     }
 });
 
@@ -258,7 +247,7 @@ app.get('/api/check-license', async (req, res) => {
     const { tenantID } = req.query;
     try {
         const tenant = await Tenant.findOne({ tenantID });
-        if (!tenant) return res.status(404).json({ success: false, error: "Identifiant introuvable." });
+        if (!tenant) return res.status(404).json({ success: false, error: "Introuvable." });
         res.json({ success: true, status: tenant.status, plan: tenant.plan, specialite: tenant.specialite });
     } catch (e) { res.status(500).json({ success: false }); }
 });
@@ -268,7 +257,6 @@ app.post('/api/verify-pin', async (req, res) => {
     try {
         const tenant = await Tenant.findOne({ tenantID });
         if (!tenant) return res.status(404).json({ success: false, error: "Identifiant inconnu." });
-        
         if (tenant.status === 'SUSPENDU') return res.status(403).json({ success: false, error: "Licence suspendue." });
 
         if (tenant.pin === pin) { 
@@ -276,7 +264,7 @@ app.post('/api/verify-pin', async (req, res) => {
         } else { 
             return res.status(401).json({ success: false, error: "Code PIN incorrect." }); 
         }
-    } catch (error) { res.status(500).json({ success: false, error: "Erreur interne." }); }
+    } catch (error) { res.status(500).json({ success: false }); }
 });
 
 app.post('/api/update-pin', async (req, res) => {
@@ -285,15 +273,12 @@ app.post('/api/update-pin', async (req, res) => {
         const tenant = await Tenant.findOne({ tenantID });
         if (!tenant) return res.status(404).json({ success: false });
         tenant.pin = newPin;
-        tenant.registeredDevices = []; // 🔥 Kill switch automatique si le PIN est changé
+        tenant.registeredDevices = []; 
         await tenant.save();
         res.json({ success: true });
     } catch (error) { res.status(500).json({ success: false }); }
 });
 
-// ==========================================
-// 📱 GESTION DES ÉCRANS & STRIPE PORTAL
-// ==========================================
 app.get('/api/dashboard-info', async (req, res) => {
     const { tenantID } = req.query;
     try {
@@ -315,29 +300,25 @@ app.post('/api/billing-portal', async (req, res) => {
     const { tenantID } = req.body;
     try {
         const tenant = await Tenant.findOne({ tenantID });
-        if (!tenant || !tenant.config || !tenant.config.stripeCustomerId) {
-            return res.status(400).json({ success: false, error: "Aucun profil Stripe." });
-        }
+        if (!tenant || !tenant.config || !tenant.config.stripeCustomerId) return res.status(400).json({ success: false });
         const session = await stripe.billingPortal.sessions.create({
             customer: tenant.config.stripeCustomerId,
             return_url: `${req.headers.origin}/portail-client.html?tenantID=${tenantID}`,
         });
         res.json({ success: true, url: session.url });
-    } catch (e) { res.status(500).json({ success: false, error: "Erreur Stripe." }); }
+    } catch (e) { res.status(500).json({ success: false }); }
 });
 
 // ==========================================
-// 📡 LE COEUR DU RÉSEAU (SYNCHRONISATION TEMPS RÉEL)
+// 📡 LE CŒUR DU RÉSEAU (SYNCHRO ATOMIQUE SÉCURISÉE)
 // ==========================================
 app.get('/get-current-state', async (req, res) => {
     try {
         const tenantID = req.query.tenantID || 'MASTER_STATE';
-        
         if (tenantID !== 'MASTER_STATE') {
             const tenant = await Tenant.findOne({ tenantID });
             if (tenant && tenant.status === 'SUSPENDU') return res.status(403).json({ error: "Licence suspendue" });
         }
-
         let state = await AppState.findOne({ tenantID });
         if (!state) state = await AppState.create({ tenantID, activeOrders: {} });
         res.json(state);
@@ -347,23 +328,34 @@ app.get('/get-current-state', async (req, res) => {
 app.post('/update-order', async (req, res) => {
     try {
         const tenantID = req.query.tenantID || 'MASTER_STATE';
-        
         if (tenantID !== 'MASTER_STATE') {
             const tenant = await Tenant.findOne({ tenantID });
             if (tenant && tenant.status === 'SUSPENDU') return res.status(403).json({ error: "Licence suspendue" });
         }
 
         const { tableId, order } = req.body;
-        let state = await AppState.findOne({ tenantID });
-        if (!state) state = new AppState({ tenantID, activeOrders: {} });
         
-        if (order === null) delete state.activeOrders[tableId];
-        else state.activeOrders[tableId] = order;
+        // 🔥 LA CORRECTION ANTI-EMBOUTEILLAGE : Sauvegarde Atomique
+        let updateQuery = {};
+        if (order === null) {
+            // $unset efface uniquement cette table sans toucher au reste
+            updateQuery = { $unset: { [`activeOrders.${tableId}`]: 1 } };
+        } else {
+            // $set met à jour ou crée uniquement cette table sans toucher au reste
+            updateQuery = { $set: { [`activeOrders.${tableId}`]: order } };
+        }
         
-        state.markModified('activeOrders');
-        await state.save();
+        await AppState.findOneAndUpdate(
+            { tenantID },
+            updateQuery,
+            { upsert: true, new: true }
+        );
+        
         res.json({ success: true });
-    } catch (e) { res.status(500).json({ error: "Save Error" }); }
+    } catch (e) { 
+        console.error("Erreur Sauvegarde :", e);
+        res.status(500).json({ error: "Save Error" }); 
+    }
 });
 
 // ==========================================
@@ -388,7 +380,7 @@ app.post('/api/get-all-tenants-admin', async (req, res) => {
             status: t.status
         }));
         res.json({ success: true, tenants: formattedTenants });
-    } catch(err) { res.status(500).json({ success: false, error: "Erreur BDD" }); }
+    } catch(err) { res.status(500).json({ success: false }); }
 });
 
 app.post('/api/admin-action', async (req, res) => {
@@ -424,7 +416,7 @@ app.post('/api/admin-action', async (req, res) => {
         }
         
         res.json({ success: true });
-    } catch (err) { res.status(500).json({ success: false, error: "Erreur système d'action." }); }
+    } catch (err) { res.status(500).json({ success: false }); }
 });
 
 app.listen(PORT, () => console.log("🚀 L'Empire iCHEF est en ligne sur le port " + PORT));
