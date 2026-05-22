@@ -2,7 +2,7 @@
 <html lang="fr">
 <head>
     <script>
-        // 🛡️ GARDE DU CORPS SÉCURITÉ : EXCLUSIVITÉ PREMIUM
+        // 🛡️ GARDE DU CORPS SÉCURITÉ : EXCLUSIVITÉ PREMIUM (DOUBLE-ÉJECTION)
         (async function checkAccess() {
             const urlParams = new URLSearchParams(window.location.search);
             const tenantID = urlParams.get('tenantID') || localStorage.getItem('ichef_tenant_id');
@@ -221,21 +221,37 @@
                 let order = activeOrders[tableId];
                 if (!order || !order.items || order.items.length === 0 || order.status === 'reserved' || order.status === 'EN ATTENTE PAIEMENT') continue;
 
-                let pendingCuisine = order.items.filter(i => i.dest.toLowerCase() === 'cuisine' && !i.done && i.isSent !== false);
+                // 🚨 MOTEUR ANTI-FANTÔMES :
+                // On vérifie si c'est une commande client web (auto-envoyée)
+                let isWebOrder = tableId.toLowerCase().startsWith('web_') || tableId.toLowerCase().includes('apercu') || tableId.toLowerCase().startsWith('order_');
+
+                let pendingCuisine = order.items.filter(i => {
+                    let isCuisine = (i.dest.toLowerCase() === 'cuisine');
+                    let isSent = (i.isSent === true || isWebOrder); // Exige le statut envoyé pour les commandes PAD
+                    return isCuisine && !i.done && isSent;
+                });
+
                 if (pendingCuisine.length > 0) {
-                    cuisineTickets.push({ tableId: tableId, time: order.time || '12:00', source: order.source || 'Salle', items: pendingCuisine });
+                    let timeDisplay = order.time || new Date().toLocaleTimeString('fr-FR', {hour: '2-digit', minute:'2-digit'});
+                    cuisineTickets.push({ tableId: tableId, time: timeDisplay, source: order.source || 'Salle', items: pendingCuisine });
                 }
 
-                let pendingBar = order.items.filter(i => i.dest.toLowerCase() === 'bar' && !i.done && i.isSent !== false);
+                let pendingBar = order.items.filter(i => {
+                    let isBar = (i.dest.toLowerCase() === 'bar');
+                    let isSent = (i.isSent === true || isWebOrder);
+                    return isBar && !i.done && isSent;
+                });
+
                 if (pendingBar.length > 0) {
-                    barTickets.push({ tableId: tableId, time: order.time || '12:00', source: order.source || 'Salle', items: pendingBar });
+                    let timeDisplay = order.time || new Date().toLocaleTimeString('fr-FR', {hour: '2-digit', minute:'2-digit'});
+                    barTickets.push({ tableId: tableId, time: timeDisplay, source: order.source || 'Salle', items: pendingBar });
                 }
             }
 
             cuisineTickets.sort((a, b) => a.tableId.localeCompare(b.tableId));
             barTickets.sort((a, b) => a.tableId.localeCompare(b.tableId));
 
-            // 🛑 MOTEUR ANTI-CLIGNOTEMENT : On compare avec l'état précédent
+            // 🛑 MOTEUR ANTI-CLIGNOTEMENT
             let newCuisineHash = JSON.stringify(cuisineTickets);
             if (newCuisineHash !== lastCuisineHash) {
                 renderColumn('scroll-cuisine', 'counter-cuisine', cuisineTickets);
@@ -259,19 +275,23 @@
             }
 
             container.innerHTML = tickets.map(ticket => {
-                let tableTitle = ticket.tableId.startsWith('WEB_') ? `📱 CLIENT WEB` : `TABLE ${ticket.tableId}`;
+                let tableTitle = ticket.tableId.toLowerCase().includes('apercu') ? `📱 CLIENT WEB` : `TABLE ${ticket.tableId}`;
                 
                 let itemsHtml = ticket.items.map(item => {
                     let obsHtml = item.obs ? `<span class="item-obs">⚠️ ${item.obs}</span>` : '';
                     let seatHtml = (item.seat && item.seat > 0) ? `<span class="item-seat">👤 Siège ${item.seat}</span>` : '';
                     
+                    // Sécurité d'identification pour les vieux items de test (id, itemId, ou le nom du plat en dernier recours)
+                    let safeId = item.id || item.itemId || item.timestamp || item.n;
+                    let escapedId = safeId.toString().replace(/'/g, "\\'");
+
                     return `
                         <div class="ticket-item-row">
                             <div class="item-info">
                                 <div class="item-title"><span class="item-qty">${item.qty || 1}x</span>${item.n}</div>
                                 ${obsHtml}${seatHtml}
                             </div>
-                            <button class="btn-ready" onclick="markItemAsReady('${ticket.tableId}', '${item.id || item.itemId}')">✔ PRÊT</button>
+                            <button class="btn-ready" onclick="markItemAsReady('${ticket.tableId}', '${escapedId}')">✔ PRÊT</button>
                         </div>
                     `;
                 }).join('');
@@ -291,19 +311,21 @@
             }).join('');
         }
 
-        async function markItemAsReady(tableId, itemId) {
+        async function markItemAsReady(tableId, targetId) {
             let order = activeOrders[tableId];
             if (!order || !order.items) return;
 
-            let targetItem = order.items.find(i => (i.id == itemId || i.itemId == itemId) && !i.done);
+            let targetItem = order.items.find(i => (i.id == targetId || i.itemId == targetId || i.timestamp == targetId || i.n == targetId) && !i.done);
             if (targetItem) {
                 targetItem.done = true;
 
-                // On triche pour forcer le rafraichissement visuel immédiat avant même le retour du serveur
+                // Triche visuelle pour réactivité instantanée
                 dispatchTickets(); 
 
                 let totalRestant = order.items.filter(i => !i.done).length;
-                if(tableId.startsWith('WEB_') && totalRestant === 0) {
+                let isWebOrder = tableId.toLowerCase().startsWith('web_') || tableId.toLowerCase().includes('apercu') || tableId.toLowerCase().startsWith('order_');
+
+                if(isWebOrder && totalRestant === 0) {
                     await fetch(`${SERVER_URL}/update-order?tenantID=${tenantID}`, {
                         method: 'POST',
                         headers: {'Content-Type': 'application/json'},
