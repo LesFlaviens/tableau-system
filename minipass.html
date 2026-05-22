@@ -2,7 +2,7 @@
 <html lang="fr">
 <head>
     <script>
-        // 🛡️ GARDE DU CORPS SÉCURITÉ : EXCLUSIVITÉ PREMIUM (DOUBLE-ÉJECTION)
+        // 🛡️ GARDE DU CORPS SÉCURITÉ : EXCLUSIVITÉ PREMIUM
         (async function checkAccess() {
             const urlParams = new URLSearchParams(window.location.search);
             const tenantID = urlParams.get('tenantID') || localStorage.getItem('ichef_tenant_id');
@@ -221,29 +221,34 @@
                 let order = activeOrders[tableId];
                 if (!order || !order.items || order.items.length === 0 || order.status === 'reserved' || order.status === 'EN ATTENTE PAIEMENT') continue;
 
-                // 🚨 MOTEUR ANTI-FANTÔMES :
-                // On vérifie si c'est une commande client web (auto-envoyée)
-                let isWebOrder = tableId.toLowerCase().startsWith('web_') || tableId.toLowerCase().includes('apercu') || tableId.toLowerCase().startsWith('order_');
+                // 📌 ASTUCE INFAILLIBLE : On attache l'index d'origine au plat pour que le bouton "PRÊT" ne se trompe jamais.
+                order.items.forEach((i, idx) => i.originalIndex = idx);
 
-                let pendingCuisine = order.items.filter(i => {
-                    let isCuisine = (i.dest.toLowerCase() === 'cuisine');
-                    let isSent = (i.isSent === true || isWebOrder); // Exige le statut envoyé pour les commandes PAD
-                    return isCuisine && !i.done && isSent;
-                });
+                // Détecte les commandes WEB ou les vieux formats buggés avec des numéros à 13 chiffres
+                let isWebOrder = tableId.toLowerCase().startsWith('web_') || tableId.toLowerCase().includes('apercu') || tableId.toLowerCase().startsWith('order_') || /^\d{13}$/.test(tableId);
 
+                let pendingCuisine = order.items.filter(i => i.dest.toLowerCase() === 'cuisine' && !i.done && (i.isSent !== false || isWebOrder));
                 if (pendingCuisine.length > 0) {
-                    let timeDisplay = order.time || new Date().toLocaleTimeString('fr-FR', {hour: '2-digit', minute:'2-digit'});
+                    // On formate l'heure proprement si c'est un "1779..."
+                    let rawTime = order.time;
+                    let timeDisplay = rawTime;
+                    if (rawTime && !isNaN(rawTime) && rawTime.toString().length > 10) {
+                        timeDisplay = new Date(parseInt(rawTime)).toLocaleTimeString('fr-FR', {hour: '2-digit', minute:'2-digit'});
+                    } else if (!rawTime) {
+                        timeDisplay = new Date().toLocaleTimeString('fr-FR', {hour: '2-digit', minute:'2-digit'});
+                    }
                     cuisineTickets.push({ tableId: tableId, time: timeDisplay, source: order.source || 'Salle', items: pendingCuisine });
                 }
 
-                let pendingBar = order.items.filter(i => {
-                    let isBar = (i.dest.toLowerCase() === 'bar');
-                    let isSent = (i.isSent === true || isWebOrder);
-                    return isBar && !i.done && isSent;
-                });
-
+                let pendingBar = order.items.filter(i => i.dest.toLowerCase() === 'bar' && !i.done && (i.isSent !== false || isWebOrder));
                 if (pendingBar.length > 0) {
-                    let timeDisplay = order.time || new Date().toLocaleTimeString('fr-FR', {hour: '2-digit', minute:'2-digit'});
+                    let rawTime = order.time;
+                    let timeDisplay = rawTime;
+                    if (rawTime && !isNaN(rawTime) && rawTime.toString().length > 10) {
+                        timeDisplay = new Date(parseInt(rawTime)).toLocaleTimeString('fr-FR', {hour: '2-digit', minute:'2-digit'});
+                    } else if (!rawTime) {
+                        timeDisplay = new Date().toLocaleTimeString('fr-FR', {hour: '2-digit', minute:'2-digit'});
+                    }
                     barTickets.push({ tableId: tableId, time: timeDisplay, source: order.source || 'Salle', items: pendingBar });
                 }
             }
@@ -275,23 +280,23 @@
             }
 
             container.innerHTML = tickets.map(ticket => {
-                let tableTitle = ticket.tableId.toLowerCase().includes('apercu') ? `📱 CLIENT WEB` : `TABLE ${ticket.tableId}`;
+                let tableTitle = (ticket.tableId.toLowerCase().includes('apercu') || /^\d{13}$/.test(ticket.tableId)) ? `📱 CLIENT WEB` : `TABLE ${ticket.tableId}`;
                 
                 let itemsHtml = ticket.items.map(item => {
                     let obsHtml = item.obs ? `<span class="item-obs">⚠️ ${item.obs}</span>` : '';
                     let seatHtml = (item.seat && item.seat > 0) ? `<span class="item-seat">👤 Siège ${item.seat}</span>` : '';
                     
-                    // Sécurité d'identification pour les vieux items de test (id, itemId, ou le nom du plat en dernier recours)
-                    let safeId = item.id || item.itemId || item.timestamp || item.n;
-                    let escapedId = safeId.toString().replace(/'/g, "\\'");
+                    // ON NETTOIE L'AFFICHAGE DU [BR] POUR LE KDS
+                    let cleanName = (item.n || "").replace(/\[BR\]/g, '<br><span style="color:var(--gold); font-size:0.8rem; margin-left: 10px;">↳</span> ');
 
+                    // LA SOLUTION INFAILLIBLE : On utilise originalIndex !
                     return `
                         <div class="ticket-item-row">
                             <div class="item-info">
-                                <div class="item-title"><span class="item-qty">${item.qty || 1}x</span>${item.n}</div>
+                                <div class="item-title"><span class="item-qty">${item.qty || 1}x</span>${cleanName}</div>
                                 ${obsHtml}${seatHtml}
                             </div>
-                            <button class="btn-ready" onclick="markItemAsReady('${ticket.tableId}', '${escapedId}')">✔ PRÊT</button>
+                            <button class="btn-ready" onclick="markItemAsReady('${ticket.tableId}', ${item.originalIndex})">✔ PRÊT</button>
                         </div>
                     `;
                 }).join('');
@@ -311,20 +316,22 @@
             }).join('');
         }
 
-        async function markItemAsReady(tableId, targetId) {
+        // LE MOTEUR DE VALIDATION INFAILLIBLE
+        async function markItemAsReady(tableId, itemIndex) {
             let order = activeOrders[tableId];
             if (!order || !order.items) return;
 
-            let targetItem = order.items.find(i => (i.id == targetId || i.itemId == targetId || i.timestamp == targetId || i.n == targetId) && !i.done);
-            if (targetItem) {
+            let targetItem = order.items[itemIndex];
+            if (targetItem && !targetItem.done) {
                 targetItem.done = true;
 
-                // Triche visuelle pour réactivité instantanée
+                // Rafraîchissement visuel instantané
                 dispatchTickets(); 
 
                 let totalRestant = order.items.filter(i => !i.done).length;
-                let isWebOrder = tableId.toLowerCase().startsWith('web_') || tableId.toLowerCase().includes('apercu') || tableId.toLowerCase().startsWith('order_');
+                let isWebOrder = tableId.toLowerCase().startsWith('web_') || tableId.toLowerCase().includes('apercu') || tableId.toLowerCase().startsWith('order_') || /^\d{13}$/.test(tableId);
 
+                // Si c'est un ticket Web et qu'il n'y a plus aucun plat à faire, on supprime de la BD.
                 if(isWebOrder && totalRestant === 0) {
                     await fetch(`${SERVER_URL}/update-order?tenantID=${tenantID}`, {
                         method: 'POST',
