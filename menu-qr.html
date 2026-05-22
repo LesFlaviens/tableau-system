@@ -193,7 +193,6 @@
                 const state = await API.getState();
                 let activeOrders = state.activeOrders || {};
                 
-                // 1. LECTURE PARAMÈTRES ET CONFIGURATION DU PAIEMENT
                 if (activeOrders['SETTINGS_MASTER'] && activeOrders['SETTINGS_MASTER'].data) {
                     systemSettings = activeOrders['SETTINGS_MASTER'].data;
                     if (systemSettings.currency && systemSettings.currency !== currentCurrency) {
@@ -217,7 +216,6 @@
                     }
                 }
 
-                // 2. ASPIRATEUR TOTAL (Sécurisé contre les crashs)
                 let rawCuisine = activeOrders['MENU_MASTER']?.data || {};
                 let rawBar = activeOrders['MENU_MASTER_BAR']?.data || {};
                 let rawArchi = activeOrders['MENU_ARCHITECTURE']?.data || {};
@@ -236,7 +234,7 @@
                             return { id: key, label: key, isTasting: key.toLowerCase().replace(/[^a-z]/gi, '').includes('jour') };
                         });
                         renderClientMenu();
-                        updateCartUI(); // Met à jour le bouton de paiement
+                        updateCartUI(); 
                     }
                 } else {
                     currentMenuData = null;
@@ -245,7 +243,6 @@
             } catch(e) { console.error("Erreur Sync:", e); }
         }
 
-        // 🛒 PANIER LOGIQUE
         window.addToCart = function(encodedName, safePrice) {
             let name = decodeURIComponent(encodedName); let price = parseFloat(safePrice) || 0;
             let existing = cart.find(i => i.name === name);
@@ -271,7 +268,6 @@
             document.getElementById('cart-total-price').innerText = totalPrice.toFixed(2) + ' ' + currentCurrency;
             document.getElementById('cart-fab').style.display = totalItems > 0 ? 'flex' : 'none';
             
-            // 🧠 INTELLIGENCE ARTIFICIELLE DU BOUTON (Stripe VS Serveur)
             let btnCheckout = document.querySelector('.btn-checkout');
             if(btnCheckout) {
                 let isOnlinePayment = systemSettings.payment && systemSettings.payment.online;
@@ -309,7 +305,6 @@
             else if (cart.length > 0) { renderCartModal(); modal.style.display = 'flex'; }
         };
 
-        // 🚀 ENVOI KDS ET REDIRECTION STRIPE DYNAMIQUE
         window.checkout = async function() {
             if (cart.length === 0) return;
             const btn = document.querySelector('.btn-checkout'); 
@@ -317,11 +312,8 @@
             btn.disabled = true;
 
             let total = cart.reduce((sum, i) => sum + (i.price * i.qty), 0);
-            
-            // Format compris par le Pad Caisse et le KDS Cuisine
             let itemsFormattees = cart.map(item => { return { n: item.name, p: item.price, qty: item.qty }; });
             
-            // On vérifie le choix de l'administrateur
             let isOnlinePayment = systemSettings.payment && systemSettings.payment.online;
             let stripeLink = systemSettings.payment ? systemSettings.payment.stripeLink : "";
 
@@ -338,14 +330,11 @@
             let ticketId = `WEB_${tableNum.replace(/\s+/g, '')}_${Math.floor(Math.random() * 10000)}`;
 
             try {
-                // 📡 1. On injecte la commande dans la base MongoDB (Pad Serveur)
                 await fetch(`${SERVER_URL}/update-order?tenantID=${tenantID}`, { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ tableId: ticketId, order: orderData }) });
                 
-                // 💳 2. Aiguillage selon le mode choisi par le client
                 if (isOnlinePayment && stripeLink) { 
-                    window.location.href = stripeLink; // Redirection
-                } 
-                else { 
+                    window.location.href = stripeLink; 
+                } else { 
                     alert("✅ Votre commande a bien été transmise à l'équipe !"); 
                     cart = []; 
                     updateCartUI(); 
@@ -354,22 +343,24 @@
             } catch(e) { 
                 alert("❌ Erreur réseau. Veuillez prévenir un serveur."); 
             } finally { 
-                updateCartUI(); // Remet le bouton à son état initial
+                updateCartUI(); 
                 btn.disabled = false; 
             }
         };
 
-        // RENDU HTML (AVEC CORRECTION DES RETOURS A LA LIGNE)
+        // 🛠️ EXTRACTION DU TITRE PUR POUR LE PANIER (Supprime tout après le premier [BR])
         function renderTastingMenu(item) {
             let cleanName = item.name ? item.name.replace('🌟 ', '') : "Plat inconnu";
+            let mainName = cleanName.includes('[BR]') ? cleanName.split('[BR]')[0].trim() : cleanName;
+            
             let priceStr = parseFloat(item.price) > 0 ? `${parseFloat(item.price).toFixed(2)} ${currentCurrency}` : '';
-            let encodedName = encodeURIComponent(cleanName).replace(/'/g, "%27"); let safePrice = parseFloat(item.price) || 0;
+            let encodedName = encodeURIComponent(mainName).replace(/'/g, "%27"); 
+            let safePrice = parseFloat(item.price) || 0;
             
             if (cleanName.includes('[BR]')) {
                 let parts = cleanName.split('[BR]');
                 let html = `<div class="tasting-menu-box menu-item" onclick="addToCart('${encodedName}', ${safePrice})"><h2 class="category-title">${parts[0].trim()}</h2><div class="tasting-price">${priceStr} <span class="add-badge">+ Ajouter</span></div>`;
                 let labels = ['Entrée', 'Plat', 'Dessert', 'Fromage / Suite'];
-                // La correction du Menu du jour !
                 for(let i = 1; i < parts.length; i++) {
                     if (parts[i].trim() !== '') html += `<div class="tasting-course"><span class="tasting-course-label">${labels[i-1]||''}</span>${parts[i].trim()}</div>`;
                 }
@@ -380,12 +371,17 @@
 
         function renderStandardItem(item) {
             let cleanName = item.name ? item.name.replace('🌟 ', '') : "Plat inconnu";
+            let mainName = cleanName.includes('[BR]') ? cleanName.split('[BR]')[0].trim() : cleanName;
+            
             let priceStr = parseFloat(item.price) > 0 ? `${parseFloat(item.price).toFixed(2)} ${currentCurrency}` : '';
-            let encodedName = encodeURIComponent(cleanName).replace(/'/g, "%27"); let safePrice = parseFloat(item.price) || 0;
-            let mainName = cleanName; let description = '';
-
-            // 🛠️ LA CORRECTION EST ICI : Le .join('<br>') remet les retours à la ligne !
-            if (cleanName.includes('[BR]')) { let parts = cleanName.split('[BR]'); mainName = parts[0].trim(); description = parts.slice(1).join('<br>').trim(); }
+            let encodedName = encodeURIComponent(mainName).replace(/'/g, "%27"); 
+            let safePrice = parseFloat(item.price) || 0;
+            
+            let description = '';
+            if (cleanName.includes('[BR]')) { 
+                let parts = cleanName.split('[BR]'); 
+                description = parts.slice(1).join('<br>').trim(); 
+            }
             let descHtml = description ? `<div class="item-desc">${description}</div>` : '';
 
             return `<div class="menu-item" onclick="addToCart('${encodedName}', ${safePrice})"><div class="item-row"><div class="item-name">${mainName}</div><div class="item-dots"></div><div class="item-price">${priceStr} <span class="add-badge">+ Ajouter</span></div></div>${descHtml}</div>`;
@@ -418,7 +414,6 @@
         fetchMenu();
         setInterval(fetchMenu, 3000);
 
-        // KIOSQUE
         document.getElementById('btn-kiosk').addEventListener('click', () => {
             const elem = document.documentElement; const btn = document.getElementById('btn-kiosk');
             if (!document.fullscreenElement) {
