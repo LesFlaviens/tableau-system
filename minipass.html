@@ -24,7 +24,7 @@
 
                 const plan = data.plan ? data.plan.toString().toUpperCase() : '';
                 
-              // On bloque ceux qui ne sont pas PREMIUM... SAUF le compte teste1 !
+                // 🛑 EXCEPTION VIP POUR TON COMPTE DE TEST
                 if (plan !== 'PREMIUM' && tenantID !== 'teste1') {
                     alert(`⛔ MODULE VERROUILLÉ :\nL'Écran de Contrôle Production (Pass Cuisine/Bar) est réservé aux abonnés du Pack Élite à 45€/mois.\n\nVeuillez upgrader votre offre depuis votre espace client.`);
                     try { window.close(); } catch(e) {}
@@ -145,7 +145,28 @@
                 let r = await fetch(`${SERVER_URL}/get-current-state?tenantID=${tenantID}&_t=${Date.now()}`, { cache: 'no-store' });
                 if(r.ok) {
                     let state = await r.json();
-                    activeOrders = state.activeOrders || {};
+                    let nO = state.activeOrders || {};
+
+                    // 🧠 LE MOTEUR DE TRADUCTION : Rend le KDS compatible avec le Pad et le Menu QR !
+                    for (let key in nO) { 
+                        // 1. Désimbriquer les données si elles sont coincées dans .data
+                        if (nO[key] && nO[key].data !== undefined && !Array.isArray(nO[key].data)) {
+                            nO[key] = nO[key].data; 
+                        }
+                        
+                        // 2. Traduire les clés (name -> n, category -> dest)
+                        if (nO[key] && nO[key].items) {
+                            if (!Array.isArray(nO[key].items)) nO[key].items = [];
+                            nO[key].items.forEach(i => {
+                                if (i.name && !i.n) i.n = i.name;
+                                if (i.price && !i.p) i.p = i.price;
+                                if (i.category && !i.dest) i.dest = i.category;
+                                if (!i.dest) i.dest = "cuisine"; // Sécurité anti-vide par défaut
+                            });
+                        }
+                    }
+
+                    activeOrders = nO;
                     dispatchTickets();
                 }
             } catch(e) { console.error("Erreur Synchro KDS"); }
@@ -156,15 +177,20 @@
             let barTickets = [];
 
             for (let tableId in activeOrders) {
+                // Ignore les fichiers de configuration de la base de données
+                if (tableId.includes('MASTER') || tableId.includes('ARCHIVE') || tableId.includes('CATEGORIES') || tableId.includes('ARCHITECTURE')) continue;
+
                 let order = activeOrders[tableId];
+                
                 if (!order || !order.items || order.items.length === 0 || order.status === 'reserved' || order.status === 'EN ATTENTE PAIEMENT') continue;
 
-                let pendingCuisine = order.items.filter(i => i.dest === 'cuisine' && !i.done);
+                // 🚦 ON NE PREND QUE LES PLATS "ENVOYÉS" PAR LE SERVEUR (!== false) ET NON PRÊTS (!done)
+                let pendingCuisine = order.items.filter(i => i.dest.toLowerCase() === 'cuisine' && !i.done && i.isSent !== false);
                 if (pendingCuisine.length > 0) {
                     cuisineTickets.push({ tableId: tableId, time: order.time || '12:00', source: order.source || 'Salle', items: pendingCuisine });
                 }
 
-                let pendingBar = order.items.filter(i => i.dest === 'bar' && !i.done);
+                let pendingBar = order.items.filter(i => i.dest.toLowerCase() === 'bar' && !i.done && i.isSent !== false);
                 if (pendingBar.length > 0) {
                     barTickets.push({ tableId: tableId, time: order.time || '12:00', source: order.source || 'Salle', items: pendingBar });
                 }
@@ -196,7 +222,7 @@
                     return `
                         <div class="ticket-item-row">
                             <div class="item-info">
-                                <div class="item-title"><span class="item-qty">${item.qty}x</span>${item.n}</div>
+                                <div class="item-title"><span class="item-qty">${item.qty || 1}x</span>${item.n}</div>
                                 ${obsHtml}${seatHtml}
                             </div>
                             <button class="btn-ready" onclick="markItemAsReady('${ticket.tableId}', '${item.id || item.itemId}')">✔ PRÊT</button>
