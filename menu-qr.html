@@ -28,7 +28,7 @@
                     setTimeout(() => { window.location.href = `portail-client.html?tenantID=${tenantID}`; }, 100);
                 }
             } catch(e) {
-                console.log("Mode hors-ligne actif. Vérification des accès retardée.");
+                console.log("Mode hors-ligne actif.");
             }
         })();
     </script>
@@ -72,7 +72,7 @@
             background: var(--bg-color);
             box-shadow: 0 0 50px rgba(0,0,0,0.8);
             position: relative;
-            padding-bottom: 100px; /* Espace pour le panier */
+            padding-bottom: 120px; /* Espace pour le panier */
         }
 
         header { 
@@ -256,7 +256,7 @@
         // VARIABLES GLOBALES
         let currentCurrency = "€";
         let currencyName = "Euros";
-        let systemSettings = {}; // Stocke les paramètres d'admin (ex: Stripe)
+        let systemSettings = {}; 
         
         let categoriesMap = [];
         let currentMenuData = null;
@@ -282,7 +282,7 @@
             try {
                 const state = await API.getState();
                 
-                // LECTURE DES PARAMÈTRES GLOBAUX (Dont le paiement)
+                // LECTURE DES PARAMÈTRES
                 if (state.activeOrders && state.activeOrders['SETTINGS_MASTER'] && state.activeOrders['SETTINGS_MASTER'].data) {
                     systemSettings = state.activeOrders['SETTINGS_MASTER'].data;
                     
@@ -328,12 +328,15 @@
         }
 
         // 🛒 FONCTIONS DU PANIER
-        function addToCart(name, price) {
+        function addToCart(name, priceStr) {
+            // Conversion propre du prix pour éviter les erreurs JS
+            let price = parseFloat(priceStr) || 0;
+            
             let existing = cart.find(i => i.name === name);
             if (existing) {
                 existing.qty++;
             } else {
-                cart.push({ name: name, price: parseFloat(price), qty: 1 });
+                cart.push({ name: name, price: price, qty: 1 });
             }
             updateCartUI();
             
@@ -412,13 +415,16 @@
 
             let total = cart.reduce((sum, i) => sum + (i.price * i.qty), 0);
             
-            // Vérification si le paiement Stripe est activé dans l'Administration
+            // Format adapté pour que le Chef ou le Barman puisse lire la commande
+            let itemsFormattees = cart.map(item => {
+                return { n: item.name, p: item.price, qty: item.qty }; // Format "n" (name), "p" (price) pour KDS
+            });
+            
             let isOnlinePayment = systemSettings.payment && systemSettings.payment.online;
             let stripeLink = systemSettings.payment ? systemSettings.payment.stripeLink : "";
 
-            // Format de la commande pour l'écran Cuisine (KDS)
             let orderData = {
-                items: cart,
+                items: itemsFormattees,
                 total: total,
                 time: Date.now(),
                 table: tableNum,
@@ -427,11 +433,9 @@
                 source: "QR Code"
             };
 
-            // Création d'un ID de ticket unique pour la cuisine
             let ticketId = `WEB_${tableNum.replace(/\s+/g, '')}_${Math.floor(Math.random() * 10000)}`;
 
             try {
-                // Envoi à la base de données iChef
                 await fetch(`${SERVER_URL}/update-order?tenantID=${tenantID}`, {
                     method: 'POST',
                     headers: {'Content-Type': 'application/json'},
@@ -440,7 +444,7 @@
 
                 if (isOnlinePayment && stripeLink) {
                     alert("Commande enregistrée ! Vous allez être redirigé vers le module de paiement.");
-                    window.location.href = stripeLink; // Redirection vers Stripe
+                    window.location.href = stripeLink; 
                 } else {
                     alert("✅ Votre commande a bien été envoyée en cuisine !");
                     cart = [];
@@ -456,16 +460,19 @@
             }
         }
 
-        // 🎨 RENDU DES PLATS (Ajout du onclick)
+        // 🎨 RENDU DES PLATS (AVEC SÉCURITÉ DE PRIX)
         function renderTastingMenu(item) {
             let cleanName = item.name.replace('🌟 ', '');
             let priceStr = parseFloat(item.price) > 0 ? `${parseFloat(item.price).toFixed(2)} ${currentCurrency}` : '';
+            
+            // Protection JS : Échappe les guillemets et apostrophes
             let escapedName = cleanName.replace(/'/g, "\\'").replace(/"/g, '&quot;');
+            let safePrice = item.price || 0; // Si le prix est vide, on met 0
             
             if (cleanName.includes('[BR]')) {
                 let parts = cleanName.split('[BR]');
                 let html = `
-                <div class="tasting-menu-box menu-item" onclick="addToCart('${escapedName}', ${item.price})">
+                <div class="tasting-menu-box menu-item" onclick="addToCart('${escapedName}', '${safePrice}')">
                     <h2 class="category-title">Menu du Jour</h2>
                     <div class="tasting-price">${priceStr} <span class="add-badge">+ Ajouter</span></div>
                 `;
@@ -481,7 +488,7 @@
             }
             
             return `
-            <div class="tasting-menu-box menu-item" onclick="addToCart('${escapedName}', ${item.price})">
+            <div class="tasting-menu-box menu-item" onclick="addToCart('${escapedName}', '${safePrice}')">
                 <h2 class="category-title">Menu du Jour</h2>
                 <div class="tasting-price">${priceStr} <span class="add-badge">+ Ajouter</span></div>
                 <div class="tasting-course">${cleanName}</div>
@@ -491,7 +498,9 @@
         function renderStandardItem(item) {
             let cleanName = item.name.replace('🌟 ', '');
             let priceStr = parseFloat(item.price) > 0 ? `${parseFloat(item.price).toFixed(2)} ${currentCurrency}` : '';
+            
             let escapedName = cleanName.replace(/'/g, "\\'").replace(/"/g, '&quot;');
+            let safePrice = item.price || 0;
 
             let mainName = cleanName;
             let description = '';
@@ -504,9 +513,8 @@
 
             let descHtml = description ? `<div class="item-desc">${description}</div>` : '';
 
-            // Rend la ligne cliquable
             return `
-            <div class="menu-item" onclick="addToCart('${escapedName}', ${item.price})">
+            <div class="menu-item" onclick="addToCart('${escapedName}', '${safePrice}')">
                 <div class="item-row">
                     <div class="item-name">${mainName}</div>
                     <div class="item-dots"></div>
