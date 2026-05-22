@@ -1,6 +1,36 @@
 <!DOCTYPE html>
 <html lang="fr">
 <head>
+    <script>
+        // 🛡️ GARDE DU CORPS SÉCURITÉ ADMIN
+        (async function checkAccess() {
+            const urlParams = new URLSearchParams(window.location.search);
+            const tenantID = urlParams.get('tenantID') || localStorage.getItem('ichef_tenant_id');
+            const SERVER_URL = (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1" || window.location.protocol === "file:") 
+                ? "http://localhost:10000" : "https://tableau-system.onrender.com";
+            
+            if(!tenantID) return window.location.href = 'portail-client.html';
+
+            try {
+                const res = await fetch(`${SERVER_URL}/api/check-license?tenantID=${tenantID}`);
+                const data = await res.json();
+                
+                if(!data.success || data.status === 'SUSPENDU') {
+                    alert("⛔ LICENCE SUSPENDUE OU INVALIDE.");
+                    return window.location.href = 'portail-client.html';
+                }
+
+                const plan = data.plan ? data.plan.toString().toUpperCase() : '';
+
+                if (plan === 'CHEF' || plan === 'CHEF_CUISINE' || plan === 'CHEF_PATISSIER' || plan === 'CHEF_BAR') {
+                    alert(`⛔ ACCÈS REFUSÉ :\nVotre forfait actuel (${plan}) n'inclut pas le module Administration.\nVeuillez upgrader votre offre pour y accéder.`);
+                    window.location.href = `portail-client.html?tenantID=${tenantID}`;
+                }
+            } catch(e) { 
+                console.log("Mode hors-ligne actif."); 
+            }
+        })();
+    </script>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <link rel="manifest" href="manifest.json">
@@ -27,7 +57,7 @@
             --gold-dim: rgba(197, 160, 89, 0.08);
             --accent: #10b981; /* Vert Émeraude */      
             --accent-dim: rgba(16, 185, 129, 0.08);
-            --alert: #D9534F; /* Rouge bordeaux */       
+            --alert: #D9534F; /* Rouge bordeaux */        
             --alert-dim: rgba(217, 83, 79, 0.08);
             --shadow: 0 10px 30px rgba(0, 0, 0, 0.9);
         }
@@ -147,37 +177,6 @@
 </head>
 <body>
 
-    <script>
-        // 🛡️ GARDE DU CORPS iCHEF : CONTRÔLE STRICT DES ACCÈS B2B (Se lance immédiatement)
-        (async function checkAccess() {
-            const urlParams = new URLSearchParams(window.location.search);
-            const tenantID = urlParams.get('tenantID') || localStorage.getItem('ichef_tenant_id');
-            const SERVER_URL = (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1" || window.location.protocol === "file:") 
-                ? "http://localhost:10000" : "https://tableau-system.onrender.com";
-            
-            if(!tenantID) return window.location.href = 'index.html';
-
-            try {
-                const res = await fetch(`${SERVER_URL}/api/check-license?tenantID=${tenantID}`);
-                const data = await res.json();
-                
-                if(!data.success || data.status === 'SUSPENDU') {
-                    alert("⛔ LICENCE SUSPENDUE OU INVALIDE.");
-                    return window.location.href = 'index.html';
-                }
-
-                const plan = data.plan ? data.plan.toString().toUpperCase() : '';
-
-                if (plan === 'CHEF' || plan === 'CHEF_CUISINE' || plan === 'CHEF_PATISSIER' || plan === 'CHEF_BAR') {
-                    alert(`⛔ ACCÈS REFUSÉ :\nVotre forfait actuel (${plan}) n'inclut pas le module Administration.\nVeuillez upgrader votre offre pour y accéder.`);
-                    window.location.href = `portail-client.html?tenantID=${tenantID}`;
-                }
-            } catch(e) {
-                console.log("Mode hors-ligne actif. Vérification des accès retardée.");
-            }
-        })();
-    </script>
-
     <div id="admin-security-overlay" style="position:fixed; top:0; left:0; width:100%; height:100%; background:var(--bg); z-index:99999; display:flex; flex-direction:column; align-items:center; justify-content:center;">
         <div style="text-align: center; margin-bottom: 40px;">
             <div style="font-family: 'Playfair Display', serif; font-size: 3rem; font-weight: 600; color: var(--gold); letter-spacing: 6px;">EMPIRE</div>
@@ -200,8 +199,8 @@
         <button class="nav-btn" onclick="switchTab('tab-design')">🎨 Parc QR & Design</button>
         <button class="nav-btn" onclick="switchTab('tab-settings')">⚙️ Paramètres Généraux</button>
         
-        <button class="nav-btn" style="margin-top: auto; border: 1px solid var(--text-main); color: var(--text-main); justify-content: center;" onclick="window.open('menu-qr.html?tenantID=' + tenantID + '&table=Apercu', '_blank')">🍽️ VOIR MENU CLIENT</button>
-        <button class="nav-btn" style="margin-top: 15px; background: var(--panel); border: 1px solid var(--border-strong); color: var(--gold); justify-content: center;" onclick="window.location.href = 'pack-eco.html?tenantID=' + tenantID">📱 RETOUR CAISSE</button>
+        <button class="nav-btn" style="margin-top: auto; border: 1px solid var(--text-main); color: var(--text-main); justify-content: center;" onclick="voirMenuClient()">🍽️ VOIR MENU CLIENT</button>
+        <button class="nav-btn" style="margin-top: 15px; background: var(--panel); border: 1px solid var(--border-strong); color: var(--gold); justify-content: center;" onclick="retourCaisse()">📱 RETOUR CAISSE</button>
         <button class="nav-btn danger" style="margin-top: 15px; justify-content: center; border: 1px solid var(--alert);" onclick="forceSync()">🔄 FORCER SYNCHRO</button>
     </div>
 
@@ -1288,6 +1287,19 @@
         });
 
         window.addEventListener('load', fetchStateFromCloud);
+
+        // --- FONCTIONS DE NAVIGATION RAPIDE ---
+        function retourCaisse() {
+            const urlParams = new URLSearchParams(window.location.search);
+            const tenantID = urlParams.get('tenantID') || localStorage.getItem('ichef_tenant_id');
+            window.location.href = `pack-eco.html?tenantID=${tenantID}`;
+        }
+
+        function voirMenuClient() {
+            const urlParams = new URLSearchParams(window.location.search);
+            const tenantID = urlParams.get('tenantID') || localStorage.getItem('ichef_tenant_id');
+            window.open(`menu-qr.html?tenantID=${tenantID}&table=Aperçu`, '_blank'); // Ouvre un nouvel onglet !
+        }
     </script>
 </body>
 </html>
