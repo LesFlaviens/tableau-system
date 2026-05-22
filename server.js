@@ -3,8 +3,8 @@ const cors = require('cors');
 const path = require('path');
 const mongoose = require('mongoose');
 
-// 🛡️ CONFIGURATION STRIPE
-const stripeKey = process.env.STRIPE_SECRET_KEY || 'sk_test_51...'; 
+// 🛡️ CONFIGURATION STRIPE iCHEF (Pour TES abonnements SaaS)
+const stripeKey = process.env.STRIPE_SECRET_KEY || 'sk_test_51TN80JQ9Dw3nOfA4I3XTxPl5FR4ddYmU9Jw2pGmfa0eABz2P6wAzK8RMzHw2XilulLXxFmY2oEDgau4TcScOf9WK00ajIEuweB'; 
 const stripe = require('stripe')(stripeKey);
 
 const app = express();
@@ -335,13 +335,10 @@ app.post('/update-order', async (req, res) => {
 
         const { tableId, order } = req.body;
         
-        // 🔥 LA CORRECTION ANTI-EMBOUTEILLAGE : Sauvegarde Atomique
         let updateQuery = {};
         if (order === null) {
-            // $unset efface uniquement cette table sans toucher au reste
             updateQuery = { $unset: { [`activeOrders.${tableId}`]: 1 } };
         } else {
-            // $set met à jour ou crée uniquement cette table sans toucher au reste
             updateQuery = { $set: { [`activeOrders.${tableId}`]: order } };
         }
         
@@ -355,6 +352,54 @@ app.post('/update-order', async (req, res) => {
     } catch (e) { 
         console.error("Erreur Sauvegarde :", e);
         res.status(500).json({ error: "Save Error" }); 
+    }
+});
+
+// ==========================================
+// 💳 CRÉATION DE PAIEMENT STRIPE DYNAMIQUE (MULTI-RESTAURANTS)
+// ==========================================
+app.post('/api/create-checkout', async (req, res) => {
+    try {
+        const { total, table, tenantID } = req.body;
+
+        // 1. Lire la base de données Mongoose pour trouver le restaurant
+        const state = await AppState.findOne({ tenantID });
+
+        if (!state || !state.activeOrders || !state.activeOrders['SETTINGS_MASTER']) {
+            return res.status(400).json({ error: "Configuration restaurant introuvable." });
+        }
+
+        // 2. Récupérer la Clé Stripe du Restaurateur (sauvegardée dans son admin)
+        const settings = state.activeOrders['SETTINGS_MASTER'].data;
+        const stripeKeyResto = settings.payment && settings.payment.stripeLink ? settings.payment.stripeLink.trim() : null;
+
+        if (!stripeKeyResto || !stripeKeyResto.startsWith('sk_')) {
+            return res.status(400).json({ error: "Le restaurateur n'a pas configuré sa clé Stripe secrète." });
+        }
+
+        // 3. Initialiser Stripe UNIQUEMENT pour ce restaurant
+        const tenantStripe = require('stripe')(stripeKeyResto);
+
+        // 4. Créer la facture pour le client
+        const session = await tenantStripe.checkout.sessions.create({
+            payment_method_types: ['card'],
+            line_items: [{
+                price_data: {
+                    currency: 'eur',
+                    product_data: { name: 'Commande Restaurant - Table ' + table },
+                    unit_amount: Math.round(total * 100), // Stripe calcule en centimes !
+                },
+                quantity: 1,
+            }],
+            mode: 'payment',
+            success_url: 'https://tableau-system.onrender.com/menu-qr.html?tenantID=' + tenantID + '&table=' + table + '&paiement=ok',
+            cancel_url: 'https://tableau-system.onrender.com/menu-qr.html?tenantID=' + tenantID + '&table=' + table + '&paiement=annule',
+        });
+        
+        res.json({ url: session.url });
+    } catch (error) {
+        console.error("Erreur Stripe Tenant:", error);
+        res.status(500).json({ error: error.message });
     }
 });
 
