@@ -2,7 +2,7 @@
 <html lang="fr">
 <head>
     <script>
-        // 🛡️ GARDE DU CORPS iCHEF
+        // 🛡️ GARDE DU CORPS iCHEF (Sécurité B2B)
         (async function checkAccess() {
             const urlParams = new URLSearchParams(window.location.search);
             const tenantID = urlParams.get('tenantID') || localStorage.getItem('ichef_tenant_id');
@@ -104,8 +104,13 @@
         .cart-btn { background: transparent; border: none; color: var(--gold); font-size: 1.2rem; cursor: pointer; padding: 0 5px;}
         .cart-footer { padding-top: 20px; border-top: 1px solid var(--border-color); }
         .cart-total-row { display: flex; justify-content: space-between; font-family: var(--font-title); font-size: 2rem; color: var(--text-main); margin-bottom: 20px; }
-        .btn-checkout { width: 100%; background: var(--gold); color: #000; border: none; padding: 18px; border-radius: 8px; font-family: var(--font-text); font-weight: 600; font-size: 1.1rem; text-transform: uppercase; letter-spacing: 2px; cursor: pointer; transition: 0.3s; }
+        
+        /* Boutons de Checkouts Multiples */
+        .checkout-buttons-container { display: flex; flex-direction: column; gap: 12px; }
+        .btn-checkout { width: 100%; border: none; padding: 18px; border-radius: 8px; font-family: var(--font-text); font-weight: 600; font-size: 1.1rem; text-transform: uppercase; letter-spacing: 2px; cursor: pointer; transition: 0.3s; }
         .btn-checkout:active { transform: scale(0.98); }
+        .btn-gold { background: var(--gold); color: #000; }
+        .btn-stripe { background: #635bff; color: #fff; } /* Couleur typique de Stripe */
 
         @media (max-width: 800px) {
             .menu-container { padding: 20px; }
@@ -135,7 +140,7 @@
 
         <div class="footer">
             Prix nets en <span id="footer-currency">Euros</span> — Service compris<br>
-            <span style="font-size: 0.6rem; opacity: 0.5; margin-top: 10px; display: block;">Propulsé par I CHEF</span>
+            <span style="font-size: 0.6rem; opacity: 0.5; margin-top: 10px; display: block;">Propulsé par I CHEF - v4 (Omnicanal)</span>
         </div>
     </div>
 
@@ -150,13 +155,17 @@
                 <button class="close-cart" onclick="toggleCart()">✕</button>
             </div>
             <div id="cart-items" class="cart-items"></div>
+            
             <div class="cart-footer">
                 <div class="cart-total-row">
                     <span>Total</span>
                     <span id="cart-total-price" style="color: var(--gold);">0.00 €</span>
                 </div>
-                <button class="btn-checkout" onclick="checkout()">🛎️ Envoyer en Cuisine</button>
+                <div id="checkout-buttons-container" class="checkout-buttons-container">
+                    <button class="btn-checkout btn-gold" onclick="checkout('table')">🛎️ Envoyer en Cuisine</button>
+                </div>
             </div>
+            
         </div>
     </div>
 
@@ -193,6 +202,7 @@
                 const state = await API.getState();
                 let activeOrders = state.activeOrders || {};
                 
+                // 1. LECTURE PARAMÈTRES
                 if (activeOrders['SETTINGS_MASTER'] && activeOrders['SETTINGS_MASTER'].data) {
                     systemSettings = activeOrders['SETTINGS_MASTER'].data;
                     if (systemSettings.currency && systemSettings.currency !== currentCurrency) {
@@ -216,6 +226,7 @@
                     }
                 }
 
+                // 2. ASPIRATEUR TOTAL (Sécurisé)
                 let rawCuisine = activeOrders['MENU_MASTER']?.data || {};
                 let rawBar = activeOrders['MENU_MASTER_BAR']?.data || {};
                 let rawArchi = activeOrders['MENU_ARCHITECTURE']?.data || {};
@@ -268,13 +279,23 @@
             document.getElementById('cart-total-price').innerText = totalPrice.toFixed(2) + ' ' + currentCurrency;
             document.getElementById('cart-fab').style.display = totalItems > 0 ? 'flex' : 'none';
             
-            let btnCheckout = document.querySelector('.btn-checkout');
-            if(btnCheckout) {
-                let isOnlinePayment = systemSettings.payment && systemSettings.payment.online;
-                if (isOnlinePayment && systemSettings.payment.stripeLink) {
-                    btnCheckout.innerHTML = `💳 Payer ${totalPrice.toFixed(2)} ${currentCurrency}`;
+            // 🧠 LOGIQUE DES DEUX BOUTONS OMNICANAL
+            let checkoutContainer = document.getElementById('checkout-buttons-container');
+            if(checkoutContainer) {
+                // Vérifie si le restaurateur a mis un lien Stripe ET a coché la case "Paiement en ligne"
+                let isOnlinePaymentActive = systemSettings.payment && systemSettings.payment.online && systemSettings.payment.stripeLink && systemSettings.payment.stripeLink.trim() !== "";
+                
+                if (isOnlinePaymentActive) {
+                    // MODE DOUBLE CHOIX
+                    checkoutContainer.innerHTML = `
+                        <button class="btn-checkout btn-stripe" onclick="checkout('online')">💳 Payer en ligne (${totalPrice.toFixed(2)} ${currentCurrency})</button>
+                        <button class="btn-checkout btn-gold" onclick="checkout('table')">🛎️ Commander (Paiement au serveur)</button>
+                    `;
                 } else {
-                    btnCheckout.innerHTML = `🛎️ Envoyer en Cuisine`;
+                    // MODE CLASSIQUE (Serveur uniquement)
+                    checkoutContainer.innerHTML = `
+                        <button class="btn-checkout btn-gold" onclick="checkout('table')">🛎️ Envoyer en Cuisine</button>
+                    `;
                 }
             }
 
@@ -305,16 +326,21 @@
             else if (cart.length > 0) { renderCartModal(); modal.style.display = 'flex'; }
         };
 
-        window.checkout = async function() {
+        // 🚀 ENVOI KDS ET RÉPARTITION SELON LE CHOIX DU CLIENT
+        window.checkout = async function(mode) {
             if (cart.length === 0) return;
-            const btn = document.querySelector('.btn-checkout'); 
-            btn.innerText = "Transmission en cours..."; 
-            btn.disabled = true;
+            
+            // On désactive tous les boutons pendant l'envoi pour éviter les doubles clics
+            let buttons = document.querySelectorAll('.btn-checkout');
+            buttons.forEach(btn => { btn.innerText = "Transmission..."; btn.disabled = true; });
 
             let total = cart.reduce((sum, i) => sum + (i.price * i.qty), 0);
+            
+            // Format pour la Cuisine et le Serveur
             let itemsFormattees = cart.map(item => { return { n: item.name, p: item.price, qty: item.qty }; });
             
-            let isOnlinePayment = systemSettings.payment && systemSettings.payment.online;
+            // Est-ce que le client a cliqué sur le bouton de paiement en ligne ?
+            let isOnlineChoice = (mode === 'online');
             let stripeLink = systemSettings.payment ? systemSettings.payment.stripeLink : "";
 
             let orderData = { 
@@ -322,19 +348,26 @@
                 total: total, 
                 time: Date.now(), 
                 table: tableNum, 
-                status: isOnlinePayment ? "EN ATTENTE PAIEMENT" : "NOUVELLE COMMANDE", 
-                typePaiement: isOnlinePayment ? "Stripe" : "À table", 
+                status: isOnlineChoice ? "EN ATTENTE PAIEMENT" : "NOUVELLE COMMANDE", 
+                typePaiement: isOnlineChoice ? "En Ligne" : "À table", 
                 source: "QR Code" 
             };
             
             let ticketId = `WEB_${tableNum.replace(/\s+/g, '')}_${Math.floor(Math.random() * 10000)}`;
 
             try {
-                await fetch(`${SERVER_URL}/update-order?tenantID=${tenantID}`, { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ tableId: ticketId, order: orderData }) });
+                // 📡 Envoi de la commande sur le serveur Render
+                await fetch(`${SERVER_URL}/update-order?tenantID=${tenantID}`, { 
+                    method: 'POST', 
+                    headers: {'Content-Type': 'application/json'}, 
+                    body: JSON.stringify({ tableId: ticketId, order: orderData }) 
+                });
                 
-                if (isOnlinePayment && stripeLink) { 
-                    window.location.href = stripeLink; 
-                } else { 
+                // 💳 Aiguillage
+                if (isOnlineChoice && stripeLink) { 
+                    window.location.href = stripeLink; // Envoi vers Stripe/SumUp
+                } 
+                else { 
                     alert("✅ Votre commande a bien été transmise à l'équipe !"); 
                     cart = []; 
                     updateCartUI(); 
@@ -343,12 +376,11 @@
             } catch(e) { 
                 alert("❌ Erreur réseau. Veuillez prévenir un serveur."); 
             } finally { 
-                updateCartUI(); 
-                btn.disabled = false; 
+                updateCartUI(); // Remet les boutons à l'état normal
             }
         };
 
-        // 🛠️ EXTRACTION DU TITRE PUR POUR LE PANIER (Supprime tout après le premier [BR])
+        // 🛠️ EXTRACTION DU TITRE PUR (LE PANIER SERA PROPRE !)
         function renderTastingMenu(item) {
             let cleanName = item.name ? item.name.replace('🌟 ', '') : "Plat inconnu";
             let mainName = cleanName.includes('[BR]') ? cleanName.split('[BR]')[0].trim() : cleanName;
