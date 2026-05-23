@@ -178,6 +178,16 @@
         let currentCurrency = "€"; let currencyName = "Euros";
         let systemSettings = {}; let categoriesMap = []; let currentMenuData = null; let cart = []; let lastDesignHash = "";
 
+        // ⏳ FONCTION UTILITAIRE POUR VÉRIFIER LES CRÉNEAUX HORAIRES MÊME LA NUIT
+        function isTimeInSlot(current, start, end) {
+            if (!start || !end) return false;
+            if (start > end) {
+                // Le créneau traverse minuit (ex: 23:00 - 05:00)
+                return current >= start || current <= end;
+            }
+            return current >= start && current <= end;
+        }
+
         async function fetchMenu() {
             try {
                 let r = await fetch(`${SERVER_URL}/get-current-state?tenantID=${tenantID}&_t=${Date.now()}`, { cache: 'no-store' });
@@ -192,9 +202,9 @@
                     let isManualClosed = (systemSettings.qrActive === false);
 
                     if (systemSettings.schedule && systemSettings.schedule.auto) {
-                        // Récupérer l'heure de Paris (France) pour éviter les contournements de fuseaux horaires
+                        // Récupérer l'heure de Paris (France)
                         let now = new Date(new Date().toLocaleString("en-US", {timeZone: "Europe/Paris"}));
-                        let currentDay = now.getDay(); // 0 = Dim, 1 = Lun, 2 = Mar...
+                        let currentDay = now.getDay(); // 0 = Dim, 1 = Lun...
                         let currentHour = now.getHours().toString().padStart(2, '0') + ":" + now.getMinutes().toString().padStart(2, '0');
                         
                         let sched = systemSettings.schedule;
@@ -202,9 +212,14 @@
                         if (!sched.days.includes(currentDay)) {
                             isAutoOpen = false; // Fermé ce jour
                         } else {
-                            let inMidi = (currentHour >= sched.midi.s && currentHour <= sched.midi.e);
-                            let inSoir = (currentHour >= sched.soir.s && currentHour <= sched.soir.e);
-                            if (!inMidi && !inSoir) isAutoOpen = false; // Hors des horaires de service
+                            let inMatin = isTimeInSlot(currentHour, sched.matin?.s, sched.matin?.e);
+                            let inAprem = isTimeInSlot(currentHour, sched.aprem?.s, sched.aprem?.e);
+                            let inSoir  = isTimeInSlot(currentHour, sched.soir?.s,  sched.soir?.e);
+                            let inNuit  = isTimeInSlot(currentHour, sched.nuit?.s,  sched.nuit?.e);
+                            
+                            if (!inMatin && !inAprem && !inSoir && !inNuit) {
+                                isAutoOpen = false; // Hors de tous les créneaux horaires
+                            }
                         }
                     }
 
@@ -230,7 +245,21 @@
                         let cartModal = document.getElementById('cart-modal');
                         if (cartModal) cartModal.style.display = 'none';
                         
-                        return; // 🛑 On arrête tout ici, on ne charge pas les plats !
+                        return; // 🛑 On arrête tout ici
+                    }
+
+                    // 🔥 AFFICHAGE DU BANDEAU ANTI-RUSH
+                    let rushBanner = document.getElementById('rush-banner');
+                    if (systemSettings.antiRush === true) {
+                        if (!rushBanner) {
+                            rushBanner = document.createElement('div');
+                            rushBanner.id = 'rush-banner';
+                            rushBanner.style.cssText = "background: #f97316; color: #000; text-align: center; padding: 12px 20px; font-weight: 600; font-family: var(--font-text); font-size: 0.9rem; position: sticky; top: 0; z-index: 9999; box-shadow: 0 4px 15px rgba(249,115,22,0.4); text-transform: uppercase; letter-spacing: 1px;";
+                            rushBanner.innerHTML = "🔥 Forte affluence : Les temps de préparation sont actuellement rallongés.";
+                            document.body.insertBefore(rushBanner, document.body.firstChild);
+                        }
+                    } else if (rushBanner) {
+                        rushBanner.remove(); // Enlève le bandeau si le rush est fini
                     }
 
                     if (systemSettings.currency && systemSettings.currency !== currentCurrency) {
@@ -253,7 +282,6 @@
                     }
                 }
 
-                // 🧠 L'AIGUILLAGE MAGIQUE : On taggue chaque plat pour dire où il doit aller (cuisine ou bar)
                 let rawCuisine = activeOrders['MENU_MASTER']?.data || {};
                 let rawBar = activeOrders['MENU_MASTER_BAR']?.data || {};
                 let rawArchi = activeOrders['MENU_ARCHITECTURE']?.data || {};
@@ -279,7 +307,6 @@
             } catch(e) { console.error("Erreur Sync:", e); }
         }
 
-        // PANIER AVEC DESTINATION
         window.addToCart = function(encodedName, safePrice, dest) {
             let name = decodeURIComponent(encodedName); let price = parseFloat(safePrice) || 0;
             let existing = cart.find(i => i.name === name);
@@ -299,7 +326,6 @@
         };
 
         function updateCartUI() {
-            // Re-vérification sécurité panier au cas où
             let isManualClosed = (systemSettings.qrActive === false);
             let isAutoOpen = true;
             if (systemSettings.schedule && systemSettings.schedule.auto) {
@@ -307,11 +333,14 @@
                 let currentDay = now.getDay(); 
                 let currentHour = now.getHours().toString().padStart(2, '0') + ":" + now.getMinutes().toString().padStart(2, '0');
                 let sched = systemSettings.schedule;
-                if (!sched.days.includes(currentDay)) isAutoOpen = false;
-                else {
-                    let inMidi = (currentHour >= sched.midi.s && currentHour <= sched.midi.e);
-                    let inSoir = (currentHour >= sched.soir.s && currentHour <= sched.soir.e);
-                    if (!inMidi && !inSoir) isAutoOpen = false;
+                if (!sched.days.includes(currentDay)) {
+                    isAutoOpen = false;
+                } else {
+                    let inMatin = isTimeInSlot(currentHour, sched.matin?.s, sched.matin?.e);
+                    let inAprem = isTimeInSlot(currentHour, sched.aprem?.s, sched.aprem?.e);
+                    let inSoir  = isTimeInSlot(currentHour, sched.soir?.s,  sched.soir?.e);
+                    let inNuit  = isTimeInSlot(currentHour, sched.nuit?.s,  sched.nuit?.e);
+                    if (!inMatin && !inAprem && !inSoir && !inNuit) isAutoOpen = false;
                 }
             }
             if (isManualClosed || !isAutoOpen) {
@@ -360,7 +389,6 @@
             modal.style.display = (modal.style.display === 'flex') ? 'none' : (cart.length > 0 ? 'flex' : 'none');
         };
 
-        // 🚀 ENVOI VERS LES PADS (AVEC FUSION DE TABLE ET AIGUILLAGE)
         window.checkout = async function(mode) {
             if (cart.length === 0) return;
             document.querySelectorAll('.btn-checkout').forEach(btn => { btn.innerText = "Transmission..."; btn.disabled = true; });
@@ -369,12 +397,10 @@
             let isOnlineChoice = (mode === 'online');
 
             try {
-                // On lit la table pour AJOUTER la commande sans écraser ce que le serveur a déjà tapé
                 let r = await fetch(`${SERVER_URL}/get-current-state?tenantID=${tenantID}`);
                 let stateData = await r.json();
                 let existingOrder = (stateData.activeOrders && stateData.activeOrders[tableNum]) ? stateData.activeOrders[tableNum] : { items: [], total: 0 };
                 
-                // Formatage précis exigé par tes PADs (name, price, qty, category) ET BALISE SÉCURITÉ isSent: true
                 let newItems = cart.map(item => ({ 
                     name: item.name, 
                     price: item.price, 
@@ -393,7 +419,6 @@
                     source: "QR Code" 
                 };
                 
-                // Envoi avec le VRAI nom de la table (ex: T1)
                 await fetch(`${SERVER_URL}/update-order?tenantID=${tenantID}`, { 
                     method: 'POST', 
                     headers: {'Content-Type': 'application/json'}, 
