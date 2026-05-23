@@ -238,7 +238,7 @@
                     <h2 class="card-title">État du Système QR</h2>
                     <div class="switch-container" style="margin-bottom: 25px;">
                         <label class="switch">
-                            <input type="checkbox" id="setting-qr-active" onchange="markUnsaved()">
+                            <input type="checkbox" id="setting-qr-active" onchange="updateQRToggles()">
                             <span class="slider"></span>
                         </label>
                         <div>
@@ -249,7 +249,7 @@
                     
                     <div class="switch-container">
                         <label class="switch">
-                            <input type="checkbox" id="setting-qr-pay" onchange="markUnsaved()">
+                            <input type="checkbox" id="setting-qr-pay" onchange="updateQRToggles()">
                             <span class="slider"></span>
                         </label>
                         <div>
@@ -725,6 +725,39 @@
                 document.getElementById('sync-status').style.color = 'var(--alert)';
                 document.getElementById('sync-status').style.background = 'transparent';
                 document.getElementById('sync-status').style.borderColor = 'var(--alert)';
+            }
+        }
+
+     // 🚰 GESTION DES VANNES DU SYSTÈME QR ET PAIEMENT STRIPE EN TEMPS RÉEL
+        async function updateQRToggles() {
+            let isQrActive = document.getElementById('setting-qr-active').checked;
+            let isStripeActive = document.getElementById('setting-qr-pay').checked;
+            
+            // Mise à jour de l'objet local
+            systemSettings.qrActive = isQrActive;
+            if (!systemSettings.payment) systemSettings.payment = {};
+            systemSettings.payment.online = isStripeActive;
+            
+            try {
+                let r = await fetch(`${SERVER_URL}/get-current-state?tenantID=${tenantID}`);
+                let state = await r.json();
+                let currentDB = (state.activeOrders && state.activeOrders['SETTINGS_MASTER']) ? state.activeOrders['SETTINGS_MASTER'].data : systemSettings;
+                
+                // On met à jour nos deux variables dans la base
+                currentDB.qrActive = isQrActive;
+                if (!currentDB.payment) currentDB.payment = {};
+                currentDB.payment.online = isStripeActive;
+
+                // On envoie au serveur instantanément
+                await fetch(`${SERVER_URL}/update-order?tenantID=${tenantID}`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ tableId: 'SETTINGS_MASTER', order: { data: currentDB } })
+                });
+                
+                showToast("✅ Vannes mises à jour instantanément !");
+            } catch (e) { 
+                alert("📡 Erreur réseau : Impossible de sauvegarder l'état des vannes."); 
             }
         }
 
