@@ -89,6 +89,7 @@ const tenantSchema = new mongoose.Schema({
     specialite: { type: String, enum: ['cuisine', 'patisserie', 'bar'], default: 'cuisine' },
     pin: { type: String, default: '9999' }, 
     maxScreens: { type: Number, default: 2 }, 
+    maxStaff: { type: Number, default: 999 }, // Ajout de la limite du personnel
     registeredDevices: [String], 
     config: { stripeCustomerId: String }
 });
@@ -222,16 +223,17 @@ app.post('/api/activate', async (req, res) => {
         const finalPlan = plan || 'ECO';
         const finalSpec = specialite || 'cuisine';
 
-        // 👑 GESTION DES LIMITES D'ÉCRANS SELON LE FORFAIT
+        // 👑 GESTION DES LIMITES D'ÉCRANS ET STAFF SELON LE FORFAIT
         let limit = 2; 
-        if (finalPlan === 'CHEF') limit = 1;        
-        if (finalPlan === 'ECO') limit = 2;     
-        if (finalPlan === 'BUSINESS') limit = 5;    
-        if (finalPlan === 'PREMIUM') limit = 50;    
+        let staffLimit = 999;
+        if (finalPlan === 'CHEF') { limit = 1; staffLimit = 1; }        
+        if (finalPlan === 'ECO') { limit = 2; staffLimit = 999; }     
+        if (finalPlan === 'BUSINESS') { limit = 5; staffLimit = 999; }  
+        if (finalPlan === 'PREMIUM') { limit = 50; staffLimit = 999; }  
 
         await Tenant.create({ 
             tenantID, clientName, email, phone, status: 'ACTIF', 
-            plan: finalPlan, specialite: finalSpec, maxScreens: limit, pin: randomPin, 
+            plan: finalPlan, specialite: finalSpec, maxScreens: limit, maxStaff: staffLimit, pin: randomPin, 
             config: { stripeCustomerId: session.customer } 
         });
         
@@ -312,6 +314,39 @@ app.post('/api/billing-portal', async (req, res) => {
 });
 
 // ==========================================
+// 🆘 GESTION DES ALERTES SUPPORT (SOS)
+// ==========================================
+let activeAlerts = []; // Stockage temporaire en mémoire RAM
+
+app.post('/api/support-alert', (req, res) => {
+    const { tenantID, type, message, timestamp } = req.body;
+    const newAlert = {
+        id: Date.now().toString(),
+        tenantID,
+        type,
+        message,
+        timestamp,
+        status: 'OPEN'
+    };
+    activeAlerts.push(newAlert);
+    res.json({ success: true });
+});
+
+app.post('/api/get-alerts', (req, res) => {
+    if(req.body.masterKey !== ADMIN_PASS) return res.status(403).json({ success: false, error: "Non autorisé" });
+    res.json({ success: true, alerts: activeAlerts.filter(a => a.status === 'OPEN') });
+});
+
+app.post('/api/resolve-alert', (req, res) => {
+    if(req.body.masterKey !== ADMIN_PASS) return res.status(403).json({ success: false, error: "Non autorisé" });
+    const alertIndex = activeAlerts.findIndex(a => a.id === req.body.alertId);
+    if(alertIndex > -1) {
+        activeAlerts[alertIndex].status = 'RESOLVED';
+    }
+    res.json({ success: true });
+});
+
+// ==========================================
 // 📡 LE CŒUR DU RÉSEAU (SYNCHRO ATOMIQUE SÉCURISÉE)
 // ==========================================
 app.get('/get-current-state', async (req, res) => {
@@ -323,7 +358,13 @@ app.get('/get-current-state', async (req, res) => {
         }
         let state = await AppState.findOne({ tenantID });
         if (!state) state = await AppState.create({ tenantID, activeOrders: {} });
-        res.json(state);
+        
+        // On injecte le maxStaff dans la réponse pour que le frontend le lise
+        const tenantInfo = await Tenant.findOne({ tenantID });
+        const finalState = state.toObject();
+        if(tenantInfo) finalState.maxStaff = tenantInfo.maxStaff;
+        
+        res.json(finalState);
     } catch (e) { res.status(500).json({ error: "Sync Error" }); }
 });
 
@@ -363,15 +404,12 @@ app.post('/update-order', async (req, res) => {
 app.post('/api/create-checkout', async (req, res) => {
     try {
         const { total, table, tenantID } = req.body;
-
-        // 1. Lire la base de données Mongoose pour trouver le restaurant
         const state = await AppState.findOne({ tenantID });
 
         if (!state || !state.activeOrders || !state.activeOrders['SETTINGS_MASTER']) {
             return res.status(400).json({ error: "Configuration restaurant introuvable." });
         }
 
-        // 2. Récupérer la Clé Stripe du Restaurateur (sauvegardée dans son admin)
         const settings = state.activeOrders['SETTINGS_MASTER'].data;
         const stripeKeyResto = settings.payment && settings.payment.stripeLink ? settings.payment.stripeLink.trim() : null;
 
@@ -379,17 +417,14 @@ app.post('/api/create-checkout', async (req, res) => {
             return res.status(400).json({ error: "Le restaurateur n'a pas configuré sa clé Stripe secrète." });
         }
 
-        // 3. Initialiser Stripe UNIQUEMENT pour ce restaurant
         const tenantStripe = require('stripe')(stripeKeyResto);
-
-        // 4. Créer la facture pour le client
         const session = await tenantStripe.checkout.sessions.create({
             payment_method_types: ['card'],
             line_items: [{
                 price_data: {
                     currency: 'eur',
                     product_data: { name: 'Commande Restaurant - Table ' + table },
-                    unit_amount: Math.round(total * 100), // Stripe calcule en centimes !
+                    unit_amount: Math.round(total * 100),
                 },
                 quantity: 1,
             }],
@@ -423,6 +458,7 @@ app.post('/api/get-all-tenants-admin', async (req, res) => {
             specialite: t.specialite,
             pin: t.pin,
             maxScreens: t.maxScreens, 
+            maxStaff: t.maxStaff, // Remonté pour l'affichage de la Tour
             activeScreens: t.registeredDevices ? t.registeredDevices.length : 0, 
             status: t.status
         }));
@@ -431,23 +467,27 @@ app.post('/api/get-all-tenants-admin', async (req, res) => {
 });
 
 app.post('/api/admin-action', async (req, res) => {
-    const { masterKey, tenantID, action, newPlan, manualScreens, manualPin } = req.body;
+    const { masterKey, tenantID, action, newPlan, manualScreens, manualPin, manualMaxStaff } = req.body;
     if (masterKey !== ADMIN_PASS) return res.status(401).json({ success: false, error: "🔒 Accès Refusé." });
 
     try {
         if (action === 'set_screens' && manualScreens) {
             await Tenant.findOneAndUpdate({ tenantID }, { maxScreens: parseInt(manualScreens) });
         }
+        else if (action === 'set_max_staff' && manualMaxStaff) {
+            await Tenant.findOneAndUpdate({ tenantID }, { maxStaff: parseInt(manualMaxStaff) });
+        }
         else if (action === 'set_pin' && manualPin) {
             await Tenant.findOneAndUpdate({ tenantID }, { pin: manualPin.trim(), registeredDevices: [] });
         }
         else if (action === 'set_plan' && newPlan) { 
             let limit = 2; 
-            if (newPlan === 'CHEF') limit = 1; 
-            if (newPlan === 'ECO') limit = 2; 
-            if (newPlan === 'BUSINESS') limit = 5; 
-            if (newPlan === 'PREMIUM') limit = 50; 
-            await Tenant.findOneAndUpdate({ tenantID }, { plan: newPlan, maxScreens: limit });
+            let staffLimit = 999;
+            if (newPlan === 'CHEF') { limit = 1; staffLimit = 1; } 
+            if (newPlan === 'ECO') { limit = 2; staffLimit = 999; } 
+            if (newPlan === 'BUSINESS') { limit = 5; staffLimit = 999; } 
+            if (newPlan === 'PREMIUM') { limit = 50; staffLimit = 999; } 
+            await Tenant.findOneAndUpdate({ tenantID }, { plan: newPlan, maxScreens: limit, maxStaff: staffLimit });
         }
         else if (action === 'reset_devices') {
             await Tenant.findOneAndUpdate({ tenantID }, { registeredDevices: [] });
