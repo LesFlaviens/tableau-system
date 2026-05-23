@@ -1,3 +1,4 @@
+acac
 <!DOCTYPE html>
 <html lang="fr">
 <head>
@@ -12,7 +13,6 @@
             --bg: #050505;
             --panel: #0A0A0A;
             --border: rgba(255, 255, 255, 0.08);
-            --border-strong: rgba(255, 255, 255, 0.2);
             --text-main: #f8fafc;
             --text-muted: #64748b;
             --gold: #fbbf24;
@@ -156,24 +156,6 @@
             font-weight: 700;
         }
 
-        /* INPUTS */
-        .input-field {
-            width: 100%;
-            padding: 14px 15px;
-            background: var(--bg);
-            border: 1px solid var(--border-strong);
-            color: var(--text-main);
-            border-radius: 8px;
-            font-size: 1rem;
-            font-family: inherit;
-            box-sizing: border-box;
-            transition: border-color 0.3s;
-        }
-        .input-field:focus {
-            border-color: var(--gold);
-            outline: none;
-        }
-
         /* DYNAMIC APP BUTTONS */
         .apps-list {
             display: flex;
@@ -233,7 +215,7 @@
 
     <nav>
         <div class="nav-logo"><span>iCHEF.</span> PORTAIL CLIENT</div>
-        <button class="btn-logout" onclick="window.logicielManager.logout()">Se déconnecter</button>
+        <button class="btn-logout" onclick="logout()">Se déconnecter</button>
     </nav>
 
     <div class="container">
@@ -257,155 +239,323 @@
 
             <div class="card purple-panel">
                 <h2 class="card-title">👥 Gestion du Personnel</h2>
-                <p class="card-desc" style="margin-bottom: 40px;">Équipe active autorisée sur la caisse :<br><br><span style="color:var(--text-main); font-weight: 500; font-size: 1.1rem;">Collaborateurs synchronisés.</span></p>
-                <a href="#" id="btn-staff-link" class="btn-action-purple">AJOUTER / MODIFIER ➔</a>
+                <p class="card-desc" style="margin-bottom: 40px;">Équipe active autorisée sur la caisse :<br><br><span style="color:var(--text-main); font-weight: 500; font-size: 1.1rem;">Aucun collaborateur enregistré.</span></p>
+                <a href="admin.html?tab=tab-staff" id="btn-staff-link" class="btn-action-purple">AJOUTER / MODIFIER ➔</a>
             </div>
         </div>
 
         <div class="grid-2">
-            <div class="card">
-                <h2 class="card-title">👤 Mes Coordonnées</h2>
-                <p class="card-desc">Vos informations de contact liées à cette licence iCHEF.</p>
-                <div style="display:flex; flex-direction:column; gap:15px; margin-bottom: 20px;">
-                    <input type="email" id="user-email" class="input-field" placeholder="Adresse Email de contact">
-                    <input type="tel" id="user-phone" class="input-field" placeholder="Numéro de Téléphone">
-                </div>
-                <button class="btn-return" style="width:100%; justify-content:center; border-color:var(--border-strong);" onclick="window.logicielManager.sauvegarderCoordonnees()">Enregistrer mes informations</button>
-            </div>
-
             <div class="card">
                 <h2 class="card-title">🔒 Sécurité Master</h2>
-                <p class="card-desc">Modifiez votre code d'accès maître administrateur h24. <br><b>Code PIN de sécurité étendu (de 4 à 9 chiffres).</b></p>
-                <button class="btn-return" style="width:100%; justify-content:center; border-color:var(--border-strong); margin-top:auto;" onclick="window.logicielManager.modifierPinMaster()">Changer le code PIN Maître</button>
+                <p class="card-desc">Modifiez votre code d'accès maître administrateur h24.</p>
+                <button class="btn-return" style="width:100%; justify-content:center; border-color:var(--border-strong);" onclick="modifierPinMaster()">Changer le code PIN Maître</button>
             </div>
-        </div>
 
-        <div class="grid-2">
             <div class="card">
                 <h2 class="card-title">📱 Gestion des Écrans</h2>
                 <p class="card-desc">Visualisez et réinitialisez les terminaux (PADs, KDS) connectés sur votre réseau.</p>
-                <button class="btn-return" style="width:100%; justify-content:center; border-color:var(--border-strong);" onclick="alert('Réseau local iCHEF stable. Tous les écrans sont connectés.')">Gérer mes terminaux actifs</button>
+                <button class="btn-return" style="width:100%; justify-content:center; border-color:var(--border-strong);" onclick="alert('Aucun autre écran connecté pour le moment.')">Gérer mes terminaux actifs</button>
             </div>
         </div>
     </div>
 
     <script>
-        // Moteur unifié et sécurisé anti-freeze
-        window.logicielManager = {
-            tenantID: 'MASTER_STATE',
-            SERVER_URL: (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1" || window.location.protocol === "file:") 
-                ? "http://localhost:10000" : "https://tableau-system.onrender.com",
+        // 1. Récupération de l'ID du restaurant
+        const urlParams = new URLSearchParams(window.location.search);
+        let tenantID = urlParams.get('tenantID') || localStorage.getItem('ichef_tenant_id') || 'MASTER_STATE';
+        
+        // Affichage du nom dans l'interface
+        document.getElementById('restaurant-name').innerText = tenantID.toUpperCase();
+        localStorage.setItem('ichef_tenant_id', tenantID);
 
-            init: function() {
-                const urlParams = new URLSearchParams(window.location.search);
-                this.tenantID = urlParams.get('tenantID') || localStorage.getItem('ichef_tenant_id') || 'MASTER_STATE';
+        const SERVER_URL = (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1" || window.location.protocol === "file:") 
+            ? "http://localhost:10000" : "https://tableau-system.onrender.com";
+
+        // 2. Fonction qui charge les boutons dynamiquement
+        async function loadConnectedApps() {
+            const container = document.getElementById('apps-container');
+            const planLabel = document.getElementById('plan-label');
+            
+            try {
+                // Interrogation du serveur pour connaître le forfait
+                const res = await fetch(`${SERVER_URL}/api/check-license?tenantID=${tenantID}&_t=${Date.now()}`);
+                const data = await res.json();
                 
-                document.getElementById('restaurant-name').innerText = this.tenantID.toUpperCase();
-                localStorage.setItem('ichef_tenant_id', this.tenantID);
-                document.getElementById('btn-staff-link').href = `admin.html?tenantID=${this.tenantID}&tab=tab-staff`;
-
-                this.chargerCoordonnees();
-                this.loadConnectedApps();
-            },
-
-            chargerCoordonnees: function() {
-                document.getElementById('user-email').value = localStorage.getItem('ichef_email') || "";
-                document.getElementById('user-phone').value = localStorage.getItem('ichef_phone') || "";
-            },
-
-            sauvegarderCoordonnees: function() {
-                const email = document.getElementById('user-email').value;
-                const phone = document.getElementById('user-phone').value;
-                localStorage.setItem('ichef_email', email);
-                localStorage.setItem('ichef_phone', phone);
-                alert("✅ Vos coordonnées de contact ont été mises à jour !");
-            },
-
-            loadConnectedApps: async function() {
-                const container = document.getElementById('apps-container');
-                const planLabel = document.getElementById('plan-label');
-                
-                try {
-                    const res = await fetch(`${this.SERVER_URL}/api/check-license?tenantID=${this.tenantID}&_t=${Date.now()}`);
-                    const data = await res.json();
-                    
-                    if (!data.success || data.status === 'SUSPENDU') {
-                        planLabel.innerText = "SUSPENDU";
-                        container.innerHTML = `<div style="color:var(--alert); text-align:center; font-weight:bold; padding:20px;">⛔ LICENCE SUSPENDUE OU INVALIDE.</div>`;
-                        return;
-                    }
-
-                    const planStr = data.plan ? data.plan.toString().toUpperCase() : 'CHEF';
-                    planLabel.innerText = planStr;
-
-                    let html = '';
-
-                    // 🗺️ DÉCODEUR UNIVERSEL ROBUSTE DE FORFAITS (Mots-clés)
-                    if (planStr.includes('PREMIUM')) {
-                        html += `<a href="admin.html?tenantID=${this.tenantID}" class="app-link-btn">⚙️ Centre de Commandes (Admin)</a>`;
-                        html += `<a href="pack-eco.html?tenantID=${this.tenantID}" class="app-link-btn">📱 Écran Tactile (Caisse)</a>`;
-                        html += `<a href="production.html?tenantID=${this.tenantID}" class="app-link-btn">🖥️ KDS Production (Cuisine)</a>`;
-                        html += `<a href="bar.html?tenantID=${this.tenantID}" class="app-link-btn">🍸 KDS Commandes (Le Bar)</a>`;
-                        html += `<a href="minipass.html?tenantID=${this.tenantID}" class="app-link-btn">📟 Mini-Pass (Serveur)</a>`;
-                        html += `<a href="rh.html?tenantID=${this.tenantID}" class="app-link-btn">👔 Portail RH</a>`;
-                    } 
-                    else if (planStr.includes('ECO') || planStr.includes('BUSINESS') || planStr.includes('RENTABILIT')) {
-                        html += `<a href="admin.html?tenantID=${this.tenantID}" class="app-link-btn">⚙️ Centre de Commandes (Admin)</a>`;
-                        html += `<a href="pack-eco.html?tenantID=${this.tenantID}" class="app-link-btn">📱 Écran Tactile (Caisse)</a>`;
-                        html += `<a href="production.html?tenantID=${this.tenantID}" class="app-link-btn">🖥️ Écran Cuisine (KDS)</a>`;
-                        html += `<a href="bar.html?tenantID=${this.tenantID}" class="app-link-btn">🍸 Écran Pass Bar</a>`;
-                        html += `<a href="menu-qr.html?tenantID=${this.tenantID}" target="_blank" class="app-link-btn">🍽️ Vue sur le menu QR</a>`;
-                    } 
-                    else if (planStr.includes('PATISSIER') || planStr.includes('PÂTISSIER')) {
-                        html += `<a href="chef-patissier.html?tenantID=${this.tenantID}" class="app-link-btn">🍰 Écran Chef Pâtissier</a>`;
-                    } 
-                    else if (planStr.includes('BAR')) {
-                        html += `<a href="chef-bar.html?tenantID=${this.tenantID}" class="app-link-btn">🍸 Écran Chef Barman</a>`;
-                    } 
-                    else if (planStr === 'ICHEF OS' || planStr === 'ICHEF-OS' || planStr === 'ICHEF_OS') {
-                        // Forfait iCHEF OS à 14€ de la Vitrine (Donne accès aux 3 écrans indépendants)
-                        html += `<a href="chef.html?tenantID=${this.tenantID}" class="app-link-btn">👨‍🍳 Écran Chef Cuisine</a>`;
-                        html += `<a href="chef-patissier.html?tenantID=${this.tenantID}" class="app-link-btn">🍰 Écran Chef Pâtissier</a>`;
-                        html += `<a href="chef-bar.html?tenantID=${this.tenantID}" class="app-link-btn">🍸 Écran Chef Barman</a>`;
-                    }
-                    else {
-                        // Forfait de base (CHEF, CHEF_CUISINE)
-                        html += `<a href="chef.html?tenantID=${this.tenantID}" class="app-link-btn">👨‍🍳 Écran Chef Cuisine</a>`;
-                    }
-
-                    container.innerHTML = html;
-
-                } catch (e) {
-                    console.error(e);
-                    planLabel.innerText = "HORS-LIGNE";
-                    container.innerHTML = `
-                        <a href="chef.html?tenantID=${this.tenantID}" class="app-link-btn">👨‍🍳 Écran Local (Mode Secours)</a>
-                        <div style="color:var(--text-muted); text-align:center; font-size:0.8rem; margin-top:10px;">Connexion au cloud interrompue. Utilisation locale.</div>
-                    `;
+                if (!data.success || data.status === 'SUSPENDU') {
+                    planLabel.innerText = "SUSPENDU";
+                    container.innerHTML = `<div style="color:var(--alert); text-align:center; font-weight:bold; padding:20px;">⛔ LICENCE SUSPENDUE OU INVALIDE.</div>`;
+                    return;
                 }
-            },
 
-            modifierPinMaster: function() {
-                let nvPin = prompt("Entrez votre nouveau code PIN Maître (de 4 à 9 chiffres) :");
-                if(nvPin && !isNaN(nvPin) && nvPin.length >= 4 && nvPin.length <= 9) {
-                    localStorage.setItem('ichef_master_pin', nvPin);
-                    alert("✅ Sécurité renforcée ! Code PIN Maître mis à jour avec succès.");
-                } else if (nvPin) {
-                    alert("❌ Code PIN non valide. Il doit contenir entre 4 et 9 chiffres uniquement.");
-                }
-            },
+                const plan = data.plan ? data.plan.toString().toUpperCase() : 'CHEF';
+                planLabel.innerText = plan;
 
-            logout: function() {
-                if(confirm("Voulez-vous vous déconnecter de votre espace ?")) {
-                    window.location.href = "vitrine.html";
-                }
+                // Lien vers la gestion du personnel
+                document.getElementById('btn-staff-link').href = `admin.html?tenantID=${tenantID}`;
+
+                // Création des boutons selon le forfait spécifique
+                let html = '';
+
+            else if (plan === 'CHEF' || plan === 'iCHEF OS'plan === 'Pâtisserie') {
+                    html += `<a href="chef-patissier.html?tenantID=${tenantID}" class="app-link-btn">🍰 ÉCRAN CHEF PÂTISSIER</a>`;
+                } 
+               else if (plan === 'CHEF' || plan === 'iCHEF OS'plan === 'bar') {
+                    html += `<a href="chef-bar.html?tenantID=${tenantID}" class="app-link-btn">🍸 ÉCRAN CHEF BARMAN</a>`;
+                } 
+               else if (plan === 'CHEF' || plan === 'iCHEF OS'plan === 'cuisine) {
+                    html += `<a href="chef.html?tenantID=${tenantID}" class="app-link-btn">👨‍🍳 ÉCRAN CHEF CUISINE</a>`;
+                  }   
+           else if (plan === 'ECO' || plan === 'BUSINESS' || plan === 'Meilleure rentabilité') {
+                appsHtml += `<button class="btn btn-outline" style="border-color: var(--accent); color: var(--accent);" onclick="window.location.href='pack-eco.html?tenantID=' + currentTenantID">💻 pad service</button>`;
+                appsHtml += `<button class="btn btn-outline" style="border-color: #10b981; color: #10b981;" onclick="window.location.href='admin.html?tenantID=' + currentTenantID">⚙️ Administration</button>`;
+                appsHtml += `<button class="btn btn-outline" style="border-color: #a78bfa; color: #a78bfa;" onclick="window.open('menu-qr.html?tenantID=' + currentTenantID, '_blank')">📱Vue sur le menu digital pour les clients</button>`;
+                appsHtml += `<button class="btn btn-outline" style="border-color: #f59e0b; color: #f59e0b;" onclick="window.open('minipass.html?tenantID=' + currentTenantID, '_blank')">🖥️ pass </button>`;
+            } 
+            else if (plan === 'PREMIUM') { 
+                appsHtml += `<button class="btn btn-outline" style="border-color: var(--accent); color: var(--accent);" onclick="window.location.href='pack-eco.html?tenantID=' + currentTenantID">💻 Caisse Principale</button>`;
+                appsHtml += `<button class="btn btn-outline" style="border-color: #10b981; color: #10b981;" onclick="window.location.href='admin.html?tenantID=' + currentTenantID">⚙️ Administration</button>`;
+                // 🔥 NOUVEAU BOUTON KDS AJOUTÉ ICI POUR LE PACK PREMIUM 🔥
+                appsHtml += `<button class="btn btn-outline" style="border-color: #f43f5e; color: #f43f5e;" onclick="window.open('minipass.html?tenantID=' + currentTenantID, '_blank')">🖥️ Pass Production (KDS)</button>`;
+                appsHtml += `<button class="btn btn-outline" style="border-color: #f59e0b; color: #f59e0b;" onclick="window.location.href='chef.html?tenantID=' + currentTenantID">👨‍🍳 Chef Cuisine</button>`;
+                appsHtml += `<button class="btn btn-outline" style="border-color: #3b82f6; color: #3b82f6;" onclick="window.location.href='chef-bar.html?tenantID=' + currentTenantID">🍸 Chef Bar</button>`;
+                appsHtml += `<button class="btn btn-outline" style="border-color: #a78bfa; color: #a78bfa;" onclick="window.open('menu-pure.html?tenantID=' + currentTenantID, '_blank')">📱 Menu Digital Pure</button>`;
+                appsHtml += `<button class="btn btn-outline" style="border-color: #ef4444; color: #ef4444;" onclick="window.open('menu-qr.html?tenantID=' + currentTenantID, '_blank')">📱 Menu QR Salle</button>`;
+                appsHtml += `<button class="btn btn-outline" style="border-color: #60a5fa; color: #60a5fa;" onclick="window.open('menu-bar.html?tenantID=' + currentTenantID, '_blank')">🍹 Menu Bar</button>`;
+                appsHtml += `<button class="btn btn-outline" style="border-color: #ec4899; color: #ec4899;" onclick="window.location.href='rh.html?tenantID=' + currentTenantID">👥 Ressources Humaines (RH)</button>`;
+                appsHtml += `<button class="btn btn-outline" style="border-color: #14b8a6; color: #14b8a6;" onclick="window.location.href='haccp.html?tenantID=' + currentTenantID">🧼 HACCP</button>`;
+                appsHtml += `<button class="btn btn-outline" style="border-color: #8b5cf6; color: #8b5cf6;" onclick="window.location.href='reservation.html?tenantID=' + currentTenantID">📅 Réservations</button>`;
+                appsHtml += `<button class="btn btn-outline" style="border-color: #84cc16; color: #84cc16;" onclick="window.location.href='planning-cuisine.html?tenantID=' + currentTenantID">🗓️ Planning Cuisine</button>`;
             }
-        };
+            
+            document.getElementById('dynamic-apps-list').innerHTML = appsHtml;
+        }
 
-        // Lancement natif sécurisé dès le chargement complet de l'architecture
-        document.addEventListener('DOMContentLoaded', () => {
-            window.logicielManager.init();
-        });
+        // 🔄 BOUTON RETOUR INTELLIGENT MIS À JOUR
+        function goBackToApp() {
+            if(!currentTenantID) return;
+            
+            if (currentPlan === 'CHEF_CUISINE') window.location.href = `chef.html?tenantID=${currentTenantID}`;
+            else if (currentPlan === 'CHEF_PATISSIER') window.location.href = `chef-patissier.html?tenantID=${currentTenantID}`;
+            else if (currentPlan === 'CHEF_BAR') window.location.href = `chef-bar.html?tenantID=${currentTenantID}`;
+            else window.location.href = `admin.html?tenantID=${currentTenantID}`; // Redirection vers admin.html pour ECO, BUSINESS et PREMIUM
+        }
+
+        function logout() {
+            currentTenantID = null;
+            currentPlan = null;
+            document.getElementById('login-id').value = '';
+            document.getElementById('login-pwd').value = '';
+            document.getElementById('login-section').style.display = 'flex';
+            document.getElementById('dashboard-section').style.display = 'none';
+            document.getElementById('btn-logout').style.display = 'none';
+        }
+
+        async function loadData() {
+            try {
+                let r = await fetch(`${SERVER_URL}/get-current-state?tenantID=${currentTenantID}`);
+                let state = await r.json();
+                
+                if(state.activeOrders && state.activeOrders['STAFF_ACCESS']) {
+                    let rawData = state.activeOrders['STAFF_ACCESS'].data || state.activeOrders['STAFF_ACCESS'];
+                    staffList = Array.isArray(rawData) ? rawData : [];
+                }
+                
+                loadDashboardStats();
+                renderDashboardStaff(); 
+            } catch(e) {
+                showMessage("Réseau lent. Données non synchronisées.", true);
+            }
+        }
+
+        function openStaffModal() {
+            renderStaff();
+            document.getElementById('staff-modal').style.display = 'flex';
+        }
+
+        function closeStaffModal() {
+            document.getElementById('staff-modal').style.display = 'none';
+        }
+
+        function renderDashboardStaff() {
+            const container = document.getElementById('dashboard-staff-list');
+            if(staffList.length === 0) {
+                container.innerHTML = `<div style="font-size:0.85rem; color:var(--text-dim); text-align:center; padding:15px; background:rgba(255,255,255,0.02); border-radius:8px;">Aucun collaborateur enregistré.</div>`;
+                return;
+            }
+            container.innerHTML = staffList.map(s => `
+                <div style="display:flex; justify-content:space-between; align-items:center; background:rgba(255,255,255,0.05); padding:10px 15px; border-radius:6px; border: 1px solid rgba(255,255,255,0.05);">
+                    <strong style="color:white; font-size:1rem;">${s.name}</strong>
+                    <span style="color:#a78bfa; font-size:0.8rem; font-weight:bold; text-transform:uppercase;">${s.role}</span>
+                </div>
+            `).join('');
+        }
+
+        function renderStaff() {
+            const container = document.getElementById('staff-list-container');
+            if(staffList.length === 0) {
+                container.innerHTML = `<div style="text-align:center; color:var(--text-dim); padding:30px; background: rgba(255,255,255,0.02); border-radius: 8px;">Aucun collaborateur enregistré.</div>`;
+            } else {
+                container.innerHTML = staffList.map((s, i) => `
+                    <div style="display:flex; justify-content:space-between; align-items:center; background:rgba(255,255,255,0.05); padding:15px 20px; border-radius:8px; border: 1px solid var(--border-color);">
+                        <div>
+                            <div style="font-weight:800; font-size:1.1rem; color:white;">${s.name}</div>
+                            <div style="font-size:0.85rem; color:var(--text-dim); margin-top:5px;">
+                                Rôle: <span style="color:#a78bfa; font-weight:bold; text-transform:uppercase;">${s.role}</span> | PIN: <span style="color:white; font-family:monospace;">${s.pin}</span>
+                            </div>
+                        </div>
+                        <button class="btn-outline" style="border-color:var(--danger); color:var(--danger); padding: 8px 15px; width:auto;" onclick="deleteStaff(${i})">Supprimer</button>
+                    </div>
+                `).join('');
+            }
+            renderDashboardStaff(); 
+        }
+
+        async function addStaff() {
+            const name = document.getElementById('staff-name').value.trim();
+            const role = document.getElementById('staff-role').value.trim();
+            const pin = document.getElementById('staff-pin').value.trim();
+            
+            if(name.length < 3) return showMessage("Veuillez saisir le prénom et le nom complet.", true);
+            if(!role) return showMessage("Veuillez indiquer la fonction/le rôle du collaborateur.", true);
+            
+            const pinRegex = /^\d{4}$/;
+            if(!pinRegex.test(pin)) return showMessage("Le code PIN doit contenir exactement 4 chiffres (ex: 1234).", true);
+            
+            if(staffList.some(s => s.pin === pin)) return showMessage("⚠️ Ce code PIN est déjà utilisé par un autre membre de l'équipe !", true);
+            
+            staffList.push({ id: Date.now(), name: name, role: role, pin: pin, active: true });
+            
+            document.getElementById('staff-name').value = '';
+            document.getElementById('staff-role').value = '';
+            document.getElementById('staff-pin').value = '';
+            
+            renderStaff();
+            await saveStaffToDB();
+        }
+
+        async function deleteStaff(idx) {
+            if(confirm(`Supprimer définitivement l'accès de ${staffList[idx].name} ?`)) {
+                staffList.splice(idx, 1);
+                renderStaff();
+                await saveStaffToDB();
+            }
+        }
+
+        async function saveStaffToDB() {
+            try {
+                await fetch(`${SERVER_URL}/update-order?tenantID=${currentTenantID}`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ tableId: 'STAFF_ACCESS', order: { data: staffList } })
+                });
+                showMessage("Mise à jour du personnel réussie.");
+            } catch(e) {
+                showMessage("Erreur de sauvegarde réseau.", true);
+            }
+        }
+
+        function togglePinVisibility() {
+            const pinInput = document.getElementById('new-pin');
+            const confirmInput = document.getElementById('confirm-pin');
+            const type = pinInput.type === 'password' ? 'text' : 'password';
+            pinInput.type = type; confirmInput.type = type;
+        }
+
+        async function updatePin() {
+            const newPin = document.getElementById('new-pin').value.trim();
+            const confirmPin = document.getElementById('confirm-pin').value.trim();
+            if (!newPin || !confirmPin) return showMessage("Veuillez remplir les deux champs de PIN.", true);
+            if (newPin !== confirmPin) return showMessage("Les codes PIN ne correspondent pas.", true);
+
+            try {
+                const response = await fetch(`${SERVER_URL}/api/update-pin`, {
+                    method: 'POST', headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ tenantID: currentTenantID, newPin: newPin })
+                });
+                const result = await response.json();
+                if (result.success) {
+                    showMessage("Code PIN Maître mis à jour avec succès.");
+                    document.getElementById('new-pin').value = ''; document.getElementById('confirm-pin').value = ''; 
+                    localStorage.setItem('ichef_master_pin', newPin);
+                } else showMessage(result.error || "Impossible de mettre à jour.", true);
+            } catch (err) { showMessage("Erreur réseau.", true); }
+        }
+
+        async function loadDashboardStats() {
+            try {
+                const res = await fetch(`${SERVER_URL}/api/dashboard-info?tenantID=${currentTenantID}`);
+                const data = await res.json();
+                if(data.success) {
+                    document.getElementById('device-count').innerText = `Écrans Actifs : ${data.activeDevices} / ${data.maxScreens}`;
+                }
+            } catch (e) { console.log("Erreur chargement écrans"); }
+        }
+
+        async function killSwitch() {
+            if(!confirm("⚠️ ATTENTION : Cela va forcer la déconnexion de tous vos écrans de caisse actuels. Voulez-vous continuer ?")) return;
+            try {
+                const res = await fetch(`${SERVER_URL}/api/kill-switch`, {
+                    method: 'POST', headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ tenantID: currentTenantID })
+                });
+                const data = await res.json();
+                if (data.success) {
+                    showMessage("Tous les appareils ont été déconnectés.");
+                    loadDashboardStats();
+                } else showMessage("Erreur lors de la révocation.", true);
+            } catch (err) { showMessage("Erreur serveur.", true); }
+        }
+
+        async function openBillingPortal() {
+            try {
+                const res = await fetch(`${SERVER_URL}/api/billing-portal`, {
+                    method: 'POST', headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ tenantID: currentTenantID })
+                });
+                const data = await res.json();
+                if (data.success && data.url) window.location.href = data.url;
+                else showMessage(data.error || "Impossible d'ouvrir le portail.", true);
+            } catch (err) { showMessage("Erreur serveur.", true); }
+        }
+
+        async function downloadCSV() {
+            try {
+                let r = await fetch(`${SERVER_URL}/get-current-state?tenantID=${currentTenantID}`);
+                let state = await r.json();
+                let orders = state.activeOrders || {};
+                
+                let csvContent = "Date,Table/Commande,Article,Quantite,Prix Unitaire\n";
+                let hasData = false;
+
+                for (let key in orders) {
+                    if (key.includes('MASTER') || key.includes('ARCHIVE')) continue;
+                    let order = orders[key];
+                    let items = order.items || (order.data && order.data.items);
+                    if (items && Array.isArray(items)) {
+                        items.forEach(item => {
+                            let price = item.price || item.p || 0;
+                            let name = item.name || item.n || '?';
+                            let qty = item.qty || 1;
+                            csvContent += `${new Date().toLocaleDateString()},${key},"${name}",${qty},${price}\n`;
+                            hasData = true;
+                        });
+                    }
+                }
+
+                if (!hasData) return showMessage("Aucune donnée de vente à exporter.", true);
+
+                const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+                const link = document.createElement("a");
+                const url = URL.createObjectURL(blob);
+                link.setAttribute("href", url);
+                link.setAttribute("download", `Ventes_iChef_${currentTenantID}_${new Date().toLocaleDateString().replace(/\//g, '-')}.csv`);
+                link.style.visibility = 'hidden';
+                document.body.appendChild(link);
+                link.click();
+                document.body.removeChild(link);
+                showMessage("Export CSV réussi.");
+            } catch (e) { showMessage("Erreur lors de la génération du CSV.", true); }
+        }
     </script>
 </body>
 </html>
