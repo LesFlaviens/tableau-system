@@ -38,7 +38,7 @@
         
         /* Table Clients */
         .table-container { background: var(--panel); border: 1px solid var(--border-color); border-radius: 12px; overflow: hidden; overflow-x: auto; }
-        table { width: 100%; border-collapse: collapse; text-align: left; min-width: 1000px; }
+        table { width: 100%; border-collapse: collapse; text-align: left; min-width: 1100px; }
         th { background: rgba(255,255,255,0.02); padding: 15px 20px; color: var(--text-dim); font-size: 0.8rem; text-transform: uppercase; font-weight: 800; letter-spacing: 1px; border-bottom: 1px solid var(--border-color); }
         td { padding: 15px 20px; border-bottom: 1px solid var(--border-color); font-size: 0.95rem; font-weight: 500; }
         tr:last-child td { border-bottom: none; }
@@ -71,25 +71,6 @@
         <p style="color:var(--text-dim); margin-bottom:30px;">Accès restreint au créateur de la solution.</p>
         <input type="password" id="super-pwd-input" placeholder="Clé Maître..." style="max-width: 300px; text-align: center; margin-bottom: 20px; letter-spacing: 2px;">
         <button class="btn btn-primary" style="max-width: 300px; width: 100%;" onclick="verifySuperAdmin()">DÉVERROUILLER</button>
-    </div>
-
-    <div id="add-client-modal" class="modal">
-        <div class="modal-content">
-            <h2>Créer une nouvelle licence</h2>
-            <input type="text" id="new-tenant-id" placeholder="ID Unique (ex: le-bistrot-paris)">
-            <input type="text" id="new-tenant-name" placeholder="Nom de l'établissement">
-            <input type="email" id="new-tenant-email" placeholder="Email du gérant">
-            <input type="text" id="new-tenant-phone" placeholder="Téléphone">
-            <select id="new-tenant-plan">
-                <option value="ECO">Pack ECO (19€/m)</option>
-                <option value="CHEF">Pack BRIGADE (45€/m)</option>
-                <option value="PREMIUM">Pack EXÉCUTIF (99€/m)</option>
-            </select>
-            <div style="display:flex; gap:10px; margin-top: 10px;">
-                <button class="btn" style="background:transparent; border:1px solid var(--border-color); color:white; flex:1;" onclick="closeModal()">Annuler</button>
-                <button class="btn btn-primary" style="flex:2;" onclick="createNewClient()">Générer la licence</button>
-            </div>
-        </div>
     </div>
 
     <div class="navbar">
@@ -126,13 +107,15 @@
                         <th>ID Licence</th>
                         <th>Contact</th>
                         <th>Forfait</th>
-                        <th style="color: var(--accent);">Mot de passe (PIN)</th> <th>Écrans</th>
+                        <th style="color: var(--accent);">Mot de passe (PIN)</th> 
+                        <th>Écrans</th>
+                        <th>Staff Max</th>
                         <th>Statut</th>
                         <th>Actions</th>
                     </tr>
                 </thead>
                 <tbody id="clients-table-body">
-                    <tr><td colspan="8" style="text-align:center; color:var(--text-dim); padding: 30px;">Connexion au serveur...</td></tr>
+                    <tr><td colspan="9" style="text-align:center; color:var(--text-dim); padding: 30px;">Connexion au serveur...</td></tr>
                 </tbody>
             </table>
         </div>
@@ -144,7 +127,6 @@
         ? "http://localhost:10000" 
         : "https://tableau-system.onrender.com";
 
-        // === SÉCURITÉ DU CRÉATEUR ===
         const SUPER_ADMIN_PWD = "MASTER_ICHEF_2026";
 
         function verifySuperAdmin() {
@@ -161,12 +143,11 @@
             if (e.key === 'Enter') verifySuperAdmin();
         });
 
-        // === LIAISON TEMPS RÉEL À LA BASE DE DONNÉES MONGODB ===
         function loadClientsList() {
             fetch(`${SERVER_URL}/api/get-all-tenants-admin`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ masterKey: 'Empire2026' }) // Clé d'accès API
+                body: JSON.stringify({ masterKey: 'Empire2026' })
             })
             .then(res => res.json())
             .then(data => {
@@ -178,7 +159,7 @@
             })
             .catch(err => {
                 console.error("Erreur réseau backend", err);
-                document.getElementById('clients-table-body').innerHTML = `<tr><td colspan="8" style="text-align:center; color:var(--danger); padding:30px;">❌ Impossible de joindre la base de données.</td></tr>`;
+                document.getElementById('clients-table-body').innerHTML = `<tr><td colspan="9" style="text-align:center; color:var(--danger); padding:30px;">❌ Impossible de joindre la base de données.</td></tr>`;
             });
         }
 
@@ -199,7 +180,7 @@
 
             const tbody = document.getElementById('clients-table-body');
             if (clients.length === 0) {
-                tbody.innerHTML = `<tr><td colspan="8" style="text-align:center; color:var(--text-dim); padding: 30px;">Aucun client trouvé dans le Cluster iCHEF.</td></tr>`;
+                tbody.innerHTML = `<tr><td colspan="9" style="text-align:center; color:var(--text-dim); padding: 30px;">Aucun client trouvé dans le Cluster iCHEF.</td></tr>`;
                 return;
             }
 
@@ -214,6 +195,10 @@
 
                 let emailDisplay = c.email || "Non renseigné";
                 let phoneDisplay = c.phone || "Non renseigné";
+
+                // LOGIQUE STAFF MAX : Utilise la DB, ou limite à 1 par défaut pour les petits packs.
+                let defaultStaff = (['CHEF', 'PÂTISSERIE', 'BAR'].includes(c.pack)) ? 1 : 999;
+                let maxStaffDisplay = c.maxStaff ? c.maxStaff : (defaultStaff === 999 ? '∞' : defaultStaff);
 
                 return `
                 <tr>
@@ -238,6 +223,14 @@
                             <button onclick="editScreens('${c.id}', ${c.maxScreens})" style="background:transparent; border:none; cursor:pointer; font-size:0.9rem; padding:0;" title="Ajuster la limite">✏️</button>
                         </div>
                     </td>
+
+                    <td>
+                        <div style="display:flex; align-items:center; gap:10px;">
+                            <span style="font-weight:bold; color: ${maxStaffDisplay === 1 ? 'var(--danger)' : 'var(--success)'};">${maxStaffDisplay}</span>
+                            <button onclick="editMaxStaff('${c.id}', '${maxStaffDisplay}')" style="background:transparent; border:none; cursor:pointer; font-size:0.9rem; padding:0;" title="Ajuster la limite Staff">✏️</button>
+                        </div>
+                    </td>
+
                     <td>${badge}</td>
                     <td>
                         <a class="action-link" onclick="window.open('vitrine.html?tenantID=${c.id}', '_blank')">Accéder</a>
@@ -249,58 +242,50 @@
             }).join('');
         }
 
-        // === ACTIONS DIRECTES SUR LA BASE DE DONNÉES ===
-
-        // MODIFIER LE PIN
         function editPin(tenantID) {
             let newVal = prompt(`Nouveau code PIN Maître pour la licence "${tenantID}" (4 à 6 chiffres) :`);
             if (newVal !== null && newVal.trim() !== "") {
-                fetch(`${SERVER_URL}/api/admin-action`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ masterKey: 'Empire2026', tenantID: tenantID, action: 'set_pin', manualPin: newVal })
-                })
-                .then(res => res.json())
-                .then(data => {
-                    if(data.success) loadClientsList();
-                    else alert("Le serveur a refusé la modification.");
-                });
+                executeAdminAction(tenantID, 'set_pin', { manualPin: newVal });
             }
         }
 
-        // MODIFIER LES ÉCRANS
         function editScreens(tenantID, currentMax) {
             let newVal = prompt(`Modifier le nombre d'écrans maximum autorisés pour la licence "${tenantID}" :`, currentMax);
             if (newVal !== null && newVal.trim() !== "") {
                 let parsed = parseInt(newVal);
-                if (!isNaN(parsed) && parsed > 0) {
-                    fetch(`${SERVER_URL}/api/admin-action`, {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ masterKey: 'Empire2026', tenantID: tenantID, action: 'set_screens', manualScreens: parsed })
-                    })
-                    .then(res => res.json())
-                    .then(data => {
-                        if(data.success) loadClientsList();
-                        else alert("Le serveur a refusé la modification.");
-                    });
-                } else alert("Veuillez entrer un nombre entier supérieur à 0.");
+                if (!isNaN(parsed) && parsed > 0) executeAdminAction(tenantID, 'set_screens', { manualScreens: parsed });
+                else alert("Veuillez entrer un nombre entier supérieur à 0.");
+            }
+        }
+
+        // NOUVELLE FONCTION STAFF MAX
+        function editMaxStaff(tenantID, currentMax) {
+            let newVal = prompt(`Définir le nombre MAXIMUM de collaborateurs (Staff) pour la licence "${tenantID}" (Tapez 999 pour illimité) :`, currentMax === '∞' ? 999 : currentMax);
+            if (newVal !== null && newVal.trim() !== "") {
+                let parsed = parseInt(newVal);
+                if (!isNaN(parsed) && parsed > 0) executeAdminAction(tenantID, 'set_max_staff', { manualMaxStaff: parsed });
+                else alert("Veuillez entrer un nombre entier valide.");
             }
         }
 
         function toggleStatus(tenantID, action) {
-            let msg = action === 'delete' ? "🚨 ACTION IRRÉVERSIBLE : Supprimer définitivement ce client et détruire sa base de données ?" : "Changer le statut réseau de ce client ?";
+            let msg = action === 'delete' ? "🚨 ACTION IRRÉVERSIBLE : Supprimer définitivement ce client ?" : "Changer le statut réseau de ce client ?";
             if(!confirm(msg)) return;
+            executeAdminAction(tenantID, action, {});
+        }
 
+        // Utilitaire pour centraliser les appels API
+        function executeAdminAction(tenantID, action, extraPayload) {
+            let payload = { masterKey: 'Empire2026', tenantID: tenantID, action: action, ...extraPayload };
             fetch(`${SERVER_URL}/api/admin-action`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ masterKey: 'Empire2026', tenantID: tenantID, action: action })
+                body: JSON.stringify(payload)
             })
             .then(res => res.json())
             .then(data => {
                 if(data.success) loadClientsList();
-                else alert("Action refusée.");
+                else alert("Action refusée par le serveur.");
             });
         }
     </script>
