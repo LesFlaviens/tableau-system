@@ -1,4 +1,3 @@
-acac152
 <!DOCTYPE html>
 <html lang="fr">
 <head>
@@ -13,12 +12,16 @@ acac152
             --bg: #050505;
             --panel: #0A0A0A;
             --border: rgba(255, 255, 255, 0.08);
+            --border-strong: rgba(255, 255, 255, 0.2);
             --text-main: #f8fafc;
             --text-muted: #64748b;
+            --text-dim: #94a3b8;
             --gold: #fbbf24;
             --purple: #a78bfa;
             --alert: #ef4444;
+            --danger: #ef4444;
             --shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+            --accent: #38bdf8;
         }
 
         body {
@@ -96,7 +99,7 @@ acac152
             color: var(--text-muted);
             font-size: 1.05rem;
         }
-        .btn-return {
+        .btn-return, .btn-outline {
             background: rgba(255,255,255,0.03);
             border: 1px solid var(--border);
             color: var(--text-main);
@@ -110,7 +113,7 @@ acac152
             gap: 8px;
             transition: 0.3s;
         }
-        .btn-return:hover {
+        .btn-return:hover, .btn-outline:hover {
             border-color: var(--text-main);
         }
 
@@ -151,10 +154,6 @@ acac152
             margin-top: 0;
             margin-bottom: 25px;
         }
-        .card-desc span {
-            color: var(--gold);
-            font-weight: 700;
-        }
 
         /* DYNAMIC APP BUTTONS */
         .apps-list {
@@ -163,7 +162,7 @@ acac152
             gap: 12px;
             width: 100%;
         }
-        .app-link-btn {
+        .app-link-btn, .btn {
             background: rgba(251, 191, 36, 0.05);
             border: 1px solid var(--gold);
             color: var(--gold);
@@ -178,11 +177,11 @@ acac152
             transition: 0.3s;
             box-shadow: 0 4px 10px rgba(0,0,0,0.2);
             display: block;
+            cursor: pointer;
         }
-        .app-link-btn:hover {
+        .app-link-btn:hover, .btn:hover {
             background: var(--gold);
             color: #000;
-            box-shadow: 0 0 20px rgba(251, 191, 36, 0.2);
             transform: translateY(-2px);
         }
 
@@ -224,7 +223,7 @@ acac152
                 <h1>Bienvenue, <span id="restaurant-name">Chargement...</span></h1>
                 <p>Gérez la sécurité et la facturation de votre licence iChef OS.</p>
             </div>
-            <button class="btn-return" onclick="window.history.back()">↩ Retour</button>
+            <button class="btn-return" onclick="goBackToApp()">↩ Retour à l'App</button>
         </div>
 
         <div class="grid-2">
@@ -232,14 +231,17 @@ acac152
                 <h2 class="card-title">🚀 Apps Connectées</h2>
                 <p class="card-desc">Vos modules logiciels selon votre forfait (<span id="plan-label" style="color:var(--gold);">...</span>).</p>
                 
-                <div id="apps-container" class="apps-list">
-                    <div style="color:var(--text-muted); text-align:center; font-style:italic; padding:20px;">Vérification de votre forfait B2B...</div>
+                <div id="dynamic-apps-list" class="apps-list">
+                    <div style="color:var(--text-muted); text-align:center; font-style:italic; padding:20px;">Vérification de votre forfait...</div>
                 </div>
             </div>
 
             <div class="card purple-panel">
                 <h2 class="card-title">👥 Gestion du Personnel</h2>
-                <p class="card-desc" style="margin-bottom: 40px;">Équipe active autorisée sur la caisse :<br><br><span style="color:var(--text-main); font-weight: 500; font-size: 1.1rem;">Aucun collaborateur enregistré.</span></p>
+                <p class="card-desc" style="margin-bottom: 20px;">Équipe active autorisée sur la caisse :</p>
+                <div id="dashboard-staff-list" style="margin-bottom: 20px;">
+                    <span style="color:var(--text-main); font-weight: 500; font-size: 1.1rem;">Aucun collaborateur enregistré.</span>
+                </div>
                 <a href="admin.html?tab=tab-staff" id="btn-staff-link" class="btn-action-purple">AJOUTER / MODIFIER ➔</a>
             </div>
         </div>
@@ -253,31 +255,36 @@ acac152
 
             <div class="card">
                 <h2 class="card-title">📱 Gestion des Écrans</h2>
-                <p class="card-desc">Visualisez et réinitialisez les terminaux (PADs, KDS) connectés sur votre réseau.</p>
-                <button class="btn-return" style="width:100%; justify-content:center; border-color:var(--border-strong);" onclick="alert('Aucun autre écran connecté pour le moment.')">Gérer mes terminaux actifs</button>
+                <p class="card-desc" id="device-count">Écrans Actifs : Chargement...</p>
+                <button class="btn-return" style="width:100%; justify-content:center; border-color:var(--border-strong);" onclick="killSwitch()">Déconnecter tous les terminaux</button>
             </div>
         </div>
     </div>
 
     <script>
-        // 1. Récupération de l'ID du restaurant
+        // 1. Initialisation et Variables Globales
         const urlParams = new URLSearchParams(window.location.search);
         let tenantID = urlParams.get('tenantID') || localStorage.getItem('ichef_tenant_id') || 'MASTER_STATE';
+        let currentPlan = null;
+        let staffList = [];
         
-        // Affichage du nom dans l'interface
         document.getElementById('restaurant-name').innerText = tenantID.toUpperCase();
         localStorage.setItem('ichef_tenant_id', tenantID);
 
         const SERVER_URL = (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1" || window.location.protocol === "file:") 
             ? "http://localhost:10000" : "https://tableau-system.onrender.com";
 
-        // 2. Fonction qui charge les boutons dynamiquement
+        // Utilitaire d'alerte générique
+        function showMessage(msg, isError = false) {
+            alert((isError ? "❌ ERREUR: " : "✅ ") + msg);
+        }
+
+        // 2. Chargement des modules dynamiques
         async function loadConnectedApps() {
-            const container = document.getElementById('apps-container');
+            const container = document.getElementById('dynamic-apps-list');
             const planLabel = document.getElementById('plan-label');
             
             try {
-                // Interrogation du serveur pour connaître le forfait
                 const res = await fetch(`${SERVER_URL}/api/check-license?tenantID=${tenantID}&_t=${Date.now()}`);
                 const data = await res.json();
                 
@@ -287,72 +294,64 @@ acac152
                     return;
                 }
 
-                const plan = data.plan ? data.plan.toString().toUpperCase() : 'CHEF';
-                planLabel.innerText = plan;
+                currentPlan = data.plan ? data.plan.toString().toUpperCase() : 'CHEF';
+                planLabel.innerText = currentPlan;
+                document.getElementById('btn-staff-link').href = `admin.html?tenantID=${tenantID}&tab=tab-staff`;
 
-                // Lien vers la gestion du personnel
-                document.getElementById('btn-staff-link').href = `admin.html?tenantID=${tenantID}`;
+                let appsHtml = '';
 
-                // Création des boutons selon le forfait spécifique
-                let html = '';
-
-            else if (plan === 'CHEF' || plan === 'iCHEF OS' || plan === 'Pâtisserie') {
-                    html += `<a href="chef-patissier.html?tenantID=${tenantID}" class="app-link-btn">🍰 ÉCRAN CHEF PÂTISSIER</a>`;
-            } 
-            else if (plan === 'CHEF' || plan === 'iCHEF OS' || plan === 'bar') {
-                    html += `<a href="chef-bar.html?tenantID=${tenantID}" class="app-link-btn">🍸 ÉCRAN CHEF BARMAN</a>`;
-            } 
-            else if (plan === 'CHEF' || plan === 'iCHEF OS' || plan === 'cuisine) {
-                    html += `<a href="chef.html?tenantID=${tenantID}" class="app-link-btn">👨‍🍳 ÉCRAN CHEF CUISINE</a>`;
-            }   
-           else if (plan === 'ECO' || plan === 'BUSINESS' || plan === 'Meilleure rentabilité') {
-                appsHtml += `<button class="btn btn-outline" style="border-color: var(--accent); color: var(--accent);" onclick="window.location.href='pack-eco.html?tenantID=' + currentTenantID">💻 pad service</button>`;
-                appsHtml += `<button class="btn btn-outline" style="border-color: #10b981; color: #10b981;" onclick="window.location.href='admin.html?tenantID=' + currentTenantID">⚙️ Administration</button>`;
-                appsHtml += `<button class="btn btn-outline" style="border-color: #a78bfa; color: #a78bfa;" onclick="window.open('menu-qr.html?tenantID=' + currentTenantID, '_blank')">📱Vue sur le menu digital pour les clients</button>`;
-                appsHtml += `<button class="btn btn-outline" style="border-color: #f59e0b; color: #f59e0b;" onclick="window.open('minipass.html?tenantID=' + currentTenantID, '_blank')">🖥️ pass </button>`;
-            } 
-            else if (plan === 'PREMIUM') { 
-                appsHtml += `<button class="btn btn-outline" style="border-color: var(--accent); color: var(--accent);" onclick="window.location.href='pack-eco.html?tenantID=' + currentTenantID">💻 Caisse Principale</button>`;
-                appsHtml += `<button class="btn btn-outline" style="border-color: #10b981; color: #10b981;" onclick="window.location.href='admin.html?tenantID=' + currentTenantID">⚙️ Administration</button>`;
-                // 🔥 NOUVEAU BOUTON KDS AJOUTÉ ICI POUR LE PACK PREMIUM 🔥
-                appsHtml += `<button class="btn btn-outline" style="border-color: #f43f5e; color: #f43f5e;" onclick="window.open('minipass.html?tenantID=' + currentTenantID, '_blank')">🖥️ Pass Production (KDS)</button>`;
-                appsHtml += `<button class="btn btn-outline" style="border-color: #f59e0b; color: #f59e0b;" onclick="window.location.href='chef.html?tenantID=' + currentTenantID">👨‍🍳 Chef Cuisine</button>`;
-                appsHtml += `<button class="btn btn-outline" style="border-color: #3b82f6; color: #3b82f6;" onclick="window.location.href='chef-bar.html?tenantID=' + currentTenantID">🍸 Chef Bar</button>`;
-                appsHtml += `<button class="btn btn-outline" style="border-color: #a78bfa; color: #a78bfa;" onclick="window.open('menu-pure.html?tenantID=' + currentTenantID, '_blank')">📱 Menu Digital Pure</button>`;
-                appsHtml += `<button class="btn btn-outline" style="border-color: #ef4444; color: #ef4444;" onclick="window.open('menu-qr.html?tenantID=' + currentTenantID, '_blank')">📱 Menu QR Salle</button>`;
-                appsHtml += `<button class="btn btn-outline" style="border-color: #60a5fa; color: #60a5fa;" onclick="window.open('menu-bar.html?tenantID=' + currentTenantID, '_blank')">🍹 Menu Bar</button>`;
-                appsHtml += `<button class="btn btn-outline" style="border-color: #ec4899; color: #ec4899;" onclick="window.location.href='rh.html?tenantID=' + currentTenantID">👥 Ressources Humaines (RH)</button>`;
-                appsHtml += `<button class="btn btn-outline" style="border-color: #14b8a6; color: #14b8a6;" onclick="window.location.href='haccp.html?tenantID=' + currentTenantID">🧼 HACCP</button>`;
-                appsHtml += `<button class="btn btn-outline" style="border-color: #8b5cf6; color: #8b5cf6;" onclick="window.location.href='reservation.html?tenantID=' + currentTenantID">📅 Réservations</button>`;
-                appsHtml += `<button class="btn btn-outline" style="border-color: #84cc16; color: #84cc16;" onclick="window.location.href='planning-cuisine.html?tenantID=' + currentTenantID">🗓️ Planning Cuisine</button>`;
+                if (currentPlan === 'CHEF' || currentPlan === 'I-CHEF OS' || currentPlan === 'PÂTISSERIE') {
+                    appsHtml += `<a href="chef-patissier.html?tenantID=${tenantID}" class="app-link-btn">🍰 ÉCRAN CHEF PÂTISSIER</a>`;
+                } 
+                else if (currentPlan === 'BAR') {
+                    appsHtml += `<a href="chef-bar.html?tenantID=${tenantID}" class="app-link-btn">🍸 ÉCRAN CHEF BARMAN</a>`;
+                } 
+                else if (currentPlan === 'CUISINE') {
+                    appsHtml += `<a href="chef.html?tenantID=${tenantID}" class="app-link-btn">👨‍🍳 ÉCRAN CHEF CUISINE</a>`;
+                }   
+                else if (currentPlan === 'ECO' || currentPlan === 'BUSINESS' || currentPlan === 'MEILLEURE RENTABILITÉ') {
+                    appsHtml += `<button class="btn btn-outline" style="border-color: var(--accent); color: var(--accent);" onclick="window.location.href='pack-eco.html?tenantID=${tenantID}'">💻 pad service</button>`;
+                    appsHtml += `<button class="btn btn-outline" style="border-color: #10b981; color: #10b981;" onclick="window.location.href='admin.html?tenantID=${tenantID}'">⚙️ Administration</button>`;
+                    appsHtml += `<button class="btn btn-outline" style="border-color: #a78bfa; color: #a78bfa;" onclick="window.open('menu-qr.html?tenantID=${tenantID}', '_blank')">📱 Menu digital</button>`;
+                    appsHtml += `<button class="btn btn-outline" style="border-color: #f59e0b; color: #f59e0b;" onclick="window.open('minipass.html?tenantID=${tenantID}', '_blank')">🖥️ pass</button>`;
+                } 
+                else if (currentPlan === 'PREMIUM') { 
+                    appsHtml += `<button class="btn btn-outline" style="border-color: var(--accent); color: var(--accent);" onclick="window.location.href='pack-eco.html?tenantID=${tenantID}'">💻 Caisse Principale</button>`;
+                    appsHtml += `<button class="btn btn-outline" style="border-color: #10b981; color: #10b981;" onclick="window.location.href='admin.html?tenantID=${tenantID}'">⚙️ Administration</button>`;
+                    appsHtml += `<button class="btn btn-outline" style="border-color: #f43f5e; color: #f43f5e;" onclick="window.open('minipass.html?tenantID=${tenantID}', '_blank')">🖥️ Pass Production (KDS)</button>`;
+                    appsHtml += `<button class="btn btn-outline" style="border-color: #f59e0b; color: #f59e0b;" onclick="window.location.href='chef.html?tenantID=${tenantID}'">👨‍🍳 Chef Cuisine</button>`;
+                    appsHtml += `<button class="btn btn-outline" style="border-color: #3b82f6; color: #3b82f6;" onclick="window.location.href='chef-bar.html?tenantID=${tenantID}'">🍸 Chef Bar</button>`;
+                    appsHtml += `<button class="btn btn-outline" style="border-color: #a78bfa; color: #a78bfa;" onclick="window.open('menu-pure.html?tenantID=${tenantID}', '_blank')">📱 Menu Digital Pure</button>`;
+                    appsHtml += `<button class="btn btn-outline" style="border-color: #ef4444; color: #ef4444;" onclick="window.open('menu-qr.html?tenantID=${tenantID}', '_blank')">📱 Menu QR Salle</button>`;
+                    appsHtml += `<button class="btn btn-outline" style="border-color: #60a5fa; color: #60a5fa;" onclick="window.open('menu-bar.html?tenantID=${tenantID}', '_blank')">🍹 Menu Bar</button>`;
+                    appsHtml += `<button class="btn btn-outline" style="border-color: #ec4899; color: #ec4899;" onclick="window.location.href='rh.html?tenantID=${tenantID}'">👥 Ressources Humaines (RH)</button>`;
+                    appsHtml += `<button class="btn btn-outline" style="border-color: #14b8a6; color: #14b8a6;" onclick="window.location.href='haccp.html?tenantID=${tenantID}'">🧼 HACCP</button>`;
+                    appsHtml += `<button class="btn btn-outline" style="border-color: #8b5cf6; color: #8b5cf6;" onclick="window.location.href='reservation.html?tenantID=${tenantID}'">📅 Réservations</button>`;
+                    appsHtml += `<button class="btn btn-outline" style="border-color: #84cc16; color: #84cc16;" onclick="window.location.href='planning-cuisine.html?tenantID=${tenantID}'">🗓️ Planning Cuisine</button>`;
+                }
+                
+                container.innerHTML = appsHtml;
+            } catch(e) {
+                container.innerHTML = `<div style="color:var(--alert);">Erreur de connexion au serveur.</div>`;
             }
-            
-            document.getElementById('dynamic-apps-list').innerHTML = appsHtml;
         }
 
-        // 🔄 BOUTON RETOUR INTELLIGENT MIS À JOUR
         function goBackToApp() {
-            if(!currentTenantID) return;
-            
-            if (currentPlan === 'CHEF_CUISINE') window.location.href = `chef.html?tenantID=${currentTenantID}`;
-            else if (currentPlan === 'CHEF_PATISSIER') window.location.href = `chef-patissier.html?tenantID=${currentTenantID}`;
-            else if (currentPlan === 'CHEF_BAR') window.location.href = `chef-bar.html?tenantID=${currentTenantID}`;
-            else window.location.href = `admin.html?tenantID=${currentTenantID}`; // Redirection vers admin.html pour ECO, BUSINESS et PREMIUM
+            if(!tenantID) return;
+            if (currentPlan === 'CUISINE' || currentPlan === 'CHEF_CUISINE') window.location.href = `chef.html?tenantID=${tenantID}`;
+            else if (currentPlan === 'PÂTISSERIE' || currentPlan === 'CHEF_PATISSIER') window.location.href = `chef-patissier.html?tenantID=${tenantID}`;
+            else if (currentPlan === 'BAR' || currentPlan === 'CHEF_BAR') window.location.href = `chef-bar.html?tenantID=${tenantID}`;
+            else window.location.href = `admin.html?tenantID=${tenantID}`;
         }
 
         function logout() {
-            currentTenantID = null;
-            currentPlan = null;
-            document.getElementById('login-id').value = '';
-            document.getElementById('login-pwd').value = '';
-            document.getElementById('login-section').style.display = 'flex';
-            document.getElementById('dashboard-section').style.display = 'none';
-            document.getElementById('btn-logout').style.display = 'none';
+            localStorage.removeItem('ichef_tenant_id');
+            window.location.href = 'index.html'; // Redirection ferme vers l'accueil/login
         }
 
         async function loadData() {
             try {
-                let r = await fetch(`${SERVER_URL}/get-current-state?tenantID=${currentTenantID}`);
+                let r = await fetch(`${SERVER_URL}/get-current-state?tenantID=${tenantID}`);
                 let state = await r.json();
                 
                 if(state.activeOrders && state.activeOrders['STAFF_ACCESS']) {
@@ -363,17 +362,8 @@ acac152
                 loadDashboardStats();
                 renderDashboardStaff(); 
             } catch(e) {
-                showMessage("Réseau lent. Données non synchronisées.", true);
+                console.warn("Réseau lent. Données non synchronisées.");
             }
-        }
-
-        function openStaffModal() {
-            renderStaff();
-            document.getElementById('staff-modal').style.display = 'flex';
-        }
-
-        function closeStaffModal() {
-            document.getElementById('staff-modal').style.display = 'none';
         }
 
         function renderDashboardStaff() {
@@ -383,112 +373,45 @@ acac152
                 return;
             }
             container.innerHTML = staffList.map(s => `
-                <div style="display:flex; justify-content:space-between; align-items:center; background:rgba(255,255,255,0.05); padding:10px 15px; border-radius:6px; border: 1px solid rgba(255,255,255,0.05);">
+                <div style="display:flex; justify-content:space-between; align-items:center; background:rgba(255,255,255,0.05); padding:10px 15px; border-radius:6px; border: 1px solid rgba(255,255,255,0.05); margin-bottom:8px;">
                     <strong style="color:white; font-size:1rem;">${s.name}</strong>
                     <span style="color:#a78bfa; font-size:0.8rem; font-weight:bold; text-transform:uppercase;">${s.role}</span>
                 </div>
             `).join('');
         }
 
-        function renderStaff() {
-            const container = document.getElementById('staff-list-container');
-            if(staffList.length === 0) {
-                container.innerHTML = `<div style="text-align:center; color:var(--text-dim); padding:30px; background: rgba(255,255,255,0.02); border-radius: 8px;">Aucun collaborateur enregistré.</div>`;
-            } else {
-                container.innerHTML = staffList.map((s, i) => `
-                    <div style="display:flex; justify-content:space-between; align-items:center; background:rgba(255,255,255,0.05); padding:15px 20px; border-radius:8px; border: 1px solid var(--border-color);">
-                        <div>
-                            <div style="font-weight:800; font-size:1.1rem; color:white;">${s.name}</div>
-                            <div style="font-size:0.85rem; color:var(--text-dim); margin-top:5px;">
-                                Rôle: <span style="color:#a78bfa; font-weight:bold; text-transform:uppercase;">${s.role}</span> | PIN: <span style="color:white; font-family:monospace;">${s.pin}</span>
-                            </div>
-                        </div>
-                        <button class="btn-outline" style="border-color:var(--danger); color:var(--danger); padding: 8px 15px; width:auto;" onclick="deleteStaff(${i})">Supprimer</button>
-                    </div>
-                `).join('');
-            }
-            renderDashboardStaff(); 
-        }
-
-        async function addStaff() {
-            const name = document.getElementById('staff-name').value.trim();
-            const role = document.getElementById('staff-role').value.trim();
-            const pin = document.getElementById('staff-pin').value.trim();
-            
-            if(name.length < 3) return showMessage("Veuillez saisir le prénom et le nom complet.", true);
-            if(!role) return showMessage("Veuillez indiquer la fonction/le rôle du collaborateur.", true);
-            
-            const pinRegex = /^\d{4}$/;
-            if(!pinRegex.test(pin)) return showMessage("Le code PIN doit contenir exactement 4 chiffres (ex: 1234).", true);
-            
-            if(staffList.some(s => s.pin === pin)) return showMessage("⚠️ Ce code PIN est déjà utilisé par un autre membre de l'équipe !", true);
-            
-            staffList.push({ id: Date.now(), name: name, role: role, pin: pin, active: true });
-            
-            document.getElementById('staff-name').value = '';
-            document.getElementById('staff-role').value = '';
-            document.getElementById('staff-pin').value = '';
-            
-            renderStaff();
-            await saveStaffToDB();
-        }
-
-        async function deleteStaff(idx) {
-            if(confirm(`Supprimer définitivement l'accès de ${staffList[idx].name} ?`)) {
-                staffList.splice(idx, 1);
-                renderStaff();
-                await saveStaffToDB();
-            }
-        }
-
-        async function saveStaffToDB() {
-            try {
-                await fetch(`${SERVER_URL}/update-order?tenantID=${currentTenantID}`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ tableId: 'STAFF_ACCESS', order: { data: staffList } })
-                });
-                showMessage("Mise à jour du personnel réussie.");
-            } catch(e) {
-                showMessage("Erreur de sauvegarde réseau.", true);
-            }
-        }
-
-        function togglePinVisibility() {
-            const pinInput = document.getElementById('new-pin');
-            const confirmInput = document.getElementById('confirm-pin');
-            const type = pinInput.type === 'password' ? 'text' : 'password';
-            pinInput.type = type; confirmInput.type = type;
-        }
-
-        async function updatePin() {
-            const newPin = document.getElementById('new-pin').value.trim();
-            const confirmPin = document.getElementById('confirm-pin').value.trim();
-            if (!newPin || !confirmPin) return showMessage("Veuillez remplir les deux champs de PIN.", true);
-            if (newPin !== confirmPin) return showMessage("Les codes PIN ne correspondent pas.", true);
+        async function modifierPinMaster() {
+            const newPin = prompt("Entrez le nouveau code PIN Maître (4 chiffres) :");
+            if (!newPin) return;
+            if (!/^\d{4}$/.test(newPin)) return showMessage("Le code PIN doit contenir exactement 4 chiffres.", true);
 
             try {
                 const response = await fetch(`${SERVER_URL}/api/update-pin`, {
                     method: 'POST', headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ tenantID: currentTenantID, newPin: newPin })
+                    body: JSON.stringify({ tenantID: tenantID, newPin: newPin })
                 });
                 const result = await response.json();
                 if (result.success) {
                     showMessage("Code PIN Maître mis à jour avec succès.");
-                    document.getElementById('new-pin').value = ''; document.getElementById('confirm-pin').value = ''; 
                     localStorage.setItem('ichef_master_pin', newPin);
-                } else showMessage(result.error || "Impossible de mettre à jour.", true);
-            } catch (err) { showMessage("Erreur réseau.", true); }
+                } else {
+                    showMessage(result.error || "Impossible de mettre à jour.", true);
+                }
+            } catch (err) { 
+                showMessage("Erreur réseau.", true); 
+            }
         }
 
         async function loadDashboardStats() {
             try {
-                const res = await fetch(`${SERVER_URL}/api/dashboard-info?tenantID=${currentTenantID}`);
+                const res = await fetch(`${SERVER_URL}/api/dashboard-info?tenantID=${tenantID}`);
                 const data = await res.json();
                 if(data.success) {
                     document.getElementById('device-count').innerText = `Écrans Actifs : ${data.activeDevices} / ${data.maxScreens}`;
                 }
-            } catch (e) { console.log("Erreur chargement écrans"); }
+            } catch (e) { 
+                console.warn("Erreur chargement écrans"); 
+            }
         }
 
         async function killSwitch() {
@@ -496,7 +419,7 @@ acac152
             try {
                 const res = await fetch(`${SERVER_URL}/api/kill-switch`, {
                     method: 'POST', headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ tenantID: currentTenantID })
+                    body: JSON.stringify({ tenantID: tenantID })
                 });
                 const data = await res.json();
                 if (data.success) {
@@ -506,56 +429,11 @@ acac152
             } catch (err) { showMessage("Erreur serveur.", true); }
         }
 
-        async function openBillingPortal() {
-            try {
-                const res = await fetch(`${SERVER_URL}/api/billing-portal`, {
-                    method: 'POST', headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ tenantID: currentTenantID })
-                });
-                const data = await res.json();
-                if (data.success && data.url) window.location.href = data.url;
-                else showMessage(data.error || "Impossible d'ouvrir le portail.", true);
-            } catch (err) { showMessage("Erreur serveur.", true); }
-        }
-
-        async function downloadCSV() {
-            try {
-                let r = await fetch(`${SERVER_URL}/get-current-state?tenantID=${currentTenantID}`);
-                let state = await r.json();
-                let orders = state.activeOrders || {};
-                
-                let csvContent = "Date,Table/Commande,Article,Quantite,Prix Unitaire\n";
-                let hasData = false;
-
-                for (let key in orders) {
-                    if (key.includes('MASTER') || key.includes('ARCHIVE')) continue;
-                    let order = orders[key];
-                    let items = order.items || (order.data && order.data.items);
-                    if (items && Array.isArray(items)) {
-                        items.forEach(item => {
-                            let price = item.price || item.p || 0;
-                            let name = item.name || item.n || '?';
-                            let qty = item.qty || 1;
-                            csvContent += `${new Date().toLocaleDateString()},${key},"${name}",${qty},${price}\n`;
-                            hasData = true;
-                        });
-                    }
-                }
-
-                if (!hasData) return showMessage("Aucune donnée de vente à exporter.", true);
-
-                const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
-                const link = document.createElement("a");
-                const url = URL.createObjectURL(blob);
-                link.setAttribute("href", url);
-                link.setAttribute("download", `Ventes_iChef_${currentTenantID}_${new Date().toLocaleDateString().replace(/\//g, '-')}.csv`);
-                link.style.visibility = 'hidden';
-                document.body.appendChild(link);
-                link.click();
-                document.body.removeChild(link);
-                showMessage("Export CSV réussi.");
-            } catch (e) { showMessage("Erreur lors de la génération du CSV.", true); }
-        }
+        // Lancement initial
+        window.onload = () => {
+            loadConnectedApps();
+            loadData();
+        };
     </script>
 </body>
 </html>
