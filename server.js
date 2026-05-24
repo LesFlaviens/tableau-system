@@ -61,7 +61,7 @@ app.post('/webhook', express.raw({type: 'application/json'}), async (req, res) =
                         config: { stripeCustomerId: session.customer } 
                     },
                     $setOnInsert: { 
-                        plan: "PREMIUM", 
+                        plan: "BRIGADE", // Mise à jour par défaut vers le nouveau pack
                         maxScreens: 50, 
                         pin: Math.floor(1000 + Math.random() * 9000).toString() 
                     }
@@ -85,10 +85,11 @@ const tenantSchema = new mongoose.Schema({
     email: String,
     phone: String,
     status: { type: String, enum: ['ACTIF', 'SUSPENDU'], default: 'ACTIF' },
-    plan: { type: String, enum: ['CHEF', 'ECO', 'BUSINESS', 'PREMIUM'], default: 'ECO' },
+    // 🚨 NOUVEAUX PACKS INTÉGRÉS ICI
+    plan: { type: String, enum: ['CHEF_CUISINE', 'CHEF_PATISSERIE', 'CHEF_BAR', 'RENTABILITE', 'BRIGADE'], default: 'RENTABILITE' },
     specialite: { type: String, enum: ['cuisine', 'patisserie', 'bar'], default: 'cuisine' },
     pin: { type: String, default: '9999' }, 
-    maxScreens: { type: Number, default: 2 }, 
+    maxScreens: { type: Number, default: 5 }, 
     maxStaff: { type: Number, default: 999 }, // Ajout de la limite du personnel
     registeredDevices: [String], 
     config: { stripeCustomerId: String }
@@ -220,16 +221,25 @@ app.post('/api/activate', async (req, res) => {
         if (existingTenant) return res.status(400).json({ error: "Identifiant déjà pris." });
 
         const randomPin = Math.floor(1000 + Math.random() * 9000).toString();
-        const finalPlan = plan || 'ECO';
+        const finalPlan = plan || 'RENTABILITE';
         const finalSpec = specialite || 'cuisine';
 
-        // 👑 GESTION DES LIMITES D'ÉCRANS ET STAFF SELON LE FORFAIT
-        let limit = 2; 
-        let staffLimit = 999;
-        if (finalPlan === 'CHEF') { limit = 1; staffLimit = 1; }        
-        if (finalPlan === 'ECO') { limit = 2; staffLimit = 999; }     
-        if (finalPlan === 'BUSINESS') { limit = 5; staffLimit = 999; }  
-        if (finalPlan === 'PREMIUM') { limit = 50; staffLimit = 999; }  
+        // 👑 GESTION STRICTE DES LIMITES iCHEF OS
+        let limit = 1; 
+        let staffLimit = 1;
+
+        if (finalPlan === 'CHEF_CUISINE' || finalPlan === 'CHEF_PATISSERIE' || finalPlan === 'CHEF_BAR') { 
+            limit = 1; 
+            staffLimit = 1; 
+        } 
+        else if (finalPlan === 'RENTABILITE') { 
+            limit = 5; 
+            staffLimit = 999; 
+        } 
+        else if (finalPlan === 'BRIGADE') { 
+            limit = 50; 
+            staffLimit = 999; 
+        } 
 
         await Tenant.create({ 
             tenantID, clientName, email, phone, status: 'ACTIF', 
@@ -481,12 +491,23 @@ app.post('/api/admin-action', async (req, res) => {
             await Tenant.findOneAndUpdate({ tenantID }, { pin: manualPin.trim(), registeredDevices: [] });
         }
         else if (action === 'set_plan' && newPlan) { 
-            let limit = 2; 
-            let staffLimit = 999;
-            if (newPlan === 'CHEF') { limit = 1; staffLimit = 1; } 
-            if (newPlan === 'ECO') { limit = 2; staffLimit = 999; } 
-            if (newPlan === 'BUSINESS') { limit = 5; staffLimit = 999; } 
-            if (newPlan === 'PREMIUM') { limit = 50; staffLimit = 999; } 
+            // 👑 GESTION STRICTE DES LIMITES iCHEF OS VIA LA TOUR
+            let limit = 1; 
+            let staffLimit = 1;
+            
+            if (newPlan === 'CHEF_CUISINE' || newPlan === 'CHEF_PATISSERIE' || newPlan === 'CHEF_BAR') { 
+                limit = 1; 
+                staffLimit = 1; 
+            } 
+            else if (newPlan === 'RENTABILITE') { 
+                limit = 5; 
+                staffLimit = 999; 
+            } 
+            else if (newPlan === 'BRIGADE') { 
+                limit = 50; 
+                staffLimit = 999; 
+            } 
+            
             await Tenant.findOneAndUpdate({ tenantID }, { plan: newPlan, maxScreens: limit, maxStaff: staffLimit });
         }
         else if (action === 'reset_devices') {
