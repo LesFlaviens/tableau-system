@@ -61,8 +61,8 @@ app.post('/webhook', express.raw({type: 'application/json'}), async (req, res) =
                         config: { stripeCustomerId: session.customer } 
                     },
                     $setOnInsert: { 
-                        plan: "BRIGADE", // Mise à jour par défaut vers le nouveau pack
-                        maxScreens: 50, 
+                        plan: "RENTABILITE", // Mise à jour par défaut
+                        maxScreens: 5, 
                         pin: Math.floor(1000 + Math.random() * 9000).toString() 
                     }
                 },
@@ -85,12 +85,16 @@ const tenantSchema = new mongoose.Schema({
     email: String,
     phone: String,
     status: { type: String, enum: ['ACTIF', 'SUSPENDU'], default: 'ACTIF' },
-    // 🚨 NOUVEAUX PACKS INTÉGRÉS ICI
-    plan: { type: String, enum: ['CHEF_CUISINE', 'CHEF_PATISSERIE', 'CHEF_BAR', 'RENTABILITE', 'BRIGADE'], default: 'RENTABILITE' },
-    specialite: { type: String, enum: ['cuisine', 'patisserie', 'bar'], default: 'cuisine' },
+    // 🚨 ENUM TRÈS PERMISSIF POUR NE JAMAIS CRASHER LORS DU PAIEMENT
+    plan: { 
+        type: String, 
+        enum: ['CHEF_CUISINE', 'CHEF_PATISSERIE', 'CHEF_BAR', 'ICHEF_OS', 'RENTABILITE', 'BRIGADES', 'BUSINESS', 'ECO', 'PREMIUM', 'CHEF'], 
+        default: 'RENTABILITE' 
+    },
+    specialite: { type: String, default: 'cuisine' },
     pin: { type: String, default: '9999' }, 
     maxScreens: { type: Number, default: 5 }, 
-    maxStaff: { type: Number, default: 999 }, // Ajout de la limite du personnel
+    maxStaff: { type: Number, default: 999 },
     registeredDevices: [String], 
     config: { stripeCustomerId: String }
 });
@@ -221,22 +225,23 @@ app.post('/api/activate', async (req, res) => {
         if (existingTenant) return res.status(400).json({ error: "Identifiant déjà pris." });
 
         const randomPin = Math.floor(1000 + Math.random() * 9000).toString();
-        const finalPlan = plan || 'RENTABILITE';
+        // Remplacement espaces pour correspondre à l'enum de la BDD
+        const finalPlan = plan ? plan.toUpperCase().replace(' ', '_') : 'RENTABILITE';
         const finalSpec = specialite || 'cuisine';
 
-        // 👑 GESTION STRICTE DES LIMITES iCHEF OS
+        // 👑 GESTION STRICTE DES LIMITES iCHEF OS 
         let limit = 1; 
         let staffLimit = 1;
 
-        if (finalPlan === 'CHEF_CUISINE' || finalPlan === 'CHEF_PATISSERIE' || finalPlan === 'CHEF_BAR') { 
+        if (finalPlan === 'CHEF_CUISINE' || finalPlan === 'CHEF_PATISSERIE' || finalPlan === 'CHEF_BAR' || finalPlan === 'ICHEF_OS') { 
             limit = 1; 
             staffLimit = 1; 
         } 
-        else if (finalPlan === 'RENTABILITE') { 
+        else if (finalPlan === 'RENTABILITE' || finalPlan === 'BUSINESS' || finalPlan === 'ECO') { 
             limit = 5; 
             staffLimit = 999; 
         } 
-        else if (finalPlan === 'BRIGADE') { 
+        else if (finalPlan === 'BRIGADES' || finalPlan === 'PREMIUM') { 
             limit = 50; 
             staffLimit = 999; 
         } 
@@ -250,7 +255,8 @@ app.post('/api/activate', async (req, res) => {
         await AppState.create({ tenantID, activeOrders: {} });
         res.json({ success: true, dedicatedPin: randomPin });
     } catch (error) { 
-        res.status(500).json({ error: "Erreur BDD." }); 
+        console.error("Erreur d'activation:", error);
+        res.status(500).json({ error: "Erreur BDD ou nom de forfait invalide." }); 
     }
 });
 
@@ -468,7 +474,7 @@ app.post('/api/get-all-tenants-admin', async (req, res) => {
             specialite: t.specialite,
             pin: t.pin,
             maxScreens: t.maxScreens, 
-            maxStaff: t.maxStaff, // Remonté pour l'affichage de la Tour
+            maxStaff: t.maxStaff,
             activeScreens: t.registeredDevices ? t.registeredDevices.length : 0, 
             status: t.status
         }));
@@ -495,15 +501,15 @@ app.post('/api/admin-action', async (req, res) => {
             let limit = 1; 
             let staffLimit = 1;
             
-            if (newPlan === 'CHEF_CUISINE' || newPlan === 'CHEF_PATISSERIE' || newPlan === 'CHEF_BAR') { 
+            if (newPlan === 'CHEF_CUISINE' || newPlan === 'CHEF_PATISSERIE' || newPlan === 'CHEF_BAR' || newPlan === 'ICHEF_OS') { 
                 limit = 1; 
                 staffLimit = 1; 
             } 
-            else if (newPlan === 'RENTABILITE') { 
+            else if (newPlan === 'RENTABILITE' || newPlan === 'BUSINESS' || newPlan === 'ECO') { 
                 limit = 5; 
                 staffLimit = 999; 
             } 
-            else if (newPlan === 'BRIGADE') { 
+            else if (newPlan === 'BRIGADES' || newPlan === 'PREMIUM') { 
                 limit = 50; 
                 staffLimit = 999; 
             } 
