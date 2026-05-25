@@ -1,9 +1,6 @@
 <!DOCTYPE html>
 <html lang="fr">
 <head>
-<!DOCTYPE html>
-<html lang="fr">
-<head>
     <script>
         // 🛡️ SÉCURITÉ COMPTOIR : N'accepte QUE le Barman ou les gros packs
         (async function enforceSecurity() {
@@ -66,6 +63,92 @@
     </style>
 </head>
 <body>
+
+    <header>
+        <h1><span>iCHEF.</span> COMPTOIR BARMAN</h1>
+        <div style="display:flex; gap:12px; align-items:center;">
+            <span id="kds-count" style="font-size:0.8rem; font-weight:bold; border:1px solid var(--border); padding:6px 12px; border-radius:4px;">0 BOISSONS</span>
+            <a class="btn-top" id="back-link" href="administration.html">↩ Portail</a>
+        </div>
+    </header>
+
+    <div class="kds-grid" id="kds-container">
+        <div id="kds-empty">Aucun bon de commande de boissons pour le moment.</div>
+    </div>
+
+    <script>
+        const SERVER_URL = (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1" || window.location.protocol === "file:") 
+            ? "http://localhost:10000" : "https://tableau-system.onrender.com";
+
+        const tenantID = localStorage.getItem('ichef_tenant_id');
+        let activeTickets = [];
+
+        function initKDS() {
+            if(tenantID) { document.getElementById('back-link').href = `administration.html?tenantID=${tenantID}`; }
+            fetchOrders();
+            setInterval(fetchOrders, 4000);
+        }
+
+        async function fetchOrders() {
+            try {
+                let r = await fetch(`${SERVER_URL}/get-current-state?tenantID=${tenantID}`);
+                let state = await r.json();
+                let archiveVentes = state.activeOrders?.['SALES_ARCHIVE_CUISINE']?.data || [];
+                
+                // Filtrage temporel standard h24 (30 dernières minutes)
+                activeTickets = archiveVentes.filter(t => {
+                    let diff = Date.now() - new Date(t.time).getTime();
+                    return diff < (30 * 60 * 1000); 
+                });
+
+                renderKDS();
+            } catch(e) { console.error("Erreur Synchro Bar"); }
+        }
+
+        function renderKDS() {
+            const container = document.getElementById('kds-container');
+            const counter = document.getElementById('kds-count');
+            
+            if(activeTickets.length === 0) {
+                container.innerHTML = `<div id="kds-empty">Aucun bon de commande de boissons pour le moment.</div>`;
+                counter.innerText = "0 BOISSONS";
+                return;
+            }
+
+            counter.innerText = `${activeTickets.length} ENVOI${activeTickets.length > 1 ? 'S' : ''}`;
+            
+            container.innerHTML = activeTickets.map((ticket, index) => {
+                let minutesPassed = Math.floor((Date.now() - new Date(ticket.time).getTime()) / 60000);
+                return `
+                    <div class="ticket-card">
+                        <div class="ticket-header">
+                            <span class="ticket-table">TABLE : ${ticket.table}</span>
+                            <span class="ticket-time">${minutesPassed} min</span>
+                        </div>
+                        <div class="ticket-body">
+                            ${ticket.items.map(line => `
+                                <div class="line-item">
+                                    <span><span class="line-qte">${line.qte}x</span> ${line.name}</span>
+                                </div>
+                            `).join('')}
+                        </div>
+                        <div class="ticket-footer">
+                            <button class="btn-done" onclick="archiverTicket(${index})">✓ Servir</button>
+                        </div>
+                    </div>
+                `;
+            }).join('');
+        }
+
+        function archiverTicket(index) {
+            activeTickets.splice(index, 1);
+            renderKDS();
+        }
+
+        window.onload = initKDS;
+    </script>
+</body>
+</html>
 
     <header>
         <h1><span>iCHEF.</span> COMPTOIR BARMAN</h1>
