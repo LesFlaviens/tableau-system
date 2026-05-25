@@ -65,6 +65,31 @@ app.post('/webhook', express.raw({type: 'application/json'}), async (req, res) =
             console.log(`💰 PAIEMENT REÇU ! Sécurisation de la licence en arrière-plan...`);
             try {
                 const tenantID = session.client_reference_id || "client_attente_" + Date.now();
+                
+                // 🕵️ DÉTECTION INTELLIGENTE DU FORFAIT SELON LE PRIX PAYÉ
+                let planAchete = "BUSINESS";
+                let limitScreens = 5;
+                let limitStaff = 999;
+
+                // session.amount_total est en centimes (ex: 4500 = 45.00€)
+                if (session.amount_total === 1900) {
+                    planAchete = "CHEF"; 
+                    limitScreens = 1; 
+                    limitStaff = 1;
+                } else if (session.amount_total === 4500) {
+                    planAchete = "BUSINESS"; 
+                    limitScreens = 5; 
+                    limitStaff = 999;
+                } else if (session.amount_total === 12900) {
+                    planAchete = "BRIGADE"; 
+                    limitScreens = 50; 
+                    limitStaff = 999;
+                } 
+                else if (session.metadata && session.metadata.plan) {
+                    planAchete = session.metadata.plan.toUpperCase();
+                }
+
+                // 💾 Enregistrement exact dans MongoDB
                 await Tenant.updateOne(
                     { tenantID: tenantID },
                     { 
@@ -73,8 +98,9 @@ app.post('/webhook', express.raw({type: 'application/json'}), async (req, res) =
                             config: { stripeCustomerId: session.customer } 
                         },
                         $setOnInsert: { 
-                            plan: "BUSINESS", 
-                            maxScreens: 5, 
+                            plan: planAchete, 
+                            maxScreens: limitScreens, 
+                            maxStaff: limitStaff,
                             pin: Math.floor(1000 + Math.random() * 9000).toString() 
                         }
                     },
@@ -362,6 +388,7 @@ app.post('/api/billing-portal', async (req, res) => {
         res.json({ success: true, url: session.url });
     } catch (e) { res.status(500).json({ success: false }); }
 });
+
 // ==========================================
 // 🆘 GESTION DES ALERTES SUPPORT (SOS)
 // ==========================================
