@@ -282,23 +282,24 @@ app.get('/api/check-license', async (req, res) => {
     } catch (e) { res.status(500).json({ success: false }); }
 });
 
-// 🛠️ ROUTE CORRIGÉE : COMPARAISON DE FORMAT TEXTE BLINDÉE ANTI-BUG 
+// 🛠️ ROUTE CORRIGÉE : RECHERCHE INSENSIBLE AUX MAJUSCULES/MINUSCULES
 app.post('/api/verify-pin', async (req, res) => {
     const { tenantID, pin, deviceId } = req.body;
     try {
-        const tenant = await Tenant.findOne({ tenantID });
+        // L'astuce est ici : RegExp permet de trouver 'PATEU' même si enregistré 'pateu' dans la BDD
+        const tenant = await Tenant.findOne({ tenantID: new RegExp(`^${tenantID}$`, 'i') });
+        
         if (!tenant) return res.status(404).json({ success: false, error: "Identifiant inconnu." });
         if (tenant.status === 'SUSPENDU') return res.status(403).json({ success: false, error: "Licence suspendue." });
 
-        // Force la conversion au format Texte (String) et nettoie les espaces vides des deux côtés
         if (String(tenant.pin).trim() === String(pin).trim()) { 
-            // 🛑 VÉRIFICATION FACULTATIVE DU DEVICE (Seulement si fourni par l'app tablette/caisse)
+            // VÉRIFICATION FACULTATIVE DU DEVICE
             if (deviceId) {
                 if (!tenant.registeredDevices.includes(deviceId)) {
                     if (tenant.registeredDevices.length >= tenant.maxScreens) {
                         return res.status(403).json({ 
                             success: false, 
-                            error: `🛑 Limite atteinte ! Votre forfait autorise ${tenant.maxScreens} écran(s) maximum. Veuillez libérer une connexion depuis l'administration.` 
+                            error: `🛑 Limite atteinte ! Votre forfait autorise ${tenant.maxScreens} écran(s) maximum.` 
                         });
                     }
                     tenant.registeredDevices.push(deviceId);
