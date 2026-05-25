@@ -55,6 +55,19 @@
         .action-link { color: var(--accent); text-decoration: none; font-weight: 600; font-size: 0.85rem; cursor: pointer; margin-right: 15px; transition: 0.2s;}
         .action-link:hover { color: white; }
         .action-danger { color: var(--danger); }
+
+        /* SÉLECTEUR DE FORFAITS INTÉGRÉ */
+        .plan-selector {
+            background: #111 !important; border: 1px solid var(--border-color) !important;
+            padding: 8px 12px; border-radius: 6px; font-weight: 800; font-size: 0.75rem;
+            outline: none; cursor: pointer; transition: 0.2s; text-transform: uppercase;
+            color: var(--text-main); font-family: 'Inter', sans-serif;
+        }
+        .plan-selector[data-plan="CHEF"] { color: #38bdf8; border-color: rgba(56, 189, 248, 0.3) !important; }
+        .plan-selector[data-plan="PATISSIER"] { color: #fda4af; border-color: rgba(253, 164, 175, 0.3) !important; }
+        .plan-selector[data-plan="BAR"] { color: #34d399; border-color: rgba(52, 211, 153, 0.3) !important; }
+        .plan-selector[data-plan="BUSINESS"] { color: var(--warning); border-color: rgba(245, 158, 11, 0.3) !important; }
+        .plan-selector[data-plan="BRIGADE"] { color: var(--accent); border-color: rgba(139, 92, 246, 0.3) !important; }
         
         /* Login Overlay */
         #super-login-overlay { position:fixed; top:0; left:0; width:100%; height:100%; background:var(--bg); z-index:99999; display:flex; flex-direction:column; align-items:center; justify-content:center; padding: 20px; box-sizing: border-box; }
@@ -145,16 +158,15 @@
         ? "http://localhost:10000" 
         : "https://tableau-system.onrender.com";
 
-        let MASTER_KEY = ""; // Stockée en mémoire après déverrouillage
+        let MASTER_KEY = "";
 
         // === 1. SÉCURITÉ DU CRÉATEUR ===
         function verifySuperAdmin() {
             const pwd = document.getElementById('super-pwd-input').value;
             if (!pwd) return alert("Veuillez entrer la Clé Maître.");
             
-            MASTER_KEY = pwd; // On enregistre la clé pour les futurs appels API
+            MASTER_KEY = pwd;
 
-            // Premier test d'authentification en récupérant les clients
             fetch(`${SERVER_URL}/api/get-all-tenants-admin`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -163,10 +175,9 @@
             .then(res => res.json())
             .then(data => {
                 if(data.success) {
-                    // Authentification réussie
                     document.getElementById('super-login-overlay').style.display = 'none';
                     renderClients(data.tenants);
-                    loadAlerts(); // Charge le support technique
+                    loadAlerts();
                 } else {
                     alert("Clé Maître incorrecte ou accès refusé.");
                     MASTER_KEY = "";
@@ -205,7 +216,6 @@
 
             tbody.innerHTML = alerts.map(a => {
                 let dateFormatee = new Date(a.timestamp).toLocaleString('fr-FR');
-                // Détecte si c'est une urgence absolue pour la couleur du badge
                 let badgeClass = a.type.includes('URGENCE') ? 'badge-suspended' : 'badge-warning';
 
                 return `
@@ -235,7 +245,6 @@
             });
         }
 
-        // Auto-rafraîchissement des alertes toutes les 30 secondes
         setInterval(() => {
             if(MASTER_KEY && document.getElementById('super-login-overlay').style.display === 'none') {
                 loadAlerts();
@@ -261,16 +270,16 @@
             const activeClients = clients.filter(c => c.status === 'ACTIF');
             const suspendedClients = clients.filter(c => c.status === 'SUSPENDU');
             
-            // 💰 CALCULATEUR MRR OPTIMISÉ POUR TES NOUVEAUX FORFAITS
+            // 💰 CALCULATEUR MRR OPTIMISÉ POUR TES MOTS EXACTS
             let totalMrr = 0;
             activeClients.forEach(c => {
-                const plan = c.pack ? c.pack.toUpperCase() : '';
-                if(plan.includes('PREMIUM') || plan.includes('BRIGADES')) {
+                const plan = (c.plan || c.pack || 'CHEF').toUpperCase();
+                if(plan.includes('BRIGADE') || plan.includes('EMPIRE')) {
                     totalMrr += 129;
-                } else if (plan.includes('BUSINESS') || plan.includes('RENTABILITE') || plan.includes('ECO')) {
+                } else if (plan.includes('BUSINESS')) {
                     totalMrr += 45;
                 } else {
-                    totalMrr += 19; // Tous les packs unitaires (CHEF_CUISINE, CHEF_BAR, ICHEF_OS...)
+                    totalMrr += 19; // CHEF, PATISSIER, BAR
                 }
             });
 
@@ -295,31 +304,41 @@
 
                 let emailDisplay = c.email || "Non renseigné";
                 let phoneDisplay = c.phone || "Non renseigné";
-
                 let maxStaffDisplay = c.maxStaff === 999 ? '∞' : c.maxStaff;
                 let maxStaffColor = c.maxStaff === 1 ? 'var(--warning)' : 'var(--success)';
 
+                // Récupération du plan exact pour le menu déroulant
+                let currentPlan = (c.plan || c.pack || 'CHEF').toUpperCase();
+
                 return `
                 <tr>
-                    <td><strong style="color:white; font-size:1.05rem;">${c.name}</strong></td>
-                    <td style="font-family:monospace; color:var(--accent); font-weight:600;">${c.id}</td>
+                    <td><strong style="color:white; font-size:1.05rem;">${c.name || 'Inconnu'}</strong></td>
+                    <td style="font-family:monospace; color:var(--text-dim); font-weight:600;">${c.id}</td>
                     <td>
                         <div style="font-size:0.85rem; color:white;">📩 ${emailDisplay}</div>
                         <div style="font-size:0.85rem; color:var(--text-dim); margin-top:4px;">📞 ${phoneDisplay}</div>
                     </td>
-                    <td><span style="font-weight:800; color:var(--accent);">${c.pack}</span></td>
+                    <td>
+                        <select class="plan-selector" data-plan="${currentPlan}" onchange="updateTenantPlan('${c.id}', this.value, this)">
+                            <option value="CHEF" ${currentPlan === 'CHEF' ? 'selected' : ''}>👨‍🍳 Chef Cuisine (19€)</option>
+                            <option value="PATISSIER" ${currentPlan === 'PATISSIER' ? 'selected' : ''}>🍰 Chef Pâtissier (19€)</option>
+                            <option value="BAR" ${currentPlan === 'BAR' ? 'selected' : ''}>🍸 Chef Barman (19€)</option>
+                            <option value="BUSINESS" ${currentPlan === 'BUSINESS' ? 'selected' : ''}>💻 Business (45€)</option>
+                            <option value="BRIGADE" ${currentPlan === 'BRIGADE' ? 'selected' : ''}>🏰 Brigade (129€)</option>
+                        </select>
+                    </td>
                     
                     <td>
                         <div style="display:flex; align-items:center; gap:10px;">
-                            <span style="font-family:monospace; font-size:1.1rem; color:white; background:rgba(255,255,255,0.1); padding:4px 8px; border-radius:4px;">${c.pin}</span>
+                            <span style="font-family:monospace; font-size:1.1rem; color:white; background:rgba(255,255,255,0.1); padding:4px 8px; border-radius:4px;">${c.pin || '----'}</span>
                             <button onclick="editPin('${c.id}')" style="background:transparent; border:none; cursor:pointer; font-size:1rem; padding:0;" title="Modifier le PIN du client">✏️</button>
                         </div>
                     </td>
 
                     <td>
                         <div style="display:flex; align-items:center; gap:10px;">
-                            <span style="font-weight:bold;">${c.activeScreens} / ${c.maxScreens}</span>
-                            <button onclick="editScreens('${c.id}', ${c.maxScreens})" style="background:transparent; border:none; cursor:pointer; font-size:0.9rem; padding:0;" title="Ajuster la limite d'écrans">✏️</button>
+                            <span style="font-weight:bold;">${c.activeScreens || 0} / ${c.maxScreens || 1}</span>
+                            <button onclick="editScreens('${c.id}', ${c.maxScreens || 1})" style="background:transparent; border:none; cursor:pointer; font-size:0.9rem; padding:0;" title="Ajuster la limite d'écrans">✏️</button>
                             <button onclick="resetDevices('${c.id}')" style="background:transparent; border:none; cursor:pointer; font-size:0.9rem; padding:0;" title="Forcer la déconnexion de tous les écrans (Kill Switch)">🔌</button>
                         </div>
                     </td>
@@ -333,7 +352,7 @@
 
                     <td>${badge}</td>
                     <td>
-                        <a class="action-link" onclick="window.open('connexionpartenaire.html?tenantID=${c.id}', '_blank')">Accéder</a>
+                        <a class="action-link" onclick="window.open('administration.html?tenantID=${c.id}', '_blank')">Accéder</a>
                         ${toggleAction}
                         <a class="action-link action-danger" onclick="toggleStatus('${c.id}', 'delete')">Supprimer</a>
                     </td>
@@ -343,6 +362,35 @@
         }
 
         // === 4. ACTIONS DE MODIFICATION ===
+        async function updateTenantPlan(tenantID, newPlan, selectElement) {
+            if(!MASTER_KEY) return alert("Non autorisé. Clé manquante.");
+            selectElement.style.opacity = "0.4";
+            
+            try {
+                let res = await fetch(`${SERVER_URL}/api/update-plan-admin`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        masterKey: MASTER_KEY,
+                        tenantID: tenantID,
+                        newPlan: newPlan
+                    })
+                });
+                let data = await res.json();
+                
+                if(data.success) {
+                    selectElement.setAttribute('data-plan', newPlan);
+                    alert(`✅ Forfait de "${tenantID}" modifié avec succès vers : ${newPlan}`);
+                    loadClientsList(); // Recharge pour recalculer le MRR en haut de l'écran
+                } else { 
+                    alert("❌ Erreur de mise à jour."); 
+                }
+            } catch(e) { 
+                alert("❌ Serveur injoignable."); 
+            }
+            selectElement.style.opacity = "1";
+        }
+
         function editPin(tenantID) {
             let newVal = prompt(`Nouveau code PIN Maître pour la licence "${tenantID}" (4 à 9 chiffres) :`);
             if (newVal !== null && newVal.trim() !== "") {
@@ -359,7 +407,6 @@
             }
         }
 
-        // 🔌 FONCTION KILL SWITCH (LIBÉRER LES CONNEXIONS DEPUIS LA TOUR)
         function resetDevices(tenantID) {
             if(confirm(`🚨 Voulez-vous expulser et déconnecter tous les appareils actuellement actifs pour le client "${tenantID}" ?`)) {
                 executeAdminAction(tenantID, 'reset_devices', {});
@@ -381,7 +428,6 @@
             executeAdminAction(tenantID, action, {});
         }
 
-        // === UTILITAIRE API CENTRAL ===
         function executeAdminAction(tenantID, action, extraPayload) {
             let payload = { masterKey: MASTER_KEY, tenantID: tenantID, action: action, ...extraPayload };
             fetch(`${SERVER_URL}/api/admin-action`, {
