@@ -35,7 +35,7 @@ app.get('/panel-ichef', (req, res) => {
 });
 
 // ==========================================
-// 🚨 WEBHOOK STRIPE : SÉCURITÉ ANTI-IMPAYÉS
+// 🚨 WEBHOOK STRIPE : SÉCURITÉ ANTI-IMPAYÉS & UPSELL 
 // ==========================================
 app.post('/webhook', express.raw({type: 'application/json'}), async (req, res) => {
     const sig = req.headers['stripe-signature'];
@@ -47,28 +47,41 @@ app.post('/webhook', express.raw({type: 'application/json'}), async (req, res) =
     }
     
     if (event.type === 'checkout.session.completed') {
-        console.log(`💰 PAIEMENT REÇU ! Sécurisation de la licence en arrière-plan...`);
         const session = event.data.object;
-        
-        try {
-            const tenantID = session.client_reference_id || "client_attente_" + Date.now();
-            
-            await Tenant.updateOne(
-                { tenantID: tenantID },
-                { 
-                    $set: { 
-                        status: 'ACTIF', 
-                        config: { stripeCustomerId: session.customer } 
+
+        // 🟢 CAS 1 : LE CLIENT ACHÈTE DES ÉCRANS SUPPLÉMENTAIRES
+        if (session.metadata && session.metadata.type === 'UPGRADE_SCREENS') {
+            console.log(`📈 UPSELL RÉUSSI : Achat d'écrans pour le restaurant ${session.metadata.tenantID}`);
+            try {
+                const extraScreens = parseInt(session.metadata.extraScreens);
+                await Tenant.updateOne(
+                    { tenantID: session.metadata.tenantID },
+                    { $inc: { maxScreens: extraScreens } } // Ajoute le nombre d'écrans au forfait actuel
+                );
+            } catch(e) { console.error("Erreur Upgrade Écrans:", e); }
+        } 
+        // 🔵 CAS 2 : LE CLIENT ACHÈTE UN NOUVEL ABONNEMENT
+        else {
+            console.log(`💰 PAIEMENT REÇU ! Sécurisation de la licence en arrière-plan...`);
+            try {
+                const tenantID = session.client_reference_id || "client_attente_" + Date.now();
+                await Tenant.updateOne(
+                    { tenantID: tenantID },
+                    { 
+                        $set: { 
+                            status: 'ACTIF', 
+                            config: { stripeCustomerId: session.customer } 
+                        },
+                        $setOnInsert: { 
+                            plan: "RENTABILITE", 
+                            maxScreens: 5, 
+                            pin: Math.floor(1000 + Math.random() * 9000).toString() 
+                        }
                     },
-                    $setOnInsert: { 
-                        plan: "RENTABILITE", // Mise à jour par défaut
-                        maxScreens: 5, 
-                        pin: Math.floor(1000 + Math.random() * 9000).toString() 
-                    }
-                },
-                { upsert: true }
-            );
-        } catch(e) { console.error("❌ Erreur MongoDB Webhook :", e); }
+                    { upsert: true }
+                );
+            } catch(e) { console.error("❌ Erreur MongoDB Webhook :", e); }
+        }
     }
     res.json({received: true});
 });
@@ -85,7 +98,6 @@ const tenantSchema = new mongoose.Schema({
     email: String,
     phone: String,
     status: { type: String, enum: ['ACTIF', 'SUSPENDU'], default: 'ACTIF' },
-    // 🚨 ENUM TRÈS PERMISSIF POUR NE JAMAIS CRASHER LORS DU PAIEMENT
     plan: { 
         type: String, 
         enum: ['CHEF_CUISINE', 'CHEF_PATISSERIE', 'CHEF_BAR', 'ICHEF_OS', 'RENTABILITE', 'BRIGADES', 'BUSINESS', 'ECO', 'PREMIUM', 'CHEF'], 
@@ -225,7 +237,6 @@ app.post('/api/activate', async (req, res) => {
         if (existingTenant) return res.status(400).json({ error: "Identifiant déjà pris." });
 
         const randomPin = Math.floor(1000 + Math.random() * 9000).toString();
-        // Remplacement espaces pour correspondre à l'enum de la BDD
         const finalPlan = plan ? plan.toUpperCase().replace(' ', '_') : 'RENTABILITE';
         const finalSpec = specialite || 'cuisine';
 
@@ -258,18 +269,6 @@ app.post('/api/activate', async (req, res) => {
         console.error("Erreur d'activation:", error);
         res.status(500).json({ error: "Erreur BDD ou nom de forfait invalide." }); 
     }
-});
-
-// ==========================================
-// 🔒 SÉCURITÉ : GARDE DU CORPS & PINS
-// ==========================================
-app.get('/api/check-license', async (req, res) => {
-    const { tenantID } = req.query;
-    try {
-        const tenant = await Tenant.findOne({ tenantID });
-        if (!tenant) return res.status(404).json({ success: false, error: "Introuvable." });
-        res.json({ success: true, status: tenant.status, plan: tenant.plan, specialite: tenant.specialite });
-    } catch (e) { res.status(500).json({ success: false }); }
 });
 
 // ==========================================
@@ -365,14 +364,7 @@ let activeAlerts = []; // Stockage temporaire en mémoire RAM
 
 app.post('/api/support-alert', (req, res) => {
     const { tenantID, type, message, timestamp } = req.body;
-    const newAlert = {
-        id: Date.now().toString(),
-        tenantID,
-        type,
-        message,
-        timestamp,
-        status: 'OPEN'
-    };
+    const newAlert = { id: Date.now().toString(), tenantID, type, message, timestamp, status: 'OPEN' };
     activeAlerts.push(newAlert);
     res.json({ success: true });
 });
@@ -440,6 +432,41 @@ app.post('/update-order', async (req, res) => {
     } catch (e) { 
         console.error("Erreur Sauvegarde :", e);
         res.status(500).json({ error: "Save Error" }); 
+    }
+});
+
+// ==========================================
+// 🛒 BOUTIQUE INTÉGRÉE : ACHAT DE CONNEXIONS SUPPLÉMENTAIRES
+// ==========================================
+app.post('/api/buy-screens', async (req, res) => {
+    try {
+        const { tenantID, pack } = req.body;
+        
+        let amount = 0;
+        let productName = "";
+        
+        // Définition de tes tarifs HT (Stripe gère les montants en centimes)
+        if (pack === '1') { amount = 900; productName = "iCHEF OS : +1 Connexion Supplémentaire"; }
+        else if (pack === '3') { amount = 2300; productName = "iCHEF OS : +3 Connexions Supplémentaires"; }
+        else if (pack === '5') { amount = 5000; productName = "iCHEF OS : +5 Connexions Supplémentaires"; }
+        else return res.status(400).json({ error: "Pack inconnu." });
+
+        const session = await stripe.checkout.sessions.create({
+            payment_method_types: ['card'],
+            line_items: [{
+                price_data: { currency: 'eur', product_data: { name: productName }, unit_amount: amount },
+                quantity: 1,
+            }],
+            mode: 'payment',
+            metadata: { type: 'UPGRADE_SCREENS', tenantID: tenantID, extraScreens: pack },
+            success_url: `${req.headers.origin}/administration.html?tenantID=${tenantID}&upgrade=success`,
+            cancel_url: `${req.headers.origin}/administration.html?tenantID=${tenantID}&upgrade=cancel`,
+        });
+        
+        res.json({ success: true, url: session.url });
+    } catch (error) {
+        console.error("Erreur Boutique Écrans:", error);
+        res.status(500).json({ success: false, error: "Erreur lors de la création du paiement Stripe." });
     }
 });
 
