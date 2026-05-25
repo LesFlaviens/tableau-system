@@ -285,22 +285,21 @@ app.get('/api/check-license', async (req, res) => {
 // 🛠️ ROUTE CORRIGÉE : RECHERCHE INSENSIBLE AUX MAJUSCULES/MINUSCULES
 app.post('/api/verify-pin', async (req, res) => {
     const { tenantID, pin, deviceId } = req.body;
+    if (!tenantID || !pin) return res.status(400).json({ success: false, error: "Données manquantes" });
+
     try {
-        // L'astuce est ici : RegExp permet de trouver 'PATEU' même si enregistré 'pateu' dans la BDD
-        const tenant = await Tenant.findOne({ tenantID: new RegExp(`^${tenantID}$`, 'i') });
+        const cleanID = String(tenantID).trim();
+        const tenant = await Tenant.findOne({ tenantID: new RegExp(`^${cleanID}$`, 'i') });
         
         if (!tenant) return res.status(404).json({ success: false, error: "Identifiant inconnu." });
         if (tenant.status === 'SUSPENDU') return res.status(403).json({ success: false, error: "Licence suspendue." });
 
+        // LE SECRET EST ICI : String() convertit tout en texte avant de comparer
         if (String(tenant.pin).trim() === String(pin).trim()) { 
-            // VÉRIFICATION FACULTATIVE DU DEVICE
             if (deviceId) {
                 if (!tenant.registeredDevices.includes(deviceId)) {
                     if (tenant.registeredDevices.length >= tenant.maxScreens) {
-                        return res.status(403).json({ 
-                            success: false, 
-                            error: `🛑 Limite atteinte ! Votre forfait autorise ${tenant.maxScreens} écran(s) maximum.` 
-                        });
+                        return res.status(403).json({ success: false, error: `🛑 Limite d'écrans atteinte.` });
                     }
                     tenant.registeredDevices.push(deviceId);
                     await tenant.save();
@@ -312,7 +311,6 @@ app.post('/api/verify-pin', async (req, res) => {
         }
     } catch (error) { res.status(500).json({ success: false }); }
 });
-
 app.post('/api/update-pin', async (req, res) => {
     const { tenantID, newPin } = req.body;
     try {
