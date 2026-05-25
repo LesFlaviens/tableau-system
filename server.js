@@ -128,7 +128,7 @@ app.post('/api/scan-invoice', async (req, res) => {
     
     if (!imageBase64) return res.status(400).json({ success: false, error: "Aucune image fournie." });
     if (!process.env.GEMINI_API_KEY || process.env.GEMINI_API_KEY === 'CLE_MANQUANTE') {
-        return res.status(500).json({ success: false, error: "🚨 CRITIQUE : Clé GEMINI_API_KEY introuSummary." });
+        return res.status(500).json({ success: false, error: "🚨 CRITIQUE : Clé GEMINI_API_KEY introuvable." });
     }
 
     try {
@@ -282,7 +282,7 @@ app.get('/api/check-license', async (req, res) => {
     } catch (e) { res.status(500).json({ success: false }); }
 });
 
-// 🛠️ ROUTE CORRIGÉE : AJUSTEMENT DU PROTOCOLE DE VÉRIFICATION DU CODE PIN
+// 🛠️ ROUTE CORRIGÉE : COMPARAISON DE FORMAT TEXTE BLINDÉE ANTI-BUG 
 app.post('/api/verify-pin', async (req, res) => {
     const { tenantID, pin, deviceId } = req.body;
     try {
@@ -290,7 +290,8 @@ app.post('/api/verify-pin', async (req, res) => {
         if (!tenant) return res.status(404).json({ success: false, error: "Identifiant inconnu." });
         if (tenant.status === 'SUSPENDU') return res.status(403).json({ success: false, error: "Licence suspendue." });
 
-        if (tenant.pin === pin) { 
+        // Force la conversion au format Texte (String) et nettoie les espaces vides des deux côtés
+        if (String(tenant.pin).trim() === String(pin).trim()) { 
             // 🛑 VÉRIFICATION FACULTATIVE DU DEVICE (Seulement si fourni par l'app tablette/caisse)
             if (deviceId) {
                 if (!tenant.registeredDevices.includes(deviceId)) {
