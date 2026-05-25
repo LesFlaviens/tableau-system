@@ -278,7 +278,9 @@ app.post('/api/activate', async (req, res) => {
 app.get('/api/check-license', async (req, res) => {
     const { tenantID } = req.query;
     try {
-        const tenant = await Tenant.findOne({ tenantID });
+        const cleanID = String(tenantID).trim();
+        const tenant = await Tenant.findOne({ tenantID: new RegExp(`^${cleanID}$`, 'i') });
+        
         if (!tenant) return res.status(404).json({ success: false, error: "Introuvable." });
         res.json({ success: true, status: tenant.status, plan: tenant.plan, specialite: tenant.specialite });
     } catch (e) { res.status(500).json({ success: false }); }
@@ -315,7 +317,9 @@ app.post('/api/verify-pin', async (req, res) => {
 app.post('/api/update-pin', async (req, res) => {
     const { tenantID, newPin } = req.body;
     try {
-        const tenant = await Tenant.findOne({ tenantID });
+        const cleanID = String(tenantID).trim();
+        const tenant = await Tenant.findOne({ tenantID: new RegExp(`^${cleanID}$`, 'i') });
+        
         if (!tenant) return res.status(404).json({ success: false });
         tenant.pin = newPin;
         tenant.registeredDevices = []; 
@@ -327,7 +331,9 @@ app.post('/api/update-pin', async (req, res) => {
 app.get('/api/dashboard-info', async (req, res) => {
     const { tenantID } = req.query;
     try {
-        const tenant = await Tenant.findOne({ tenantID });
+        const cleanID = String(tenantID).trim();
+        const tenant = await Tenant.findOne({ tenantID: new RegExp(`^${cleanID}$`, 'i') });
+        
         if (!tenant) return res.status(404).json({ success: false });
         res.json({ success: true, activeDevices: tenant.registeredDevices.length, maxScreens: tenant.maxScreens });
     } catch (e) { res.status(500).json({ success: false }); }
@@ -336,7 +342,8 @@ app.get('/api/dashboard-info', async (req, res) => {
 app.post('/api/kill-switch', async (req, res) => {
     const { tenantID } = req.body;
     try {
-        await Tenant.findOneAndUpdate({ tenantID }, { registeredDevices: [] });
+        const cleanID = String(tenantID).trim();
+        await Tenant.findOneAndUpdate({ tenantID: new RegExp(`^${cleanID}$`, 'i') }, { registeredDevices: [] });
         res.json({ success: true });
     } catch (e) { res.status(500).json({ success: false }); }
 });
@@ -344,7 +351,9 @@ app.post('/api/kill-switch', async (req, res) => {
 app.post('/api/billing-portal', async (req, res) => {
     const { tenantID } = req.body;
     try {
-        const tenant = await Tenant.findOne({ tenantID });
+        const cleanID = String(tenantID).trim();
+        const tenant = await Tenant.findOne({ tenantID: new RegExp(`^${cleanID}$`, 'i') });
+        
         if (!tenant || !tenant.config || !tenant.config.stripeCustomerId) return res.status(400).json({ success: false });
         const session = await stripe.billingPortal.sessions.create({
             customer: tenant.config.stripeCustomerId,
@@ -353,7 +362,6 @@ app.post('/api/billing-portal', async (req, res) => {
         res.json({ success: true, url: session.url });
     } catch (e) { res.status(500).json({ success: false }); }
 });
-
 // ==========================================
 // 🆘 GESTION DES ALERTES SUPPORT (SOS)
 // ==========================================
