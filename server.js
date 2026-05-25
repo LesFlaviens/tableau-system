@@ -73,7 +73,7 @@ app.post('/webhook', express.raw({type: 'application/json'}), async (req, res) =
                             config: { stripeCustomerId: session.customer } 
                         },
                         $setOnInsert: { 
-                            plan: "RENTABILITE", 
+                            plan: "BUSINESS", 
                             maxScreens: 5, 
                             pin: Math.floor(1000 + Math.random() * 9000).toString() 
                         }
@@ -100,8 +100,9 @@ const tenantSchema = new mongoose.Schema({
     status: { type: String, enum: ['ACTIF', 'SUSPENDU'], default: 'ACTIF' },
     plan: { 
         type: String, 
-        enum: ['CHEF_CUISINE', 'CHEF_PATISSERIE', 'CHEF_BAR', 'ICHEF_OS', 'RENTABILITE', 'BRIGADES', 'BRIGADE', 'BUSINESS', 'ECO', 'PREMIUM', 'CHEF'], 
-        default: 'RENTABILITE' 
+        // Mise à jour de l'enum avec tes mots ultra-simples :
+        enum: ['CHEF_CUISINE', 'CHEF_PATISSERIE', 'CHEF_BAR', 'ICHEF_OS', 'RENTABILITE', 'BRIGADES', 'BRIGADE', 'BUSINESS', 'ECO', 'PREMIUM', 'CHEF', 'PATISSIER', 'BAR', 'EMPIRE'], 
+        default: 'BUSINESS' 
     },
     specialite: { type: String, default: 'cuisine' },
     pin: { type: String, default: '9999' }, 
@@ -237,21 +238,22 @@ app.post('/api/activate', async (req, res) => {
         if (existingTenant) return res.status(400).json({ error: "Identifiant déjà pris." });
 
         const randomPin = Math.floor(1000 + Math.random() * 9000).toString();
-        const finalPlan = plan ? plan.toUpperCase().replace(' ', '_') : 'RENTABILITE';
+        const finalPlan = plan ? plan.toUpperCase().replace(' ', '_') : 'BUSINESS';
         const finalSpec = specialite || 'cuisine';
 
         let limit = 1; 
         let staffLimit = 1;
 
-        if (['CHEF', 'CHEF_CUISINE', 'CHEF_PATISSERIE', 'CHEF_BAR', 'ICHEF_OS'].includes(finalPlan)) { 
+        // Mise à jour de la distribution selon tes mots exacts
+        if (['CHEF', 'PATISSIER', 'BAR', 'CHEF_CUISINE', 'CHEF_PATISSERIE', 'CHEF_BAR'].includes(finalPlan)) { 
             limit = 1; 
             staffLimit = 1; 
         } 
-        else if (['RENTABILITE', 'BUSINESS', 'ECO'].includes(finalPlan)) { 
+        else if (['BUSINESS', 'RENTABILITE', 'ECO'].includes(finalPlan)) { 
             limit = 5; 
             staffLimit = 999; 
         } 
-        else if (['BRIGADE', 'BRIGADES', 'PREMIUM'].includes(finalPlan)) { 
+        else if (['BRIGADE', 'BRIGADES', 'EMPIRE', 'PREMIUM'].includes(finalPlan)) { 
             limit = 50; 
             staffLimit = 999; 
         } 
@@ -282,7 +284,6 @@ app.get('/api/check-license', async (req, res) => {
     } catch (e) { res.status(500).json({ success: false }); }
 });
 
-// 🛠️ ROUTE CORRIGÉE : RECHERCHE INSENSIBLE AUX MAJUSCULES/MINUSCULES
 app.post('/api/verify-pin', async (req, res) => {
     const { tenantID, pin, deviceId } = req.body;
     if (!tenantID || !pin) return res.status(400).json({ success: false, error: "Données manquantes" });
@@ -294,7 +295,6 @@ app.post('/api/verify-pin', async (req, res) => {
         if (!tenant) return res.status(404).json({ success: false, error: "Identifiant inconnu." });
         if (tenant.status === 'SUSPENDU') return res.status(403).json({ success: false, error: "Licence suspendue." });
 
-        // LE SECRET EST ICI : String() convertit tout en texte avant de comparer
         if (String(tenant.pin).trim() === String(pin).trim()) { 
             if (deviceId) {
                 if (!tenant.registeredDevices.includes(deviceId)) {
@@ -311,6 +311,7 @@ app.post('/api/verify-pin', async (req, res) => {
         }
     } catch (error) { res.status(500).json({ success: false }); }
 });
+
 app.post('/api/update-pin', async (req, res) => {
     const { tenantID, newPin } = req.body;
     try {
@@ -532,6 +533,43 @@ app.post('/api/get-all-tenants-admin', async (req, res) => {
     } catch(err) { res.status(500).json({ success: false }); }
 });
 
+// 🎛️ NOUVELLE ROUTE : MODIFIER LE FORFAIT DEPUIS LA TOUR DE CONTRÔLE
+app.post('/api/update-plan-admin', async (req, res) => {
+    const { masterKey, tenantID, newPlan } = req.body;
+    
+    if (masterKey !== ADMIN_PASS) {
+        return res.status(401).json({ success: false, error: 'Accès refusé' });
+    }
+
+    try {
+        // Détermination des limites selon le nouveau forfait
+        let limit = 1; 
+        let staffLimit = 1;
+        const upperPlan = newPlan.toUpperCase();
+        
+        if (['CHEF', 'PATISSIER', 'BAR'].includes(upperPlan)) { 
+            limit = 1; staffLimit = 1; 
+        } else if (['BUSINESS', 'RENTABILITE'].includes(upperPlan)) { 
+            limit = 5; staffLimit = 999; 
+        } else if (['BRIGADE', 'EMPIRE'].includes(upperPlan)) { 
+            limit = 50; staffLimit = 999; 
+        }
+
+        const result = await Tenant.updateOne(
+            { tenantID: tenantID },
+            { $set: { plan: upperPlan, maxScreens: limit, maxStaff: staffLimit } }
+        );
+        
+        if (result.modifiedCount > 0 || result.matchedCount > 0) {
+            res.json({ success: true });
+        } else {
+            res.json({ success: false, error: 'Client introuvable' });
+        }
+    } catch (err) {
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+
 app.post('/api/admin-action', async (req, res) => {
     const { masterKey, tenantID, action, newPlan, manualScreens, manualPin, manualMaxStaff } = req.body;
     if (masterKey !== ADMIN_PASS) return res.status(401).json({ success: false, error: "🔒 Accès Refusé." });
@@ -550,17 +588,14 @@ app.post('/api/admin-action', async (req, res) => {
             let limit = 1; 
             let staffLimit = 1;
             
-            if (['CHEF', 'CHEF_CUISINE', 'CHEF_PATISSERIE', 'CHEF_BAR', 'ICHEF_OS'].includes(newPlan)) { 
-                limit = 1; 
-                staffLimit = 1; 
+            if (['CHEF', 'PATISSIER', 'BAR'].includes(newPlan)) { 
+                limit = 1; staffLimit = 1; 
             } 
-            else if (['RENTABILITE', 'BUSINESS', 'ECO'].includes(newPlan)) { 
-                limit = 5; 
-                staffLimit = 999; 
+            else if (['BUSINESS', 'RENTABILITE'].includes(newPlan)) { 
+                limit = 5; staffLimit = 999; 
             } 
-            else if (['BRIGADE', 'BRIGADES', 'PREMIUM'].includes(newPlan)) { 
-                limit = 50; 
-                staffLimit = 999; 
+            else if (['BRIGADE', 'EMPIRE'].includes(newPlan)) { 
+                limit = 50; staffLimit = 999; 
             } 
             
             await Tenant.findOneAndUpdate({ tenantID }, { plan: newPlan, maxScreens: limit, maxStaff: staffLimit });
