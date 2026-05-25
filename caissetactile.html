@@ -1,0 +1,281 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>iCHEF OS - Caisse Tactile</title>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;900&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --bg: #050505; --panel: #0A0A0A; --border: rgba(255, 255, 255, 0.08);
+            --text-main: #f8fafc; --text-muted: #64748b; --gold: #fbbf24;
+            --accent: #10b981; --danger: #ef4444; --surface-hover: #141414;
+        }
+        body { font-family: 'Inter', sans-serif; background: var(--bg); color: var(--text-main); margin: 0; display: flex; height: 100vh; overflow: hidden; }
+        
+        /* PORTE D'ENTRÉE : PIN SERVEUR */
+        #caisse-auth-overlay { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: var(--bg); z-index: 9999; display: flex; align-items: center; justify-content: center; }
+        .auth-box { background: var(--panel); border: 1px solid var(--border); padding: 40px; border-radius: 12px; text-align: center; width: 100%; max-width: 320px; }
+        .pin-display { font-size: 2rem; letter-spacing: 10px; margin-bottom: 25px; min-height: 40px; color: var(--gold); font-weight: 700; }
+        .pin-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 15px; }
+        .pin-btn { background: var(--surface-hover); border: 1px solid var(--border); color: var(--text-main); font-size: 1.5rem; font-weight: 600; padding: 20px; border-radius: 8px; cursor: pointer; transition: 0.2s; }
+        .pin-btn:hover { background: rgba(255,255,255,0.05); }
+
+        /* INTERFACE CAISSE */
+        .caisse-container { display: flex; width: 100%; height: 100%; }
+        .menu-side { flex: 2; display: flex; flex-direction: column; border-right: 1px solid var(--border); padding: 20px; }
+        .ticket-side { flex: 1; background: var(--panel); display: flex; flex-direction: column; padding: 20px; box-sizing: border-box; }
+        
+        .categories-bar { display: flex; gap: 10px; overflow-x: auto; padding-bottom: 15px; margin-bottom: 15px; border-bottom: 1px solid var(--border); }
+        .cat-btn { background: transparent; border: 1px solid var(--border); color: var(--text-muted); padding: 12px 20px; border-radius: 6px; font-weight: 600; cursor: pointer; white-space: nowrap; transition: 0.2s; text-transform: uppercase; font-size: 0.8rem; }
+        .cat-btn.active { border-color: var(--gold); color: var(--gold); background: rgba(251, 191, 36, 0.05); }
+
+        .items-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 15px; overflow-y: auto; flex: 1; padding-right: 5px; }
+        .item-card { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 15px; display: flex; flex-direction: column; justify-content: space-between; cursor: pointer; transition: 0.2s; min-height: 100px; }
+        .item-card:hover { border-color: var(--text-muted); background: var(--surface-hover); }
+        .item-card.sold-out { opacity: 0.3; cursor: not-allowed; }
+        .item-name { font-weight: 600; font-size: 0.95rem; margin-bottom: 10px; line-height: 1.4; }
+        .item-price { color: var(--gold); font-weight: 700; font-size: 1rem; }
+
+        /* TICKET STRUCTURE */
+        .ticket-header { border-bottom: 1px dashed var(--border); padding-bottom: 15px; margin-bottom: 15px; display: flex; justify-content: space-between; align-items: center; }
+        .ticket-title { font-weight: 900; letter-spacing: 1px; font-size: 1.2rem; }
+        .ticket-lines { flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 12px; }
+        .ticket-line { display: flex; justify-content: space-between; align-items: center; font-size: 0.95rem; }
+        
+        .ticket-totals { border-top: 1px dashed var(--border); padding-top: 15px; margin-top: 15px; }
+        .total-row { display: flex; justify-content: space-between; font-size: 1.5rem; font-weight: 900; color: var(--gold); margin-bottom: 20px; }
+        
+        .actions-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+        .btn-action { padding: 16px; border: none; border-radius: 8px; font-weight: 700; font-size: 1rem; cursor: pointer; text-transform: uppercase; transition: 0.2s; }
+        .btn-cash { background: var(--accent); color: #000; grid-column: span 2; }
+        .btn-cash:hover { opacity: 0.9; }
+        .btn-clear { background: rgba(255,255,255,0.05); border: 1px solid var(--border); color: var(--text-main); }
+        .btn-clear:hover { background: var(--danger); color: #000; border-color: var(--danger); }
+        .btn-nav { background: transparent; border: 1px solid var(--border); color: var(--text-muted); }
+        .btn-nav:hover { color: var(--text-main); border-color: var(--text-main); }
+
+        #sync-badge { font-size: 0.75rem; color: var(--accent); font-weight: bold; border: 1px solid var(--accent); padding: 4px 10px; border-radius: 4px; }
+    </style>
+</head>
+<body>
+
+    <div id="caisse-auth-overlay">
+        <div class="auth-box">
+            <h2 style="margin-top:0; font-weight:900; letter-spacing:1px;">SESSION SÉCURISÉE</h2>
+            <p style="color:var(--text-muted); font-size:0.85rem; margin-bottom:25px;">Saisissez votre code PIN d'équipe</p>
+            <div class="pin-display" id="pin-dots"></div>
+            <div class="pin-grid">
+                <button class="pin-btn" onclick="pressPin('1')">1</button>
+                <button class="pin-btn" onclick="pressPin('2')">2</button>
+                <button class="pin-btn" onclick="pressPin('3')">3</button>
+                <button class="pin-btn" onclick="pressPin('4')">4</button>
+                <button class="pin-btn" onclick="pressPin('5')">5</button>
+                <button class="pin-btn" onclick="pressPin('6')">6</button>
+                <button class="pin-btn" onclick="pressPin('7')">7</button>
+                <button class="pin-btn" onclick="pressPin('8')">8</button>
+                <button class="pin-btn" onclick="pressPin('9')">9</button>
+                <button class="pin-btn" onclick="clearPin()" style="color:var(--danger)">✕</button>
+                <button class="pin-btn" onclick="pressPin('0')">0</button>
+                <button class="pin-btn" onclick="window.history.back()" style="font-size:1rem; color:var(--text-muted)">↩</button>
+            </div>
+        </div>
+    </div>
+
+    <div class="caisse-container">
+        <section class="menu-side">
+            <div class="categories-bar" id="cat-bar">
+                <button class="cat-btn active">Chargement...</button>
+            </div>
+            <div class="items-grid" id="items-container"></div>
+        </section>
+
+        <section class="ticket-side">
+            <div class="ticket-header">
+                <span class="ticket-title">TABLE : COMPTOIR</span>
+                <span id="sync-badge">● SYNCHRO CLOUD</span>
+            </div>
+            <div class="ticket-lines" id="ticket-items">
+                <div style="color:var(--text-muted); text-align:center; padding-top:40px; font-style:italic;">Ticket vide</div>
+            </div>
+            <div class="ticket-totals">
+                <div class="total-row">
+                    <span>TOTAL</span>
+                    <span id="ticket-total-val">0.00 €</span>
+                </div>
+                <div class="actions-grid">
+                    <button class="btn-action btn-cash" onclick="encaisserTicket()">💵 Encaisser & Sauvegarder</button>
+                    <button class="btn-action btn-clear" onclick="viderTicket()">Vider</button>
+                    <button class="btn-action btn-nav" onclick="window.location.href='administration.html?tenantID='+tenantID">Portail</button>
+                </div>
+            </div>
+        </section>
+    </div>
+
+    <script>
+        const SERVER_URL = (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1" || window.location.protocol === "file:") 
+            ? "http://localhost:10000" : "https://tableau-system.onrender.com";
+
+        const tenantID = localStorage.getItem('ichef_tenant_id');
+        let staffList = [];
+        let fullMenu = {};
+        let currentTicket = [];
+        let activePin = "";
+
+        // 1. SÉCURITÉ : CHARGEMENT DU STAFF DEPUIS LE CLOUD
+        async function initCaisse() {
+            if(!tenantID) return window.location.href = 'connexionpartenaire.html';
+            try {
+                let r = await fetch(`${SERVER_URL}/get-current-state?tenantID=${tenantID}`);
+                let state = await r.json();
+                
+                // Récupération du staff autorisé
+                staffList = state.activeOrders?.['STAFF_ACCESS']?.data || [];
+                
+                // Fusion de la carte Cuisine + Bar
+                let cuisine = state.activeOrders?.['MENU_MASTER']?.data || {};
+                let bar = state.activeOrders?.['MENU_MASTER_BAR']?.data || {};
+                fullMenu = { ...cuisine, ...bar };
+
+                renderCategories();
+            } catch(e) {
+                document.getElementById('sync-badge').innerText = "🔴 MODE HORS-LIGNE";
+                document.getElementById('sync-badge').style.color = "var(--danger)";
+                document.getElementById('sync-badge').style.borderColor = "var(--danger)";
+            }
+        }
+
+        // 2. CLAVIER PIN NUMÉRIQUE SÉCURISÉ
+        function pressPin(num) {
+            if(activePin.length >= 6) return;
+            activePin += num;
+            document.getElementById('pin-dots').innerText = "• ".repeat(activePin.length);
+            if(activePin.length >= 4) checkStaffAuth();
+        }
+        function clearPin() { activePin = ""; document.getElementById('pin-dots').innerText = ""; }
+        
+        function checkStaffAuth() {
+            let match = staffList.find(s => s.pin === activePin && s.active !== false);
+            if(match) {
+                document.getElementById('caisse-auth-overlay').style.display = 'none';
+                showToast(`Session : ${match.name}`);
+            } else if(activePin.length >= 6) {
+                alert("❌ Code PIN invalide ou compte inactif.");
+                clearPin();
+            }
+        }
+
+        // 3. AFFICHAGE DYNAMIQUE DES CATÉGORIES ET DES PLATS
+        function renderCategories() {
+            let cats = Object.keys(fullMenu);
+            if(cats.length === 0) {
+                document.getElementById('cat-bar').innerHTML = `<div style="color:var(--text-muted)">Aucune catégorie configurée dans l'administration.</div>`;
+                return;
+            }
+            document.getElementById('cat-bar').innerHTML = cats.map((c, idx) => `
+                <button class="cat-btn ${idx === 0 ? 'active' : ''}" onclick="selectCategory('${c}', this)">${c}</button>
+            `).join('');
+            selectCategory(cats[0], document.querySelector('.cat-btn'));
+        }
+
+        function selectCategory(catId, btnElement) {
+            document.querySelectorAll('.cat-btn').forEach(b => b.classList.remove('active'));
+            btnElement.classList.add('active');
+            
+            let items = fullMenu[catId] || [];
+            document.getElementById('items-container').innerHTML = items.map(item => {
+                let isSoldOut = item.stock === 0 || item.stock === "0";
+                if(item.hidden) return ''; // Cache les plats masqués dans l'admin
+                return `
+                    <div class="item-card ${isSoldOut ? 'sold-out' : ''}" onclick="${isSoldOut ? '' : `ajouterAuTicket('${item.name.replace(/'/g, "\\'")}', ${item.price})`}">
+                        <div class="item-name">${item.name}</div>
+                        <div class="item-price">${parseFloat(item.price).toFixed(2)} €</div>
+                    </div>
+                `;
+            }).join('');
+        }
+
+        // 4. LOGIQUE DU TICKET DE CAISSE
+        function ajouterAuTicket(name, price) {
+            let exist = currentTicket.find(line => line.name === name);
+            if(exist) exist.qte++;
+            else currentTicket.push({ name: name, price: price, qte: 1 });
+            renderTicket();
+        }
+
+        function renderTicket() {
+            let container = document.getElementById('ticket-items');
+            if(currentTicket.length === 0) {
+                container.innerHTML = `<div style="color:var(--text-muted); text-align:center; padding-top:40px; font-style:italic;">Ticket vide</div>`;
+                document.getElementById('ticket-total-val').innerText = "0.00 €";
+                return;
+            }
+            let total = 0;
+            container.innerHTML = currentTicket.map(line => {
+                let sTotal = line.price * line.qte;
+                total += sTotal;
+                return `
+                    <div class="ticket-line">
+                        <span style="font-weight:600;">${line.qte}x ${line.name}</span>
+                        <span>${sTotal.toFixed(2)} €</span>
+                    </div>
+                `;
+            }).join('');
+            document.getElementById('ticket-total-val').innerText = total.toFixed(2) + " €";
+        }
+
+        function viderTicket() { currentTicket = []; renderTicket(); }
+
+        // 5. ENCAISSEMENT STRICT SANS PERTE : SAUVEGARDE DIRECTE DANS LE CLOUD 
+        async function encaisserTicket() {
+            if(currentTicket.length === 0) return alert("Le ticket est vide !");
+            
+            let totalTicket = currentTicket.reduce((acc, l) => acc + (l.price * l.qte), 0);
+            
+            // Préparation du payload de vente standardisé
+            let payloadVente = {
+                table: "COMPTOIR",
+                total: totalTicket,
+                time: new Date().toISOString(),
+                items: currentTicket
+            };
+
+            document.getElementById('sync-badge').innerText = "⏳ SAUVEGARDE CLOUD...";
+            
+            try {
+                // On récupère d'abord l'archive existante pour ne rien écraser
+                let r = await fetch(`${SERVER_URL}/get-current-state?tenantID=${tenantID}`);
+                let state = await r.json();
+                let fullArchive = state.activeOrders?.['SALES_ARCHIVE_CUISINE']?.data || [];
+                
+                // On pousse la nouvelle vente à l'intérieur
+                fullArchive.push(payloadVente);
+
+                // On grave l'archive mise à jour dans le serveur primaire
+                let saveRes = await fetch(`${SERVER_URL}/update-order?tenantID=${tenantID}`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        tableId: 'SALES_ARCHIVE_CUISINE',
+                        order: { data: fullArchive }
+                    })
+                });
+
+                if(saveRes.ok) {
+                    alert(`✅ Encaissé avec succès : ${totalTicket.toFixed(2)} € sauvegardés dans le Cloud !`);
+                    viderTicket();
+                    document.getElementById('sync-badge').innerText = "● SYNCHRO CLOUD";
+                } else throw new Error();
+
+            } catch(e) {
+                alert("🚨 Erreur de sauvegarde réseau ! Le chiffre d'affaires n'a pas pu être envoyé au serveur. Vérifiez votre connexion.");
+                document.getElementById('sync-badge').innerText = "⚠️ ERREUR SYNCHRO";
+            }
+        }
+
+        function showToast(msg) { alert(msg); } // Remplaçable par une div animée
+
+        window.onload = initCaisse;
+    </script>
+</body>
+</html>
