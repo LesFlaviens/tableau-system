@@ -272,14 +272,42 @@ app.get('/api/check-license', async (req, res) => {
     } catch (e) { res.status(500).json({ success: false }); }
 });
 
+// ==========================================
+// 🔒 SÉCURITÉ : GARDE DU CORPS & PINS & LIMITES D'ÉCRANS
+// ==========================================
+app.get('/api/check-license', async (req, res) => {
+    const { tenantID } = req.query;
+    try {
+        const tenant = await Tenant.findOne({ tenantID });
+        if (!tenant) return res.status(404).json({ success: false, error: "Introuvable." });
+        res.json({ success: true, status: tenant.status, plan: tenant.plan, specialite: tenant.specialite });
+    } catch (e) { res.status(500).json({ success: false }); }
+});
+
 app.post('/api/verify-pin', async (req, res) => {
-    const { tenantID, pin } = req.body;
+    const { tenantID, pin, deviceId } = req.body;
     try {
         const tenant = await Tenant.findOne({ tenantID });
         if (!tenant) return res.status(404).json({ success: false, error: "Identifiant inconnu." });
         if (tenant.status === 'SUSPENDU') return res.status(403).json({ success: false, error: "Licence suspendue." });
 
         if (tenant.pin === pin) { 
+            // 🛑 VÉRIFICATION DE LA LIMITE D'ÉCRANS (DEVICE ID)
+            if (deviceId) {
+                // Si l'appareil n'est pas encore enregistré dans la base...
+                if (!tenant.registeredDevices.includes(deviceId)) {
+                    // On vérifie s'il reste de la place
+                    if (tenant.registeredDevices.length >= tenant.maxScreens) {
+                        return res.status(403).json({ 
+                            success: false, 
+                            error: `🛑 Limite atteinte ! Votre forfait autorise ${tenant.maxScreens} écran(s) maximum. Veuillez libérer une connexion depuis l'administration.` 
+                        });
+                    }
+                    // S'il reste de la place, on l'enregistre !
+                    tenant.registeredDevices.push(deviceId);
+                    await tenant.save();
+                }
+            }
             return res.json({ success: true, plan: tenant.plan, specialite: tenant.specialite }); 
         } else { 
             return res.status(401).json({ success: false, error: "Code PIN incorrect." }); 
@@ -293,6 +321,7 @@ app.post('/api/update-pin', async (req, res) => {
         const tenant = await Tenant.findOne({ tenantID });
         if (!tenant) return res.status(404).json({ success: false });
         tenant.pin = newPin;
+        // On profite du changement de PIN pour déconnecter tout le monde par sécurité
         tenant.registeredDevices = []; 
         await tenant.save();
         res.json({ success: true });
@@ -323,7 +352,7 @@ app.post('/api/billing-portal', async (req, res) => {
         if (!tenant || !tenant.config || !tenant.config.stripeCustomerId) return res.status(400).json({ success: false });
         const session = await stripe.billingPortal.sessions.create({
             customer: tenant.config.stripeCustomerId,
-            return_url: `${req.headers.origin}/portail-client.html?tenantID=${tenantID}`,
+            return_url: `${req.headers.origin}/administration.html?tenantID=${tenantID}`,
         });
         res.json({ success: true, url: session.url });
     } catch (e) { res.status(500).json({ success: false }); }
