@@ -7,6 +7,50 @@
     <title>iCHEF - Centre de Commandes</title>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
     
+    <script>
+        // 🛡️ GARDE DU CORPS SÉCURITÉ ADMIN (MATRICE DES FORFAITS)
+        (async function enforceSecurity() {
+            const urlParams = new URLSearchParams(window.location.search);
+            const tenantID = urlParams.get('tenantID') || localStorage.getItem('ichef_tenant_id');
+            const SERVER_URL = (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1" || window.location.protocol === "file:") 
+                ? "http://localhost:10000" : "https://tableau-system.onrender.com";
+            
+            if(!tenantID) return window.location.href = 'portail-client.html';
+
+            const accessMatrix = {
+                'CHEF_CUISINE': ['administration.html', 'chef.html', 'portail-client.html', 'admini.html'],
+                'CHEF_PATISSERIE': ['administration.html', 'chef-patissier.html', 'portail-client.html', 'admini.html'],
+                'CHEF_BAR': ['administration.html', 'chef-bar.html', 'portail-client.html', 'admini.html'],
+                'RENTABILITE': ['administration.html', 'pack-eco.html', 'admin.html', 'admini.html', 'minipass.html', 'minipass.htm', 'menu-qr.html', 'portail-client.html'],
+                'BRIGADE': ['administration.html', 'pack-eco.html', 'admin.html', 'admini.html', 'menu-qr.html', 'chef.html', 'menu-pure.html', 'chef-bar.html', 'menu-bar.html', 'rh.html', 'haccp.html', 'reservation.html', 'minipass.html', 'minipass.htm', 'portail-client.html']
+            };
+
+            try {
+                const res = await fetch(`${SERVER_URL}/api/check-license?tenantID=${tenantID}`);
+                const data = await res.json();
+                
+                if(!data.success || data.status === 'SUSPENDU') {
+                    alert("⛔ LICENCE SUSPENDUE OU INVALIDE.");
+                    setTimeout(() => { window.location.href = 'portail-client.html'; }, 100);
+                    return;
+                }
+
+                const currentPlan = data.plan ? data.plan.toString().toUpperCase() : '';
+                
+                let currentPage = window.location.pathname.split('/').pop().toLowerCase();
+                if(currentPage === '') currentPage = 'index.html';
+
+                const allowedPages = accessMatrix[currentPlan] || [];
+                
+                // On vérifie si la page actuelle est autorisée pour ce plan (le nom du fichier actuel est ici admini.html)
+                if (!allowedPages.includes('admini.html') && !allowedPages.includes(currentPage)) {
+                    alert(`🔒 ACCÈS REFUSÉ :\nVotre forfait iChef OS (${currentPlan}) n'inclut pas le Centre de Commandes.\nVeuillez upgrader votre offre.`);
+                    setTimeout(() => { window.location.href = `portail-client.html?tenantID=${tenantID}`; }, 100);
+                }
+            } catch(e) { console.log("Mode hors-ligne actif."); }
+        })();
+    </script>
+    
     <style>
         :root {
             --bg-base: #000000;
@@ -254,9 +298,14 @@
             // 1. DÉMARRAGE : VÉRIFICATION SILENCIEUSE
             start: async function() {
                 this.tenantID = localStorage.getItem('ichef_tenant_id');
-                this.masterPin = localStorage.getItem('ichef_master_pin');
+                this.masterPin = localStorage.getItem('ichef_master_pin'); // PIN Administrateur/Manager
 
-                // Si les infos sont déjà là, on tente de vérifier en arrière-plan
+                // Si l'ID est là, on affiche tout de suite le nom (esthétique)
+                if(this.tenantID) {
+                    document.getElementById('login-tenant').value = this.tenantID.toUpperCase();
+                }
+
+                // Essai de reconnexion auto avec PIN en cache
                 if (this.tenantID && this.masterPin) {
                     try {
                         const res = await fetch(`${this.SERVER_URL}/api/verify-pin`, {
@@ -268,14 +317,11 @@
                         
                         if (data.success) {
                             document.getElementById('admin-login-overlay').style.display = 'none';
-                            this.initAfterAuth(data.plan);
+                            this.initAfterAuth();
                             return;
                         }
                     } catch(e) { console.warn("Serveur injoignable, mode hors ligne."); }
                 }
-                
-                // Pré-remplir l'identifiant s'il est connu
-                if(this.tenantID) document.getElementById('login-tenant').value = this.tenantID.toUpperCase();
             },
 
             // 2. BOUTON "S'AUTHENTIFIER"
@@ -285,52 +331,56 @@
 
                 if(!tenantInput || !pinInput) return alert("❌ Veuillez entrer votre Identifiant et votre Code PIN.");
 
+                // 2.1. Vérification au niveau du Maître (Propriétaire de la licence)
                 try {
-                    const res = await fetch(`${this.SERVER_URL}/api/verify-pin`, {
+                    const resMaster = await fetch(`${this.SERVER_URL}/api/verify-pin`, {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({ tenantID: tenantInput, pin: pinInput })
                     });
-                    const data = await res.json();
+                    const dataMaster = await resMaster.json();
                     
-                    if (data.success) {
-                        localStorage.setItem('ichef_tenant_id', tenantInput);
-                        localStorage.setItem('ichef_master_pin', pinInput);
-                        this.tenantID = tenantInput;
-                        this.masterPin = pinInput;
-                        
-                        document.getElementById('admin-login-overlay').style.display = 'none';
-                        this.initAfterAuth(data.plan);
-                    } else {
-                        alert("❌ Identifiant ou Code PIN incorrect.");
-                        document.getElementById('login-pin').value = '';
+                    if (dataMaster.success) {
+                        this.validateLogin(tenantInput, pinInput);
+                        return;
                     }
-                } catch(e) { alert("❌ Erreur réseau. Veuillez vérifier votre connexion."); }
+                } catch(e) {}
+
+                // 2.2. Si le PIN Maître ne marche pas, on vérifie dans la liste du STAFF (Serveurs/Managers)
+                try {
+                    const resState = await fetch(`${this.SERVER_URL}/get-current-state?tenantID=${tenantInput}`);
+                    const stateData = await resState.json();
+                    
+                    if (stateData.activeOrders && stateData.activeOrders['SETTINGS_MASTER']) {
+                        const staffList = stateData.activeOrders['SETTINGS_MASTER'].data.staff || [];
+                        const employee = staffList.find(s => s.pin === pinInput && s.active);
+                        
+                        if (employee) {
+                            // On autorise un employé (serveur) à accéder au système s'il est enregistré
+                            // Note: Dans une version plus avancée, on pourrait restreindre les onglets selon employee.role
+                            this.validateLogin(tenantInput, pinInput);
+                            return;
+                        }
+                    }
+                } catch(e) {}
+
+                // Si aucune vérification n'a marché
+                alert("❌ Identifiant ou Code PIN incorrect.");
+                document.getElementById('login-pin').value = '';
             },
 
-            // 3. MATRICE DE SÉCURITÉ INTÉGRÉE
-            initAfterAuth: function(plan) {
-                const accessMatrix = {
-                    'CHEF_CUISINE': ['administration.html', 'chef.html'],
-                    'CHEF_PATISSERIE': ['administration.html', 'chef-patissier.html'],
-                    'CHEF_BAR': ['administration.html', 'chef-bar.html'],
-                    'ICHEF_OS': ['administration.html', 'chef.html', 'chef-patissier.html', 'chef-bar.html'],
-                    'RENTABILITE': ['administration.html', 'pack-eco.html', 'admin.html', 'minipass.htm', 'minipass.html', 'menu-qr.html'],
-                    'BUSINESS': ['administration.html', 'pack-eco.html', 'admin.html', 'minipass.htm', 'minipass.html', 'menu-qr.html'],
-                    'ECO': ['administration.html', 'pack-eco.html', 'admin.html', 'minipass.htm', 'minipass.html', 'menu-qr.html'],
-                    'BRIGADES': ['administration.html', 'pack-eco.html', 'admin.html', 'menu-qr.html', 'chef.html', 'menu-pure.html', 'chef-bar.html', 'menu-bar.html', 'rh.html', 'haccp.html', 'reservation.html', 'minipass.htm', 'minipass.html', 'chef-patissier.html'],
-                    'PREMIUM': ['administration.html', 'pack-eco.html', 'admin.html', 'menu-qr.html', 'chef.html', 'menu-pure.html', 'chef-bar.html', 'menu-bar.html', 'rh.html', 'haccp.html', 'reservation.html', 'minipass.htm', 'minipass.html', 'chef-patissier.html']
-                };
+            validateLogin: function(tenant, pin) {
+                localStorage.setItem('ichef_tenant_id', tenant);
+                localStorage.setItem('ichef_master_pin', pin);
+                this.tenantID = tenant;
+                this.masterPin = pin;
+                
+                document.getElementById('admin-login-overlay').style.display = 'none';
+                this.initAfterAuth();
+            },
 
-                const currentPlan = plan ? plan.toUpperCase() : 'CHEF_CUISINE';
-                const allowedPages = accessMatrix[currentPlan] || [];
-                
-                // Le Couperet iCHEF 🔪
-                if (!allowedPages.includes('admin.html')) {
-                    alert(`🔒 ACCÈS REFUSÉ : Votre forfait n'inclut pas le Centre de Commandes.`);
-                    return window.location.href = `administration.html?tenantID=${this.tenantID}`;
-                }
-                
+            // 3. INITIALISATION DE L'INTERFACE APRÈS AUTHENTIFICATION
+            initAfterAuth: function() {
                 document.getElementById('display-tenant').innerText = this.tenantID;
                 this.handleTabs();
                 this.loadDataFromServer();
@@ -365,6 +415,8 @@
                     const res = await fetch(`${this.SERVER_URL}/get-current-state?tenantID=${this.tenantID}`);
                     const state = await res.json();
                     this.appState = state.activeOrders || {};
+                    // On récupère le maxStaff depuis la réponse serveur
+                    this.maxStaff = state.maxStaff || 999; 
 
                     if(!this.appState['SETTINGS_MASTER']) {
                         this.appState['SETTINGS_MASTER'] = { data: { staff: [], settings: { name: '', tva: 10, stripeLink: '' } } };
@@ -381,7 +433,7 @@
                 const container = document.getElementById('staff-list-container');
                 
                 // 📊 MISE À JOUR VUE D'ENSEMBLE
-                document.getElementById('dash-staff-count').innerText = staffList.length;
+                document.getElementById('dash-staff-count').innerText = `${staffList.length} / ${this.maxStaff === 999 ? '∞' : this.maxStaff}`;
 
                 if(staffList.length === 0) {
                     container.innerHTML = `<div class="empty-state">Aucun collaborateur enregistré pour le moment. Cliquez sur "Ajouter".</div>`;
@@ -405,12 +457,23 @@
             },
 
             addStaff: async function() {
+                const staffList = this.appState['SETTINGS_MASTER'].data.staff || [];
+                
+                // 🚨 LE VERROU BUSINESS : Vérification de la limite de staff
+                if (staffList.length >= this.maxStaff) {
+                    alert(`🔒 Limite atteinte. Votre forfait iChef OS autorise un maximum de ${this.maxStaff} collaborateur(s). Veuillez upgrader votre licence via le portail.`);
+                    return; 
+                }
+
                 const name = prompt("Prénom ou Nom du collaborateur :");
                 if(!name) return;
                 
                 const pin = prompt(`Créer un code PIN d'accès caisse (chiffres uniquement) pour ${name} :`);
                 if(!pin || pin.length < 4 || isNaN(pin)) return alert("❌ Le PIN est invalide. Il doit contenir au moins 4 chiffres.");
                 
+                // Vérifier si le PIN existe déjà
+                if(staffList.some(s => s.pin === pin)) return alert("❌ Ce code PIN est déjà utilisé par un autre collaborateur.");
+
                 if(!this.appState['SETTINGS_MASTER'].data.staff) this.appState['SETTINGS_MASTER'].data.staff = [];
                 
                 this.appState['SETTINGS_MASTER'].data.staff.push({ 
