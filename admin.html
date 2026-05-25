@@ -209,8 +209,8 @@
                     <input type="number" id="resto-tva" class="input-field" placeholder="10">
                 </div>
                 <div class="input-group">
-                    <label class="input-label">Clé Secrète STRIPE (Pour la commande à table)</label>
-                    <input type="text" id="resto-stripe" class="input-field" placeholder="sk_test_..." style="font-family: monospace; letter-spacing: 1px;">
+                    <label class="input-label">Clé Secrète STRIPE (Pour la commande à table via QR Code)</label>
+                    <input type="text" id="resto-stripe" class="input-field" placeholder="sk_live_..." style="font-family: monospace; letter-spacing: 1px;">
                 </div>
                 <button class="btn" onclick="window.adminManager.saveSettings()">Sauvegarder les modifications</button>
             </div>
@@ -227,7 +227,6 @@
 
             // 1. DÉMARRAGE : VÉRIFICATION SILENCIEUSE
             start: async function() {
-                // S'il y a déjà un jeton dans le navigateur, on essaie de l'utiliser en silence
                 this.tenantID = localStorage.getItem('ichef_tenant_id');
                 this.masterPin = localStorage.getItem('ichef_master_pin');
 
@@ -241,7 +240,6 @@
                         const data = await res.json();
                         
                         if (data.success) {
-                            // C'est bon, on ouvre la porte directement !
                             document.getElementById('admin-login-overlay').style.display = 'none';
                             this.initAfterAuth(data.plan);
                             return;
@@ -249,11 +247,10 @@
                     } catch(e) { console.warn("Serveur injoignable, mode hors ligne."); }
                 }
                 
-                // Si on n'a pas de jeton ou s'il est invalide, on pré-remplit l'input et on attend
                 if(this.tenantID) document.getElementById('login-tenant').value = this.tenantID.toUpperCase();
             },
 
-            // 2. BOUTON "S'AUTHENTIFIER" DE LA PORTE
+            // 2. BOUTON "S'AUTHENTIFIER"
             login: async function() {
                 const tenantInput = document.getElementById('login-tenant').value.trim().toUpperCase();
                 const pinInput = document.getElementById('login-pin').value.trim();
@@ -269,7 +266,6 @@
                     const data = await res.json();
                     
                     if (data.success) {
-                        // Sauvegarde du badge et ouverture
                         localStorage.setItem('ichef_tenant_id', tenantInput);
                         localStorage.setItem('ichef_master_pin', pinInput);
                         this.tenantID = tenantInput;
@@ -284,14 +280,28 @@
                 } catch(e) { alert("❌ Erreur réseau. Veuillez vérifier votre connexion."); }
             },
 
-            // 3. LANCEMENT DU DASHBOARD (Une fois la porte passée)
+            // 3. MATRICE DE SÉCURITÉ (LE GARDE DU CORPS DÉFINITIF)
             initAfterAuth: function(plan) {
-                // Matrice de sécurité post-connexion
                 const accessMatrix = {
-                    'CHEF_CUISINE': ['admin.html'], 'CHEF_PATISSERIE': ['admin.html'], 'CHEF_BAR': ['admin.html'], 'ICHEF_OS': ['admin.html'],
-                    'RENTABILITE': ['admin.html'], 'BUSINESS': ['admin.html'], 'ECO': ['admin.html'],
-                    'BRIGADES': ['admin.html'], 'PREMIUM': ['admin.html']
+                    'CHEF_CUISINE': ['administration.html', 'chef.html'],
+                    'CHEF_PATISSERIE': ['administration.html', 'chef-patissier.html'],
+                    'CHEF_BAR': ['administration.html', 'chef-bar.html'],
+                    'ICHEF_OS': ['administration.html', 'chef.html', 'chef-patissier.html', 'chef-bar.html'],
+                    'RENTABILITE': ['administration.html', 'pack-eco.html', 'admin.html', 'minipass.htm', 'minipass.html', 'menu-qr.html'],
+                    'BUSINESS': ['administration.html', 'pack-eco.html', 'admin.html', 'minipass.htm', 'minipass.html', 'menu-qr.html'],
+                    'ECO': ['administration.html', 'pack-eco.html', 'admin.html', 'minipass.htm', 'minipass.html', 'menu-qr.html'],
+                    'BRIGADES': ['administration.html', 'pack-eco.html', 'admin.html', 'menu-qr.html', 'chef.html', 'menu-pure.html', 'chef-bar.html', 'menu-bar.html', 'rh.html', 'haccp.html', 'reservation.html', 'minipass.htm', 'minipass.html', 'chef-patissier.html'],
+                    'PREMIUM': ['administration.html', 'pack-eco.html', 'admin.html', 'menu-qr.html', 'chef.html', 'menu-pure.html', 'chef-bar.html', 'menu-bar.html', 'rh.html', 'haccp.html', 'reservation.html', 'minipass.htm', 'minipass.html', 'chef-patissier.html']
                 };
+
+                const currentPlan = plan ? plan.toUpperCase() : 'CHEF_CUISINE';
+                const allowedPages = accessMatrix[currentPlan] || [];
+                
+                // Vérifier si 'admin.html' est dans la liste autorisée pour ce forfait
+                if (!allowedPages.includes('admin.html')) {
+                    alert(`🔒 ACCÈS REFUSÉ : Votre forfait (${currentPlan}) n'inclut pas le Centre de Commandes.\nVeuillez upgrader votre licence.`);
+                    return window.location.href = `administration.html?tenantID=${this.tenantID}`;
+                }
                 
                 document.getElementById('display-tenant').innerText = this.tenantID;
                 this.handleTabs();
@@ -300,8 +310,8 @@
 
             // 4. VERROUILLAGE MANUEL
             lockScreen: function() {
-                document.getElementById('login-pin').value = ''; // On vide le mot de passe
-                document.getElementById('admin-login-overlay').style.display = 'flex'; // On fait tomber le rideau noir
+                document.getElementById('login-pin').value = ''; 
+                document.getElementById('admin-login-overlay').style.display = 'flex'; 
             },
 
             // --- SYSTÈME D'ONGLETS ---
@@ -390,9 +400,11 @@
 
             renderSettings: function() {
                 const settings = this.appState['SETTINGS_MASTER'].data.settings || {};
+                const payment = this.appState['SETTINGS_MASTER'].data.payment || {};
+                
                 document.getElementById('resto-name').value = settings.name || '';
                 document.getElementById('resto-tva').value = settings.tva || 10;
-                document.getElementById('resto-stripe').value = (this.appState['SETTINGS_MASTER'].data.payment && this.appState['SETTINGS_MASTER'].data.payment.stripeLink) ? this.appState['SETTINGS_MASTER'].data.payment.stripeLink : '';
+                document.getElementById('resto-stripe').value = payment.stripeLink || '';
             },
 
             saveSettings: async function() {
