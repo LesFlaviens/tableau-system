@@ -56,7 +56,7 @@ app.post('/webhook', express.raw({type: 'application/json'}), async (req, res) =
                 const extraScreens = parseInt(session.metadata.extraScreens);
                 await Tenant.updateOne(
                     { tenantID: session.metadata.tenantID },
-                    { $inc: { maxScreens: extraScreens } } // Ajoute le nombre d'écrans au forfait actuel
+                    { $inc: { maxScreens: extraScreens } }
                 );
             } catch(e) { console.error("Erreur Upgrade Écrans:", e); }
         } 
@@ -128,7 +128,7 @@ app.post('/api/scan-invoice', async (req, res) => {
     
     if (!imageBase64) return res.status(400).json({ success: false, error: "Aucune image fournie." });
     if (!process.env.GEMINI_API_KEY || process.env.GEMINI_API_KEY === 'CLE_MANQUANTE') {
-        return res.status(500).json({ success: false, error: "🚨 CRITIQUE : Clé GEMINI_API_KEY introuvable." });
+        return res.status(500).json({ success: false, error: "🚨 CRITIQUE : Clé GEMINI_API_KEY introuSummary." });
     }
 
     try {
@@ -240,7 +240,6 @@ app.post('/api/activate', async (req, res) => {
         const finalPlan = plan ? plan.toUpperCase().replace(' ', '_') : 'RENTABILITE';
         const finalSpec = specialite || 'cuisine';
 
-        // 👑 GESTION STRICTE DES LIMITES iCHEF OS 
         let limit = 1; 
         let staffLimit = 1;
 
@@ -283,6 +282,7 @@ app.get('/api/check-license', async (req, res) => {
     } catch (e) { res.status(500).json({ success: false }); }
 });
 
+// 🛠️ ROUTE CORRIGÉE : AJUSTEMENT DU PROTOCOLE DE VÉRIFICATION DU CODE PIN
 app.post('/api/verify-pin', async (req, res) => {
     const { tenantID, pin, deviceId } = req.body;
     try {
@@ -291,7 +291,7 @@ app.post('/api/verify-pin', async (req, res) => {
         if (tenant.status === 'SUSPENDU') return res.status(403).json({ success: false, error: "Licence suspendue." });
 
         if (tenant.pin === pin) { 
-            // 🛑 VÉRIFICATION DE LA LIMITE D'ÉCRANS (DEVICE ID)
+            // 🛑 VÉRIFICATION FACULTATIVE DU DEVICE (Seulement si fourni par l'app tablette/caisse)
             if (deviceId) {
                 if (!tenant.registeredDevices.includes(deviceId)) {
                     if (tenant.registeredDevices.length >= tenant.maxScreens) {
@@ -547,7 +547,6 @@ app.post('/api/admin-action', async (req, res) => {
             await Tenant.findOneAndUpdate({ tenantID }, { pin: manualPin.trim(), registeredDevices: [] });
         }
         else if (action === 'set_plan' && newPlan) { 
-            // 👑 GESTION STRICTE DES LIMITES iCHEF OS VIA LA TOUR
             let limit = 1; 
             let staffLimit = 1;
             
