@@ -100,7 +100,7 @@ const tenantSchema = new mongoose.Schema({
     status: { type: String, enum: ['ACTIF', 'SUSPENDU'], default: 'ACTIF' },
     plan: { 
         type: String, 
-        enum: ['CHEF_CUISINE', 'CHEF_PATISSERIE', 'CHEF_BAR', 'ICHEF_OS', 'RENTABILITE', 'BRIGADES', 'BUSINESS', 'ECO', 'PREMIUM', 'CHEF'], 
+        enum: ['CHEF_CUISINE', 'CHEF_PATISSERIE', 'CHEF_BAR', 'ICHEF_OS', 'RENTABILITE', 'BRIGADES', 'BRIGADE', 'BUSINESS', 'ECO', 'PREMIUM', 'CHEF'], 
         default: 'RENTABILITE' 
     },
     specialite: { type: String, default: 'cuisine' },
@@ -244,15 +244,15 @@ app.post('/api/activate', async (req, res) => {
         let limit = 1; 
         let staffLimit = 1;
 
-        if (finalPlan === 'CHEF_CUISINE' || finalPlan === 'CHEF_PATISSERIE' || finalPlan === 'CHEF_BAR' || finalPlan === 'ICHEF_OS') { 
+        if (['CHEF', 'CHEF_CUISINE', 'CHEF_PATISSERIE', 'CHEF_BAR', 'ICHEF_OS'].includes(finalPlan)) { 
             limit = 1; 
             staffLimit = 1; 
         } 
-        else if (finalPlan === 'RENTABILITE' || finalPlan === 'BUSINESS' || finalPlan === 'ECO') { 
+        else if (['RENTABILITE', 'BUSINESS', 'ECO'].includes(finalPlan)) { 
             limit = 5; 
             staffLimit = 999; 
         } 
-        else if (finalPlan === 'BRIGADES' || finalPlan === 'PREMIUM') { 
+        else if (['BRIGADE', 'BRIGADES', 'PREMIUM'].includes(finalPlan)) { 
             limit = 50; 
             staffLimit = 999; 
         } 
@@ -293,16 +293,13 @@ app.post('/api/verify-pin', async (req, res) => {
         if (tenant.pin === pin) { 
             // 🛑 VÉRIFICATION DE LA LIMITE D'ÉCRANS (DEVICE ID)
             if (deviceId) {
-                // Si l'appareil n'est pas encore enregistré dans la base...
                 if (!tenant.registeredDevices.includes(deviceId)) {
-                    // On vérifie s'il reste de la place
                     if (tenant.registeredDevices.length >= tenant.maxScreens) {
                         return res.status(403).json({ 
                             success: false, 
                             error: `🛑 Limite atteinte ! Votre forfait autorise ${tenant.maxScreens} écran(s) maximum. Veuillez libérer une connexion depuis l'administration.` 
                         });
                     }
-                    // S'il reste de la place, on l'enregistre !
                     tenant.registeredDevices.push(deviceId);
                     await tenant.save();
                 }
@@ -320,7 +317,6 @@ app.post('/api/update-pin', async (req, res) => {
         const tenant = await Tenant.findOne({ tenantID });
         if (!tenant) return res.status(404).json({ success: false });
         tenant.pin = newPin;
-        // On profite du changement de PIN pour déconnecter tout le monde par sécurité
         tenant.registeredDevices = []; 
         await tenant.save();
         res.json({ success: true });
@@ -360,7 +356,7 @@ app.post('/api/billing-portal', async (req, res) => {
 // ==========================================
 // 🆘 GESTION DES ALERTES SUPPORT (SOS)
 // ==========================================
-let activeAlerts = []; // Stockage temporaire en mémoire RAM
+let activeAlerts = []; 
 
 app.post('/api/support-alert', (req, res) => {
     const { tenantID, type, message, timestamp } = req.body;
@@ -396,7 +392,6 @@ app.get('/get-current-state', async (req, res) => {
         let state = await AppState.findOne({ tenantID });
         if (!state) state = await AppState.create({ tenantID, activeOrders: {} });
         
-        // On injecte le maxStaff dans la réponse pour que le frontend le lise
         const tenantInfo = await Tenant.findOne({ tenantID });
         const finalState = state.toObject();
         if(tenantInfo) finalState.maxStaff = tenantInfo.maxStaff;
@@ -445,7 +440,6 @@ app.post('/api/buy-screens', async (req, res) => {
         let amount = 0;
         let productName = "";
         
-        // Définition de tes tarifs HT (Stripe gère les montants en centimes)
         if (pack === '1') { amount = 900; productName = "iCHEF OS : +1 Connexion Supplémentaire"; }
         else if (pack === '3') { amount = 2300; productName = "iCHEF OS : +3 Connexions Supplémentaires"; }
         else if (pack === '5') { amount = 5000; productName = "iCHEF OS : +5 Connexions Supplémentaires"; }
@@ -557,15 +551,15 @@ app.post('/api/admin-action', async (req, res) => {
             let limit = 1; 
             let staffLimit = 1;
             
-            if (newPlan === 'CHEF_CUISINE' || newPlan === 'CHEF_PATISSERIE' || newPlan === 'CHEF_BAR' || newPlan === 'ICHEF_OS') { 
+            if (['CHEF', 'CHEF_CUISINE', 'CHEF_PATISSERIE', 'CHEF_BAR', 'ICHEF_OS'].includes(newPlan)) { 
                 limit = 1; 
                 staffLimit = 1; 
             } 
-            else if (newPlan === 'RENTABILITE' || newPlan === 'BUSINESS' || newPlan === 'ECO') { 
+            else if (['RENTABILITE', 'BUSINESS', 'ECO'].includes(newPlan)) { 
                 limit = 5; 
                 staffLimit = 999; 
             } 
-            else if (newPlan === 'BRIGADES' || newPlan === 'PREMIUM') { 
+            else if (['BRIGADE', 'BRIGADES', 'PREMIUM'].includes(newPlan)) { 
                 limit = 50; 
                 staffLimit = 999; 
             } 
