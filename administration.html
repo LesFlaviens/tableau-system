@@ -115,6 +115,7 @@
         }
         .btn-return:hover, .btn-outline:hover {
             border-color: var(--text-main);
+            background: rgba(255,255,255,0.08);
         }
 
         /* GRID SYSTEM */
@@ -282,6 +283,21 @@
                 <h2 class="card-title">📱 Gestion des Écrans</h2>
                 <p class="card-desc" id="device-count">Écrans Actifs : Chargement...</p>
                 <button class="btn-return" style="width:100%; justify-content:center; border-color:var(--border-strong); color:var(--alert);" onclick="window.logicielManager.resetEcrans()">Libérer les connexions (Kill Switch)</button>
+
+                <div style="border-top: 1px solid var(--border-strong); padding-top: 20px; margin-top: 20px;">
+                    <p style="color:var(--text-main); font-size: 0.9rem; margin-top: 0; margin-bottom: 15px; font-weight: 600;">🚀 Acheter des connexions simultanées :</p>
+                    <div style="display: flex; gap: 10px; flex-wrap: wrap;">
+                        <button class="btn-outline" style="flex:1; justify-content:center; border-color:var(--gold); color:var(--gold); font-size:0.8rem; flex-direction:column; padding: 10px;" onclick="window.logicielManager.buyScreens('1')">
+                            <b style="font-size: 1rem;">+1 Écran</b> 9€ HT
+                        </button>
+                        <button class="btn-outline" style="flex:1; justify-content:center; border-color:var(--gold); color:var(--gold); font-size:0.8rem; flex-direction:column; padding: 10px;" onclick="window.logicielManager.buyScreens('3')">
+                            <b style="font-size: 1rem;">+3 Écrans</b> 23€ HT
+                        </button>
+                        <button class="btn-outline" style="flex:1; justify-content:center; border-color:var(--gold); color:var(--gold); font-size:0.8rem; flex-direction:column; padding: 10px;" onclick="window.logicielManager.buyScreens('5')">
+                            <b style="font-size: 1rem;">+5 Écrans</b> 50€ HT
+                        </button>
+                    </div>
+                </div>
             </div>
         </div>
     </div>
@@ -320,17 +336,24 @@
                 ? "http://localhost:10000" : "https://tableau-system.onrender.com",
 
             init: async function() {
-                // 🔒 1. LE VÉRITABLE VERROU EST ICI
+                // 🔒 1. LE VÉRITABLE VERROU
                 this.tenantID = localStorage.getItem('ichef_tenant_id');
                 this.masterPin = localStorage.getItem('ichef_master_pin');
 
-                // Si le visiteur n'a pas de badge -> Retour à la porte d'entrée !
                 if (!this.tenantID || !this.masterPin) {
                     window.location.href = "connexionpartenaire.html";
                     return;
                 }
 
-                // 🔒 2. LA DOUBLE VÉRIFICATION SERVEUR (Anti-Fraude)
+                // 🎉 Vérification d'un retour Stripe "Upsell réussi"
+                const urlParams = new URLSearchParams(window.location.search);
+                if(urlParams.get('upgrade') === 'success') {
+                    alert("✅ Paiement réussi ! Vos écrans supplémentaires ont été ajoutés à votre licence.");
+                    // Nettoie l'URL pour ne pas ré-afficher le message au rechargement
+                    window.history.replaceState({}, document.title, window.location.pathname + "?tenantID=" + this.tenantID);
+                }
+
+                // 🔒 2. VÉRIFICATION SERVEUR (Anti-Fraude)
                 try {
                     const authRes = await fetch(`${this.SERVER_URL}/api/verify-pin`, {
                         method: 'POST',
@@ -350,12 +373,12 @@
                     console.warn("Vérification cloud en arrière-plan indisponible.");
                 }
 
-                // ✅ Si on arrive ici, le client est 100% légitime
+                // ✅ Initialisation
                 document.getElementById('restaurant-name').innerText = this.tenantID.toUpperCase();
                 document.getElementById('btn-staff-link').href = `admin.html?tenantID=${this.tenantID}&tab=tab-staff`;
 
                 this.loadConnectedApps();
-                this.loadScreenStats(); // Charge les compteurs d'écrans
+                this.loadScreenStats();
             },
 
             loadScreenStats: async function() {
@@ -384,6 +407,27 @@
                             this.loadScreenStats();
                         }
                     } catch(e) { alert("Erreur réseau"); }
+                }
+            },
+
+            // 🛒 FONCTION D'ACHAT D'ÉCRANS (UPSELL STRIPE)
+            buyScreens: async function(packAmount) {
+                if(confirm(`Voulez-vous acheter ${packAmount} écran(s) supplémentaire(s) pour votre établissement ?`)) {
+                    try {
+                        const res = await fetch(`${this.SERVER_URL}/api/buy-screens`, {
+                            method: 'POST',
+                            headers: {'Content-Type': 'application/json'},
+                            body: JSON.stringify({ tenantID: this.tenantID, pack: packAmount })
+                        });
+                        const data = await res.json();
+                        if(data.success && data.url) {
+                            window.location.href = data.url; // Redirige vers Stripe
+                        } else {
+                            alert("❌ Impossible de générer la page de paiement.");
+                        }
+                    } catch(e) {
+                        alert("❌ Erreur de connexion avec la boutique en ligne.");
+                    }
                 }
             },
 
@@ -432,7 +476,6 @@
 
                     let html = '';
 
-                    // 🗺️ MATRICE ET PARSER SÉCURISÉ DES SÉLECTIONS DE FORFAITS
                     if (planStr.includes('BRIGADES') || planStr.includes('PREMIUM')) {
                         html += `<a href="admin.html?tenantID=${this.tenantID}" class="app-link-btn">⚙️ Centre de Commandes (Admin)</a>`;
                         html += `<a href="pack-eco.html?tenantID=${this.tenantID}" class="app-link-btn">📱 Écran Tactile (Caisse)</a>`;
@@ -478,8 +521,6 @@
             modifierPinMaster: function() {
                 let nvPin = prompt("Entrez votre nouveau code PIN Maître (entre 4 et 9 chiffres) :");
                 if(nvPin && !isNaN(nvPin) && nvPin.length >= 4 && nvPin.length <= 9) {
-                    
-                    // On met à jour sur le serveur aussi !
                     fetch(`${this.SERVER_URL}/api/update-pin`, {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
@@ -507,7 +548,7 @@
             }
         };
 
-        // Lancement natif au chargement du DOM
+        // Lancement natif
         document.addEventListener('DOMContentLoaded', () => {
             window.logicielManager.init();
         });
