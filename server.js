@@ -3,14 +3,14 @@ const cors = require('cors');
 const path = require('path');
 const mongoose = require('mongoose');
 
-// 🛡️ CONFIGURATION STRIPE iCHEF (Pour TES abonnements SaaS)
+// CONFIGURATION STRIPE iCHEF (Abonnements SaaS)
 const stripeKey = process.env.STRIPE_SECRET_KEY || 'sk_test_51TN80JQ9Dw3nOfA4I3XTxPl5FR4ddYmU9Jw2pGmfa0eABz2P6wAzK8RMzHw2XilulLXxFmY2oEDgau4TcScOf9WK00ajIEuweB'; 
 const stripe = require('stripe')(stripeKey);
 
 const app = express();
 const PORT = process.env.PORT || 10000;
 
-// 👑 SÉCURITÉ MAÎTRE DE L'EMPIRE
+// SÉCURITÉ MAÎTRE DE L'EMPIRE
 const ADMIN_PASS = process.env.ADMIN_PASS || 'Empire2026';
 
 app.use(cors({ origin: '*', methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'], allowedHeaders: ['Content-Type', 'Authorization', 'Origin', 'Accept'] }));
@@ -19,23 +19,22 @@ app.use(express.urlencoded({ extended: true }));
 app.use(express.static(path.join(__dirname)));
 
 // ==========================================
-// 🏠 ROUTAGE DES PAGES WEB
+// ROUTAGE DES PAGES WEB
 // ==========================================
 app.get('/', (req, res) => {
     res.sendFile(path.join(__dirname, 'vitrine.html'));
 });
 
-// Portail Super Admin (Empire) caché
 app.get('/panel-ichef', (req, res) => {
     if (req.query.pass === ADMIN_PASS) {
         res.sendFile(path.join(__dirname, 'empire.html'));
     } else {
-        res.status(403).send('🔒 Accès Refusé. Sécurité Empire iCHEF.');
+        res.status(403).send('Accès Refusé. Sécurité Empire iCHEF.');
     }
 });
 
 // ==========================================
-// 🚨 WEBHOOK STRIPE : SÉCURITÉ ANTI-IMPAYÉS & UPSELL 
+// WEBHOOK STRIPE : SÉCURITÉ ANTI-IMPAYÉS & UPSELL 
 // ==========================================
 app.post('/webhook', express.raw({type: 'application/json'}), async (req, res) => {
     const sig = req.headers['stripe-signature'];
@@ -49,47 +48,50 @@ app.post('/webhook', express.raw({type: 'application/json'}), async (req, res) =
     if (event.type === 'checkout.session.completed') {
         const session = event.data.object;
 
-        // 🟢 CAS 1 : LE CLIENT ACHÈTE DES ÉCRANS SUPPLÉMENTAIRES
         if (session.metadata && session.metadata.type === 'UPGRADE_SCREENS') {
-            console.log(`📈 UPSELL RÉUSSI : Achat d'écrans pour le restaurant ${session.metadata.tenantID}`);
+            console.log(`UPSELL REUSSI : Achat d'ecrans pour le restaurant ${session.metadata.tenantID}`);
             try {
                 const extraScreens = parseInt(session.metadata.extraScreens);
                 await Tenant.updateOne(
                     { tenantID: session.metadata.tenantID },
                     { $inc: { maxScreens: extraScreens } }
                 );
-            } catch(e) { console.error("Erreur Upgrade Écrans:", e); }
+            } catch(e) { console.error("Erreur Upgrade Ecrans:", e); }
         } 
-        // 🔵 CAS 2 : LE CLIENT ACHÈTE UN NOUVEL ABONNEMENT
         else {
-            console.log(`💰 PAIEMENT REÇU ! Sécurisation de la licence en arrière-plan...`);
+            console.log(`PAIEMENT RECU ! Securisation de la licence en arriere-plan...`);
             try {
                 const tenantID = session.client_reference_id || "client_attente_" + Date.now();
                 
-                // 🕵️ DÉTECTION INTELLIGENTE DU FORFAIT SELON LE PRIX PAYÉ
                 let planAchete = "BUSINESS";
                 let limitScreens = 5;
                 let limitStaff = 999;
 
-                // session.amount_total est en centimes (ex: 4500 = 45.00€)
-                if (session.amount_total === 1900) {
-                    planAchete = "CHEF"; 
-                    limitScreens = 1; 
-                    limitStaff = 1;
-                } else if (session.amount_total === 4500) {
-                    planAchete = "BUSINESS"; 
-                    limitScreens = 5; 
-                    limitStaff = 999;
-                } else if (session.amount_total === 12900) {
-                    planAchete = "BRIGADE"; 
-                    limitScreens = 50; 
-                    limitStaff = 999;
-                } 
-                else if (session.metadata && session.metadata.plan) {
+                // 1. LECTURE DES MÉTADONNÉES STRIPE (Ex: CHEF_PATISSERIE)
+                if (session.metadata && session.metadata.plan) {
                     planAchete = session.metadata.plan.toUpperCase();
+                    if (['CHEF_CUISINE', 'CHEF_PATISSERIE', 'CHEF_BAR', 'CHEF', 'PATISSIER', 'BAR'].includes(planAchete)) {
+                        limitScreens = 1; limitStaff = 1;
+                    } else if (['BUSINESS', 'RENTABILITE', 'ECO'].includes(planAchete)) {
+                        limitScreens = 5; limitStaff = 999;
+                    } else if (['EMPIRE', 'BRIGADE', 'BRIGADES', 'PREMIUM'].includes(planAchete)) {
+                        limitScreens = 50; limitStaff = 999;
+                    }
+                } 
+                // 2. SECOURS : DÉTECTION PAR PRIX PAYÉ
+                else {
+                    if (session.amount_total === 1900) {
+                        planAchete = "CHEF_CUISINE"; 
+                        limitScreens = 1; limitStaff = 1;
+                    } else if (session.amount_total === 4500 || session.amount_total === 4900) {
+                        planAchete = "BUSINESS"; 
+                        limitScreens = 5; limitStaff = 999;
+                    } else if (session.amount_total >= 9900) {
+                        planAchete = "EMPIRE"; 
+                        limitScreens = 50; limitStaff = 999;
+                    }
                 }
 
-                // 💾 Enregistrement exact dans MongoDB
                 await Tenant.updateOne(
                     { tenantID: tenantID },
                     { 
@@ -106,17 +108,17 @@ app.post('/webhook', express.raw({type: 'application/json'}), async (req, res) =
                     },
                     { upsert: true }
                 );
-            } catch(e) { console.error("❌ Erreur MongoDB Webhook :", e); }
+            } catch(e) { console.error("Erreur MongoDB Webhook :", e); }
         }
     }
     res.json({received: true});
 });
 
 // ==========================================
-// 🧠 BASE DE DONNÉES : INFRASTRUCTURE MONGODB
+// BASE DE DONNÉES : INFRASTRUCTURE MONGODB
 // ==========================================
 const mongoURI = process.env.MONGO_URI || "mongodb+srv://icheflavien_db_user:Tamere58.@cluster0.4w95d7m.mongodb.net/ichef_production?retryWrites=true&w=majority";
-mongoose.connect(mongoURI).then(() => console.log('🔥 Base de données iCHEF Online')).catch(err => console.error(err.message));
+mongoose.connect(mongoURI).then(() => console.log('Base de donnees iCHEF Online')).catch(err => console.error(err.message));
 
 const tenantSchema = new mongoose.Schema({
     tenantID: { type: String, required: true, unique: true },
@@ -126,7 +128,6 @@ const tenantSchema = new mongoose.Schema({
     status: { type: String, enum: ['ACTIF', 'SUSPENDU'], default: 'ACTIF' },
     plan: { 
         type: String, 
-        // Mise à jour de l'enum avec tes mots ultra-simples :
         enum: ['CHEF_CUISINE', 'CHEF_PATISSERIE', 'CHEF_BAR', 'ICHEF_OS', 'RENTABILITE', 'BRIGADES', 'BRIGADE', 'BUSINESS', 'ECO', 'PREMIUM', 'CHEF', 'PATISSIER', 'BAR', 'EMPIRE'], 
         default: 'BUSINESS' 
     },
@@ -145,7 +146,7 @@ const AppState = mongoose.model('AppState', new mongoose.Schema({
 }, { minimize: false }));
 
 // ==========================================
-// 🤖 MOTEUR IA 1 : RECONNAISSANCE DE FACTURES
+// MOTEUR IA 1 : RECONNAISSANCE DE FACTURES
 // ==========================================
 const { GoogleGenerativeAI } = require('@google/generative-ai');
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY || 'CLE_MANQUANTE');
@@ -155,7 +156,7 @@ app.post('/api/scan-invoice', async (req, res) => {
     
     if (!imageBase64) return res.status(400).json({ success: false, error: "Aucune image fournie." });
     if (!process.env.GEMINI_API_KEY || process.env.GEMINI_API_KEY === 'CLE_MANQUANTE') {
-        return res.status(500).json({ success: false, error: "🚨 CRITIQUE : Clé GEMINI_API_KEY introuvable." });
+        return res.status(500).json({ success: false, error: "CRITIQUE : Cle GEMINI_API_KEY introuvable." });
     }
 
     try {
@@ -187,7 +188,7 @@ app.post('/api/scan-invoice', async (req, res) => {
             } catch (err) { lastError = err.message; }
         }
 
-        if (!result) throw new Error("Modèles refusés : " + lastError);
+        if (!result) throw new Error("Modeles refuses : " + lastError);
 
         let responseText = result.response.text().trim();
         responseText = responseText.replace(/```json/gi, '').replace(/```/gi, '').trim();
@@ -195,17 +196,17 @@ app.post('/api/scan-invoice', async (req, res) => {
         
         res.json({ success: true, data: JSON.parse(responseText) });
     } catch (error) {
-        console.error("🔥 CRASH IA FACTURE :", error.message);
+        console.error("CRASH IA FACTURE :", error.message);
         res.status(500).json({ success: false, error: "ERREUR GOOGLE : " + error.message });
     }
 });
 
 // ==========================================
-// 🤖 MOTEUR IA 2 : MAÎTRE D'HÔTEL (RÉSERVATIONS)
+// MOTEUR IA 2 : MAÎTRE D'HÔTEL (RÉSERVATIONS)
 // ==========================================
 app.post('/api/smart-reservation', async (req, res) => {
     const { tenantID, customerRequest, availableTables } = req.body;
-    if (!process.env.GEMINI_API_KEY) return res.status(500).json({ success: false, error: "Clé IA manquante." });
+    if (!process.env.GEMINI_API_KEY) return res.status(500).json({ success: false, error: "Cle IA manquante." });
 
     try {
         const prompt = `
@@ -244,13 +245,13 @@ app.post('/api/smart-reservation', async (req, res) => {
 
         res.json({ success: true, decision });
     } catch (error) {
-        console.error("🔥 CRASH IA RÉSA :", error.message);
+        console.error("CRASH IA RESA :", error.message);
         res.status(500).json({ success: false, error: "Erreur IA." });
     }
 });
 
 // ==========================================
-// 🚀 ACTIVATION & CRÉATION OFFICIELLE CLIENT
+// ACTIVATION & CRÉATION OFFICIELLE CLIENT
 // ==========================================
 app.post('/api/activate', async (req, res) => {
     const { sessionId, clientName, tenantID, email, phone, plan, specialite } = req.body;
@@ -258,10 +259,10 @@ app.post('/api/activate', async (req, res) => {
 
     try {
         const session = await stripe.checkout.sessions.retrieve(sessionId);
-        if (session.payment_status !== 'paid') return res.status(403).json({ error: "Paiement non validé." });
+        if (session.payment_status !== 'paid') return res.status(403).json({ error: "Paiement non valide." });
         
         const existingTenant = await Tenant.findOne({ tenantID });
-        if (existingTenant) return res.status(400).json({ error: "Identifiant déjà pris." });
+        if (existingTenant) return res.status(400).json({ error: "Identifiant deja pris." });
 
         const randomPin = Math.floor(1000 + Math.random() * 9000).toString();
         const finalPlan = plan ? plan.toUpperCase().replace(' ', '_') : 'BUSINESS';
@@ -270,18 +271,14 @@ app.post('/api/activate', async (req, res) => {
         let limit = 1; 
         let staffLimit = 1;
 
-        // Mise à jour de la distribution selon tes mots exacts
         if (['CHEF', 'PATISSIER', 'BAR', 'CHEF_CUISINE', 'CHEF_PATISSERIE', 'CHEF_BAR'].includes(finalPlan)) { 
-            limit = 1; 
-            staffLimit = 1; 
+            limit = 1; staffLimit = 1; 
         } 
         else if (['BUSINESS', 'RENTABILITE', 'ECO'].includes(finalPlan)) { 
-            limit = 5; 
-            staffLimit = 999; 
+            limit = 5; staffLimit = 999; 
         } 
         else if (['BRIGADE', 'BRIGADES', 'EMPIRE', 'PREMIUM'].includes(finalPlan)) { 
-            limit = 50; 
-            staffLimit = 999; 
+            limit = 50; staffLimit = 999; 
         } 
 
         await Tenant.create({ 
@@ -299,7 +296,7 @@ app.post('/api/activate', async (req, res) => {
 });
 
 // ==========================================
-// 🔒 SÉCURITÉ : GARDE DU CORPS & PINS & LIMITES D'ÉCRANS
+// SÉCURITÉ : GARDE DU CORPS & PINS & LIMITES D'ÉCRANS
 // ==========================================
 app.get('/api/check-license', async (req, res) => {
     const { tenantID } = req.query;
@@ -314,7 +311,7 @@ app.get('/api/check-license', async (req, res) => {
 
 app.post('/api/verify-pin', async (req, res) => {
     const { tenantID, pin, deviceId } = req.body;
-    if (!tenantID || !pin) return res.status(400).json({ success: false, error: "Données manquantes" });
+    if (!tenantID || !pin) return res.status(400).json({ success: false, error: "Donnees manquantes" });
 
     try {
         const cleanID = String(tenantID).trim();
@@ -327,7 +324,7 @@ app.post('/api/verify-pin', async (req, res) => {
             if (deviceId) {
                 if (!tenant.registeredDevices.includes(deviceId)) {
                     if (tenant.registeredDevices.length >= tenant.maxScreens) {
-                        return res.status(403).json({ success: false, error: `🛑 Limite d'écrans atteinte.` });
+                        return res.status(403).json({ success: false, error: `Limite d ecrans atteinte.` });
                     }
                     tenant.registeredDevices.push(deviceId);
                     await tenant.save();
@@ -390,7 +387,7 @@ app.post('/api/billing-portal', async (req, res) => {
 });
 
 // ==========================================
-// 🆘 GESTION DES ALERTES SUPPORT (SOS)
+// GESTION DES ALERTES SUPPORT (SOS)
 // ==========================================
 let activeAlerts = []; 
 
@@ -402,12 +399,12 @@ app.post('/api/support-alert', (req, res) => {
 });
 
 app.post('/api/get-alerts', (req, res) => {
-    if(req.body.masterKey !== ADMIN_PASS) return res.status(403).json({ success: false, error: "Non autorisé" });
+    if(req.body.masterKey !== ADMIN_PASS) return res.status(403).json({ success: false, error: "Non autorise" });
     res.json({ success: true, alerts: activeAlerts.filter(a => a.status === 'OPEN') });
 });
 
 app.post('/api/resolve-alert', (req, res) => {
-    if(req.body.masterKey !== ADMIN_PASS) return res.status(403).json({ success: false, error: "Non autorisé" });
+    if(req.body.masterKey !== ADMIN_PASS) return res.status(403).json({ success: false, error: "Non autorise" });
     const alertIndex = activeAlerts.findIndex(a => a.id === req.body.alertId);
     if(alertIndex > -1) {
         activeAlerts[alertIndex].status = 'RESOLVED';
@@ -416,7 +413,7 @@ app.post('/api/resolve-alert', (req, res) => {
 });
 
 // ==========================================
-// 📡 LE CŒUR DU RÉSEAU (SYNCHRO ATOMIQUE SÉCURISÉE)
+// LE CŒUR DU RÉSEAU (SYNCHRO ATOMIQUE SÉCURISÉE)
 // ==========================================
 app.get('/get-current-state', async (req, res) => {
     try {
@@ -467,7 +464,7 @@ app.post('/update-order', async (req, res) => {
 });
 
 // ==========================================
-// 🛒 BOUTIQUE INTÉGRÉE : ACHAT DE CONNEXIONS SUPPLÉMENTAIRES
+// BOUTIQUE INTÉGRÉE : ACHAT DE CONNEXIONS SUPPLÉMENTAIRES
 // ==========================================
 app.post('/api/buy-screens', async (req, res) => {
     try {
@@ -476,9 +473,9 @@ app.post('/api/buy-screens', async (req, res) => {
         let amount = 0;
         let productName = "";
         
-        if (pack === '1') { amount = 900; productName = "iCHEF OS : +1 Connexion Supplémentaire"; }
-        else if (pack === '3') { amount = 2300; productName = "iCHEF OS : +3 Connexions Supplémentaires"; }
-        else if (pack === '5') { amount = 5000; productName = "iCHEF OS : +5 Connexions Supplémentaires"; }
+        if (pack === '1') { amount = 900; productName = "iCHEF OS : +1 Connexion Supplementaire"; }
+        else if (pack === '3') { amount = 2300; productName = "iCHEF OS : +3 Connexions Supplementaires"; }
+        else if (pack === '5') { amount = 5000; productName = "iCHEF OS : +5 Connexions Supplementaires"; }
         else return res.status(400).json({ error: "Pack inconnu." });
 
         const session = await stripe.checkout.sessions.create({
@@ -495,13 +492,13 @@ app.post('/api/buy-screens', async (req, res) => {
         
         res.json({ success: true, url: session.url });
     } catch (error) {
-        console.error("Erreur Boutique Écrans:", error);
-        res.status(500).json({ success: false, error: "Erreur lors de la création du paiement Stripe." });
+        console.error("Erreur Boutique Ecrans:", error);
+        res.status(500).json({ success: false, error: "Erreur lors de la creation du paiement Stripe." });
     }
 });
 
 // ==========================================
-// 💳 CRÉATION DE PAIEMENT STRIPE DYNAMIQUE (MULTI-RESTAURANTS)
+// CRÉATION DE PAIEMENT STRIPE DYNAMIQUE (MULTI-RESTAURANTS)
 // ==========================================
 app.post('/api/create-checkout', async (req, res) => {
     try {
@@ -516,7 +513,7 @@ app.post('/api/create-checkout', async (req, res) => {
         const stripeKeyResto = settings.payment && settings.payment.stripeLink ? settings.payment.stripeLink.trim() : null;
 
         if (!stripeKeyResto || !stripeKeyResto.startsWith('sk_')) {
-            return res.status(400).json({ error: "Le restaurateur n'a pas configuré sa clé Stripe secrète." });
+            return res.status(400).json({ error: "Le restaurateur n a pas configure sa cle Stripe secrete." });
         }
 
         const tenantStripe = require('stripe')(stripeKeyResto);
@@ -543,19 +540,19 @@ app.post('/api/create-checkout', async (req, res) => {
 });
 
 // ==========================================
-// 👑 MASTER CONTROL API (EMPIRE SUPER ADMIN)
+// MASTER CONTROL API (EMPIRE SUPER ADMIN)
 // ==========================================
 app.post('/api/get-all-tenants-admin', async (req, res) => {
     const { masterKey } = req.body;
-    if (masterKey !== ADMIN_PASS) return res.status(401).json({ success: false, error: "🔒 Accès Refusé." });
+    if (masterKey !== ADMIN_PASS) return res.status(401).json({ success: false, error: "Acces Refuse." });
     
     try {
         const tenantsData = await Tenant.find({});
         const formattedTenants = tenantsData.map(t => ({
             id: t.tenantID, 
             name: t.clientName || "Sans Nom", 
-            email: t.email || "Non renseigné",
-            phone: t.phone || "Non renseigné",
+            email: t.email || "Non renseigne",
+            phone: t.phone || "Non renseigne",
             pack: t.plan, 
             specialite: t.specialite,
             pin: t.pin,
@@ -568,25 +565,23 @@ app.post('/api/get-all-tenants-admin', async (req, res) => {
     } catch(err) { res.status(500).json({ success: false }); }
 });
 
-// 🎛️ NOUVELLE ROUTE : MODIFIER LE FORFAIT DEPUIS LA TOUR DE CONTRÔLE
 app.post('/api/update-plan-admin', async (req, res) => {
     const { masterKey, tenantID, newPlan } = req.body;
     
     if (masterKey !== ADMIN_PASS) {
-        return res.status(401).json({ success: false, error: 'Accès refusé' });
+        return res.status(401).json({ success: false, error: 'Acces refuse' });
     }
 
     try {
-        // Détermination des limites selon le nouveau forfait
         let limit = 1; 
         let staffLimit = 1;
         const upperPlan = newPlan.toUpperCase();
         
-        if (['CHEF', 'PATISSIER', 'BAR'].includes(upperPlan)) { 
+        if (['CHEF', 'PATISSIER', 'BAR', 'CHEF_CUISINE', 'CHEF_PATISSERIE', 'CHEF_BAR'].includes(upperPlan)) { 
             limit = 1; staffLimit = 1; 
-        } else if (['BUSINESS', 'RENTABILITE'].includes(upperPlan)) { 
+        } else if (['BUSINESS', 'RENTABILITE', 'ECO'].includes(upperPlan)) { 
             limit = 5; staffLimit = 999; 
-        } else if (['BRIGADE', 'EMPIRE'].includes(upperPlan)) { 
+        } else if (['BRIGADE', 'EMPIRE', 'BRIGADES', 'PREMIUM'].includes(upperPlan)) { 
             limit = 50; staffLimit = 999; 
         }
 
@@ -607,7 +602,7 @@ app.post('/api/update-plan-admin', async (req, res) => {
 
 app.post('/api/admin-action', async (req, res) => {
     const { masterKey, tenantID, action, newPlan, manualScreens, manualPin, manualMaxStaff } = req.body;
-    if (masterKey !== ADMIN_PASS) return res.status(401).json({ success: false, error: "🔒 Accès Refusé." });
+    if (masterKey !== ADMIN_PASS) return res.status(401).json({ success: false, error: "Acces Refuse." });
 
     try {
         if (action === 'set_screens' && manualScreens) {
@@ -622,18 +617,19 @@ app.post('/api/admin-action', async (req, res) => {
         else if (action === 'set_plan' && newPlan) { 
             let limit = 1; 
             let staffLimit = 1;
+            const upperPlan = newPlan.toUpperCase();
             
-            if (['CHEF', 'PATISSIER', 'BAR'].includes(newPlan)) { 
+            if (['CHEF', 'PATISSIER', 'BAR', 'CHEF_CUISINE', 'CHEF_PATISSERIE', 'CHEF_BAR'].includes(upperPlan)) { 
                 limit = 1; staffLimit = 1; 
             } 
-            else if (['BUSINESS', 'RENTABILITE'].includes(newPlan)) { 
+            else if (['BUSINESS', 'RENTABILITE', 'ECO'].includes(upperPlan)) { 
                 limit = 5; staffLimit = 999; 
             } 
-            else if (['BRIGADE', 'EMPIRE'].includes(newPlan)) { 
+            else if (['BRIGADE', 'EMPIRE', 'BRIGADES', 'PREMIUM'].includes(upperPlan)) { 
                 limit = 50; staffLimit = 999; 
             } 
             
-            await Tenant.findOneAndUpdate({ tenantID }, { plan: newPlan, maxScreens: limit, maxStaff: staffLimit });
+            await Tenant.findOneAndUpdate({ tenantID }, { plan: upperPlan, maxScreens: limit, maxStaff: staffLimit });
         }
         else if (action === 'reset_devices') {
             await Tenant.findOneAndUpdate({ tenantID }, { registeredDevices: [] });
@@ -653,4 +649,4 @@ app.post('/api/admin-action', async (req, res) => {
     } catch (err) { res.status(500).json({ success: false }); }
 });
 
-app.listen(PORT, () => console.log("🚀 L'Empire iCHEF est en ligne sur le port " + PORT));
+app.listen(PORT, () => console.log("L Empire iCHEF est en ligne sur le port " + PORT));
