@@ -55,7 +55,7 @@
             color: var(--text-main); border-radius: 8px; font-size: 1rem; box-sizing: border-box; transition: 0.3s; font-family: inherit;
         }
         .input-field:focus { outline: none; border-color: var(--border-focus); box-shadow: 0 0 0 1px var(--border-focus);}
-        .input-field::placeholder { color: #475569; }
+        .input-field::placeholder { color: #475569; text-transform: none; }
 
         .btn-submit {
             background: var(--text-main); color: var(--bg); border: none; width: 100%; padding: 16px;
@@ -79,7 +79,7 @@
         <form id="login-form" onsubmit="handleLogin(event)">
             <div class="input-group">
                 <label>Identifiant Établissement</label>
-                <input type="text" id="tenant-id" class="input-field" placeholder="Ex: BISTROT_PARIS" required autocomplete="off" style="text-transform: uppercase;">
+                <input type="text" id="tenant-id" class="input-field" placeholder="Ex: bistrot-paris" required autocomplete="off" style="text-transform: uppercase;">
             </div>
             
             <div class="input-group">
@@ -96,6 +96,16 @@
     <script>
         const SERVER_URL = (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1" || window.location.protocol === "file:") 
             ? "http://localhost:10000" : "https://tableau-system.onrender.com";
+
+        // FONCTION DE SÉCURITÉ : Génère une empreinte numérique unique pour cet appareil
+        function getDeviceFingerprint() {
+            let deviceId = localStorage.getItem('ichef_device_fingerprint');
+            if (!deviceId) {
+                deviceId = 'device_' + Math.random().toString(36).substr(2, 9) + '_' + Date.now();
+                localStorage.setItem('ichef_device_fingerprint', deviceId);
+            }
+            return deviceId;
+        }
 
         // Par sécurité, on purge la mémoire à l'arrivée sur la page de connexion
         window.onload = function() {
@@ -118,11 +128,15 @@
             errorMsg.style.display = 'none';
 
             try {
-                // 🔒 Appel STRICT vers le serveur. Le serveur est le seul juge.
+                // Appel STRICT vers le serveur, avec inclusion de la plaque d'immatriculation (deviceId)
                 const response = await fetch(`${SERVER_URL}/api/verify-pin`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ tenantID: tenantInput, pin: pinInput })
+                    body: JSON.stringify({ 
+                        tenantID: tenantInput, 
+                        pin: pinInput,
+                        deviceId: getDeviceFingerprint() 
+                    })
                 });
                 const data = await response.json();
 
@@ -131,20 +145,26 @@
                     localStorage.setItem('ichef_tenant_id', tenantInput);
                     localStorage.setItem('ichef_master_pin', pinInput);
                     
-                    // ⏱️ DÉLAI DE SÉCURITÉ : Attendre la fin de l'écriture avant de rediriger
+                    // DÉLAI DE SÉCURITÉ : Attendre la fin de l'écriture avant de rediriger
                     setTimeout(() => {
                         window.location.href = `administration.html?tenantID=${tenantInput}`;
                     }, 300);
                     
                 } else {
-                    throw new Error("Identifiant ou Code PIN incorrect.");
+                    // Le serveur a refusé : on affiche la raison exacte (ex: Limite d'écrans atteinte)
+                    throw new Error(data.error || "Identifiant ou Code PIN incorrect.");
                 }
             } catch (error) {
                 btnLogin.disabled = false;
                 btnLogin.innerText = "Connexion Sécurisée";
-                errorMsg.innerText = error.message === "Identifiant ou Code PIN incorrect." ? error.message : "Erreur réseau. Impossible de joindre le serveur.";
+                
+                // Si l'erreur est liée au PIN, on vide le champ PIN
+                if (error.message.toLowerCase().includes("incorrect")) {
+                    document.getElementById('tenant-pin').value = ''; 
+                }
+                
+                errorMsg.innerText = error.message;
                 errorMsg.style.display = 'block';
-                document.getElementById('tenant-pin').value = ''; // On vide uniquement le PIN pour réessayer
             }
         }
     </script>
