@@ -138,13 +138,14 @@
                     <span>Total</span>
                     <span id="cart-total-price" style="color: var(--gold);">0.00 €</span>
                 </div>
-                <div id="checkout-buttons-container" class="checkout-buttons-container"></div>
+                <div id="checkout-buttons-container" class="checkout-buttons-container">
+                    </div>
             </div>
         </div>
     </div>
 
     <script>
-        // 🔒 LIAISON AU CLOUD DU RESTAURANT (Sans PIN)
+        // 🔒 LIAISON AU CLOUD DU RESTAURANT (Sans PIN car côté client)
         const urlParams = new URLSearchParams(window.location.search);
         const tenantID = urlParams.get('tenantID');
         const tableNum = urlParams.get('table') || `WEB_${Math.floor(Math.random() * 1000)}`;
@@ -157,15 +158,17 @@
             document.getElementById('menu-container').innerHTML = '<div class="loading-screen" style="color:#ff4757;">Ce QR Code est invalide. Identifiant établissement manquant.</div>';
         }
 
-        // 🚨 GESTION RETOUR STRIPE : Feu vert pour la cuisine
+        // 🚨 GESTION RETOUR STRIPE : Feu vert pour la caisse et la cuisine
         if (paiementStatus === 'ok') { 
-            alert("✅ Paiement accepté ! Votre commande part immédiatement en cuisine."); 
-            // Validation de la commande
+            alert("✅ Paiement accepté ! Votre commande part immédiatement en préparation."); 
+            // On valide la commande pour que le pad serveur et les KDS la voient comme payée
             fetch(`${SERVER_URL}/get-current-state?tenantID=${tenantID}`).then(r=>r.json()).then(stateData => {
                 if(stateData.activeOrders && stateData.activeOrders[tableNum]) {
                     let order = stateData.activeOrders[tableNum];
                     order.status = "NOUVELLE COMMANDE";
                     order.paid = true;
+                    // L'alerte rouge fait sonner la caisse serveur (pack-eco.html)
+                    order.alerteRouge = "📱 PAIEMENT REÇU EN LIGNE"; 
                     fetch(`${SERVER_URL}/update-order?tenantID=${tenantID}`, { 
                         method: 'POST', headers: {'Content-Type': 'application/json'}, 
                         body: JSON.stringify({ tableId: tableNum, order: order }) 
@@ -341,7 +344,30 @@
             if (cart.length === 0) toggleCart();
         };
 
+        // 🛒 MISE À JOUR DE L'INTERFACE PANIER ET BOUTONS PAIEMENT
         function updateCartUI() {
+            let isManualClosed = (systemSettings.qrActive === false);
+            let isAutoOpen = true;
+            if (systemSettings.schedule && systemSettings.schedule.auto) {
+                let now = new Date(new Date().toLocaleString("en-US", {timeZone: "Europe/Paris"}));
+                let currentDay = now.getDay(); 
+                let currentHour = now.getHours().toString().padStart(2, '0') + ":" + now.getMinutes().toString().padStart(2, '0');
+                let sched = systemSettings.schedule;
+                if (!sched.days.includes(currentDay)) {
+                    isAutoOpen = false;
+                } else {
+                    let inMatin = isTimeInSlot(currentHour, sched.matin?.s, sched.matin?.e);
+                    let inAprem = isTimeInSlot(currentHour, sched.aprem?.s, sched.aprem?.e);
+                    let inSoir  = isTimeInSlot(currentHour, sched.soir?.s,  sched.soir?.e);
+                    let inNuit  = isTimeInSlot(currentHour, sched.nuit?.s,  sched.nuit?.e);
+                    if (!inMatin && !inAprem && !inSoir && !inNuit) isAutoOpen = false;
+                }
+            }
+            if (isManualClosed || !isAutoOpen) {
+                document.getElementById('cart-fab').style.display = 'none';
+                return;
+            }
+
             let totalItems = cart.reduce((sum, item) => sum + item.qty, 0);
             let totalPrice = cart.reduce((sum, item) => sum + (item.price * item.qty), 0);
             
@@ -351,15 +377,16 @@
             
             let checkoutContainer = document.getElementById('checkout-buttons-container');
             if(checkoutContainer) {
+                // On s'assure que si Stripe est actif, on affiche les deux boutons !
                 let isOnlinePaymentActive = systemSettings.payment && systemSettings.payment.online;
                 
                 if (isOnlinePaymentActive) {
                     checkoutContainer.innerHTML = `
-                        <button class="btn-checkout btn-stripe" onclick="checkout('online')">💳 Payer en ligne (${totalPrice.toFixed(2)} ${currentCurrency})</button>
-                        <button class="btn-checkout btn-gold" onclick="checkout('table')">🛎️ Payer au serveur</button>
+                        <button class="btn-checkout btn-stripe" onclick="checkout('online')">💳 PAYER EN LIGNE (${totalPrice.toFixed(2)} ${currentCurrency})</button>
+                        <button class="btn-checkout btn-gold" onclick="checkout('table')">🛎️ COMMANDER (Paiement au serveur)</button>
                     `;
                 } else {
-                    checkoutContainer.innerHTML = `<button class="btn-checkout btn-gold" onclick="checkout('table')">🛎️ Envoyer en Cuisine</button>`;
+                    checkoutContainer.innerHTML = `<button class="btn-checkout btn-gold" onclick="checkout('table')">🛎️ Envoyer la Commande (Paiement au serveur)</button>`;
                 }
             }
             if (document.getElementById('cart-modal').style.display === 'flex') renderCartModal();
@@ -383,8 +410,11 @@
             modal.style.display = (modal.style.display === 'flex') ? 'none' : (cart.length > 0 ? 'flex' : 'none');
         };
 
+        // 🚀 FONCTION DE SOUMISSION DE COMMANDE (ROUTAGE VERS LE PAD SERVEUR) 🚀
         window.checkout = async function(mode) {
             if (cart.length === 0) return;
+            
+            // Désactiver les boutons pendant le chargement
             document.querySelectorAll('.btn-checkout').forEach(btn => { btn.innerText = "Transmission..."; btn.disabled = true; });
 
             let total = cart.reduce((sum, i) => sum + (i.price * i.qty), 0);
@@ -403,7 +433,7 @@
                     qty: item.qty, 
                     category: item.destination,
                     dest: item.destination,
-                    isSent: true 
+                    isSent: true // Indique au KDS que ça peut être affiché (si payé ou serveur alerté)
                 }));
                 
                 let orderData = { 
@@ -411,12 +441,15 @@
                     total: (existingOrder.total || 0) + total, 
                     time: Date.now(), 
                     table: tableNum, 
-                    status: isOnlineChoice ? "EN ATTENTE PAIEMENT" : "NOUVELLE COMMANDE", 
+                    // Le statut À VALIDER PAR LA CAISSE dit au Pad Serveur (pack-eco.html) d'attraper la commande
+                    status: isOnlineChoice ? "EN ATTENTE PAIEMENT" : "À VALIDER PAR LA CAISSE", 
                     typePaiement: isOnlineChoice ? "En Ligne" : "À table", 
                     source: "QR Code",
-                    isWeb: true
+                    isWeb: true,
+                    alerteRouge: isOnlineChoice ? null : "📱 COMMANDE WEB A VALIDER" // Fait clignoter la table en rouge sur le Pad Serveur
                 };
                 
+                // Envoi à la base de données
                 await fetch(`${SERVER_URL}/update-order?tenantID=${tenantID}`, { 
                     method: 'POST', 
                     headers: {'Content-Type': 'application/json'}, 
@@ -424,6 +457,7 @@
                 });
                 
                 if (isOnlineChoice) { 
+                    // Si paiement Stripe, redirection
                     let stripeRes = await fetch(`${SERVER_URL}/api/create-checkout`, {
                         method: 'POST', headers: {'Content-Type': 'application/json'},
                         body: JSON.stringify({ total: total, table: tableNum, tenantID: tenantID })
@@ -432,7 +466,18 @@
                     if(stripeData.url) window.location.href = stripeData.url;
                     else alert("Erreur de connexion bancaire : " + stripeData.error);
                 } else { 
-                    alert("✅ Votre commande a bien été transmise à la cuisine !"); 
+                    // Si paiement au serveur, on force un "RING" (sonnerie) sur le Pad Serveur
+                    try {
+                        await fetch(`${SERVER_URL}/update-order?tenantID=${tenantID}`, { 
+                            method: 'POST', headers: {'Content-Type': 'application/json'}, 
+                            body: JSON.stringify({ 
+                                tableId: 'ALERTS_MASTER', 
+                                order: { data: { type: 'RING', message: `📱 NOUVELLE COMMANDE WEB (Table ${tableNum.replace('WEB_','')})`, timestamp: Date.now() } }
+                            }) 
+                        });
+                    } catch(e) {}
+                    
+                    alert("✅ Votre commande a bien été transmise à notre équipe en salle !"); 
                     cart = []; updateCartUI(); toggleCart(); 
                 }
             } catch(e) { 
