@@ -177,13 +177,11 @@ app.post('/api/scan-invoice', async (req, res) => {
             "articles": [ { "nom": "Produit", "quantite": "1 kg", "prixUnitaire": 4.54, "categorie": "Légumes" } ]
         }`;
 
-        // Utilisation stricte du modèle stable et officiel de Google
         const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
         const result = await model.generateContent([prompt, imagePart]);
 
         let responseText = result.response.text().trim();
         
-        // Nettoyage du format Markdown renvoyé par l'IA
         responseText = responseText.replace(/```json/gi, '').replace(/```/gi, '').trim();
         if (!responseText.startsWith("{")) responseText = responseText.substring(responseText.indexOf("{"));
         
@@ -289,7 +287,7 @@ app.post('/api/activate', async (req, res) => {
 });
 
 // ==========================================
-// SÉCURITÉ : GARDE DU CORPS & PINS & LIMITES D'ÉCRANS
+// SÉCURITÉ : GARDE DU CORPS & PINS (MAÎTRE + STAFF)
 // ==========================================
 app.get('/api/check-license', async (req, res) => {
     const { tenantID } = req.query;
@@ -313,7 +311,29 @@ app.post('/api/verify-pin', async (req, res) => {
         if (!tenant) return res.status(404).json({ success: false, error: "Identifiant inconnu." });
         if (tenant.status === 'SUSPENDU') return res.status(403).json({ success: false, error: "Licence suspendue." });
 
+        let isValid = false;
+        let roleAttribue = 'MASTER';
+
+        // 1. VÉRIFICATION DU PIN PATRON (Master PIN)
         if (String(tenant.pin).trim() === String(pin).trim()) { 
+            isValid = true;
+        } 
+        // 2. VÉRIFICATION DU PIN BRIGADE (Si le PIN tapé n'est pas celui du patron)
+        else {
+            const state = await AppState.findOne({ tenantID: tenant.tenantID });
+            if (state && state.activeOrders && state.activeOrders['STAFF_ACCESS']) {
+                const staffList = state.activeOrders['STAFF_ACCESS'].data || [];
+                // Recherche d'un membre actif avec ce code PIN exact
+                const staffMember = staffList.find(s => String(s.pin).trim() === String(pin).trim() && s.active === true);
+                if (staffMember) {
+                    isValid = true;
+                    roleAttribue = staffMember.dept || 'STAFF'; // Ex: 'salle', 'admin', 'cuisine'
+                }
+            }
+        }
+
+        // 3. VALIDATION DE L'ACCÈS ET DES ÉCRANS
+        if (isValid) { 
             if (deviceId) {
                 if (!tenant.registeredDevices.includes(deviceId)) {
                     if (tenant.registeredDevices.length >= tenant.maxScreens) {
@@ -323,7 +343,7 @@ app.post('/api/verify-pin', async (req, res) => {
                     await tenant.save();
                 }
             }
-            return res.json({ success: true, plan: tenant.plan, specialite: tenant.specialite }); 
+            return res.json({ success: true, plan: tenant.plan, specialite: tenant.specialite, role: roleAttribue }); 
         } else { 
             return res.status(401).json({ success: false, error: "Code PIN incorrect." }); 
         }
