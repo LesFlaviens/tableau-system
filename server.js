@@ -177,7 +177,8 @@ app.post('/api/scan-invoice', async (req, res) => {
             "articles": [ { "nom": "Produit", "quantite": "1 kg", "prixUnitaire": 4.54, "categorie": "Légumes" } ]
         }`;
 
-        const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash" });
+        // 🟢 CORRECTION ICI : Utilisation de la version "latest" autorisée
+        const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash-latest" });
         const result = await model.generateContent([prompt, imagePart]);
 
         let responseText = result.response.text().trim();
@@ -213,7 +214,8 @@ app.post('/api/smart-reservation', async (req, res) => {
             "optimisationInfo": "Notes brigade"
         }`;
 
-        const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash" });
+        // 🟢 CORRECTION ICI : Utilisation de la version "latest" autorisée
+        const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash-latest" });
         const result = await model.generateContent(prompt);
         
         let responseText = result.response.text().trim();
@@ -285,7 +287,6 @@ app.post('/api/activate', async (req, res) => {
         res.status(500).json({ error: "Erreur BDD ou nom de forfait invalide." }); 
     }
 });
-
 // ==========================================
 // SÉCURITÉ : GARDE DU CORPS & PINS (MAÎTRE + STAFF)
 // ==========================================
