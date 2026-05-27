@@ -177,7 +177,7 @@ app.post('/api/scan-invoice', async (req, res) => {
             "articles": [ { "nom": "Produit", "quantite": "1 kg", "prixUnitaire": 4.54, "categorie": "Légumes" } ]
         }`;
 
-        const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+        const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash" });
         const result = await model.generateContent([prompt, imagePart]);
 
         let responseText = result.response.text().trim();
@@ -213,7 +213,7 @@ app.post('/api/smart-reservation', async (req, res) => {
             "optimisationInfo": "Notes brigade"
         }`;
 
-        const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+        const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash" });
         const result = await model.generateContent(prompt);
         
         let responseText = result.response.text().trim();
