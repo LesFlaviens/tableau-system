@@ -146,7 +146,7 @@ const AppState = mongoose.model('AppState', new mongoose.Schema({
 }, { minimize: false }));
 
 // ==========================================
-// MOTEUR IA 1 : RECONNAISSANCE DE FACTURES
+// 🤖 MOTEUR IA 1 : RECONNAISSANCE DE FACTURES
 // ==========================================
 const { GoogleGenerativeAI } = require('@google/generative-ai');
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY || 'CLE_MANQUANTE');
@@ -156,7 +156,7 @@ app.post('/api/scan-invoice', async (req, res) => {
     
     if (!imageBase64) return res.status(400).json({ success: false, error: "Aucune image fournie." });
     if (!process.env.GEMINI_API_KEY || process.env.GEMINI_API_KEY === 'CLE_MANQUANTE') {
-        return res.status(500).json({ success: false, error: "CRITIQUE : Cle GEMINI_API_KEY introuvable." });
+        return res.status(500).json({ success: false, error: "🚨 CRITIQUE : Clé GEMINI_API_KEY introuvable sur le serveur." });
     }
 
     try {
@@ -177,26 +177,19 @@ app.post('/api/scan-invoice', async (req, res) => {
             "articles": [ { "nom": "Produit", "quantite": "1 kg", "prixUnitaire": 4.54, "categorie": "Légumes" } ]
         }`;
 
-        const modelsToTry = ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash", "gemini-flash"];
-        let result = null; let lastError = "";
-
-        for (let modelName of modelsToTry) {
-            try {
-                const model = genAI.getGenerativeModel({ model: modelName });
-                result = await model.generateContent([prompt, imagePart]);
-                break; 
-            } catch (err) { lastError = err.message; }
-        }
-
-        if (!result) throw new Error("Modeles refuses : " + lastError);
+        // Utilisation stricte du modèle stable et officiel de Google
+        const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+        const result = await model.generateContent([prompt, imagePart]);
 
         let responseText = result.response.text().trim();
+        
+        // Nettoyage du format Markdown renvoyé par l'IA
         responseText = responseText.replace(/```json/gi, '').replace(/```/gi, '').trim();
         if (!responseText.startsWith("{")) responseText = responseText.substring(responseText.indexOf("{"));
         
         res.json({ success: true, data: JSON.parse(responseText) });
     } catch (error) {
-        console.error("CRASH IA FACTURE :", error.message);
+        console.error("🔥 CRASH IA FACTURE :", error.message);
         res.status(500).json({ success: false, error: "ERREUR GOOGLE : " + error.message });
     }
 });
