@@ -156,7 +156,7 @@ app.post('/api/scan-invoice', async (req, res) => {
     
     if (!imageBase64) return res.status(400).json({ success: false, error: "Aucune image fournie." });
     if (!process.env.GEMINI_API_KEY || process.env.GEMINI_API_KEY === 'CLE_MANQUANTE') {
-        return res.status(500).json({ success: false, error: "🚨 CRITIQUE : Clé GEMINI_API_KEY introuvable sur le serveur." });
+        return res.status(500).json({ success: false, error: "🚨 CRITIQUE : Clé GEMINI_API_KEY introuvable." });
     }
 
     try {
@@ -177,12 +177,20 @@ app.post('/api/scan-invoice', async (req, res) => {
             "articles": [ { "nom": "Produit", "quantite": "1 kg", "prixUnitaire": 4.54, "categorie": "Légumes" } ]
         }`;
 
-        // 🟢 CORRECTION ICI : Utilisation de la version "latest" autorisée
-        const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash-latest" });
-        const result = await model.generateContent([prompt, imagePart]);
+        const modelsToTry = ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash", "gemini-flash"];
+        let result = null; let lastError = "";
+
+        for (let modelName of modelsToTry) {
+            try {
+                const model = genAI.getGenerativeModel({ model: modelName });
+                result = await model.generateContent([prompt, imagePart]);
+                break; 
+            } catch (err) { lastError = err.message; }
+        }
+
+        if (!result) throw new Error("Modèles refusés : " + lastError);
 
         let responseText = result.response.text().trim();
-        
         responseText = responseText.replace(/```json/gi, '').replace(/```/gi, '').trim();
         if (!responseText.startsWith("{")) responseText = responseText.substring(responseText.indexOf("{"));
         
@@ -194,11 +202,11 @@ app.post('/api/scan-invoice', async (req, res) => {
 });
 
 // ==========================================
-// MOTEUR IA 2 : MAÎTRE D'HÔTEL (RÉSERVATIONS)
+// 🤖 MOTEUR IA 2 : MAÎTRE D'HÔTEL (RÉSERVATIONS)
 // ==========================================
 app.post('/api/smart-reservation', async (req, res) => {
     const { tenantID, customerRequest, availableTables } = req.body;
-    if (!process.env.GEMINI_API_KEY) return res.status(500).json({ success: false, error: "Cle IA manquante." });
+    if (!process.env.GEMINI_API_KEY) return res.status(500).json({ success: false, error: "Clé IA manquante." });
 
     try {
         const prompt = `
@@ -214,8 +222,7 @@ app.post('/api/smart-reservation', async (req, res) => {
             "optimisationInfo": "Notes brigade"
         }`;
 
-        // 🟢 CORRECTION ICI : Utilisation de la version "latest" autorisée
-        const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash-latest" });
+        const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
         const result = await model.generateContent(prompt);
         
         let responseText = result.response.text().trim();
@@ -238,11 +245,10 @@ app.post('/api/smart-reservation', async (req, res) => {
 
         res.json({ success: true, decision });
     } catch (error) {
-        console.error("CRASH IA RESA :", error.message);
+        console.error("🔥 CRASH IA RÉSA :", error.message);
         res.status(500).json({ success: false, error: "Erreur IA." });
     }
 });
-
 // ==========================================
 // ACTIVATION & CRÉATION OFFICIELLE CLIENT
 // ==========================================
