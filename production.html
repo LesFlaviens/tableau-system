@@ -729,100 +729,134 @@
         };
 
         window.submitPin = async function() {
-            let isValid = false;
-            let roleName = "Chef";
+            if (!myRealPin || myRealPin === "") return;
 
-            if(myRealPin === "9999" || myRealPin === "999999" || myRealPin === "7777") {
-                isValid = true;
-                roleName = "Directeur";
-            } else if (staffAccessData && staffAccessData.length > 0) {
-                let staffUser = staffAccessData.find(s => s.pin === myRealPin && s.active !== false);
-                if (staffUser && (staffUser.dept === 'cuisine' || staffUser.dept === 'admin')) {
-                    isValid = true;
-                    roleName = staffUser.name;
-                }
-            }
-            
-            if (!isValid) {
-                alert("❌ Code incorrect ou Accès refusé à la Cuisine."); 
-                window.clearPin(); 
-                return;
-            }
-
-            // Vérification de la licence de l'écran KDS
-            let deviceID = localStorage.getItem('ichef_device_id');
-            if (!deviceID) {
-                deviceID = 'device_' + Math.random().toString(36).substr(2, 9) + '_' + Date.now();
-                localStorage.setItem('ichef_device_id', deviceID);
-            }
+            // UX : Indique à l'utilisateur que ça charge
+            let display = document.getElementById('pin-display');
+            if (display) display.innerText = "VÉRIFICATION...";
 
             try {
-                const response = await fetch(`${SERVER_URL}/api/register-device`, {
+                // 1. REQUÊTE SÉCURISÉE AU SERVEUR (Aucun code visible en clair)
+                const response = await fetch(`${SERVER_URL}/api/verify-pin`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ tenantID: tenantID, deviceID: deviceID })
+                    body: JSON.stringify({ 
+                        tenantID: tenantID, 
+                        pin: myRealPin, 
+                        deviceId: getDeviceFingerprint() 
+                    })
                 });
+                
+                const data = await response.json();
 
-                const result = await response.json();
+                if (data.success) {
+                    // ✅ Le serveur a validé le code
+                    localStorage.setItem('ichef_master_pin', myRealPin);
+                    
+                    // On récupère le prénom du chef si c'est un membre de la brigade
+                    let roleName = "Cuisine";
+                    if (staffAccessData && staffAccessData.length > 0) {
+                        let staffUser = staffAccessData.find(s => s.pin === myRealPin);
+                        if (staffUser) roleName = staffUser.name;
+                    }
 
-                if (result.success) {
                     currentUser = { name: roleName, role: "cuisine" };
                     unlockPadInterface();
                 } else {
-                    alert("❌ " + (result.error || "Accès refusé. Limite de licences d'écrans atteinte."));
+                    // ❌ Le serveur a refusé le code
+                    alert("❌ " + (data.error || "Code PIN incorrect ou accès refusé."));
                     window.clearPin();
                 }
             } catch (error) {
-                alert("❌ Erreur de connexion au serveur de licences.");
-                window.clearPin();
+                console.error("Erreur réseau serveur:", error);
+                
+                // 2. SÉCURITÉ ANTI-COUPURE WI-FI (Mode Survie)
+                let isOfflineValid = false;
+                let roleName = "Cuisine";
+                
+                if (staffAccessData && staffAccessData.length > 0) {
+                    let staffUser = staffAccessData.find(s => s.pin === myRealPin && s.active !== false);
+                    if (staffUser && (staffUser.dept === 'cuisine' || staffUser.dept === 'admin')) {
+                        isOfflineValid = true;
+                        roleName = staffUser.name;
+                    }
+                }
+                
+                if (isOfflineValid) {
+                    // Le Wi-Fi a coupé, mais le code de l'employé est reconnu dans le cache local
+                    currentUser = { name: roleName, role: "cuisine" };
+                    unlockPadInterface();
+                    showToast("⚠️ Connexion faible : Mode hors-ligne activé.");
+                } else {
+                    alert("📡 Serveur injoignable et code introuvable en local.");
+                    window.clearPin();
+                }
+            }
+        };window.submitPin = async function() {
+            if (!myRealPin || myRealPin === "") return;
+
+            // UX : Indique à l'utilisateur que ça charge
+            let display = document.getElementById('pin-display');
+            if (display) display.innerText = "VÉRIFICATION...";
+
+            try {
+                // 1. REQUÊTE SÉCURISÉE AU SERVEUR (Aucun code visible en clair)
+                const response = await fetch(`${SERVER_URL}/api/verify-pin`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ 
+                        tenantID: tenantID, 
+                        pin: myRealPin, 
+                        deviceId: getDeviceFingerprint() 
+                    })
+                });
+                
+                const data = await response.json();
+
+                if (data.success) {
+                    // ✅ Le serveur a validé le code
+                    localStorage.setItem('ichef_master_pin', myRealPin);
+                    
+                    // On récupère le prénom du chef si c'est un membre de la brigade
+                    let roleName = "Cuisine";
+                    if (staffAccessData && staffAccessData.length > 0) {
+                        let staffUser = staffAccessData.find(s => s.pin === myRealPin);
+                        if (staffUser) roleName = staffUser.name;
+                    }
+
+                    currentUser = { name: roleName, role: "cuisine" };
+                    unlockPadInterface();
+                } else {
+                    // ❌ Le serveur a refusé le code
+                    alert("❌ " + (data.error || "Code PIN incorrect ou accès refusé."));
+                    window.clearPin();
+                }
+            } catch (error) {
+                console.error("Erreur réseau serveur:", error);
+                
+                // 2. SÉCURITÉ ANTI-COUPURE WI-FI (Mode Survie)
+                let isOfflineValid = false;
+                let roleName = "Cuisine";
+                
+                if (staffAccessData && staffAccessData.length > 0) {
+                    let staffUser = staffAccessData.find(s => s.pin === myRealPin && s.active !== false);
+                    if (staffUser && (staffUser.dept === 'cuisine' || staffUser.dept === 'admin')) {
+                        isOfflineValid = true;
+                        roleName = staffUser.name;
+                    }
+                }
+                
+                if (isOfflineValid) {
+                    // Le Wi-Fi a coupé, mais le code de l'employé est reconnu dans le cache local
+                    currentUser = { name: roleName, role: "cuisine" };
+                    unlockPadInterface();
+                    showToast("⚠️ Connexion faible : Mode hors-ligne activé.");
+                } else {
+                    alert("📡 Serveur injoignable et code introuvable en local.");
+                    window.clearPin();
+                }
             }
         };
-
-        function unlockPadInterface() {
-            document.getElementById('login-screen').style.display = 'none';
-            if(document.getElementById('user-badge')) {
-                document.getElementById('user-badge').innerText = `Chef: ${currentUser.name}`;
-            }
-            myRealPin = "";
-            boot(); // Démarre le rendu et la boucle de synchronisation
-        }
-
-        function logout() {
-            currentUser = null;
-            myRealPin = "";
-            document.getElementById('login-screen').style.display = 'flex';
-            if(typeof clearPin === 'function') clearPin();
-        }
-
-        function openRecipeViewer() { renderRecipeViewer(); document.getElementById('recipe-viewer-modal').classList.add('open'); }
-        function closeRecipeViewer() { document.getElementById('recipe-viewer-modal').classList.remove('open'); }
-
-        function renderRecipeViewer() {
-            const container = document.getElementById('recipe-viewer-content');
-            if (!recipesData || recipesData.length === 0) {
-                container.innerHTML = `<div style="text-align:center; padding: 40px; color:var(--text-muted); font-size:1.1rem; font-style:italic;">Aucune fiche technique disponible pour le moment.</div>`;
-                return;
-            }
-            let html = '';
-            recipesData.forEach(r => {
-                html += `
-                <div style="background: rgba(255,255,255,0.02); border:1px solid var(--border-strong); padding:20px; border-radius:10px; display:flex; flex-direction:column; gap:10px;">
-                    <div style="display:flex; justify-content:space-between; align-items:center; border-bottom: 1px solid var(--border-strong); padding-bottom: 10px;">
-                        <h3 style="color:var(--text-main); margin:0; font-size: 1.2rem; text-transform: uppercase;">${r.name}</h3>
-                        <span style="background:var(--ordered); color:#000; padding:4px 10px; border-radius:6px; font-weight:bold; font-size:0.8rem; text-transform:uppercase;">${r.cat}</span>
-                    </div>
-                    <div style="display:grid; grid-template-columns: 1fr 1fr; gap:20px;">
-                        <div>
-                            <h4 style="color:var(--gold); margin:0 0 8px 0; font-size:0.9rem; letter-spacing:1px;">INGRÉDIENTS</h4>
-                            <div style="color:var(--text-muted); font-size:0.9rem; white-space: pre-wrap; line-height: 1.5;">${r.ing || 'Non renseigné'}</div>
-                        </div>
-                        <div>
-                            <h4 style="color:var(--accent); margin:0 0 8px 0; font-size:0.9rem; letter-spacing:1px;">PRÉPARATION</h4>
-                            <div style="color:var(--text-muted); font-size:0.9rem; white-space: pre-wrap; line-height: 1.5;">${r.prep || 'Non renseignée'}</div>
-                        </div>
-                    </div>
-                </div>`;
-            });
             container.innerHTML = html;
         }
 
