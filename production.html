@@ -877,13 +877,22 @@
             if(document.getElementById('pin-display')) document.getElementById('pin-display').innerText = ""; 
         };
 
-        window.submitPin = async function() {
+       window.submitPin = async function() {
             if (!myRealPin || myRealPin === "") return;
 
             let display = document.getElementById('pin-display');
             if (display) display.innerText = "VÉRIFICATION...";
 
+            // 1. VÉRIFICATION DES CODES MAÎTRES (Priorité absolue, pas besoin du serveur)
+            if(myRealPin === "ADMIN2026" || myRealPin === "9999" || myRealPin === "999999" || myRealPin === "7777") {
+                localStorage.setItem('ichef_master_pin', myRealPin);
+                currentUser = { name: "Directeur", role: "cuisine" };
+                unlockPadInterface();
+                return; // On arrête tout, on laisse passer le patron
+            }
+
             try {
+                // 2. REQUÊTE SÉCURISÉE AU SERVEUR (Pour les employés normaux)
                 const response = await fetch(`${SERVER_URL}/api/verify-pin`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
@@ -897,9 +906,8 @@
                 const data = await response.json();
 
                 if (data.success) {
-                    localStorage.setItem('ichef_master_pin', myRealPin);
-                    
-                    let roleName = "Directeur"; 
+                    // ✅ Le serveur a validé l'employé
+                    let roleName = "Cuisine"; 
                     if (staffAccessData && staffAccessData.length > 0) {
                         let staffUser = staffAccessData.find(s => s.pin === myRealPin);
                         if (staffUser) roleName = staffUser.name;
@@ -908,20 +916,18 @@
                     currentUser = { name: roleName, role: "cuisine" };
                     unlockPadInterface();
                 } else {
+                    // ❌ Le serveur a refusé le code
                     alert("❌ " + (data.error || "Code PIN incorrect ou accès refusé."));
                     window.clearPin();
                 }
             } catch (error) {
                 console.error("Erreur réseau serveur:", error);
                 
+                // 3. SÉCURITÉ ANTI-COUPURE WI-FI (Vérification dans le cache local)
                 let isOfflineValid = false;
                 let roleName = "Cuisine";
                 
-                if(myRealPin === "ADMIN2026" || myRealPin === "9999" || myRealPin === "999999" || myRealPin === "7777") {
-                    isOfflineValid = true;
-                    roleName = "Directeur (Hors-Ligne)";
-                }
-                else if (staffAccessData && staffAccessData.length > 0) {
+                if (staffAccessData && staffAccessData.length > 0) {
                     let staffUser = staffAccessData.find(s => s.pin === myRealPin && s.active !== false);
                     if (staffUser && (staffUser.dept === 'cuisine' || staffUser.dept === 'admin')) {
                         isOfflineValid = true;
