@@ -1683,7 +1683,7 @@
             }
         }
 
-        // === CALCUL LABORATOIRE PÂTISSERIE ===
+        // === CALCUL LABORATOIRE MIXOLOGIE / PATISSERIE ===
         function calcSmartPlate() {
             const calcBox = (prefix) => {
                 let el = document.getElementById(`market-${prefix}-raw`);
@@ -1695,12 +1695,15 @@
                     let cleanLine = line.replace(/\([^)]+\)/g, '').replace(/dispo:.*$/i, '').trim();
                     if(cleanLine === "") return;
                     
+                    // CORRECTION 1 : L'ÉCONOMAT CHERCHE LE PRIX, PAS LE VOLUME
                     if (prefix === 'eco') {
-                        let priceMatch = cleanLine.match(/(\d+(?:\.\d+)?)/);
+                        let priceMatch = cleanLine.match(/(\d+(?:\.\d+)?)\s*(?:€|euros?|\$|chf|mad|£|¥)/i);
+                        if(!priceMatch) priceMatch = cleanLine.match(/(\d+(?:\.\d+)?)$/); // Secours si aucun symbole
                         if(priceMatch && portion > 0) cost += (parseFloat(priceMatch[1]) / portion);
                         return;
                     }
 
+                    // CORRECTION 2 : GESTION DES UNITÉS PAR DÉFAUT
                     let unitPriceMatch = cleanLine.match(/(\d+(?:\.\d+)?)\s*(?:€|euros?|\$|chf|mad|£|¥)\s*(?:\/|au|le|la)\s*(kg|kilo|l|litre|pce|piece|pièce|g|gr|ml|cl)/i);
                     if (unitPriceMatch) {
                         let p = parseFloat(unitPriceMatch[1]); let u = unitPriceMatch[2];
@@ -1714,9 +1717,16 @@
                         let p = parseFloat(priceMatch[1]);
                         if (weightMatch) {
                             let w = parseFloat(weightMatch[1]); let u = weightMatch[2];
-                            if (u.startsWith('k') || (u.startsWith('l') && !u.includes('ml') && !u.includes('cl'))) cost += (p / (w * 1000)) * portion; 
-                            else cost += (p / w) * portion; 
-                        } else cost += p / portion; 
+                            if (u.startsWith('k') || (u.startsWith('l') && !u.includes('ml') && !u.includes('cl'))) {
+                                cost += (p / (w * 1000)) * portion; 
+                            } else {
+                                cost += (p / w) * portion; 
+                            }
+                        } else {
+                            // SI AUCUN POIDS N'EST SPÉCIFIÉ DANS LE TEXTE (ex: "fraise 5€")
+                            // ON ASSUME QUE C'EST LE PRIX AU KILO PAR DÉFAUT
+                            cost += (p / 1000) * portion; 
+                        }
                     }
                 });
                 let costDisplay = document.getElementById(`cost-${prefix}`);
@@ -1724,10 +1734,13 @@
                 return cost;
             };
 
+            // ATTENTION ICI : Assure-toi que ces 6 abréviations correspondent 
+            // exactement à celles que tu as mises dans le HTML de ton chef pâtissier.
             let total = ['fecu', 'prot', 'bof', 'sauc', 'legu', 'eco'].reduce((sum, k) => sum + calcBox(k), 0);
+            
             let totalEl = document.getElementById('market-total-cost');
             if (totalEl) totalEl.value = total.toFixed(2) + " " + currentCurrency;
-            let margin = parseFloat(document.getElementById('market-margin').value) || 4.0;
+            let margin = parseFloat(document.getElementById('market-margin').value) || 3.5;
             let rec = total * margin;
             let recEl = document.getElementById('market-recommended');
             if (recEl) recEl.innerText = rec.toFixed(2);
@@ -1737,7 +1750,6 @@
                 priceInput.value = rec.toFixed(2); priceInput.dataset.autofilled = "true";
             }
         }
-
         // === RECETTES ET FICHE TECHNIQUE ===
         function generateRecipeIngredients() {
             let paxCount = parseInt(document.getElementById('recipe-pax').value) || 1;
