@@ -515,6 +515,155 @@
         let kdsDirection = localStorage.getItem('empire_kds_direction') || 'ltr';
         let tempKdsConfig = [];
 
+        // === 1. OUTIL : EXTRACTION DES POIDS ET UNITÉS (SMART IA UNIVERSELLE) ===
+        function parseQuantity(str, itemName = "") {
+            if (!str) return { val: 1, unit: 'u' };
+            // On cherche un nombre suivi potentiellement d'une unité
+            let match = String(str).toLowerCase().match(/([\d.,]+)\s*(kg|g|gr|l|cl|ml|pce|piece|pièce|u|botte|boite|carton)?/);
+            
+            let val = parseFloat(match ? match[1].replace(',', '.') : String(str).replace(',', '.'));
+            if (isNaN(val)) val = 1;
+
+            let unit = 'u';
+            if (match && match[2]) {
+                unit = match[2]; 
+            } else if (itemName) {
+                let n = itemName.toLowerCase();
+                if (n.match(/tomate|pomme|carotte|oignon|viande|poisson|farine|sucre|beurre|fromage|boeuf|poulet|veau|porc|pâte|chocolat|levure|amande|praliné|glaçon|purée|fruit|café/)) unit = 'kg';
+                else if (n.match(/lait|crème|eau|vin|huile|vinaigre|jus|sirop|alcool|liqueur|rhum|vodka|gin|tequila|bière|champagne/)) unit = 'l';
+                else if (n.match(/menthe|coriandre|ciboulette|persil|basilic|thym|romarin/)) unit = 'botte';
+                else if (n.match(/oeuf|citron|orange|lime|gousse/)) unit = 'pce';
+            }
+            
+            if (unit === 'gr') unit = 'g';
+            if (unit === 'piece' || unit === 'pièce') unit = 'pce';
+
+            return { val: val, unit: unit };
+        }
+
+        // === 2. AJOUT MANUEL STOCK ===
+        async function addManualStock() {
+            const name = document.getElementById('manual-stock-name').value.trim();
+            const qtyStr = document.getElementById('manual-stock-qty').value.trim();
+            const price = parseFloat(document.getElementById('manual-stock-price').value);
+            const cat = document.getElementById('manual-stock-cat').value;
+            const supplier = document.getElementById('manual-stock-supplier').value.trim();
+
+            if(!name || !qtyStr || isNaN(price)) return alert("Remplissez les champs obligatoires (Nom, Qté, Prix).");
+
+            let parsedQty = parseQuantity(qtyStr, name); 
+            let unitPrice = parsedQty.val > 0 ? (price / parsedQty.val) : price;
+
+            stockGlobalData.unshift({ 
+                id: Date.now(), name, cat, fournisseur: supplier,
+                qtyStr: parsedQty.val + " " + parsedQty.unit, 
+                initialQty: parsedQty.val, currentQty: parsedQty.val, unit: parsedQty.unit,
+                totalPrice: price, unitPrice: unitPrice, date: new Date().toLocaleDateString() 
+            });
+
+            document.getElementById('manual-stock-name').value = ''; 
+            document.getElementById('manual-stock-qty').value = ''; 
+            document.getElementById('manual-stock-price').value = '';
+            document.getElementById('manual-stock-supplier').value = '';
+            
+            closeInvModal('manual-stock-modal');
+            renderAll(); 
+            await API.save('INVENTORY_MASTER', stockGlobalData);
+        }
+
+        // === 3. ÉDITION RAPIDE DU STOCK ===
+        async function editStockQty(idx) {
+            let item = stockGlobalData[idx];
+            let parsed = parseQuantity(item.qtyStr, item.name);
+            let initialQ = item.initialQty !== undefined ? item.initialQty : parsed.val;
+            let currentQ = item.currentQty !== undefined ? item.currentQty : initialQ;
+            let unit = item.unit !== undefined ? item.unit : parsed.unit;
+            
+            let newQtyStr = prompt(`📦 Quantité et Unité RESTANTES pour ${item.name} :\n(Vous pouvez modifier l'unité, ex: "5 kg", "2 l", "10 pce")`, `${currentQ} ${unit}`);
+            
+            if (newQtyStr !== null && newQtyStr.trim() !== "") {
+                let parsedNew = parseQuantity(newQtyStr, item.name);
+                
+                if (!isNaN(parsedNew.val) && parsedNew.val >= 0) {
+                    if (item.initialQty === undefined) item.initialQty = initialQ; 
+                    if (item.unitPrice === undefined) {
+                        let tPrice = parseFloat(String(item.lastPrice).replace(',', '.').replace(/[^\d.-]/g, '')) || 0;
+                        item.totalPrice = tPrice;
+                        item.unitPrice = initialQ > 0 ? tPrice / initialQ : tPrice;
+                    }
+                    
+                    item.currentQty = parsedNew.val;
+                    item.unit = parsedNew.unit; 
+                    item.qtyStr = parsedNew.val + " " + parsedNew.unit; 
+                    
+                    renderAll();
+                    await API.save('INVENTORY_MASTER', stockGlobalData);
+                } else alert("⚠️ Quantité invalide.");
+            }
+        }
+
+        // === CALCUL LABORATOIRE MIXOLOGIE / PATISSERIE ===
+        function calcSmartPlate() {
+            const calcBox = (prefix) => {
+                let el = document.getElementById(`market-${prefix}-raw`);
+                if(!el) return 0;
+                let lines = el.value.toLowerCase().replace(/,/g, '.').split('\n');
+                let portion = parseFloat(document.getElementById(`gram-${prefix}`).value) || 1;
+                let cost = 0;
+                lines.forEach(line => {
+                    let cleanLine = line.replace(/\([^)]+\)/g, '').replace(/dispo:.*$/i, '').trim();
+                    if(cleanLine === "") return;
+                    
+                    if (prefix === 'eco') {
+                        let priceMatch = cleanLine.match(/(\d+(?:\.\d+)?)\s*(?:€|euros?|\$|chf|mad|£|¥)/i);
+                        if(!priceMatch) priceMatch = cleanLine.match(/(\d+(?:\.\d+)?)$/); 
+                        if(priceMatch && portion > 0) cost += (parseFloat(priceMatch[1]) / portion);
+                        return;
+                    }
+
+                    let unitPriceMatch = cleanLine.match(/(\d+(?:\.\d+)?)\s*(?:€|euros?|\$|chf|mad|£|¥)\s*(?:\/|au|le|la)\s*(kg|kilo|l|litre|pce|piece|pièce|g|gr|ml|cl)/i);
+                    if (unitPriceMatch) {
+                        let p = parseFloat(unitPriceMatch[1]); let u = unitPriceMatch[2];
+                        if (u.startsWith('k') || (u.startsWith('l') && !u.includes('ml') && !u.includes('cl'))) cost += (p / 1000) * portion; 
+                        else cost += p * portion; 
+                        return; 
+                    }
+                    let priceMatch = cleanLine.match(/(\d+(?:\.\d+)?)\s*(?:€|euros?|\$|chf|mad|£|¥)/i);
+                    let weightMatch = cleanLine.match(/(\d+(?:\.\d+)?)\s*(kg|kilo|g|gr|l|cl|ml|pce|piece|pièce)/i);
+                    if (priceMatch) {
+                        let p = parseFloat(priceMatch[1]);
+                        if (weightMatch) {
+                            let w = parseFloat(weightMatch[1]); let u = weightMatch[2];
+                            if (u.startsWith('k') || (u.startsWith('l') && !u.includes('ml') && !u.includes('cl'))) {
+                                cost += (p / (w * 1000)) * portion; 
+                            } else {
+                                cost += (p / w) * portion; 
+                            }
+                        } else {
+                            cost += (p / 1000) * portion; 
+                        }
+                    }
+                });
+                let costDisplay = document.getElementById(`cost-${prefix}`);
+                if (costDisplay) costDisplay.innerText = cost.toFixed(2);
+                return cost;
+            };
+
+            let total = ['fecu', 'prot', 'bof', 'sauc', 'legu', 'eco'].reduce((sum, k) => sum + calcBox(k), 0);
+            
+            let totalEl = document.getElementById('market-total-cost');
+            if (totalEl) totalEl.value = total.toFixed(2) + " " + currentCurrency;
+            let margin = parseFloat(document.getElementById('market-margin').value) || 3.5;
+            let rec = total * margin;
+            let recEl = document.getElementById('market-recommended');
+            if (recEl) recEl.innerText = rec.toFixed(2);
+
+            let priceInput = document.getElementById('market-price');
+            if (priceInput && (priceInput.value === "" || priceInput.dataset.autofilled === "true")) {
+                priceInput.value = rec.toFixed(2); priceInput.dataset.autofilled = "true";
+            }
+        }
+
         function buildKdsLanesDOM() {
             const container = document.getElementById('kds-lanes-container');
             if(!container) return;
@@ -728,7 +877,7 @@
             if(document.getElementById('pin-display')) document.getElementById('pin-display').innerText = ""; 
         };
 
-        window.submitPin = async function() {
+       window.submitPin = async function() {
             if (!myRealPin || myRealPin === "") return;
 
             let display = document.getElementById('pin-display');
@@ -1238,22 +1387,6 @@
         async function boot() { 
             buildKdsLanesDOM(); 
             renderKDS();
-            
-            // 🔥 LE MOTEUR DE SYNCHRO TEMPS RÉEL EST LÀ 🔥
-            setInterval(fetchSystemState, 3000);
-        }
-        
-        window.onload = async () => {
-            // Afficher le login au démarrage
-            let loginScreen = document.getElementById('login-screen');
-            if (loginScreen) {
-                loginScreen.style.display = 'flex';
-            }
-            
-            // Charger l'état une première fois pour obtenir les PINs du personnel
-            await fetchSystemState(); 
-        };
-
         // ⛶ LOGIQUE DU MODE KIOSQUE AVEC CONNEXION TOTALE (ANTI-VEILLE)
         let wakeLock = null;
 
@@ -1311,64 +1444,3 @@
                 }
             }
         });
-// ⛶ LOGIQUE DU MODE KIOSQUE AVEC CONNEXION TOTALE (ANTI-VEILLE)
-        let wakeLock = null;
-
-        document.getElementById('btn-kiosk').addEventListener('click', async () => {
-            const elem = document.documentElement;
-            const btn = document.getElementById('btn-kiosk');
-            
-            if (!document.fullscreenElement) {
-                // 1. Activer le Plein Écran
-                if (elem.requestFullscreen) elem.requestFullscreen();
-                else if (elem.webkitRequestFullscreen) elem.webkitRequestFullscreen(); 
-                else if (elem.msRequestFullscreen) elem.msRequestFullscreen(); 
-                
-                btn.innerText = "✕ QUITTER";
-                btn.style.color = "var(--alert)";
-                btn.style.borderColor = "var(--alert)";
-
-                // 2. Activer le maintien de l'écran (Wake Lock) pour garantir la connexion
-                try {
-                    if ('wakeLock' in navigator) {
-                        wakeLock = await navigator.wakeLock.request('screen');
-                        showToast("🔒 Mode Kiosque activé : L'écran ne s'éteindra plus.");
-                    }
-                } catch (err) {
-                    console.warn('Wake Lock non supporté sur ce navigateur.');
-                }
-            } else {
-                // 1. Quitter le Plein Écran
-                if (document.exitFullscreen) document.exitFullscreen();
-                else if (document.webkitExitFullscreen) document.webkitExitFullscreen();
-                
-                btn.innerText = "⛶ KIOSQUE";
-                btn.style.color = "var(--text-muted)";
-                btn.style.borderColor = "var(--border-strong)";
-
-                // 2. Relâcher l'écran (autoriser la mise en veille)
-                if (wakeLock !== null) {
-                    wakeLock.release().then(() => { 
-                        wakeLock = null; 
-                        showToast("🔓 Mode Kiosque désactivé.");
-                    });
-                }
-            }
-        });
-
-        // Sécurité supplémentaire : Si l'utilisateur quitte le plein écran avec la touche Echap
-        document.addEventListener('fullscreenchange', () => {
-            const btn = document.getElementById('btn-kiosk');
-            if (!document.fullscreenElement) {
-                btn.innerText = "⛶ KIOSQUE";
-                btn.style.color = "var(--text-muted)";
-                btn.style.borderColor = "var(--border-strong)";
-                // On coupe l'anti-veille si on quitte le mode kiosque
-                if (wakeLock !== null) {
-                    wakeLock.release().then(() => { wakeLock = null; });
-                }
-            }
-        });
-    </script>
-</body>
-</html>
