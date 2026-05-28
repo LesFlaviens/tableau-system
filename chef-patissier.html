@@ -745,17 +745,79 @@
         let currentStockCategoryOpen = null; 
         let userProfile = {};
 
-        // === OUTIL : EXTRACTION DES POIDS ET UNITÉS ===
-        function parseQuantity(str) {
+        // === 1. OUTIL : EXTRACTION DES POIDS ET UNITÉS (SMART IA UNIVERSELLE) ===
+        function parseQuantity(str, itemName = "") {
             if (!str) return { val: 1, unit: 'u' };
-            let match = String(str).match(/([\d.,]+)\s*(.*)/);
-            if(match) {
-                let val = parseFloat(match[1].replace(',', '.'));
-                return { val: isNaN(val) ? 1 : val, unit: match[2].trim() || 'u' };
+            // On cherche un nombre suivi potentiellement d'une unité
+            let match = String(str).toLowerCase().match(/([\d.,]+)\s*(kg|g|gr|l|cl|ml|pce|piece|pièce|u|botte|boite|carton)?/);
+            
+            let val = parseFloat(match ? match[1].replace(',', '.') : String(str).replace(',', '.'));
+            if (isNaN(val)) val = 1;
+
+            let unit = 'u';
+            if (match && match[2]) {
+                unit = match[2]; // L'utilisateur a précisé l'unité (ex: "10 kg")
+            } else if (itemName) {
+                // "IA" : Déduction automatique basée sur le nom du produit
+                let n = itemName.toLowerCase();
+                // Vocabulaire Cuisine + Pâtisserie + Bar (Solides)
+                if (n.match(/tomate|pomme|carotte|oignon|viande|poisson|farine|sucre|beurre|fromage|boeuf|poulet|veau|porc|pâte|chocolat|levure|amande|praliné|glaçon|purée|fruit|café/)) unit = 'kg';
+                // Vocabulaire Cuisine + Pâtisserie + Bar (Liquides)
+                else if (n.match(/lait|crème|eau|vin|huile|vinaigre|jus|sirop|alcool|liqueur|rhum|vodka|gin|tequila|bière|champagne/)) unit = 'l';
+                // Herbes fraîches
+                else if (n.match(/menthe|coriandre|ciboulette|persil|basilic|thym|romarin/)) unit = 'botte';
+                // Unités singulières
+                else if (n.match(/oeuf|citron|orange|lime|gousse/)) unit = 'pce';
             }
-            return { val: 1, unit: 'u' };
+            
+            // Homogénéisation propre pour l'affichage
+            if (unit === 'gr') unit = 'g';
+            if (unit === 'piece' || unit === 'pièce') unit = 'pce';
+
+            return { val: val, unit: unit };
         }
 
+        // === 2. AJOUT MANUEL STOCK ===
+        async function addManualStock() {
+            const name = document.getElementById('manual-stock-name').value.trim();
+            const qtyStr = document.getElementById('manual-stock-qty').value.trim();
+            const price = parseFloat(document.getElementById('manual-stock-price').value);
+            const cat = document.getElementById('manual-stock-cat').value;
+            const supplier = document.getElementById('manual-stock-supplier').value.trim();
+
+            if(!name || !qtyStr || isNaN(price)) return alert("Remplissez les champs obligatoires (Nom, Qté, Prix).");
+
+            // On passe le 'name' à la fonction pour qu'elle devine l'unité
+            let parsedQty = parseQuantity(qtyStr, name); 
+            let unitPrice = parsedQty.val > 0 ? (price / parsedQty.val) : price;
+
+            stockGlobalData.unshift({ 
+                id: Date.now(), name, cat, fournisseur: supplier,
+                qtyStr: parsedQty.val + " " + parsedQty.unit, // Sauvegarde propre avec la bonne unité
+                initialQty: parsedQty.val, currentQty: parsedQty.val, unit: parsedQty.unit,
+                totalPrice: price, unitPrice: unitPrice, date: new Date().toLocaleDateString() 
+            });
+
+            document.getElementById('manual-stock-name').value = ''; 
+            document.getElementById('manual-stock-qty').value = ''; 
+            document.getElementById('manual-stock-price').value = '';
+            document.getElementById('manual-stock-supplier').value = '';
+            
+            closeInvModal('manual-stock-modal');
+            renderAll(); 
+            await API.save('INVENTORY_MASTER', stockGlobalData);
+        }
+
+        // === 3. ÉDITION RAPIDE DU STOCK ===
+        async function editStockQty(idx) {
+            let item = stockGlobalData[idx];
+            let parsed = parseQuantity(item.qtyStr, item.name);
+            let initialQ = item.initialQty !== undefined ? item.initialQty : parsed.val;
+            let currentQ = item.currentQty !== undefined ? item.currentQty : initialQ;
+            let unit = item.unit !== undefined ? item.unit : parsed.unit;
+            
+            // Le prompt affiche désormais l'unité et invite à la changer si besoin
+            let newQtyStr = prompt(`📦 Quantité et Unité
         // === MOTEUR RÉSEAU BLINDÉ ===
         const API = {
             get: async () => {
