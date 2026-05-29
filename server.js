@@ -19,6 +19,11 @@ app.use(express.urlencoded({ extended: true }));
 app.use(express.static(path.join(__dirname)));
 
 // ==========================================
+// OUTIL DE NETTOYAGE UNIVERSEL (ANTI-CRACH)
+// ==========================================
+const cleanString = (str) => String(str || "").trim().toLowerCase();
+
+// ==========================================
 // ROUTAGE DES PAGES WEB
 // ==========================================
 app.get('/', (req, res) => {
@@ -49,11 +54,12 @@ app.post('/webhook', express.raw({type: 'application/json'}), async (req, res) =
         const session = event.data.object;
 
         if (session.metadata && session.metadata.type === 'UPGRADE_SCREENS') {
-            console.log(`UPSELL REUSSI : Achat d'ecrans pour le restaurant ${session.metadata.tenantID}`);
+            const safeID = cleanString(session.metadata.tenantID);
+            console.log(`UPSELL REUSSI : Achat d'ecrans pour le restaurant ${safeID}`);
             try {
                 const extraScreens = parseInt(session.metadata.extraScreens);
                 await Tenant.updateOne(
-                    { tenantID: session.metadata.tenantID },
+                    { tenantID: safeID },
                     { $inc: { maxScreens: extraScreens } }
                 );
             } catch(e) { console.error("Erreur Upgrade Ecrans:", e); }
@@ -61,13 +67,14 @@ app.post('/webhook', express.raw({type: 'application/json'}), async (req, res) =
         else {
             console.log(`PAIEMENT RECU ! Securisation de la licence en arriere-plan...`);
             try {
-                const tenantID = session.client_reference_id || "client_attente_" + Date.now();
+                const rawTenantID = session.client_reference_id || "client_attente_" + Date.now();
+                const safeID = cleanString(rawTenantID);
                 
                 let planAchete = "BUSINESS";
                 let limitScreens = 5;
                 let limitStaff = 999;
 
-                // 1. LECTURE DES MÉTADONNÉES STRIPE (Ex: CHEF_PATISSERIE)
+                // 1. LECTURE DES MÉTADONNÉES STRIPE
                 if (session.metadata && session.metadata.plan) {
                     planAchete = session.metadata.plan.toUpperCase();
                     if (['CHEF_CUISINE', 'CHEF_PATISSERIE', 'CHEF_BAR', 'CHEF', 'PATISSIER', 'BAR'].includes(planAchete)) {
@@ -93,7 +100,7 @@ app.post('/webhook', express.raw({type: 'application/json'}), async (req, res) =
                 }
 
                 await Tenant.updateOne(
-                    { tenantID: tenantID },
+                    { tenantID: safeID },
                     { 
                         $set: { 
                             status: 'ACTIF', 
@@ -206,6 +213,7 @@ app.post('/api/scan-invoice', async (req, res) => {
 // ==========================================
 app.post('/api/smart-reservation', async (req, res) => {
     const { tenantID, customerRequest, availableTables } = req.body;
+    const safeID = cleanString(tenantID);
     if (!process.env.GEMINI_API_KEY) return res.status(500).json({ success: false, error: "Clé IA manquante." });
 
     try {
@@ -240,7 +248,7 @@ app.post('/api/smart-reservation', async (req, res) => {
                     }
                 } 
             };
-            await AppState.findOneAndUpdate({ tenantID }, updateQuery, { upsert: true });
+            await AppState.findOneAndUpdate({ tenantID: safeID }, updateQuery, { upsert: true });
         }
 
         res.json({ success: true, decision });
@@ -249,6 +257,7 @@ app.post('/api/smart-reservation', async (req, res) => {
         res.status(500).json({ success: false, error: "Erreur IA." });
     }
 });
+
 // ==========================================
 // ACTIVATION & CRÉATION OFFICIELLE CLIENT
 // ==========================================
@@ -260,7 +269,8 @@ app.post('/api/activate', async (req, res) => {
         const session = await stripe.checkout.sessions.retrieve(sessionId);
         if (session.payment_status !== 'paid') return res.status(403).json({ error: "Paiement non valide." });
         
-        const existingTenant = await Tenant.findOne({ tenantID });
+        const safeID = cleanString(tenantID);
+        const existingTenant = await Tenant.findOne({ tenantID: safeID });
         if (existingTenant) return res.status(400).json({ error: "Identifiant deja pris." });
 
         const randomPin = Math.floor(1000 + Math.random() * 9000).toString();
@@ -281,26 +291,27 @@ app.post('/api/activate', async (req, res) => {
         } 
 
         await Tenant.create({ 
-            tenantID, clientName, email, phone, status: 'ACTIF', 
+            tenantID: safeID, clientName, email, phone, status: 'ACTIF', 
             plan: finalPlan, specialite: finalSpec, maxScreens: limit, maxStaff: staffLimit, pin: randomPin, 
             config: { stripeCustomerId: session.customer } 
         });
         
-        await AppState.create({ tenantID, activeOrders: {} });
-        res.json({ success: true, dedicatedPin: randomPin });
+        await AppState.create({ tenantID: safeID, activeOrders: {} });
+        res.json({ success: true, dedicatedPin: randomPin, safeTenantID: safeID });
     } catch (error) { 
         console.error("Erreur d'activation:", error);
         res.status(500).json({ error: "Erreur BDD ou nom de forfait invalide." }); 
     }
 });
+
 // ==========================================
 // SÉCURITÉ : GARDE DU CORPS & PINS (MAÎTRE + STAFF)
 // ==========================================
 app.get('/api/check-license', async (req, res) => {
     const { tenantID } = req.query;
     try {
-        const cleanID = String(tenantID).trim();
-        const tenant = await Tenant.findOne({ tenantID: new RegExp(`^${cleanID}$`, 'i') });
+        const safeID = cleanString(tenantID);
+        const tenant = await Tenant.findOne({ tenantID: safeID });
         
         if (!tenant) return res.status(404).json({ success: false, error: "Introuvable." });
         res.json({ success: true, status: tenant.status, plan: tenant.plan, specialite: tenant.specialite });
@@ -312,8 +323,8 @@ app.post('/api/verify-pin', async (req, res) => {
     if (!tenantID || !pin) return res.status(400).json({ success: false, error: "Donnees manquantes" });
 
     try {
-        const cleanID = String(tenantID).trim();
-        const tenant = await Tenant.findOne({ tenantID: new RegExp(`^${cleanID}$`, 'i') });
+        const safeID = cleanString(tenantID);
+        const tenant = await Tenant.findOne({ tenantID: safeID });
         
         if (!tenant) return res.status(404).json({ success: false, error: "Identifiant inconnu." });
         if (tenant.status === 'SUSPENDU') return res.status(403).json({ success: false, error: "Licence suspendue." });
@@ -330,11 +341,10 @@ app.post('/api/verify-pin', async (req, res) => {
             const state = await AppState.findOne({ tenantID: tenant.tenantID });
             if (state && state.activeOrders && state.activeOrders['STAFF_ACCESS']) {
                 const staffList = state.activeOrders['STAFF_ACCESS'].data || [];
-                // Recherche d'un membre actif avec ce code PIN exact
                 const staffMember = staffList.find(s => String(s.pin).trim() === String(pin).trim() && s.active === true);
                 if (staffMember) {
                     isValid = true;
-                    roleAttribue = staffMember.dept || 'STAFF'; // Ex: 'salle', 'admin', 'cuisine'
+                    roleAttribue = staffMember.dept || 'STAFF';
                 }
             }
         }
@@ -350,7 +360,8 @@ app.post('/api/verify-pin', async (req, res) => {
                     await tenant.save();
                 }
             }
-            return res.json({ success: true, plan: tenant.plan, specialite: tenant.specialite, role: roleAttribue }); 
+            // IMPORTANT : On renvoie le tenantID propre (minuscule) pour que la tablette le sauvegarde correctement
+            return res.json({ success: true, plan: tenant.plan, specialite: tenant.specialite, role: roleAttribue, safeTenantID: tenant.tenantID }); 
         } else { 
             return res.status(401).json({ success: false, error: "Code PIN incorrect." }); 
         }
@@ -360,9 +371,8 @@ app.post('/api/verify-pin', async (req, res) => {
 app.post('/api/update-pin', async (req, res) => {
     const { tenantID, newPin } = req.body;
     try {
-        const cleanID = String(tenantID).trim();
-        const tenant = await Tenant.findOne({ tenantID: new RegExp(`^${cleanID}$`, 'i') });
-        
+        const safeID = cleanString(tenantID);
+        const tenant = await Tenant.findOne({ tenantID: safeID });
         if (!tenant) return res.status(404).json({ success: false });
         tenant.pin = newPin;
         tenant.registeredDevices = []; 
@@ -374,9 +384,8 @@ app.post('/api/update-pin', async (req, res) => {
 app.get('/api/dashboard-info', async (req, res) => {
     const { tenantID } = req.query;
     try {
-        const cleanID = String(tenantID).trim();
-        const tenant = await Tenant.findOne({ tenantID: new RegExp(`^${cleanID}$`, 'i') });
-        
+        const safeID = cleanString(tenantID);
+        const tenant = await Tenant.findOne({ tenantID: safeID });
         if (!tenant) return res.status(404).json({ success: false });
         res.json({ success: true, activeDevices: tenant.registeredDevices.length, maxScreens: tenant.maxScreens });
     } catch (e) { res.status(500).json({ success: false }); }
@@ -385,8 +394,8 @@ app.get('/api/dashboard-info', async (req, res) => {
 app.post('/api/kill-switch', async (req, res) => {
     const { tenantID } = req.body;
     try {
-        const cleanID = String(tenantID).trim();
-        await Tenant.findOneAndUpdate({ tenantID: new RegExp(`^${cleanID}$`, 'i') }, { registeredDevices: [] });
+        const safeID = cleanString(tenantID);
+        await Tenant.findOneAndUpdate({ tenantID: safeID }, { registeredDevices: [] });
         res.json({ success: true });
     } catch (e) { res.status(500).json({ success: false }); }
 });
@@ -394,13 +403,13 @@ app.post('/api/kill-switch', async (req, res) => {
 app.post('/api/billing-portal', async (req, res) => {
     const { tenantID } = req.body;
     try {
-        const cleanID = String(tenantID).trim();
-        const tenant = await Tenant.findOne({ tenantID: new RegExp(`^${cleanID}$`, 'i') });
+        const safeID = cleanString(tenantID);
+        const tenant = await Tenant.findOne({ tenantID: safeID });
         
         if (!tenant || !tenant.config || !tenant.config.stripeCustomerId) return res.status(400).json({ success: false });
         const session = await stripe.billingPortal.sessions.create({
             customer: tenant.config.stripeCustomerId,
-            return_url: `${req.headers.origin}/administration.html?tenantID=${tenantID}`,
+            return_url: `${req.headers.origin}/administration.html?tenantID=${safeID}`,
         });
         res.json({ success: true, url: session.url });
     } catch (e) { res.status(500).json({ success: false }); }
@@ -413,7 +422,8 @@ let activeAlerts = [];
 
 app.post('/api/support-alert', (req, res) => {
     const { tenantID, type, message, timestamp } = req.body;
-    const newAlert = { id: Date.now().toString(), tenantID, type, message, timestamp, status: 'OPEN' };
+    const safeID = cleanString(tenantID);
+    const newAlert = { id: Date.now().toString(), tenantID: safeID, type, message, timestamp, status: 'OPEN' };
     activeAlerts.push(newAlert);
     res.json({ success: true });
 });
@@ -437,8 +447,9 @@ app.post('/api/resolve-alert', (req, res) => {
 // ==========================================
 app.get('/get-current-state', async (req, res) => {
     try {
-        const tenantID = req.query.tenantID || 'MASTER_STATE';
+        let tenantID = req.query.tenantID || 'MASTER_STATE';
         if (tenantID !== 'MASTER_STATE') {
+            tenantID = cleanString(tenantID);
             const tenant = await Tenant.findOne({ tenantID });
             if (tenant && tenant.status === 'SUSPENDU') return res.status(403).json({ error: "Licence suspendue" });
         }
@@ -455,8 +466,9 @@ app.get('/get-current-state', async (req, res) => {
 
 app.post('/update-order', async (req, res) => {
     try {
-        const tenantID = req.query.tenantID || 'MASTER_STATE';
+        let tenantID = req.query.tenantID || 'MASTER_STATE';
         if (tenantID !== 'MASTER_STATE') {
+            tenantID = cleanString(tenantID);
             const tenant = await Tenant.findOne({ tenantID });
             if (tenant && tenant.status === 'SUSPENDU') return res.status(403).json({ error: "Licence suspendue" });
         }
@@ -489,7 +501,7 @@ app.post('/update-order', async (req, res) => {
 app.post('/api/buy-screens', async (req, res) => {
     try {
         const { tenantID, pack } = req.body;
-        
+        const safeID = cleanString(tenantID);
         let amount = 0;
         let productName = "";
         
@@ -505,9 +517,9 @@ app.post('/api/buy-screens', async (req, res) => {
                 quantity: 1,
             }],
             mode: 'payment',
-            metadata: { type: 'UPGRADE_SCREENS', tenantID: tenantID, extraScreens: pack },
-            success_url: `${req.headers.origin}/administration.html?tenantID=${tenantID}&upgrade=success`,
-            cancel_url: `${req.headers.origin}/administration.html?tenantID=${tenantID}&upgrade=cancel`,
+            metadata: { type: 'UPGRADE_SCREENS', tenantID: safeID, extraScreens: pack },
+            success_url: `${req.headers.origin}/administration.html?tenantID=${safeID}&upgrade=success`,
+            cancel_url: `${req.headers.origin}/administration.html?tenantID=${safeID}&upgrade=cancel`,
         });
         
         res.json({ success: true, url: session.url });
@@ -523,7 +535,8 @@ app.post('/api/buy-screens', async (req, res) => {
 app.post('/api/create-checkout', async (req, res) => {
     try {
         const { total, table, tenantID } = req.body;
-        const state = await AppState.findOne({ tenantID });
+        const safeID = cleanString(tenantID);
+        const state = await AppState.findOne({ tenantID: safeID });
 
         if (!state || !state.activeOrders || !state.activeOrders['SETTINGS_MASTER']) {
             return res.status(400).json({ error: "Configuration restaurant introuvable." });
@@ -548,8 +561,8 @@ app.post('/api/create-checkout', async (req, res) => {
                 quantity: 1,
             }],
             mode: 'payment',
-            success_url: 'https://tableau-system.onrender.com/menu-qr.html?tenantID=' + tenantID + '&table=' + table + '&paiement=ok',
-            cancel_url: 'https://tableau-system.onrender.com/menu-qr.html?tenantID=' + tenantID + '&table=' + table + '&paiement=annule',
+            success_url: 'https://tableau-system.onrender.com/menu-qr.html?tenantID=' + safeID + '&table=' + table + '&paiement=ok',
+            cancel_url: 'https://tableau-system.onrender.com/menu-qr.html?tenantID=' + safeID + '&table=' + table + '&paiement=annule',
         });
         
         res.json({ url: session.url });
@@ -593,6 +606,7 @@ app.post('/api/update-plan-admin', async (req, res) => {
     }
 
     try {
+        const safeID = cleanString(tenantID);
         let limit = 1; 
         let staffLimit = 1;
         const upperPlan = newPlan.toUpperCase();
@@ -606,7 +620,7 @@ app.post('/api/update-plan-admin', async (req, res) => {
         }
 
         const result = await Tenant.updateOne(
-            { tenantID: tenantID },
+            { tenantID: safeID },
             { $set: { plan: upperPlan, maxScreens: limit, maxStaff: staffLimit } }
         );
         
@@ -625,14 +639,15 @@ app.post('/api/admin-action', async (req, res) => {
     if (masterKey !== ADMIN_PASS) return res.status(401).json({ success: false, error: "Acces Refuse." });
 
     try {
+        const safeID = cleanString(tenantID);
         if (action === 'set_screens' && manualScreens) {
-            await Tenant.findOneAndUpdate({ tenantID }, { maxScreens: parseInt(manualScreens) });
+            await Tenant.findOneAndUpdate({ tenantID: safeID }, { maxScreens: parseInt(manualScreens) });
         }
         else if (action === 'set_max_staff' && manualMaxStaff) {
-            await Tenant.findOneAndUpdate({ tenantID }, { maxStaff: parseInt(manualMaxStaff) });
+            await Tenant.findOneAndUpdate({ tenantID: safeID }, { maxStaff: parseInt(manualMaxStaff) });
         }
         else if (action === 'set_pin' && manualPin) {
-            await Tenant.findOneAndUpdate({ tenantID }, { pin: manualPin.trim(), registeredDevices: [] });
+            await Tenant.findOneAndUpdate({ tenantID: safeID }, { pin: manualPin.trim(), registeredDevices: [] });
         }
         else if (action === 'set_plan' && newPlan) { 
             let limit = 1; 
@@ -649,20 +664,20 @@ app.post('/api/admin-action', async (req, res) => {
                 limit = 50; staffLimit = 999; 
             } 
             
-            await Tenant.findOneAndUpdate({ tenantID }, { plan: upperPlan, maxScreens: limit, maxStaff: staffLimit });
+            await Tenant.findOneAndUpdate({ tenantID: safeID }, { plan: upperPlan, maxScreens: limit, maxStaff: staffLimit });
         }
         else if (action === 'reset_devices') {
-            await Tenant.findOneAndUpdate({ tenantID }, { registeredDevices: [] });
+            await Tenant.findOneAndUpdate({ tenantID: safeID }, { registeredDevices: [] });
         }
         else if (action === 'suspend') {
-            await Tenant.findOneAndUpdate({ tenantID }, { status: 'SUSPENDU', registeredDevices: [] });
+            await Tenant.findOneAndUpdate({ tenantID: safeID }, { status: 'SUSPENDU', registeredDevices: [] });
         }
         else if (action === 'activate') {
-            await Tenant.findOneAndUpdate({ tenantID }, { status: 'ACTIF' });
+            await Tenant.findOneAndUpdate({ tenantID: safeID }, { status: 'ACTIF' });
         }
         else if (action === 'delete') { 
-            await Tenant.findOneAndDelete({ tenantID }); 
-            await AppState.findOneAndDelete({ tenantID }); 
+            await Tenant.findOneAndDelete({ tenantID: safeID }); 
+            await AppState.findOneAndDelete({ tenantID: safeID }); 
         }
         
         res.json({ success: true });
