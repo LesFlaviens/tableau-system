@@ -3,7 +3,9 @@ const cors = require('cors');
 const path = require('path');
 const mongoose = require('mongoose');
 
+// ==========================================
 // CONFIGURATION STRIPE iCHEF (Abonnements SaaS)
+// ==========================================
 const stripeKey = process.env.STRIPE_SECRET_KEY || 'sk_test_51TN80JQ9Dw3nOfA4I3XTxPl5FR4ddYmU9Jw2pGmfa0eABz2P6wAzK8RMzHw2XilulLXxFmY2oEDgau4TcScOf9WK00ajIEuweB'; 
 const stripe = require('stripe')(stripeKey);
 
@@ -14,12 +16,16 @@ const PORT = process.env.PORT || 10000;
 const ADMIN_PASS = process.env.ADMIN_PASS || 'Empire2026';
 
 app.use(cors({ origin: '*', methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'], allowedHeaders: ['Content-Type', 'Authorization', 'Origin', 'Accept'] }));
+
+// 🚨 SÉCURITÉ STRIPE : On utilise raw() uniquement pour la route webhook pour vérifier la signature cryptée
+app.use('/webhook', express.raw({ type: 'application/json' }));
+
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true }));
 app.use(express.static(path.join(__dirname)));
 
 // ==========================================
-// OUTIL DE NETTOYAGE UNIVERSEL (ANTI-CRACH)
+// OUTIL DE NETTOYAGE UNIVERSEL (ANTI-CRASH)
 // ==========================================
 const cleanString = (str) => String(str || "").trim().toLowerCase();
 
@@ -41,7 +47,7 @@ app.get('/panel-ichef', (req, res) => {
 // ==========================================
 // WEBHOOK STRIPE : SÉCURITÉ ANTI-IMPAYÉS & UPSELL 
 // ==========================================
-app.post('/webhook', express.raw({type: 'application/json'}), async (req, res) => {
+app.post('/webhook', async (req, res) => {
     const sig = req.headers['stripe-signature'];
     let event;
     try { 
@@ -53,6 +59,7 @@ app.post('/webhook', express.raw({type: 'application/json'}), async (req, res) =
     if (event.type === 'checkout.session.completed') {
         const session = event.data.object;
 
+        // ACHAT D'ÉCRANS SUPPLÉMENTAIRES
         if (session.metadata && session.metadata.type === 'UPGRADE_SCREENS') {
             const safeID = cleanString(session.metadata.tenantID);
             console.log(`UPSELL REUSSI : Achat d'ecrans pour le restaurant ${safeID}`);
@@ -64,6 +71,7 @@ app.post('/webhook', express.raw({type: 'application/json'}), async (req, res) =
                 );
             } catch(e) { console.error("Erreur Upgrade Ecrans:", e); }
         } 
+        // NOUVEL ABONNEMENT RESTAURATEUR
         else {
             console.log(`PAIEMENT RECU ! Securisation de la licence en arriere-plan...`);
             try {
@@ -336,7 +344,7 @@ app.post('/api/verify-pin', async (req, res) => {
         if (String(tenant.pin).trim() === String(pin).trim()) { 
             isValid = true;
         } 
-        // 2. VÉRIFICATION DU PIN BRIGADE (Si le PIN tapé n'est pas celui du patron)
+        // 2. VÉRIFICATION DU PIN BRIGADE
         else {
             const state = await AppState.findOne({ tenantID: tenant.tenantID });
             if (state && state.activeOrders && state.activeOrders['STAFF_ACCESS']) {
@@ -360,7 +368,6 @@ app.post('/api/verify-pin', async (req, res) => {
                     await tenant.save();
                 }
             }
-            // IMPORTANT : On renvoie le tenantID propre (minuscule) pour que la tablette le sauvegarde correctement
             return res.json({ success: true, plan: tenant.plan, specialite: tenant.specialite, role: roleAttribue, safeTenantID: tenant.tenantID }); 
         } else { 
             return res.status(401).json({ success: false, error: "Code PIN incorrect." }); 
