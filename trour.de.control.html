@@ -264,6 +264,9 @@
                     const statusClass = client.status === 'SUSPENDU' ? 'suspended' : 'active';
                     const statusText = client.status === 'SUSPENDU' ? 'Suspendu' : 'Actif';
                     
+                    // Style conditionnel si la limite est atteinte
+                    const screenAlertColor = client.activeScreens >= client.maxScreens ? 'var(--alert)' : 'var(--text-main)';
+
                     return `
                     <tr>
                         <td><span class="establishment-name">${client.name}</span></td>
@@ -291,13 +294,14 @@
                         </td>
                         <td>
                             <div class="editable-field">
-                                <span>${client.activeScreens} / ${client.maxScreens}</span>
-                                <button class="btn-edit-inline" onclick="executeAdminAction('${client.id}', 'set_screens')">Modifier</button>
+                                <span style="color: ${screenAlertColor}; font-weight: 800; font-size: 1.1rem;">${client.activeScreens}</span> 
+                                <span style="color: var(--text-muted);">/ ${client.maxScreens}</span>
+                                <button class="btn-edit-inline" style="background: rgba(212, 175, 55, 0.1); border-radius: 4px; padding: 4px 8px; color: var(--gold); margin-left: 8px;" onclick="changerLimiteEcrans('${client.id}', '${client.maxScreens}')">✏️ Modifier</button>
                             </div>
                         </td>
                         <td>
                             <div class="editable-field">
-                                <span>${client.maxStaff}</span>
+                                <span>${client.maxStaff || 0}</span>
                                 <button class="btn-edit-inline" onclick="executeAdminAction('${client.id}', 'set_max_staff')">Modifier</button>
                             </div>
                         </td>
@@ -335,6 +339,45 @@
             } catch(e) { console.error(e); }
         }
 
+        // ==========================================
+        // 🚀 LA NOUVELLE FONCTION POUR LES ÉCRANS
+        // ==========================================
+        async function changerLimiteEcrans(tenantID, limiteActuelle) {
+            let nouvelleLimite = prompt(`📱 Nouvelle limite d'écrans pour le client ${tenantID} ?`, limiteActuelle);
+            
+            if (nouvelleLimite !== null && nouvelleLimite.trim() !== "") {
+                let limiteNum = parseInt(nouvelleLimite);
+                
+                if (!isNaN(limiteNum) && limiteNum > 0) {
+                    try {
+                        const response = await fetch(`${SERVER_URL}/api/admin-action`, {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ 
+                                masterKey: ADMIN_PASS, 
+                                tenantID: tenantID, 
+                                action: 'set_screens',
+                                manualScreens: limiteNum 
+                            })
+                        });
+                        
+                        const result = await response.json();
+                        
+                        if (result.success) {
+                            alert(`✅ C'est fait ! Le client peut maintenant connecter ${limiteNum} écrans.`);
+                            loadNetworkDatabase(); // On rafraîchit le tableau
+                        } else {
+                            alert("❌ Erreur du serveur : " + (result.error || "Impossible de modifier la limite."));
+                        }
+                    } catch (e) {
+                        alert("❌ Erreur réseau avec Render.");
+                    }
+                } else {
+                    alert("⚠️ Veuillez entrer un nombre valide (supérieur à 0).");
+                }
+            }
+        }
+
         async function executeAdminAction(tenantID, action) {
             let bodyData = { masterKey: ADMIN_PASS, tenantID, action };
 
@@ -345,11 +388,6 @@
                 const manualPin = prompt("Nouveau code PIN Maitre :");
                 if(!manualPin) return;
                 bodyData.manualPin = manualPin;
-            }
-            if (action === 'set_screens') {
-                const manualScreens = prompt("Nouvelle limite d ecrans :");
-                if(!manualScreens || isNaN(manualScreens)) return;
-                bodyData.manualScreens = manualScreens;
             }
             if (action === 'set_max_staff') {
                 const manualMaxStaff = prompt("Nouvelle limite de personnel :");
