@@ -1,0 +1,115 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    
+    <link rel="manifest" href="manifest.json">
+    <link rel="apple-touch-icon" href="icon-512.png">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="mobile-web-app-capable" content="yes">
+    <meta name="theme-color" content="#050505">
+
+    <title>iCHEF Empire OS - Lanceur</title>
+    
+    <style>
+        body, html {
+            margin: 0; 
+            padding: 0; 
+            width: 100%; 
+            height: 100%;
+            overflow: hidden;
+            background-color: #050505;
+            font-family: system-ui, -apple-system, sans-serif;
+            -webkit-user-select: none;
+            user-select: none;
+        }
+    </style>
+    
+    <script>
+        // 🛡️ SYSTÈME AUTOMATIQUE D'AIGUILLAGE ET DE SÉCURITÉ ACCÈS
+        (async function routeAndCheck() {
+            const urlParams = new URLSearchParams(window.location.search);
+            let tenantID = urlParams.get('tenantID') || localStorage.getItem('ichef_tenant_id');
+
+            // Si aucun restaurant n'est configuré, on le redirige vers l'écran de connexion des partenaires
+            if (!tenantID) {
+                window.location.href = 'connexionpartenaire.html';
+                return;
+            }
+
+            // On garde en mémoire le tenantID pour les prochaines fois
+            localStorage.setItem('ichef_tenant_id', tenantID);
+
+            const SERVER_URL = (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1" || window.location.protocol === "file:") 
+                ? "http://localhost:10000" : "https://tableau-system.onrender.com";
+
+            try {
+                // Étape 1 : Vérification de la licence sur MongoDB via l'API Render
+                const res = await fetch(`${SERVER_URL}/api/check-license?tenantID=${tenantID}`);
+                const data = await res.json();
+                
+                if (!data.success || data.status === 'SUSPENDU') {
+                    alert("⛔ LICENCE BLOQUÉE OU SUSPENDUE. Veuillez contacter le support iCHEF.");
+                    window.location.href = 'connexionpartenaire.html';
+                    return;
+                }
+
+                // Étape 2 : Si la licence est OK, on l'envoie sur sa page d'administration principale
+                window.location.href = `administration.html?tenantID=${tenantID}`;
+
+            } catch(e) {
+                console.log("Mode hors-ligne détecté ou problème serveur. Tentative de secours locale.");
+                // Secours hors-ligne : On tente de charger l'administration locale
+                window.location.href = `administration.html?tenantID=${tenantID}`;
+            }
+        })();
+    </script>
+</head>
+<body>
+
+    <div id="pwa-strict-lock" style="display: flex; position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; background: #050505; z-index: 9999999; flex-direction: column; justify-content: center; align-items: center; text-align: center; padding: 20px; box-sizing: border-box;">
+        
+        <img src="logo-ichef.png" alt="Logo iCHEF" style="width: 220px; height: auto; margin-bottom: 20px; filter: drop-shadow(0px 5px 15px rgba(212, 175, 55, 0.4));">
+
+        <h1 style="color: #ffffff; font-size: 1.6rem; font-weight: 800; margin: 0; letter-spacing: 1px; text-transform: uppercase;">iCHEF EMPIRE OS</h1>
+        <p style="color: #64748b; max-width: 420px; font-size: 0.95rem; margin-top: 12px; margin-bottom: 35px; line-height: 1.6;">
+            Vérification de la licence et synchronisation sécurisée en cours...
+        </p>
+
+        <button id="btn-force-install" style="display: none; background: linear-gradient(135deg, #d4af37, #b89626); color: #050505; border: none; padding: 16px 35px; font-size: 1rem; font-weight: 900; border-radius: 10px; cursor: pointer; box-shadow: 0 0 25px rgba(212, 175, 55, 0.25); text-transform: uppercase; letter-spacing: 0.5px;">
+            📲 TÉLÉCHARGER L'APPLICATION
+        </button>
+    </div>
+
+    <script>
+        // Gestion de l'installation forcée (PWA) au besoin
+        let deferredInstallPrompt = null;
+        window.addEventListener('beforeinstallprompt', (e) => {
+            e.preventDefault();
+            deferredInstallPrompt = e;
+            const btn = document.getElementById('btn-force-install');
+            if(btn) btn.style.display = 'block'; // Affiche le bouton si l'application n'est pas installée
+        });
+
+        document.getElementById('btn-force-install').addEventListener('click', async () => {
+            if (deferredInstallPrompt) {
+                deferredInstallPrompt.prompt();
+                const { outcome } = await deferredInstallPrompt.userChoice;
+                if (outcome === 'accepted') deferredInstallPrompt = null;
+            }
+        });
+    </script>
+
+    <script>
+        if ('serviceWorker' in navigator) {
+            window.addEventListener('load', () => {
+                navigator.serviceWorker.register('./service-worker.js')
+                .then(reg => console.log('✅ Service Worker de l\'index connecté !'))
+                .catch(err => console.error('❌ Erreur Service Worker :', err));
+            });
+        }
+    </script>
+</body>
+</html>
