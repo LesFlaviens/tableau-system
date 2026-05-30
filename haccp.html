@@ -545,7 +545,7 @@
                 document.getElementById('login-screen').style.display = 'none';
                 populateSelects(); 
                 document.getElementById('trace-open').valueAsDate = new Date();
-                await loadData();
+              await loadData();
                 generateArchiveFolders(); 
             } else { alert("❌ CODE PIN INVALIDE."); clearPin(); }
         }
@@ -686,7 +686,75 @@
                 db.temp = state.activeOrders['HACCP_TEMP']?.data || [];
                 db.cleaning = state.activeOrders['HACCP_CLEANING']?.data || [];
                 db.trace = state.activeOrders['HACCP_TRACE']?.data || [];
+                // NOUVEAU : Téléchargement du stock central et de l'historique d'inventaire
+                db.inventoryMaster = state.activeOrders['INVENTORY_MASTER']?.data || [];
+                db.inventoryLogs = state.activeOrders['HACCP_INV_LOGS']?.data || [];
             }
+            renderLogs();
+            populateInventoryDatalist(); // NOUVEAU : Autocomplétion basée sur le stock central
+        }
+
+        // --- 📦 SYNCHRONISATION INVENTAIRE À 10 000% ---
+        function populateInventoryDatalist() {
+            let dl = document.getElementById('list-inv-name');
+            if(!dl) {
+                dl = document.createElement('datalist');
+                dl.id = 'list-inv-name';
+                document.body.appendChild(dl);
+                document.getElementById('inv-name').setAttribute('list', 'list-inv-name');
+            }
+            if (db.inventoryMaster) {
+                dl.innerHTML = db.inventoryMaster.map(item => `<option value="${item.name}">`).join('');
+            }
+        }
+
+        async function saveInventoryCount() {
+            const name = document.getElementById('inv-name').value.trim();
+            const qtyStr = document.getElementById('inv-qty').value;
+            
+            if(!name || qtyStr === "") return alert("Veuillez saisir un produit et sa quantité réelle.");
+            const realQty = parseFloat(qtyStr.replace(',', '.'));
+
+            if (!db.inventoryMaster) db.inventoryMaster = [];
+            if (!db.inventoryLogs) db.inventoryLogs = [];
+
+            // 1. Chercher le produit dans le vrai stock central
+            let stockItem = db.inventoryMaster.find(i => i.name.toLowerCase() === name.toLowerCase());
+            let theoreticalQty = stockItem ? (stockItem.currentQty !== undefined ? stockItem.currentQty : stockItem.initialQty) : 0;
+            let unit = stockItem ? (stockItem.unit || 'u') : 'u';
+            
+            // 2. Calculer la perte ou le surplus
+            let ecart = realQty - theoreticalQty;
+
+            // 3. Créer le rapport d'audit
+            const now = new Date();
+            let logEntry = {
+                id: Date.now(), date: now.toLocaleDateString('fr-FR'), time: now.toLocaleTimeString('fr-FR', {hour:'2-digit', minute:'2-digit'}),
+                dept: currentDept, name: name, theo: theoreticalQty, real: realQty, diff: ecart, unit: unit, audit: "Compté par " + USERS[pin]
+            };
+            db.inventoryLogs.unshift(logEntry);
+
+            // 4. METTRE À JOUR LE STOCK CENTRAL OFFICIEL !
+            if (stockItem) {
+                stockItem.currentQty = realQty;
+                stockItem.qtyStr = realQty + " " + unit;
+            } else {
+                // S'il trouve un produit inconnu, il le rajoute à l'économat !
+                db.inventoryMaster.unshift({
+                    id: Date.now(), name: name, cat: "📦 INVENTAIRE RAPIDE", fournisseur: "",
+                    qtyStr: realQty + " " + unit, initialQty: realQty, currentQty: realQty, unit: unit,
+                    totalPrice: 0, unitPrice: 0, date: now.toLocaleDateString('fr-FR')
+                });
+            }
+
+            // 5. Envoyer instantanément au serveur cloud
+            await API.update('HACCP_INV_LOGS', db.inventoryLogs);
+            await API.update('INVENTORY_MASTER', db.inventoryMaster);
+
+            // 6. Nettoyer les cases
+            document.getElementById('inv-name').value = '';
+            document.getElementById('inv-qty').value = '';
+            
             renderLogs();
         }
 
@@ -724,6 +792,23 @@
                     <td>${!l.originalId ? `<div style="display:flex; gap:5px; flex-direction:column;"><button class="btn-rectify" onclick="initRectify('trace', ${l.id})">⚠️ Corriger</button><button class="btn-rectify" style="background: rgba(41, 121, 255, 0.1); color: var(--ordered); border-color: var(--ordered);" onclick="printDossier('trace', '${l.name.replace(/'/g, "\\'")}')">🖨️ Imprimer</button></div>` : ''}</td>
                 </tr>`;
             }).join('');
+
+            // --- NOUVEAU : Affichage de l'Inventaire ---
+            let invLogs = db.inventoryLogs || [];
+            let invHtml = invLogs.filter(l => l.dept === currentDept).slice(0,20).map(l => {
+                let diffColor = l.diff < 0 ? 'var(--alert)' : (l.diff > 0 ? 'var(--ordered)' : 'var(--accent)');
+                let diffSign = l.diff > 0 ? '+' : '';
+                return `<tr>
+                    <td><b>${l.name}</b><br><span style="font-size:0.7rem; color:#888;">Théorique: ${l.theo} ${l.unit}</span></td>
+                    <td style="font-weight:900; font-size:1.1rem; color:var(--text-main);">${l.real} <span style="font-size:0.7rem;">${l.unit}</span></td>
+                    <td style="color:${diffColor}; font-weight:900;">${diffSign}${l.diff.toFixed(2)} ${l.unit}</td>
+                    <td><span class="audit-trail">${l.date} à ${l.time}<br>${l.audit}</span></td>
+                </tr>`;
+            }).join('');
+            
+            if(invHtml === "") invHtml = `<tr><td colspan="4" style="text-align:center; color:#555; padding: 20px;">Aucun comptage récent.</td></tr>`;
+            const logsInv = document.getElementById('logs-inventory');
+            if(logsInv) logsInv.innerHTML = invHtml;
         }
 
         async function saveEntry(type) {
