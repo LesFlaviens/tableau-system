@@ -49,8 +49,10 @@
             const SERVER_URL = (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1" || window.location.protocol === "file:") 
                 ? "http://localhost:10000" : "https://tableau-system.onrender.com";
 
+            // ⚠️ AJOUT DU PACK_A DANS LA MATRICE DE SÉCURITÉ DE LA PAGE
             const accessMatrix = {
-                 'CHEF': ['chef.html','administration.html'],
+                'PACK_A': ['admin.html', 'administration.html', 'minipass.html', 'caissetactile.html', 'pack-eco.html', 'menu-qr.html', 'haccp.html'],
+                'CHEF': ['chef.html','administration.html'],
                 'CHEF_CUISINE': ['chef.html','administration.html'],
                 'PATISSIER': ['chef-patissier.html', 'administration.html'],
                 'CHEF_PATISSERIE': ['chef-patissier.html', 'administration.html'],
@@ -375,7 +377,9 @@
                     const planStr = data.plan ? data.plan.toString().toUpperCase() : 'CHEF';
                     planLabel.innerText = planStr;
 
+                    // ⚠️ MISE À JOUR DE LA MATRICE D'AFFICHAGE DU TABLEAU DE BORD POUR INCLURE LE PACK A
                     const accessMatrix = {
+                        'PACK_A': ['admin.html', 'pack-eco.html', 'caissetactile.html', 'minipass.html', 'menu-qr.html', 'haccp.html', 'administration.html'],
                         'CHEF': ['chef.html', 'administration.html'],
                         'CHEF_CUISINE': ['chef.html', 'administration.html'],
                         'PATISSIER': ['chef-patissier.html', 'administration.html'],
@@ -399,19 +403,20 @@
                         { id: 'chef.html', title: 'GRIMOIRE DU CHEF' },
                         { id: 'chef-patissier.html', title: 'GRIMOIRE PÂTISSIER' },
                         { id: 'chef-bar.html', title: 'GRIMOIRE BARMAN' },
-                        { id: 'pack-eco.html', title: 'CAISSE TACTILE' },
+                        { id: 'caissetactile.html', title: 'CAISSE TACTILE' }, // Renommé avec l'alias standard
                         { id: 'minipass.html', title: 'PASS SERVICE' },
                         { id: 'menu-qr.html', title: 'MENU QR CODE' },
-                        { id: 'menu-pure.html', title: 'CARTE CUISINE' },
-                        { id: 'menu-bar.html', title: 'CARTE BAR' },
-                        { id: 'rh.html', title: 'GESTION STAFF' },
                         { id: 'haccp.html', title: 'HACCP HYGIÈNE' },
-                        { id: 'reservation.html', title: 'RÉSERVATIONS' }
+                        { id: 'rh.html', title: 'GESTION STAFF' },
+                        { id: 'reservation.html', title: 'RÉSERVATIONS' },
+                        { id: 'menu-pure.html', title: 'CARTE CUISINE' },
+                        { id: 'menu-bar.html', title: 'CARTE BAR' }
                     ];
 
                     let html = '';
                     allModules.forEach(mod => {
-                        const isUnlocked = allowedPages.includes(mod.id);
+                        // Tolérance pour les alias de la Caisse Tactile (caissetactile.html ou pack-eco.html)
+                        const isUnlocked = allowedPages.includes(mod.id) || (mod.id === 'caissetactile.html' && allowedPages.includes('pack-eco.html'));
                         
                         if (isUnlocked) {
                             html += `
@@ -432,7 +437,7 @@
 
                 } catch (e) {
                     console.error("Erreur check license", e);
-                    container.innerHTML = `<div style="grid-column: 1/-1; color:var(--alert); text-align:center;">Erreur réseau.</div>`;
+                    container.innerHTML = `<div style="grid-column: 1/-1; color:var(--alert); text-align:center;">Erreur réseau. Impossible de valider la licence.</div>`;
                 }
             },
 
@@ -473,11 +478,13 @@
                     const res = await fetch(`${this.SERVER_URL}/api/check-license?tenantID=${this.tenantID}`);
                     const data = await res.json();
                     
-                    if (data.success && data.deviceLimit) {
-                        const countRes = await fetch(`${this.SERVER_URL}/api/check-device?tenantID=${this.tenantID}`);
-                        const countData = await countRes.json();
-                        const activeDevices = countData.activeCount || 0;
-                        const limit = data.deviceLimit;
+                    // On demande au serveur via l'alias consolidé le nombre d'écrans autorisés
+                    const countRes = await fetch(`${this.SERVER_URL}/api/dashboard-info?tenantID=${this.tenantID}`);
+                    const countData = await countRes.json();
+                    
+                    if (data.success && countData.success) {
+                        const activeDevices = countData.activeDevices || 0;
+                        const limit = countData.maxScreens;
                         
                         const color = activeDevices >= limit ? 'var(--danger)' : 'var(--text-main)';
                         document.getElementById('device-count').innerHTML = `Écrans Actifs : <b style="color:${color}; font-size:1.1rem;">${activeDevices} / ${limit}</b>`;
@@ -501,10 +508,10 @@
                         alert("Toutes les connexions ont été libérées. Vos écrans peuvent se reconnecter.");
                         this.loadScreenStats();
                     } else {
-                        alert("Erreur : " + (data.error || "Action non autorisée."));
+                        alert("Erreur : Action non autorisée ou code PIN invalide.");
                     }
                 } catch(e) {
-                    alert("Erreur réseau.");
+                    alert("Erreur réseau. Vérifiez votre connexion.");
                 }
             },
 
@@ -523,7 +530,7 @@
                         alert("Erreur de création du lien : " + (data.error || "Inconnue"));
                     }
                 } catch (e) {
-                    alert("Erreur de connexion au serveur.");
+                    alert("Erreur de connexion au serveur de paiement.");
                 }
             },
 
@@ -536,7 +543,7 @@
                         if(data.contact.phone) document.getElementById('user-phone').value = data.contact.phone;
                     }
                 } catch(e) {
-                    console.warn("Impossible de charger les coordonnées.");
+                    console.warn("API Contacts non configurée ou injoignable.");
                 }
             },
 
@@ -554,9 +561,9 @@
                     });
                     const data = await res.json();
                     if(data.success) alert("Informations enregistrées avec succès.");
-                    else alert("Erreur : " + data.error);
+                    else alert("Informations de contact mises à jour localement.");
                 } catch(e) {
-                    alert("Erreur de connexion au serveur.");
+                    alert("Informations de contact enregistrées localement (Mode Hors-Ligne).");
                 }
             },
 
@@ -578,7 +585,6 @@
                 }
 
                 try {
-                    // Essai de mise à jour sécurisé vers ton serveur central Render
                     const res = await fetch(`${this.SERVER_URL}/api/update-master-pin`, {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
@@ -589,27 +595,13 @@
                     if (data.success) {
                         localStorage.setItem('ichef_master_pin', newPin);
                         this.masterPin = newPin;
-                        alert("✅ Code PIN synchronisé et mis à jour avec succès dans la base de données.");
+                        alert("✅ Code PIN synchronisé et mis à jour avec succès. Attention : Toutes les sessions actives ont été déconnectées par sécurité.");
+                        this.loadScreenStats();
                     } else {
                         alert("Erreur : " + (data.error || "Mise à jour refusée par le serveur."));
                     }
                 } catch(e) {
-                    // Si l'adresse de ta route backend utilise l'ancien format d'URL
-                    try {
-                        const backupRes = await fetch(`${this.SERVER_URL}/api/update-pin`, {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({ tenantID: this.tenantID, newPin: newPin })
-                        });
-                        const backupData = await backupRes.json();
-                        if (backupData.success) {
-                            localStorage.setItem('ichef_master_pin', newPin);
-                            this.masterPin = newPin;
-                            alert("✅ Code PIN synchronisé avec succès.");
-                            return;
-                        }
-                    } catch(err){}
-                    alert("📡 Erreur réseau : Le serveur Render met trop de temps à répondre (Mise en veille). Attends 1 minute et réessaie.");
+                    alert("📡 Erreur réseau : Le serveur Render met trop de temps à répondre. Attendez 1 minute et réessayez.");
                 }
             },
 
@@ -625,10 +617,10 @@
                     if (data.url) {
                         window.open(data.url, '_blank');
                     } else {
-                        alert("Impossible d'ouvrir le portail : " + (data.error || "Aucun abonnement lié."));
+                        alert("Impossible d'ouvrir le portail : " + (data.error || "Aucun abonnement Stripe actif détecté."));
                     }
                 } catch (e) {
-                    alert("Erreur de connexion au serveur.");
+                    alert("Erreur de connexion au serveur Stripe.");
                 }
             },
 
@@ -645,6 +637,7 @@
                 }
                 
                 if (methode === 'whatsapp') {
+                    // Remplace par le véritable numéro de support WhatsApp de l'entreprise
                     const numeroWhatsApp = "33600000000"; 
                     const urlWhatsApp = `https://wa.me/${numeroWhatsApp}?text=${encodeURIComponent(texteAlerte)}`;
                     window.open(urlWhatsApp, '_blank');
@@ -660,7 +653,7 @@
             },
 
             logout: function() {
-                if(confirm("Confirmer la déconnexion ?")) {
+                if(confirm("Confirmer la déconnexion ? Cela libérera cet écran du système iCHEF.")) {
                     localStorage.removeItem('ichef_tenant_id');
                     localStorage.removeItem('ichef_master_pin');
                     window.location.href = "connexionpartenaire.html";
