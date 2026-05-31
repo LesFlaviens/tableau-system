@@ -461,10 +461,25 @@ app.post('/api/create-checkout', async (req, res) => {
 // MASTER CONTROL API (EMPIRE SUPER ADMIN)
 // ==========================================
 app.post('/api/get-all-tenants-admin', async (req, res) => {
-    if (req.body.masterKey !== ADMIN_PASS) return res.status(401).json({ success: false });
+    const { masterKey } = req.body;
+    if (masterKey !== ADMIN_PASS) return res.status(401).json({ success: false, error: "Acces Refuse." });
+    
     try {
         const tenantsData = await Tenant.find({});
-        const formattedTenants = tenantsData.map(t => ({ id: t.tenantID, name: t.clientName, email: t.email, pack: t.plan, pin: t.pin, maxScreens: t.maxScreens, activeScreens: t.registeredDevices ? t.registeredDevices.length : 0, status: t.status }));
+        const formattedTenants = tenantsData.map(t => ({
+            id: t.tenantID, 
+            name: t.clientName || "Sans Nom", 
+            // ⚠️ CORRECTIF : On s'assure de récupérer les vraies données de MongoDB sans filtre anonyme
+            email: t.email || "Non renseigné",
+            phone: t.phone || "Non renseigné",
+            pack: t.plan, 
+            specialite: t.specialite,
+            pin: t.pin,
+            maxScreens: t.maxScreens, 
+            maxStaff: t.maxStaff,
+            activeScreens: t.registeredDevices ? t.registeredDevices.length : 0, 
+            status: t.status
+        }));
         res.json({ success: true, tenants: formattedTenants });
     } catch(err) { res.status(500).json({ success: false }); }
 });
