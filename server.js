@@ -62,7 +62,6 @@ app.post('/webhook', async (req, res) => {
         // ACHAT D'ÉCRANS SUPPLÉMENTAIRES
         if (session.metadata && session.metadata.type === 'UPGRADE_SCREENS') {
             const safeID = cleanString(session.metadata.tenantID);
-            console.log(`UPSELL REUSSI : Achat d'ecrans pour le restaurant ${safeID}`);
             try {
                 const extraScreens = parseInt(session.metadata.extraScreens);
                 await Tenant.updateOne(
@@ -73,7 +72,6 @@ app.post('/webhook', async (req, res) => {
         } 
         // NOUVEL ABONNEMENT RESTAURATEUR
         else {
-            console.log(`PAIEMENT RECU ! Securisation de la licence en arriere-plan...`);
             try {
                 const rawTenantID = session.client_reference_id || "client_attente_" + Date.now();
                 const safeID = cleanString(rawTenantID);
@@ -143,7 +141,6 @@ const tenantSchema = new mongoose.Schema({
     status: { type: String, enum: ['ACTIF', 'SUSPENDU'], default: 'ACTIF' },
     plan: { 
         type: String, 
-        // LE PACK_A EST BIEN PRÉSENT ICI POUR NE PAS FAIRE PLANTER LA BASE DE DONNÉES
         enum: ['CHEF_CUISINE', 'CHEF_PATISSERIE', 'CHEF_BAR', 'ICHEF_OS', 'RENTABILITE', 'BRIGADES', 'BRIGADE', 'BUSINESS', 'ECO', 'PREMIUM', 'CHEF', 'PATISSIER', 'BAR', 'EMPIRE', 'PACK_A'], 
         default: 'BUSINESS' 
     },
@@ -170,10 +167,7 @@ const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY || 'CLE_MANQUANT
 app.post('/api/scan-invoice', async (req, res) => {
     const { imageBase64, mimeType } = req.body;
     if (!imageBase64) return res.status(400).json({ success: false, error: "Aucune image fournie." });
-    if (!process.env.GEMINI_API_KEY || process.env.GEMINI_API_KEY === 'CLE_MANQUANTE') {
-        return res.status(500).json({ success: false, error: "🚨 CRITIQUE : Clé GEMINI_API_KEY introuvable." });
-    }
-
+    
     try {
         const base64Data = imageBase64.includes(',') ? imageBase64.split(',')[1] : imageBase64;
         const imagePart = { inlineData: { data: base64Data, mimeType: mimeType || "image/jpeg" } };
@@ -210,8 +204,7 @@ app.post('/analyse-ticket', async (req, res) => {
 app.post('/api/smart-reservation', async (req, res) => {
     const { tenantID, customerRequest, availableTables } = req.body;
     const safeID = cleanString(tenantID);
-    if (!process.env.GEMINI_API_KEY) return res.status(500).json({ success: false, error: "Clé IA manquante." });
-
+    
     try {
         const prompt = `Tu es le Maître d'Hôtel iCHEF. Demande client : "${customerRequest}". Tables libres : ${JSON.stringify(availableTables)}. Trouve la table optimale, sois poli. JSON STRICT: { "acceptee": true/false, "pax": nombre, "heure": "HH:MM", "tableAllouee": "ID_TABLE", "messageClient": "Votre réponse", "optimisationInfo": "Notes brigade" }`;
         const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
@@ -267,6 +260,31 @@ app.post('/api/activate', async (req, res) => {
         await AppState.create({ tenantID: safeID, activeOrders: {} });
         res.json({ success: true, dedicatedPin: randomPin, safeTenantID: safeID });
     } catch (error) { res.status(500).json({ error: "Erreur BDD." }); }
+});
+
+// ==========================================
+// GESTION DES CONTACTS RESTAURANT
+// ==========================================
+app.get('/api/get-contact', async (req, res) => {
+    try {
+        const tenant = await Tenant.findOne({ tenantID: cleanString(req.query.tenantID) });
+        if (tenant) res.json({ success: true, contact: { email: tenant.email, phone: tenant.phone } });
+        else res.json({ success: false });
+    } catch(e) { res.status(500).json({ success: false }); }
+});
+
+app.post('/api/update-contact', async (req, res) => {
+    try {
+        const { tenantID, masterPin, email, phone } = req.body;
+        const tenant = await Tenant.findOne({ tenantID: cleanString(tenantID) });
+        
+        if (!tenant || tenant.pin !== masterPin) return res.status(403).json({ success: false, error: "Non autorisé. PIN invalide." });
+        
+        tenant.email = email;
+        tenant.phone = phone;
+        await tenant.save();
+        res.json({ success: true });
+    } catch(e) { res.status(500).json({ success: false }); }
 });
 
 // ==========================================
@@ -461,25 +479,10 @@ app.post('/api/create-checkout', async (req, res) => {
 // MASTER CONTROL API (EMPIRE SUPER ADMIN)
 // ==========================================
 app.post('/api/get-all-tenants-admin', async (req, res) => {
-    const { masterKey } = req.body;
-    if (masterKey !== ADMIN_PASS) return res.status(401).json({ success: false, error: "Acces Refuse." });
-    
+    if (req.body.masterKey !== ADMIN_PASS) return res.status(401).json({ success: false });
     try {
         const tenantsData = await Tenant.find({});
-        const formattedTenants = tenantsData.map(t => ({
-            id: t.tenantID, 
-            name: t.clientName || "Sans Nom", 
-            // ⚠️ CORRECTIF : On s'assure de récupérer les vraies données de MongoDB sans filtre anonyme
-            email: t.email || "Non renseigné",
-            phone: t.phone || "Non renseigné",
-            pack: t.plan, 
-            specialite: t.specialite,
-            pin: t.pin,
-            maxScreens: t.maxScreens, 
-            maxStaff: t.maxStaff,
-            activeScreens: t.registeredDevices ? t.registeredDevices.length : 0, 
-            status: t.status
-        }));
+        const formattedTenants = tenantsData.map(t => ({ id: t.tenantID, name: t.clientName, email: t.email, phone: t.phone, pack: t.plan, pin: t.pin, maxScreens: t.maxScreens, activeScreens: t.registeredDevices ? t.registeredDevices.length : 0, status: t.status }));
         res.json({ success: true, tenants: formattedTenants });
     } catch(err) { res.status(500).json({ success: false }); }
 });
@@ -494,26 +497,19 @@ app.post('/api/admin-action', async (req, res) => {
         else if (action === 'set_max_staff' && manualMaxStaff) await Tenant.findOneAndUpdate({ tenantID: safeID }, { maxStaff: parseInt(manualMaxStaff) });
         else if (action === 'set_pin' && manualPin) await Tenant.findOneAndUpdate({ tenantID: safeID }, { pin: manualPin.trim(), registeredDevices: [] });
         else if (action === 'set_plan' && newPlan) { 
-            let limit = 1; 
-            let staffLimit = 1;
-            const upperPlan = newPlan.toUpperCase();
-            
-            // Configuration stricte des limites selon le forfait choisi dans la Tour de Contrôle
-            if (['CHEF', 'PATISSIER', 'BAR', 'CHEF_CUISINE', 'CHEF_PATISSERIE', 'CHEF_BAR'].includes(upperPlan)) { 
-                limit = 1; staffLimit = 1; 
-            } 
-            else if (['BUSINESS', 'RENTABILITE', 'ECO', 'PACK_A'].includes(upperPlan)) { 
-                limit = 5; staffLimit = 999; // 👈 Déverrouille les 5 écrans pour le PACK_A
-            } 
-            else if (['BRIGADE', 'EMPIRE', 'BRIGADES', 'PREMIUM'].includes(upperPlan)) { 
-                limit = 50; staffLimit = 999; 
-            } 
-            
-            // On applique la mise à jour directement dans MongoDB
-            await Tenant.findOneAndUpdate(
-                { tenantID: safeID }, 
-                { $set: { plan: upperPlan, maxScreens: limit, maxStaff: staffLimit } },
-                { new: true }
-            );
+            let limit = 1; let staffLimit = 1; const upperPlan = newPlan.toUpperCase();
+            if (['CHEF', 'PATISSIER', 'BAR', 'CHEF_CUISINE', 'CHEF_PATISSERIE', 'CHEF_BAR'].includes(upperPlan)) { limit = 1; staffLimit = 1; } 
+            else if (['BUSINESS', 'RENTABILITE', 'ECO', 'PACK_A'].includes(upperPlan)) { limit = 5; staffLimit = 999; } 
+            else if (['BRIGADE', 'EMPIRE', 'BRIGADES', 'PREMIUM'].includes(upperPlan)) { limit = 50; staffLimit = 999; } 
+            await Tenant.findOneAndUpdate({ tenantID: safeID }, { plan: upperPlan, maxScreens: limit, maxStaff: staffLimit }, { new: true });
         }
-app.listen(PORT, () => console.log("L Empire iCHEF est en ligne sur le port " + PORT));
+        else if (action === 'reset_devices') await Tenant.findOneAndUpdate({ tenantID: safeID }, { registeredDevices: [] });
+        else if (action === 'suspend') await Tenant.findOneAndUpdate({ tenantID: safeID }, { status: 'SUSPENDU', registeredDevices: [] });
+        else if (action === 'activate') await Tenant.findOneAndUpdate({ tenantID: safeID }, { status: 'ACTIF' });
+        else if (action === 'delete') { await Tenant.findOneAndDelete({ tenantID: safeID }); await AppState.findOneAndDelete({ tenantID: safeID }); }
+        
+        res.json({ success: true });
+    } catch (err) { res.status(500).json({ success: false }); }
+});
+
+app.listen(PORT, () => console.log("L'Empire iCHEF est en ligne et sécurisé sur le port " + PORT));
