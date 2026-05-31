@@ -479,19 +479,26 @@ app.post('/api/admin-action', async (req, res) => {
         else if (action === 'set_max_staff' && manualMaxStaff) await Tenant.findOneAndUpdate({ tenantID: safeID }, { maxStaff: parseInt(manualMaxStaff) });
         else if (action === 'set_pin' && manualPin) await Tenant.findOneAndUpdate({ tenantID: safeID }, { pin: manualPin.trim(), registeredDevices: [] });
         else if (action === 'set_plan' && newPlan) { 
-            let limit = 1; let staffLimit = 1; const upperPlan = newPlan.toUpperCase();
-            if (['CHEF', 'PATISSIER', 'BAR', 'CHEF_CUISINE', 'CHEF_PATISSERIE', 'CHEF_BAR'].includes(upperPlan)) { limit = 1; staffLimit = 1; } 
-            else if (['BUSINESS', 'RENTABILITE', 'ECO', 'PACK_A'].includes(upperPlan)) { limit = 5; staffLimit = 999; } 
-            else if (['BRIGADE', 'EMPIRE', 'BRIGADES', 'PREMIUM'].includes(upperPlan)) { limit = 50; staffLimit = 999; } 
-            await Tenant.findOneAndUpdate({ tenantID: safeID }, { plan: upperPlan, maxScreens: limit, maxStaff: staffLimit });
+            let limit = 1; 
+            let staffLimit = 1;
+            const upperPlan = newPlan.toUpperCase();
+            
+            // Configuration stricte des limites selon le forfait choisi dans la Tour de Contrôle
+            if (['CHEF', 'PATISSIER', 'BAR', 'CHEF_CUISINE', 'CHEF_PATISSERIE', 'CHEF_BAR'].includes(upperPlan)) { 
+                limit = 1; staffLimit = 1; 
+            } 
+            else if (['BUSINESS', 'RENTABILITE', 'ECO', 'PACK_A'].includes(upperPlan)) { 
+                limit = 5; staffLimit = 999; // 👈 Déverrouille les 5 écrans pour le PACK_A
+            } 
+            else if (['BRIGADE', 'EMPIRE', 'BRIGADES', 'PREMIUM'].includes(upperPlan)) { 
+                limit = 50; staffLimit = 999; 
+            } 
+            
+            // On applique la mise à jour directement dans MongoDB
+            await Tenant.findOneAndUpdate(
+                { tenantID: safeID }, 
+                { $set: { plan: upperPlan, maxScreens: limit, maxStaff: staffLimit } },
+                { new: true }
+            );
         }
-        else if (action === 'reset_devices') await Tenant.findOneAndUpdate({ tenantID: safeID }, { registeredDevices: [] });
-        else if (action === 'suspend') await Tenant.findOneAndUpdate({ tenantID: safeID }, { status: 'SUSPENDU', registeredDevices: [] });
-        else if (action === 'activate') await Tenant.findOneAndUpdate({ tenantID: safeID }, { status: 'ACTIF' });
-        else if (action === 'delete') { await Tenant.findOneAndDelete({ tenantID: safeID }); await AppState.findOneAndDelete({ tenantID: safeID }); }
-        
-        res.json({ success: true });
-    } catch (err) { res.status(500).json({ success: false }); }
-});
-
 app.listen(PORT, () => console.log("L Empire iCHEF est en ligne sur le port " + PORT));
