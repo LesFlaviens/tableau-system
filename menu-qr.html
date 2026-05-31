@@ -36,6 +36,7 @@
             -webkit-font-smoothing: antialiased; 
             transition: background-color 0.5s, color 0.5s; 
             font-family: var(--font-text);
+            overscroll-behavior-y: none; /* Évite l'effet de rebond iOS */
         }
 
         .kiosk-wrapper { width: 100%; max-width: 800px; min-height: 100vh; background: var(--bg-color); position: relative; padding-bottom: 120px; }
@@ -155,6 +156,67 @@
 </head>
 <body>
 
+    <div id="pwa-strict-lock" style="display: none; position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; background: #050505; z-index: 9999999; flex-direction: column; justify-content: center; align-items: center; text-align: center; padding: 20px; box-sizing: border-box; font-family: system-ui, -apple-system, sans-serif;">
+       <img src="logo-ichef.png" alt="Logo iCHEF" style="width: 220px; height: auto; margin-bottom: 20px; filter: drop-shadow(0px 5px 15px rgba(212, 175, 55, 0.4));">
+        <h1 style="color: #ffffff; font-size: 1.8rem; font-weight: 800; margin: 0; letter-spacing: 1px; text-transform: uppercase;">iCHEF EMPIRE OS</h1>
+        <p style="color: #94a3b8; max-width: 420px; font-size: 0.95rem; margin-top: 12px; margin-bottom: 35px; line-height: 1.6; font-weight: 500;">
+            L'accès à cette commande à table nécessite l'installation de l'application pour une expérience optimale.
+        </p>
+        <button id="btn-force-install" style="background: linear-gradient(135deg, #d4af37, #b89626); color: #050505; border: none; padding: 16px 35px; font-size: 1rem; font-weight: 900; border-radius: 10px; cursor: pointer; box-shadow: 0 0 25px rgba(212, 175, 55, 0.25); text-transform: uppercase; letter-spacing: 0.5px; transition: all 0.2s;">
+            📲 TÉLÉCHARGER L'APPLICATION
+        </button>
+        <div id="ios-instruction" style="display: none; margin-top: 20px; background: rgba(255,255,255,0.05); border: 1px dashed var(--gold); padding: 15px; border-radius: 8px;">
+            <p style="color: var(--gold); font-size: 0.85rem; font-weight: bold; margin: 0; text-transform: uppercase;">🍏 SUR IPHONE / IPAD :</p>
+            <p style="color: #cbd5e1; font-size: 0.8rem; margin: 5px 0 0 0;">Touchez l'icône Partage (le carré avec la flèche), puis choisissez <b>"Sur l'écran d'accueil"</b>.</p>
+        </div>
+    </div>
+
+    <script>
+        function verifyImmersion() {
+            // Sécurité : On ne force l'appli PWA QUE SI le client a scanné un QR Code avec le marqueur "?source=pwa"
+            const forcePWA = window.location.search.includes('source=pwa') || window.location.href.includes('source=pwa');
+            if (!forcePWA) return; 
+
+            const isStandalone = window.matchMedia('(display-mode: standalone)').matches 
+                              || window.navigator.standalone === true 
+                              || document.referrer.includes('android-app://');
+            
+            const lockCurtain = document.getElementById('pwa-strict-lock');
+            if (lockCurtain) {
+                if (isStandalone) {
+                    lockCurtain.style.display = 'none';
+                } else {
+                    lockCurtain.style.display = 'flex';
+                    const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) && !window.MSStream;
+                    if(isIOS) document.getElementById('ios-instruction').style.display = 'block';
+                }
+            }
+        }
+
+        if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', verifyImmersion);
+        else verifyImmersion();
+
+        let deferredInstallPrompt = null;
+        window.addEventListener('beforeinstallprompt', (e) => {
+            e.preventDefault();
+            deferredInstallPrompt = e;
+            const installBtn = document.getElementById('btn-force-install');
+            if (installBtn) installBtn.style.display = 'block';
+        });
+
+        document.addEventListener('DOMContentLoaded', () => {
+            const installBtn = document.getElementById('btn-force-install');
+            if (installBtn) {
+                installBtn.addEventListener('click', async () => {
+                    if (!deferredInstallPrompt) return;
+                    deferredInstallPrompt.prompt();
+                    const { outcome } = await deferredInstallPrompt.userChoice;
+                    if (outcome === 'accepted') deferredInstallPrompt = null;
+                });
+            }
+        });
+    </script>
+
     <div class="kiosk-wrapper">
         <header>
             <h1 id="restaurant-name" class="logo-text">NOTRE MAISON</h1>
@@ -211,7 +273,7 @@
             document.getElementById('menu-container').innerHTML = '<div class="loading-screen" style="color:#ff4757;">Ce QR Code est invalide. Identifiant établissement manquant.</div>';
         }
 
-        // 🚨 GESTION RETOUR STRIPE : Feu vert pour la caisse et la cuisine
+        // 🚨 GESTION RETOUR STRIPE : Validation automatique de la commande payée
         if (paiementStatus === 'ok') { 
             alert("✅ Paiement accepté ! Votre commande part immédiatement en préparation."); 
             fetch(`${SERVER_URL}/get-current-state?tenantID=${tenantID}`).then(r=>r.json()).then(stateData => {
@@ -256,6 +318,7 @@
                 let state = await r.json();
                 let activeOrders = state.activeOrders || {};
                 
+                // SYNCHRONISATION DES PARAMÈTRES (Heures, Design, Anti-Rush)
                 if (activeOrders['SETTINGS_MASTER'] && activeOrders['SETTINGS_MASTER'].data) {
                     systemSettings = activeOrders['SETTINGS_MASTER'].data;
                     if (systemSettings.name) document.getElementById('restaurant-name').innerText = systemSettings.name;
@@ -348,6 +411,7 @@
                     }
                 }
 
+                // SYNCHRONISATION DES PLATS ET DES RUPTURES EN TEMPS RÉEL
                 let rawCuisine = activeOrders['MENU_MASTER']?.data || {};
                 let rawBar = activeOrders['MENU_MASTER_BAR']?.data || {};
 
@@ -366,7 +430,7 @@
                 } else { 
                     currentMenuData = null;
                     document.getElementById('filter-bar').style.display = 'none';
-                    document.getElementById('menu-container').innerHTML = '<div class="loading-screen">La carte n\'est pas encore disponible.</div>'; 
+                    document.getElementById('menu-container').innerHTML = '<div class="loading-screen" style="font-style:normal;">La carte n\'est pas encore disponible.</div>'; 
                 }
             } catch(e) { console.error("Erreur Sync:", e); }
         }
@@ -549,6 +613,7 @@
             let safePrice = parseFloat(item.price) || 0;
             let dest = item.destination || 'cuisine';
             
+            // DÉTECTION DU STOCK EN DIRECT (Si 0 => Épuisé)
             let isSoldOut = (item.stock === 0 || item.stock === "0");
             let soldOutClass = isSoldOut ? 'sold-out' : '';
             let soldOutBadge = isSoldOut ? `<span class="sold-out-badge">Épuisé</span>` : `<span class="add-badge">+ Ajouter</span>`;
@@ -619,6 +684,7 @@
             container.innerHTML = htmlContent || '<div class="loading-screen" style="font-style:normal;">Aucun plat trouvé dans cette catégorie.</div>';
         }
 
+        // Lancement initial et synchro en direct (toutes les 3s)
         fetchMenu(); 
         setInterval(fetchMenu, 3000); 
     </script>
@@ -628,10 +694,10 @@
             window.addEventListener('load', () => {
                 navigator.serviceWorker.register('./service-worker.js')
                 .then(registration => {
-                    console.log('✅ Moteur iCHEF PWA activé avec succès !', registration.scope);
+                    console.log('✅ Moteur PWA activé !', registration.scope);
                 })
                 .catch(err => {
-                    console.error('❌ Erreur de sécurité PWA :', err);
+                    console.error('❌ Erreur PWA :', err);
                 });
             });
         }
