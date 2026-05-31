@@ -4,9 +4,10 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     
-  <link rel="manifest" href="manifest.json">
+    <link rel="manifest" href="manifest.json">
     <link rel="apple-touch-icon" href="icon-512.png">
-    <link rel="icon" type="image/png" href="icon-512.png"> <meta name="apple-mobile-web-app-capable" content="yes">
+    <link rel="icon" type="image/png" href="icon-512.png"> 
+    <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
     <meta name="mobile-web-app-capable" content="yes">
     <meta name="theme-color" content="#050505">
@@ -72,10 +73,11 @@
 
         .btn-submit {
             background: var(--text-main); color: var(--bg); border: none; width: 100%; padding: 16px;
-            border-radius: 8px; font-size: 1.1rem; font-weight: 900; text-transform: uppercase;
+            border-radius: 8px; font-size: 1rem; font-weight: 900; text-transform: uppercase;
             cursor: pointer; transition: 0.3s; margin-top: 10px; letter-spacing: 1px;
         }
-        .btn-submit:hover { background: var(--gold); }
+        .btn-submit:hover { background: var(--gold); color: #000; }
+        .btn-submit:disabled { background: #333; color: #888; cursor: not-allowed; }
 
         .error-msg {
             color: var(--alert); font-size: 0.85rem; margin-top: 15px; font-weight: 600;
@@ -97,6 +99,11 @@
         <button id="btn-force-install" style="display: none; background: linear-gradient(135deg, #d4af37, #b89626); color: #050505; border: none; padding: 16px 35px; font-size: 1rem; font-weight: 900; border-radius: 10px; cursor: pointer; box-shadow: 0 0 25px rgba(212, 175, 55, 0.25); text-transform: uppercase; letter-spacing: 0.5px;">
             📲 TÉLÉCHARGER L'APPLICATION
         </button>
+
+        <div id="ios-instruction" style="display: none; margin-top: 10px; background: rgba(255,255,255,0.05); border: 1px dashed var(--gold); padding: 15px; border-radius: 8px;">
+            <p style="color: var(--gold); font-size: 0.85rem; font-weight: bold; margin: 0; text-transform: uppercase;">🍏 SUR IPHONE / IPAD :</p>
+            <p style="color: #cbd5e1; font-size: 0.8rem; margin: 5px 0 0 0;">Touchez l'icône Partage (le carré avec la flèche), puis choisissez <b>"Sur l'écran d'accueil"</b> pour installer la caisse.</p>
+        </div>
     </div>
 
     <script>
@@ -110,8 +117,17 @@
             
             const lockCurtain = document.getElementById('pwa-strict-lock');
             if (lockCurtain) {
-                if (isStandalone) lockCurtain.style.display = 'none';
-                else lockCurtain.style.display = 'flex';
+                if (isStandalone) {
+                    lockCurtain.style.display = 'none'; // Si installé, on cache le rideau
+                } else {
+                    lockCurtain.style.display = 'flex'; // Sinon on bloque
+                    
+                    // Détection des utilisateurs iPhone/iPad pour afficher les bonnes instructions
+                    const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) && !window.MSStream;
+                    if(isIOS) {
+                        document.getElementById('ios-instruction').style.display = 'block';
+                    }
+                }
             }
         }
 
@@ -121,7 +137,7 @@
             verifyImmersion();
         }
 
-        // Gestion de l'installation forcée (PWA)
+        // Gestion de l'installation forcée (Android/Chrome)
         let deferredInstallPrompt = null;
         window.addEventListener('beforeinstallprompt', (e) => {
             e.preventDefault();
@@ -138,6 +154,7 @@
             }
         });
     </script>
+
     <div class="login-box">
         <h1 class="logo"><span>iCHEF.</span> OS</h1>
         <div class="subtitle">Espace Partenaire</div>
@@ -189,9 +206,16 @@
 
             if (!tenantInput || !pinInput) return;
 
+            // On désactive le bouton pour empêcher le double-clic
             btnLogin.disabled = true;
             btnLogin.innerText = "Vérification...";
             errorMsg.style.display = 'none';
+
+            // DÉTECTEUR DE SOMMEIL DU SERVEUR RENDER :
+            // Si la réponse prend plus de 3 secondes, on rassure le client.
+            let wakeTimer = setTimeout(() => {
+                btnLogin.innerText = "⏳ Réveil du serveur (Patientez 30s)...";
+            }, 3000);
 
             try {
                 // Appel STRICT vers le serveur, avec inclusion de la plaque d'immatriculation (deviceId)
@@ -204,12 +228,19 @@
                         deviceId: getDeviceFingerprint() 
                     })
                 });
+                
+                clearTimeout(wakeTimer); // On annule le timer si le serveur répond vite
+                
                 const data = await response.json();
 
                 if (data.success) {
                     // Connexion validée par le cloud, on écrit la mémoire en urgence
                     localStorage.setItem('ichef_tenant_id', tenantInput);
                     localStorage.setItem('ichef_master_pin', pinInput);
+                    
+                    btnLogin.style.backgroundColor = "var(--accent)";
+                    btnLogin.style.color = "#000";
+                    btnLogin.innerText = "✅ Connexion Réussie !";
                     
                     // 🔑 CAPTURE DU MOT DE PASSE SECRET PWA POUR LA PAGE SUIVANTE
                     const isPWA = window.location.search.includes('source=pwa') || window.location.href.includes('source=pwa');
@@ -218,13 +249,14 @@
                     // DÉLAI DE SÉCURITÉ : Attendre la fin de l'écriture avant de rediriger
                     setTimeout(() => {
                         window.location.href = `administration.html${finalParams}`;
-                    }, 300);
+                    }, 500);
                     
                 } else {
-                    // Le serveur a refusé : on affiche la raison exacte (ex: Limite d'écrans atteinte)
+                    // Le serveur a refusé (mauvais code ou limite d'écran)
                     throw new Error(data.error || "Identifiant ou Code PIN incorrect.");
                 }
             } catch (error) {
+                clearTimeout(wakeTimer);
                 btnLogin.disabled = false;
                 btnLogin.innerText = "Connexion Sécurisée";
                 
@@ -233,7 +265,13 @@
                     document.getElementById('tenant-pin').value = ''; 
                 }
                 
-                errorMsg.innerText = error.message;
+                // Si c'est une erreur de réseau (serveur éteint ou injoignable)
+                if (error.message.includes("Failed to fetch") || error.message.includes("NetworkError")) {
+                    errorMsg.innerText = "Le serveur sécurisé démarre. Cliquez à nouveau sur Connexion.";
+                } else {
+                    errorMsg.innerText = error.message;
+                }
+                
                 errorMsg.style.display = 'block';
             }
         }
