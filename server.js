@@ -24,18 +24,13 @@ app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 app.use(express.static(path.join(__dirname)));
 
-// ==========================================
-// OUTIL DE NETTOYAGE UNIVERSEL (ANTI-CRASH)
-// ==========================================
 const cleanString = (str) => String(str || "").trim().toLowerCase();
 
-// ==========================================
-// ROUTAGE DES PAGES WEB
-// ==========================================
 app.get('/', (req, res) => {
     res.sendFile(path.join(__dirname, 'vitrine.html'));
 });
 
+// Ta nouvelle route d'administration officielle
 app.get('/panel-ichef', (req, res) => {
     if (req.query.pass === ADMIN_PASS) {
         res.sendFile(path.join(__dirname, 'empire.html'));
@@ -59,28 +54,19 @@ app.post('/webhook', async (req, res) => {
     if (event.type === 'checkout.session.completed') {
         const session = event.data.object;
 
-        // ACHAT D'ÉCRANS SUPPLÉMENTAIRES
         if (session.metadata && session.metadata.type === 'UPGRADE_SCREENS') {
             const safeID = cleanString(session.metadata.tenantID);
             try {
                 const extraScreens = parseInt(session.metadata.extraScreens);
-                await Tenant.updateOne(
-                    { tenantID: safeID },
-                    { $inc: { maxScreens: extraScreens } }
-                );
-            } catch(e) { console.error("Erreur Upgrade Ecrans:", e); }
-        } 
-        // NOUVEL ABONNEMENT RESTAURATEUR
-        else {
+                await Tenant.updateOne({ tenantID: safeID }, { $inc: { maxScreens: extraScreens } });
+            } catch(e) {}
+        } else {
             try {
                 const rawTenantID = session.client_reference_id || "client_attente_" + Date.now();
                 const safeID = cleanString(rawTenantID);
-                
                 let planAchete = "BUSINESS";
-                let limitScreens = 5;
-                let limitStaff = 999;
+                let limitScreens = 5; let limitStaff = 999;
 
-                // 1. LECTURE DES MÉTADONNÉES STRIPE
                 if (session.metadata && session.metadata.plan) {
                     planAchete = session.metadata.plan.toUpperCase();
                     if (['CHEF_CUISINE', 'CHEF_PATISSERIE', 'CHEF_BAR', 'CHEF', 'PATISSIER', 'BAR'].includes(planAchete)) {
@@ -90,38 +76,21 @@ app.post('/webhook', async (req, res) => {
                     } else if (['EMPIRE', 'BRIGADE', 'BRIGADES', 'PREMIUM'].includes(planAchete)) {
                         limitScreens = 50; limitStaff = 999;
                     }
-                } 
-                // 2. SECOURS : DÉTECTION PAR PRIX PAYÉ
-                else {
-                    if (session.amount_total === 1900) {
-                        planAchete = "CHEF_CUISINE"; 
-                        limitScreens = 1; limitStaff = 1;
-                    } else if (session.amount_total === 4500 || session.amount_total === 4900) {
-                        planAchete = "PACK_A"; 
-                        limitScreens = 5; limitStaff = 999;
-                    } else if (session.amount_total >= 9900) {
-                        planAchete = "EMPIRE"; 
-                        limitScreens = 50; limitStaff = 999;
-                    }
+                } else {
+                    if (session.amount_total === 1900) { planAchete = "CHEF_CUISINE"; limitScreens = 1; limitStaff = 1; } 
+                    else if (session.amount_total === 4500 || session.amount_total === 4900) { planAchete = "PACK_A"; limitScreens = 5; limitStaff = 999; } 
+                    else if (session.amount_total >= 9900) { planAchete = "EMPIRE"; limitScreens = 50; limitStaff = 999; }
                 }
 
                 await Tenant.updateOne(
                     { tenantID: safeID },
                     { 
-                        $set: { 
-                            status: 'ACTIF', 
-                            config: { stripeCustomerId: session.customer } 
-                        },
-                        $setOnInsert: { 
-                            plan: planAchete, 
-                            maxScreens: limitScreens, 
-                            maxStaff: limitStaff,
-                            pin: Math.floor(1000 + Math.random() * 9000).toString() 
-                        }
+                        $set: { status: 'ACTIF', config: { stripeCustomerId: session.customer } },
+                        $setOnInsert: { plan: planAchete, maxScreens: limitScreens, maxStaff: limitStaff, pin: Math.floor(1000 + Math.random() * 9000).toString() }
                     },
                     { upsert: true }
                 );
-            } catch(e) { console.error("Erreur MongoDB Webhook :", e); }
+            } catch(e) {}
         }
     }
     res.json({received: true});
@@ -159,7 +128,7 @@ const AppState = mongoose.model('AppState', new mongoose.Schema({
 }, { minimize: false }));
 
 // ==========================================
-// 🤖 MOTEUR IA 1 : RECONNAISSANCE DE FACTURES
+// 🤖 MOTEURS IA
 // ==========================================
 const { GoogleGenerativeAI } = require('@google/generative-ai');
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY || 'CLE_MANQUANTE');
@@ -167,30 +136,24 @@ const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY || 'CLE_MANQUANT
 app.post('/api/scan-invoice', async (req, res) => {
     const { imageBase64, mimeType } = req.body;
     if (!imageBase64) return res.status(400).json({ success: false, error: "Aucune image fournie." });
-    
     try {
         const base64Data = imageBase64.includes(',') ? imageBase64.split(',')[1] : imageBase64;
         const imagePart = { inlineData: { data: base64Data, mimeType: mimeType || "image/jpeg" } };
-        const prompt = `Analyse cette image de facture. Extrais les informations et CLASSIFIE chaque article. RESPOND ONLY WITH JSON WITHOUT MARKDOWN TEXT around: { "fournisseur": "Nom", "adresse": "Adresse", "telephone": "Tel", "email": "Email", "devise": "€", "date": "JJ/MM/AAAA", "totalHT": 0.00, "tva": 0.00, "totalTTC": 0.00, "articles": [ { "nom": "Produit", "quantite": "1 kg", "prixUnitaire": 4.54, "categorie": "Légumes" } ] }`;
-
+        const prompt = `Analyse cette image de facture. Extrais les informations. RESPOND ONLY WITH JSON WITHOUT MARKDOWN TEXT: { "fournisseur": "Nom", "adresse": "Adresse", "telephone": "Tel", "email": "Email", "devise": "€", "date": "JJ/MM/AAAA", "totalHT": 0.00, "tva": 0.00, "totalTTC": 0.00, "articles": [] }`;
         const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
         const result = await model.generateContent([prompt, imagePart]);
-        let responseText = result.response.text().trim();
-        responseText = responseText.replace(/```json/gi, '').replace(/```/gi, '').trim();
+        let responseText = result.response.text().trim().replace(/```json/gi, '').replace(/```/gi, '').trim();
         if (!responseText.startsWith("{")) responseText = responseText.substring(responseText.indexOf("{"));
         res.json({ success: true, data: JSON.parse(responseText) });
-    } catch (error) { res.status(500).json({ success: false, error: "ERREUR GOOGLE : " + error.message }); }
+    } catch (error) { res.status(500).json({ success: false, error: "ERREUR GOOGLE" }); }
 });
 
-// ==========================================
-// 🤖 MOTEUR IA 2 : ANALYSE ÉTIQUETTES HACCP
-// ==========================================
 app.post('/analyse-ticket', async (req, res) => {
     const { image, mimeType } = req.body;
     if (!image) return res.status(400).json({ success: false, error: "Image manquante" });
     try {
         const imagePart = { inlineData: { data: image, mimeType: mimeType || "image/jpeg" } };
-        const prompt = `Analyse cette étiquette de traçabilité de cuisine. Extrais précisément le nom du produit, le numéro de lot, et la DLC au format JJ/MM/AAAA. UK TEXT ONLY JSON NO MARKDOWN: { "nom": "Nom du produit", "lot": "Numéro de lot", "dlc": "Date" }`;
+        const prompt = `Analyse cette étiquette de traçabilité. JSON NO MARKDOWN: { "nom": "Nom du produit", "lot": "Numéro", "dlc": "JJ/MM/AAAA" }`;
         const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
         const result = await model.generateContent([prompt, imagePart]);
         let text = result.response.text().trim().replace(/```json/gi, '').replace(/```/gi, '').trim();
@@ -198,24 +161,18 @@ app.post('/analyse-ticket', async (req, res) => {
     } catch (error) { res.status(500).json({ success: false, error: error.message }); }
 });
 
-// ==========================================
-// 🤖 MOTEUR IA 3 : MAÎTRE D'HÔTEL (RÉSERVATIONS)
-// ==========================================
 app.post('/api/smart-reservation', async (req, res) => {
     const { tenantID, customerRequest, availableTables } = req.body;
-    const safeID = cleanString(tenantID);
-    
     try {
-        const prompt = `Tu es le Maître d'Hôtel iCHEF. Demande client : "${customerRequest}". Tables libres : ${JSON.stringify(availableTables)}. Trouve la table optimale, sois poli. JSON STRICT: { "acceptee": true/false, "pax": nombre, "heure": "HH:MM", "tableAllouee": "ID_TABLE", "messageClient": "Votre réponse", "optimisationInfo": "Notes brigade" }`;
+        const prompt = `Tu es le Maître d'Hôtel iCHEF. Demande client : "${customerRequest}". Tables libres : ${JSON.stringify(availableTables)}. Trouve la table optimale. JSON STRICT: { "acceptee": true/false, "pax": nombre, "heure": "HH:MM", "tableAllouee": "ID_TABLE", "messageClient": "Votre réponse", "optimisationInfo": "Notes" }`;
         const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
         const result = await model.generateContent(prompt);
         let responseText = result.response.text().trim().replace(/```json/gi, '').replace(/```/gi, '').trim();
         if (!responseText.startsWith("{")) responseText = responseText.substring(responseText.indexOf("{"));
         const decision = JSON.parse(responseText);
-
         if (decision.acceptee && decision.tableAllouee) {
             await AppState.findOneAndUpdate(
-                { tenantID: safeID },
+                { tenantID: cleanString(tenantID) },
                 { $push: { "activeOrders.RESERVATIONS_MASTER.data": { id: 'resa_' + Date.now(), pax: decision.pax, heure: decision.heure, table: decision.tableAllouee, info: decision.optimisationInfo, timestamp: Date.now() } } },
                 { upsert: true }
             );
@@ -225,45 +182,7 @@ app.post('/api/smart-reservation', async (req, res) => {
 });
 
 // ==========================================
-// ACTIVATION & CRÉATION OFFICIELLE CLIENT
-// ==========================================
-app.post('/api/activate', async (req, res) => {
-    const { sessionId, clientName, tenantID, email, phone, plan, specialite } = req.body;
-    if (!sessionId) return res.status(403).json({ error: "Session invalide." });
-
-    try {
-        const session = await stripe.checkout.sessions.retrieve(sessionId);
-        if (session.payment_status !== 'paid') return res.status(403).json({ error: "Paiement non valide." });
-        
-        const safeID = cleanString(tenantID);
-        const existingTenant = await Tenant.findOne({ tenantID: safeID });
-        if (existingTenant) return res.status(400).json({ error: "Identifiant deja pris." });
-
-        const randomPin = Math.floor(1000 + Math.random() * 9000).toString();
-        const finalPlan = plan ? plan.toUpperCase().replace(' ', '_') : 'BUSINESS';
-        let limit = 1; let staffLimit = 1;
-
-        if (['CHEF', 'PATISSIER', 'BAR', 'CHEF_CUISINE', 'CHEF_PATISSERIE', 'CHEF_BAR'].includes(finalPlan)) { 
-            limit = 1; staffLimit = 1; 
-        } else if (['BUSINESS', 'RENTABILITE', 'ECO', 'PACK_A'].includes(finalPlan)) { 
-            limit = 5; staffLimit = 999; 
-        } else if (['BRIGADE', 'BRIGADES', 'EMPIRE', 'PREMIUM'].includes(finalPlan)) { 
-            limit = 50; staffLimit = 999; 
-        } 
-
-        await Tenant.create({ 
-            tenantID: safeID, clientName, email, phone, status: 'ACTIF', 
-            plan: finalPlan, specialite: specialite || 'cuisine', maxScreens: limit, maxStaff: staffLimit, pin: randomPin, 
-            config: { stripeCustomerId: session.customer } 
-        });
-        
-        await AppState.create({ tenantID: safeID, activeOrders: {} });
-        res.json({ success: true, dedicatedPin: randomPin, safeTenantID: safeID });
-    } catch (error) { res.status(500).json({ error: "Erreur BDD." }); }
-});
-
-// ==========================================
-// GESTION DES CONTACTS RESTAURANT
+// API RESTAURANT (Caisse, Admin, etc.)
 // ==========================================
 app.get('/api/get-contact', async (req, res) => {
     try {
@@ -277,19 +196,12 @@ app.post('/api/update-contact', async (req, res) => {
     try {
         const { tenantID, masterPin, email, phone } = req.body;
         const tenant = await Tenant.findOne({ tenantID: cleanString(tenantID) });
-        
-        if (!tenant || tenant.pin !== masterPin) return res.status(403).json({ success: false, error: "Non autorisé. PIN invalide." });
-        
-        tenant.email = email;
-        tenant.phone = phone;
-        await tenant.save();
+        if (!tenant || tenant.pin !== masterPin) return res.status(403).json({ success: false, error: "Non autorisé." });
+        tenant.email = email; tenant.phone = phone; await tenant.save();
         res.json({ success: true });
     } catch(e) { res.status(500).json({ success: false }); }
 });
 
-// ==========================================
-// SÉCURITÉ : GARDE DU CORPS & PINS (MAÎTRE + STAFF)
-// ==========================================
 app.get('/api/check-license', async (req, res) => {
     try {
         const tenant = await Tenant.findOne({ tenantID: cleanString(req.query.tenantID) });
@@ -302,8 +214,8 @@ app.post('/api/verify-pin', async (req, res) => {
     const { tenantID, pin, deviceId } = req.body;
     try {
         const tenant = await Tenant.findOne({ tenantID: cleanString(tenantID) });
-        if (!tenant) return res.status(404).json({ success: false, error: "Identifiant inconnu." });
-        if (tenant.status === 'SUSPENDU') return res.status(403).json({ success: false, error: "Licence suspendue." });
+        if (!tenant) return res.status(404).json({ success: false, error: "Inconnu." });
+        if (tenant.status === 'SUSPENDU') return res.status(403).json({ success: false, error: "Suspendue." });
 
         let isValid = (String(tenant.pin).trim() === String(pin).trim());
         let roleAttribue = 'MASTER';
@@ -318,22 +230,13 @@ app.post('/api/verify-pin', async (req, res) => {
 
         if (isValid) { 
             if (deviceId && !tenant.registeredDevices.includes(deviceId)) {
-                if (tenant.registeredDevices.length >= tenant.maxScreens) return res.status(403).json({ success: false, error: "Limite d'écrans atteinte." });
+                if (tenant.registeredDevices.length >= tenant.maxScreens) return res.status(403).json({ success: false, error: "Limite écrans atteinte." });
                 tenant.registeredDevices.push(deviceId); await tenant.save();
             }
             return res.json({ success: true, plan: tenant.plan, specialite: tenant.specialite, role: roleAttribue, safeTenantID: tenant.tenantID }); 
         }
         res.status(401).json({ success: false, error: "Code PIN incorrect." });
     } catch (error) { res.status(500).json({ success: false }); }
-});
-
-// ALIAS INTÉGRÉS ICI : Prise en charge des doubles routes
-app.get(['/api/check-device', '/api/dashboard-info'], async (req, res) => {
-    try {
-        const tenant = await Tenant.findOne({ tenantID: cleanString(req.query.tenantID) });
-        if (!tenant) return res.status(404).json({ success: false });
-        res.json({ success: true, activeCount: tenant.registeredDevices.length, activeDevices: tenant.registeredDevices.length, maxScreens: tenant.maxScreens });
-    } catch (e) { res.status(500).json({ success: false }); }
 });
 
 app.post(['/api/update-pin', '/api/update-master-pin'], async (req, res) => {
@@ -343,6 +246,14 @@ app.post(['/api/update-pin', '/api/update-master-pin'], async (req, res) => {
     } catch (error) { res.status(500).json({ success: false }); }
 });
 
+app.get(['/api/check-device', '/api/dashboard-info'], async (req, res) => {
+    try {
+        const tenant = await Tenant.findOne({ tenantID: cleanString(req.query.tenantID) });
+        if (!tenant) return res.status(404).json({ success: false });
+        res.json({ success: true, activeCount: tenant.registeredDevices.length, activeDevices: tenant.registeredDevices.length, maxScreens: tenant.maxScreens });
+    } catch (e) { res.status(500).json({ success: false }); }
+});
+
 app.post(['/api/kill-switch', '/api/admin-reset-devices'], async (req, res) => {
     try {
         await Tenant.findOneAndUpdate({ tenantID: cleanString(req.body.tenantID) }, { registeredDevices: [] });
@@ -350,44 +261,6 @@ app.post(['/api/kill-switch', '/api/admin-reset-devices'], async (req, res) => {
     } catch (e) { res.status(500).json({ success: false }); }
 });
 
-app.post(['/api/billing-portal', '/api/stripe/create-customer-portal-session'], async (req, res) => {
-    try {
-        const tenant = await Tenant.findOne({ tenantID: cleanString(req.body.tenantID) });
-        if (!tenant || !tenant.config || !tenant.config.stripeCustomerId) return res.status(400).json({ success: false });
-        const session = await stripe.billingPortal.sessions.create({
-            customer: tenant.config.stripeCustomerId,
-            return_url: `${req.headers.origin}/administration.html?tenantID=${tenant.tenantID}`,
-        });
-        res.json({ success: true, url: session.url });
-    } catch (e) { res.status(500).json({ success: false }); }
-});
-
-// ==========================================
-// GESTION DES ALERTES SUPPORT (SOS)
-// ==========================================
-let activeAlerts = []; 
-
-app.post(['/api/support-alert', '/api/sos-alert'], (req, res) => {
-    const { tenantID, type, message, timestamp } = req.body;
-    activeAlerts.push({ id: Date.now().toString(), tenantID: cleanString(tenantID), type, message, timestamp, status: 'OPEN' });
-    res.json({ success: true });
-});
-
-app.post('/api/get-alerts', (req, res) => {
-    if(req.body.masterKey !== ADMIN_PASS) return res.status(403).json({ success: false });
-    res.json({ success: true, alerts: activeAlerts.filter(a => a.status === 'OPEN') });
-});
-
-app.post('/api/resolve-alert', (req, res) => {
-    if(req.body.masterKey !== ADMIN_PASS) return res.status(403).json({ success: false });
-    const alertIndex = activeAlerts.findIndex(a => a.id === req.body.alertId);
-    if(alertIndex > -1) activeAlerts[alertIndex].status = 'RESOLVED';
-    res.json({ success: true });
-});
-
-// ==========================================
-// LE CŒUR DU RÉSEAU (SYNCHRO ATOMIQUE SÉCURISÉE)
-// ==========================================
 app.get('/get-current-state', async (req, res) => {
     try {
         let tenantID = req.query.tenantID || 'MASTER_STATE';
@@ -409,98 +282,56 @@ app.get('/get-current-state', async (req, res) => {
 app.post('/update-order', async (req, res) => {
     try {
         let tenantID = req.query.tenantID || 'MASTER_STATE';
-        if (tenantID !== 'MASTER_STATE') {
-            tenantID = cleanString(tenantID);
-            const tenant = await Tenant.findOne({ tenantID });
-            if (tenant && tenant.status === 'SUSPENDU') return res.status(403).json({ error: "Licence suspendue" });
-        }
+        if (tenantID !== 'MASTER_STATE') tenantID = cleanString(tenantID);
 
         const { tableId, order } = req.body;
         let updateQuery = (order === null) ? { $unset: { [`activeOrders.${tableId}`]: 1 } } : { $set: { [`activeOrders.${tableId}`]: order } };
-        
         await AppState.findOneAndUpdate({ tenantID }, updateQuery, { upsert: true, new: true });
         res.json({ success: true });
     } catch (e) { res.status(500).json({ error: "Save Error" }); }
 });
 
 // ==========================================
-// BOUTIQUE INTÉGRÉE : ACHAT DE CONNEXIONS SUPPLÉMENTAIRES
-// ==========================================
-app.post(['/api/buy-screens', '/api/stripe/create-screen-upgrade-session'], async (req, res) => {
-    try {
-        const { tenantID, pack, quantity } = req.body;
-        const safeID = cleanString(tenantID);
-        const qteFinale = quantity || parseInt(pack) || 1;
-        let amount = qteFinale === 3 ? 2300 : qteFinale === 5 ? 5000 : qteFinale * 900;
-
-        const session = await stripe.checkout.sessions.create({
-            payment_method_types: ['card'],
-            line_items: [{ price_data: { currency: 'eur', product_data: { name: `iCHEF OS : +${qteFinale} Écrans` }, unit_amount: amount }, quantity: 1 }],
-            mode: 'payment',
-            metadata: { type: 'UPGRADE_SCREENS', tenantID: safeID, extraScreens: qteFinale },
-            success_url: `${req.headers.origin}/administration.html?tenantID=${safeID}&upgrade=success`,
-            cancel_url: `${req.headers.origin}/administration.html?tenantID=${safeID}&upgrade=cancel`,
-        });
-        res.json({ success: true, url: session.url });
-    } catch (error) { res.status(500).json({ success: false }); }
-});
-
-// ==========================================
-// CRÉATION DE PAIEMENT STRIPE DYNAMIQUE (MULTI-RESTAURANTS)
-// ==========================================
-app.post('/api/create-checkout', async (req, res) => {
-    try {
-        const { total, table, tenantID } = req.body;
-        const safeID = cleanString(tenantID);
-        const state = await AppState.findOne({ tenantID: safeID });
-
-        if (!state || !state.activeOrders || !state.activeOrders['SETTINGS_MASTER']) {
-            return res.status(400).json({ error: "Configuration restaurant introuvable." });
-        }
-
-        const settings = state.activeOrders['SETTINGS_MASTER'].data;
-        const stripeKeyResto = settings.payment && settings.payment.stripeLink ? settings.payment.stripeLink.trim() : null;
-
-        if (!stripeKeyResto || !stripeKeyResto.startsWith('sk_')) return res.status(400).json({ error: "Clé Stripe manquante." });
-
-        const tenantStripe = require('stripe')(stripeKeyResto);
-        const session = await tenantStripe.checkout.sessions.create({
-            payment_method_types: ['card'],
-            line_items: [{ price_data: { currency: 'eur', product_data: { name: 'Commande Restaurant - Table ' + table }, unit_amount: Math.round(total * 100) }, quantity: 1 }],
-            mode: 'payment',
-            success_url: `https://tableau-system.onrender.com/menu-qr.html?tenantID=${safeID}&table=${table}&paiement=ok`,
-            cancel_url: `https://tableau-system.onrender.com/menu-qr.html?tenantID=${safeID}&table=${table}&paiement=annule`,
-        });
-        res.json({ url: session.url });
-    } catch (error) { res.status(500).json({ error: error.message }); }
-});
-
-// ==========================================
 // MASTER CONTROL API (EMPIRE SUPER ADMIN)
 // ==========================================
 app.post('/api/get-all-tenants-admin', async (req, res) => {
-    if (req.body.masterKey !== ADMIN_PASS) return res.status(401).json({ success: false });
+    if (req.body.masterKey !== ADMIN_PASS) return res.status(401).json({ success: false, error: "Acces Refuse." });
     try {
         const tenantsData = await Tenant.find({});
-        const formattedTenants = tenantsData.map(t => ({ id: t.tenantID, name: t.clientName, email: t.email, phone: t.phone, pack: t.plan, pin: t.pin, maxScreens: t.maxScreens, activeScreens: t.registeredDevices ? t.registeredDevices.length : 0, status: t.status }));
+        const formattedTenants = tenantsData.map(t => ({
+            id: t.tenantID, name: t.clientName || "Sans Nom", 
+            email: t.email || "Non renseigné", phone: t.phone || "Non renseigné",
+            pack: t.plan, specialite: t.specialite, pin: t.pin,
+            maxScreens: t.maxScreens, maxStaff: t.maxStaff,
+            activeScreens: t.registeredDevices ? t.registeredDevices.length : 0, 
+            status: t.status
+        }));
         res.json({ success: true, tenants: formattedTenants });
     } catch(err) { res.status(500).json({ success: false }); }
 });
 
 app.post('/api/admin-action', async (req, res) => {
-    if (req.body.masterKey !== ADMIN_PASS) return res.status(401).json({ success: false });
+    if (req.body.masterKey !== ADMIN_PASS) return res.status(401).json({ success: false, error: "Acces Refuse." });
     try {
         const { tenantID, action, newPlan, manualScreens, manualPin, manualMaxStaff } = req.body;
         const safeID = cleanString(tenantID);
 
-        if (action === 'set_screens' && manualScreens) await Tenant.findOneAndUpdate({ tenantID: safeID }, { maxScreens: parseInt(manualScreens) });
-        else if (action === 'set_max_staff' && manualMaxStaff) await Tenant.findOneAndUpdate({ tenantID: safeID }, { maxStaff: parseInt(manualMaxStaff) });
-        else if (action === 'set_pin' && manualPin) await Tenant.findOneAndUpdate({ tenantID: safeID }, { pin: manualPin.trim(), registeredDevices: [] });
+        if (action === 'set_screens' && manualScreens) {
+            await Tenant.findOneAndUpdate({ tenantID: safeID }, { maxScreens: parseInt(manualScreens) });
+        }
+        else if (action === 'set_max_staff' && manualMaxStaff) {
+            await Tenant.findOneAndUpdate({ tenantID: safeID }, { maxStaff: parseInt(manualMaxStaff) });
+        }
+        else if (action === 'set_pin' && manualPin) {
+            await Tenant.findOneAndUpdate({ tenantID: safeID }, { pin: manualPin.trim(), registeredDevices: [] });
+        }
         else if (action === 'set_plan' && newPlan) { 
-            let limit = 1; let staffLimit = 1; const upperPlan = newPlan.toUpperCase();
+            let limit = 1; let staffLimit = 1;
+            const upperPlan = newPlan.toUpperCase();
             if (['CHEF', 'PATISSIER', 'BAR', 'CHEF_CUISINE', 'CHEF_PATISSERIE', 'CHEF_BAR'].includes(upperPlan)) { limit = 1; staffLimit = 1; } 
             else if (['BUSINESS', 'RENTABILITE', 'ECO', 'PACK_A'].includes(upperPlan)) { limit = 5; staffLimit = 999; } 
             else if (['BRIGADE', 'EMPIRE', 'BRIGADES', 'PREMIUM'].includes(upperPlan)) { limit = 50; staffLimit = 999; } 
+            
             await Tenant.findOneAndUpdate({ tenantID: safeID }, { plan: upperPlan, maxScreens: limit, maxStaff: staffLimit }, { new: true });
         }
         else if (action === 'reset_devices') await Tenant.findOneAndUpdate({ tenantID: safeID }, { registeredDevices: [] });
@@ -512,4 +343,5 @@ app.post('/api/admin-action', async (req, res) => {
     } catch (err) { res.status(500).json({ success: false }); }
 });
 
+// IMPORTANT : CETTE DERNIÈRE LIGNE DOIT ABSOLUMENT ÊTRE PRÉSENTE !
 app.listen(PORT, () => console.log("L'Empire iCHEF est en ligne et sécurisé sur le port " + PORT));
