@@ -956,7 +956,7 @@
             }
         }
 
-        // ==============================================================
+// ==============================================================
         // 🎨 SAUVEGARDE DESIGN CLIENT UNIQUEMENT
         // ==============================================================
         async function saveClientDesign() {
@@ -1014,6 +1014,26 @@
             closeInvModal('profile-modal');
         }
 
+        // ==============================================================
+        // 🔄 SYMBIOSE PARFAITE : SÉPARATION CUISINE / BAR POUR L'ADMIN
+        // ==============================================================
+        async function syncMenuToCloud() {
+            let newMenuCuisine = {};
+            let newMenuBar = {};
+            
+            for (let cat in menuData) {
+                let catLower = cat.toLowerCase();
+                if (catLower.includes('bar') || catLower.includes('boisson') || catLower.includes('vin') || catLower.includes('cocktail') || catLower.includes('soft')) {
+                    newMenuBar[cat] = menuData[cat];
+                } else {
+                    newMenuCuisine[cat] = menuData[cat];
+                }
+            }
+            
+            await API.save('MENU_MASTER', newMenuCuisine);
+            await API.save('MENU_MASTER_BAR', newMenuBar);
+        }
+
         // === IMPORT / EXPORT RECETTES ET CARTE ===
         function exportRecipes() {
             const backupData = { recipes: recipesData, menu: menuData };
@@ -1037,7 +1057,8 @@
                     if (imported.recipes && imported.menu) {
                         if(confirm("⚠️ ATTENTION : L'import va fusionner/écraser votre carte et vos fiches techniques actuelles. Confirmer ?")) {
                             recipesData = imported.recipes; menuData = imported.menu;
-                            await API.save('RECIPES_MASTER', recipesData); await API.save('MENU_MASTER', menuData);
+                            await syncMenuToCloud(); 
+                            await API.save('RECIPES_MASTER', recipesData); 
                             renderAll(); alert("✅ Base de données importée et synchronisée avec succès.");
                         }
                     } else alert("❌ Fichier invalide. Ce n'est pas un export système iCHEF valide.");
@@ -1056,18 +1077,18 @@
             let newCat = prompt("🏷️ Nom de la nouvelle catégorie de la carte :");
             if(newCat && newCat.trim() !== "") {
                 let key = newCat.trim().toLowerCase();
-                if(!menuData[key]) { menuData[key] = []; renderAll(); await API.save('MENU_MASTER', menuData); 
+                if(!menuData[key]) { menuData[key] = []; renderAll(); await syncMenuToCloud(); 
                 } else alert("⚠️ Cette catégorie existe déjà.");
             }
         }
         async function removeCurrentDropdownCategory() {
             let select = document.getElementById('market-category'); let catToRemove = select ? select.value : null; if(!catToRemove) return;
             if(menuData[catToRemove].length > 0) { if(!confirm(`⚠️ Supprimer "${catToRemove.toUpperCase()}" et ses ${menuData[catToRemove].length} plats ?`)) return; }
-            delete menuData[catToRemove]; renderAll(); await API.save('MENU_MASTER', menuData);
+            delete menuData[catToRemove]; renderAll(); await syncMenuToCloud();
         }
         async function removeRecipeCategory(catToRemove) {
             if(menuData[catToRemove].length > 0) { if(!confirm(`⚠️ Supprimer "${catToRemove.toUpperCase()}" et ses ${menuData[catToRemove].length} plats ?`)) return; }
-            delete menuData[catToRemove]; renderAll(); await API.save('MENU_MASTER', menuData);
+            delete menuData[catToRemove]; renderAll(); await syncMenuToCloud();
         }
 
         function renderStockCategoryDropdown() {
@@ -1129,29 +1150,36 @@
             const nameInput = document.getElementById(`add-name-${cat}`); const priceInput = document.getElementById(`add-price-${cat}`); const stockInput = document.getElementById(`add-stock-${cat}`);
             if (!nameInput.value || !priceInput.value) return alert("Nom et prix requis.");
             let stockVal = stockInput.value ? parseInt(stockInput.value) : 99;
-            menuData[cat].push({ id: Date.now(), name: nameInput.value.trim(), price: parseFloat(priceInput.value), stock: stockVal });
-            nameInput.value = ''; priceInput.value = ''; stockInput.value = ''; renderAll(); await API.save('MENU_MASTER', menuData);
+            
+            // Attribution automatique de la TVA
+            let catLower = cat.toLowerCase();
+            let isBarCategory = catLower.includes('bar') || catLower.includes('boisson') || catLower.includes('vin') || catLower.includes('cocktail');
+            let newTva = isBarCategory ? (systemSettings.tva2 !== undefined ? systemSettings.tva2 : 20) : (systemSettings.tva !== undefined ? systemSettings.tva : 10);
+            
+            menuData[cat].push({ id: Date.now(), name: nameInput.value.trim(), price: parseFloat(priceInput.value), stock: stockVal, tva: newTva });
+            nameInput.value = ''; priceInput.value = ''; stockInput.value = ''; renderAll(); 
+            await syncMenuToCloud();
         }
 
         async function updateDishStock(cat, id) {
             let item = menuData[cat].find(x => x.id === id); if(!item) return;
             let shortName = item.name.split('\n')[0]; let newStock = prompt(`📦 Portions à la carte pour :\n"${shortName}" ?`, item.stock !== undefined ? item.stock : 99);
-            if(newStock !== null && newStock.trim() !== "") { let parsedStock = parseInt(newStock); if(!isNaN(parsedStock) && parsedStock >= 0) { item.stock = parsedStock; renderAll(); await API.save('MENU_MASTER', menuData); } else alert("⚠️ Quantité invalide."); }
+            if(newStock !== null && newStock.trim() !== "") { let parsedStock = parseInt(newStock); if(!isNaN(parsedStock) && parsedStock >= 0) { item.stock = parsedStock; renderAll(); await syncMenuToCloud(); } else alert("⚠️ Quantité invalide."); }
         }
 
         async function editItemPrice(cat, id) {
             let item = menuData[cat].find(x => x.id === id); if(!item) return;
             let newPrice = prompt(`💰 Nouveau prix pour "${item.name.split('\n')[0]}" :`, item.price);
-            if(newPrice && newPrice.trim() !== "") { let parsed = parseFloat(newPrice.replace(',', '.')); if(!isNaN(parsed)) { item.price = parsed; renderAll(); await API.save('MENU_MASTER', menuData); } }
+            if(newPrice && newPrice.trim() !== "") { let parsed = parseFloat(newPrice.replace(',', '.')); if(!isNaN(parsed)) { item.price = parsed; renderAll(); await syncMenuToCloud(); } }
         }
 
         async function editItemName(cat, id) {
             let item = menuData[cat].find(x => x.id === id); if(!item) return;
             let newName = prompt(`✏️ Nouveau nom / description :`, item.name);
-            if(newName && newName.trim() !== "") { item.name = newName.trim(); renderAll(); await API.save('MENU_MASTER', menuData); }
+            if(newName && newName.trim() !== "") { item.name = newName.trim(); renderAll(); await syncMenuToCloud(); }
         }
 
-        async function deleteMenuItem(cat, id) { if(confirm("Supprimer ce plat de la carte ?")) { menuData[cat] = menuData[cat].filter(item => item.id !== id); renderAll(); await API.save('MENU_MASTER', menuData); } }
+        async function deleteMenuItem(cat, id) { if(confirm("Supprimer ce plat de la carte ?")) { menuData[cat] = menuData[cat].filter(item => item.id !== id); renderAll(); await syncMenuToCloud(); } }
 
         // === INVENTAIRE & IA ===
         function openInvModal(modalId) { document.getElementById(modalId).style.display = 'flex'; }
@@ -1690,7 +1718,7 @@
             }
         }
 
-     // === CALCUL LABORATOIRE MIXOLOGIE ===
+        // === CALCUL LABORATOIRE MIXOLOGIE ===
         function calcSmartPlate() {
             const calcBox = (prefix) => {
                 let el = document.getElementById(`market-${prefix}-raw`);
@@ -1702,15 +1730,13 @@
                     let cleanLine = line.replace(/\([^)]+\)/g, '').replace(/dispo:.*$/i, '').trim();
                     if(cleanLine === "") return;
                     
-                    // CORRECTION 1 : L'ÉCONOMAT CHERCHE LE PRIX, PAS LE VOLUME
                     if (prefix === 'eco') {
                         let priceMatch = cleanLine.match(/(\d+(?:\.\d+)?)\s*(?:€|euros?|\$|chf|mad|£|¥)/i);
-                        if(!priceMatch) priceMatch = cleanLine.match(/(\d+(?:\.\d+)?)$/); // Secours si aucun symbole
+                        if(!priceMatch) priceMatch = cleanLine.match(/(\d+(?:\.\d+)?)$/);
                         if(priceMatch && portion > 0) cost += (parseFloat(priceMatch[1]) / portion);
                         return;
                     }
 
-                    // CORRECTION 2 : GESTION DES UNITÉS PAR DÉFAUT
                     let unitPriceMatch = cleanLine.match(/(\d+(?:\.\d+)?)\s*(?:€|euros?|\$|chf|mad|£|¥)\s*(?:\/|au|le|la)\s*(kg|kilo|l|litre|pce|piece|pièce|g|gr|ml|cl)/i);
                     if (unitPriceMatch) {
                         let p = parseFloat(unitPriceMatch[1]); let u = unitPriceMatch[2];
@@ -1730,8 +1756,6 @@
                                 cost += (p / w) * portion; 
                             }
                         } else {
-                            // SI AUCUN POIDS N'EST SPÉCIFIÉ DANS LE TEXTE (ex: "tomate 5€")
-                            // ON ASSUME QUE C'EST LE PRIX AU KILO PAR DÉFAUT
                             cost += (p / 1000) * portion; 
                         }
                     }
@@ -1754,7 +1778,8 @@
                 priceInput.value = rec.toFixed(2); priceInput.dataset.autofilled = "true";
             }
         }
-// === RECETTES ET FICHE TECHNIQUE ===
+
+        // === RECETTES ET FICHE TECHNIQUE ===
         function generateRecipeIngredients() {
             let paxCount = parseInt(document.getElementById('recipe-pax').value) || 1;
             let ingTextarea = document.getElementById('rec-ing');
@@ -1823,22 +1848,29 @@
                 }
             });
 
+            // Identification automatique du type de TVA
+            let catLower = category.toLowerCase();
+            let isBarCategory = catLower.includes('bar') || catLower.includes('boisson') || catLower.includes('vin') || catLower.includes('cocktail');
+            let newTva = isBarCategory ? (systemSettings.tva2 !== undefined ? systemSettings.tva2 : 20) : (systemSettings.tva !== undefined ? systemSettings.tva : 10);
+
             let recipeObj = { id: Date.now(), name: name, cat: category, price: price, cost: unitCost, fc: fc, ing: ing, prep: prep, structuredIngs: structuredIngs };
-            let newItem = { id: Date.now(), name: name, price: price, stock: 99 };
+            let newItem = { id: Date.now(), name: name, price: price, stock: 99, tva: newTva };
 
             recipesData.unshift(recipeObj);
             if(!menuData[category]) menuData[category] = [];
             menuData[category].unshift(newItem);
 
-            await API.save('MENU_MASTER', menuData);
+            // Synchronisation intelligente vers le Cloud
+            await syncMenuToCloud();
             await API.save('RECIPES_MASTER', recipesData); 
+            
             renderMenu(); renderRecipes();
             
             document.getElementById('market-name').value = '';
             if(document.getElementById('rec-ing')) document.getElementById('rec-ing').value = '';
             if(document.getElementById('rec-prep')) document.getElementById('rec-prep').value = '';
             
-            alert(`✅ Plat "${name}" publié à la carte !`);
+            alert(`✅ Plat "${name}" publié à la carte avec une TVA à ${newTva}% !`);
         }
 
         // === FICHES TECHNIQUES (AFFICHAGE) ===
