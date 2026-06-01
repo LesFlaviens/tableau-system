@@ -128,57 +128,101 @@ const AppState = mongoose.model('AppState', new mongoose.Schema({
 }, { minimize: false }));
 
 // ==========================================
-// 🤖 MOTEURS IA
+// 🤖 MOTEUR IA 1 : RECONNAISSANCE DE FACTURES
 // ==========================================
 const { GoogleGenerativeAI } = require('@google/generative-ai');
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY || 'CLE_MANQUANTE');
 
 app.post('/api/scan-invoice', async (req, res) => {
     const { imageBase64, mimeType } = req.body;
+    
     if (!imageBase64) return res.status(400).json({ success: false, error: "Aucune image fournie." });
+    if (!process.env.GEMINI_API_KEY || process.env.GEMINI_API_KEY === 'CLE_MANQUANTE') {
+        return res.status(500).json({ success: false, error: "🚨 CRITIQUE : Clé GEMINI_API_KEY introuvable sur le serveur." });
+    }
+
     try {
         const base64Data = imageBase64.includes(',') ? imageBase64.split(',')[1] : imageBase64;
         const imagePart = { inlineData: { data: base64Data, mimeType: mimeType || "image/jpeg" } };
-        const prompt = `Analyse cette image de facture. Extrais les informations. RESPOND ONLY WITH JSON WITHOUT MARKDOWN TEXT: { "fournisseur": "Nom", "adresse": "Adresse", "telephone": "Tel", "email": "Email", "devise": "€", "date": "JJ/MM/AAAA", "totalHT": 0.00, "tva": 0.00, "totalTTC": 0.00, "articles": [] }`;
-        const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
+
+        const prompt = `
+        Analyse cette image de facture ou de ticket de caisse. Extrais les informations et CLASSIFIE chaque article.
+        1. Trouve le vrai fournisseur (pas l'adresse de livraison).
+        2. Trouve téléphone, email, adresse.
+        3. Si vendu au poids, mets le poids exact dans "quantite". Si à l'unité, mets le nombre.
+        4. "prixUnitaire" = prix total de la ligne.
+        
+        RÉPONSE JSON STRICTE UNIQUEMENT, AUCUN TEXTE AUTOUR :
+        {
+            "fournisseur": "Nom", "adresse": "Adresse", "telephone": "Tel", "email": "Email", "devise": "€",
+            "date": "JJ/MM/AAAA", "totalHT": 0.00, "tva": 0.00, "totalTTC": 0.00,
+            "articles": [ { "nom": "Produit", "quantite": "1 kg", "prixUnitaire": 4.54, "categorie": "Légumes" } ]
+        }`;
+
+        // 🟢 CORRECTION ICI : Utilisation de la version "latest" autorisée
+        const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash-latest" });
         const result = await model.generateContent([prompt, imagePart]);
-        let responseText = result.response.text().trim().replace(/```json/gi, '').replace(/```/gi, '').trim();
+
+        let responseText = result.response.text().trim();
+        
+        responseText = responseText.replace(/```json/gi, '').replace(/```/gi, '').trim();
         if (!responseText.startsWith("{")) responseText = responseText.substring(responseText.indexOf("{"));
+        
         res.json({ success: true, data: JSON.parse(responseText) });
-    } catch (error) { res.status(500).json({ success: false, error: "ERREUR GOOGLE" }); }
+    } catch (error) {
+        console.error("🔥 CRASH IA FACTURE :", error.message);
+        res.status(500).json({ success: false, error: "ERREUR GOOGLE : " + error.message });
+    }
 });
 
-app.post('/analyse-ticket', async (req, res) => {
-    const { image, mimeType } = req.body;
-    if (!image) return res.status(400).json({ success: false, error: "Image manquante" });
-    try {
-        const imagePart = { inlineData: { data: image, mimeType: mimeType || "image/jpeg" } };
-        const prompt = `Analyse cette étiquette de traçabilité. JSON NO MARKDOWN: { "nom": "Nom du produit", "lot": "Numéro", "dlc": "JJ/MM/AAAA" }`;
-        const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
-        const result = await model.generateContent([prompt, imagePart]);
-        let text = result.response.text().trim().replace(/```json/gi, '').replace(/```/gi, '').trim();
-        res.json({ success: true, resultat: JSON.parse(text) });
-    } catch (error) { res.status(500).json({ success: false, error: error.message }); }
-});
-
+// ==========================================
+// MOTEUR IA 2 : MAÎTRE D'HÔTEL (RÉSERVATIONS)
+// ==========================================
 app.post('/api/smart-reservation', async (req, res) => {
     const { tenantID, customerRequest, availableTables } = req.body;
+    if (!process.env.GEMINI_API_KEY) return res.status(500).json({ success: false, error: "Cle IA manquante." });
+
     try {
-        const prompt = `Tu es le Maître d'Hôtel iCHEF. Demande client : "${customerRequest}". Tables libres : ${JSON.stringify(availableTables)}. Trouve la table optimale. JSON STRICT: { "acceptee": true/false, "pax": nombre, "heure": "HH:MM", "tableAllouee": "ID_TABLE", "messageClient": "Votre réponse", "optimisationInfo": "Notes" }`;
-        const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+        const prompt = `
+        Tu es le Maître d'Hôtel iCHEF. Demande client : "${customerRequest}". Tables libres : ${JSON.stringify(availableTables)}
+        Trouve la table optimale, sois poli, détecte allergies/VIP.
+        JSON STRICT ATTENDU :
+        {
+            "acceptee": true/false,
+            "pax": nombre,
+            "heure": "HH:MM",
+            "tableAllouee": "ID_TABLE" ou null,
+            "messageClient": "Votre réponse",
+            "optimisationInfo": "Notes brigade"
+        }`;
+
+        // 🟢 CORRECTION ICI : Utilisation de la version "latest" autorisée
+        const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash-latest" });
         const result = await model.generateContent(prompt);
-        let responseText = result.response.text().trim().replace(/```json/gi, '').replace(/```/gi, '').trim();
+        
+        let responseText = result.response.text().trim();
+        responseText = responseText.replace(/```json/gi, '').replace(/```/gi, '').trim();
         if (!responseText.startsWith("{")) responseText = responseText.substring(responseText.indexOf("{"));
+        
         const decision = JSON.parse(responseText);
+
         if (decision.acceptee && decision.tableAllouee) {
-            await AppState.findOneAndUpdate(
-                { tenantID: cleanString(tenantID) },
-                { $push: { "activeOrders.RESERVATIONS_MASTER.data": { id: 'resa_' + Date.now(), pax: decision.pax, heure: decision.heure, table: decision.tableAllouee, info: decision.optimisationInfo, timestamp: Date.now() } } },
-                { upsert: true }
-            );
+            let updateQuery = { 
+                $push: { 
+                    "activeOrders.RESERVATIONS_MASTER.data": {
+                        id: 'resa_' + Date.now(), pax: decision.pax, heure: decision.heure, 
+                        table: decision.tableAllouee, info: decision.optimisationInfo, timestamp: Date.now()
+                    }
+                } 
+            };
+            await AppState.findOneAndUpdate({ tenantID }, updateQuery, { upsert: true });
         }
+
         res.json({ success: true, decision });
-    } catch (error) { res.status(500).json({ success: false, error: "Erreur IA." }); }
+    } catch (error) {
+        console.error("CRASH IA RESA :", error.message);
+        res.status(500).json({ success: false, error: "Erreur IA." });
+    }
 });
 
 // ==========================================
