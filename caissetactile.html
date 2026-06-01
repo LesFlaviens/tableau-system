@@ -115,6 +115,18 @@
             font-family: 'Inter', sans-serif;
         }
 
+        /* ANIMATION TABLE PRÊTE AU BAR */
+        @keyframes pulseReady {
+            0% { box-shadow: 0 0 0 0 rgba(56, 189, 248, 0.7); border-color: var(--accent); }
+            70% { box-shadow: 0 0 0 10px rgba(56, 189, 248, 0); border-color: transparent; }
+            100% { box-shadow: 0 0 0 0 rgba(56, 189, 248, 0); border-color: var(--accent); }
+        }
+        .table-card.ready {
+            border-color: var(--accent);
+            background: rgba(56, 189, 248, 0.1);
+            animation: pulseReady 2s infinite;
+        }
+
         * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
         body { font-family: 'Inter', sans-serif; background: var(--bg); color: var(--text-main); margin: 0; display: flex; flex-direction: column; height: 100vh; overflow: hidden; -webkit-font-smoothing: antialiased; padding-top: env(safe-area-inset-top); }
 
@@ -129,9 +141,8 @@
         .tables-grid-side { flex: 1.5; padding: 25px; overflow-y: auto; display: grid; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); gap: 15px; align-content: flex-start; }
         .order-panel-side { width: 400px; background: var(--panel); border-left: 1px solid var(--border); display: flex; flex-direction: column; height: 100%; }
 
-        .table-card { background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius-main); padding: 20px; text-align: center; cursor: pointer; transition: 0.2s; box-shadow: 0 4px 10px rgba(0,0,0,0.1); display: flex; flex-direction: column; justify-content: center; align-items: center; gap: 8px; }
+        .table-card { background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius-main); padding: 20px; text-align: center; cursor: pointer; transition: 0.2s; box-shadow: 0 4px 10px rgba(0,0,0,0.1); display: flex; flex-direction: column; justify-content: center; align-items: center; gap: 8px; position: relative; }
         .table-card:hover { border-color: var(--gold); transform: translateY(-2px); }
-        .table-card.active { border-color: var(--gold); background: var(--gold-dim); }
         .table-num { font-family: 'Playfair Display', serif; font-size: 1.5rem; font-weight: 700; color: #fff; }
         .table-status { font-size: 0.75rem; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.5px; }
 
@@ -152,7 +163,7 @@
 
     <div class="caisse-container">
         <div class="tables-grid-side" id="room-grid">
-            <div class="empty-msg">Chargement des tables de la salle...</div>
+             <div class="empty-msg">Chargement des tables de la salle...</div>
         </div>
 
         <div class="order-panel-side" id="ticket-panel">
@@ -167,6 +178,7 @@
             ? "http://localhost:10000" : "https://tableau-system.onrender.com";
 
         let currentActiveTables = {};
+        let isServiceAuBarActive = false; // Variable globale pour savoir si le mode est actif
 
         async function fetchStateFromCloud() {
             try {
@@ -178,10 +190,11 @@
                     // --- INTELLIGENCE DE RETRAIT COMPTOIR COMPILÉE ---
                     if (aO['SETTINGS_MASTER'] && aO['SETTINGS_MASTER'].data) {
                         let settings = aO['SETTINGS_MASTER'].data;
+                        isServiceAuBarActive = settings.serviceAuBar === true;
+                        
                         let badgeBar = document.getElementById('badge-service-bar');
                         if (badgeBar) {
-                            // Si coché dans admin.html => On allume le badge clignotant
-                            if (settings.serviceAuBar === true) {
+                            if (isServiceAuBarActive) {
                                 badgeBar.style.display = 'inline-block';
                             } else {
                                 badgeBar.style.display = 'none';
@@ -211,11 +224,16 @@
                 let isWeb = key.startsWith('WEB_') || key.startsWith('ORDER_');
                 let displayTitle = isWeb ? `📱 WEB ${key.replace('WEB_', '')}` : `TABLE ${key}`;
 
+                // Détection de l'alerte pour les serveurs
+                let isReady = (t.status === 'PRÊT');
+                let cardClass = (isReady && isServiceAuBarActive) ? 'table-card ready' : 'table-card';
+                let statusStyle = isReady ? 'color: var(--accent); font-weight: bold;' : '';
+
                 html += `
-                    <div class="table-card" onclick="ouvrirTicket('${key}')">
+                    <div class="${cardClass}" onclick="ouvrirTicket('${key}')">
                         <div class="table-num">${displayTitle}</div>
                         <div class="table-status" style="color:var(--gold); font-weight:bold;">${parseFloat(t.total || 0).toFixed(2)} €</div>
-                        <div class="table-status">${t.status || 'En cours'}</div>
+                        <div class="table-status" style="${statusStyle}">${t.status || 'En cours'}</div>
                     </div>
                 `;
             }
@@ -232,6 +250,16 @@
             let t = currentActiveTables[tableId];
             if(!t) return;
 
+            // ALERTE POUR LE SERVEUR SI LA COMMANDE ATTEND AU BAR
+            let alertHtml = "";
+            if (t.status === 'PRÊT' && isServiceAuBarActive) {
+                alertHtml = `
+                    <div style="background: rgba(56, 189, 248, 0.2); border: 1px solid var(--accent); color: #fff; padding: 15px; margin: 15px 25px; border-radius: 8px; text-align: center; font-weight: bold; text-transform: uppercase; animation: pulseBadge 2s infinite;">
+                        🍹 Le client doit venir récupérer sa commande !
+                    </div>
+                `;
+            }
+
             let itemsHtml = (t.items || []).map(i => `
                 <div style="display:flex; justify-content:space-between; padding:10px 0; border-bottom:1px dashed rgba(255,255,255,0.05);">
                     <span>${i.qty || 1}x ${i.n || i.name}</span>
@@ -244,6 +272,7 @@
                     <h3 style="margin:0; font-family:'Playfair Display', serif; font-size:1.4rem;">🧾 Ticket : ${tableId}</h3>
                     <small style="color:var(--text-muted);">Mode : ${t.typePaiement || 'Salle'}</small>
                 </div>
+                ${alertHtml}
                 <div style="flex:1; overflow-y:auto; padding:25px;">
                     ${itemsHtml}
                 </div>
