@@ -177,6 +177,10 @@
         .rush-alert-banner { display: none; text-align: center; padding: 12px; font-weight: 900; font-size: 0.85rem; text-transform: uppercase; letter-spacing: 2px; z-index: 99; box-shadow: 0 4px 15px rgba(0,0,0,0.5); animation: flashRush 1.5s infinite ease-in-out; }
         @keyframes flashRush { 0% { opacity: 0.8; } 50% { opacity: 1; } 100% { opacity: 0.8; } }
 
+        /* TOAST NOTIFICATION (Nouveau) */
+        .toast { position: fixed; bottom: 40px; left: 50%; transform: translateX(-50%) translateY(100px); background: var(--ready-color); color: #000; padding: 14px 28px; border-radius: 30px; font-weight: 700; box-shadow: 0 10px 30px rgba(16, 185, 129, 0.4); transition: transform 0.4s cubic-bezier(0.16, 1, 0.3, 1), opacity 0.4s; z-index: 20000; display: flex; align-items: center; gap: 10px; font-size: 0.95rem; opacity: 0;}
+        .toast.show { transform: translateX(-50%) translateY(0); opacity: 1; }
+
         @media (max-width: 768px) {
             .split-screen { flex-direction: column; }
             .pass-column { height: 50%; }
@@ -206,6 +210,8 @@
             Continuer sur le navigateur (PC/Mac)
         </button>
     </div>
+
+    <div id="toast" class="toast"></div>
 
     <script>
         document.addEventListener('contextmenu', event => event.preventDefault());
@@ -288,6 +294,14 @@
                 }
             });
         })();
+
+        // Fonction pour afficher une notification au chef
+        function showToast(msg) { 
+            const t = document.getElementById('toast'); 
+            t.innerText = msg; 
+            t.classList.add('show'); 
+            setTimeout(() => t.classList.remove('show'), 4000); 
+        }
     </script>
 
     <header>
@@ -427,7 +441,8 @@
                 if (tableId.includes('MASTER') || tableId.includes('ARCHIVE') || tableId.includes('CATEGORIES') || tableId.includes('ARCHITECTURE') || tableId.includes('HACCP') || tableId.includes('INVENTORY')) continue;
 
                 let order = activeOrders[tableId];
-                if (!order || !order.items || order.items.length === 0 || order.status === 'reserved' || order.status === 'EN ATTENTE PAIEMENT') continue;
+                // L'interface KDS ne doit afficher que les commandes qui ne sont ni payées/archivées ni déjà "PRÊT"
+                if (!order || !order.items || order.items.length === 0 || order.status === 'reserved' || order.status === 'EN ATTENTE PAIEMENT' || order.status === 'PRÊT') continue;
 
                 order.items.forEach((i, idx) => i.originalIndex = idx);
                 
@@ -563,22 +578,23 @@
 
                 dispatchTickets(); 
 
+                // On vérifie combien de plats restent à préparer pour cette commande globale (Cuisine + Bar confondus)
                 let totalRestant = order.items.filter(i => !i.done).length;
-                let isWebOrder = tableId.toLowerCase().startsWith('web_') || tableId.toLowerCase().includes('apercu') || tableId.toLowerCase().startsWith('order_') || /^\d{13}$/.test(tableId);
 
-                if(isWebOrder && totalRestant === 0) {
-                    await fetch(`${SERVER_URL}/update-order?tenantID=${tenantID}`, {
-                        method: 'POST',
-                        headers: {'Content-Type': 'application/json'},
-                        body: JSON.stringify({ tableId: tableId, order: null })
-                    });
+                // 🔔 NOTIFICATION INTELLIGENTE
+                if(totalRestant === 0) {
+                    order.status = "PRÊT"; // Déclenche la notification sur le téléphone du client et l'écran de la caisse
+                    showToast("🔔 Commande complète ! Le client et la salle sont notifiés.");
                 } else {
-                    await fetch(`${SERVER_URL}/update-order?tenantID=${tenantID}`, {
-                        method: 'POST',
-                        headers: {'Content-Type': 'application/json'},
-                        body: JSON.stringify({ tableId: tableId, order: order })
-                    });
+                    showToast(`✅ Article prêt. Reste ${totalRestant} article(s) à sortir.`);
                 }
+
+                // On met à jour la commande dans le cloud (On ne la supprime plus pour que la caisse et le client la voient !)
+                await fetch(`${SERVER_URL}/update-order?tenantID=${tenantID}`, {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ tableId: tableId, order: order })
+                });
                 
                 fetchProductionState();
             }
