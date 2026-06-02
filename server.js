@@ -19,7 +19,7 @@ const stripe = require('stripe')(stripeKey);
 const app = express();
 const PORT = process.env.PORT || 10000;
 
-// SÉCURITÉ MAÎTRE DE L'EMPIRE
+// SÉCURITÉ MAÎTRE DE L'EMPIRE (Super Admin)
 const ADMIN_PASS = process.env.ADMIN_PASS || 'Empire2026';
 
 app.use(cors({ origin: '*', methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'], allowedHeaders: ['Content-Type', 'Authorization', 'Origin', 'Accept'] }));
@@ -27,7 +27,7 @@ app.use(cors({ origin: '*', methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS']
 // 🚨 SÉCURITÉ STRIPE : On utilise raw() uniquement pour la route webhook
 app.use('/webhook', express.raw({ type: 'application/json' }));
 
-app.use(express.json({ limit: '100mb' })); // Limite augmentée pour les scans de factures IA
+app.use(express.json({ limit: '100mb' })); // Limite augmentée pour les scans de factures/étiquettes IA
 app.use(express.urlencoded({ extended: true, limit: '100mb' }));
 app.use(express.static(path.join(__dirname)));
 
@@ -37,10 +37,10 @@ app.get('/', (req, res) => {
     res.sendFile(path.join(__dirname, 'vitrine.html'));
 });
 
-// Ta nouvelle route d'administration officielle
+// Ta route d'administration officielle (Tour de Contrôle)
 app.get('/panel-ichef', (req, res) => {
     if (req.query.pass === ADMIN_PASS) {
-        res.sendFile(path.join(__dirname, 'empire.html'));
+        res.sendFile(path.join(__dirname, 'empire.html')); // ou superadmin.html / master.html
     } else {
         res.status(403).send('Accès Refusé. Sécurité Empire iCHEF.');
     }
@@ -191,7 +191,7 @@ app.post('/api/smart-reservation', async (req, res) => {
 // API RESTAURANT (Caisse, Admin, etc.)
 // ==========================================
 
-// HISTORIQUE FINANCIER GLOBAL (Nouveau Routeur)
+// HISTORIQUE FINANCIER GLOBAL
 app.post('/api/save-transaction', async (req, res) => {
     const { tenantID, transaction } = req.body;
     if (!tenantID || !transaction) return res.status(400).json({ success: false, error: "Données de transaction manquantes." });
@@ -208,7 +208,7 @@ app.post('/api/save-transaction', async (req, res) => {
             state.activeOrders['FINANCIAL_HISTORY'] = { data: [] };
         }
         
-        // Ajout en haut de la liste (unshift n'est pas supporté en modification Mongoose directe, on reconstruit le tableau)
+        // Ajout en haut de la liste
         let history = state.activeOrders['FINANCIAL_HISTORY'].data || [];
         history.unshift(transaction);
         state.activeOrders['FINANCIAL_HISTORY'].data = history;
@@ -353,7 +353,7 @@ app.post('/api/get-all-tenants-admin', async (req, res) => {
 app.post('/api/admin-action', async (req, res) => {
     if (req.body.masterKey !== ADMIN_PASS) return res.status(401).json({ success: false, error: "Acces Refuse." });
     try {
-        const { tenantID, action, newPlan, manualScreens, manualPin, manualMaxStaff } = req.body;
+        const { tenantID, action, newPlan, manualScreens, manualPin, manualMaxStaff, maxScreens } = req.body;
         const safeID = cleanString(tenantID);
 
         if (action === 'set_screens' && manualScreens) {
@@ -374,32 +374,23 @@ app.post('/api/admin-action', async (req, res) => {
             
             await Tenant.findOneAndUpdate({ tenantID: safeID }, { plan: upperPlan, maxScreens: limit, maxStaff: staffLimit }, { new: true });
         }
+        
+        // 🔥 CORRECTION DE LA FONCTION POUR CHANGER LE NOMBRE D'ÉCRANS ! 🔥
+        else if (action === 'set_max_screens') {
+            if (!maxScreens || isNaN(maxScreens) || maxScreens < 1) {
+                return res.status(400).json({ success: false, error: "Nombre invalide." });
+            }
+            await Tenant.findOneAndUpdate({ tenantID: safeID }, { maxScreens: parseInt(maxScreens) });
+        }
+        
         else if (action === 'reset_devices') await Tenant.findOneAndUpdate({ tenantID: safeID }, { registeredDevices: [] });
         else if (action === 'suspend') await Tenant.findOneAndUpdate({ tenantID: safeID }, { status: 'SUSPENDU', registeredDevices: [] });
         else if (action === 'activate') await Tenant.findOneAndUpdate({ tenantID: safeID }, { status: 'ACTIF' });
         else if (action === 'delete') { await Tenant.findOneAndDelete({ tenantID: safeID }); await AppState.findOneAndDelete({ tenantID: safeID }); }
         
         res.json({ success: true });
-    } catch (err) { res.status(500).json({ success: false }); }
+    } catch (err) { res.status(500).json({ success: false, error: err.message }); }
 });
 
-// IMPORTANT : CETTE DERNIÈRE LIGNE DOIT ABSOLUMENT ÊTRE PRÉSENTE !
+// IMPORTANT : LA LIGNE LISTEN TOUT EN BAS !
 app.listen(PORT, () => console.log("L'Empire iCHEF est en ligne et sécurisé sur le port " + PORT));
-
-// NOUVELLE FONCTION : Modifier le nombre max d'écrans
-            if (action === 'set_max_screens') {
-                const { maxScreens } = req.body;
-                
-                if (!maxScreens || isNaN(maxScreens) || maxScreens < 1) {
-                    return res.status(400).json({ success: false, error: "Nombre invalide." });
-                }
-
-                // Mise à jour dans la base de données
-                await db.collection('users').updateOne(
-                    { tenantID: tenantID },
-                    { $set: { maxScreens: parseInt(maxScreens) } }
-                );
-
-                return res.json({ success: true });
-            }
-
