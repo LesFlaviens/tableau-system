@@ -385,3 +385,21 @@ app.post('/api/admin-action', async (req, res) => {
 
 // IMPORTANT : CETTE DERNIÈRE LIGNE DOIT ABSOLUMENT ÊTRE PRÉSENTE !
 app.listen(PORT, () => console.log("L'Empire iCHEF est en ligne et sécurisé sur le port " + PORT));
+
+// NOUVELLE FONCTION : Modifier le nombre max d'écrans
+            if (action === 'set_max_screens') {
+                const { maxScreens } = req.body;
+                
+                if (!maxScreens || isNaN(maxScreens) || maxScreens < 1) {
+                    return res.status(400).json({ success: false, error: "Nombre invalide." });
+                }
+
+                // Mise à jour dans la base de données
+                await db.collection('users').updateOne(
+                    { tenantID: tenantID },
+                    { $set: { maxScreens: parseInt(maxScreens) } }
+                );
+
+                return res.json({ success: true });
+            }
+
