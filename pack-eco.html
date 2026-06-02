@@ -13,7 +13,6 @@
     <title>Empire OS - Pad Serveur Master</title>
 
     <script>
-        // 1. SÉCURITÉ : Générateur d'empreinte numérique
         function getDeviceFingerprint() {
             let deviceId = localStorage.getItem('ichef_device_fingerprint');
             if (!deviceId) {
@@ -23,7 +22,6 @@
             return deviceId;
         }
 
-        // 2. GARDE DU CORPS SECURITE UNIVERSEL (VERSION ISOLATION STRICTE 🔒)
         (async function enforceSecurity() {
             const urlParams = new URLSearchParams(window.location.search);
             let urlTenantID = urlParams.get('tenantID');
@@ -235,7 +233,7 @@
         .item-delete-btn { background: transparent; color: var(--text-muted); border: 1px solid var(--border); padding: 6px 10px; font-weight: 300; cursor: pointer; font-size: 0.8rem; transition: 0.2s; border-radius: 2px;}
         .item-delete-btn:hover { border-color: var(--alert); color: var(--alert); }
 
-        .pay-btn { background: transparent; border: 1px solid var(--border); color: var(--text-main); padding: 15px 30px; font-size: 0.9rem; font-weight: 500; letter-spacing: 2px; cursor: pointer; width: 300px; margin-bottom: 10px; text-transform: uppercase; transition: 0.2s; border-radius: 4px; }
+        .pay-btn { background: transparent; border: 1px solid var(--border); color: var(--text-main); padding: 15px 30px; font-size: 0.9rem; font-weight: 500; letter-spacing: 2px; cursor: pointer; width: 300px; margin-bottom: 10px; text-transform: uppercase; transition: 0.2s; border-radius: 4px; display: flex; align-items: center; justify-content: center; gap: 10px;}
         .pay-btn:hover { border-color: var(--gold); color: var(--gold); background: var(--gold-dim);}
         .pay-btn:active { transform: scale(0.98); }
 
@@ -544,13 +542,13 @@
     </div>
 
     <div id="payment-modal" class="modal">
-        <div style="background:var(--panel); padding:40px; border-radius:8px; border:1px solid var(--gold); display:flex; flex-direction:column; width: 550px; max-width: 95%;">
+        <div style="background:var(--panel); padding:40px; border-radius:8px; border:1px solid var(--gold); display:flex; flex-direction:column; width: 600px; max-width: 95%;">
             <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom: 25px; border-bottom: 1px solid var(--border); padding-bottom: 15px;">
                 <h2 style="color:var(--gold); font-size: 1.6rem; margin: 0; text-transform: uppercase; letter-spacing: 2px;" id="pay-modal-title">TABLE X</h2>
                 <button class="btn-mini" style="border-color: var(--border); color: var(--text-muted);" onclick="closePaymentModal()">✕ FERMER</button>
             </div>
             
-            <div style="display: flex; gap: 15px; margin-bottom: 25px;">
+            <div style="display: flex; gap: 15px; margin-bottom: 20px;">
                 <div style="flex: 1; background: transparent; padding: 20px; border-radius: 4px; text-align: center; border: 1px solid var(--border-strong);">
                     <div style="color: var(--text-muted); font-size: 0.75rem; letter-spacing: 1px; text-transform: uppercase; margin-bottom: 5px;">Total Addition</div>
                     <div id="pay-modal-total" style="font-size: 1.5rem; font-family: 'Playfair Display', serif; color: var(--text-main);">0.00 €</div>
@@ -559,6 +557,14 @@
                     <div style="color: var(--text-muted); font-size: 0.75rem; letter-spacing: 1px; text-transform: uppercase; margin-bottom: 5px;">Reste à payer</div>
                     <div id="pay-remaining" style="font-size: 2rem; font-family: 'Playfair Display', serif; color: var(--gold);">0.00 €</div>
                 </div>
+            </div>
+
+            <div id="loyalty-zone" style="background: rgba(212, 175, 55, 0.05); border: 1px dashed var(--gold); border-radius: 4px; padding: 15px; margin-bottom: 20px; display: none; align-items: center; justify-content: space-between;">
+                <div>
+                    <div style="color: var(--gold); font-size: 0.9rem; font-weight: 600; letter-spacing: 1px;">🎁 FIDÉLITÉ CLIENT</div>
+                    <div id="loyalty-status-text" style="color: var(--text-muted); font-size: 0.8rem; margin-top: 5px;">Aucun compte lié.</div>
+                </div>
+                <button id="btn-loyalty-action" class="btn-mini gold" style="padding: 10px 20px;" onclick="openLoyaltyPrompt()">ASSOCIER</button>
             </div>
 
             <div id="pay-action-zone">
@@ -712,6 +718,12 @@
         let localSasConfig = { active: false, maxTables: 5, delay: 60 }; 
         let unifiedMenu = {};
 
+        // SYSTÈME DE FIDÉLITÉ
+        let isLoyaltyActive = false;
+        let loyaltyPercent = 5;
+        let globalLoyaltyData = {}; // Base de données complète des clients
+        let currentLoyaltyPhone = null; // Client actuellement lié à la table
+
         function safeArray(key, fallback) {
             try { let v = localStorage.getItem(key); if (v && v !== 'undefined' && v !== 'null') { let p = JSON.parse(v); if (Array.isArray(p)) return p.filter(i => i !== null && i !== undefined); } } catch(e) {} return fallback;
         }
@@ -741,7 +753,6 @@
                         }
                     }
                 } catch (error) {
-                    console.error("Erreur de connexion :", error);
                     let tag = document.getElementById('stock-tag');
                     if (tag) {
                         tag.innerHTML = '● DÉCONNECTÉ'; 
@@ -846,18 +857,30 @@
                     let nO = state.activeOrders;
 
                     if (nO['SETTINGS_MASTER'] && nO['SETTINGS_MASTER'].data) {
-                        isServiceAuBarActive = nO['SETTINGS_MASTER'].data.serviceAuBar === true;
+                        let sys = nO['SETTINGS_MASTER'].data;
+                        isServiceAuBarActive = sys.serviceAuBar === true;
+                        
+                        if (sys.loyalty) {
+                            isLoyaltyActive = sys.loyalty.active === true;
+                            loyaltyPercent = sys.loyalty.percent || 5;
+                        }
+
                         let badgeBar = document.getElementById('badge-service-bar');
                         if (badgeBar) {
                             badgeBar.style.display = isServiceAuBarActive ? 'flex' : 'none';
                         }
                     }
 
+                    // Récupération Base Fidélité
+                    if(nO['LOYALTY_MASTER'] && nO['LOYALTY_MASTER'].data) {
+                        globalLoyaltyData = nO['LOYALTY_MASTER'].data;
+                    }
+
                     for (let key in nO) { 
                         if (key.startsWith('order_') || key.startsWith('W') || key.startsWith('T') || key.startsWith('WEB_')) { 
                             if (nO[key] && nO[key].data !== undefined && !Array.isArray(nO[key].data)) nO[key] = nO[key].data; 
                             
-                            // 🛡️ SYSTÈME AUTO-RÉPARATEUR : Traduit automatiquement le panier web pour éviter les crashs de tables
+                            // 🛡️ SYSTÈME AUTO-RÉPARATEUR
                             if (nO[key]) {
                                 if (!Array.isArray(nO[key].items)) nO[key].items = [];
                                 nO[key].items.forEach(i => {
@@ -918,10 +941,7 @@
                     if (stockTracker) stockTracker.innerText = currentStockValue.toFixed(2) + ' €';
 
                     activeOrders = nO;
-                    
-                    // GESTION DES ALERTES RED CLOUD
                     checkGlobalAlerts();
-
                     if(!isDraggingTable) renderFloor();
                 }
             } catch(e) {}
@@ -933,7 +953,6 @@
                 let banner = document.getElementById('drawer-alert-banner');
                 let msgBox = document.getElementById('drawer-alert-msg');
                 
-                // Si le tiroir de commande est ouvert, afficher l'alerte dedans
                 if(document.getElementById('order-drawer').classList.contains('open')) {
                     if (banner) {
                         banner.style.display = 'flex'; 
@@ -1389,6 +1408,7 @@
         function openOrder(tableLabel) {
             currentTableId = tableLabel;
             document.getElementById('ticket-table-name').innerText = "TABLE " + tableLabel;
+            currentLoyaltyPhone = null; // Reset fidélité pour la nouvelle table
             
             if(activeOrders[tableLabel] && activeOrders[tableLabel].status === 'reserved') {
                 currentTicket = [];
@@ -1417,6 +1437,7 @@
         function closeOrder() { 
             document.getElementById('order-drawer').classList.remove('open');
             currentTableId = null; 
+            currentLoyaltyPhone = null;
         }
 
         function checkTableAlertState(tableId) {
@@ -1816,11 +1837,14 @@
         async function executeClearTicket(raison) { currentTicket = []; renderTicket(); await API.update(currentTableId, null, true); document.getElementById('clear-ticket-modal').classList.remove('open'); closeOrder(); renderFloor(); }
 
         // ==========================================
-        // 💳 PAIEMENT INTELLIGENT ET SYNCHRO
+        // 💳 PAIEMENT INTELLIGENT ET FIDÉLITÉ
         // ==========================================
         let paymentsDone = [];
         let currentTableTotal = 0;
         let currentPayRemaining = 0;
+        
+        let fidelityDiscountUsed = 0; // Argent de la cagnotte utilisé pour payer
+        let loyaltyClientName = null;
 
         function openPaymentModal() {
             if(currentTicket.length === 0) return alert("Table vide."); 
@@ -1831,10 +1855,82 @@
             document.getElementById('pay-modal-total').innerText = currentTableTotal.toFixed(2) + " €";
             
             paymentsDone = [];
+            fidelityDiscountUsed = 0;
             currentPayRemaining = currentTableTotal;
             updatePaymentUI();
             
+            // GESTION AFFICHAGE ZONE FIDELITÉ
+            let lZone = document.getElementById('loyalty-zone');
+            if(isLoyaltyActive) {
+                lZone.style.display = 'flex';
+                updateLoyaltyUI();
+            } else {
+                lZone.style.display = 'none';
+            }
+            
             document.getElementById('payment-modal').classList.add('open');
+        }
+
+        function openLoyaltyPrompt() {
+            let phone = prompt("📱 Numéro de téléphone du client (ex: 0612345678) :");
+            if (!phone) return;
+            phone = phone.replace(/\s+/g, '');
+            if(phone.length < 8) return alert("Numéro invalide.");
+            
+            currentLoyaltyPhone = phone;
+            
+            if(!globalLoyaltyData[phone]) {
+                let name = prompt("✨ Nouveau client ! Quel est son prénom/nom ?");
+                globalLoyaltyData[phone] = { name: name || 'Client', points: 0 };
+            }
+            
+            loyaltyClientName = globalLoyaltyData[phone].name;
+            updateLoyaltyUI();
+        }
+
+        function updateLoyaltyUI() {
+            let statusText = document.getElementById('loyalty-status-text');
+            let actionBtn = document.getElementById('btn-loyalty-action');
+            
+            if(!currentLoyaltyPhone) {
+                statusText.innerText = "Aucun compte lié.";
+                actionBtn.innerText = "ASSOCIER";
+                actionBtn.setAttribute("onclick", "openLoyaltyPrompt()");
+            } else {
+                let solde = globalLoyaltyData[currentLoyaltyPhone].points || 0;
+                statusText.innerHTML = `Connecté : <b>${loyaltyClientName}</b><br>Cagnotte dispo : <strong style="color:var(--text-main); font-size:1rem;">${solde.toFixed(2)} €</strong>`;
+                
+                if (solde > 0 && currentPayRemaining > 0) {
+                    actionBtn.innerText = "DÉDUIRE";
+                    actionBtn.setAttribute("onclick", "useLoyaltyPoints()");
+                } else {
+                    actionBtn.innerText = "MODIFIER";
+                    actionBtn.setAttribute("onclick", "openLoyaltyPrompt()");
+                }
+            }
+        }
+
+        function useLoyaltyPoints() {
+            if(!currentLoyaltyPhone || !globalLoyaltyData[currentLoyaltyPhone]) return;
+            let solde = globalLoyaltyData[currentLoyaltyPhone].points || 0;
+            
+            let maxDeductible = Math.min(solde, currentPayRemaining);
+            let deductStr = prompt(`Combien de la cagnotte voulez-vous utiliser ?\nMax possible: ${maxDeductible.toFixed(2)}€`, maxDeductible.toFixed(2));
+            
+            if(!deductStr) return;
+            let deduct = parseFloat(deductStr.replace(',', '.'));
+            
+            if(isNaN(deduct) || deduct <= 0 || deduct > maxDeductible + 0.05) return alert("Montant invalide.");
+            
+            fidelityDiscountUsed += deduct;
+            globalLoyaltyData[currentLoyaltyPhone].points -= deduct; // On soustrait de la BDD
+            
+            paymentsDone.push({ method: '🎁 CAGNOTTE', amount: deduct });
+            currentPayRemaining -= deduct;
+            if(currentPayRemaining < 0) currentPayRemaining = 0;
+            
+            updateLoyaltyUI();
+            updatePaymentUI();
         }
 
         function setRemainderAmount() {
@@ -1896,6 +1992,7 @@
         async function finalizeTablePayment() {
             document.getElementById('payment-modal').classList.remove('open');
             window.print(); 
+            
             setTimeout(async () => {
                 try {
                     const state = await API.getState();
@@ -1910,6 +2007,20 @@
                         tvaTotals[rate] = (tvaTotals[rate] || 0) + (ligneTTC - ligneHT);
                     });
 
+                    // FIDÉLITÉ : CRÉDITER LA CAGNOTTE DU CLIENT
+                    if(isLoyaltyActive && currentLoyaltyPhone && globalLoyaltyData[currentLoyaltyPhone]) {
+                        // On calcule le cashback sur le total de l'addition (moins ce qui a été payé avec la fidélité)
+                        let montantEligibleCashback = currentTableTotal - fidelityDiscountUsed;
+                        if(montantEligibleCashback > 0) {
+                            let argentGagne = montantEligibleCashback * (loyaltyPercent / 100);
+                            globalLoyaltyData[currentLoyaltyPhone].points += argentGagne;
+                            
+                            // On pousse la mise à jour de la BDD Fidélité sur Render
+                            await API.update('LOYALTY_MASTER', globalLoyaltyData);
+                            alert(`🎁 Le client ${globalLoyaltyData[currentLoyaltyPhone].name} vient de gagner ${argentGagne.toFixed(2)} € sur sa cagnotte !`);
+                        }
+                    }
+
                     let transaction = {
                         id: 'TX_' + Date.now(),
                         date: new Date().toISOString(),
@@ -1921,10 +2032,8 @@
                         items: currentTicket
                     };
 
-                    // SAUVEGARDE HISTORIQUE FINANCIER GLOBAL (Synchronisé avec la Tour de Contrôle)
                     let historyNode = state.activeOrders['FINANCIAL_HISTORY'] || { data: [] };
                     historyNode.data.push(transaction);
-
                     await API.update('FINANCIAL_HISTORY', historyNode.data);
                 } catch(e) {}
                 
