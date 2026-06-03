@@ -1502,5 +1502,118 @@
         window.adminManager = { start: fetchStateFromCloud };
         window.addEventListener('load', window.adminManager.start);
     </script>
+    <script>
+        // 🚀 SYNCHRONISATION DES TABLES POUR LES QR CODES
+        async function syncQRTables() {
+            try {
+                let btn = document.querySelector('.btn-sync');
+                if(btn) btn.innerHTML = "⏳ Synchro...";
+
+                let r = await fetch(`${SERVER_URL}/get-current-state?tenantID=${tenantID}`);
+                let state = await r.json();
+                let activeOrders = state.activeOrders || {};
+                
+                // On exclut les tables systèmes (Paramètres, Menus, etc.)
+                let tables = Object.keys(activeOrders).filter(k => 
+                    !['MENU_MASTER', 'SETTINGS_MASTER', 'STAFF_ACCESS', 'MENU_MASTER_BAR', 'CATEGORIES_CUISINE', 'CATEGORIES_BAR', 'MENU_ARCHITECTURE', 'ALERTS_MASTER', 'LOYALTY_MASTER'].includes(k)
+                );
+                
+                let container = document.getElementById('all-qr-grid');
+                if(!container) return;
+
+                if(tables.length === 0) {
+                    container.innerHTML = "<div style='grid-column: 1 / -1; text-align: center; color: var(--text-muted);'><i>Aucune table n'est actuellement ouverte sur la Caisse. Ouvrez une table fictive pour générer son QR.</i></div>";
+                } else {
+                    let html = '';
+                    let customUrl = document.getElementById('qr-base-url').value.trim();
+                    let baseUrl = customUrl ? customUrl : `${window.location.origin}/menu-qr.html`;
+                    
+                    tables.forEach(t => {
+                        let cleanTable = t.replace('WEB_', ''); // Enlever le préfixe web si présent
+                        let link = `${baseUrl}?tenantID=${tenantID}&table=${encodeURIComponent(cleanTable)}`;
+                        
+                        // Génération de l'image QR via l'API QRServer
+                        let qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=250x250&data=${encodeURIComponent(link)}&color=000000&bgcolor=ffffff`;
+                        
+                        html += `
+                        <div style="background: rgba(255,255,255,0.05); border: 1px solid var(--border); padding: 15px; border-radius: var(--radius-main); text-align: center; display: flex; flex-direction: column; align-items: center;">
+                            <h4 style="color: var(--gold); margin: 0 0 15px 0; font-size:1.2rem;">Table ${cleanTable}</h4>
+                            <img src="${qrUrl}" alt="QR Table ${cleanTable}" style="width: 140px; height: 140px; border-radius: 8px; margin-bottom: 15px; background: white; padding: 5px;">
+                            <button onclick="copyToClipboard('${link}')" style="width: 100%; background: transparent; border: 1px solid var(--text-muted); color: var(--text-main); padding: 10px; border-radius: 6px; cursor: pointer; font-size: 0.85rem; transition: 0.2s;">🔗 Copier Lien</button>
+                        </div>`;
+                    });
+                    container.innerHTML = html;
+                }
+                if(btn) btn.innerHTML = "✅ À jour !";
+                setTimeout(() => { if(btn) btn.innerHTML = "🔄 Synchro Tables"; }, 2000);
+            } catch(e) {
+                alert("❌ Erreur de synchronisation avec le serveur.");
+                let btn = document.querySelector('.btn-sync');
+                if(btn) btn.innerHTML = "🔄 Synchro Tables";
+            }
+        }
+
+        // 📲 GÉNÉRATION DU LIEN NFC
+        function copyNFCLink() {
+            let tableNum = document.getElementById('qr-table-num').value.trim();
+            if(!tableNum) return alert("⚠️ Veuillez entrer un numéro de table pour la puce NFC.");
+            
+            let customUrl = document.getElementById('qr-base-url').value.trim();
+            let baseUrl = customUrl ? customUrl : `${window.location.origin}/menu-qr.html`;
+            
+            let link = `${baseUrl}?tenantID=${tenantID}&table=${encodeURIComponent(tableNum)}`;
+            copyToClipboard(link);
+        }
+
+        // ⚡ GRAVURE NFC DIRECTE (WEB NFC API)
+        async function writeWebNFC() {
+            let tableNum = document.getElementById('qr-table-num').value.trim();
+            if(!tableNum) return alert("⚠️ Veuillez entrer un numéro de table avant de graver.");
+
+            let customUrl = document.getElementById('qr-base-url').value.trim();
+            let baseUrl = customUrl ? customUrl : `${window.location.origin}/menu-qr.html`;
+            let link = `${baseUrl}?tenantID=${tenantID}&table=${encodeURIComponent(tableNum)}`;
+
+            if ('NDEFReader' in window) {
+                try {
+                    const ndef = new NDEFReader();
+                    alert("📱 Approchez votre téléphone de la puce NFC pour la graver...");
+                    await ndef.write({
+                        records: [{ recordType: "url", data: link }]
+                    });
+                    alert("✅ Puce NFC gravée avec succès pour la table " + tableNum + " !");
+                } catch (error) {
+                    alert("❌ Erreur lors de la gravure NFC : " + error.message);
+                }
+            } else {
+                alert("❌ Votre navigateur (ou iPhone) ne supporte pas la gravure Web NFC.\n\nAstuce : Cliquez sur 'Copier le lien' et utilisez l'application 'NFC Tools' pour graver votre puce.");
+            }
+        }
+
+        // 📋 COPIE SÉCURISÉE (INFAILLIBLE MÊME EN LOCAL)
+        function copyToClipboard(text) {
+            if (navigator.clipboard && window.isSecureContext) {
+                navigator.clipboard.writeText(text).then(() => {
+                    alert("✅ Lien copié avec succès !");
+                });
+            } else {
+                // Système de secours (Force Copy)
+                let textArea = document.createElement("textarea");
+                textArea.value = text;
+                textArea.style.position = "fixed";
+                textArea.style.left = "-999999px";
+                document.body.appendChild(textArea);
+                textArea.focus();
+                textArea.select();
+                try {
+                    document.execCommand('copy');
+                    alert("✅ Lien copié avec succès !");
+                } catch (err) {
+                    alert("❌ Copie impossible. Voici le lien :\n" + text);
+                }
+                textArea.remove();
+            }
+        }
+    </script>
 </body>
 </html>
