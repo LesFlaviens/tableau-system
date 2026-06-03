@@ -329,7 +329,7 @@
                         </div>
                     </div>
                     
-                    <div class="section-card" style="border-color: rgba(239, 68, 68, 0.2); background: rgba(239, 68, 68, 0.02);">
+                    <div class="section-card" style="border-color: rgba(239, 68, 68, 0.4); background: rgba(239, 68, 68, 0.02);">
                         <h3 class="section-title" style="color: var(--danger); border-bottom-color: rgba(239, 68, 68, 0.2);">Zone de Danger</h3>
                         <div class="grid-2">
                             <button class="btn-outline danger" style="justify-content: center; padding: 15px;" onclick="factoryResetMenu()">🗑️ Vider toute la carte</button>
@@ -742,7 +742,7 @@
         </div>
     </div>
 
-  <div class="modal" id="staff-modal">
+    <div class="modal" id="staff-modal">
         <div class="modal-content">
             <div class="modal-header">
                 <h3>👥 Fiche Employé</h3>
@@ -770,10 +770,7 @@
                     <div class="input-group">
                         <label>Droits Système (Sécurité)</label>
                         <select id="staff-role" class="input-field">
-                            <option value="salle">Caisse / Salle (Restreint)</option>
-                            <option value="cuisine">Cuisine (Écrans Chef)</option>
-                            <option value="patisserie">Pâtisserie (Écrans Pâtissier)</option>
-                            <option value="bar">Bar (Écrans Barman)</option>
+                            <option value="salle">Caisse uniquement (Restreint)</option>
                             <option value="admin">Manager (Accès Total)</option>
                         </select>
                     </div>
@@ -1346,7 +1343,7 @@
         function factoryResetMenu() { if (prompt("Taper 'SUPPRIMER' pour vider la carte.") === "SUPPRIMER") { menuCuisine = {}; menuBar = {}; categoriesCuisine = []; categoriesBar = []; markUnsaved(); updateCategoryDropdowns(); renderMenuList(); updateDashboardStats(); } }
         function factoryResetSystem() { if (prompt("Taper 'RESET' pour vider TOUTE la base.") === "RESET") { menuCuisine = {}; menuBar = {}; categoriesCuisine = []; categoriesBar = []; staffAccess = []; markUnsaved(); renderStaffList(); renderMenuList(); updateDashboardStats(); } }
 
-       // --- GESTION BRIGADE SÉCURISÉE & AUTO-SYNCHRONISÉE ---
+        // --- GESTION BRIGADE SÉCURISÉE & AUTO-SYNCHRONISÉE ---
         function renderStaffList() {
             document.getElementById('admin-staff-list').innerHTML = staffAccess.length === 0 ? '<div class="empty-state">Aucun membre.</div>' : staffAccess.map((s, idx) => {
                 let roleColor = s.dept === 'admin' ? 'var(--gold)' : 'var(--text-muted)';
@@ -1463,6 +1460,57 @@
                 }
             } 
         }
+
+        function renderFinancialDashboard() {
+            let allClosed = [];
+            if (Array.isArray(archiveCuisine)) allClosed = [...archiveCuisine];
+            else if (archiveCuisine && Array.isArray(archiveCuisine.data)) allClosed = [...archiveCuisine.data];
+            
+            allClosed.sort((a, b) => new Date(b.date || b.time) - new Date(a.date || a.time)); 
+            let totalCA = 0; let totalTransactions = allClosed.length;
+            let curr = systemSettings.currency || "€";
+            
+            let html = allClosed.map(t => { 
+                let valTTC = parseFloat(t.totalTTC || t.total || 0);
+                let valHT = parseFloat(t.totalHT || (valTTC / 1.10)); 
+                totalCA += valTTC; 
+                let nameTitle = t.source || (t.table ? `Table ${t.table}` : "Transaction Caisse");
+                
+                let rawDate = t.date || t.time; let dateStr = "Date inconnue";
+                if (rawDate) {
+                    let dObj = new Date(rawDate);
+                    dateStr = dObj.toLocaleDateString('fr-FR') + ' à ' + dObj.toLocaleTimeString('fr-FR', {hour: '2-digit', minute:'2-digit'});
+                }
+                
+                let tvaDetailsHtml = "";
+                if (t.tva && typeof t.tva === 'object') {
+                    tvaDetailsHtml = Object.entries(t.tva).filter(([rate, amt]) => parseFloat(amt) > 0).map(([rate, amt]) => `
+                        <span style="background: rgba(255,255,255,0.02); padding: 4px 8px; border-radius: 4px; font-size: 0.75rem; border: 1px solid rgba(250,240,230,0.1); color: var(--text-main); white-space: nowrap;">
+                            TVA ${rate}% : <strong>${parseFloat(amt).toFixed(2)} ${curr}</strong>
+                        </span>
+                    `).join(' ');
+                } else {
+                    tvaDetailsHtml = `<span style="font-size: 0.75rem; color: var(--text-muted); font-style: italic;">TVA cumulée (Est.) : ${(valTTC - valHT).toFixed(2)} ${curr}</span>`;
+                }
+                let methodLabel = t.method || t.typePaiement || "Non spécifié";
+
+                return `
+                    <div class="list-item" style="flex-direction: column; align-items: stretch; gap: 12px; padding: 20px; border: 1px solid var(--border); border-radius: 6px; background: rgba(250,240,230,0.01); margin-bottom: 12px; box-shadow: var(--shadow);">
+                        <div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 1px dashed rgba(250,240,230,0.1); padding-bottom: 10px;">
+                            <span class="list-item-title" style="color: var(--gold); font-size: 1.05rem; font-weight: 600; margin: 0; font-family: 'Inter', sans-serif;">${nameTitle}</span>
+                            <span style="font-size: 1.35rem; font-family: 'Playfair Display', serif; color: var(--text-main); font-weight: 700;">${valTTC.toFixed(2)} ${curr}</span>
+                        </div>
+                        <div style="display: flex; justify-content: space-between; font-size: 0.8rem; color: var(--text-muted); flex-wrap: wrap; gap: 5px;">
+                            <span>📅 ${dateStr}</span>
+                            <span style="color: var(--gold); font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px;">💳 ${methodLabel}</span>
+                        </div>
+                        <div style="display: flex; flex-direction: column; gap: 8px; border-top: 1px solid rgba(250,240,230,0.05); padding-top: 10px; margin-top: 2px;">
+                            <div style="font-size: 0.8rem; color: var(--text-muted);">Chiffre Hors-Taxe (HT) : <strong style="color: var(--text-main); font-size: 0.85rem;">${valHT.toFixed(2)} ${curr}</strong></div>
+                            <div style="display: flex; gap: 6px; flex-wrap: wrap; margin-top: 2px;">
+                                ${tvaDetailsHtml}
+                            </div>
+                        </div>
+                    </div>
                 `;
             }).join('');
             document.getElementById('finance-total-ca').innerText = totalCA.toFixed(2) + ' ' + curr; 
