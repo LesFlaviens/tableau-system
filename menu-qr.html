@@ -48,8 +48,8 @@
         .logo-text { font-family: var(--font-title); color: var(--gold); font-size: 3rem; font-weight: 600; letter-spacing: 8px; margin: 0; text-transform: uppercase; }
         .subtitle { font-family: var(--font-text); color: var(--text-muted); font-size: 0.9rem; letter-spacing: 4px; margin-top: 15px; text-transform: uppercase; font-weight: 500; }
         
-        /* 🔥 BOUTONS HUB CLIENT (FIDÉLITÉ & RÉSA) 🔥 */
-        .hub-actions-container { display: flex; justify-content: center; gap: 12px; margin-top: 25px; flex-wrap: wrap; }
+        /* 🔥 BOUTONS HUB CLIENT (FIDÉLITÉ & RÉSA) cachés par défaut 🔥 */
+        .hub-actions-container { display: none; justify-content: center; gap: 12px; margin-top: 25px; flex-wrap: wrap; }
         .header-action-btn { background: rgba(255,255,255,0.05); border: 1px solid var(--border-color); color: var(--text-main); padding: 10px 20px; border-radius: 30px; font-family: var(--font-text); font-size: 0.8rem; font-weight: 600; text-transform: uppercase; letter-spacing: 1px; cursor: pointer; transition: 0.2s; display: flex; align-items: center; gap: 8px;}
         .header-action-btn:hover, .header-action-btn:active { background: rgba(212, 175, 55, 0.1); border-color: var(--gold); color: var(--gold); }
 
@@ -198,7 +198,7 @@
             <h1 id="restaurant-name" class="logo-text">NOTRE MAISON</h1>
             <div class="subtitle">La Carte</div>
             
-            <div class="hub-actions-container">
+            <div id="hub-actions-container" class="hub-actions-container">
                 <button class="header-action-btn" onclick="openLoyaltyModal()">🎁 MA FIDÉLITÉ</button>
                 <button class="header-action-btn" onclick="goToReservation()">🛎️ RÉSERVER UNE TABLE</button>
             </div>
@@ -334,7 +334,7 @@
             return current >= start && current <= end;
         }
 
-// -------------------------------------------------------------
+        // -------------------------------------------------------------
         // FONCTION CENTRALE : RÉCUPÉRATION DU MENU ET DES ALERTES
         // -------------------------------------------------------------
         async function fetchMenu() {
@@ -375,8 +375,7 @@
                         let icone = isManualClosed ? "🛎️" : "🕰️";
 
                         document.getElementById('filter-bar').style.display = 'none';
-                        // Masquer aussi le hub s'il est fermé
-                        let hubContainer = document.querySelector('.hub-actions-container');
+                        let hubContainer = document.getElementById('hub-actions-container');
                         if (hubContainer) hubContainer.style.display = 'none';
 
                         document.getElementById('menu-container').innerHTML = `
@@ -398,8 +397,8 @@
                         document.getElementById('filter-bar').style.display = 'flex';
                     }
 
-                    // 🔥 ACTIVATION OU DÉSACTIVATION DU HUB CLIENT 🔥
-                    let hubContainer = document.querySelector('.hub-actions-container');
+                    // 🔥 GESTION DU HUB (ACTIVATION DEPUIS L'ADMIN) 🔥
+                    let hubContainer = document.getElementById('hub-actions-container');
                     if (hubContainer) {
                         if (systemSettings.qrHubActive === true) {
                             hubContainer.style.display = 'flex';
@@ -408,7 +407,6 @@
                         }
                     }
 
-                    // --- 🎯 DÉCLENCHEUR 1 : ACTIVATION DU SERVICE AU BAR ---
                     let bannerBar = document.getElementById('service-bar-banner');
                     let btnPayer = document.getElementById('btn-commander'); 
                     
@@ -420,7 +418,6 @@
                         if(btnPayer) btnPayer.innerHTML = "🛎️ COMMANDER ET PAYER À TABLE";
                     }
 
-                    // Gestion Bannière Rush
                     let rushBanner = document.getElementById('rush-banner');
                     if (systemSettings.antiRush === true) {
                         const levels = {
@@ -478,27 +475,19 @@
                     
                     if (isReady && systemSettings && systemSettings.serviceAuBar === true && !window.hasBeenNotifiedReady) {
                         window.hasBeenNotifiedReady = true; 
-                        
-                        // Injection du numéro dans la page qui clignote !
                         document.getElementById('ready-order-num').innerText = displayOrderNum;
 
                         let modalReady = document.getElementById('order-ready-modal');
                         if (modalReady) modalReady.style.display = 'flex';
                         
                         let sound = document.getElementById('order-ready-sound');
-                        if (sound) {
-                            sound.play().catch(e => console.log('Son bloqué.', e));
-                        }
+                        if (sound) sound.play().catch(e => console.log('Son bloqué.', e));
                         
-                        if (navigator.vibrate) {
-                            navigator.vibrate([500, 300, 500, 300, 1000]);
-                        }
+                        if (navigator.vibrate) navigator.vibrate([500, 300, 500, 300, 1000]);
                     }
-                    
                     if (!isReady) window.hasBeenNotifiedReady = false; 
                 }
 
-                // 2. SYNCHRONISATION DES PLATS ET DES RUPTURES EN TEMPS RÉEL
                 let rawCuisine = activeOrders['MENU_MASTER']?.data || {};
                 let rawBar = activeOrders['MENU_MASTER_BAR']?.data || {};
 
@@ -522,9 +511,285 @@
             } catch(e) { console.error("Erreur Sync:", e); }
         }
 
+        // -------------------------------------------------------------
+        // FONCTIONS D'INTERFACE ET DE PANIER
+        // -------------------------------------------------------------
+        function renderFilterBar(activeCategories) {
+            const filterBar = document.getElementById('filter-bar');
+            if (!filterBar) return;
+            
+            let isActiveAll = currentCategoryFilter === 'TOUTES' ? 'active' : '';
+            let html = `<button class="filter-btn ${isActiveAll}" onclick="setFilter('TOUTES', this)">TOUTES</button>`;
+            
+            activeCategories.forEach(cat => {
+                let isActive = currentCategoryFilter === cat ? 'active' : '';
+                let safeCat = encodeURIComponent(cat).replace(/'/g, "%27");
+                html += `<button class="filter-btn ${isActive}" onclick="setFilter('${safeCat}', this)">${cat}</button>`;
+            });
+            
+            filterBar.innerHTML = html;
+        }
+
+        window.setFilter = function(encodedCat, btnElement) {
+            let cat = encodedCat === 'TOUTES' ? 'TOUTES' : decodeURIComponent(encodedCat);
+            currentCategoryFilter = cat;
+            
+            document.querySelectorAll('.filter-btn').forEach(btn => btn.classList.remove('active'));
+            if (btnElement) {
+                btnElement.classList.add('active');
+                btnElement.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'center' });
+            }
+            
+            renderClientMenu(true);
+        };
+
+        window.addToCart = function(encodedName, safePrice, dest) {
+            let name = decodeURIComponent(encodedName); let price = parseFloat(safePrice) || 0;
+            let existing = cart.find(i => i.name === name);
+            if (existing) existing.qty++; else cart.push({ name: name, price: price, qty: 1, destination: dest });
+            updateCartUI();
+            
+            let fab = document.getElementById('cart-fab');
+            fab.style.display = 'flex';
+            fab.style.transform = 'translateX(-50%) scale(1.1)';
+            setTimeout(() => fab.style.transform = 'translateX(-50%) scale(1)', 200);
+        };
+
+        window.changeQty = function(index, delta) {
+            cart[index].qty += delta;
+            if (cart[index].qty <= 0) cart.splice(index, 1);
+            updateCartUI();
+            if (cart.length === 0) toggleCart();
+        };
+
+        function updateCartUI() {
+            let isManualClosed = (systemSettings.qrActive === false);
+            let isAutoOpen = true;
+            if (systemSettings.schedule && systemSettings.schedule.auto) {
+                let now = new Date(new Date().toLocaleString("en-US", {timeZone: "Europe/Paris"}));
+                let currentDay = now.getDay(); 
+                let currentHour = now.getHours().toString().padStart(2, '0') + ":" + now.getMinutes().toString().padStart(2, '0');
+                let sched = systemSettings.schedule;
+                if (!sched.days.includes(currentDay)) { isAutoOpen = false; }
+            }
+            if (isManualClosed || !isAutoOpen) {
+                document.getElementById('cart-fab').style.display = 'none'; return;
+            }
+
+            let totalItems = cart.reduce((sum, item) => sum + item.qty, 0);
+            let totalPrice = cart.reduce((sum, item) => sum + (item.price * item.qty), 0);
+            
+            document.getElementById('cart-badge').innerText = totalItems;
+            document.getElementById('cart-total-price').innerText = totalPrice.toFixed(2) + ' ' + currentCurrency;
+            document.getElementById('cart-fab').style.display = totalItems > 0 ? 'flex' : 'none';
+            
+            let btnOnline = document.querySelector('.btn-stripe');
+            if(btnOnline) btnOnline.innerHTML = `💳 PAYER EN LIGNE (${totalPrice.toFixed(2)} ${currentCurrency})`;
+
+            if (document.getElementById('cart-modal').style.display === 'flex') renderCartModal();
+        }
+
+        function renderCartModal() {
+            const container = document.getElementById('cart-items');
+            container.innerHTML = cart.map((item, index) => `
+                <div class="cart-item">
+                    <div style="flex: 1;"><div class="cart-item-name">${item.name}</div><div style="color:var(--gold); font-weight:bold;">${(item.price * item.qty).toFixed(2)} ${currentCurrency}</div></div>
+                    <div class="cart-controls">
+                        <button class="cart-btn" onclick="changeQty(${index}, -1)">−</button>
+                        <span style="color:white; width:20px; text-align:center; font-family:var(--font-text); font-weight:bold;">${item.qty}</span>
+                        <button class="cart-btn" onclick="changeQty(${index}, 1)">+</button>
+                    </div>
+                </div>`).join('');
+        }
+
+        window.toggleCart = function() {
+            const modal = document.getElementById('cart-modal');
+            modal.style.display = (modal.style.display === 'flex') ? 'none' : (cart.length > 0 ? 'flex' : 'none');
+        };
+
+        window.checkout = async function(mode) {
+            if (cart.length === 0) return;
+            
+            document.querySelectorAll('.btn-checkout').forEach(btn => { btn.innerText = "Transmission..."; btn.disabled = true; });
+
+            let total = cart.reduce((sum, i) => sum + (i.price * i.qty), 0);
+            let isOnlineChoice = (mode === 'online');
+
+            try {
+                let r = await fetch(`${SERVER_URL}/get-current-state?tenantID=${tenantID}`);
+                let stateData = await r.json();
+                let existingOrder = (stateData.activeOrders && stateData.activeOrders[tableNum]) ? stateData.activeOrders[tableNum] : { items: [], total: 0 };
+                
+                let newItems = cart.map(item => ({ 
+                    name: item.name, n: item.name, price: item.price, p: item.price,
+                    qty: item.qty, category: item.destination, dest: item.destination, isSent: true
+                }));
+                
+                let orderData = { 
+                    items: [...(existingOrder.items || []), ...newItems], 
+                    total: (existingOrder.total || 0) + total, 
+                    time: Date.now(), table: tableNum, 
+                    status: isOnlineChoice ? "EN ATTENTE PAIEMENT" : "À VALIDER PAR LA CAISSE", 
+                    typePaiement: isOnlineChoice ? "En Ligne" : "À table", 
+                    source: "QR Code", isWeb: true,
+                    alerteRouge: isOnlineChoice ? null : "📱 COMMANDE WEB A VALIDER" 
+                };
+                
+                await fetch(`${SERVER_URL}/update-order?tenantID=${tenantID}`, { 
+                    method: 'POST', headers: {'Content-Type': 'application/json'}, 
+                    body: JSON.stringify({ tableId: tableNum, order: orderData }) 
+                });
+                
+                if (isOnlineChoice) { 
+                    let stripeRes = await fetch(`${SERVER_URL}/api/create-checkout`, {
+                        method: 'POST', headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify({ total: total, table: tableNum, tenantID: tenantID })
+                    });
+                    let stripeData = await stripeRes.json();
+                    if(stripeData.url) window.location.href = stripeData.url;
+                    else alert("Erreur de connexion bancaire : " + stripeData.error);
+                } else { 
+                    try {
+                        await fetch(`${SERVER_URL}/update-order?tenantID=${tenantID}`, { 
+                            method: 'POST', headers: {'Content-Type': 'application/json'}, 
+                            body: JSON.stringify({ tableId: 'ALERTS_MASTER', order: { data: { type: 'RING', message: `📱 NOUVELLE COMMANDE WEB (Table ${tableNum.replace('WEB_','')})`, timestamp: Date.now() } } }) 
+                        });
+                    } catch(e) {}
+                    
+                    let isServiceAuBar = document.getElementById('service-bar-banner').style.display === 'block';
+
+                    document.getElementById('success-order-num').innerText = displayOrderNum;
+                    
+                    let msgBox = document.getElementById('order-success-msg');
+                    if (isServiceAuBar) {
+                        msgBox.innerHTML = "Préparez-vous, nous vous appellerons au comptoir avec votre numéro dès que c'est prêt ! 🍹";
+                    } else {
+                        msgBox.innerHTML = "Détendez-vous, un serveur va vous apporter votre commande à table. 🍽️";
+                    }
+                    document.getElementById('order-success-modal').style.display = 'flex';
+
+                    window.hasBeenNotifiedReady = false; 
+                    cart = []; updateCartUI(); toggleCart(); 
+                }
+            } catch(e) { 
+                alert("❌ Erreur réseau. Veuillez prévenir l'équipe en salle."); 
+            } finally { 
+                updateCartUI(); document.querySelectorAll('.btn-checkout').forEach(btn => btn.disabled = false); 
+            }
+        };
+
+        function renderTastingMenu(item) {
+            let cleanName = item.name ? item.name.replace('🌟 ', '') : "Plat inconnu";
+            let mainName = cleanName.includes('[BR]') ? cleanName.split('[BR]')[0].trim() : cleanName;
+            let priceStr = parseFloat(item.price) > 0 ? `${parseFloat(item.price).toFixed(2)} ${currentCurrency}` : '';
+            let encodedName = encodeURIComponent(mainName).replace(/'/g, "%27"); 
+            let safePrice = parseFloat(item.price) || 0;
+            let dest = item.destination || 'cuisine';
+            
+            if (cleanName.includes('[BR]')) {
+                let parts = cleanName.split('[BR]');
+                let html = `<div class="tasting-menu-box menu-item" onclick="addToCart('${encodedName}', ${safePrice}, '${dest}')"><h2 class="category-title">${parts[0].trim()}</h2><div class="tasting-price">${priceStr} <span class="add-badge">+ Ajouter</span></div>`;
+                let labels = ['Entrée', 'Plat', 'Dessert', 'Fromage / Suite'];
+                for(let i = 1; i < parts.length; i++) if (parts[i].trim() !== '') html += `<div class="tasting-course"><span class="tasting-course-label">${labels[i-1]||''}</span>${parts[i].trim()}</div>`;
+                return html + `</div>`;
+            }
+            return `<div class="tasting-menu-box menu-item" onclick="addToCart('${encodedName}', ${safePrice}, '${dest}')"><h2 class="category-title">Menu du Jour</h2><div class="tasting-price">${priceStr} <span class="add-badge">+ Ajouter</span></div><div class="tasting-course">${cleanName}</div></div>`;
+        }
+
+        function renderStandardItem(item) {
+            let cleanName = item.name ? item.name.replace('🌟 ', '') : "Plat inconnu";
+            let mainName = cleanName.includes('[BR]') ? cleanName.split('[BR]')[0].trim() : cleanName;
+            let priceStr = parseFloat(item.price) > 0 ? `${parseFloat(item.price).toFixed(2)} ${currentCurrency}` : '';
+            let encodedName = encodeURIComponent(mainName).replace(/'/g, "%27"); 
+            let safePrice = parseFloat(item.price) || 0;
+            let dest = item.destination || 'cuisine';
+            
+            let isSoldOut = (item.stock === 0 || item.stock === "0");
+            let soldOutClass = isSoldOut ? 'sold-out' : '';
+            let soldOutBadge = isSoldOut ? `<span class="sold-out-badge">Épuisé</span>` : `<span class="add-badge">+ Ajouter</span>`;
+
+            let descText = item.description || item.desc || "";
+            if (!descText && cleanName.includes('[BR]')) {
+                descText = cleanName.split('[BR]').slice(1).join('<br>').trim();
+            }
+            let descriptionHTML = descText ? `<div class="item-desc">${descText}</div>` : '';
+            
+            return `
+            <div class="menu-item ${soldOutClass}" onclick="if(!${isSoldOut}) addToCart('${encodedName}', ${safePrice}, '${dest}')">
+                <div class="item-row">
+                    <div class="item-name">${mainName}</div>
+                    <div class="item-price">${priceStr} ${soldOutBadge}</div>
+                </div>
+                ${descriptionHTML}
+            </div>`;
+        }
+
+        function renderClientMenu(skipFilterUpdate = false) {
+            const container = document.getElementById('menu-container');
+            if (!currentMenuData) return;
+            
+            let htmlContent = '';
+            let categories = Object.keys(currentMenuData);
+            
+            categories.sort((a, b) => {
+                let isMenuA = a.toLowerCase().includes('jour') || a.toLowerCase().includes('sugg');
+                let isMenuB = b.toLowerCase().includes('jour') || b.toLowerCase().includes('sugg');
+                if (isMenuA && !isMenuB) return -1;
+                if (!isMenuA && isMenuB) return 1;
+                return 0;
+            });
+
+            let activeCategories = [];
+            categories.forEach(catKey => {
+                let items = currentMenuData[catKey];
+                if (items && Array.isArray(items)) {
+                    let visibleItems = items.filter(item => item.hidden !== true);
+                    if (visibleItems.length > 0) activeCategories.push(catKey);
+                }
+            });
+
+            if (!skipFilterUpdate) {
+                let currentHash = JSON.stringify(activeCategories);
+                if (currentHash !== drawnCategoriesHash) {
+                    renderFilterBar(activeCategories);
+                    drawnCategoriesHash = currentHash;
+                }
+            }
+
+            activeCategories.forEach((catKey) => {
+                if (currentCategoryFilter !== 'TOUTES' && currentCategoryFilter !== catKey) return;
+
+                let visibleItems = currentMenuData[catKey].filter(item => item.hidden !== true);
+                let isTasting = catKey.toLowerCase().includes('jour') || catKey.toLowerCase().includes('sugg');
+                
+                if (isTasting) {
+                    visibleItems.forEach(item => htmlContent += renderTastingMenu(item));
+                } else {
+                    htmlContent += `<div class="category-section"><h2 class="category-title"><span>${catKey}</span></h2>`;
+                    visibleItems.forEach(item => htmlContent += renderStandardItem(item));
+                    htmlContent += `</div>`;
+                }
+            });
+            
+            container.innerHTML = htmlContent || '<div class="loading-screen" style="font-style:normal;">Aucun plat trouvé dans cette catégorie.</div>';
+        }
+
         fetchMenu(); 
         setInterval(fetchMenu, 3000); 
     </script>
 
+    <script>
+        if ('serviceWorker' in navigator) {
+            window.addEventListener('load', () => {
+                navigator.serviceWorker.register('./service-worker.js')
+                .then(registration => {
+                    console.log('✅ Moteur PWA activé !', registration.scope);
+                })
+                .catch(err => {
+                    console.error('❌ Erreur PWA :', err);
+                });
+            });
+        }
+    </script>
 </body>
 </html>
