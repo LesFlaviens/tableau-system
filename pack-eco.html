@@ -9,7 +9,7 @@
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
     <meta name="mobile-web-app-capable" content="yes">
-    <meta name="theme-color" content="#0f172a">
+    <meta name="theme-color" content="#000000">
     <title>Empire OS - Pad Serveur Master</title>
 
     <script>
@@ -45,7 +45,6 @@
             const SERVER_URL = (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1" || window.location.protocol === "file:") 
                 ? "http://localhost:10000" : "https://tableau-system.onrender.com";
 
-            // MATRICE DES DROITS : Le Pad de Salle
             const accessMatrix = {
                 'PACK_A': ['pack-eco.html'], 'CHEF': ['pack-eco.html'], 'CHEF_CUISINE': ['pack-eco.html'], 'PATISSIER': ['pack-eco.html'], 'CHEF_PATISSERIE': ['pack-eco.html'], 'BAR': ['pack-eco.html'], 'CHEF_BAR': ['pack-eco.html'],
                 'ICHEF_OS': ['admin.html', 'pack-eco.html', 'minipass.html', 'menu-qr.html', 'administration.html'],
@@ -84,7 +83,7 @@
                     return;
                 }
 
-                // 2. VÉRIFICATION STRICTE DE LA BRIGADE & DU PLANNING DU JOUR
+                // 2. VÉRIFICATION STRICTE DE LA BRIGADE & DU PLANNING
                 let rState = await fetch(`${SERVER_URL}/get-current-state?tenantID=${tenantID}`);
                 if (!rState.ok) throw new Error("Erreur réseau");
                 
@@ -117,7 +116,6 @@
                     
                     let dailyPoste = matchedStaff.dept; // Poste par défaut
                     
-                    // S'il y a un planning pour ce mois, cet employé, et ce jour, on lit la colonne "POSTE ASSIGNÉ"
                     if (timesheets[monthStr] && timesheets[monthStr][matchedStaff.id] && timesheets[monthStr][matchedStaff.id][day]) {
                         if(timesheets[monthStr][matchedStaff.id][day].poste) {
                             dailyPoste = timesheets[monthStr][matchedStaff.id][day].poste;
@@ -125,7 +123,6 @@
                     }
 
                     if (dailyPoste !== 'salle' && dailyPoste !== 'admin') {
-                        // LE COUPERET TOMBE ICI SI LE POSTE EST CUISINE/BAR...
                         alert(`ACCÈS REFUSÉ : Accès Caisse interdit pour le poste assigné [${dailyPoste.toUpperCase()}].`);
                         window.location.href = 'connexionpartenaire.html';
                         return;
@@ -147,29 +144,18 @@
             --ordered: #FAF0E6; --ordered-dim: rgba(250, 240, 230, 0.05); --shadow: 0 10px 30px rgba(0, 0, 0, 0.9); --blur: blur(10px);
         }
 
-        /* 🍹 ALERTES SERVICE AU BAR */
         @keyframes pulseBadgeBar {
             0% { opacity: 1; box-shadow: 0 0 0 rgba(56, 189, 248, 0); }
             50% { opacity: 0.8; box-shadow: 0 0 15px rgba(56, 189, 248, 0.6); }
             100% { opacity: 1; box-shadow: 0 0 0 rgba(56, 189, 248, 0); }
         }
         #badge-service-bar {
-            display: none;
-            background: rgba(56, 189, 248, 0.1);
-            color: #38bdf8;
-            border: 1px solid #38bdf8;
-            padding: 6px 12px;
-            border-radius: 2px;
-            font-size: 0.75rem;
-            font-weight: 600;
-            text-transform: uppercase;
-            letter-spacing: 1px;
-            animation: pulseBadgeBar 2s infinite;
-            white-space: nowrap;
+            display: none; background: rgba(56, 189, 248, 0.1); color: #38bdf8; border: 1px solid #38bdf8;
+            padding: 6px 12px; border-radius: 2px; font-size: 0.75rem; font-weight: 600; text-transform: uppercase;
+            letter-spacing: 1px; animation: pulseBadgeBar 2s infinite; white-space: nowrap;
         }
         .status-ready-bar .table-obj {
-            border-color: #38bdf8 !important;
-            color: #38bdf8 !important;
+            border-color: #38bdf8 !important; color: #38bdf8 !important;
             box-shadow: inset 0 0 15px rgba(56, 189, 248, 0.25) !important;
             animation: pulseBadgeBar 2s infinite !important;
         }
@@ -342,7 +328,7 @@
         input[type="number"]::-webkit-inner-spin-button, input[type="number"]::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
     </style>
 </head>
-<body>
+<body oncontextmenu="return false;" ondragstart="return false;" ondrop="return false;">
 
     <div id="login-screen">
         <h1 style="color:var(--text-main); letter-spacing: 6px; font-size: 2.5rem; margin-bottom: 10px;">SALLE</h1>
@@ -769,6 +755,9 @@
         let staffAccessData = []; 
         let localSasConfig = { active: false, maxTables: 5, delay: 60 }; 
         let unifiedMenu = {};
+        
+        // Ajout variable globale pour le planning
+        let globalTimesheets = {};
 
         // SYSTÈME DE FIDÉLITÉ
         let isLoyaltyActive = false;
@@ -832,7 +821,7 @@
             }
         };
 
-        // --- AUTHENTIFICATION ---
+        // --- AUTHENTIFICATION BLINDÉE (VERIFIE LE PLANNING) ---
         function resetInactivityTimer() { clearTimeout(inactivityTimer); if(currentUser) inactivityTimer = setTimeout(logout, INACTIVITY_LIMIT); }
         ['touchstart', 'click', 'mousemove', 'keypress'].forEach(e => document.addEventListener(e, resetInactivityTimer, {passive: true}));
         
@@ -840,35 +829,41 @@
         function clearPin() { currentPin = ""; document.getElementById('pin-display').innerText = ""; resetInactivityTimer(); }
         
         async function submitPin() {
-            let masterPin = localStorage.getItem('ichef_master_pin');
+            let masterPin = localStorage.getItem('ichef_master_pin') || "999999";
             if(currentPin === masterPin || currentPin === "9999" || currentPin === "999999" || currentPin === "7777") {
                 currentUser = { name: "Directeur", role: "Manager" };
                 unlockPadWithUser(currentUser); 
                 return;
             }
 
-            try {
-                const response = await fetch(`${APP_SERVER_URL}/api/verify-pin`, {
-                    method: 'POST', headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ tenantID: appTenantID, pin: currentPin })
-                });
-                const data = await response.json();
-
-                if (data.success) {
-                    localStorage.setItem('ichef_master_pin', currentPin);
-                    localStorage.setItem('ichef_tenant_id', appTenantID);
-                    
-                    currentUser = { name: "Directeur", role: "Manager" };
-                    unlockPadWithUser(currentUser);
-                    return;
-                }
-            } catch(e) { console.warn("Serveur injoignable, vérification locale uniquement."); }
-
             if (typeof staffAccessData !== 'undefined') {
                 let staffUser = staffAccessData.find(s => s.pin === currentPin);
                 if (staffUser) {
-                    if (staffUser.active === false) { alert("❌ Accès suspendu."); clearPin(); return; }
-                    let userRole = (staffUser.dept === 'admin' || staffUser.dept === 'Direction') ? 'Manager' : 'Serveur';
+                    if (staffUser.active === false) { 
+                        alert("❌ Accès suspendu."); 
+                        clearPin(); 
+                        return; 
+                    }
+                    
+                    // VÉRIFICATION DU POSTE DANS LE PLANNING DU JOUR
+                    let dailyPoste = staffUser.dept;
+                    const today = new Date();
+                    const monthStr = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}`;
+                    const day = today.getDate();
+                    
+                    if (globalTimesheets && globalTimesheets[monthStr] && globalTimesheets[monthStr][staffUser.id] && globalTimesheets[monthStr][staffUser.id][day]) {
+                        if (globalTimesheets[monthStr][staffUser.id][day].poste) {
+                            dailyPoste = globalTimesheets[monthStr][staffUser.id][day].poste;
+                        }
+                    }
+
+                    if (dailyPoste !== 'salle' && dailyPoste !== 'admin') {
+                        alert(`❌ ACCÈS REFUSÉ : La Caisse est interdite pour le poste [${dailyPoste.toUpperCase()}].`);
+                        clearPin();
+                        return;
+                    }
+
+                    let userRole = (dailyPoste === 'admin') ? 'Manager' : 'Serveur';
                     currentUser = { name: staffUser.name, role: userRole };
                     unlockPadWithUser(currentUser);
                     return;
@@ -926,6 +921,11 @@
                     // Récupération Base Fidélité
                     if(nO['LOYALTY_MASTER'] && nO['LOYALTY_MASTER'].data) {
                         globalLoyaltyData = nO['LOYALTY_MASTER'].data;
+                    }
+                    
+                    // Récupération du Planning pour les vérifications de PIN
+                    if(nO['TIMESHEETS_MASTER'] && nO['TIMESHEETS_MASTER'].data) {
+                        globalTimesheets = nO['TIMESHEETS_MASTER'].data;
                     }
 
                     for (let key in nO) { 
