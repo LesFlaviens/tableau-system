@@ -56,24 +56,45 @@
                 'PREMIUM': ['admin.html', 'pack-eco.html', 'menu-qr.html', 'chef.html', 'menu-pure.html', 'chef-bar.html', 'menu-bar.html', 'rh.html', 'haccp.html', 'reservation.html', 'minipass.html', 'chef-patissier.html', 'administration.html', 'production.html', 'chef-production.html']
             };
 
-            try {
-                // Vérification simple du compte restaurant pour laisser charger la page
-                const res = await fetch(`${SERVER_URL}/api/verify-pin`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ tenantID: tenantID, pin: "0000", deviceId: getDeviceFingerprint() })
-                });
-                const data = await res.json();
+           try {
+                let savedPin = localStorage.getItem('ichef_master_pin');
 
-                if(!data.success) {
-                    alert(data.error || "ACCÈS REFUSÉ : Compte invalide ou expiré.");
-                    window.location.href = 'connexionpartenaire.html';
-                    return;
+                // Si un PIN maître est en mémoire, on le valide auprès du serveur
+                if (savedPin) {
+                    const res = await fetch(`${SERVER_URL}/api/verify-pin`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ tenantID: tenantID, pin: savedPin, deviceId: getDeviceFingerprint() })
+                    });
+                    const data = await res.json();
+
+                    if(!data.success) {
+                        // Le PIN sauvegardé n'est plus valide (révoqué ou expiré)
+                        localStorage.removeItem('ichef_master_pin');
+                        alert(data.error || "ACCÈS REFUSÉ : Session invalide ou expirée.");
+                        window.location.href = 'connexionpartenaire.html';
+                        return;
+                    }
+
+                    // Vérification de l'abonnement et du plan d'accès
+                    const currentPlan = data.plan ? data.plan.toUpperCase() : 'CHEF';
+                    let currentPage = window.location.pathname.split('/').pop().toLowerCase();
+                    if(currentPage === '') currentPage = 'index.html';
+
+                    const allowedPages = accessMatrix[currentPlan] || [];
+                    if (!allowedPages.includes(currentPage) && currentPage !== 'caissetactile.html') {
+                        alert(`ACCÈS REFUSÉ : Votre forfait n'inclut pas ce module.`);
+                        window.location.href = `administration.html?tenantID=${tenantID}`;
+                        return;
+                    }
+                } else {
+                    // Aucun PIN en mémoire : on laisse l'écran de verrouillage UI s'afficher
+                    // sans déclencher d'alerte d'erreur backend inutile.
+                    console.log("Empire OS : En attente d'authentification opérateur.");
                 }
-
-                const currentPlan = data.plan ? data.plan.toUpperCase() : 'CHEF';
-                let currentPage = window.location.pathname.split('/').pop().toLowerCase();
-                if(currentPage === '') currentPage = 'index.html';
+            } catch (e) { 
+                console.error("Erreur critique de sécurité réseau", e); 
+            }
 
                 const allowedPages = accessMatrix[currentPlan] || [];
                 if (!allowedPages.includes(currentPage) && currentPage !== 'caissetactile.html') {
