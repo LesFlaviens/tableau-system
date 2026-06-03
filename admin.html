@@ -1346,11 +1346,17 @@
         function factoryResetMenu() { if (prompt("Taper 'SUPPRIMER' pour vider la carte.") === "SUPPRIMER") { menuCuisine = {}; menuBar = {}; categoriesCuisine = []; categoriesBar = []; markUnsaved(); updateCategoryDropdowns(); renderMenuList(); updateDashboardStats(); } }
         function factoryResetSystem() { if (prompt("Taper 'RESET' pour vider TOUTE la base.") === "RESET") { menuCuisine = {}; menuBar = {}; categoriesCuisine = []; categoriesBar = []; staffAccess = []; markUnsaved(); renderStaffList(); renderMenuList(); updateDashboardStats(); } }
 
-        // --- GESTION BRIGADE SÉCURISÉE ---
+       // --- GESTION BRIGADE SÉCURISÉE & AUTO-SYNCHRONISÉE ---
         function renderStaffList() {
             document.getElementById('admin-staff-list').innerHTML = staffAccess.length === 0 ? '<div class="empty-state">Aucun membre.</div>' : staffAccess.map((s, idx) => {
                 let roleColor = s.dept === 'admin' ? 'var(--gold)' : 'var(--text-muted)';
-                let roleLabel = s.dept === 'admin' ? 'MANAGER' : 'CAISSE';
+                
+                let roleLabel = 'CAISSE';
+                if(s.dept === 'admin') roleLabel = 'MANAGER';
+                else if(s.dept === 'cuisine') roleLabel = 'CUISINE';
+                else if(s.dept === 'patisserie') roleLabel = 'PÂTISSERIE';
+                else if(s.dept === 'bar') roleLabel = 'BAR';
+
                 let titleDisplay = s.title ? s.title.toUpperCase() : 'EMPLOYÉ';
                 
                 return `
@@ -1375,12 +1381,14 @@
                 document.getElementById('staff-title').value = s.title || ""; 
                 document.getElementById('staff-pin').value = s.pin; 
                 document.getElementById('staff-role').value = s.dept; 
+                document.getElementById('staff-active').checked = s.active !== false;
             } 
             else { 
                 document.getElementById('staff-name').value = ""; 
                 document.getElementById('staff-title').value = ""; 
                 document.getElementById('staff-pin').value = ""; 
                 document.getElementById('staff-role').value = "salle"; 
+                document.getElementById('staff-active').checked = true;
             }
             
             let modal = document.getElementById('staff-modal');
@@ -1389,7 +1397,7 @@
             setTimeout(() => modal.classList.add('show'), 10);
         }
 
-        function saveStaff() {
+        async function saveStaff() {
             let name = document.getElementById('staff-name').value.trim(); 
             let title = document.getElementById('staff-title').value.trim(); 
             let pin = document.getElementById('staff-pin').value.trim();
@@ -1409,61 +1417,52 @@
             if (origPin) staffAccess[staffAccess.findIndex(s => s.pin === origPin)] = newStaff; 
             else staffAccess.push(newStaff);
             
-            markUnsaved(); closeModals(); renderStaffList(); updateDashboardStats();
+            closeModals(); 
+            renderStaffList(); 
+            updateDashboardStats();
+
+            // 🔥 SYNCHRONISATION INSTANTANÉE DANS LE CLOUD 🔥
+            try {
+                let syncBtn = document.getElementById('sync-status');
+                if(syncBtn) syncBtn.innerHTML = '⏳ Sync...';
+                
+                await fetch(`${SERVER_URL}/update-order?tenantID=${tenantID}`, { 
+                    method: 'POST', 
+                    headers: {'Content-Type': 'application/json'}, 
+                    body: JSON.stringify({ tableId: 'STAFF_ACCESS', order: { data: staffAccess } }) 
+                });
+                
+                markSaved();
+                showToast("Accès synchronisé sur tous les écrans !");
+            } catch(e) {
+                alert("⚠️ Erreur de synchronisation réseau.");
+            }
         }
 
-        function deleteStaff(pin) { if(confirm("Supprimer ?")) { staffAccess = staffAccess.filter(s => s.pin !== pin); markUnsaved(); renderStaffList(); updateDashboardStats(); } }
-
-        function renderFinancialDashboard() {
-            let allClosed = [];
-            if (Array.isArray(archiveCuisine)) allClosed = [...archiveCuisine];
-            else if (archiveCuisine && Array.isArray(archiveCuisine.data)) allClosed = [...archiveCuisine.data];
-            
-            allClosed.sort((a, b) => new Date(b.date || b.time) - new Date(a.date || a.time)); 
-            let totalCA = 0; let totalTransactions = allClosed.length;
-            let curr = systemSettings.currency || "€";
-            
-            let html = allClosed.map(t => { 
-                let valTTC = parseFloat(t.totalTTC || t.total || 0);
-                let valHT = parseFloat(t.totalHT || (valTTC / 1.10)); 
-                totalCA += valTTC; 
-                let nameTitle = t.source || (t.table ? `Table ${t.table}` : "Transaction Caisse");
+        async function deleteStaff(pin) { 
+            if(confirm("Supprimer cet accès définitivement ?")) { 
+                staffAccess = staffAccess.filter(s => s.pin !== pin); 
+                renderStaffList(); 
+                updateDashboardStats(); 
                 
-                let rawDate = t.date || t.time; let dateStr = "Date inconnue";
-                if (rawDate) {
-                    let dObj = new Date(rawDate);
-                    dateStr = dObj.toLocaleDateString('fr-FR') + ' à ' + dObj.toLocaleTimeString('fr-FR', {hour: '2-digit', minute:'2-digit'});
+                // 🔥 SYNCHRONISATION INSTANTANÉE DANS LE CLOUD 🔥
+                try {
+                    let syncBtn = document.getElementById('sync-status');
+                    if(syncBtn) syncBtn.innerHTML = '⏳ Sync...';
+                    
+                    await fetch(`${SERVER_URL}/update-order?tenantID=${tenantID}`, { 
+                        method: 'POST', 
+                        headers: {'Content-Type': 'application/json'}, 
+                        body: JSON.stringify({ tableId: 'STAFF_ACCESS', order: { data: staffAccess } }) 
+                    });
+                    
+                    markSaved();
+                    showToast("Accès supprimé et synchronisé !");
+                } catch(e) {
+                    alert("⚠️ Erreur de synchronisation réseau.");
                 }
-                
-                let tvaDetailsHtml = "";
-                if (t.tva && typeof t.tva === 'object') {
-                    tvaDetailsHtml = Object.entries(t.tva).filter(([rate, amt]) => parseFloat(amt) > 0).map(([rate, amt]) => `
-                        <span style="background: rgba(255,255,255,0.02); padding: 4px 8px; border-radius: 4px; font-size: 0.75rem; border: 1px solid rgba(250,240,230,0.1); color: var(--text-main); white-space: nowrap;">
-                            TVA ${rate}% : <strong>${parseFloat(amt).toFixed(2)} ${curr}</strong>
-                        </span>
-                    `).join(' ');
-                } else {
-                    tvaDetailsHtml = `<span style="font-size: 0.75rem; color: var(--text-muted); font-style: italic;">TVA cumulée (Est.) : ${(valTTC - valHT).toFixed(2)} ${curr}</span>`;
-                }
-                let methodLabel = t.method || t.typePaiement || "Non spécifié";
-
-                return `
-                    <div class="list-item" style="flex-direction: column; align-items: stretch; gap: 12px; padding: 20px; border: 1px solid var(--border); border-radius: 6px; background: rgba(250,240,230,0.01); margin-bottom: 12px; box-shadow: var(--shadow);">
-                        <div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 1px dashed rgba(250,240,230,0.1); padding-bottom: 10px;">
-                            <span class="list-item-title" style="color: var(--gold); font-size: 1.05rem; font-weight: 600; margin: 0; font-family: 'Inter', sans-serif;">${nameTitle}</span>
-                            <span style="font-size: 1.35rem; font-family: 'Playfair Display', serif; color: var(--text-main); font-weight: 700;">${valTTC.toFixed(2)} ${curr}</span>
-                        </div>
-                        <div style="display: flex; justify-content: space-between; font-size: 0.8rem; color: var(--text-muted); flex-wrap: wrap; gap: 5px;">
-                            <span>📅 ${dateStr}</span>
-                            <span style="color: var(--gold); font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px;">💳 ${methodLabel}</span>
-                        </div>
-                        <div style="display: flex; flex-direction: column; gap: 8px; border-top: 1px solid rgba(250,240,230,0.05); padding-top: 10px; margin-top: 2px;">
-                            <div style="font-size: 0.8rem; color: var(--text-muted);">Chiffre Hors-Taxe (HT) : <strong style="color: var(--text-main); font-size: 0.85rem;">${valHT.toFixed(2)} ${curr}</strong></div>
-                            <div style="display: flex; gap: 6px; flex-wrap: wrap; margin-top: 2px;">
-                                ${tvaDetailsHtml}
-                            </div>
-                        </div>
-                    </div>
+            } 
+        }
                 `;
             }).join('');
             document.getElementById('finance-total-ca').innerText = totalCA.toFixed(2) + ' ' + curr; 
