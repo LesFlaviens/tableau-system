@@ -742,7 +742,7 @@
         </div>
     </div>
 
-   <div class="modal" id="staff-modal">
+    <div class="modal" id="staff-modal">
         <div class="modal-content">
             <div class="modal-header">
                 <h3>👥 Fiche Employé</h3>
@@ -887,7 +887,6 @@
                     staffAccess = (aO['STAFF_ACCESS'] && aO['STAFF_ACCESS'].data) ? aO['STAFF_ACCESS'].data : [];
                     archiveCuisine = (aO['FINANCIAL_HISTORY'] && aO['FINANCIAL_HISTORY'].data) ? aO['FINANCIAL_HISTORY'].data : [];
                     
-                    // Chargement de la base de données fidélité
                     loyaltyData = (aO['LOYALTY_MASTER'] && aO['LOYALTY_MASTER'].data) ? aO['LOYALTY_MASTER'].data : {};
 
                     if(aO['ARCHITECTURE']) {
@@ -1344,6 +1343,7 @@
         function factoryResetMenu() { if (prompt("Taper 'SUPPRIMER' pour vider la carte.") === "SUPPRIMER") { menuCuisine = {}; menuBar = {}; categoriesCuisine = []; categoriesBar = []; markUnsaved(); updateCategoryDropdowns(); renderMenuList(); updateDashboardStats(); } }
         function factoryResetSystem() { if (prompt("Taper 'RESET' pour vider TOUTE la base.") === "RESET") { menuCuisine = {}; menuBar = {}; categoriesCuisine = []; categoriesBar = []; staffAccess = []; markUnsaved(); renderStaffList(); renderMenuList(); updateDashboardStats(); } }
 
+        // --- GESTION BRIGADE SÉCURISÉE ---
         function renderStaffList() {
             document.getElementById('admin-staff-list').innerHTML = staffAccess.length === 0 ? '<div class="empty-state">Aucun membre.</div>' : staffAccess.map((s, idx) => {
                 let roleColor = s.dept === 'admin' ? 'var(--gold)' : 'var(--text-muted)';
@@ -1408,6 +1408,42 @@
             
             markUnsaved(); closeModals(); renderStaffList(); updateDashboardStats();
         }
+
+        function deleteStaff(pin) { if(confirm("Supprimer ?")) { staffAccess = staffAccess.filter(s => s.pin !== pin); markUnsaved(); renderStaffList(); updateDashboardStats(); } }
+
+        function renderFinancialDashboard() {
+            let allClosed = [];
+            if (Array.isArray(archiveCuisine)) allClosed = [...archiveCuisine];
+            else if (archiveCuisine && Array.isArray(archiveCuisine.data)) allClosed = [...archiveCuisine.data];
+            
+            allClosed.sort((a, b) => new Date(b.date || b.time) - new Date(a.date || a.time)); 
+            let totalCA = 0; let totalTransactions = allClosed.length;
+            let curr = systemSettings.currency || "€";
+            
+            let html = allClosed.map(t => { 
+                let valTTC = parseFloat(t.totalTTC || t.total || 0);
+                let valHT = parseFloat(t.totalHT || (valTTC / 1.10)); 
+                totalCA += valTTC; 
+                let nameTitle = t.source || (t.table ? `Table ${t.table}` : "Transaction Caisse");
+                
+                let rawDate = t.date || t.time; let dateStr = "Date inconnue";
+                if (rawDate) {
+                    let dObj = new Date(rawDate);
+                    dateStr = dObj.toLocaleDateString('fr-FR') + ' à ' + dObj.toLocaleTimeString('fr-FR', {hour: '2-digit', minute:'2-digit'});
+                }
+                
+                let tvaDetailsHtml = "";
+                if (t.tva && typeof t.tva === 'object') {
+                    tvaDetailsHtml = Object.entries(t.tva).filter(([rate, amt]) => parseFloat(amt) > 0).map(([rate, amt]) => `
+                        <span style="background: rgba(255,255,255,0.02); padding: 4px 8px; border-radius: 4px; font-size: 0.75rem; border: 1px solid rgba(250,240,230,0.1); color: var(--text-main); white-space: nowrap;">
+                            TVA ${rate}% : <strong>${parseFloat(amt).toFixed(2)} ${curr}</strong>
+                        </span>
+                    `).join(' ');
+                } else {
+                    tvaDetailsHtml = `<span style="font-size: 0.75rem; color: var(--text-muted); font-style: italic;">TVA cumulée (Est.) : ${(valTTC - valHT).toFixed(2)} ${curr}</span>`;
+                }
+                let methodLabel = t.method || t.typePaiement || "Non spécifié";
+
                 return `
                     <div class="list-item" style="flex-direction: column; align-items: stretch; gap: 12px; padding: 20px; border: 1px solid var(--border); border-radius: 6px; background: rgba(250,240,230,0.01); margin-bottom: 12px; box-shadow: var(--shadow);">
                         <div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 1px dashed rgba(250,240,230,0.1); padding-bottom: 10px;">
