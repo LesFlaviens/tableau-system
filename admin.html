@@ -1345,64 +1345,69 @@
         function factoryResetSystem() { if (prompt("Taper 'RESET' pour vider TOUTE la base.") === "RESET") { menuCuisine = {}; menuBar = {}; categoriesCuisine = []; categoriesBar = []; staffAccess = []; markUnsaved(); renderStaffList(); renderMenuList(); updateDashboardStats(); } }
 
         function renderStaffList() {
-            document.getElementById('admin-staff-list').innerHTML = staffAccess.length === 0 ? '<div class="empty-state">Aucun membre.</div>' : staffAccess.map((s, idx) => `
-                <div class="list-item"><div class="list-item-info"><span class="list-item-title">${s.name}</span><span>PIN: **** | ${s.dept.toUpperCase()}</span></div>
-                <div class="list-item-actions"><button class="btn-outline" onclick="openStaffModal('${s.pin}')">✏️</button><button class="btn-outline danger" onclick="deleteStaff('${s.pin}')">🗑️</button></div></div>
-            `).join('');
+            document.getElementById('admin-staff-list').innerHTML = staffAccess.length === 0 ? '<div class="empty-state">Aucun membre.</div>' : staffAccess.map((s, idx) => {
+                let roleColor = s.dept === 'admin' ? 'var(--gold)' : 'var(--text-muted)';
+                let roleLabel = s.dept === 'admin' ? 'MANAGER' : 'CAISSE';
+                let titleDisplay = s.title ? s.title.toUpperCase() : 'EMPLOYÉ';
+                
+                return `
+                <div class="list-item">
+                    <div class="list-item-info">
+                        <span class="list-item-title">${s.name} <span style="font-size:0.75rem; color:var(--accent); font-weight:normal; margin-left:8px; border: 1px solid var(--accent-dim); padding: 2px 6px; border-radius: 4px;">${titleDisplay}</span></span>
+                        <span style="color: ${roleColor}; font-size: 0.8rem; font-weight: 600;">PIN: **** | DROITS : ${roleLabel}</span>
+                    </div>
+                    <div class="list-item-actions">
+                        <button class="btn-outline" onclick="openStaffModal('${s.pin}')">✏️</button>
+                        <button class="btn-outline danger" onclick="deleteStaff('${s.pin}')">🗑️</button>
+                    </div>
+                </div>`;
+            }).join('');
         }
+
         function openStaffModal(pin = null) {
             document.getElementById('staff-edit-original-pin').value = pin || "";
-            if (pin) { let s = staffAccess.find(x => x.pin === pin); document.getElementById('staff-name').value = s.name; document.getElementById('staff-pin').value = s.pin; document.getElementById('staff-role').value = s.dept; } 
-            else { document.getElementById('staff-name').value = ""; document.getElementById('staff-pin').value = ""; document.getElementById('staff-role').value = "salle"; }
+            if (pin) { 
+                let s = staffAccess.find(x => x.pin === pin); 
+                document.getElementById('staff-name').value = s.name; 
+                document.getElementById('staff-title').value = s.title || ""; 
+                document.getElementById('staff-pin').value = s.pin; 
+                document.getElementById('staff-role').value = s.dept; 
+            } 
+            else { 
+                document.getElementById('staff-name').value = ""; 
+                document.getElementById('staff-title').value = ""; 
+                document.getElementById('staff-pin').value = ""; 
+                document.getElementById('staff-role').value = "salle"; 
+            }
             
             let modal = document.getElementById('staff-modal');
             modal.style.display = 'flex';
             modal.style.opacity = '';
             setTimeout(() => modal.classList.add('show'), 10);
         }
+
         function saveStaff() {
-            let name = document.getElementById('staff-name').value.trim(); let pin = document.getElementById('staff-pin').value.trim();
+            let name = document.getElementById('staff-name').value.trim(); 
+            let title = document.getElementById('staff-title').value.trim(); 
+            let pin = document.getElementById('staff-pin').value.trim();
             let origPin = document.getElementById('staff-edit-original-pin').value;
-            if (!name || pin.length < 4) return alert("Invalide."); if (pin !== origPin && staffAccess.find(s => s.pin === pin)) return alert("PIN utilisé.");
-            let newStaff = { name: name, pin: pin, dept: document.getElementById('staff-role').value, active: document.getElementById('staff-active').checked };
-            if (origPin) staffAccess[staffAccess.findIndex(s => s.pin === origPin)] = newStaff; else staffAccess.push(newStaff);
+            
+            if (!name || pin.length < 4) return alert("Veuillez saisir un nom et un PIN (4 chiffres min)."); 
+            if (pin !== origPin && staffAccess.find(s => s.pin === pin)) return alert("Ce code PIN est déjà utilisé par un autre employé.");
+            
+            let newStaff = { 
+                name: name, 
+                title: title, 
+                pin: pin, 
+                dept: document.getElementById('staff-role').value, 
+                active: document.getElementById('staff-active').checked 
+            };
+            
+            if (origPin) staffAccess[staffAccess.findIndex(s => s.pin === origPin)] = newStaff; 
+            else staffAccess.push(newStaff);
+            
             markUnsaved(); closeModals(); renderStaffList(); updateDashboardStats();
         }
-        function deleteStaff(pin) { if(confirm("Supprimer ?")) { staffAccess = staffAccess.filter(s => s.pin !== pin); markUnsaved(); renderStaffList(); updateDashboardStats(); } }
-
-        function renderFinancialDashboard() {
-            let allClosed = [];
-            if (Array.isArray(archiveCuisine)) allClosed = [...archiveCuisine];
-            else if (archiveCuisine && Array.isArray(archiveCuisine.data)) allClosed = [...archiveCuisine.data];
-            
-            allClosed.sort((a, b) => new Date(b.date || b.time) - new Date(a.date || a.time)); 
-            let totalCA = 0; let totalTransactions = allClosed.length;
-            let curr = systemSettings.currency || "€";
-            
-            let html = allClosed.map(t => { 
-                let valTTC = parseFloat(t.totalTTC || t.total || 0);
-                let valHT = parseFloat(t.totalHT || (valTTC / 1.10)); 
-                totalCA += valTTC; 
-                let nameTitle = t.source || (t.table ? `Table ${t.table}` : "Transaction Caisse");
-                
-                let rawDate = t.date || t.time; let dateStr = "Date inconnue";
-                if (rawDate) {
-                    let dObj = new Date(rawDate);
-                    dateStr = dObj.toLocaleDateString('fr-FR') + ' à ' + dObj.toLocaleTimeString('fr-FR', {hour: '2-digit', minute:'2-digit'});
-                }
-                
-                let tvaDetailsHtml = "";
-                if (t.tva && typeof t.tva === 'object') {
-                    tvaDetailsHtml = Object.entries(t.tva).filter(([rate, amt]) => parseFloat(amt) > 0).map(([rate, amt]) => `
-                        <span style="background: rgba(255,255,255,0.02); padding: 4px 8px; border-radius: 4px; font-size: 0.75rem; border: 1px solid rgba(250,240,230,0.1); color: var(--text-main); white-space: nowrap;">
-                            TVA ${rate}% : <strong>${parseFloat(amt).toFixed(2)} ${curr}</strong>
-                        </span>
-                    `).join(' ');
-                } else {
-                    tvaDetailsHtml = `<span style="font-size: 0.75rem; color: var(--text-muted); font-style: italic;">TVA cumulée (Est.) : ${(valTTC - valHT).toFixed(2)} ${curr}</span>`;
-                }
-                let methodLabel = t.method || t.typePaiement || "Non spécifié";
-
                 return `
                     <div class="list-item" style="flex-direction: column; align-items: stretch; gap: 12px; padding: 20px; border: 1px solid var(--border); border-radius: 6px; background: rgba(250,240,230,0.01); margin-bottom: 12px; box-shadow: var(--shadow);">
                         <div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 1px dashed rgba(250,240,230,0.1); padding-bottom: 10px;">
