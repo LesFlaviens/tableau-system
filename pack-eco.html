@@ -1,17 +1,6 @@
 <!DOCTYPE html>
 <html lang="fr">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
-    
-    <link rel="manifest" href="manifest.json">
-    <link rel="apple-touch-icon" href="icon-192.png">
-    <meta name="apple-mobile-web-app-capable" content="yes">
-    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-    <meta name="mobile-web-app-capable" content="yes">
-    <meta name="theme-color" content="#0f172a">
-    <title>Empire OS - Pad Serveur Master</title>
-
     <script>
         function getDeviceFingerprint() {
             let deviceId = localStorage.getItem('ichef_device_fingerprint');
@@ -35,6 +24,7 @@
             }
 
             let tenantID = urlTenantID || storedTenantID;
+            let pin = localStorage.getItem('ichef_master_pin'); 
             
             if(!tenantID) {
                 window.location.href = 'connexionpartenaire.html';
@@ -44,6 +34,7 @@
             const SERVER_URL = (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1" || window.location.protocol === "file:") 
                 ? "http://localhost:10000" : "https://tableau-system.onrender.com";
 
+            // MATRICE DES DROITS : Le Pad de Salle
             const accessMatrix = {
                 'PACK_A': ['pack-eco.html'], 'CHEF': ['pack-eco.html'], 'CHEF_CUISINE': ['pack-eco.html'], 'PATISSIER': ['pack-eco.html'], 'CHEF_PATISSERIE': ['pack-eco.html'], 'BAR': ['pack-eco.html'], 'CHEF_BAR': ['pack-eco.html'],
                 'ICHEF_OS': ['admin.html', 'pack-eco.html', 'minipass.html', 'menu-qr.html', 'administration.html'],
@@ -57,16 +48,225 @@
             };
 
             try {
-                // Vérification simple du compte restaurant (et non du code du serveur)
+                // 1. Vérification du Serveur Cloud
                 const res = await fetch(`${SERVER_URL}/api/verify-pin`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ tenantID: tenantID, pin: "0000", deviceId: getDeviceFingerprint() })
+                    body: JSON.stringify({ tenantID: tenantID, pin: pin || "0000", deviceId: getDeviceFingerprint() })
                 });
                 const data = await res.json();
 
                 if(!data.success) {
-                    alert(data.error || "ACCÈS REFUSÉ : Compte invalide ou expiré.");
+                    alert(data.error || "ACCÈS REFUSÉ : Appareil non reconnu.");
+                    window.location.href = 'connexionpartenaire.html';
+                    return;
+                }
+
+                // 2. VÉRIFICATION STRICTE DE LA BRIGADE (Seul Admin et Salle passent)
+                let rState = await fetch(`${SERVER_URL}/get-current-state?tenantID=${tenantID}`);
+                if (rState.ok) {
+                    let stateData = await rState.json();
+                    let staffList = (stateData.activeOrders && stateData.activeOrders['STAFF_ACCESS']) ? stateData.activeOrders['STAFF_ACCESS'].data : [];
+                    
+                    let isMasterPin = (pin === "999999" || pin === "9999" || pin === "7777");
+                    
+                    if (!isMasterPin) {
+                        let matchedStaff = staffList.find(s => s.pin === pin);
+                        if (!matchedStaff) {
+                            alert("ACCÈS REFUSÉ : Code employé introuvable.");
+                            window.location.href = 'connexionpartenaire.html';
+                            return;
+                        } else if (matchedStaff.active === false) {
+                            alert("ACCÈS REFUSÉ : Ce compte employé a été suspendu.");
+                            window.location.href = 'connexionpartenaire.html';
+                            return;
+                        } else if (matchedStaff.dept !== 'salle' && matchedStaff.dept !== 'admin') {
+                            // Le couperet tombe ici !
+                            alert(`ACCÈS REFUSÉ : Accès Caisse interdit pour le poste [${matchedStaff.dept.toUpperCase()}].`);
+                            window.location.href = 'connexionpartenaire.html';
+                            return;
+                        }
+                    }
+                }
+
+            } catch (e) { 
+                console.error("Erreur de sécurité réseau", e); 
+            }
+        })();
+    </script>
+    <script>
+        function getDeviceFingerprint() {
+            let deviceId = localStorage.getItem('ichef_device_fingerprint');
+            if (!deviceId) {
+                deviceId = 'device_' + Math.random().toString(36).substr(2, 9) + '_' + Date.now();
+                localStorage.setItem('ichef_device_fingerprint', deviceId);
+            }
+            return deviceId;
+        }
+
+        (async function enforceSecurity() {
+            const urlParams = new URLSearchParams(window.location.search);
+            let urlTenantID = urlParams.get('tenantID');
+            let storedTenantID = localStorage.getItem('ichef_tenant_id');
+
+            if (urlTenantID && urlTenantID !== storedTenantID) {
+                localStorage.removeItem('EMPIRE_GLOBAL_SYNC');
+                localStorage.removeItem('ichef_master_pin');
+                if (urlTenantID) localStorage.setItem('ichef_tenant_id', urlTenantID);
+                storedTenantID = urlTenantID;
+            }
+
+            let tenantID = urlTenantID || storedTenantID;
+            let pin = localStorage.getItem('ichef_master_pin'); 
+            
+            if(!tenantID) {
+                window.location.href = 'connexionpartenaire.html';
+                return;
+            }
+
+            const SERVER_URL = (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1" || window.location.protocol === "file:") 
+                ? "http://localhost:10000" : "https://tableau-system.onrender.com";
+
+            // MATRICE DES DROITS : Le Pad de Salle ("pack-eco.html")
+            const accessMatrix = {
+                'PACK_A': ['pack-eco.html'], 'CHEF': ['pack-eco.html'], 'CHEF_CUISINE': ['pack-eco.html'], 'PATISSIER': ['pack-eco.html'], 'CHEF_PATISSERIE': ['pack-eco.html'], 'BAR': ['pack-eco.html'], 'CHEF_BAR': ['pack-eco.html'],
+                'ICHEF_OS': ['admin.html', 'pack-eco.html', 'minipass.html', 'menu-qr.html', 'administration.html'],
+                'ECO': ['admin.html', 'pack-eco.html', 'minipass.html', 'menu-qr.html', 'administration.html'],
+                'BUSINESS': ['admin.html', 'pack-eco.html', 'minipass.html', 'menu-qr.html', 'administration.html'],
+                'RENTABILITE': ['admin.html', 'pack-eco.html', 'minipass.html', 'menu-qr.html', 'administration.html'],
+                'EMPIRE': ['admin.html', 'pack-eco.html', 'menu-qr.html', 'chef.html', 'menu-pure.html', 'chef-bar.html', 'menu-bar.html', 'rh.html', 'haccp.html', 'reservation.html', 'minipass.html', 'chef-patissier.html', 'administration.html', 'production.html', 'chef-production.html'],
+                'BRIGADE': ['admin.html', 'pack-eco.html', 'menu-qr.html', 'chef.html', 'menu-pure.html', 'chef-bar.html', 'menu-bar.html', 'rh.html', 'haccp.html', 'reservation.html', 'minipass.html', 'chef-patissier.html', 'administration.html', 'production.html', 'chef-production.html'],
+                'BRIGADES': ['admin.html', 'pack-eco.html', 'menu-qr.html', 'chef.html', 'menu-pure.html', 'chef-bar.html', 'menu-bar.html', 'rh.html', 'haccp.html', 'reservation.html', 'minipass.html', 'chef-patissier.html', 'administration.html', 'production.html', 'chef-production.html'],
+                'PREMIUM': ['admin.html', 'pack-eco.html', 'menu-qr.html', 'chef.html', 'menu-pure.html', 'chef-bar.html', 'menu-bar.html', 'rh.html', 'haccp.html', 'reservation.html', 'minipass.html', 'chef-patissier.html', 'administration.html', 'production.html', 'chef-production.html']
+            };
+
+            try {
+                // 1. Vérification du Cloud
+                const res = await fetch(`${SERVER_URL}/api/verify-pin`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ tenantID: tenantID, pin: pin || "0000", deviceId: getDeviceFingerprint() })
+                });
+                const data = await res.json();
+
+                if(!data.success) {
+                    alert(data.error || "ACCÈS REFUSÉ : Compte invalide ou écran non autorisé.");
+                    window.location.href = 'connexionpartenaire.html';
+                    return;
+                }
+
+                // 2. Vérification des accès du forfait
+                const currentPlan = data.plan ? data.plan.toUpperCase() : 'CHEF';
+                let currentPage = window.location.pathname.split('/').pop().toLowerCase();
+                if(currentPage === '') currentPage = 'index.html';
+
+                const allowedPages = accessMatrix[currentPlan] || [];
+                if (!allowedPages.includes(currentPage)) {
+                    alert(`ACCÈS REFUSÉ : Votre établissement n'inclut pas le module Caisse.`);
+                    window.location.href = `administration.html?tenantID=${tenantID}`;
+                    return;
+                }
+
+                // 3. VÉRIFICATION STRICTE DE LA BRIGADE (Seul Admin et Salle passent)
+                let rState = await fetch(`${SERVER_URL}/get-current-state?tenantID=${tenantID}`);
+                let stateData = await rState.json();
+                let staffList = (stateData.activeOrders && stateData.activeOrders['STAFF_ACCESS']) ? stateData.activeOrders['STAFF_ACCESS'].data : [];
+                
+                let isMasterPin = (pin === "999999" || pin === "9999" || pin === "7777");
+                let matchedStaff = staffList.find(s => s.pin === pin);
+
+                if (!isMasterPin) {
+                    if (!matchedStaff) {
+                        alert("ACCÈS REFUSÉ : Employé introuvable.");
+                        window.location.href = 'connexionpartenaire.html';
+                    } else if (matchedStaff.active === false) {
+                        alert("ACCÈS REFUSÉ : Ce compte employé a été suspendu par la direction.");
+                        window.location.href = 'connexionpartenaire.html';
+                    } else if (matchedStaff.dept !== 'salle' && matchedStaff.dept !== 'admin') {
+                        // S'il n'est ni en salle ni manager, on le bloque de la caisse !
+                        alert(`ACCÈS REFUSÉ : Accès Caisse interdit pour le poste [${matchedStaff.dept.toUpperCase()}].`);
+                        window.location.href = 'connexionpartenaire.html';
+                    }
+                }
+
+            } catch (e) { 
+                console.error("Erreur de sécurité réseau", e); 
+            }
+        })();
+    </script>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    
+    <link rel="manifest" href="manifest.json">
+    <link rel="apple-touch-icon" href="icon-192.png">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="mobile-web-app-capable" content="yes">
+    <meta name="theme-color" content="#0f172a">
+    <title>Empire OS - Pad Serveur Master</title>
+
+    <script>
+        // 1. SÉCURITÉ : Générateur d'empreinte numérique
+        function getDeviceFingerprint() {
+            let deviceId = localStorage.getItem('ichef_device_fingerprint');
+            if (!deviceId) {
+                deviceId = 'device_' + Math.random().toString(36).substr(2, 9) + '_' + Date.now();
+                localStorage.setItem('ichef_device_fingerprint', deviceId);
+            }
+            return deviceId;
+        }
+
+        // 2. GARDE DU CORPS SECURITE UNIVERSEL (VERSION ISOLATION STRICTE 🔒)
+        (async function enforceSecurity() {
+            const urlParams = new URLSearchParams(window.location.search);
+            let urlTenantID = urlParams.get('tenantID');
+            let storedTenantID = localStorage.getItem('ichef_tenant_id');
+
+            if (urlTenantID && urlTenantID !== storedTenantID) {
+                localStorage.removeItem('EMPIRE_GLOBAL_SYNC');
+                localStorage.removeItem('ichef_master_pin');
+                if (urlTenantID) localStorage.setItem('ichef_tenant_id', urlTenantID);
+                storedTenantID = urlTenantID;
+            }
+
+            let tenantID = urlTenantID || storedTenantID;
+            let pin = localStorage.getItem('ichef_master_pin'); 
+            
+            if(!tenantID) {
+                window.location.href = 'connexionpartenaire.html';
+                return;
+            }
+
+            const SERVER_URL = (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1" || window.location.protocol === "file:") 
+                ? "http://localhost:10000" : "https://tableau-system.onrender.com";
+
+            const accessMatrix = {
+                 'CHEF': ['chef.html', 'administration.html'],
+                'CHEF_CUISINE': ['chef.html', 'administration.html'],
+                'PATISSIER': ['chef-patissier.html', 'administration.html'],
+                'CHEF_PATISSERIE': ['chef-patissier.html', 'administration.html'],
+                'BAR': ['chef-bar.html', 'administration.html'],
+                'CHEF_BAR': ['chef-bar.html', 'administration.html'],
+                'ICHEF_OS': ['admin.html', 'pack-eco.html', 'minipass.html', 'menu-qr.html', 'administration.html'],
+                'ECO': ['admin.html', 'pack-eco.html', 'minipass.html', 'menu-qr.html', 'administration.html'],
+                'BUSINESS': ['admin.html', 'pack-eco.html', 'minipass.html', 'menu-qr.html', 'administration.html'],
+                'RENTABILITE': ['admin.html', 'pack-eco.html', 'minipass.html', 'menu-qr.html', 'administration.html'],
+                'PACK_A': ['admin.html', 'pack-eco.html', 'minipass.html', 'menu-qr.html', 'administration.html', 'caissetactile.html', 'haccp.html'],
+                'EMPIRE': ['admin.html', 'pack-eco.html', 'menu-qr.html', 'chef.html', 'menu-pure.html', 'chef-bar.html', 'menu-bar.html', 'rh.html', 'haccp.html', 'reservation.html', 'minipass.html', 'chef-patissier.html', 'administration.html', 'production.html', 'chef-production.html'],
+                'BRIGADE': ['admin.html', 'pack-eco.html', 'menu-qr.html', 'chef.html', 'menu-pure.html', 'chef-bar.html', 'menu-bar.html', 'rh.html', 'haccp.html', 'reservation.html', 'minipass.html', 'chef-patissier.html', 'administration.html', 'production.html', 'chef-production.html'],
+                'BRIGADES': ['admin.html', 'pack-eco.html', 'menu-qr.html', 'chef.html', 'menu-pure.html', 'chef-bar.html', 'menu-bar.html', 'rh.html', 'haccp.html', 'reservation.html', 'minipass.html', 'chef-patissier.html', 'administration.html', 'production.html', 'chef-production.html'],
+                'PREMIUM': ['admin.html', 'pack-eco.html', 'menu-qr.html', 'chef.html', 'menu-pure.html', 'chef-bar.html', 'menu-bar.html', 'rh.html', 'haccp.html', 'reservation.html', 'minipass.html', 'chef-patissier.html', 'administration.html', 'production.html', 'chef-production.html']
+            };
+            try {
+                const res = await fetch(`${SERVER_URL}/api/verify-pin`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ tenantID: tenantID, pin: pin || "0000", deviceId: getDeviceFingerprint() })
+                });
+                const data = await res.json();
+
+                if(!data.success) {
+                    alert(data.error || "ACCÈS REFUSÉ (Limite d'écrans atteinte ou compte invalide).");
                     window.location.href = 'connexionpartenaire.html';
                     return;
                 }
@@ -77,16 +277,10 @@
 
                 const allowedPages = accessMatrix[currentPlan] || [];
                 if (!allowedPages.includes(currentPage) && currentPage !== 'caissetactile.html') {
-                    alert(`ACCÈS REFUSÉ : Votre forfait n'inclut pas le module Caisse.`);
+                    alert(`ACCÈS REFUSÉ : Votre forfait (${currentPlan}) n'inclut pas ce module.`);
                     window.location.href = `administration.html?tenantID=${tenantID}`;
-                    return;
                 }
-                
-                // C'est tout ! On laisse la page s'afficher pour que le serveur puisse taper son code.
-
-            } catch (e) { 
-                console.error("Erreur de sécurité réseau", e); 
-            }
+            } catch (e) { console.error("Erreur de securite reseau", e); }
         })();
     </script>
 
@@ -100,18 +294,29 @@
             --ordered: #FAF0E6; --ordered-dim: rgba(250, 240, 230, 0.05); --shadow: 0 10px 30px rgba(0, 0, 0, 0.9); --blur: blur(10px);
         }
 
+        /* 🍹 ALERTES SERVICE AU BAR */
         @keyframes pulseBadgeBar {
             0% { opacity: 1; box-shadow: 0 0 0 rgba(56, 189, 248, 0); }
             50% { opacity: 0.8; box-shadow: 0 0 15px rgba(56, 189, 248, 0.6); }
             100% { opacity: 1; box-shadow: 0 0 0 rgba(56, 189, 248, 0); }
         }
         #badge-service-bar {
-            display: none; background: rgba(56, 189, 248, 0.1); color: #38bdf8; border: 1px solid #38bdf8;
-            padding: 6px 12px; border-radius: 2px; font-size: 0.75rem; font-weight: 600; text-transform: uppercase;
-            letter-spacing: 1px; animation: pulseBadgeBar 2s infinite; white-space: nowrap;
+            display: none;
+            background: rgba(56, 189, 248, 0.1);
+            color: #38bdf8;
+            border: 1px solid #38bdf8;
+            padding: 6px 12px;
+            border-radius: 2px;
+            font-size: 0.75rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            animation: pulseBadgeBar 2s infinite;
+            white-space: nowrap;
         }
         .status-ready-bar .table-obj {
-            border-color: #38bdf8 !important; color: #38bdf8 !important;
+            border-color: #38bdf8 !important;
+            color: #38bdf8 !important;
             box-shadow: inset 0 0 15px rgba(56, 189, 248, 0.25) !important;
             animation: pulseBadgeBar 2s infinite !important;
         }
@@ -181,6 +386,7 @@
         .drawer.open { display: flex; }
         .drawer-body { display:flex; flex:1; overflow:hidden; transition: opacity 0.3s, filter 0.3s; height: 100%; }
         
+        /* 🔥 CORRECTIFS DE DÉFILEMENT POUR MOBILE (COULISSANT) 🔥 */
         .menu-grid { flex: 1; display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 10px; padding: 20px; overflow-y: auto; align-content: start; -webkit-overflow-scrolling: touch; padding-bottom: 80px; }
 
         .btn-item { position: relative; background: var(--panel); border: 1px solid var(--border); color: var(--text-main); padding: 15px; border-radius: 4px; font-weight: 400; text-align: left; display: flex; flex-direction: column; justify-content: center; align-items: center; gap: 10px; font-size: 0.95rem; transition: 0.2s; cursor: pointer; letter-spacing: 0.5px;}
@@ -284,7 +490,7 @@
         input[type="number"]::-webkit-inner-spin-button, input[type="number"]::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
     </style>
 </head>
-<body oncontextmenu="return false;" ondragstart="return false;" ondrop="return false;">
+<body>
 
     <div id="login-screen">
         <h1 style="color:var(--text-main); letter-spacing: 6px; font-size: 2.5rem; margin-bottom: 10px;">SALLE</h1>
@@ -683,12 +889,14 @@
     </div>
 
     <script>
+        // 🌐 1. IDENTIFICATION DU RESTAURANT
         const appUrlParams = new URLSearchParams(window.location.search);
         let appTenantID = appUrlParams.get('tenantID') || localStorage.getItem('ichef_tenant_id') || 'MASTER_STATE';
 
         const APP_SERVER_URL = (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1" || window.location.protocol === "file:") 
         ? "http://localhost:10000" : "https://tableau-system.onrender.com";
         
+        // 💾 3. VARIABLES D'ÉTAT DE LA CAISSE
         let activeOrders = {}; 
         let currentTableId = null; 
         let currentTicket = []; 
@@ -709,13 +917,12 @@
         let staffAccessData = []; 
         let localSasConfig = { active: false, maxTables: 5, delay: 60 }; 
         let unifiedMenu = {};
-        
-        let globalTimesheets = {};
 
+        // SYSTÈME DE FIDÉLITÉ
         let isLoyaltyActive = false;
         let loyaltyPercent = 5;
-        let globalLoyaltyData = {};
-        let currentLoyaltyPhone = null;
+        let globalLoyaltyData = {}; // Base de données complète des clients
+        let currentLoyaltyPhone = null; // Client actuellement lié à la table
 
         function safeArray(key, fallback) {
             try { let v = localStorage.getItem(key); if (v && v !== 'undefined' && v !== 'null') { let p = JSON.parse(v); if (Array.isArray(p)) return p.filter(i => i !== null && i !== undefined); } } catch(e) {} return fallback;
@@ -729,6 +936,7 @@
         let inactivityTimer; const INACTIVITY_LIMIT = 120000; 
         let currentUser = null, currentPin = "";
 
+        // ⚙️ 4. MOTEUR DE SYNCHRONISATION
         const API = {
             getState: async () => {
                 let state = { activeOrders: {} };
@@ -772,7 +980,7 @@
             }
         };
 
-        // --- AUTHENTIFICATION BLINDÉE (VERIFIE LE PLANNING) ---
+        // --- AUTHENTIFICATION ---
         function resetInactivityTimer() { clearTimeout(inactivityTimer); if(currentUser) inactivityTimer = setTimeout(logout, INACTIVITY_LIMIT); }
         ['touchstart', 'click', 'mousemove', 'keypress'].forEach(e => document.addEventListener(e, resetInactivityTimer, {passive: true}));
         
@@ -780,40 +988,35 @@
         function clearPin() { currentPin = ""; document.getElementById('pin-display').innerText = ""; resetInactivityTimer(); }
         
         async function submitPin() {
-            let masterPin = localStorage.getItem('ichef_master_pin') || "999999";
+            let masterPin = localStorage.getItem('ichef_master_pin');
             if(currentPin === masterPin || currentPin === "9999" || currentPin === "999999" || currentPin === "7777") {
                 currentUser = { name: "Directeur", role: "Manager" };
                 unlockPadWithUser(currentUser); 
                 return;
             }
 
+            try {
+                const response = await fetch(`${APP_SERVER_URL}/api/verify-pin`, {
+                    method: 'POST', headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ tenantID: appTenantID, pin: currentPin })
+                });
+                const data = await response.json();
+
+                if (data.success) {
+                    localStorage.setItem('ichef_master_pin', currentPin);
+                    localStorage.setItem('ichef_tenant_id', appTenantID);
+                    
+                    currentUser = { name: "Directeur", role: "Manager" };
+                    unlockPadWithUser(currentUser);
+                    return;
+                }
+            } catch(e) { console.warn("Serveur injoignable, vérification locale uniquement."); }
+
             if (typeof staffAccessData !== 'undefined') {
                 let staffUser = staffAccessData.find(s => s.pin === currentPin);
                 if (staffUser) {
-                    if (staffUser.active === false) { 
-                        alert("❌ Accès suspendu."); 
-                        clearPin(); 
-                        return; 
-                    }
-                    
-                    let dailyPoste = staffUser.dept;
-                    const today = new Date();
-                    const monthStr = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}`;
-                    const day = today.getDate();
-                    
-                    if (globalTimesheets && globalTimesheets[monthStr] && globalTimesheets[monthStr][staffUser.id] && globalTimesheets[monthStr][staffUser.id][day]) {
-                        if (globalTimesheets[monthStr][staffUser.id][day].poste) {
-                            dailyPoste = globalTimesheets[monthStr][staffUser.id][day].poste;
-                        }
-                    }
-
-                    if (dailyPoste !== 'salle' && dailyPoste !== 'admin') {
-                        alert(`❌ ACCÈS REFUSÉ : La Caisse est interdite pour le poste [${dailyPoste.toUpperCase()}].`);
-                        clearPin();
-                        return;
-                    }
-
-                    let userRole = (dailyPoste === 'admin') ? 'Manager' : 'Serveur';
+                    if (staffUser.active === false) { alert("❌ Accès suspendu."); clearPin(); return; }
+                    let userRole = (staffUser.dept === 'admin' || staffUser.dept === 'Direction') ? 'Manager' : 'Serveur';
                     currentUser = { name: staffUser.name, role: userRole };
                     unlockPadWithUser(currentUser);
                     return;
@@ -868,18 +1071,16 @@
                         }
                     }
 
+                    // Récupération Base Fidélité
                     if(nO['LOYALTY_MASTER'] && nO['LOYALTY_MASTER'].data) {
                         globalLoyaltyData = nO['LOYALTY_MASTER'].data;
-                    }
-                    
-                    if(nO['TIMESHEETS_MASTER'] && nO['TIMESHEETS_MASTER'].data) {
-                        globalTimesheets = nO['TIMESHEETS_MASTER'].data;
                     }
 
                     for (let key in nO) { 
                         if (key.startsWith('order_') || key.startsWith('W') || key.startsWith('T') || key.startsWith('WEB_')) { 
                             if (nO[key] && nO[key].data !== undefined && !Array.isArray(nO[key].data)) nO[key] = nO[key].data; 
                             
+                            // 🛡️ SYSTÈME AUTO-RÉPARATEUR
                             if (nO[key]) {
                                 if (!Array.isArray(nO[key].items)) nO[key].items = [];
                                 nO[key].items.forEach(i => {
@@ -1257,6 +1458,12 @@
             function updateDim(cX, cY) { let nW = Math.max(40, iW+(cX-iX)); let nH = Math.max(40, iH+(cY-iY)); elmnt.style.width=nW+"px"; elmnt.style.height=nH+"px"; tableObj.w=nW; tableObj.h=nH; }
             function close() { document.onmouseup=null; document.onmousemove=null; document.ontouchend=null; document.ontouchmove=null; setTimeout(()=>{isDraggingTable=false; renderFloor(); }, 50); } 
         }
+
+        const isItemInCategory = (itemName, catArray) => {
+            if(!catArray) return false;
+            let pName = itemName.split(' (')[0].replace('🌟 ', '').trim().toLowerCase();
+            return catArray.some(x => x.name.replace('🌟 ', '').trim().toLowerCase() === pName);
+        };
 
         function renderFloor() {
             try {
@@ -1641,7 +1848,7 @@
             let plat = parts[1] ? "🔥 " + parts[1].trim() : null;
             let dessert = parts[2] ? "🍰 " + parts[2].trim() : null;
             if (entree) executeAddToCart(entree, 0, dest, 1, n, tvaRate); 
-            if (plat) executeAddToCart(plat, p, dest, 2, n, tvaRate);      
+            if (plat) executeAddToCart(plat, p, dest, 2, n, tvaRate);     
             if (dessert) executeAddToCart(dessert, 0, dest, 3, n, tvaRate); 
             for(let i=3; i<parts.length; i++) { if(parts[i].trim() !== '') executeAddToCart("🍰 " + parts[i].trim(), 0, dest, 3, n, tvaRate); }
         }
@@ -2035,42 +2242,20 @@
                 renderFloor();
             }, 500);
         }
+    </script>
 
-        // --- AUTRES FONCTIONS ---
-        function openQuickOrder() { addExtraTable(); }
-        function addExtraTable() {
-            let extras = tables.filter(t => t && t.isExtra);
-            let nextNum = extras.length + 1;
-            let label = "EXT-" + nextNum;
-            tables.push({ label: label, l: 20 + (extras.length * 90), t: 20, w: 80, h: 80, shape: "rect", isExtra: true, pax: 1, room: currentRoom });
-            pushArchitecture(); renderFloor(); openOrder(label);
-        }
-        function openHistoryDrawer() {
-            document.getElementById('history-drawer').classList.add('open');
-            API.getState().then(s => {
-                let hData = s.activeOrders['FINANCIAL_HISTORY'] ? s.activeOrders['FINANCIAL_HISTORY'].data : [];
-                let container = document.getElementById('history-content');
-                if(hData.length === 0) { container.innerHTML = '<div style="color:var(--text-muted); text-align:center;">Aucun historique</div>'; return; }
-                
-                hData.sort((a,b) => new Date(b.date) - new Date(a.date));
-                let html = hData.map(t => {
-                    let d = new Date(t.date);
-                    return `<div style="background:var(--panel); border:1px solid var(--border-strong); padding:15px; border-radius:4px;">
-                        <div style="display:flex; justify-content:space-between; border-bottom:1px solid var(--border); padding-bottom:10px; margin-bottom:10px;">
-                            <span style="color:var(--gold); font-weight:bold;">${t.source}</span>
-                            <span style="color:var(--text-muted); font-size:0.8rem;">${d.toLocaleDateString()} ${d.toLocaleTimeString()}</span>
-                        </div>
-                        <div style="display:flex; justify-content:space-between; font-weight:bold;">
-                            <span>TOTAL</span>
-                            <span style="color:var(--gold);">${t.totalTTC.toFixed(2)}€</span>
-                        </div>
-                        <div style="font-size:0.7rem; color:var(--text-muted); text-align:right; margin-top:5px;">${t.method}</div>
-                    </div>`;
-                }).join('');
-                container.innerHTML = html;
+    <script>
+        if ('serviceWorker' in navigator) {
+            window.addEventListener('load', () => {
+                navigator.serviceWorker.register('./service-worker.js')
+                .then(registration => {
+                    console.log('✅ Moteur iCHEF PWA activé avec succès !', registration.scope);
+                })
+                .catch(err => {
+                    console.error('❌ Erreur de sécurité PWA :', err);
+                });
             });
         }
-        function closeDrawer(id) { document.getElementById(id).classList.remove('open'); }
     </script>
 </body>
 </html>
