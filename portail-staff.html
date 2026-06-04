@@ -3,8 +3,16 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+    
+    <link rel="manifest" href="manifest.json">
+    <link rel="apple-touch-icon" href="icon-192.png">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="theme-color" content="#050505">
+    
     <title>Empire OS - Portail Équipe</title>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600&family=Playfair+Display:wght@600;700&display=swap" rel="stylesheet">
+    
     <style>
         /* 💎 DESIGN SOMBRE & ÉLÉGANT (EMPIRE OS) 💎 */
         :root { 
@@ -30,7 +38,16 @@
             justify-content: center; 
             overflow: hidden; 
             background-image: radial-gradient(circle at 50% 0%, var(--panel) 0%, var(--bg) 100%);
+            -webkit-tap-highlight-color: transparent;
         }
+
+        .btn-kiosk { 
+            position: absolute; top: 20px; right: 20px; background: transparent; 
+            border: 1px solid rgba(255,255,255,0.1); color: var(--text-muted); 
+            padding: 10px 15px; border-radius: 4px; font-size: 0.75rem; 
+            font-weight: 600; text-transform: uppercase; cursor: pointer; transition: 0.3s; 
+        }
+        .btn-kiosk:hover { border-color: var(--gold); color: var(--gold); background: var(--gold-dim); }
 
         .login-card {
             background: rgba(10, 10, 10, 0.8);
@@ -41,6 +58,7 @@
             max-width: 400px;
             box-shadow: 0 25px 50px rgba(0,0,0,0.8);
             backdrop-filter: blur(20px);
+            -webkit-backdrop-filter: blur(20px);
             text-align: center;
             animation: fadeIn 0.5s ease-out;
         }
@@ -116,6 +134,10 @@
             transition: 0.3s;
             box-shadow: 0 10px 20px rgba(197, 160, 89, 0.2);
             margin-top: 10px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            height: 55px;
         }
 
         .btn-submit:active {
@@ -128,17 +150,17 @@
             margin-top: 15px;
             min-height: 20px;
             font-weight: 500;
+            transition: 0.3s;
         }
 
         .loader {
             display: none;
-            border: 3px solid rgba(255,255,255,0.1);
-            border-top: 3px solid var(--gold);
+            border: 3px solid rgba(0,0,0,0.1);
+            border-top: 3px solid #000;
             border-radius: 50%;
             width: 20px;
             height: 20px;
             animation: spin 1s linear infinite;
-            margin: 0 auto;
         }
 
         @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
@@ -147,13 +169,15 @@
 </head>
 <body>
 
+    <button id="btn-kiosk" class="btn-kiosk">⛶ PLEIN ÉCRAN</button>
+
     <div class="login-card">
         <h1 class="logo-title">iCHEF</h1>
         <div class="logo-subtitle">Portail Équipe</div>
 
         <div class="input-group">
             <label>Identifiant Restaurant</label>
-            <input type="text" id="tenant-id" class="input-field" placeholder="Ex: MONRESTO24" autocomplete="off" autocorrect="off" autocapitalize="off">
+            <input type="text" id="tenant-id" class="input-field" placeholder="Ex: MONRESTO24" autocomplete="off" autocorrect="off" autocapitalize="characters">
         </div>
 
         <div class="input-group">
@@ -173,7 +197,27 @@
         const SERVER_URL = (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1" || window.location.protocol === "file:") 
             ? "http://localhost:10000" : "https://tableau-system.onrender.com";
 
-        // Pré-remplir l'ID du restaurant s'il est déjà connu dans la mémoire de l'appareil
+        // GESTION DU MODE KIOSQUE
+        document.getElementById('btn-kiosk').addEventListener('click', () => {
+            const elem = document.documentElement;
+            const btn = document.getElementById('btn-kiosk');
+            if (!document.fullscreenElement) {
+                if (elem.requestFullscreen) elem.requestFullscreen();
+                else if (elem.webkitRequestFullscreen) elem.webkitRequestFullscreen(); 
+                else if (elem.msRequestFullscreen) elem.msRequestFullscreen(); 
+                btn.innerHTML = "✕ QUITTER";
+                btn.style.color = "var(--gold)";
+                btn.style.borderColor = "var(--gold)";
+            } else {
+                if (document.exitFullscreen) document.exitFullscreen();
+                else if (document.webkitExitFullscreen) document.webkitExitFullscreen();
+                btn.innerHTML = "⛶ PLEIN ÉCRAN";
+                btn.style.color = "var(--text-muted)";
+                btn.style.borderColor = "rgba(255,255,255,0.1)";
+            }
+        });
+
+        // PRÉ-REMPLISSAGE ET GESTION CLAVIER
         window.onload = () => {
             let savedTenant = localStorage.getItem('ichef_tenant_id');
             if (savedTenant) {
@@ -182,9 +226,12 @@
             }
         };
 
-        // Permettre de valider avec la touche "Entrée" du clavier
         document.getElementById('pin-code').addEventListener('keypress', function (e) {
             if (e.key === 'Enter') attemptLogin();
+        });
+
+        document.getElementById('tenant-id').addEventListener('input', function (e) {
+            this.value = this.value.toUpperCase();
         });
 
         async function attemptLogin() {
@@ -201,30 +248,27 @@
                 return;
             }
 
-            // Animation de chargement
+            // Animation bouton
             btnText.style.display = 'none';
             btnLoader.style.display = 'block';
+            document.getElementById('btn-login').style.pointerEvents = 'none';
 
             try {
-                // 1. On va chercher la base de données de l'établissement
-                let rState = await fetch(`${SERVER_URL}/get-current-state?tenantID=${tenantID}`);
+                // 1. PURGE PRÉVENTIVE DES ANCIENNES SESSIONS
+                localStorage.removeItem('EMPIRE_GLOBAL_SYNC');
+                localStorage.removeItem('ichef_master_pin');
                 
-                if (!rState.ok) {
-                    throw new Error("Restaurant introuvable.");
-                }
+                // 2. RECUPERATION BDD DU RESTAURANT
+                let rState = await fetch(`${SERVER_URL}/get-current-state?tenantID=${tenantID}`);
+                if (!rState.ok) throw new Error("Restaurant introuvable. Vérifiez l'identifiant.");
 
                 let stateData = await rState.json();
-                
-                // Si la base est vide (le restaurant n'existe pas vraiment)
-                if (!stateData || Object.keys(stateData).length === 0) {
-                    throw new Error("Identifiant Restaurant incorrect.");
-                }
+                if (!stateData || Object.keys(stateData).length === 0) throw new Error("Identifiant Restaurant incorrect.");
 
-                // 2. On récupère la Brigade et le Planning
                 let staffList = (stateData.activeOrders && stateData.activeOrders['STAFF_ACCESS']) ? stateData.activeOrders['STAFF_ACCESS'].data : [];
                 let timesheets = (stateData.activeOrders && stateData.activeOrders['TIMESHEETS_MASTER']) ? stateData.activeOrders['TIMESHEETS_MASTER'].data : {};
 
-                // Vérification si c'est le code MASTER du Patron
+                // 3. VERIFICATION DU CODE PATRON
                 let isMasterPin = false;
                 try {
                     const resVerify = await fetch(`${SERVER_URL}/api/verify-pin`, {
@@ -239,21 +283,16 @@
                 let targetPage = '';
 
                 if (isMasterPin) {
-                    // Si c'est le patron, on l'envoie sur le panneau d'administration total
-                    targetPage = 'administration.html';
+                    targetPage = 'administration.html'; // Accès total
                 } else {
-                    // 3. On cherche l'employé dans la liste
+                    // 4. VERIFICATION DE L'EMPLOYÉ DANS LA BRIGADE
                     let matchedStaff = staffList.find(s => s.pin === pin);
 
-                    if (!matchedStaff) {
-                        throw new Error("Code PIN invalide.");
-                    }
-                    if (matchedStaff.active === false) {
-                        throw new Error("Votre compte est actuellement suspendu.");
-                    }
+                    if (!matchedStaff) throw new Error("Code PIN invalide.");
+                    if (matchedStaff.active === false) throw new Error("Votre compte est actuellement suspendu.");
 
-                    // 4. On vérifie son rôle pour AUJOURD'HUI dans le planning
-                    let dailyPoste = matchedStaff.dept; // Son poste de base (Cuisine, Salle, etc.)
+                    // 5. LECTURE DU PLANNING POUR AUJOURD'HUI
+                    let dailyPoste = matchedStaff.dept; 
                     const today = new Date();
                     const monthStr = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}`;
                     const day = today.getDate();
@@ -264,27 +303,46 @@
                         }
                     }
 
-                    // 5. L'AIGUILLEUR : On le redirige vers le bon écran selon son poste du jour
+                    // 6. AIGUILLAGE INTELLIGENT
                     if (dailyPoste === 'admin') targetPage = 'administration.html';
                     else if (dailyPoste === 'salle') targetPage = 'pack-eco.html';
                     else if (dailyPoste === 'cuisine') targetPage = 'chef.html';
                     else if (dailyPoste === 'patisserie') targetPage = 'chef-patissier.html';
                     else if (dailyPoste === 'bar') targetPage = 'chef-bar.html';
-                    else targetPage = 'pack-eco.html'; // Sécurité par défaut
+                    else targetPage = 'pack-eco.html'; // Fallback sécurité
                 }
 
-                // 6. Succès ! On sauvegarde les accès dans son téléphone et on le redirige
+                // 7. INJECTION DES NOUVEAUX DROITS ET REDIRECTION DÉFINITIVE
                 localStorage.setItem('ichef_tenant_id', tenantID);
                 localStorage.setItem('ichef_master_pin', pin);
 
-                window.location.href = `${targetPage}?tenantID=${tenantID}`;
+                // Simulation d'un chargement pour un effet premium
+                setTimeout(() => {
+                    window.location.href = `${targetPage}?tenantID=${tenantID}`;
+                }, 400);
 
             } catch (error) {
-                // Remettre le bouton à la normale en cas d'erreur
                 btnText.style.display = 'block';
                 btnLoader.style.display = 'none';
-                errorBox.innerText = error.message || "Erreur de connexion. Réessayez.";
+                document.getElementById('btn-login').style.pointerEvents = 'auto';
+                errorBox.innerText = error.message || "Erreur de connexion réseau.";
+                document.getElementById('pin-code').value = '';
+                document.getElementById('pin-code').focus();
             }
+        }
+    </script>
+
+    <script>
+        if ('serviceWorker' in navigator) {
+            window.addEventListener('load', () => {
+                navigator.serviceWorker.register('./service-worker.js')
+                .then(registration => {
+                    console.log('✅ Portail PWA activé et synchronisé', registration.scope);
+                })
+                .catch(err => {
+                    console.error('❌ Erreur Service Worker :', err);
+                });
+            });
         }
     </script>
 </body>
