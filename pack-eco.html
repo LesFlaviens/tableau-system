@@ -22,89 +22,11 @@
             return deviceId;
         }
 
-        (async function enforceSecurity() {
+        (function initApp() {
             const urlParams = new URLSearchParams(window.location.search);
             let urlTenantID = urlParams.get('tenantID');
-            let storedTenantID = localStorage.getItem('ichef_tenant_id');
-
-            if (urlTenantID && urlTenantID !== storedTenantID) {
-                localStorage.removeItem('EMPIRE_GLOBAL_SYNC');
-                localStorage.removeItem('ichef_master_pin');
-                if (urlTenantID) localStorage.setItem('ichef_tenant_id', urlTenantID);
-                storedTenantID = urlTenantID;
-            }
-
-            let tenantID = urlTenantID || storedTenantID;
-            
-            if(!tenantID) {
-                window.location.href = 'connexionpartenaire.html';
-                return;
-            }
-
-            const SERVER_URL = (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1" || window.location.protocol === "file:") 
-                ? "http://localhost:10000" : "https://tableau-system.onrender.com";
-
-            const accessMatrix = {
-                'PACK_A': ['pack-eco.html'], 'CHEF': ['pack-eco.html'], 'CHEF_CUISINE': ['pack-eco.html'], 'PATISSIER': ['pack-eco.html'], 'CHEF_PATISSERIE': ['pack-eco.html'], 'BAR': ['pack-eco.html'], 'CHEF_BAR': ['pack-eco.html'],
-                'ICHEF_OS': ['admin.html', 'pack-eco.html', 'minipass.html', 'menu-qr.html', 'administration.html'],
-                'ECO': ['admin.html', 'pack-eco.html', 'minipass.html', 'menu-qr.html', 'administration.html'],
-                'BUSINESS': ['admin.html', 'pack-eco.html', 'minipass.html', 'menu-qr.html', 'administration.html'],
-                'RENTABILITE': ['admin.html', 'pack-eco.html', 'minipass.html', 'menu-qr.html', 'administration.html'],
-                'EMPIRE': ['admin.html', 'pack-eco.html', 'menu-qr.html', 'chef.html', 'menu-pure.html', 'chef-bar.html', 'menu-bar.html', 'rh.html', 'haccp.html', 'reservation.html', 'minipass.html', 'chef-patissier.html', 'administration.html', 'production.html', 'chef-production.html'],
-                'BRIGADE': ['admin.html', 'pack-eco.html', 'menu-qr.html', 'chef.html', 'menu-pure.html', 'chef-bar.html', 'menu-bar.html', 'rh.html', 'haccp.html', 'reservation.html', 'minipass.html', 'chef-patissier.html', 'administration.html', 'production.html', 'chef-production.html'],
-                'BRIGADES': ['admin.html', 'pack-eco.html', 'menu-qr.html', 'chef.html', 'menu-pure.html', 'chef-bar.html', 'menu-bar.html', 'rh.html', 'haccp.html', 'reservation.html', 'minipass.html', 'chef-patissier.html', 'administration.html', 'production.html', 'chef-production.html'],
-                'PREMIUM': ['admin.html', 'pack-eco.html', 'menu-qr.html', 'chef.html', 'menu-pure.html', 'chef-bar.html', 'menu-bar.html', 'rh.html', 'haccp.html', 'reservation.html', 'minipass.html', 'chef-patissier.html', 'administration.html', 'production.html', 'chef-production.html']
-            };
-
-           try {
-                let savedPin = localStorage.getItem('ichef_master_pin');
-
-                // Si un PIN maître est en mémoire, on le valide auprès du serveur
-                if (savedPin) {
-                    const res = await fetch(`${SERVER_URL}/api/verify-pin`, {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ tenantID: tenantID, pin: savedPin, deviceId: getDeviceFingerprint() })
-                    });
-                    const data = await res.json();
-
-                    if(!data.success) {
-                        // Le PIN sauvegardé n'est plus valide (révoqué ou expiré)
-                        localStorage.removeItem('ichef_master_pin');
-                        alert(data.error || "ACCÈS REFUSÉ : Session invalide ou expirée.");
-                        window.location.href = 'connexionpartenaire.html';
-                        return;
-                    }
-
-                    // Vérification de l'abonnement et du plan d'accès
-                    const currentPlan = data.plan ? data.plan.toUpperCase() : 'CHEF';
-                    let currentPage = window.location.pathname.split('/').pop().toLowerCase();
-                    if(currentPage === '') currentPage = 'index.html';
-
-                    const allowedPages = accessMatrix[currentPlan] || [];
-                    if (!allowedPages.includes(currentPage) && currentPage !== 'caissetactile.html') {
-                        alert(`ACCÈS REFUSÉ : Votre forfait n'inclut pas ce module.`);
-                        window.location.href = `administration.html?tenantID=${tenantID}`;
-                        return;
-                    }
-                } else {
-                    // Aucun PIN en mémoire : on laisse l'écran de verrouillage UI s'afficher
-                    // sans déclencher d'alerte d'erreur backend inutile.
-                    console.log("Empire OS : En attente d'authentification opérateur.");
-                }
-            } catch (e) { 
-                console.error("Erreur critique de sécurité réseau", e); 
-            }
-
-                const allowedPages = accessMatrix[currentPlan] || [];
-                if (!allowedPages.includes(currentPage) && currentPage !== 'caissetactile.html') {
-                    alert(`ACCÈS REFUSÉ : Votre forfait n'inclut pas le module Caisse.`);
-                    window.location.href = `administration.html?tenantID=${tenantID}`;
-                    return;
-                }
-                // C'est tout ! On laisse la page s'afficher pour que le serveur puisse taper son code.
-            } catch (e) { 
-                console.error("Erreur de sécurité réseau", e); 
+            if (urlTenantID) {
+                localStorage.setItem('ichef_tenant_id', urlTenantID);
             }
         })();
     </script>
@@ -747,6 +669,9 @@
 
         let inactivityTimer; const INACTIVITY_LIMIT = 120000; 
         let currentUser = null, currentPin = "";
+        
+        let syncInterval = null;
+        let clockInterval = null;
 
         const API = {
             getState: async () => {
@@ -806,38 +731,45 @@
                 return;
             }
 
-            if (typeof staffAccessData !== 'undefined') {
-                let staffUser = staffAccessData.find(s => s.pin === currentPin);
-                if (staffUser) {
-                    if (staffUser.active === false) { 
-                        alert("❌ Accès suspendu."); 
-                        clearPin(); 
-                        return; 
-                    }
+            try {
+                let rState = await fetch(`${APP_SERVER_URL}/get-current-state?tenantID=${appTenantID}`);
+                if (rState.ok) {
+                    let stateData = await rState.json();
+                    let staffList = (stateData.activeOrders && stateData.activeOrders['STAFF_ACCESS']) ? stateData.activeOrders['STAFF_ACCESS'].data : [];
+                    let timesheets = (stateData.activeOrders && stateData.activeOrders['TIMESHEETS_MASTER']) ? stateData.activeOrders['TIMESHEETS_MASTER'].data : {};
                     
-                    let dailyPoste = staffUser.dept;
-                    const today = new Date();
-                    const monthStr = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}`;
-                    const day = today.getDate();
-                    
-                    if (globalTimesheets && globalTimesheets[monthStr] && globalTimesheets[monthStr][staffUser.id] && globalTimesheets[monthStr][staffUser.id][day]) {
-                        if (globalTimesheets[monthStr][staffUser.id][day].poste) {
-                            dailyPoste = globalTimesheets[monthStr][staffUser.id][day].poste;
+                    let staffUser = staffList.find(s => s.pin === currentPin);
+                    if (staffUser) {
+                        if (staffUser.active === false) { 
+                            alert("❌ Accès suspendu."); 
+                            clearPin(); 
+                            return; 
                         }
-                    }
+                        
+                        let dailyPoste = staffUser.dept;
+                        const today = new Date();
+                        const monthStr = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}`;
+                        const day = today.getDate();
+                        
+                        if (timesheets && timesheets[monthStr] && timesheets[monthStr][staffUser.id] && timesheets[monthStr][staffUser.id][day]) {
+                            if (timesheets[monthStr][staffUser.id][day].poste) {
+                                dailyPoste = timesheets[monthStr][staffUser.id][day].poste;
+                            }
+                        }
 
-                    if (dailyPoste !== 'salle' && dailyPoste !== 'admin') {
-                        alert(`❌ ACCÈS REFUSÉ : La Caisse est interdite pour le poste [${dailyPoste.toUpperCase()}].`);
-                        clearPin();
+                        if (dailyPoste !== 'salle' && dailyPoste !== 'admin') {
+                            alert(`❌ ACCÈS REFUSÉ : La Caisse est interdite pour le poste [${dailyPoste.toUpperCase()}].`);
+                            clearPin();
+                            return;
+                        }
+
+                        let userRole = (dailyPoste === 'admin') ? 'Manager' : 'Serveur';
+                        currentUser = { name: staffUser.name, role: userRole };
+                        unlockPadWithUser(currentUser);
                         return;
                     }
-
-                    let userRole = (dailyPoste === 'admin') ? 'Manager' : 'Serveur';
-                    currentUser = { name: staffUser.name, role: userRole };
-                    unlockPadWithUser(currentUser);
-                    return;
                 }
-            }
+            } catch(e) { console.error("Erreur vérification PIN", e); }
 
             alert("❌ Code PIN Incorrect."); 
             clearPin(); 
@@ -856,13 +788,18 @@
             document.getElementById('login-screen').style.display = 'flex'; clearPin();
             closeOrder(); closeArchiMode(); closeAdminCatalog(); closePlanningModal(); closeDrawer('history-drawer');
             clearTimeout(inactivityTimer); 
+            if(syncInterval) clearInterval(syncInterval);
+            if(clockInterval) clearInterval(clockInterval);
         }
 
         // --- SYNCHRO H24 ---
         function connectEmpireH24() { 
+            if(clockInterval) clearInterval(clockInterval);
+            if(syncInterval) clearInterval(syncInterval);
+            
             const updateClock = () => { const c = document.getElementById('empire-clock'); if(c) c.innerText = new Date().toLocaleTimeString('fr-FR', {hour: '2-digit', minute: '2-digit'}); };
-            updateClock(); setInterval(updateClock, 1000); 
-            if (typeof syncData === 'function') { syncData(); setInterval(syncData, 3000); }
+            updateClock(); clockInterval = setInterval(updateClock, 1000); 
+            if (typeof syncData === 'function') { syncData(); syncInterval = setInterval(syncData, 3000); }
         }
 
         async function syncData() {
@@ -957,6 +894,15 @@
                     }
                     let stockTracker = document.getElementById('stock-tracker');
                     if (stockTracker) stockTracker.innerText = currentStockValue.toFixed(2) + ' €';
+
+                    // 🔄 MISE À JOUR LIVE DU TICKET OUVERT 🔄
+                    if (currentTableId && nO[currentTableId]) {
+                        let serverOrder = nO[currentTableId];
+                        if (serverOrder && serverOrder.items && serverOrder.items.length !== currentTicket.length) {
+                            currentTicket = JSON.parse(JSON.stringify(serverOrder.items));
+                            renderTicket();
+                        }
+                    }
 
                     activeOrders = nO;
                     checkGlobalAlerts();
@@ -1293,6 +1239,8 @@
                 }
                 tablesEnAttente.sort((a, b) => a.time - b.time);
                 let ordrePriorite = {}; tablesEnAttente.forEach((t, index) => { ordrePriorite[t.label] = index + 1; });
+                
+                // EFFACER LE TAG MAPPED DES COMMANDES WEB POUR LA RECONSTRUCTION
                 for(let k in activeOrders) { if(activeOrders[k]) delete activeOrders[k]._isMapped; }
 
                 if (hasTables) {
@@ -1378,8 +1326,19 @@
                     });
                 }
 
-                // 👻 COMMANDES WEB FANTÔMES
-                let webOrders = Object.keys(activeOrders).filter(k => activeOrders[k] && activeOrders[k].isWeb && !activeOrders[k]._isMapped);
+                // 👻 COMMANDES WEB FANTÔMES (ASPIRATEUR DE COMMANDES)
+                // Capture toute commande non dessinée sur le plan (QR ou extra)
+                let webOrders = Object.keys(activeOrders).filter(k => {
+                    let orderData = activeOrders[k];
+                    if (!orderData || orderData._isMapped) return false;
+                    let isOrder = k.startsWith('order_') || k.startsWith('W') || k.startsWith('T') || k.startsWith('WEB_');
+                    if (!isOrder) return false;
+                    if (orderData.items && orderData.items.length > 0) return true;
+                    if (orderData.status === 'EN ATTENTE PAIEMENT') return true;
+                    if (orderData.isWeb) return true;
+                    return false;
+                });
+
                 let webStartX = 20; let webStartY = 20;
                 webOrders.forEach((orderKey, index) => {
                     let orderData = activeOrders[orderKey];
