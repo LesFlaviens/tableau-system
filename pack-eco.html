@@ -2216,6 +2216,79 @@
             });
         }
         function closeDrawer(id) { document.getElementById(id).classList.remove('open'); }
+        function openOrder(tableLabel) {
+            currentTableId = tableLabel;
+            document.getElementById('ticket-table-name').innerText = "TABLE " + tableLabel;
+            currentLoyaltyPhone = null; 
+            
+            // 🔲 GESTION DU ZONING SPATIAL
+            let tableObj = tables.find(t => t && t.label === tableLabel && t.room === currentRoom);
+            let zoneBandeau = document.getElementById('drawer-zone-alert');
+            
+            if (zoneBandeau) {
+                zoneBandeau.style.display = 'none'; // Caché par défaut
+                
+                if (tableObj && typeof zones !== 'undefined') {
+                    // On cherche si la table se trouve à l'intérieur d'une zone dessinée
+                    let tableCenterY = (tableObj.t || 0) + ((tableObj.h || 120) / 2);
+                    let tableCenterX = (tableObj.l || 0) + ((tableObj.w || 80) / 2);
+                    
+                    let activeZone = zones.find(z => 
+                        z.room === currentRoom &&
+                        tableCenterX >= (z.l || 0) && tableCenterX <= ((z.l || 0) + (z.w || 400)) &&
+                        tableCenterY >= (z.t || 0) && tableCenterY <= ((z.t || 0) + (z.h || 300))
+                    );
+
+                    if (activeZone) {
+                        // On stocke le mode de paiement de la zone dans la table pour bloquer la caisse si besoin
+                        currentTableId_PayMode = activeZone.payMode; 
+                        
+                        if (activeZone.payMode === 'qr_nfc') {
+                            zoneBandeau.style.display = 'block';
+                            zoneBandeau.style.borderColor = activeZone.color || 'var(--alert)';
+                            zoneBandeau.style.color = activeZone.color || 'var(--alert)';
+                            zoneBandeau.style.background = (activeZone.color ? activeZone.color + '15' : 'rgba(239, 68, 68, 0.1)');
+                            zoneBandeau.innerHTML = `📱 ZONE AUTONOME : ENCAISSEMENT SERVEUR BLOQUÉ`;
+                        } 
+                        else if (activeZone.payMode === 'bar') {
+                            zoneBandeau.style.display = 'block';
+                            zoneBandeau.style.borderColor = activeZone.color || '#3498db';
+                            zoneBandeau.style.color = activeZone.color || '#3498db';
+                            zoneBandeau.style.background = (activeZone.color ? activeZone.color + '15' : 'rgba(52, 152, 219, 0.1)');
+                            zoneBandeau.innerHTML = `🍹 ZONE BAR : LES CLIENTS PAIENT AU COMPTOIR`;
+                        }
+                    } else {
+                        currentTableId_PayMode = 'standard';
+                    }
+                } else {
+                    currentTableId_PayMode = 'standard';
+                }
+            }
+
+            if(activeOrders[tableLabel] && activeOrders[tableLabel].status === 'reserved') {
+                currentTicket = [];
+                document.getElementById('order-obs').value = activeOrders[tableLabel].observations || '';
+            } else {
+                currentTicket = (activeOrders[tableLabel] && activeOrders[tableLabel].items) ? JSON.parse(JSON.stringify(activeOrders[tableLabel].items)) : [];
+                currentTicket.forEach(i => { if (i.isSent === undefined) i.isSent = true; });
+                document.getElementById('order-obs').value = (activeOrders[tableLabel] && activeOrders[tableLabel].observations) ? activeOrders[tableLabel].observations : '';
+            }
+            
+            if (tableObj && tableObj.isExtra && currentTicket.length === 0 && document.getElementById('order-obs').value === '') {
+                document.getElementById('order-obs').value = `🍽️ ${tableObj.pax || 1} Couvert(s)`;
+            }
+            
+            let needsUpdate = false;
+            currentTicket.forEach(i => { if (i.done && !i.served) { i.served = true; needsUpdate = true; } });
+            if (needsUpdate && activeOrders[currentTableId]) {
+                let updatedOrder = activeOrders[currentTableId];
+                updatedOrder.items = currentTicket;
+                API.update(currentTableId, updatedOrder, true);
+            }
+
+            renderSeatBar(); renderMenu('MenuJour'); renderTicket(); checkTableAlertState(currentTableId); 
+            document.getElementById('order-drawer').classList.add('open');
+        }
     </script>
 </body>
 </html>
