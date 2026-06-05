@@ -8,7 +8,7 @@ const express = require('express');
 const cors = require('cors');
 const path = require('path');
 const mongoose = require('mongoose');
-const { GoogleGenerativeAI } = require('@google/generative-ai'); // MOTEUR IA
+const { GoogleGenerativeAI } = require('@google/generative-ai');
 
 // ==========================================
 // CONFIGURATION STRIPE iCHEF (Abonnements SaaS)
@@ -40,7 +40,7 @@ app.get('/', (req, res) => {
 // Ta route d'administration officielle (Tour de Contrôle)
 app.get('/panel-ichef', (req, res) => {
     if (req.query.pass === ADMIN_PASS) {
-        res.sendFile(path.join(__dirname, 'empire.html')); // ou superadmin.html / master.html
+        res.sendFile(path.join(__dirname, 'empire.html'));
     } else {
         res.status(403).send('Accès Refusé. Sécurité Empire iCHEF.');
     }
@@ -375,7 +375,6 @@ app.post('/api/admin-action', async (req, res) => {
             await Tenant.findOneAndUpdate({ tenantID: safeID }, { plan: upperPlan, maxScreens: limit, maxStaff: staffLimit }, { new: true });
         }
         
-        // 🔥 CORRECTION DE LA FONCTION POUR CHANGER LE NOMBRE D'ÉCRANS ! 🔥
         else if (action === 'set_max_screens') {
             if (!maxScreens || isNaN(maxScreens) || maxScreens < 1) {
                 return res.status(400).json({ success: false, error: "Nombre invalide." });
