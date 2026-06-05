@@ -325,6 +325,17 @@ app.post('/update-order', async (req, res) => {
         if (tenantID !== 'MASTER_STATE') tenantID = cleanString(tenantID);
 
         const { tableId, order } = req.body;
+        
+        // SÉCURISATION DU PAYLOAD SETTINGS (Structure de base garantie pour éviter les crashs front-end)
+        if (tableId === 'SETTINGS_MASTER' && order && order.data) {
+             let d = order.data;
+             if (!d.schedule) d.schedule = { auto: false, days: [1,2,3,4,5,6], matin: {}, aprem: {}, soir: {}, nuit: {} };
+             if (!d.loyalty) d.loyalty = { active: false, percent: 5 };
+             if (!d.payment) d.payment = { online: false, stripeLink: "" };
+             if (!d.design) d.design = {};
+             if (!d.sasConfig) d.sasConfig = { active: false, maxTables: 5, delay: 60 };
+        }
+
         let updateQuery = (order === null) ? { $unset: { [`activeOrders.${tableId}`]: 1 } } : { $set: { [`activeOrders.${tableId}`]: order } };
         await AppState.findOneAndUpdate({ tenantID }, updateQuery, { upsert: true, new: true });
         res.json({ success: true });
@@ -375,7 +386,6 @@ app.post('/api/admin-action', async (req, res) => {
             await Tenant.findOneAndUpdate({ tenantID: safeID }, { plan: upperPlan, maxScreens: limit, maxStaff: staffLimit }, { new: true });
         }
         
-        // 🔥 CORRECTION DE LA FONCTION POUR CHANGER LE NOMBRE D'ÉCRANS ! 🔥
         else if (action === 'set_max_screens') {
             if (!maxScreens || isNaN(maxScreens) || maxScreens < 1) {
                 return res.status(400).json({ success: false, error: "Nombre invalide." });
