@@ -1340,7 +1340,7 @@
         async function saveAllToCloud() {
             try {
                 let syncBtn = document.getElementById('sync-status');
-                if(syncBtn) syncBtn.innerHTML = '⏳ Save...';
+                if(syncBtn) syncBtn.innerHTML = '⏳ Enregistrement...';
                 
                 systemSettings.name = document.getElementById('resto-name').value.trim();
                 systemSettings.tva = parseFloat(document.getElementById('resto-tva').value) || 10;
@@ -1354,6 +1354,7 @@
                 systemSettings.schedule = { auto: document.getElementById('setting-auto-schedule').checked, days: selectedDays };
 
                 let architectureConsolidee = { ...menuCuisine, ...menuBar };
+                
                 const reqs = [
                     { tableId: 'MENU_MASTER', order: { data: menuCuisine } }, 
                     { tableId: 'MENU_MASTER_BAR', order: { data: menuBar } },
@@ -1362,11 +1363,21 @@
                     { tableId: 'MENU_ARCHITECTURE', order: { data: architectureConsolidee } }
                 ];
                 
+                // Exécution avec capture d'échec individuelle
                 for (let req of reqs) {
-                    await fetch(`${SERVER_URL}/update-order?tenantID=${tenantID}`, { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(req) });
+                    let response = await fetch(`${SERVER_URL}/update-order?tenantID=${tenantID}`, { 
+                        method: 'POST', 
+                        headers: {'Content-Type': 'application/json'}, 
+                        body: JSON.stringify(req) 
+                    });
+                    if(!response.ok) throw new Error(`Erreur lors de la synchronisation de la table : ${req.tableId}`);
                 }
                 markSaved();
-            } catch(e) { alert("❌ Erreur sauvegarde : " + e.message); }
+            } catch(e) { 
+                alert("❌ Échec de la sauvegarde Cloud : " + e.message); 
+                let syncBtn = document.getElementById('sync-status');
+                if(syncBtn) syncBtn.innerHTML = '⚠️ Erreur';
+            }
         }
 
         async function fetchStateFromCloud() {
@@ -1390,8 +1401,13 @@
                 staffAccess = (aO['STAFF_ACCESS'] && aO['STAFF_ACCESS'].data) ? aO['STAFF_ACCESS'].data : [];
                 archiveCuisine = (aO['FINANCIAL_HISTORY'] && aO['FINANCIAL_HISTORY'].data) ? aO['FINANCIAL_HISTORY'].data : [];
 
+                // RECONSTRUCTION AUTOMATIQUE DES CATÉGORIES SI ABSENTES
+                categoriesCuisine = Object.keys(menuCuisine).map(key => ({ id: key, label: key.toUpperCase().replace(/-/g, ' ') }));
+                categoriesBar = Object.keys(menuBar).map(key => ({ id: key, label: key.toUpperCase().replace(/-/g, ' ') }));
+
                 injectSettingsToUI();
                 updateCategoryDropdowns();
+                renderCategoryModalLists();
                 renderMenuList();
                 renderStaffList();
                 updateDashboardStats();
