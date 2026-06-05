@@ -640,5 +640,107 @@
             });
         }
     </script>
+    <script>
+        let knownOrderIds = new Set();
+        let isFirstScan = true;
+        let audioCtx = null;
+
+        // 1. Déverrouiller le son (Sécurité des navigateurs : nécessite un clic)
+        function initAudio() {
+            if (!audioCtx) {
+                audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+            }
+        }
+        document.addEventListener('click', initAudio, { once: true });
+        document.addEventListener('touchstart', initAudio, { once: true });
+
+        // 2. Générateur du son "Ding" (Cloche de comptoir)
+        function playNewOrderSound() {
+            if (!audioCtx) return; // Ne sonne pas si l'écran n'a pas encore été touché
+            try {
+                const osc = audioCtx.createOscillator();
+                const gain = audioCtx.createGain();
+                
+                osc.connect(gain);
+                gain.connect(audioCtx.destination);
+                
+                // Fréquence d'une cloche claire (Si 5 vers Si 6)
+                osc.type = 'sine';
+                osc.frequency.setValueAtTime(987.77, audioCtx.currentTime); 
+                osc.frequency.exponentialRampToValueAtTime(1975.53, audioCtx.currentTime + 0.1); 
+                
+                // Volume qui s'estompe proprement
+                gain.gain.setValueAtTime(1, audioCtx.currentTime);
+                gain.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.5);
+                
+                osc.start(audioCtx.currentTime);
+                osc.stop(audioCtx.currentTime + 0.5);
+            } catch(e) { console.log("Audio non supporté sur cet appareil."); }
+        }
+
+        // 3. Alerte visuelle (Flash de l'écran)
+        function triggerVisualAlert() {
+            const originalBg = document.body.style.backgroundColor;
+            let flashCount = 0;
+            // Fait clignoter le fond en rouge sombre
+            let interval = setInterval(() => {
+                document.body.style.backgroundColor = flashCount % 2 === 0 ? '#450a0a' : 'var(--bg, #000000)';
+                flashCount++;
+                if (flashCount > 5) {
+                    clearInterval(interval);
+                    document.body.style.backgroundColor = originalBg;
+                }
+            }, 300);
+        }
+
+        // 4. Scanner de nouvelles commandes (Tourne toutes les 3 secondes)
+        setInterval(async () => {
+            try {
+                // Utilise l'URL du serveur définie dans ton fichier
+                const urlParams = new URLSearchParams(window.location.search);
+                let tID = urlParams.get('tenantID') || localStorage.getItem('ichef_tenant_id');
+                const SRV = (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1") ? "http://localhost:10000" : "https://tableau-system.onrender.com";
+                
+                let res = await fetch(`${SRV}/get-current-state?tenantID=${tID}`);
+                if (res.ok) {
+                    let state = await res.json();
+                    if (state && state.activeOrders) {
+                        let foundNew = false;
+                        
+                        for (let tableId in state.activeOrders) {
+                            let order = state.activeOrders[tableId];
+                            
+                            // On vérifie s'il y a des plats dans la table
+                            if (order && (order.items || (order.data && order.data.items))) {
+                                let items = order.items || order.data.items || [];
+                                
+                                items.forEach(item => {
+                                    // Si le plat a été "Envoyé" (!done et isSent)
+                                    if (item.isSent && !item.done) {
+                                        // On crée une ID unique pour ce plat
+                                        let uniqueId = tableId + '_' + item.itemId;
+                                        
+                                        if (!knownOrderIds.has(uniqueId)) {
+                                            knownOrderIds.add(uniqueId);
+                                            // Si ce n'est pas le chargement initial de la page = Nouveau plat !
+                                            if (!isFirstScan) foundNew = true; 
+                                        }
+                                    }
+                                });
+                            }
+                        }
+
+                        // Si au moins un nouveau plat est détecté
+                        if (foundNew) {
+                            playNewOrderSound();
+                            triggerVisualAlert();
+                        }
+                        
+                        isFirstScan = false;
+                    }
+                }
+            } catch(e) {}
+        }, 3000);
+    </script>
 </body>
 </html>
