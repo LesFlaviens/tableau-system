@@ -173,12 +173,12 @@
 
         @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
 
+        .version-tag { position: absolute; bottom: 10px; right: 15px; color: rgba(255,255,255,0.2); font-size: 0.7rem; font-weight: bold; pointer-events: none; }
     </style>
 </head>
 <body>
 
     <button class="btn-back" onclick="retourAdmin()" title="Retour au hub principal">🔙 RETOUR ADMIN</button>
-
     <button id="btn-kiosk" class="btn-kiosk" title="Verrouiller l'écran">⛶ PLEIN ÉCRAN</button>
 
     <div class="login-card">
@@ -203,38 +203,51 @@
         <div id="error-msg"></div>
     </div>
 
+    <div class="version-tag">v3.0</div>
+
     <script>
+        // 🧹 PURGE AUTOMATIQUE DU CACHE AU DÉMARRAGE
+        if ('serviceWorker' in navigator) {
+            navigator.serviceWorker.getRegistrations().then(function(registrations) {
+                for(let registration of registrations) registration.update();
+            });
+        }
+
         const SERVER_URL = (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1" || window.location.protocol === "file:") 
             ? "http://localhost:10000" : "https://tableau-system.onrender.com";
 
-        // GESTION DU RETOUR
+        // GÉNÉRER L'EMPREINTE DE L'APPAREIL (TRÈS IMPORTANT POUR LE SERVEUR)
+        function getDeviceFingerprint() {
+            let deviceId = localStorage.getItem('ichef_device_fingerprint');
+            if (!deviceId) {
+                deviceId = 'device_' + Math.random().toString(36).substr(2, 9) + '_' + Date.now();
+                localStorage.setItem('ichef_device_fingerprint', deviceId);
+            }
+            return deviceId;
+        }
+
         function retourAdmin() {
-            let tenant = document.getElementById('tenant-id').value.trim();
-            if(!tenant) tenant = localStorage.getItem('ichef_tenant_id') || "";
+            let tenant = document.getElementById('tenant-id').value.trim() || localStorage.getItem('ichef_tenant_id') || "";
             window.location.href = tenant ? `administration.html?tenantID=${tenant}` : `administration.html`;
         }
 
-        // GESTION DU MODE KIOSQUE
         document.getElementById('btn-kiosk').addEventListener('click', async () => {
             const elem = document.documentElement;
             const btn = document.getElementById('btn-kiosk');
             if (!document.fullscreenElement) {
                 if (elem.requestFullscreen) await elem.requestFullscreen();
                 else if (elem.webkitRequestFullscreen) await elem.webkitRequestFullscreen(); 
-                else if (elem.msRequestFullscreen) await elem.msRequestFullscreen(); 
                 btn.innerHTML = "✕ QUITTER";
                 btn.style.color = "var(--gold)";
                 btn.style.borderColor = "var(--gold)";
             } else {
                 if (document.exitFullscreen) await document.exitFullscreen();
-                else if (document.webkitExitFullscreen) await document.webkitExitFullscreen();
                 btn.innerHTML = "⛶ PLEIN ÉCRAN";
                 btn.style.color = "var(--text-muted)";
                 btn.style.borderColor = "rgba(255,255,255,0.1)";
             }
         });
 
-        // PRÉ-REMPLISSAGE ET GESTION CLAVIER
         window.onload = () => {
             let savedTenant = localStorage.getItem('ichef_tenant_id');
             if (savedTenant) {
@@ -259,84 +272,75 @@
             const btnLoader = document.getElementById('btn-loader');
 
             errorBox.innerText = "";
+            if (!tenantID || !pin) { errorBox.innerText = "Veuillez remplir les deux champs."; return; }
 
-            if (!tenantID || !pin) {
-                errorBox.innerText = "Veuillez remplir les deux champs.";
-                return;
-            }
-
-            // Animation bouton
             btnText.style.display = 'none';
             btnLoader.style.display = 'block';
             document.getElementById('btn-login').style.pointerEvents = 'none';
 
             try {
-                // 1. PURGE PRÉVENTIVE
-                localStorage.removeItem('EMPIRE_GLOBAL_SYNC');
-                localStorage.removeItem('ichef_master_pin');
-                
-                // 2. VÉRIFICATION FORFAIT & SÉCURITÉ SERVEUR
-                const resVerify = await fetch(`${SERVER_URL}/api/verify-pin`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ tenantID: tenantID, pin: pin })
-                });
-                const dataVerify = await resVerify.json();
+                // 1. VÉRIFICATION SÉCURISÉE DU COMPTE PATRON AUPRÈS DU SERVEUR
+                let isMasterPin = false;
+                try {
+                    const resVerify = await fetch(`${SERVER_URL}/api/verify-pin`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        // ON ENVOIE ENFIN LE DEVICE ID AU SERVEUR !
+                        body: JSON.stringify({ tenantID: tenantID, pin: pin, deviceId: getDeviceFingerprint() })
+                    });
+                    const dataVerify = await resVerify.json();
+                    isMasterPin = dataVerify.success;
+                } catch(e) { console.warn("API Serveur injoignable, passage en mode local."); }
 
-                let isMasterPin = dataVerify.success;
-                let masterPinLocal = localStorage.getItem('ichef_master_pin') || "999999";
-                let targetPage = '';
+                let masterPinLocal = localStorage.getItem('ichef_master_pin');
 
-                // 3. RECUPERATION BDD DU RESTAURANT (BRIGADE + PLANNING)
+                // 👑 ÉTAPE CLÉ : ROUTAGE IMMÉDIAT SI C'EST LE PATRON
+                if (isMasterPin || pin === masterPinLocal || pin === "999999" || pin === "9999" || pin === "7777") {
+                    localStorage.setItem('ichef_tenant_id', tenantID);
+                    localStorage.setItem('ichef_master_pin', pin);
+                    
+                    // Téléportation vers l'administration garantie !
+                    window.location.href = `administration.html?tenantID=${tenantID}`;
+                    return; 
+                }
+
+                // 2. SI CE N'EST PAS LE PATRON, ON CHERCHE DANS L'ÉQUIPE (SERVEUR / CUISINE)
                 let rState = await fetch(`${SERVER_URL}/get-current-state?tenantID=${tenantID}`);
-                if (!rState.ok) throw new Error("Restaurant introuvable. Vérifiez l'identifiant.");
-
+                if (!rState.ok) throw new Error("Identifiant Restaurant introuvable.");
                 let stateData = await rState.json();
-                if (!stateData || Object.keys(stateData).length === 0) throw new Error("Identifiant Restaurant incorrect.");
 
                 let staffList = (stateData.activeOrders && stateData.activeOrders['STAFF_ACCESS']) ? stateData.activeOrders['STAFF_ACCESS'].data : [];
                 let timesheets = (stateData.activeOrders && stateData.activeOrders['TIMESHEETS_MASTER']) ? stateData.activeOrders['TIMESHEETS_MASTER'].data : {};
 
-                // 👑 ÉTAPE CLÉ : PRIORITÉ ABSOLUE AU PATRON
-                if (isMasterPin || pin === masterPinLocal || pin === "999999" || pin === "9999" || pin === "7777") {
-                    targetPage = 'administration.html';
-                } 
-                // 👥 SINON, ON CHERCHE DANS L'ÉQUIPE
-                else {
-                    let matchedStaff = staffList.find(s => s.pin === pin);
+                let matchedStaff = staffList.find(s => s.pin === pin);
 
-                    if (!matchedStaff) throw new Error("Code PIN invalide ou introuvable.");
-                    if (matchedStaff.active === false) throw new Error("Votre compte est actuellement suspendu.");
+                if (!matchedStaff) throw new Error("Code PIN invalide ou introuvable.");
+                if (matchedStaff.active === false) throw new Error("Votre compte est actuellement suspendu.");
 
-                    // LECTURE DU PLANNING POUR AUJOURD'HUI
-                    let dailyPoste = matchedStaff.dept; 
-                    const today = new Date();
-                    const monthStr = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}`;
-                    const day = today.getDate();
-                    
-                    if (timesheets && timesheets[monthStr] && timesheets[monthStr][matchedStaff.id] && timesheets[monthStr][matchedStaff.id][day]) {
-                        if (timesheets[monthStr][matchedStaff.id][day].poste) {
-                            dailyPoste = timesheets[monthStr][matchedStaff.id][day].poste;
-                        }
+                let dailyPoste = matchedStaff.dept || 'salle'; 
+                const today = new Date();
+                const monthStr = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}`;
+                const day = today.getDate();
+                
+                if (timesheets && timesheets[monthStr] && timesheets[monthStr][matchedStaff.id] && timesheets[monthStr][matchedStaff.id][day]) {
+                    if (timesheets[monthStr][matchedStaff.id][day].poste) {
+                        dailyPoste = timesheets[monthStr][matchedStaff.id][day].poste;
                     }
-
-                    // AIGUILLAGE DU STAFF
-                    if (dailyPoste === 'admin') targetPage = 'administration.html';
-                    else if (dailyPoste === 'salle') targetPage = 'pack-eco.html';
-                    else if (dailyPoste === 'cuisine') targetPage = 'chef.html';
-                    else if (dailyPoste === 'patisserie') targetPage = 'chef-patissier.html';
-                    else if (dailyPoste === 'bar') targetPage = 'chef-bar.html';
-                    else targetPage = 'pack-eco.html';
                 }
 
-                // INJECTION DES NOUVEAUX DROITS ET REDIRECTION
-                localStorage.setItem('ichef_tenant_id', tenantID);
-                localStorage.setItem('ichef_master_pin', pin);
+                let targetPage = 'pack-eco.html';
+                if (dailyPoste === 'admin') targetPage = 'administration.html';
+                else if (dailyPoste === 'salle') targetPage = 'pack-eco.html';
+                else if (dailyPoste === 'cuisine') targetPage = 'chef.html';
+                else if (dailyPoste === 'patisserie') targetPage = 'chef-patissier.html';
+                else if (dailyPoste === 'bar') targetPage = 'chef-bar.html';
 
-                // Redirection fluide
+                // Sauvegarde juste l'ID du resto pour la session (pas le master PIN, car ce n'est pas le patron)
+                localStorage.setItem('ichef_tenant_id', tenantID);
+
                 setTimeout(() => {
                     window.location.href = `${targetPage}?tenantID=${tenantID}`;
-                }, 400);
+                }, 300);
 
             } catch (error) {
                 btnText.style.display = 'block';
@@ -346,20 +350,6 @@
                 document.getElementById('pin-code').value = '';
                 document.getElementById('pin-code').focus();
             }
-        }
-    </script>
-
-    <script>
-        if ('serviceWorker' in navigator) {
-            window.addEventListener('load', () => {
-                navigator.serviceWorker.register('./service-worker.js')
-                .then(registration => {
-                    console.log('✅ Portail PWA activé et synchronisé', registration.scope);
-                })
-                .catch(err => {
-                    console.error('❌ Erreur Service Worker :', err);
-                });
-            });
         }
     </script>
 </body>
