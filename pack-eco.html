@@ -1288,7 +1288,7 @@
             function close() { document.onmouseup=null; document.onmousemove=null; document.ontouchend=null; document.ontouchmove=null; setTimeout(()=>{isDraggingTable=false; renderFloor(); }, 50); } 
         }
 
-        function renderFloor() {
+     function renderFloor() {
             try {
                 let floor = document.getElementById('floor-plan'); floor.innerHTML = '';
                 let hasTables = tables.filter(t => t && t.room === currentRoom).length > 0;
@@ -1305,7 +1305,6 @@
                 tablesEnAttente.sort((a, b) => a.time - b.time);
                 let ordrePriorite = {}; tablesEnAttente.forEach((t, index) => { ordrePriorite[t.label] = index + 1; });
                 
-                // EFFACER LE TAG MAPPED DES COMMANDES WEB POUR LA RECONSTRUCTION
                 for(let k in activeOrders) { if(activeOrders[k]) delete activeOrders[k]._isMapped; }
 
                 if (hasTables) {
@@ -1316,20 +1315,39 @@
                         let orderData = orderKey ? activeOrders[orderKey] : null;
                         if(orderData) orderData._isMapped = true; 
 
-                        // 🧠 RECLASSIFICATION INTELLIGENTE DU CODE COULEUR
                         let isReady = false;
+                        let maxDelayMin = 0; // ⏱️ CHRONOMÈTRE
+
                         if (orderData && orderData.status === 'PRÊT') isReady = true;
                         if (orderData && orderData.items && orderData.items.length > 0) {
                             let allDone = orderData.items.every(i => i.done);
                             if (allDone) isReady = true;
+
+                            // CALCUL DU RETARD
+                            orderData.items.forEach(i => {
+                                if (i.isSent && !i.served && i.itemId) {
+                                    let delay = (Date.now() - parseInt(i.itemId)) / 60000;
+                                    if (delay > maxDelayMin) maxDelayMin = delay;
+                                }
+                            });
                         }
 
+                        // 🧠 AIGUILLAGE
                         if (orderData) {
                             if (orderData.alerteRouge) tStatus = 'alert';
                             else if (orderData.status === 'reserved') tStatus = 'reserved';
                             else if (orderData.status === 'EN ATTENTE PAIEMENT') tStatus = 'payment';
                             else if (isReady && isServiceAuBarActive) tStatus = 'ready-bar'; 
-                            else if (orderData.items && orderData.items.length > 0) { isActive = true; tStatus = 'active'; }
+                            else if (orderData.items && orderData.items.length > 0) { 
+                                isActive = true; 
+                                tStatus = 'active'; // Bleu par défaut
+                                
+                                // ALERTES TEMPORELLES (15min et 25min)
+                                if (!isReady) {
+                                    if (maxDelayMin >= 25) tStatus = 'late'; // Fuchsia Clignotant
+                                    else if (maxDelayMin >= 15) tStatus = 'warning'; // Violet
+                                }
+                            }
                         }
 
                         let wrapper = document.createElement('div'); wrapper.className = 'table-wrapper';
@@ -1341,18 +1359,20 @@
                         let pax = parseInt(t.pax) || 4;
                         if (orderData && orderData.observations) { let match = orderData.observations.match(/🍽️ (\d+) Couvert\(s\)/); if (match) pax = parseInt(match[1]); }
 
-                        // CHAISES
                         for(let i=0; i<pax; i++) {
                             let angle = (i / pax) * 2 * Math.PI - (Math.PI / 2); 
                             let c = document.createElement('div'); c.className = 'chair';
                             let rx = (t.w || 80) / 2 + 12; let ry = (t.h || 120) / 2 + 12;
                             let cx = (t.w || 80) / 2 + rx * Math.cos(angle) - 7; let cy = (t.h || 120) / 2 + ry * Math.sin(angle) - 7;
                             c.style.left = cx + 'px'; c.style.top = cy + 'px';
-                            if (isActive || isArchiMode) { c.innerText = i + 1; c.style.background = 'transparent'; c.style.border = '1px solid var(--text-muted)'; c.style.color = 'var(--text-muted)';
+                            if (isActive || isArchiMode) { 
+                                c.innerText = i + 1; c.style.background = 'transparent'; c.style.border = '1px solid var(--text-muted)'; c.style.color = 'var(--text-muted)';
                                 if(tStatus === 'reserved') { c.style.borderColor = '#ff69b4'; c.style.color = '#ff69b4'; }
                                 else if(tStatus === 'payment') { c.style.borderColor = '#bdc3c7'; c.style.color = '#bdc3c7'; }
                                 else if(tStatus === 'active') { c.style.borderColor = '#3498db'; c.style.color = '#3498db'; }
                                 else if(tStatus === 'alert') { c.style.borderColor = 'var(--alert)'; c.style.color = 'var(--alert)'; }
+                                else if(tStatus === 'warning') { c.style.borderColor = '#9b59b6'; c.style.color = '#9b59b6'; } // Violet
+                                else if(tStatus === 'late') { c.style.borderColor = '#e056fd'; c.style.color = '#e056fd'; } // Fuchsia
                                 else if(tStatus === 'ready-bar') { c.style.borderColor = '#38bdf8'; c.style.color = '#38bdf8'; }
                             }
                             wrapper.appendChild(c);
@@ -1363,6 +1383,12 @@
                         if (tStatus === 'alert') contentHtml = `<span style="text-align:center; display:block;">⚠️<br>${t.label || '?'}</span>`;
                         else contentHtml = `<span style="text-align:center; display:block; font-family: 'Playfair Display', serif; font-weight:600;">${t.label || '?'}</span>`;
                         
+                        // ⏱️ CHRONO SUR LA TABLE (Adaptation Couleurs)
+                        if (isActive && !isReady && maxDelayMin >= 1) {
+                            let chronoColor = (tStatus === 'late') ? '#e056fd' : (tStatus === 'warning' ? '#9b59b6' : '#3498db');
+                            contentHtml += `<span style="font-size:0.6rem; color:${chronoColor}; margin-top:2px; font-weight:bold; letter-spacing: 1px;">⏱ ${Math.floor(maxDelayMin)} min</span>`;
+                        }
+
                         if(orderData && orderData.status === 'reserved') {
                              contentHtml += `<span style="font-size:0.5rem; color:#ff69b4; margin-top:4px; font-weight:500; text-transform:uppercase; letter-spacing: 1px;">${orderData.clientName.substring(0,10)}</span>`;
                              contentHtml += `<span style="font-size:0.65rem; color:var(--text-main); margin-top:2px; font-weight:400; font-family: 'Playfair Display', serif;">${orderData.time}</span>`;
@@ -1390,6 +1416,73 @@
                         makeInteractive(wrapper, t, r); floor.appendChild(wrapper);
                     });
                 }
+
+                // COMMANDES WEB (QR)
+                let webOrders = Object.keys(activeOrders).filter(k => {
+                    let orderData = activeOrders[k];
+                    if (!orderData || orderData._isMapped) return false;
+                    let isOrder = k.startsWith('order_') || k.startsWith('W') || k.startsWith('T') || k.startsWith('WEB_');
+                    if (!isOrder) return false;
+                    if (orderData.items && orderData.items.length > 0) return true;
+                    if (orderData.status === 'EN ATTENTE PAIEMENT') return true;
+                    if (orderData.isWeb) return true;
+                    return false;
+                });
+
+                let webStartX = 20; let webStartY = 20;
+                webOrders.forEach((orderKey, index) => {
+                    let orderData = activeOrders[orderKey];
+                    let d = document.createElement('div');
+                    
+                    let statusClass = 'status-active';
+                    let isReady = orderData.status === 'PRÊT' || (orderData.items && orderData.items.length > 0 && orderData.items.every(i => i.done));
+                    let maxDelayMin = 0;
+
+                    if (orderData.items && orderData.items.length > 0) {
+                        orderData.items.forEach(i => {
+                            if (i.isSent && !i.served && i.itemId) {
+                                let delay = (Date.now() - parseInt(i.itemId)) / 60000;
+                                if (delay > maxDelayMin) maxDelayMin = delay;
+                            }
+                        });
+                    }
+                    
+                    if (orderData.alerteRouge) statusClass = 'status-alert';
+                    else if (orderData.status === 'reserved') statusClass = 'status-reserved';
+                    else if (orderData.status === 'EN ATTENTE PAIEMENT') statusClass = 'status-payment';
+                    else if (isReady && isServiceAuBarActive) statusClass = 'status-ready-bar';
+                    else if (!isReady) {
+                        if (maxDelayMin >= 25) statusClass = 'status-late';
+                        else if (maxDelayMin >= 15) statusClass = 'status-warning';
+                    }
+                    
+                    d.className = `table-obj shape-rect ${statusClass}`; 
+                    d.style.left = webStartX + (index * 130) + 'px'; d.style.top = webStartY + 'px';
+                    d.style.width = '110px'; d.style.height = '90px'; d.style.zIndex = '100'; d.style.cursor = 'pointer';
+
+                    let clientName = orderData.clientName ? orderData.clientName.substring(0,12) : 'Client Web';
+                    let displayTitle = orderKey.startsWith('WEB_') ? `QR` : `Table ${orderKey}`;
+
+                    let contentHtml = `<span style="color:var(--text-main); font-weight:600; font-size:0.75rem; letter-spacing: 1px;">${displayTitle}</span>`;
+                    
+                    // CHRONO WEB (Adaptation Couleurs)
+                    if (!isReady && maxDelayMin >= 1 && statusClass !== 'status-alert') {
+                        let chronoColor = (statusClass === 'status-late') ? '#e056fd' : (statusClass === 'status-warning' ? '#9b59b6' : '#3498db');
+                        contentHtml += `<span style="font-size:0.6rem; color:${chronoColor}; margin-top:2px; font-weight:bold;">⏱ ${Math.floor(maxDelayMin)} min</span>`;
+                    }
+
+                    if(statusClass === 'status-alert') contentHtml += `<span style="font-size:1.5rem; margin-top:5px;">⚠️</span>`;
+                    else {
+                        contentHtml += `<span style="font-size:0.65rem; color:var(--text-muted); margin-top:8px; font-weight:400; text-align:center;">${clientName}</span>`;
+                        contentHtml += `<span style="font-size:0.75rem; color:var(--gold); font-weight:500; margin-top:5px; font-family: 'Playfair Display', serif;">${orderData.totalStr || ''}</span>`;
+                    }
+
+                    d.innerHTML = `<div class="table-content">${contentHtml}</div>`;
+                    d.onclick = () => { openOrder(orderKey); };
+                    floor.appendChild(d);
+                });
+            } catch (e) { console.error(e); }
+        }
 
                 // 👻 COMMANDES WEB FANTÔMES (ASPIRATEUR DE COMMANDES)
                 // Capture toute commande non dessinée sur le plan (QR ou extra)
