@@ -1,8 +1,32 @@
-const CACHE_NAME = 'ichef-cache-v12'; // 🚀 v12 pour forcer tous tes appareils à se synchroniser
+const CACHE_NAME = 'ichef-cache-v3';
 
-// 1. INSTALLATION IMMÉDIATE (Sécurité)
+// 0. LISTE DES FICHIERS VITAUX À SAUVEGARDER DÈS L'INSTALLATION
+const ASSETS_TO_CACHE = [
+  './',
+  './connexionpartenaire.html',
+  './administration.html',
+  './pack-eco.html',
+  './chef-bar.html',
+  './chef-patissier.html',
+  './chef.html',
+  './menu-qr.html',
+  './manifest.json',
+  './icon-192.png',
+  './icon-512.png'
+];
+
+// 1. INSTALLATION IMMÉDIATE ET PRÉ-TÉLÉCHARGEMENT (Sécurité)
 self.addEventListener('install', (event) => {
     self.skipWaiting(); 
+    event.waitUntil(
+        caches.open(CACHE_NAME).then((cache) => {
+            console.log('📦 iCHEF : Mise en cache des fichiers critiques...');
+            // Promise.allSettled permet de ne pas bloquer l'installation si une image manque
+            return Promise.allSettled(
+                ASSETS_TO_CACHE.map(url => cache.add(url).catch(err => console.log(`Fichier ignoré (probablement absent) : ${url}`)))
+            );
+        })
+    );
 });
 
 // 2. NETTOYAGE DES ANCIENNES VERSIONS
@@ -12,6 +36,7 @@ self.addEventListener('activate', (event) => {
             return Promise.all(
                 cacheNames.map((cacheName) => {
                     if (cacheName !== CACHE_NAME) {
+                        console.log('🧹 iCHEF : Ancien cache supprimé:', cacheName);
                         return caches.delete(cacheName);
                     }
                 })
@@ -20,31 +45,28 @@ self.addEventListener('activate', (event) => {
     );
 });
 
-// 3. BOUCLIER RÉSEAU INTELLIGENT
+// 3. BOUCLIER RÉSEAU (Stratégie "Network First" pour la caisse)
 self.addEventListener('fetch', (event) => {
-    const req = event.request;
-    const url = new URL(req.url);
-
-    // 🚨 REGLE D'OR : On laisse passer en direct TOUTES les requêtes de données (API, États, Mises à jour, POST, etc.)
-    if (
-        req.method !== 'GET' || 
-        url.pathname.startsWith('/api/') || 
-        url.pathname.includes('get-current-state') || 
-        url.pathname.includes('update-order')
-    ) {
-        return; // Le navigateur interroge le serveur Render directement sans passer par le cache !
+    // 🚨 On ignore STRICTEMENT les requêtes API et la Base de Données MongoDB
+    if (event.request.method !== 'GET' || 
+        event.request.url.includes('/api/') || 
+        event.request.url.includes('/get-current-state') || 
+        event.request.url.includes('/update-order')) {
+        return;
     }
 
-    // Stratégie "Network First" pour le reste (Fichiers HTML, CSS, polices d'écriture)
     event.respondWith(
-        fetch(req).then((response) => {
+        fetch(event.request).then((response) => {
+            // Si Internet est OK, on sauvegarde une copie de sécurité fraîche
             const responseClone = response.clone();
             caches.open(CACHE_NAME).then((cache) => {
-                cache.put(req, responseClone);
+                cache.put(event.request, responseClone);
             });
             return response;
         }).catch(() => {
-            return caches.match(req);
+            // 🚨 SI INTERNET COUPE : On renvoie l'application depuis la mémoire de la tablette !
+            console.log('📶 iCHEF : Réseau perdu. Mode hors-ligne activé pour', event.request.url);
+            return caches.match(event.request);
         })
     );
 });
