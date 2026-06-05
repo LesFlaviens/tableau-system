@@ -1,4 +1,4 @@
-const CACHE_NAME = 'ichef-cache-v2';
+const CACHE_NAME = 'ichef-cache-v12'; // 🚀 v12 pour forcer tous tes appareils à se synchroniser
 
 // 1. INSTALLATION IMMÉDIATE (Sécurité)
 self.addEventListener('install', (event) => {
@@ -20,22 +20,31 @@ self.addEventListener('activate', (event) => {
     );
 });
 
-// 3. BOUCLIER RÉSEAU (Stratégie "Network First" pour la caisse)
+// 3. BOUCLIER RÉSEAU INTELLIGENT
 self.addEventListener('fetch', (event) => {
-    // On ignore les requêtes API et les envois de base de données (POST)
-    if (event.request.method !== 'GET' || event.request.url.includes('/api/')) return;
+    const req = event.request;
+    const url = new URL(req.url);
 
+    // 🚨 REGLE D'OR : On laisse passer en direct TOUTES les requêtes de données (API, États, Mises à jour, POST, etc.)
+    if (
+        req.method !== 'GET' || 
+        url.pathname.startsWith('/api/') || 
+        url.pathname.includes('get-current-state') || 
+        url.pathname.includes('update-order')
+    ) {
+        return; // Le navigateur interroge le serveur Render directement sans passer par le cache !
+    }
+
+    // Stratégie "Network First" pour le reste (Fichiers HTML, CSS, polices d'écriture)
     event.respondWith(
-        fetch(event.request).then((response) => {
-            // Si Internet est OK, on sauvegarde une copie de sécurité
+        fetch(req).then((response) => {
             const responseClone = response.clone();
             caches.open(CACHE_NAME).then((cache) => {
-                cache.put(event.request, responseClone);
+                cache.put(req, responseClone);
             });
             return response;
         }).catch(() => {
-            // 🚨 SI INTERNET COUPE : On renvoie l'application depuis la mémoire du téléphone !
-            return caches.match(event.request);
+            return caches.match(req);
         })
     );
 });
