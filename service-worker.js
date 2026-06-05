@@ -1,42 +1,35 @@
-const CACHE_NAME = 'ichef-cache-v3';
+const CACHE_NAME = 'ichef-empire-v6'; // Le changement de nom force la destruction de l'ancien bug !
 
-// 0. LISTE DES FICHIERS VITAUX À SAUVEGARDER DÈS L'INSTALLATION
+// 0. LISTE DES FICHIERS VITAUX À SAUVEGARDER (Uniquement le design et les icônes)
 const ASSETS_TO_CACHE = [
   './',
-  './connexionpartenaire.html',
-  './administration.html',
-  './pack-eco.html',
-  './chef-bar.html',
-  './chef-patissier.html',
-  './chef.html',
-  './menu-qr.html',
   './manifest.json',
+  './manifest-staff.json',
   './icon-192.png',
   './icon-512.png'
 ];
 
-// 1. INSTALLATION IMMÉDIATE ET PRÉ-TÉLÉCHARGEMENT (Sécurité)
+// 1. INSTALLATION IMMÉDIATE (Sécurité)
 self.addEventListener('install', (event) => {
     self.skipWaiting(); 
     event.waitUntil(
         caches.open(CACHE_NAME).then((cache) => {
-            console.log('📦 iCHEF : Mise en cache des fichiers critiques...');
-            // Promise.allSettled permet de ne pas bloquer l'installation si une image manque
+            console.log('📦 iCHEF : Mise en cache du design propre...');
             return Promise.allSettled(
-                ASSETS_TO_CACHE.map(url => cache.add(url).catch(err => console.log(`Fichier ignoré (probablement absent) : ${url}`)))
+                ASSETS_TO_CACHE.map(url => cache.add(url).catch(err => console.log(`Fichier ignoré : ${url}`)))
             );
         })
     );
 });
 
-// 2. NETTOYAGE DES ANCIENNES VERSIONS
+// 2. NETTOYAGE NUCLÉAIRE DES ANCIENNES VERSIONS (Détruit le cache v3 qui bloquait tout)
 self.addEventListener('activate', (event) => {
     event.waitUntil(
         caches.keys().then((cacheNames) => {
             return Promise.all(
                 cacheNames.map((cacheName) => {
                     if (cacheName !== CACHE_NAME) {
-                        console.log('🧹 iCHEF : Ancien cache supprimé:', cacheName);
+                        console.log('🧹 iCHEF : Ancien cache empoisonné supprimé:', cacheName);
                         return caches.delete(cacheName);
                     }
                 })
@@ -45,28 +38,30 @@ self.addEventListener('activate', (event) => {
     );
 });
 
-// 3. BOUCLIER RÉSEAU (Stratégie "Network First" pour la caisse)
+// 3. BOUCLIER RÉSEAU INTELLIGENT (La vraie magie)
 self.addEventListener('fetch', (event) => {
-    // 🚨 On ignore STRICTEMENT les requêtes API et la Base de Données MongoDB
-    if (event.request.method !== 'GET' || 
-        event.request.url.includes('/api/') || 
-        event.request.url.includes('/get-current-state') || 
-        event.request.url.includes('/update-order')) {
+    const req = event.request;
+    const url = new URL(req.url);
+
+    // 🚨 RÈGLE 1 : NE JAMAIS TOUCHER AUX API, MOTS DE PASSE ET BASE DE DONNÉES
+    if (req.method !== 'GET' || url.pathname.startsWith('/api/') || url.pathname.includes('/get-current-state') || url.pathname.includes('/update-order')) {
+        return; // Laisse le navigateur interroger le serveur en direct !
+    }
+
+    // 🌐 RÈGLE 2 : POUR LES PAGES HTML (La Caisse, l'Admin, le Portail)
+    // On demande TOUJOURS à internet en premier, et on ne bloque pas la page en mémoire cache
+    if (req.headers.get('accept') && req.headers.get('accept').includes('text/html')) {
+        event.respondWith(
+            fetch(req).catch(() => caches.match(req)) // Si coupure internet, on essaie d'afficher le reste
+        );
         return;
     }
 
+    // 🖼️ RÈGLE 3 : POUR LES IMAGES ET LE RESTE
+    // On lit le cache pour aller très vite et économiser la batterie
     event.respondWith(
-        fetch(event.request).then((response) => {
-            // Si Internet est OK, on sauvegarde une copie de sécurité fraîche
-            const responseClone = response.clone();
-            caches.open(CACHE_NAME).then((cache) => {
-                cache.put(event.request, responseClone);
-            });
-            return response;
-        }).catch(() => {
-            // 🚨 SI INTERNET COUPE : On renvoie l'application depuis la mémoire de la tablette !
-            console.log('📶 iCHEF : Réseau perdu. Mode hors-ligne activé pour', event.request.url);
-            return caches.match(event.request);
+        caches.match(req).then(cachedRes => {
+            return cachedRes || fetch(req);
         })
     );
 });
