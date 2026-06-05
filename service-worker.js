@@ -1,24 +1,11 @@
-const CACHE_NAME = 'ichef-empire-v10'; // 🚀 PASSAGE EN V10 POUR FORCER LA MISE À JOUR
+const CACHE_NAME = 'ichef-cache-v2';
 
-const ASSETS_TO_CACHE = [
-  './',
-  './manifest.json',
-  './icon-192.png',
-  './icon-512.png',
-  './logo-ichef.png'
-];
-
+// 1. INSTALLATION IMMÉDIATE (Sécurité)
 self.addEventListener('install', (event) => {
     self.skipWaiting(); 
-    event.waitUntil(
-        caches.open(CACHE_NAME).then((cache) => {
-            return Promise.allSettled(
-                ASSETS_TO_CACHE.map(url => cache.add(url).catch(err => console.log(`Fichier ignoré : ${url}`)))
-            );
-        })
-    );
 });
 
+// 2. NETTOYAGE DES ANCIENNES VERSIONS
 self.addEventListener('activate', (event) => {
     event.waitUntil(
         caches.keys().then((cacheNames) => {
@@ -33,36 +20,22 @@ self.addEventListener('activate', (event) => {
     );
 });
 
+// 3. BOUCLIER RÉSEAU (Stratégie "Network First" pour la caisse)
 self.addEventListener('fetch', (event) => {
-    const req = event.request;
-    const url = new URL(req.url);
-
-    if (req.method !== 'GET' || url.pathname.startsWith('/api/') || url.pathname.includes('/get-current-state') || url.pathname.includes('/update-order')) {
-        return; 
-    }
-
-    if (req.headers.get('accept') && req.headers.get('accept').includes('text/html')) {
-        event.respondWith(
-            fetch(req).then((networkResponse) => {
-                let responseClone = networkResponse.clone();
-                caches.open(CACHE_NAME).then((cache) => {
-                    cache.put(req, responseClone);
-                });
-                return networkResponse;
-            }).catch(() => {
-                return caches.match(req);
-            })
-        );
-        return;
-    }
+    // On ignore les requêtes API et les envois de base de données (POST)
+    if (event.request.method !== 'GET' || event.request.url.includes('/api/')) return;
 
     event.respondWith(
-        caches.match(req).then(cachedRes => {
-            return cachedRes || fetch(req).then((fetchRes) => {
-                let responseClone = fetchRes.clone();
-                caches.open(CACHE_NAME).then(cache => cache.put(req, responseClone));
-                return fetchRes;
+        fetch(event.request).then((response) => {
+            // Si Internet est OK, on sauvegarde une copie de sécurité
+            const responseClone = response.clone();
+            caches.open(CACHE_NAME).then((cache) => {
+                cache.put(event.request, responseClone);
             });
+            return response;
+        }).catch(() => {
+            // 🚨 SI INTERNET COUPE : On renvoie l'application depuis la mémoire du téléphone !
+            return caches.match(event.request);
         })
     );
 });
