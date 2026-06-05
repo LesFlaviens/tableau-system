@@ -1,4 +1,4 @@
-const CACHE_NAME = 'ichef-cache-v3';
+const CACHE_NAME = 'ichef-cache-v10';
 
 // 0. LISTE DES FICHIERS VITAUX À SAUVEGARDER DÈS L'INSTALLATION
 const ASSETS_TO_CACHE = [
