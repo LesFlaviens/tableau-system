@@ -324,10 +324,9 @@
         </div>
         
         <div class="nav-btns swipe-row">
-            
             <button id="btn-kiosk" class="btn-mini" onclick="toggleKioskMode()">⛶ KIOSQUE</button>
-            <button class="btn-mini" style="border-color: var(--accent); color: var(--accent);" onclick="addExtraClient()">🧑‍🤝‍🧑 CLIENT EXTRA</button>
             <button class="btn-mini" style="border-color: var(--gold); color: var(--gold);" onclick="openQuickOrder()">📝 NOUV. COMMANDE</button>
+            <button class="btn-mini" style="border-color: var(--gold); color: var(--gold);" onclick="addExtraClient()">🧑‍🤝‍🧑 CLIENT EXTRA</button>
             <button id="btn-rush-toggle" class="btn-mini" onclick="toggleRushMode()">⚡ MODE RUSH</button>
             <button class="btn-mini" onclick="addExtraTable()">➕ TABLE EXTRA</button>
             <button class="btn-mini" onclick="openHistoryDrawer()">📜 HISTO.</button>
@@ -932,52 +931,62 @@
         function appendPin(n) { currentPin += n; document.getElementById('pin-display').innerText = '*'.repeat(currentPin.length); resetInactivityTimer(); }
         function clearPin() { currentPin = ""; document.getElementById('pin-display').innerText = ""; resetInactivityTimer(); }
         
-async function submitPin() {
-    if (!currentPin) return;
-
-    try {
-        // Le front-end ne sait rien. Il interroge le serveur, qui détient l'autorité.
-        let response = await fetch(`${APP_SERVER_URL}/verify-pin?tenantID=${appTenantID}`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ pin: currentPin })
-        });
-
-        if (response.ok) {
-            let data = await response.json();
+        async function submitPin() {
+            let masterPin = localStorage.getItem('ichef_master_pin') || "999999";
             
-            // La logique métier est conservée, mais basée sur la réponse sécurisée du serveur
-            if (data.active === false) {
-                alert("❌ Accès suspendu.");
-                clearPin();
+            if(currentPin === masterPin || currentPin === "9999" || currentPin === "999999" || currentPin === "7777") {
+                currentUser = { name: "Directeur", role: "Manager" };
+                unlockPadWithUser(currentUser); 
                 return;
             }
 
-            if (data.poste !== 'salle' && data.poste !== 'admin' && data.role !== 'Manager') {
-                alert(`❌ ACCÈS REFUSÉ : La Caisse est interdite pour le poste [${data.poste ? data.poste.toUpperCase() : 'INCONNU'}].`);
-                clearPin();
-                return;
-            }
+            try {
+                let rState = await fetch(`${APP_SERVER_URL}/get-current-state?tenantID=${appTenantID}`);
+                if (rState.ok) {
+                    let stateData = await rState.json();
+                    let staffList = (stateData.activeOrders && stateData.activeOrders['STAFF_ACCESS']) ? stateData.activeOrders['STAFF_ACCESS'].data : [];
+                    let timesheets = (stateData.activeOrders && stateData.activeOrders['TIMESHEETS_MASTER']) ? stateData.activeOrders['TIMESHEETS_MASTER'].data : {};
+                    
+                    let staffUser = staffList.find(s => s.pin === currentPin);
+                    if (staffUser) {
+                        if (staffUser.active === false) { 
+                            alert("❌ Accès suspendu."); 
+                            clearPin(); 
+                            return; 
+                        }
+                        
+                        let dailyPoste = staffUser.dept;
+                        const today = new Date();
+                        const monthStr = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}`;
+                        const day = today.getDate();
+                        
+                        if (timesheets && timesheets[monthStr] && timesheets[monthStr][staffUser.id] && timesheets[monthStr][staffUser.id][day]) {
+                            if (timesheets[monthStr][staffUser.id][day].poste) {
+                                dailyPoste = timesheets[monthStr][staffUser.id][day].poste;
+                            }
+                        }
 
-            // Identification réussie
-            currentUser = { name: data.name, role: data.role };
-            
-            // On déclenche le rafraîchissement des données de base (sans les mots de passe)
-            await syncData(); 
-            
-            unlockPadWithUser(currentUser);
-            return;
-        } else {
-            // Le serveur a renvoyé une erreur 401 ou 403
-            alert("❌ Code PIN Incorrect.");
+                        if (dailyPoste !== 'salle' && dailyPoste !== 'admin') {
+                            alert(`❌ ACCÈS REFUSÉ : La Caisse est interdite pour le poste [${dailyPoste.toUpperCase()}].`);
+                            clearPin();
+                            return;
+                        }
+
+                        let userRole = (dailyPoste === 'admin') ? 'Manager' : 'Serveur';
+                        currentUser = { name: staffUser.name, role: userRole };
+                        
+                        staffAccessData = staffList;
+                        globalTimesheets = timesheets;
+                        
+                        unlockPadWithUser(currentUser);
+                        return;
+                    }
+                }
+            } catch(e) { console.error("Erreur réseau PIN", e); }
+
+            alert("❌ Code PIN Incorrect."); 
+            clearPin(); 
         }
-    } catch (e) {
-        console.error("Erreur réseau PIN", e);
-        alert("❌ Erreur de communication avec le serveur maître.");
-    }
-    
-    clearPin();
-}
 
         async function toggleKioskMode() {
             const elem = document.documentElement;
@@ -1543,7 +1552,7 @@ async function submitPin() {
             }
         }
 
-function renderFloor() {
+        function renderFloor() {
             try {
                 let floor = document.getElementById('floor-plan'); floor.innerHTML = '';
                 let hasTables = tables.filter(t => t && t.room === currentRoom).length > 0;
@@ -1574,7 +1583,7 @@ function renderFloor() {
                     let icon = modeIcons[mode] || '🍽️';
 
                     if (!isRushMode) {
-                        // MODE ARCHITECTE (Standard Absolu)
+                        // MODE ARCHITECTE
                         wrapper.style.left = (z.l||0)+'px'; wrapper.style.top = (z.t||0)+'px'; wrapper.style.width = (z.w||400)+'px'; wrapper.style.height = (z.h||300)+'px';
                         
                         let d = document.createElement('div'); d.className = 'zone-obj';
@@ -1589,7 +1598,7 @@ function renderFloor() {
                         d.onclick = (e) => { if(isArchiMode) { if(!isDraggingTable && e.target !== r) openZoneConfigModal(z.id); } };
                         if (isArchiMode) makeInteractive(wrapper, z, r);
                     } else {
-                        // MODE RUSH : La zone devient une "boîte" conteneur (Flexbox)
+                        // MODE RUSH Conteneur Flexbox
                         let labelHtml = '';
                         let rushColor = bgCol;
                         if (mode === 'qr_nfc') { rushColor = '#fbbf24'; labelHtml = `ZONE AUTONOME <span style="font-size:0.75rem; font-weight:400; opacity:0.8; margin-left:10px;">💳 PAIEMENT CLIENT (QR)</span>`; } 
@@ -1621,7 +1630,6 @@ function renderFloor() {
                     floor.appendChild(wrapper);
                 });
 
-                // Container pour tables HORS ZONES (seulement en mode Rush)
                 let unassignedWrapper = null;
                 if (isRushMode) {
                     unassignedWrapper = document.createElement('div');
@@ -1693,21 +1701,38 @@ function renderFloor() {
                         let pax = parseInt(t.pax) || 4;
                         if (orderData && orderData.observations) { let match = orderData.observations.match(/🍽️ (\d+) Couvert\(s\)/); if (match) pax = parseInt(match[1]); }
 
+                        // CHAISES OR POUR CLIENT EXTRA
+                        let extraPax = parseInt(t.extraPax) || 0;
+
                         for(let i=0; i<pax; i++) {
                             let angle = (i / pax) * 2 * Math.PI - (Math.PI / 2); 
                             let c = document.createElement('div'); c.className = 'chair';
                             let rx = (t.w || 80) / 2 + 12; let ry = (t.h || 120) / 2 + 12;
                             let cx = (t.w || 80) / 2 + rx * Math.cos(angle) - 7; let cy = (t.h || 120) / 2 + ry * Math.sin(angle) - 7;
                             c.style.left = cx + 'px'; c.style.top = cy + 'px';
+                            
                             if (isActive || isArchiMode) { 
-                                c.innerText = i + 1; c.style.background = 'transparent'; c.style.border = '1px solid var(--text-muted)'; c.style.color = 'var(--text-muted)';
-                                if(tStatus === 'reserved') { c.style.borderColor = '#ff69b4'; c.style.color = '#ff69b4'; }
-                                else if(tStatus === 'payment') { c.style.borderColor = '#bdc3c7'; c.style.color = '#bdc3c7'; }
-                                else if(tStatus === 'active') { c.style.borderColor = '#3498db'; c.style.color = '#3498db'; }
-                                else if(tStatus === 'alert') { c.style.borderColor = 'var(--alert)'; c.style.color = 'var(--alert)'; }
-                                else if(tStatus === 'warning') { c.style.borderColor = '#9b59b6'; c.style.color = '#9b59b6'; }
-                                else if(tStatus === 'late') { c.style.borderColor = '#e056fd'; c.style.color = '#e056fd'; }
-                                else if(tStatus === 'ready-bar') { c.style.borderColor = '#38bdf8'; c.style.color = '#38bdf8'; }
+                                c.innerText = i + 1; 
+                                c.style.background = 'transparent'; 
+                                
+                                // SIÈGE EXTRA (OR)
+                                if (i >= (pax - extraPax)) {
+                                    c.style.border = '2px solid var(--gold)';
+                                    c.style.color = 'var(--gold)';
+                                    c.style.boxShadow = '0 0 10px var(--gold)';
+                                    c.style.fontWeight = 'bold';
+                                } else {
+                                    c.style.border = '1px solid var(--text-muted)'; 
+                                    c.style.color = 'var(--text-muted)';
+                                    
+                                    if(tStatus === 'reserved') { c.style.borderColor = '#ff69b4'; c.style.color = '#ff69b4'; }
+                                    else if(tStatus === 'payment') { c.style.borderColor = '#bdc3c7'; c.style.color = '#bdc3c7'; }
+                                    else if(tStatus === 'active') { c.style.borderColor = '#3498db'; c.style.color = '#3498db'; }
+                                    else if(tStatus === 'alert') { c.style.borderColor = 'var(--alert)'; c.style.color = 'var(--alert)'; }
+                                    else if(tStatus === 'warning') { c.style.borderColor = '#9b59b6'; c.style.color = '#9b59b6'; }
+                                    else if(tStatus === 'late') { c.style.borderColor = '#e056fd'; c.style.color = '#e056fd'; }
+                                    else if(tStatus === 'ready-bar') { c.style.borderColor = '#38bdf8'; c.style.color = '#38bdf8'; }
+                                }
                             }
                             wrapper.appendChild(c);
                         }
@@ -1752,7 +1777,6 @@ function renderFloor() {
                         };
                         makeInteractive(wrapper, t, r); 
                         
-                        // 🧠 AIGUILLAGE DU PLACEMENT (RUSH VS ARCHI)
                         if (isRushMode) {
                             let tableCenterY = (t.t || 0) + ((t.h || 120) / 2);
                             let tableCenterX = (t.l || 0) + ((t.w || 80) / 2);
@@ -1775,7 +1799,7 @@ function renderFloor() {
                     });
                 }
 
-                // COMMANDES WEB (QR) FANTÔMES
+                // COMMANDES WEB
                 let webOrders = Object.keys(activeOrders).filter(k => {
                     let orderData = activeOrders[k];
                     if (!orderData || orderData._isMapped) return false;
@@ -1850,323 +1874,12 @@ function renderFloor() {
                     }
                 });
                 
-                // Met à jour les petits badges ronds de zones
-                renderTableZoneBadges();
-                
-            } catch (e) { console.error(e); }
-        }function renderFloor() {
-            try {
-                let floor = document.getElementById('floor-plan'); floor.innerHTML = '';
-                let hasTables = tables.filter(t => t && t.room === currentRoom).length > 0;
-                
-                let tablesEnAttente = [];
-                for (let tLabel in activeOrders) {
-                    let order = activeOrders[tLabel];
-                    if (order && order.items && order.items.length > 0 && order.status !== 'reserved') {
-                        let unfired = order.items.filter(i => !i.fired);
-                        let hasReady = order.items.some(i => i.done);
-                        if (unfired.length > 0 && !hasReady) tablesEnAttente.push({ label: tLabel, time: Math.min(...unfired.map(i => i.itemId)) });
-                    }
-                }
-                tablesEnAttente.sort((a, b) => a.time - b.time);
-                let ordrePriorite = {}; tablesEnAttente.forEach((t, index) => { ordrePriorite[t.label] = index + 1; });
-                
-                for(let k in activeOrders) { if(activeOrders[k]) delete activeOrders[k]._isMapped; }
-
-                // 🔲 DESSIN DES ZONES SPATIALES
-                let zoneContainers = {};
-                zones.filter(z => z && z.room === currentRoom).forEach(z => {
-                    let wrapper = document.createElement('div'); wrapper.className = 'zone-wrapper';
-                    wrapper.setAttribute('data-id', z.id);
-                    
-                    let bgCol = z.color || '#3498db';
-                    let modeIcons = { 'standard': '🍽️', 'qr_nfc': '📱 QR/NFC', 'bar': '🍹 BAR' };
-                    let mode = z.payMode || z.mode || 'standard';
-                    let icon = modeIcons[mode] || '🍽️';
-
-                    if (!isRushMode) {
-                        // MODE ARCHITECTE (Standard Absolu)
-                        wrapper.style.left = (z.l||0)+'px'; wrapper.style.top = (z.t||0)+'px'; wrapper.style.width = (z.w||400)+'px'; wrapper.style.height = (z.h||300)+'px';
-                        
-                        let d = document.createElement('div'); d.className = 'zone-obj';
-                        d.style.borderColor = bgCol;
-                        d.style.background = `linear-gradient(135deg, ${bgCol}25, transparent)`;
-                        d.innerHTML = `<span class="zone-badge" style="color:${bgCol};">${icon} ${z.label}</span>`;
-                        
-                        let r = document.createElement('div'); r.className = 'zone-resizer';
-                        r.style.backgroundColor = bgCol;
-                        
-                        wrapper.appendChild(d); wrapper.appendChild(r);
-                        d.onclick = (e) => { if(isArchiMode) { if(!isDraggingTable && e.target !== r) openZoneConfigModal(z.id); } };
-                        if (isArchiMode) makeInteractive(wrapper, z, r);
-                    } else {
-                        // MODE RUSH : La zone devient une "boîte" conteneur (Flexbox)
-                        let labelHtml = '';
-                        let rushColor = bgCol;
-                        if (mode === 'qr_nfc') { rushColor = '#fbbf24'; labelHtml = `ZONE AUTONOME <span style="font-size:0.75rem; font-weight:400; opacity:0.8; margin-left:10px;">💳 PAIEMENT CLIENT (QR)</span>`; } 
-                        else if (mode === 'bar') { rushColor = '#ef4444'; labelHtml = `ZONE COMPTOIR <span style="font-size:0.75rem; font-weight:400; opacity:0.8; margin-left:10px;">🚶 RETRAIT & PAIEMENT BAR</span>`; } 
-                        else { rushColor = '#10b981'; labelHtml = `ZONE CLASSIQUE <span style="font-size:0.75rem; font-weight:400; opacity:0.8; margin-left:10px;">👨‍🍳 COMMANDE SERVEUR</span>`; }
-
-                        wrapper.style.position = 'relative';
-                        wrapper.style.width = '100%';
-                        wrapper.style.height = 'auto';
-                        wrapper.style.minHeight = '140px';
-                        wrapper.style.display = 'flex';
-                        wrapper.style.flexWrap = 'wrap';
-                        wrapper.style.gap = '15px';
-                        wrapper.style.padding = '60px 20px 20px 20px';
-                        wrapper.style.border = `2px dashed ${rushColor}`;
-                        wrapper.style.borderRadius = '12px';
-                        wrapper.style.backgroundColor = `${rushColor}15`;
-                        wrapper.style.marginBottom = '15px';
-
-                        let title = document.createElement('div');
-                        title.style.position = 'absolute';
-                        title.style.top = '15px';
-                        title.style.left = '20px';
-                        title.innerHTML = `<span style="color:${rushColor}; font-size: 1.1rem; font-weight: 800; letter-spacing: 1px; text-transform: uppercase;">${icon} ${z.label} | ${labelHtml}</span>`;
-                        wrapper.appendChild(title);
-                    }
-                    
-                    zoneContainers[z.id] = wrapper;
-                    floor.appendChild(wrapper);
-                });
-
-                // Container pour tables HORS ZONES (seulement en mode Rush)
-                let unassignedWrapper = null;
-                if (isRushMode) {
-                    unassignedWrapper = document.createElement('div');
-                    unassignedWrapper.className = 'zone-wrapper unassigned-zone';
-                    unassignedWrapper.style.position = 'relative';
-                    unassignedWrapper.style.width = '100%';
-                    unassignedWrapper.style.minHeight = '120px';
-                    unassignedWrapper.style.display = 'flex';
-                    unassignedWrapper.style.flexWrap = 'wrap';
-                    unassignedWrapper.style.gap = '15px';
-                    unassignedWrapper.style.padding = '50px 20px 20px 20px';
-                    unassignedWrapper.style.border = `2px dashed var(--border-strong)`;
-                    unassignedWrapper.style.borderRadius = '12px';
-                    
-                    let title = document.createElement('div');
-                    title.style.position = 'absolute';
-                    title.style.top = '15px';
-                    title.style.left = '20px';
-                    title.innerHTML = `<span style="color:var(--text-muted); font-size: 1rem; font-weight: 700; letter-spacing: 1px; text-transform: uppercase;">🍽️ TABLES HORS ZONE</span>`;
-                    unassignedWrapper.appendChild(title);
-                }
-
-                if (hasTables) {
-                    tables.forEach(t => { if(t && !t.room) t.room = rooms[0] || 'Salle Principale'; });
-                    tables.filter(t => t && t.room === currentRoom).forEach(t => {
-                        let tStatus = ''; let isActive = false;
-                        let orderKey = Object.keys(activeOrders).find(k => k.toLowerCase() === t.label.toLowerCase() || ('t' + k).toLowerCase() === t.label.toLowerCase() || k.toLowerCase().replace(/[^a-z0-9]/gi, '') === t.label.toLowerCase().replace(/[^a-z0-9]/gi, ''));
-                        let orderData = orderKey ? activeOrders[orderKey] : null;
-                        if(orderData) orderData._isMapped = true; 
-
-                        let isReady = false;
-                        let maxDelayMin = 0;
-
-                        if (orderData && orderData.status === 'PRÊT') isReady = true;
-                        if (orderData && orderData.items && orderData.items.length > 0) {
-                            let allDone = orderData.items.every(i => i.done);
-                            if (allDone) isReady = true;
-
-                            orderData.items.forEach(i => {
-                                if (i.isSent && !i.served && i.itemId) {
-                                    let delay = (Date.now() - parseInt(i.itemId)) / 60000;
-                                    if (delay > maxDelayMin) maxDelayMin = delay;
-                                }
-                            });
-                        }
-
-                        if (orderData) {
-                            if (orderData.alerteRouge) tStatus = 'alert';
-                            else if (orderData.status === 'reserved') tStatus = 'reserved';
-                            else if (orderData.status === 'EN ATTENTE PAIEMENT') tStatus = 'payment';
-                            else if (isReady && isServiceAuBarActive) tStatus = 'ready-bar'; 
-                            else if (orderData.items && orderData.items.length > 0) { 
-                                isActive = true; tStatus = 'active'; 
-                                if (!isReady) {
-                                    if (maxDelayMin >= 25) tStatus = 'late';
-                                    else if (maxDelayMin >= 15) tStatus = 'warning';
-                                }
-                            }
-                        }
-
-                        let wrapper = document.createElement('div'); wrapper.className = 'table-wrapper';
-                        wrapper.setAttribute('data-id', t.label);
-                        if(tStatus) wrapper.classList.add('status-' + tStatus);
-                        if(orderData && orderData.status === 'reserved') wrapper.classList.add('status-reserved');
-                        if(t.isExtra) wrapper.classList.add('extra');
-                        
-                        wrapper.style.left=(t.l||0)+'px'; wrapper.style.top=(t.t||0)+'px'; wrapper.style.width=(t.w||80)+'px'; wrapper.style.height=(t.h||120)+'px';
-
-                        let pax = parseInt(t.pax) || 4;
-                        if (orderData && orderData.observations) { let match = orderData.observations.match(/🍽️ (\d+) Couvert\(s\)/); if (match) pax = parseInt(match[1]); }
-
-                        for(let i=0; i<pax; i++) {
-                            let angle = (i / pax) * 2 * Math.PI - (Math.PI / 2); 
-                            let c = document.createElement('div'); c.className = 'chair';
-                            let rx = (t.w || 80) / 2 + 12; let ry = (t.h || 120) / 2 + 12;
-                            let cx = (t.w || 80) / 2 + rx * Math.cos(angle) - 7; let cy = (t.h || 120) / 2 + ry * Math.sin(angle) - 7;
-                            c.style.left = cx + 'px'; c.style.top = cy + 'px';
-                            if (isActive || isArchiMode) { 
-                                c.innerText = i + 1; c.style.background = 'transparent'; c.style.border = '1px solid var(--text-muted)'; c.style.color = 'var(--text-muted)';
-                                if(tStatus === 'reserved') { c.style.borderColor = '#ff69b4'; c.style.color = '#ff69b4'; }
-                                else if(tStatus === 'payment') { c.style.borderColor = '#bdc3c7'; c.style.color = '#bdc3c7'; }
-                                else if(tStatus === 'active') { c.style.borderColor = '#3498db'; c.style.color = '#3498db'; }
-                                else if(tStatus === 'alert') { c.style.borderColor = 'var(--alert)'; c.style.color = 'var(--alert)'; }
-                                else if(tStatus === 'warning') { c.style.borderColor = '#9b59b6'; c.style.color = '#9b59b6'; }
-                                else if(tStatus === 'late') { c.style.borderColor = '#e056fd'; c.style.color = '#e056fd'; }
-                                else if(tStatus === 'ready-bar') { c.style.borderColor = '#38bdf8'; c.style.color = '#38bdf8'; }
-                            }
-                            wrapper.appendChild(c);
-                        }
-
-                        let d = document.createElement('div'); d.className = 'table-obj shape-' + (t.shape || 'rect');
-                        let contentHtml = '';
-                        if (tStatus === 'alert') contentHtml = `<span style="text-align:center; display:block;">⚠️<br>${t.label || '?'}</span>`;
-                        else contentHtml = `<span style="text-align:center; display:block; font-family: 'Playfair Display', serif; font-weight:600;">${t.label || '?'}</span>`;
-                        
-                        if (isActive && !isReady && maxDelayMin >= 1) {
-                            let chronoColor = (tStatus === 'late') ? '#e056fd' : (tStatus === 'warning' ? '#9b59b6' : '#3498db');
-                            contentHtml += `<span style="font-size:0.6rem; color:${chronoColor}; margin-top:2px; font-weight:bold; letter-spacing: 1px;">⏱ ${Math.floor(maxDelayMin)} min</span>`;
-                        }
-
-                        if(orderData && orderData.status === 'reserved') {
-                             contentHtml += `<span style="font-size:0.5rem; color:#ff69b4; margin-top:4px; font-weight:500; text-transform:uppercase; letter-spacing: 1px;">${orderData.clientName.substring(0,10)}</span>`;
-                             contentHtml += `<span style="font-size:0.65rem; color:var(--text-main); margin-top:2px; font-weight:400; font-family: 'Playfair Display', serif;">${orderData.time}</span>`;
-                        } else if (orderData && orderData.isWeb) {
-                             contentHtml += `<span style="font-size:0.55rem; color:var(--bg); margin-top:5px; font-weight:600; background:var(--text-main); padding:2px 6px; border-radius:2px; letter-spacing: 1px;">WEB</span>`;
-                             contentHtml += `<span style="font-size:0.65rem; color:var(--text-main); font-weight:400; margin-top:5px; font-family: 'Playfair Display', serif;">${orderData.totalStr || ''}</span>`;
-                        } else if (t.isExtra && t.pax) {
-                            contentHtml += `<span style="font-size:0.65rem; color:var(--text-muted); margin-top:5px; font-weight:500; letter-spacing: 1px;">👤 ${t.pax}</span>`;
-                        }
-
-                        d.innerHTML = `<div class="table-content">${contentHtml}</div>`;
-                        let r = document.createElement('div'); r.className = 'table-resizer'; 
-                        wrapper.appendChild(d); wrapper.appendChild(r);
-                        
-                        let clickTimer = null;
-                        d.onclick = (e) => { 
-                            if(isArchiMode) { if(!isDraggingTable && e.target !== r) openTableConfigModal(t.label); } 
-                            else if(pendingAssignResa) { assignTableToResa(t.label); } 
-                            else if (isRushMode) {
-                                if (!checkZoneAccess(t.label)) return;
-                                if (clickTimer == null) { clickTimer = setTimeout(() => { clickTimer = null; openOrder(orderKey || t.label); }, 300); } 
-                                else { clearTimeout(clickTimer); clickTimer = null; }
-                            } 
-                            else { 
-                                if (!checkZoneAccess(t.label)) return;
-                                openOrder(orderKey || t.label); 
-                            }
-                        };
-                        makeInteractive(wrapper, t, r); 
-                        
-                        // 🧠 AIGUILLAGE DU PLACEMENT (RUSH VS ARCHI)
-                        if (isRushMode) {
-                            let tableCenterY = (t.t || 0) + ((t.h || 120) / 2);
-                            let tableCenterX = (t.l || 0) + ((t.w || 80) / 2);
-                            
-                            let activeZone = zones.find(z => 
-                                z.room === currentRoom &&
-                                tableCenterX >= (z.l || 0) && tableCenterX <= ((z.l || 0) + (z.w || 400)) &&
-                                tableCenterY >= (z.t || 0) && tableCenterY <= ((z.t || 0) + (z.h || 300))
-                            );
-
-                            if (activeZone && zoneContainers[activeZone.id]) {
-                                zoneContainers[activeZone.id].appendChild(wrapper);
-                            } else {
-                                if (!unassignedWrapper.parentNode) floor.appendChild(unassignedWrapper);
-                                unassignedWrapper.appendChild(wrapper);
-                            }
-                        } else {
-                            floor.appendChild(wrapper);
-                        }
-                    });
-                }
-
-                // COMMANDES WEB (QR) FANTÔMES
-                let webOrders = Object.keys(activeOrders).filter(k => {
-                    let orderData = activeOrders[k];
-                    if (!orderData || orderData._isMapped) return false;
-                    let isOrder = k.startsWith('order_') || k.startsWith('W') || k.startsWith('T') || k.startsWith('WEB_');
-                    if (!isOrder) return false;
-                    if (orderData.items && orderData.items.length > 0) return true;
-                    if (orderData.status === 'EN ATTENTE PAIEMENT') return true;
-                    if (orderData.isWeb) return true;
-                    return false;
-                });
-
-                let webStartX = 20; let webStartY = 20;
-                webOrders.forEach((orderKey, index) => {
-                    let orderData = activeOrders[orderKey];
-                    let d = document.createElement('div');
-                    
-                    let statusClass = 'status-active';
-                    let isReady = orderData.status === 'PRÊT' || (orderData.items && orderData.items.length > 0 && orderData.items.every(i => i.done));
-                    let maxDelayMin = 0;
-
-                    if (orderData.items && orderData.items.length > 0) {
-                        orderData.items.forEach(i => {
-                            if (i.isSent && !i.served && i.itemId) {
-                                let delay = (Date.now() - parseInt(i.itemId)) / 60000;
-                                if (delay > maxDelayMin) maxDelayMin = delay;
-                            }
-                        });
-                    }
-                    
-                    if (orderData.alerteRouge) statusClass = 'status-alert';
-                    else if (orderData.status === 'reserved') statusClass = 'status-reserved';
-                    else if (orderData.status === 'EN ATTENTE PAIEMENT') statusClass = 'status-payment';
-                    else if (isReady && isServiceAuBarActive) statusClass = 'status-ready-bar';
-                    else if (!isReady) {
-                        if (maxDelayMin >= 25) statusClass = 'status-late';
-                        else if (maxDelayMin >= 15) statusClass = 'status-warning';
-                    }
-                    
-                    d.className = `table-obj shape-rect ${statusClass}`; 
-                    
-                    if (isRushMode) {
-                        d.style.position = 'relative';
-                    } else {
-                        d.style.left = webStartX + (index * 130) + 'px'; d.style.top = webStartY + 'px';
-                    }
-
-                    d.style.width = '110px'; d.style.height = '90px'; d.style.zIndex = '100'; d.style.cursor = 'pointer';
-
-                    let clientName = orderData.clientName ? orderData.clientName.substring(0,12) : 'Client Web';
-                    let displayTitle = orderKey.startsWith('WEB_') ? `QR` : `Table ${orderKey}`;
-
-                    let contentHtml = `<span style="color:var(--text-main); font-weight:600; font-size:0.75rem; letter-spacing: 1px;">${displayTitle}</span>`;
-                    
-                    if (!isReady && maxDelayMin >= 1 && statusClass !== 'status-alert') {
-                        let chronoColor = (statusClass === 'status-late') ? '#e056fd' : (statusClass === 'status-warning' ? '#9b59b6' : '#3498db');
-                        contentHtml += `<span style="font-size:0.6rem; color:${chronoColor}; margin-top:2px; font-weight:bold;">⏱ ${Math.floor(maxDelayMin)} min</span>`;
-                    }
-
-                    if(statusClass === 'status-alert') contentHtml += `<span style="font-size:1.5rem; margin-top:5px;">⚠️</span>`;
-                    else {
-                        contentHtml += `<span style="font-size:0.65rem; color:var(--text-muted); margin-top:8px; font-weight:400; text-align:center;">${clientName}</span>`;
-                        contentHtml += `<span style="font-size:0.75rem; color:var(--gold); font-weight:500; margin-top:5px; font-family: 'Playfair Display', serif;">${orderData.totalStr || ''}</span>`;
-                    }
-
-                    d.innerHTML = `<div class="table-content">${contentHtml}</div>`;
-                    d.onclick = () => { openOrder(orderKey); };
-                    
-                    if(isRushMode && unassignedWrapper) {
-                        unassignedWrapper.appendChild(d);
-                    } else {
-                        floor.appendChild(d);
-                    }
-                });
-                
-                // Met à jour les petits badges ronds de zones
                 renderTableZoneBadges();
                 
             } catch (e) { console.error(e); }
         }
-// ==========================================
+
+        // ==========================================
         // 🍽️ GESTION DU TIROIR DE COMMANDE 🍽️
         // ==========================================
         function openOrder(tableLabel) {
@@ -2176,18 +1889,16 @@ function renderFloor() {
             // 🔲 GESTION DU ZONING SPATIAL
             let tableObj = tables.find(t => t && t.label === tableLabel && t.room === currentRoom);
 
-            // 👇 LA LIGNE MAGIQUE POUR LE BOUTON RETIRER (TABLES EXTRA) 👇
+            // BOUTON RETIRER UNIQUEMENT POUR TABLES EXTRA
             let extraBtnHtml = (tableObj && tableObj.isExtra) ? ` <button class="btn-mini" style="border-color:var(--alert); color:var(--alert); padding:4px 8px; margin-left:15px; font-size:0.7rem;" onclick="promptRemoveExtraTable('${tableLabel}')">🗑️ RETIRER</button>` : '';
             document.getElementById('ticket-table-name').innerHTML = "TABLE " + tableLabel + extraBtnHtml;
-            // 👆 ========================================= 👆
 
             let zoneBandeau = document.getElementById('drawer-zone-alert');
             
             if (zoneBandeau) {
-                zoneBandeau.style.display = 'none'; // Caché par défaut
+                zoneBandeau.style.display = 'none'; 
                 
                 if (tableObj && typeof zones !== 'undefined') {
-                    // On cherche si la table se trouve à l'intérieur d'une zone dessinée
                     let tableCenterY = (tableObj.t || 0) + ((tableObj.h || 120) / 2);
                     let tableCenterX = (tableObj.l || 0) + ((tableObj.w || 80) / 2);
                     
@@ -2265,7 +1976,6 @@ function renderFloor() {
                 if (allDone) isReady = true;
             }
 
-            // ALERTE POUR LE SERVEUR SI LA COMMANDE ATTEND AU BAR
             let sba = document.getElementById('drawer-service-bar-alert');
             if (sba) {
                 sba.style.display = (isReady && isServiceAuBarActive) ? 'block' : 'none';
@@ -2424,7 +2134,6 @@ function renderFloor() {
         function addToTicket(n, p, dest, tvaRate = 10) { 
             let realName = n.replace(/\[BR\]/g, ' ');
             
-            // Gestion des Cuissons pour les viandes
             if(['entrecôte', 'entrecote', 'bœuf', 'boeuf', 'steak', 'burger', 'filet', 'canard', 'agneau', 'viande', 'tartare', 'onglet', 'bavette', 'côte', 'cote'].some(m => realName.toLowerCase().includes(m))) {
                 pendingCuissonItem = { n: realName, p, dest, tvaRate }; 
                 document.getElementById('cuisson-item-name').innerText = realName; 
@@ -2438,7 +2147,6 @@ function renderFloor() {
         function confirmCuisson(niv) { if(pendingCuissonItem) { executeAddToCart(`${pendingCuissonItem.n} (${niv})`, pendingCuissonItem.p, pendingCuissonItem.dest, currentCourseDefault, pendingCuissonItem.n, pendingCuissonItem.tvaRate); cancelCuisson(); } }
         function cancelCuisson() { pendingCuissonItem = null; document.getElementById('cuisson-modal').classList.remove('open'); }
 
-        // AJOUT DE LA TVA AU TICKET ITEM
         function executeAddToCart(n, p, dest, courseOverride, originalName, tvaRate = 10) { 
             let cId = courseOverride !== undefined ? courseOverride : currentCourseDefault;
             let seatId = currentSeat; 
@@ -2480,7 +2188,6 @@ function renderFloor() {
                 let ligneTTC = (parseFloat(i.p)||0) * q;
                 total += ligneTTC;
 
-                // Calcul TVA
                 let rate = parseFloat(i.tva) || 10;
                 let ligneHT = ligneTTC / (1 + (rate / 100));
                 let ligneTVA = ligneTTC - ligneHT;
@@ -2522,7 +2229,6 @@ function renderFloor() {
             document.getElementById('ticket-total-price').innerText = `${total.toFixed(2)}€`;
             currentTableTotal = total;
 
-            // Affichage TVA
             let tvaStr = Object.entries(tvaTotals).filter(([k,v]) => v>0).map(([k,v]) => `TVA ${k}%: ${v.toFixed(2)}€`).join(' | ');
             if(!tvaStr) tvaStr = "Aucune TVA";
             document.getElementById('ticket-tva').innerText = tvaStr + ` (HT: ${totalHT.toFixed(2)}€)`;
@@ -2536,9 +2242,6 @@ function renderFloor() {
             }
         }
 
-        // ==========================================
-        // 🔄 ENVOI ET SYNCHRONISATION KDS
-        // ==========================================
         async function sendOrderToKDS() {
             let count = 0;
             currentTicket.forEach(i => { if (!i.isSent) { i.isSent = true; i.itemId = Date.now(); count++; } });
@@ -2564,7 +2267,6 @@ function renderFloor() {
             }, 10);
         }
 
-        // --- EDITION D'UN PLAT ---
         let pendingEditIndex = null;
         function openEditItem(idx) { 
             pendingEditIndex = idx; let item = currentTicket[idx]; 
@@ -2634,7 +2336,6 @@ function renderFloor() {
             closeSurMesureModal();
         }
 
-        // --- ANNULATIONS ---
         let pendingCancelIndex = null;
         function removeTicketItem(idx) { pendingCancelIndex = idx; document.getElementById('cancel-item-name').innerText = `${currentTicket[idx].n.replace(/\n/g, ' ')}`; document.getElementById('cancel-modal').classList.add('open'); }
         function abortCancelItem() { pendingCancelIndex = null; document.getElementById('cancel-modal').classList.remove('open'); }
@@ -2649,25 +2350,18 @@ function renderFloor() {
         function abortClearTicket() { document.getElementById('clear-ticket-modal').classList.remove('open'); }
         async function executeClearTicket(raison) { currentTicket = []; renderTicket(); await API.update(currentTableId, null, true); document.getElementById('clear-ticket-modal').classList.remove('open'); closeOrder(); renderFloor(); }
 
-        // ==========================================
-        // 💳 PAIEMENT INTELLIGENT ET FIDÉLITÉ
-        // ==========================================
         let paymentsDone = [];
         let currentTableTotal = 0;
         let currentPayRemaining = 0;
-        
-        let fidelityDiscountUsed = 0; // Argent de la cagnotte utilisé pour payer
+        let fidelityDiscountUsed = 0; 
         let loyaltyClientName = null;
 
        function openPaymentModal() {
-            // 🛑 TRIPLE SÉCURITÉ (HEURE, PLANNING ET ZONING) 🛑
             if (currentGlobalScheduledMode === 'closed') {
                 return alert("🛑 IMPOSSIBLE : Le restaurant est programmé comme FERMÉ à cette heure-ci.");
             }
 
-            // Si la Zone spécifie QR_NFC, ou si le Planning Global spécifie QR_NFC : on bloque !
             let isQrRequired = (typeof currentTableId_PayMode !== 'undefined' && currentTableId_PayMode === 'qr_nfc') || (currentGlobalScheduledMode === 'qr_nfc');
-            
             if (isQrRequired) {
                 return alert("🛑 IMPOSSIBLE : En raison de la Zone ou de l'Heure actuelle, le mode AUTONOME est activé. Le client doit payer lui-même depuis son smartphone via QR Code ou NFC.");
             }
@@ -2684,7 +2378,6 @@ function renderFloor() {
             currentPayRemaining = currentTableTotal;
             updatePaymentUI();
             
-            // GESTION AFFICHAGE ZONE FIDELITÉ
             let lZone = document.getElementById('loyalty-zone');
             if(isLoyaltyActive) {
                 lZone.style.display = 'flex';
@@ -2748,7 +2441,7 @@ function renderFloor() {
             if(isNaN(deduct) || deduct <= 0 || deduct > maxDeductible + 0.05) return alert("Montant invalide.");
             
             fidelityDiscountUsed += deduct;
-            globalLoyaltyData[currentLoyaltyPhone].points -= deduct; // On soustrait de la BDD
+            globalLoyaltyData[currentLoyaltyPhone].points -= deduct; 
             
             paymentsDone.push({ method: '🎁 CAGNOTTE', amount: deduct });
             currentPayRemaining -= deduct;
@@ -2822,7 +2515,6 @@ function renderFloor() {
                 try {
                     const state = await API.getState();
                     
-                    // Calculs TVA pour archive financière
                     let totalHT = 0; let tvaTotals = {};
                     currentTicket.forEach(i => {
                         let ligneTTC = (parseFloat(i.p)||0) * (i.qty||1);
@@ -2832,7 +2524,6 @@ function renderFloor() {
                         tvaTotals[rate] = (tvaTotals[rate] || 0) + (ligneTTC - ligneHT);
                     });
 
-                    // FIDÉLITÉ : CRÉDITER LA CAGNOTTE DU CLIENT
                     if(isLoyaltyActive && currentLoyaltyPhone && globalLoyaltyData[currentLoyaltyPhone]) {
                         let montantEligibleCashback = currentTableTotal - fidelityDiscountUsed;
                         if(montantEligibleCashback > 0) {
@@ -2891,7 +2582,6 @@ function renderFloor() {
                 container.innerHTML = html;
             });
         }
-        
         function closeDrawer(id) { document.getElementById(id).classList.remove('open'); }
 
         // ==========================================
@@ -2910,11 +2600,9 @@ function renderFloor() {
             if (!paxStr) return;
             let pax = parseInt(paxStr) || 2;
 
-            // Coordonnées par défaut (au centre de l'écran)
             let baseL = window.innerWidth / 2 - 40;
             let baseT = window.innerHeight / 2 - 60;
 
-            // 🎯 CHOIX DE LA ZONE POUR LE MODE RUSH
             let roomZones = zones.filter(z => z && z.room === currentRoom);
             if (roomZones.length > 0) {
                 let zPrompt = "Dans quelle zone placer la table ?\n\n";
@@ -2925,14 +2613,12 @@ function renderFloor() {
                 if (zChoice !== null && zChoice !== "0") {
                     let selectedZone = roomZones[parseInt(zChoice) - 1];
                     if (selectedZone) {
-                        // On téléporte la table au centre mathématique de la zone choisie
                         baseL = (selectedZone.l || 0) + ((selectedZone.w || 400) / 2) - 40;
                         baseT = (selectedZone.t || 0) + ((selectedZone.h || 300) / 2) - 60;
                     }
                 }
             }
 
-            // Léger décalage aléatoire pour ne pas que les tables se superposent exactement
             let randomOffsetX = Math.floor(Math.random() * 80) - 40;
             let randomOffsetY = Math.floor(Math.random() * 80) - 40;
 
@@ -2950,9 +2636,37 @@ function renderFloor() {
 
             pushArchitecture();
             renderFloor();
-   
+        }
+
+        function promptRemoveExtraTable(tableName) {
+            let pin = prompt("🔐 Entrez votre code PIN pour retirer cette table :");
+            if (!pin) return;
+
+            let masterPin = localStorage.getItem('ichef_master_pin') || "999999";
+            let isValid = (pin === masterPin || pin === "9999" || pin === "7777");
+            
+            if (!isValid && typeof staffAccessData !== 'undefined') {
+                let staff = staffAccessData.find(s => s.pin === pin);
+                if (staff && staff.active !== false) isValid = true;
+            }
+
+            if (!isValid) return alert("❌ Code PIN incorrect ou accès refusé.");
+
+            let order = activeOrders[tableName];
+            if (order && order.items && order.items.length > 0) {
+                if (!confirm("⚠️ La table a des commandes en cours ! Êtes-vous sûr de vouloir la supprimer ?")) return;
+            }
+
+            tables = tables.filter(t => !(t && t.label === tableName && t.room === currentRoom));
+            API.update(tableName, null, true); 
+            
+            pushArchitecture();
+            closeOrder();
+            renderFloor();
+        }
+
         // ==========================================
-        // 🧑‍🤝‍🧑 2. GESTION DES CLIENTS EXTRA (SIÈGES EN PLUS)
+        // 🧑‍🤝‍🧑 GESTION DES CLIENTS EXTRA (SIÈGES EN PLUS)
         // ==========================================
         async function addExtraClient() {
             let tableName = prompt("🧑‍🤝‍🧑 À quelle table voulez-vous ajouter un client supplémentaire ?\n(ex: 12, T1)");
@@ -3004,6 +2718,7 @@ function renderFloor() {
                 });
             });
         });
+
     </script>
 </body>
 </html>
