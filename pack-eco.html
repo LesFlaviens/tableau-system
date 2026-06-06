@@ -2714,8 +2714,200 @@
                     if(window.innerWidth <= 900 && item.id !== 'btn-rush-toggle') {
                         let sidebar = document.getElementById('sidebar');
                         if (sidebar && sidebar.classList.contains('open')) toggleMobileMenu();
+                        
                     }
-                });
+                
+                // ========================================================
+        // 🏗️ MECHANICAL SUB-SYSTEM: ARCHITECTURE & STRUCTURE MODE
+        // ========================================================
+        function unlockArchiMode() {
+            if (!currentUser || currentUser.role !== 'Manager') return alert("⛔ Accès Manager requis");
+            isArchiMode = true;
+            document.body.classList.add('edit-mode');
+            renderRooms();
+            renderFloor();
+        }
+
+        async function closeArchiMode() {
+            isArchiMode = false;
+            document.body.classList.remove('edit-mode');
+            renderRooms();
+            renderFloor();
+        }
+
+        function saveArchitecture() {
+            pushArchitecture();
+            closeArchiMode();
+        }
+        
+        async function pushArchitecture() { 
+            await API.update('ARCHITECTURE', { rooms: rooms, tables: tables, zones: zones }); 
+            localStorage.setItem('empire_architecture', JSON.stringify(tables)); 
+            localStorage.setItem('empire_rooms', JSON.stringify(rooms)); 
+            localStorage.setItem('empire_zones', JSON.stringify(zones));
+        }
+
+        // --- CONFIGURATION DES SALLES ---
+        function renderRooms() {
+            const container = document.getElementById('room-tabs-container');
+            if(container) {
+                container.innerHTML = rooms.map(r => `<div class="room-tab ${r === currentRoom ? 'active' : 'inactive'}" onclick="handleRoomClick('${r}')">${r}</div>`).join('');
+            }
+        }
+
+        function handleRoomClick(r) {
+            if(isArchiMode && r === currentRoom) {
+                openRoomConfigModal(r);
+            } else {
+                currentRoom = r;
+                renderRooms();
+                renderFloor();
+            }
+        }
+
+        function addNewRoom() {
+            let n = "Salle " + (rooms.length + 1);
+            rooms.push(n);
+            currentRoom = n;
+            renderRooms();
+            renderFloor();
+        }
+
+        function addTactileRoomName(v) {
+            if(v === 'CLEAR') currentTactileRoomName = currentTactileRoomName.slice(0, -1);
+            else currentTactileRoomName += v;
+            document.getElementById('config-room-name-display').innerText = currentTactileRoomName;
+        }
+        
+        function openRoomConfigModal(r) {
+            configRoomOldName = r;
+            currentTactileRoomName = r;
+            document.getElementById('config-room-name-display').innerText = currentTactileRoomName;
+            document.getElementById('room-config-modal').style.display = 'flex';
+        }
+
+        function closeRoomConfigModal() {
+            configRoomOldName = null;
+            document.getElementById('room-config-modal').style.display = 'none';
+        }
+
+        function saveRoomConfig() {
+            if(!configRoomOldName) return;
+            let n = currentTactileRoomName.trim();
+            if(n && n !== configRoomOldName) {
+                let idx = rooms.indexOf(configRoomOldName);
+                if(idx > -1) rooms[idx] = n;
+                tables.forEach(t => { if(t && t.room === configRoomOldName) t.room = n; });
+                zones.forEach(z => { if(z && z.room === configRoomOldName) z.room = n; });
+                if(currentRoom === configRoomOldName) currentRoom = n;
+            }
+            closeRoomConfigModal();
+            renderRooms();
+            renderFloor();
+            pushArchitecture();
+        }
+
+        function deleteCurrentRoom() {
+            if(rooms.length <= 1) return alert("Impossible de supprimer la dernière salle.");
+            if(confirm(`Supprimer la salle "${configRoomOldName}" et TOUTES ses tables et zones ?`)) {
+                tables = tables.filter(t => t && t.room !== configRoomOldName);
+                zones = zones.filter(z => z && z.room !== configRoomOldName);
+                rooms = rooms.filter(r => r !== configRoomOldName);
+                currentRoom = rooms[0];
+                closeRoomConfigModal();
+                renderRooms();
+                renderFloor();
+                pushArchitecture();
+            }
+        }
+
+        // --- CONFIGURATION DES TABLES (STRUCTURE) ---
+        function addNewTable() {
+            let nextNum = 1;
+            tables.filter(t => t && t.room === currentRoom).forEach(t => {
+                let m = t.label.match(/\d+/);
+                if(m && parseInt(m[0]) >= nextNum) nextNum = parseInt(m[0]) + 1;
+            });
+            tables.push({ label: "T" + nextNum, l: 400, t: 400, w: 80, h: 120, shape: "rect", pax: 4, room: currentRoom }); 
+            renderFloor();
+        }
+
+        let currentTactileName = "";
+        function addTactileTableName(v) {
+            if(v === 'CLEAR') currentTactileName = currentTactileName.slice(0, -1);
+            else currentTactileName += v;
+            document.getElementById('config-table-name-display').innerText = currentTactileName;
+        }
+
+        function setShape(s) {
+            document.getElementById('config-table-shape').value = s;
+        }
+        
+        function openTableConfigModal(id) {
+            let t = tables.find(x => x && x.label === id && x.room === currentRoom);
+            if(!t) return;
+            configTableId = id;
+            currentTactileName = t.label; 
+            document.getElementById('config-table-name-display').innerText = currentTactileName; 
+            document.getElementById('config-table-shape').value = t.shape || 'rect';
+            document.getElementById('config-table-pax').value = t.pax || 4; 
+            document.getElementById('table-config-modal').style.display = 'flex';
+        }
+
+        function closeTableConfigModal() {
+            configTableId = null;
+            document.getElementById('table-config-modal').style.display = 'none';
+        }
+
+        function saveTableConfig() {
+            let t = tables.find(x => x && x.label === configTableId && x.room === currentRoom);
+            if(t) {
+                let n = currentTactileName.trim();
+                if(n && n !== t.label) {
+                    if(activeOrders[t.label]) { activeOrders[n] = activeOrders[t.label]; delete activeOrders[t.label]; }
+                    t.label = n;
+                }
+                t.shape = document.getElementById('config-table-shape').value;
+                t.pax = parseInt(document.getElementById('config-table-pax').value) || 4; 
+            }
+            closeTableConfigModal();
+            renderFloor(); 
+        }
+
+        function deleteCurrentTable() {
+            if(confirm("Supprimer cette table ?")) {
+                tables = tables.filter(t => !(t && t.label === configTableId && t.room === currentRoom));
+                closeTableConfigModal();
+                renderFloor();
+            }
+        }
+
+        function changeConfigPax(delta) {
+            let input = document.getElementById('config-table-pax');
+            let val = parseInt(input.value) || 2;
+            val = Math.max(1, val + delta);
+            input.value = val;
+        }
+
+        // --- ENGINE: DRAG & DROP DES TABLES ET ZONES ---
+        function makeInteractive(elmnt, tableObj, resizerElnt) {
+            let p1=0, p2=0, p3=0, p4=0, iW, iH, iX, iY;
+            elmnt.onmousedown = dragMD; elmnt.ontouchstart = dragTS;
+            if(resizerElnt) {
+                resizerElnt.onmousedown = resMD; resizerElnt.ontouchstart = resTS;
+            }
+            function dragMD(e) { if(!isArchiMode || e.target === resizerElnt) return; e.preventDefault(); p3=e.clientX; p4=e.clientY; document.onmouseup=close; document.onmousemove=drag; }
+            function dragTS(e) { if(!isArchiMode || e.target === resizerElnt) return; p3=e.touches[0].clientX; p4=e.touches[0].clientY; document.ontouchend=close; document.ontouchmove=tDrag; }
+            function drag(e) { e.preventDefault(); isDraggingTable=true; p1=p3-e.clientX; p2=p4-e.clientY; p3=e.clientX; p4=e.clientY; updatePos(); }
+            function tDrag(e) { isDraggingTable=true; p1=p3-e.touches[0].clientX; p2=p4-e.touches[0].clientY; p3=e.touches[0].clientX; p4=e.touches[0].clientY; updatePos(); }
+            function updatePos() { elmnt.style.top = (elmnt.offsetTop-p2)+"px"; elmnt.style.left = (elmnt.offsetLeft-p1)+"px"; tableObj.t = elmnt.offsetTop; tableObj.l = elmnt.offsetLeft; }
+            function resMD(e) { if(!isArchiMode) return; e.preventDefault(); e.stopPropagation(); iW=elmnt.offsetWidth; iH=elmnt.offsetHeight; iX=e.clientX; iY=e.clientY; document.onmouseup=close; document.onmousemove=res; }
+            function resTS(e) { if(!isArchiMode) return; e.stopPropagation(); iW=elmnt.offsetWidth; iH=elmnt.offsetHeight; iX=e.touches[0].clientX; iY=e.touches[0].clientY; document.ontouchend=close; document.ontouchmove=tRes; }
+            function res(e) { e.preventDefault(); isDraggingTable=true; updateDim(e.clientX, e.clientY); }
+            function tRes(e) { isDraggingTable=true; updateDim(e.touches[0].clientX, e.touches[0].clientY); }
+            function updateDim(cX, cY) { let nW = Math.max(40, iW+(cX-iX)); let nH = Math.max(40, iH+(cY-iY)); elmnt.style.width=nW+"px"; elmnt.style.height=nH+"px"; tableObj.w=nW; tableObj.h=nH; }
+            function close() { document.onmouseup=null; document.onmousemove=null; document.ontouchend=null; document.ontouchmove=null; setTimeout(()=>{isDraggingTable=false;}, 50); } 
+        }});
             });
         });
 
