@@ -2,7 +2,7 @@
 <html lang="fr">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
     
     <link rel="manifest" href="manifest.json">
     <link rel="apple-touch-icon" href="icon-192.png">
@@ -14,6 +14,11 @@
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;900&display=swap" rel="stylesheet">
     
     <script>
+        // Déclaration globale pour éviter les plantages de scope
+        window.tenantID = new URLSearchParams(window.location.search).get('tenantID') || localStorage.getItem('ichef_tenant_id');
+        window.SERVER_URL = (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1" || window.location.protocol === "file:") 
+            ? "http://localhost:10000" : "https://tableau-system.onrender.com";
+
         // 1. SÉCURITÉ : Générateur d'empreinte numérique
         function getDeviceFingerprint() {
             let deviceId = localStorage.getItem('ichef_device_fingerprint');
@@ -28,28 +33,23 @@
         (async function enforceSecurity() {
             const urlParams = new URLSearchParams(window.location.search);
             let urlTenantID = urlParams.get('tenantID');
-            let storedTenantID = localStorage.getItem('ichef_tenant_id');
 
-            if (urlTenantID && urlTenantID !== storedTenantID) {
+            if (urlTenantID && urlTenantID !== window.tenantID) {
                 localStorage.removeItem('EMPIRE_GLOBAL_SYNC');
                 localStorage.removeItem('ichef_master_pin');
-                if (urlTenantID) localStorage.setItem('ichef_tenant_id', urlTenantID);
-                storedTenantID = urlTenantID;
+                localStorage.setItem('ichef_tenant_id', urlTenantID);
+                window.tenantID = urlTenantID;
             }
 
-            let tenantID = urlTenantID || storedTenantID;
             let pin = localStorage.getItem('ichef_master_pin'); 
             
-            if(!tenantID) {
+            if(!window.tenantID) {
                 window.location.href = 'connexionpartenaire.html';
                 return;
             }
 
-            const SERVER_URL = (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1" || window.location.protocol === "file:") 
-                ? "http://localhost:10000" : "https://tableau-system.onrender.com";
-
             const accessMatrix = {
-                  'PACK_A': ['admin.html', 'administration.html','portail-staff.html', 'minipass.html', 'production.html', 'caissetactile.html', 'pack-eco.html', 'menu-qr.html', 'haccp.html'],
+                'PACK_A': ['admin.html', 'administration.html','portail-staff.html', 'minipass.html', 'production.html', 'caissetactile.html', 'pack-eco.html', 'menu-qr.html', 'haccp.html'],
                 'CHEF': ['chef.html', 'administration.html'],
                 'CHEF_CUISINE': ['chef.html', 'administration.html'],
                 'PATISSIER': ['chef-patissier.html', 'administration.html'],
@@ -67,10 +67,10 @@
             };
 
             try {
-                const res = await fetch(`${SERVER_URL}/api/verify-pin`, {
+                const res = await fetch(`${window.SERVER_URL}/api/verify-pin`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ tenantID: tenantID, pin: pin || "0000", deviceId: getDeviceFingerprint() })
+                    body: JSON.stringify({ tenantID: window.tenantID, pin: pin || "0000", deviceId: getDeviceFingerprint() })
                 });
                 const data = await res.json();
 
@@ -87,11 +87,13 @@
                 const allowedPages = accessMatrix[currentPlan] || [];
                 if (!allowedPages.includes(currentPage)) {
                     alert(`ACCÈS REFUSÉ : Votre forfait (${currentPlan}) n'inclut pas ce module.`);
-                    window.location.href = `administration.html?tenantID=${tenantID}`;
+                    window.location.href = `administration.html?tenantID=${window.tenantID}`;
                 }
             } catch (e) { console.error("Erreur de securite reseau", e); }
         })();
     </script>
+
+    <style>
         :root {
             --bg: #050505; 
             --panel: rgba(20, 20, 20, 0.7); 
@@ -120,7 +122,6 @@
             -webkit-font-smoothing: antialiased;
         }
 
-        /* ⚙️ BOUTON RETOUR ADMIN DISCRET ⚙️ */
         .admin-back-btn {
             position: absolute;
             top: 20px;
@@ -144,7 +145,6 @@
             border-color: var(--gold);
         }
 
-        /* ⛶ BOUTON KIOSQUE DISCRET ⛶ */
         .kiosk-btn {
             position: absolute;
             top: 20px;
@@ -308,18 +308,18 @@
     </div>
 
     <script>
-        // Synchronisation dynamique du bouton admin
-        document.getElementById('back-to-admin').href = `admin.html?tenantID=${tenantID}`;
+        // Synchronisation dynamique du bouton admin sécurisé
+        document.getElementById('back-to-admin').href = `admin.html?tenantID=${window.tenantID}`;
 
         const API = {
             getState: async () => {
-                let r = await fetch(`${SERVER_URL}/get-current-state?tenantID=${tenantID}`);
+                let r = await fetch(`${window.SERVER_URL}/get-current-state?tenantID=${window.tenantID}`);
                 if (!r.ok) throw new Error("Serveur injoignable");
                 return await r.json();
             },
             update: async (key, data) => {
                 try { 
-                    await fetch(`${SERVER_URL}/update-order?tenantID=${tenantID}`, { 
+                    await fetch(`${window.SERVER_URL}/update-order?tenantID=${window.tenantID}`, { 
                         method: 'POST', 
                         headers: {'Content-Type': 'application/json'}, 
                         body: JSON.stringify({ tableId: key, order: { data: data } })
@@ -328,7 +328,7 @@
             }
         };
 
-        // Initialisation de la date au jour même
+        // iCHEF Engine Engine: Initialisation de la date au jour même
         document.getElementById('res-date').valueAsDate = new Date();
         document.getElementById('res-date').min = new Date().toISOString().split("T")[0];
 
@@ -371,11 +371,11 @@
 
                 let customerRequest = `Nom: ${name}. Téléphone: ${phone}. Réservation pour ${pax} personnes, le ${date} à ${time}. Occasion: ${eventType || 'Standard'}. Notes: ${rawObs || 'Aucune'}.`;
 
-                let response = await fetch(`${SERVER_URL}/api/smart-reservation`, {
+                let response = await fetch(`${window.SERVER_URL}/api/smart-reservation`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
-                        tenantID: tenantID,
+                        tenantID: window.tenantID,
                         customerRequest: customerRequest,
                         availableTables: availableTables
                     })
@@ -432,7 +432,7 @@
             }
         }
 
-        // ⛶ LOGIQUE DU MODE KIOSQUE
+        // ⛶ LOGIQUE DU MODE KIOSQUE PURE
         document.getElementById('btn-kiosk').addEventListener('click', () => {
             const elem = document.documentElement;
             const btn = document.getElementById('btn-kiosk');
@@ -454,12 +454,8 @@
                 btn.innerText = "⛶ KIOSQUE";
             }
         });
-    </script>
-    // ... Tout le reste de ton code JavaScript actuel (fonctions, boutons, etc.) ...
-        
-    </script>
 
-    <script>
+        // iCHEF ENGINE: Moteur PWA Service Worker Local Service
         if ('serviceWorker' in navigator) {
             window.addEventListener('load', () => {
                 navigator.serviceWorker.register('./service-worker.js')
@@ -472,7 +468,5 @@
             });
         }
     </script>
-</body>
-</html>
 </body>
 </html>
