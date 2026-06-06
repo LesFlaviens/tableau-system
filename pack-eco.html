@@ -932,62 +932,52 @@
         function appendPin(n) { currentPin += n; document.getElementById('pin-display').innerText = '*'.repeat(currentPin.length); resetInactivityTimer(); }
         function clearPin() { currentPin = ""; document.getElementById('pin-display').innerText = ""; resetInactivityTimer(); }
         
-        async function submitPin() {
-            let masterPin = localStorage.getItem('ichef_master_pin') || "999999";
+async function submitPin() {
+    if (!currentPin) return;
+
+    try {
+        // Le front-end ne sait rien. Il interroge le serveur, qui détient l'autorité.
+        let response = await fetch(`${APP_SERVER_URL}/verify-pin?tenantID=${appTenantID}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ pin: currentPin })
+        });
+
+        if (response.ok) {
+            let data = await response.json();
             
-            if(currentPin === masterPin || currentPin === "9999" || currentPin === "999999" || currentPin === "7777") {
-                currentUser = { name: "Directeur", role: "Manager" };
-                unlockPadWithUser(currentUser); 
+            // La logique métier est conservée, mais basée sur la réponse sécurisée du serveur
+            if (data.active === false) {
+                alert("❌ Accès suspendu.");
+                clearPin();
                 return;
             }
 
-            try {
-                let rState = await fetch(`${APP_SERVER_URL}/get-current-state?tenantID=${appTenantID}`);
-                if (rState.ok) {
-                    let stateData = await rState.json();
-                    let staffList = (stateData.activeOrders && stateData.activeOrders['STAFF_ACCESS']) ? stateData.activeOrders['STAFF_ACCESS'].data : [];
-                    let timesheets = (stateData.activeOrders && stateData.activeOrders['TIMESHEETS_MASTER']) ? stateData.activeOrders['TIMESHEETS_MASTER'].data : {};
-                    
-                    let staffUser = staffList.find(s => s.pin === currentPin);
-                    if (staffUser) {
-                        if (staffUser.active === false) { 
-                            alert("❌ Accès suspendu."); 
-                            clearPin(); 
-                            return; 
-                        }
-                        
-                        let dailyPoste = staffUser.dept;
-                        const today = new Date();
-                        const monthStr = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}`;
-                        const day = today.getDate();
-                        
-                        if (timesheets && timesheets[monthStr] && timesheets[monthStr][staffUser.id] && timesheets[monthStr][staffUser.id][day]) {
-                            if (timesheets[monthStr][staffUser.id][day].poste) {
-                                dailyPoste = timesheets[monthStr][staffUser.id][day].poste;
-                            }
-                        }
+            if (data.poste !== 'salle' && data.poste !== 'admin' && data.role !== 'Manager') {
+                alert(`❌ ACCÈS REFUSÉ : La Caisse est interdite pour le poste [${data.poste ? data.poste.toUpperCase() : 'INCONNU'}].`);
+                clearPin();
+                return;
+            }
 
-                        if (dailyPoste !== 'salle' && dailyPoste !== 'admin') {
-                            alert(`❌ ACCÈS REFUSÉ : La Caisse est interdite pour le poste [${dailyPoste.toUpperCase()}].`);
-                            clearPin();
-                            return;
-                        }
-
-                        let userRole = (dailyPoste === 'admin') ? 'Manager' : 'Serveur';
-                        currentUser = { name: staffUser.name, role: userRole };
-                        
-                        staffAccessData = staffList;
-                        globalTimesheets = timesheets;
-                        
-                        unlockPadWithUser(currentUser);
-                        return;
-                    }
-                }
-            } catch(e) { console.error("Erreur réseau PIN", e); }
-
-            alert("❌ Code PIN Incorrect."); 
-            clearPin(); 
+            // Identification réussie
+            currentUser = { name: data.name, role: data.role };
+            
+            // On déclenche le rafraîchissement des données de base (sans les mots de passe)
+            await syncData(); 
+            
+            unlockPadWithUser(currentUser);
+            return;
+        } else {
+            // Le serveur a renvoyé une erreur 401 ou 403
+            alert("❌ Code PIN Incorrect.");
         }
+    } catch (e) {
+        console.error("Erreur réseau PIN", e);
+        alert("❌ Erreur de communication avec le serveur maître.");
+    }
+    
+    clearPin();
+}
 
         async function toggleKioskMode() {
             const elem = document.documentElement;
