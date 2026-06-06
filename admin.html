@@ -1031,279 +1031,139 @@
             updateDashboardStats();
         }
 
-        // --- GESTION STAFF ---
-        function renderStaffList() {
-            let html = staffAccess.length === 0 
-                ? '<div class="empty-state">Vide</div>' 
-                : staffAccess.map(s => {
-                    let roleColor = s.dept === 'admin' ? 'var(--gold)' : 'var(--text-muted)'; 
-                    return `<div class="list-item"><div><strong>${s.name}</strong> <span style="font-size:0.75rem; color:${roleColor}; margin-left:8px;">${s.dept.toUpperCase()}</span></div><div><button class="btn-outline" onclick="openStaffModal('${s.pin}')">✏️</button><button class="btn-outline danger" onclick="deleteStaff('${s.pin}')">🗑️</button></div></div>`;
-                }).join('');
-            if(document.getElementById('admin-staff-list')) document.getElementById('admin-staff-list').innerHTML = html;
-        }
+<script>
+    // --- ETAT GLOBAL ---
+    let systemSettings = { 
+        loyalty: { active: false, percent: 5 }, 
+        payment: {online: false, stripeLink: ""}, 
+        antiRush: false, 
+        serviceAuBar: false, 
+        schedule: {auto: false, days: [1,2,3,4,5,6]}, 
+        design: {} 
+    };
+    
+    let globalArchitecture = { rooms: ['Salle Principale'], tables: [], zones: [] };
+    let menuCuisine = {}; 
+    let menuBar = {}; 
+    let categoriesCuisine = []; 
+    let categoriesBar = []; 
+    let staffAccess = []; 
+    let archiveCuisine = []; 
+    let hasUnsavedChanges = false;
 
-        function openStaffModal(pin = null) {
-            document.getElementById('staff-edit-original-pin').value = pin || "";
-            if (pin) { 
-                let s = staffAccess.find(x => x.pin === pin); 
-                document.getElementById('staff-name').value = s.name; 
-                document.getElementById('staff-pin').value = s.pin; 
-                document.getElementById('staff-role').value = s.dept; 
-                document.getElementById('staff-active').checked = s.active !== false; 
-            } else { 
-                document.getElementById('staff-name').value = ""; 
-                document.getElementById('staff-pin').value = ""; 
-                document.getElementById('staff-role').value = "salle"; 
-                document.getElementById('staff-active').checked = true; 
-            }
-            let modal = document.getElementById('staff-modal'); 
-            if(modal) { 
-                modal.style.display = 'flex'; 
-                setTimeout(() => modal.classList.add('show'), 10); 
-            }
-        }
+    // --- NAVIGATION & UI ---
+    function toggleMobileMenu() { 
+        document.getElementById('sidebar').classList.toggle('open'); 
+        document.getElementById('mobile-overlay').classList.toggle('show'); 
+    }
+    
+    function switchTab(tabId, el) { 
+        document.querySelectorAll('.main-scroll').forEach(t => t.style.display='none'); 
+        document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active')); 
+        let target = document.getElementById(tabId); 
+        if(target) { target.style.display='block'; setTimeout(() => target.classList.add('active'), 10); } 
+        if(el) el.classList.add('active'); 
+        if(window.innerWidth <= 900) toggleMobileMenu(); 
+    }
 
-        async function saveStaff() {
-            let name = document.getElementById('staff-name').value.trim(); 
-            let pin = document.getElementById('staff-pin').value.trim(); 
-            let origPin = document.getElementById('staff-edit-original-pin').value;
-            
-            if (!name || pin.length < 4) return alert("PIN 4 chiffres min."); 
-            if (pin !== origPin && staffAccess.find(s => s.pin === pin)) return alert("Code existant.");
-            
-            let newStaff = { name: name, pin: pin, dept: document.getElementById('staff-role').value, active: document.getElementById('staff-active').checked };
-            
-            if (origPin) staffAccess[staffAccess.findIndex(s => s.pin === origPin)] = newStaff; 
-            else staffAccess.push(newStaff);
-            
-            closeModals(); 
-            renderStaffList(); 
-            updateDashboardStats();
-            
-            try { 
-                await fetchWithRetry(`${SERVER_URL}/update-order?tenantID=${tenantID}`, { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ tableId: 'STAFF_ACCESS', order: { data: staffAccess } }) }, 3, 2000); 
-                showToast("Synchronisé !"); 
-            } catch(e) {}
-        }
+    // --- GESTION STAFF & BRIGADE ---
+    function renderStaffList() {
+        let html = staffAccess.length === 0 ? '<div class="empty-state">Vide</div>' : staffAccess.map(s => {
+            let roleColor = s.dept === 'admin' ? 'var(--gold)' : 'var(--text-muted)'; 
+            return `<div class="list-item"><div><strong>${s.name}</strong> <span style="font-size:0.75rem; color:${roleColor}; margin-left:8px;">${s.dept.toUpperCase()}</span></div><div><button class="btn-outline" onclick="openStaffModal('${s.pin}')">✏️</button><button class="btn-outline danger" onclick="deleteStaff('${s.pin}')">🗑️</button></div></div>`;
+        }).join('');
+        if(document.getElementById('admin-staff-list')) document.getElementById('admin-staff-list').innerHTML = html;
+    }
 
-        async function deleteStaff(pin) { 
-            if(confirm("Supprimer ?")) { 
-                staffAccess = staffAccess.filter(s => s.pin !== pin); 
-                renderStaffList(); 
-                updateDashboardStats(); 
-                try { 
-                    await fetchWithRetry(`${SERVER_URL}/update-order?tenantID=${tenantID}`, { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ tableId: 'STAFF_ACCESS', order: { data: staffAccess } }) }, 3, 2000); 
-                } catch(e) {} 
-            } 
-        }
-
-        // --- DASHBOARDS ET STATS ---
-        function renderFinancialDashboard() {
-            let allClosed = Array.isArray(archiveCuisine) ? [...archiveCuisine] : (archiveCuisine && Array.isArray(archiveCuisine.data) ? [...archiveCuisine.data] : []);
-            let totalCA = 0; 
-            let curr = systemSettings.currency || "€"; 
-            let html = '';
-            
-            allClosed.sort((a, b) => new Date(b.date || b.time) - new Date(a.date || a.time)).forEach(t => { 
-                let valTTC = parseFloat(t.totalTTC || t.total || 0); 
-                totalCA += valTTC; 
-                let dObj = new Date(t.date || t.time); 
-                let dateStr = isNaN(dObj) ? "" : dObj.toLocaleDateString('fr-FR') + ' ' + dObj.toLocaleTimeString('fr-FR', {hour: '2-digit', minute:'2-digit'});
-                html += `<div class="list-item" style="flex-direction: column; align-items: stretch; gap: 8px;"><div style="display: flex; justify-content: space-between;"><strong style="color:var(--gold);">${t.source || 'Caisse'}</strong><strong>${valTTC.toFixed(2)} ${curr}</strong></div><div style="font-size:0.8rem; color:var(--text-muted);">${dateStr}</div></div>`;
-            });
-            
-            if(document.getElementById('finance-total-ca')) document.getElementById('finance-total-ca').innerText = totalCA.toFixed(2) + ' ' + curr; 
-            if(document.getElementById('finance-total-tables')) document.getElementById('finance-total-tables').innerText = allClosed.length;
-            if(document.getElementById('admin-finance-list')) document.getElementById('admin-finance-list').innerHTML = html || '<div class="empty-state">Vide</div>';
-        }
-
-        function updateDashboardStats() {
-            let itemsCount = 0; 
-            if(menuCuisine) Object.values(menuCuisine).forEach(arr => itemsCount += (arr ? arr.length : 0)); 
-            if(menuBar) Object.values(menuBar).forEach(arr => itemsCount += (arr ? arr.length : 0));
-            if(document.getElementById('dash-items-count')) document.getElementById('dash-items-count').innerText = itemsCount;
-            if(document.getElementById('dash-staff-count')) document.getElementById('dash-staff-count').innerText = staffAccess ? staffAccess.length : 0;
-        }
-
-        // --- DESIGN ET QR ---
-        function updateDesignPreview() { 
-            let bg = document.getElementById('design-bg-color')?.value || '#0b0f19'; 
-            let txt = document.getElementById('design-text-color')?.value || '#ffffff'; 
-            let phone = document.getElementById('phone-preview'); 
-            if (phone) { phone.style.backgroundColor = bg; phone.style.color = txt; } 
-        }
+    function renderActiveStaff() {
+        // Filtre les membres ayant le statut onDuty: true
+        let activeStaff = staffAccess.filter(s => s.onDuty === true); 
+        let container = document.getElementById('active-staff-list');
+        if (!container) return;
         
-        async function syncQRTables() {
-            try {
-                let btn = document.querySelector('.btn-sync'); if(btn) btn.innerHTML = "⏳...";
-                
-                // On récupère les tables depuis l'architecture globale (Le terrain maitre)
-                let tablesList = [];
-                if (globalArchitecture && globalArchitecture.tables) {
-                    tablesList = globalArchitecture.tables.map(t => t.label);
-                }
-                tablesList = [...new Set(tablesList)]; // Dédoublonnage sécurisé
-                
-                let container = document.getElementById('all-qr-grid'); if(!container) return;
-                
-                if(tablesList.length === 0) {
-                    container.innerHTML = "<div class='empty-state'>Aucune table trouvée. Dessinez vos tables sur le Pad Serveur d'abord.</div>";
-                } else {
-                    let html = ''; 
-                    let baseUrl = (document.getElementById('qr-base-url')?.value.trim());
-                    if (!baseUrl) baseUrl = `${window.location.origin}/menu-qr.html`;
-                    
-                    tablesList.forEach(t => {
-                        let link = `${baseUrl}?tenantID=${tenantID}&table=${encodeURIComponent(t)}`; 
-                        let qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=500x500&data=${encodeURIComponent(link)}&color=000000&bgcolor=ffffff`;
-                        
-                        html += `
-                        <div style="background: rgba(255,255,255,0.05); padding: 15px; border-radius: var(--radius-main); text-align: center; border: 1px solid var(--border-strong);">
-                            <h4 style="color: var(--gold); margin: 0 0 15px 0; font-size: 1.2rem; letter-spacing: 1px;">TABLE ${t}</h4>
-                            <img src="${qrUrl}" style="width: 150px; height: 150px; border-radius: 8px; margin-bottom: 15px; cursor:zoom-in; border: 5px solid #fff;" onclick="openQRZoom('${qrUrl}', '${t}')" title="Zoomer">
-                            
-                            <div style="background: #000; padding: 10px; border-radius: 8px; border: 1px solid var(--border);">
-                                <div style="font-size: 0.65rem; color: var(--accent); margin-bottom: 5px; text-transform: uppercase; font-weight: bold; letter-spacing: 1px;">Lien pour Puce NFC</div>
-                                <input type="text" readonly value="${link}" style="width: 100%; padding: 6px; font-size: 0.65rem; background: transparent; color: #fff; border: 1px dashed var(--border-strong); border-radius: 4px; margin-bottom: 8px; text-align: center; box-sizing: border-box;">
-                                <button class="btn-outline" style="width: 100%; font-size: 0.75rem; padding: 8px; border-color: var(--gold); color: var(--gold);" onclick="navigator.clipboard.writeText('${link}'); showToast('Lien NFC copié !')">📋 COPIER LE LIEN</button>
-                            </div>
-                        </div>`;
-                    });
-                    container.innerHTML = html;
-                }
-                if(btn) btn.innerHTML = "✅"; 
-                setTimeout(() => { if(btn) btn.innerHTML = "🔄 Générer"; }, 2000);
-            } catch(e) { console.error(e); }
+        if (activeStaff.length === 0) {
+            container.innerHTML = '<div class="empty-state" style="width: 100%;">La brigade est au repos.</div>';
+        } else {
+            container.innerHTML = activeStaff.map(s => `
+                <div style="padding: 8px 12px; background: var(--success); color: #000; border-radius: 6px; font-size: 0.8rem; font-weight: 700;">● ${s.name}</div>
+            `).join('');
         }
+    }
 
-        function openQRZoom(src, num) { 
-            if(document.getElementById('qr-zoom-img')) document.getElementById('qr-zoom-img').src = src.replace('250x250', '500x500'); 
-            if(document.getElementById('qr-zoom-title')) document.getElementById('qr-zoom-title').innerText = "TABLE " + num; 
-            let modal = document.getElementById('qr-zoom-modal'); 
-            if(modal) { 
-                modal.style.display = 'flex'; 
-                setTimeout(() => modal.classList.add('show'), 10); 
-            } 
+    function openStaffModal(pin = null) {
+        document.getElementById('staff-edit-original-pin').value = pin || "";
+        if (pin) { 
+            let s = staffAccess.find(x => x.pin === pin); 
+            document.getElementById('staff-name').value = s.name; 
+            document.getElementById('staff-pin').value = s.pin; 
+            document.getElementById('staff-role').value = s.dept; 
+            document.getElementById('staff-active').checked = s.active !== false; 
+        } else { 
+            document.getElementById('staff-name').value = ""; 
+            document.getElementById('staff-pin').value = ""; 
+            document.getElementById('staff-role').value = "salle"; 
+            document.getElementById('staff-active').checked = true; 
         }
+        let modal = document.getElementById('staff-modal'); 
+        if(modal) { modal.style.display = 'flex'; setTimeout(() => modal.classList.add('show'), 10); }
+    }
 
-        // --- SAUVEGARDE ET SYNCHRONISATION SERVEUR ---
-        async function saveAllToCloud() {
-            try {
-                let syncBtn = document.getElementById('sync-status'); 
-                if(syncBtn) syncBtn.innerHTML = '⏳ Enregistrement...';
-                
-                if(document.getElementById('resto-name')) systemSettings.name = document.getElementById('resto-name').value.trim();
-                if(document.getElementById('resto-tva')) systemSettings.tva = parseFloat(document.getElementById('resto-tva').value) || 10;
-                if(document.getElementById('resto-tva-2')) systemSettings.tva2 = parseFloat(document.getElementById('resto-tva-2').value) || 20;
-                if(document.getElementById('setting-currency')) systemSettings.currency = document.getElementById('setting-currency').value;
-                if(document.getElementById('setting-anti-rush')) systemSettings.antiRush = document.getElementById('setting-anti-rush').checked;
+    async function saveStaff() {
+        let name = document.getElementById('staff-name').value.trim(); 
+        let pin = document.getElementById('staff-pin').value.trim(); 
+        let origPin = document.getElementById('staff-edit-original-pin').value;
+        if (!name || pin.length < 4) return alert("PIN 4 chiffres min."); 
+        let newStaff = { name: name, pin: pin, dept: document.getElementById('staff-role').value, active: document.getElementById('staff-active').checked, onDuty: false };
+        if (origPin) staffAccess[staffAccess.findIndex(s => s.pin === origPin)] = { ...staffAccess.find(s => s.pin === origPin), ...newStaff }; 
+        else staffAccess.push(newStaff);
+        closeModals(); renderStaffList(); renderActiveStaff(); updateDashboardStats();
+        try { await fetchWithRetry(`${SERVER_URL}/update-order?tenantID=${tenantID}`, { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ tableId: 'STAFF_ACCESS', order: { data: staffAccess } }) }, 3, 2000); showToast("Synchronisé !"); } catch(e) {}
+    }
 
-                if(!systemSettings.loyalty) systemSettings.loyalty = {};
-                if(document.getElementById('setting-loyalty-active')) systemSettings.loyalty.active = document.getElementById('setting-loyalty-active').checked;
-                if(document.getElementById('setting-loyalty-percent')) systemSettings.loyalty.percent = parseFloat(document.getElementById('setting-loyalty-percent').value) || 5;
+    async function deleteStaff(pin) { 
+        if(confirm("Supprimer ?")) { 
+            staffAccess = staffAccess.filter(s => s.pin !== pin); 
+            renderStaffList(); renderActiveStaff(); updateDashboardStats();
+            try { await fetchWithRetry(`${SERVER_URL}/update-order?tenantID=${tenantID}`, { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ tableId: 'STAFF_ACCESS', order: { data: staffAccess } }) }, 3, 2000); } catch(e) {} 
+        } 
+    }
 
-                if(!systemSettings.payment) systemSettings.payment = { online: false, stripeLink: "" };
-                if(document.getElementById('setting-qr-pay')) systemSettings.payment.online = document.getElementById('setting-qr-pay').checked;
-                if(document.getElementById('resto-stripe')) systemSettings.payment.stripeLink = document.getElementById('resto-stripe').value.trim();
+    // --- UTILS & SYNC ---
+    function markUnsaved() { hasUnsavedChanges = true; let s = document.getElementById('sync-status'); if(s) { s.innerHTML = '⚠️ Modifié'; s.style.color = 'var(--gold)'; s.style.borderColor = 'var(--gold)'; } }
+    function markSaved() { hasUnsavedChanges = false; let s = document.getElementById('sync-status'); if(s) { s.innerHTML = '<span>● À jour</span> 🔄'; s.style.color = 'var(--text-main)'; s.style.borderColor = 'var(--border)'; } showToast("Sauvegardé !"); }
+    function showToast(msg) { let t = document.getElementById('toast'); if(t) { t.innerText = msg; t.classList.add('show'); setTimeout(() => t.classList.remove('show'), 3000); } }
+    function closeModals() { document.querySelectorAll('.modal').forEach(m => { m.style.opacity = '0'; setTimeout(() => { m.classList.remove('show'); m.style.display = 'none'; }, 300); }); }
+    function forceSync() { if(hasUnsavedChanges && !confirm("⚠️ Écraser les modifications ?")) return; fetchStateFromCloud(); }
+    function retourCaisse() { window.location.href = `pack-eco.html?tenantID=${tenantID}`; }
 
-                if(!systemSettings.design) systemSettings.design = {};
-                if(document.getElementById('design-bg-color')) systemSettings.design.bgColor = document.getElementById('design-bg-color').value;
-                if(document.getElementById('design-text-color')) systemSettings.design.textColor = document.getElementById('design-text-color').value;
+    // --- DASHBOARD CALCULATIONS ---
+    function updateDashboardStats() {
+        let itemsCount = 0; 
+        if(menuCuisine) Object.values(menuCuisine).forEach(arr => itemsCount += (arr ? arr.length : 0)); 
+        if(menuBar) Object.values(menuBar).forEach(arr => itemsCount += (arr ? arr.length : 0));
+        if(document.getElementById('dash-items-count')) document.getElementById('dash-items-count').innerText = itemsCount;
+        if(document.getElementById('dash-staff-count')) document.getElementById('dash-staff-count').innerText = staffAccess ? staffAccess.length : 0;
+    }
 
-                let selectedDays = []; 
-                document.querySelectorAll('#schedule-days-container input[type="checkbox"]:checked').forEach(cb => selectedDays.push(parseInt(cb.value)));
-                
-                systemSettings.schedule = { 
-                    auto: document.getElementById('setting-auto-schedule')?.checked || false, 
-                    days: selectedDays,
-                    matin: { s: document.getElementById('matin-start')?.value || "" },
-                    soir: { s: document.getElementById('soir-start')?.value || "" }
-                };
+    // --- FETCH ---
+    async function fetchStateFromCloud() {
+        try {
+            let isAuthOk = await runSecurityCheck(); if(!isAuthOk) return;
+            let r = await fetchWithRetry(`${SERVER_URL}/get-current-state?tenantID=${tenantID}&_t=${Date.now()}`, { cache: 'no-store' }, 4, 3000);
+            let state = await r.json(); let aO = state.activeOrders || {};
+            if(aO['SETTINGS_MASTER']) systemSettings = aO['SETTINGS_MASTER'].data;
+            staffAccess = (aO['STAFF_ACCESS'] && aO['STAFF_ACCESS'].data) ? aO['STAFF_ACCESS'].data : [];
+            
+            // Render calls
+            injectSettingsToUI();
+            renderStaffList();
+            renderActiveStaff(); // Mise à jour de la brigade
+            updateDashboardStats();
+            markSaved();
+        } catch(e) { console.error("Sync error", e); }
+    }
 
-                let architectureConsolidee = { ...menuCuisine, ...menuBar };
-                const reqs = [
-                    { tableId: 'MENU_MASTER', order: { data: menuCuisine } }, 
-                    { tableId: 'MENU_MASTER_BAR', order: { data: menuBar } },
-                    { tableId: 'SETTINGS_MASTER', order: { data: systemSettings } }, 
-                    { tableId: 'STAFF_ACCESS', order: { data: staffAccess } },
-                    { tableId: 'CATEGORIES_CUISINE', order: { data: categoriesCuisine } }, 
-                    { tableId: 'CATEGORIES_BAR', order: { data: categoriesBar } },
-                    { tableId: 'MENU_ARCHITECTURE', order: { data: architectureConsolidee } },
-                    { tableId: 'ARCHITECTURE', order: { data: globalArchitecture } }
-                ];
-                
-                for (let req of reqs) {
-                    await fetchWithRetry(`${SERVER_URL}/update-order?tenantID=${tenantID}`, { 
-                        method: 'POST', 
-                        headers: {'Content-Type': 'application/json'}, 
-                        body: JSON.stringify(req) 
-                    }, 3, 2000);
-                }
-                markSaved();
-            } catch(e) { 
-                alert("❌ Erreur : " + e.message); 
-                let syncBtn = document.getElementById('sync-status'); 
-                if(syncBtn) syncBtn.innerHTML = '⚠️ Erreur'; 
-            }
-        }
-
-        async function fetchStateFromCloud() {
-            try {
-                if ('serviceWorker' in navigator) { 
-                    const registrations = await navigator.serviceWorker.getRegistrations(); 
-                    for(let r of registrations) await r.unregister(); 
-                }
-                
-                let syncBtn = document.getElementById('sync-status'); 
-                if (syncBtn) syncBtn.innerHTML = '⏳ Synchronisation...';
-                
-                let isAuthOk = await runSecurityCheck(); 
-                if(!isAuthOk) return;
-
-                let r = await fetchWithRetry(`${SERVER_URL}/get-current-state?tenantID=${tenantID}&_t=${Date.now()}`, { cache: 'no-store' }, 4, 3000);
-                let state = await r.json(); 
-                let aO = state.activeOrders || {};
-
-                if(aO['SETTINGS_MASTER'] && aO['SETTINGS_MASTER'].data) systemSettings = aO['SETTINGS_MASTER'].data;
-                menuCuisine = (aO['MENU_MASTER'] && aO['MENU_MASTER'].data) ? aO['MENU_MASTER'].data : {};
-                menuBar = (aO['MENU_MASTER_BAR'] && aO['MENU_MASTER_BAR'].data) ? aO['MENU_MASTER_BAR'].data : {};
-                staffAccess = (aO['STAFF_ACCESS'] && aO['STAFF_ACCESS'].data) ? aO['STAFF_ACCESS'].data : [];
-                archiveCuisine = (aO['FINANCIAL_HISTORY'] && aO['FINANCIAL_HISTORY'].data) ? aO['FINANCIAL_HISTORY'].data : [];
-
-                // SYNCHRONISATION ARCHITECTURE ZONES
-                if (aO['ARCHITECTURE']) {
-                    let archi = aO['ARCHITECTURE'].data !== undefined ? aO['ARCHITECTURE'].data : aO['ARCHITECTURE'];
-                    globalArchitecture.rooms = archi.rooms || ['Salle Principale'];
-                    globalArchitecture.tables = archi.tables || [];
-                    globalArchitecture.zones = archi.zones || [];
-                }
-
-                if(aO['CATEGORIES_CUISINE'] && aO['CATEGORIES_CUISINE'].data) categoriesCuisine = aO['CATEGORIES_CUISINE'].data; 
-                else categoriesCuisine = Object.keys(menuCuisine).map(k => ({id: k, label: k}));
-                
-                if(aO['CATEGORIES_BAR'] && aO['CATEGORIES_BAR'].data) categoriesBar = aO['CATEGORIES_BAR'].data; 
-                else categoriesBar = Object.keys(menuBar).map(k => ({id: k, label: k}));
-
-                injectSettingsToUI(); 
-                updateCategoryDropdowns(); 
-                renderCategoryModalLists(); 
-                renderMenuList(); 
-                renderStaffList(); 
-                updateDashboardStats(); 
-                renderFinancialDashboard(); 
-                markSaved();
-            } catch(e) { 
-                let syncBtn = document.getElementById('sync-status'); 
-                if(syncBtn) { 
-                    syncBtn.innerHTML = '❌ EN PANNE'; 
-                    syncBtn.style.background = 'var(--danger)'; 
-                    syncBtn.style.color = '#fff'; 
-                } 
-            }
-        }
-
-        window.adminManager = { start: fetchStateFromCloud };
-        fetchStateFromCloud();
-    </script>
+    fetchStateFromCloud();
+</script>
 </body>
 </html>
