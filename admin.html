@@ -142,10 +142,6 @@
             .modal-content { border-radius: 20px 20px 0 0; max-height: 92dvh; height: 92dvh; transform: translateY(100%); }
         }
         .empty-state { text-align: center; padding: 50px 20px; color: var(--text-muted); font-style: italic; background: rgba(0,0,0,0.1); border: 1px dashed var(--border-strong); border-radius: 12px; font-size: 0.95rem;}
-        .btn-visibility { background: transparent; border: 1px solid var(--border-strong); padding: 8px 14px; border-radius: var(--radius-btn); cursor: pointer; display: flex; align-items: center; gap: 8px; }
-        .btn-visibility.visible { color: var(--success); border-color: rgba(16, 185, 129, 0.3); background: rgba(16, 185, 129, 0.05);}
-        .btn-visibility.hidden { color: var(--text-muted); border-style: dashed; }
-        .status-badge.inactive { background: var(--danger); color: #fff; padding: 3px 8px; border-radius: 6px; font-size: 0.7rem; font-weight: bold; letter-spacing: 0.5px;}
     </style>
 </head>
 
@@ -351,23 +347,9 @@
                             📍 Architecture des Zones (Contrôle Terrain)
                         </h3>
                         <p style="color: var(--text-muted); font-size: 0.9rem; margin-bottom: 20px;">
-                            Délimitez le terrain (ex: Zone Jaune). Synchronisez cette zone avec le paiement par Carte (Stripe), le Serveur (Pad), ou le QR Code NFC.
+                            Les zones sont créées et dessinées directement sur le plan de salle (depuis l'écran Pad Serveur > Config > Nouvelle Zone).<br>
+                            Depuis ce panneau, vous pouvez <strong>contrôler et forcer le mode de paiement</strong> de chaque zone.
                         </p>
-                        
-                        <div class="grid-2" style="align-items: end; margin-bottom: 25px;">
-                            <div class="input-group" style="margin: 0;">
-                                <label style="color: var(--text-main);">Nom de la Zone</label>
-                                <input type="text" id="new-zone-name" class="input-field" placeholder="Ex: Zone Jaune (Terrasse)">
-                            </div>
-                            <div style="display: flex; gap: 10px;">
-                                <select id="new-zone-mode" class="input-field" style="flex: 1;">
-                                    <option value="qr_nfc">📱 Paiement Carte (QR/Stripe)</option>
-                                    <option value="standard">🍽️ Paiement Serveur (Pad)</option>
-                                    <option value="bar">🍹 Paiement Comptoir (NFC/Bar)</option>
-                                </select>
-                                <button class="btn-save" style="background: var(--accent); color: #000; box-shadow: 0 4px 15px rgba(56, 189, 248, 0.25);" onclick="addZone()">Créer</button>
-                            </div>
-                        </div>
 
                         <div id="admin-zones-list" style="display: flex; flex-direction: column; gap: 10px;">
                             <div class="empty-state">Chargement des zones...</div>
@@ -441,7 +423,8 @@
     <div id="toast" class="toast">✓ Modifié avec succès</div>
 
     <script>
-        let systemSettings = { loyalty: { active: false, percent: 5 }, payment: {online: false, stripeLink: ""}, antiRush: false, serviceAuBar: false, schedule: {auto: false, days: [1,2,3,4,5,6]}, design: {}, zones: [] };
+        let systemSettings = { loyalty: { active: false, percent: 5 }, payment: {online: false, stripeLink: ""}, antiRush: false, serviceAuBar: false, schedule: {auto: false, days: [1,2,3,4,5,6]}, design: {} };
+        let globalArchitecture = { rooms: ['Salle Principale'], tables: [], zones: [] };
         let menuCuisine = {}; let menuBar = {}; let categoriesCuisine = []; let categoriesBar = []; let staffAccess = []; let archiveCuisine = []; let loyaltyData = {}; let hasUnsavedChanges = false;
 
         function toggleMobileMenu() { document.getElementById('sidebar').classList.toggle('open'); document.getElementById('mobile-overlay').classList.toggle('show'); }
@@ -454,39 +437,38 @@
         function retourCaisse() { window.location.href = `pack-eco.html?tenantID=${tenantID}`; }
 
         function renderZonesList() {
-            if(!systemSettings.zones) systemSettings.zones = [];
-            let html = systemSettings.zones.length === 0 ? '<div class="empty-state">Aucune zone configurée sur le terrain.</div>' : systemSettings.zones.map(z => {
-                let badgeColor = z.mode === 'qr_nfc' ? '#fbbf24' : (z.mode === 'bar' ? 'var(--danger)' : 'var(--success)');
-                let modeLabel = z.mode === 'qr_nfc' ? '📱 CARTE (STRIPE)' : (z.mode === 'bar' ? '🍹 COMPTOIR (NFC)' : '🍽️ SERVEUR (PAD)');
+            let zones = globalArchitecture.zones || [];
+            let html = zones.length === 0 ? '<div class="empty-state">Aucune zone dessinée. Dessinez-les depuis le Pad Serveur.</div>' : zones.map(z => {
+                let mode = z.payMode || z.mode || 'standard';
+                let badgeColor = mode === 'qr_nfc' ? '#fbbf24' : (mode === 'bar' ? 'var(--danger)' : 'var(--success)');
+                let modeLabel = mode === 'qr_nfc' ? '📱 CARTE (STRIPE)' : (mode === 'bar' ? '🍹 COMPTOIR (NFC)' : '🍽️ SERVEUR (PAD)');
                 return `
                 <div class="list-item" style="background: rgba(0,0,0,0.3); border: 1px solid var(--border-strong);">
                     <div class="list-item-info">
-                        <span class="list-item-title" style="color: var(--text-main); font-size: 1.05rem;">${z.name}</span>
+                        <span class="list-item-title" style="color: var(--text-main); font-size: 1.05rem;">🔲 ${z.label}</span>
                         <span style="font-size: 0.75rem; color: ${badgeColor}; font-weight: bold; margin-top: 2px;">MODE : ${modeLabel}</span>
                     </div>
                     <div class="list-item-actions">
                         <select class="input-field" style="padding: 6px 10px; font-size: 0.8rem; width: auto;" onchange="updateZoneMode('${z.id}', this.value)">
-                            <option value="qr_nfc" ${z.mode==='qr_nfc'?'selected':''}>📱 Carte/Stripe</option>
-                            <option value="standard" ${z.mode==='standard'?'selected':''}>🍽️ Serveur/Pad</option>
-                            <option value="bar" ${z.mode==='bar'?'selected':''}>🍹 Comptoir/NFC</option>
+                            <option value="qr_nfc" ${mode==='qr_nfc'?'selected':''}>📱 Carte/Stripe</option>
+                            <option value="standard" ${mode==='standard'?'selected':''}>🍽️ Serveur/Pad</option>
+                            <option value="bar" ${mode==='bar'?'selected':''}>🍹 Comptoir/NFC</option>
                         </select>
-                        <button class="btn-outline danger" style="padding: 6px 10px;" onclick="deleteZone('${z.id}')">🗑️</button>
                     </div>
                 </div>`;
             }).join('');
             if(document.getElementById('admin-zones-list')) document.getElementById('admin-zones-list').innerHTML = html;
         }
 
-        function addZone() {
-            let nameInput = document.getElementById('new-zone-name'); let modeInput = document.getElementById('new-zone-mode');
-            if(!nameInput || !modeInput) return; let name = nameInput.value.trim(); let mode = modeInput.value;
-            if(!name) return alert("Nom de zone requis."); if(!systemSettings.zones) systemSettings.zones = [];
-            systemSettings.zones.push({ id: 'zone_' + Date.now(), name: name, mode: mode });
-            nameInput.value = ''; markUnsaved(); renderZonesList();
+        function updateZoneMode(id, newMode) { 
+            let zone = globalArchitecture.zones.find(z => z.id === id); 
+            if(zone) { 
+                zone.payMode = newMode; 
+                zone.mode = newMode; 
+                markUnsaved(); 
+                renderZonesList(); 
+            } 
         }
-
-        function deleteZone(id) { if(confirm("Supprimer cette zone ?")) { systemSettings.zones = systemSettings.zones.filter(z => z.id !== id); markUnsaved(); renderZonesList(); } }
-        function updateZoneMode(id, newMode) { let zone = systemSettings.zones.find(z => z.id === id); if(zone) { zone.mode = newMode; markUnsaved(); renderZonesList(); } }
 
         function injectSettingsToUI() {
             let sched = systemSettings.schedule || { auto: false, days: [1,2,3,4,5,6], matin: {}, aprem: {}, soir: {}, nuit: {} }; let safeDays = Array.isArray(sched.days) ? sched.days : [1,2,3,4,5,6];
@@ -631,6 +613,7 @@
         }
 
         function updateDesignPreview() { let bg = document.getElementById('design-bg-color')?.value || '#0b0f19'; let txt = document.getElementById('design-text-color')?.value || '#ffffff'; let phone = document.getElementById('phone-preview'); if (phone) { phone.style.backgroundColor = bg; phone.style.color = txt; } }
+        
         async function syncQRTables() {
             try {
                 let btn = document.querySelector('.btn-sync'); if(btn) btn.innerHTML = "⏳...";
@@ -685,7 +668,8 @@
                     { tableId: 'MENU_MASTER', order: { data: menuCuisine } }, { tableId: 'MENU_MASTER_BAR', order: { data: menuBar } },
                     { tableId: 'SETTINGS_MASTER', order: { data: systemSettings } }, { tableId: 'STAFF_ACCESS', order: { data: staffAccess } },
                     { tableId: 'CATEGORIES_CUISINE', order: { data: categoriesCuisine } }, { tableId: 'CATEGORIES_BAR', order: { data: categoriesBar } },
-                    { tableId: 'MENU_ARCHITECTURE', order: { data: architectureConsolidee } }
+                    { tableId: 'MENU_ARCHITECTURE', order: { data: architectureConsolidee } },
+                    { tableId: 'ARCHITECTURE', order: { data: globalArchitecture } } // On renvoie l'architecture globale
                 ];
                 
                 for (let req of reqs) await fetchWithRetry(`${SERVER_URL}/update-order?tenantID=${tenantID}`, { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(req) }, 3, 2000);
@@ -707,6 +691,14 @@
                 menuBar = (aO['MENU_MASTER_BAR'] && aO['MENU_MASTER_BAR'].data) ? aO['MENU_MASTER_BAR'].data : {};
                 staffAccess = (aO['STAFF_ACCESS'] && aO['STAFF_ACCESS'].data) ? aO['STAFF_ACCESS'].data : [];
                 archiveCuisine = (aO['FINANCIAL_HISTORY'] && aO['FINANCIAL_HISTORY'].data) ? aO['FINANCIAL_HISTORY'].data : [];
+
+                // 🔲 SYNCHRONISATION ARCHITECTURE ZONES
+                if (aO['ARCHITECTURE']) {
+                    let archi = aO['ARCHITECTURE'].data !== undefined ? aO['ARCHITECTURE'].data : aO['ARCHITECTURE'];
+                    globalArchitecture.rooms = archi.rooms || ['Salle Principale'];
+                    globalArchitecture.tables = archi.tables || [];
+                    globalArchitecture.zones = archi.zones || [];
+                }
 
                 if(aO['CATEGORIES_CUISINE'] && aO['CATEGORIES_CUISINE'].data) categoriesCuisine = aO['CATEGORIES_CUISINE'].data; else categoriesCuisine = Object.keys(menuCuisine).map(k => ({id: k, label: k}));
                 if(aO['CATEGORIES_BAR'] && aO['CATEGORIES_BAR'].data) categoriesBar = aO['CATEGORIES_BAR'].data; else categoriesBar = Object.keys(menuBar).map(k => ({id: k, label: k}));
