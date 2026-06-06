@@ -142,6 +142,10 @@
             .modal-content { border-radius: 20px 20px 0 0; max-height: 92dvh; height: 92dvh; transform: translateY(100%); }
         }
         .empty-state { text-align: center; padding: 50px 20px; color: var(--text-muted); font-style: italic; background: rgba(0,0,0,0.1); border: 1px dashed var(--border-strong); border-radius: 12px; font-size: 0.95rem;}
+        .btn-visibility { background: transparent; border: 1px solid var(--border-strong); padding: 8px 14px; border-radius: var(--radius-btn); cursor: pointer; display: flex; align-items: center; gap: 8px; }
+        .btn-visibility.visible { color: var(--success); border-color: rgba(16, 185, 129, 0.3); background: rgba(16, 185, 129, 0.05);}
+        .btn-visibility.hidden { color: var(--text-muted); border-style: dashed; }
+        .status-badge.inactive { background: var(--danger); color: #fff; padding: 3px 8px; border-radius: 6px; font-size: 0.7rem; font-weight: bold; letter-spacing: 0.5px;}
     </style>
 </head>
 
@@ -164,7 +168,7 @@
                 <li class="nav-item" onclick="switchTab('tab-menu', this);">🍔 Carte & Catégories</li>
                 
                 <div class="nav-section-title">Module Clients</div>
-                <li class="nav-item" onclick="switchTab('tab-design', this);">🎨 Design Menu QR</li>
+                <li class="nav-item" onclick="switchTab('tab-design', this);">🎨 Design Menu QR & NFC</li>
                 <li class="nav-item" onclick="switchTab('tab-loyalty', this);">🎁 Fidélité & Clients</li>
                 <li class="nav-item" onclick="switchTab('tab-horaires', this);">🕰️ Horaires & Ouvertures</li>
                 <li class="nav-item" onclick="switchTab('tab-rush', this);">🔥 Mode Anti-Rush</li>
@@ -303,9 +307,15 @@
                         </div>
                     </div>
                     <div class="section-card">
-                        <div class="section-title">Créateur de QR Codes <button class="btn-sync" onclick="syncQRTables()" style="padding: 8px 16px;">🔄 Synchro Tables</button></div>
-                        <div class="input-group"><label>URL de base</label><input type="text" id="qr-base-url" class="input-field" onchange="syncQRTables()"></div>
-                        <div id="all-qr-grid" style="display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 20px;"></div>
+                        <div class="section-title">Générateur QR Codes & Programmation NFC <button class="btn-sync" onclick="syncQRTables()" style="padding: 8px 16px;">🔄 Générer</button></div>
+                        <p style="color: var(--text-muted); font-size: 0.9rem; margin-bottom: 20px;">
+                            Voici les liens exacts pour chaque table dessinée sur votre Pad Serveur. Imprimez les QR codes ou copiez le lien pour l'encoder dans vos puces NFC (via une application comme NFC Tools).
+                        </p>
+                        <div class="input-group">
+                            <label>Domaine de votre Menu (Laissez vide pour auto)</label>
+                            <input type="text" id="qr-base-url" class="input-field" placeholder="https://[VOTRE_DOMAINE]/menu-qr.html" onchange="syncQRTables()">
+                        </div>
+                        <div id="all-qr-grid" style="display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 20px;"></div>
                     </div>
                 </div>
 
@@ -428,7 +438,7 @@
         let menuCuisine = {}; let menuBar = {}; let categoriesCuisine = []; let categoriesBar = []; let staffAccess = []; let archiveCuisine = []; let loyaltyData = {}; let hasUnsavedChanges = false;
 
         function toggleMobileMenu() { document.getElementById('sidebar').classList.toggle('open'); document.getElementById('mobile-overlay').classList.toggle('show'); }
-        function switchTab(tabId, el) { document.querySelectorAll('.main-scroll').forEach(t => t.style.display='none'); document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active')); let target = document.getElementById(tabId); if(target) { target.style.display='block'; setTimeout(() => target.classList.add('active'), 10); } if(el) el.classList.add('active'); if(window.innerWidth <= 900) toggleMobileMenu(); if(tabId === 'tab-design') renderAllQRCodes(); }
+        function switchTab(tabId, el) { document.querySelectorAll('.main-scroll').forEach(t => t.style.display='none'); document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active')); let target = document.getElementById(tabId); if(target) { target.style.display='block'; setTimeout(() => target.classList.add('active'), 10); } if(el) el.classList.add('active'); if(window.innerWidth <= 900) toggleMobileMenu(); if(tabId === 'tab-design') syncQRTables(); }
         function markUnsaved() { hasUnsavedChanges = true; let s = document.getElementById('sync-status'); if(s) { s.innerHTML = '⚠️ Modifié'; s.style.color = 'var(--gold)'; s.style.borderColor = 'var(--gold)'; } }
         function markSaved() { hasUnsavedChanges = false; let s = document.getElementById('sync-status'); if(s) { s.innerHTML = '<span>● À jour</span> 🔄'; s.style.color = 'var(--text-main)'; s.style.borderColor = 'var(--border)'; } showToast("Sauvegardé !"); }
         function showToast(msg) { let t = document.getElementById('toast'); if(t) { t.innerText = msg; t.classList.add('show'); setTimeout(() => t.classList.remove('show'), 3000); } }
@@ -617,20 +627,43 @@
         async function syncQRTables() {
             try {
                 let btn = document.querySelector('.btn-sync'); if(btn) btn.innerHTML = "⏳...";
-                let r = await fetch(`${SERVER_URL}/get-current-state?tenantID=${tenantID}`); let state = await r.json(); let activeOrders = state.activeOrders || {};
-                let tablesList = Object.keys(activeOrders).filter(k => !['MENU_MASTER', 'SETTINGS_MASTER', 'STAFF_ACCESS', 'MENU_MASTER_BAR', 'CATEGORIES_CUISINE', 'CATEGORIES_BAR', 'MENU_ARCHITECTURE', 'ALERTS_MASTER', 'LOYALTY_MASTER', 'FINANCIAL_HISTORY'].includes(k));
+                
+                // On récupère les tables depuis l'architecture globale (Le terrain maitre)
+                let tablesList = [];
+                if (globalArchitecture && globalArchitecture.tables) {
+                    tablesList = globalArchitecture.tables.map(t => t.label);
+                }
+                tablesList = [...new Set(tablesList)]; // Dédoublonnage sécurisé
+                
                 let container = document.getElementById('all-qr-grid'); if(!container) return;
-                if(tablesList.length === 0) container.innerHTML = "<div class='empty-state'>Aucune table active.</div>";
-                else {
-                    let html = ''; let baseUrl = (document.getElementById('qr-base-url')?.value.trim()) || `${window.location.origin}/menu-qr.html`;
+                
+                if(tablesList.length === 0) {
+                    container.innerHTML = "<div class='empty-state'>Aucune table trouvée. Dessinez vos tables sur le Pad Serveur d'abord.</div>";
+                } else {
+                    let html = ''; 
+                    let baseUrl = (document.getElementById('qr-base-url')?.value.trim());
+                    if (!baseUrl) baseUrl = `${window.location.origin}/menu-qr.html`;
+                    
                     tablesList.forEach(t => {
-                        let cleanTable = t.replace('WEB_', ''); let link = `${baseUrl}?tenantID=${tenantID}&table=${encodeURIComponent(cleanTable)}`; let qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=250x250&data=${encodeURIComponent(link)}&color=000000&bgcolor=ffffff`;
-                        html += `<div style="background: rgba(255,255,255,0.05); padding: 15px; border-radius: var(--radius-main); text-align: center;"><h4 style="color: var(--gold); margin: 0 0 15px 0;">Table ${cleanTable}</h4><img src="${qrUrl}" style="width: 140px; height: 140px; border-radius: 8px; margin-bottom: 15px; cursor:zoom-in;" onclick="openQRZoom('${qrUrl}', '${cleanTable}')"></div>`;
+                        let link = `${baseUrl}?tenantID=${tenantID}&table=${encodeURIComponent(t)}`; 
+                        let qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=500x500&data=${encodeURIComponent(link)}&color=000000&bgcolor=ffffff`;
+                        
+                        html += `
+                        <div style="background: rgba(255,255,255,0.05); padding: 15px; border-radius: var(--radius-main); text-align: center; border: 1px solid var(--border-strong);">
+                            <h4 style="color: var(--gold); margin: 0 0 15px 0; font-size: 1.2rem; letter-spacing: 1px;">TABLE ${t}</h4>
+                            <img src="${qrUrl}" style="width: 150px; height: 150px; border-radius: 8px; margin-bottom: 15px; cursor:zoom-in; border: 5px solid #fff;" onclick="openQRZoom('${qrUrl}', '${t}')" title="Zoomer">
+                            
+                            <div style="background: #000; padding: 10px; border-radius: 8px; border: 1px solid var(--border);">
+                                <div style="font-size: 0.65rem; color: var(--accent); margin-bottom: 5px; text-transform: uppercase; font-weight: bold; letter-spacing: 1px;">Lien pour Puce NFC</div>
+                                <input type="text" readonly value="${link}" style="width: 100%; padding: 6px; font-size: 0.65rem; background: transparent; color: #fff; border: 1px dashed var(--border-strong); border-radius: 4px; margin-bottom: 8px; text-align: center; box-sizing: border-box;">
+                                <button class="btn-outline" style="width: 100%; font-size: 0.75rem; padding: 8px; border-color: var(--gold); color: var(--gold);" onclick="navigator.clipboard.writeText('${link}'); showToast('Lien NFC copié !')">📋 COPIER LE LIEN</button>
+                            </div>
+                        </div>`;
                     });
                     container.innerHTML = html;
                 }
-                if(btn) btn.innerHTML = "✅"; setTimeout(() => { if(btn) btn.innerHTML = "🔄 Synchro Tables"; }, 2000);
-            } catch(e) {}
+                if(btn) btn.innerHTML = "✅"; setTimeout(() => { if(btn) btn.innerHTML = "🔄 Générer"; }, 2000);
+            } catch(e) { console.error(e); }
         }
         function openQRZoom(src, num) { if(document.getElementById('qr-zoom-img')) document.getElementById('qr-zoom-img').src = src.replace('250x250', '500x500'); if(document.getElementById('qr-zoom-title')) document.getElementById('qr-zoom-title').innerText = "TABLE " + num; let modal = document.getElementById('qr-zoom-modal'); if(modal) { modal.style.display = 'flex'; setTimeout(() => modal.classList.add('show'), 10); } }
 
@@ -669,7 +702,7 @@
                     { tableId: 'SETTINGS_MASTER', order: { data: systemSettings } }, { tableId: 'STAFF_ACCESS', order: { data: staffAccess } },
                     { tableId: 'CATEGORIES_CUISINE', order: { data: categoriesCuisine } }, { tableId: 'CATEGORIES_BAR', order: { data: categoriesBar } },
                     { tableId: 'MENU_ARCHITECTURE', order: { data: architectureConsolidee } },
-                    { tableId: 'ARCHITECTURE', order: { data: globalArchitecture } } // On renvoie l'architecture globale
+                    { tableId: 'ARCHITECTURE', order: { data: globalArchitecture } }
                 ];
                 
                 for (let req of reqs) await fetchWithRetry(`${SERVER_URL}/update-order?tenantID=${tenantID}`, { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(req) }, 3, 2000);
