@@ -30,6 +30,8 @@
         .status-actif { background: rgba(16,185,129,0.1); color: var(--accent); border: 1px solid rgba(16,185,129,0.2); }
         .status-suspendu { background: rgba(239,68,68,0.1); color: var(--danger); border: 1px solid rgba(239,68,68,0.2); }
 
+        .addon-badge { background: rgba(212,175,55,0.1); border: 1px solid var(--gold); color: var(--gold); padding: 3px 6px; border-radius: 4px; font-size: 0.65rem; margin: 2px; display: inline-block; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px;}
+
         select { background: #000; border: 1px solid var(--border-strong); color: var(--gold); padding: 8px 12px; border-radius: 6px; font-weight: 600; cursor: pointer; outline: none; }
         select:focus { border-color: var(--gold); }
 
@@ -61,6 +63,7 @@
                     <th>Établissement</th>
                     <th>Contact</th>
                     <th>Forfait Actuel</th>
+                    <th>Add-ons / Options</th>
                     <th>Écrans Actifs / Max</th>
                     <th>Mot de passe (PIN)</th>
                     <th>Statut</th>
@@ -69,7 +72,7 @@
             </thead>
             <tbody id="tenants-list-container">
                 <tr>
-                    <td colspan="7" style="text-align: center; color: var(--text-muted); padding: 40px; font-style: italic;">Connexion atomique à la base MongoDB en cours...</td>
+                    <td colspan="8" style="text-align: center; color: var(--text-muted); padding: 40px; font-style: italic;">Connexion atomique à la base MongoDB en cours...</td>
                 </tr>
             </tbody>
         </table>
@@ -101,7 +104,7 @@
         function renderTenantsTable() {
             const container = document.getElementById('tenants-list-container');
             if (allTenants.length === 0) {
-                container.innerHTML = `<tr><td colspan="7" style="text-align:center; color:var(--text-muted); padding:40px;">Aucun restaurant enregistré sous licence actuellement.</td></tr>`;
+                container.innerHTML = `<tr><td colspan="8" style="text-align:center; color:var(--text-muted); padding:40px;">Aucun restaurant enregistré sous licence actuellement.</td></tr>`;
                 return;
             }
 
@@ -110,6 +113,12 @@
                 let toggleStatusBtn = t.status === 'ACTIF' 
                     ? `<button class="btn-action btn-danger" onclick="executerAction('${t.id}', 'suspend')">Suspendre</button>`
                     : `<button class="btn-action btn-success" onclick="executerAction('${t.id}', 'activate')">Activer</button>`;
+
+                // Gestion de l'affichage des Add-ons (Modules à la carte)
+                let userAddons = t.addons || [];
+                let addonsHtml = userAddons.length > 0 
+                    ? userAddons.map(a => `<span class="addon-badge">${a.replace('.html', '')}</span>`).join('') 
+                    : `<span style="color:var(--text-muted); font-size:0.75rem; font-style:italic;">Aucun add-on</span>`;
 
                 return `
                     <tr class="resto-row" data-search="${String(t.id + ' ' + t.name + ' ' + t.email).toLowerCase()}">
@@ -130,6 +139,10 @@
                                 <option value="CHEF_BAR" ${t.pack === 'CHEF_BAR' ? 'selected' : ''}>Chef Barman (19€)</option>
                                 <option value="EMPIRE" ${t.pack === 'EMPIRE' ? 'selected' : ''}>Empire (99€)</option>
                             </select>
+                        </td>
+                        <td>
+                            <div style="margin-bottom: 6px; line-height: 1.5;">${addonsHtml}</div>
+                            <button class="btn-action btn-edit" style="padding:4px 8px; font-size:0.65rem;" onclick="gererAddons('${t.id}', '${userAddons.join(',')}')">Gérer Options</button>
                         </td>
                         <td>
                             <div style="display: flex; align-items: center; gap: 8px;">
@@ -172,6 +185,8 @@
                 });
                 if (res.ok) {
                     loadAllTenants(); // Rechargement synchrone de la grille
+                } else {
+                    alert("Erreur retournée par le serveur.");
                 }
             } catch(e) { alert("Erreur de communication avec le serveur central."); }
         }
@@ -184,10 +199,22 @@
             }
         }
 
-        // 🔥 NOUVELLE FONCTION : MODIFIER LE NOMBRE MAX D'ÉCRANS 🔥
+        // 🔥 GESTION DES ADD-ONS DEPUIS LA TOUR DE CONTRÔLE 🔥
+        function gererAddons(tenantID, currentAddonsStr) {
+            let input = prompt(
+                `🧩 GESTION DES OPTIONS POUR : ${tenantID.toUpperCase()}\n\nSaisissez les noms des fichiers HTML exacts séparés par une virgule pour les autoriser :\n(Exemple: reservation.html, haccp.html, chef-patissier.html)\n\nLaissez vide pour tout retirer.`, 
+                currentAddonsStr
+            );
+            
+            if (input !== null) {
+                let addonsArray = input.split(',').map(s => s.trim()).filter(s => s !== "");
+                executerAction(tenantID, 'set_addons', { addons: addonsArray });
+            }
+        }
+
         function modifierNombreEcrans(tenantID, currentMax) {
             let nouveauMax = prompt(`🖥️ Saisissez le NOUVEAU nombre maximum d'écrans autorisés pour le restaurant ${tenantID.toUpperCase()} :`, currentMax);
-            if (nouveauMax === null) return; // Le gars a annulé
+            if (nouveauMax === null) return;
             
             let val = parseInt(nouveauMax);
             if (isNaN(val) || val < 1) {
