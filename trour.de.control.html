@@ -45,6 +45,17 @@
         .btn-edit:hover { background: var(--gold); color: #000; border-color: var(--gold); }
 
         .flex-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+
+        /* 🧩 MODAL QCM ADD-ONS */
+        .modal-overlay { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.8); backdrop-filter: blur(5px); display: none; align-items: center; justify-content: center; z-index: 9999; opacity: 0; transition: opacity 0.3s; }
+        .modal-overlay.active { display: flex; opacity: 1; }
+        .modal-content { background: var(--panel); border: 1px solid var(--gold); border-radius: 12px; padding: 30px; width: 90%; max-width: 500px; box-shadow: 0 20px 50px rgba(0,0,0,0.5); max-height: 85vh; display: flex; flex-direction: column; transform: scale(0.9); transition: transform 0.3s; }
+        .modal-overlay.active .modal-content { transform: scale(1); }
+        
+        .addons-grid { display: grid; grid-template-columns: 1fr; gap: 10px; margin: 20px 0; overflow-y: auto; padding-right: 10px; }
+        .addon-checkbox-label { display: flex; align-items: center; gap: 12px; background: rgba(255,255,255,0.02); padding: 12px 15px; border-radius: 8px; border: 1px solid var(--border); cursor: pointer; transition: 0.2s; }
+        .addon-checkbox-label:hover { border-color: var(--gold); background: rgba(212,175,55,0.05); }
+        .addon-checkbox-label input { width: 18px; height: 18px; accent-color: var(--gold); cursor: pointer; }
     </style>
 </head>
 <body>
@@ -78,11 +89,43 @@
         </table>
     </div>
 
+    <div id="addons-modal" class="modal-overlay">
+        <div class="modal-content">
+            <h2 id="addons-modal-title" style="margin-top:0; color:var(--gold); text-transform:uppercase; font-size: 1.4rem;">Options</h2>
+            <p style="color:var(--text-muted); font-size:0.9rem; margin-top:0;">Cochez les modules additionnels à activer pour ce restaurant.</p>
+            
+            <div id="addons-grid" class="addons-grid">
+                </div>
+            
+            <div style="display:flex; gap:10px; margin-top:10px;">
+                <button class="btn-action btn-success" style="flex:1; padding:12px; font-size:0.9rem;" onclick="sauvegarderAddonsModal()">💾 Enregistrer</button>
+                <button class="btn-action btn-danger" style="flex:1; padding:12px; font-size:0.9rem;" onclick="fermerAddonsModal()">Annuler</button>
+            </div>
+        </div>
+    </div>
+
     <script>
         const ADMIN_PASS = "Empire2026"; 
         const SERVER_URL = "https://tableau-system.onrender.com";
 
+        // 📜 LISTE GLOBALE DE TOUS LES MODULES POSSIBLES À LA CARTE
+        const MODULES_DISPONIBLES = [
+            { id: 'pack-eco.html', title: '🖥️ PAD SERVEUR' },
+            { id: 'caissetactile.html', title: '📟 CAISSE TACTILE' },
+            { id: 'minipass.html', title: '📜 ÉCRAN HYBRIDE' },
+            { id: 'chef.html', title: '🍳 GRIMOIRE DU CHEF' },
+            { id: 'chef-patissier.html', title: '🍰 GRIMOIRE PÂTISSIER' },
+            { id: 'chef-bar.html', title: '🍸 GRIMOIRE BARMAN' },
+            { id: 'menu-qr.html', title: '📱 MENU AUTONOME' },
+            { id: 'reservation.html', title: '🛎️ RÉSERVATIONS' },
+            { id: 'haccp.html', title: '🧼 HACCP & HYGIÈNE' },
+            { id: 'rh.html', title: '👥 GESTION STAFF' },
+            { id: 'menu-pure.html', title: '🍔 CARTE RESTAURANT' },
+            { id: 'menu-bar.html', title: '🍷 CARTE BOISSONS' }
+        ];
+
         let allTenants = [];
+        let currentEditingTenant = null;
 
         async function loadAllTenants() {
             try {
@@ -114,7 +157,7 @@
                     ? `<button class="btn-action btn-danger" onclick="executerAction('${t.id}', 'suspend')">Suspendre</button>`
                     : `<button class="btn-action btn-success" onclick="executerAction('${t.id}', 'activate')">Activer</button>`;
 
-                // Gestion de l'affichage des Add-ons (Modules à la carte)
+                // Gestion de l'affichage des Add-ons
                 let userAddons = t.addons || [];
                 let addonsHtml = userAddons.length > 0 
                     ? userAddons.map(a => `<span class="addon-badge">${a.replace('.html', '')}</span>`).join('') 
@@ -141,8 +184,8 @@
                             </select>
                         </td>
                         <td>
-                            <div style="margin-bottom: 6px; line-height: 1.5;">${addonsHtml}</div>
-                            <button class="btn-action btn-edit" style="padding:4px 8px; font-size:0.65rem;" onclick="gererAddons('${t.id}', '${userAddons.join(',')}')">Gérer Options</button>
+                            <div style="margin-bottom: 6px; line-height: 1.5; max-width: 180px;">${addonsHtml}</div>
+                            <button class="btn-action btn-edit" style="padding:4px 8px; font-size:0.65rem;" onclick="ouvrirModalAddons('${t.id}', '${userAddons.join(',')}')">⚙️ Gérer Options</button>
                         </td>
                         <td>
                             <div style="display: flex; align-items: center; gap: 8px;">
@@ -175,6 +218,55 @@
             }).join('');
         }
 
+        // ===============================================
+        // 🧩 SYSTÈME DE GESTION QCM DES MODULES ADD-ONS
+        // ===============================================
+        
+        function ouvrirModalAddons(tenantID, currentAddonsStr) {
+            currentEditingTenant = tenantID;
+            let currentAddons = currentAddonsStr.split(',').map(s => s.trim());
+
+            document.getElementById('addons-modal-title').innerText = `Options de : ${tenantID.toUpperCase()}`;
+            
+            let gridHtml = '';
+            MODULES_DISPONIBLES.forEach(mod => {
+                let isChecked = currentAddons.includes(mod.id) ? 'checked' : '';
+                gridHtml += `
+                    <label class="addon-checkbox-label">
+                        <input type="checkbox" value="${mod.id}" class="addon-checkbox" ${isChecked}>
+                        <div>
+                            <span style="font-weight:600; font-size:0.9rem; color:var(--text-main); display:block;">${mod.title}</span>
+                            <span style="color:var(--text-muted); font-weight:400; font-size:0.75rem; letter-spacing:1px;">Fichier : ${mod.id}</span>
+                        </div>
+                    </label>
+                `;
+            });
+            
+            document.getElementById('addons-grid').innerHTML = gridHtml;
+            document.getElementById('addons-modal').classList.add('active');
+        }
+
+        function fermerAddonsModal() {
+            document.getElementById('addons-modal').classList.remove('active');
+            currentEditingTenant = null;
+        }
+
+        function sauvegarderAddonsModal() {
+            if(!currentEditingTenant) return;
+            
+            // Récupère toutes les checkboxes cochées dans la modale
+            let checkboxes = document.querySelectorAll('.addon-checkbox:checked');
+            let selectedAddons = Array.from(checkboxes).map(cb => cb.value);
+            
+            // Envoi à la base de données
+            executerAction(currentEditingTenant, 'set_addons', { addons: selectedAddons });
+            fermerAddonsModal();
+        }
+
+        // ===============================================
+        // COMMANDES D'ADMINISTRATION
+        // ===============================================
+
         async function executerAction(tenantID, action, payload = {}) {
             try {
                 let bodyData = { masterKey: ADMIN_PASS, tenantID, action, ...payload };
@@ -196,19 +288,6 @@
                 executerAction(tenantID, 'set_plan', { newPlan: nouveauPack });
             } else {
                 loadAllTenants(); // Annule visuellement le changement
-            }
-        }
-
-        // 🔥 GESTION DES ADD-ONS DEPUIS LA TOUR DE CONTRÔLE 🔥
-        function gererAddons(tenantID, currentAddonsStr) {
-            let input = prompt(
-                `🧩 GESTION DES OPTIONS POUR : ${tenantID.toUpperCase()}\n\nSaisissez les noms des fichiers HTML exacts séparés par une virgule pour les autoriser :\n(Exemple: reservation.html, haccp.html, chef-patissier.html)\n\nLaissez vide pour tout retirer.`, 
-                currentAddonsStr
-            );
-            
-            if (input !== null) {
-                let addonsArray = input.split(',').map(s => s.trim()).filter(s => s !== "");
-                executerAction(tenantID, 'set_addons', { addons: addonsArray });
             }
         }
 
