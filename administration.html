@@ -15,6 +15,11 @@
     <title>Empire - Admin System</title>
     
     <script>
+        // Déclaration globale
+        window.tenantID = new URLSearchParams(window.location.search).get('tenantID') || localStorage.getItem('ichef_tenant_id');
+        window.SERVER_URL = (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1" || window.location.protocol === "file:") 
+            ? "http://localhost:10000" : "https://tableau-system.onrender.com";
+
         // 🔒 SÉCURITÉ : Générateur d'empreinte numérique
         function getDeviceFingerprint() {
             let deviceId = localStorage.getItem('ichef_device_fingerprint');
@@ -25,35 +30,48 @@
             return deviceId;
         }
 
-        // 🔒 SÉCURITÉ : Validation de licence stricte avant affichage du DOM
+        // 🔒 SÉCURITÉ : Validation de licence stricte & ADD-ONS avant affichage du DOM
         (async function enforceSecurity() {
             const urlParams = new URLSearchParams(window.location.search);
             let urlTenantID = urlParams.get('tenantID');
-            let storedTenantID = localStorage.getItem('ichef_tenant_id');
 
-            if (urlTenantID && urlTenantID !== storedTenantID) {
+            if (urlTenantID && urlTenantID !== window.tenantID) {
                 localStorage.removeItem('EMPIRE_GLOBAL_SYNC');
                 localStorage.removeItem('ichef_master_pin');
                 if (urlTenantID) localStorage.setItem('ichef_tenant_id', urlTenantID);
-                storedTenantID = urlTenantID;
+                window.tenantID = urlTenantID;
             }
 
-            let tenantID = urlTenantID || storedTenantID;
             let pin = localStorage.getItem('ichef_master_pin'); 
             
-            if(!tenantID) {
+            if(!window.tenantID) {
                 window.location.href = 'connexionpartenaire.html';
                 return;
             }
 
-            const SERVER_URL = (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1" || window.location.protocol === "file:") 
-                ? "http://localhost:10000" : "https://tableau-system.onrender.com";
+            const accessMatrix = {
+                'PACK_A': ['admin.html', 'administration.html','portail-staff.html', 'minipass.html', 'production.html', 'caissetactile.html', 'pack-eco.html', 'menu-qr.html', 'haccp.html'],
+                'CHEF': ['chef.html', 'administration.html'],
+                'CHEF_CUISINE': ['chef.html', 'administration.html'],
+                'PATISSIER': ['chef-patissier.html', 'administration.html'],
+                'CHEF_PATISSERIE': ['chef-patissier.html', 'administration.html'],
+                'BAR': ['chef-bar.html', 'administration.html'],
+                'CHEF_BAR': ['chef-bar.html', 'administration.html'],
+                'ICHEF_OS': ['chef.html', 'portail-staff.html', 'chef-bar.html', 'administration.html', 'admin.html', 'pack-eco.html', 'caissetactile.html', 'minipass.html', 'production.html', 'menu-qr.html'],
+                'ECO': ['portail-staff.html','admin.html', 'pack-eco.html', 'caissetactile.html', 'minipass.html', 'production.html', 'menu-qr.html', 'administration.html', 'haccp.html'],
+                'BUSINESS': ['portail-staff.html','admin.html', 'pack-eco.html', 'caissetactile.html', 'minipass.html', 'production.html', 'menu-qr.html', 'administration.html', 'haccp.html'],
+                'RENTABILITE': ['portail-staff.html','admin.html', 'pack-eco.html', 'caissetactile.html', 'minipass.html', 'production.html', 'menu-qr.html', 'administration.html', 'haccp.html'],
+                'EMPIRE': ['portail-staff.html','admin.html', 'pack-eco.html', 'caissetactile.html', 'menu-qr.html', 'chef.html', 'menu-pure.html', 'chef-bar.html', 'menu-bar.html', 'rh.html', 'haccp.html', 'reservation.html', 'minipass.html', 'production.html', 'chef-patissier.html', 'administration.html'],
+                'BRIGADE': ['portail-staff.html','admin.html', 'pack-eco.html', 'caissetactile.html', 'menu-qr.html', 'chef.html', 'menu-pure.html', 'chef-bar.html', 'menu-bar.html', 'rh.html', 'haccp.html', 'reservation.html', 'minipass.html', 'production.html', 'chef-patissier.html', 'administration.html'],
+                'BRIGADES': ['admin.html', 'portail-staff.html', 'pack-eco.html', 'caissetactile.html', 'menu-qr.html', 'chef.html', 'menu-pure.html', 'chef-bar.html', 'menu-bar.html', 'rh.html', 'haccp.html', 'reservation.html', 'minipass.html', 'production.html', 'chef-patissier.html', 'administration.html'],
+                'PREMIUM': ['admin.html', 'portail-staff.html', 'pack-eco.html', 'caissetactile.html', 'menu-qr.html', 'chef.html', 'menu-pure.html', 'chef-bar.html', 'menu-bar.html', 'rh.html', 'haccp.html', 'reservation.html', 'minipass.html', 'production.html', 'chef-patissier.html', 'administration.html']
+            };
 
             try {
-                const res = await fetch(`${SERVER_URL}/api/verify-pin`, {
+                const res = await fetch(`${window.SERVER_URL}/api/verify-pin`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ tenantID: tenantID, pin: pin || "0000", deviceId: getDeviceFingerprint() })
+                    body: JSON.stringify({ tenantID: window.tenantID, pin: pin || "0000", deviceId: getDeviceFingerprint() })
                 });
                 const data = await res.json();
 
@@ -62,7 +80,22 @@
                     window.location.href = 'connexionpartenaire.html';
                     return;
                 }
+
+                const currentPlan = data.plan ? data.plan.toUpperCase() : 'CHEF';
+                const userAddons = data.addons || []; // 🧩 Récupération des Add-ons du client
+
+                let currentPage = window.location.pathname.split('/').pop().toLowerCase();
+                if(currentPage === '') currentPage = 'index.html';
+
+                const allowedPages = accessMatrix[currentPlan] || [];
                 
+                // 🌟 VÉRIFICATION HYBRIDE (Forfait de base OU Add-on)
+                if (!allowedPages.includes(currentPage) && !userAddons.includes(currentPage) && currentPage !== 'administration.html') {
+                    alert(`ACCÈS REFUSÉ : Votre forfait (${currentPlan}) n'inclut pas ce module, et vous ne possédez pas l'Add-on pour y accéder.`);
+                    window.location.href = `administration.html?tenantID=${window.tenantID}`;
+                    return;
+                }
+
                 // Si la sécurité est OK, on affiche l'interface utilisateur de manière sécurisée
                 document.documentElement.style.opacity = "1";
             } catch (e) { 
@@ -115,8 +148,8 @@
         .app-link-btn { background: rgba(212, 175, 55, 0.05); border: 1px solid var(--gold); color: var(--gold); padding: 16px; border-radius: 8px; text-align: center; font-weight: 600; text-decoration: none; text-transform: uppercase; letter-spacing: 1.5px; font-size: 0.8rem; transition: 0.3s; display: block; cursor: pointer; box-sizing: border-box; display: flex; flex-direction: column; justify-content: center; }
         .app-link-btn:hover { background: var(--gold); color: #000; transform: translateY(-2px); }
         
-        .app-link-btn.locked { background: #111; border: 1px dashed #333; color: #555; cursor: not-allowed; opacity: 0.6; transform: none; }
-        .app-link-btn.locked:hover { background: #111; color: #555; border-color: #333; }
+        .app-link-btn.locked { background: #111; border: 1px dashed #333; color: #555; cursor: pointer; opacity: 0.8; transform: none; transition: 0.3s; }
+        .app-link-btn.locked:hover { background: rgba(255,255,255,0.05); border-color: var(--gold); color: var(--text-main); }
 
         .btn-action { background: transparent; border: 1px solid var(--border-strong); color: var(--text-main); padding: 16px; border-radius: 8px; font-weight: 600; text-transform: uppercase; letter-spacing: 1.5px; cursor: pointer; transition: 0.3s; width: 100%; margin-top: auto; text-align: center; text-decoration: none; display: block; box-sizing: border-box; font-size: 0.85rem;}
         .btn-action:hover { border-color: var(--text-main); background: rgba(255,255,255,0.05); }
@@ -242,14 +275,17 @@
     </div>
 
     <script>
+        function redirectionAjoutStaff() {
+            window.location.href = `rh.html?tenantID=${window.tenantID}`;
+        }
+
         window.logicielManager = {
             tenantID: null,
             masterPin: null,
-            SERVER_URL: (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1" || window.location.protocol === "file:") 
-                ? "http://localhost:10000" : "https://tableau-system.onrender.com",
+            SERVER_URL: window.SERVER_URL,
 
             init: async function() {
-                this.tenantID = localStorage.getItem('ichef_tenant_id');
+                this.tenantID = window.tenantID;
                 this.masterPin = localStorage.getItem('ichef_master_pin');
 
                 if (!this.tenantID || !this.masterPin) {
@@ -306,9 +342,10 @@
                     };
 
                     const allowedPages = accessMatrix[planStr] || [];
+                    const userAddons = data.addons || []; // 🧩 LISTE DES ADD-ONS ACHETÉS !
 
                     const allModules = [
-                        { id: 'admin.html', title: '⚙️ PARAMÈTRES & CONFIG' }, // Label clarifié
+                        { id: 'admin.html', title: '⚙️ PARAMÈTRES & CONFIG' },
                         { id: 'pack-eco.html', title: '🖥️ PAD SERVEUR' },
                         { id: 'caissetactile.html', title: '📟 CAISSE TACTILE' },
                         { id: 'minipass.html', title: '📜 ÉCRAN HYBRIDE D\'ENVOI' },
@@ -326,11 +363,13 @@
 
                     let html = '';
                     allModules.forEach(mod => {
+                        // 🌟 VÉRIFICATION HYBRIDE : Est-ce dans le forfait de base OU dans les Add-ons achetés ?
                         const isUnlocked = allowedPages.includes(mod.id) 
-                            || (mod.id === 'caissetactile.html' && allowedPages.includes('pack-eco.html'))
-                            || (mod.id === 'pack-eco.html' && allowedPages.includes('caissetactile.html'))
-                            || (mod.id === 'minipass.html' && allowedPages.includes('production.html'))
-                            || (mod.id === 'production.html' && allowedPages.includes('minipass.html'));
+                            || userAddons.includes(mod.id)
+                            || (mod.id === 'caissetactile.html' && (allowedPages.includes('pack-eco.html') || userAddons.includes('pack-eco.html')))
+                            || (mod.id === 'pack-eco.html' && (allowedPages.includes('caissetactile.html') || userAddons.includes('caissetactile.html')))
+                            || (mod.id === 'minipass.html' && (allowedPages.includes('production.html') || userAddons.includes('production.html')))
+                            || (mod.id === 'production.html' && (allowedPages.includes('minipass.html') || userAddons.includes('minipass.html')));
                         
                         if (isUnlocked) {
                             html += `
@@ -339,8 +378,8 @@
                             </a>`;
                         } else {
                             html += `
-                            <div class="app-link-btn locked" title="Module non inclus" onclick="alert('ACCÈS REFUSÉ : Ce module n\\'est pas inclus dans votre forfait actuel (${planStr}).')">
-                                <span style="font-size: 0.65rem; display: block; color: #666; margin-bottom: 4px; letter-spacing: 2px;">NON INCLUS</span>
+                            <div class="app-link-btn locked" title="Module en option" onclick="alert('🔒 ADD-ON REQUIS : Ce module (${mod.title}) n\\'est pas inclus dans votre forfait de base (${planStr}).\\n\\nContactez le support ICHEF pour l\\'ajouter à la carte à votre abonnement !')">
+                                <span style="font-size: 0.65rem; display: block; color: var(--gold); margin-bottom: 4px; letter-spacing: 2px;">🔒 DÉBLOQUER</span>
                                 ${mod.title}
                             </div>`;
                         }
