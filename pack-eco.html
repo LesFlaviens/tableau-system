@@ -2660,6 +2660,421 @@
             tables = tables.filter(t => !(t && t.label === tableName && t.room === currentRoom));
             API.update(tableName, null, true); 
             
+function executeSaveTableState(fireAllNew = false, keepOpen = false) {
+            if(currentTicket.length === 0 && !keepOpen) return;
+            let itemsToSave = JSON.parse(JSON.stringify(currentTicket));
+            let obsToSave = document.getElementById('order-obs').value.trim();
+            let targetTable = currentTableId;
+            
+            if(!keepOpen) { closeOrder(); renderFloor(); }
+
+            setTimeout(async () => {
+                try {
+                    // On préserve le statut "PRÊT" ou "PAIEMENT" pour ne pas couper la notification du client
+                    let existingOrder = activeOrders[targetTable];
+                    let currentStatus = (existingOrder && existingOrder.status) ? existingOrder.status : 'pending';
+                    if (currentStatus !== 'PRÊT' && currentStatus !== 'EN ATTENTE PAIEMENT') {
+                        currentStatus = 'pending';
+                    }
+
+                    await API.update(targetTable, { items: itemsToSave, time: new Date().toLocaleTimeString('fr-FR', {hour:'2-digit', minute:'2-digit'}), status: currentStatus, observations: obsToSave }, true);
+                } catch(e) {}
+            }, 10);
+        }
+
+        let pendingEditIndex = null;
+        function openEditItem(idx) { 
+            pendingEditIndex = idx; let item = currentTicket[idx]; 
+            document.getElementById('edit-item-title').innerText = item.n.replace(/\n/g, ' '); 
+            document.getElementById('edit-item-price').value = item.p; 
+            document.getElementById('edit-item-obs').value = item.obs || ""; 
+            document.getElementById('edit-item-course').value = item.course !== undefined ? item.course : 2;
+            document.getElementById('edit-item-seat').value = item.seat || 0;
+            updateEditSeatDisplay(item.seat || 0); 
+            document.getElementById('edit-item-modal').classList.add('open'); 
+        }
+        function closeEditModal() { pendingEditIndex = null; document.getElementById('edit-item-modal').classList.remove('open'); }
+        
+        function updateEditSeatDisplay(seatNum) { document.getElementById('edit-item-seat-display').innerText = seatNum === 0 ? '🍽️ CENTRE' : '👤 C' + seatNum; }
+        function cycleEditSeat() {
+            let input = document.getElementById('edit-item-seat');
+            let next = (parseInt(input.value) || 0) + 1;
+            if (next > 8) next = 0; 
+            input.value = next; updateEditSeatDisplay(next);
+        }
+
+        function saveItemEdit() {
+            if(pendingEditIndex === null) return; 
+            let p = parseFloat(document.getElementById('edit-item-price').value);
+            let c = parseInt(document.getElementById('edit-item-course').value);
+            let seat = parseInt(document.getElementById('edit-item-seat').value) || 0;
+            let obsVal = document.getElementById('edit-item-obs').value.trim();
+            if(!isNaN(p)) { currentTicket[pendingEditIndex].p = p; currentTicket[pendingEditIndex].obs = obsVal; currentTicket[pendingEditIndex].course = c; currentTicket[pendingEditIndex].seat = seat; }
+            closeEditModal(); renderTicket();
+            executeSaveTableState(false, true);
+        }
+
+        function offerItem() {
+            if(pendingEditIndex === null) return;
+            let item = currentTicket[pendingEditIndex];
+            let maxQty = item.qty || 1;
+            let qtyToOfferStr = prompt(`Combien de "${item.n.replace(/\n/g, ' ')}" voulez-vous offrir ? (Max: ${maxQty})`, "1");
+            if (!qtyToOfferStr) return; 
+            let qtyToOffer = parseInt(qtyToOfferStr);
+            if (isNaN(qtyToOffer) || qtyToOffer <= 0 || qtyToOffer > maxQty) return alert("⚠️ Quantité invalide.");
+
+            if (qtyToOffer === maxQty) {
+                item.originalPrice = item.originalPrice !== undefined ? item.originalPrice : item.p; 
+                item.p = 0; item.isOffered = true; item.obs = (item.obs ? item.obs + " | " : "") + "🎁 Geste Co.";
+            } else {
+                item.qty = maxQty - qtyToOffer; 
+                let offeredItem = JSON.parse(JSON.stringify(item)); 
+                offeredItem.id = Date.now() + Math.random(); offeredItem.qty = qtyToOffer;
+                offeredItem.originalPrice = offeredItem.originalPrice !== undefined ? offeredItem.originalPrice : offeredItem.p;
+                offeredItem.p = 0; offeredItem.isOffered = true; offeredItem.obs = (offeredItem.obs ? offeredItem.obs + " | " : "") + "🎁 Geste Co.";
+                currentTicket.push(offeredItem);
+            }
+            closeEditModal(); renderTicket();
+            executeSaveTableState(false, true);
+        }
+
+        function openSurMesureModal() { document.getElementById('sm-name').value = ''; document.getElementById('sm-price').value = ''; document.getElementById('sur-mesure-modal').classList.add('open'); }
+        function closeSurMesureModal() { document.getElementById('sur-mesure-modal').classList.remove('open'); }
+        function addSurMesure() {
+            let n = document.getElementById('sm-name').value.trim();
+            let p = parseFloat(document.getElementById('sm-price').value) || 0;
+            let c = parseInt(document.getElementById('sm-course').value);
+            let tvaRate = parseFloat(document.getElementById('sm-tva').value);
+            if(!n) return alert("Veuillez entrer un nom.");
+            let dest = (c === 0) ? 'bar' : 'cuisine';
+            executeAddToCart("✏️ " + n, p, dest, c, "✏️ " + n, tvaRate);
+            closeSurMesureModal();
+        }
+
+        let pendingCancelIndex = null;
+        function removeTicketItem(idx) { pendingCancelIndex = idx; document.getElementById('cancel-item-name').innerText = `${currentTicket[idx].n.replace(/\n/g, ' ')}`; document.getElementById('cancel-modal').classList.add('open'); }
+        function abortCancelItem() { pendingCancelIndex = null; document.getElementById('cancel-modal').classList.remove('open'); }
+        function executeCancelItem(raison) {
+            if(pendingCancelIndex === null) return; 
+            if (currentTicket[pendingCancelIndex].qty > 1) currentTicket[pendingCancelIndex].qty -= 1; else currentTicket.splice(pendingCancelIndex, 1);
+            pendingCancelIndex = null; document.getElementById('cancel-modal').classList.remove('open'); renderTicket();
+            executeSaveTableState(false, true);
+        }
+
+        function confirmClearTicket() { if(currentTicket.length === 0) return; document.getElementById('clear-ticket-modal').classList.add('open'); }
+        function abortClearTicket() { document.getElementById('clear-ticket-modal').classList.remove('open'); }
+        async function executeClearTicket(raison) { currentTicket = []; renderTicket(); await API.update(currentTableId, null, true); document.getElementById('clear-ticket-modal').classList.remove('open'); closeOrder(); renderFloor(); }
+
+        let paymentsDone = [];
+        let currentTableTotal = 0;
+        let currentPayRemaining = 0;
+        let fidelityDiscountUsed = 0; 
+        let loyaltyClientName = null;
+
+       function openPaymentModal() {
+            if (typeof currentGlobalScheduledMode !== 'undefined' && currentGlobalScheduledMode === 'closed') {
+                return alert("🛑 IMPOSSIBLE : Le restaurant est programmé comme FERMÉ à cette heure-ci.");
+            }
+
+            let isQrRequired = (typeof currentTableId_PayMode !== 'undefined' && currentTableId_PayMode === 'qr_nfc') || (typeof currentGlobalScheduledMode !== 'undefined' && currentGlobalScheduledMode === 'qr_nfc');
+            if (isQrRequired && !isRushMode) {
+                return alert("🛑 IMPOSSIBLE : En raison de la Zone ou de l'Heure actuelle, le mode AUTONOME est activé. Le client doit payer lui-même depuis son smartphone via QR Code ou NFC.");
+            }
+
+            if(currentTicket.length === 0) return alert("Table vide."); 
+            let td = activeOrders[currentTableId]; 
+            if(!td || !td.items || td.items.length !== currentTicket.length) return alert("⚠️ Sauvegardez les modifications avant d'encaisser.");
+            
+            document.getElementById('pay-modal-title').innerText = "TABLE " + currentTableId; 
+            document.getElementById('pay-modal-total').innerText = currentTableTotal.toFixed(2) + " €";
+            
+            paymentsDone = [];
+            fidelityDiscountUsed = 0;
+            currentPayRemaining = currentTableTotal;
+            updatePaymentUI();
+            
+            let lZone = document.getElementById('loyalty-zone');
+            if(isLoyaltyActive) {
+                lZone.style.display = 'flex';
+                updateLoyaltyUI();
+            } else {
+                lZone.style.display = 'none';
+            }
+            
+            document.getElementById('payment-modal').classList.add('open');
+        }
+
+        function openLoyaltyPrompt() {
+            let phone = prompt("📱 Numéro de téléphone du client (ex: 0612345678) :");
+            if (!phone) return;
+            phone = phone.replace(/\s+/g, '');
+            if(phone.length < 8) return alert("Numéro invalide.");
+            
+            currentLoyaltyPhone = phone;
+            
+            if(!globalLoyaltyData[phone]) {
+                let name = prompt("✨ Nouveau client ! Quel est son prénom/nom ?");
+                globalLoyaltyData[phone] = { name: name || 'Client', points: 0 };
+            }
+            
+            loyaltyClientName = globalLoyaltyData[phone].name;
+            updateLoyaltyUI();
+        }
+
+        function updateLoyaltyUI() {
+            let statusText = document.getElementById('loyalty-status-text');
+            let actionBtn = document.getElementById('btn-loyalty-action');
+            
+            if(!currentLoyaltyPhone) {
+                statusText.innerText = "Aucun compte lié.";
+                actionBtn.innerText = "ASSOCIER";
+                actionBtn.setAttribute("onclick", "openLoyaltyPrompt()");
+            } else {
+                let solde = globalLoyaltyData[currentLoyaltyPhone].points || 0;
+                statusText.innerHTML = `Connecté : <b>${loyaltyClientName}</b><br>Cagnotte dispo : <strong style="color:var(--text-main); font-size:1rem;">${solde.toFixed(2)} €</strong>`;
+                
+                if (solde > 0 && currentPayRemaining > 0) {
+                    actionBtn.innerText = "DÉDUIRE";
+                    actionBtn.setAttribute("onclick", "useLoyaltyPoints()");
+                } else {
+                    actionBtn.innerText = "MODIFIER";
+                    actionBtn.setAttribute("onclick", "openLoyaltyPrompt()");
+                }
+            }
+        }
+
+        function useLoyaltyPoints() {
+            if(!currentLoyaltyPhone || !globalLoyaltyData[currentLoyaltyPhone]) return;
+            let solde = globalLoyaltyData[currentLoyaltyPhone].points || 0;
+            
+            let maxDeductible = Math.min(solde, currentPayRemaining);
+            let deductStr = prompt(`Combien de la cagnotte voulez-vous utiliser ?\nMax possible: ${maxDeductible.toFixed(2)}€`, maxDeductible.toFixed(2));
+            
+            if(!deductStr) return;
+            let deduct = parseFloat(deductStr.replace(',', '.'));
+            
+            if(isNaN(deduct) || deduct <= 0 || deduct > maxDeductible + 0.05) return alert("Montant invalide.");
+            
+            fidelityDiscountUsed += deduct;
+            globalLoyaltyData[currentLoyaltyPhone].points -= deduct; 
+            
+            paymentsDone.push({ method: '🎁 CAGNOTTE', amount: deduct });
+            currentPayRemaining -= deduct;
+            if(currentPayRemaining < 0) currentPayRemaining = 0;
+            
+            updateLoyaltyUI();
+            updatePaymentUI();
+        }
+
+        function setRemainderAmount() {
+            document.getElementById('pay-amount-input').value = currentPayRemaining.toFixed(2);
+        }
+
+        function processPartialPayment(method) {
+            let amtInput = document.getElementById('pay-amount-input').value;
+            let amt = parseFloat(amtInput.replace(',', '.'));
+            if(isNaN(amt) || amt <= 0) return alert("⚠️ Saisissez un montant valide.");
+            
+            let isVoucher = (method === 'TR' || method === 'CV');
+            if(!isVoucher && amt > currentPayRemaining + 0.05) return alert("⚠️ Le montant dépasse le reste à payer.");
+            if (isVoucher && amt > currentPayRemaining) { if (!confirm(`On ne rend pas la monnaie sur les ${method}. Valider ?`)) return; }
+
+            if (method === 'ESPÈCES') {
+                let cashGivenStr = prompt(`💵 Espèces données par le client ?\n(Reste à payer : ${amt.toFixed(2)}€)`);
+                if (!cashGivenStr) return; 
+                let cashGiven = parseFloat(cashGivenStr.replace(',', '.'));
+                if (isNaN(cashGiven) || cashGiven < amt) return alert("⚠️ Montant insuffisant.");
+                let changeDue = cashGiven - amt;
+                if (changeDue > 0) alert(`💰 MONNAIE À RENDRE : ${changeDue.toFixed(2)} €`);
+            }
+            
+            paymentsDone.push({ method: method, amount: amt });
+            currentPayRemaining -= amt;
+            if(currentPayRemaining < 0) currentPayRemaining = 0;
+            updatePaymentUI();
+        }
+
+        function updatePaymentUI() {
+            document.getElementById('pay-remaining').innerText = currentPayRemaining.toFixed(2) + " €";
+            document.getElementById('pay-amount-input').value = currentPayRemaining.toFixed(2);
+            
+            let histList = document.getElementById('payment-history');
+            if(paymentsDone.length === 0) histList.innerHTML = '<span style="color:var(--text-muted); font-weight: 300;">Aucun paiement enregistré</span>';
+            else {
+                histList.innerHTML = paymentsDone.map(p => `
+                    <div style="display:flex; justify-content:space-between; color:var(--text-main); font-weight:500; background:transparent; padding:10px 0; border-bottom:1px solid var(--border-strong);">
+                        <span>${p.method}</span>
+                        <span style="color:var(--gold); font-family: 'Playfair Display', serif;">${p.amount.toFixed(2)} €</span>
+                    </div>
+                 `).join('');
+            }
+            
+            if(currentPayRemaining <= 0) {
+                document.querySelector('.pay-methods').style.display = 'none';
+                document.getElementById('pay-amount-input').style.display = 'none';
+                document.getElementById('btn-close-table').style.display = 'block';
+            } else {
+                document.querySelector('.pay-methods').style.display = 'flex';
+                document.getElementById('pay-amount-input').style.display = 'block';
+                document.getElementById('btn-close-table').style.display = 'none';
+            }
+        }
+
+        function closePaymentModal() { document.getElementById('payment-modal').classList.remove('open'); }
+
+        async function finalizeTablePayment() {
+            document.getElementById('payment-modal').classList.remove('open');
+            window.print(); 
+            
+            setTimeout(async () => {
+                try {
+                    const state = await API.getState();
+                    
+                    let totalHT = 0; let tvaTotals = {};
+                    currentTicket.forEach(i => {
+                        let ligneTTC = (parseFloat(i.p)||0) * (i.qty||1);
+                        let rate = parseFloat(i.tva) || 10;
+                        let ligneHT = ligneTTC / (1 + (rate / 100));
+                        totalHT += ligneHT;
+                        tvaTotals[rate] = (tvaTotals[rate] || 0) + (ligneTTC - ligneHT);
+                    });
+
+                    if(isLoyaltyActive && currentLoyaltyPhone && globalLoyaltyData[currentLoyaltyPhone]) {
+                        let montantEligibleCashback = currentTableTotal - fidelityDiscountUsed;
+                        if(montantEligibleCashback > 0) {
+                            let argentGagne = montantEligibleCashback * (loyaltyPercent / 100);
+                            globalLoyaltyData[currentLoyaltyPhone].points += argentGagne;
+                            
+                            await API.update('LOYALTY_MASTER', globalLoyaltyData);
+                            alert(`🎁 Le client ${globalLoyaltyData[currentLoyaltyPhone].name} vient de gagner ${argentGagne.toFixed(2)} € sur sa cagnotte !`);
+                        }
+                    }
+
+                    let transaction = {
+                        id: 'TX_' + Date.now(),
+                        date: new Date().toISOString(),
+                        method: paymentsDone.map(h => h.method).join(' + '),
+                        totalTTC: parseFloat(currentTableTotal.toFixed(2)),
+                        totalHT: parseFloat(totalHT.toFixed(2)),
+                        tva: tvaTotals,
+                        source: 'Caisse Salle (' + currentTableId + ')',
+                        items: currentTicket
+                    };
+
+                    let historyNode = state.activeOrders['FINANCIAL_HISTORY'] || { data: [] };
+                    historyNode.data.push(transaction);
+                    await API.update('FINANCIAL_HISTORY', historyNode.data);
+                } catch(e) {}
+                
+                await API.update(currentTableId, null, true);
+                closeOrder(); 
+                renderFloor();
+            }, 500);
+        }
+
+        function openHistoryDrawer() {
+            document.getElementById('history-drawer').classList.add('open');
+            API.getState().then(s => {
+                let hData = s.activeOrders['FINANCIAL_HISTORY'] ? s.activeOrders['FINANCIAL_HISTORY'].data : [];
+                let container = document.getElementById('history-content');
+                if(hData.length === 0) { container.innerHTML = '<div style="color:var(--text-muted); text-align:center;">Aucun historique</div>'; return; }
+                
+                hData.sort((a,b) => new Date(b.date) - new Date(a.date));
+                let html = hData.map(t => {
+                    let d = new Date(t.date);
+                    return `<div style="background:var(--panel); border:1px solid var(--border-strong); padding:15px; border-radius:4px;">
+                        <div style="display:flex; justify-content:space-between; border-bottom:1px solid var(--border); padding-bottom:10px; margin-bottom:10px;">
+                            <span style="color:var(--gold); font-weight:bold;">${t.source}</span>
+                            <span style="color:var(--text-muted); font-size:0.8rem;">${d.toLocaleDateString()} ${d.toLocaleTimeString()}</span>
+                        </div>
+                        <div style="display:flex; justify-content:space-between; font-weight:bold;">
+                            <span>TOTAL</span>
+                            <span style="color:var(--gold);">${t.totalTTC.toFixed(2)}€</span>
+                        </div>
+                        <div style="font-size:0.7rem; color:var(--text-muted); text-align:right; margin-top:5px;">${t.method}</div>
+                    </div>`;
+                }).join('');
+                container.innerHTML = html;
+            });
+        }
+        function closeDrawer(id) { document.getElementById(id).classList.remove('open'); }
+
+        // ==========================================
+        // ➕ GESTION DES TABLES EXTRA (VOLANTES)
+        // ==========================================
+        function addExtraTable() {
+            let tableName = prompt("Nom de la table supplémentaire (ex: EXT-2, DEBOUT, BAR) :");
+            if (!tableName) return;
+            tableName = tableName.trim().toUpperCase();
+
+            if (tables.find(t => t && t.label === tableName && t.room === currentRoom)) {
+                return alert("❌ Ce nom de table existe déjà dans cette salle.");
+            }
+
+            let paxStr = prompt("Combien de couverts ?", "2");
+            if (!paxStr) return;
+            let pax = parseInt(paxStr) || 2;
+
+            let baseL = window.innerWidth / 2 - 40;
+            let baseT = window.innerHeight / 2 - 60;
+
+            let roomZones = zones.filter(z => z && z.room === currentRoom);
+            if (roomZones.length > 0) {
+                let zPrompt = "Dans quelle zone placer la table ?\n\n";
+                roomZones.forEach((z, i) => { zPrompt += `[ ${i + 1} ] - ${z.label}\n`; });
+                zPrompt += `[ 0 ] - Aucune zone (Hors zone)\n\nEntrez le numéro :`;
+                
+                let zChoice = prompt(zPrompt, "1");
+                if (zChoice !== null && zChoice !== "0") {
+                    let selectedZone = roomZones[parseInt(zChoice) - 1];
+                    if (selectedZone) {
+                        baseL = (selectedZone.l || 0) + ((selectedZone.w || 400) / 2) - 40;
+                        baseT = (selectedZone.t || 0) + ((selectedZone.h || 300) / 2) - 60;
+                    }
+                }
+            }
+
+            let randomOffsetX = Math.floor(Math.random() * 80) - 40;
+            let randomOffsetY = Math.floor(Math.random() * 80) - 40;
+
+            tables.push({
+                label: tableName,
+                l: baseL + randomOffsetX,
+                t: baseT + randomOffsetY,
+                w: 80,
+                h: 120,
+                shape: "rect",
+                pax: pax,
+                room: currentRoom,
+                isExtra: true
+            });
+
+            pushArchitecture();
+            renderFloor();
+        }
+
+        function promptRemoveExtraTable(tableName) {
+            let pin = prompt("🔐 Entrez votre code PIN pour retirer cette table :");
+            if (!pin) return;
+
+            let masterPin = localStorage.getItem('ichef_master_pin') || "999999";
+            let isValid = (pin === masterPin || pin === "9999" || pin === "7777");
+            
+            if (!isValid && typeof staffAccessData !== 'undefined') {
+                let staff = staffAccessData.find(s => s.pin === pin);
+                if (staff && staff.active !== false) isValid = true;
+            }
+
+            if (!isValid) return alert("❌ Code PIN incorrect ou accès refusé.");
+
+            let order = activeOrders[tableName];
+            if (order && order.items && order.items.length > 0) {
+                if (!confirm("⚠️ La table a des commandes en cours ! Êtes-vous sûr de vouloir la supprimer ?")) return;
+            }
+
+            tables = tables.filter(t => !(t && t.label === tableName && t.room === currentRoom));
+            API.update(tableName, null, true); 
+            
             pushArchitecture();
             closeOrder();
             renderFloor();
@@ -2713,11 +3128,15 @@
                 item.addEventListener('click', () => {
                     if(window.innerWidth <= 900 && item.id !== 'btn-rush-toggle') {
                         let sidebar = document.getElementById('sidebar');
-                        if (sidebar && sidebar.classList.contains('open')) toggleMobileMenu();
-                        
+                        if (sidebar && sidebar.classList.contains('open')) {
+                            if(typeof toggleMobileMenu === 'function') toggleMobileMenu();
+                        }
                     }
-                
-                // ========================================================
+                });
+            });
+        });
+
+        // ========================================================
         // 🏗️ MECHANICAL SUB-SYSTEM: ARCHITECTURE & STRUCTURE MODE
         // ========================================================
         function unlockArchiMode() {
@@ -2907,10 +3326,7 @@
             function tRes(e) { isDraggingTable=true; updateDim(e.touches[0].clientX, e.touches[0].clientY); }
             function updateDim(cX, cY) { let nW = Math.max(40, iW+(cX-iX)); let nH = Math.max(40, iH+(cY-iY)); elmnt.style.width=nW+"px"; elmnt.style.height=nH+"px"; tableObj.w=nW; tableObj.h=nH; }
             function close() { document.onmouseup=null; document.onmousemove=null; document.ontouchend=null; document.ontouchmove=null; setTimeout(()=>{isDraggingTable=false;}, 50); } 
-        }});
-            });
-        });
-
+        }
     </script>
 </body>
 </html>
