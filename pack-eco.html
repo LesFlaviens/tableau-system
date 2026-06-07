@@ -1203,6 +1203,226 @@ function connectEmpireH24() {
                     if(!isDraggingTable) renderFloor();
                 }
             } catch(e) {}
+        }function connectEmpireH24() { 
+            let currentGlobalScheduledMode = 'standard'; 
+            window.systemSettings = null;
+
+            function evaluateScheduleMode() {
+                if (!window.systemSettings || !window.systemSettings.schedule || !window.systemSettings.schedule.auto) {
+                    currentGlobalScheduledMode = 'standard';
+                    return;
+                }
+                
+                let d = new Date();
+                let currentDay = d.getDay(); 
+                
+                // 1. Vérifie si le restaurant est ouvert ce jour-là
+                if (!window.systemSettings.schedule.days.includes(currentDay)) {
+                    currentGlobalScheduledMode = 'closed';
+                    return;
+                }
+
+                let nowTime = d.getHours() * 60 + d.getMinutes();
+                
+                // ⚡ LA SYNCHRONISATION EST LÀ : ON LIT LES 4 BONS SERVICES
+                let shifts = ['matin', 'midi', 'aprem', 'soir'];
+                let activeShiftMode = 'standard';
+                let isClosed = true;
+
+                for (let s of shifts) {
+                    let shift = window.systemSettings.schedule[s];
+                    if (shift && shift.s && shift.e) {
+                        let startMins = parseInt(shift.s.split(':')[0]) * 60 + parseInt(shift.s.split(':')[1]);
+                        let endMins = parseInt(shift.e.split(':')[0]) * 60 + parseInt(shift.e.split(':')[1]);
+                        
+                        if (startMins > endMins) {
+                            if (nowTime >= startMins || nowTime <= endMins) { activeShiftMode = shift.mode || 'standard'; isClosed = false; break; }
+                        } else {
+                            if (nowTime >= startMins && nowTime <= endMins) { activeShiftMode = shift.mode || 'standard'; isClosed = false; break; }
+                        }
+                    }
+                }
+                currentGlobalScheduledMode = isClosed ? 'closed' : activeShiftMode;
+            }
+
+            if(clockInterval) clearInterval(clockInterval);
+            if(syncInterval) clearInterval(syncInterval);
+            
+            const updateClock = () => { const c = document.getElementById('empire-clock'); if(c) c.innerText = new Date().toLocaleTimeString('fr-FR', {hour: '2-digit', minute: '2-digit'}); };
+            updateClock(); clockInterval = setInterval(updateClock, 1000); 
+            if (typeof syncData === 'function') { syncData(); syncInterval = setInterval(syncData, 3000); }
+        }
+
+        async function syncData() {
+            if (isArchiMode) return; 
+            try {
+                const state = await API.getState();
+                if (state && state.activeOrders) {
+                    let nO = state.activeOrders;
+
+                    if (nO['SETTINGS_MASTER'] && nO['SETTINGS_MASTER'].data) {
+                        window.systemSettings = nO['SETTINGS_MASTER'].data;
+                        isServiceAuBarActive = window.systemSettings.serviceAuBar === true;
+                        
+                        if (window.systemSettings.loyalty) {
+                            isLoyaltyActive = window.systemSettings.loyalty.active === true;
+                            loyaltyPercent = window.systemSettings.loyalty.percent || 5;
+                        }
+
+                        let badgeBar = document.getElementById('badge-service-bar');
+                        if (badgeBar) {
+                            badgeBar.style.display = isServiceAuBarActive ? 'flex' : 'none';
+                        }
+                    }
+
+                    if(nO['LOYALTY_MASTER'] && nO['LOYALTY_MASTER'].data) {
+                        globalLoyaltyData = nO['LOYALTY_MASTER'].data;
+                    }
+                    
+                    if(nO['TIMESHEETS_MASTER'] && nO['TIMESHEETS_MASTER'].data) {
+                        globalTimesheets = nO['TIMESHEETS_MASTER'].data;
+                    }
+
+                    for (let key in nO) { 
+                        if (key.startsWith('order_') || key.startsWith('W') || key.startsWith('T') || key.startsWith('WEB_')) { 
+                            if (nO[key] && nO[key].data !== undefined && !Array.isArray(nO[key].data)) nO[key] = nO[key].data; 
+                            
+                            if (nO[key]) {
+                                if (!Array.isArray(nO[key].items)) nO[key].items = [];
+                                nO[key].items.forEach(i => {
+                                    if (i.name && !i.n) i.n = i.name;
+                                    if (i.price && !i.p) i.p = i.price;
+                                    if (i.category && !i.dest) i.dest = i.category;
+                                    if (!i.n) i.n = "Plat QR";
+                                    if (!i.dest) i.dest = "cuisine";
+                                });
+                            }
+                        } 
+                    }
+                    
+                    if(nO['MENU_MASTER']?.data) menuCuisine = nO['MENU_MASTER'].data;
+                    if(nO['MENU_MASTER_BAR']?.data) menuBar = nO['MENU_MASTER_BAR'].data;
+                    unifiedMenu = { ...menuCuisine, ...menuBar };
+                    
+                    if(nO['STAFF_ACCESS']?.data) staffAccessData = nO['STAFF_ACCESS'].data;
+                    if(nO['RESERVATIONS_MASTER']?.data) reservationsData = nO['RESERVATIONS_MASTER'].data;
+                    
+                    if (state.sasConfig) {
+                        localSasConfig = state.sasConfig;
+                        if(typeof updateSASButtonUI === 'function') updateSASButtonUI();
+                    }
+
+                    if (nO['ARCHITECTURE']) {
+                        let archiData = nO['ARCHITECTURE'].data !== undefined ? nO['ARCHITECTURE'].data : nO['ARCHITECTURE'];
+                        if (!isDraggingTable && archiData && archiData.tables) {
+                            let newArchiStr = JSON.stringify(archiData.tables) + JSON.stringify(archiData.zones || []);
+                            let oldArchiStr = JSON.stringify(tables) + JSON.stringify(zones);
+                            if (newArchiStr !== oldArchiStr) {
+                                rooms = archiData.rooms || ['Salle Principale'];
+                                tables = archiData.tables || [];
+                                zones = archiData.zones || [];
+                                if (!rooms.includes(currentRoom)) currentRoom = rooms[0] || 'Salle Principale';
+                                localStorage.setItem('empire_architecture', JSON.stringify(tables));
+                                localStorage.setItem('empire_rooms', JSON.stringify(rooms));
+                                localStorage.setItem('empire_zones', JSON.stringify(zones));
+                                renderRooms(); renderFloor();
+                            }
+                        }
+                    }
+                    
+                    let currentStockValue = 0;
+                    for (let cat in menuCuisine) {
+                        if (menuCuisine[cat]) {
+                            menuCuisine[cat].forEach(item => {
+                                if (item.stock && parseInt(item.stock) > 0) currentStockValue += (parseFloat(item.price) || 0) * parseInt(item.stock);
+                            });
+                        }
+                    }
+                    for (let cat in menuBar) {
+                        if (menuBar[cat]) {
+                            menuBar[cat].forEach(item => {
+                                if (item.stock && parseInt(item.stock) > 0) currentStockValue += (parseFloat(item.price) || 0) * parseInt(item.stock);
+                            });
+                        }
+                    }
+                    let stockTracker = document.getElementById('stock-tracker');
+                    if (stockTracker) stockTracker.innerText = currentStockValue.toFixed(2) + ' €';
+
+                    if (currentTableId && nO[currentTableId]) {
+                        let serverOrder = nO[currentTableId];
+                        if (serverOrder && serverOrder.items && serverOrder.items.length !== currentTicket.length) {
+                            currentTicket = JSON.parse(JSON.stringify(serverOrder.items));
+                            renderTicket();
+                        }
+                    }
+
+                    activeOrders = nO;
+                    checkGlobalAlerts();
+                    if(!isDraggingTable) renderFloor();
+                }
+            } catch(e) {}
+        }
+                    if(nO['MENU_MASTER']?.data) menuCuisine = nO['MENU_MASTER'].data;
+                    if(nO['MENU_MASTER_BAR']?.data) menuBar = nO['MENU_MASTER_BAR'].data;
+                    unifiedMenu = { ...menuCuisine, ...menuBar };
+                    
+                    if(nO['STAFF_ACCESS']?.data) staffAccessData = nO['STAFF_ACCESS'].data;
+                    if(nO['RESERVATIONS_MASTER']?.data) reservationsData = nO['RESERVATIONS_MASTER'].data;
+                    
+                    if (state.sasConfig) {
+                        localSasConfig = state.sasConfig;
+                        if(typeof updateSASButtonUI === 'function') updateSASButtonUI();
+                    }
+
+                    if (nO['ARCHITECTURE']) {
+                        let archiData = nO['ARCHITECTURE'].data !== undefined ? nO['ARCHITECTURE'].data : nO['ARCHITECTURE'];
+                        if (!isDraggingTable && archiData && archiData.tables) {
+                            let newArchiStr = JSON.stringify(archiData.tables) + JSON.stringify(archiData.zones || []);
+                            let oldArchiStr = JSON.stringify(tables) + JSON.stringify(zones);
+                            if (newArchiStr !== oldArchiStr) {
+                                rooms = archiData.rooms || ['Salle Principale'];
+                                tables = archiData.tables || [];
+                                zones = archiData.zones || [];
+                                if (!rooms.includes(currentRoom)) currentRoom = rooms[0] || 'Salle Principale';
+                                localStorage.setItem('empire_architecture', JSON.stringify(tables));
+                                localStorage.setItem('empire_rooms', JSON.stringify(rooms));
+                                localStorage.setItem('empire_zones', JSON.stringify(zones));
+                                renderRooms(); renderFloor();
+                            }
+                        }
+                    }
+                    
+                    let currentStockValue = 0;
+                    for (let cat in menuCuisine) {
+                        if (menuCuisine[cat]) {
+                            menuCuisine[cat].forEach(item => {
+                                if (item.stock && parseInt(item.stock) > 0) currentStockValue += (parseFloat(item.price) || 0) * parseInt(item.stock);
+                            });
+                        }
+                    }
+                    for (let cat in menuBar) {
+                        if (menuBar[cat]) {
+                            menuBar[cat].forEach(item => {
+                                if (item.stock && parseInt(item.stock) > 0) currentStockValue += (parseFloat(item.price) || 0) * parseInt(item.stock);
+                            });
+                        }
+                    }
+                    let stockTracker = document.getElementById('stock-tracker');
+                    if (stockTracker) stockTracker.innerText = currentStockValue.toFixed(2) + ' €';
+
+                    if (currentTableId && nO[currentTableId]) {
+                        let serverOrder = nO[currentTableId];
+                        if (serverOrder && serverOrder.items && serverOrder.items.length !== currentTicket.length) {
+                            currentTicket = JSON.parse(JSON.stringify(serverOrder.items));
+                            renderTicket();
+                        }
+                    }
+
+                    activeOrders = nO;
+                    checkGlobalAlerts();
+                    if(!isDraggingTable) renderFloor();
+                }
+            } catch(e) {}
         }
 
         async function checkGlobalAlerts() {
@@ -1226,36 +1446,6 @@ function connectEmpireH24() {
                 } catch(e){}
                 
                 await API.update('ALERTS_MASTER', null);
-            }
-        }
-
-        async function acknowledgeChefAlert() {
-            document.getElementById('drawer-alert-banner').style.display = 'none';
-        }
-
-        function openAdminCatalog() {
-            if (!currentUser || currentUser.role !== 'Manager') return alert("⛔ Accès Manager requis");
-            document.getElementById('admin-catalog-modal').classList.add('open');
-            document.getElementById('sas-max-input').value = localSasConfig.maxTables || 5;
-            document.getElementById('sas-time-input').value = localSasConfig.delay || 60;
-        }
-
-        function closeAdminCatalog() { document.getElementById('admin-catalog-modal').classList.remove('open'); }
-
-        function toggleSAS() {
-            localSasConfig.active = !localSasConfig.active;
-            updateSASButtonUI();
-        }
-
-        function updateSASButtonUI() {
-            const btn = document.getElementById('btn-sas-toggle');
-            if(!btn) return;
-            if(localSasConfig.active) {
-                btn.innerHTML = "✅ ACTIVÉ";
-                btn.style.borderColor = "var(--gold)"; btn.style.color = "var(--gold)";
-            } else {
-                btn.innerHTML = "❌ DÉSACTIVÉ";
-                btn.style.borderColor = "var(--border)"; btn.style.color = "var(--text-muted)";
             }
         }
 
@@ -1911,56 +2101,59 @@ function connectEmpireH24() {
             } catch (e) { console.error(e); }
         }
 
-function openOrder(tableLabel) {
-    currentTableId = tableLabel;
-    currentLoyaltyPhone = null; 
-    
-    // 🔲 RÉCUPÉRATION DE LA TABLE
-    const tableObj = tables.find(t => t?.label === tableLabel && t?.room === currentRoom);
-
-    // BOUTON RETIRER UNIQUEMENT POUR TABLES EXTRA
-    const extraBtnHtml = tableObj?.isExtra 
-        ? `<button class="btn-mini" style="border-color:var(--alert); color:var(--alert); padding:4px 8px; margin-left:15px; font-size:0.7rem;" onclick="promptRemoveExtraTable('${tableLabel}')">🗑️ RETIRER</button>` 
-        : '';
-    document.getElementById('ticket-table-name').innerHTML = `TABLE ${tableLabel}${extraBtnHtml}`;
-
-    // 🔲 GESTION DU ZONING SPATIAL
-    const zoneBandeau = document.getElementById('drawer-zone-alert');
-    currentTableId_PayMode = 'standard'; // Initialisation par défaut sécurisée
-    
-    if (!zoneBandeau) return; // Arrêt prématuré si l'élément UI manque
-
-    zoneBandeau.style.display = 'none'; 
-    
-    if (tableObj && typeof zones !== 'undefined') {
-        const tableCenterX = (tableObj.l || 0) + ((tableObj.w || 80) / 2);
-        const tableCenterY = (tableObj.t || 0) + ((tableObj.h || 120) / 2);
-        
-        const activeZone = zones.find(z => 
-            z.room === currentRoom &&
-            tableCenterX >= (z.l || 0) && tableCenterX <= ((z.l || 0) + (z.w || 400)) &&
-            tableCenterY >= (z.t || 0) && tableCenterY <= ((z.t || 0) + (z.h || 300))
-        );
-
-        if (activeZone) {
-            currentTableId_PayMode = activeZone.payMode || activeZone.mode || 'standard'; 
+        // ==========================================
+        // 🍽️ GESTION DU TIROIR DE COMMANDE 🍽️
+        // ==========================================
+        function openOrder(tableLabel) {
+            currentTableId = tableLabel;
+            currentLoyaltyPhone = null; 
             
-            if (currentTableId_PayMode === 'qr_nfc' || currentTableId_PayMode === 'bar') {
-                const isAutonomous = currentTableId_PayMode === 'qr_nfc';
-                const color = activeZone.color || (isAutonomous ? 'var(--alert)' : '#3498db');
-                const bgAlpha = activeZone.color ? `${activeZone.color}15` : (isAutonomous ? 'rgba(239, 68, 68, 0.1)' : 'rgba(52, 152, 219, 0.1)');
+            // 🔲 GESTION DU ZONING SPATIAL
+            let tableObj = tables.find(t => t && t.label === tableLabel && t.room === currentRoom);
+
+            // BOUTON RETIRER UNIQUEMENT POUR TABLES EXTRA
+            let extraBtnHtml = (tableObj && tableObj.isExtra) ? ` <button class="btn-mini" style="border-color:var(--alert); color:var(--alert); padding:4px 8px; margin-left:15px; font-size:0.7rem;" onclick="promptRemoveExtraTable('${tableLabel}')">🗑️ RETIRER</button>` : '';
+            document.getElementById('ticket-table-name').innerHTML = "TABLE " + tableLabel + extraBtnHtml;
+
+            let zoneBandeau = document.getElementById('drawer-zone-alert');
+            
+            if (zoneBandeau) {
+                zoneBandeau.style.display = 'none'; 
                 
-                zoneBandeau.style.display = 'block';
-                zoneBandeau.style.borderColor = color;
-                zoneBandeau.style.color = color;
-                zoneBandeau.style.background = bgAlpha;
-                zoneBandeau.innerHTML = isAutonomous 
-                    ? `📱 ZONE AUTONOME : ENCAISSEMENT SERVEUR BLOQUÉ` 
-                    : `🍹 ZONE BAR : LES CLIENTS PAIENT AU COMPTOIR`;
+                if (tableObj && typeof zones !== 'undefined') {
+                    let tableCenterY = (tableObj.t || 0) + ((tableObj.h || 120) / 2);
+                    let tableCenterX = (tableObj.l || 0) + ((tableObj.w || 80) / 2);
+                    
+                    let activeZone = zones.find(z => 
+                        z.room === currentRoom &&
+                        tableCenterX >= (z.l || 0) && tableCenterX <= ((z.l || 0) + (z.w || 400)) &&
+                        tableCenterY >= (z.t || 0) && tableCenterY <= ((z.t || 0) + (z.h || 300))
+                    );
+
+                    if (activeZone) {
+                        currentTableId_PayMode = activeZone.payMode || activeZone.mode; 
+                        
+                        if (currentTableId_PayMode === 'qr_nfc') {
+                            zoneBandeau.style.display = 'block';
+                            zoneBandeau.style.borderColor = activeZone.color || 'var(--alert)';
+                            zoneBandeau.style.color = activeZone.color || 'var(--alert)';
+                            zoneBandeau.style.background = (activeZone.color ? activeZone.color + '15' : 'rgba(239, 68, 68, 0.1)');
+                            zoneBandeau.innerHTML = `📱 ZONE AUTONOME : ENCAISSEMENT SERVEUR BLOQUÉ`;
+                        } 
+                        else if (currentTableId_PayMode === 'bar') {
+                            zoneBandeau.style.display = 'block';
+                            zoneBandeau.style.borderColor = activeZone.color || '#3498db';
+                            zoneBandeau.style.color = activeZone.color || '#3498db';
+                            zoneBandeau.style.background = (activeZone.color ? activeZone.color + '15' : 'rgba(52, 152, 219, 0.1)');
+                            zoneBandeau.innerHTML = `🍹 ZONE BAR : LES CLIENTS PAIENT AU COMPTOIR`;
+                        }
+                    } else {
+                        currentTableId_PayMode = 'standard';
+                    }
+                } else {
+                    currentTableId_PayMode = 'standard';
+                }
             }
-        }
-    }
-}
 
             if(activeOrders[tableLabel] && activeOrders[tableLabel].status === 'reserved') {
                 currentTicket = [];
@@ -2176,166 +2369,110 @@ function openOrder(tableLabel) {
         function confirmCuisson(niv) { if(pendingCuissonItem) { executeAddToCart(`${pendingCuissonItem.n} (${niv})`, pendingCuissonItem.p, pendingCuissonItem.dest, currentCourseDefault, pendingCuissonItem.n, pendingCuissonItem.tvaRate); cancelCuisson(); } }
         function cancelCuisson() { pendingCuissonItem = null; document.getElementById('cuisson-modal').classList.remove('open'); }
 
-function executeAddToCart(n, p, dest, courseOverride, originalName, tvaRate = 10) {
-    const cId = courseOverride !== undefined ? courseOverride : currentCourseDefault;
-    const seatId = currentSeat;
-
-    // 🔲 RECHERCHE D'UN ARTICLE IDENTIQUE FUSIONNABLE
-    let existingItem = currentTicket.find(i => 
-        i.n === n && 
-        !i.done && 
-        !i.served && 
-        !i.isSent && 
-        i.course === cId && 
-        !i.obs && 
-        !i.isOffered && 
-        (i.seat || 0) === seatId && 
-        i.tva === tvaRate
-    );
-
-    if (existingItem) {
-        existingItem.qty = (existingItem.qty || 1) + 1;
-    } else {
-        currentTicket.push({ 
-            id: Date.now() + Math.random(), // Génération d'ID unique
-            itemId: Date.now(), 
-            n: n.replace(/\[BR\]/g, ' '), 
-            originalName: (originalName || n).replace(/\[BR\]/g, '\n'), 
-            p: parseFloat(p) || 0, 
-            tva: parseFloat(tvaRate) || 10, 
-            qty: 1, 
-            done: false, 
-            served: false, 
-            dest, 
-            savedToDB: false, 
-            isOffered: false, 
-            course: cId, 
-            obs: "", 
-            seat: seatId, 
-            isSent: false 
-        });
-    }
-    renderTicket();
-}
-
-function addMenuToTicket(n, p, dest, tvaRate = 10) {
-    const parts = n.split('[BR]');
-    const cleanN = n.replace('🌟 ', '').trim();
-
-    // 🔲 CAS 1 : MENU GÉNÉRIQUE SANS DÉTAILS
-    if (parts.length <= 1) {
-        executeAddToCart(`🥗 Entrée (${cleanN})`, 0, dest, 1, n, tvaRate);
-        executeAddToCart(`🔥 Plat (${cleanN})`, p, dest, 2, n, tvaRate);
-        executeAddToCart(`🍰 Dessert (${cleanN})`, 0, dest, 3, n, tvaRate);
-        return;
-    }
-
-    // 🔲 CAS 2 : MENU DÉTAILLÉ (Mappage dynamique)
-    const courses = [
-        { icon: '🥗', name: parts[0], courseId: 1, price: 0 },
-        { icon: '🔥', name: parts[1], courseId: 2, price: p },
-        { icon: '🍰', name: parts[2], courseId: 3, price: 0 }
-    ];
-
-    courses.forEach(c => {
-        if (c.name && c.name.trim()) {
-            executeAddToCart(`${c.icon} ${c.name.trim()}`, c.price, dest, c.courseId, n, tvaRate);
+        function executeAddToCart(n, p, dest, courseOverride, originalName, tvaRate = 10) { 
+            let cId = courseOverride !== undefined ? courseOverride : currentCourseDefault;
+            let seatId = currentSeat; 
+            let e = currentTicket.find(i => i.n === n && !i.done && !i.served && !i.isSent && i.course === cId && !i.obs && !i.isOffered && (i.seat || 0) === seatId && i.tva === tvaRate); 
+            if(e) e.qty = (e.qty||1)+1; 
+            else currentTicket.push({ id: Date.now()+Math.random(), itemId: Date.now(), n: n.replace(/\[BR\]/g, ' '), originalName: (originalName || n).replace(/\[BR\]/g, '\n'), p, tva: tvaRate, qty: 1, done: false, served: false, dest, savedToDB: false, isOffered: false, course: cId, obs: "", seat: seatId, isSent: false }); 
+            renderTicket(); 
         }
-    });
 
-    // Gestion des suppléments éventuels (ex: 2ème dessert)
-    for (let i = 3; i < parts.length; i++) {
-        if (parts[i].trim() !== '') {
-            executeAddToCart(`🍰 ${parts[i].trim()}`, 0, dest, 3, n, tvaRate);
+        function addMenuToTicket(n, p, dest, tvaRate = 10) {
+            let parts = n.split('[BR]');
+            if (parts.length <= 1) {
+                let cleanN = n.replace('🌟 ', '').trim();
+                executeAddToCart("🥗 Entrée (" + cleanN + ")", 0, dest, 1, n, tvaRate);
+                executeAddToCart("🔥 Plat (" + cleanN + ")", p, dest, 2, n, tvaRate);
+                executeAddToCart("🍰 Dessert (" + cleanN + ")", 0, dest, 3, n, tvaRate);
+                return;
+            }
+            let entree = parts[0] ? "🥗 " + parts[0].trim() : null;
+            let plat = parts[1] ? "🔥 " + parts[1].trim() : null;
+            let dessert = parts[2] ? "🍰 " + parts[2].trim() : null;
+            if (entree) executeAddToCart(entree, 0, dest, 1, n, tvaRate); 
+            if (plat) executeAddToCart(plat, p, dest, 2, n, tvaRate);      
+            if (dessert) executeAddToCart(dessert, 0, dest, 3, n, tvaRate); 
+            for(let i=3; i<parts.length; i++) { if(parts[i].trim() !== '') executeAddToCart("🍰 " + parts[i].trim(), 0, dest, 3, n, tvaRate); }
         }
-    }
-}
 
-function renderTicket() {
-    const list = document.getElementById('ticket-list');
-    if (!list) return; // Sécurité anti-crash
+        function renderTicket() {
+            let list = document.getElementById('ticket-list');
+            let total = 0;
+            let totalHT = 0;
+            let tvaTotals = { '5.5': 0, '10': 0, '20': 0, '0': 0 };
 
-    let totalTTC = 0;
-    let totalHT = 0;
-    const tvaTotals = { '0': 0, '5.5': 0, '10': 0, '20': 0 };
+            let htmlByCourse = { 0: '', 1: '', 2: '', 3: '' };
+            let courseNames = { 0: '🍸 BOISSONS', 1: '🥗 ENTRÉES', 2: '🔥 PLATS', 3: '🍰 DESSERTS' };
 
-    const htmlByCourse = { 0: '', 1: '', 2: '', 3: '' };
-    const courseNames = { 0: '🍸 BOISSONS', 1: '🥗 ENTRÉES', 2: '🔥 PLATS', 3: '🍰 DESSERTS' };
+            currentTicket.forEach((i, idx) => {
+                if(!i) return; let q = i.qty || 1; 
+                let ligneTTC = (parseFloat(i.p)||0) * q;
+                total += ligneTTC;
 
-    // 🔲 CONSTRUCTION DES LIGNES DU TICKET
-    currentTicket.forEach((i, idx) => {
-        if (!i) return; 
+                let rate = parseFloat(i.tva) || 10;
+                let ligneHT = ligneTTC / (1 + (rate / 100));
+                let ligneTVA = ligneTTC - ligneHT;
+                totalHT += ligneHT;
+                if(tvaTotals[rate] !== undefined) tvaTotals[rate] += ligneTVA;
+                else tvaTotals[rate] = ligneTVA;
 
-        const q = i.qty || 1;
-        const rate = parseFloat(i.tva) || 10;
-        const ligneTTC = (parseFloat(i.p) || 0) * q;
-        const ligneHT = ligneTTC / (1 + (rate / 100));
-        const ligneTVA = ligneTTC - ligneHT;
+                let cleanName = i.n.replace(/\n/g, ' + ');
+                let c = i.course !== undefined ? i.course : 2; 
+                let statusHtml = ''; let opacityStyle = "";
+                
+                if (!i.isSent) statusHtml = `<button class="btn-mini" style="border-color: var(--text-main); color: var(--text-main); padding: 4px 8px; font-size: 0.6rem;">NOUVEAU</button>`;
+                else if (i.served) { statusHtml = `<button class="btn-mini" style="border-color: var(--text-muted); color: var(--text-muted); padding: 4px 8px; font-size: 0.6rem;">SERVI</button>`; opacityStyle = "opacity: 0.4;"; }
+                else if (i.done) statusHtml = `<button class="btn-mini" style="background: var(--accent); color: #000; border-color: var(--accent); padding: 4px 8px; font-size: 0.6rem;">PRÊT</button>`;
+                else statusHtml = `<button class="btn-mini" style="border-color: var(--gold); color: var(--gold); padding: 4px 8px; font-size: 0.6rem;">ATTENTE</button>`;
+                
+                let seatBadge = (i.seat && i.seat > 0) ? `<span style="color:var(--text-muted); font-size:0.75rem; margin-right:8px; font-weight:500;">👤 ${i.seat}</span>` : `<span style="color:var(--text-muted); font-size:0.7rem; margin-right:8px; font-weight:400;">🍽️ CTR</span>`;
+                let priceHtml = i.isOffered ? `<span style="margin-right:10px; font-weight:500; color:var(--gold); font-size: 0.8rem; letter-spacing: 1px;">🎁 OFFERT</span>` : `<span style="margin-right:10px; font-weight:500; font-size: 0.95rem; font-family: 'Playfair Display', serif;">${ligneTTC.toFixed(2)}€</span>`;
+                let obsDisplay = i.obs ? `<span style="font-size:0.7rem; color:var(--gold); margin-left: 5px; font-weight: 500;">⚠️ ${i.obs}</span>` : `<span style="font-size:0.65rem; color:var(--border-strong); font-weight: 300; margin-left: 5px;">+ Obs</span>`;
 
-        totalTTC += ligneTTC;
-        totalHT += ligneHT;
-        
-        if (tvaTotals[rate] !== undefined) tvaTotals[rate] += ligneTVA;
-        else tvaTotals[rate] = ligneTVA;
+                let itemHtml = `
+                <div class="ticket-item-row" style="${opacityStyle}">
+                    <div style="flex:1; cursor:pointer;" onclick="openEditItem(${idx})">
+                        <div style="font-weight:400; font-size:0.95rem; color: var(--text-main);">${seatBadge}${q>1?`<span style="color:var(--gold); font-weight:600;">${q}x</span> `:""}${cleanName||'?'}</div>
+                        <div style="display:flex; align-items:center; gap:8px; margin-top:6px;">${statusHtml}${obsDisplay}</div>
+                    </div>
+                    ${priceHtml}
+                    <button class="item-delete-btn" onclick="removeTicketItem(${idx}); event.stopPropagation();">✕</button>
+                </div>`;
+                htmlByCourse[c] += itemHtml;
+            }); 
 
-        const cleanName = i.n.replace(/\n/g, ' + ');
-        const c = i.course !== undefined ? i.course : 2;
-
-        // Définition des statuts visuels
-        let statusHtml = ''; 
-        let opacityStyle = '';
-        
-        if (!i.isSent) {
-            statusHtml = `<button class="btn-mini" style="border-color: var(--text-main); color: var(--text-main); padding: 4px 8px; font-size: 0.6rem;">NOUVEAU</button>`;
-        } else if (i.served) {
-            statusHtml = `<button class="btn-mini" style="border-color: var(--text-muted); color: var(--text-muted); padding: 4px 8px; font-size: 0.6rem;">SERVI</button>`;
-            opacityStyle = "opacity: 0.4;";
-        } else if (i.done) {
-            statusHtml = `<button class="btn-mini" style="background: var(--accent); color: #000; border-color: var(--accent); padding: 4px 8px; font-size: 0.6rem;">PRÊT</button>`;
-        } else {
-            statusHtml = `<button class="btn-mini" style="border-color: var(--gold); color: var(--gold); padding: 4px 8px; font-size: 0.6rem;">ATTENTE</button>`;
-        }
-        
-        const seatBadge = (i.seat && i.seat > 0) 
-            ? `<span style="color:var(--text-muted); font-size:0.75rem; margin-right:8px; font-weight:500;">👤 ${i.seat}</span>` 
-            : `<span style="color:var(--text-muted); font-size:0.7rem; margin-right:8px; font-weight:400;">🍽️ CTR</span>`;
+            let finalHtml = '';
+            [0, 1, 2, 3].forEach(c => { if(htmlByCourse[c] !== '') finalHtml += `<div class="course-card"><div class="course-card-header"><span class="course-title">${courseNames[c]}</span></div><div class="course-body">${htmlByCourse[c]}</div></div>`; });
             
-        const priceHtml = i.isOffered 
-            ? `<span style="margin-right:10px; font-weight:500; color:var(--gold); font-size: 0.8rem; letter-spacing: 1px;">🎁 OFFERT</span>` 
-            : `<span style="margin-right:10px; font-weight:500; font-size: 0.95rem; font-family: 'Playfair Display', serif;">${ligneTTC.toFixed(2)}€</span>`;
+            if(finalHtml === '') finalHtml = `<div style="text-align:center; color:var(--text-muted); font-weight: 300; padding:40px 0; border: 1px dashed var(--border-strong); border-radius: 4px;">En attente de saisie...</div>`;
             
-        const obsDisplay = i.obs 
-            ? `<span style="font-size:0.7rem; color:var(--gold); margin-left: 5px; font-weight: 500;">⚠️ ${i.obs}</span>` 
-            : `<span style="font-size:0.65rem; color:var(--border-strong); font-weight: 300; margin-left: 5px;">+ Obs</span>`;
+            list.innerHTML = finalHtml;
+            document.getElementById('ticket-total-price').innerText = `${total.toFixed(2)}€`;
+            currentTableTotal = total;
 
-        htmlByCourse[c] += `
-        <div class="ticket-item-row" style="${opacityStyle}">
-            <div style="flex:1; cursor:pointer;" onclick="openEditItem(${idx})">
-                <div style="font-weight:400; font-size:0.95rem; color: var(--text-main);">${seatBadge}${q > 1 ? `<span style="color:var(--gold); font-weight:600;">${q}x</span> ` : ''}${cleanName || '?'}</div>
-                <div style="display:flex; align-items:center; gap:8px; margin-top:6px;">${statusHtml}${obsDisplay}</div>
-            </div>
-            ${priceHtml}
-            <button class="item-delete-btn" onclick="removeTicketItem(${idx}); event.stopPropagation();">✕</button>
-        </div>`;
-    });
+            let tvaStr = Object.entries(tvaTotals).filter(([k,v]) => v>0).map(([k,v]) => `TVA ${k}%: ${v.toFixed(2)}€`).join(' | ');
+            if(!tvaStr) tvaStr = "Aucune TVA";
+            document.getElementById('ticket-tva').innerText = tvaStr + ` (HT: ${totalHT.toFixed(2)}€)`;
 
-    // 🔲 ASSEMBLAGE ET INJECTION DANS LE DOM
-    let finalHtml = '';
-    for (let c = 0; c <= 3; c++) {
-        if (htmlByCourse[c] !== '') {
-            finalHtml += `<div style="font-size:0.8rem; color:var(--text-muted); margin:15px 0 5px 0; font-weight:600; text-transform:uppercase; border-bottom:1px solid var(--border-light); padding-bottom:3px;">${courseNames[c]}</div>`;
-            finalHtml += htmlByCourse[c];
+            let hasUnsent = currentTicket.some(i => !i.isSent);
+            let btnSend = document.getElementById('btn-send-kds');
+            if (hasUnsent) {
+                btnSend.style.display = 'block';
+            } else {
+                btnSend.style.display = 'none';
+            }
         }
-    }
-    
-    list.innerHTML = finalHtml;
 
-    // Mise à jour de l'affichage du Total (si l'élément existe dans ton interface)
-    const totalDisplay = document.getElementById('ticket-total');
-    if (totalDisplay) {
-        totalDisplay.innerText = `${totalTTC.toFixed(2)}€`;
-    }
-}
+        async function sendOrderToKDS() {
+            let count = 0;
+            currentTicket.forEach(i => { if (!i.isSent) { i.isSent = true; i.itemId = Date.now(); count++; } });
+            if (count > 0) {
+                renderTicket();
+                await executeSaveTableState(false, true); 
+                alert(`✅ ${count} plats/boissons envoyés en production !`);
+            }
+        }
 
         function executeSaveTableState(fireAllNew = false, keepOpen = false) {
             if(currentTicket.length === 0 && !keepOpen) return;
@@ -2592,446 +2729,410 @@ function renderTicket() {
 
         function closePaymentModal() { document.getElementById('payment-modal').classList.remove('open'); }
 
-    // ==========================================
-// 💰 GESTION FINANCIÈRE ET ENCAISSEMENT
-// ==========================================
-async function finalizeTablePayment() {
-    document.getElementById('payment-modal').classList.remove('open');
-    window.print(); 
-    
-    setTimeout(async () => {
-        try {
-            const state = await API.getState();
+        async function finalizeTablePayment() {
+            document.getElementById('payment-modal').classList.remove('open');
+            window.print(); 
             
-            // 1. Calcul rigoureux de la TVA et du Hors Taxe
-            let totalHT = 0; 
-            const tvaTotals = {};
-            
-            currentTicket.forEach(i => {
-                const qty = i.qty || 1;
-                const ligneTTC = (parseFloat(i.p) || 0) * qty;
-                const rate = parseFloat(i.tva) || 10;
-                const ligneHT = ligneTTC / (1 + (rate / 100));
+            setTimeout(async () => {
+                try {
+                    const state = await API.getState();
+                    
+                    let totalHT = 0; let tvaTotals = {};
+                    currentTicket.forEach(i => {
+                        let ligneTTC = (parseFloat(i.p)||0) * (i.qty||1);
+                        let rate = parseFloat(i.tva) || 10;
+                        let ligneHT = ligneTTC / (1 + (rate / 100));
+                        totalHT += ligneHT;
+                        tvaTotals[rate] = (tvaTotals[rate] || 0) + (ligneTTC - ligneHT);
+                    });
+
+                    if(isLoyaltyActive && currentLoyaltyPhone && globalLoyaltyData[currentLoyaltyPhone]) {
+                        let montantEligibleCashback = currentTableTotal - fidelityDiscountUsed;
+                        if(montantEligibleCashback > 0) {
+                            let argentGagne = montantEligibleCashback * (loyaltyPercent / 100);
+                            globalLoyaltyData[currentLoyaltyPhone].points += argentGagne;
+                            
+                            await API.update('LOYALTY_MASTER', globalLoyaltyData);
+                            alert(`🎁 Le client ${globalLoyaltyData[currentLoyaltyPhone].name} vient de gagner ${argentGagne.toFixed(2)} € sur sa cagnotte !`);
+                        }
+                    }
+
+                    let transaction = {
+                        id: 'TX_' + Date.now(),
+                        date: new Date().toISOString(),
+                        method: paymentsDone.map(h => h.method).join(' + '),
+                        totalTTC: parseFloat(currentTableTotal.toFixed(2)),
+                        totalHT: parseFloat(totalHT.toFixed(2)),
+                        tva: tvaTotals,
+                        source: 'Caisse Salle (' + currentTableId + ')',
+                        items: currentTicket
+                    };
+
+                    let historyNode = state.activeOrders['FINANCIAL_HISTORY'] || { data: [] };
+                    historyNode.data.push(transaction);
+                    await API.update('FINANCIAL_HISTORY', historyNode.data);
+                } catch(e) {}
                 
-                totalHT += ligneHT;
-                tvaTotals[rate] = (tvaTotals[rate] || 0) + (ligneTTC - ligneHT);
+                await API.update(currentTableId, null, true);
+                closeOrder(); 
+                renderFloor();
+            }, 500);
+        }
+
+        function openHistoryDrawer() {
+            document.getElementById('history-drawer').classList.add('open');
+            API.getState().then(s => {
+                let hData = s.activeOrders['FINANCIAL_HISTORY'] ? s.activeOrders['FINANCIAL_HISTORY'].data : [];
+                let container = document.getElementById('history-content');
+                if(hData.length === 0) { container.innerHTML = '<div style="color:var(--text-muted); text-align:center;">Aucun historique</div>'; return; }
+                
+                hData.sort((a,b) => new Date(b.date) - new Date(a.date));
+                let html = hData.map(t => {
+                    let d = new Date(t.date);
+                    return `<div style="background:var(--panel); border:1px solid var(--border-strong); padding:15px; border-radius:4px;">
+                        <div style="display:flex; justify-content:space-between; border-bottom:1px solid var(--border); padding-bottom:10px; margin-bottom:10px;">
+                            <span style="color:var(--gold); font-weight:bold;">${t.source}</span>
+                            <span style="color:var(--text-muted); font-size:0.8rem;">${d.toLocaleDateString()} ${d.toLocaleTimeString()}</span>
+                        </div>
+                        <div style="display:flex; justify-content:space-between; font-weight:bold;">
+                            <span>TOTAL</span>
+                            <span style="color:var(--gold);">${t.totalTTC.toFixed(2)}€</span>
+                        </div>
+                        <div style="font-size:0.7rem; color:var(--text-muted); text-align:right; margin-top:5px;">${t.method}</div>
+                    </div>`;
+                }).join('');
+                container.innerHTML = html;
+            });
+        }
+        function closeDrawer(id) { document.getElementById(id).classList.remove('open'); }
+
+        // ==========================================
+        // ➕ GESTION DES TABLES EXTRA (VOLANTES)
+        // ==========================================
+        function addExtraTable() {
+            let tableName = prompt("Nom de la table supplémentaire (ex: EXT-2, DEBOUT, BAR) :");
+            if (!tableName) return;
+            tableName = tableName.trim().toUpperCase();
+
+            if (tables.find(t => t && t.label === tableName && t.room === currentRoom)) {
+                return alert("❌ Ce nom de table existe déjà dans cette salle.");
+            }
+
+            let paxStr = prompt("Combien de couverts ?", "2");
+            if (!paxStr) return;
+            let pax = parseInt(paxStr) || 2;
+
+            let baseL = window.innerWidth / 2 - 40;
+            let baseT = window.innerHeight / 2 - 60;
+
+            let roomZones = zones.filter(z => z && z.room === currentRoom);
+            if (roomZones.length > 0) {
+                let zPrompt = "Dans quelle zone placer la table ?\n\n";
+                roomZones.forEach((z, i) => { zPrompt += `[ ${i + 1} ] - ${z.label}\n`; });
+                zPrompt += `[ 0 ] - Aucune zone (Hors zone)\n\nEntrez le numéro :`;
+                
+                let zChoice = prompt(zPrompt, "1");
+                if (zChoice !== null && zChoice !== "0") {
+                    let selectedZone = roomZones[parseInt(zChoice) - 1];
+                    if (selectedZone) {
+                        baseL = (selectedZone.l || 0) + ((selectedZone.w || 400) / 2) - 40;
+                        baseT = (selectedZone.t || 0) + ((selectedZone.h || 300) / 2) - 60;
+                    }
+                }
+            }
+
+            let randomOffsetX = Math.floor(Math.random() * 80) - 40;
+            let randomOffsetY = Math.floor(Math.random() * 80) - 40;
+
+            tables.push({
+                label: tableName,
+                l: baseL + randomOffsetX,
+                t: baseT + randomOffsetY,
+                w: 80,
+                h: 120,
+                shape: "rect",
+                pax: pax,
+                room: currentRoom,
+                isExtra: true
             });
 
-            // 2. Traitement de la fidélité et du Cashback
-            if (isLoyaltyActive && currentLoyaltyPhone && globalLoyaltyData[currentLoyaltyPhone]) {
-                const discount = typeof fidelityDiscountUsed !== 'undefined' ? fidelityDiscountUsed : 0;
-                const montantEligibleCashback = currentTableTotal - discount;
+            pushArchitecture();
+            renderFloor();
+        }
+
+        function promptRemoveExtraTable(tableName) {
+            let pin = prompt("🔐 Entrez votre code PIN pour retirer cette table :");
+            if (!pin) return;
+
+            let masterPin = localStorage.getItem('ichef_master_pin') || "999999";
+            let isValid = (pin === masterPin || pin === "9999" || pin === "7777");
+            
+            if (!isValid && typeof staffAccessData !== 'undefined') {
+                let staff = staffAccessData.find(s => s.pin === pin);
+                if (staff && staff.active !== false) isValid = true;
+            }
+
+            if (!isValid) return alert("❌ Code PIN incorrect ou accès refusé.");
+
+            let order = activeOrders[tableName];
+            if (order && order.items && order.items.length > 0) {
+                if (!confirm("⚠️ La table a des commandes en cours ! Êtes-vous sûr de vouloir la supprimer ?")) return;
+            }
+
+            tables = tables.filter(t => !(t && t.label === tableName && t.room === currentRoom));
+            API.update(tableName, null, true); 
+            
+            pushArchitecture();
+            closeOrder();
+            renderFloor();
+        }
+
+        // ==========================================
+        // 🧑‍🤝‍🧑 GESTION DES CLIENTS EXTRA (SIÈGES EN PLUS)
+        // ==========================================
+        async function addExtraClient() {
+            let tableName = prompt("🧑‍🤝‍🧑 À quelle table voulez-vous ajouter un client supplémentaire ?\n(ex: 12, T1)");
+            if (!tableName) return;
+            tableName = tableName.trim().toUpperCase();
+
+            let tObj = tables.find(t => t && t.label === tableName && t.room === currentRoom);
+            if (!tObj) {
+                return alert(`❌ ERREUR HUMAINE : La table "${tableName}" n'existe pas dans la salle "${currentRoom}". Vérifiez votre saisie.`);
+            }
+
+            let extraStr = prompt(`Combien de clients voulez-vous ajouter à la table ${tableName} ?`, "1");
+            let extra = parseInt(extraStr);
+            if (isNaN(extra) || extra <= 0) return;
+
+            tObj.extraPax = (tObj.extraPax || 0) + extra;
+            tObj.pax = (tObj.pax || 2) + extra;
+            
+            pushArchitecture();
+
+            let order = activeOrders[tableName];
+            if (!order) order = { status: 'active', items: [], observations: '' };
+            
+            let baseObs = order.observations || "";
+            baseObs = baseObs.replace(/🍽️ \d+ Couvert\(s\)( \| )?/, '').replace(/ \| $/, '').trim();
+            order.observations = `🍽️ ${tObj.pax} Couvert(s) | ⚠️ +${tObj.extraPax} EXTRA(S) | ${baseObs}`;
+            
+            await API.update(tableName, order, true);
+            
+            await API.update('ALERTS_MASTER', { 
+                type: 'RING', 
+                message: `⚠️ NOUVEAU CLIENT EXTRA AJOUTÉ À LA TABLE ${tableName} (+${extra} Couvert(s))` 
+            });
+
+            renderFloor();
+            alert(`✅ C'est validé ! ${extra} client(s) ajouté(s) à la table ${tableName}. La cuisine a été prévenue.`);
+        }
+
+        // ==========================================
+        // 📱 GESTION FERMETURE AUTOMATIQUE MENU MOBILE
+        // ==========================================
+        document.addEventListener('DOMContentLoaded', () => {
+            document.querySelectorAll('.btn-mini').forEach(item => {
+                item.addEventListener('click', () => {
+                    if(window.innerWidth <= 900 && item.id !== 'btn-rush-toggle') {
+                        let sidebar = document.getElementById('sidebar');
+                        if (sidebar && sidebar.classList.contains('open')) toggleMobileMenu();
+                        
+                    }
                 
-                if (montantEligibleCashback > 0) {
-                    const argentGagne = montantEligibleCashback * (loyaltyPercent / 100);
-                    globalLoyaltyData[currentLoyaltyPhone].points += argentGagne;
-                    
-                    await API.update('LOYALTY_MASTER', globalLoyaltyData);
-                    alert(`🎁 Le client ${globalLoyaltyData[currentLoyaltyPhone].name} vient de gagner ${argentGagne.toFixed(2)} € sur sa cagnotte !`);
+                // ========================================================
+        // 🏗️ MECHANICAL SUB-SYSTEM: ARCHITECTURE & STRUCTURE MODE
+        // ========================================================
+        function unlockArchiMode() {
+            if (!currentUser || currentUser.role !== 'Manager') return alert("⛔ Accès Manager requis");
+            isArchiMode = true;
+            document.body.classList.add('edit-mode');
+            renderRooms();
+            renderFloor();
+        }
+
+        async function closeArchiMode() {
+            isArchiMode = false;
+            document.body.classList.remove('edit-mode');
+            renderRooms();
+            renderFloor();
+        }
+
+        function saveArchitecture() {
+            pushArchitecture();
+            closeArchiMode();
+        }
+        
+        async function pushArchitecture() { 
+            await API.update('ARCHITECTURE', { rooms: rooms, tables: tables, zones: zones }); 
+            localStorage.setItem('empire_architecture', JSON.stringify(tables)); 
+            localStorage.setItem('empire_rooms', JSON.stringify(rooms)); 
+            localStorage.setItem('empire_zones', JSON.stringify(zones));
+        }
+
+        // --- CONFIGURATION DES SALLES ---
+        function renderRooms() {
+            const container = document.getElementById('room-tabs-container');
+            if(container) {
+                container.innerHTML = rooms.map(r => `<div class="room-tab ${r === currentRoom ? 'active' : 'inactive'}" onclick="handleRoomClick('${r}')">${r}</div>`).join('');
+            }
+        }
+
+        function handleRoomClick(r) {
+            if(isArchiMode && r === currentRoom) {
+                openRoomConfigModal(r);
+            } else {
+                currentRoom = r;
+                renderRooms();
+                renderFloor();
+            }
+        }
+
+        function addNewRoom() {
+            let n = "Salle " + (rooms.length + 1);
+            rooms.push(n);
+            currentRoom = n;
+            renderRooms();
+            renderFloor();
+        }
+
+        function addTactileRoomName(v) {
+            if(v === 'CLEAR') currentTactileRoomName = currentTactileRoomName.slice(0, -1);
+            else currentTactileRoomName += v;
+            document.getElementById('config-room-name-display').innerText = currentTactileRoomName;
+        }
+        
+        function openRoomConfigModal(r) {
+            configRoomOldName = r;
+            currentTactileRoomName = r;
+            document.getElementById('config-room-name-display').innerText = currentTactileRoomName;
+            document.getElementById('room-config-modal').style.display = 'flex';
+        }
+
+        function closeRoomConfigModal() {
+            configRoomOldName = null;
+            document.getElementById('room-config-modal').style.display = 'none';
+        }
+
+        function saveRoomConfig() {
+            if(!configRoomOldName) return;
+            let n = currentTactileRoomName.trim();
+            if(n && n !== configRoomOldName) {
+                let idx = rooms.indexOf(configRoomOldName);
+                if(idx > -1) rooms[idx] = n;
+                tables.forEach(t => { if(t && t.room === configRoomOldName) t.room = n; });
+                zones.forEach(z => { if(z && z.room === configRoomOldName) z.room = n; });
+                if(currentRoom === configRoomOldName) currentRoom = n;
+            }
+            closeRoomConfigModal();
+            renderRooms();
+            renderFloor();
+            pushArchitecture();
+        }
+
+        function deleteCurrentRoom() {
+            if(rooms.length <= 1) return alert("Impossible de supprimer la dernière salle.");
+            if(confirm(`Supprimer la salle "${configRoomOldName}" et TOUTES ses tables et zones ?`)) {
+                tables = tables.filter(t => t && t.room !== configRoomOldName);
+                zones = zones.filter(z => z && z.room !== configRoomOldName);
+                rooms = rooms.filter(r => r !== configRoomOldName);
+                currentRoom = rooms[0];
+                closeRoomConfigModal();
+                renderRooms();
+                renderFloor();
+                pushArchitecture();
+            }
+        }
+
+        // --- CONFIGURATION DES TABLES (STRUCTURE) ---
+        function addNewTable() {
+            let nextNum = 1;
+            tables.filter(t => t && t.room === currentRoom).forEach(t => {
+                let m = t.label.match(/\d+/);
+                if(m && parseInt(m[0]) >= nextNum) nextNum = parseInt(m[0]) + 1;
+            });
+            tables.push({ label: "T" + nextNum, l: 400, t: 400, w: 80, h: 120, shape: "rect", pax: 4, room: currentRoom }); 
+            renderFloor();
+        }
+
+        let currentTactileName = "";
+        function addTactileTableName(v) {
+            if(v === 'CLEAR') currentTactileName = currentTactileName.slice(0, -1);
+            else currentTactileName += v;
+            document.getElementById('config-table-name-display').innerText = currentTactileName;
+        }
+
+        function setShape(s) {
+            document.getElementById('config-table-shape').value = s;
+        }
+        
+        function openTableConfigModal(id) {
+            let t = tables.find(x => x && x.label === id && x.room === currentRoom);
+            if(!t) return;
+            configTableId = id;
+            currentTactileName = t.label; 
+            document.getElementById('config-table-name-display').innerText = currentTactileName; 
+            document.getElementById('config-table-shape').value = t.shape || 'rect';
+            document.getElementById('config-table-pax').value = t.pax || 4; 
+            document.getElementById('table-config-modal').style.display = 'flex';
+        }
+
+        function closeTableConfigModal() {
+            configTableId = null;
+            document.getElementById('table-config-modal').style.display = 'none';
+        }
+
+        function saveTableConfig() {
+            let t = tables.find(x => x && x.label === configTableId && x.room === currentRoom);
+            if(t) {
+                let n = currentTactileName.trim();
+                if(n && n !== t.label) {
+                    if(activeOrders[t.label]) { activeOrders[n] = activeOrders[t.label]; delete activeOrders[t.label]; }
+                    t.label = n;
                 }
+                t.shape = document.getElementById('config-table-shape').value;
+                t.pax = parseInt(document.getElementById('config-table-pax').value) || 4; 
             }
-
-            // 3. Audit et création de la transaction
-            const transaction = {
-                id: `TX_${Date.now()}`,
-                date: new Date().toISOString(),
-                method: typeof paymentsDone !== 'undefined' ? paymentsDone.map(h => h.method).join(' + ') : 'Non spécifié',
-                totalTTC: parseFloat(currentTableTotal.toFixed(2)),
-                totalHT: parseFloat(totalHT.toFixed(2)),
-                tva: tvaTotals,
-                source: `Caisse Salle (${currentTableId})`,
-                items: currentTicket
-            };
-
-            // 4. Injection dans l'historique financier Cloud
-            const historyNode = state.activeOrders['FINANCIAL_HISTORY'] || { data: [] };
-            historyNode.data.push(transaction);
-            await API.update('FINANCIAL_HISTORY', historyNode.data);
-
-        } catch (e) {
-            console.error("Échec de la transaction financière :", e);
-            alert("⚠️ Erreur réseau lors de la sauvegarde de la transaction. Vérifiez l'historique.");
+            closeTableConfigModal();
+            renderFloor(); 
         }
-        
-        // 5. Libération de la table et rafraîchissement UI
-        await API.update(currentTableId, null, true);
-        closeOrder(); 
-        renderFloor();
-    }, 500);
-}
 
-function openHistoryDrawer() {
-    document.getElementById('history-drawer').classList.add('open');
-    API.getState().then(s => {
-        const hData = s.activeOrders['FINANCIAL_HISTORY'] ? s.activeOrders['FINANCIAL_HISTORY'].data : [];
-        const container = document.getElementById('history-content');
-        
-        if (hData.length === 0) { 
-            container.innerHTML = '<div style="color:var(--text-muted); text-align:center;">Aucun historique</div>'; 
-            return; 
-        }
-        
-        hData.sort((a, b) => new Date(b.date) - new Date(a.date));
-        
-        container.innerHTML = hData.map(t => {
-            const d = new Date(t.date);
-            return `
-            <div style="background:var(--panel); border:1px solid var(--border-strong); padding:15px; border-radius:4px; margin-bottom:10px;">
-                <div style="display:flex; justify-content:space-between; border-bottom:1px solid var(--border); padding-bottom:10px; margin-bottom:10px;">
-                    <span style="color:var(--gold); font-weight:bold;">${t.source}</span>
-                    <span style="color:var(--text-muted); font-size:0.8rem;">${d.toLocaleDateString()} ${d.toLocaleTimeString()}</span>
-                </div>
-                <div style="display:flex; justify-content:space-between; font-weight:bold;">
-                    <span>TOTAL</span>
-                    <span style="color:var(--gold);">${(t.totalTTC || 0).toFixed(2)}€</span>
-                </div>
-                <div style="font-size:0.7rem; color:var(--text-muted); text-align:right; margin-top:5px;">${t.method}</div>
-            </div>`;
-        }).join('');
-    });
-}
-
-function closeDrawer(id) { 
-    document.getElementById(id).classList.remove('open'); 
-}
-
-// ==========================================
-// ➕ GESTION DES TABLES EXTRA (VOLANTES)
-// ==========================================
-function addExtraTable() {
-    let tableName = prompt("Nom de la table supplémentaire (ex: EXT-2, DEBOUT, BAR) :");
-    if (!tableName) return;
-    tableName = tableName.trim().toUpperCase();
-
-    if (tables.find(t => t?.label === tableName && t?.room === currentRoom)) {
-        return alert("❌ Ce nom de table existe déjà dans cette salle.");
-    }
-
-    const paxStr = prompt("Combien de couverts ?", "2");
-    if (!paxStr) return;
-    const pax = parseInt(paxStr) || 2;
-
-    let baseL = window.innerWidth / 2 - 40;
-    let baseT = window.innerHeight / 2 - 60;
-
-    const roomZones = zones.filter(z => z?.room === currentRoom);
-    if (roomZones.length > 0) {
-        let zPrompt = "Dans quelle zone placer la table ?\n\n";
-        roomZones.forEach((z, i) => { zPrompt += `[ ${i + 1} ] - ${z.label}\n`; });
-        zPrompt += `[ 0 ] - Aucune zone (Hors zone)\n\nEntrez le numéro :`;
-        
-        const zChoice = prompt(zPrompt, "1");
-        if (zChoice !== null && zChoice !== "0") {
-            const selectedZone = roomZones[parseInt(zChoice) - 1];
-            if (selectedZone) {
-                baseL = (selectedZone.l || 0) + ((selectedZone.w || 400) / 2) - 40;
-                baseT = (selectedZone.t || 0) + ((selectedZone.h || 300) / 2) - 60;
+        function deleteCurrentTable() {
+            if(confirm("Supprimer cette table ?")) {
+                tables = tables.filter(t => !(t && t.label === configTableId && t.room === currentRoom));
+                closeTableConfigModal();
+                renderFloor();
             }
         }
-    }
 
-    const randomOffsetX = Math.floor(Math.random() * 80) - 40;
-    const randomOffsetY = Math.floor(Math.random() * 80) - 40;
+        function changeConfigPax(delta) {
+            let input = document.getElementById('config-table-pax');
+            let val = parseInt(input.value) || 2;
+            val = Math.max(1, val + delta);
+            input.value = val;
+        }
 
-    tables.push({
-        label: tableName,
-        l: baseL + randomOffsetX,
-        t: baseT + randomOffsetY,
-        w: 80,
-        h: 120,
-        shape: "rect",
-        pax: pax,
-        room: currentRoom,
-        isExtra: true
-    });
-
-    pushArchitecture();
-    renderFloor();
-}
-
-function promptRemoveExtraTable(tableName) {
-    const pin = prompt("🔐 Entrez votre code PIN pour retirer cette table :");
-    if (!pin) return;
-
-    const masterPin = localStorage.getItem('ichef_master_pin') || "999999";
-    let isValid = (pin === masterPin || pin === "9999" || pin === "7777");
-    
-    if (!isValid && typeof staffAccessData !== 'undefined') {
-        const staff = staffAccessData.find(s => s.pin === pin);
-        if (staff && staff.active !== false) isValid = true;
-    }
-
-    if (!isValid) return alert("❌ Code PIN incorrect ou accès refusé.");
-
-    const order = activeOrders[tableName];
-    if (order?.items?.length > 0) {
-        if (!confirm("⚠️ La table a des commandes en cours ! Êtes-vous sûr de vouloir la supprimer ?")) return;
-    }
-
-    tables = tables.filter(t => !(t?.label === tableName && t?.room === currentRoom));
-    API.update(tableName, null, true); 
-    
-    pushArchitecture();
-    closeOrder();
-    renderFloor();
-}
-
-// ==========================================
-// 🧑‍🤝‍🧑 GESTION DES CLIENTS EXTRA (SIÈGES EN PLUS)
-// ==========================================
-async function addExtraClient() {
-    let tableName = prompt("🧑‍🤝‍🧑 À quelle table voulez-vous ajouter un client supplémentaire ?\n(ex: 12, T1)");
-    if (!tableName) return;
-    tableName = tableName.trim().toUpperCase();
-
-    const tObj = tables.find(t => t?.label === tableName && t?.room === currentRoom);
-    if (!tObj) {
-        return alert(`❌ ERREUR HUMAINE : La table "${tableName}" n'existe pas dans la salle "${currentRoom}". Vérifiez votre saisie.`);
-    }
-
-    const extraStr = prompt(`Combien de clients voulez-vous ajouter à la table ${tableName} ?`, "1");
-    const extra = parseInt(extraStr);
-    if (isNaN(extra) || extra <= 0) return;
-
-    tObj.extraPax = (tObj.extraPax || 0) + extra;
-    tObj.pax = (tObj.pax || 2) + extra;
-    
-    pushArchitecture();
-
-    let order = activeOrders[tableName] || { status: 'active', items: [], observations: '' };
-    
-    let baseObs = order.observations || "";
-    baseObs = baseObs.replace(/🍽️ \d+ Couvert\(s\)( \| )?/, '').replace(/ \| $/, '').trim();
-    order.observations = `🍽️ ${tObj.pax} Couvert(s) | ⚠️ +${tObj.extraPax} EXTRA(S) | ${baseObs}`;
-    
-    await API.update(tableName, order, true);
-    
-    await API.update('ALERTS_MASTER', { 
-        type: 'RING', 
-        message: `⚠️ NOUVEAU CLIENT EXTRA AJOUTÉ À LA TABLE ${tableName} (+${extra} Couvert(s))` 
-    });
-
-    renderFloor();
-    alert(`✅ C'est validé ! ${extra} client(s) ajouté(s) à la table ${tableName}. La cuisine a été prévenue.`);
-}
-
-// ==========================================
-// 📱 GESTION UI / FERMETURE AUTOMATIQUE
-// ==========================================
-document.addEventListener('DOMContentLoaded', () => {
-    document.querySelectorAll('.btn-mini').forEach(item => {
-        item.addEventListener('click', () => {
-            if (window.innerWidth <= 900 && item.id !== 'btn-rush-toggle') {
-                const sidebar = document.getElementById('sidebar');
-                if (sidebar && sidebar.classList.contains('open')) {
-                    if (typeof toggleMobileMenu === 'function') toggleMobileMenu();
-                }
+        // --- ENGINE: DRAG & DROP DES TABLES ET ZONES ---
+        function makeInteractive(elmnt, tableObj, resizerElnt) {
+            let p1=0, p2=0, p3=0, p4=0, iW, iH, iX, iY;
+            elmnt.onmousedown = dragMD; elmnt.ontouchstart = dragTS;
+            if(resizerElnt) {
+                resizerElnt.onmousedown = resMD; resizerElnt.ontouchstart = resTS;
             }
+            function dragMD(e) { if(!isArchiMode || e.target === resizerElnt) return; e.preventDefault(); p3=e.clientX; p4=e.clientY; document.onmouseup=close; document.onmousemove=drag; }
+            function dragTS(e) { if(!isArchiMode || e.target === resizerElnt) return; p3=e.touches[0].clientX; p4=e.touches[0].clientY; document.ontouchend=close; document.ontouchmove=tDrag; }
+            function drag(e) { e.preventDefault(); isDraggingTable=true; p1=p3-e.clientX; p2=p4-e.clientY; p3=e.clientX; p4=e.clientY; updatePos(); }
+            function tDrag(e) { isDraggingTable=true; p1=p3-e.touches[0].clientX; p2=p4-e.touches[0].clientY; p3=e.touches[0].clientX; p4=e.touches[0].clientY; updatePos(); }
+            function updatePos() { elmnt.style.top = (elmnt.offsetTop-p2)+"px"; elmnt.style.left = (elmnt.offsetLeft-p1)+"px"; tableObj.t = elmnt.offsetTop; tableObj.l = elmnt.offsetLeft; }
+            function resMD(e) { if(!isArchiMode) return; e.preventDefault(); e.stopPropagation(); iW=elmnt.offsetWidth; iH=elmnt.offsetHeight; iX=e.clientX; iY=e.clientY; document.onmouseup=close; document.onmousemove=res; }
+            function resTS(e) { if(!isArchiMode) return; e.stopPropagation(); iW=elmnt.offsetWidth; iH=elmnt.offsetHeight; iX=e.touches[0].clientX; iY=e.touches[0].clientY; document.ontouchend=close; document.ontouchmove=tRes; }
+            function res(e) { e.preventDefault(); isDraggingTable=true; updateDim(e.clientX, e.clientY); }
+            function tRes(e) { isDraggingTable=true; updateDim(e.touches[0].clientX, e.touches[0].clientY); }
+            function updateDim(cX, cY) { let nW = Math.max(40, iW+(cX-iX)); let nH = Math.max(40, iH+(cY-iY)); elmnt.style.width=nW+"px"; elmnt.style.height=nH+"px"; tableObj.w=nW; tableObj.h=nH; }
+            function close() { document.onmouseup=null; document.onmousemove=null; document.ontouchend=null; document.ontouchmove=null; setTimeout(()=>{isDraggingTable=false;}, 50); } 
+        }});
+            });
         });
-    });
-});
 
-// ========================================================
-// 🏗️ MECHANICAL SUB-SYSTEM: ARCHITECTURE & STRUCTURE MODE
-// ========================================================
-let isArchiMode = false;
-let configRoomOldName = null;
-let currentTactileRoomName = "";
-let configTableId = null;
-let currentTactileName = "";
-let isDraggingTable = false;
-
-function unlockArchiMode() {
-    if (!currentUser || currentUser.role !== 'Manager') return alert("⛔ Accès Manager requis");
-    isArchiMode = true;
-    document.body.classList.add('edit-mode');
-    renderRooms();
-    renderFloor();
-}
-
-async function closeArchiMode() {
-    isArchiMode = false;
-    document.body.classList.remove('edit-mode');
-    renderRooms();
-    renderFloor();
-}
-
-function saveArchitecture() {
-    pushArchitecture();
-    closeArchiMode();
-}
-
-async function pushArchitecture() { 
-    await API.update('ARCHITECTURE', { rooms: rooms, tables: tables, zones: zones }); 
-    localStorage.setItem('empire_architecture', JSON.stringify(tables)); 
-    localStorage.setItem('empire_rooms', JSON.stringify(rooms)); 
-    localStorage.setItem('empire_zones', JSON.stringify(zones));
-}
-
-function renderRooms() {
-    const container = document.getElementById('room-tabs-container');
-    if (container) {
-        container.innerHTML = rooms.map(r => `<div class="room-tab ${r === currentRoom ? 'active' : 'inactive'}" onclick="handleRoomClick('${r}')">${r}</div>`).join('');
-    }
-}
-
-function handleRoomClick(r) {
-    if (isArchiMode && r === currentRoom) {
-        openRoomConfigModal(r);
-    } else {
-        currentRoom = r;
-        renderRooms();
-        renderFloor();
-    }
-}
-
-function addNewRoom() {
-    const n = `Salle ${rooms.length + 1}`;
-    rooms.push(n);
-    currentRoom = n;
-    renderRooms();
-    renderFloor();
-}
-
-function addTactileRoomName(v) {
-    if (v === 'CLEAR') currentTactileRoomName = currentTactileRoomName.slice(0, -1);
-    else currentTactileRoomName += v;
-    document.getElementById('config-room-name-display').innerText = currentTactileRoomName;
-}
-
-function openRoomConfigModal(r) {
-    configRoomOldName = r;
-    currentTactileRoomName = r;
-    document.getElementById('config-room-name-display').innerText = currentTactileRoomName;
-    document.getElementById('room-config-modal').style.display = 'flex';
-}
-
-function closeRoomConfigModal() {
-    configRoomOldName = null;
-    document.getElementById('room-config-modal').style.display = 'none';
-}
-
-function saveRoomConfig() {
-    if (!configRoomOldName) return;
-    const n = currentTactileRoomName.trim();
-    if (n && n !== configRoomOldName) {
-        const idx = rooms.indexOf(configRoomOldName);
-        if (idx > -1) rooms[idx] = n;
-        tables.forEach(t => { if (t?.room === configRoomOldName) t.room = n; });
-        zones.forEach(z => { if (z?.room === configRoomOldName) z.room = n; });
-        if (currentRoom === configRoomOldName) currentRoom = n;
-    }
-    closeRoomConfigModal();
-    renderRooms();
-    renderFloor();
-    pushArchitecture();
-}
-
-function deleteCurrentRoom() {
-    if (rooms.length <= 1) return alert("Impossible de supprimer la dernière salle.");
-    if (confirm(`Supprimer la salle "${configRoomOldName}" et TOUTES ses tables et zones ?`)) {
-        tables = tables.filter(t => t?.room !== configRoomOldName);
-        zones = zones.filter(z => z?.room !== configRoomOldName);
-        rooms = rooms.filter(r => r !== configRoomOldName);
-        currentRoom = rooms[0];
-        closeRoomConfigModal();
-        renderRooms();
-        renderFloor();
-        pushArchitecture();
-    }
-}
-
-function addNewTable() {
-    let nextNum = 1;
-    tables.filter(t => t?.room === currentRoom).forEach(t => {
-        const m = t.label.match(/\d+/);
-        if (m && parseInt(m[0]) >= nextNum) nextNum = parseInt(m[0]) + 1;
-    });
-    tables.push({ label: `T${nextNum}`, l: 400, t: 400, w: 80, h: 120, shape: "rect", pax: 4, room: currentRoom }); 
-    renderFloor();
-}
-
-function addTactileTableName(v) {
-    if (v === 'CLEAR') currentTactileName = currentTactileName.slice(0, -1);
-    else currentTactileName += v;
-    document.getElementById('config-table-name-display').innerText = currentTactileName;
-}
-
-function setShape(s) {
-    document.getElementById('config-table-shape').value = s;
-}
-
-function openTableConfigModal(id) {
-    const t = tables.find(x => x?.label === id && x?.room === currentRoom);
-    if (!t) return;
-    configTableId = id;
-    currentTactileName = t.label; 
-    document.getElementById('config-table-name-display').innerText = currentTactileName; 
-    document.getElementById('config-table-shape').value = t.shape || 'rect';
-    document.getElementById('config-table-pax').value = t.pax || 4; 
-    document.getElementById('table-config-modal').style.display = 'flex';
-}
-
-function closeTableConfigModal() {
-    configTableId = null;
-    document.getElementById('table-config-modal').style.display = 'none';
-}
-
-function saveTableConfig() {
-    const t = tables.find(x => x?.label === configTableId && x?.room === currentRoom);
-    if (t) {
-        const n = currentTactileName.trim();
-        if (n && n !== t.label) {
-            if (activeOrders[t.label]) { activeOrders[n] = activeOrders[t.label]; delete activeOrders[t.label]; }
-            t.label = n;
-        }
-        t.shape = document.getElementById('config-table-shape').value;
-        t.pax = parseInt(document.getElementById('config-table-pax').value) || 4; 
-    }
-    closeTableConfigModal();
-    renderFloor(); 
-}
-
-function deleteCurrentTable() {
-    if (confirm("Supprimer cette table ?")) {
-        tables = tables.filter(t => !(t?.label === configTableId && t?.room === currentRoom));
-        closeTableConfigModal();
-        renderFloor();
-    }
-}
-
-function changeConfigPax(delta) {
-    const input = document.getElementById('config-table-pax');
-    let val = parseInt(input.value) || 2;
-    input.value = Math.max(1, val + delta);
-}
-
-// --- ENGINE: DRAG & DROP DES TABLES ET ZONES ---
-function makeInteractive(elmnt, tableObj, resizerElnt) {
-    let p1 = 0, p2 = 0, p3 = 0, p4 = 0, iW, iH, iX, iY;
-    
-    elmnt.onmousedown = dragMD; 
-    elmnt.ontouchstart = dragTS;
-    
-    if (resizerElnt) {
-        resizerElnt.onmousedown = resMD; 
-        resizerElnt.ontouchstart = resTS;
-    }
-    
-    function dragMD(e) { if (!isArchiMode || e.target === resizerElnt) return; e.preventDefault(); p3 = e.clientX; p4 = e.clientY; document.onmouseup = closeDrag; document.onmousemove = drag; }
-    function dragTS(e) { if (!isArchiMode || e.target === resizerElnt) return; p3 = e.touches[0].clientX; p4 = e.touches[0].clientY; document.ontouchend = closeDrag; document.ontouchmove = tDrag; }
-    function drag(e) { e.preventDefault(); isDraggingTable = true; p1 = p3 - e.clientX; p2 = p4 - e.clientY; p3 = e.clientX; p4 = e.clientY; updatePos(); }
-    function tDrag(e) { isDraggingTable = true; p1 = p3 - e.touches[0].clientX; p2 = p4 - e.touches[0].clientY; p3 = e.touches[0].clientX; p4 = e.touches[0].clientY; updatePos(); }
-    function updatePos() { elmnt.style.top = (elmnt.offsetTop - p2) + "px"; elmnt.style.left = (elmnt.offsetLeft - p1) + "px"; tableObj.t = elmnt.offsetTop; tableObj.l = elmnt.offsetLeft; }
-    
-    function resMD(e) { if (!isArchiMode) return; e.preventDefault(); e.stopPropagation(); iW = elmnt.offsetWidth; iH = elmnt.offsetHeight; iX = e.clientX; iY = e.clientY; document.onmouseup = closeDrag; document.onmousemove = res; }
-    function resTS(e) { if (!isArchiMode) return; e.stopPropagation(); iW = elmnt.offsetWidth; iH = elmnt.offsetHeight; iX = e.touches[0].clientX; iY = e.touches[0].clientY; document.ontouchend = closeDrag; document.ontouchmove = tRes; }
-    function res(e) { e.preventDefault(); isDraggingTable = true; updateDim(e.clientX, e.clientY); }
-    function tRes(e) { isDraggingTable = true; updateDim(e.touches[0].clientX, e.touches[0].clientY); }
-    function updateDim(cX, cY) { const nW = Math.max(40, iW + (cX - iX)); const nH = Math.max(40, iH + (cY - iY)); elmnt.style.width = nW + "px"; elmnt.style.height = nH + "px"; tableObj.w = nW; tableObj.h = nH; }
-    
-    function closeDrag() { document.onmouseup = null; document.onmousemove = null; document.ontouchend = null; document.ontouchmove = null; setTimeout(() => { isDraggingTable = false; }, 50); } 
-}
- </script>
+    </script>
 </body>
 </html>
