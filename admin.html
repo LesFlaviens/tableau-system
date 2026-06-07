@@ -1478,10 +1478,12 @@ if(document.getElementById('design-banner-url')) systemSettings.design.bannerUrl
             } catch(e) { alert("❌ Erreur : " + e.message); let syncBtn = document.getElementById('sync-status'); if(syncBtn) syncBtn.innerHTML = '⚠️ Erreur'; }
         }
 
-        async function fetchStateFromCloud() {
+// --- FETCH ET SYNC EN ARRIÈRE-PLAN (SYMBIOSE LIVE 🔄) ---
+        async function fetchStateFromCloud(isBackground = false) {
             try {
-                if ('serviceWorker' in navigator) { const registrations = await navigator.serviceWorker.getRegistrations(); for(let r of registrations) await r.unregister(); }
-                let syncBtn = document.getElementById('sync-status'); if (syncBtn) syncBtn.innerHTML = '⏳ Synchronisation...';
+                if (!isBackground && 'serviceWorker' in navigator) { const registrations = await navigator.serviceWorker.getRegistrations(); for(let r of registrations) await r.unregister(); }
+                let syncBtn = document.getElementById('sync-status'); 
+                if (syncBtn && !isBackground) syncBtn.innerHTML = '⏳ Synchronisation...';
                 
                 let isAuthOk = await runSecurityCheck(); if(!isAuthOk) return;
 
@@ -1494,7 +1496,6 @@ if(document.getElementById('design-banner-url')) systemSettings.design.bannerUrl
                 staffAccess = (aO['STAFF_ACCESS'] && aO['STAFF_ACCESS'].data) ? aO['STAFF_ACCESS'].data : [];
                 archiveCuisine = (aO['FINANCIAL_HISTORY'] && aO['FINANCIAL_HISTORY'].data) ? aO['FINANCIAL_HISTORY'].data : [];
 
-                // 🔲 SYNCHRONISATION ARCHITECTURE ZONES
                 if (aO['ARCHITECTURE']) {
                     let archi = aO['ARCHITECTURE'].data !== undefined ? aO['ARCHITECTURE'].data : aO['ARCHITECTURE'];
                     globalArchitecture.rooms = archi.rooms || ['Salle Principale'];
@@ -1505,12 +1506,30 @@ if(document.getElementById('design-banner-url')) systemSettings.design.bannerUrl
                 if(aO['CATEGORIES_CUISINE'] && aO['CATEGORIES_CUISINE'].data) categoriesCuisine = aO['CATEGORIES_CUISINE'].data; else categoriesCuisine = Object.keys(menuCuisine).map(k => ({id: k, label: k}));
                 if(aO['CATEGORIES_BAR'] && aO['CATEGORIES_BAR'].data) categoriesBar = aO['CATEGORIES_BAR'].data; else categoriesBar = Object.keys(menuBar).map(k => ({id: k, label: k}));
 
-                injectSettingsToUI(); updateCategoryDropdowns(); renderCategoryModalLists(); renderMenuList(); renderStaffList(); renderActiveStaff(); updateDashboardStats(); renderFinancialDashboard(); markSaved();
-            } catch(e) { let syncBtn = document.getElementById('sync-status'); if(syncBtn) { syncBtn.innerHTML = '❌ EN PANNE'; syncBtn.style.background = 'var(--danger)'; syncBtn.style.color = '#fff'; } }
+                injectSettingsToUI(); updateCategoryDropdowns(); renderCategoryModalLists(); renderMenuList(); renderStaffList(); renderActiveStaff(); updateDashboardStats(); renderFinancialDashboard(); 
+                
+                if(!isBackground) {
+                    markSaved();
+                } else {
+                    hasUnsavedChanges = false;
+                    if(syncBtn) syncBtn.innerHTML = '<span>● En Direct</span> 🔄';
+                }
+            } catch(e) { 
+                let syncBtn = document.getElementById('sync-status'); 
+                if(syncBtn) { syncBtn.innerHTML = '❌ EN PANNE'; syncBtn.style.background = 'var(--danger)'; syncBtn.style.color = '#fff'; } 
+            }
         }
 
         window.adminManager = { start: fetchStateFromCloud };
         fetchStateFromCloud();
+
+        // ⚡ BOUCLE DE SYMBIOSE EN TEMPS RÉEL (Toutes les 3 secondes)
+        setInterval(() => {
+            // Sécurité : on ne synchronise pas en arrière-plan si tu es en train d'écrire ou si une fenêtre est ouverte
+            if (!hasUnsavedChanges && !document.querySelector('.modal.show')) {
+                fetchStateFromCloud(true);
+            }
+        }, 3000);
     </script>
 </body>
 </html>
