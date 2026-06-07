@@ -2781,410 +2781,445 @@ function renderTicket() {
 
         function closePaymentModal() { document.getElementById('payment-modal').classList.remove('open'); }
 
-        async function finalizeTablePayment() {
-            document.getElementById('payment-modal').classList.remove('open');
-            window.print(); 
+    // ==========================================
+// 💰 GESTION FINANCIÈRE ET ENCAISSEMENT
+// ==========================================
+async function finalizeTablePayment() {
+    document.getElementById('payment-modal').classList.remove('open');
+    window.print(); 
+    
+    setTimeout(async () => {
+        try {
+            const state = await API.getState();
             
-            setTimeout(async () => {
-                try {
-                    const state = await API.getState();
+            // 1. Calcul rigoureux de la TVA et du Hors Taxe
+            let totalHT = 0; 
+            const tvaTotals = {};
+            
+            currentTicket.forEach(i => {
+                const qty = i.qty || 1;
+                const ligneTTC = (parseFloat(i.p) || 0) * qty;
+                const rate = parseFloat(i.tva) || 10;
+                const ligneHT = ligneTTC / (1 + (rate / 100));
+                
+                totalHT += ligneHT;
+                tvaTotals[rate] = (tvaTotals[rate] || 0) + (ligneTTC - ligneHT);
+            });
+
+            // 2. Traitement de la fidélité et du Cashback
+            if (isLoyaltyActive && currentLoyaltyPhone && globalLoyaltyData[currentLoyaltyPhone]) {
+                const discount = typeof fidelityDiscountUsed !== 'undefined' ? fidelityDiscountUsed : 0;
+                const montantEligibleCashback = currentTableTotal - discount;
+                
+                if (montantEligibleCashback > 0) {
+                    const argentGagne = montantEligibleCashback * (loyaltyPercent / 100);
+                    globalLoyaltyData[currentLoyaltyPhone].points += argentGagne;
                     
-                    let totalHT = 0; let tvaTotals = {};
-                    currentTicket.forEach(i => {
-                        let ligneTTC = (parseFloat(i.p)||0) * (i.qty||1);
-                        let rate = parseFloat(i.tva) || 10;
-                        let ligneHT = ligneTTC / (1 + (rate / 100));
-                        totalHT += ligneHT;
-                        tvaTotals[rate] = (tvaTotals[rate] || 0) + (ligneTTC - ligneHT);
-                    });
-
-                    if(isLoyaltyActive && currentLoyaltyPhone && globalLoyaltyData[currentLoyaltyPhone]) {
-                        let montantEligibleCashback = currentTableTotal - fidelityDiscountUsed;
-                        if(montantEligibleCashback > 0) {
-                            let argentGagne = montantEligibleCashback * (loyaltyPercent / 100);
-                            globalLoyaltyData[currentLoyaltyPhone].points += argentGagne;
-                            
-                            await API.update('LOYALTY_MASTER', globalLoyaltyData);
-                            alert(`🎁 Le client ${globalLoyaltyData[currentLoyaltyPhone].name} vient de gagner ${argentGagne.toFixed(2)} € sur sa cagnotte !`);
-                        }
-                    }
-
-                    let transaction = {
-                        id: 'TX_' + Date.now(),
-                        date: new Date().toISOString(),
-                        method: paymentsDone.map(h => h.method).join(' + '),
-                        totalTTC: parseFloat(currentTableTotal.toFixed(2)),
-                        totalHT: parseFloat(totalHT.toFixed(2)),
-                        tva: tvaTotals,
-                        source: 'Caisse Salle (' + currentTableId + ')',
-                        items: currentTicket
-                    };
-
-                    let historyNode = state.activeOrders['FINANCIAL_HISTORY'] || { data: [] };
-                    historyNode.data.push(transaction);
-                    await API.update('FINANCIAL_HISTORY', historyNode.data);
-                } catch(e) {}
-                
-                await API.update(currentTableId, null, true);
-                closeOrder(); 
-                renderFloor();
-            }, 500);
-        }
-
-        function openHistoryDrawer() {
-            document.getElementById('history-drawer').classList.add('open');
-            API.getState().then(s => {
-                let hData = s.activeOrders['FINANCIAL_HISTORY'] ? s.activeOrders['FINANCIAL_HISTORY'].data : [];
-                let container = document.getElementById('history-content');
-                if(hData.length === 0) { container.innerHTML = '<div style="color:var(--text-muted); text-align:center;">Aucun historique</div>'; return; }
-                
-                hData.sort((a,b) => new Date(b.date) - new Date(a.date));
-                let html = hData.map(t => {
-                    let d = new Date(t.date);
-                    return `<div style="background:var(--panel); border:1px solid var(--border-strong); padding:15px; border-radius:4px;">
-                        <div style="display:flex; justify-content:space-between; border-bottom:1px solid var(--border); padding-bottom:10px; margin-bottom:10px;">
-                            <span style="color:var(--gold); font-weight:bold;">${t.source}</span>
-                            <span style="color:var(--text-muted); font-size:0.8rem;">${d.toLocaleDateString()} ${d.toLocaleTimeString()}</span>
-                        </div>
-                        <div style="display:flex; justify-content:space-between; font-weight:bold;">
-                            <span>TOTAL</span>
-                            <span style="color:var(--gold);">${t.totalTTC.toFixed(2)}€</span>
-                        </div>
-                        <div style="font-size:0.7rem; color:var(--text-muted); text-align:right; margin-top:5px;">${t.method}</div>
-                    </div>`;
-                }).join('');
-                container.innerHTML = html;
-            });
-        }
-        function closeDrawer(id) { document.getElementById(id).classList.remove('open'); }
-
-        // ==========================================
-        // ➕ GESTION DES TABLES EXTRA (VOLANTES)
-        // ==========================================
-        function addExtraTable() {
-            let tableName = prompt("Nom de la table supplémentaire (ex: EXT-2, DEBOUT, BAR) :");
-            if (!tableName) return;
-            tableName = tableName.trim().toUpperCase();
-
-            if (tables.find(t => t && t.label === tableName && t.room === currentRoom)) {
-                return alert("❌ Ce nom de table existe déjà dans cette salle.");
-            }
-
-            let paxStr = prompt("Combien de couverts ?", "2");
-            if (!paxStr) return;
-            let pax = parseInt(paxStr) || 2;
-
-            let baseL = window.innerWidth / 2 - 40;
-            let baseT = window.innerHeight / 2 - 60;
-
-            let roomZones = zones.filter(z => z && z.room === currentRoom);
-            if (roomZones.length > 0) {
-                let zPrompt = "Dans quelle zone placer la table ?\n\n";
-                roomZones.forEach((z, i) => { zPrompt += `[ ${i + 1} ] - ${z.label}\n`; });
-                zPrompt += `[ 0 ] - Aucune zone (Hors zone)\n\nEntrez le numéro :`;
-                
-                let zChoice = prompt(zPrompt, "1");
-                if (zChoice !== null && zChoice !== "0") {
-                    let selectedZone = roomZones[parseInt(zChoice) - 1];
-                    if (selectedZone) {
-                        baseL = (selectedZone.l || 0) + ((selectedZone.w || 400) / 2) - 40;
-                        baseT = (selectedZone.t || 0) + ((selectedZone.h || 300) / 2) - 60;
-                    }
+                    await API.update('LOYALTY_MASTER', globalLoyaltyData);
+                    alert(`🎁 Le client ${globalLoyaltyData[currentLoyaltyPhone].name} vient de gagner ${argentGagne.toFixed(2)} € sur sa cagnotte !`);
                 }
             }
 
-            let randomOffsetX = Math.floor(Math.random() * 80) - 40;
-            let randomOffsetY = Math.floor(Math.random() * 80) - 40;
+            // 3. Audit et création de la transaction
+            const transaction = {
+                id: `TX_${Date.now()}`,
+                date: new Date().toISOString(),
+                method: typeof paymentsDone !== 'undefined' ? paymentsDone.map(h => h.method).join(' + ') : 'Non spécifié',
+                totalTTC: parseFloat(currentTableTotal.toFixed(2)),
+                totalHT: parseFloat(totalHT.toFixed(2)),
+                tva: tvaTotals,
+                source: `Caisse Salle (${currentTableId})`,
+                items: currentTicket
+            };
 
-            tables.push({
-                label: tableName,
-                l: baseL + randomOffsetX,
-                t: baseT + randomOffsetY,
-                w: 80,
-                h: 120,
-                shape: "rect",
-                pax: pax,
-                room: currentRoom,
-                isExtra: true
-            });
+            // 4. Injection dans l'historique financier Cloud
+            const historyNode = state.activeOrders['FINANCIAL_HISTORY'] || { data: [] };
+            historyNode.data.push(transaction);
+            await API.update('FINANCIAL_HISTORY', historyNode.data);
 
-            pushArchitecture();
-            renderFloor();
-        }
-
-        function promptRemoveExtraTable(tableName) {
-            let pin = prompt("🔐 Entrez votre code PIN pour retirer cette table :");
-            if (!pin) return;
-
-            let masterPin = localStorage.getItem('ichef_master_pin') || "999999";
-            let isValid = (pin === masterPin || pin === "9999" || pin === "7777");
-            
-            if (!isValid && typeof staffAccessData !== 'undefined') {
-                let staff = staffAccessData.find(s => s.pin === pin);
-                if (staff && staff.active !== false) isValid = true;
-            }
-
-            if (!isValid) return alert("❌ Code PIN incorrect ou accès refusé.");
-
-            let order = activeOrders[tableName];
-            if (order && order.items && order.items.length > 0) {
-                if (!confirm("⚠️ La table a des commandes en cours ! Êtes-vous sûr de vouloir la supprimer ?")) return;
-            }
-
-            tables = tables.filter(t => !(t && t.label === tableName && t.room === currentRoom));
-            API.update(tableName, null, true); 
-            
-            pushArchitecture();
-            closeOrder();
-            renderFloor();
-        }
-
-        // ==========================================
-        // 🧑‍🤝‍🧑 GESTION DES CLIENTS EXTRA (SIÈGES EN PLUS)
-        // ==========================================
-        async function addExtraClient() {
-            let tableName = prompt("🧑‍🤝‍🧑 À quelle table voulez-vous ajouter un client supplémentaire ?\n(ex: 12, T1)");
-            if (!tableName) return;
-            tableName = tableName.trim().toUpperCase();
-
-            let tObj = tables.find(t => t && t.label === tableName && t.room === currentRoom);
-            if (!tObj) {
-                return alert(`❌ ERREUR HUMAINE : La table "${tableName}" n'existe pas dans la salle "${currentRoom}". Vérifiez votre saisie.`);
-            }
-
-            let extraStr = prompt(`Combien de clients voulez-vous ajouter à la table ${tableName} ?`, "1");
-            let extra = parseInt(extraStr);
-            if (isNaN(extra) || extra <= 0) return;
-
-            tObj.extraPax = (tObj.extraPax || 0) + extra;
-            tObj.pax = (tObj.pax || 2) + extra;
-            
-            pushArchitecture();
-
-            let order = activeOrders[tableName];
-            if (!order) order = { status: 'active', items: [], observations: '' };
-            
-            let baseObs = order.observations || "";
-            baseObs = baseObs.replace(/🍽️ \d+ Couvert\(s\)( \| )?/, '').replace(/ \| $/, '').trim();
-            order.observations = `🍽️ ${tObj.pax} Couvert(s) | ⚠️ +${tObj.extraPax} EXTRA(S) | ${baseObs}`;
-            
-            await API.update(tableName, order, true);
-            
-            await API.update('ALERTS_MASTER', { 
-                type: 'RING', 
-                message: `⚠️ NOUVEAU CLIENT EXTRA AJOUTÉ À LA TABLE ${tableName} (+${extra} Couvert(s))` 
-            });
-
-            renderFloor();
-            alert(`✅ C'est validé ! ${extra} client(s) ajouté(s) à la table ${tableName}. La cuisine a été prévenue.`);
-        }
-
-        // ==========================================
-        // 📱 GESTION FERMETURE AUTOMATIQUE MENU MOBILE
-        // ==========================================
-        document.addEventListener('DOMContentLoaded', () => {
-            document.querySelectorAll('.btn-mini').forEach(item => {
-                item.addEventListener('click', () => {
-                    if(window.innerWidth <= 900 && item.id !== 'btn-rush-toggle') {
-                        let sidebar = document.getElementById('sidebar');
-                        if (sidebar && sidebar.classList.contains('open')) toggleMobileMenu();
-                        
-                    }
-                
-                // ========================================================
-        // 🏗️ MECHANICAL SUB-SYSTEM: ARCHITECTURE & STRUCTURE MODE
-        // ========================================================
-        function unlockArchiMode() {
-            if (!currentUser || currentUser.role !== 'Manager') return alert("⛔ Accès Manager requis");
-            isArchiMode = true;
-            document.body.classList.add('edit-mode');
-            renderRooms();
-            renderFloor();
-        }
-
-        async function closeArchiMode() {
-            isArchiMode = false;
-            document.body.classList.remove('edit-mode');
-            renderRooms();
-            renderFloor();
-        }
-
-        function saveArchitecture() {
-            pushArchitecture();
-            closeArchiMode();
+        } catch (e) {
+            console.error("Échec de la transaction financière :", e);
+            alert("⚠️ Erreur réseau lors de la sauvegarde de la transaction. Vérifiez l'historique.");
         }
         
-        async function pushArchitecture() { 
-            await API.update('ARCHITECTURE', { rooms: rooms, tables: tables, zones: zones }); 
-            localStorage.setItem('empire_architecture', JSON.stringify(tables)); 
-            localStorage.setItem('empire_rooms', JSON.stringify(rooms)); 
-            localStorage.setItem('empire_zones', JSON.stringify(zones));
-        }
+        // 5. Libération de la table et rafraîchissement UI
+        await API.update(currentTableId, null, true);
+        closeOrder(); 
+        renderFloor();
+    }, 500);
+}
 
-        // --- CONFIGURATION DES SALLES ---
-        function renderRooms() {
-            const container = document.getElementById('room-tabs-container');
-            if(container) {
-                container.innerHTML = rooms.map(r => `<div class="room-tab ${r === currentRoom ? 'active' : 'inactive'}" onclick="handleRoomClick('${r}')">${r}</div>`).join('');
-            }
-        }
-
-        function handleRoomClick(r) {
-            if(isArchiMode && r === currentRoom) {
-                openRoomConfigModal(r);
-            } else {
-                currentRoom = r;
-                renderRooms();
-                renderFloor();
-            }
-        }
-
-        function addNewRoom() {
-            let n = "Salle " + (rooms.length + 1);
-            rooms.push(n);
-            currentRoom = n;
-            renderRooms();
-            renderFloor();
-        }
-
-        function addTactileRoomName(v) {
-            if(v === 'CLEAR') currentTactileRoomName = currentTactileRoomName.slice(0, -1);
-            else currentTactileRoomName += v;
-            document.getElementById('config-room-name-display').innerText = currentTactileRoomName;
+function openHistoryDrawer() {
+    document.getElementById('history-drawer').classList.add('open');
+    API.getState().then(s => {
+        const hData = s.activeOrders['FINANCIAL_HISTORY'] ? s.activeOrders['FINANCIAL_HISTORY'].data : [];
+        const container = document.getElementById('history-content');
+        
+        if (hData.length === 0) { 
+            container.innerHTML = '<div style="color:var(--text-muted); text-align:center;">Aucun historique</div>'; 
+            return; 
         }
         
-        function openRoomConfigModal(r) {
-            configRoomOldName = r;
-            currentTactileRoomName = r;
-            document.getElementById('config-room-name-display').innerText = currentTactileRoomName;
-            document.getElementById('room-config-modal').style.display = 'flex';
-        }
-
-        function closeRoomConfigModal() {
-            configRoomOldName = null;
-            document.getElementById('room-config-modal').style.display = 'none';
-        }
-
-        function saveRoomConfig() {
-            if(!configRoomOldName) return;
-            let n = currentTactileRoomName.trim();
-            if(n && n !== configRoomOldName) {
-                let idx = rooms.indexOf(configRoomOldName);
-                if(idx > -1) rooms[idx] = n;
-                tables.forEach(t => { if(t && t.room === configRoomOldName) t.room = n; });
-                zones.forEach(z => { if(z && z.room === configRoomOldName) z.room = n; });
-                if(currentRoom === configRoomOldName) currentRoom = n;
-            }
-            closeRoomConfigModal();
-            renderRooms();
-            renderFloor();
-            pushArchitecture();
-        }
-
-        function deleteCurrentRoom() {
-            if(rooms.length <= 1) return alert("Impossible de supprimer la dernière salle.");
-            if(confirm(`Supprimer la salle "${configRoomOldName}" et TOUTES ses tables et zones ?`)) {
-                tables = tables.filter(t => t && t.room !== configRoomOldName);
-                zones = zones.filter(z => z && z.room !== configRoomOldName);
-                rooms = rooms.filter(r => r !== configRoomOldName);
-                currentRoom = rooms[0];
-                closeRoomConfigModal();
-                renderRooms();
-                renderFloor();
-                pushArchitecture();
-            }
-        }
-
-        // --- CONFIGURATION DES TABLES (STRUCTURE) ---
-        function addNewTable() {
-            let nextNum = 1;
-            tables.filter(t => t && t.room === currentRoom).forEach(t => {
-                let m = t.label.match(/\d+/);
-                if(m && parseInt(m[0]) >= nextNum) nextNum = parseInt(m[0]) + 1;
-            });
-            tables.push({ label: "T" + nextNum, l: 400, t: 400, w: 80, h: 120, shape: "rect", pax: 4, room: currentRoom }); 
-            renderFloor();
-        }
-
-        let currentTactileName = "";
-        function addTactileTableName(v) {
-            if(v === 'CLEAR') currentTactileName = currentTactileName.slice(0, -1);
-            else currentTactileName += v;
-            document.getElementById('config-table-name-display').innerText = currentTactileName;
-        }
-
-        function setShape(s) {
-            document.getElementById('config-table-shape').value = s;
-        }
+        hData.sort((a, b) => new Date(b.date) - new Date(a.date));
         
-        function openTableConfigModal(id) {
-            let t = tables.find(x => x && x.label === id && x.room === currentRoom);
-            if(!t) return;
-            configTableId = id;
-            currentTactileName = t.label; 
-            document.getElementById('config-table-name-display').innerText = currentTactileName; 
-            document.getElementById('config-table-shape').value = t.shape || 'rect';
-            document.getElementById('config-table-pax').value = t.pax || 4; 
-            document.getElementById('table-config-modal').style.display = 'flex';
-        }
+        container.innerHTML = hData.map(t => {
+            const d = new Date(t.date);
+            return `
+            <div style="background:var(--panel); border:1px solid var(--border-strong); padding:15px; border-radius:4px; margin-bottom:10px;">
+                <div style="display:flex; justify-content:space-between; border-bottom:1px solid var(--border); padding-bottom:10px; margin-bottom:10px;">
+                    <span style="color:var(--gold); font-weight:bold;">${t.source}</span>
+                    <span style="color:var(--text-muted); font-size:0.8rem;">${d.toLocaleDateString()} ${d.toLocaleTimeString()}</span>
+                </div>
+                <div style="display:flex; justify-content:space-between; font-weight:bold;">
+                    <span>TOTAL</span>
+                    <span style="color:var(--gold);">${(t.totalTTC || 0).toFixed(2)}€</span>
+                </div>
+                <div style="font-size:0.7rem; color:var(--text-muted); text-align:right; margin-top:5px;">${t.method}</div>
+            </div>`;
+        }).join('');
+    });
+}
 
-        function closeTableConfigModal() {
-            configTableId = null;
-            document.getElementById('table-config-modal').style.display = 'none';
-        }
+function closeDrawer(id) { 
+    document.getElementById(id).classList.remove('open'); 
+}
 
-        function saveTableConfig() {
-            let t = tables.find(x => x && x.label === configTableId && x.room === currentRoom);
-            if(t) {
-                let n = currentTactileName.trim();
-                if(n && n !== t.label) {
-                    if(activeOrders[t.label]) { activeOrders[n] = activeOrders[t.label]; delete activeOrders[t.label]; }
-                    t.label = n;
+// ==========================================
+// ➕ GESTION DES TABLES EXTRA (VOLANTES)
+// ==========================================
+function addExtraTable() {
+    let tableName = prompt("Nom de la table supplémentaire (ex: EXT-2, DEBOUT, BAR) :");
+    if (!tableName) return;
+    tableName = tableName.trim().toUpperCase();
+
+    if (tables.find(t => t?.label === tableName && t?.room === currentRoom)) {
+        return alert("❌ Ce nom de table existe déjà dans cette salle.");
+    }
+
+    const paxStr = prompt("Combien de couverts ?", "2");
+    if (!paxStr) return;
+    const pax = parseInt(paxStr) || 2;
+
+    let baseL = window.innerWidth / 2 - 40;
+    let baseT = window.innerHeight / 2 - 60;
+
+    const roomZones = zones.filter(z => z?.room === currentRoom);
+    if (roomZones.length > 0) {
+        let zPrompt = "Dans quelle zone placer la table ?\n\n";
+        roomZones.forEach((z, i) => { zPrompt += `[ ${i + 1} ] - ${z.label}\n`; });
+        zPrompt += `[ 0 ] - Aucune zone (Hors zone)\n\nEntrez le numéro :`;
+        
+        const zChoice = prompt(zPrompt, "1");
+        if (zChoice !== null && zChoice !== "0") {
+            const selectedZone = roomZones[parseInt(zChoice) - 1];
+            if (selectedZone) {
+                baseL = (selectedZone.l || 0) + ((selectedZone.w || 400) / 2) - 40;
+                baseT = (selectedZone.t || 0) + ((selectedZone.h || 300) / 2) - 60;
+            }
+        }
+    }
+
+    const randomOffsetX = Math.floor(Math.random() * 80) - 40;
+    const randomOffsetY = Math.floor(Math.random() * 80) - 40;
+
+    tables.push({
+        label: tableName,
+        l: baseL + randomOffsetX,
+        t: baseT + randomOffsetY,
+        w: 80,
+        h: 120,
+        shape: "rect",
+        pax: pax,
+        room: currentRoom,
+        isExtra: true
+    });
+
+    pushArchitecture();
+    renderFloor();
+}
+
+function promptRemoveExtraTable(tableName) {
+    const pin = prompt("🔐 Entrez votre code PIN pour retirer cette table :");
+    if (!pin) return;
+
+    const masterPin = localStorage.getItem('ichef_master_pin') || "999999";
+    let isValid = (pin === masterPin || pin === "9999" || pin === "7777");
+    
+    if (!isValid && typeof staffAccessData !== 'undefined') {
+        const staff = staffAccessData.find(s => s.pin === pin);
+        if (staff && staff.active !== false) isValid = true;
+    }
+
+    if (!isValid) return alert("❌ Code PIN incorrect ou accès refusé.");
+
+    const order = activeOrders[tableName];
+    if (order?.items?.length > 0) {
+        if (!confirm("⚠️ La table a des commandes en cours ! Êtes-vous sûr de vouloir la supprimer ?")) return;
+    }
+
+    tables = tables.filter(t => !(t?.label === tableName && t?.room === currentRoom));
+    API.update(tableName, null, true); 
+    
+    pushArchitecture();
+    closeOrder();
+    renderFloor();
+}
+
+// ==========================================
+// 🧑‍🤝‍🧑 GESTION DES CLIENTS EXTRA (SIÈGES EN PLUS)
+// ==========================================
+async function addExtraClient() {
+    let tableName = prompt("🧑‍🤝‍🧑 À quelle table voulez-vous ajouter un client supplémentaire ?\n(ex: 12, T1)");
+    if (!tableName) return;
+    tableName = tableName.trim().toUpperCase();
+
+    const tObj = tables.find(t => t?.label === tableName && t?.room === currentRoom);
+    if (!tObj) {
+        return alert(`❌ ERREUR HUMAINE : La table "${tableName}" n'existe pas dans la salle "${currentRoom}". Vérifiez votre saisie.`);
+    }
+
+    const extraStr = prompt(`Combien de clients voulez-vous ajouter à la table ${tableName} ?`, "1");
+    const extra = parseInt(extraStr);
+    if (isNaN(extra) || extra <= 0) return;
+
+    tObj.extraPax = (tObj.extraPax || 0) + extra;
+    tObj.pax = (tObj.pax || 2) + extra;
+    
+    pushArchitecture();
+
+    let order = activeOrders[tableName] || { status: 'active', items: [], observations: '' };
+    
+    let baseObs = order.observations || "";
+    baseObs = baseObs.replace(/🍽️ \d+ Couvert\(s\)( \| )?/, '').replace(/ \| $/, '').trim();
+    order.observations = `🍽️ ${tObj.pax} Couvert(s) | ⚠️ +${tObj.extraPax} EXTRA(S) | ${baseObs}`;
+    
+    await API.update(tableName, order, true);
+    
+    await API.update('ALERTS_MASTER', { 
+        type: 'RING', 
+        message: `⚠️ NOUVEAU CLIENT EXTRA AJOUTÉ À LA TABLE ${tableName} (+${extra} Couvert(s))` 
+    });
+
+    renderFloor();
+    alert(`✅ C'est validé ! ${extra} client(s) ajouté(s) à la table ${tableName}. La cuisine a été prévenue.`);
+}
+
+// ==========================================
+// 📱 GESTION UI / FERMETURE AUTOMATIQUE
+// ==========================================
+document.addEventListener('DOMContentLoaded', () => {
+    document.querySelectorAll('.btn-mini').forEach(item => {
+        item.addEventListener('click', () => {
+            if (window.innerWidth <= 900 && item.id !== 'btn-rush-toggle') {
+                const sidebar = document.getElementById('sidebar');
+                if (sidebar && sidebar.classList.contains('open')) {
+                    if (typeof toggleMobileMenu === 'function') toggleMobileMenu();
                 }
-                t.shape = document.getElementById('config-table-shape').value;
-                t.pax = parseInt(document.getElementById('config-table-pax').value) || 4; 
             }
-            closeTableConfigModal();
-            renderFloor(); 
-        }
-
-        function deleteCurrentTable() {
-            if(confirm("Supprimer cette table ?")) {
-                tables = tables.filter(t => !(t && t.label === configTableId && t.room === currentRoom));
-                closeTableConfigModal();
-                renderFloor();
-            }
-        }
-
-        function changeConfigPax(delta) {
-            let input = document.getElementById('config-table-pax');
-            let val = parseInt(input.value) || 2;
-            val = Math.max(1, val + delta);
-            input.value = val;
-        }
-
-        // --- ENGINE: DRAG & DROP DES TABLES ET ZONES ---
-        function makeInteractive(elmnt, tableObj, resizerElnt) {
-            let p1=0, p2=0, p3=0, p4=0, iW, iH, iX, iY;
-            elmnt.onmousedown = dragMD; elmnt.ontouchstart = dragTS;
-            if(resizerElnt) {
-                resizerElnt.onmousedown = resMD; resizerElnt.ontouchstart = resTS;
-            }
-            function dragMD(e) { if(!isArchiMode || e.target === resizerElnt) return; e.preventDefault(); p3=e.clientX; p4=e.clientY; document.onmouseup=close; document.onmousemove=drag; }
-            function dragTS(e) { if(!isArchiMode || e.target === resizerElnt) return; p3=e.touches[0].clientX; p4=e.touches[0].clientY; document.ontouchend=close; document.ontouchmove=tDrag; }
-            function drag(e) { e.preventDefault(); isDraggingTable=true; p1=p3-e.clientX; p2=p4-e.clientY; p3=e.clientX; p4=e.clientY; updatePos(); }
-            function tDrag(e) { isDraggingTable=true; p1=p3-e.touches[0].clientX; p2=p4-e.touches[0].clientY; p3=e.touches[0].clientX; p4=e.touches[0].clientY; updatePos(); }
-            function updatePos() { elmnt.style.top = (elmnt.offsetTop-p2)+"px"; elmnt.style.left = (elmnt.offsetLeft-p1)+"px"; tableObj.t = elmnt.offsetTop; tableObj.l = elmnt.offsetLeft; }
-            function resMD(e) { if(!isArchiMode) return; e.preventDefault(); e.stopPropagation(); iW=elmnt.offsetWidth; iH=elmnt.offsetHeight; iX=e.clientX; iY=e.clientY; document.onmouseup=close; document.onmousemove=res; }
-            function resTS(e) { if(!isArchiMode) return; e.stopPropagation(); iW=elmnt.offsetWidth; iH=elmnt.offsetHeight; iX=e.touches[0].clientX; iY=e.touches[0].clientY; document.ontouchend=close; document.ontouchmove=tRes; }
-            function res(e) { e.preventDefault(); isDraggingTable=true; updateDim(e.clientX, e.clientY); }
-            function tRes(e) { isDraggingTable=true; updateDim(e.touches[0].clientX, e.touches[0].clientY); }
-            function updateDim(cX, cY) { let nW = Math.max(40, iW+(cX-iX)); let nH = Math.max(40, iH+(cY-iY)); elmnt.style.width=nW+"px"; elmnt.style.height=nH+"px"; tableObj.w=nW; tableObj.h=nH; }
-            function close() { document.onmouseup=null; document.onmousemove=null; document.ontouchend=null; document.ontouchmove=null; setTimeout(()=>{isDraggingTable=false;}, 50); } 
-        }});
-            });
         });
+    });
+});
 
-    </script>
+// ========================================================
+// 🏗️ MECHANICAL SUB-SYSTEM: ARCHITECTURE & STRUCTURE MODE
+// ========================================================
+let isArchiMode = false;
+let configRoomOldName = null;
+let currentTactileRoomName = "";
+let configTableId = null;
+let currentTactileName = "";
+let isDraggingTable = false;
+
+function unlockArchiMode() {
+    if (!currentUser || currentUser.role !== 'Manager') return alert("⛔ Accès Manager requis");
+    isArchiMode = true;
+    document.body.classList.add('edit-mode');
+    renderRooms();
+    renderFloor();
+}
+
+async function closeArchiMode() {
+    isArchiMode = false;
+    document.body.classList.remove('edit-mode');
+    renderRooms();
+    renderFloor();
+}
+
+function saveArchitecture() {
+    pushArchitecture();
+    closeArchiMode();
+}
+
+async function pushArchitecture() { 
+    await API.update('ARCHITECTURE', { rooms: rooms, tables: tables, zones: zones }); 
+    localStorage.setItem('empire_architecture', JSON.stringify(tables)); 
+    localStorage.setItem('empire_rooms', JSON.stringify(rooms)); 
+    localStorage.setItem('empire_zones', JSON.stringify(zones));
+}
+
+function renderRooms() {
+    const container = document.getElementById('room-tabs-container');
+    if (container) {
+        container.innerHTML = rooms.map(r => `<div class="room-tab ${r === currentRoom ? 'active' : 'inactive'}" onclick="handleRoomClick('${r}')">${r}</div>`).join('');
+    }
+}
+
+function handleRoomClick(r) {
+    if (isArchiMode && r === currentRoom) {
+        openRoomConfigModal(r);
+    } else {
+        currentRoom = r;
+        renderRooms();
+        renderFloor();
+    }
+}
+
+function addNewRoom() {
+    const n = `Salle ${rooms.length + 1}`;
+    rooms.push(n);
+    currentRoom = n;
+    renderRooms();
+    renderFloor();
+}
+
+function addTactileRoomName(v) {
+    if (v === 'CLEAR') currentTactileRoomName = currentTactileRoomName.slice(0, -1);
+    else currentTactileRoomName += v;
+    document.getElementById('config-room-name-display').innerText = currentTactileRoomName;
+}
+
+function openRoomConfigModal(r) {
+    configRoomOldName = r;
+    currentTactileRoomName = r;
+    document.getElementById('config-room-name-display').innerText = currentTactileRoomName;
+    document.getElementById('room-config-modal').style.display = 'flex';
+}
+
+function closeRoomConfigModal() {
+    configRoomOldName = null;
+    document.getElementById('room-config-modal').style.display = 'none';
+}
+
+function saveRoomConfig() {
+    if (!configRoomOldName) return;
+    const n = currentTactileRoomName.trim();
+    if (n && n !== configRoomOldName) {
+        const idx = rooms.indexOf(configRoomOldName);
+        if (idx > -1) rooms[idx] = n;
+        tables.forEach(t => { if (t?.room === configRoomOldName) t.room = n; });
+        zones.forEach(z => { if (z?.room === configRoomOldName) z.room = n; });
+        if (currentRoom === configRoomOldName) currentRoom = n;
+    }
+    closeRoomConfigModal();
+    renderRooms();
+    renderFloor();
+    pushArchitecture();
+}
+
+function deleteCurrentRoom() {
+    if (rooms.length <= 1) return alert("Impossible de supprimer la dernière salle.");
+    if (confirm(`Supprimer la salle "${configRoomOldName}" et TOUTES ses tables et zones ?`)) {
+        tables = tables.filter(t => t?.room !== configRoomOldName);
+        zones = zones.filter(z => z?.room !== configRoomOldName);
+        rooms = rooms.filter(r => r !== configRoomOldName);
+        currentRoom = rooms[0];
+        closeRoomConfigModal();
+        renderRooms();
+        renderFloor();
+        pushArchitecture();
+    }
+}
+
+function addNewTable() {
+    let nextNum = 1;
+    tables.filter(t => t?.room === currentRoom).forEach(t => {
+        const m = t.label.match(/\d+/);
+        if (m && parseInt(m[0]) >= nextNum) nextNum = parseInt(m[0]) + 1;
+    });
+    tables.push({ label: `T${nextNum}`, l: 400, t: 400, w: 80, h: 120, shape: "rect", pax: 4, room: currentRoom }); 
+    renderFloor();
+}
+
+function addTactileTableName(v) {
+    if (v === 'CLEAR') currentTactileName = currentTactileName.slice(0, -1);
+    else currentTactileName += v;
+    document.getElementById('config-table-name-display').innerText = currentTactileName;
+}
+
+function setShape(s) {
+    document.getElementById('config-table-shape').value = s;
+}
+
+function openTableConfigModal(id) {
+    const t = tables.find(x => x?.label === id && x?.room === currentRoom);
+    if (!t) return;
+    configTableId = id;
+    currentTactileName = t.label; 
+    document.getElementById('config-table-name-display').innerText = currentTactileName; 
+    document.getElementById('config-table-shape').value = t.shape || 'rect';
+    document.getElementById('config-table-pax').value = t.pax || 4; 
+    document.getElementById('table-config-modal').style.display = 'flex';
+}
+
+function closeTableConfigModal() {
+    configTableId = null;
+    document.getElementById('table-config-modal').style.display = 'none';
+}
+
+function saveTableConfig() {
+    const t = tables.find(x => x?.label === configTableId && x?.room === currentRoom);
+    if (t) {
+        const n = currentTactileName.trim();
+        if (n && n !== t.label) {
+            if (activeOrders[t.label]) { activeOrders[n] = activeOrders[t.label]; delete activeOrders[t.label]; }
+            t.label = n;
+        }
+        t.shape = document.getElementById('config-table-shape').value;
+        t.pax = parseInt(document.getElementById('config-table-pax').value) || 4; 
+    }
+    closeTableConfigModal();
+    renderFloor(); 
+}
+
+function deleteCurrentTable() {
+    if (confirm("Supprimer cette table ?")) {
+        tables = tables.filter(t => !(t?.label === configTableId && t?.room === currentRoom));
+        closeTableConfigModal();
+        renderFloor();
+    }
+}
+
+function changeConfigPax(delta) {
+    const input = document.getElementById('config-table-pax');
+    let val = parseInt(input.value) || 2;
+    input.value = Math.max(1, val + delta);
+}
+
+// --- ENGINE: DRAG & DROP DES TABLES ET ZONES ---
+function makeInteractive(elmnt, tableObj, resizerElnt) {
+    let p1 = 0, p2 = 0, p3 = 0, p4 = 0, iW, iH, iX, iY;
+    
+    elmnt.onmousedown = dragMD; 
+    elmnt.ontouchstart = dragTS;
+    
+    if (resizerElnt) {
+        resizerElnt.onmousedown = resMD; 
+        resizerElnt.ontouchstart = resTS;
+    }
+    
+    function dragMD(e) { if (!isArchiMode || e.target === resizerElnt) return; e.preventDefault(); p3 = e.clientX; p4 = e.clientY; document.onmouseup = closeDrag; document.onmousemove = drag; }
+    function dragTS(e) { if (!isArchiMode || e.target === resizerElnt) return; p3 = e.touches[0].clientX; p4 = e.touches[0].clientY; document.ontouchend = closeDrag; document.ontouchmove = tDrag; }
+    function drag(e) { e.preventDefault(); isDraggingTable = true; p1 = p3 - e.clientX; p2 = p4 - e.clientY; p3 = e.clientX; p4 = e.clientY; updatePos(); }
+    function tDrag(e) { isDraggingTable = true; p1 = p3 - e.touches[0].clientX; p2 = p4 - e.touches[0].clientY; p3 = e.touches[0].clientX; p4 = e.touches[0].clientY; updatePos(); }
+    function updatePos() { elmnt.style.top = (elmnt.offsetTop - p2) + "px"; elmnt.style.left = (elmnt.offsetLeft - p1) + "px"; tableObj.t = elmnt.offsetTop; tableObj.l = elmnt.offsetLeft; }
+    
+    function resMD(e) { if (!isArchiMode) return; e.preventDefault(); e.stopPropagation(); iW = elmnt.offsetWidth; iH = elmnt.offsetHeight; iX = e.clientX; iY = e.clientY; document.onmouseup = closeDrag; document.onmousemove = res; }
+    function resTS(e) { if (!isArchiMode) return; e.stopPropagation(); iW = elmnt.offsetWidth; iH = elmnt.offsetHeight; iX = e.touches[0].clientX; iY = e.touches[0].clientY; document.ontouchend = closeDrag; document.ontouchmove = tRes; }
+    function res(e) { e.preventDefault(); isDraggingTable = true; updateDim(e.clientX, e.clientY); }
+    function tRes(e) { isDraggingTable = true; updateDim(e.touches[0].clientX, e.touches[0].clientY); }
+    function updateDim(cX, cY) { const nW = Math.max(40, iW + (cX - iX)); const nH = Math.max(40, iH + (cY - iY)); elmnt.style.width = nW + "px"; elmnt.style.height = nH + "px"; tableObj.w = nW; tableObj.h = nH; }
+    
+    function closeDrag() { document.onmouseup = null; document.onmousemove = null; document.ontouchend = null; document.ontouchmove = null; setTimeout(() => { isDraggingTable = false; }, 50); } 
+}
 </body>
 </html>
