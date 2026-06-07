@@ -2365,110 +2365,166 @@ function openOrder(tableLabel) {
         function confirmCuisson(niv) { if(pendingCuissonItem) { executeAddToCart(`${pendingCuissonItem.n} (${niv})`, pendingCuissonItem.p, pendingCuissonItem.dest, currentCourseDefault, pendingCuissonItem.n, pendingCuissonItem.tvaRate); cancelCuisson(); } }
         function cancelCuisson() { pendingCuissonItem = null; document.getElementById('cuisson-modal').classList.remove('open'); }
 
-        function executeAddToCart(n, p, dest, courseOverride, originalName, tvaRate = 10) { 
-            let cId = courseOverride !== undefined ? courseOverride : currentCourseDefault;
-            let seatId = currentSeat; 
-            let e = currentTicket.find(i => i.n === n && !i.done && !i.served && !i.isSent && i.course === cId && !i.obs && !i.isOffered && (i.seat || 0) === seatId && i.tva === tvaRate); 
-            if(e) e.qty = (e.qty||1)+1; 
-            else currentTicket.push({ id: Date.now()+Math.random(), itemId: Date.now(), n: n.replace(/\[BR\]/g, ' '), originalName: (originalName || n).replace(/\[BR\]/g, '\n'), p, tva: tvaRate, qty: 1, done: false, served: false, dest, savedToDB: false, isOffered: false, course: cId, obs: "", seat: seatId, isSent: false }); 
-            renderTicket(); 
+function executeAddToCart(n, p, dest, courseOverride, originalName, tvaRate = 10) {
+    const cId = courseOverride !== undefined ? courseOverride : currentCourseDefault;
+    const seatId = currentSeat;
+
+    // 🔲 RECHERCHE D'UN ARTICLE IDENTIQUE FUSIONNABLE
+    let existingItem = currentTicket.find(i => 
+        i.n === n && 
+        !i.done && 
+        !i.served && 
+        !i.isSent && 
+        i.course === cId && 
+        !i.obs && 
+        !i.isOffered && 
+        (i.seat || 0) === seatId && 
+        i.tva === tvaRate
+    );
+
+    if (existingItem) {
+        existingItem.qty = (existingItem.qty || 1) + 1;
+    } else {
+        currentTicket.push({ 
+            id: Date.now() + Math.random(), // Génération d'ID unique
+            itemId: Date.now(), 
+            n: n.replace(/\[BR\]/g, ' '), 
+            originalName: (originalName || n).replace(/\[BR\]/g, '\n'), 
+            p: parseFloat(p) || 0, 
+            tva: parseFloat(tvaRate) || 10, 
+            qty: 1, 
+            done: false, 
+            served: false, 
+            dest, 
+            savedToDB: false, 
+            isOffered: false, 
+            course: cId, 
+            obs: "", 
+            seat: seatId, 
+            isSent: false 
+        });
+    }
+    renderTicket();
+}
+
+function addMenuToTicket(n, p, dest, tvaRate = 10) {
+    const parts = n.split('[BR]');
+    const cleanN = n.replace('🌟 ', '').trim();
+
+    // 🔲 CAS 1 : MENU GÉNÉRIQUE SANS DÉTAILS
+    if (parts.length <= 1) {
+        executeAddToCart(`🥗 Entrée (${cleanN})`, 0, dest, 1, n, tvaRate);
+        executeAddToCart(`🔥 Plat (${cleanN})`, p, dest, 2, n, tvaRate);
+        executeAddToCart(`🍰 Dessert (${cleanN})`, 0, dest, 3, n, tvaRate);
+        return;
+    }
+
+    // 🔲 CAS 2 : MENU DÉTAILLÉ (Mappage dynamique)
+    const courses = [
+        { icon: '🥗', name: parts[0], courseId: 1, price: 0 },
+        { icon: '🔥', name: parts[1], courseId: 2, price: p },
+        { icon: '🍰', name: parts[2], courseId: 3, price: 0 }
+    ];
+
+    courses.forEach(c => {
+        if (c.name && c.name.trim()) {
+            executeAddToCart(`${c.icon} ${c.name.trim()}`, c.price, dest, c.courseId, n, tvaRate);
         }
+    });
 
-        function addMenuToTicket(n, p, dest, tvaRate = 10) {
-            let parts = n.split('[BR]');
-            if (parts.length <= 1) {
-                let cleanN = n.replace('🌟 ', '').trim();
-                executeAddToCart("🥗 Entrée (" + cleanN + ")", 0, dest, 1, n, tvaRate);
-                executeAddToCart("🔥 Plat (" + cleanN + ")", p, dest, 2, n, tvaRate);
-                executeAddToCart("🍰 Dessert (" + cleanN + ")", 0, dest, 3, n, tvaRate);
-                return;
-            }
-            let entree = parts[0] ? "🥗 " + parts[0].trim() : null;
-            let plat = parts[1] ? "🔥 " + parts[1].trim() : null;
-            let dessert = parts[2] ? "🍰 " + parts[2].trim() : null;
-            if (entree) executeAddToCart(entree, 0, dest, 1, n, tvaRate); 
-            if (plat) executeAddToCart(plat, p, dest, 2, n, tvaRate);      
-            if (dessert) executeAddToCart(dessert, 0, dest, 3, n, tvaRate); 
-            for(let i=3; i<parts.length; i++) { if(parts[i].trim() !== '') executeAddToCart("🍰 " + parts[i].trim(), 0, dest, 3, n, tvaRate); }
+    // Gestion des suppléments éventuels (ex: 2ème dessert)
+    for (let i = 3; i < parts.length; i++) {
+        if (parts[i].trim() !== '') {
+            executeAddToCart(`🍰 ${parts[i].trim()}`, 0, dest, 3, n, tvaRate);
         }
+    }
+}
 
-        function renderTicket() {
-            let list = document.getElementById('ticket-list');
-            let total = 0;
-            let totalHT = 0;
-            let tvaTotals = { '5.5': 0, '10': 0, '20': 0, '0': 0 };
+function renderTicket() {
+    const list = document.getElementById('ticket-list');
+    if (!list) return; // Sécurité anti-crash
 
-            let htmlByCourse = { 0: '', 1: '', 2: '', 3: '' };
-            let courseNames = { 0: '🍸 BOISSONS', 1: '🥗 ENTRÉES', 2: '🔥 PLATS', 3: '🍰 DESSERTS' };
+    let totalTTC = 0;
+    let totalHT = 0;
+    const tvaTotals = { '0': 0, '5.5': 0, '10': 0, '20': 0 };
 
-            currentTicket.forEach((i, idx) => {
-                if(!i) return; let q = i.qty || 1; 
-                let ligneTTC = (parseFloat(i.p)||0) * q;
-                total += ligneTTC;
+    const htmlByCourse = { 0: '', 1: '', 2: '', 3: '' };
+    const courseNames = { 0: '🍸 BOISSONS', 1: '🥗 ENTRÉES', 2: '🔥 PLATS', 3: '🍰 DESSERTS' };
 
-                let rate = parseFloat(i.tva) || 10;
-                let ligneHT = ligneTTC / (1 + (rate / 100));
-                let ligneTVA = ligneTTC - ligneHT;
-                totalHT += ligneHT;
-                if(tvaTotals[rate] !== undefined) tvaTotals[rate] += ligneTVA;
-                else tvaTotals[rate] = ligneTVA;
+    // 🔲 CONSTRUCTION DES LIGNES DU TICKET
+    currentTicket.forEach((i, idx) => {
+        if (!i) return; 
 
-                let cleanName = i.n.replace(/\n/g, ' + ');
-                let c = i.course !== undefined ? i.course : 2; 
-                let statusHtml = ''; let opacityStyle = "";
-                
-                if (!i.isSent) statusHtml = `<button class="btn-mini" style="border-color: var(--text-main); color: var(--text-main); padding: 4px 8px; font-size: 0.6rem;">NOUVEAU</button>`;
-                else if (i.served) { statusHtml = `<button class="btn-mini" style="border-color: var(--text-muted); color: var(--text-muted); padding: 4px 8px; font-size: 0.6rem;">SERVI</button>`; opacityStyle = "opacity: 0.4;"; }
-                else if (i.done) statusHtml = `<button class="btn-mini" style="background: var(--accent); color: #000; border-color: var(--accent); padding: 4px 8px; font-size: 0.6rem;">PRÊT</button>`;
-                else statusHtml = `<button class="btn-mini" style="border-color: var(--gold); color: var(--gold); padding: 4px 8px; font-size: 0.6rem;">ATTENTE</button>`;
-                
-                let seatBadge = (i.seat && i.seat > 0) ? `<span style="color:var(--text-muted); font-size:0.75rem; margin-right:8px; font-weight:500;">👤 ${i.seat}</span>` : `<span style="color:var(--text-muted); font-size:0.7rem; margin-right:8px; font-weight:400;">🍽️ CTR</span>`;
-                let priceHtml = i.isOffered ? `<span style="margin-right:10px; font-weight:500; color:var(--gold); font-size: 0.8rem; letter-spacing: 1px;">🎁 OFFERT</span>` : `<span style="margin-right:10px; font-weight:500; font-size: 0.95rem; font-family: 'Playfair Display', serif;">${ligneTTC.toFixed(2)}€</span>`;
-                let obsDisplay = i.obs ? `<span style="font-size:0.7rem; color:var(--gold); margin-left: 5px; font-weight: 500;">⚠️ ${i.obs}</span>` : `<span style="font-size:0.65rem; color:var(--border-strong); font-weight: 300; margin-left: 5px;">+ Obs</span>`;
+        const q = i.qty || 1;
+        const rate = parseFloat(i.tva) || 10;
+        const ligneTTC = (parseFloat(i.p) || 0) * q;
+        const ligneHT = ligneTTC / (1 + (rate / 100));
+        const ligneTVA = ligneTTC - ligneHT;
 
-                let itemHtml = `
-                <div class="ticket-item-row" style="${opacityStyle}">
-                    <div style="flex:1; cursor:pointer;" onclick="openEditItem(${idx})">
-                        <div style="font-weight:400; font-size:0.95rem; color: var(--text-main);">${seatBadge}${q>1?`<span style="color:var(--gold); font-weight:600;">${q}x</span> `:""}${cleanName||'?'}</div>
-                        <div style="display:flex; align-items:center; gap:8px; margin-top:6px;">${statusHtml}${obsDisplay}</div>
-                    </div>
-                    ${priceHtml}
-                    <button class="item-delete-btn" onclick="removeTicketItem(${idx}); event.stopPropagation();">✕</button>
-                </div>`;
-                htmlByCourse[c] += itemHtml;
-            }); 
+        totalTTC += ligneTTC;
+        totalHT += ligneHT;
+        
+        if (tvaTotals[rate] !== undefined) tvaTotals[rate] += ligneTVA;
+        else tvaTotals[rate] = ligneTVA;
 
-            let finalHtml = '';
-            [0, 1, 2, 3].forEach(c => { if(htmlByCourse[c] !== '') finalHtml += `<div class="course-card"><div class="course-card-header"><span class="course-title">${courseNames[c]}</span></div><div class="course-body">${htmlByCourse[c]}</div></div>`; });
+        const cleanName = i.n.replace(/\n/g, ' + ');
+        const c = i.course !== undefined ? i.course : 2;
+
+        // Définition des statuts visuels
+        let statusHtml = ''; 
+        let opacityStyle = '';
+        
+        if (!i.isSent) {
+            statusHtml = `<button class="btn-mini" style="border-color: var(--text-main); color: var(--text-main); padding: 4px 8px; font-size: 0.6rem;">NOUVEAU</button>`;
+        } else if (i.served) {
+            statusHtml = `<button class="btn-mini" style="border-color: var(--text-muted); color: var(--text-muted); padding: 4px 8px; font-size: 0.6rem;">SERVI</button>`;
+            opacityStyle = "opacity: 0.4;";
+        } else if (i.done) {
+            statusHtml = `<button class="btn-mini" style="background: var(--accent); color: #000; border-color: var(--accent); padding: 4px 8px; font-size: 0.6rem;">PRÊT</button>`;
+        } else {
+            statusHtml = `<button class="btn-mini" style="border-color: var(--gold); color: var(--gold); padding: 4px 8px; font-size: 0.6rem;">ATTENTE</button>`;
+        }
+        
+        const seatBadge = (i.seat && i.seat > 0) 
+            ? `<span style="color:var(--text-muted); font-size:0.75rem; margin-right:8px; font-weight:500;">👤 ${i.seat}</span>` 
+            : `<span style="color:var(--text-muted); font-size:0.7rem; margin-right:8px; font-weight:400;">🍽️ CTR</span>`;
             
-            if(finalHtml === '') finalHtml = `<div style="text-align:center; color:var(--text-muted); font-weight: 300; padding:40px 0; border: 1px dashed var(--border-strong); border-radius: 4px;">En attente de saisie...</div>`;
+        const priceHtml = i.isOffered 
+            ? `<span style="margin-right:10px; font-weight:500; color:var(--gold); font-size: 0.8rem; letter-spacing: 1px;">🎁 OFFERT</span>` 
+            : `<span style="margin-right:10px; font-weight:500; font-size: 0.95rem; font-family: 'Playfair Display', serif;">${ligneTTC.toFixed(2)}€</span>`;
             
-            list.innerHTML = finalHtml;
-            document.getElementById('ticket-total-price').innerText = `${total.toFixed(2)}€`;
-            currentTableTotal = total;
+        const obsDisplay = i.obs 
+            ? `<span style="font-size:0.7rem; color:var(--gold); margin-left: 5px; font-weight: 500;">⚠️ ${i.obs}</span>` 
+            : `<span style="font-size:0.65rem; color:var(--border-strong); font-weight: 300; margin-left: 5px;">+ Obs</span>`;
 
-            let tvaStr = Object.entries(tvaTotals).filter(([k,v]) => v>0).map(([k,v]) => `TVA ${k}%: ${v.toFixed(2)}€`).join(' | ');
-            if(!tvaStr) tvaStr = "Aucune TVA";
-            document.getElementById('ticket-tva').innerText = tvaStr + ` (HT: ${totalHT.toFixed(2)}€)`;
+        htmlByCourse[c] += `
+        <div class="ticket-item-row" style="${opacityStyle}">
+            <div style="flex:1; cursor:pointer;" onclick="openEditItem(${idx})">
+                <div style="font-weight:400; font-size:0.95rem; color: var(--text-main);">${seatBadge}${q > 1 ? `<span style="color:var(--gold); font-weight:600;">${q}x</span> ` : ''}${cleanName || '?'}</div>
+                <div style="display:flex; align-items:center; gap:8px; margin-top:6px;">${statusHtml}${obsDisplay}</div>
+            </div>
+            ${priceHtml}
+            <button class="item-delete-btn" onclick="removeTicketItem(${idx}); event.stopPropagation();">✕</button>
+        </div>`;
+    });
 
-            let hasUnsent = currentTicket.some(i => !i.isSent);
-            let btnSend = document.getElementById('btn-send-kds');
-            if (hasUnsent) {
-                btnSend.style.display = 'block';
-            } else {
-                btnSend.style.display = 'none';
-            }
+    // 🔲 ASSEMBLAGE ET INJECTION DANS LE DOM
+    let finalHtml = '';
+    for (let c = 0; c <= 3; c++) {
+        if (htmlByCourse[c] !== '') {
+            finalHtml += `<div style="font-size:0.8rem; color:var(--text-muted); margin:15px 0 5px 0; font-weight:600; text-transform:uppercase; border-bottom:1px solid var(--border-light); padding-bottom:3px;">${courseNames[c]}</div>`;
+            finalHtml += htmlByCourse[c];
         }
+    }
+    
+    list.innerHTML = finalHtml;
 
-        async function sendOrderToKDS() {
-            let count = 0;
-            currentTicket.forEach(i => { if (!i.isSent) { i.isSent = true; i.itemId = Date.now(); count++; } });
-            if (count > 0) {
-                renderTicket();
-                await executeSaveTableState(false, true); 
-                alert(`✅ ${count} plats/boissons envoyés en production !`);
-            }
-        }
+    // Mise à jour de l'affichage du Total (si l'élément existe dans ton interface)
+    const totalDisplay = document.getElementById('ticket-total');
+    if (totalDisplay) {
+        totalDisplay.innerText = `${totalTTC.toFixed(2)}€`;
+    }
+}
 
         function executeSaveTableState(fireAllNew = false, keepOpen = false) {
             if(currentTicket.length === 0 && !keepOpen) return;
