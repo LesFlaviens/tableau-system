@@ -40,6 +40,12 @@ self.addEventListener('activate', (event) => {
 });
 
 self.addEventListener('fetch', (event) => {
+    // 1. PATCH VIDÉO : Exclusion des requêtes de flux (évite le crash 206)
+    if (event.request.headers.get('range')) {
+        return; 
+    }
+
+    // 2. Exclusion des requêtes dynamiques et non-GET
     if (event.request.method !== 'GET' || 
         event.request.url.includes('/api/') || 
         event.request.url.includes('/get-current-state') || 
@@ -47,6 +53,7 @@ self.addEventListener('fetch', (event) => {
         return; 
     }
 
+    // 3. Mise en cache standard pour le reste des fichiers
     event.respondWith(
         fetch(event.request).then((response) => {
             const responseClone = response.clone();
