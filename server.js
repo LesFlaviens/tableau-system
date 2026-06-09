@@ -395,5 +395,18 @@ app.post('/api/admin-action', async (req, res) => {
     } catch (err) { res.status(500).json({ success: false, error: err.message }); }
 });
 
+// ==========================================
+// OUTIL DE DIAGNOSTIC (TOUR DE CONTRÔLE)
+// ==========================================
+app.get('/debug-fichiers', (req, res) => {
+    const fs = require('fs');
+    fs.readdir(__dirname, (err, files) => {
+        if (err) return res.status(500).json({ erreur: "Impossible de lire le dossier" });
+        res.json({
+            dossier_actuel: __dirname,
+            fichiers_trouves: files
+        });
+    });
+});
 // IMPORTANT : LA LIGNE LISTEN TOUT EN BAS !
 app.listen(PORT, () => console.log("L'Empire iCHEF est en ligne et sécurisé sur le port " + PORT));
