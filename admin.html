@@ -22,21 +22,28 @@
             return deviceId;
         }
 
-        async function fetchWithRetry(url, options = {}, retries = 3, delay = 3000) {
+        // 🔥 GESTION DES REQUETES SILENCIEUSES (ANTI-CLIGNOTEMENT)
+        async function fetchWithRetry(url, options = {}, retries = 4, delay = 3000, isSilent = false) {
             for (let i = 0; i < retries; i++) {
                 try {
-                    const response = await fetch(url, options);
+                    const controller = new AbortController();
+                    const timeoutId = setTimeout(() => controller.abort(), 10000); // Laisse 10s au serveur pour répondre
+                    const response = await fetch(url, { ...options, signal: controller.signal });
+                    clearTimeout(timeoutId);
                     if (response.ok) return response;
                     throw new Error(`Code HTTP ${response.status}`);
                 } catch (error) {
                     if (i === retries - 1) throw error; 
-                    let syncBtn = document.getElementById('sync-status');
-                    if (syncBtn) { 
-                        syncBtn.innerHTML = '⏳ Reconnexion...'; 
-                        syncBtn.style.color = '#000'; 
-                        syncBtn.style.background = 'var(--gold)'; 
+                    if (!isSilent) {
+                        let syncBtn = document.getElementById('sync-status');
+                        if (syncBtn) { 
+                            syncBtn.innerHTML = '⏳ Réveil Serveur...'; 
+                            syncBtn.style.color = '#000'; 
+                            syncBtn.style.background = 'var(--gold)'; 
+                        }
                     }
-                    await new Promise(res => setTimeout(res, delay));
+                    // Attente progressive (3s, puis 5s, puis 7s) pour éviter de spammer le serveur
+                    await new Promise(res => setTimeout(res, delay + (i * 2000)));
                 }
             }
         }
@@ -130,7 +137,6 @@
         .nav-item { padding: 14px 16px; margin-bottom: 6px; border-radius: var(--radius-btn); cursor: pointer; color: var(--text-muted); font-weight: 500; display: flex; align-items: center; gap: 12px; transition: all 0.2s ease; font-size: 0.95rem; }
         .nav-item:hover { background: rgba(255,255,255,0.03); color: var(--text-main); }
         .nav-item:active { transform: scale(0.95); opacity: 0.7; background: rgba(255,255,255,0.08); }
-        /* CORRECTION DU VISUEL DU MENU ACTIF */
         .nav-item.active { background: rgba(255, 255, 255, 0.05); color: var(--gold); font-weight: 700; border-left: 3px solid var(--gold); }
         
         /* --- Topbar --- */
@@ -277,7 +283,7 @@
                         <div class="grid-2">
                             <div class="input-group">
                                 <label>Nom de l'établissement</label>
-                                <input type="text" id="resto-name" class="input-field" placeholder="Ex: Le Bistrot Parisien" onchange="markUnsaved()">
+                                <input type="text" id="resto-name" class="input-field" placeholder="Ex: Le Bistrot Parisien" oninput="markUnsaved()">
                             </div>
                             <div class="input-group">
                                 <label>Devise Principale</label>
@@ -292,11 +298,11 @@
                         <div class="grid-2" style="margin-top: 10px;">
                             <div class="input-group">
                                 <label>TVA par défaut (%)</label>
-                                <input type="number" id="resto-tva" class="input-field" step="0.1" min="0" onchange="markUnsaved()">
+                                <input type="number" id="resto-tva" class="input-field" step="0.1" min="0" oninput="markUnsaved()">
                             </div>
                             <div class="input-group">
                                 <label>2ème TVA (Boissons) (%)</label>
-                                <input type="number" id="resto-tva-2" class="input-field" step="0.1" min="0" onchange="markUnsaved()">
+                                <input type="number" id="resto-tva-2" class="input-field" step="0.1" min="0" oninput="markUnsaved()">
                             </div>
                         </div>
                     </div>
@@ -388,7 +394,7 @@
                             <select id="menu-filter-cat" class="input-field" style="flex: 1;" onchange="renderMenuList()">
                                 <option value="ALL">Toutes</option>
                             </select>
-                            <input type="text" id="menu-filter-search" class="input-field" placeholder="Recherche..." style="flex: 1;" onkeyup="renderMenuList()">
+                            <input type="text" id="menu-filter-search" class="input-field" placeholder="Recherche..." style="flex: 1;" oninput="renderMenuList()">
                         </div>
                         <div id="admin-menu-list"></div>
                     </div>
@@ -398,7 +404,7 @@
                         <div class="grid-2" style="align-items: end; margin-bottom: 25px;">
                             <div class="input-group" style="margin: 0;">
                                 <label>Nom de la catégorie</label>
-                                <input type="text" id="new-cat-name" class="input-field" placeholder="Ex: Pizzas">
+                                <input type="text" id="new-cat-name" class="input-field" placeholder="Ex: Pizzas" oninput="markUnsaved()">
                             </div>
                             <div style="display: flex; gap: 10px;">
                                 <select id="new-cat-type" class="input-field" style="flex: 1;">
@@ -606,7 +612,7 @@
                         </p>
                         <div class="input-group">
                             <label>Domaine de votre Menu (Laissez vide pour auto)</label>
-                            <input type="text" id="qr-base-url" class="input-field" placeholder="https://[VOTRE_DOMAINE]/menu-qr.html" onchange="syncQRTables()">
+                            <input type="text" id="qr-base-url" class="input-field" placeholder="https://[VOTRE_DOMAINE]/menu-qr.html" oninput="syncQRTables()">
                         </div>
                         <div id="all-qr-grid" style="display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 20px;"></div>
                     </div>
@@ -621,7 +627,7 @@
                         </div>
                         <div class="input-group">
                             <label>Pourcentage (%)</label>
-                            <input type="number" id="setting-loyalty-percent" class="input-field" step="0.1" min="0" onchange="markUnsaved()">
+                            <input type="number" id="setting-loyalty-percent" class="input-field" step="0.1" min="0" oninput="markUnsaved()">
                         </div>
                     </div>
                     <div class="section-card">
@@ -645,29 +651,29 @@
                             <div style="display: flex; flex-direction: column; gap: 5px;">
                                 <label style="font-size:0.8rem; color:var(--gold); text-transform:uppercase;">Matin</label>
                                 <div style="display: flex; gap: 5px;">
-                                    <input type="time" id="matin-start" class="input-field" style="padding: 10px;" onchange="markUnsaved()">
-                                    <input type="time" id="matin-end" class="input-field" style="padding: 10px;" onchange="markUnsaved()">
+                                    <input type="time" id="matin-start" class="input-field" style="padding: 10px;" oninput="markUnsaved()">
+                                    <input type="time" id="matin-end" class="input-field" style="padding: 10px;" oninput="markUnsaved()">
                                 </div>
                             </div>
                             <div style="display: flex; flex-direction: column; gap: 5px;">
                                 <label style="font-size:0.8rem; color:var(--gold); text-transform:uppercase;">Midi</label>
                                 <div style="display: flex; gap: 5px;">
-                                    <input type="time" id="midi-start" class="input-field" style="padding: 10px;" onchange="markUnsaved()">
-                                    <input type="time" id="midi-end" class="input-field" style="padding: 10px;" onchange="markUnsaved()">
+                                    <input type="time" id="midi-start" class="input-field" style="padding: 10px;" oninput="markUnsaved()">
+                                    <input type="time" id="midi-end" class="input-field" style="padding: 10px;" oninput="markUnsaved()">
                                 </div>
                             </div>
                             <div style="display: flex; flex-direction: column; gap: 5px;">
                                 <label style="font-size:0.8rem; color:var(--gold); text-transform:uppercase;">Après-midi</label>
                                 <div style="display: flex; gap: 5px;">
-                                    <input type="time" id="aprem-start" class="input-field" style="padding: 10px;" onchange="markUnsaved()">
-                                    <input type="time" id="aprem-end" class="input-field" style="padding: 10px;" onchange="markUnsaved()">
+                                    <input type="time" id="aprem-start" class="input-field" style="padding: 10px;" oninput="markUnsaved()">
+                                    <input type="time" id="aprem-end" class="input-field" style="padding: 10px;" oninput="markUnsaved()">
                                 </div>
                             </div>
                             <div style="display: flex; flex-direction: column; gap: 5px;">
                                 <label style="font-size:0.8rem; color:var(--gold); text-transform:uppercase;">Soir</label>
                                 <div style="display: flex; gap: 5px;">
-                                    <input type="time" id="soir-start" class="input-field" style="padding: 10px;" onchange="markUnsaved()">
-                                    <input type="time" id="soir-end" class="input-field" style="padding: 10px;" onchange="markUnsaved()">
+                                    <input type="time" id="soir-start" class="input-field" style="padding: 10px;" oninput="markUnsaved()">
+                                    <input type="time" id="soir-end" class="input-field" style="padding: 10px;" oninput="markUnsaved()">
                                 </div>
                             </div>
                         </div>
@@ -701,7 +707,7 @@
                                     <span style="color:#fbbf24; font-weight:800; width: 110px;">🟡 NIVEAU 2</span>
                                     <div style="display: flex; align-items: center; gap: 10px; flex: 1; flex-wrap: wrap;">
                                         <span style="font-size:0.9rem; color:var(--text-muted);">S'active à partir de</span>
-                                        <input type="number" id="rush-t2" class="input-field" style="width: 80px; padding: 8px; text-align: center; font-weight: bold;" value="15" onchange="markUnsaved()">
+                                        <input type="number" id="rush-t2" class="input-field" style="width: 80px; padding: 8px; text-align: center; font-weight: bold;" value="15" oninput="markUnsaved()">
                                         <span style="font-size:0.9rem; color:var(--text-muted);">tickets en attente.</span>
                                     </div>
                                 </div>
@@ -709,7 +715,7 @@
                                     <span style="color:#f97316; font-weight:800; width: 110px;">🟠 NIVEAU 3</span>
                                     <div style="display: flex; align-items: center; gap: 10px; flex: 1; flex-wrap: wrap;">
                                         <span style="font-size:0.9rem; color:var(--text-muted);">S'active à partir de</span>
-                                        <input type="number" id="rush-t3" class="input-field" style="width: 80px; padding: 8px; text-align: center; font-weight: bold;" value="25" onchange="markUnsaved()">
+                                        <input type="number" id="rush-t3" class="input-field" style="width: 80px; padding: 8px; text-align: center; font-weight: bold;" value="25" oninput="markUnsaved()">
                                         <span style="font-size:0.9rem; color:var(--text-muted);">tickets en attente.</span>
                                     </div>
                                 </div>
@@ -717,7 +723,7 @@
                                     <span style="color:#ef4444; font-weight:800; width: 110px;">🔴 NIVEAU 4</span>
                                     <div style="display: flex; align-items: center; gap: 10px; flex: 1; flex-wrap: wrap;">
                                         <span style="font-size:0.9rem; color:var(--text-muted);">S'active à partir de</span>
-                                        <input type="number" id="rush-t4" class="input-field" style="width: 80px; padding: 8px; text-align: center; font-weight: bold;" value="40" onchange="markUnsaved()">
+                                        <input type="number" id="rush-t4" class="input-field" style="width: 80px; padding: 8px; text-align: center; font-weight: bold;" value="40" oninput="markUnsaved()">
                                         <span style="font-size:0.9rem; color:var(--text-muted);">tickets en attente.</span>
                                     </div>
                                 </div>
@@ -753,7 +759,7 @@
                                     <span style="color:#fbbf24; font-weight:800; width: 110px;">🟡 NIVEAU 2</span>
                                     <div style="display: flex; align-items: center; gap: 10px; flex: 1; flex-wrap: wrap;">
                                         <span style="font-size:0.9rem; color:var(--text-muted);">S'active à partir de</span>
-                                        <input type="number" id="rush-bar-t2" class="input-field" style="width: 80px; padding: 8px; text-align: center; font-weight: bold;" value="15" onchange="markUnsaved()">
+                                        <input type="number" id="rush-bar-t2" class="input-field" style="width: 80px; padding: 8px; text-align: center; font-weight: bold;" value="15" oninput="markUnsaved()">
                                         <span style="font-size:0.9rem; color:var(--text-muted);">boissons en attente.</span>
                                     </div>
                                 </div>
@@ -761,7 +767,7 @@
                                     <span style="color:#f97316; font-weight:800; width: 110px;">🟠 NIVEAU 3</span>
                                     <div style="display: flex; align-items: center; gap: 10px; flex: 1; flex-wrap: wrap;">
                                         <span style="font-size:0.9rem; color:var(--text-muted);">S'active à partir de</span>
-                                        <input type="number" id="rush-bar-t3" class="input-field" style="width: 80px; padding: 8px; text-align: center; font-weight: bold;" value="25" onchange="markUnsaved()">
+                                        <input type="number" id="rush-bar-t3" class="input-field" style="width: 80px; padding: 8px; text-align: center; font-weight: bold;" value="25" oninput="markUnsaved()">
                                         <span style="font-size:0.9rem; color:var(--text-muted);">boissons en attente.</span>
                                     </div>
                                 </div>
@@ -769,7 +775,7 @@
                                     <span style="color:#ef4444; font-weight:800; width: 110px;">🔴 NIVEAU 4</span>
                                     <div style="display: flex; align-items: center; gap: 10px; flex: 1; flex-wrap: wrap;">
                                         <span style="font-size:0.9rem; color:var(--text-muted);">S'active à partir de</span>
-                                        <input type="number" id="rush-bar-t4" class="input-field" style="width: 80px; padding: 8px; text-align: center; font-weight: bold;" value="40" onchange="markUnsaved()">
+                                        <input type="number" id="rush-bar-t4" class="input-field" style="width: 80px; padding: 8px; text-align: center; font-weight: bold;" value="40" oninput="markUnsaved()">
                                         <span style="font-size:0.9rem; color:var(--text-muted);">boissons en attente.</span>
                                     </div>
                                 </div>
@@ -800,7 +806,7 @@
                         </div>
                         <div class="input-group">
                             <label>Identifiant Stripe (Clé Secrète)</label>
-                            <input type="password" id="resto-stripe" class="input-field" onchange="markUnsaved()">
+                            <input type="password" id="resto-stripe" class="input-field" oninput="markUnsaved()">
                         </div>
                     </div>
                 </div>
@@ -951,26 +957,20 @@
         }
         
         function switchTab(tabId, el) { 
-            // 1. On cache tout
             document.querySelectorAll('.main-scroll').forEach(t => {
                 t.style.display = 'none';
                 t.classList.remove('active');
             });
             
-            // 2. On désactive tous les boutons
             document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
             
-            // 3. On affiche la cible
             let target = document.getElementById(tabId); 
             if(target) { 
                 target.style.display = 'block'; 
-                // Petit délai pour permettre l'animation CSS
                 setTimeout(() => target.classList.add('active'), 10); 
             } 
             
-            // 4. On active le bouton cliqué
             if(el) el.classList.add('active'); 
-            
             if(window.innerWidth <= 900) toggleMobileMenu(); 
             if(tabId === 'tab-design') syncQRTables(); 
         }
@@ -1005,7 +1005,7 @@
                 emp.onDuty = !emp.onDuty; 
                 renderStaffList(); 
                 renderActiveStaff(); 
-                try { await fetchWithRetry(`${SERVER_URL}/update-order?tenantID=${tenantID}`, { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ tableId: 'STAFF_ACCESS', order: { data: staffAccess } }) }, 3, 2000); } catch(e) {}
+                try { await fetchWithRetry(`${SERVER_URL}/update-order?tenantID=${tenantID}`, { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ tableId: 'STAFF_ACCESS', order: { data: staffAccess } }) }, 3, 2000, true); } catch(e) {}
             }
         }
 
@@ -1058,14 +1058,14 @@
             }
 
             closeModals(); renderStaffList(); renderActiveStaff(); updateDashboardStats();
-            try { await fetchWithRetry(`${SERVER_URL}/update-order?tenantID=${tenantID}`, { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ tableId: 'STAFF_ACCESS', order: { data: staffAccess } }) }, 3, 2000); showToast("Synchronisé !"); } catch(e) {}
+            try { await fetchWithRetry(`${SERVER_URL}/update-order?tenantID=${tenantID}`, { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ tableId: 'STAFF_ACCESS', order: { data: staffAccess } }) }, 3, 2000, true); showToast("Synchronisé !"); } catch(e) {}
         }
 
         async function deleteStaff(pin) { 
             if(confirm("Supprimer cet employé ?")) { 
                 staffAccess = staffAccess.filter(s => s.pin !== pin); 
                 renderStaffList(); renderActiveStaff(); updateDashboardStats();
-                try { await fetchWithRetry(`${SERVER_URL}/update-order?tenantID=${tenantID}`, { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ tableId: 'STAFF_ACCESS', order: { data: staffAccess } }) }, 3, 2000); } catch(e) {} 
+                try { await fetchWithRetry(`${SERVER_URL}/update-order?tenantID=${tenantID}`, { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ tableId: 'STAFF_ACCESS', order: { data: staffAccess } }) }, 3, 2000, true); } catch(e) {} 
             } 
         }
 
@@ -1138,7 +1138,6 @@
             if(document.getElementById('setting-loyalty-percent') && systemSettings.loyalty) document.getElementById('setting-loyalty-percent').value = systemSettings.loyalty.percent !== undefined ? systemSettings.loyalty.percent : 5;
             if(document.getElementById('setting-auto-schedule')) document.getElementById('setting-auto-schedule').checked = sched.auto;
             
-            // Injection Pilote Auto Cuisine
             if(systemSettings.rushRules) {
                 if(document.getElementById('setting-rush-auto')) {
                     document.getElementById('setting-rush-auto').checked = systemSettings.rushRules.auto || false;
@@ -1149,7 +1148,6 @@
                 if(document.getElementById('rush-t4')) document.getElementById('rush-t4').value = systemSettings.rushRules.lvl4?.t || 40;
             }
 
-            // Injection Pilote Auto Bar
             if(systemSettings.rushRulesBar) {
                 if(document.getElementById('setting-rush-auto-bar')) {
                     document.getElementById('setting-rush-auto-bar').checked = systemSettings.rushRulesBar.auto || false;
@@ -1598,10 +1596,8 @@
                 
                 let isAuthOk = await runSecurityCheck(); if(!isAuthOk) return;
 
-                let r = await fetchWithRetry(`${SERVER_URL}/get-current-state?tenantID=${tenantID}&_t=${Date.now()}`, { cache: 'no-store' }, 4, 3000);
+                let r = await fetchWithRetry(`${SERVER_URL}/get-current-state?tenantID=${tenantID}&_t=${Date.now()}`, { cache: 'no-store' }, 4, 3000, isBackground);
                 let state = await r.json(); let aO = state.activeOrders || {};
-
-                console.log("--- DONNÉES REÇUES ---", aO); // LOG POUR DEBUG L'HISTORIQUE FINANCIER
 
                 systemSettings = aO['SETTINGS_MASTER']?.data || systemSettings;
                 menuCuisine = aO['MENU_MASTER']?.data || {};
@@ -1640,8 +1636,19 @@
         window.adminManager = { start: fetchStateFromCloud };
         fetchStateFromCloud();
 
+        // 🔥 BOUCLIER ANTI-SAUT : Détecte si tu es en train d'écrire
+        let isTyping = false;
+        document.addEventListener('focusin', (e) => {
+            if(e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT' || e.target.tagName === 'TEXTAREA') isTyping = true;
+        });
+        document.addEventListener('focusout', () => {
+            isTyping = false;
+        });
+
+        // 🔥 RYTHME DÉTENDU (8 Secondes) ET SILENCIEUX
         setInterval(() => {
-            if (!hasUnsavedChanges && !document.querySelector('.modal.show')) {
+            // On ne synchronise PAS si tu écris (isTyping), s'il y a des changements non sauvés, ou un pop-up ouvert.
+            if (!hasUnsavedChanges && !document.querySelector('.modal.show') && !isTyping) {
                 fetchStateFromCloud(true);
             }
         }, 8000);
