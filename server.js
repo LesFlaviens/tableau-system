@@ -17,6 +17,10 @@ const stripeKey = process.env.STRIPE_SECRET_KEY || 'sk_test_51TN80JQ9Dw3nOfA4I3X
 const stripe = require('stripe')(stripeKey);
 
 const app = express();
+
+// 👇 DÉBLOCAGE DES VIDÉOS : Placé correctement après la création de "app" 👇
+app.use(express.static(__dirname));
+
 const PORT = process.env.PORT || 10000;
 
 // SÉCURITÉ MAÎTRE DE L'EMPIRE (Super Admin)
