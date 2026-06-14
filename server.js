@@ -152,7 +152,8 @@ app.post('/api/scan-invoice', async (req, res) => {
         const prompt = `Analyse cette image de facture. Extrais les informations. RESPOND ONLY WITH JSON WITHOUT MARKDOWN TEXT: { "fournisseur": "Nom", "adresse": "Adresse", "telephone": "Tel", "email": "Email", "devise": "€", "date": "JJ/MM/AAAA", "totalHT": 0.00, "tva": 0.00, "totalTTC": 0.00, "articles": [{ "nom": "nom", "categorie": "catégorie", "quantite": "qty", "prixUnitaire": 0.00 }] }`;
         const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
         const result = await model.generateContent([prompt, imagePart]);
-        let responseText = result.response.text().trim().replace(/```json/gi, '').replace(/```/gi, '').trim();
+        let responseText = result.response.text().trim().replace(/```json/gi, '').replace(/
+```/gi, '').trim();
         if (!responseText.startsWith("{")) responseText = responseText.substring(responseText.indexOf("{"));
         res.json({ success: true, data: JSON.parse(responseText) });
     } catch (error) { res.status(500).json({ success: false, error: "Erreur de traitement IA ou Image illisible." }); }
@@ -177,7 +178,8 @@ app.post('/api/smart-reservation', async (req, res) => {
         const prompt = `Tu es le Maître d'Hôtel iCHEF. Demande client : "${customerRequest}". Tables libres : ${JSON.stringify(availableTables)}. Trouve la table optimale. JSON STRICT: { "acceptee": true/false, "pax": nombre, "heure": "HH:MM", "tableAllouee": "ID_TABLE", "messageClient": "Votre réponse", "optimisationInfo": "Notes" }`;
         const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
         const result = await model.generateContent(prompt);
-        let responseText = result.response.text().trim().replace(/```json/gi, '').replace(/```/gi, '').trim();
+        let responseText = result.response.text().trim().replace(/```json/gi, '').replace(/
+```/gi, '').trim();
         if (!responseText.startsWith("{")) responseText = responseText.substring(responseText.indexOf("{"));
         const decision = JSON.parse(responseText);
         if (decision.acceptee && decision.tableAllouee) {
@@ -259,7 +261,7 @@ app.post('/api/verify-pin', async (req, res) => {
     try {
         const tenant = await Tenant.findOne({ tenantID: cleanString(tenantID) });
         if (!tenant) return res.status(404).json({ success: false, error: "Inconnu." });
-        if (tenant.status === 'SUSPENDU') return res.status(403).json({ success: false, error: "Suspendue." });
+        if (tenant.status === 'SUSPENDU') return res.status(403).json({ success: false, error: "Licence suspendue ou en attente d'approbation manuelle." });
 
         let isValid = (String(tenant.pin).trim() === String(pin).trim());
         let roleAttribue = 'MASTER';
@@ -311,7 +313,7 @@ app.get('/get-current-state', async (req, res) => {
         if (tenantID !== 'MASTER_STATE') {
             tenantID = cleanString(tenantID);
             const tenant = await Tenant.findOne({ tenantID });
-            if (tenant && tenant.status === 'SUSPENDU') return res.status(403).json({ error: "Licence suspendue" });
+            if (tenant && tenant.status === 'SUSPENDU') return res.status(403).json({ error: "Licence suspendue ou en attente" });
         }
         let state = await AppState.findOne({ tenantID });
         if (!state) state = await AppState.create({ tenantID, activeOrders: {} });
@@ -408,5 +410,45 @@ app.get('/debug-fichiers', (req, res) => {
         });
     });
 });
+
+// ==========================================
+// 🎯 PORTAIL DES DEMANDES DE DÉMO (AVEC APPROBATION MANUELLE)
+// ==========================================
+app.post('/api/nouvelle-demande-demo', async (req, res) => {
+    try {
+        const { tenantID, restaurant, email, phone } = req.body;
+        console.log(`🌟 ENREGISTREMENT SÉCURISÉ PROSPECT : ${restaurant} (${email})`);
+        
+        // Génération automatique d'un code PIN aléatoire
+        const codePinAlea = Math.floor(1000 + Math.random() * 9000).toString();
+
+        // Création du compte au statut SUSPENDU (nécessite ton clic dans /panel-ichef)
+        await Tenant.create({
+            tenantID: cleanString(tenantID),
+            clientName: restaurant,
+            email: email,
+            phone: phone,
+            status: 'SUSPENDU', 
+            plan: 'EMPIRE',     
+            specialite: 'cuisine',
+            pin: codePinAlea,   
+            maxScreens: 5,
+            maxStaff: 999,
+            registeredDevices: []
+        });
+
+        // Allocation de son espace de stockage vide associé
+        await AppState.create({
+            tenantID: cleanString(tenantID),
+            activeOrders: {}
+        });
+
+        res.json({ success: true, message: "Demande mise en attente de validation." });
+    } catch (e) {
+        console.error("Erreur création prospect démo :", e);
+        res.status(500).json({ success: false, error: "Cet identifiant d'établissement existe déjà." });
+    }
+});
+
 // IMPORTANT : LA LIGNE LISTEN TOUT EN BAS !
 app.listen(PORT, () => console.log("L'Empire iCHEF est en ligne et sécurisé sur le port " + PORT));
