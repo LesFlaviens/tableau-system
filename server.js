@@ -9,6 +9,7 @@ const cors = require('cors');
 const path = require('path');
 const mongoose = require('mongoose');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
+const cron = require('node-cron'); // 🌟 NOUVEAU : Module d'automatisation (tâches planifiées)
 
 // ==========================================
 // CONFIGURATION STRIPE iCHEF (Abonnements SaaS)
@@ -152,7 +153,8 @@ app.post('/api/scan-invoice', async (req, res) => {
         const prompt = `Analyse cette image de facture. Extrais les informations. RESPOND ONLY WITH JSON WITHOUT MARKDOWN TEXT: { "fournisseur": "Nom", "adresse": "Adresse", "telephone": "Tel", "email": "Email", "devise": "€", "date": "JJ/MM/AAAA", "totalHT": 0.00, "tva": 0.00, "totalTTC": 0.00, "articles": [{ "nom": "nom", "categorie": "catégorie", "quantite": "qty", "prixUnitaire": 0.00 }] }`;
         const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
         const result = await model.generateContent([prompt, imagePart]);
-        let responseText = result.response.text().trim().replace(/```json/gi, '').replace(/```/gi, '').trim();
+        let responseText = result.response.text().trim().replace(/```json/gi, '').replace(/
+```/gi, '').trim();
         if (!responseText.startsWith("{")) responseText = responseText.substring(responseText.indexOf("{"));
         res.json({ success: true, data: JSON.parse(responseText) });
     } catch (error) { res.status(500).json({ success: false, error: "Erreur de traitement IA ou Image illisible." }); }
@@ -177,7 +179,8 @@ app.post('/api/smart-reservation', async (req, res) => {
         const prompt = `Tu es le Maître d'Hôtel iCHEF. Demande client : "${customerRequest}". Tables libres : ${JSON.stringify(availableTables)}. Trouve la table optimale. JSON STRICT: { "acceptee": true/false, "pax": nombre, "heure": "HH:MM", "tableAllouee": "ID_TABLE", "messageClient": "Votre réponse", "optimisationInfo": "Notes" }`;
         const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
         const result = await model.generateContent(prompt);
-        let responseText = result.response.text().trim().replace(/```json/gi, '').replace(/```/gi, '').trim();
+        let responseText = result.response.text().trim().replace(/```json/gi, '').replace(/
+```/gi, '').trim();
         if (!responseText.startsWith("{")) responseText = responseText.substring(responseText.indexOf("{"));
         const decision = JSON.parse(responseText);
         if (decision.acceptee && decision.tableAllouee) {
@@ -395,9 +398,6 @@ app.post('/api/admin-action', async (req, res) => {
     } catch (err) { res.status(500).json({ success: false, error: err.message }); }
 });
 
-// ==========================================
-// OUTIL DE DIAGNOSTIC (TOUR DE CONTRÔLE)
-// ==========================================
 app.get('/debug-fichiers', (req, res) => {
     const fs = require('fs');
     fs.readdir(__dirname, (err, files) => {
@@ -408,5 +408,83 @@ app.get('/debug-fichiers', (req, res) => {
         });
     });
 });
+
+// ==========================================
+// 🌟 LE NETTOYEUR NOCTURNE : COMPTE "DEMO"
+// ==========================================
+
+// Définition de l'état parfait pour les prospects (Ce qu'ils voient en se connectant)
+const ETAT_PARFAIT_DEMO = {
+    "SETTINGS_MASTER": {
+        data: {
+            name: "Le Bistrot iChef (Démo)",
+            design: { bgColor: "#050505", btnColor: "#d4af37", textColor: "#ffffff", font: "'Playfair Display', serif" },
+            creationDate: new Date().toISOString(),
+            hasPaid: true
+        }
+    },
+    "STAFF_ACCESS": {
+        data: [
+            { name: "Flavien (Manager)", active: true, dept: "admin", pin: "0000" },
+            { name: "Serveur VIP", active: true, dept: "salle", pin: "1111" },
+            { name: "Chef Cuisine", active: true, dept: "cuisine", pin: "2222" }
+        ]
+    },
+    "ARCHITECTURE": {
+        data: {
+            tables: [
+                { label: "T1", pax: 2, room: "Salle Principale" },
+                { label: "T2", pax: 4, room: "Salle Principale" },
+                { label: "T3", pax: 2, room: "Terrasse" }
+            ]
+        }
+    },
+    "RESERVATIONS_MASTER": { data: [] }, // On vide les fausses réservations créées dans la journée
+    "MENU_MASTER": {
+        data: [
+            { id: "m1", category: "Plats", name: "Filet de Bœuf", price: 28, description: "Sauce poivre et frites maison" },
+            { id: "m2", category: "Desserts", name: "Tiramisu", price: 9, description: "Recette traditionnelle au café" }
+        ]
+    }
+};
+
+// La Tâche Planifiée (À 03:00 du matin, tous les jours)
+cron.schedule('0 3 * * *', async () => {
+    console.log("🕒 [CRON] Début du nettoyage nocturne du compte DÉMO...");
+    try {
+        const demoID = 'demo'; // C'est le tenantID de ton compte de démonstration
+        
+        // 1. Réinitialiser la base de données de l'application (AppState)
+        await AppState.findOneAndUpdate(
+            { tenantID: demoID },
+            { $set: { activeOrders: ETAT_PARFAIT_DEMO } },
+            { upsert: true, new: true }
+        );
+
+        // 2. Réinitialiser les paramètres du compte maitre (Tenant) pour débloquer les écrans
+        await Tenant.findOneAndUpdate(
+            { tenantID: demoID },
+            { 
+                $set: { 
+                    clientName: "Compte Démo Public",
+                    status: 'ACTIF',
+                    plan: 'EMPIRE', // Le plus gros forfait pour que le client voie tout
+                    pin: '0000',
+                    maxScreens: 50,
+                    maxStaff: 999,
+                    registeredDevices: [] // Déconnecte tous les appareils de la veille
+                } 
+            },
+            { upsert: true, new: true }
+        );
+
+        console.log("✅ [CRON] Compte DÉMO réinitialisé avec succès à son état parfait !");
+    } catch (error) {
+        console.error("❌ [CRON] Erreur lors de la réinitialisation de la démo :", error);
+    }
+});
+
+// ==========================================
 // IMPORTANT : LA LIGNE LISTEN TOUT EN BAS !
+// ==========================================
 app.listen(PORT, () => console.log("L'Empire iCHEF est en ligne et sécurisé sur le port " + PORT));
