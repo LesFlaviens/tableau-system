@@ -10,30 +10,23 @@
     <!-- ============================================================== -->
     <!-- 🛡️ SCRIPT 1 : SÉCURITÉ & RÉSEAU (À obfusquer ensemble)        -->
     <!-- ============================================================== -->
-    <script>
-        // 🛡️ BOUCLIER 1 : DOMAIN LOCK (Verrouillage du domaine)
-        if (window.location.hostname !== "os.ichef.ch" && window.location.hostname !== "localhost" && window.location.hostname !== "127.0.0.1") {
-            document.documentElement.innerHTML = "<h1 style='color:red; text-align:center; margin-top:20%; font-family:sans-serif;'>🛑 VIOLATION DE LICENCE iCHEF OS</h1>";
-            throw new Error("Exécution non autorisée hors du domaine officiel.");
-        }
+   <script>
+    // 🛡️ BOUCLIER 1 : DOMAIN LOCK
+    if (window.location.hostname !== "os.ichef.ch" && window.location.hostname !== "localhost" && window.location.hostname !== "127.0.0.1") {
+        document.documentElement.innerHTML = "<h1 style='color:red; text-align:center; margin-top:20%; font-family:sans-serif;'>🛑 VIOLATION DE LICENCE iCHEF OS</h1>";
+        throw new Error("Exécution non autorisée hors du domaine officiel.");
+    }
 
-        // 🛡️ BOUCLIER 2 : ANTI-SNOOPING (Bloque F12, Ctrl+U, Inspecteur)
-        document.addEventListener('contextmenu', event => event.preventDefault());
-        document.onkeydown = function(e) {
-            if(e.keyCode == 123) return false; // F12
-            if(e.ctrlKey && e.shiftKey && e.keyCode == 'I'.charCodeAt(0)) return false; // Ctrl+Shift+I
-            if(e.ctrlKey && e.shiftKey && e.keyCode == 'J'.charCodeAt(0)) return false; // Ctrl+Shift+J
-            if(e.ctrlKey && e.keyCode == 'U'.charCodeAt(0)) return false; // Ctrl+U
-        }
+    // 🛡️ BOUCLIER 2 : ANTI-SNOOPING (Bloque F12, Inspecteur, Clic-droit)
+    document.addEventListener('contextmenu', event => event.preventDefault());
+    document.onkeydown = function(e) {
+        if(e.keyCode == 123) return false; 
+        if(e.ctrlKey && e.shiftKey && e.keyCode == 'I'.charCodeAt(0)) return false; 
+        if(e.ctrlKey && e.shiftKey && e.keyCode == 'J'.charCodeAt(0)) return false; 
+        if(e.ctrlKey && e.keyCode == 'U'.charCodeAt(0)) return false; 
+    }
 
-        const SERVER_URL = (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1" || window.location.protocol === "file:") 
-            ? "http://localhost:10000" : "https://tableau-system.onrender.com";
-        const urlParams = new URLSearchParams(window.location.search);
-        let tenantID = urlParams.get('tenantID') || localStorage.getItem('ichef_tenant_id') || 'MASTER_STATE';
-        
-        // 🌟 IDENTIFICATION MODE DÉMO
-        const isDemoMode = (tenantID === 'demo' || tenantID === 'demo_pizzeria');
-
+        // 1. SÉCURITÉ : Générateur d'empreinte numérique
         function getDeviceFingerprint() {
             let deviceId = localStorage.getItem('ichef_device_fingerprint');
             if (!deviceId) {
@@ -43,33 +36,9 @@
             return deviceId;
         }
 
-        // 🔥 GESTION DES REQUETES SILENCIEUSES (ANTI-CLIGNOTEMENT)
-        async function fetchWithRetry(url, options = {}, retries = 4, delay = 3000, isSilent = false) {
-            for (let i = 0; i < retries; i++) {
-                try {
-                    const controller = new AbortController();
-                    const timeoutId = setTimeout(() => controller.abort(), 10000); // Laisse 10s au serveur pour répondre
-                    const response = await fetch(url, { ...options, signal: controller.signal });
-                    clearTimeout(timeoutId);
-                    if (response.ok) return response;
-                    throw new Error(`Code HTTP ${response.status}`);
-                } catch (error) {
-                    if (i === retries - 1) throw error; 
-                    if (!isSilent) {
-                        let syncBtn = document.getElementById('sync-status');
-                        if (syncBtn) { 
-                            syncBtn.innerHTML = '⏳ Réveil Serveur...'; 
-                            syncBtn.style.color = '#000'; 
-                            syncBtn.style.background = 'var(--gold)'; 
-                        }
-                    }
-                    // Attente progressive (3s, puis 5s, puis 7s) pour éviter de spammer le serveur
-                    await new Promise(res => setTimeout(res, delay + (i * 2000)));
-                }
-            }
-        }
-
-        async function runSecurityCheck() {
+        // 2. GARDE DU CORPS SECURITE UNIVERSEL (VERSION ISOLATION STRICTE 🔒)
+        (async function enforceSecurity() {
+            const urlParams = new URLSearchParams(window.location.search);
             let urlTenantID = urlParams.get('tenantID');
             let storedTenantID = localStorage.getItem('ichef_tenant_id');
 
@@ -80,39 +49,59 @@
                 storedTenantID = urlTenantID;
             }
 
-            let currentTenant = urlTenantID || storedTenantID;
+            let tenantID = urlTenantID || storedTenantID;
             let pin = localStorage.getItem('ichef_master_pin'); 
             
-            // Auto-connexion pour le mode démo
-            if (isDemoMode && !pin) {
-                pin = "0000";
-                localStorage.setItem('ichef_master_pin', pin);
-            }
-            
-            if(!currentTenant) { 
-                window.location.href = 'connexionpartenaire.html'; 
-                return false; 
+            if(!tenantID) {
+                window.location.href = 'connexionpartenaire.html';
+                return;
             }
 
+            const SERVER_URL = (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1" || window.location.protocol === "file:") 
+                ? "http://localhost:10000" : "https://tableau-system.onrender.com";
+
+            const accessMatrix = {
+                 'CHEF': ['chef.html', 'administration.html'],
+                'CHEF_CUISINE': ['chef.html', 'administration.html'],
+                'PATISSIER': ['chef-patissier.html', 'administration.html'],
+                'CHEF_PATISSERIE': ['chef-patissier.html', 'administration.html'],
+                'BAR': ['chef-bar.html', 'administration.html'],
+                'CHEF_BAR': ['chef-bar.html', 'administration.html'],
+                'ICHEF_OS': ['admin.html', 'pack-eco.html', 'minipass.html', 'menu-qr.html', 'administration.html'],
+                'ECO': ['admin.html', 'pack-eco.html', 'minipass.html', 'menu-qr.html', 'administration.html'],
+                'BUSINESS': ['admin.html', 'pack-eco.html', 'minipass.html', 'menu-qr.html', 'administration.html'],
+                'RENTABILITE': ['admin.html', 'pack-eco.html', 'minipass.html', 'menu-qr.html', 'administration.html'],
+                'EMPIRE': ['admin.html', 'pack-eco.html', 'menu-qr.html', 'chef.html', 'menu-pure.html', 'chef-bar.html', 'menu-bar.html', 'rh.html', 'haccp.html', 'reservation.html', 'minipass.html', 'chef-patissier.html', 'administration.html', 'production.html', 'chef-production.html'],
+                'BRIGADE': ['admin.html', 'pack-eco.html', 'menu-qr.html', 'chef.html', 'menu-pure.html', 'chef-bar.html', 'menu-bar.html', 'rh.html', 'haccp.html', 'reservation.html', 'minipass.html', 'chef-patissier.html', 'administration.html', 'production.html', 'chef-production.html'],
+                'BRIGADES': ['admin.html', 'pack-eco.html', 'menu-qr.html', 'chef.html', 'menu-pure.html', 'chef-bar.html', 'menu-bar.html', 'rh.html', 'haccp.html', 'reservation.html', 'minipass.html', 'chef-patissier.html', 'administration.html', 'production.html', 'chef-production.html'],
+                'PREMIUM': ['admin.html', 'pack-eco.html', 'menu-qr.html', 'chef.html', 'menu-pure.html', 'chef-bar.html', 'menu-bar.html', 'rh.html', 'haccp.html', 'reservation.html', 'minipass.html', 'chef-patissier.html', 'administration.html', 'production.html', 'chef-production.html']
+            };
+
             try {
-                const res = await fetchWithRetry(`${SERVER_URL}/api/verify-pin`, {
-                    method: 'POST', 
+                const res = await fetch(`${SERVER_URL}/api/verify-pin`, {
+                    method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ tenantID: currentTenant, pin: pin || "0000", deviceId: getDeviceFingerprint() })
-                }, 2, 2000);
-                
+                    body: JSON.stringify({ tenantID: tenantID, pin: pin || "0000", deviceId: getDeviceFingerprint() })
+                });
                 const data = await res.json();
 
                 if(!data.success) {
-                    alert(data.error || "ACCÈS REFUSÉ.");
+                    alert(data.error || "ACCÈS REFUSÉ (Limite d'écrans atteinte ou compte invalide).");
                     window.location.href = 'connexionpartenaire.html';
-                    return false;
+                    return;
                 }
-                return true;
-            } catch (e) { 
-                return true; 
-            }
-        }
+
+                const currentPlan = data.plan ? data.plan.toUpperCase() : 'CHEF';
+                let currentPage = window.location.pathname.split('/').pop().toLowerCase();
+                if(currentPage === '') currentPage = 'index.html';
+
+                const allowedPages = accessMatrix[currentPlan] || [];
+                if (!allowedPages.includes(currentPage)) {
+                    alert(`ACCÈS REFUSÉ : Votre forfait (${currentPlan}) n'inclut pas ce module.`);
+                    window.location.href = `administration.html?tenantID=${tenantID}`;
+                }
+            } catch (e) { console.error("Erreur de securite reseau", e); }
+        })();
     </script>
     
     <style>
