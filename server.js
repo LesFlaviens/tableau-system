@@ -458,4 +458,57 @@ app.post('/api/nouvelle-demande-demo', async (req, res) => {
 });
 
 // IMPORTANT : LA LIGNE LISTEN TOUT EN BAS !
+app.listen(PORT, () => console.log("L'Empire iCHEF est en ligne et sécurisé sur le port " + PORT));// ==========================================
+// 🎯 PORTAIL DES DEMANDES DE DÉMO (AVEC APPROBATION MANUELLE ET ALERTE WHATSAPP SERVEUR)
+// ==========================================
+app.post('/api/nouvelle-demande-demo', async (req, res) => {
+    try {
+        const { tenantID, restaurant, email, phone } = req.body;
+        console.log(`🌟 ENREGISTREMENT SÉCURISÉ PROSPECT : ${restaurant} (${email})`);
+        
+        const codePinAlea = Math.floor(1000 + Math.random() * 9000).toString();
+
+        await Tenant.create({
+            tenantID: cleanString(tenantID),
+            clientName: restaurant,
+            email: email,
+            phone: phone,
+            status: 'SUSPENDU', 
+            plan: 'EMPIRE',     
+            specialite: 'cuisine',
+            pin: codePinAlea,   
+            maxScreens: 5,
+            maxStaff: 999,
+            registeredDevices: []
+        });
+
+        await AppState.create({
+            tenantID: cleanString(tenantID),
+            activeOrders: {}
+        });
+
+        // 🚨 ENVOI SILENCIEUX DU WHATSAPP DEPUIS LE SERVEUR (MÉTHODE ULTRA-ROBUSTE) 🚨
+        let texteAlerte = `🚨 *Nouvelle Demande de Démo* 🚨\nSalut, il y a un client qui veut un code pour ta démo !\n\n🏢 Établissement : ${restaurant}\n📞 Téléphone : ${phone}\n📧 Email : ${email}\n🆔 ID : ${tenantID}\n🔑 PIN généré : ${codePinAlea}`;
+        
+        const numTo = "+33641437265";
+        const apiKey = "VOTRE_API_KEY_CALLMEBOT"; // ⚠️ REMPLACE CECI PAR LE CODE DU BOT ⚠️
+        
+        const urlWhatsApp = `https://api.callmebot.com/whatsapp.php?phone=${numTo}&text=${encodeURIComponent(texteAlerte)}&apikey=${apiKey}`;
+        
+        // Utilisation du module natif HTTPS pour forcer l'envoi avant de répondre au client
+        const https = require('https');
+        https.get(urlWhatsApp, (resp) => {
+            console.log("WhatsApp envoyé avec succès. Statut:", resp.statusCode);
+        }).on("error", (err) => {
+            console.log("Erreur envoi WhatsApp:", err.message);
+        });
+
+        res.json({ success: true, message: "Demande mise en attente de validation." });
+    } catch (e) {
+        console.error("Erreur création prospect démo :", e);
+        res.status(500).json({ success: false, error: "Cet identifiant d'établissement existe déjà." });
+    }
+});
+
+// IMPORTANT : LA LIGNE LISTEN TOUT EN BAS !
 app.listen(PORT, () => console.log("L'Empire iCHEF est en ligne et sécurisé sur le port " + PORT));
