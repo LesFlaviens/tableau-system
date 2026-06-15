@@ -13,7 +13,7 @@ const { GoogleGenerativeAI } = require('@google/generative-ai');
 // ==========================================
 // CONFIGURATION STRIPE iCHEF (Abonnements SaaS)
 // ==========================================
-const stripeKey = process.env.STRIPE_SECRET_KEY || 'sk_test_51TN80JQ9Dw3nOfA4I3XTxPl5FR4ddYmU9Jw2pGmfa0eABz2P6wAzK8RMzHw2XilulLXxFmY2oEDgau4TcScOf9WK00ajIEuweB'; 
+const stripeKey = process.env.STRIPE_SECRET_KEY || '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'; 
 const stripe = require('stripe')(stripeKey);
 
 const app = express();
