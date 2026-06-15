@@ -406,14 +406,17 @@ app.get('/debug-fichiers', (req, res) => {
 });
 
 // ==========================================
-// 🎯 PORTAIL DES DEMANDES DE DÉMO (AVEC ALERTE WHATSAPP CORRIGÉE)
+// 🎯 PORTAIL DES DEMANDES DE DÉMO (LIMITE 24H & ALERTE)
 // ==========================================
 app.post('/api/nouvelle-demande-demo', async (req, res) => {
     try {
         const { tenantID, restaurant, email, phone } = req.body;
-        console.log(`🌟 ENREGISTREMENT SÉCURISÉ PROSPECT : ${restaurant} (${email})`);
+        console.log(`🌟 ENREGISTREMENT SÉCURISÉ PROSPECT DÉMO 24H : ${restaurant} (${email})`);
         
         const codePinAlea = Math.floor(1000 + Math.random() * 9000).toString();
+        
+        // ⏳ La démo expirera automatiquement dans exactement 24 heures
+        const expirationTime = new Date(Date.now() + 24 * 60 * 60 * 1000);
 
         await Tenant.create({
             tenantID: cleanString(tenantID),
@@ -426,7 +429,8 @@ app.post('/api/nouvelle-demande-demo', async (req, res) => {
             pin: codePinAlea,   
             maxScreens: 5,
             maxStaff: 999,
-            registeredDevices: []
+            registeredDevices: [],
+            demoExpiration: expirationTime // Sauvegarde de la limite 24H
         });
 
         await AppState.create({
@@ -435,17 +439,15 @@ app.post('/api/nouvelle-demande-demo', async (req, res) => {
         });
 
         // 🚨 ENVOI SILENCIEUX DU WHATSAPP DEPUIS LE SERVEUR 🚨
-        let texteAlerte = `🚨 *Nouvelle Demande de Démo* 🚨\nSalut, il y a un client qui veut un code pour ta démo !\n\n🏢 Établissement : ${restaurant}\n📞 Téléphone : ${phone}\n📧 Email : ${email}\n🆔 ID : ${tenantID}\n🔑 PIN généré : ${codePinAlea}`;
+        let texteAlerte = `🚨 *Nouvelle Demande de Démo* 🚨\nIl y a un client qui veut un code pour ta démo !\n\n🏢 Établissement : ${restaurant}\n📞 Téléphone : ${phone}\n📧 Email : ${email}\n🆔 ID : ${tenantID}\n🔑 PIN généré : ${codePinAlea}\n\n⏱️ *Rappel : La démo expirera automatiquement dans 24H.*`;
         
-        // CORRECTION : Utilisation de %2B à la place du + pour que le réseau comprenne
         const numTo = "%2B33641437265";
         
-        // ⚠️ INSÈRE TON CODE À 6 CHIFFRES ICI EN GARDANT LES GUILLEMETS ⚠️
+        // ⚠️ N'OUBLIE PAS DE METTRE TON CODE À 6 CHIFFRES ICI ⚠️
         const apiKey = "VOTRE_API_KEY_CALLMEBOT"; 
         
         const urlWhatsApp = `https://api.callmebot.com/whatsapp.php?phone=${numTo}&text=${encodeURIComponent(texteAlerte)}&apikey=${apiKey}`;
         
-        // Le serveur envoie l'alerte et lit la réponse pour le debug
         const https = require('https');
         https.get(urlWhatsApp, (resp) => {
             let data = '';
