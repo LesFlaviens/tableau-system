@@ -406,7 +406,7 @@ app.get('/debug-fichiers', (req, res) => {
 });
 
 // ==========================================
-// 🎯 PORTAIL DES DEMANDES DE DÉMO (AVEC APPROBATION MANUELLE ET ALERTE WHATSAPP SERVEUR)
+// 🎯 PORTAIL DES DEMANDES DE DÉMO (AVEC ALERTE WHATSAPP CORRIGÉE)
 // ==========================================
 app.post('/api/nouvelle-demande-demo', async (req, res) => {
     try {
@@ -434,20 +434,27 @@ app.post('/api/nouvelle-demande-demo', async (req, res) => {
             activeOrders: {}
         });
 
-        // 🚨 ENVOI SILENCIEUX DU WHATSAPP DEPUIS LE SERVEUR (MÉTHODE ULTRA-ROBUSTE) 🚨
+        // 🚨 ENVOI SILENCIEUX DU WHATSAPP DEPUIS LE SERVEUR 🚨
         let texteAlerte = `🚨 *Nouvelle Demande de Démo* 🚨\nSalut, il y a un client qui veut un code pour ta démo !\n\n🏢 Établissement : ${restaurant}\n📞 Téléphone : ${phone}\n📧 Email : ${email}\n🆔 ID : ${tenantID}\n🔑 PIN généré : ${codePinAlea}`;
         
-        const numTo = "+33641437265";
-        const apiKey = "VOTRE_API_KEY_CALLMEBOT"; // ⚠️ REMPLACE CECI PAR LE CODE DU BOT ⚠️
+        // CORRECTION : Utilisation de %2B à la place du + pour que le réseau comprenne
+        const numTo = "%2B33641437265";
+        
+        // ⚠️ INSÈRE TON CODE À 6 CHIFFRES ICI EN GARDANT LES GUILLEMETS ⚠️
+        const apiKey = "VOTRE_API_KEY_CALLMEBOT"; 
         
         const urlWhatsApp = `https://api.callmebot.com/whatsapp.php?phone=${numTo}&text=${encodeURIComponent(texteAlerte)}&apikey=${apiKey}`;
         
-        // Utilisation du module natif HTTPS pour forcer l'envoi avant de répondre au client
+        // Le serveur envoie l'alerte et lit la réponse pour le debug
         const https = require('https');
         https.get(urlWhatsApp, (resp) => {
-            console.log("WhatsApp envoyé avec succès. Statut:", resp.statusCode);
+            let data = '';
+            resp.on('data', (chunk) => { data += chunk; });
+            resp.on('end', () => { 
+                console.log("📡 Réponse du Bot WhatsApp :", data); 
+            });
         }).on("error", (err) => {
-            console.log("Erreur envoi WhatsApp:", err.message);
+            console.log("❌ Erreur critique envoi WhatsApp :", err.message);
         });
 
         res.json({ success: true, message: "Demande mise en attente de validation." });
