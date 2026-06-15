@@ -18,7 +18,7 @@ const stripe = require('stripe')(stripeKey);
 
 const app = express();
 
-// 👇 DÉBLOCAGE DES VIDÉOS : Placé correctement après la création de "app" 👇
+// 👇 DÉBLOCAGE DES VIDÉOS
 app.use(express.static(__dirname));
 
 const PORT = process.env.PORT || 10000;
@@ -31,7 +31,7 @@ app.use(cors({ origin: '*', methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS']
 // 🚨 SÉCURITÉ STRIPE : On utilise raw() uniquement pour la route webhook
 app.use('/webhook', express.raw({ type: 'application/json' }));
 
-app.use(express.json({ limit: '100mb' })); // Limite augmentée pour les scans de factures/étiquettes IA
+app.use(express.json({ limit: '100mb' })); 
 app.use(express.urlencoded({ extended: true, limit: '100mb' }));
 app.use(express.static(path.join(__dirname)));
 
@@ -139,7 +139,7 @@ const AppState = mongoose.model('AppState', new mongoose.Schema({
 }, { minimize: false }));
 
 // ==========================================
-// 🤖 MOTEURS IA (GEMINI)
+// 🤖 MOTEURS IA (GEMINI) — SÉCURISÉS CONTRE LES CRASHS DE SYNTAXE
 // ==========================================
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY || 'CLE_MANQUANTE');
 
@@ -149,11 +149,15 @@ app.post('/api/scan-invoice', async (req, res) => {
     try {
         const base64Data = imageBase64.includes(',') ? imageBase64.split(',')[1] : imageBase64;
         const imagePart = { inlineData: { data: base64Data, mimeType: mimeType || "image/jpeg" } };
-        const prompt = `Analyse cette image de facture. Extrais les informations. RESPOND ONLY WITH JSON WITHOUT MARKDOWN TEXT: { "fournisseur": "Nom", "adresse": "Adresse", "telephone": "Tel", "email": "Email", "devise": "€", "date": "JJ/MM/AAAA", "totalHT": 0.00, "tva": 0.00, "totalTTC": 0.00, "articles": [{ "nom": "nom", "categorie": "catégorie", "quantite": "qty", "prixUnitaire": 0.00 }] }`;
+        const prompt = 'Analyse cette image de facture. Extrais les informations. RESPOND ONLY WITH JSON WITHOUT MARKDOWN TEXT: { "fournisseur": "Nom", "adresse": "Adresse", "telephone": "Tel", "email": "Email", "devise": "€", "date": "JJ/MM/AAAA", "totalHT": 0.00, "tva": 0.00, "totalTTC": 0.00, "articles": [{ "nom": "nom", "categorie": "catégorie", "quantite": "qty", "prixUnitaire": 0.00 }] }';
         const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
         const result = await model.generateContent([prompt, imagePart]);
-        let responseText = result.response.text().trim().replace(/```json/gi, '').replace(/
-```/gi, '').trim();
+        
+        let responseText = result.response.text().trim();
+        responseText = responseText.replace(new RegExp('```json', 'gi'), '');
+        responseText = responseText.replace(new RegExp('
+```', 'gi'), '').trim();
+        
         if (!responseText.startsWith("{")) responseText = responseText.substring(responseText.indexOf("{"));
         res.json({ success: true, data: JSON.parse(responseText) });
     } catch (error) { res.status(500).json({ success: false, error: "Erreur de traitement IA ou Image illisible." }); }
@@ -164,10 +168,15 @@ app.post('/analyse-ticket', async (req, res) => {
     if (!image) return res.status(400).json({ success: false, error: "Image manquante" });
     try {
         const imagePart = { inlineData: { data: image, mimeType: mimeType || "image/jpeg" } };
-        const prompt = `Analyse cette étiquette de traçabilité. JSON NO MARKDOWN: { "nom": "Nom du produit", "lot": "Numéro", "dlc": "JJ/MM/AAAA" }`;
+        const prompt = 'Analyse cette étiquette de traçabilité. JSON NO MARKDOWN: { "nom": "Nom du produit", "lot": "Numéro", "dlc": "JJ/MM/AAAA" }';
         const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
         const result = await model.generateContent([prompt, imagePart]);
-        let text = result.response.text().trim().replace(/```json/gi, '').replace(/```/gi, '').trim();
+        
+        let text = result.response.text().trim();
+        text = text.replace(new RegExp('```json', 'gi'), '');
+        text = text.replace(new RegExp('
+```', 'gi'), '').trim();
+        
         res.json({ success: true, resultat: JSON.parse(text) });
     } catch (error) { res.status(500).json({ success: false, error: error.message }); }
 });
@@ -178,8 +187,12 @@ app.post('/api/smart-reservation', async (req, res) => {
         const prompt = `Tu es le Maître d'Hôtel iCHEF. Demande client : "${customerRequest}". Tables libres : ${JSON.stringify(availableTables)}. Trouve la table optimale. JSON STRICT: { "acceptee": true/false, "pax": nombre, "heure": "HH:MM", "tableAllouee": "ID_TABLE", "messageClient": "Votre réponse", "optimisationInfo": "Notes" }`;
         const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
         const result = await model.generateContent(prompt);
-        let responseText = result.response.text().trim().replace(/```json/gi, '').replace(/
-```/gi, '').trim();
+        
+        let responseText = result.response.text().trim();
+        responseText = responseText.replace(new RegExp('```json', 'gi'), '');
+        responseText = responseText.replace(new RegExp('
+```', 'gi'), '').trim();
+        
         if (!responseText.startsWith("{")) responseText = responseText.substring(responseText.indexOf("{"));
         const decision = JSON.parse(responseText);
         if (decision.acceptee && decision.tableAllouee) {
@@ -197,38 +210,24 @@ app.post('/api/smart-reservation', async (req, res) => {
 // API RESTAURANT (Caisse, Admin, etc.)
 // ==========================================
 
-// HISTORIQUE FINANCIER GLOBAL
 app.post('/api/save-transaction', async (req, res) => {
     const { tenantID, transaction } = req.body;
     if (!tenantID || !transaction) return res.status(400).json({ success: false, error: "Données de transaction manquantes." });
-
     const safeID = cleanString(tenantID);
-    
     try {
         let state = await AppState.findOne({ tenantID: safeID });
-        if (!state) {
-            state = new AppState({ tenantID: safeID, activeOrders: {} });
-        }
+        if (!state) state = new AppState({ tenantID: safeID, activeOrders: {} });
+        if (!state.activeOrders['FINANCIAL_HISTORY']) state.activeOrders['FINANCIAL_HISTORY'] = { data: [] };
         
-        if (!state.activeOrders['FINANCIAL_HISTORY']) {
-            state.activeOrders['FINANCIAL_HISTORY'] = { data: [] };
-        }
-        
-        // Ajout en haut de la liste
         let history = state.activeOrders['FINANCIAL_HISTORY'].data || [];
         history.unshift(transaction);
         state.activeOrders['FINANCIAL_HISTORY'].data = history;
 
-        // Force l'enregistrement Mongoose sur un sous-document Mixed
         state.markModified('activeOrders');
         await state.save();
-
         res.json({ success: true, message: "Ticket comptabilisé dans l'historique Admin." });
-    } catch(e) {
-        res.status(500).json({ success: false, error: "Erreur sauvegarde base de données." });
-    }
+    } catch(e) { res.status(500).json({ success: false, error: "Erreur sauvegarde base de données." }); }
 });
-
 
 app.get('/api/get-contact', async (req, res) => {
     try {
@@ -380,14 +379,12 @@ app.post('/api/admin-action', async (req, res) => {
             
             await Tenant.findOneAndUpdate({ tenantID: safeID }, { plan: upperPlan, maxScreens: limit, maxStaff: staffLimit }, { new: true });
         }
-        
         else if (action === 'set_max_screens') {
             if (!maxScreens || isNaN(maxScreens) || maxScreens < 1) {
                 return res.status(400).json({ success: false, error: "Nombre invalide." });
             }
             await Tenant.findOneAndUpdate({ tenantID: safeID }, { maxScreens: parseInt(maxScreens) });
         }
-        
         else if (action === 'reset_devices') await Tenant.findOneAndUpdate({ tenantID: safeID }, { registeredDevices: [] });
         else if (action === 'suspend') await Tenant.findOneAndUpdate({ tenantID: safeID }, { status: 'SUSPENDU', registeredDevices: [] });
         else if (action === 'activate') await Tenant.findOneAndUpdate({ tenantID: safeID }, { status: 'ACTIF' });
