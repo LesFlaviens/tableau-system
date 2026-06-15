@@ -14,689 +14,6 @@
     
     <title>Empire - Admin System</title>
     
-       <script>
-    // 🛡️ BOUCLIER 1 : DOMAIN LOCK
-    if (window.location.hostname !== "os.ichef.ch" && window.location.hostname !== "localhost" && window.location.hostname !== "127.0.0.1") {
-        document.documentElement.innerHTML = "<h1 style='color:red; text-align:center; margin-top:20%; font-family:sans-serif;'>🛑 VIOLATION DE LICENCE iCHEF OS</h1>";
-        throw new Error("Exécution non autorisée hors du domaine officiel.");
-    }
-
-    // 🛡️ BOUCLIER 2 : ANTI-SNOOPING (Bloque F12, Inspecteur, Clic-droit)
-    document.addEventListener('contextmenu', event => event.preventDefault());
-    document.onkeydown = function(e) {
-        if(e.keyCode == 123) return false; 
-        if(e.ctrlKey && e.shiftKey && e.keyCode == 'I'.charCodeAt(0)) return false; 
-        if(e.ctrlKey && e.shiftKey && e.keyCode == 'J'.charCodeAt(0)) return false; 
-        if(e.ctrlKey && e.keyCode == 'U'.charCodeAt(0)) return false; 
-    }
-
-        // 1. SÉCURITÉ : Générateur d'empreinte numérique
-        function getDeviceFingerprint() {
-            let deviceId = localStorage.getItem('ichef_device_fingerprint');
-            if (!deviceId) {
-                deviceId = 'device_' + Math.random().toString(36).substr(2, 9) + '_' + Date.now();
-                localStorage.setItem('ichef_device_fingerprint', deviceId);
-            }
-            return deviceId;
-        }
-
-        // 2. GARDE DU CORPS SECURITE UNIVERSEL (VERSION ISOLATION STRICTE 🔒)
-        (async function enforceSecurity() {
-            const urlParams = new URLSearchParams(window.location.search);
-            let urlTenantID = urlParams.get('tenantID');
-            let storedTenantID = localStorage.getItem('ichef_tenant_id');
-
-            if (urlTenantID && urlTenantID !== storedTenantID) {
-                localStorage.removeItem('EMPIRE_GLOBAL_SYNC');
-                localStorage.removeItem('ichef_master_pin');
-                if (urlTenantID) localStorage.setItem('ichef_tenant_id', urlTenantID);
-                storedTenantID = urlTenantID;
-            }
-
-            let tenantID = urlTenantID || storedTenantID;
-            let pin = localStorage.getItem('ichef_master_pin'); 
-            
-            if(!tenantID) {
-                window.location.href = 'connexionpartenaire.html';
-                return;
-            }
-
-            const SERVER_URL = (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1" || window.location.protocol === "file:") 
-                ? "http://localhost:10000" : "https://tableau-system.onrender.com";
-
-            const accessMatrix = {
-                 'CHEF': ['chef.html', 'administration.html'],
-                'CHEF_CUISINE': ['chef.html', 'administration.html'],
-                'PATISSIER': ['chef-patissier.html', 'administration.html'],
-                'CHEF_PATISSERIE': ['chef-patissier.html', 'administration.html'],
-                'BAR': ['chef-bar.html', 'administration.html'],
-                'CHEF_BAR': ['chef-bar.html', 'administration.html'],
-                'ICHEF_OS': ['admin.html', 'pack-eco.html', 'minipass.html', 'menu-qr.html', 'administration.html'],
-                'ECO': ['admin.html', 'pack-eco.html', 'minipass.html', 'menu-qr.html', 'administration.html'],
-                'BUSINESS': ['admin.html', 'pack-eco.html', 'minipass.html', 'menu-qr.html', 'administration.html'],
-                'RENTABILITE': ['admin.html', 'pack-eco.html', 'minipass.html', 'menu-qr.html', 'administration.html'],
-                'EMPIRE': ['admin.html', 'pack-eco.html', 'menu-qr.html', 'chef.html', 'menu-pure.html', 'chef-bar.html', 'menu-bar.html', 'rh.html', 'haccp.html', 'reservation.html', 'minipass.html', 'chef-patissier.html', 'administration.html', 'production.html', 'chef-production.html'],
-                'BRIGADE': ['admin.html', 'pack-eco.html', 'menu-qr.html', 'chef.html', 'menu-pure.html', 'chef-bar.html', 'menu-bar.html', 'rh.html', 'haccp.html', 'reservation.html', 'minipass.html', 'chef-patissier.html', 'administration.html', 'production.html', 'chef-production.html'],
-                'BRIGADES': ['admin.html', 'pack-eco.html', 'menu-qr.html', 'chef.html', 'menu-pure.html', 'chef-bar.html', 'menu-bar.html', 'rh.html', 'haccp.html', 'reservation.html', 'minipass.html', 'chef-patissier.html', 'administration.html', 'production.html', 'chef-production.html'],
-                'PREMIUM': ['admin.html', 'pack-eco.html', 'menu-qr.html', 'chef.html', 'menu-pure.html', 'chef-bar.html', 'menu-bar.html', 'rh.html', 'haccp.html', 'reservation.html', 'minipass.html', 'chef-patissier.html', 'administration.html', 'production.html', 'chef-production.html']
-            };
-
-            try {
-                const res = await fetch(`${SERVER_URL}/api/verify-pin`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ tenantID: tenantID, pin: pin || "0000", deviceId: getDeviceFingerprint() })
-                });
-                const data = await res.json();
-
-                if(!data.success) {
-                    alert(data.error || "ACCÈS REFUSÉ (Limite d'écrans atteinte ou compte invalide).");
-                    window.location.href = 'connexionpartenaire.html';
-                    return;
-                }
-
-                const currentPlan = data.plan ? data.plan.toUpperCase() : 'CHEF';
-                let currentPage = window.location.pathname.split('/').pop().toLowerCase();
-                if(currentPage === '') currentPage = 'index.html';
-
-                const allowedPages = accessMatrix[currentPlan] || [];
-                if (!allowedPages.includes(currentPage)) {
-                    alert(`ACCÈS REFUSÉ : Votre forfait (${currentPlan}) n'inclut pas ce module.`);
-                    window.location.href = `administration.html?tenantID=${tenantID}`;
-                }
-            } catch (e) { console.error("Erreur de securite reseau", e); }
-        })();
-    </script>
-    
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&family=Playfair+Display:wght@400;900&display=swap" rel="stylesheet">
-    <style>
-        :root {
-            --bg: #050505; --panel: #0A0A0A; --border: rgba(255, 255, 255, 0.08); --border-strong: rgba(255, 255, 255, 0.2);
-            --text-main: #f8fafc; --text-muted: #64748b; --text-dim: #94a3b8;
-            --gold: #d4af37; --purple: #a78bfa; --alert: #ef4444; --danger: #ef4444;
-            --shadow: 0 10px 30px rgba(0, 0, 0, 0.5); --accent: #38bdf8;
-        }
-
-        /* 🔒 Anti-Race Condition */
-        html { opacity: 0; transition: opacity 0.2s ease-in-out; }
-
-        body { font-family: 'Inter', sans-serif; background: var(--bg); color: var(--text-main); margin: 0; padding: 0; min-height: 100vh; display: flex; flex-direction: column; }
-        
-        nav { background: var(--panel); border-bottom: 1px solid var(--border); padding: 15px 40px; display: flex; justify-content: space-between; align-items: center; box-shadow: var(--shadow); }
-        .nav-logo { font-size: 1.3rem; font-weight: 900; letter-spacing: 1px; }
-        .nav-logo span { color: var(--gold); }
-        .btn-logout { background: transparent; border: 1px solid var(--border-strong); color: var(--text-muted); padding: 8px 16px; border-radius: 6px; cursor: pointer; font-weight: 500; font-size: 0.85rem; transition: 0.3s; text-transform: uppercase; letter-spacing: 1px;}
-        .btn-logout:hover { background: var(--border-strong); color: var(--text-main); }
-
-        .container { max-width: 1200px; width: 100%; margin: 40px auto; padding: 0 20px; box-shadow: none; box-sizing: border-box; }
-        .welcome-row { display: flex; justify-content: space-between; align-items: center; margin-bottom: 40px; }
-        .welcome-text h1 { margin: 0; font-size: 2.5rem; font-weight: 900; letter-spacing: -0.5px; }
-        .welcome-text h1 span { color: var(--gold); text-transform: uppercase; }
-        .welcome-text p { margin: 10px 0 0 0; color: var(--text-muted); font-size: 1.05rem; }
-        
-        .btn-return, .btn-outline { background: rgba(255,255,255,0.03); border: 1px solid var(--border); color: var(--text-main); padding: 12px 24px; border-radius: 8px; cursor: pointer; font-weight: 600; font-size: 0.9rem; display: flex; align-items: center; justify-content: center; gap: 8px; transition: 0.3s; text-transform: uppercase; letter-spacing: 1px; }
-        .btn-return:hover, .btn-outline:hover { border-color: var(--text-main); background: rgba(255,255,255,0.08); }
-
-        .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 30px; margin-bottom: 30px; }
-        @media (max-width: 768px) { .grid-2 { grid-template-columns: 1fr; } }
-
-        .card { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 35px; box-shadow: var(--shadow); display: flex; flex-direction: column; }
-        .card.yellow-panel { border-color: rgba(212, 175, 55, 0.4); }
-        .card-title { font-size: 1.1rem; font-weight: 600; text-transform: uppercase; letter-spacing: 1.5px; margin-top: 0; margin-bottom: 20px; display: flex; align-items: center; gap: 10px; color: var(--text-main); }
-        .card-desc { color: var(--text-muted); font-size: 0.95rem; line-height: 1.6; margin-top: 0; margin-bottom: 25px; }
-
-        .input-field { width: 100%; padding: 14px 15px; background: var(--bg); border: 1px solid var(--border-strong); color: var(--text-main); border-radius: 8px; font-size: 1rem; font-family: inherit; box-sizing: border-box; transition: border-color 0.3s; }
-        .input-field:focus { border-color: var(--gold); outline: none; }
-
-        .apps-list { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; width: 100%; }
-        .app-link-btn { background: rgba(212, 175, 55, 0.05); border: 1px solid var(--gold); color: var(--gold); padding: 16px; border-radius: 8px; text-align: center; font-weight: 600; text-decoration: none; text-transform: uppercase; letter-spacing: 1.5px; font-size: 0.8rem; transition: 0.3s; display: block; cursor: pointer; box-sizing: border-box; display: flex; flex-direction: column; justify-content: center; }
-        .app-link-btn:hover { background: var(--gold); color: #000; transform: translateY(-2px); }
-        
-        .app-link-btn.locked { background: #111; border: 1px dashed #333; color: #555; cursor: pointer; opacity: 0.8; transform: none; transition: 0.3s; }
-        .app-link-btn.locked:hover { background: rgba(255,255,255,0.05); border-color: var(--gold); color: var(--text-main); }
-
-        .btn-action { background: transparent; border: 1px solid var(--border-strong); color: var(--text-main); padding: 16px; border-radius: 8px; font-weight: 600; text-transform: uppercase; letter-spacing: 1.5px; cursor: pointer; transition: 0.3s; width: 100%; margin-top: auto; text-align: center; text-decoration: none; display: block; box-sizing: border-box; font-size: 0.85rem;}
-        .btn-action:hover { border-color: var(--text-main); background: rgba(255,255,255,0.05); }
-
-        .btn-sos-float { position: fixed; bottom: 30px; right: 30px; background: var(--bg); border: 1px solid var(--danger); color: var(--danger); border-radius: 50px; padding: 15px 25px; font-weight: 600; font-family: 'Inter', sans-serif; cursor: pointer; box-shadow: 0 4px 20px rgba(239, 68, 68, 0.1); z-index: 9000; display: flex; align-items: center; justify-content: center; transition: 0.3s; text-transform: uppercase; letter-spacing: 1px; font-size: 0.85rem;}
-        .btn-sos-float:hover { transform: scale(1.05); background: var(--danger); color: #fff; }
-
-        /* 🛒 BOUTIQUE ADD-ONS */
-        .modal-overlay { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.8); backdrop-filter: blur(10px); z-index: 9999; display: none; align-items: center; justify-content: center; opacity: 0; transition: 0.3s; }
-        .modal-overlay.active { display: flex; opacity: 1; }
-        .addon-card { background: var(--panel); border: 1px solid var(--gold); border-radius: 16px; padding: 40px; text-align: center; max-width: 400px; width: 90%; box-shadow: 0 20px 50px rgba(212, 175, 55, 0.15); transform: scale(0.9); transition: 0.3s; }
-        .modal-overlay.active .addon-card { transform: scale(1); }
-        .addon-price { font-size: 3rem; color: var(--gold); font-weight: 900; margin: 20px 0; font-family: 'Playfair Display', serif; }
-        .addon-price span { font-size: 1rem; color: var(--text-muted); font-weight: 400; font-family: 'Inter', sans-serif; }
-        .btn-submit { background: var(--gold); color: #000; border: none; padding: 15px 20px; width: 100%; font-weight: 900; font-size: 1rem; border-radius: 8px; cursor: pointer; text-transform: uppercase; letter-spacing: 1px; transition: 0.3s; }
-        .btn-submit:hover { transform: translateY(-2px); box-shadow: 0 10px 20px rgba(212, 175, 55, 0.3); }
-    </style>
-</head>
-<body>
-    
-    <nav>
-        <div class="nav-logo"><span>ICHEF</span> OS</div>
-        <button class="btn-logout" onclick="window.logicielManager.logout()">Se déconnecter</button>
-    </nav>
-
-    <div class="container">
-        <div class="welcome-row">
-            <div class="welcome-text">
-                <h1>Bienvenue, <span id="restaurant-name">CHARGEMENT...</span></h1>
-                <p>Gérez la sécurité et la facturation de votre licence ICHEF OS.</p>
-            </div>
-        </div>
-
-        <div class="grid-2">
-            <div class="card yellow-panel">
-                <h2 class="card-title">Apps Connectées</h2>
-                <p class="card-desc">Vos modules logiciels selon votre forfait (<span id="plan-label" style="color:var(--gold);">...</span>).</p>
-                <div id="dynamic-apps-list" class="apps-list">
-                    <div style="grid-column: 1/-1; color:var(--text-muted); text-align:center; font-style:italic; padding:20px;">Vérification de votre licence...</div>
-                </div>
-            </div>
-
-            <div class="card">
-                <h2 class="card-title">Gestion du Personnel</h2>
-                <p class="card-desc" style="margin-bottom: 20px;">Équipe active autorisée sur le système :</p>
-                <div id="dashboard-staff-list" style="margin-bottom: 20px; display: flex; flex-direction: column; gap: 8px;">
-                    <span style="color:var(--text-muted); font-style: italic;">Chargement de l'équipe...</span>
-                </div>
-                <button onclick="redirectionAjoutStaff()" id="btn-staff-link" class="btn-action">Ajouter / Modifier</button>
-            </div>
-        </div>
-
-        <div class="grid-2">
-            <div class="card">
-                <h2 class="card-title">Mes Coordonnées</h2>
-                <p class="card-desc">Vos informations de contact liées à cette licence.</p>
-                <div style="display:flex; flex-direction:column; gap:15px; margin-bottom: 20px;">
-                    <input type="email" id="user-email" class="input-field" placeholder="Adresse Email de contact">
-                    <input type="tel" id="user-phone" class="input-field" placeholder="Numéro de Téléphone">
-                </div>
-                <button class="btn-return" style="width:100%; border-color:var(--border-strong); margin-top:auto;" onclick="window.logicielManager.sauvegarderCoordonnees()">Enregistrer</button>
-            </div>
-
-            <div class="card">
-                <h2 class="card-title">Sécurité Master</h2>
-                <p class="card-desc">Modifiez votre code d'accès maître administrateur.<br>Code PIN de sécurité étendu (de 4 à 9 chiffres).</p>
-                <button class="btn-return" style="width:100%; border-color:var(--border-strong); margin-top:auto;" onclick="window.logicielManager.modifierPinMaster()">Changer le code PIN</button>
-            </div>
-        </div>
-
-        <div class="grid-2">
-            <div class="card">
-                <h2 class="card-title">Gestion des Écrans</h2>
-                <p class="card-desc" id="device-count">Écrans Actifs : Chargement...</p>
-                <button class="btn-return" style="width:100%; border-color:var(--danger); color:var(--danger);" onclick="window.logicielManager.resetEcrans()">Libérer les connexions</button>
-
-                <div style="border-top: 1px solid var(--border-strong); padding-top: 20px; margin-top: 20px;">
-                    <p style="color:var(--text-main); font-size: 0.85rem; margin-top: 0; margin-bottom: 15px; font-weight: 500; text-transform: uppercase; letter-spacing: 1px;">Acheter des connexions :</p>
-                    <div style="display: flex; gap: 10px; flex-wrap: wrap;">
-                        <button class="btn-outline" style="flex:1; border-color:var(--gold); color:var(--gold); font-size:0.75rem; flex-direction:column; padding: 12px 10px;" onclick="window.logicielManager.buyScreens('1')">
-                            <b style="font-size: 0.9rem; margin-bottom: 4px;">+1 Écran</b> 9€ HT
-                        </button>
-                        <button class="btn-outline" style="flex:1; border-color:var(--gold); color:var(--gold); font-size:0.75rem; flex-direction:column; padding: 12px 10px;" onclick="window.logicielManager.buyScreens('3')">
-                            <b style="font-size: 0.9rem; margin-bottom: 4px;">+3 Écrans</b> 23€ HT
-                        </button>
-                        <button class="btn-outline" style="flex:1; border-color:var(--gold); color:var(--gold); font-size:0.75rem; flex-direction:column; padding: 12px 10px;" onclick="window.logicielManager.buyScreens('5')">
-                            <b style="font-size: 0.9rem; margin-bottom: 4px;">+5 Écrans</b> 50€ HT
-                        </button>
-                    </div>
-                </div>
-            </div>
-            
-            <div class="card">
-                <h2 class="card-title">Facturation Stripe</h2>
-                <p class="card-desc">Gérez votre abonnement, téléchargez vos factures ou modifiez votre méthode de paiement.</p>
-                <button class="btn-return" style="width:100%; border-color:var(--border-strong); margin-top:auto;" onclick="window.logicielManager.openBillingPortal()">Ouvrir l'Espace Facturation</button>
-            </div>
-        </div>
-    </div>
-
-    <div id="addon-modal" class="modal-overlay">
-        <div class="addon-card">
-            <h2 id="addon-title" style="margin-top:0; color:var(--text-main); font-size:1.5rem; text-transform:uppercase; letter-spacing:1px;">Module</h2>
-            <p style="color:var(--text-muted); font-size:0.95rem; line-height:1.5;">Débloquez cette fonctionnalité instantanément et boostez les performances de votre restaurant.</p>
-            <div class="addon-price" id="addon-price">0€<span>/mois</span></div>
-            <button class="btn-submit" id="btn-buy-addon" onclick="window.logicielManager.processAddonPurchase()">Ajouter à mon abonnement</button>
-            <button class="btn-return" style="width:100%; margin-top:15px; border-color:var(--border-strong);" onclick="document.getElementById('addon-modal').classList.remove('active')">Annuler</button>
-        </div>
-    </div>
-
-    <button class="btn-sos-float" onclick="document.getElementById('sos-modal').style.display='flex'">
-        Signaler un problème
-    </button>
-
-    <div id="sos-modal" style="position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.9); z-index: 10000; display: none; align-items: center; justify-content: center; padding: 20px; box-sizing: border-box;">
-        <div style="background: var(--panel); border: 1px solid var(--border-strong); border-radius: 12px; padding: 40px; width: 100%; max-width: 500px; text-align: center;">
-            <h2 style="margin-top: 0; color: var(--alert); font-weight: 600; text-transform: uppercase; letter-spacing: 1px;">Signaler un problème</h2>
-            <p style="color: var(--text-dim); font-size: 0.95rem; margin-bottom: 25px; line-height: 1.5;">Choisissez comment contacter l'équipe technique.</p>
-            
-            <div style="text-align: left;">
-                <select id="sos-type" style="width: 100%; padding: 15px; background: var(--bg); border: 1px solid var(--border-strong); color: white; border-radius: 8px; margin-bottom: 15px; font-family: 'Inter', sans-serif; font-size: 0.95rem; outline: none;">
-                    <option value="URGENCE - CAISSE BLOQUÉE">Urgence - Caisse bloquée</option>
-                    <option value="BUG AFFICHAGE">Bug d'affichage ou lenteur</option>
-                    <option value="MATÉRIEL / IMPRIMANTE">Problème matériel (Imprimante)</option>
-                    <option value="QUESTION TECHNIQUE">Question technique / Autre</option>
-                </select>
-                
-                <textarea id="sos-message" placeholder="Décrivez le problème brièvement (optionnel)..." style="width: 100%; padding: 15px; background: var(--bg); border: 1px solid var(--border-strong); color: white; border-radius: 8px; margin-bottom: 25px; min-height: 120px; box-sizing: border-box; resize: none; font-family: 'Inter', sans-serif; font-size: 0.95rem; outline: none;"></textarea>
-            </div>
-            
-            <div style="display: flex; gap: 10px; flex-wrap: wrap;">
-                <button class="btn-return" onclick="document.getElementById('sos-modal').style.display='none'" style="flex: 1; min-width: 80px;">Annuler</button>
-                
-                <button class="btn-return" onclick="window.logicielManager.sendSOS('email')" style="flex: 1; min-width: 120px; background: #3b82f6; border: none; color: white;">
-                    📧 Email
-                </button>
-
-                <button class="btn-return" onclick="window.logicielManager.sendSOS('whatsapp')" style="flex: 1; min-width: 120px; background: #25D366; border: none; color: white;">
-                    📲 WhatsApp
-                </button>
-            </div>
-        </div>
-    </div>
-
-    <script>
-        function redirectionAjoutStaff() {
-            window.location.href = `rh.html?tenantID=${window.tenantID}`;
-        }
-
-        window.logicielManager = {
-            tenantID: null,
-            masterPin: null,
-            SERVER_URL: window.SERVER_URL,
-            currentSelectedAddon: null,
-            
-            // Propriété dynamique pour détecter si on est en démo
-            isDemoMode: false, 
-
-            init: async function() {
-                this.tenantID = window.tenantID;
-                this.masterPin = localStorage.getItem('ichef_master_pin');
-                this.isDemoMode = (this.tenantID === 'demo' || this.tenantID === 'demo_pizzeria');
-
-                if (!this.tenantID || !this.masterPin) {
-                    window.location.href = "connexionpartenaire.html";
-                    return;
-                }
-
-                const urlParams = new URLSearchParams(window.location.search);
-                if(urlParams.get('upgrade') === 'success') {
-                    alert("Paiement réussi. Vos écrans supplémentaires ont été ajoutés à votre licence.");
-                    window.history.replaceState({}, document.title, window.location.pathname + "?tenantID=" + this.tenantID);
-                }
-
-                // 🌟 INJECTION UI MODE DÉMO
-                if (this.isDemoMode) {
-                    document.getElementById('restaurant-name').innerHTML = `COMPTE DÉMO <span style="background:var(--danger); color:white; font-size:0.7rem; padding:4px 8px; border-radius:6px; vertical-align:middle; margin-left:10px;">LECTURE SEULE</span>`;
-                } else {
-                    document.getElementById('restaurant-name').innerText = this.tenantID.toUpperCase();
-                }
-
-                this.chargerCoordonnees();
-                this.loadConnectedApps();
-                this.loadScreenStats();
-            },
-
-            loadConnectedApps: async function() {
-                const container = document.getElementById('dynamic-apps-list');
-                const planLabel = document.getElementById('plan-label');
-                
-                try {
-                    const res = await fetch(`${this.SERVER_URL}/api/check-license?tenantID=${this.tenantID}&_t=${Date.now()}`);
-                    const data = await res.json();
-                    
-                    if (!data.success || data.status === 'SUSPENDU') {
-                        planLabel.innerText = "SUSPENDU";
-                        container.innerHTML = `<div style="grid-column: 1/-1; color:var(--alert); text-align:center; font-weight:600; padding:20px;">LICENCE SUSPENDUE OU INVALIDE.</div>`;
-                        return;
-                    }
-
-                    const planStr = data.plan ? data.plan.toString().toUpperCase() : 'CHEF';
-                    planLabel.innerText = planStr;
-
-                    const accessMatrix = {
-                        'PACK_A': ['admin.html', 'administration.html','portail-staff.html', 'minipass.html', 'production.html', 'caissetactile.html', 'pack-eco.html', 'menu-qr.html', 'haccp.html'],
-                        'CHEF': ['chef.html', 'administration.html'],
-                        'CHEF_CUISINE': ['chef.html', 'administration.html'],
-                        'PATISSIER': ['chef-patissier.html', 'administration.html'],
-                        'CHEF_PATISSERIE': ['chef-patissier.html', 'administration.html'],
-                        'BAR': ['chef-bar.html', 'administration.html'],
-                        'CHEF_BAR': ['chef-bar.html', 'administration.html'],
-                        'ICHEF_OS': ['chef.html', 'portail-staff.html', 'chef-bar.html', 'administration.html', 'admin.html', 'pack-eco.html', 'caissetactile.html', 'minipass.html', 'production.html', 'menu-qr.html'],
-                        'ECO': ['portail-staff.html','admin.html', 'pack-eco.html', 'caissetactile.html', 'minipass.html', 'production.html', 'menu-qr.html', 'administration.html', 'haccp.html'],
-                        'BUSINESS': ['portail-staff.html','admin.html', 'pack-eco.html', 'caissetactile.html', 'minipass.html', 'production.html', 'menu-qr.html', 'administration.html', 'haccp.html'],
-                        'RENTABILITE': ['portail-staff.html','admin.html', 'pack-eco.html', 'caissetactile.html', 'minipass.html', 'production.html', 'menu-qr.html', 'administration.html', 'haccp.html'],
-                        'EMPIRE': ['portail-staff.html','admin.html', 'pack-eco.html', 'caissetactile.html', 'menu-qr.html', 'chef.html', 'menu-pure.html', 'chef-bar.html', 'menu-bar.html', 'rh.html', 'haccp.html', 'reservation.html', 'minipass.html', 'production.html', 'chef-patissier.html', 'administration.html'],
-                        'BRIGADE': ['portail-staff.html','admin.html', 'pack-eco.html', 'caissetactile.html', 'menu-qr.html', 'chef.html', 'menu-pure.html', 'chef-bar.html', 'menu-bar.html', 'rh.html', 'haccp.html', 'reservation.html', 'minipass.html', 'production.html', 'chef-patissier.html', 'administration.html'],
-                        'BRIGADES': ['admin.html', 'portail-staff.html', 'pack-eco.html', 'caissetactile.html', 'menu-qr.html', 'chef.html', 'menu-pure.html', 'chef-bar.html', 'menu-bar.html', 'rh.html', 'haccp.html', 'reservation.html', 'minipass.html', 'production.html', 'chef-patissier.html', 'administration.html'],
-                        'PREMIUM': ['admin.html', 'portail-staff.html', 'pack-eco.html', 'caissetactile.html', 'menu-qr.html', 'chef.html', 'menu-pure.html', 'chef-bar.html', 'menu-bar.html', 'rh.html', 'haccp.html', 'reservation.html', 'minipass.html', 'production.html', 'chef-patissier.html', 'administration.html']
-                    };
-
-                    const allowedPages = accessMatrix[planStr] || [];
-                    const userAddons = data.addons || []; 
-
-                    const allModules = [
-                        { id: 'administration.html', title: '⚙️ PARAMÈTRES & CONFIG', price: 0 },
-                        { id: 'pack-eco.html', title: '🖥️ PAD SERVEUR', price: 19 },
-                        { id: 'caissetactile.html', title: '📟 CAISSE TACTILE', price: 29 },
-                        { id: 'minipass.html', title: '📜 ÉCRAN HYBRIDE D\'ENVOI', price: 15 },
-                        { id: 'chef.html', title: '🍳 GRIMOIRE DU CHEF', price: 29 },
-                        { id: 'chef-patissier.html', title: '🍰 GRIMOIRE PÂTISSIER', price: 19 },
-                        { id: 'chef-bar.html', title: '🍸 GRIMOIRE BARMAN', price: 19 },
-                        { id: 'menu-qr.html', title: '📱 MENU AUTONOME', price: 25 },
-                        { id: 'reservation.html', title: '🛎️ RÉSERVATIONS', price: 39 },
-                        { id: 'haccp.html', title: '🧼 HACCP & HYGIÈNE', price: 20 },
-                        { id: 'rh.html', title: '👥 GESTION STAFF', price: 15 },
-                        { id: 'menu-pure.html', title: '🍔 CARTE RESTAURANT', price: 9 },
-                        { id: 'menu-bar.html', title: '🍷 CARTE DES BOISSONS', price: 9 },
-                        { id: 'portail-staff.html', title: '🔐 PORTAIL STAFF', price: 0 }
-                    ];
-
-                    let html = '';
-                    allModules.forEach(mod => {
-                        const isUnlocked = allowedPages.includes(mod.id) 
-                            || userAddons.includes(mod.id)
-                            || (mod.id === 'caissetactile.html' && (allowedPages.includes('pack-eco.html') || userAddons.includes('pack-eco.html')))
-                            || (mod.id === 'pack-eco.html' && (allowedPages.includes('caissetactile.html') || userAddons.includes('caissetactile.html')))
-                            || (mod.id === 'minipass.html' && (allowedPages.includes('production.html') || userAddons.includes('production.html')))
-                            || (mod.id === 'production.html' && (allowedPages.includes('minipass.html') || userAddons.includes('minipass.html')));
-                        
-                        if (isUnlocked) {
-                            html += `
-                            <a href="${mod.id}?tenantID=${this.tenantID}" class="app-link-btn" title="Ouvrir ce module">
-                                ${mod.title}
-                            </a>`;
-                        } else {
-                            html += `
-                            <div class="app-link-btn locked" title="Module en option" onclick="window.logicielManager.openAddonModal('${mod.id}', '${mod.title}', ${mod.price})">
-                                <span style="font-size: 0.65rem; display: block; color: var(--gold); margin-bottom: 4px; letter-spacing: 2px;">🔒 DÉBLOQUER</span>
-                                ${mod.title}
-                            </div>`;
-                        }
-                    });
-
-                    container.innerHTML = html;
-                    this.loadStaffList();
-
-                } catch (e) {
-                    console.error("Erreur check license", e);
-                    container.innerHTML = `<div style="grid-column: 1/-1; color:var(--alert); text-align:center;">Erreur réseau. Impossible de valider la licence.</div>`;
-                }
-            },
-
-            openAddonModal: function(id, title, price) {
-                this.currentSelectedAddon = id;
-                document.getElementById('addon-title').innerText = title;
-                document.getElementById('addon-price').innerHTML = price + '€<span>/mois HT</span>';
-                document.getElementById('addon-modal').classList.add('active');
-            },
-
-            processAddonPurchase: async function() {
-                if(!this.currentSelectedAddon) return;
-                
-                let moduleName = document.getElementById('addon-title').innerText;
-                let message = `Bonjour, je souhaite ajouter le module "${moduleName}" à mon abonnement ICHEF OS pour mon restaurant : ${this.tenantID.toUpperCase()}.`;
-                
-                const numeroWhatsApp = "33641437265"; 
-                const urlWhatsApp = `https://wa.me/${numeroWhatsApp}?text=${encodeURIComponent(message)}`;
-                
-                window.open(urlWhatsApp, '_blank');
-                document.getElementById('addon-modal').classList.remove('active');
-            },
-
-            loadStaffList: async function() {
-                const listDiv = document.getElementById('dashboard-staff-list');
-                try {
-                    const r = await fetch(`${this.SERVER_URL}/get-current-state?tenantID=${this.tenantID}&_t=${Date.now()}`);
-                    if(r.ok) {
-                        const state = await r.json();
-                        const staffData = (state.activeOrders && state.activeOrders['STAFF_ACCESS']) ? state.activeOrders['STAFF_ACCESS'].data : [];
-                        
-                        if(staffData.length === 0) {
-                            listDiv.innerHTML = `<div style="color:var(--text-muted); font-size: 0.9rem; background: rgba(255,255,255,0.03); padding: 15px; border-radius: 8px; border: 1px dashed var(--border-strong); text-align: center;">Aucun collaborateur enregistré.</div>`;
-                        } else {
-                            listDiv.innerHTML = staffData.map(s => {
-                                let badgeColor = s.active ? 'var(--text-main)' : 'var(--text-muted)';
-                                let badgeText = s.active ? 'ACTIF' : 'SUSPENDU';
-                                let roleBadge = s.dept === 'admin' ? '<span style="color:var(--gold); font-size:0.75rem; border: 1px solid var(--gold); padding: 2px 6px; border-radius: 4px; margin-left:10px;">MANAGER</span>' : '';
-                                
-                                return `
-                                <div style="display:flex; justify-content:space-between; align-items:center; background:var(--bg); border:1px solid var(--border-strong); padding: 12px 15px; border-radius: 8px;">
-                                    <span style="font-weight:600; color:var(--text-main); font-size: 0.95rem;">${s.name} ${roleBadge}</span>
-                                    <span style="color:${badgeColor}; font-size:0.7rem; font-weight:600; letter-spacing:1px; border: 1px solid ${badgeColor}; padding: 3px 8px; border-radius: 4px;">${badgeText}</span>
-                                </div>
-                                `;
-                            }).join('');
-                        }
-                    } else {
-                        listDiv.innerHTML = `<span style="color:var(--text-muted);">Erreur de lecture de l'équipe.</span>`;
-                    }
-                } catch(e) {
-                    listDiv.innerHTML = `<span style="color:var(--text-muted);">Mode hors ligne - Équipe indisponible.</span>`;
-                }
-            },
-
-            loadScreenStats: async function() {
-                try {
-                    const res = await fetch(`${this.SERVER_URL}/api/check-license?tenantID=${this.tenantID}`);
-                    const data = await res.json();
-                    
-                    const countRes = await fetch(`${this.SERVER_URL}/api/dashboard-info?tenantID=${this.tenantID}`);
-                    const countData = await countRes.json();
-                    
-                    if (data.success && countData.success) {
-                        const activeDevices = countData.activeDevices || 0;
-                        const limit = countData.maxScreens;
-                        
-                        const color = activeDevices >= limit ? 'var(--danger)' : 'var(--text-main)';
-                        document.getElementById('device-count').innerHTML = `Écrans Actifs : <b style="color:${color}; font-size:1.1rem;">${activeDevices} / ${limit}</b>`;
-                    }
-                } catch(e) {
-                    document.getElementById('device-count').innerText = "Écrans Actifs : Inconnu";
-                }
-            },
-
-            resetEcrans: async function() {
-                // 🌟 SÉCURITÉ MODE DÉMO
-                if(this.isDemoMode) return alert("🔒 Mode Démo : La réinitialisation des écrans est désactivée pour éviter de perturber les autres utilisateurs en test.");
-
-                if(!confirm("ATTENTION : Cela va déconnecter TOUS les écrans actuels de votre restaurant. Êtes-vous sûr de vouloir forcer la libération des connexions ?")) return;
-                
-                try {
-                    const res = await fetch(`${this.SERVER_URL}/api/admin-reset-devices`, {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ tenantID: this.tenantID, adminPin: this.masterPin })
-                    });
-                    const data = await res.json();
-                    if(data.success) {
-                        alert("Toutes les connexions ont été libérées. Vos écrans peuvent se reconnecter.");
-                        this.loadScreenStats();
-                    } else {
-                        alert("Erreur : Action non autorisée ou code PIN invalide.");
-                    }
-                } catch(e) {
-                    alert("Erreur réseau. Vérifiez votre connexion.");
-                }
-            },
-
-            buyScreens: async function(qty) {
-                // 🌟 SÉCURITÉ MODE DÉMO
-                if(this.isDemoMode) return alert("🔒 Mode Démo : L'achat d'écrans supplémentaires n'est pas disponible sur le compte de démonstration.");
-
-                try {
-                    const res = await fetch(`${this.SERVER_URL}/api/stripe/create-screen-upgrade-session`, {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ tenantID: this.tenantID, quantity: parseInt(qty) })
-                    });
-                    
-                    const data = await res.json();
-                    if (data.url) {
-                        window.location.href = data.url;
-                    } else {
-                        alert("Erreur de création du lien : " + (data.error || "Inconnue"));
-                    }
-                } catch (e) {
-                    alert("Erreur de connexion au serveur de paiement.");
-                }
-            },
-
-            chargerCoordonnees: async function() {
-                try {
-                    const res = await fetch(`${this.SERVER_URL}/api/get-contact?tenantID=${this.tenantID}`);
-                    const data = await res.json();
-                    if (data.success && data.contact) {
-                        if(data.contact.email) document.getElementById('user-email').value = data.contact.email;
-                        if(data.contact.phone) document.getElementById('user-phone').value = data.contact.phone;
-                    }
-                } catch(e) {
-                    console.warn("API Contacts non configurée ou injoignable.");
-                }
-            },
-
-            sauvegarderCoordonnees: async function() {
-                // 🌟 SÉCURITÉ MODE DÉMO
-                if(this.isDemoMode) return alert("🔒 Mode Démo : L'enregistrement des coordonnées est désactivé.");
-
-                const email = document.getElementById('user-email').value.trim();
-                const phone = document.getElementById('user-phone').value.trim();
-                
-                if(!email && !phone) return alert("Veuillez remplir au moins un champ.");
-                
-                try {
-                    const res = await fetch(`${this.SERVER_URL}/api/update-contact`, {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ tenantID: this.tenantID, masterPin: this.masterPin, email: email, phone: phone })
-                    });
-                    const data = await res.json();
-                    if(data.success) alert("Informations enregistrées avec succès.");
-                    else alert("Erreur lors de l'enregistrement. Vérifiez votre connexion.");
-                } catch(e) {
-                    alert("Erreur réseau lors de la sauvegarde.");
-                }
-            },
-
-            modifierPinMaster: async function() {
-                // 🌟 SÉCURITÉ MODE DÉMO
-                if(this.isDemoMode) return alert("🔒 Mode Démo : La modification du code PIN Administrateur est désactivée.");
-
-                const newPin = prompt("Entrez votre NOUVEAU code PIN (entre 4 et 9 chiffres) :");
-                if(!newPin) return;
-                
-                if(!/^\d{4,9}$/.test(newPin)) {
-                    return alert("Invalide. Le code doit contenir entre 4 et 9 chiffres.");
-                }
-
-                if(newPin === "0000" || newPin === "1234") {
-                    return alert("Code trop simple. Veuillez choisir un code plus sécurisé.");
-                }
-
-                const confirmPin = prompt("Confirmez votre nouveau code PIN :");
-                if(newPin !== confirmPin) {
-                    return alert("Les codes ne correspondent pas. Annulé.");
-                }
-
-                try {
-                    const res = await fetch(`${this.SERVER_URL}/api/update-master-pin`, {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ tenantID: this.tenantID, oldPin: this.masterPin, newPin: newPin })
-                    });
-                    
-                    const data = await res.json();
-                    if (data.success) {
-                        localStorage.setItem('ichef_master_pin', newPin);
-                        this.masterPin = newPin;
-                        alert("✅ Code PIN synchronisé et mis à jour avec succès. Attention : Toutes les sessions actives ont été déconnectées par sécurité.");
-                        this.loadScreenStats();
-                    } else {
-                        alert("Erreur : " + (data.error || "Mise à jour refusée par le serveur."));
-                    }
-                } catch(e) {
-                    alert("📡 Erreur réseau : Le serveur met trop de temps à répondre. Attendez 1 minute et réessayez.");
-                }
-            },
-
-            openBillingPortal: async function() {
-                // 🌟 SÉCURITÉ MODE DÉMO
-                if(this.isDemoMode) return alert("🔒 Mode Démo : L'accès au portail de facturation sécurisé Stripe est désactivé.");
-
-                try {
-                    const res = await fetch(`${this.SERVER_URL}/api/stripe/create-customer-portal-session`, {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ tenantID: this.tenantID })
-                    });
-                    
-                    const data = await res.json();
-                    if (data.url) {
-                        window.open(data.url, '_blank');
-                    } else {
-                        alert("Impossible d'ouvrir le portail : " + (data.error || "Aucun abonnement Stripe actif détecté."));
-                    }
-                } catch (e) {
-                    alert("Erreur de connexion au serveur Stripe.");
-                }
-            },
-
-            sendSOS: function(methode) {
-                const sosType = document.getElementById('sos-type').value;
-                const sosMessage = document.getElementById('sos-message').value.trim();
-                
-                let texteAlerte = `🚨 SOS iCHEF OS 🚨\n\n🏢 Restaurant : ${this.tenantID ? this.tenantID.toUpperCase() : "Inconnu"}\n⚠️ Type : ${sosType}`;
-                if (sosMessage) {
-                    texteAlerte += `\n📝 Détails : ${sosMessage}`;
-                }
-                
-                if (methode === 'whatsapp') {
-                    const numeroWhatsApp = "33641437265"; 
-                    const urlWhatsApp = `https://wa.me/${numeroWhatsApp}?text=${encodeURIComponent(texteAlerte)}`;
-                    window.open(urlWhatsApp, '_blank');
-                } 
-                else if (methode === 'email') {
-                    const emailSupport = "icheflavien@ichef.ch";
-                    const urlEmail = `mailto:${emailSupport}?subject=${encodeURIComponent("🚨 SOS iCHEF OS - " + sosType)}&body=${encodeURIComponent(texteAlerte)}`;
-                    window.location.href = urlEmail;
-                }
-                
-                document.getElementById('sos-modal').style.display = 'none';
-                document.getElementById('sos-message').value = "";
-            },
-
-            logout: function() {
-                if(confirm("Confirmer la déconnexion ? Cela libérera cet écran du système iCHEF.")) {
-                    localStorage.removeItem('ichef_tenant_id');
-                    localStorage.removeItem('ichef_master_pin');
-                    window.location.href = "connexionpartenaire.html";
-                }
-            }
-        };
-
-        window.addEventListener('load', () => window.logicielManager.init())
-window.addEventListener('load', () => window.logicielManager.init())
-    </script>
-</body>
-</html><!DOCTYPE html>
-<html lang="fr">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    
-    <link rel="manifest" href="manifest.json">
-    <link rel="apple-touch-icon" href="icon-512.png">
-    <link rel="icon" type="image/png" href="icon-512.png"> 
-    <meta name="apple-mobile-web-app-capable" content="yes">
-    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-    <meta name="mobile-web-app-capable" content="yes">
-    <meta name="theme-color" content="#0f172a"> 
-    
-    <title>Empire - Admin System</title>
-    
     <script>
         // Déclaration globale du cerveau
         window.tenantID = new URLSearchParams(window.location.search).get('tenantID') || localStorage.getItem('ichef_tenant_id');
@@ -813,6 +130,9 @@ window.addEventListener('load', () => window.logicielManager.init())
         .nav-logo span { color: var(--gold); }
         .btn-logout { background: transparent; border: 1px solid var(--border-strong); color: var(--text-muted); padding: 8px 16px; border-radius: 6px; cursor: pointer; font-weight: 500; font-size: 0.85rem; transition: 0.3s; text-transform: uppercase; letter-spacing: 1px;}
         .btn-logout:hover { background: var(--border-strong); color: var(--text-main); }
+        
+        .btn-install-app { background: rgba(212, 175, 55, 0.1); border: 1px solid var(--gold); color: var(--gold); padding: 8px 16px; border-radius: 6px; cursor: pointer; font-weight: 600; font-size: 0.85rem; transition: 0.3s; display: none; text-transform: uppercase; letter-spacing: 1px;}
+        .btn-install-app:hover { background: var(--gold); color: #000; }
 
         .container { max-width: 1200px; width: 100%; margin: 40px auto; padding: 0 20px; box-shadow: none; box-sizing: border-box; }
         .welcome-row { display: flex; justify-content: space-between; align-items: center; margin-bottom: 40px; }
@@ -862,14 +182,17 @@ window.addEventListener('load', () => window.logicielManager.init())
     
     <nav>
         <div class="nav-logo"><span>ICHEF</span> OS</div>
-        <button class="btn-logout" onclick="window.logicielManager.logout()">Se déconnecter</button>
+        <div style="display: flex; gap: 15px; align-items: center;">
+            <button id="pwa-install-btn" class="btn-install-app" onclick="ouvrirGuideInstallation()">📲 Installer l'App</button>
+            <button class="btn-logout" onclick="window.logicielManager.logout()">Se déconnecter</button>
+        </div>
     </nav>
 
     <div class="container">
         <div class="welcome-row">
             <div class="welcome-text">
                 <h1>Bienvenue, <span id="restaurant-name">CHARGEMENT...</span></h1>
-                <p>Gérez la sécurité et la facturation de votre licence ICHEF OS.</p>
+                <p>Gérez la sécurité et la configuration de votre système ICHEF OS.</p>
             </div>
         </div>
 
@@ -940,6 +263,7 @@ window.addEventListener('load', () => window.logicielManager.init())
         </div>
     </div>
 
+    <!-- MODULE ADDON (POP-UP) -->
     <div id="addon-modal" class="modal-overlay">
         <div class="addon-card">
             <h2 id="addon-title" style="margin-top:0; color:var(--text-main); font-size:1.5rem; text-transform:uppercase; letter-spacing:1px;">Module</h2>
@@ -950,10 +274,12 @@ window.addEventListener('load', () => window.logicielManager.init())
         </div>
     </div>
 
+    <!-- BOUTON FLOTTANT SOS -->
     <button class="btn-sos-float" onclick="document.getElementById('sos-modal').style.display='flex'">
         Signaler un problème
     </button>
 
+    <!-- FENÊTRE SOS -->
     <div id="sos-modal" style="position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.9); z-index: 10000; display: none; align-items: center; justify-content: center; padding: 20px; box-sizing: border-box;">
         <div style="background: var(--panel); border: 1px solid var(--border-strong); border-radius: 12px; padding: 40px; width: 100%; max-width: 500px; text-align: center;">
             <h2 style="margin-top: 0; color: var(--alert); font-weight: 600; text-transform: uppercase; letter-spacing: 1px;">Signaler un problème</h2>
@@ -984,6 +310,49 @@ window.addEventListener('load', () => window.logicielManager.init())
         </div>
     </div>
 
+    <!-- ============================================================== -->
+    <!-- 📲 FENÊTRE POP-UP POP-UP INTERACTIVE : POP-UP GUIDE DE TÉLÉCHARGEMENT -->
+    <!-- ============================================================== -->
+    <div id="pwa-modal" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.85); z-index: 10001; align-items: center; justify-content: center; backdrop-filter: blur(5px);">
+        <div style="background: #0A0A0A; border: 1px solid #333; padding: 30px 25px; border-radius: 20px; max-width: 340px; text-align: center; box-shadow: 0 20px 50px rgba(0,0,0,0.8);">
+            
+            <!-- Icône d'en-tête -->
+            <div style="background: rgba(212, 175, 55, 0.1); width: 60px; height: 60px; border-radius: 50%; display: flex; align-items: center; justify-content: center; margin: 0 auto 15px auto;">
+                <span style="font-size: 1.8rem;">📲</span>
+            </div>
+
+            <h3 style="font-family: 'Playfair Display', serif; color: #d4af37; margin: 0 0 10px 0; font-size: 1.5rem;">Installer l'App</h3>
+            
+            <p style="color: #aaa; font-size: 0.9rem; line-height: 1.4; margin-bottom: 20px;" id="pwa-instructions">
+                Ajoutez iCHEF OS sur votre écran d'accueil pour une expérience fluide en plein écran.
+            </p>
+
+            <div id="ios-guide" style="text-align: left; background: #111; padding: 20px; border-radius: 12px; margin-bottom: 20px; font-size: 0.85rem; color: #eee; border: 1px solid #222; display: flex; flex-direction: column; gap: 15px;">
+                
+                <div style="display: flex; gap: 12px; align-items: flex-start;">
+                    <div style="background: #222; color: #d4af37; width: 24px; height: 24px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-weight: bold; font-size: 0.75rem; flex-shrink: 0; border: 1px solid #333;">1</div>
+                    <div style="line-height: 1.4;">Touchez l'icône <b>Partager</b> <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#d4af37" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align: sub; margin: 0 2px;"><path d="M4 12v8a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-8"></path><polyline points="16 6 12 2 8 6"></polyline><line x1="12" y1="2" x2="12" y2="15"></line></svg> dans la barre de votre navigateur.</div>
+                </div>
+
+                <div style="display: flex; gap: 12px; align-items: flex-start;">
+                    <div style="background: #222; color: #d4af37; width: 24px; height: 24px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-weight: bold; font-size: 0.75rem; flex-shrink: 0; border: 1px solid #333;">2</div>
+                    <div style="line-height: 1.4;">Faites défiler et choisissez <b>Sur l'écran d'accueil</b> <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#d4af37" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align: sub; margin: 0 2px;"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect><line x1="12" y1="8" x2="12" y2="16"></line><line x1="8" y1="12" x2="16" y2="12"></line></svg>.</div>
+                </div>
+
+                <div style="display: flex; gap: 12px; align-items: flex-start;">
+                    <div style="background: #222; color: #d4af37; width: 24px; height: 24px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-weight: bold; font-size: 0.75rem; flex-shrink: 0; border: 1px solid #333;">3</div>
+                    <div style="line-height: 1.4;">Confirmez en touchant <b>Ajouter</b> en haut à droite.</div>
+                </div>
+
+            </div>
+
+            <button onclick="document.getElementById('pwa-modal').style.display='none'" style="width: 100%; background: linear-gradient(135deg, #d4af37, #b89626); color:#000; padding:14px; font-weight:800; text-transform:uppercase; font-size:0.9rem; border:none; border-radius:10px; cursor:pointer; box-shadow: 0 4px 15px rgba(212, 175, 55, 0.3);">J'ai compris</button>
+        </div>
+    </div>
+
+    <!-- ============================================================== -->
+    <!-- ⚙️ SCRIPTS DE GESTION DU LOGICIEL ET DU DASHBOARD                -->
+    <!-- ============================================================== -->
     <script>
         function redirectionAjoutStaff() {
             window.location.href = `rh.html?tenantID=${window.tenantID}`;
@@ -994,8 +363,6 @@ window.addEventListener('load', () => window.logicielManager.init())
             masterPin: null,
             SERVER_URL: window.SERVER_URL,
             currentSelectedAddon: null,
-            
-            // Propriété dynamique pour détecter si on est en démo
             isDemoMode: false, 
 
             init: async function() {
@@ -1014,7 +381,6 @@ window.addEventListener('load', () => window.logicielManager.init())
                     window.history.replaceState({}, document.title, window.location.pathname + "?tenantID=" + this.tenantID);
                 }
 
-                // 🌟 INJECTION UI MODE DÉMO
                 if (this.isDemoMode) {
                     document.getElementById('restaurant-name').innerHTML = `COMPTE DÉMO <span style="background:var(--danger); color:white; font-size:0.7rem; padding:4px 8px; border-radius:6px; vertical-align:middle; margin-left:10px;">LECTURE SEULE</span>`;
                 } else {
@@ -1186,7 +552,6 @@ window.addEventListener('load', () => window.logicielManager.init())
             },
 
             resetEcrans: async function() {
-                // 🌟 SÉCURITÉ MODE DÉMO
                 if(this.isDemoMode) return alert("🔒 Mode Démo : La réinitialisation des écrans est désactivée pour éviter de perturber les autres utilisateurs en test.");
 
                 if(!confirm("ATTENTION : Cela va déconnecter TOUS les écrans actuels de votre restaurant. Êtes-vous sûr de vouloir forcer la libération des connexions ?")) return;
@@ -1210,7 +575,6 @@ window.addEventListener('load', () => window.logicielManager.init())
             },
 
             buyScreens: async function(qty) {
-                // 🌟 SÉCURITÉ MODE DÉMO
                 if(this.isDemoMode) return alert("🔒 Mode Démo : L'achat d'écrans supplémentaires n'est pas disponible sur le compte de démonstration.");
 
                 try {
@@ -1245,7 +609,6 @@ window.addEventListener('load', () => window.logicielManager.init())
             },
 
             sauvegarderCoordonnees: async function() {
-                // 🌟 SÉCURITÉ MODE DÉMO
                 if(this.isDemoMode) return alert("🔒 Mode Démo : L'enregistrement des coordonnées est désactivé.");
 
                 const email = document.getElementById('user-email').value.trim();
@@ -1268,7 +631,6 @@ window.addEventListener('load', () => window.logicielManager.init())
             },
 
             modifierPinMaster: async function() {
-                // 🌟 SÉCURITÉ MODE DÉMO
                 if(this.isDemoMode) return alert("🔒 Mode Démo : La modification du code PIN Administrateur est désactivée.");
 
                 const newPin = prompt("Entrez votre NOUVEAU code PIN (entre 4 et 9 chiffres) :");
@@ -1309,7 +671,6 @@ window.addEventListener('load', () => window.logicielManager.init())
             },
 
             openBillingPortal: async function() {
-                // 🌟 SÉCURITÉ MODE DÉMO
                 if(this.isDemoMode) return alert("🔒 Mode Démo : L'accès au portail de facturation sécurisé Stripe est désactivé.");
 
                 try {
@@ -1363,7 +724,41 @@ window.addEventListener('load', () => window.logicielManager.init())
             }
         };
 
-        window.addEventListener('load', () => window.logicielManager.init())
+        // ====== SCRIPT PILOTE TÉLÉCHARGEMENT APP (PWA) ======
+        let defferredPrompt;
+
+        window.addEventListener('beforeinstallprompt', (e) => {
+            e.preventDefault();
+            defferredPrompt = e;
+            document.getElementById('pwa-instructions').innerText = "Cliquez ci-dessous pour lancer le téléchargement de l'application iCHEF OS directement sur votre terminal :";
+            document.getElementById('ios-guide').style.display = 'none';
+        });
+
+        function ouvrirGuideInstallation() {
+            const modal = document.getElementById('pwa-modal');
+            modal.style.display = 'flex';
+            
+            if (defferredPrompt) {
+                modal.style.display = 'none';
+                defferredPrompt.prompt();
+                defferredPrompt.userChoice.then((choiceResult) => {
+                    if (choiceResult.outcome === 'accepted') {
+                        console.log('iCHEF App Installée par le client.');
+                    }
+                    defferredPrompt = null;
+                });
+            }
+        }
+
+        // Afficher ou cacher le bouton selon si l'app est déjà installée
+        window.addEventListener('load', () => {
+            if (window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone) {
+                document.getElementById('pwa-install-btn').style.display = 'none';
+            } else {
+                document.getElementById('pwa-install-btn').style.display = 'block';
+            }
+            window.logicielManager.init();
+        });
     </script>
 </body>
 </html>
