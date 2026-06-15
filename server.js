@@ -463,31 +463,35 @@ app.post('/api/nouvelle-demande-demo', async (req, res) => {
             activeOrders: {}
         });
 
-        // 🚨 ENVOI SILENCIEUX DU WHATSAPP DEPUIS LE SERVEUR 🚨
-        try {
-            let texteAlerte = `🚨 *Nouvelle Demande de Démo* 🚨\n\n🏢 Établissement : ${restaurant}\n📞 Tél : ${phone}\n📧 Email : ${email}\n🆔 ID : ${tenantID}\n🔑 PIN généré : ${codePinAlea}`;
-            
-            // On écrit le numéro avec le + classique, le code l'adaptera automatiquement
-            const numTo = "+33641437265";
-            
-            // ⚠️ METS TON CODE À 6 CHIFFRES ICI (ENTRE LES GUILLEMETS) ⚠️
-            const apiKey = "VOTRE_CODE_A_6_CHIFFRES"; 
-            
-            const urlWhatsApp = `https://api.callmebot.com/whatsapp.php?phone=${encodeURIComponent(numTo)}&text=${encodeURIComponent(texteAlerte)}&apikey=${apiKey}`;
-            
-            // Le serveur contacte le robot WhatsApp et lit sa réponse
-            fetch(urlWhatsApp)
-                .then(reponse => reponse.text())
-                .then(texte => console.log("📡 RÉPONSE DU BOT WHATSAPP :", texte))
-                .catch(err => console.error("❌ ERREUR DE CONNEXION AU BOT :", err.message));
-                
-        } catch(e) {
-            console.log("Erreur dans la préparation du WhatsApp :", e);
-        }
+     // 🚨 ENVOI SILENCIEUX DU WHATSAPP DEPUIS LE SERVEUR 🚨
+try {
+    const texteAlerte = `🚨 *Nouvelle Demande de Démo iChef* 🚨
 
-        res.json({ success: true, message: "Demande mise en attente de validation." });
-    } catch (e) {
-        console.error("Erreur création prospect démo :", e);
-        res.status(500).json({ success: false, error: "Cet identifiant d'établissement existe déjà." });
+🏢 Établissement : ${restaurant}
+📞 Téléphone : ${phone}
+📧 Email : ${email}
+🆔 ID établissement : ${tenantID}
+🔑 PIN généré : ${codePinAlea}
+
+➡️ Client à rappeler rapidement.`;
+
+    // Ton numéro WhatsApp qui reçoit l'alerte
+    const numTo = process.env.WHATSAPP_ALERT_PHONE || "+33641437265";
+
+    // Clé CallMeBot à mettre dans Render > Environment
+    const apiKey = process.env.CALLMEBOT_APIKEY || "VOTRE_CODE_A_6_CHIFFRES";
+
+    if (!apiKey || apiKey === "VOTRE_CODE_A_6_CHIFFRES") {
+        console.error("❌ API Key CallMeBot manquante. Ajoute CALLMEBOT_APIKEY dans Render.");
+    } else {
+        const urlWhatsApp = `https://api.callmebot.com/whatsapp.php?phone=${encodeURIComponent(numTo)}&text=${encodeURIComponent(texteAlerte)}&apikey=${encodeURIComponent(apiKey)}`;
+
+        fetch(urlWhatsApp)
+            .then(reponse => reponse.text())
+            .then(texte => console.log("📡 RÉPONSE DU BOT WHATSAPP :", texte))
+            .catch(err => console.error("❌ ERREUR CONNEXION BOT WHATSAPP :", err.message));
     }
-});
+
+} catch (e) {
+    console.error("❌ Erreur préparation WhatsApp :", e.message);
+}
