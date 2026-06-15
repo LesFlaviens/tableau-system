@@ -18,7 +18,7 @@ const stripe = require('stripe')(stripeKey);
 
 const app = express();
 
-// 👇 DÉBLOCAGE DES VIDÉOS
+// 👇 DÉBLOCAGE DES VIDÉOS 👇
 app.use(express.static(__dirname));
 
 const PORT = process.env.PORT || 10000;
@@ -139,7 +139,7 @@ const AppState = mongoose.model('AppState', new mongoose.Schema({
 }, { minimize: false }));
 
 // ==========================================
-// 🤖 MOTEURS IA (GEMINI) — SÉCURISÉS CONTRE LES CRASHS DE SYNTAXE
+// 🤖 MOTEURS IA (GEMINI) — SÉCURISATION BLINDÉE CONTRE LE COUPAGE DE LIGNES
 // ==========================================
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY || 'CLE_MANQUANTE');
 
@@ -154,9 +154,8 @@ app.post('/api/scan-invoice', async (req, res) => {
         const result = await model.generateContent([prompt, imagePart]);
         
         let responseText = result.response.text().trim();
-        responseText = responseText.replace(new RegExp('```json', 'gi'), '');
-        responseText = responseText.replace(new RegExp('
-```', 'gi'), '').trim();
+        const ticks = String.fromCharCode(96, 96, 96);
+        responseText = responseText.split(ticks + 'json').join('').split(ticks).join('').trim();
         
         if (!responseText.startsWith("{")) responseText = responseText.substring(responseText.indexOf("{"));
         res.json({ success: true, data: JSON.parse(responseText) });
@@ -173,9 +172,8 @@ app.post('/analyse-ticket', async (req, res) => {
         const result = await model.generateContent([prompt, imagePart]);
         
         let text = result.response.text().trim();
-        text = text.replace(new RegExp('```json', 'gi'), '');
-        text = text.replace(new RegExp('
-```', 'gi'), '').trim();
+        const ticks = String.fromCharCode(96, 96, 96);
+        text = text.split(ticks + 'json').join('').split(ticks).join('').trim();
         
         res.json({ success: true, resultat: JSON.parse(text) });
     } catch (error) { res.status(500).json({ success: false, error: error.message }); }
@@ -189,9 +187,8 @@ app.post('/api/smart-reservation', async (req, res) => {
         const result = await model.generateContent(prompt);
         
         let responseText = result.response.text().trim();
-        responseText = responseText.replace(new RegExp('```json', 'gi'), '');
-        responseText = responseText.replace(new RegExp('
-```', 'gi'), '').trim();
+        const ticks = String.fromCharCode(96, 96, 96);
+        responseText = responseText.split(ticks + 'json').join('').split(ticks).join('').trim();
         
         if (!responseText.startsWith("{")) responseText = responseText.substring(responseText.indexOf("{"));
         const decision = JSON.parse(responseText);
@@ -207,7 +204,7 @@ app.post('/api/smart-reservation', async (req, res) => {
 });
 
 // ==========================================
-// API RESTAURANT (Caisse, Admin, etc.)
+// API RESTAURANT SYNCHRONISATION (Caisse, Admin, etc.)
 // ==========================================
 
 app.post('/api/save-transaction', async (req, res) => {
@@ -416,10 +413,8 @@ app.post('/api/nouvelle-demande-demo', async (req, res) => {
         const { tenantID, restaurant, email, phone } = req.body;
         console.log(`🌟 ENREGISTREMENT SÉCURISÉ PROSPECT : ${restaurant} (${email})`);
         
-        // Génération automatique d'un code PIN aléatoire
         const codePinAlea = Math.floor(1000 + Math.random() * 9000).toString();
 
-        // Création du compte au statut SUSPENDU (nécessite ton clic dans /panel-ichef)
         await Tenant.create({
             tenantID: cleanString(tenantID),
             clientName: restaurant,
@@ -434,7 +429,6 @@ app.post('/api/nouvelle-demande-demo', async (req, res) => {
             registeredDevices: []
         });
 
-        // Allocation de son espace de stockage vide associé
         await AppState.create({
             tenantID: cleanString(tenantID),
             activeOrders: {}
