@@ -1,6 +1,6 @@
 /**
  * ==============================================================
- * 🧠 iCHEF EMPIRE OS — ENGINE SERVER BACKEND
+ * 🧠 iCHEF EMPIRE OS — ENGINE SERVER BACKEND (V. FORTERESSE)
  * ==============================================================
  */
 
@@ -18,7 +18,7 @@ const stripe = require('stripe')(stripeKey);
 
 const app = express();
 
-// 👇 DÉBLOCAGE DES VIDÉOS 👇
+// 👇 DÉBLOCAGE DES VIDÉOS & RESSOURCES 👇
 app.use(express.static(__dirname));
 
 const PORT = process.env.PORT || 10000;
@@ -26,6 +26,7 @@ const PORT = process.env.PORT || 10000;
 // SÉCURITÉ MAÎTRE DE L'EMPIRE (Super Admin)
 const ADMIN_PASS = process.env.ADMIN_PASS || 'Empire2026';
 
+// Sécurité des requêtes (CORS)
 app.use(cors({ origin: '*', methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'], allowedHeaders: ['Content-Type', 'Authorization', 'Origin', 'Accept'] }));
 
 // 🚨 SÉCURITÉ STRIPE : On utilise raw() uniquement pour la route webhook
@@ -46,7 +47,7 @@ app.get('/panel-ichef', (req, res) => {
     if (req.query.pass === ADMIN_PASS) {
         res.sendFile(path.join(__dirname, 'empire.html'));
     } else {
-        res.status(403).send('Accès Refusé. Sécurité Empire iCHEF.');
+        res.status(403).send('🛑 Accès Refusé. Sécurité Empire iCHEF.');
     }
 });
 
@@ -93,10 +94,12 @@ app.post('/webhook', async (req, res) => {
                     else if (session.amount_total >= 9900) { planAchete = "EMPIRE"; limitScreens = 50; limitStaff = 999; }
                 }
 
+                // 🔓 Un achat officiel supprime toute expiration de démo (La licence devient permanente)
                 await Tenant.updateOne(
                     { tenantID: safeID },
                     { 
                         $set: { status: 'ACTIF', config: { stripeCustomerId: session.customer } },
+                        $unset: { demoExpiration: "" }, // Supprime la limite de 24h
                         $setOnInsert: { plan: planAchete, maxScreens: limitScreens, maxStaff: limitStaff, pin: Math.floor(1000 + Math.random() * 9000).toString() }
                     },
                     { upsert: true }
@@ -111,7 +114,7 @@ app.post('/webhook', async (req, res) => {
 // BASE DE DONNÉES : INFRASTRUCTURE MONGODB
 // ==========================================
 const mongoURI = process.env.MONGO_URI || "mongodb+srv://icheflavien_db_user:Tamere58.@cluster0.4w95d7m.mongodb.net/ichef_production?retryWrites=true&w=majority";
-mongoose.connect(mongoURI).then(() => console.log('Base de donnees iCHEF Online')).catch(err => console.error(err.message));
+mongoose.connect(mongoURI).then(() => console.log('✅ Base de donnees iCHEF Online')).catch(err => console.error(err.message));
 
 const tenantSchema = new mongoose.Schema({
     tenantID: { type: String, required: true, unique: true },
@@ -129,7 +132,8 @@ const tenantSchema = new mongoose.Schema({
     maxScreens: { type: Number, default: 5 }, 
     maxStaff: { type: Number, default: 999 },
     registeredDevices: [String], 
-    config: { stripeCustomerId: String }
+    config: { stripeCustomerId: String },
+    demoExpiration: { type: Date } // ⏳ CHRONOMÈTRE DE SÉCURITÉ DÉMO (24H)
 });
 const Tenant = mongoose.model('Tenant', tenantSchema);
 
@@ -139,7 +143,7 @@ const AppState = mongoose.model('AppState', new mongoose.Schema({
 }, { minimize: false }));
 
 // ==========================================
-// 🤖 MOTEURS IA (GEMINI) — SÉCURISATION BLINDÉE CONTRE LE COUPAGE DE LIGNES
+// 🤖 MOTEURS IA (GEMINI)
 // ==========================================
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY || 'CLE_MANQUANTE');
 
@@ -204,7 +208,7 @@ app.post('/api/smart-reservation', async (req, res) => {
 });
 
 // ==========================================
-// API RESTAURANT SYNCHRONISATION (Caisse, Admin, etc.)
+// API RESTAURANT SYNCHRONISATION
 // ==========================================
 
 app.post('/api/save-transaction', async (req, res) => {
@@ -257,6 +261,12 @@ app.post('/api/verify-pin', async (req, res) => {
     try {
         const tenant = await Tenant.findOne({ tenantID: cleanString(tenantID) });
         if (!tenant) return res.status(404).json({ success: false, error: "Inconnu." });
+        
+        // 🔒 SÉCURITÉ : VÉRIFICATION EXPIRATION 24H POUR LA DÉMO
+        if (tenant.demoExpiration && new Date() > new Date(tenant.demoExpiration)) {
+            return res.status(403).json({ success: false, error: "Démonstration expirée (limite de 24h atteinte)." });
+        }
+
         if (tenant.status === 'SUSPENDU') return res.status(403).json({ success: false, error: "Licence suspendue ou en attente d'approbation manuelle." });
 
         let isValid = (String(tenant.pin).trim() === String(pin).trim());
@@ -309,6 +319,11 @@ app.get('/get-current-state', async (req, res) => {
         if (tenantID !== 'MASTER_STATE') {
             tenantID = cleanString(tenantID);
             const tenant = await Tenant.findOne({ tenantID });
+            
+            // 🔒 SÉCURITÉ : VÉRIFICATION EXPIRATION 24H EN COURS D'UTILISATION
+            if (tenant && tenant.demoExpiration && new Date() > new Date(tenant.demoExpiration)) {
+                return res.status(403).json({ error: "Démonstration expirée (limite de 24h atteinte)." });
+            }
             if (tenant && tenant.status === 'SUSPENDU') return res.status(403).json({ error: "Licence suspendue ou en attente" });
         }
         let state = await AppState.findOne({ tenantID });
@@ -355,7 +370,7 @@ app.post('/api/get-all-tenants-admin', async (req, res) => {
 app.post('/api/admin-action', async (req, res) => {
     if (req.body.masterKey !== ADMIN_PASS) return res.status(401).json({ success: false, error: "Acces Refuse." });
     try {
-        const { tenantID, action, newPlan, manualScreens, manualPin, manualMaxStaff, maxScreens } = req.body;
+        const { tenantID, action, newPlan, manualScreens, manualPin, manualMaxStaff, maxScreens, addons } = req.body;
         const safeID = cleanString(tenantID);
 
         if (action === 'set_screens' && manualScreens) {
@@ -366,6 +381,9 @@ app.post('/api/admin-action', async (req, res) => {
         }
         else if (action === 'set_pin' && manualPin) {
             await Tenant.findOneAndUpdate({ tenantID: safeID }, { pin: manualPin.trim(), registeredDevices: [] });
+        }
+        else if (action === 'set_addons' && Array.isArray(addons)) {
+            await Tenant.findOneAndUpdate({ tenantID: safeID }, { addons: addons });
         }
         else if (action === 'set_plan' && newPlan) { 
             let limit = 1; let staffLimit = 1;
@@ -384,7 +402,10 @@ app.post('/api/admin-action', async (req, res) => {
         }
         else if (action === 'reset_devices') await Tenant.findOneAndUpdate({ tenantID: safeID }, { registeredDevices: [] });
         else if (action === 'suspend') await Tenant.findOneAndUpdate({ tenantID: safeID }, { status: 'SUSPENDU', registeredDevices: [] });
-        else if (action === 'activate') await Tenant.findOneAndUpdate({ tenantID: safeID }, { status: 'ACTIF' });
+        else if (action === 'activate') {
+            // Lors de l'activation manuelle, on valide officiellement (retrait expiration 24h si elle existe)
+            await Tenant.findOneAndUpdate({ tenantID: safeID }, { status: 'ACTIF', $unset: { demoExpiration: "" } });
+        }
         else if (action === 'delete') { await Tenant.findOneAndDelete({ tenantID: safeID }); await AppState.findOneAndDelete({ tenantID: safeID }); }
         
         res.json({ success: true });
@@ -406,7 +427,7 @@ app.get('/debug-fichiers', (req, res) => {
 });
 
 // ==========================================
-// 🎯 PORTAIL DES DEMANDES DE DÉMO (LIMITE 24H & ALERTE)
+// 🎯 PORTAIL DES DEMANDES DE DÉMO (ALERTE EMAIL VIA FORMSUBMIT SÉCURISÉ)
 // ==========================================
 app.post('/api/nouvelle-demande-demo', async (req, res) => {
     try {
@@ -415,7 +436,7 @@ app.post('/api/nouvelle-demande-demo', async (req, res) => {
         
         const codePinAlea = Math.floor(1000 + Math.random() * 9000).toString();
         
-        // ⏳ La démo expirera automatiquement dans exactement 24 heures
+        // ⏳ SÉCURITÉ : La démo expirera automatiquement dans exactement 24 heures
         const expirationTime = new Date(Date.now() + 24 * 60 * 60 * 1000);
 
         await Tenant.create({
@@ -430,7 +451,7 @@ app.post('/api/nouvelle-demande-demo', async (req, res) => {
             maxScreens: 5,
             maxStaff: 999,
             registeredDevices: [],
-            demoExpiration: expirationTime // Sauvegarde de la limite 24H
+            demoExpiration: expirationTime // Activation du chrono 24H
         });
 
         await AppState.create({
@@ -438,26 +459,38 @@ app.post('/api/nouvelle-demande-demo', async (req, res) => {
             activeOrders: {}
         });
 
-        // 🚨 ENVOI SILENCIEUX DU WHATSAPP DEPUIS LE SERVEUR 🚨
-        let texteAlerte = `🚨 *Nouvelle Demande de Démo* 🚨\nIl y a un client qui veut un code pour ta démo !\n\n🏢 Établissement : ${restaurant}\n📞 Téléphone : ${phone}\n📧 Email : ${email}\n🆔 ID : ${tenantID}\n🔑 PIN généré : ${codePinAlea}\n\n⏱️ *Rappel : La démo expirera automatiquement dans 24H.*`;
-        
-        const numTo = "%2B33641437265";
-        
-        // ⚠️ N'OUBLIE PAS DE METTRE TON CODE À 6 CHIFFRES ICI ⚠️
-        const apiKey = "VOTRE_API_KEY_CALLMEBOT"; 
-        
-        const urlWhatsApp = `https://api.callmebot.com/whatsapp.php?phone=${numTo}&text=${encodeURIComponent(texteAlerte)}&apikey=${apiKey}`;
-        
-        const https = require('https');
-        https.get(urlWhatsApp, (resp) => {
-            let data = '';
-            resp.on('data', (chunk) => { data += chunk; });
-            resp.on('end', () => { 
-                console.log("📡 Réponse du Bot WhatsApp :", data); 
-            });
-        }).on("error", (err) => {
-            console.log("❌ Erreur critique envoi WhatsApp :", err.message);
-        });
+        // 🚨 ENVOI SILENCIEUX DE L'EMAIL DEPUIS LE SERVEUR 🚨
+        try {
+            const urlEmail = "https://formsubmit.co/ajax/iche.flavien@hotmail.fr";
+            
+            const payload = {
+                _subject: `🚨 iCHEF OS : Nouvelle Démo demandée par ${restaurant}`,
+                "Établissement": restaurant,
+                "Téléphone": phone,
+                "Email du client": email,
+                "Identifiant (ID)": tenantID,
+                "Code PIN Généré": codePinAlea,
+                "Statut Technique": "Bloqué (en attente de votre activation depuis l'Admin)",
+                "Durée de la démo": "Se coupera dans 24H automatiquement",
+                _template: "box" // Formate l'email dans un joli tableau
+            };
+
+            // Requête silencieuse (Machine à Machine)
+            fetch(urlEmail, {
+                method: "POST",
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Accept': 'application/json'
+                },
+                body: JSON.stringify(payload)
+            })
+            .then(res => res.json())
+            .then(data => console.log("✅ Email d'alerte déclenché avec succès !"))
+            .catch(err => console.log("❌ Erreur silencieuse lors de l'envoi de l'email :", err));
+            
+        } catch (err) {
+            console.error("Erreur lors de la préparation de l'email :", err);
+        }
 
         res.json({ success: true, message: "Demande mise en attente de validation." });
     } catch (e) {
@@ -467,4 +500,4 @@ app.post('/api/nouvelle-demande-demo', async (req, res) => {
 });
 
 // IMPORTANT : LA LIGNE LISTEN TOUT EN BAS !
-app.listen(PORT, () => console.log("L'Empire iCHEF est en ligne et sécurisé sur le port " + PORT));
+app.listen(PORT, () => console.log("✅ L'Empire iCHEF est en ligne et sécurisé sur le port " + PORT));
