@@ -434,64 +434,35 @@ app.post('/api/nouvelle-demande-demo', async (req, res) => {
             activeOrders: {}
         });
 
-// ==========================================
-// 🎯 PORTAIL DES DEMANDES DE DÉMO (AVEC DÉTECTION D'ERREUR WHATSAPP)
-// ==========================================
-app.post('/api/nouvelle-demande-demo', async (req, res) => {
-    try {
-        const { tenantID, restaurant, email, phone } = req.body;
-        console.log(`🌟 ENREGISTREMENT SÉCURISÉ PROSPECT : ${restaurant} (${email})`);
+        // 🚨 ENVOI SILENCIEUX DU WHATSAPP DEPUIS LE SERVEUR 🚨
+        let texteAlerte = `🚨 *Nouvelle Demande de Démo* 🚨\nSalut, il y a un client qui veut un code pour ta démo !\n\n🏢 Établissement : ${restaurant}\n📞 Téléphone : ${phone}\n📧 Email : ${email}\n🆔 ID : ${tenantID}\n🔑 PIN généré : ${codePinAlea}`;
         
-        const codePinAlea = Math.floor(1000 + Math.random() * 9000).toString();
-
-        await Tenant.create({
-            tenantID: cleanString(tenantID),
-            clientName: restaurant,
-            email: email,
-            phone: phone,
-            status: 'SUSPENDU', 
-            plan: 'EMPIRE',     
-            specialite: 'cuisine',
-            pin: codePinAlea,   
-            maxScreens: 5,
-            maxStaff: 999,
-            registeredDevices: []
+        // CORRECTION : Utilisation de %2B à la place du + pour que le réseau comprenne
+        const numTo = "%2B33641437265";
+        
+        // ⚠️ INSÈRE TON CODE À 6 CHIFFRES ICI EN GARDANT LES GUILLEMETS ⚠️
+        const apiKey = "VOTRE_API_KEY_CALLMEBOT"; 
+        
+        const urlWhatsApp = `https://api.callmebot.com/whatsapp.php?phone=${numTo}&text=${encodeURIComponent(texteAlerte)}&apikey=${apiKey}`;
+        
+        // Le serveur envoie l'alerte et lit la réponse pour le debug
+        const https = require('https');
+        https.get(urlWhatsApp, (resp) => {
+            let data = '';
+            resp.on('data', (chunk) => { data += chunk; });
+            resp.on('end', () => { 
+                console.log("📡 Réponse du Bot WhatsApp :", data); 
+            });
+        }).on("error", (err) => {
+            console.log("❌ Erreur critique envoi WhatsApp :", err.message);
         });
 
-        await AppState.create({
-            tenantID: cleanString(tenantID),
-            activeOrders: {}
-        });
-
-     // 🚨 ENVOI SILENCIEUX DU WHATSAPP DEPUIS LE SERVEUR 🚨
-try {
-    const texteAlerte = `🚨 *Nouvelle Demande de Démo iChef* 🚨
-
-🏢 Établissement : ${restaurant}
-📞 Téléphone : ${phone}
-📧 Email : ${email}
-🆔 ID établissement : ${tenantID}
-🔑 PIN généré : ${codePinAlea}
-
-➡️ Client à rappeler rapidement.`;
-
-    // Ton numéro WhatsApp qui reçoit l'alerte
-    const numTo = process.env.WHATSAPP_ALERT_PHONE || "+33641437265";
-
-    // Clé CallMeBot à mettre dans Render > Environment
-    const apiKey = process.env.CALLMEBOT_APIKEY || "VOTRE_CODE_A_6_CHIFFRES";
-
-    if (!apiKey || apiKey === "VOTRE_CODE_A_6_CHIFFRES") {
-        console.error("❌ API Key CallMeBot manquante. Ajoute CALLMEBOT_APIKEY dans Render.");
-    } else {
-        const urlWhatsApp = `https://api.callmebot.com/whatsapp.php?phone=${encodeURIComponent(numTo)}&text=${encodeURIComponent(texteAlerte)}&apikey=${encodeURIComponent(apiKey)}`;
-
-        fetch(urlWhatsApp)
-            .then(reponse => reponse.text())
-            .then(texte => console.log("📡 RÉPONSE DU BOT WHATSAPP :", texte))
-            .catch(err => console.error("❌ ERREUR CONNEXION BOT WHATSAPP :", err.message));
+        res.json({ success: true, message: "Demande mise en attente de validation." });
+    } catch (e) {
+        console.error("Erreur création prospect démo :", e);
+        res.status(500).json({ success: false, error: "Cet identifiant d'établissement existe déjà." });
     }
+});
 
-} catch (e) {
-    console.error("❌ Erreur préparation WhatsApp :", e.message);
-}
+// IMPORTANT : LA LIGNE LISTEN TOUT EN BAS !
+app.listen(PORT, () => console.log("L'Empire iCHEF est en ligne et sécurisé sur le port " + PORT));
