@@ -406,7 +406,7 @@ app.get('/debug-fichiers', (req, res) => {
 });
 
 // ==========================================
-// 🎯 PORTAIL DES DEMANDES DE DÉMO (AVEC APPROBATION MANUELLE)
+// 🎯 PORTAIL DES DEMANDES DE DÉMO (AVEC APPROBATION MANUELLE ET ALERTE WHATSAPP SERVEUR)
 // ==========================================
 app.post('/api/nouvelle-demande-demo', async (req, res) => {
     try {
@@ -433,6 +433,18 @@ app.post('/api/nouvelle-demande-demo', async (req, res) => {
             tenantID: cleanString(tenantID),
             activeOrders: {}
         });
+
+        // 🚨 ENVOI SILENCIEUX DU WHATSAPP DEPUIS LE SERVEUR 🚨
+        let texteAlerte = `🚨 *Nouvelle Demande de Démo* 🚨\nSalut, il y a un client qui veut un code pour ta démo !\n\n🏢 Établissement : ${restaurant}\n📞 Téléphone : ${phone}\n📧 Email : ${email}\n🆔 ID : ${tenantID}\n🔑 PIN généré : ${codePinAlea}`;
+        
+        // Configuration CallMeBot (Service gratuit d'envoi de messages à soi-même)
+        const numTo = "+33641437265";
+        const apiKey = "VOTRE_API_KEY_CALLMEBOT"; // <-- À REMPLACER PAR TA CLÉ 
+        
+        const urlWhatsApp = `https://api.callmebot.com/whatsapp.php?phone=${numTo}&text=${encodeURIComponent(texteAlerte)}&apikey=${apiKey}`;
+        
+        // Le serveur envoie l'alerte en arrière-plan (fetch natif Node.js)
+        fetch(urlWhatsApp).catch(err => console.log("Erreur envoi WhatsApp en fond:", err));
 
         res.json({ success: true, message: "Demande mise en attente de validation." });
     } catch (e) {
