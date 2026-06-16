@@ -461,7 +461,7 @@ app.post('/api/nouvelle-demande-demo', async (req, res) => {
 
         // 🚨 ENVOI SILENCIEUX DE L'EMAIL DEPUIS LE SERVEUR 🚨
         try {
-            const urlEmail = "https://formsubmit.co/ajax/iche.flavien@ichef.ch";
+            const urlEmail = "https://formsubmit.co/el/merumi";
             
             const payload = {
                 _subject: `🚨 iCHEF OS : Nouvelle Démo demandée par ${restaurant}`,
