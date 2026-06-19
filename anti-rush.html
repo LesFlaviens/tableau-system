@@ -8,6 +8,96 @@
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;800;900&family=Playfair+Display:wght@700&display=swap" rel="stylesheet">
     <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
 
+    <script>
+        // 🛡️ BOUCLIER 1 : DOMAIN LOCK
+        if (window.location.hostname !== "os.ichef.ch" && window.location.hostname !== "localhost" && window.location.hostname !== "127.0.0.1") {
+            document.documentElement.innerHTML = "<h1 style='color:red; text-align:center; margin-top:20%; font-family:sans-serif;'>🛑 VIOLATION DE LICENCE iCHEF OS</h1>";
+            throw new Error("Exécution non autorisée hors du domaine officiel.");
+        }
+
+        // 🛡️ BOUCLIER 2 : ANTI-SNOOPING
+        document.addEventListener('contextmenu', event => event.preventDefault());
+        document.onkeydown = function(e) {
+            if(e.keyCode == 123) return false; 
+            if(e.ctrlKey && e.shiftKey && e.keyCode == 'I'.charCodeAt(0)) return false; 
+            if(e.ctrlKey && e.shiftKey && e.keyCode == 'J'.charCodeAt(0)) return false; 
+            if(e.ctrlKey && e.keyCode == 'U'.charCodeAt(0)) return false; 
+        }
+
+        function getDeviceFingerprint() {
+            let deviceId = localStorage.getItem('ichef_device_fingerprint');
+            if (!deviceId) {
+                deviceId = 'device_' + Math.random().toString(36).substr(2, 9) + '_' + Date.now();
+                localStorage.setItem('ichef_device_fingerprint', deviceId);
+            }
+            return deviceId;
+        }
+
+        let backUrl = 'administration.html'; 
+        let tenantID = '';
+        let SERVER_URL = '';
+        let currentUserRole = 'CHEF'; // Mémorise le poste actif
+
+        (async function enforceSecurity() {
+            const urlParams = new URLSearchParams(window.location.search);
+            let urlTenantID = urlParams.get('tenantID');
+            let storedTenantID = localStorage.getItem('ichef_tenant_id');
+
+            if (urlTenantID && urlTenantID !== storedTenantID) {
+                localStorage.setItem('ichef_tenant_id', urlTenantID);
+                storedTenantID = urlTenantID;
+            }
+
+            tenantID = urlTenantID || storedTenantID;
+            let pin = localStorage.getItem('ichef_master_pin'); 
+            
+            if(!tenantID) {
+                window.location.href = 'connexionpartenaire.html';
+                return;
+            }
+
+            SERVER_URL = (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1" || window.location.protocol === "file:") 
+                ? "http://localhost:10000" : "https://tableau-system.onrender.com";
+
+            const allowedRoles = [
+                'CHEF', 'CHEF_CUISINE', 
+                'PATISSIER', 'CHEF_PATISSERIE', 
+                'BAR', 'CHEF_BAR', 
+                'ICHEF_OS', 'ECO', 'BUSINESS', 'RENTABILITE', 'EMPIRE', 'BRIGADE', 'BRIGADES', 'PREMIUM'
+            ];
+
+            try {
+                const res = await fetch(`${SERVER_URL}/api/verify-pin`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ tenantID: tenantID, pin: pin || "0000", deviceId: getDeviceFingerprint() })
+                });
+                const data = await res.json();
+
+                if(!data.success) {
+                    alert("ACCÈS REFUSÉ (Limite d'écrans atteinte ou compte invalide).");
+                    window.location.href = 'connexionpartenaire.html';
+                    return;
+                }
+
+                const currentPlan = data.plan ? data.plan.toUpperCase() : 'CHEF';
+                currentUserRole = currentPlan;
+
+                if (!allowedRoles.includes(currentPlan)) {
+                    alert(`ACCÈS REFUSÉ : Votre poste (${currentPlan}) n'est pas autorisé à modifier l'Anti-Rush.`);
+                    window.location.href = `administration.html?tenantID=${tenantID}`;
+                    return;
+                }
+
+                if (currentPlan.includes('CHEF') && !currentPlan.includes('BAR') && !currentPlan.includes('PATISSERIE')) backUrl = 'chef.html';
+                if (currentPlan.includes('BAR')) backUrl = 'chef-bar.html';
+                if (currentPlan.includes('PATISSIER') || currentPlan.includes('PATISSERIE')) backUrl = 'chef-patissier.html';
+                if (['ICHEF_OS', 'ECO', 'BUSINESS', 'RENTABILITE', 'EMPIRE', 'PREMIUM', 'BRIGADE', 'BRIGADES'].includes(currentPlan)) backUrl = 'admin.html';
+
+            } catch (e) { console.error("Erreur de securite reseau", e); }
+        })();
+    </script>
+
     <style>
         :root {
             --bg: #050505;
@@ -23,13 +113,14 @@
             --danger: #ef4444;
         }
 
-        body { font-family: 'Inter', sans-serif; background: var(--bg); color: var(--text-main); margin: 0; padding: 20px; display: flex; flex-direction: column; align-items: center; min-height: 100vh; box-sizing: border-box;}
+        * { box-sizing: border-box; }
+        body { font-family: 'Inter', sans-serif; background: var(--bg); color: var(--text-main); margin: 0; padding: 20px; display: flex; flex-direction: column; align-items: center; min-height: 100vh;}
         
         .container { width: 100%; max-width: 900px; display: flex; flex-direction: column; gap: 20px; }
         
         .header { display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid var(--border); padding-bottom: 20px; margin-bottom: 10px;}
-        .title { font-family: 'Playfair Display', serif; font-size: 2rem; margin: 0; color: var(--accent); text-transform: uppercase; letter-spacing: 2px; display: flex; align-items: center; gap: 15px;}
-        .live-badge { background: rgba(16, 185, 129, 0.1); color: var(--success); padding: 5px 12px; border-radius: 20px; font-size: 0.8rem; font-weight: 800; border: 1px solid rgba(16, 185, 129, 0.3); display: flex; align-items: center; gap: 8px;}
+        .title { font-family: 'Playfair Display', serif; font-size: 1.8rem; margin: 0; color: var(--accent); text-transform: uppercase; letter-spacing: 2px; display: flex; align-items: center; gap: 15px;}
+        .live-badge { background: rgba(16, 185, 129, 0.1); color: var(--success); padding: 6px 14px; border-radius: 20px; font-size: 0.8rem; font-weight: 800; border: 1px solid rgba(16, 185, 129, 0.3); display: flex; align-items: center; gap: 8px; transition: 0.3s;}
         .live-dot { width: 8px; height: 8px; background: var(--success); border-radius: 50%; animation: blink 1s infinite alternate; }
         @keyframes blink { from { opacity: 0.4; } to { opacity: 1; box-shadow: 0 0 10px var(--success); } }
 
@@ -38,13 +129,37 @@
         .card-title { font-size: 1.2rem; margin: 0 0 20px 0; color: var(--text-muted); text-transform: uppercase; letter-spacing: 1px; font-weight: 800;}
         
         .rush-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 15px; }
-        .rush-btn { background: #000; border: 2px solid var(--border); border-radius: 12px; padding: 20px 10px; color: var(--text-muted); font-size: 1rem; font-weight: 800; cursor: pointer; transition: all 0.2s; display: flex; flex-direction: column; align-items: center; gap: 10px; text-transform: uppercase;}
+        .rush-btn { background: #000; border: 2px solid var(--border); border-radius: 12px; padding: 20px 10px; color: var(--text-muted); font-size: 1rem; font-weight: 800; cursor: pointer; transition: all 0.2s; display: flex; flex-direction: column; align-items: center; gap: 10px; text-transform: uppercase; line-height: 1.2; text-align: center;}
         .rush-btn span { font-size: 0.75rem; font-weight: 600; opacity: 0.7; }
+        .rush-btn:hover { background: rgba(255,255,255,0.05); }
         
         .rush-btn.active[data-level="1"] { border-color: var(--success); background: rgba(16, 185, 129, 0.1); color: var(--success); box-shadow: 0 0 20px rgba(16, 185, 129, 0.2); transform: scale(1.05);}
         .rush-btn.active[data-level="2"] { border-color: var(--warning); background: rgba(251, 191, 36, 0.1); color: var(--warning); box-shadow: 0 0 20px rgba(251, 191, 36, 0.2); transform: scale(1.05);}
         .rush-btn.active[data-level="3"] { border-color: var(--orange); background: rgba(249, 115, 22, 0.1); color: var(--orange); box-shadow: 0 0 20px rgba(249, 115, 22, 0.2); transform: scale(1.05);}
         .rush-btn.active[data-level="4"] { border-color: var(--danger); background: rgba(239, 68, 68, 0.1); color: var(--danger); box-shadow: 0 0 20px rgba(239, 68, 68, 0.2); transform: scale(1.05);}
+
+        /* --- ALERTES & INCIDENTS --- */
+        .alert-item { display: flex; justify-content: space-between; align-items: center; padding: 15px; background: rgba(255,255,255,0.03); border-left: 4px solid var(--danger); border-radius: 8px; margin-bottom: 10px; animation: slideIn 0.3s ease-out; }
+        @keyframes slideIn { from { transform: translateX(-20px); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
+        .alert-item.humain { border-left-color: var(--warning); }
+        .alert-item.systeme { border-left-color: var(--accent); }
+        .alert-info { display: flex; flex-direction: column; gap: 5px; }
+        .alert-header { font-size: 0.75rem; color: var(--text-muted); font-weight: 600; text-transform: uppercase; letter-spacing: 1px; }
+        .alert-msg { font-size: 1.1rem; font-weight: 800; color: #fff; }
+        .btn-resolve { background: rgba(16, 185, 129, 0.1); border: 1px solid var(--success); color: var(--success); padding: 8px 16px; border-radius: 8px; font-weight: 800; cursor: pointer; transition: 0.2s; }
+        .btn-resolve:hover { background: var(--success); color: #000; }
+
+        /* --- MODAL ALERTE --- */
+        .modal { position: fixed; top: 0; left: 0; width: 100vw; height: 100dvh; background: rgba(0,0,0,0.8); backdrop-filter: blur(8px); z-index: 1000; display: none; align-items: center; justify-content: center; padding: 20px; opacity: 0; transition: opacity 0.3s;}
+        .modal.show { display: flex; opacity: 1; }
+        .modal-content { background: var(--panel); border: 1px solid var(--border); border-radius: 20px; width: 100%; max-width: 500px; padding: 25px; display: flex; flex-direction: column; gap: 20px; transform: translateY(20px); transition: transform 0.3s;}
+        .modal.show .modal-content { transform: translateY(0); }
+        .modal-title { font-size: 1.4rem; font-weight: 800; margin: 0; color: #fff; display: flex; align-items: center; gap: 10px;}
+        .modal-input { background: rgba(0,0,0,0.5); border: 1px solid var(--border); color: #fff; padding: 15px; border-radius: 12px; font-size: 1rem; width: 100%; font-family: inherit; resize: none; min-height: 100px; outline: none;}
+        .modal-input:focus { border-color: var(--gold); }
+        .modal-actions { display: flex; justify-content: flex-end; gap: 10px; }
+        .btn-cancel { background: transparent; border: 1px solid var(--text-muted); color: var(--text-muted); padding: 12px 24px; border-radius: 10px; font-weight: 600; cursor: pointer; }
+        .btn-send { background: var(--danger); border: none; color: #fff; padding: 12px 24px; border-radius: 10px; font-weight: 800; cursor: pointer; text-transform: uppercase;}
 
         /* --- MODULES IA --- */
         .module-grid { display: grid; grid-template-columns: 1fr; gap: 20px; }
@@ -69,13 +184,21 @@
         .label-mini { font-size: 0.85rem; color: var(--text-muted); text-transform: uppercase; font-weight: 600;}
 
         /* --- NOTIFICATIONS --- */
-        .toast { position: fixed; bottom: 30px; left: 50%; transform: translateX(-50%) translateY(100px); background: var(--success); color: #000; padding: 15px 30px; border-radius: 30px; font-weight: 800; z-index: 2000; opacity: 0; transition: all 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275); text-transform: uppercase; letter-spacing: 1px; box-shadow: 0 10px 30px rgba(16, 185, 129, 0.4);}
+        .toast { position: fixed; bottom: 30px; left: 50%; transform: translateX(-50%) translateY(150px); background: var(--success); color: #000; padding: 15px 30px; border-radius: 30px; font-weight: 800; z-index: 2000; opacity: 0; transition: all 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275); text-transform: uppercase; letter-spacing: 1px; box-shadow: 0 10px 30px rgba(16, 185, 129, 0.4);}
         .toast.show { transform: translateX(-50%) translateY(0); opacity: 1; }
+        .toast.info { background: var(--accent); color: #000; box-shadow: 0 10px 30px rgba(56, 189, 248, 0.4); }
+        .toast.alert { background: var(--danger); color: #fff; box-shadow: 0 10px 30px rgba(239, 68, 68, 0.5); font-size: 1.2rem; padding: 20px 40px;}
+
+        .btn-retour { background: transparent; border: 1px dashed var(--border); color: var(--text-muted); padding: 15px; border-radius: 12px; font-weight: 600; cursor: pointer; text-transform: uppercase; letter-spacing: 1px; transition: 0.2s; width: 100%; text-align: center;}
+        .btn-retour:hover { border-color: var(--gold); color: var(--gold); background: rgba(212, 175, 55, 0.05); }
 
         @media (max-width: 768px) {
             .rush-grid { grid-template-columns: 1fr 1fr; }
             .module-row { flex-direction: column; align-items: flex-start; gap: 20px;}
             .switch { align-self: flex-end; }
+            .title { font-size: 1.4rem; }
+            .alert-item { flex-direction: column; align-items: stretch; gap: 15px; }
+            .btn-resolve { text-align: center; }
         }
     </style>
 </head>
@@ -86,10 +209,11 @@
         <div class="header">
             <h1 class="title">⚡ Cockpit Anti-Rush</h1>
             <div class="live-badge" id="sync-status">
-                <div class="live-dot"></div> EN DIRECT
+                <div class="live-dot" id="live-dot-elem"></div> <span id="sync-text">EN DIRECT</span>
             </div>
         </div>
 
+        <!-- BLOC 1 : LE NIVEAU DE FLUX -->
         <div class="card">
             <h2 class="card-title">1. Niveau d'Alerte (Salle & Cuisine)</h2>
             <div class="rush-grid">
@@ -106,20 +230,39 @@
                     🔴 NIVEAU 4 <span>Critique (+40m)</span>
                 </button>
             </div>
-            <p style="margin: 15px 0 0 0; font-size: 0.85rem; color: var(--text-muted); text-align: center;">
-                Ce niveau s'affiche en direct sur le smartphone de tous les clients qui consultent le menu.
-            </p>
         </div>
 
+        <!-- BLOC NOUVEAU : CENTRE D'ALERTES -->
         <div class="card">
-            <h2 class="card-title">2. L'Écosystème Automatique 3.0</h2>
+            <h2 class="card-title">2. Centre d'Alertes & Incidents</h2>
+            <p style="margin: 0 0 15px 0; font-size: 0.85rem; color: var(--text-muted);">
+                Déclenchez une alerte pour avertir immédiatement tous les autres postes (Cuisine, Salle, Bar).
+            </p>
+            <div class="rush-grid" style="grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));">
+                <button class="rush-btn" style="border-color: var(--warning); color: var(--warning);" onclick="openAlertModal('humain')">
+                    🤦‍♂️ ERREUR HUMAINE <span>Refaire un plat / Erreur Table</span>
+                </button>
+                <button class="rush-btn" style="border-color: var(--danger); color: var(--danger);" onclick="openAlertModal('systeme')">
+                    📢 ALERTE SYSTÈME <span>Manque stock / Incident technique</span>
+                </button>
+            </div>
+
+            <!-- FIL D'ACTUALITÉ DES ALERTES -->
+            <div id="alerts-feed" style="margin-top: 25px; display: flex; flex-direction: column; gap: 10px;">
+                <!-- Les alertes s'afficheront ici -->
+            </div>
+        </div>
+
+        <!-- BLOC 3 : L'INTELLIGENCE ARTIFICIELLE -->
+        <div class="card">
+            <h2 class="card-title">3. L'Écosystème Automatique 3.0</h2>
             
             <div class="module-grid">
                 
                 <div class="module-row" id="row-cameleon">
                     <div class="module-info">
                         <div class="module-name">🦎 Menu Caméléon</div>
-                        <div class="module-desc">Masque dynamiquement les plats longs à préparer (chaud, grill) sur les smartphones des clients dès que le Niveau 3 (Saturé) est atteint.</div>
+                        <div class="module-desc">Masque dynamiquement les plats longs à préparer sur les smartphones des clients dès que le Niveau 3 est atteint.</div>
                     </div>
                     <label class="switch">
                         <input type="checkbox" id="mod-cameleon" onchange="saveDirectToCloud()">
@@ -132,7 +275,7 @@
                         <div style="display: flex; justify-content: space-between; align-items: center;">
                             <div class="module-info">
                                 <div class="module-name">⏱️ Time-Shifting (Paiement différé)</div>
-                                <div class="module-desc">Incite financièrement les clients à différer l'envoi de leur commande pour soulager la cuisine pendant le coup de feu.</div>
+                                <div class="module-desc">Incite financièrement les clients à différer l'envoi de leur commande pour soulager les équipes.</div>
                             </div>
                             <label class="switch">
                                 <input type="checkbox" id="mod-timeshift" onchange="saveDirectToCloud()">
@@ -170,7 +313,7 @@
                         
                         <div class="settings-bar">
                             <div style="display: flex; align-items: center; gap: 10px;">
-                                <span class="label-mini">Bons maximum affichés sur l'écran Chef :</span>
+                                <span class="label-mini">Bons maximum affichés :</span>
                                 <input type="number" id="pm-max" class="input-mini" value="10" onchange="saveDirectToCloud()">
                                 <span style="color:var(--text-main); font-weight:bold;">Tickets</span>
                             </div>
@@ -181,44 +324,56 @@
             </div>
         </div>
 
-        <button onclick="window.location.href='admin.html'" style="background: transparent; border: 1px dashed var(--border); color: var(--text-muted); padding: 15px; border-radius: 12px; font-weight: 600; cursor: pointer; text-transform: uppercase; letter-spacing: 1px; transition: 0.2s;">
-            🔙 Retour aux paramètres généraux
+        <button onclick="goBackToMyStation()" class="btn-retour">
+            🔙 Retourner à mon poste
         </button>
 
+    </div>
+
+    <!-- MODAL D'ALERTE -->
+    <div class="modal" id="alert-modal">
+        <div class="modal-content">
+            <h3 class="modal-title" id="alert-modal-title">🚨 Nouvelle Alerte</h3>
+            <input type="hidden" id="alert-type-hidden">
+            <textarea id="alert-message-input" class="modal-input" placeholder="Ex: Table 4, refaire 1 Entrecôte bien cuite (Tombée)"></textarea>
+            <div class="modal-actions">
+                <button class="btn-cancel" onclick="closeModal()">Annuler</button>
+                <button class="btn-send" onclick="sendAlert()">Déclencher l'alerte</button>
+            </div>
+        </div>
     </div>
 
     <div id="toast" class="toast">Action Confirmée</div>
 
     <script>
-        const urlParams = new URLSearchParams(window.location.search);
-        let tenantID = urlParams.get('tenantID') || localStorage.getItem('ichef_tenant_id');
-        
-        const SERVER_URL = (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1") 
-            ? "http://localhost:10000" : "https://tableau-system.onrender.com";
+        let systemSettings = { activeAlerts: [] }; // Initialisation sécurisée
 
-        if (!tenantID) {
-            alert("Erreur : Identifiant de restaurant introuvable.");
-            window.location.href = "connexionpartenaire.html";
+        function goBackToMyStation() {
+            window.location.href = `${backUrl}?tenantID=${tenantID}`;
         }
-
-        let systemSettings = {};
 
         // --- 1. CHARGEMENT INITIAL ---
         async function fetchSettings() {
             try {
+                if (!SERVER_URL) { setTimeout(fetchSettings, 200); return; }
+
                 let r = await fetch(`${SERVER_URL}/get-current-state?tenantID=${tenantID}&_t=${Date.now()}`);
                 let state = await r.json();
                 
                 if (state.activeOrders && state.activeOrders['SETTINGS_MASTER']) {
                     systemSettings = state.activeOrders['SETTINGS_MASTER'].data;
+                    if(!systemSettings.activeAlerts) systemSettings.activeAlerts = []; // Sécurité
                     updateUIFromSettings();
                 }
+                
+                initWebSocket();
             } catch(e) {
                 console.error("Erreur de connexion", e);
-                document.getElementById('sync-status').innerHTML = "❌ HORS LIGNE";
                 document.getElementById('sync-status').style.background = "rgba(239, 68, 68, 0.2)";
                 document.getElementById('sync-status').style.color = "var(--danger)";
                 document.getElementById('sync-status').style.borderColor = "var(--danger)";
+                document.getElementById('sync-text').innerText = "HORS LIGNE";
+                document.getElementById('live-dot-elem').style.display = "none";
             }
         }
 
@@ -227,28 +382,105 @@
             // Boutons de Rush
             let currentLevel = systemSettings.rushLevel || 1;
             document.querySelectorAll('.rush-btn').forEach(btn => {
-                btn.classList.remove('active');
-                if(parseInt(btn.dataset.level) === currentLevel) btn.classList.add('active');
+                if(btn.dataset.level) {
+                    btn.classList.remove('active');
+                    if(parseInt(btn.dataset.level) === currentLevel) btn.classList.add('active');
+                }
             });
 
-            // Toggles et Inputs IA
+            // Toggles IA
             let ar3 = systemSettings.rushV3 || { cameleon: false, timeShift: { active: false, discount: 5, delay: 15 }, paceMaker: { active: false, max: 10 } };
-            
             document.getElementById('mod-cameleon').checked = ar3.cameleon;
             document.getElementById('mod-timeshift').checked = ar3.timeShift.active;
             document.getElementById('ts-discount').value = ar3.timeShift.discount;
             document.getElementById('ts-delay').value = ar3.timeShift.delay;
-            
             document.getElementById('mod-pacemaker').checked = ar3.paceMaker.active;
             document.getElementById('pm-max').value = ar3.paceMaker.max;
 
-            // Styles dynamiques des boites
             document.getElementById('row-cameleon').className = 'module-row ' + (ar3.cameleon ? 'active' : '');
             document.getElementById('row-timeshift').className = 'module-row ' + (ar3.timeShift.active ? 'active' : '');
             document.getElementById('row-pacemaker').className = 'module-row ' + (ar3.paceMaker.active ? 'active' : '');
+
+            // Rendu des Alertes Actives
+            renderAlertsFeed();
         }
 
-        // --- 3. ACTIONS UTILISATEUR ---
+        // --- GESTION DES ALERTES ---
+        function renderAlertsFeed() {
+            let container = document.getElementById('alerts-feed');
+            if(!systemSettings.activeAlerts || systemSettings.activeAlerts.length === 0) {
+                container.innerHTML = '<div style="text-align: center; color: var(--text-muted); font-style: italic; padding: 20px; background: rgba(255,255,255,0.02); border-radius: 12px;">Aucun incident en cours.</div>';
+                return;
+            }
+
+            container.innerHTML = systemSettings.activeAlerts.map(alert => {
+                let emoji = alert.type === 'humain' ? '🤦‍♂️' : '📢';
+                let timeStr = new Date(alert.timestamp).toLocaleTimeString('fr-FR', {hour: '2-digit', minute:'2-digit'});
+                return `
+                    <div class="alert-item ${alert.type}">
+                        <div class="alert-info">
+                            <div class="alert-header">${emoji} Émis par ${alert.author} à ${timeStr}</div>
+                            <div class="alert-msg">${alert.message}</div>
+                        </div>
+                        <button class="btn-resolve" onclick="resolveAlert('${alert.id}')">✓ Résolu</button>
+                    </div>
+                `;
+            }).join('');
+        }
+
+        function openAlertModal(type) {
+            document.getElementById('alert-type-hidden').value = type;
+            document.getElementById('alert-message-input').value = "";
+            let title = document.getElementById('alert-modal-title');
+            
+            if(type === 'humain') {
+                title.innerHTML = '🤦‍♂️ Signaler une erreur humaine';
+                document.getElementById('alert-message-input').placeholder = "Ex: Table 4, refaire 1 Entrecôte bien cuite (Tombée)";
+            } else {
+                title.innerHTML = '📢 Diffuser une alerte système';
+                document.getElementById('alert-message-input').placeholder = "Ex: Problème plonge / Manque urgent de glaçons au bar";
+            }
+            
+            let modal = document.getElementById('alert-modal');
+            modal.style.display = 'flex';
+            setTimeout(() => { modal.classList.add('show'); document.getElementById('alert-message-input').focus(); }, 10);
+        }
+
+        function closeModal() {
+            let modal = document.getElementById('alert-modal');
+            modal.style.opacity = '0';
+            setTimeout(() => { modal.classList.remove('show'); modal.style.display = 'none'; }, 300);
+        }
+
+        function sendAlert() {
+            let msg = document.getElementById('alert-message-input').value.trim();
+            let type = document.getElementById('alert-type-hidden').value;
+            if(!msg) return;
+
+            if(!systemSettings.activeAlerts) systemSettings.activeAlerts = [];
+            
+            let newAlert = {
+                id: 'alert_' + Date.now(),
+                type: type,
+                message: msg,
+                author: currentUserRole,
+                timestamp: Date.now()
+            };
+
+            systemSettings.activeAlerts.unshift(newAlert); // Ajoute en haut de la liste
+            closeModal();
+            updateUIFromSettings();
+            saveDirectToCloud();
+        }
+
+        function resolveAlert(id) {
+            if(!systemSettings.activeAlerts) return;
+            systemSettings.activeAlerts = systemSettings.activeAlerts.filter(a => a.id !== id);
+            updateUIFromSettings();
+            saveDirectToCloud();
+        }
+
+        // --- ACTIONS & SAUVEGARDE ---
         function setRushLevel(lvl) {
             systemSettings.rushLevel = lvl;
             updateUIFromSettings();
@@ -257,11 +489,11 @@
 
         async function saveDirectToCloud() {
             let syncBadge = document.getElementById('sync-status');
-            syncBadge.innerHTML = "⏳ ENVOI...";
+            document.getElementById('sync-text').innerText = "ENVOI...";
             syncBadge.style.color = "var(--gold)";
             syncBadge.style.borderColor = "var(--gold)";
+            document.getElementById('live-dot-elem').style.background = "var(--gold)";
 
-            // On met à jour l'objet avec les inputs de l'écran
             systemSettings.rushV3 = {
                 cameleon: document.getElementById('mod-cameleon').checked,
                 timeShift: {
@@ -275,8 +507,7 @@
                 }
             };
 
-            // Styles visuels immédiats
-            updateUIFromSettings();
+            // Pas besoin d'assigner activeAlerts, c'est déjà modifié par référence dans la variable globale
 
             try {
                 await fetch(`${SERVER_URL}/update-order?tenantID=${tenantID}`, { 
@@ -285,41 +516,66 @@
                     body: JSON.stringify({ tableId: 'SETTINGS_MASTER', order: { data: systemSettings } }) 
                 });
                 
-                showToast("Action synchronisée !");
-                
-                syncBadge.innerHTML = "<div class='live-dot'></div> EN DIRECT";
+                document.getElementById('sync-text').innerText = "EN DIRECT";
                 syncBadge.style.color = "var(--success)";
                 syncBadge.style.borderColor = "rgba(16, 185, 129, 0.3)";
+                document.getElementById('live-dot-elem').style.background = "var(--success)";
+                document.getElementById('live-dot-elem').style.display = "block";
             } catch (e) {
                 showToast("❌ Erreur réseau");
-                syncBadge.innerHTML = "❌ ERREUR";
+                document.getElementById('sync-text').innerText = "ERREUR";
             }
         }
 
-        function showToast(msg) {
+        function showToast(msg, isInfo = false, isAlert = false) {
             let t = document.getElementById('toast');
             t.innerText = msg;
+            t.className = 'toast'; // Reset
+            if(isInfo) t.classList.add('info');
+            if(isAlert) {
+                t.classList.add('alert');
+                t.innerHTML = "⚠️ " + msg;
+                // Optionnel : Jouer un son
+                try { new Audio('https://assets.mixkit.co/active_storage/sfx/2869/2869-preview.mp3').play(); } catch(e){}
+            }
+            
             t.classList.add('show');
-            setTimeout(() => t.classList.remove('show'), 3000);
+            setTimeout(() => t.classList.remove('show'), isAlert ? 6000 : 3500);
         }
 
-        // --- 4. WEBSOCKET (ECOUTE DES AUTRES ECRANS) ---
-        fetchSettings();
+        // --- 4. WEBSOCKET (SYMBIOSE DES POSTES) ---
+        function initWebSocket() {
+            const socket = io(SERVER_URL);
+            socket.emit('joinTenant', tenantID);
+            
+            socket.on('updateState', (state) => {
+                if(!state) return;
+                if(state.activeOrders && state.activeOrders['SETTINGS_MASTER']) {
+                    let newSettings = state.activeOrders['SETTINGS_MASTER'].data;
+                    if(!newSettings.activeAlerts) newSettings.activeAlerts = [];
+                    
+                    let rushChanged = newSettings.rushLevel !== systemSettings.rushLevel;
+                    let v3Changed = JSON.stringify(newSettings.rushV3) !== JSON.stringify(systemSettings.rushV3);
+                    
+                    // Vérifier si une NOUVELLE alerte est arrivée
+                    let currentAlertIds = (systemSettings.activeAlerts || []).map(a => a.id);
+                    let newAlerts = (newSettings.activeAlerts || []).filter(a => !currentAlertIds.includes(a.id));
 
-        const socket = io(SERVER_URL);
-        socket.emit('joinTenant', tenantID);
-        socket.on('updateState', (state) => {
-            if(!state) return;
-            // Si un autre manager modifie un réglage, le cockpit se met à jour tout seul
-            if(state.activeOrders && state.activeOrders['SETTINGS_MASTER']) {
-                let newSettings = state.activeOrders['SETTINGS_MASTER'].data;
-                // On vérifie si c'est vraiment différent pour ne pas clignoter pour rien
-                if(JSON.stringify(newSettings.rushV3) !== JSON.stringify(systemSettings.rushV3) || newSettings.rushLevel !== systemSettings.rushLevel) {
-                    systemSettings = newSettings;
-                    updateUIFromSettings();
+                    if(rushChanged || v3Changed || newSettings.activeAlerts.length !== (systemSettings.activeAlerts||[]).length) {
+                        systemSettings = newSettings;
+                        updateUIFromSettings();
+                        
+                        if (newAlerts.length > 0) {
+                            showToast("INCIDENT DÉCLARÉ : " + newAlerts[0].message, false, true);
+                        } else if (rushChanged) {
+                            showToast("🔄 Le Niveau d'alerte a été modifié !", true);
+                        }
+                    }
                 }
-            }
-        });
+            });
+        }
+
+        setTimeout(fetchSettings, 500);
 
     </script>
 </body>
