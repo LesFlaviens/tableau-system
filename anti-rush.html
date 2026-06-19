@@ -1,0 +1,326 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Cockpit Anti-Rush - iCHEF</title>
+    
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;800;900&family=Playfair+Display:wght@700&display=swap" rel="stylesheet">
+    <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
+
+    <style>
+        :root {
+            --bg: #050505;
+            --panel: #111111;
+            --border: #222222;
+            --text-main: #ffffff;
+            --text-muted: #888888;
+            --gold: #d4af37;
+            --accent: #38bdf8;
+            --success: #10b981;
+            --warning: #fbbf24;
+            --orange: #f97316;
+            --danger: #ef4444;
+        }
+
+        body { font-family: 'Inter', sans-serif; background: var(--bg); color: var(--text-main); margin: 0; padding: 20px; display: flex; flex-direction: column; align-items: center; min-height: 100vh; box-sizing: border-box;}
+        
+        .container { width: 100%; max-width: 900px; display: flex; flex-direction: column; gap: 20px; }
+        
+        .header { display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid var(--border); padding-bottom: 20px; margin-bottom: 10px;}
+        .title { font-family: 'Playfair Display', serif; font-size: 2rem; margin: 0; color: var(--accent); text-transform: uppercase; letter-spacing: 2px; display: flex; align-items: center; gap: 15px;}
+        .live-badge { background: rgba(16, 185, 129, 0.1); color: var(--success); padding: 5px 12px; border-radius: 20px; font-size: 0.8rem; font-weight: 800; border: 1px solid rgba(16, 185, 129, 0.3); display: flex; align-items: center; gap: 8px;}
+        .live-dot { width: 8px; height: 8px; background: var(--success); border-radius: 50%; animation: blink 1s infinite alternate; }
+        @keyframes blink { from { opacity: 0.4; } to { opacity: 1; box-shadow: 0 0 10px var(--success); } }
+
+        /* --- CONTROLE DU FLUX (NIVEAUX) --- */
+        .card { background: var(--panel); border: 1px solid var(--border); border-radius: 16px; padding: 25px; box-shadow: 0 10px 30px rgba(0,0,0,0.5); }
+        .card-title { font-size: 1.2rem; margin: 0 0 20px 0; color: var(--text-muted); text-transform: uppercase; letter-spacing: 1px; font-weight: 800;}
+        
+        .rush-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 15px; }
+        .rush-btn { background: #000; border: 2px solid var(--border); border-radius: 12px; padding: 20px 10px; color: var(--text-muted); font-size: 1rem; font-weight: 800; cursor: pointer; transition: all 0.2s; display: flex; flex-direction: column; align-items: center; gap: 10px; text-transform: uppercase;}
+        .rush-btn span { font-size: 0.75rem; font-weight: 600; opacity: 0.7; }
+        
+        .rush-btn.active[data-level="1"] { border-color: var(--success); background: rgba(16, 185, 129, 0.1); color: var(--success); box-shadow: 0 0 20px rgba(16, 185, 129, 0.2); transform: scale(1.05);}
+        .rush-btn.active[data-level="2"] { border-color: var(--warning); background: rgba(251, 191, 36, 0.1); color: var(--warning); box-shadow: 0 0 20px rgba(251, 191, 36, 0.2); transform: scale(1.05);}
+        .rush-btn.active[data-level="3"] { border-color: var(--orange); background: rgba(249, 115, 22, 0.1); color: var(--orange); box-shadow: 0 0 20px rgba(249, 115, 22, 0.2); transform: scale(1.05);}
+        .rush-btn.active[data-level="4"] { border-color: var(--danger); background: rgba(239, 68, 68, 0.1); color: var(--danger); box-shadow: 0 0 20px rgba(239, 68, 68, 0.2); transform: scale(1.05);}
+
+        /* --- MODULES IA --- */
+        .module-grid { display: grid; grid-template-columns: 1fr; gap: 20px; }
+        
+        .module-row { display: flex; justify-content: space-between; align-items: center; padding: 20px; background: rgba(255,255,255,0.02); border: 1px solid var(--border); border-radius: 12px; transition: 0.3s; }
+        .module-row.active { border-color: var(--accent); background: rgba(56, 189, 248, 0.05); }
+        
+        .module-info { display: flex; flex-direction: column; gap: 6px; }
+        .module-name { font-size: 1.2rem; font-weight: 800; color: var(--text-main); display: flex; align-items: center; gap: 10px;}
+        .module-desc { font-size: 0.9rem; color: var(--text-muted); line-height: 1.4; max-width: 500px;}
+        
+        .switch { position: relative; display: inline-block; width: 64px; height: 34px; flex-shrink: 0;}
+        .switch input { opacity: 0; width: 0; height: 0; }
+        .slider { position: absolute; cursor: pointer; top: 0; left: 0; right: 0; bottom: 0; background-color: var(--danger); transition: .3s; border-radius: 34px; box-shadow: inset 0 2px 5px rgba(0,0,0,0.5);}
+        .slider:before { position: absolute; content: ""; height: 26px; width: 26px; left: 4px; bottom: 4px; background-color: white; transition: .3s; border-radius: 50%; box-shadow: 0 2px 5px rgba(0,0,0,0.5);}
+        input:checked + .slider { background-color: var(--success); }
+        input:checked + .slider:before { transform: translateX(30px); }
+
+        .settings-bar { display: flex; gap: 15px; margin-top: 15px; padding-top: 15px; border-top: 1px dashed rgba(255,255,255,0.1); align-items: center; }
+        .input-mini { background: #000; border: 1px solid var(--border); color: var(--gold); padding: 10px; border-radius: 8px; width: 80px; text-align: center; font-size: 1.1rem; font-weight: 800; outline: none; }
+        .input-mini:focus { border-color: var(--accent); }
+        .label-mini { font-size: 0.85rem; color: var(--text-muted); text-transform: uppercase; font-weight: 600;}
+
+        /* --- NOTIFICATIONS --- */
+        .toast { position: fixed; bottom: 30px; left: 50%; transform: translateX(-50%) translateY(100px); background: var(--success); color: #000; padding: 15px 30px; border-radius: 30px; font-weight: 800; z-index: 2000; opacity: 0; transition: all 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275); text-transform: uppercase; letter-spacing: 1px; box-shadow: 0 10px 30px rgba(16, 185, 129, 0.4);}
+        .toast.show { transform: translateX(-50%) translateY(0); opacity: 1; }
+
+        @media (max-width: 768px) {
+            .rush-grid { grid-template-columns: 1fr 1fr; }
+            .module-row { flex-direction: column; align-items: flex-start; gap: 20px;}
+            .switch { align-self: flex-end; }
+        }
+    </style>
+</head>
+<body>
+
+    <div class="container">
+        
+        <div class="header">
+            <h1 class="title">⚡ Cockpit Anti-Rush</h1>
+            <div class="live-badge" id="sync-status">
+                <div class="live-dot"></div> EN DIRECT
+            </div>
+        </div>
+
+        <div class="card">
+            <h2 class="card-title">1. Niveau d'Alerte (Salle & Cuisine)</h2>
+            <div class="rush-grid">
+                <button class="rush-btn" data-level="1" onclick="setRushLevel(1)">
+                    🟢 NIVEAU 1 <span>Normal (10-20m)</span>
+                </button>
+                <button class="rush-btn" data-level="2" onclick="setRushLevel(2)">
+                    🟡 NIVEAU 2 <span>Tendu (20-30m)</span>
+                </button>
+                <button class="rush-btn" data-level="3" onclick="setRushLevel(3)">
+                    🟠 NIVEAU 3 <span>Saturé (30-40m)</span>
+                </button>
+                <button class="rush-btn" data-level="4" onclick="setRushLevel(4)">
+                    🔴 NIVEAU 4 <span>Critique (+40m)</span>
+                </button>
+            </div>
+            <p style="margin: 15px 0 0 0; font-size: 0.85rem; color: var(--text-muted); text-align: center;">
+                Ce niveau s'affiche en direct sur le smartphone de tous les clients qui consultent le menu.
+            </p>
+        </div>
+
+        <div class="card">
+            <h2 class="card-title">2. L'Écosystème Automatique 3.0</h2>
+            
+            <div class="module-grid">
+                
+                <div class="module-row" id="row-cameleon">
+                    <div class="module-info">
+                        <div class="module-name">🦎 Menu Caméléon</div>
+                        <div class="module-desc">Masque dynamiquement les plats longs à préparer (chaud, grill) sur les smartphones des clients dès que le Niveau 3 (Saturé) est atteint.</div>
+                    </div>
+                    <label class="switch">
+                        <input type="checkbox" id="mod-cameleon" onchange="saveDirectToCloud()">
+                        <span class="slider"></span>
+                    </label>
+                </div>
+
+                <div class="module-row" id="row-timeshift">
+                    <div style="width: 100%;">
+                        <div style="display: flex; justify-content: space-between; align-items: center;">
+                            <div class="module-info">
+                                <div class="module-name">⏱️ Time-Shifting (Paiement différé)</div>
+                                <div class="module-desc">Incite financièrement les clients à différer l'envoi de leur commande pour soulager la cuisine pendant le coup de feu.</div>
+                            </div>
+                            <label class="switch">
+                                <input type="checkbox" id="mod-timeshift" onchange="saveDirectToCloud()">
+                                <span class="slider"></span>
+                            </label>
+                        </div>
+                        
+                        <div class="settings-bar">
+                            <div style="display: flex; align-items: center; gap: 10px;">
+                                <span class="label-mini">Réduction offerte :</span>
+                                <input type="number" id="ts-discount" class="input-mini" value="5" onchange="saveDirectToCloud()">
+                                <span style="color:var(--text-main); font-weight:bold;">%</span>
+                            </div>
+                            <div style="display: flex; align-items: center; gap: 10px; margin-left: 20px;">
+                                <span class="label-mini">Délai imposé :</span>
+                                <input type="number" id="ts-delay" class="input-mini" value="15" onchange="saveDirectToCloud()">
+                                <span style="color:var(--text-main); font-weight:bold;">min</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="module-row" id="row-pacemaker">
+                    <div style="width: 100%;">
+                        <div style="display: flex; justify-content: space-between; align-items: center;">
+                            <div class="module-info">
+                                <div class="module-name">❤️ Pace-Maker (Aiguilleur Cuisine)</div>
+                                <div class="module-desc">Retient les commandes dans un sas invisible et ne les libère sur l'écran du Chef que pour remplacer un bon terminé.</div>
+                            </div>
+                            <label class="switch">
+                                <input type="checkbox" id="mod-pacemaker" onchange="saveDirectToCloud()">
+                                <span class="slider"></span>
+                            </label>
+                        </div>
+                        
+                        <div class="settings-bar">
+                            <div style="display: flex; align-items: center; gap: 10px;">
+                                <span class="label-mini">Bons maximum affichés sur l'écran Chef :</span>
+                                <input type="number" id="pm-max" class="input-mini" value="10" onchange="saveDirectToCloud()">
+                                <span style="color:var(--text-main); font-weight:bold;">Tickets</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+            </div>
+        </div>
+
+        <button onclick="window.location.href='admin.html'" style="background: transparent; border: 1px dashed var(--border); color: var(--text-muted); padding: 15px; border-radius: 12px; font-weight: 600; cursor: pointer; text-transform: uppercase; letter-spacing: 1px; transition: 0.2s;">
+            🔙 Retour aux paramètres généraux
+        </button>
+
+    </div>
+
+    <div id="toast" class="toast">Action Confirmée</div>
+
+    <script>
+        const urlParams = new URLSearchParams(window.location.search);
+        let tenantID = urlParams.get('tenantID') || localStorage.getItem('ichef_tenant_id');
+        
+        const SERVER_URL = (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1") 
+            ? "http://localhost:10000" : "https://tableau-system.onrender.com";
+
+        if (!tenantID) {
+            alert("Erreur : Identifiant de restaurant introuvable.");
+            window.location.href = "connexionpartenaire.html";
+        }
+
+        let systemSettings = {};
+
+        // --- 1. CHARGEMENT INITIAL ---
+        async function fetchSettings() {
+            try {
+                let r = await fetch(`${SERVER_URL}/get-current-state?tenantID=${tenantID}&_t=${Date.now()}`);
+                let state = await r.json();
+                
+                if (state.activeOrders && state.activeOrders['SETTINGS_MASTER']) {
+                    systemSettings = state.activeOrders['SETTINGS_MASTER'].data;
+                    updateUIFromSettings();
+                }
+            } catch(e) {
+                console.error("Erreur de connexion", e);
+                document.getElementById('sync-status').innerHTML = "❌ HORS LIGNE";
+                document.getElementById('sync-status').style.background = "rgba(239, 68, 68, 0.2)";
+                document.getElementById('sync-status').style.color = "var(--danger)";
+                document.getElementById('sync-status').style.borderColor = "var(--danger)";
+            }
+        }
+
+        // --- 2. MISE A JOUR DE L'INTERFACE ---
+        function updateUIFromSettings() {
+            // Boutons de Rush
+            let currentLevel = systemSettings.rushLevel || 1;
+            document.querySelectorAll('.rush-btn').forEach(btn => {
+                btn.classList.remove('active');
+                if(parseInt(btn.dataset.level) === currentLevel) btn.classList.add('active');
+            });
+
+            // Toggles et Inputs IA
+            let ar3 = systemSettings.rushV3 || { cameleon: false, timeShift: { active: false, discount: 5, delay: 15 }, paceMaker: { active: false, max: 10 } };
+            
+            document.getElementById('mod-cameleon').checked = ar3.cameleon;
+            document.getElementById('mod-timeshift').checked = ar3.timeShift.active;
+            document.getElementById('ts-discount').value = ar3.timeShift.discount;
+            document.getElementById('ts-delay').value = ar3.timeShift.delay;
+            
+            document.getElementById('mod-pacemaker').checked = ar3.paceMaker.active;
+            document.getElementById('pm-max').value = ar3.paceMaker.max;
+
+            // Styles dynamiques des boites
+            document.getElementById('row-cameleon').className = 'module-row ' + (ar3.cameleon ? 'active' : '');
+            document.getElementById('row-timeshift').className = 'module-row ' + (ar3.timeShift.active ? 'active' : '');
+            document.getElementById('row-pacemaker').className = 'module-row ' + (ar3.paceMaker.active ? 'active' : '');
+        }
+
+        // --- 3. ACTIONS UTILISATEUR ---
+        function setRushLevel(lvl) {
+            systemSettings.rushLevel = lvl;
+            updateUIFromSettings();
+            saveDirectToCloud();
+        }
+
+        async function saveDirectToCloud() {
+            let syncBadge = document.getElementById('sync-status');
+            syncBadge.innerHTML = "⏳ ENVOI...";
+            syncBadge.style.color = "var(--gold)";
+            syncBadge.style.borderColor = "var(--gold)";
+
+            // On met à jour l'objet avec les inputs de l'écran
+            systemSettings.rushV3 = {
+                cameleon: document.getElementById('mod-cameleon').checked,
+                timeShift: {
+                    active: document.getElementById('mod-timeshift').checked,
+                    discount: parseFloat(document.getElementById('ts-discount').value) || 5,
+                    delay: parseInt(document.getElementById('ts-delay').value) || 15
+                },
+                paceMaker: {
+                    active: document.getElementById('mod-pacemaker').checked,
+                    max: parseInt(document.getElementById('pm-max').value) || 10
+                }
+            };
+
+            // Styles visuels immédiats
+            updateUIFromSettings();
+
+            try {
+                await fetch(`${SERVER_URL}/update-order?tenantID=${tenantID}`, { 
+                    method: 'POST', 
+                    headers: {'Content-Type': 'application/json'}, 
+                    body: JSON.stringify({ tableId: 'SETTINGS_MASTER', order: { data: systemSettings } }) 
+                });
+                
+                showToast("Action synchronisée !");
+                
+                syncBadge.innerHTML = "<div class='live-dot'></div> EN DIRECT";
+                syncBadge.style.color = "var(--success)";
+                syncBadge.style.borderColor = "rgba(16, 185, 129, 0.3)";
+            } catch (e) {
+                showToast("❌ Erreur réseau");
+                syncBadge.innerHTML = "❌ ERREUR";
+            }
+        }
+
+        function showToast(msg) {
+            let t = document.getElementById('toast');
+            t.innerText = msg;
+            t.classList.add('show');
+            setTimeout(() => t.classList.remove('show'), 3000);
+        }
+
+        // --- 4. WEBSOCKET (ECOUTE DES AUTRES ECRANS) ---
+        fetchSettings();
+
+        const socket = io(SERVER_URL);
+        socket.emit('joinTenant', tenantID);
+        socket.on('updateState', (state) => {
+            if(!state) return;
+            // Si un autre manager modifie un réglage, le cockpit se met à jour tout seul
+            if(state.activeOrders && state.activeOrders['SETTINGS_MASTER']) {
+                let newSettings = state.activeOrders['SETTINGS_MASTER'].data;
+                // On vérifie si c'est vraiment différent pour ne pas clignoter pour rien
+                if(JSON.stringify(newSettings.rushV3) !== JSON.stringify(systemSettings.rushV3) || newSettings.rushLevel !== systemSettings.rushLevel) {
+                    systemSettings = newSettings;
+                    updateUIFromSettings();
+                }
+            }
+        });
+
+    </script>
+</body>
+</html>
