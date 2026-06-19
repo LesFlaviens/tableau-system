@@ -99,6 +99,8 @@
     </script>
 
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;700;900&display=swap" rel="stylesheet">
+    <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
+
     <style>
         :root {
             --bg: #050505;
@@ -189,6 +191,11 @@
         .toast { position: fixed; bottom: 40px; left: 50%; transform: translateX(-50%) translateY(100px); background: var(--ready-color); color: #000; padding: 14px 28px; border-radius: 6px; font-weight: 800; transition: transform 0.4s cubic-bezier(0.16, 1, 0.3, 1), opacity 0.4s; z-index: 20000; font-size: 0.9rem; opacity: 0; text-transform: uppercase; letter-spacing: 1px;}
         .toast.show { transform: translateX(-50%) translateY(0); opacity: 1; }
 
+        /* Pop-up d'Alerte Incident */
+        .incident-popup { position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; background: rgba(0,0,0,0.85); backdrop-filter: blur(5px); z-index: 99999; display: none; justify-content: center; align-items: center; }
+        .incident-box { background: var(--danger); border: 2px solid #fff; padding: 40px; border-radius: 20px; text-align: center; max-width: 500px; box-shadow: 0 0 50px rgba(239, 68, 68, 0.5); animation: pulseDanger 1.5s infinite; }
+        @keyframes pulseDanger { 0% { box-shadow: 0 0 30px rgba(239, 68, 68, 0.6); } 50% { box-shadow: 0 0 80px rgba(239, 68, 68, 1); } 100% { box-shadow: 0 0 30px rgba(239, 68, 68, 0.6); } }
+
         @media (max-width: 768px) {
             .pass-container { flex-direction: column; }
             .pass-column { height: 50%; }
@@ -213,6 +220,15 @@
         <button onclick="document.getElementById('pwa-strict-lock').style.display='none'" style="margin-top: 30px; background: transparent; border: 1px solid var(--border); color: var(--text-muted); padding: 10px 20px; border-radius: 4px; font-size: 0.75rem; cursor: pointer; text-transform: uppercase; font-weight: 600;">
             OUTREPASSER (MAINTENANCE)
         </button>
+    </div>
+
+    <div id="incident-popup" class="incident-popup">
+        <div class="incident-box">
+            <div style="font-size: 4rem; margin-bottom: 10px;">🚨</div>
+            <h2 style="color: #fff; font-family: 'Inter', sans-serif; font-weight: 900; margin-bottom: 10px; text-transform: uppercase;">Alerte Cuisine / Bar</h2>
+            <p id="incident-message" style="color: #fff; font-size: 1.2rem; font-weight: 600; line-height: 1.5; margin-bottom: 25px;"></p>
+            <button onclick="document.getElementById('incident-popup').style.display='none'" style="background: #fff; color: var(--danger); font-weight: 800; border: none; padding: 12px 30px; border-radius: 8px; cursor: pointer; text-transform: uppercase; font-size: 0.9rem;">J'ai compris</button>
+        </div>
     </div>
 
     <div id="toast" class="toast"></div>
@@ -260,9 +276,17 @@
             window.addEventListener('beforeinstallprompt', (e) => { e.preventDefault(); deferredInstallPrompt = e; const btn = document.getElementById('btn-force-install'); if(btn) btn.style.display = 'block'; });
         })();
 
-        function showToast(msg) { 
+        function showToast(msg, isAlert = false) { 
             const t = document.getElementById('toast'); 
-            t.innerText = msg; t.classList.add('show'); 
+            t.innerText = msg;
+            if(isAlert) {
+                t.style.background = 'var(--danger)';
+                t.style.color = '#fff';
+            } else {
+                t.style.background = 'var(--ready-color)';
+                t.style.color = '#000';
+            }
+            t.classList.add('show'); 
             setTimeout(() => t.classList.remove('show'), 3000); 
         }
     </script>
@@ -325,11 +349,11 @@
         let limitWarningMin = 15;
         let limitLateMin = 25;
         let loadThreshold = 8; // Le seuil de bons en cuisine avant alerte saturation directeur
+        let systemSettings = {};
+        let displayedAlerts = []; // Pour garder en mémoire les alertes déjà affichées
 
         function setView(view) {
-            document.getElementById('btn-mixte').classList.remove('active');
-            document.getElementById('btn-cuisine').classList.remove('active');
-            document.getElementById('btn-bar').classList.remove('active');
+            document.querySelectorAll('.view-btn').forEach(b => b.classList.remove('active'));
             document.getElementById('btn-' + view).classList.add('active');
 
             const colCuisine = document.getElementById('col-cuisine');
@@ -359,29 +383,44 @@
                     let serviceBarBanner = document.getElementById('kds-service-bar-banner');
                     let directorBanner = document.getElementById('director-load-banner');
 
+                    // 🔥 INTÉGRATION DE LA RÉCEPTION ANTI-RUSH 3.0 🔥
                     if (nO['SETTINGS_MASTER'] && nO['SETTINGS_MASTER'].data) {
-                        let systemSettings = nO['SETTINGS_MASTER'].data;
+                        systemSettings = nO['SETTINGS_MASTER'].data;
                         
+                        // 1. Détection d'une nouvelle alerte (Incident Humain/Technique)
+                        if (systemSettings.activeAlerts && systemSettings.activeAlerts.length > 0) {
+                            let latestAlert = systemSettings.activeAlerts[0];
+                            if (!displayedAlerts.includes(latestAlert.id)) {
+                                displayedAlerts.push(latestAlert.id);
+                                document.getElementById('incident-message').innerText = latestAlert.message;
+                                document.getElementById('incident-popup').style.display = 'flex';
+                                try { new Audio('https://assets.mixkit.co/active_storage/sfx/2869/2869-preview.mp3').play(); } catch(e){}
+                            }
+                        }
+
+                        // 2. Paramètres de seuils classiques
                         if (systemSettings.alertWarningMin) limitWarningMin = parseInt(systemSettings.alertWarningMin);
                         if (systemSettings.alertLateMin) limitLateMin = parseInt(systemSettings.alertLateMin);
                         
-                        // Définition dynamique du seuil de charge en fonction du paramétrage SAS de l'admin
                         if (systemSettings.sasConfig && systemSettings.sasConfig.maxTables) {
                             loadThreshold = parseInt(systemSettings.sasConfig.maxTables) * 1.5;
                         }
                         
-                        if (systemSettings.antiRush === true) {
+                        // 3. Affichage du Rush (Niveau 1 à 4)
+                        let rushLevel = systemSettings.rushLevel || 1;
+                        if (rushLevel > 1) { // À partir de Tendu
                             const levels = {
-                                1: { text: "10 à 20 min", color: "#10b981" },
-                                2: { text: "20 à 30 min", color: "#fbbf24" },
-                                3: { text: "30 à 40 min", color: "#f97316" },
-                                4: { text: "+ de 40 min", color: "#ef4444" }
+                                1: { text: "10 à 20 min", color: "#10b981", bg: "#065f46" },
+                                2: { text: "20 à 30 min", color: "#fbbf24", bg: "#b45309" },
+                                3: { text: "30 à 40 min", color: "#f97316", bg: "#9a3412" },
+                                4: { text: "+ de 40 min", color: "#ef4444", bg: "#7f1d1d" }
                             };
-                            let currentRush = levels[systemSettings.rushLevel || 1];
+                            let currentRush = levels[rushLevel];
+                            
                             if (rushBanner) {
                                 rushBanner.style.display = 'block';
                                 rushBanner.style.backgroundColor = currentRush.color;
-                                rushBanner.innerHTML = `MODE ANTI-RUSH ACTIF : LATENCE ESTIMÉE À ${currentRush.text.toUpperCase()}`;
+                                rushBanner.innerHTML = `🔥 MODE ANTI-RUSH (Niveau ${rushLevel}) : LATENCE ESTIMÉE À ${currentRush.text.toUpperCase()}`;
                             }
                         } else {
                             if (rushBanner) rushBanner.style.display = 'none';
@@ -436,7 +475,8 @@
                 if (tableId.includes('MASTER') || tableId.includes('ARCHIVE') || tableId.includes('CATEGORIES') || tableId.includes('ARCHITECTURE') || tableId.includes('HACCP') || tableId.includes('INVENTORY')) continue;
 
                 let order = activeOrders[tableId];
-                if (!order || !order.items || order.items.length === 0 || order.status === 'reserved' || order.status === 'EN ATTENTE PAIEMENT' || order.status === 'PRÊT') continue;
+                // 🔥 NOUVEAU : On ne dispatche plus en production les commandes retenues par le TimeShift
+                if (!order || !order.items || order.items.length === 0 || order.status === 'reserved' || order.status === 'EN ATTENTE PAIEMENT' || order.status === 'PRÊT' || order.status === 'EN ATTENTE (TIME-SHIFT)') continue;
 
                 order.items.forEach((i, idx) => i.originalIndex = idx);
                 order.tableKey = tableId;
@@ -494,7 +534,7 @@
             }
 
             container.innerHTML = tickets.map(ticket => {
-                let tableTitle = (ticket.tableId.toLowerCase().includes('apercu') || /^\d{13}$/.test(ticket.tableId)) ? `CLIENT WEB` : `TABLE ${ticket.tableId}`;
+                let tableTitle = (ticket.tableId.toLowerCase().includes('apercu') || /^\d{13}$/.test(ticket.tableId)) ? `CLIENT WEB` : `TABLE ${ticket.tableId.replace('WEB_','')}`;
                 let chronoClass = ""; let chronoHtml = "";
                 
                 if (ticket.delayMin >= limitLateMin) {
@@ -574,9 +614,9 @@
                 let totalRestant = order.items.filter(i => !i.done).length;
                 if(totalRestant === 0) {
                     order.status = "PRÊT"; 
-                    showToast("COMMANDE FINALISÉE");
+                    showToast("COMMANDE FINALISÉE", false);
                 } else {
-                    showToast(`ARTICLE VALIDÉ. RESTE : ${totalRestant}`);
+                    showToast(`ARTICLE VALIDÉ. RESTE : ${totalRestant}`, false);
                 }
                 await fetch(`${SERVER_URL}/update-order?tenantID=${tenantID}`, { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ tableId: tableId, order: order }) });
                 fetchProductionState();
@@ -610,37 +650,15 @@
             }, 200);
         }
 
-        setInterval(async () => {
-            try {
-                let res = await fetch(`${SERVER_URL}/get-current-state?tenantID=${tenantID}`);
-                if (res.ok) {
-                    let state = await res.json();
-                    if (state && state.activeOrders) {
-                        let foundNew = false;
-                        for (let tableId in state.activeOrders) {
-                            let order = state.activeOrders[tableId];
-                            if (order && (order.items || (order.data && order.data.items))) {
-                                let items = order.items || order.data.items || [];
-                                items.forEach(item => {
-                                    if (item.isSent && !item.done) {
-                                        let uniqueId = tableId + '_' + item.itemId;
-                                        if (!knownOrderIds.has(uniqueId)) {
-                                            knownOrderIds.add(uniqueId);
-                                            if (!isFirstScan) foundNew = true; 
-                                        }
-                                    }
-                                });
-                            }
-                        }
-                        if (foundNew) { playNewOrderSound(); triggerVisualAlert(); }
-                        isFirstScan = false;
-                    }
-                }
-            } catch(e) {}
-        }, 3000);
+        // --- ECOUTE PASSIVE (WEBSOCKET) ---
+        const socket = io(SERVER_URL);
+        socket.emit('joinTenant', tenantID);
+        socket.on('updateState', (state) => {
+            if(!state) return;
+            fetchProductionState(); // Met à jour les bons en direct sans rafraîchir la page !
+        });
 
         fetchProductionState();
-        setInterval(fetchProductionState, 3000);
     </script>
 </body>
 </html>
