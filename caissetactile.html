@@ -12,6 +12,8 @@
     <meta name="mobile-web-app-capable" content="yes">
     <meta name="theme-color" content="#0b0f19">
     
+    <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
+
     <title>iCHEF - Caisse Tactile</title>
 
     <script>
@@ -331,11 +333,46 @@
             });
 
             document.getElementById('ticket-panel').innerHTML = '<div class="empty-msg">Sélectionnez une table pour ouvrir le ticket 🧾</div>';
+            
+            // Le serveur va avertir les autres écrans par WebSocket, 
+            // mais on rafraîchit manuellement cet écran pour qu'il soit réactif au clic.
             fetchStateFromCloud();
         }
 
-        fetchStateFromCloud();
-        setInterval(fetchStateFromCloud, 3000);
+        // --- 🛡️ INITIALISATION & SYSTÈME ANTI-RUSH (WEBSOCKETS) ---
+        
+        // 1. Chargement initial au lancement
+        fetchStateFromCloud(); 
+
+        // 2. Connexion silencieuse au serveur (écoute passive)
+        const socket = io(SERVER_URL);
+
+        // 3. On informe le serveur du restaurant (tenantID) qu'on écoute
+        socket.emit('joinTenant', tenantID);
+
+        // 4. Dès que le serveur signale un changement, on met à jour la grille instantanément
+        socket.on('updateState', (state) => {
+            if(!state) return;
+            let aO = state.activeOrders || {};
+
+            // Mise à jour des paramètres du Bar
+            if (aO['SETTINGS_MASTER'] && aO['SETTINGS_MASTER'].data) {
+                let settings = aO['SETTINGS_MASTER'].data;
+                isServiceAuBarActive = settings.serviceAuBar === true;
+                
+                let badgeBar = document.getElementById('badge-service-bar');
+                if (badgeBar) {
+                    badgeBar.style.display = isServiceAuBarActive ? 'inline-block' : 'none';
+                }
+            }
+
+            // Rafraîchissement instantané des tables
+            currentActiveTables = aO;
+            renderRoomGrid();
+            
+            console.log("⚡ Mise à jour instantanée reçue du serveur !");
+        });
+
     </script>
 </body>
 </html>
