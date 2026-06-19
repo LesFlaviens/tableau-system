@@ -252,13 +252,15 @@
                     ⚙️ Paramètres
                 </h2>
                 <div class="topbar-actions">
-    <button class="btn-outline" onclick="window.location.href='admin.html'" style="border-color: var(--gold); color: var(--gold);">🔙 Accueil Master</button>
-    <button class="btn-sync" id="sync-status" onclick="forceSync()"><span>● En Direct</span> 🔄</button>
-    
-    <button id="btn-kill-switch" class="btn-save" style="background: var(--danger); color: white; box-shadow: 0 4px 15px rgba(239, 68, 68, 0.4);" onclick="toggleKillSwitch()">🛑 COUPER LE SYSTÈME</button>
-    
-    <button class="btn-save" onclick="saveAllToCloud()">Enregistrer</button>
-</div>
+                    <button class="btn-outline" onclick="window.location.href='admin.html'" style="border-color: var(--gold); color: var(--gold);">🔙 Accueil Master</button>
+                    <button class="btn-sync" id="sync-status" onclick="forceSync()"><span>● En Direct</span> 🔄</button>
+                    
+                    <button id="btn-kill-switch" class="btn-save" style="background: var(--danger); color: white; box-shadow: 0 4px 15px rgba(239, 68, 68, 0.4);" onclick="toggleKillSwitch()">🛑 COUPER LE SYSTÈME</button>
+                    
+                    <button class="btn-save" onclick="saveAllToCloud()">Enregistrer</button>
+                </div>
+            </div>
+
             <div class="content-scroll">
                 
                 <div id="tab-general" class="main-scroll active">
@@ -703,6 +705,11 @@
     </div>
 
     <script>
+        const urlParams = new URLSearchParams(window.location.search);
+        let tenantID = urlParams.get('tenantID') || localStorage.getItem('ichef_tenant_id');
+        const SERVER_URL = (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1" || window.location.protocol === "file:") 
+            ? "http://localhost:10000" : "https://tableau-system.onrender.com";
+
         let systemSettings = {};
         let globalArchitecture = { rooms: ['Salle Principale'], tables: [], zones: [] };
         let menuCuisine = {}; 
@@ -736,6 +743,8 @@
             if(document.getElementById('resto-tva-2')) document.getElementById('resto-tva-2').value = systemSettings.tva2 !== undefined ? systemSettings.tva2 : 20;
             if(document.getElementById('setting-currency')) document.getElementById('setting-currency').value = systemSettings.currency || "€";
             if(document.getElementById('setting-service-bar')) document.getElementById('setting-service-bar').checked = systemSettings.serviceAuBar || false;
+
+            updateKillSwitchUI(); // MET A JOUR LE BOUTON D'URGENCE
 
             if(document.getElementById('setting-loyalty-active') && systemSettings.loyalty) document.getElementById('setting-loyalty-active').checked = systemSettings.loyalty.active === true;
             if(document.getElementById('setting-loyalty-percent') && systemSettings.loyalty) document.getElementById('setting-loyalty-percent').value = systemSettings.loyalty.percent !== undefined ? systemSettings.loyalty.percent : 5;
@@ -1353,66 +1362,52 @@
                 updateDashboardStats(); renderFinancialDashboard(); renderStaffList(); renderActiveStaff(); renderMenuList();
             }
         });
-// --- 🛑 KILL SWITCH SYSTEM (ARRÊT D'URGENCE GLOBAL) ---
-async function toggleKillSwitch() {
-    let isDown = systemSettings.systemDown === true;
-    let action = isDown ? "RÉACTIVER" : "VERROUILLER";
-    let confirmMsg = isDown 
-        ? "🟢 Relancer l'ensemble de l'écosystème (Prise de commande, production, caisses) ?" 
-        : "🛑 COUPURE D'URGENCE : Verrouiller l'infrastructure et stopper toutes les prises de commandes ?";
-        
-    if(!confirm(confirmMsg)) return;
 
-    // Bascule de l'état
-    systemSettings.systemDown = !isDown;
-    updateKillSwitchUI();
-    markUnsaved();
+        // --- 🛑 KILL SWITCH SYSTEM (ARRÊT D'URGENCE GLOBAL) ---
+        async function toggleKillSwitch() {
+            let isDown = systemSettings.systemDown === true;
+            let action = isDown ? "RÉACTIVER" : "VERROUILLER";
+            let confirmMsg = isDown 
+                ? "🟢 Relancer l'ensemble de l'écosystème (Prise de commande, production, caisses) ?" 
+                : "🛑 COUPURE D'URGENCE : Verrouiller l'infrastructure et stopper toutes les prises de commandes ?";
+                
+            if(!confirm(confirmMsg)) return;
 
-    try {
-        // Frappe chirurgicale : Injection directe et immédiate vers le Cloud
-        await fetch(`${SERVER_URL}/update-order?tenantID=${tenantID}`, {
-            method: 'POST',
-            headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({ tableId: 'SETTINGS_MASTER', order: { data: systemSettings } })
-        });
-        showToast(isDown ? "Système Opérationnel" : "Système Verrouillé !");
-    } catch(e) {
-        alert("Échec de la transmission d'urgence. Vérifiez la connexion.");
-    }
-}
+            // Bascule de l'état
+            systemSettings.systemDown = !isDown;
+            updateKillSwitchUI();
+            markUnsaved();
 
-function updateKillSwitchUI() {
-    let btn = document.getElementById('btn-kill-switch');
-    if(!btn) return;
-    
-    if(systemSettings.systemDown) {
-        btn.innerHTML = "🟢 RELANCER LE SYSTÈME";
-        btn.style.background = "var(--success)";
-        btn.style.boxShadow = "0 4px 15px rgba(16, 185, 129, 0.4)";
-        btn.style.color = "#000";
-    } else {
-        btn.innerHTML = "🛑 COUPER LE SYSTÈME";
-        btn.style.background = "var(--danger)";
-        btn.style.boxShadow = "0 4px 15px rgba(239, 68, 68, 0.4)";
-        btn.style.color = "#fff";
-    }
-}
-        // --- 🛑 GESTION VISUELLE DU KILL SWITCH ---
-function updateKillSwitchUI() {
-    let btn = document.getElementById('btn-kill-switch');
-    if(!btn) return;
-    
-    if(systemSettings.systemDown) {
-        btn.innerHTML = "🟢 RELANCER LE SYSTÈME";
-        btn.style.background = "var(--success)";
-        btn.style.boxShadow = "0 4px 15px rgba(16, 185, 129, 0.4)";
-        btn.style.color = "#000";
-    } else {
-        btn.innerHTML = "🛑 COUPER LE SYSTÈME";
-        btn.style.background = "var(--danger)";
-        btn.style.boxShadow = "0 4px 15px rgba(239, 68, 68, 0.4)";
-        btn.style.color = "#fff";
-    }
+            try {
+                // Frappe chirurgicale : Injection directe et immédiate vers le Cloud
+                await fetch(`${SERVER_URL}/update-order?tenantID=${tenantID}`, {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ tableId: 'SETTINGS_MASTER', order: { data: systemSettings } })
+                });
+                showToast(isDown ? "Système Opérationnel" : "Système Verrouillé !");
+                markSaved(); // Pour enlever le statut "Modifié"
+            } catch(e) {
+                alert("Échec de la transmission d'urgence. Vérifiez la connexion.");
+            }
+        }
+
+        function updateKillSwitchUI() {
+            let btn = document.getElementById('btn-kill-switch');
+            if(!btn) return;
+            
+            if(systemSettings.systemDown) {
+                btn.innerHTML = "🟢 RELANCER LE SYSTÈME";
+                btn.style.background = "var(--success)";
+                btn.style.boxShadow = "0 4px 15px rgba(16, 185, 129, 0.4)";
+                btn.style.color = "#000";
+            } else {
+                btn.innerHTML = "🛑 COUPER LE SYSTÈME";
+                btn.style.background = "var(--danger)";
+                btn.style.boxShadow = "0 4px 15px rgba(239, 68, 68, 0.4)";
+                btn.style.color = "#fff";
+            }
+        }
 
     </script>
 </body>
