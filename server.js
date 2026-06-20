@@ -65,6 +65,7 @@
                 if (currentPlan.includes('CHEF') && !currentPlan.includes('BAR') && !currentPlan.includes('PATISSERIE')) backUrl = 'chef.html';
                 if (currentPlan.includes('BAR')) backUrl = 'chef-bar.html';
                 if (currentPlan.includes('PATISSIER') || currentPlan.includes('PATISSERIE')) backUrl = 'chef-patissier.html';
+                // ✅ LE PACK ECO EST PARFAITEMENT RECONNU ET REDIRIGÉ VERS ADMIN.HTML
                 if (['ICHEF_OS', 'ECO', 'BUSINESS', 'RENTABILITE', 'EMPIRE', 'PREMIUM', 'BRIGADE', 'BRIGADES'].includes(currentPlan)) backUrl = 'admin.html';
             } catch (e) { console.error(e); }
         })();
@@ -73,10 +74,9 @@
     <style>
         :root {
             --bg: #050505; --panel: #111111; --border: #222222; --border-strong: #333333;
-            --text-main: #ffffff; --text-muted: #888888; --sub: #777777;
-            --gold: #d4af37; --accent: #38bdf8; --success: #10b981; --warning: #f59e0b;
-            --danger: #ef4444; --orange: #f97316; --purple: #a855f7; --cyan: #06b6d4; --recup: #d4e157;
-            --hr: #3b82f6; --radius: 12px; --blur: blur(20px);
+            --text-main: #ffffff; --text-muted: #888888;
+            --gold: #d4af37; --accent: #38bdf8; --success: #10b981; --warning: #fbbf24;
+            --orange: #f97316; --danger: #ef4444; --chaos: #a855f7;
         }
 
         * { box-sizing: border-box; }
@@ -100,7 +100,6 @@
         .live-dot { width: 8px; height: 8px; background: var(--success); border-radius: 50%; animation: blink 1s infinite alternate; }
         @keyframes blink { from { opacity: 0.4; } to { opacity: 1; box-shadow: 0 0 10px var(--success); } }
 
-        /* GRID STRATÉGIQUE 3 COLONNES AVEC PRIORITÉ GAUCHE MASSIF */
         .dashboard-grid {
             display: grid;
             grid-template-columns: minmax(380px, 1.3fr) minmax(300px, 1fr) 300px;
@@ -195,7 +194,6 @@
 
     <div class="dashboard-grid">
         
-        <!-- COLONNE GAUCHE (MASSIF ET PRIORITAIRE) : BRIGADE ACTIVE & RADAR PREDICTIF -->
         <div class="dash-col">
             <div class="card" style="border-color: var(--gold); background: rgba(212, 175, 55, 0.03); flex: 1;">
                 <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
@@ -215,21 +213,23 @@
                 </div>
             </div>
 
+            <!-- 📡 EMPLACEMENT RÉSERVATIONS MIS À JOUR AVEC LIEN VERS RESERVATION.HTML -->
             <div class="card" style="border-color: var(--accent); background: rgba(56, 189, 248, 0.03); flex: 1.2;">
-                <h2 class="card-title" style="color: var(--accent);">
-                    📡 Radar Prédictif
-                    <span id="radar-total-pax" style="color: #fff; font-size: 0.75rem; background: var(--border); padding: 3px 8px; border-radius: 8px; font-weight: normal;">0 Pax en approche</span>
+                <h2 class="card-title" style="color: var(--accent); display: flex; justify-content: space-between; align-items: center; width: 100%;">
+                    <span>📡 Radar Prédictif</span>
+                    <!-- 📂 BOUTON D'ACCÈS SUR RESERVATION.HTML AVEC PROG DU PACK ECO COMPATIBLE -->
+                    <button class="btn-edit" onclick="window.location.href='reservation.html?tenantID=' + tenantID" style="border-color: var(--accent); color: var(--accent); font-weight: bold; text-transform: uppercase; font-size: 0.7rem; padding: 5px 10px;">📂 Ouvrir Réservations</button>
                 </h2>
-                <p style="margin: 0 0 10px 0; font-size: 0.75rem; color: var(--text-muted);">
-                    Le système scanne les arrivées (+45 min) et les intègre à la charge de la Salle.
-                </p>
+                <!-- ZONE AFFICHAGE DU NOMBRE TOTAL DES RÉSERVATIONS ET PAX -->
+                <div id="radar-total-pax" style="color: #fff; font-size: 0.8rem; background: var(--border); padding: 6px 10px; border-radius: 8px; font-weight: bold; margin-bottom: 10px; border: 1px solid var(--border-strong);">
+                    0 Résas Total | 0 Pax en approche
+                </div>
                 <div class="scrollable-content" id="radar-reservations" style="display: flex; flex-direction: column; gap: 8px;">
                     <div style="color: var(--text-muted); text-align: center; font-style: italic; padding: 10px; font-size: 0.8rem;">Scan en cours...</div>
                 </div>
             </div>
         </div>
 
-        <!-- COLONNE CENTRE : JAUGES & FLUX -->
         <div class="dash-col">
             <div class="card" style="flex: 1;">
                 <h2 class="card-title">
@@ -281,7 +281,6 @@
             </div>
         </div>
 
-        <!-- COLONNE DROITE : IA ET ALERTES -->
         <div class="dash-col">
             <div class="card" style="flex: 0.7;">
                 <h2 class="card-title">Modules d'Atténuation IA</h2>
@@ -345,7 +344,7 @@
         </div>
     </div>
 
-    <!-- MODAL SPECIFIQUE : PROFIL INTEGRAL STAFF AVEC TELEPORTATION ET HEURES DU CUMUL -->
+    <!-- MODAL SPECIFIQUE : PROFIL INTEGRAL STAFF AVEC CALENDRIER L M M J V S D SYNCHRONISÉ -->
     <div class="modal" id="staff-profile-modal">
         <div class="modal-content" style="max-width: 400px; text-align: center;">
             <h3 class="modal-title" id="sp-name" style="color: var(--accent); margin-bottom: 5px; text-transform: uppercase;">Nom</h3>
@@ -353,23 +352,21 @@
 
             <div style="background: rgba(255,255,255,0.03); border: 1px solid var(--border); border-radius: 8px; padding: 15px; margin-bottom: 20px; text-align: left;">
                 <div style="margin-bottom: 15px; padding-bottom: 10px; border-bottom: 1px dashed rgba(255,255,255,0.1);">
-                    <span style="color: var(--text-muted); font-size: 0.8rem;">⏱️ Cumul Semaine :</span>
+                    <span style="color: var(--text-muted); font-size: 0.8rem;">⏱️ Cumul Mensuel :</span>
                     <strong id="sp-hours" style="color: #fff; float: right; font-size: 1.1rem;">0h / 35h</strong>
                 </div>
                 <div>
-                    <span style="color: var(--text-muted); font-size: 0.8rem;">📅 Prochains Services :</span>
-                    <div id="sp-schedule" style="color: var(--warning); font-size: 0.85rem; margin-top: 5px; font-weight: bold; line-height: 1.4;">
-                        En attente de synchro...
+                    <span style="color: var(--text-muted); font-size: 0.8rem;">📅 Planning Hebdomadaire (RH) :</span>
+                    <div id="sp-schedule" style="display: flex; justify-content: space-between; margin-top: 10px; background: rgba(0,0,0,0.2); padding: 8px; border-radius: 8px; border: 1px solid var(--border);">
+                        <!-- Généré dynamiquement en JS -->
                     </div>
                 </div>
             </div>
 
-            <!-- ACTION : POINTEUSE MANUELLE/SERVICE -->
             <button id="sp-toggle-btn" class="rush-btn" style="width: 100%; margin-bottom: 10px; font-size: 0.85rem;" onclick="toggleStaffDutyFromModal()">
                 🟢 FORCER L'ENTRÉE (ON DUTY)
             </button>
 
-            <!-- ACTION : TÉLÉPORTATION VERS LA BRIGADE RH.HTML -->
             <button class="rush-btn" style="width: 100%; border-color: var(--gold); color: var(--gold); background: rgba(212, 175, 55, 0.05); font-size: 0.85rem;" onclick="goToRH()">
                 📁 GÉRER LE PROFIL (RH.HTML)
             </button>
@@ -448,11 +445,12 @@
         let systemSettings = { activeAlerts: [], rushThresholds: {}, rushRules: {} }; 
         let staffAccess = [];
         let currentSelectedPin = null;
+        let globalAppState = null;
 
         function goBackToMyStation() { window.location.href = `${backUrl}?tenantID=${tenantID}`; }
 
         // ==========================================
-        // 📡 MOTEUR DU RADAR PRÉDICTIF (ANTI-RUSH)
+        // 📡 MOTEUR DU RADAR PRÉDICTIF AMÉLIORÉ (NOM + TEL + TOTAL)
         // ==========================================
         function updateRadarReservations(state) {
             const radarContainer = document.getElementById('radar-reservations');
@@ -471,11 +469,12 @@
             resasDuJour.sort((a, b) => (a.time || "00:00").localeCompare(b.time || "00:00"));
 
             let incomingClients = 0;
+            let totalResasCount = resasDuJour.length; // 📊 NOMBRE TOTAL DE RÉSERVATIONS DU SERVICE
             let html = '';
 
             if (resasDuJour.length === 0) {
                 radarContainer.innerHTML = `<div style="padding: 10px; color: var(--text-muted); text-align: center; border: 1px dashed var(--border-strong); border-radius: 6px; font-size:0.8rem;">Aucune réservation à venir.</div>`;
-                paxCounter.innerText = "0 Pax en approche";
+                paxCounter.innerHTML = `<span style="color:var(--gold); font-weight:900;">0 Résas Total</span> | 0 Pax en approche`;
                 return 0;
             }
 
@@ -484,6 +483,7 @@
                 let heure = r.time || "N/A";
                 let table = r.table || r.assignedTable || "Aucune";
                 let nom = r.name || "Client";
+                let phone = r.phone || "Pas de numéro"; // 📞 INCLUSION DU NUMÉRO DE TÉLÉPHONE
                 
                 let [h, m] = heure.split(':').map(Number);
                 let resaTime = new Date(now.getFullYear(), now.getMonth(), now.getDate(), h, m);
@@ -497,26 +497,93 @@
                 let stripeTag = r.stripeHold ? '<span style="color: var(--success); font-size:0.65rem; margin-left: 5px;">💳 Garantie</span>' : '';
 
                 html += `
-                <div style="background: rgba(255,255,255,0.03); border-left: 3px solid ${alertColor}; padding: 8px 10px; border-radius: 4px; display: flex; justify-content: space-between; align-items: center; opacity: ${opacity};">
+                <div style="background: rgba(255,255,255,0.03); border-left: 3px solid ${alertColor}; padding: 10px; border-radius: 6px; display: flex; justify-content: space-between; align-items: center; opacity: ${opacity};">
                     <div>
                         <div style="color: #fff; font-size: 0.95rem; font-weight: bold;">
-                            🕒 ${heure} <span style="font-weight: normal; color: var(--text-muted); font-size:0.85rem; margin-left: 5px;">${nom.substring(0,10)}</span>
+                            🕒 ${heure} - <span style="color: var(--accent); font-weight:800;">${nom}</span>
                         </div>
-                        <div style="font-size: 0.75rem; color: var(--text-muted); margin-top: 2px;">
-                            📍 T: <span style="color: var(--text-main); font-weight:600;">${table}</span>
+                        <div style="font-size: 0.75rem; color: var(--text-muted); margin-top: 4px; display:flex; gap: 10px; align-items:center;">
+                            <span>📞 ${phone}</span>
+                            <span style="color: var(--border-strong);">|</span>
+                            <span>📍 Table: <span style="color: var(--text-main); font-weight:600;">${table}</span></span>
                             ${stripeTag}
                         </div>
                     </div>
-                    <div style="color: ${alertColor}; font-weight: 900; font-size: 1.1rem;">
+                    <div style="color: ${alertColor}; font-weight: 900; font-size: 1.1rem; background: rgba(0,0,0,0.2); padding: 4px 8px; border-radius: 6px;">
                         ${pax}p
                     </div>
                 </div>`;
             });
 
-            paxCounter.innerText = `${incomingClients} Pax (-45m)`;
+            // MISE À JOUR DE LA BARRE DE STATUT SUPÉRIEURE
+            paxCounter.innerHTML = `<span style="color:var(--gold); font-weight:900;">${totalResasCount} Résas au Service</span> | <span style="color:var(--accent); font-weight:900;">${incomingClients} Pax</span> en approche (-45 min)`;
             radarContainer.innerHTML = html;
             
             return incomingClients;
+        }
+
+        // ==========================================
+        // 🗓️ EXTRACTION DE LA SEMAINE ACTIVE DE RH.HTML
+        // ==========================================
+        function generateHREmojiCalendar(staffId, state) {
+            const daysLetters = ['L', 'M', 'M', 'J', 'V', 'S', 'D'];
+            const now = new Date();
+            
+            const dayOfWeek = now.getDay(); 
+            const diffToMonday = dayOfWeek === 0 ? -6 : 1 - dayOfWeek;
+            const mondayDate = new Date(now);
+            mondayDate.setDate(now.getDate() + diffToMonday);
+            
+            let html = '';
+            const timesheets = (state.activeOrders && state.activeOrders['TIMESHEETS_MASTER'] && state.activeOrders['TIMESHEETS_MASTER'].data) ? state.activeOrders['TIMESHEETS_MASTER'].data : {};
+            
+            for (let i = 0; i < 7; i++) {
+                const targetDay = new Date(mondayDate);
+                targetDay.setDate(mondayDate.getDate() + i);
+                
+                const monthKey = `${targetDay.getFullYear()}-${String(targetDay.getMonth() + 1).padStart(2, '0')}`;
+                const dayNum = targetDay.getDate();
+                
+                let combinedEmoji = '💤'; 
+                let dayContainerStyle = 'border: 1px solid transparent;';
+                
+                if (targetDay.toDateString() === now.toDateString()) {
+                    dayContainerStyle = 'border: 1px solid var(--gold); background: rgba(212, 175, 55, 0.1); border-radius: 6px;';
+                }
+                
+                if (timesheets[monthKey] && timesheets[monthKey][staffId] && timesheets[monthKey][staffId][dayNum]) {
+                    const dataObj = timesheets[monthKey][staffId][dayNum];
+                    const st = dataObj.status;
+                    
+                    if (st === 'present') {
+                        const hasMatin = dataObj.s1 && dataObj.s1.trim() !== '';
+                        const hasSoir = dataObj.s2 && dataObj.s2.trim() !== '';
+                        if (hasMatin && hasSoir) combinedEmoji = '☀️🌙';
+                        else if (hasMatin) combinedEmoji = '☀️';
+                        else if (hasSoir) combinedEmoji = '🌙';
+                        else combinedEmoji = '✅';
+                    } else if (st === 'off_matin') {
+                        combinedEmoji = '❌🌙';
+                    } else if (st === 'off_soir') {
+                        combinedEmoji = '☀️❌';
+                    } else if (st === 'repos' || st === 'off') {
+                        combinedEmoji = '💤';
+                    } else if (st === 'ferie') {
+                        combinedEmoji = '🎉';
+                    } else if (st === 'conge' || st === 'vacation') {
+                        combinedEmoji = '🏖️';
+                    } else if (st === 'maladie') {
+                        combinedEmoji = '🤒';
+                    }
+                }
+                
+                html += `
+                <div style="display: flex; flex-direction: column; align-items: center; gap: 4px; flex: 1; padding: 4px 0; ${dayContainerStyle}">
+                    <span style="font-size: 0.7rem; color: var(--text-muted); font-weight: 900;">${daysLetters[i]}</span>
+                    <span style="font-size: 1rem;">${combinedEmoji}</span>
+                </div>`;
+            }
+            return html;
         }
 
         // --- INTERFACES LOGIQUES BRIGADE ---
@@ -531,8 +598,6 @@
                 let rankLabel = s.role ? s.role.toUpperCase() : s.dept.toUpperCase();
                 let colorTheme = s.dept === 'cuisine' ? 'var(--orange)' : 'var(--accent)';
                 let isOnDuty = s.onDuty === true;
-                
-                // NOUVEAU : Récupération sécurisée du cumul d'heures calculé par le serveur
                 let hoursLogged = s.workedHours !== undefined ? s.workedHours + 'h' : '0h';
                 
                 let boxStyle = isOnDuty 
@@ -559,7 +624,12 @@
 
             let heuresSimulees = emp.workedHours ? emp.workedHours : "0"; 
             document.getElementById('sp-hours').innerText = heuresSimulees + "h / " + (emp.contract || 35) + "h";
-            document.getElementById('sp-schedule').innerText = emp.scheduleText || "Ce soir, Demain Matin, Vendredi Soir";
+            
+            if (globalAppState) {
+                document.getElementById('sp-schedule').innerHTML = generateHREmojiCalendar(emp.id || emp.pin, globalAppState);
+            } else {
+                document.getElementById('sp-schedule').innerText = "En attente de synchro...";
+            }
 
             let toggleBtn = document.getElementById('sp-toggle-btn');
             if(emp.onDuty) {
@@ -597,6 +667,7 @@
                     await fetch(`${SERVER_URL}/update-order?tenantID=${tenantID}`, { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ tableId: 'STAFF_ACCESS', order: { data: staffAccess } }) });
                     let r = await fetch(`${SERVER_URL}/get-current-state?tenantID=${tenantID}`);
                     let state = await r.json();
+                    globalAppState = state;
                     calculateRushState(state);
                 } catch(e) { showToast("❌ Erreur RH"); }
             }
@@ -608,6 +679,7 @@
                 if (!SERVER_URL) { setTimeout(fetchSettings, 200); return; }
                 let r = await fetch(`${SERVER_URL}/get-current-state?tenantID=${tenantID}&_t=${Date.now()}`);
                 let state = await r.json();
+                globalAppState = state;
 
                 if (state.activeOrders && state.activeOrders['STAFF_ACCESS']) staffAccess = state.activeOrders['STAFF_ACCESS'].data || [];
                 if (state.activeOrders && state.activeOrders['SETTINGS_MASTER']) {
@@ -662,7 +734,7 @@
             systemSettings.rushThresholds = { l0: document.getElementById('input-thresh-0').value, l1: document.getElementById('input-thresh-1').value, l2: document.getElementById('input-thresh-2').value, l3: document.getElementById('input-thresh-3').value, l4: document.getElementById('input-thresh-4').value, l5: document.getElementById('input-thresh-5').value };
             systemSettings.rushRules = { auto: document.getElementById('input-auto-rush').checked, ratioCook: parseInt(document.getElementById('ratio-cook').value), ratioServer: parseInt(document.getElementById('ratio-server').value) };
             closeModal('threshold-modal'); updateUIFromSettings(); saveDirectToCloud();
-            fetch(`${SERVER_URL}/get-current-state?tenantID=${tenantID}`).then(r=>r.json()).then(state => calculateRushState(state));
+            fetch(`${SERVER_URL}/get-current-state?tenantID=${tenantID}`).then(r=>r.json()).then(state => { globalAppState = state; calculateRushState(state); });
         }
 
         function renderAlertsFeed() {
@@ -736,6 +808,7 @@
             const socket = io(SERVER_URL); socket.emit('joinTenant', tenantID);
             socket.on('updateState', (state) => {
                 if(!state) return;
+                globalAppState = state;
                 if (state.activeOrders && state.activeOrders['STAFF_ACCESS']) { staffAccess = state.activeOrders['STAFF_ACCESS'].data || []; renderStaffSymbiosis(); }
                 calculateRushState(state);
             });
