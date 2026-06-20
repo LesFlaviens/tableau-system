@@ -695,6 +695,7 @@
 
             loadPublicPlanning(); 
             updateReqBadge();
+            broadcastStaffingLevels();
             
             setInterval(async () => {
                 if(loginMode === 'director') {
@@ -1220,6 +1221,8 @@
 
             document.getElementById('punch-success-overlay').style.display = 'flex';
 
+            broadcastStaffingLevels(); // SYNCHRONISATION ANTI-RUSH
+
             setTimeout(() => {
                 cancelPunchClock();
             }, 2500);
@@ -1448,6 +1451,54 @@
             return Math.max(0, total);
         }
 
+        // ==========================================
+        // 🧠 SYNCHRONISATION ANTI-RUSH : EFFECTIFS EN TEMPS RÉEL
+        // ==========================================
+        async function broadcastStaffingLevels() {
+            try {
+                const today = new Date();
+                const year = today.getFullYear();
+                const month = today.getMonth() + 1;
+                const day = today.getDate();
+                const monthStr = `${year}-${String(month).padStart(2, '0')}`;
+                
+                const ts = getTs(); 
+                const dir = getDir(); 
+                const punches = getPunches(); 
+                
+                let staffing = {
+                    cuisine: 0,
+                    bar: 0,
+                    salle: 0,
+                    patisserie: 0,
+                    admin: 0,
+                    capaciteMaxPlatsParCuistot: 12 
+                };
+
+                dir.forEach(staff => {
+                    if(staff.active === false) return;
+                    
+                    let p = (ts[monthStr] && ts[monthStr][staff.id] && ts[monthStr][staff.id][day]) ? ts[monthStr][staff.id][day] : null;
+                    
+                    if (p) {
+                        let isScheduledToday = (p.status === 'present' || p.status === 'off_soir' || p.status === 'off_matin');
+
+                        if (isScheduledToday) {
+                            let assignedDept = p.poste || staff.dept;
+                            if(staffing[assignedDept] !== undefined) {
+                                staffing[assignedDept]++;
+                            }
+                        }
+                    }
+                });
+
+                await API.update('RH_MASTER', staffing);
+                console.log("📡 Télémétrie RH envoyée pour l'Anti-Rush :", staffing);
+            } catch (e) {
+                console.error("Erreur lors du broadcast RH :", e);
+            }
+        }
+
         function getStaffMonthStats(staffId, year, month, daysInMonth, monthData) {
             const staff = getDir().find(s => s.id === staffId);
             if(!staff) return null;
@@ -1673,6 +1724,7 @@
             saveTs(ts);
             loadMonthData();
             loadPublicPlanning();
+            broadcastStaffingLevels(); // SYNCHRONISATION ANTI-RUSH A CHAQUE MODIFICATION
         }
 
         function updateStatus(sid, d, v) { updateData(sid, d, 'status', v); }
@@ -1771,4 +1823,3 @@
     </script>
 </body>
 </html>
-
