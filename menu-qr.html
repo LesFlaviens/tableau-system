@@ -24,15 +24,6 @@
     <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
 
     <style>
-        /* Désactive l'affichage de la bannière sur le menu QR */
-        #banner {
-            display: none !important;
-        }
-
-        /* Optionnel : Ajuste le padding du header si le logo est trop haut sans bannière */
-        header {
-            padding-top: 40px !important;
-        }
         :root { 
             --bg-color: #050505;            
             --text-main: #f5f5f5;   
@@ -75,7 +66,7 @@
         body { background: var(--bg-color); color: var(--text-main); margin: 0; padding: 0; display: flex; flex-direction: column; align-items: center; -webkit-font-smoothing: antialiased; transition: background-color 0.5s, color 0.5s; font-family: var(--font-text); overscroll-behavior-y: none; }
         
         .kiosk-wrapper { width: 100%; max-width: 800px; min-height: 100vh; background: var(--bg-color); position: relative; padding-bottom: 120px; }
-        header { text-align: center; padding: 60px 20px 30px; border-bottom: 1px solid var(--border-color); }
+        header { text-align: center; padding: 80px 20px 30px; border-bottom: 1px solid var(--border-color); transition: padding 0.3s ease; }
         .logo-text { font-family: var(--font-title); color: var(--gold); font-size: 3rem; font-weight: 600; letter-spacing: 8px; margin: 0; text-transform: uppercase; }
         .subtitle { font-family: var(--font-text); color: var(--text-muted); font-size: 0.9rem; letter-spacing: 4px; margin-top: 15px; text-transform: uppercase; font-weight: 500; }
         
@@ -221,7 +212,7 @@
     </div>
 
     <div class="kiosk-wrapper">
-        <div id="banner" style="width:100%; height:250px; background:center center/cover no-repeat; background-color:#111;"></div>
+        <div id="banner" style="width:100%; height:250px; background:center center/cover no-repeat; background-color:#111; display:none;"></div>
         <header>
             <h1 id="restaurant-name" class="logo-text">NOTRE MAISON</h1>
             <div class="subtitle">La Carte</div>
@@ -402,7 +393,7 @@
                     if (systemSettings.name) document.getElementById('restaurant-name').innerText = systemSettings.name;
 
                     // 🔥 ÉVALUATION DE L'ÉTAT ANTI-RUSH 3.0 🔥
-                    let rushLevel = systemSettings.rushLevel || 1;
+                    let rushLevel = systemSettings.rushLevel || 0; // Lecture du niveau de 0 à 5
                     rushV3Settings = systemSettings.rushV3 || { cameleon: false, timeShift: { active: false, discount: 5, delay: 15 }, paceMaker: { active: false, max: 10 } };
                     
                     isKitchenInRush = (rushLevel >= 3); // L'IA considère qu'il y a un Rush à partir du Niveau 3 (Orange)
@@ -439,11 +430,12 @@
                         }
                     }
 
-                    // 🛑 GESTION DE LA FERMETURE
-                    if (isManualClosed || !isAutoOpen) {
-                        let motif = isManualClosed ? "suite à une forte affluence" : "car nous sommes en dehors de nos heures de service";
-                        let titre = isManualClosed ? "Service Suspendu" : "Service Terminé";
-                        let icone = isManualClosed ? "🛎️" : "🕰️";
+                    // 🛑 GESTION DE LA FERMETURE (et BLOCAGE NIVEAU 5 ANTI-RUSH)
+                    if (isManualClosed || !isAutoOpen || rushLevel >= 5) {
+                        let motif = isManualClosed ? "suite à une forte affluence" : 
+                                    (rushLevel >= 5 ? "pour garantir la qualité de nos plats suite à une saturation des cuisines" : "car nous sommes en dehors de nos heures de service");
+                        let titre = rushLevel >= 5 ? "Cuisine Saturée" : (isManualClosed ? "Service Suspendu" : "Service Terminé");
+                        let icone = rushLevel >= 5 ? "🔥" : (isManualClosed ? "🛎️" : "🕰️");
 
                         document.getElementById('filter-bar').style.display = 'none';
 
@@ -461,7 +453,7 @@
                         if (fab) fab.style.display = 'none';
                         let cartModal = document.getElementById('cart-modal');
                         if (cartModal) cartModal.style.display = 'none';
-                        return; 
+                        return; // On bloque l'exécution ici si c'est fermé ou Niveau 5 !
                     } else {
                         document.getElementById('filter-bar').style.display = 'flex';
                     }
@@ -477,24 +469,26 @@
                         if(btnPayer) btnPayer.innerHTML = "🛎️ COMMANDER ET PAYER À TABLE";
                     }
 
+                    // 🔥 AFFICHAGE DE LA BANNIÈRE D'ATTENTE SELON LE NIVEAU (2 à 4) 🔥
                     let rushBanner = document.getElementById('rush-banner');
-                    if (systemSettings.antiRush === true) {
+                    if (rushLevel >= 2 && rushLevel < 5) {
                         const levels = {
-                            1: { text: "10 à 20 min", color: "#10b981" },
-                            2: { text: "20 à 30 min", color: "#fbbf24" },
-                            3: { text: "30 à 40 min", color: "#f97316" },
-                            4: { text: "+ de 40 min", color: "#ef4444" }
+                            2: { text: "20 à 30 min", color: "#fbbf24" }, // Jaune
+                            3: { text: "30 à 40 min", color: "#f97316" }, // Orange
+                            4: { text: "+ de 45 min", color: "#ef4444" }  // Rouge
                         };
-                        let currentRush = levels[systemSettings.rushLevel || 1];
+                        let currentRush = levels[rushLevel] || { text: "Attente prolongée", color: "#fbbf24" };
 
                         if (!rushBanner) {
                             rushBanner = document.createElement('div');
                             rushBanner.id = 'rush-banner';
                             document.body.insertBefore(rushBanner, document.getElementById('service-bar-banner').nextSibling);
                         }
-                        rushBanner.style.cssText = `background: ${currentRush.color}; color: #000; text-align: center; padding: 12px; font-weight: 900; font-family: var(--font-text); position: sticky; top: ${systemSettings.serviceAuBar ? '40px' : '0'}; z-index: 9998; text-transform: uppercase; letter-spacing: 1px; font-size:0.85rem;`;
+                        rushBanner.style.cssText = `background: ${currentRush.color}; color: ${rushLevel >= 4 ? '#fff' : '#000'}; text-align: center; padding: 12px; font-weight: 900; font-family: var(--font-text); position: sticky; top: ${systemSettings.serviceAuBar ? '40px' : '0'}; z-index: 9998; text-transform: uppercase; letter-spacing: 1px; font-size:0.85rem;`;
                         rushBanner.innerHTML = `🔥 Forte affluence : Attente estimée ${currentRush.text}`;
-                    } else if (rushBanner) { rushBanner.remove(); }
+                    } else if (rushBanner) { 
+                        rushBanner.remove(); // S'il est à 0 ou 1, on cache la bannière
+                    }
 
                     if (systemSettings.currency && systemSettings.currency !== currentCurrency) {
                         currentCurrency = systemSettings.currency;
@@ -519,11 +513,20 @@
                         }
                     }
 
-                    const bannerUrl = systemSettings.design?.bannerUrl;
-                    if (bannerUrl) {
-                        const banner = document.getElementById('banner');
-                        if (banner) {
-                            banner.style.backgroundImage = `url('${bannerUrl}')`;
+                    // GESTION INTELLIGENTE DE LA PHOTO DE BANNIÈRE
+                    const banner = document.getElementById('banner');
+                    const header = document.querySelector('header');
+                    
+                    if (banner && header) {
+                        if (systemSettings.design && systemSettings.design.bannerUrl && systemSettings.design.bannerUrl.trim() !== "") {
+                            // Si une image est configurée, on l'affiche et on réduit l'espace
+                            banner.style.display = 'block';
+                            banner.style.backgroundImage = `url('${systemSettings.design.bannerUrl}')`;
+                            header.style.paddingTop = '30px'; 
+                        } else {
+                            // S'il n'y a pas d'image, on cache la div et on aère le titre
+                            banner.style.display = 'none';
+                            header.style.paddingTop = '80px'; 
                         }
                     }
                 }
