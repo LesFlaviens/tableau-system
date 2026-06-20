@@ -1279,23 +1279,66 @@ async function submitPunch() {
 
         function fullLogout() { window.location.reload(); }
 
+// ==========================================
+        // ☁️ PONT CLOUD : SYNCHRONISATION LISTE NOMINATIVE (ANTI-RUSH)
+        // ==========================================
+        async function syncStaffAccessToCloud(dirList) {
+            try {
+                // On formate les données pour le cockpit Anti-Rush
+                let staffAccessPayload = dirList.map(s => ({
+                    id: s.id,
+                    name: s.name,
+                    role: s.role, // L'intitulé exact (ex: Chef de Partie, Commis...)
+                    dept: s.dept,
+                    pin: s.pin || "0000",
+                    active: s.active !== false,
+                    onDuty: s.onDuty || false
+                }));
+                
+                await fetch(`${SERVER_URL}/update-order?tenantID=${tenantID}`, {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ tableId: 'STAFF_ACCESS', order: { data: staffAccessPayload } })
+                });
+                console.log("☁️ Liste du personnel (STAFF_ACCESS) synchronisée avec succès.");
+            } catch (e) {
+                console.error("Erreur de sync STAFF_ACCESS", e);
+            }
+        }
+
+        // ==========================================
+        // 👥 GESTION DU PERSONNEL
+        // ==========================================
         function openStaffModal() { 
             document.getElementById('new-name').value = '';
             document.getElementById('new-role').value = '';
             document.getElementById('staff-modal').style.display = 'flex'; 
         }
+        
         function closeStaffModal() { document.getElementById('staff-modal').style.display = 'none'; }
 
         function saveNewStaff() {
             const name = document.getElementById('new-name').value.trim();
-            const role = document.getElementById('new-role').value.trim();
+            const role = document.getElementById('new-role').value.trim(); // Intitulé exact (ex: "Commis de Cuisine")
             const contract = parseFloat(document.getElementById('new-contract').value) || 39;
             
-            if(!name || !role) return alert("Erreur : Le nom et la fonction sont obligatoires.");
+            if(!name || !role) return alert("Erreur : Le nom et la fonction (Rang) sont obligatoires.");
 
             let dir = getDir();
-            dir.push({ id: Date.now(), name: name, role: role, dept: currentDept, contract: contract, pin: '000000', active: true });
+            dir.push({ 
+                id: Date.now(), 
+                name: name, 
+                role: role, 
+                dept: currentDept, 
+                contract: contract, 
+                pin: '0000', 
+                active: true,
+                onDuty: false // Par défaut, il n'est pas pointé
+            });
+            
             saveDir(dir);
+            syncStaffAccessToCloud(dir); // 🔥 Sync immédiate Anti-Rush
+            
             closeStaffModal();
             refreshViews();
         }
@@ -1305,7 +1348,13 @@ async function submitPunch() {
             let idx = dir.findIndex(s => s.id === id);
             if (idx > -1) {
                 dir[idx].active = (dir[idx].active === false) ? true : false;
+                
+                // Si on le désactive, on le sort de son poste automatiquement
+                if (dir[idx].active === false) dir[idx].onDuty = false;
+                
                 saveDir(dir);
+                syncStaffAccessToCloud(dir); // 🔥 Sync immédiate Anti-Rush
+                
                 if (currentStaffId === id && dir[idx].active === false) {
                     currentStaffId = null;
                     isGlobalView = true;
@@ -1320,6 +1369,8 @@ async function submitPunch() {
             if(confirm(`⚠️ SUPPRESSION DÉFINITIVE : Supprimer le dossier de ${name} ?\n(Note : Pour garder son historique, préférez le bouton DÉSACTIVER).`)) {
                 let dir = getDir().filter(s => s.id !== id);
                 saveDir(dir);
+                syncStaffAccessToCloud(dir); // 🔥 Sync immédiate Anti-Rush
+                
                 if(currentStaffId === id) {
                     currentStaffId = null;
                     isGlobalView = true;
@@ -1329,6 +1380,24 @@ async function submitPunch() {
             }
         }
 
+        function updatePin(id) {
+            const dir = getDir();
+            const staff = dir.find(s => s.id === id);
+            if(!staff) return;
+            let newPin = prompt(`Nouveau PIN personnel pour ${staff.name} (4 chiffres min) :`, staff.pin || "0000");
+            if(newPin && newPin.length >= 4) {
+                staff.pin = newPin;
+                saveDir(dir);
+                syncStaffAccessToCloud(dir); // 🔥 Sync immédiate pour la Pointeuse
+                alert(`✅ PIN mis à jour. ${staff.name} peut maintenant utiliser la pointeuse.`);
+            } else if (newPin) {
+                alert("Erreur : Le code PIN doit faire au moins 4 chiffres.");
+            }
+        }
+
+        // ==========================================
+        // 🕒 CALCULS DES HEURES ET LISSAGES
+        // ==========================================
         function parseTime(timeStr) {
             if(!timeStr || !timeStr.includes(':')) return null;
             const pts = timeStr.split(':');
@@ -1358,7 +1427,7 @@ async function submitPunch() {
         }
 
         // ==========================================
-        // 🧠 SYNCHRONISATION ANTI-RUSH : EFFECTIFS EN TEMPS RÉEL
+        // 🧠 SYNCHRONISATION ANTI-RUSH : EFFECTIFS EN TEMPS RÉEL (RH_MASTER)
         // ==========================================
         async function broadcastStaffingLevels() {
             try {
@@ -1398,13 +1467,20 @@ async function submitPunch() {
                     }
                 });
 
-                await API.update('RH_MASTER', staffing);
+                await fetch(`${SERVER_URL}/update-order?tenantID=${tenantID}`, {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ tableId: 'RH_MASTER', order: { data: staffing } })
+                });
                 console.log("📡 Télémétrie RH envoyée pour l'Anti-Rush :", staffing);
             } catch (e) {
                 console.error("Erreur lors du broadcast RH :", e);
             }
         }
 
+        // ==========================================
+        // 📊 STATISTIQUES ET VUES DU PLANNING
+        // ==========================================
         function getStaffMonthStats(staffId, year, month, daysInMonth, monthData) {
             const staff = getDir().find(s => s.id === staffId);
             if(!staff) return null;
@@ -1468,18 +1544,6 @@ async function submitPunch() {
             isAnnualView = false;
             refreshViews();
             toggleViewDisplay();
-        }
-
-        function updatePin(id) {
-            const dir = getDir();
-            const staff = dir.find(s => s.id === id);
-            if(!staff) return;
-            let newPin = prompt(`Nouveau PIN personnel pour ${staff.name} :`, staff.pin || "0000");
-            if(newPin && newPin.length >= 4) {
-                staff.pin = newPin;
-                saveDir(dir);
-                alert(`✅ PIN mis à jour. ${staff.name} peut maintenant se connecter à son espace.`);
-            }
         }
 
         function loadMonthData() {
@@ -1630,7 +1694,7 @@ async function submitPunch() {
             saveTs(ts);
             loadMonthData();
             loadPublicPlanning();
-            broadcastStaffingLevels(); // SYNCHRONISATION ANTI-RUSH A CHAQUE MODIFICATION
+            broadcastStaffingLevels(); // SYNCHRONISATION ANTI-RUSH A CHAQUE MODIFICATION DE PLANNING
         }
 
         function updateStatus(sid, d, v) { updateData(sid, d, 'status', v); }
