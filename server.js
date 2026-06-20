@@ -585,6 +585,88 @@ app.post('/api/create-hold-intent', async (req, res) => {
         res.status(500).json({ success: false, error: "Impossible de créer l'empreinte bancaire." });
     }
 });
+// ==========================================
+// 📈 MOTEUR ANALYTIQUE : MÉMOIRE À LONG TERME (BIG DATA)
+// ==========================================
+app.post('/api/log-traffic-history', async (req, res) => {
+    const { tenantID, pax, totalAmount } = req.body;
+    if (!tenantID || !pax) return res.status(400).json({ success: false });
 
+    const safeID = cleanString(tenantID);
+    const now = new Date();
+    
+    // Création de l'empreinte temporelle
+    const trafficData = {
+        id: 'traf_' + Date.now(),
+        timestamp: now.getTime(),
+        dateStr: now.toISOString().split('T')[0], // YYYY-MM-DD
+        dayOfWeek: now.getDay(), // 0 = Dimanche, 1 = Lundi...
+        hour: now.getHours(),
+        month: now.getMonth(),
+        pax: parseInt(pax),
+        revenue: parseFloat(totalAmount || 0)
+    };
+
+    try {
+        // On sauvegarde silencieusement dans une table d'archive dédiée
+        await AppState.findOneAndUpdate(
+            { tenantID: safeID },
+            { $push: { "activeOrders.TRAFFIC_HISTORY.data": trafficData } },
+            { upsert: true }
+        );
+        res.json({ success: true });
+    } catch (e) {
+        res.status(500).json({ success: false, error: "Erreur d'archivage" });
+    }
+});
+
+// ==========================================
+// 🧠 IA RH : PRÉDICTIONS ET PLANNINGS (YIELD MANAGEMENT)
+// ==========================================
+app.post('/api/predict-hr-schedule', async (req, res) => {
+    const { tenantID, staffList } = req.body;
+    const safeID = cleanString(tenantID);
+
+    try {
+        let state = await AppState.findOne({ tenantID: safeID });
+        let history = [];
+        if (state && state.activeOrders && state.activeOrders['TRAFFIC_HISTORY']) {
+            history = state.activeOrders['TRAFFIC_HISTORY'].data || [];
+        }
+
+        // Si on a pas assez de données, l'IA ne peut pas prédire avec précision
+        if (history.length < 50) {
+            return res.json({ success: true, message: "L'IA a besoin de plus d'historique de service (au moins 50 tables enregistrées) pour établir une prédiction fiable." });
+        }
+
+        // On compresse les données pour ne pas surcharger l'IA
+        let summary = history.map(h => `Jour:${h.dayOfWeek}-Heure:${h.hour}-Pax:${h.pax}`);
+
+        const prompt = `Tu es le Directeur des Ressources Humaines IA d'un restaurant. 
+        Voici l'historique de fréquentation récent : ${JSON.stringify(summary)}. 
+        Voici le staff actuel : ${JSON.stringify(staffList)}.
+        
+        MISSION : Analyse ces données et renvoie un JSON STRICT (SANS MARKDOWN) avec :
+        1. "rushPeriods" : Les 3 créneaux de la semaine où il faut absolument tout le monde.
+        2. "deadPeriods" : Les 3 créneaux où on peut envoyer le staff en repos.
+        3. "hiringAdvice" : Faut-il recruter ? (Oui/Non) et pourquoi (justification courte).
+        4. "vacationSuggestions" : Le meilleur moment du mois pour autoriser des congés longs.
+        
+        Format attendu : { "rushPeriods": ["Jeudi 20h", ...], "deadPeriods": [...], "hiringAdvice": "...", "vacationSuggestions": "..." }`;
+
+        const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+        const result = await model.generateContent(prompt);
+        
+        let responseText = result.response.text().trim();
+        const ticks = String.fromCharCode(96, 96, 96);
+        responseText = responseText.split(ticks + 'json').join('').split(ticks).join('').trim();
+        
+        if (!responseText.startsWith("{")) responseText = responseText.substring(responseText.indexOf("{"));
+        
+        res.json({ success: true, prediction: JSON.parse(responseText) });
+    } catch (error) { 
+        res.status(500).json({ success: false, error: "Erreur de prédiction IA." }); 
+    }
+});
 // IMPORTANT : LA LIGNE LISTEN TOUT EN BAS !
 app.listen(PORT, () => console.log("✅ L'Empire iCHEF est en ligne et sécurisé sur le port " + PORT));
