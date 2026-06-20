@@ -238,6 +238,10 @@
                 </button>
             </div>
             <div id="auto-pilot-indicator">🤖 MODE PILOTE AUTOMATIQUE ACTIVÉ : Le système ajuste le niveau tout seul</div>
+
+            <button onclick="forceDeactivateRush()" style="background: transparent; border: 1px solid var(--danger); color: var(--danger); padding: 15px; font-size: 0.9rem; font-weight: 800; border-radius: 8px; cursor: pointer; text-transform: uppercase; letter-spacing: 1px; width: 100%; margin-top: 20px; transition: 0.2s;">
+                🛑 DÉSACTIVATION D'URGENCE (RETOUR NORMAL)
+            </button>
         </div>
 
         <div class="card">
@@ -413,36 +417,36 @@
     <div id="toast" class="toast">Action Confirmée</div>
 
     <script>
-          async function forceDeactivateRush() {
-    if(!confirm("⚠️ Confirmez-vous la désactivation de l'Anti-Rush ? La salle reprendra les commandes normalement.")) return;
-
-    try {
-        // 1. On récupère l'état actuel du système
-        const state = await API.getState();
-        let settings = (state.activeOrders && state.activeOrders['SETTINGS_MASTER']) ? state.activeOrders['SETTINGS_MASTER'].data : {};
-        
-        // 2. On écrase TOUS les paramètres de Rush pour forcer le retour au calme
-        settings.rushLevel = 1; // Niveau 1 = Calme plat
-        
-        if(!settings.rushV3) settings.rushV3 = {};
-        settings.rushV3.timeShift = { active: false, discount: 5, delay: 15 };
-        settings.rushV3.cameleon = false;
-        settings.rushV3.paceMaker = { active: false, max: 10 };
-        
-        // 3. On renvoie le nouvel état "Normal" au serveur
-        await API.update('SETTINGS_MASTER', settings);
-        
-        alert("✅ ANTI-RUSH DÉSACTIVÉ : Synchronisation en cours avec la salle et la cuisine...");
-        
-        // 4. (Optionnel) Rafraîchir l'interface locale pour que les boutons s'éteignent
-        location.reload();
-
-    } catch(e) {
-        console.error(e);
-        alert("❌ Erreur réseau : Impossible de contacter le serveur central.");
-    }
-
         let systemSettings = { activeAlerts: [], rushThresholds: {}, rushRules: {} }; 
+
+        // 🛑 LA FONCTION KILL SWITCH (ARRÊT D'URGENCE)
+        async function forceDeactivateRush() {
+            if(!confirm("⚠️ Confirmez-vous la désactivation totale de l'Anti-Rush ? La salle reprendra les commandes normalement.")) return;
+
+            try {
+                // On met à jour nos paramètres localement
+                systemSettings.rushLevel = 1;
+                
+                if(!systemSettings.rushV3) systemSettings.rushV3 = {};
+                systemSettings.rushV3.timeShift = { active: false, discount: 5, delay: 15 };
+                systemSettings.rushV3.cameleon = false;
+                systemSettings.rushV3.paceMaker = { active: false, max: 10 };
+                
+                if(systemSettings.rushRules) systemSettings.rushRules.auto = false;
+
+                // On met à jour l'interface
+                updateUIFromSettings();
+
+                // On force la sauvegarde vers le serveur
+                await saveDirectToCloud(false);
+                
+                showToast("✅ ANTI-RUSH DÉSACTIVÉ", false);
+
+            } catch(e) {
+                console.error(e);
+                alert("❌ Erreur réseau : Impossible de contacter le serveur central.");
+            }
+        }
 
         function goBackToMyStation() {
             window.location.href = `${backUrl}?tenantID=${tenantID}`;
