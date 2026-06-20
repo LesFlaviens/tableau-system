@@ -184,7 +184,25 @@ app.post('/analyse-ticket', async (req, res) => {
 });
 
 // ==========================================
-// 🛎️ IA SMART-RESERVATION (Yield Management & Time-Shifting)
+// 🔴 ENGINE DE CALCUL DE TEMPS RH INTÉGRÉ
+// ==========================================
+function parseTime(timeStr) {
+    if(!timeStr || !timeStr.includes(':')) return null;
+    const pts = timeStr.split(':');
+    return parseInt(pts[0]) + (parseInt(pts[1]) / 60);
+}
+
+function calculateNet(p) {
+    if(p.status !== 'present' && p.status !== 'off_matin' && p.status !== 'off_soir' && p.status !== 'ferie') return 0;
+    let total = 0;
+    if(p.s1) { let [s, e] = p.s1.split('-'); if(s && e) { s=parseTime(s); e=parseTime(e); if(s!==null&&e!==null) { if(e<s) e+=24; total+=(e-s); } } }
+    if(p.s2) { let [s, e] = p.s2.split('-'); if(s && e) { s=parseTime(s); e=parseTime(e); if(s!==null&&e!==null) { if(e<s) e+=24; total+=(e-s); } } }
+    total -= (parseInt(p.pause) || 0) / 60;
+    return Math.max(0, total);
+}
+
+// ==========================================
+//  IA SMART-RESERVATION (Yield Management & Time-Shifting)
 // ==========================================
 app.post('/api/smart-reservation', async (req, res) => {
     const { tenantID, customerRequest, availableTables } = req.body;
@@ -378,6 +396,37 @@ app.get('/get-current-state', async (req, res) => {
         let state = await AppState.findOne({ tenantID });
         if (!state) state = await AppState.create({ tenantID, activeOrders: {} });
         
+        // 🔥 SYMBIOSIE INTELLIGENTE : CALCUL DYNAMIQUE DES HEURES ACCOMPLIES DU MOIS EN COURS 🔥
+        if (state.activeOrders && state.activeOrders['STAFF_ACCESS'] && state.activeOrders['TIMESHEETS_MASTER']) {
+            const today = new Date();
+            const monthStr = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}`;
+            const daysInMonth = new Date(today.getFullYear(), today.getMonth() + 1, 0).getDate();
+            
+            const staffList = state.activeOrders['STAFF_ACCESS'].data || [];
+            const timesheets = state.activeOrders['TIMESHEETS_MASTER'].data || {};
+            const monthData = timesheets[monthStr] || {};
+
+            let stateModified = false;
+            staffList.forEach(staff => {
+                let totalHoursDone = 0;
+                for (let d = 1; d <= daysInMonth; d++) {
+                    if (monthData[staff.id] && monthData[staff.id][d]) {
+                        totalHoursDone += calculateNet(monthData[staff.id][d]);
+                    }
+                }
+                const formattedHours = parseFloat(totalHoursDone.toFixed(1));
+                if (staff.workedHours !== formattedHours) {
+                    staff.workedHours = formattedHours;
+                    stateModified = true;
+                }
+            });
+
+            if (stateModified) {
+                state.markModified('activeOrders');
+                await state.save();
+            }
+        }
+        
         const tenantInfo = await Tenant.findOne({ tenantID });
         const finalState = state.toObject();
         if(tenantInfo) finalState.maxStaff = tenantInfo.maxStaff;
@@ -550,7 +599,7 @@ app.post('/api/nouvelle-demande-demo', async (req, res) => {
 });
 
 // ==========================================
-// 💳 STRIPE : ANTI NO-SHOW (Empreinte Bancaire)
+//  ANTI NO-SHOW (Empreinte Bancaire)
 // ==========================================
 app.post('/api/create-hold-intent', async (req, res) => {
     try {
@@ -585,8 +634,9 @@ app.post('/api/create-hold-intent', async (req, res) => {
         res.status(500).json({ success: false, error: "Impossible de créer l'empreinte bancaire." });
     }
 });
+
 // ==========================================
-// 📈 MOTEUR ANALYTIQUE : MÉMOIRE À LONG TERME (BIG DATA)
+//  MOTEUR ANALYTIQUE : MÉMOIRE À LONG TERME (BIG DATA)
 // ==========================================
 app.post('/api/log-traffic-history', async (req, res) => {
     const { tenantID, pax, totalAmount } = req.body;
@@ -601,6 +651,7 @@ app.post('/api/log-traffic-history', async (req, res) => {
         timestamp: now.getTime(),
         dateStr: now.toISOString().split('T')[0], // YYYY-MM-DD
         dayOfWeek: now.getDay(), // 0 = Dimanche, 1 = Lundi...
+        hour: now.getHours(),
         hour: now.getHours(),
         month: now.getMonth(),
         pax: parseInt(pax),
