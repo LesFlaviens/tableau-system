@@ -11,7 +11,7 @@ const mongoose = require('mongoose');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
 
 // ==========================================
-// CONFIGURATION STRIPE iCHEF (Abonnements SaaS)
+// CONFIGURATION STRIPE iCHEF (Abonnements SaaS & Empreintes)
 // ==========================================
 const stripeKey = process.env.STRIPE_SECRET_KEY || 'sk_test_51TN80JQ9Dw3nOfA4I3XTxPl5FR4ddYmU9Jw2pGmfa0eABz2P6wAzK8RMzHw2XilulLXxFmY2oEDgau4TcScOf9WK00ajIEuweB'; 
 const stripe = require('stripe')(stripeKey);
@@ -183,10 +183,47 @@ app.post('/analyse-ticket', async (req, res) => {
     } catch (error) { res.status(500).json({ success: false, error: error.message }); }
 });
 
+// ==========================================
+// 🛎️ IA SMART-RESERVATION (Yield Management & Time-Shifting)
+// ==========================================
 app.post('/api/smart-reservation', async (req, res) => {
     const { tenantID, customerRequest, availableTables } = req.body;
     try {
-        const prompt = `Tu es le Maître d'Hôtel iCHEF. Demande client : "${customerRequest}". Tables libres : ${JSON.stringify(availableTables)}. Trouve la table optimale. JSON STRICT: { "acceptee": true/false, "pax": nombre, "heure": "HH:MM", "tableAllouee": "ID_TABLE", "messageClient": "Votre réponse", "optimisationInfo": "Notes" }`;
+        const safeID = cleanString(tenantID);
+        let state = await AppState.findOne({ tenantID: safeID });
+        
+        // 1. Analyse de la force de frappe actuelle (Brigade)
+        let activeCooks = 1; // Par défaut s'il n'y a pas de données
+        if (state && state.activeOrders && state.activeOrders['STAFF_ACCESS'] && state.activeOrders['STAFF_ACCESS'].data) {
+            const staff = state.activeOrders['STAFF_ACCESS'].data;
+            // On compte les cuisiniers actifs
+            activeCooks = staff.filter(s => s.dept === 'cuisine' && s.active).length || 1;
+        }
+
+        // Le prompt de Yield Management pour Gemini
+        const prompt = `Tu es l'IA iCHEF, le Maître d'Hôtel d'élite et Yield Manager du restaurant.
+        
+        Demande du client : "${customerRequest}".
+        Tables physiques libres : ${JSON.stringify(availableTables)}.
+        
+        🔴 INFO CRITIQUE BRIGADE : Nous avons actuellement ${activeCooks} cuisinier(s) en poste. 
+        RÈGLE DE PRODUCTION : 1 cuisinier peut gérer environ 15 couverts par tranche horaire.
+        
+        MISSION :
+        1. Si la taille de la table dépasse la capacité de la brigade pour l'heure demandée, TU DOIS REFUSER l'heure initiale.
+        2. TIME-SHIFTING : Si tu refuses, propose au client un autre horaire (ex: 45 min plus tôt ou plus tard) dans le "messageClient".
+        3. Si tu acceptes, trouve la table idéale.
+        
+        RÉPONDS UNIQUEMENT AVEC CE JSON STRICT (SANS MARKDOWN) : 
+        { 
+          "acceptee": true/false, 
+          "pax": nombre, 
+          "heure": "HH:MM", 
+          "tableAllouee": "ID_TABLE_OU_VIDE", 
+          "messageClient": "Votre réponse élégante au client, justifiant un refus par l'affluence et proposant une alternative si besoin.", 
+          "optimisationInfo": "Notes internes pour le manager" 
+        }`;
+
         const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
         const result = await model.generateContent(prompt);
         
@@ -196,15 +233,27 @@ app.post('/api/smart-reservation', async (req, res) => {
         
         if (!responseText.startsWith("{")) responseText = responseText.substring(responseText.indexOf("{"));
         const decision = JSON.parse(responseText);
+        
+        // Sauvegarde de la réservation validée
         if (decision.acceptee && decision.tableAllouee) {
             await AppState.findOneAndUpdate(
-                { tenantID: cleanString(tenantID) },
-                { $push: { "activeOrders.RESERVATIONS_MASTER.data": { id: 'resa_' + Date.now(), pax: decision.pax, heure: decision.heure, table: decision.tableAllouee, info: decision.optimisationInfo, timestamp: Date.now() } } },
+                { tenantID: safeID },
+                { $push: { "activeOrders.RESERVATIONS_MASTER.data": { 
+                    id: 'resa_' + Date.now(), 
+                    pax: decision.pax, 
+                    heure: decision.heure, 
+                    table: decision.tableAllouee, 
+                    info: decision.optimisationInfo, 
+                    timestamp: Date.now() 
+                } } },
                 { upsert: true }
             );
         }
         res.json({ success: true, decision });
-    } catch (error) { res.status(500).json({ success: false, error: "Erreur IA." }); }
+    } catch (error) { 
+        console.error("Erreur Smart-Reservation:", error);
+        res.status(500).json({ success: false, error: "L'IA du Maître d'Hôtel est momentanément indisponible." }); 
+    }
 });
 
 // ==========================================
@@ -497,6 +546,43 @@ app.post('/api/nouvelle-demande-demo', async (req, res) => {
     } catch (e) {
         console.error("Erreur création prospect démo :", e);
         res.status(500).json({ success: false, error: "Cet identifiant d'établissement existe déjà." });
+    }
+});
+
+// ==========================================
+// 💳 STRIPE : ANTI NO-SHOW (Empreinte Bancaire)
+// ==========================================
+app.post('/api/create-hold-intent', async (req, res) => {
+    try {
+        const { tenantID, guests, date, time } = req.body;
+        
+        // 🔒 On fixe une garantie de 50€ par couvert
+        const amountPerPerson = 50; 
+        const totalAmount = (parseInt(guests) || 1) * amountPerPerson * 100; // Stripe calcule en centimes
+
+        // On crée l'empreinte SANS DÉBITER le client (capture_method: 'manual')
+        const paymentIntent = await stripe.paymentIntents.create({
+            amount: totalAmount,
+            currency: 'eur',
+            payment_method_types: ['card'],
+            capture_method: 'manual', 
+            metadata: {
+                tenantID: tenantID,
+                type: 'ANTI_NO_SHOW',
+                date: date,
+                time: time,
+                guests: guests
+            },
+        });
+
+        res.json({ 
+            success: true, 
+            clientSecret: paymentIntent.client_secret, 
+            holdAmount: totalAmount / 100 
+        });
+    } catch (error) {
+        console.error("Erreur Stripe Empreinte:", error);
+        res.status(500).json({ success: false, error: "Impossible de créer l'empreinte bancaire." });
     }
 });
 
