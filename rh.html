@@ -1148,38 +1148,7 @@
             renderDirectorRequests();
         }
 
-        async function openPunchClock() {
-            document.getElementById('punch-modal').style.display = 'flex';
-            punchPin = "";
-            document.getElementById('punch-display').innerText = "";
-            document.getElementById('punch-success-overlay').style.display = 'none';
-
-            try {
-                const video = document.getElementById('punch-video');
-                videoStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "user" } });
-                video.srcObject = videoStream;
-            } catch (err) {
-                console.error("Erreur Caméra: ", err);
-                alert("❌ ERREUR : Impossible d'accéder à la caméra. Le système de pointage exige une photo pour éviter la triche.");
-            }
-        }
-
-        function cancelPunchClock() {
-            document.getElementById('punch-modal').style.display = 'none';
-            if(videoStream) {
-                videoStream.getTracks().forEach(track => track.stop());
-                videoStream = null;
-            }
-        }
-
-        function appendPunchPin(n) {
-            if(punchPin.length < 6) {
-                punchPin += n;
-                document.getElementById('punch-display').innerText = '*'.repeat(punchPin.length);
-            }
-        }
-
-        function submitPunch() {
+async function submitPunch() {
             if(punchPin.length < 4) return;
 
             const dir = getDir();
@@ -1221,7 +1190,26 @@
 
             document.getElementById('punch-success-overlay').style.display = 'flex';
 
-            broadcastStaffingLevels(); // SYNCHRONISATION ANTI-RUSH
+            // 🔥 NOUVEAU : CONNEXION DIRECTE AVEC L'ANTI-RUSH (ON DUTY) 🔥
+            try {
+                let r = await fetch(`${SERVER_URL}/get-current-state?tenantID=${tenantID}`);
+                let state = await r.json();
+                let staffList = state.activeOrders['STAFF_ACCESS']?.data || [];
+                let empIndex = staffList.findIndex(s => s.pin === punchPin);
+                if(empIndex > -1) {
+                    // Si le chef fait "ENTRÉE", on le marque actif en cuisine, si "SORTIE", on l'enlève
+                    staffList[empIndex].onDuty = (punchType === 'ENTRÉE');
+                    await fetch(`${SERVER_URL}/update-order?tenantID=${tenantID}`, {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify({ tableId: 'STAFF_ACCESS', order: { data: staffList } })
+                    });
+                }
+            } catch(e) { console.error("Erreur Sync Auto-Pointeuse", e); }
+
+            if (typeof broadcastStaffingLevels === "function") {
+                broadcastStaffingLevels(); // Met à jour le cerveau RH s'il existe
+            }
 
             setTimeout(() => {
                 cancelPunchClock();
