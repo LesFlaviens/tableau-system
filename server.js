@@ -1,819 +1,723 @@
-<!DOCTYPE html>
-<html lang="fr">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>Cockpit Anti-Rush - iCHEF</title>
+/**
+ * ==============================================================
+ * 🧠 iCHEF EMPIRE OS — ENGINE SERVER BACKEND (V. FORTERESSE)
+ * ==============================================================
+ */
+
+const express = require('express');
+const cors = require('cors');
+const path = require('path');
+const mongoose = require('mongoose');
+const { GoogleGenerativeAI } = require('@google/generative-ai');
+
+// ==========================================
+// CONFIGURATION STRIPE iCHEF (Abonnements SaaS & Empreintes)
+// ==========================================
+const stripeKey = process.env.STRIPE_SECRET_KEY || 'sk_test_51TN80JQ9Dw3nOfA4I3XTxPl5FR4ddYmU9Jw2pGmfa0eABz2P6wAzK8RMzHw2XilulLXxFmY2oEDgau4TcScOf9WK00ajIEuweB'; 
+const stripe = require('stripe')(stripeKey);
+
+const app = express();
+
+// 👇 DÉBLOCAGE DES VIDÉOS & RESSOURCES 👇
+app.use(express.static(__dirname));
+
+const PORT = process.env.PORT || 10000;
+
+// SÉCURITÉ MAÎTRE DE L'EMPIRE (Super Admin)
+const ADMIN_PASS = process.env.ADMIN_PASS || 'Empire2026';
+
+// Sécurité des requêtes (CORS)
+app.use(cors({ origin: '*', methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'], allowedHeaders: ['Content-Type', 'Authorization', 'Origin', 'Accept'] }));
+
+// 🚨 SÉCURITÉ STRIPE : On utilise raw() uniquement pour la route webhook
+app.use('/webhook', express.raw({ type: 'application/json' }));
+
+app.use(express.json({ limit: '100mb' })); 
+app.use(express.urlencoded({ extended: true, limit: '100mb' }));
+app.use(express.static(path.join(__dirname)));
+
+const cleanString = (str) => String(str || "").trim().toLowerCase();
+
+app.get('/', (req, res) => {
+    res.sendFile(path.join(__dirname, 'vitrine.html'));
+});
+
+// Ta route d'administration officielle (Tour de Contrôle)
+app.get('/panel-ichef', (req, res) => {
+    if (req.query.pass === ADMIN_PASS) {
+        res.sendFile(path.join(__dirname, 'empire.html'));
+    } else {
+        res.status(403).send('🛑 Accès Refusé. Sécurité Empire iCHEF.');
+    }
+});
+
+// ==========================================
+// WEBHOOK STRIPE : SÉCURITÉ ANTI-IMPAYÉS & UPSELL 
+// ==========================================
+app.post('/webhook', async (req, res) => {
+    const sig = req.headers['stripe-signature'];
+    let event;
+    try { 
+        event = stripe.webhooks.constructEvent(req.body, sig, process.env.STRIPE_WEBHOOK_SECRET); 
+    } catch (err) { 
+        return res.status(400).send(`Webhook Error: ${err.message}`); 
+    }
     
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;800;900&family=Playfair+Display:wght@700&display=swap" rel="stylesheet">
-    <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
+    if (event.type === 'checkout.session.completed') {
+        const session = event.data.object;
 
-    <script>
-        // 🛡️ SÉCURITÉ ET IDENTIFICATION
-        if (window.location.hostname !== "os.ichef.ch" && window.location.hostname !== "localhost" && window.location.hostname !== "127.0.0.1") {
-            document.documentElement.innerHTML = "<h1 style='color:red; text-align:center; margin-top:20%; font-family:sans-serif;'>🛑 VIOLATION DE LICENCE iCHEF OS</h1>";
-            throw new Error("Exécution non autorisée hors du domaine officiel.");
-        }
-        document.addEventListener('contextmenu', event => event.preventDefault());
-        document.onkeydown = function(e) {
-            if(e.keyCode == 123) return false; 
-            if(e.ctrlKey && e.shiftKey && e.keyCode == 'I'.charCodeAt(0)) return false; 
-            if(e.ctrlKey && e.shiftKey && e.keyCode == 'J'.charCodeAt(0)) return false; 
-            if(e.ctrlKey && e.keyCode == 'U'.charCodeAt(0)) return false; 
-        }
-
-        function getDeviceFingerprint() {
-            let deviceId = localStorage.getItem('ichef_device_fingerprint');
-            if (!deviceId) {
-                deviceId = 'device_' + Math.random().toString(36).substr(2, 9) + '_' + Date.now();
-                localStorage.setItem('ichef_device_fingerprint', deviceId);
-            }
-            return deviceId;
-        }
-
-        let backUrl = 'administration.html'; 
-        let tenantID = '';
-        let SERVER_URL = '';
-        let currentUserRole = 'CHEF'; 
-
-        (async function enforceSecurity() {
-            const urlParams = new URLSearchParams(window.location.search);
-            let urlTenantID = urlParams.get('tenantID');
-            let storedTenantID = localStorage.getItem('ichef_tenant_id');
-            if (urlTenantID && urlTenantID !== storedTenantID) {
-                localStorage.setItem('ichef_tenant_id', urlTenantID);
-                storedTenantID = urlTenantID;
-            }
-            tenantID = urlTenantID || storedTenantID;
-            let pin = localStorage.getItem('ichef_master_pin'); 
-            
-            if(!tenantID) { window.location.href = 'connexionpartenaire.html'; return; }
-            SERVER_URL = (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1" || window.location.protocol === "file:") ? "http://localhost:10000" : "https://tableau-system.onrender.com";
-
+        if (session.metadata && session.metadata.type === 'UPGRADE_SCREENS') {
+            const safeID = cleanString(session.metadata.tenantID);
             try {
-                const res = await fetch(`${SERVER_URL}/api/verify-pin`, {
-                    method: 'POST', headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ tenantID: tenantID, pin: pin || "0000", deviceId: getDeviceFingerprint() })
-                });
-                const data = await res.json();
+                const extraScreens = parseInt(session.metadata.extraScreens);
+                await Tenant.updateOne({ tenantID: safeID }, { $inc: { maxScreens: extraScreens } });
+            } catch(e) {}
+        } else {
+            try {
+                const rawTenantID = session.client_reference_id || "client_attente_" + Date.now();
+                const safeID = cleanString(rawTenantID);
+                let planAchete = "BUSINESS";
+                let limitScreens = 5; let limitStaff = 999;
 
-                if(!data.success) { alert("ACCÈS REFUSÉ"); window.location.href = 'connexionpartenaire.html'; return; }
-
-                const currentPlan = data.plan ? data.plan.toUpperCase() : 'CHEF';
-                currentUserRole = currentPlan;
-
-                if (currentPlan.includes('CHEF') && !currentPlan.includes('BAR') && !currentPlan.includes('PATISSERIE')) backUrl = 'chef.html';
-                if (currentPlan.includes('BAR')) backUrl = 'chef-bar.html';
-                if (currentPlan.includes('PATISSIER') || currentPlan.includes('PATISSERIE')) backUrl = 'chef-patissier.html';
-                // ✅ LE PACK ECO EST PARFAITEMENT RECONNU ET REDIRIGÉ VERS ADMIN.HTML
-                if (['ICHEF_OS', 'ECO', 'BUSINESS', 'RENTABILITE', 'EMPIRE', 'PREMIUM', 'BRIGADE', 'BRIGADES'].includes(currentPlan)) backUrl = 'admin.html';
-            } catch (e) { console.error(e); }
-        })();
-    </script>
-
-    <style>
-        :root {
-            --bg: #050505; --panel: #111111; --border: #222222; --border-strong: #333333;
-            --text-main: #ffffff; --text-muted: #888888;
-            --gold: #d4af37; --accent: #38bdf8; --success: #10b981; --warning: #fbbf24;
-            --orange: #f97316; --danger: #ef4444; --chaos: #a855f7;
-        }
-
-        * { box-sizing: border-box; }
-        
-        body { 
-            font-family: 'Inter', sans-serif; background: var(--bg); color: var(--text-main); 
-            margin: 0; padding: 15px; display: flex; flex-direction: column; 
-            height: 100vh; overflow: hidden;
-        }
-        
-        .header { 
-            display: flex; justify-content: space-between; align-items: center; 
-            border-bottom: 1px solid var(--border); padding-bottom: 15px; margin-bottom: 15px; flex-shrink: 0;
-        }
-        
-        .title { font-family: 'Playfair Display', serif; font-size: 1.6rem; margin: 0; color: var(--accent); text-transform: uppercase; letter-spacing: 2px; display: flex; align-items: center; gap: 15px;}
-        .header-actions { display: flex; align-items: center; gap: 15px; }
-        .btn-retour-top { background: transparent; border: 1px solid var(--border); color: var(--text-main); padding: 8px 15px; border-radius: 8px; font-weight: 600; cursor: pointer; text-transform: uppercase; font-size: 0.8rem; transition: 0.2s; text-decoration: none;}
-        .btn-retour-top:hover { border-color: var(--gold); color: var(--gold); }
-        .live-badge { background: rgba(16, 185, 129, 0.1); color: var(--success); padding: 6px 14px; border-radius: 20px; font-size: 0.8rem; font-weight: 800; border: 1px solid rgba(16, 185, 129, 0.3); display: flex; align-items: center; gap: 8px;}
-        .live-dot { width: 8px; height: 8px; background: var(--success); border-radius: 50%; animation: blink 1s infinite alternate; }
-        @keyframes blink { from { opacity: 0.4; } to { opacity: 1; box-shadow: 0 0 10px var(--success); } }
-
-        .dashboard-grid {
-            display: grid;
-            grid-template-columns: minmax(380px, 1.3fr) minmax(300px, 1fr) 300px;
-            gap: 15px;
-            flex: 1;
-            min-height: 0; 
-        }
-
-        .dash-col { display: flex; flex-direction: column; gap: 15px; min-height: 0; }
-
-        .card { 
-            background: var(--panel); border: 1px solid var(--border); border-radius: 12px; 
-            padding: 15px; display: flex; flex-direction: column; min-height: 0; box-shadow: 0 5px 15px rgba(0,0,0,0.5);
-        }
-        .card-title { font-size: 1rem; margin: 0 0 15px 0; color: var(--text-muted); text-transform: uppercase; letter-spacing: 1px; font-weight: 800; display: flex; justify-content: space-between; align-items: center;}
-        
-        .scrollable-content { flex: 1; overflow-y: auto; padding-right: 5px; }
-        .scrollable-content::-webkit-scrollbar { width: 4px; }
-        .scrollable-content::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
-
-        .rush-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
-        .rush-btn { background: #000; border: 2px solid var(--border); border-radius: 8px; padding: 12px 5px; color: var(--text-muted); font-size: 0.9rem; font-weight: 800; cursor: pointer; transition: all 0.2s; display: flex; flex-direction: column; align-items: center; gap: 5px; text-transform: uppercase; text-align: center;}
-        .rush-btn span { font-size: 0.7rem; font-weight: 600; opacity: 0.7; }
-        .rush-btn:hover { background: rgba(255,255,255,0.05); }
-        
-        .rush-btn.active[data-level="0"] { border-color: var(--accent); background: rgba(56, 189, 248, 0.1); color: var(--accent); box-shadow: 0 0 15px rgba(56, 189, 248, 0.2); transform: scale(1.02);}
-        .rush-btn.active[data-level="1"] { border-color: var(--success); background: rgba(16, 185, 129, 0.1); color: var(--success); box-shadow: 0 0 15px rgba(16, 185, 129, 0.2); transform: scale(1.02);}
-        .rush-btn.active[data-level="2"] { border-color: var(--warning); background: rgba(251, 191, 36, 0.1); color: var(--warning); box-shadow: 0 0 15px rgba(251, 191, 36, 0.2); transform: scale(1.02);}
-        .rush-btn.active[data-level="3"] { border-color: var(--orange); background: rgba(249, 115, 22, 0.1); color: var(--orange); box-shadow: 0 0 15px rgba(249, 115, 22, 0.2); transform: scale(1.02);}
-        .rush-btn.active[data-level="4"] { border-color: var(--danger); background: rgba(239, 68, 68, 0.1); color: var(--danger); box-shadow: 0 0 15px rgba(239, 68, 68, 0.2); transform: scale(1.02);}
-        .rush-btn.active[data-level="5"] { border-color: var(--chaos); background: rgba(168, 85, 247, 0.1); color: var(--chaos); box-shadow: 0 0 15px rgba(168, 85, 247, 0.2); transform: scale(1.02);}
-
-        .gauge-container { width: 100%; height: 8px; background: rgba(255,255,255,0.1); border-radius: 4px; margin-top: 5px; overflow: hidden; }
-        .gauge-bar { height: 100%; width: 0%; background: var(--success); transition: 0.4s cubic-bezier(0.4, 0, 0.2, 1); }
-
-        .alert-item { display: flex; justify-content: space-between; align-items: center; padding: 10px; background: rgba(255,255,255,0.03); border-left: 3px solid var(--danger); border-radius: 6px; margin-bottom: 8px; }
-        .alert-item.humain { border-left-color: var(--warning); }
-        .alert-item.systeme { border-left-color: var(--accent); }
-        .alert-info { display: flex; flex-direction: column; gap: 4px; }
-        .alert-header { font-size: 0.7rem; color: var(--text-muted); font-weight: 600; text-transform: uppercase; }
-        .alert-msg { font-size: 0.95rem; font-weight: 800; color: #fff; }
-        .btn-resolve { background: rgba(16, 185, 129, 0.1); border: 1px solid var(--success); color: var(--success); padding: 6px 12px; border-radius: 6px; font-weight: 800; cursor: pointer; transition: 0.2s; font-size: 0.75rem; }
-        .btn-resolve:hover { background: var(--success); color: #000; }
-
-        .module-row { display: flex; justify-content: space-between; align-items: center; padding: 12px; background: rgba(255,255,255,0.02); border: 1px solid var(--border); border-radius: 8px; margin-bottom: 10px; }
-        .module-row.active { border-color: var(--accent); background: rgba(56, 189, 248, 0.05); }
-        .module-info { display: flex; flex-direction: column; gap: 4px; }
-        .module-name { font-size: 0.95rem; font-weight: 800; color: var(--text-main); }
-        .module-desc { font-size: 0.75rem; color: var(--text-muted); line-height: 1.3;}
-        .switch { position: relative; display: inline-block; width: 44px; height: 24px; flex-shrink: 0;}
-        .switch input { opacity: 0; width: 0; height: 0; }
-        .slider { position: absolute; cursor: pointer; top: 0; left: 0; right: 0; bottom: 0; background-color: var(--danger); transition: .3s; border-radius: 24px;}
-        .slider:before { position: absolute; content: ""; height: 18px; width: 18px; left: 3px; bottom: 3px; background-color: white; transition: .3s; border-radius: 50%;}
-        input:checked + .slider { background-color: var(--success); }
-        input:checked + .slider:before { transform: translateX(20px); }
-
-        .settings-bar { display: flex; gap: 10px; margin-top: 10px; padding-top: 10px; border-top: 1px dashed rgba(255,255,255,0.1); align-items: center; }
-        .input-mini { background: #000; border: 1px solid var(--border); color: var(--gold); padding: 6px; border-radius: 6px; width: 60px; text-align: center; font-size: 0.9rem; font-weight: 800; outline: none; }
-        .label-mini { font-size: 0.75rem; color: var(--text-muted); text-transform: uppercase; font-weight: 600;}
-
-        .btn-edit { background: transparent; border: 1px solid var(--text-muted); color: var(--text-muted); padding: 4px 8px; border-radius: 6px; font-size: 0.75rem; cursor: pointer; transition: 0.2s; font-weight: 600;}
-        .btn-edit:hover { border-color: var(--gold); color: var(--gold); }
-        
-        .modal { position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; background: rgba(0,0,0,0.8); backdrop-filter: blur(8px); z-index: 1000; display: none; align-items: center; justify-content: center; padding: 20px; opacity: 0; transition: opacity 0.3s;}
-        .modal.show { display: flex; opacity: 1; }
-        .modal-content { background: var(--panel); border: 1px solid var(--border); border-radius: 16px; width: 100%; max-width: 650px; max-height: 90vh; overflow-y: auto; padding: 20px; display: flex; flex-direction: column; gap: 15px; }
-        .modal-title { font-size: 1.2rem; font-weight: 800; margin: 0; color: #fff;}
-        .modal-input { background: rgba(0,0,0,0.5); border: 1px solid var(--border); color: #fff; padding: 12px; border-radius: 8px; font-size: 0.9rem; width: 100%; font-family: inherit; resize: none; outline: none;}
-        .modal-actions { display: flex; justify-content: flex-end; gap: 10px; }
-        .btn-cancel { background: transparent; border: 1px solid var(--text-muted); color: var(--text-muted); padding: 10px 20px; border-radius: 8px; font-weight: 600; cursor: pointer; }
-        .btn-send { background: var(--danger); border: none; color: #fff; padding: 10px 20px; border-radius: 8px; font-weight: 800; cursor: pointer; text-transform: uppercase;}
-        .toast { position: fixed; bottom: 30px; left: 50%; transform: translateX(-50%) translateY(150px); background: var(--success); color: #000; padding: 12px 24px; border-radius: 30px; font-weight: 800; z-index: 2000; opacity: 0; transition: 0.4s; text-transform: uppercase; font-size: 0.9rem;}
-        .toast.show { transform: translateX(-50%) translateY(0); opacity: 1; }
-
-        @media (max-width: 900px) {
-            body { overflow-y: auto; height: auto; }
-            .dashboard-grid { grid-template-columns: 1fr; }
-            .scrollable-content { overflow: visible; }
-            .card { min-height: auto; }
-        }
-    </style>
-</head>
-<body>
-
-    <div class="header" style="width: 100%;">
-        <h1 class="title">⚡ Cockpit Anti-Rush</h1>
-        <div class="header-actions">
-            <button onclick="goBackToMyStation()" class="btn-retour-top">🔙 Retour Admin</button>
-            <div class="live-badge" id="sync-status"><div class="live-dot" id="live-dot-elem"></div> <span id="sync-text">EN DIRECT</span></div>
-        </div>
-    </div>
-
-    <div class="dashboard-grid">
-        
-        <div class="dash-col">
-            <div class="card" style="border-color: var(--gold); background: rgba(212, 175, 55, 0.03); flex: 1;">
-                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
-                    <h2 class="card-title" style="color: var(--gold); margin: 0;">👨‍🍳 Brigade Active</h2>
-                    <div style="display: flex; align-items: center; gap: 8px;">
-                        <span style="font-size: 0.65rem; color: var(--gold); font-weight: bold; text-transform: uppercase;">Pointeuse Auto</span>
-                        <label class="switch" style="margin: 0; transform: scale(0.7);">
-                            <input type="checkbox" id="mod-auto-staff" onchange="toggleAutoStaff()">
-                            <span class="slider"></span>
-                        </label>
-                    </div>
-                </div>
-                <div class="scrollable-content">
-                    <div id="staff-selection-grid" style="display: grid; grid-template-columns: repeat(auto-fill, minmax(110px, 1fr)); gap: 8px;">
-                        <div style="color:var(--text-muted); font-size:0.8rem; font-style:italic; grid-column: 1/-1;">Chargement du staff...</div>
-                    </div>
-                </div>
-            </div>
-
-            <!-- 📡 EMPLACEMENT RÉSERVATIONS MIS À JOUR AVEC LIEN VERS RESERVATION.HTML -->
-            <div class="card" style="border-color: var(--accent); background: rgba(56, 189, 248, 0.03); flex: 1.2;">
-                <h2 class="card-title" style="color: var(--accent); display: flex; justify-content: space-between; align-items: center; width: 100%;">
-                    <span>📡 Radar Prédictif</span>
-                    <!-- 📂 BOUTON D'ACCÈS SUR RESERVATION.HTML AVEC PROG DU PACK ECO COMPATIBLE -->
-                    <button class="btn-edit" onclick="window.location.href='reservation.html?tenantID=' + tenantID" style="border-color: var(--accent); color: var(--accent); font-weight: bold; text-transform: uppercase; font-size: 0.7rem; padding: 5px 10px;">📂 Ouvrir Réservations</button>
-                </h2>
-                <!-- ZONE AFFICHAGE DU NOMBRE TOTAL DES RÉSERVATIONS ET PAX -->
-                <div id="radar-total-pax" style="color: #fff; font-size: 0.8rem; background: var(--border); padding: 6px 10px; border-radius: 8px; font-weight: bold; margin-bottom: 10px; border: 1px solid var(--border-strong);">
-                    0 Résas Total | 0 Pax en approche
-                </div>
-                <div class="scrollable-content" id="radar-reservations" style="display: flex; flex-direction: column; gap: 8px;">
-                    <div style="color: var(--text-muted); text-align: center; font-style: italic; padding: 10px; font-size: 0.8rem;">Scan en cours...</div>
-                </div>
-            </div>
-        </div>
-
-        <div class="dash-col">
-            <div class="card" style="flex: 1;">
-                <h2 class="card-title">
-                    Niveau d'Alerte
-                    <button class="btn-edit" onclick="openThresholdModal()">⚙️ Capacités & IA</button>
-                </h2>
-                
-                <div class="rush-grid">
-                    <button class="rush-btn" data-level="0" onclick="setRushLevel(0)">🔵 NIVEAU 0 <span id="label-lvl-0">Calme Plat</span></button>
-                    <button class="rush-btn" data-level="1" onclick="setRushLevel(1)">🟢 NIVEAU 1 <span id="label-lvl-1">Normal</span></button>
-                    <button class="rush-btn" data-level="2" onclick="setRushLevel(2)">🟡 NIVEAU 2 <span id="label-lvl-2">Tendu</span></button>
-                    <button class="rush-btn" data-level="3" onclick="setRushLevel(3)">🟠 NIVEAU 3 <span id="label-lvl-3">Saturé</span></button>
-                    <button class="rush-btn" data-level="4" onclick="setRushLevel(4)">🔴 NIVEAU 4 <span id="label-lvl-4">Critique</span></button>
-                    <button class="rush-btn" data-level="5" onclick="setRushLevel(5)">🟣 NIVEAU 5 <span id="label-lvl-5">Chaos / SOS</span></button>
-                </div>
-
-                <div id="live-gauges" style="display: none; flex-direction: column; gap: 15px; margin-top: 20px; background: rgba(0,0,0,0.3); border: 1px solid var(--border); padding: 15px; border-radius: 8px;">
-                    <div style="display: flex; justify-content: space-between; align-items: center;">
-                        <h4 style="margin:0; font-size:0.8rem; color:var(--text-muted); text-transform:uppercase;">📊 Jauges (Temps Réel)</h4>
-                        <div id="rh-indicator" style="color: var(--chaos); font-weight: 800; font-size: 0.75rem; text-transform: uppercase; display: none;">Calcul...</div>
-                    </div>
-                    
-                    <div>
-                        <div style="display:flex; justify-content:space-between; font-size:0.8rem; color:var(--text-main); margin-bottom:5px;">
-                            <span>👨‍🍳 Charge Cuisine (<span id="gauge-cooks-count" style="color:var(--accent); font-weight:bold;">0</span> chefs)</span>
-                            <strong id="gauge-cooks-text">0 / 0 bons</strong>
-                        </div>
-                        <div class="gauge-container"><div id="gauge-cooks-bar" class="gauge-bar"></div></div>
-                    </div>
-
-                    <div>
-                        <div style="display:flex; justify-content:space-between; font-size:0.8rem; color:var(--text-main); margin-bottom:5px;">
-                            <span>🍽️ Charge Salle (<span id="gauge-servers-count" style="color:var(--accent); font-weight:bold;">0</span> serveurs)</span>
-                            <strong id="gauge-servers-text">0 / 0 couverts</strong>
-                        </div>
-                        <div class="gauge-container"><div id="gauge-servers-bar" class="gauge-bar"></div></div>
-                    </div>
-                </div>
-
-                <div id="auto-pilot-indicator" style="display: none; background: rgba(56, 189, 248, 0.1); color: var(--accent); border: 1px dashed var(--accent); padding: 10px; text-align: center; border-radius: 8px; margin-top: 15px; font-weight: 800; font-size: 0.8rem; text-transform: uppercase;">
-                    🤖 MODE PILOTE AUTOMATIQUE ACTIVÉ
-                </div>
-
-                <div style="margin-top: auto;">
-                    <button onclick="forceDeactivateRush()" style="background: transparent; border: 1px solid var(--danger); color: var(--danger); padding: 12px; font-size: 0.85rem; font-weight: 800; border-radius: 8px; cursor: pointer; text-transform: uppercase; width: 100%; margin-top: 15px; transition: 0.2s;">
-                        🛑 RETOUR NIVEAU 0 D'URGENCE
-                    </button>
-                </div>
-            </div>
-        </div>
-
-        <div class="dash-col">
-            <div class="card" style="flex: 0.7;">
-                <h2 class="card-title">Modules d'Atténuation IA</h2>
-                <div class="scrollable-content" style="display: flex; flex-direction: column; gap: 10px;">
-                    <div class="module-row" id="row-cameleon" style="padding: 10px;">
-                        <div class="module-info">
-                            <div class="module-name" style="font-size: 0.9rem;">🦎 Menu Caméléon</div>
-                            <div class="module-desc" style="font-size: 0.7rem;">Masque les plats longs (Niv. 3+).</div>
-                        </div>
-                        <label class="switch"><input type="checkbox" id="mod-cameleon" onchange="saveDirectToCloud()"><span class="slider"></span></label>
-                    </div>
-
-                    <div class="module-row" id="row-timeshift" style="padding: 10px; flex-direction: column; align-items: stretch; gap: 8px;">
-                        <div style="display: flex; justify-content: space-between; align-items: center;">
-                            <div class="module-info">
-                                <div class="module-name" style="font-size: 0.9rem;">⏱️ Time-Shifting</div>
-                                <div class="module-desc" style="font-size: 0.7rem;">Diffère les commandes (Niv. 4+).</div>
-                            </div>
-                            <label class="switch"><input type="checkbox" id="mod-timeshift" onchange="saveDirectToCloud()"><span class="slider"></span></label>
-                        </div>
-                        <div class="settings-bar" style="margin-top: 0; padding-top: 5px;">
-                            <div style="display: flex; align-items: center; gap: 5px;">
-                                <input type="number" id="ts-discount" class="input-mini" value="5" style="padding:4px; font-size:0.8rem;" onchange="saveDirectToCloud()">
-                                <span style="font-size:0.75rem; color:var(--text-muted); font-weight:bold;">% de remise</span>
-                            </div>
-                            <div style="display: flex; align-items: center; gap: 5px; margin-left: auto;">
-                                <input type="number" id="ts-delay" class="input-mini" value="15" style="padding:4px; font-size:0.8rem;" onchange="saveDirectToCloud()">
-                                <span style="font-size:0.75rem; color:var(--text-muted); font-weight:bold;">min imposées</span>
-                            </div>
-                        </div>
-                    </div>
-
-                    <div class="module-row" id="row-pacemaker" style="padding: 10px; flex-direction: column; align-items: stretch; gap: 8px;">
-                        <div style="display: flex; justify-content: space-between; align-items: center;">
-                            <div class="module-info">
-                                <div class="module-name" style="font-size: 0.9rem;">❤️ Pace-Maker</div>
-                                <div class="module-desc" style="font-size: 0.7rem;">Régule l'écran KDS.</div>
-                            </div>
-                            <label class="switch"><input type="checkbox" id="mod-pacemaker" onchange="saveDirectToCloud()"><span class="slider"></span></label>
-                        </div>
-                        <div class="settings-bar" style="margin-top: 0; padding-top: 5px;">
-                            <span class="label-mini" style="font-size: 0.7rem;">Bons Max sur Écran :</span>
-                            <input type="number" id="pm-max" class="input-mini" value="10" style="padding:4px; font-size:0.8rem;" onchange="saveDirectToCloud()">
-                        </div>
-                    </div>
-                </div>
-            </div>
-
-            <div class="card" style="flex: 1;">
-                <h2 class="card-title">Centre d'Incidents</h2>
-                <div style="display: flex; gap: 10px; margin-bottom: 10px;">
-                    <button class="rush-btn" style="flex:1; border-color: var(--warning); color: var(--warning); padding: 8px; font-size: 0.8rem;" onclick="openAlertModal('humain')">
-                        🤦‍♂️ ERR. HUMAINE
-                    </button>
-                    <button class="rush-btn" style="flex:1; border-color: var(--danger); color: var(--danger); padding: 8px; font-size: 0.8rem;" onclick="openAlertModal('systeme')">
-                        📢 ALERTE SYSTÈME
-                    </button>
-                </div>
-                <div class="scrollable-content" id="alerts-feed" style="display: flex; flex-direction: column; gap: 8px;"></div>
-            </div>
-        </div>
-    </div>
-
-    <!-- MODAL SPECIFIQUE : PROFIL INTEGRAL STAFF AVEC CALENDRIER L M M J V S D SYNCHRONISÉ -->
-    <div class="modal" id="staff-profile-modal">
-        <div class="modal-content" style="max-width: 400px; text-align: center;">
-            <h3 class="modal-title" id="sp-name" style="color: var(--accent); margin-bottom: 5px; text-transform: uppercase;">Nom</h3>
-            <div id="sp-role" style="color: var(--text-muted); font-size: 0.8rem; text-transform: uppercase; margin-bottom: 20px; font-weight: bold;">Role</div>
-
-            <div style="background: rgba(255,255,255,0.03); border: 1px solid var(--border); border-radius: 8px; padding: 15px; margin-bottom: 20px; text-align: left;">
-                <div style="margin-bottom: 15px; padding-bottom: 10px; border-bottom: 1px dashed rgba(255,255,255,0.1);">
-                    <span style="color: var(--text-muted); font-size: 0.8rem;">⏱️ Cumul Mensuel :</span>
-                    <strong id="sp-hours" style="color: #fff; float: right; font-size: 1.1rem;">0h / 35h</strong>
-                </div>
-                <div>
-                    <span style="color: var(--text-muted); font-size: 0.8rem;">📅 Planning Hebdomadaire (RH) :</span>
-                    <div id="sp-schedule" style="display: flex; justify-content: space-between; margin-top: 10px; background: rgba(0,0,0,0.2); padding: 8px; border-radius: 8px; border: 1px solid var(--border);">
-                        <!-- Généré dynamiquement en JS -->
-                    </div>
-                </div>
-            </div>
-
-            <button id="sp-toggle-btn" class="rush-btn" style="width: 100%; margin-bottom: 10px; font-size: 0.85rem;" onclick="toggleStaffDutyFromModal()">
-                🟢 FORCER L'ENTRÉE (ON DUTY)
-            </button>
-
-            <button class="rush-btn" style="width: 100%; border-color: var(--gold); color: var(--gold); background: rgba(212, 175, 55, 0.05); font-size: 0.85rem;" onclick="goToRH()">
-                📁 GÉRER LE PROFIL (RH.HTML)
-            </button>
-
-            <div class="modal-actions" style="margin-top: 15px; justify-content: center;">
-                <button class="btn-cancel" onclick="closeModal('staff-profile-modal')">Fermer</button>
-            </div>
-        </div>
-    </div>
-
-    <!-- AUTRES MODALS -->
-    <div class="modal" id="alert-modal">
-        <div class="modal-content" style="max-width: 450px;">
-            <h3 class="modal-title" id="alert-modal-title">🚨 Nouvelle Alerte</h3>
-            <input type="hidden" id="alert-type-hidden">
-            <div class="input-group" id="staff-error-select-group" style="display: none; margin-bottom: 15px;">
-                <label style="color:var(--warning); font-size:0.85rem; margin-bottom:8px; display:block; font-weight:bold;">Qui a fait l'erreur ?</label>
-                <select id="staff-error-select" class="modal-input" style="border-color: var(--warning);">
-                    <option value="">-- Non spécifié --</option>
-                </select>
-            </div>
-            <textarea id="alert-message-input" class="modal-input" style="min-height: 80px;" placeholder="Ex: Table 4, refaire 1 Entrecôte bien cuite..."></textarea>
-            <div class="modal-actions">
-                <button class="btn-cancel" onclick="closeModal('alert-modal')">Annuler</button>
-                <button class="btn-send" onclick="sendAlert()">Déclencher</button>
-            </div>
-        </div>
-    </div>
-
-    <div class="modal" id="threshold-modal">
-        <div class="modal-content" style="max-width: 650px;">
-            <h3 class="modal-title" style="color: var(--gold);">⚙️ Ratios Opérationnels & IA</h3>
-            <div style="display: flex; gap: 15px; margin-top: 15px; flex-wrap: wrap;">
-                <div style="flex: 1.2; min-width: 250px; background: rgba(0,0,0,0.3); padding: 15px; border-radius: 10px; border: 1px solid var(--border);">
-                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
-                        <h4 style="color:var(--accent); margin: 0; font-size: 0.85rem; text-transform: uppercase;">📊 Capacité de Base</h4>
-                        <label class="switch" style="transform: scale(0.7); margin: 0;">
-                            <input type="checkbox" id="input-auto-rush" onchange="document.getElementById('auto-rush-settings').style.opacity = this.checked ? '1' : '0.3'">
-                            <span class="slider"></span>
-                        </label>
-                    </div>
-                    <p style="font-size: 0.75rem; color: var(--text-muted); margin: 0 0 10px 0; line-height: 1.4;">L'IA multiplie ces chiffres par l'effectif actif.</p>
-                    <div id="auto-rush-settings" style="display: flex; flex-direction: column; gap: 10px; transition: 0.3s;">
-                        <div style="display:flex; justify-content:space-between; align-items:center;">
-                            <label style="color:var(--text-main); font-size: 0.8rem;">👨‍🍳 1 Chef gère :</label>
-                            <input type="number" id="ratio-cook" class="modal-input" value="10" style="width:60px; padding: 6px; text-align:center;">
-                        </div>
-                        <div style="display:flex; justify-content:space-between; align-items:center;">
-                            <label style="color:var(--text-main); font-size: 0.8rem;">🍽️ 1 Serveur gère :</label>
-                            <input type="number" id="ratio-server" class="modal-input" value="20" style="width:60px; padding: 6px; text-align:center;">
-                        </div>
-                    </div>
-                </div>
-                <div style="flex: 1; min-width: 200px;">
-                    <h4 style="color:var(--text-main); margin: 0 0 10px 0; font-size: 0.85rem; text-transform: uppercase;">Textes (Côté Client)</h4>
-                    <div style="display: flex; flex-direction: column; gap: 6px;">
-                        <input type="text" id="input-thresh-0" class="modal-input" style="padding: 6px; font-size: 0.8rem;">
-                        <input type="text" id="input-thresh-1" class="modal-input" style="padding: 6px; font-size: 0.8rem;">
-                        <input type="text" id="input-thresh-2" class="modal-input" style="padding: 6px; font-size: 0.8rem;">
-                        <input type="text" id="input-thresh-3" class="modal-input" style="padding: 6px; font-size: 0.8rem;">
-                        <input type="text" id="input-thresh-4" class="modal-input" style="padding: 6px; font-size: 0.8rem;">
-                        <input type="text" id="input-thresh-5" class="modal-input" style="padding: 6px; font-size: 0.8rem;">
-                    </div>
-                </div>
-            </div>
-            <div class="modal-actions" style="margin-top: 20px;">
-                <button class="btn-cancel" onclick="closeModal('threshold-modal')">Annuler</button>
-                <button class="btn-send" style="background:var(--success); color:#000;" onclick="saveThresholds()">Enregistrer</button>
-            </div>
-        </div>
-    </div>
-
-    <div id="toast" class="toast">Action Confirmée</div>
-
-    <script>
-        let systemSettings = { activeAlerts: [], rushThresholds: {}, rushRules: {} }; 
-        let staffAccess = [];
-        let currentSelectedPin = null;
-        let globalAppState = null;
-
-        function goBackToMyStation() { window.location.href = `${backUrl}?tenantID=${tenantID}`; }
-
-        // ==========================================
-        // 📡 MOTEUR DU RADAR PRÉDICTIF AMÉLIORÉ (NOM + TEL + TOTAL)
-        // ==========================================
-        function updateRadarReservations(state) {
-            const radarContainer = document.getElementById('radar-reservations');
-            const paxCounter = document.getElementById('radar-total-pax');
-            if (!radarContainer) return 0;
-
-            let resas = [];
-            if (state.activeOrders && state.activeOrders['RESERVATIONS_MASTER'] && state.activeOrders['RESERVATIONS_MASTER'].data) {
-                resas = state.activeOrders['RESERVATIONS_MASTER'].data;
-            }
-
-            let now = new Date();
-            let todayStr = now.toISOString().split('T')[0];
-            
-            let resasDuJour = resas.filter(r => r.date === todayStr && r.status === 'confirmed');
-            resasDuJour.sort((a, b) => (a.time || "00:00").localeCompare(b.time || "00:00"));
-
-            let incomingClients = 0;
-            let totalResasCount = resasDuJour.length; // 📊 NOMBRE TOTAL DE RÉSERVATIONS DU SERVICE
-            let html = '';
-
-            if (resasDuJour.length === 0) {
-                radarContainer.innerHTML = `<div style="padding: 10px; color: var(--text-muted); text-align: center; border: 1px dashed var(--border-strong); border-radius: 6px; font-size:0.8rem;">Aucune réservation à venir.</div>`;
-                paxCounter.innerHTML = `<span style="color:var(--gold); font-weight:900;">0 Résas Total</span> | 0 Pax en approche`;
-                return 0;
-            }
-
-            resasDuJour.forEach(r => {
-                let pax = parseInt(r.pax || r.couverts || 0);
-                let heure = r.time || "N/A";
-                let table = r.table || r.assignedTable || "Aucune";
-                let nom = r.name || "Client";
-                let phone = r.phone || "Pas de numéro"; // 📞 INCLUSION DU NUMÉRO DE TÉLÉPHONE
-                
-                let [h, m] = heure.split(':').map(Number);
-                let resaTime = new Date(now.getFullYear(), now.getMonth(), now.getDate(), h, m);
-                let diffMinutes = (resaTime - now) / 60000;
-                
-                let isIncoming = (diffMinutes >= -15 && diffMinutes <= 45);
-                if (isIncoming) incomingClients += pax;
-
-                let opacity = isIncoming ? '1' : '0.4';
-                let alertColor = isIncoming ? 'var(--warning)' : 'var(--border-strong)';
-                let stripeTag = r.stripeHold ? '<span style="color: var(--success); font-size:0.65rem; margin-left: 5px;">💳 Garantie</span>' : '';
-
-                html += `
-                <div style="background: rgba(255,255,255,0.03); border-left: 3px solid ${alertColor}; padding: 10px; border-radius: 6px; display: flex; justify-content: space-between; align-items: center; opacity: ${opacity};">
-                    <div>
-                        <div style="color: #fff; font-size: 0.95rem; font-weight: bold;">
-                            🕒 ${heure} - <span style="color: var(--accent); font-weight:800;">${nom}</span>
-                        </div>
-                        <div style="font-size: 0.75rem; color: var(--text-muted); margin-top: 4px; display:flex; gap: 10px; align-items:center;">
-                            <span>📞 ${phone}</span>
-                            <span style="color: var(--border-strong);">|</span>
-                            <span>📍 Table: <span style="color: var(--text-main); font-weight:600;">${table}</span></span>
-                            ${stripeTag}
-                        </div>
-                    </div>
-                    <div style="color: ${alertColor}; font-weight: 900; font-size: 1.1rem; background: rgba(0,0,0,0.2); padding: 4px 8px; border-radius: 6px;">
-                        ${pax}p
-                    </div>
-                </div>`;
-            });
-
-            // MISE À JOUR DE LA BARRE DE STATUT SUPÉRIEURE
-            paxCounter.innerHTML = `<span style="color:var(--gold); font-weight:900;">${totalResasCount} Résas au Service</span> | <span style="color:var(--accent); font-weight:900;">${incomingClients} Pax</span> en approche (-45 min)`;
-            radarContainer.innerHTML = html;
-            
-            return incomingClients;
-        }
-
-        // ==========================================
-        // 🗓️ EXTRACTION DE LA SEMAINE ACTIVE DE RH.HTML
-        // ==========================================
-        function generateHREmojiCalendar(staffId, state) {
-            const daysLetters = ['L', 'M', 'M', 'J', 'V', 'S', 'D'];
-            const now = new Date();
-            
-            const dayOfWeek = now.getDay(); 
-            const diffToMonday = dayOfWeek === 0 ? -6 : 1 - dayOfWeek;
-            const mondayDate = new Date(now);
-            mondayDate.setDate(now.getDate() + diffToMonday);
-            
-            let html = '';
-            const timesheets = (state.activeOrders && state.activeOrders['TIMESHEETS_MASTER'] && state.activeOrders['TIMESHEETS_MASTER'].data) ? state.activeOrders['TIMESHEETS_MASTER'].data : {};
-            
-            for (let i = 0; i < 7; i++) {
-                const targetDay = new Date(mondayDate);
-                targetDay.setDate(mondayDate.getDate() + i);
-                
-                const monthKey = `${targetDay.getFullYear()}-${String(targetDay.getMonth() + 1).padStart(2, '0')}`;
-                const dayNum = targetDay.getDate();
-                
-                let combinedEmoji = '💤'; 
-                let dayContainerStyle = 'border: 1px solid transparent;';
-                
-                if (targetDay.toDateString() === now.toDateString()) {
-                    dayContainerStyle = 'border: 1px solid var(--gold); background: rgba(212, 175, 55, 0.1); border-radius: 6px;';
+                if (session.metadata && session.metadata.plan) {
+                    planAchete = session.metadata.plan.toUpperCase();
+                    if (['CHEF_CUISINE', 'CHEF_PATISSERIE', 'CHEF_BAR', 'CHEF', 'PATISSIER', 'BAR'].includes(planAchete)) {
+                        limitScreens = 1; limitStaff = 1;
+                    } else if (['BUSINESS', 'RENTABILITE', 'ECO', 'PACK_A'].includes(planAchete)) {
+                        limitScreens = 5; limitStaff = 999;
+                    } else if (['EMPIRE', 'BRIGADE', 'BRIGADES', 'PREMIUM'].includes(planAchete)) {
+                        limitScreens = 50; limitStaff = 999;
+                    }
+                } else {
+                    if (session.amount_total === 1900) { planAchete = "CHEF_CUISINE"; limitScreens = 1; limitStaff = 1; } 
+                    else if (session.amount_total === 4500 || session.amount_total === 4900) { planAchete = "PACK_A"; limitScreens = 5; limitStaff = 999; } 
+                    else if (session.amount_total >= 9900) { planAchete = "EMPIRE"; limitScreens = 50; limitStaff = 999; }
                 }
-                
-                if (timesheets[monthKey] && timesheets[monthKey][staffId] && timesheets[monthKey][staffId][dayNum]) {
-                    const dataObj = timesheets[monthKey][staffId][dayNum];
-                    const st = dataObj.status;
-                    
-                    if (st === 'present') {
-                        const hasMatin = dataObj.s1 && dataObj.s1.trim() !== '';
-                        const hasSoir = dataObj.s2 && dataObj.s2.trim() !== '';
-                        if (hasMatin && hasSoir) combinedEmoji = '☀️🌙';
-                        else if (hasMatin) combinedEmoji = '☀️';
-                        else if (hasSoir) combinedEmoji = '🌙';
-                        else combinedEmoji = '✅';
-                    } else if (st === 'off_matin') {
-                        combinedEmoji = '❌🌙';
-                    } else if (st === 'off_soir') {
-                        combinedEmoji = '☀️❌';
-                    } else if (st === 'repos' || st === 'off') {
-                        combinedEmoji = '💤';
-                    } else if (st === 'ferie') {
-                        combinedEmoji = '🎉';
-                    } else if (st === 'conge' || st === 'vacation') {
-                        combinedEmoji = '🏖️';
-                    } else if (st === 'maladie') {
-                        combinedEmoji = '🤒';
+
+                // 🔓 Un achat officiel supprime toute expiration de démo (La licence devient permanente)
+                await Tenant.updateOne(
+                    { tenantID: safeID },
+                    { 
+                        $set: { status: 'ACTIF', config: { stripeCustomerId: session.customer } },
+                        $unset: { demoExpiration: "" }, // Supprime la limite de 24h
+                        $setOnInsert: { plan: planAchete, maxScreens: limitScreens, maxStaff: limitStaff, pin: Math.floor(1000 + Math.random() * 9000).toString() }
+                    },
+                    { upsert: true }
+                );
+            } catch(e) {}
+        }
+    }
+    res.json({received: true});
+});
+
+// ==========================================
+// BASE DE DONNÉES : INFRASTRUCTURE MONGODB
+// ==========================================
+const mongoURI = process.env.MONGO_URI || "mongodb+srv://icheflavien_db_user:Tamere58.@cluster0.4w95d7m.mongodb.net/ichef_production?retryWrites=true&w=majority";
+mongoose.connect(mongoURI).then(() => console.log('✅ Base de donnees iCHEF Online')).catch(err => console.error(err.message));
+
+const tenantSchema = new mongoose.Schema({
+    tenantID: { type: String, required: true, unique: true },
+    clientName: String,
+    email: String,
+    phone: String,
+    status: { type: String, enum: ['ACTIF', 'SUSPENDU'], default: 'ACTIF' },
+    plan: { 
+        type: String, 
+        enum: ['CHEF_CUISINE', 'CHEF_PATISSERIE', 'CHEF_BAR', 'ICHEF_OS', 'RENTABILITE', 'BRIGADES', 'BRIGADE', 'BUSINESS', 'ECO', 'PREMIUM', 'CHEF', 'PATISSIER', 'BAR', 'EMPIRE', 'PACK_A'], 
+        default: 'BUSINESS' 
+    },
+    specialite: { type: String, default: 'cuisine' },
+    pin: { type: String, default: '9999' }, 
+    maxScreens: { type: Number, default: 5 }, 
+    maxStaff: { type: Number, default: 999 },
+    registeredDevices: [String], 
+    config: { stripeCustomerId: String },
+    demoExpiration: { type: Date } // ⏳ CHRONOMÈTRE DE SÉCURITÉ DÉMO (24H)
+});
+const Tenant = mongoose.model('Tenant', tenantSchema);
+
+const AppState = mongoose.model('AppState', new mongoose.Schema({
+    tenantID: { type: String, required: true, unique: true },
+    activeOrders: { type: Object, default: {} }
+}, { minimize: false }));
+
+// ==========================================
+// 🤖 MOTEURS IA (GEMINI)
+// ==========================================
+const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY || 'CLE_MANQUANTE');
+
+app.post('/api/scan-invoice', async (req, res) => {
+    const { imageBase64, mimeType } = req.body;
+    if (!imageBase64) return res.status(400).json({ success: false, error: "Aucune image fournie." });
+    try {
+        const base64Data = imageBase64.includes(',') ? imageBase64.split(',')[1] : imageBase64;
+        const imagePart = { inlineData: { data: base64Data, mimeType: mimeType || "image/jpeg" } };
+        const prompt = 'Analyse cette image de facture. Extrais les informations. RESPOND ONLY WITH JSON WITHOUT MARKDOWN TEXT: { "fournisseur": "Nom", "adresse": "Adresse", "telephone": "Tel", "email": "Email", "devise": "€", "date": "JJ/MM/AAAA", "totalHT": 0.00, "tva": 0.00, "totalTTC": 0.00, "articles": [{ "nom": "nom", "categorie": "catégorie", "quantite": "qty", "prixUnitaire": 0.00 }] }';
+        const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
+        const result = await model.generateContent([prompt, imagePart]);
+        
+        let responseText = result.response.text().trim();
+        const ticks = String.fromCharCode(96, 96, 96);
+        responseText = responseText.split(ticks + 'json').join('').split(ticks).join('').trim();
+        
+        if (!responseText.startsWith("{")) responseText = responseText.substring(responseText.indexOf("{"));
+        res.json({ success: true, data: JSON.parse(responseText) });
+    } catch (error) { res.status(500).json({ success: false, error: "Erreur de traitement IA ou Image illisible." }); }
+});
+
+app.post('/analyse-ticket', async (req, res) => {
+    const { image, mimeType } = req.body;
+    if (!image) return res.status(400).json({ success: false, error: "Image manquante" });
+    try {
+        const imagePart = { inlineData: { data: image, mimeType: mimeType || "image/jpeg" } };
+        const prompt = 'Analyse cette étiquette de traçabilité. JSON NO MARKDOWN: { "nom": "Nom du produit", "lot": "Numéro", "dlc": "JJ/MM/AAAA" }';
+        const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
+        const result = await model.generateContent([prompt, imagePart]);
+        
+        let text = result.response.text().trim();
+        const ticks = String.fromCharCode(96, 96, 96);
+        text = text.split(ticks + 'json').join('').split(ticks).join('').trim();
+        
+        res.json({ success: true, resultat: JSON.parse(text) });
+    } catch (error) { res.status(500).json({ success: false, error: error.message }); }
+});
+
+// ==========================================
+// 🔴 ENGINE DE CALCUL DE TEMPS RH INTÉGRÉ
+// ==========================================
+function parseTime(timeStr) {
+    if(!timeStr || !timeStr.includes(':')) return null;
+    const pts = timeStr.split(':');
+    return parseInt(pts[0]) + (parseInt(pts[1]) / 60);
+}
+
+function calculateNet(p) {
+    if(p.status !== 'present' && p.status !== 'off_matin' && p.status !== 'off_soir' && p.status !== 'ferie') return 0;
+    let total = 0;
+    if(p.s1) { let [s, e] = p.s1.split('-'); if(s && e) { s=parseTime(s); e=parseTime(e); if(s!==null&&e!==null) { if(e<s) e+=24; total+=(e-s); } } }
+    if(p.s2) { let [s, e] = p.s2.split('-'); if(s && e) { s=parseTime(s); e=parseTime(e); if(s!==null&&e!==null) { if(e<s) e+=24; total+=(e-s); } } }
+    total -= (parseInt(p.pause) || 0) / 60;
+    return Math.max(0, total);
+}
+
+// ==========================================
+//  IA SMART-RESERVATION (Yield Management & Time-Shifting)
+// ==========================================
+app.post('/api/smart-reservation', async (req, res) => {
+    const { tenantID, customerRequest, availableTables } = req.body;
+    try {
+        const safeID = cleanString(tenantID);
+        let state = await AppState.findOne({ tenantID: safeID });
+        
+        // 1. Analyse de la force de frappe actuelle (Brigade)
+        let activeCooks = 1; // Par défaut s'il n'y a pas de données
+        if (state && state.activeOrders && state.activeOrders['STAFF_ACCESS'] && state.activeOrders['STAFF_ACCESS'].data) {
+            const staff = state.activeOrders['STAFF_ACCESS'].data;
+            // On compte les cuisiniers actifs
+            activeCooks = staff.filter(s => s.dept === 'cuisine' && s.active).length || 1;
+        }
+
+        // Le prompt de Yield Management pour Gemini
+        const prompt = `Tu es l'IA iCHEF, le Maître d'Hôtel d'élite et Yield Manager du restaurant.
+        
+        Demande du client : "${customerRequest}".
+        Tables physiques libres : ${JSON.stringify(availableTables)}.
+        
+        🔴 INFO CRITIQUE BRIGADE : Nous avons actuellement ${activeCooks} cuisinier(s) en poste. 
+        RÈGLE DE PRODUCTION : 1 cuisinier peut gérer environ 15 couverts par tranche horaire.
+        
+        MISSION :
+        1. Si la taille de la table dépasse la capacité de la brigade pour l'heure demandée, TU DOIS REFUSER l'heure initiale.
+        2. TIME-SHIFTING : Si tu refuses, propose au client un autre horaire (ex: 45 min plus tôt ou plus tard) dans le "messageClient".
+        3. Si tu acceptes, trouve la table idéale.
+        
+        RÉPONDS UNIQUEMENT AVEC CE JSON STRICT (SANS MARKDOWN) : 
+        { 
+          "acceptee": true/false, 
+          "pax": nombre, 
+          "heure": "HH:MM", 
+          "tableAllouee": "ID_TABLE_OU_VIDE", 
+          "messageClient": "Votre réponse élégante au client, justifiant un refus par l'affluence et proposant une alternative si besoin.", 
+          "optimisationInfo": "Notes internes pour le manager" 
+        }`;
+
+        const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+        const result = await model.generateContent(prompt);
+        
+        let responseText = result.response.text().trim();
+        const ticks = String.fromCharCode(96, 96, 96);
+        responseText = responseText.split(ticks + 'json').join('').split(ticks).join('').trim();
+        
+        if (!responseText.startsWith("{")) responseText = responseText.substring(responseText.indexOf("{"));
+        const decision = JSON.parse(responseText);
+        
+        // Sauvegarde de la réservation validée
+        if (decision.acceptee && decision.tableAllouee) {
+            await AppState.findOneAndUpdate(
+                { tenantID: safeID },
+                { $push: { "activeOrders.RESERVATIONS_MASTER.data": { 
+                    id: 'resa_' + Date.now(), 
+                    pax: decision.pax, 
+                    heure: decision.heure, 
+                    table: decision.tableAllouee, 
+                    info: decision.optimisationInfo, 
+                    timestamp: Date.now() 
+                } } },
+                { upsert: true }
+            );
+        }
+        res.json({ success: true, decision });
+    } catch (error) { 
+        console.error("Erreur Smart-Reservation:", error);
+        res.status(500).json({ success: false, error: "L'IA du Maître d'Hôtel est momentanément indisponible." }); 
+    }
+});
+
+// ==========================================
+// API RESTAURANT SYNCHRONISATION
+// ==========================================
+
+app.post('/api/save-transaction', async (req, res) => {
+    const { tenantID, transaction } = req.body;
+    if (!tenantID || !transaction) return res.status(400).json({ success: false, error: "Données de transaction manquantes." });
+    const safeID = cleanString(tenantID);
+    try {
+        let state = await AppState.findOne({ tenantID: safeID });
+        if (!state) state = new AppState({ tenantID: safeID, activeOrders: {} });
+        if (!state.activeOrders['FINANCIAL_HISTORY']) state.activeOrders['FINANCIAL_HISTORY'] = { data: [] };
+        
+        let history = state.activeOrders['FINANCIAL_HISTORY'].data || [];
+        history.unshift(transaction);
+        state.activeOrders['FINANCIAL_HISTORY'].data = history;
+
+        state.markModified('activeOrders');
+        await state.save();
+        res.json({ success: true, message: "Ticket comptabilisé dans l'historique Admin." });
+    } catch(e) { res.status(500).json({ success: false, error: "Erreur sauvegarde base de données." }); }
+});
+
+app.get('/api/get-contact', async (req, res) => {
+    try {
+        const tenant = await Tenant.findOne({ tenantID: cleanString(req.query.tenantID) });
+        if (tenant) res.json({ success: true, contact: { email: tenant.email, phone: tenant.phone } });
+        else res.json({ success: false });
+    } catch(e) { res.status(500).json({ success: false }); }
+});
+
+app.post('/api/update-contact', async (req, res) => {
+    try {
+        const { tenantID, masterPin, email, phone } = req.body;
+        const tenant = await Tenant.findOne({ tenantID: cleanString(tenantID) });
+        if (!tenant || tenant.pin !== masterPin) return res.status(403).json({ success: false, error: "Non autorisé." });
+        tenant.email = email; tenant.phone = phone; await tenant.save();
+        res.json({ success: true });
+    } catch(e) { res.status(500).json({ success: false }); }
+});
+
+app.get('/api/check-license', async (req, res) => {
+    try {
+        const tenant = await Tenant.findOne({ tenantID: cleanString(req.query.tenantID) });
+        if (!tenant) return res.status(404).json({ success: false });
+        res.json({ success: true, status: tenant.status, plan: tenant.plan, specialite: tenant.specialite });
+    } catch (e) { res.status(500).json({ success: false }); }
+});
+
+app.post('/api/verify-pin', async (req, res) => {
+    const { tenantID, pin, deviceId } = req.body;
+    try {
+        const tenant = await Tenant.findOne({ tenantID: cleanString(tenantID) });
+        if (!tenant) return res.status(404).json({ success: false, error: "Inconnu." });
+        
+        // 🔒 SÉCURITÉ : VÉRIFICATION EXPIRATION 24H POUR LA DÉMO
+        if (tenant.demoExpiration && new Date() > new Date(tenant.demoExpiration)) {
+            return res.status(403).json({ success: false, error: "Démonstration expirée (limite de 24h atteinte)." });
+        }
+
+        if (tenant.status === 'SUSPENDU') return res.status(403).json({ success: false, error: "Licence suspendue ou en attente d'approbation manuelle." });
+
+        let isValid = (String(tenant.pin).trim() === String(pin).trim());
+        let roleAttribue = 'MASTER';
+
+        if (!isValid) {
+            const state = await AppState.findOne({ tenantID: tenant.tenantID });
+            if (state && state.activeOrders && state.activeOrders['STAFF_ACCESS']) {
+                const staffMember = (state.activeOrders['STAFF_ACCESS'].data || []).find(s => String(s.pin).trim() === String(pin).trim() && s.active === true);
+                if (staffMember) { isValid = true; roleAttribue = staffMember.dept || 'STAFF'; }
+            }
+        }
+
+        if (isValid) { 
+            if (deviceId && !tenant.registeredDevices.includes(deviceId)) {
+                if (tenant.registeredDevices.length >= tenant.maxScreens) return res.status(403).json({ success: false, error: "Limite écrans atteinte." });
+                tenant.registeredDevices.push(deviceId); await tenant.save();
+            }
+            return res.json({ success: true, plan: tenant.plan, specialite: tenant.specialite, role: roleAttribue, safeTenantID: tenant.tenantID }); 
+        }
+        res.status(401).json({ success: false, error: "Code PIN incorrect." });
+    } catch (error) { res.status(500).json({ success: false }); }
+});
+
+app.post(['/api/update-pin', '/api/update-master-pin'], async (req, res) => {
+    try {
+        await Tenant.findOneAndUpdate({ tenantID: cleanString(req.body.tenantID) }, { pin: req.body.newPin, registeredDevices: [] });
+        res.json({ success: true });
+    } catch (error) { res.status(500).json({ success: false }); }
+});
+
+app.get(['/api/check-device', '/api/dashboard-info'], async (req, res) => {
+    try {
+        const tenant = await Tenant.findOne({ tenantID: cleanString(req.query.tenantID) });
+        if (!tenant) return res.status(404).json({ success: false });
+        res.json({ success: true, activeCount: tenant.registeredDevices.length, activeDevices: tenant.registeredDevices.length, maxScreens: tenant.maxScreens });
+    } catch (e) { res.status(500).json({ success: false }); }
+});
+
+app.post(['/api/kill-switch', '/api/admin-reset-devices'], async (req, res) => {
+    try {
+        await Tenant.findOneAndUpdate({ tenantID: cleanString(req.body.tenantID) }, { registeredDevices: [] });
+        res.json({ success: true });
+    } catch (e) { res.status(500).json({ success: false }); }
+});
+
+app.get('/get-current-state', async (req, res) => {
+    try {
+        let tenantID = req.query.tenantID || 'MASTER_STATE';
+        if (tenantID !== 'MASTER_STATE') {
+            tenantID = cleanString(tenantID);
+            const tenant = await Tenant.findOne({ tenantID });
+            
+            // 🔒 SÉCURITÉ : VÉRIFICATION EXPIRATION 24H EN COURS D'UTILISATION
+            if (tenant && tenant.demoExpiration && new Date() > new Date(tenant.demoExpiration)) {
+                return res.status(403).json({ error: "Démonstration expirée (limite de 24h atteinte)." });
+            }
+            if (tenant && tenant.status === 'SUSPENDU') return res.status(403).json({ error: "Licence suspendue ou en attente" });
+        }
+        let state = await AppState.findOne({ tenantID });
+        if (!state) state = await AppState.create({ tenantID, activeOrders: {} });
+        
+        // 🔥 SYMBIOSIE INTELLIGENTE : CALCUL DYNAMIQUE DES HEURES ACCOMPLIES DU MOIS EN COURS 🔥
+        if (state.activeOrders && state.activeOrders['STAFF_ACCESS'] && state.activeOrders['TIMESHEETS_MASTER']) {
+            const today = new Date();
+            const monthStr = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}`;
+            const daysInMonth = new Date(today.getFullYear(), today.getMonth() + 1, 0).getDate();
+            
+            const staffList = state.activeOrders['STAFF_ACCESS'].data || [];
+            const timesheets = state.activeOrders['TIMESHEETS_MASTER'].data || {};
+            const monthData = timesheets[monthStr] || {};
+
+            let stateModified = false;
+            staffList.forEach(staff => {
+                let totalHoursDone = 0;
+                for (let d = 1; d <= daysInMonth; d++) {
+                    if (monthData[staff.id] && monthData[staff.id][d]) {
+                        totalHoursDone += calculateNet(monthData[staff.id][d]);
                     }
                 }
-                
-                html += `
-                <div style="display: flex; flex-direction: column; align-items: center; gap: 4px; flex: 1; padding: 4px 0; ${dayContainerStyle}">
-                    <span style="font-size: 0.7rem; color: var(--text-muted); font-weight: 900;">${daysLetters[i]}</span>
-                    <span style="font-size: 1rem;">${combinedEmoji}</span>
-                </div>`;
-            }
-            return html;
-        }
-
-        // --- INTERFACES LOGIQUES BRIGADE ---
-        function renderStaffSymbiosis() {
-            let container = document.getElementById('staff-selection-grid');
-            if(!staffAccess || staffAccess.length === 0) { 
-                container.innerHTML = '<div style="color:var(--text-muted); font-size:0.8rem; font-style:italic; grid-column: 1/-1;">Aucun employé configuré.</div>'; 
-                return; 
-            }
-
-            container.innerHTML = staffAccess.map(s => {
-                let rankLabel = s.role ? s.role.toUpperCase() : s.dept.toUpperCase();
-                let colorTheme = s.dept === 'cuisine' ? 'var(--orange)' : 'var(--accent)';
-                let isOnDuty = s.onDuty === true;
-                let hoursLogged = s.workedHours !== undefined ? s.workedHours + 'h' : '0h';
-                
-                let boxStyle = isOnDuty 
-                    ? `border-color: ${colorTheme}; background: rgba(255,255,255,0.05);` 
-                    : `border-color: var(--border); background: transparent; opacity: 0.5; filter: grayscale(1);`;
-
-                return `
-                <div style="border: 1px solid; ${boxStyle} padding: 10px; border-radius: 8px; cursor: pointer; transition: 0.2s; display: flex; flex-direction: column; justify-content: center; align-items: center;" onclick="openStaffProfile('${s.pin}')">
-                    <div style="font-weight: 800; font-size: 0.9rem; color: #fff;">${s.name}</div>
-                    <div style="font-size: 0.6rem; color: ${colorTheme}; font-weight: 700; margin-top: 4px; text-transform: uppercase;">${rankLabel}</div>
-                    <div style="font-size: 0.65rem; color: var(--text-muted); font-weight: bold; margin-top: 5px; letter-spacing: 0.5px;">⏱️ ${hoursLogged}</div>
-                </div>`;
-            }).join('');
-            updateUIFromSettings();
-        }
-
-        function openStaffProfile(pin) {
-            let emp = staffAccess.find(s => s.pin === pin);
-            if(!emp) return;
-            currentSelectedPin = pin;
-
-            document.getElementById('sp-name').innerText = emp.name;
-            document.getElementById('sp-role').innerText = emp.role || emp.dept;
-
-            let heuresSimulees = emp.workedHours ? emp.workedHours : "0"; 
-            document.getElementById('sp-hours').innerText = heuresSimulees + "h / " + (emp.contract || 35) + "h";
-            
-            if (globalAppState) {
-                document.getElementById('sp-schedule').innerHTML = generateHREmojiCalendar(emp.id || emp.pin, globalAppState);
-            } else {
-                document.getElementById('sp-schedule').innerText = "En attente de synchro...";
-            }
-
-            let toggleBtn = document.getElementById('sp-toggle-btn');
-            if(emp.onDuty) {
-                toggleBtn.style.borderColor = "var(--danger)"; toggleBtn.style.color = "var(--danger)";
-                toggleBtn.innerHTML = "🔴 DÉPOINTER (RENVOYER EN REPOS)";
-            } else {
-                toggleBtn.style.borderColor = "var(--success)"; toggleBtn.style.color = "var(--success)";
-                toggleBtn.innerHTML = "🟢 POINTER (ACTIVER SUR LE SERVICE)";
-            }
-
-            let modal = document.getElementById('staff-profile-modal');
-            modal.style.display = 'flex'; setTimeout(() => modal.classList.add('show'), 10);
-        }
-
-        async function toggleStaffDutyFromModal() {
-            if(!currentSelectedPin) return;
-            closeModal('staff-profile-modal');
-            await toggleStaffDuty(currentSelectedPin);
-        }
-
-        function goToRH() {
-            localStorage.setItem('ichef_rh_focus', currentSelectedPin); 
-            window.location.href = `rh.html?tenantID=${tenantID}`;
-        }
-
-        async function toggleStaffDuty(pin) {
-            let emp = staffAccess.find(s => s.pin === pin);
-            if(emp) {
-                let isAutoStaff = systemSettings.rushV3 && systemSettings.rushV3.autoStaff === true;
-                if (isAutoStaff) return showToast("⚠️ Géré par la pointeuse RH.", true);
-
-                emp.onDuty = !emp.onDuty;
-                renderStaffSymbiosis(); 
-                try {
-                    await fetch(`${SERVER_URL}/update-order?tenantID=${tenantID}`, { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ tableId: 'STAFF_ACCESS', order: { data: staffAccess } }) });
-                    let r = await fetch(`${SERVER_URL}/get-current-state?tenantID=${tenantID}`);
-                    let state = await r.json();
-                    globalAppState = state;
-                    calculateRushState(state);
-                } catch(e) { showToast("❌ Erreur RH"); }
-            }
-        }
-
-        // --- ENGINE ET UTILS ---
-        async function fetchSettings() {
-            try {
-                if (!SERVER_URL) { setTimeout(fetchSettings, 200); return; }
-                let r = await fetch(`${SERVER_URL}/get-current-state?tenantID=${tenantID}&_t=${Date.now()}`);
-                let state = await r.json();
-                globalAppState = state;
-
-                if (state.activeOrders && state.activeOrders['STAFF_ACCESS']) staffAccess = state.activeOrders['STAFF_ACCESS'].data || [];
-                if (state.activeOrders && state.activeOrders['SETTINGS_MASTER']) {
-                    systemSettings = state.activeOrders['SETTINGS_MASTER'].data;
-                    if(!systemSettings.activeAlerts) systemSettings.activeAlerts = []; 
-                    if(!systemSettings.rushThresholds) systemSettings.rushThresholds = { l0: "Calme", l1: "Normal", l2: "Tendu", l3: "Saturé", l4: "Critique", l5: "SOS" };
-                    if(!systemSettings.rushRules) systemSettings.rushRules = { auto: false, ratioCook: 10, ratioServer: 20 };
+                const formattedHours = parseFloat(totalHoursDone.toFixed(1));
+                if (staff.workedHours !== formattedHours) {
+                    staff.workedHours = formattedHours;
+                    stateModified = true;
                 }
-                updateUIFromSettings(); renderStaffSymbiosis(); calculateRushState(state); initWebSocket();
-            } catch(e) { console.error(e); }
-        }
-
-        function toggleAutoStaff() { saveDirectToCloud(); updateUIFromSettings(); }
-
-        function updateRushButtonsUI() {
-            let currentLevel = systemSettings.rushLevel !== undefined ? systemSettings.rushLevel : 0;
-            document.querySelectorAll('.rush-btn').forEach(btn => {
-                if(btn.dataset.level) { btn.classList.remove('active'); if(parseInt(btn.dataset.level) === currentLevel) btn.classList.add('active'); }
             });
-        }
 
-        function updateUIFromSettings() {
-            updateRushButtonsUI();
-            let t = systemSettings.rushThresholds || { l0: "Calme", l1: "Normal", l2: "Tendu", l3: "Saturé", l4: "Critique", l5: "SOS" };
-            document.getElementById('label-lvl-0').innerText = t.l0; document.getElementById('label-lvl-1').innerText = t.l1; document.getElementById('label-lvl-2').innerText = t.l2; document.getElementById('label-lvl-3').innerText = t.l3; document.getElementById('label-lvl-4').innerText = t.l4; document.getElementById('label-lvl-5').innerText = t.l5;
-
-            let ar3 = systemSettings.rushV3 || { autoStaff: false, cameleon: false, timeShift: { active: false, discount: 5, delay: 15 }, paceMaker: { active: false, max: 10 } };
-            document.getElementById('mod-auto-staff').checked = ar3.autoStaff === true;
-            document.getElementById('staff-selection-grid').style.pointerEvents = ar3.autoStaff === true ? 'none' : 'auto';
-            document.getElementById('staff-selection-grid').style.opacity = ar3.autoStaff === true ? '0.7' : '1';
-
-            let isAuto = systemSettings.rushRules && systemSettings.rushRules.auto === true;
-            document.getElementById('auto-pilot-indicator').style.display = isAuto ? 'block' : 'none';
-            document.getElementById('live-gauges').style.display = isAuto ? 'flex' : 'none';
-            
-            let rhIndicator = document.getElementById('rh-indicator');
-            if (isAuto) {
-                let activeCooks = Math.max(1, staffAccess.filter(s => s.dept === 'cuisine' && s.onDuty).length);
-                rhIndicator.style.display = 'block'; rhIndicator.innerHTML = `👨‍🍳 ${activeCooks} CHEF(S) ACTIF(S)`;
-            } else { rhIndicator.style.display = 'none'; }
-
-            document.getElementById('mod-cameleon').checked = ar3.cameleon;
-            document.getElementById('mod-timeshift').checked = ar3.timeShift.active;
-            document.getElementById('ts-discount').value = ar3.timeShift.discount;
-            document.getElementById('ts-delay').value = ar3.timeShift.delay;
-            document.getElementById('mod-pacemaker').checked = ar3.paceMaker.active;
-            document.getElementById('pm-max').value = ar3.paceMaker.max;
-            renderAlertsFeed();
-        }
-
-        function saveThresholds() {
-            systemSettings.rushThresholds = { l0: document.getElementById('input-thresh-0').value, l1: document.getElementById('input-thresh-1').value, l2: document.getElementById('input-thresh-2').value, l3: document.getElementById('input-thresh-3').value, l4: document.getElementById('input-thresh-4').value, l5: document.getElementById('input-thresh-5').value };
-            systemSettings.rushRules = { auto: document.getElementById('input-auto-rush').checked, ratioCook: parseInt(document.getElementById('ratio-cook').value), ratioServer: parseInt(document.getElementById('ratio-server').value) };
-            closeModal('threshold-modal'); updateUIFromSettings(); saveDirectToCloud();
-            fetch(`${SERVER_URL}/get-current-state?tenantID=${tenantID}`).then(r=>r.json()).then(state => { globalAppState = state; calculateRushState(state); });
-        }
-
-        function renderAlertsFeed() {
-            let container = document.getElementById('alerts-feed');
-            if(!systemSettings.activeAlerts || systemSettings.activeAlerts.length === 0) { container.innerHTML = '<div style="text-align: center; color: var(--text-muted); font-size:0.85rem; padding: 15px; border: 1px dashed var(--border); border-radius: 8px;">Aucun incident.</div>'; return; }
-            container.innerHTML = systemSettings.activeAlerts.map(alert => `<div class="alert-item ${alert.type}"><div class="alert-info"><div class="alert-header">${alert.author}</div><div class="alert-msg">${alert.message}</div></div><button class="btn-resolve" onclick="resolveAlert('${alert.id}')">✓</button></div>`).join('');
-        }
-
-        function openAlertModal(type) {
-            document.getElementById('alert-type-hidden').value = type; document.getElementById('alert-message-input').value = "";
-            if(type === 'humain') {
-                document.getElementById('alert-modal-title').innerHTML = '🤦‍♂️ Erreur humaine';
-                let opts = '<option value="">-- Inconnu --</option>'; staffAccess.filter(s => s.onDuty).forEach(s => { opts += `<option value="${s.name}">${s.name}</option>`; });
-                document.getElementById('staff-error-select').innerHTML = opts; document.getElementById('staff-error-select-group').style.display = 'block';
-            } else { document.getElementById('alert-modal-title').innerHTML = '📢 Alerte Système'; document.getElementById('staff-error-select-group').style.display = 'none'; }
-            let modal = document.getElementById('alert-modal'); modal.style.display = 'flex'; setTimeout(() => { modal.classList.add('show'); }, 10);
-        }
-
-        function closeModal(modalId) { let modal = document.getElementById(modalId); modal.style.opacity = '0'; setTimeout(() => { modal.classList.remove('show'); modal.style.display = 'none'; }, 300); }
-        function sendAlert() {
-            let msg = document.getElementById('alert-message-input').value.trim(); let type = document.getElementById('alert-type-hidden').value; if(!msg) return;
-            if (type === 'humain') { let fautif = document.getElementById('staff-error-select').value; if (fautif !== "") msg = `[${fautif}] ${msg}`; }
-            if (!systemSettings.activeAlerts) systemSettings.activeAlerts = [];
-            systemSettings.activeAlerts.unshift({ id: 'alert_' + Date.now(), type: type, message: msg, author: currentUserRole, timestamp: Date.now() }); 
-            closeModal('alert-modal'); updateUIFromSettings(); saveDirectToCloud();
-        }
-        function resolveAlert(id) { systemSettings.activeAlerts = systemSettings.activeAlerts.filter(a => a.id !== id); updateUIFromSettings(); saveDirectToCloud(); }
-        async function forceDeactivateRush() { if(confirm("Retour à la normale ?")) { systemSettings.rushLevel = 0; if(systemSettings.rushRules) systemSettings.rushRules.auto = false; updateUIFromSettings(); await saveDirectToCloud(false); } }
-        function setRushLevel(lvl) { if(systemSettings.rushRules && systemSettings.rushRules.auto) return; systemSettings.rushLevel = lvl; updateUIFromSettings(); saveDirectToCloud(); }
-
-        async function saveDirectToCloud(isSilent = false) {
-            let syncBadge = document.getElementById('sync-status');
-            systemSettings.rushV3 = { autoStaff: document.getElementById('mod-auto-staff').checked, cameleon: document.getElementById('mod-cameleon').checked, timeShift: { active: document.getElementById('mod-timeshift').checked, discount: parseFloat(document.getElementById('ts-discount').value) || 5, delay: parseInt(document.getElementById('ts-delay').value) || 15 }, paceMaker: { active: document.getElementById('mod-pacemaker').checked, max: parseInt(document.getElementById('pm-max').value) || 10 } };
-            try { await fetch(`${SERVER_URL}/update-order?tenantID=${tenantID}`, { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ tableId: 'SETTINGS_MASTER', order: { data: systemSettings } }) }); } catch (e) {}
-        }
-
-        function calculateRushState(state) {
-            let incomingClients = updateRadarReservations(state);
-            if (!systemSettings.rushRules || !systemSettings.rushRules.auto) return;
-
-            let activeCooks = Math.max(1, staffAccess.filter(s => s.dept === 'cuisine' && s.onDuty).length);
-            let activeServers = Math.max(1, staffAccess.filter(s => (s.dept === 'salle' || s.dept === 'admin' || s.dept === 'bar') && s.onDuty).length);
-            let maxBons = activeCooks * (systemSettings.rushRules.ratioCook || 10);
-            let maxClients = activeServers * (systemSettings.rushRules.ratioServer || 20);
-
-            let activeBons = 0; let activeClients = 0;
-            for (let key in state.activeOrders) {
-                if (!key.includes('MASTER') && !key.includes('ARCHIVE') && !key.includes('CATEGORIES')) {
-                    let o = state.activeOrders[key];
-                    if (o && (o.status === 'EN PRÉPARATION' || o.status === 'NOUVELLE COMMANDE' || o.status === 'EN ATTENTE (TIME-SHIFT)')) { activeBons++; activeClients += parseInt(o.couverts) || 2; }
-                }
+            if (stateModified) {
+                state.markModified('activeOrders');
+                await state.save();
             }
+        }
+        
+        const tenantInfo = await Tenant.findOne({ tenantID });
+        const finalState = state.toObject();
+        if(tenantInfo) finalState.maxStaff = tenantInfo.maxStaff;
+        res.json(finalState);
+    } catch (e) { res.status(500).json({ error: "Sync Error" }); }
+});
 
-            let totalProjectedClients = activeClients + (incomingClients || 0);
-            document.getElementById('gauge-cooks-count').innerText = activeCooks; document.getElementById('gauge-cooks-text').innerText = `${activeBons} / ${maxBons}`;
-            document.getElementById('gauge-servers-count').innerText = activeServers; document.getElementById('gauge-servers-text').innerHTML = `${activeClients} <span style="color:var(--warning); font-size:0.7rem;">(+${incomingClients || 0})</span> / ${maxClients}`;
+app.post('/update-order', async (req, res) => {
+    try {
+        let tenantID = req.query.tenantID || 'MASTER_STATE';
+        if (tenantID !== 'MASTER_STATE') tenantID = cleanString(tenantID);
 
-            let loadCooks = activeBons / maxBons; let loadServers = totalProjectedClients / maxClients;
-            const updateBar = (id, load) => {
-                let bar = document.getElementById(id); bar.style.width = Math.min(100, load * 100) + '%';
-                bar.style.background = load >= 1 ? 'var(--danger)' : load >= 0.8 ? 'var(--orange)' : load >= 0.6 ? 'var(--warning)' : 'var(--success)';
+        const { tableId, order } = req.body;
+        let updateQuery = (order === null) ? { $unset: { [`activeOrders.${tableId}`]: 1 } } : { $set: { [`activeOrders.${tableId}`]: order } };
+        await AppState.findOneAndUpdate({ tenantID }, updateQuery, { upsert: true, new: true });
+        res.json({ success: true });
+    } catch (e) { res.status(500).json({ error: "Save Error" }); }
+});
+
+// ==========================================
+// MASTER CONTROL API (EMPIRE SUPER ADMIN)
+// ==========================================
+app.post('/api/get-all-tenants-admin', async (req, res) => {
+    if (req.body.masterKey !== ADMIN_PASS) return res.status(401).json({ success: false, error: "Acces Refuse." });
+    try {
+        const tenantsData = await Tenant.find({});
+        const formattedTenants = tenantsData.map(t => ({
+            id: t.tenantID, name: t.clientName || "Sans Nom", 
+            email: t.email || "Non renseigné", phone: t.phone || "Non renseigné",
+            pack: t.plan, specialite: t.specialite, pin: t.pin,
+            maxScreens: t.maxScreens, maxStaff: t.maxStaff,
+            activeScreens: t.registeredDevices ? t.registeredDevices.length : 0, 
+            status: t.status
+        }));
+        res.json({ success: true, tenants: formattedTenants });
+    } catch(err) { res.status(500).json({ success: false }); }
+});
+
+app.post('/api/admin-action', async (req, res) => {
+    if (req.body.masterKey !== ADMIN_PASS) return res.status(401).json({ success: false, error: "Acces Refuse." });
+    try {
+        const { tenantID, action, newPlan, manualScreens, manualPin, manualMaxStaff, maxScreens, addons } = req.body;
+        const safeID = cleanString(tenantID);
+
+        if (action === 'set_screens' && manualScreens) {
+            await Tenant.findOneAndUpdate({ tenantID: safeID }, { maxScreens: parseInt(manualScreens) });
+        }
+        else if (action === 'set_max_staff' && manualMaxStaff) {
+            await Tenant.findOneAndUpdate({ tenantID: safeID }, { maxStaff: parseInt(manualMaxStaff) });
+        }
+        else if (action === 'set_pin' && manualPin) {
+            await Tenant.findOneAndUpdate({ tenantID: safeID }, { pin: manualPin.trim(), registeredDevices: [] });
+        }
+        else if (action === 'set_addons' && Array.isArray(addons)) {
+            await Tenant.findOneAndUpdate({ tenantID: safeID }, { addons: addons });
+        }
+        else if (action === 'set_plan' && newPlan) { 
+            let limit = 1; let staffLimit = 1;
+            const upperPlan = newPlan.toUpperCase();
+            if (['CHEF', 'PATISSIER', 'BAR', 'CHEF_CUISINE', 'CHEF_PATISSERIE', 'CHEF_BAR'].includes(upperPlan)) { limit = 1; staffLimit = 1; } 
+            else if (['BUSINESS', 'RENTABILITE', 'ECO', 'PACK_A'].includes(upperPlan)) { limit = 5; staffLimit = 999; } 
+            else if (['BRIGADE', 'EMPIRE', 'BRIGADES', 'PREMIUM'].includes(upperPlan)) { limit = 50; staffLimit = 999; } 
+            
+            await Tenant.findOneAndUpdate({ tenantID: safeID }, { plan: upperPlan, maxScreens: limit, maxStaff: staffLimit }, { new: true });
+        }
+        else if (action === 'set_max_screens') {
+            if (!maxScreens || isNaN(maxScreens) || maxScreens < 1) {
+                return res.status(400).json({ success: false, error: "Nombre invalide." });
+            }
+            await Tenant.findOneAndUpdate({ tenantID: safeID }, { maxScreens: parseInt(maxScreens) });
+        }
+        else if (action === 'reset_devices') await Tenant.findOneAndUpdate({ tenantID: safeID }, { registeredDevices: [] });
+        else if (action === 'suspend') await Tenant.findOneAndUpdate({ tenantID: safeID }, { status: 'SUSPENDU', registeredDevices: [] });
+        else if (action === 'activate') {
+            // Lors de l'activation manuelle, on valide officiellement (retrait expiration 24h si elle existe)
+            await Tenant.findOneAndUpdate({ tenantID: safeID }, { status: 'ACTIF', $unset: { demoExpiration: "" } });
+        }
+        else if (action === 'delete') { await Tenant.findOneAndDelete({ tenantID: safeID }); await AppState.findOneAndDelete({ tenantID: safeID }); }
+        
+        res.json({ success: true });
+    } catch (err) { res.status(500).json({ success: false, error: err.message }); }
+});
+
+// ==========================================
+// OUTIL DE DIAGNOSTIC (TOUR DE CONTRÔLE)
+// ==========================================
+app.get('/debug-fichiers', (req, res) => {
+    const fs = require('fs');
+    fs.readdir(__dirname, (err, files) => {
+        if (err) return res.status(500).json({ erreur: "Impossible de lire le dossier" });
+        res.json({
+            dossier_actuel: __dirname,
+            fichiers_trouves: files
+        });
+    });
+});
+
+// ==========================================
+// 🎯 PORTAIL DES DEMANDES DE DÉMO (ALERTE EMAIL VIA FORMSUBMIT SÉCURISÉ)
+// ==========================================
+app.post('/api/nouvelle-demande-demo', async (req, res) => {
+    try {
+        const { tenantID, restaurant, email, phone } = req.body;
+        console.log(`🌟 ENREGISTREMENT SÉCURISÉ PROSPECT DÉMO 24H : ${restaurant} (${email})`);
+        
+        const codePinAlea = Math.floor(1000 + Math.random() * 9000).toString();
+        
+        // ⏳ SÉCURITÉ : La démo expirera automatiquement dans exactement 24 heures
+        const expirationTime = new Date(Date.now() + 24 * 60 * 60 * 1000);
+
+        await Tenant.create({
+            tenantID: cleanString(tenantID),
+            clientName: restaurant,
+            email: email,
+            phone: phone,
+            status: 'SUSPENDU', 
+            plan: 'EMPIRE',     
+            specialite: 'cuisine',
+            pin: codePinAlea,   
+            maxScreens: 5,
+            maxStaff: 999,
+            registeredDevices: [],
+            demoExpiration: expirationTime // Activation du chrono 24H
+        });
+
+        await AppState.create({
+            tenantID: cleanString(tenantID),
+            activeOrders: {}
+        });
+
+        // 🚨 ENVOI SILENCIEUX DE L'EMAIL DEPUIS LE SERVEUR 🚨
+        try {
+            // Changement pour ton adresse officielle ichef.ch 👇
+            const urlEmail = "https://formsubmit.co/ajax/iche.flavien@ichef.ch";
+            
+            const payload = {
+                _subject: `🚨 iCHEF OS : Nouvelle Démo demandée par ${restaurant}`,
+                "Établissement": restaurant,
+                "Téléphone": phone,
+                "Email du client": email,
+                "Identifiant (ID)": tenantID,
+                "Code PIN Généré": codePinAlea,
+                "Statut Technique": "Bloqué (en attente de votre activation depuis l'Admin)",
+                "Durée de la démo": "Se coupera dans 24H automatiquement",
+                _template: "box" // Formate l'email dans un joli tableau
             };
-            updateBar('gauge-cooks-bar', loadCooks); updateBar('gauge-servers-bar', loadServers);
 
-            let maxLoad = Math.max(loadCooks, loadServers);
-            let newLevel = maxLoad >= 1.2 ? 5 : maxLoad >= 1.0 ? 4 : maxLoad >= 0.8 ? 3 : maxLoad >= 0.6 ? 2 : maxLoad >= 0.4 ? 1 : 0;
-            if (newLevel !== systemSettings.rushLevel) { systemSettings.rushLevel = newLevel; updateRushButtonsUI(); saveDirectToCloud(true); }
+            // Requête silencieuse (Machine à Machine)
+            fetch(urlEmail, {
+                method: "POST",
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Accept': 'application/json'
+                },
+                body: JSON.stringify(payload)
+            })
+            .then(res => res.json())
+            .then(data => console.log("✅ Email d'alerte déclenché avec succès vers ichef.ch !"))
+            .catch(err => console.log("❌ Erreur silencieuse lors de l'envoi de l'email :", err));
+            
+        } catch (err) {
+            console.error("Erreur lors de la préparation de l'email :", err);
         }
 
-        function initWebSocket() {
-            const socket = io(SERVER_URL); socket.emit('joinTenant', tenantID);
-            socket.on('updateState', (state) => {
-                if(!state) return;
-                globalAppState = state;
-                if (state.activeOrders && state.activeOrders['STAFF_ACCESS']) { staffAccess = state.activeOrders['STAFF_ACCESS'].data || []; renderStaffSymbiosis(); }
-                calculateRushState(state);
-            });
+        res.json({ success: true, message: "Demande mise en attente de validation." });
+    } catch (e) {
+        console.error("Erreur création prospect démo :", e);
+        res.status(500).json({ success: false, error: "Cet identifiant d'établissement existe déjà." });
+    }
+});
+
+// ==========================================
+//  ANTI NO-SHOW (Empreinte Bancaire)
+// ==========================================
+app.post('/api/create-hold-intent', async (req, res) => {
+    try {
+        const { tenantID, guests, date, time } = req.body;
+        
+        // 🔒 On fixe une garantie de 50€ par couvert
+        const amountPerPerson = 50; 
+        const totalAmount = (parseInt(guests) || 1) * amountPerPerson * 100; // Stripe calcule en centimes
+
+        // On crée l'empreinte SANS DÉBITER le client (capture_method: 'manual')
+        const paymentIntent = await stripe.paymentIntents.create({
+            amount: totalAmount,
+            currency: 'eur',
+            payment_method_types: ['card'],
+            capture_method: 'manual', 
+            metadata: {
+                tenantID: tenantID,
+                type: 'ANTI_NO_SHOW',
+                date: date,
+                time: time,
+                guests: guests
+            },
+        });
+
+        res.json({ 
+            success: true, 
+            clientSecret: paymentIntent.client_secret, 
+            holdAmount: totalAmount / 100 
+        });
+    } catch (error) {
+        console.error("Erreur Stripe Empreinte:", error);
+        res.status(500).json({ success: false, error: "Impossible de créer l'empreinte bancaire." });
+    }
+});
+
+// ==========================================
+//  MOTEUR ANALYTIQUE : MÉMOIRE À LONG TERME (BIG DATA)
+// ==========================================
+app.post('/api/log-traffic-history', async (req, res) => {
+    const { tenantID, pax, totalAmount } = req.body;
+    if (!tenantID || !pax) return res.status(400).json({ success: false });
+
+    const safeID = cleanString(tenantID);
+    const now = new Date();
+    
+    // Création de l'empreinte temporelle
+    const trafficData = {
+        id: 'traf_' + Date.now(),
+        timestamp: now.getTime(),
+        dateStr: now.toISOString().split('T')[0], // YYYY-MM-DD
+        dayOfWeek: now.getDay(), // 0 = Dimanche, 1 = Lundi...
+        hour: now.getHours(),
+        hour: now.getHours(),
+        month: now.getMonth(),
+        pax: parseInt(pax),
+        revenue: parseFloat(totalAmount || 0)
+    };
+
+    try {
+        // On sauvegarde silencieusement dans une table d'archive dédiée
+        await AppState.findOneAndUpdate(
+            { tenantID: safeID },
+            { $push: { "activeOrders.TRAFFIC_HISTORY.data": trafficData } },
+            { upsert: true }
+        );
+        res.json({ success: true });
+    } catch (e) {
+        res.status(500).json({ success: false, error: "Erreur d'archivage" });
+    }
+});
+
+// ==========================================
+// 🧠 IA RH : PRÉDICTIONS ET PLANNINGS (YIELD MANAGEMENT)
+// ==========================================
+app.post('/api/predict-hr-schedule', async (req, res) => {
+    const { tenantID, staffList } = req.body;
+    const safeID = cleanString(tenantID);
+
+    try {
+        let state = await AppState.findOne({ tenantID: safeID });
+        let history = [];
+        if (state && state.activeOrders && state.activeOrders['TRAFFIC_HISTORY']) {
+            history = state.activeOrders['TRAFFIC_HISTORY'].data || [];
         }
-        setTimeout(fetchSettings, 500);
-    </script>
-</body>
-</html>
+
+        // Si on a pas assez de données, l'IA ne peut pas prédire avec précision
+        if (history.length < 50) {
+            return res.json({ success: true, message: "L'IA a besoin de plus d'historique de service (au moins 50 tables enregistrées) pour établir une prédiction fiable." });
+        }
+
+        // On compresse les données pour ne pas surcharger l'IA
+        let summary = history.map(h => `Jour:${h.dayOfWeek}-Heure:${h.hour}-Pax:${h.pax}`);
+
+        const prompt = `Tu es le Directeur des Ressources Humaines IA d'un restaurant. 
+        Voici l'historique de fréquentation récent : ${JSON.stringify(summary)}. 
+        Voici le staff actuel : ${JSON.stringify(staffList)}.
+        
+        MISSION : Analyse ces données et renvoie un JSON STRICT (SANS MARKDOWN) avec :
+        1. "rushPeriods" : Les 3 créneaux de la semaine où il faut absolument tout le monde.
+        2. "deadPeriods" : Les 3 créneaux où on peut envoyer le staff en repos.
+        3. "hiringAdvice" : Faut-il recruter ? (Oui/Non) et pourquoi (justification courte).
+        4. "vacationSuggestions" : Le meilleur moment du mois pour autoriser des congés longs.
+        
+        Format attendu : { "rushPeriods": ["Jeudi 20h", ...], "deadPeriods": [...], "hiringAdvice": "...", "vacationSuggestions": "..." }`;
+
+        const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+        const result = await model.generateContent(prompt);
+        
+        let responseText = result.response.text().trim();
+        const ticks = String.fromCharCode(96, 96, 96);
+        responseText = responseText.split(ticks + 'json').join('').split(ticks).join('').trim();
+        
+        if (!responseText.startsWith("{")) responseText = responseText.substring(responseText.indexOf("{"));
+        
+        res.json({ success: true, prediction: JSON.parse(responseText) });
+    } catch (error) { 
+        res.status(500).json({ success: false, error: "Erreur de prédiction IA." }); 
+    }
+});
+// IMPORTANT : LA LIGNE LISTEN TOUT EN BAS !
+app.listen(PORT, () => console.log("✅ L'Empire iCHEF est en ligne et sécurisé sur le port " + PORT));
