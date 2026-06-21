@@ -404,6 +404,136 @@
     <div id="toast" class="toast">Action Confirmée</div>
 
     <script>
+        // ==========================================
+        // EXTRACTION DES RÉSERVATIONS
+        // ==========================================
+        function updateRadarReservations(state) {
+            const radarContainer = document.getElementById('radar-reservations');
+            const paxCounter = document.getElementById('radar-total-pax');
+            if (!radarContainer) return 0;
+
+            let resas = state.activeOrders?.RESERVATIONS_MASTER?.data || [];
+            let now = new Date();
+            let todayStr = now.toISOString().split('T')[0];
+            
+            // Correction : On affiche TOUTES les résas qui ne sont pas annulées
+            let resasDuJour = resas.filter(r => r.date === todayStr && r.status !== 'cancelled');
+            resasDuJour.sort((a, b) => (a.time || "00:00").localeCompare(b.time || "00:00"));
+
+            let incomingClients = 0;
+            let html = '';
+
+            if (resasDuJour.length === 0) {
+                radarContainer.innerHTML = `<div style="padding: 10px; color: var(--text-muted); text-align: center; border: 1px dashed var(--border-strong); border-radius: 6px; font-size:0.8rem;">Aucune réservation à venir.</div>`;
+                paxCounter.innerText = "0 Pax en approche";
+                return 0;
+            }
+
+            resasDuJour.forEach(r => {
+                let pax = parseInt(r.pax || r.couverts || 0);
+                let heure = r.time || "N/A";
+                let table = r.table || r.assignedTable || "Aucune";
+                let nom = r.name || "Client";
+                
+                let [h, m] = heure.split(':').map(Number);
+                let resaTime = new Date(now.getFullYear(), now.getMonth(), now.getDate(), h, m);
+                let diffMinutes = (resaTime - now) / 60000;
+                
+                let isIncoming = (diffMinutes >= -15 && diffMinutes <= 45);
+                if (isIncoming) incomingClients += pax;
+
+                let opacity = isIncoming ? '1' : '0.4';
+                let alertColor = isIncoming ? 'var(--warning)' : 'var(--border-strong)';
+                let stripeTag = r.stripeHold ? '<span style="color: var(--success); font-size:0.65rem; margin-left: 5px;">💳 Garantie</span>' : '';
+
+                html += `
+                <div style="background: rgba(255,255,255,0.03); border-left: 3px solid ${alertColor}; padding: 8px 10px; border-radius: 4px; display: flex; justify-content: space-between; align-items: center; opacity: ${opacity};">
+                    <div>
+                        <div style="color: #fff; font-size: 0.95rem; font-weight: bold;">
+                            🕒 ${heure} <span style="font-weight: normal; color: var(--text-muted); font-size:0.85rem; margin-left: 5px;">${nom.substring(0,10)}</span>
+                        </div>
+                        <div style="font-size: 0.75rem; color: var(--text-muted); margin-top: 2px;">
+                            📍 T: <span style="color: var(--text-main); font-weight:600;">${table}</span>
+                            ${stripeTag}
+                        </div>
+                    </div>
+                    <div style="color: ${alertColor}; font-weight: 900; font-size: 1.1rem;">
+                        ${pax}p
+                    </div>
+                </div>`;
+            });
+
+            paxCounter.innerText = `${incomingClients} Pax (-45m)`;
+            radarContainer.innerHTML = html;
+            return incomingClients;
+        }
+
+        // ==========================================
+        // GESTION DU RUSH & DE LA CHARGE
+        // ==========================================
+        function calculateRushState(state) {
+            // --- CORRECTION : MISE A JOUR DES GROS COMPTEURS EN DIRECT ---
+            let resas = state.activeOrders?.RESERVATIONS_MASTER?.data || [];
+            let todayStr = new Date().toISOString().split('T')[0];
+            let todayCovers = 0;
+            resas.forEach(res => { if(res.date === todayStr && res.status !== 'cancelled') todayCovers += parseInt(res.pax || res.couverts || 2); });
+            if(document.getElementById('radar-covers')) document.getElementById('radar-covers').innerText = todayCovers;
+
+            let liveTotal = 0;
+            for (let key in state.activeOrders) {
+                if (!key.startsWith('STAFF_') && !key.includes('MASTER') && key !== 'ARCHITECTURE') {
+                    let order = state.activeOrders[key];
+                    let items = order.items || order.lines || [];
+                    items.forEach(item => {
+                        let qty = item.qty || item.quantite || 1;
+                        let price = parseFloat(item.price || item.prix || 0);
+                        liveTotal += (price * qty);
+                    });
+                }
+            }
+            if(document.getElementById('live-revenue')) document.getElementById('live-revenue').innerText = `${liveTotal.toFixed(2)}€`;
+            // -----------------------------------------------------------
+
+            let incomingClients = updateRadarReservations(state);
+            if (!systemSettings.rushRules || !systemSettings.rushRules.auto) return;
+
+            let activeCooks = Math.max(1, staffAccess.filter(s => s.dept === 'cuisine' && s.onDuty).length);
+            let activeServers = Math.max(1, staffAccess.filter(s => (s.dept === 'salle' || s.dept === 'admin' || s.dept === 'bar') && s.onDuty).length);
+
+            let maxBons = activeCooks * (systemSettings.rushRules.ratioCook || 10);
+            let maxClients = activeServers * (systemSettings.rushRules.ratioServer || 20);
+
+            let activeBons = 0; let activeClients = 0;
+            for (let key in state.activeOrders) {
+                if (!key.includes('MASTER') && !key.includes('ARCHIVE') && !key.includes('CATEGORIES')) {
+                    let o = state.activeOrders[key];
+                    if (o && (o.status === 'EN PRÉPARATION' || o.status === 'NOUVELLE COMMANDE' || o.status === 'EN ATTENTE (TIME-SHIFT)' || o.status === 'À VALIDER PAR LA CAISSE')) {
+                        activeBons++; activeClients += parseInt(o.couverts) || parseInt(o.pax) || 2;
+                    }
+                }
+            }
+
+            let totalProjectedClients = activeClients + (incomingClients || 0);
+
+            document.getElementById('gauge-cooks-count').innerText = activeCooks; document.getElementById('gauge-cooks-text').innerText = `${activeBons} / ${maxBons}`;
+            document.getElementById('gauge-servers-count').innerText = activeServers; document.getElementById('gauge-servers-text').innerHTML = `${activeClients} <span style="color:var(--warning); font-size:0.7rem;">(+${incomingClients || 0})</span> / ${maxClients}`;
+
+            let loadCooks = activeBons / maxBons; let loadServers = totalProjectedClients / maxClients;
+            const updateBar = (id, load) => {
+                let bar = document.getElementById(id); let pct = Math.min(100, load * 100); bar.style.width = pct + '%';
+                if(load >= 1) bar.style.background = 'var(--danger)'; else if(load >= 0.8) bar.style.background = 'var(--orange)'; else if(load >= 0.6) bar.style.background = 'var(--warning)'; else bar.style.background = 'var(--success)';
+            };
+            updateBar('gauge-cooks-bar', loadCooks); updateBar('gauge-servers-bar', loadServers);
+
+            let maxLoad = Math.max(loadCooks, loadServers);
+            let newLevel = 0;
+            if (maxLoad >= 1.2) newLevel = 5; else if (maxLoad >= 1.0) newLevel = 4; else if (maxLoad >= 0.8) newLevel = 3; else if (maxLoad >= 0.6) newLevel = 2; else if (maxLoad >= 0.4) newLevel = 1;
+
+            if (newLevel !== systemSettings.rushLevel) {
+                systemSettings.rushLevel = newLevel; updateRushButtonsUI(); saveDirectToCloud(true); 
+                if(newLevel > 0) showToast(`🤖 IA Niveau ${newLevel}`, true);
+            }
+        }
         window.tenantID = new URLSearchParams(window.location.search).get('tenantID') || localStorage.getItem('ichef_tenant_id') || "ch_demo_luxe";
         window.SERVER_URL = (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1") ? "http://localhost:10000" : "https://tableau-system.onrender.com";
 
