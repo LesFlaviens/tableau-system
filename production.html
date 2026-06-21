@@ -304,6 +304,46 @@
         </div>
     </div>
 
+    <div class="modal" id="brigade-modal" style="display:none; position:fixed; top:0; left:0; width:100vw; height:100vh; background:rgba(0,0,0,0.8); backdrop-filter:blur(8px); z-index:2000; justify-content:center; align-items:center;">
+        <div style="background:var(--panel); border:1px solid var(--border); border-radius:16px; width:100%; max-width:600px; padding:25px; box-shadow:0 15px 35px rgba(0,0,0,0.5);">
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:20px; border-bottom:1px solid var(--border); padding-bottom:15px;">
+                <h3 style="margin:0; color:var(--accent); font-weight:900; text-transform:uppercase; letter-spacing:2px;">👨‍🍳 Brigade en ligne</h3>
+                <button class="view-btn" onclick="document.getElementById('brigade-modal').style.display='none'">FERMER</button>
+            </div>
+            <div id="staff-selection-grid" style="display:grid; grid-template-columns:repeat(auto-fill, minmax(130px, 1fr)); gap:10px; max-height:60vh; overflow-y:auto;">
+                <div style="color:var(--text-muted); font-size:0.8rem; font-style:italic; grid-column: 1/-1;">Chargement du staff...</div>
+            </div>
+        </div>
+    </div>
+
+    <div class="modal" id="staff-profile-modal" style="display:none; position:fixed; top:0; left:0; width:100vw; height:100vh; background:rgba(0,0,0,0.8); backdrop-filter:blur(8px); z-index:3000; justify-content:center; align-items:center;">
+        <div style="background:var(--panel); border:1px solid var(--border); border-radius:16px; width:100%; max-width:400px; padding:25px; box-shadow:0 15px 35px rgba(0,0,0,0.5); text-align:center;">
+            <h3 id="sp-name" style="color:var(--accent); margin:0 0 5px 0; text-transform:uppercase; font-size:1.4rem;">Nom</h3>
+            <div id="sp-role" style="color:var(--text-muted); font-size:0.85rem; text-transform:uppercase; font-weight:bold; margin-bottom:20px;">Role</div>
+
+            <div style="background:rgba(255,255,255,0.03); border:1px solid var(--border); border-radius:8px; padding:15px; margin-bottom:20px; text-align:left;">
+                <div style="margin-bottom:15px; padding-bottom:10px; border-bottom:1px dashed rgba(255,255,255,0.1);">
+                    <span style="color:var(--text-muted); font-size:0.8rem; font-weight:700;">⏱️ Cumul Mensuel :</span>
+                    <strong id="sp-hours" style="color:#fff; float:right; font-size:1.1rem;">0h / 35h</strong>
+                </div>
+                <div>
+                    <span style="color:var(--text-muted); font-size:0.8rem; font-weight:700;">📅 Planning Hebdomadaire (RH) :</span>
+                    <div id="sp-schedule" style="display:flex; justify-content:space-between; margin-top:10px; background:rgba(0,0,0,0.3); padding:10px; border-radius:8px; border:1px solid var(--border);">
+                        </div>
+                </div>
+            </div>
+
+            <button id="sp-toggle-btn" style="width:100%; padding:14px; border-radius:8px; font-weight:900; font-size:0.85rem; text-transform:uppercase; cursor:pointer; transition:0.2s; border:1px solid var(--success); background:rgba(16,185,129,0.1); color:var(--success); margin-bottom:10px;" onclick="toggleStaffDutyFromModal()">
+                🟢 POINTER (ACTIVER SUR LE SERVICE)
+            </button>
+
+            <div style="display:flex; gap:10px; margin-top:10px;">
+                <button class="view-btn" style="flex:1; border: 1px solid var(--accent); color: var(--accent); background: rgba(245, 158, 11, 0.05);" onclick="goToRH()">📁 Gérer (RH)</button>
+                <button class="view-btn" style="flex:1; border: 1px solid var(--border);" onclick="document.getElementById('staff-profile-modal').style.display='none'">Fermer</button>
+            </div>
+        </div>
+    </div>
+
     <div id="toast" class="toast"></div>
 
     <header>
@@ -333,7 +373,8 @@
             <button class="view-btn" id="btn-bar" onclick="setView('bar')">BAR ONLY</button>
         </div>
 
-        <div class="header-menu">
+        <div class="header-menu" style="display: flex; gap: 10px;">
+            <button class="btn-top" onclick="document.getElementById('brigade-modal').style.display='flex'" style="border-color: var(--accent); color: var(--accent);">👥 BRIGADE (<span id="header-staff-count">0</span>)</button>
             <button class="btn-top" onclick="window.location.href='pack-eco.html?tenantID=' + tenantID">CAISSE SALLE</button>
             <button class="btn-top" style="border-color: var(--cuisine-color); color: var(--cuisine-color);" onclick="window.location.href='admin.html?tenantID=' + tenantID">ADMIN</button>
         </div>
@@ -381,6 +422,10 @@
         let loadThreshold = 8; 
         let systemSettings = {};
         let displayedAlerts = []; 
+        
+        let staffAccess = [];
+        let currentSelectedPin = null;
+        let globalAppState = null;
 
         function setView(view) {
             document.querySelectorAll('.view-btn').forEach(b => b.classList.remove('active'));
@@ -405,17 +450,22 @@
                 let r = await fetch(`${SERVER_URL}/get-current-state?tenantID=${tenantID}&_t=${Date.now()}`, { cache: 'no-store' });
                 if(r.ok) {
                     let state = await r.json();
+                    globalAppState = state;
                     let nO = state.activeOrders || {};
 
                     let rushBanner = document.getElementById('kds-rush-banner');
                     let serviceBarBanner = document.getElementById('kds-service-bar-banner');
                     let directorBanner = document.getElementById('director-load-banner');
 
-                    // 🔥 INTÉGRATION DE LA RÉCEPTION ANTI-RUSH 3.0 🔥
+                    // Extraction de la Brigade pour affichage direct dans KDS
+                    if (nO['STAFF_ACCESS'] && nO['STAFF_ACCESS'].data) {
+                        staffAccess = nO['STAFF_ACCESS'].data;
+                        updateBrigadeUI();
+                    }
+
                     if (nO['SETTINGS_MASTER'] && nO['SETTINGS_MASTER'].data) {
                         systemSettings = nO['SETTINGS_MASTER'].data;
                         
-                        // 1. Détection d'une nouvelle alerte (Incident Humain/Technique)
                         if (systemSettings.activeAlerts && systemSettings.activeAlerts.length > 0) {
                             let latestAlert = systemSettings.activeAlerts[0];
                             if (!displayedAlerts.includes(latestAlert.id)) {
@@ -426,16 +476,13 @@
                             }
                         }
 
-                        // 2. Paramètres de seuils classiques
                         if (systemSettings.alertWarningMin) limitWarningMin = parseInt(systemSettings.alertWarningMin);
                         if (systemSettings.alertLateMin) limitLateMin = parseInt(systemSettings.alertLateMin);
                         
-                        // Définition dynamique du seuil de charge en fonction du paramétrage SAS de l'admin
                         if (systemSettings.sasConfig && systemSettings.sasConfig.maxTables) {
                             loadThreshold = parseInt(systemSettings.sasConfig.maxTables) * 1.5;
                         }
                         
-                        // 3. Affichage du Rush (Niveaux étendus)
                         let rushLevel = systemSettings.rushLevel || 1;
                         if (rushLevel > 1) { 
                             const levels = {
@@ -480,6 +527,144 @@
             } catch (e) { console.error("Quantum Error core refresh:", e); }
         }
 
+        // ==========================================
+        // 🔥 MISE A JOUR UI DE LA BRIGADE 🔥
+        // ==========================================
+        function updateBrigadeUI() {
+            let activeCount = staffAccess.filter(s => s.onDuty).length;
+            document.getElementById('header-staff-count').innerText = activeCount;
+
+            let container = document.getElementById('staff-selection-grid');
+            if(!staffAccess || staffAccess.length === 0) { 
+                container.innerHTML = '<div style="color:var(--text-muted); font-size:0.8rem; font-style:italic; grid-column: 1/-1;">Aucun employé configuré.</div>'; 
+                return; 
+            }
+
+            container.innerHTML = staffAccess.map(s => {
+                let rankLabel = s.role ? s.role.toUpperCase() : s.dept.toUpperCase();
+                let isOnDuty = s.onDuty === true;
+                let hoursLogged = s.workedHours !== undefined ? s.workedHours + 'h' : '0h';
+                
+                let bg = isOnDuty ? 'rgba(245, 158, 11, 0.15)' : 'rgba(255,255,255,0.02)';
+                let borderColor = isOnDuty ? 'var(--accent)' : 'var(--border)';
+                let opacity = s.active === false ? '0.5' : '1';
+
+                return `
+                <div style="border: 1px solid ${borderColor}; background: ${bg}; padding: 12px; border-radius: 8px; cursor: pointer; transition: 0.2s; display: flex; flex-direction: column; justify-content: center; align-items: center; opacity: ${opacity};" onclick="openStaffProfile('${s.pin}')">
+                    <div style="font-weight: 800; font-size: 0.95rem; color: #fff;">${s.name}</div>
+                    <div style="font-size: 0.65rem; color: ${isOnDuty ? 'var(--accent)' : 'var(--text-muted)'}; font-weight: 700; margin-top: 4px; text-transform: uppercase;">${rankLabel}</div>
+                    <div style="font-size: 0.65rem; color: #fff; font-weight: bold; margin-top: 6px; letter-spacing: 0.5px;">⏱️ Total : ${hoursLogged}</div>
+                </div>`;
+            }).join('');
+        }
+
+        function openStaffProfile(pin) {
+            let emp = staffAccess.find(s => s.pin === pin);
+            if(!emp) return;
+            currentSelectedPin = pin;
+
+            document.getElementById('sp-name').innerText = emp.name;
+            document.getElementById('sp-role').innerText = emp.role || emp.dept;
+
+            let heuresSimulees = emp.workedHours ? emp.workedHours : "0"; 
+            document.getElementById('sp-hours').innerText = heuresSimulees + "h / " + (emp.contract || 35) + "h";
+            
+            if (globalAppState) {
+                document.getElementById('sp-schedule').innerHTML = generateHREmojiCalendar(emp.id || emp.pin, globalAppState);
+            } else {
+                document.getElementById('sp-schedule').innerText = "En attente de synchro...";
+            }
+
+            let toggleBtn = document.getElementById('sp-toggle-btn');
+            if(emp.onDuty) {
+                toggleBtn.style.borderColor = "var(--alert-late)"; 
+                toggleBtn.style.color = "var(--alert-late)";
+                toggleBtn.style.background = "rgba(244, 63, 94, 0.1)";
+                toggleBtn.innerHTML = "🔴 DÉPOINTER (REPOS)";
+            } else {
+                toggleBtn.style.borderColor = "var(--success)"; 
+                toggleBtn.style.color = "var(--success)";
+                toggleBtn.style.background = "rgba(16, 185, 129, 0.1)";
+                toggleBtn.innerHTML = "🟢 POINTER (ACTIF)";
+            }
+
+            document.getElementById('staff-profile-modal').style.display = 'flex';
+        }
+
+        async function toggleStaffDutyFromModal() {
+            if(!currentSelectedPin) return;
+            let emp = staffAccess.find(s => s.pin === currentSelectedPin);
+            if(emp) {
+                emp.onDuty = !emp.onDuty;
+                updateBrigadeUI(); 
+                document.getElementById('staff-profile-modal').style.display = 'none';
+                try {
+                    await fetch(`${SERVER_URL}/update-order?tenantID=${tenantID}`, { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ tableId: 'STAFF_ACCESS', order: { data: staffAccess } }) });
+                } catch(e) { console.error("Erreur RH", e); }
+            }
+        }
+
+        function goToRH() {
+            localStorage.setItem('ichef_rh_focus', currentSelectedPin); 
+            window.location.href = `rh.html?tenantID=${tenantID}`;
+        }
+
+        function generateHREmojiCalendar(staffId, state) {
+            const daysLetters = ['L', 'M', 'M', 'J', 'V', 'S', 'D'];
+            const now = new Date();
+            const dayOfWeek = now.getDay(); 
+            const diffToMonday = dayOfWeek === 0 ? -6 : 1 - dayOfWeek;
+            const mondayDate = new Date(now);
+            mondayDate.setDate(now.getDate() + diffToMonday);
+            
+            let html = '';
+            const timesheets = (state.activeOrders && state.activeOrders['TIMESHEETS_MASTER'] && state.activeOrders['TIMESHEETS_MASTER'].data) ? state.activeOrders['TIMESHEETS_MASTER'].data : {};
+            
+            for (let i = 0; i < 7; i++) {
+                const targetDay = new Date(mondayDate);
+                targetDay.setDate(mondayDate.getDate() + i);
+                
+                const monthKey = `${targetDay.getFullYear()}-${String(targetDay.getMonth() + 1).padStart(2, '0')}`;
+                const dayNum = targetDay.getDate();
+                
+                let combinedEmoji = '💤'; 
+                let dayContainerStyle = 'border: 1px solid transparent;';
+                
+                if (targetDay.toDateString() === now.toDateString()) {
+                    dayContainerStyle = 'border: 1px solid var(--accent); background: rgba(245, 158, 11, 0.1); border-radius: 6px;';
+                }
+                
+                if (timesheets[monthKey] && timesheets[monthKey][staffId] && timesheets[monthKey][staffId][dayNum]) {
+                    const dataObj = timesheets[monthKey][staffId][dayNum];
+                    const st = dataObj.status;
+                    
+                    if (st === 'present') {
+                        const hasMatin = dataObj.s1 && dataObj.s1.trim() !== '';
+                        const hasSoir = dataObj.s2 && dataObj.s2.trim() !== '';
+                        if (hasMatin && hasSoir) combinedEmoji = '☀️🌙';
+                        else if (hasMatin) combinedEmoji = '☀️';
+                        else if (hasSoir) combinedEmoji = '🌙';
+                        else combinedEmoji = '✅';
+                    } else if (st === 'off_matin') { combinedEmoji = '❌🌙'; }
+                    else if (st === 'off_soir') { combinedEmoji = '☀️❌'; }
+                    else if (st === 'repos' || st === 'off') { combinedEmoji = '💤'; }
+                    else if (st === 'ferie') { combinedEmoji = '🎉'; }
+                    else if (st === 'conge' || st === 'vacation') { combinedEmoji = '🏖️'; }
+                    else if (st === 'maladie') { combinedEmoji = '🤒'; }
+                }
+                
+                html += `
+                <div style="display: flex; flex-direction: column; align-items: center; gap: 4px; flex: 1; padding: 4px 0; ${dayContainerStyle}">
+                    <span style="font-size: 0.7rem; color: var(--text-muted); font-weight: 900;">${daysLetters[i]}</span>
+                    <span style="font-size: 1rem;">${combinedEmoji}</span>
+                </div>`;
+            }
+            return html;
+        }
+
+        // ==========================================
+        // 🔥 CALCUL DES TICKET / TELEMETRY 🔥
+        // ==========================================
         function calculateTelemetry(orders) {
             let pendingCuisineCount = 0;
             let totalDelay = 0;
@@ -501,12 +686,10 @@
                 }
             }
 
-            // Affichage charge global %
             let pct = Math.min(Math.round((pendingCuisineCount / loadThreshold) * 100), 135);
             document.getElementById('kpi-load-percent').innerText = pct + '%';
             document.getElementById('kpi-load-percent').style.color = pct > 100 ? 'var(--alert-late)' : (pct > 70 ? 'var(--accent)' : 'var(--ready-color)');
 
-            // Affichage temps d'attente moyen réel
             let avg = totalCheckedItems > 0 ? Math.round(totalTotal = totalDelay / totalCheckedItems) : 0;
             document.getElementById('kpi-wait-time').innerText = avg > 0 ? `${avg} min` : '-- min';
 
@@ -527,7 +710,6 @@
                 if (tableId.includes('MASTER') || tableId.includes('ARCHIVE') || tableId.includes('CATEGORIES') || tableId.includes('ARCHITECTURE') || tableId.includes('HACCP') || tableId.includes('INVENTORY')) continue;
 
                 let order = activeOrders[tableId];
-                // 🔥 NOUVEAU : On ne dispatche plus en production les commandes retenues par le TimeShift
                 if (!order || !order.items || order.items.length === 0 || order.status === 'reserved' || order.status === 'EN ATTENTE PAIEMENT' || order.status === 'PRÊT' || order.status === 'EN ATTENTE (TIME-SHIFT)') continue;
 
                 order.items.forEach((i, idx) => i.originalIndex = idx);
@@ -556,7 +738,6 @@
                     if (rawTime && !isNaN(rawTime) && rawTime.toString().length > 10) timeDisplay = new Date(parseInt(rawTime)).toLocaleTimeString('fr-FR', {hour: '2-digit', minute:'2-digit'});
                     else if (!rawTime) timeDisplay = new Date().toLocaleTimeString('fr-FR', {hour: '2-digit', minute:'2-digit'});
                     
-                    // 🔥 IDENTIFICATION TICKET VIP / URGENCE
                     let isUrgentCuisine = pendingCuisine.some(i => i.obs && i.obs.includes('URGENT'));
                     
                     cuisineTickets.push({ tableId: tableId, time: timeDisplay, rawTime: order.time || Date.now(), source: order.source || 'SALLE', items: pendingCuisine, delayMin: maxDelayMinCuisine, isUrgent: isUrgentCuisine });
@@ -574,7 +755,6 @@
                 }
             });
 
-            // 🔥 TRI INTELLIGENT : LES URGENCES EN PREMIER, PUIS PAR HEURE
             cuisineTickets.sort((a, b) => {
                 if(a.isUrgent && !b.isUrgent) return -1;
                 if(!a.isUrgent && b.isUrgent) return 1;
@@ -607,7 +787,6 @@
                 let tableTitle = (ticket.tableId.toLowerCase().includes('apercu') || /^\d{13}$/.test(ticket.tableId)) ? `CLIENT WEB` : `TABLE ${ticket.tableId.replace('WEB_','')}`;
                 let chronoClass = ""; let chronoHtml = "";
                 
-                // 🔥 AFFICHAGE TICKET URGENCE 🔥
                 if (ticket.isUrgent) {
                     chronoClass = "urgent-ticket";
                     chronoHtml = `<div style="text-align:center; padding: 6px; background: #ef4444; color: #fff; font-weight: 900; font-size: 0.8rem; letter-spacing: 2px; text-transform:uppercase;">🔥 PRIORITÉ ABSOLUE : REFAIRE</div>`;
@@ -705,18 +884,16 @@
         function initAudio() { if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)(); }
         document.addEventListener('click', initAudio, { once: true }); document.addEventListener('touchstart', initAudio, { once: true });
 
-        // MOTEUR ACOUSTIQUE SYNTHETIQUE AVANT-GARDISTE
         function playNewOrderSound() {
             if (!audioCtx) return; 
             try {
-                // Signal bip double du futur hyper clair
                 let now = audioCtx.currentTime;
                 let osc1 = audioCtx.createOscillator();
                 let gainNode = audioCtx.createGain();
                 
                 osc1.type = 'sine';
-                osc1.frequency.setValueAtTime(880, now); // Note Pure A5
-                osc1.frequency.setValueAtTime(1200, now + 0.08); // Glissando vers le haut
+                osc1.frequency.setValueAtTime(880, now); 
+                osc1.frequency.setValueAtTime(1200, now + 0.08); 
                 
                 gainNode.gain.setValueAtTime(0.3, now);
                 gainNode.gain.exponentialRampToValueAtTime(0.001, now + 0.25);
@@ -726,7 +903,7 @@
                 
                 osc1.start(now);
                 osc1.stop(now + 0.25);
-            } catch(e) { console.log("Audio syntax fail:", e); }
+            } catch(e) {}
         }
 
         function triggerQuantumSonar() {
@@ -735,7 +912,7 @@
                 let now = audioCtx.currentTime;
                 let osc = audioCtx.createOscillator();
                 let gain = audioCtx.createGain();
-                osc.type = 'sawtooth'; // Son d'alerte plus rugueux
+                osc.type = 'sawtooth';
                 osc.frequency.setValueAtTime(150, now);
                 osc.frequency.linearRampToValueAtTime(600, now + 0.6);
                 gain.gain.setValueAtTime(0.4, now);
@@ -770,8 +947,14 @@
         socket.emit('joinTenant', tenantID);
         socket.on('updateState', (state) => {
             if(!state) return;
+            globalAppState = state;
             
-            // Détection boucle d'alerte sonore pour les nouveaux éléments
+            let nO = state.activeOrders || {};
+            if (nO['STAFF_ACCESS'] && nO['STAFF_ACCESS'].data) {
+                staffAccess = nO['STAFF_ACCESS'].data;
+                updateBrigadeUI();
+            }
+
             let foundNew = false;
             let activeOrdersContainer = state.activeOrders || {};
             
