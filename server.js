@@ -566,20 +566,20 @@ app.post('/api/nouvelle-demande-demo', async (req, res) => {
             activeOrders: {}
         });
 
-        // 🚨 ENVOI DU SMS DE NOTIFICATION (TWILIO) 🚨
+       // 🚨 ENVOI DU WHATSAPP DE NOTIFICATION (TWILIO WHATSAPP API) 🚨
         if (twilioClient) {
             try {
                 await twilioClient.messages.create({
-                    body: `🔥 NOUVEAU LEAD iCHEF : ${restaurant} (Tél: ${phone}). TenantID: ${tenantID}. Ferme le deal.`,
-                    from: process.env.TWILIO_PHONE_NUMBER,
-                    to: NUMERO_FLAVIEN
+                    body: `🔥 NOUVEAU LEAD iCHEF : ${restaurant}\n📞 Tél: ${phone}\n🆔 TenantID: ${tenantID}\n\nFerme le deal.`,
+                    from: 'whatsapp:' + process.env.TWILIO_PHONE_NUMBER,
+                    to: 'whatsapp:' + NUMERO_FLAVIEN
                 });
-                console.log("✅ SMS d'alerte envoyé au QG.");
-            } catch (smsErr) {
-                console.log("❌ Erreur silencieuse lors de l'envoi du SMS :", smsErr.message);
+                console.log("✅ Alerte WhatsApp envoyée au QG.");
+            } catch (whatsappErr) {
+                console.log("❌ Erreur silencieuse lors de l'envoi WhatsApp :", whatsappErr.message);
             }
         } else {
-            console.log("⚠️ Variables d'environnement Twilio non configurées. SMS ignoré.");
+            console.log("⚠️ Variables d'environnement Twilio non configurées. WhatsApp ignoré.");
         }
 
         // 🚨 ENVOI SILENCIEUX DE L'EMAIL DEPUIS LE SERVEUR 🚨
