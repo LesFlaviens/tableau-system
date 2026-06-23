@@ -559,27 +559,27 @@ app.post('/api/nouvelle-demande-demo', async (req, res) => {
             tenantID: cleanString(tenantID),
             activeOrders: {}
         });
-
-       // 🚨 ENVOI DU WHATSAPP DE NOTIFICATION (TWILIO WHATSAPP API) 🚨
+// 🚨 ENVOI DU WHATSAPP DE NOTIFICATION (TWILIO WHATSAPP API) 🚨
         if (twilioClient) {
             try {
-                // Nettoyage et formatage strict pour éviter les erreurs "whatsapp:whatsapp:"
                 const envTwilioNum = process.env.TWILIO_PHONE_NUMBER || '';
-                const fromNumber = envTwilioNum.includes('whatsapp:') ? envTwilioNum : 'whatsapp:' + envTwilioNum;
-                const toNumber = NUMERO_FLAVIEN.includes('whatsapp:') ? NUMERO_FLAVIEN : 'whatsapp:' + NUMERO_FLAVIEN;
+                const fromNumber = `whatsapp:${envTwilioNum.replace('whatsapp:', '')}`;
+                const toNumber = `whatsapp:${NUMERO_FLAVIEN.replace('whatsapp:', '')}`;
+
+                console.log(`📡 Tentative d'envoi WhatsApp de ${fromNumber} vers ${toNumber}`);
 
                 const message = await twilioClient.messages.create({
-                    body: `🔥 NOUVEAU LEAD iCHEF : ${restaurant}\n📞 Tél: ${phone}\n📧 Email: ${email}\n🆔 TenantID: ${tenantID}\n\nFerme le deal.`,
+                    body: `🔥 NOUVEAU LEAD iCHEF : ${restaurant}\n📞 Tél: ${phone}\n🆔 TenantID: ${tenantID}`,
                     from: fromNumber,
                     to: toNumber
                 });
-                console.log(`✅ Alerte WhatsApp envoyée au QG (SID: ${message.sid}).`);
+                console.log(`✅ Alerte WhatsApp envoyée avec succès (SID: ${message.sid}).`);
             } catch (whatsappErr) {
-                // LOG DÉTAILLÉ EN CAS D'ÉCHEC POUR DIAGNOSTIC SUR RENDER
-                console.error("❌ ERREUR CRITIQUE TWILIO WHATSAPP :", whatsappErr);
+                // CECI VA TE DONNER LA RAISON EXACTE DU BLOCAGE
+                console.error("❌ ERREUR CRITIQUE TWILIO WHATSAPP :", JSON.stringify(whatsappErr, null, 2));
             }
         } else {
-            console.log("⚠️ Variables d'environnement Twilio non configurées. WhatsApp ignoré.");
+            console.error("⚠️ twilioClient n'est pas initialisé. Vérifie tes variables d'environnement.");
         }
 
         // 🚨 ENVOI SILENCIEUX DE L'EMAIL DEPUIS LE SERVEUR 🚨
