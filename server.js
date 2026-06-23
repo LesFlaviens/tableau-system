@@ -9,7 +9,7 @@ const cors = require('cors');
 const path = require('path');
 const mongoose = require('mongoose');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
-const twilio = require('twilio'); // 📡 INTÉGRATION TWILIO (SMS)
+const twilio = require('twilio'); // 📡 INTÉGRATION TWILIO (SMS/WHATSAPP)
 
 // ==========================================
 // CONFIGURATION STRIPE iCHEF (Abonnements SaaS & Empreintes)
@@ -510,7 +510,6 @@ app.post('/api/admin-action', async (req, res) => {
         else if (action === 'reset_devices') await Tenant.findOneAndUpdate({ tenantID: safeID }, { registeredDevices: [] });
         else if (action === 'suspend') await Tenant.findOneAndUpdate({ tenantID: safeID }, { status: 'SUSPENDU', registeredDevices: [] });
         else if (action === 'activate') {
-            // Lors de l'activation manuelle, on valide officiellement (retrait expiration 24h si elle existe)
             await Tenant.findOneAndUpdate({ tenantID: safeID }, { status: 'ACTIF', $unset: { demoExpiration: "" } });
         }
         else if (action === 'delete') { await Tenant.findOneAndDelete({ tenantID: safeID }); await AppState.findOneAndDelete({ tenantID: safeID }); }
@@ -526,10 +525,7 @@ app.get('/debug-fichiers', (req, res) => {
     const fs = require('fs');
     fs.readdir(__dirname, (err, files) => {
         if (err) return res.status(500).json({ erreur: "Impossible de lire le dossier" });
-        res.json({
-            dossier_actuel: __dirname,
-            fichiers_trouves: files
-        });
+        res.json({ dossier_actuel: __dirname, fichiers_trouves: files });
     });
 });
 
@@ -542,8 +538,6 @@ app.post('/api/nouvelle-demande-demo', async (req, res) => {
         console.log(`🌟 ENREGISTREMENT SÉCURISÉ PROSPECT DÉMO 24H : ${restaurant} (${email})`);
         
         const codePinAlea = Math.floor(1000 + Math.random() * 9000).toString();
-        
-        // ⏳ SÉCURITÉ : La démo expirera automatiquement dans exactement 24 heures
         const expirationTime = new Date(Date.now() + 24 * 60 * 60 * 1000);
 
         await Tenant.create({
@@ -558,7 +552,7 @@ app.post('/api/nouvelle-demande-demo', async (req, res) => {
             maxScreens: 5,
             maxStaff: 999,
             registeredDevices: [],
-            demoExpiration: expirationTime // Activation du chrono 24H
+            demoExpiration: expirationTime
         });
 
         await AppState.create({
@@ -569,14 +563,20 @@ app.post('/api/nouvelle-demande-demo', async (req, res) => {
        // 🚨 ENVOI DU WHATSAPP DE NOTIFICATION (TWILIO WHATSAPP API) 🚨
         if (twilioClient) {
             try {
-                await twilioClient.messages.create({
-                    body: `🔥 NOUVEAU LEAD iCHEF : ${restaurant}\n📞 Tél: ${phone}\n🆔 TenantID: ${tenantID}\n\nFerme le deal.`,
-                    from: 'whatsapp:' + process.env.TWILIO_PHONE_NUMBER,
-                    to: 'whatsapp:' + NUMERO_FLAVIEN
+                // Nettoyage et formatage strict pour éviter les erreurs "whatsapp:whatsapp:"
+                const envTwilioNum = process.env.TWILIO_PHONE_NUMBER || '';
+                const fromNumber = envTwilioNum.includes('whatsapp:') ? envTwilioNum : 'whatsapp:' + envTwilioNum;
+                const toNumber = NUMERO_FLAVIEN.includes('whatsapp:') ? NUMERO_FLAVIEN : 'whatsapp:' + NUMERO_FLAVIEN;
+
+                const message = await twilioClient.messages.create({
+                    body: `🔥 NOUVEAU LEAD iCHEF : ${restaurant}\n📞 Tél: ${phone}\n📧 Email: ${email}\n🆔 TenantID: ${tenantID}\n\nFerme le deal.`,
+                    from: fromNumber,
+                    to: toNumber
                 });
-                console.log("✅ Alerte WhatsApp envoyée au QG.");
+                console.log(`✅ Alerte WhatsApp envoyée au QG (SID: ${message.sid}).`);
             } catch (whatsappErr) {
-                console.log("❌ Erreur silencieuse lors de l'envoi WhatsApp :", whatsappErr.message);
+                // LOG DÉTAILLÉ EN CAS D'ÉCHEC POUR DIAGNOSTIC SUR RENDER
+                console.error("❌ ERREUR CRITIQUE TWILIO WHATSAPP :", whatsappErr);
             }
         } else {
             console.log("⚠️ Variables d'environnement Twilio non configurées. WhatsApp ignoré.");
@@ -595,16 +595,12 @@ app.post('/api/nouvelle-demande-demo', async (req, res) => {
                 "Code PIN Généré": codePinAlea,
                 "Statut Technique": "Bloqué (en attente de votre activation depuis l'Admin)",
                 "Durée de la démo": "Se coupera dans 24H automatiquement",
-                _template: "box" // Formate l'email dans un joli tableau
+                _template: "box" 
             };
 
-            // Requête silencieuse (Machine à Machine)
             fetch(urlEmail, {
                 method: "POST",
-                headers: {
-                    'Content-Type': 'application/json',
-                    'Accept': 'application/json'
-                },
+                headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
                 body: JSON.stringify(payload)
             })
             .then(res => res.json())
@@ -628,31 +624,18 @@ app.post('/api/nouvelle-demande-demo', async (req, res) => {
 app.post('/api/create-hold-intent', async (req, res) => {
     try {
         const { tenantID, guests, date, time } = req.body;
-        
-        // 🔒 On fixe une garantie de 50€ par couvert
         const amountPerPerson = 50; 
-        const totalAmount = (parseInt(guests) || 1) * amountPerPerson * 100; // Stripe calcule en centimes
+        const totalAmount = (parseInt(guests) || 1) * amountPerPerson * 100;
 
-        // On crée l'empreinte SANS DÉBITER le client (capture_method: 'manual')
         const paymentIntent = await stripe.paymentIntents.create({
             amount: totalAmount,
             currency: 'eur',
             payment_method_types: ['card'],
             capture_method: 'manual', 
-            metadata: {
-                tenantID: tenantID,
-                type: 'ANTI_NO_SHOW',
-                date: date,
-                time: time,
-                guests: guests
-            },
+            metadata: { tenantID: tenantID, type: 'ANTI_NO_SHOW', date: date, time: time, guests: guests },
         });
 
-        res.json({ 
-            success: true, 
-            clientSecret: paymentIntent.client_secret, 
-            holdAmount: totalAmount / 100 
-        });
+        res.json({ success: true, clientSecret: paymentIntent.client_secret, holdAmount: totalAmount / 100 });
     } catch (error) {
         console.error("Erreur Stripe Empreinte:", error);
         res.status(500).json({ success: false, error: "Impossible de créer l'empreinte bancaire." });
@@ -669,12 +652,11 @@ app.post('/api/log-traffic-history', async (req, res) => {
     const safeID = cleanString(tenantID);
     const now = new Date();
     
-    // Création de l'empreinte temporelle
     const trafficData = {
         id: 'traf_' + Date.now(),
         timestamp: now.getTime(),
-        dateStr: now.toISOString().split('T')[0], // YYYY-MM-DD
-        dayOfWeek: now.getDay(), // 0 = Dimanche, 1 = Lundi...
+        dateStr: now.toISOString().split('T')[0], 
+        dayOfWeek: now.getDay(), 
         hour: now.getHours(),
         month: now.getMonth(),
         pax: parseInt(pax),
@@ -682,7 +664,6 @@ app.post('/api/log-traffic-history', async (req, res) => {
     };
 
     try {
-        // On sauvegarde silencieusement dans une table d'archive dédiée
         await AppState.findOneAndUpdate(
             { tenantID: safeID },
             { $push: { "activeOrders.TRAFFIC_HISTORY.data": trafficData } },
@@ -708,12 +689,10 @@ app.post('/api/predict-hr-schedule', async (req, res) => {
             history = state.activeOrders['TRAFFIC_HISTORY'].data || [];
         }
 
-        // Si on a pas assez de données, l'IA ne peut pas prédire avec précision
         if (history.length < 50) {
             return res.json({ success: true, message: "L'IA a besoin de plus d'historique de service (au moins 50 tables enregistrées) pour établir une prédiction fiable." });
         }
 
-        // On compresse les données pour ne pas surcharger l'IA
         let summary = history.map(h => `Jour:${h.dayOfWeek}-Heure:${h.hour}-Pax:${h.pax}`);
 
         const prompt = `Tu es le Directeur des Ressources Humaines IA d'un restaurant. 
