@@ -9,12 +9,21 @@ const cors = require('cors');
 const path = require('path');
 const mongoose = require('mongoose');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
+const twilio = require('twilio'); // 📡 INTÉGRATION TWILIO (SMS)
 
 // ==========================================
 // CONFIGURATION STRIPE iCHEF (Abonnements SaaS & Empreintes)
 // ==========================================
 const stripeKey = process.env.STRIPE_SECRET_KEY || 'sk_test_51TN80JQ9Dw3nOfA4I3XTxPl5FR4ddYmU9Jw2pGmfa0eABz2P6wAzK8RMzHw2XilulLXxFmY2oEDgau4TcScOf9WK00ajIEuweB'; 
 const stripe = require('stripe')(stripeKey);
+
+// ==========================================
+// CONFIGURATION TWILIO (NOTIFICATIONS DIRECTEUR)
+// ==========================================
+const twilioAccountSid = process.env.TWILIO_ACCOUNT_SID;
+const twilioAuthToken = process.env.TWILIO_AUTH_TOKEN;
+const twilioClient = (twilioAccountSid && twilioAuthToken) ? twilio(twilioAccountSid, twilioAuthToken) : null;
+const NUMERO_FLAVIEN = '+33641437265'; // Cible des alertes critiques
 
 const app = express();
 
@@ -525,7 +534,7 @@ app.get('/debug-fichiers', (req, res) => {
 });
 
 // ==========================================
-// 🎯 PORTAIL DES DEMANDES DE DÉMO (ALERTE EMAIL VIA FORMSUBMIT SÉCURISÉ)
+// 🎯 PORTAIL DES DEMANDES DE DÉMO (ALERTE SMS TWILIO + EMAIL)
 // ==========================================
 app.post('/api/nouvelle-demande-demo', async (req, res) => {
     try {
@@ -557,9 +566,24 @@ app.post('/api/nouvelle-demande-demo', async (req, res) => {
             activeOrders: {}
         });
 
+        // 🚨 ENVOI DU SMS DE NOTIFICATION (TWILIO) 🚨
+        if (twilioClient) {
+            try {
+                await twilioClient.messages.create({
+                    body: `🔥 NOUVEAU LEAD iCHEF : ${restaurant} (Tél: ${phone}). TenantID: ${tenantID}. Ferme le deal.`,
+                    from: process.env.TWILIO_PHONE_NUMBER,
+                    to: NUMERO_FLAVIEN
+                });
+                console.log("✅ SMS d'alerte envoyé au QG.");
+            } catch (smsErr) {
+                console.log("❌ Erreur silencieuse lors de l'envoi du SMS :", smsErr.message);
+            }
+        } else {
+            console.log("⚠️ Variables d'environnement Twilio non configurées. SMS ignoré.");
+        }
+
         // 🚨 ENVOI SILENCIEUX DE L'EMAIL DEPUIS LE SERVEUR 🚨
         try {
-            // Changement pour ton adresse officielle ichef.ch 👇
             const urlEmail = "https://formsubmit.co/ajax/iche.flavien@ichef.ch";
             
             const payload = {
@@ -652,7 +676,6 @@ app.post('/api/log-traffic-history', async (req, res) => {
         dateStr: now.toISOString().split('T')[0], // YYYY-MM-DD
         dayOfWeek: now.getDay(), // 0 = Dimanche, 1 = Lundi...
         hour: now.getHours(),
-        hour: now.getHours(),
         month: now.getMonth(),
         pax: parseInt(pax),
         revenue: parseFloat(totalAmount || 0)
@@ -719,5 +742,6 @@ app.post('/api/predict-hr-schedule', async (req, res) => {
         res.status(500).json({ success: false, error: "Erreur de prédiction IA." }); 
     }
 });
+
 // IMPORTANT : LA LIGNE LISTEN TOUT EN BAS !
 app.listen(PORT, () => console.log("✅ L'Empire iCHEF est en ligne et sécurisé sur le port " + PORT));
