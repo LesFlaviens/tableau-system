@@ -722,5 +722,29 @@ app.post('/api/predict-hr-schedule', async (req, res) => {
     }
 });
 
+// ==========================================
+// 🌟 AUTO-GÉNÉRATION DU COMPTE DE DÉMONSTRATION
+// ==========================================
+async function creerCompteDemo() {
+    try {
+        const demoExist = await Tenant.findOne({ tenantID: 'demo' });
+        if (!demoExist) {
+            await Tenant.create({
+                tenantID: 'demo',
+                clientName: 'Restaurant iCHEF Démo',
+                status: 'ACTIF',
+                plan: 'EMPIRE',
+                pin: '0000',
+                maxScreens: 50,
+                maxStaff: 999
+            });
+            console.log('✅ Compte DÉMO ("demo" / "0000") généré avec succès dans la base !');
+        }
+    } catch (e) {
+        console.error("Erreur lors de la création du compte démo :", e);
+    }
+}
+creerCompteDemo();
+
 // IMPORTANT : LA LIGNE LISTEN TOUT EN BAS !
 app.listen(PORT, () => console.log("✅ L'Empire iCHEF est en ligne et sécurisé sur le port " + PORT));
