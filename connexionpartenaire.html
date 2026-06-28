@@ -3,6 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <link rel="manifest" href="manifest.json">
     <title>iCHEF Empire OS - Connexion</title>
     
     <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -38,10 +39,17 @@
         
         button { width: 100%; padding: 16px; background: linear-gradient(135deg, var(--gold), #b89626); color: #000; border: none; border-radius: 10px; font-size: 0.9rem; font-weight: 800; text-transform: uppercase; cursor: pointer; transition: 0.3s; letter-spacing: 1px; }
         button:hover { filter: brightness(1.1); transform: translateY(-2px); }
+        button:disabled { opacity: 0.5; cursor: not-allowed; }
         
         .toggle-link { margin-top: 25px; font-size: 0.8rem; color: #666; cursor: pointer; letter-spacing: 1px; }
         .toggle-link:hover { color: var(--gold); }
         
+        /* Message d'erreur (Ajouté pour le moteur JS) */
+        #error-msg {
+            display: none; margin-top: 20px; font-size: 0.85rem; font-weight: 600; 
+            padding: 12px; border-radius: 8px; border: 1px solid;
+        }
+
         /* PWA MODAL PREMIUM */
         #pwa-modal { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.9); z-index: 1000; align-items: center; justify-content: center; backdrop-filter: blur(5px); }
         .modal-content { background: #060B14; border: 1px solid #1a1a1a; padding: 40px; border-radius: 20px; max-width: 340px; text-align: center; box-shadow: 0 20px 40px rgba(0,0,0,0.5); }
@@ -50,7 +58,7 @@
 <body>
 
     <div class="login-box" id="screen-login">
-        <img src="icon-512.png" alt="Logo iCHEF" class="login-logo">
+        <img src="icon-512.png" alt="Logo iCHEF" class="login-logo" onerror="this.src='https://via.placeholder.com/100?text=iCHEF'">
         <div class="subtitle">Portail Partenaire</div>
         
         <div class="input-group">
@@ -63,10 +71,13 @@
             <input type="password" id="pinCode" placeholder="••••" autocomplete="off" pattern="[0-9]*" inputmode="numeric">
         </div>
         
-        <button id="login-btn" onclick="login()">Se Connecter</button>
-        <div class="toggle-link" onclick="switchScreen('demo')">Pas encore partenaire ? Démo ✨</div>
+        <button id="login-btn">Se Connecter</button>
         
-        <button id="pwa-install-btn" onclick="ouvrirGuideInstallation()" style="background: transparent; border: 1px solid var(--gold); color: var(--gold); margin-top: 20px;">
+        <div id="error-msg"></div>
+
+        <div class="toggle-link" onclick="window.location.href='vitrine.html'">Pas encore partenaire ? Découvrir iCHEF ✨</div>
+        
+        <button id="pwa-install-btn" onclick="ouvrirGuideInstallation()" style="background: transparent; border: 1px solid var(--gold); color: var(--gold); margin-top: 20px; display: none;">
             Télécharger iCHEF OS
         </button>
     </div>
@@ -75,22 +86,362 @@
         <div class="modal-content">
             <h2 style="font-family: 'Playfair Display', serif; color: #fff; margin-bottom: 30px;">Mode Application</h2>
             <div style="display: flex; flex-direction: column; gap: 25px; text-align: left; color: #a0a0a0; font-size: 0.9rem;">
-                <div><span style="color:var(--gold); font-weight:bold;">01</span> Appuyez sur <strong style="color:#fff;">Partager</strong>.</div>
+                <div><span style="color:var(--gold); font-weight:bold;">01</span> Appuyez sur l'icône <strong style="color:#fff;">Partager</strong>.</div>
                 <div><span style="color:var(--gold); font-weight:bold;">02</span> Sélectionnez <strong style="color:#fff;">Sur l'écran d'accueil</strong>.</div>
-                <div><span style="color:var(--gold); font-weight:bold;">03</span> Validez : <strong style="color:#fff;">ichéf.ch</strong> est prêt.</div>
+                <div><span style="color:var(--gold); font-weight:bold;">03</span> Validez : <strong style="color:#fff;">iCHEF OS</strong> est prêt.</div>
             </div>
             <button onclick="document.getElementById('pwa-modal').style.display='none'" style="margin-top: 40px; background: transparent; border: 1px solid #333; color: #666;">Fermer le guide</button>
         </div>
     </div>
 
     <script>
-        // ... (Ton logique JS reste identique, j'ai juste mis à jour l'appel PWA)
-        function switchScreen(screen) {
-            document.getElementById('screen-login').style.display = screen === 'login' ? 'block' : 'none';
-            // Ajoute les autres si besoin...
+        // 🔒 URL DU SERVEUR RENDER
+        const SERVER_URL = "https://tableau-system.onrender.com";
+
+        // 🛡️ SÉCURITÉS ANTI-SNOOP
+        document.addEventListener('contextmenu', event => event.preventDefault());
+        document.onkeydown = function(e) {
+            if(e.keyCode == 123) return false; 
+            if(e.ctrlKey && e.shiftKey && e.keyCode == 'I'.charCodeAt(0)) return false; 
+            if(e.ctrlKey && e.shiftKey && e.keyCode == 'J'.charCodeAt(0)) return false; 
+            if(e.ctrlKey && e.keyCode == 'U'.charCodeAt(0)) return false; 
         }
-        function ouvrirGuideInstallation() { document.getElementById('pwa-modal').style.display = 'flex'; }
-        // ... reste du script
+
+        // ==========================================
+        // INITIALISATION AU CHARGEMENT DE LA PAGE
+        // ==========================================
+        document.addEventListener('DOMContentLoaded', () => {
+            const loginBtn = document.getElementById('login-btn');
+            const pinInput = document.getElementById('pinCode');
+            const tenantInput = document.getElementById('tenantID');
+
+            // Lier le bouton à la fonction de connexion
+            loginBtn.addEventListener('click', effectuerConnexion);
+
+            // Remplissage automatique pour le mode démo via URL (ex: ?tenantID=demo)
+            const urlParams = new URLSearchParams(window.location.search);
+            const urlTenant = urlParams.get('tenantID');
+            
+            if (urlTenant === 'demo') {
+                tenantInput.value = "demo";
+                pinInput.value = "0000";
+                setTimeout(() => effectuerConnexion(), 800); 
+            }
+
+            // Gestion de la touche "Entrée"
+            pinInput.addEventListener('keypress', function (e) {
+                if (e.key === 'Enter') effectuerConnexion();
+            });
+            tenantInput.addEventListener('keypress', function (e) {
+                if (e.key === 'Enter') pinInput.focus();
+            });
+
+            // Afficher le bouton PWA si l'app n'est pas installée
+            if (!(window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone)) {
+                document.getElementById('pwa-install-btn').style.display = 'block';
+            }
+        });
+
+        // ==========================================
+        // MOTEUR DE CONNEXION AU SERVEUR RENDER
+        // ==========================================
+        async function effectuerConnexion() {
+            const tenantID = document.getElementById('tenantID').value.trim().toLowerCase();
+            const pin = document.getElementById('pinCode').value.trim();
+            const errorMsg = document.getElementById('error-msg');
+            const btn = document.getElementById('login-btn');
+
+            if (!tenantID || !pin) {
+                afficherMessage(errorMsg, "Veuillez saisir l'identifiant et le code PIN.", "var(--gold)");
+                return;
+            }
+
+            btn.disabled = true;
+            btn.innerText = "CONNEXION EN COURS...";
+            afficherMessage(errorMsg, "⏳ Connexion sécurisée en cours...", "#fff");
+
+            try {
+                const response = await fetch(`${SERVER_URL}/api/verify-pin`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ tenantID: tenantID, pin: pin })
+                });
+                
+                const data = await response.json();
+
+                if (data.success) {
+                    afficherMessage(errorMsg, "✅ Accès Autorisé ! Redirection...", "#10b981");
+                    localStorage.setItem('ichef_tenant_id', tenantID);
+                    localStorage.setItem('ichef_master_pin', pin);
+                    
+                    // Redirection vers le panneau d'administration
+                    setTimeout(() => {
+                        window.location.href = `admin.html?tenantID=${tenantID}`; 
+                    }, 500);
+                } else {
+                    afficherMessage(errorMsg, "❌ " + (data.error || "Identifiants incorrects."), "#ef4444");
+                    btn.disabled = false;
+                    btn.innerText = "SE CONNECTER";
+                }
+            } catch (err) {
+                console.error("Erreur réseau :", err);
+                afficherMessage(errorMsg, "⚠️ Serveur injoignable. Vérifiez votre connexion internet.", "#ef4444");
+                btn.disabled = false;
+                btn.innerText = "RÉESSAYER";
+            }
+        }
+
+        // Fonction utilitaire pour afficher les messages
+        function afficherMessage(element, texte, couleur) {
+            element.innerHTML = texte;
+            element.style.color = couleur;
+            element.style.borderColor = couleur;
+            element.style.background = couleur === '#fff' ? 'rgba(255,255,255,0.1)' : `rgba(${couleur === 'var(--gold)' ? '212,175,55' : '239,68,68'}, 0.1)`;
+            element.style.display = 'block';
+        }
+
+        // ==========================================
+        // GESTION DU MODAL PWA
+        // ==========================================
+        let defferredPrompt;
+        window.addEventListener('beforeinstallprompt', (e) => {
+            e.preventDefault();
+            defferredPrompt = e;
+        });
+
+        function ouvrirGuideInstallation() {
+            if (defferredPrompt) {
+                defferredPrompt.prompt();
+                defferredPrompt.userChoice.then((choiceResult) => {
+                    defferredPrompt = null;
+                });
+            } else {
+                document.getElementById('pwa-modal').style.display = 'flex';
+            }
+        }
+    </script>
+</body>
+</html><!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <link rel="manifest" href="manifest.json">
+    <title>iCHEF Empire OS - Connexion</title>
+    
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;800&family=Playfair+Display:ital,wght@0,600;1,400&display=swap" rel="stylesheet">
+    
+    <style>
+        :root { --gold: #d4af37; --bg-dark: #050505; --panel: #0A0A0A; }
+        body { 
+            margin: 0; padding: 0; background: var(--bg-dark); color: #fff; 
+            font-family: 'Inter', sans-serif; display: flex; flex-direction: column; 
+            align-items: center; justify-content: center; height: 100vh; overflow: hidden;
+            background-image: radial-gradient(circle at 50% 0%, #1a1a1f 0%, transparent 50%);
+        }
+        
+        .login-box { 
+            background: var(--panel); border: 1px solid #1a1a1a; padding: 40px; 
+            border-radius: 20px; text-align: center; width: 90%; max-width: 400px; 
+            box-shadow: 0 20px 50px rgba(0,0,0,0.8); animation: fadeIn 0.6s ease-out;
+        }
+
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(20px); } to { opacity: 1; transform: translateY(0); } }
+
+        .login-logo { width: 100px; margin-bottom: 10px; filter: drop-shadow(0px 5px 15px rgba(212, 175, 55, 0.3)); }
+
+        .subtitle { color: #888; font-size: 0.8rem; margin-bottom: 30px; text-transform: uppercase; letter-spacing: 2px; font-weight: 600; }
+        
+        .input-group { margin-bottom: 20px; text-align: left; }
+        .input-group label { display: block; font-size: 0.7rem; color: #666; margin-bottom: 8px; text-transform: uppercase; letter-spacing: 1.5px; font-weight: 800; }
+
+        input { width: 100%; padding: 15px; background: #000; border: 1px solid #222; color: #fff; border-radius: 10px; box-sizing: border-box; font-size: 1rem; text-align: center; outline: none; transition: 0.3s; }
+        input:focus { border-color: var(--gold); }
+        
+        button { width: 100%; padding: 16px; background: linear-gradient(135deg, var(--gold), #b89626); color: #000; border: none; border-radius: 10px; font-size: 0.9rem; font-weight: 800; text-transform: uppercase; cursor: pointer; transition: 0.3s; letter-spacing: 1px; }
+        button:hover { filter: brightness(1.1); transform: translateY(-2px); }
+        button:disabled { opacity: 0.5; cursor: not-allowed; }
+        
+        .toggle-link { margin-top: 25px; font-size: 0.8rem; color: #666; cursor: pointer; letter-spacing: 1px; }
+        .toggle-link:hover { color: var(--gold); }
+        
+        /* Message d'erreur (Ajouté pour le moteur JS) */
+        #error-msg {
+            display: none; margin-top: 20px; font-size: 0.85rem; font-weight: 600; 
+            padding: 12px; border-radius: 8px; border: 1px solid;
+        }
+
+        /* PWA MODAL PREMIUM */
+        #pwa-modal { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.9); z-index: 1000; align-items: center; justify-content: center; backdrop-filter: blur(5px); }
+        .modal-content { background: #060B14; border: 1px solid #1a1a1a; padding: 40px; border-radius: 20px; max-width: 340px; text-align: center; box-shadow: 0 20px 40px rgba(0,0,0,0.5); }
+    </style>
+</head>
+<body>
+
+    <div class="login-box" id="screen-login">
+        <img src="icon-512.png" alt="Logo iCHEF" class="login-logo" onerror="this.src='https://via.placeholder.com/100?text=iCHEF'">
+        <div class="subtitle">Portail Partenaire</div>
+        
+        <div class="input-group">
+            <label>ID Restaurant</label>
+            <input type="text" id="tenantID" placeholder="EX: CHEZMARC" autocomplete="off" autocapitalize="characters">
+        </div>
+        
+        <div class="input-group">
+            <label>Code PIN</label>
+            <input type="password" id="pinCode" placeholder="••••" autocomplete="off" pattern="[0-9]*" inputmode="numeric">
+        </div>
+        
+        <button id="login-btn">Se Connecter</button>
+        
+        <div id="error-msg"></div>
+
+        <div class="toggle-link" onclick="window.location.href='vitrine.html'">Pas encore partenaire ? Découvrir iCHEF ✨</div>
+        
+        <button id="pwa-install-btn" onclick="ouvrirGuideInstallation()" style="background: transparent; border: 1px solid var(--gold); color: var(--gold); margin-top: 20px; display: none;">
+            Télécharger iCHEF OS
+        </button>
+    </div>
+
+    <div id="pwa-modal">
+        <div class="modal-content">
+            <h2 style="font-family: 'Playfair Display', serif; color: #fff; margin-bottom: 30px;">Mode Application</h2>
+            <div style="display: flex; flex-direction: column; gap: 25px; text-align: left; color: #a0a0a0; font-size: 0.9rem;">
+                <div><span style="color:var(--gold); font-weight:bold;">01</span> Appuyez sur l'icône <strong style="color:#fff;">Partager</strong>.</div>
+                <div><span style="color:var(--gold); font-weight:bold;">02</span> Sélectionnez <strong style="color:#fff;">Sur l'écran d'accueil</strong>.</div>
+                <div><span style="color:var(--gold); font-weight:bold;">03</span> Validez : <strong style="color:#fff;">iCHEF OS</strong> est prêt.</div>
+            </div>
+            <button onclick="document.getElementById('pwa-modal').style.display='none'" style="margin-top: 40px; background: transparent; border: 1px solid #333; color: #666;">Fermer le guide</button>
+        </div>
+    </div>
+
+    <script>
+        // 🔒 URL DU SERVEUR RENDER
+        const SERVER_URL = "https://tableau-system.onrender.com";
+
+        // 🛡️ SÉCURITÉS ANTI-SNOOP
+        document.addEventListener('contextmenu', event => event.preventDefault());
+        document.onkeydown = function(e) {
+            if(e.keyCode == 123) return false; 
+            if(e.ctrlKey && e.shiftKey && e.keyCode == 'I'.charCodeAt(0)) return false; 
+            if(e.ctrlKey && e.shiftKey && e.keyCode == 'J'.charCodeAt(0)) return false; 
+            if(e.ctrlKey && e.keyCode == 'U'.charCodeAt(0)) return false; 
+        }
+
+        // ==========================================
+        // INITIALISATION AU CHARGEMENT DE LA PAGE
+        // ==========================================
+        document.addEventListener('DOMContentLoaded', () => {
+            const loginBtn = document.getElementById('login-btn');
+            const pinInput = document.getElementById('pinCode');
+            const tenantInput = document.getElementById('tenantID');
+
+            // Lier le bouton à la fonction de connexion
+            loginBtn.addEventListener('click', effectuerConnexion);
+
+            // Remplissage automatique pour le mode démo via URL (ex: ?tenantID=demo)
+            const urlParams = new URLSearchParams(window.location.search);
+            const urlTenant = urlParams.get('tenantID');
+            
+            if (urlTenant === 'demo') {
+                tenantInput.value = "demo";
+                pinInput.value = "0000";
+                setTimeout(() => effectuerConnexion(), 800); 
+            }
+
+            // Gestion de la touche "Entrée"
+            pinInput.addEventListener('keypress', function (e) {
+                if (e.key === 'Enter') effectuerConnexion();
+            });
+            tenantInput.addEventListener('keypress', function (e) {
+                if (e.key === 'Enter') pinInput.focus();
+            });
+
+            // Afficher le bouton PWA si l'app n'est pas installée
+            if (!(window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone)) {
+                document.getElementById('pwa-install-btn').style.display = 'block';
+            }
+        });
+
+        // ==========================================
+        // MOTEUR DE CONNEXION AU SERVEUR RENDER
+        // ==========================================
+        async function effectuerConnexion() {
+            const tenantID = document.getElementById('tenantID').value.trim().toLowerCase();
+            const pin = document.getElementById('pinCode').value.trim();
+            const errorMsg = document.getElementById('error-msg');
+            const btn = document.getElementById('login-btn');
+
+            if (!tenantID || !pin) {
+                afficherMessage(errorMsg, "Veuillez saisir l'identifiant et le code PIN.", "var(--gold)");
+                return;
+            }
+
+            btn.disabled = true;
+            btn.innerText = "CONNEXION EN COURS...";
+            afficherMessage(errorMsg, "⏳ Connexion sécurisée en cours...", "#fff");
+
+            try {
+                const response = await fetch(`${SERVER_URL}/api/verify-pin`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ tenantID: tenantID, pin: pin })
+                });
+                
+                const data = await response.json();
+
+                if (data.success) {
+                    afficherMessage(errorMsg, "✅ Accès Autorisé ! Redirection...", "#10b981");
+                    localStorage.setItem('ichef_tenant_id', tenantID);
+                    localStorage.setItem('ichef_master_pin', pin);
+                    
+                    // Redirection vers le panneau d'administration
+                    setTimeout(() => {
+                        window.location.href = `admin.html?tenantID=${tenantID}`; 
+                    }, 500);
+                } else {
+                    afficherMessage(errorMsg, "❌ " + (data.error || "Identifiants incorrects."), "#ef4444");
+                    btn.disabled = false;
+                    btn.innerText = "SE CONNECTER";
+                }
+            } catch (err) {
+                console.error("Erreur réseau :", err);
+                afficherMessage(errorMsg, "⚠️ Serveur injoignable. Vérifiez votre connexion internet.", "#ef4444");
+                btn.disabled = false;
+                btn.innerText = "RÉESSAYER";
+            }
+        }
+
+        // Fonction utilitaire pour afficher les messages
+        function afficherMessage(element, texte, couleur) {
+            element.innerHTML = texte;
+            element.style.color = couleur;
+            element.style.borderColor = couleur;
+            element.style.background = couleur === '#fff' ? 'rgba(255,255,255,0.1)' : `rgba(${couleur === 'var(--gold)' ? '212,175,55' : '239,68,68'}, 0.1)`;
+            element.style.display = 'block';
+        }
+
+        // ==========================================
+        // GESTION DU MODAL PWA
+        // ==========================================
+        let defferredPrompt;
+        window.addEventListener('beforeinstallprompt', (e) => {
+            e.preventDefault();
+            defferredPrompt = e;
+        });
+
+        function ouvrirGuideInstallation() {
+            if (defferredPrompt) {
+                defferredPrompt.prompt();
+                defferredPrompt.userChoice.then((choiceResult) => {
+                    defferredPrompt = null;
+                });
+            } else {
+                document.getElementById('pwa-modal').style.display = 'flex';
+            }
+        }
     </script>
 </body>
 </html>
