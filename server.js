@@ -529,23 +529,23 @@ app.get('/debug-fichiers', (req, res) => {
 });
 
 // ==========================================
-// 🎯 PORTAIL DES DEMANDES DE PARTENARIAT DÉTAILLÉ (ONBOARDING VIP)
+// 🎯 PORTAIL DES DEMANDES DE PARTENARIAT DÉTAILLÉ
 // ==========================================
 app.post('/api/nouvelle-demande-demo', async (req, res) => {
     try {
         const { tenantID, restaurant, email, phone } = req.body;
-        console.log(`🌟 ENREGISTREMENT SÉCURISÉ NOUVEAU PARTENAIRE : ${restaurant} (${email})`);
+        console.log(`🌟 ENREGISTREMENT SÉCURISÉ NOUVEAU PARTENAIRE : ${restaurant}`);
         
         const codePinAlea = Math.floor(1000 + Math.random() * 9000).toString();
         const expirationTime = new Date(Date.now() + 24 * 60 * 60 * 1000);
 
-        // 1. Sauvegarde du compte principal
+        // 👉 C'EST ICI QUE LE COMPTE EST CRÉÉ POUR TA TOUR DE CONTRÔLE
         await Tenant.create({
             tenantID: cleanString(tenantID),
             clientName: restaurant,
             email: email,
             phone: phone,
-            status: 'SUSPENDU', // En attente de validation par Flavien
+            status: 'SUSPENDU', // En attente de ta validation
             plan: 'EMPIRE',     
             specialite: 'cuisine',
             pin: codePinAlea,   
@@ -555,11 +555,13 @@ app.post('/api/nouvelle-demande-demo', async (req, res) => {
             demoExpiration: expirationTime
         });
 
-        // 2. Initialisation de l'état vide
+        // 2. Initialisation des commandes (vide au départ)
         await AppState.create({
             tenantID: cleanString(tenantID),
             activeOrders: {}
         });
+
+        // ... La suite du code avec l'envoi du WhatsApp Twilio ...
 
         // 🚨 PRÉPARATION DES DONNÉES DE QUALIFICATION POUR LES ALERTES 🚨
         const d = req.body.details || {};
