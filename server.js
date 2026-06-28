@@ -11,6 +11,10 @@ const mongoose = require('mongoose');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
 const twilio = require('twilio'); // 📡 INTÉGRATION TWILIO (SMS/WHATSAPP)
 
+// 🔥 WEBSOCKETS POUR LE TEMPS RÉEL 🔥
+const http = require('http');
+const { Server } = require('socket.io');
+
 // ==========================================
 // CONFIGURATION STRIPE iCHEF (Abonnements SaaS & Empreintes)
 // ==========================================
@@ -26,6 +30,8 @@ const twilioClient = (twilioAccountSid && twilioAuthToken) ? twilio(twilioAccoun
 const NUMERO_FLAVIEN = '+33641437265'; // Cible des alertes critiques
 
 const app = express();
+const server = http.createServer(app); // Serveur HTTP lié à Express
+const io = new Server(server, { cors: { origin: '*' } }); // Serveur Temps Réel
 
 // 👇 DÉBLOCAGE DES VIDÉOS & RESSOURCES 👇
 app.use(express.static(__dirname));
@@ -223,11 +229,9 @@ app.post('/api/smart-reservation', async (req, res) => {
         let activeCooks = 1; // Par défaut s'il n'y a pas de données
         if (state && state.activeOrders && state.activeOrders['STAFF_ACCESS'] && state.activeOrders['STAFF_ACCESS'].data) {
             const staff = state.activeOrders['STAFF_ACCESS'].data;
-            // On compte les cuisiniers actifs
             activeCooks = staff.filter(s => s.dept === 'cuisine' && s.active).length || 1;
         }
 
-        // Le prompt de Yield Management pour Gemini
         const prompt = `Tu es l'IA iCHEF, le Maître d'Hôtel d'élite et Yield Manager du restaurant.
         
         Demande du client : "${customerRequest}".
@@ -261,7 +265,6 @@ app.post('/api/smart-reservation', async (req, res) => {
         if (!responseText.startsWith("{")) responseText = responseText.substring(responseText.indexOf("{"));
         const decision = JSON.parse(responseText);
         
-        // Sauvegarde de la réservation validée
         if (decision.acceptee && decision.tableAllouee) {
             await AppState.findOneAndUpdate(
                 { tenantID: safeID },
@@ -450,7 +453,11 @@ app.post('/update-order', async (req, res) => {
 
         const { tableId, order } = req.body;
         let updateQuery = (order === null) ? { $unset: { [`activeOrders.${tableId}`]: 1 } } : { $set: { [`activeOrders.${tableId}`]: order } };
-        await AppState.findOneAndUpdate({ tenantID }, updateQuery, { upsert: true, new: true });
+        const newState = await AppState.findOneAndUpdate({ tenantID }, updateQuery, { upsert: true, new: true });
+        
+        // 🔥 ÉMISSION TEMPS RÉEL (WEBSOCKETS) VERS LES ÉCRANS DU RESTAURANT 🔥
+        io.to(tenantID).emit('updateState', newState);
+        
         res.json({ success: true });
     } catch (e) { res.status(500).json({ error: "Save Error" }); }
 });
@@ -530,22 +537,23 @@ app.get('/debug-fichiers', (req, res) => {
 });
 
 // ==========================================
-// 🎯 PORTAIL DES DEMANDES DE DÉMO (ALERTE SMS TWILIO + EMAIL)
+// 🎯 PORTAIL DES DEMANDES DE PARTENARIAT DÉTAILLÉ
 // ==========================================
 app.post('/api/nouvelle-demande-demo', async (req, res) => {
     try {
         const { tenantID, restaurant, email, phone } = req.body;
-        console.log(`🌟 ENREGISTREMENT SÉCURISÉ PROSPECT DÉMO 24H : ${restaurant} (${email})`);
+        console.log(`🌟 ENREGISTREMENT SÉCURISÉ NOUVEAU PARTENAIRE : ${restaurant} (${email})`);
         
         const codePinAlea = Math.floor(1000 + Math.random() * 9000).toString();
         const expirationTime = new Date(Date.now() + 24 * 60 * 60 * 1000);
 
+        // On sauvegarde le compte principal
         await Tenant.create({
             tenantID: cleanString(tenantID),
             clientName: restaurant,
             email: email,
             phone: phone,
-            status: 'SUSPENDU', 
+            status: 'SUSPENDU', // En attente de validation par Flavien
             plan: 'EMPIRE',     
             specialite: 'cuisine',
             pin: codePinAlea,   
@@ -555,46 +563,53 @@ app.post('/api/nouvelle-demande-demo', async (req, res) => {
             demoExpiration: expirationTime
         });
 
+        // On initialise l'état vide de ses commandes/ratios/tables
         await AppState.create({
             tenantID: cleanString(tenantID),
             activeOrders: {}
         });
-// 🚨 ENVOI DU WHATSAPP DE NOTIFICATION (TWILIO WHATSAPP API) 🚨
+
+        // 🚨 PRÉPARATION DES DONNÉES DE QUALIFICATION POUR LES ALERTES 🚨
+        const d = req.body.details || {};
+        let qualification = `Type: ${d.type || 'Non précisé'}\n`;
+        if (d.type === 'hotel' || d.type === 'hotel-resto') {
+            qualification += `🏨 Catégorie: ${d.stars || 'N/A'} - 🚪 Chambres: ${d.rooms || 0}\n`;
+        }
+        if (d.type === 'restaurant' || d.type === 'hotel-resto' || d.type === 'kiosque') {
+            qualification += `🍽️ Style: ${d.style || 'N/A'} - 🪑 Couverts: ${d.seats || 0}\n📍 Zones: ${d.zones || 'N/A'}\n`;
+        }
+
+        // 📡 ENVOI DE L'ALERTE WHATSAPP DIRECTEUR (TWILIO)
         if (twilioClient) {
             try {
                 const envTwilioNum = process.env.TWILIO_PHONE_NUMBER || '';
                 const fromNumber = `whatsapp:${envTwilioNum.replace('whatsapp:', '')}`;
                 const toNumber = `whatsapp:${NUMERO_FLAVIEN.replace('whatsapp:', '')}`;
 
-                console.log(`📡 Tentative d'envoi WhatsApp de ${fromNumber} vers ${toNumber}`);
-
-                const message = await twilioClient.messages.create({
-                    body: `🔥 NOUVEAU LEAD iCHEF : ${restaurant}\n📞 Tél: ${phone}\n🆔 TenantID: ${tenantID}`,
+                await twilioClient.messages.create({
+                    body: `🔥 NOUVEAU PARTENAIRE QUALIFIÉ : ${restaurant}\n📞 Tél: ${phone}\n🆔 TenantID: ${tenantID}\n\n📊 INFOS PROFIL :\n${qualification}\n🎯 PROJET: ${d.projet || 'Aucun'}`,
                     from: fromNumber,
                     to: toNumber
                 });
-                console.log(`✅ Alerte WhatsApp envoyée avec succès (SID: ${message.sid}).`);
+                console.log(`✅ Alerte WhatsApp envoyée.`);
             } catch (whatsappErr) {
-                // CECI VA TE DONNER LA RAISON EXACTE DU BLOCAGE
-                console.error("❌ ERREUR CRITIQUE TWILIO WHATSAPP :", JSON.stringify(whatsappErr, null, 2));
+                console.error("❌ Erreur Twilio WhatsApp :", whatsappErr);
             }
-        } else {
-            console.error("⚠️ twilioClient n'est pas initialisé. Vérifie tes variables d'environnement.");
         }
 
-        // 🚨 ENVOI SILENCIEUX DE L'EMAIL DEPUIS LE SERVEUR 🚨
+        // 🚨 ENVOI SILENCIEUX DE L'EMAIL DE NOTIFICATION (FORMSUBMIT) POUR TOI
         try {
             const urlEmail = "https://formsubmit.co/ajax/iche.flavien@ichef.ch";
-            
             const payload = {
-                _subject: `🚨 iCHEF OS : Nouvelle Démo demandée par ${restaurant}`,
+                _subject: `🚨 iCHEF OS : Nouveau Lead Qualifié - ${restaurant}`,
                 "Établissement": restaurant,
                 "Téléphone": phone,
-                "Email du client": email,
-                "Identifiant (ID)": tenantID,
-                "Code PIN Généré": codePinAlea,
-                "Statut Technique": "Bloqué (en attente de votre activation depuis l'Admin)",
-                "Durée de la démo": "Se coupera dans 24H automatiquement",
+                "Email du gérant": email,
+                "Identifiant Généré (ID)": tenantID,
+                "Code PIN d'accès temporaire": codePinAlea,
+                "Qualification Profil": qualification,
+                "Projet / Besoin exprimé": d.projet || 'Aucun détail fourni',
+                "Statut": "Bloqué (En attente d'activation manuelle depuis votre panel Admin)",
                 _template: "box" 
             };
 
@@ -602,21 +617,54 @@ app.post('/api/nouvelle-demande-demo', async (req, res) => {
                 method: "POST",
                 headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
                 body: JSON.stringify(payload)
-            })
-            .then(res => res.json())
-            .then(data => console.log("✅ Email d'alerte déclenché avec succès vers ichef.ch !"))
-            .catch(err => console.log("❌ Erreur silencieuse lors de l'envoi de l'email :", err));
+            }).catch(err => console.log("Erreur e-mail alerte"));
             
-        } catch (err) {
-            console.error("Erreur lors de la préparation de l'email :", err);
-        }
+        } catch (err) { console.error(err); }
 
-        res.json({ success: true, message: "Demande mise en attente de validation." });
+        // ✉️ ENVOI AUTOMATIQUE DE L'E-MAIL DE BIENVENUE AU PARTENAIRE
+        try {
+            const urlEmailClient = `https://formsubmit.co/ajax/${email}`; // On vise l'adresse du gérant
+            
+            const clientPayload = {
+                _subject: "✨ Bienvenue dans l'élite iCHEF OS — Préparation de votre écosystème",
+                "Message de la Brigade iCHEF": `Bonjour, vous ne devenez pas un simple numéro ou un "client" de plus. Vous devenez un véritable Partenaire. 
+
+Étant nous-mêmes issus du monde de la restauration, nous connaissons la réalité du terrain : la pression du coup de feu, les serveurs débordés, et ces dizaines de commandes supplémentaires qui s'évaporent parce que les clients n'osent pas solliciter une équipe déjà à 200%.
+
+Votre espace privé est actuellement en cours de pré-génération sur nos serveurs sécurisés.
+
+VOS IDENTIFIANTS PROVISOIRES :
+🆔 ID Restaurant : ${tenantID}
+🔑 Code PIN Master : ${codePinAlea}
+
+PROCHAINES ÉTAPES :
+1. L'Appel de Synchronisation (Sous 24h) : Un expert de notre brigade va vous contacter sur ce numéro : ${phone}. Ce sera un appel court pour comprendre la topographie de vos espaces.
+2. Le Paramétrage Sur-Mesure : Nous configurons votre carte, le Mode Anti-Rush et les options de Time-Shifting.
+3. Le Déploiement : Vous recevrez vos puces NFC haut de gamme, prêtes à poser.
+
+Préparez-vous à vivre votre premier service sans stress.
+
+Flavien Iché & l'équipe iCHEF`,
+                _template: "box"
+            };
+
+            fetch(urlEmailClient, {
+                method: "POST",
+                headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+                body: JSON.stringify(clientPayload)
+            }).then(() => console.log(`✉️ Mail de bienvenue envoyé à ${email}`));
+
+        } catch (mailClientErr) { console.error("Erreur envoi mail client:", mailClientErr); }
+
+        // Tout s'est bien passé
+        res.json({ success: true, message: "Demande enregistrée avec succès." });
+
     } catch (e) {
-        console.error("Erreur création prospect démo :", e);
+        console.error("Erreur création prospect :", e);
         res.status(500).json({ success: false, error: "Cet identifiant d'établissement existe déjà." });
     }
 });
+
 
 // ==========================================
 //  ANTI NO-SHOW (Empreinte Bancaire)
@@ -723,6 +771,23 @@ app.post('/api/predict-hr-schedule', async (req, res) => {
 });
 
 // ==========================================
+// 🌟 GESTION DES WEBSOCKETS (SYNCHRONISATION DES ÉCRANS EN SALLE/CUISINE)
+// ==========================================
+io.on('connection', (socket) => {
+    console.log('✅ Nouvelle connexion écran détectée (ID: ' + socket.id + ')');
+    
+    socket.on('joinTenant', (tenantID) => {
+        const safeID = cleanString(tenantID);
+        socket.join(safeID);
+        console.log(`📡 L'écran ${socket.id} est maintenant synchronisé sur le réseau du restaurant : ${safeID}`);
+    });
+
+    socket.on('disconnect', () => {
+        console.log(`❌ Écran déconnecté (ID: ${socket.id})`);
+    });
+});
+
+// ==========================================
 // 🌟 AUTO-GÉNÉRATION DU COMPTE DE DÉMONSTRATION
 // ==========================================
 async function creerCompteDemo() {
@@ -746,5 +811,10 @@ async function creerCompteDemo() {
 }
 creerCompteDemo();
 
-// IMPORTANT : LA LIGNE LISTEN TOUT EN BAS !
-app.listen(PORT, () => console.log("✅ L'Empire iCHEF est en ligne et sécurisé sur le port " + PORT));
+// ==========================================
+// 🚀 ALLUMAGE DU SERVEUR GLOBAL (HTTP + WEBSOCKETS)
+// ==========================================
+server.listen(PORT, () => {
+    console.log("✅ L'Empire iCHEF est en ligne et sécurisé sur le port " + PORT);
+    console.log("📡 Moteur WebSockets activé avec succès.");
+});
