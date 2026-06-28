@@ -109,12 +109,12 @@ app.post('/webhook', async (req, res) => {
                     else if (session.amount_total >= 9900) { planAchete = "EMPIRE"; limitScreens = 50; limitStaff = 999; }
                 }
 
-                // 🔓 Un achat officiel supprime toute expiration de démo (La licence devient permanente)
+                // 🔓 Un achat officiel supprime toute expiration de démo
                 await Tenant.updateOne(
                     { tenantID: safeID },
                     { 
                         $set: { status: 'ACTIF', config: { stripeCustomerId: session.customer } },
-                        $unset: { demoExpiration: "" }, // Supprime la limite de 24h
+                        $unset: { demoExpiration: "" },
                         $setOnInsert: { plan: planAchete, maxScreens: limitScreens, maxStaff: limitStaff, pin: Math.floor(1000 + Math.random() * 9000).toString() }
                     },
                     { upsert: true }
@@ -148,7 +148,7 @@ const tenantSchema = new mongoose.Schema({
     maxStaff: { type: Number, default: 999 },
     registeredDevices: [String], 
     config: { stripeCustomerId: String },
-    demoExpiration: { type: Date } // ⏳ CHRONOMÈTRE DE SÉCURITÉ DÉMO (24H)
+    demoExpiration: { type: Date }
 });
 const Tenant = mongoose.model('Tenant', tenantSchema);
 
@@ -241,7 +241,7 @@ app.post('/api/smart-reservation', async (req, res) => {
         
         MISSION :
         1. Si la taille de la table dépasse la capacité de la brigade pour l'heure demandée, TU DOIS REFUSER l'heure initiale.
-        2. TIME-SHIFTING : Si tu refuses, propose au client un autre horaire (ex: 45 min plus tôt ou plus tard) dans le "messageClient".
+        2. TIME-SHIFTING : Si tu refuses, propose au client un autre horaire dans le "messageClient".
         3. Si tu acceptes, trouve la table idéale.
         
         RÉPONDS UNIQUEMENT AVEC CE JSON STRICT (SANS MARKDOWN) : 
@@ -250,7 +250,7 @@ app.post('/api/smart-reservation', async (req, res) => {
           "pax": nombre, 
           "heure": "HH:MM", 
           "tableAllouee": "ID_TABLE_OU_VIDE", 
-          "messageClient": "Votre réponse élégante au client, justifiant un refus par l'affluence et proposant une alternative si besoin.", 
+          "messageClient": "Votre réponse élégante au client", 
           "optimisationInfo": "Notes internes pour le manager" 
         }`;
 
@@ -268,12 +268,8 @@ app.post('/api/smart-reservation', async (req, res) => {
             await AppState.findOneAndUpdate(
                 { tenantID: safeID },
                 { $push: { "activeOrders.RESERVATIONS_MASTER.data": { 
-                    id: 'resa_' + Date.now(), 
-                    pax: decision.pax, 
-                    heure: decision.heure, 
-                    table: decision.tableAllouee, 
-                    info: decision.optimisationInfo, 
-                    timestamp: Date.now() 
+                    id: 'resa_' + Date.now(), pax: decision.pax, heure: decision.heure, 
+                    table: decision.tableAllouee, info: decision.optimisationInfo, timestamp: Date.now() 
                 } } },
                 { upsert: true }
             );
@@ -304,7 +300,7 @@ app.post('/api/save-transaction', async (req, res) => {
 
         state.markModified('activeOrders');
         await state.save();
-        res.json({ success: true, message: "Ticket comptabilisé dans l'historique Admin." });
+        res.json({ success: true, message: "Ticket comptabilisé." });
     } catch(e) { res.status(500).json({ success: false, error: "Erreur sauvegarde base de données." }); }
 });
 
@@ -340,11 +336,9 @@ app.post('/api/verify-pin', async (req, res) => {
         const tenant = await Tenant.findOne({ tenantID: cleanString(tenantID) });
         if (!tenant) return res.status(404).json({ success: false, error: "Inconnu." });
         
-        // 🔒 SÉCURITÉ : VÉRIFICATION EXPIRATION 24H POUR LA DÉMO
         if (tenant.demoExpiration && new Date() > new Date(tenant.demoExpiration)) {
             return res.status(403).json({ success: false, error: "Démonstration expirée (limite de 24h atteinte)." });
         }
-
         if (tenant.status === 'SUSPENDU') return res.status(403).json({ success: false, error: "Licence suspendue ou en attente d'approbation manuelle." });
 
         let isValid = (String(tenant.pin).trim() === String(pin).trim());
@@ -398,16 +392,15 @@ app.get('/get-current-state', async (req, res) => {
             tenantID = cleanString(tenantID);
             const tenant = await Tenant.findOne({ tenantID });
             
-            // 🔒 SÉCURITÉ : VÉRIFICATION EXPIRATION 24H EN COURS D'UTILISATION
             if (tenant && tenant.demoExpiration && new Date() > new Date(tenant.demoExpiration)) {
-                return res.status(403).json({ error: "Démonstration expirée (limite de 24h atteinte)." });
+                return res.status(403).json({ error: "Démonstration expirée (limite de 24h)." });
             }
             if (tenant && tenant.status === 'SUSPENDU') return res.status(403).json({ error: "Licence suspendue ou en attente" });
         }
         let state = await AppState.findOne({ tenantID });
         if (!state) state = await AppState.create({ tenantID, activeOrders: {} });
         
-        // 🔥 SYMBIOSIE INTELLIGENTE : CALCUL DYNAMIQUE DES HEURES ACCOMPLIES DU MOIS EN COURS 🔥
+        // 🔥 CALCUL DYNAMIQUE DES HEURES ACCOMPLIES DU MOIS
         if (state.activeOrders && state.activeOrders['STAFF_ACCESS'] && state.activeOrders['TIMESHEETS_MASTER']) {
             const today = new Date();
             const monthStr = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}`;
@@ -454,7 +447,7 @@ app.post('/update-order', async (req, res) => {
         let updateQuery = (order === null) ? { $unset: { [`activeOrders.${tableId}`]: 1 } } : { $set: { [`activeOrders.${tableId}`]: order } };
         const newState = await AppState.findOneAndUpdate({ tenantID }, updateQuery, { upsert: true, new: true });
         
-        // 🔥 ÉMISSION TEMPS RÉEL (WEBSOCKETS) VERS LES ÉCRANS DU RESTAURANT 🔥
+        // 🔥 ÉMISSION TEMPS RÉEL (WEBSOCKETS) VERS LES ÉCRANS 🔥
         io.to(tenantID).emit('updateState', newState);
         
         res.json({ success: true });
@@ -525,7 +518,7 @@ app.post('/api/admin-action', async (req, res) => {
 });
 
 // ==========================================
-// OUTIL DE DIAGNOSTIC (TOUR DE CONTRÔLE)
+// OUTIL DE DIAGNOSTIC
 // ==========================================
 app.get('/debug-fichiers', (req, res) => {
     const fs = require('fs');
@@ -536,22 +529,23 @@ app.get('/debug-fichiers', (req, res) => {
 });
 
 // ==========================================
-// 🎯 PORTAIL DES DEMANDES DE DÉMO (ALERTE SMS TWILIO + EMAIL)
+// 🎯 PORTAIL DES DEMANDES DE PARTENARIAT DÉTAILLÉ (ONBOARDING VIP)
 // ==========================================
 app.post('/api/nouvelle-demande-demo', async (req, res) => {
     try {
         const { tenantID, restaurant, email, phone } = req.body;
-        console.log(`🌟 ENREGISTREMENT SÉCURISÉ PROSPECT DÉMO 24H : ${restaurant} (${email})`);
+        console.log(`🌟 ENREGISTREMENT SÉCURISÉ NOUVEAU PARTENAIRE : ${restaurant} (${email})`);
         
         const codePinAlea = Math.floor(1000 + Math.random() * 9000).toString();
         const expirationTime = new Date(Date.now() + 24 * 60 * 60 * 1000);
 
+        // 1. Sauvegarde du compte principal
         await Tenant.create({
             tenantID: cleanString(tenantID),
             clientName: restaurant,
             email: email,
             phone: phone,
-            status: 'SUSPENDU', 
+            status: 'SUSPENDU', // En attente de validation par Flavien
             plan: 'EMPIRE',     
             specialite: 'cuisine',
             pin: codePinAlea,   
@@ -561,18 +555,20 @@ app.post('/api/nouvelle-demande-demo', async (req, res) => {
             demoExpiration: expirationTime
         });
 
+        // 2. Initialisation de l'état vide
         await AppState.create({
             tenantID: cleanString(tenantID),
             activeOrders: {}
         });
 
+        // 🚨 PRÉPARATION DES DONNÉES DE QUALIFICATION POUR LES ALERTES 🚨
         const d = req.body.details || {};
-        let qualification = `Type: ${d.type || 'Non précisé'}\n`;
-        if (d.type === 'hotel' || d.type === 'hotel-resto') {
+        let qualification = `Type Précis: ${d.type || 'Non précisé'}\n`;
+        if (d.type && d.type.includes('hotel')) {
             qualification += `🏨 Catégorie: ${d.stars || 'N/A'} - 🚪 Chambres: ${d.rooms || 0}\n`;
         }
-        if (d.type === 'restaurant' || d.type === 'hotel-resto' || d.type === 'kiosque') {
-            qualification += `🍽️ Style: ${d.style || 'N/A'} - 🪑 Couverts: ${d.seats || 0}\n📍 Zones: ${d.zones || 'N/A'}\n`;
+        if (d.type && d.type.includes('resto')) {
+            qualification += `🪑 Couverts: ${d.seats || 0}\n📍 Zones: ${d.zones || 'N/A'}\n`;
         }
 
         // 📡 ENVOI DE L'ALERTE WHATSAPP DIRECTEUR (TWILIO)
@@ -591,11 +587,11 @@ app.post('/api/nouvelle-demande-demo', async (req, res) => {
             } catch (whatsappErr) {
                 console.error("❌ Erreur Twilio WhatsApp :", JSON.stringify(whatsappErr, null, 2));
             }
+        } else {
+            console.error("⚠️ twilioClient n'est pas initialisé. Vérifiez les variables d'environnement.");
         }
 
-        // ========================================================
-        // ✨ WHATSAPP DU CLIENT (Moteur d'Onboarding VIP)
-        // ========================================================
+        // ✨ WHATSAPP DU CLIENT (Moteur d'Onboarding VIP) ✨
         if (twilioClient && phone) {
             try {
                 // Formatage du numéro client (ex: 06 12 34 56 78 -> +33612345678)
@@ -621,17 +617,16 @@ app.post('/api/nouvelle-demande-demo', async (req, res) => {
         // 🚨 ENVOI SILENCIEUX DE L'EMAIL DE NOTIFICATION (FORMSUBMIT)
         try {
             const urlEmail = "https://formsubmit.co/ajax/iche.flavien@ichef.ch";
-            
             const payload = {
                 _subject: `🚨 iCHEF OS : Nouveau Lead Qualifié - ${restaurant}`,
                 "Établissement": restaurant,
                 "Téléphone": phone,
-                "Email du client": email,
-                "Identifiant (ID)": tenantID,
-                "Code PIN Généré": codePinAlea,
+                "Email du gérant": email,
+                "Identifiant Généré (ID)": tenantID,
+                "Code PIN d'accès temporaire": codePinAlea,
                 "Qualification Profil": qualification,
-                "Statut Technique": "Bloqué (en attente de votre activation depuis l'Admin)",
-                "Durée de la démo": "Se coupera dans 24H automatiquement",
+                "Projet / Besoin exprimé": d.projet || 'Aucun détail fourni',
+                "Statut": "Bloqué (En attente d'activation manuelle depuis votre panel Admin)",
                 _template: "box" 
             };
 
@@ -639,18 +634,50 @@ app.post('/api/nouvelle-demande-demo', async (req, res) => {
                 method: "POST",
                 headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
                 body: JSON.stringify(payload)
-            })
-            .then(res => res.json())
-            .then(data => console.log("✅ Email d'alerte déclenché avec succès vers ichef.ch !"))
-            .catch(err => console.log("❌ Erreur silencieuse lors de l'envoi de l'email :", err));
+            }).then(() => console.log("✅ Email d'alerte interne envoyé."))
+              .catch(err => console.log("❌ Erreur silencieuse email interne :", err));
             
-        } catch (err) {
-            console.error("Erreur lors de la préparation de l'email :", err);
-        }
+        } catch (err) { console.error(err); }
 
-        res.json({ success: true, message: "Demande mise en attente de validation." });
+        // ✉️ ENVOI AUTOMATIQUE DE L'E-MAIL DE BIENVENUE AU PARTENAIRE
+        try {
+            const urlEmailClient = `https://formsubmit.co/ajax/${email}`; 
+            const clientPayload = {
+                _subject: "✨ Bienvenue dans l'élite iCHEF OS — Préparation de votre écosystème",
+                "Message de la Brigade iCHEF": `Bonjour, vous ne devenez pas un simple numéro ou un "client" de plus. Vous devenez un véritable Partenaire. 
+
+Étant nous-mêmes issus du monde de la restauration, nous connaissons la réalité du terrain : la pression du coup de feu, les serveurs débordés, et ces dizaines de commandes supplémentaires qui s'évaporent parce que les clients n'osent pas solliciter une équipe déjà à 200%.
+
+Votre espace privé est actuellement en cours de pré-génération sur nos serveurs sécurisés.
+
+VOS IDENTIFIANTS PROVISOIRES :
+🆔 ID Restaurant : ${tenantID}
+🔑 Code PIN Master : ${codePinAlea}
+
+PROCHAINES ÉTAPES :
+1. L'Appel de Synchronisation (Sous 24h) : Un expert de notre brigade va vous contacter sur ce numéro : ${phone}. Ce sera un appel court pour comprendre la topographie de vos espaces.
+2. Le Paramétrage Sur-Mesure : Nous configurons votre carte, le Mode Anti-Rush et les options de Time-Shifting.
+3. Le Déploiement : Vous recevrez vos puces NFC haut de gamme, prêtes à poser.
+
+Préparez-vous à vivre votre premier service sans stress.
+
+Flavien Iché & l'équipe iCHEF`,
+                _template: "box"
+            };
+
+            fetch(urlEmailClient, {
+                method: "POST",
+                headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+                body: JSON.stringify(clientPayload)
+            }).then(() => console.log(`✉️ Mail de bienvenue envoyé à ${email}`))
+              .catch(err => console.error("❌ Erreur mail client :", err));
+
+        } catch (mailClientErr) { console.error("Erreur envoi mail client:", mailClientErr); }
+
+        res.json({ success: true, message: "Demande enregistrée avec succès. Workflow déclenché." });
+
     } catch (e) {
-        console.error("Erreur création prospect démo :", e);
+        console.error("Erreur création prospect :", e);
         res.status(500).json({ success: false, error: "Cet identifiant d'établissement existe déjà." });
     }
 });
@@ -760,6 +787,23 @@ app.post('/api/predict-hr-schedule', async (req, res) => {
 });
 
 // ==========================================
+// 🌟 GESTION DES WEBSOCKETS (SYNCHRONISATION DES ÉCRANS EN SALLE/CUISINE)
+// ==========================================
+io.on('connection', (socket) => {
+    console.log('✅ Nouvelle connexion écran détectée (ID: ' + socket.id + ')');
+    
+    socket.on('joinTenant', (tenantID) => {
+        const safeID = cleanString(tenantID);
+        socket.join(safeID);
+        console.log(`📡 L'écran ${socket.id} est maintenant synchronisé sur le réseau du restaurant : ${safeID}`);
+    });
+
+    socket.on('disconnect', () => {
+        console.log(`❌ Écran déconnecté (ID: ${socket.id})`);
+    });
+});
+
+// ==========================================
 // 🌟 AUTO-GÉNÉRATION DU COMPTE DE DÉMONSTRATION
 // ==========================================
 async function creerCompteDemo() {
@@ -784,4 +828,6 @@ async function creerCompteDemo() {
 creerCompteDemo();
 
 // CRITIQUE : C'est 'server.listen' et non 'app.listen' pour que Socket.io fonctionne.
-server.listen(PORT, () => console.log("✅ L'Empire iCHEF est en ligne, Socket.io activé, sécurisé sur le port " + PORT));
+server.listen(PORT, () => {
+    console.log("✅ L'Empire iCHEF est en ligne, Socket.io activé, sécurisé sur le port " + PORT);
+});
