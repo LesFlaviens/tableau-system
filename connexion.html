@@ -8,7 +8,6 @@
     
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-    <meta name="mobile-web-app-capable" content="yes">
     <meta name="theme-color" content="#0a0a0a">
     
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;900&family=Playfair+Display:wght@600;700&display=swap" rel="stylesheet">
@@ -107,6 +106,7 @@
             border: 1px solid rgba(212, 175, 55, 0.2); 
             font-size: 0.85rem;
             letter-spacing: 1px;
+            transition: 0.3s ease-in-out;
         }
     </style>
 </head>
@@ -115,71 +115,73 @@
         <h1>ICHEF</h1>
         <p>Authentification</p>
         
-        <input type="text" id="tenantID" placeholder="Identifiant (ex: lebistrot)" autocomplete="off">
-        <input type="password" id="pin" placeholder="CODE PIN" autocomplete="off">
+        <input type="text" id="tenantID" placeholder="Identifiant (ex: demo)" autocomplete="off">
+        <input type="password" id="pin" placeholder="CODE PIN" autocomplete="off" inputmode="numeric" pattern="[0-9]*">
         
-        <button id="login-btn" class="btn" onclick="authenticate()">DÉVERROUILLER</button>
+        <button id="login-btn" class="btn">DÉVERROUILLER</button>
         
-        <div id="error-msg">Accès refusé. Vérifiez vos identifiants.</div>
+        <div id="error-msg"></div>
     </div>
 
-    <!-- ============================================================== -->
-    <!-- 🛡️ SCRIPT GLOBAL : À OBFUSQUER ENTIÈREMENT                     -->
-    <!-- ============================================================== -->
     <script>
-        // 🛡️ BOUCLIER 1 : DOMAIN LOCK (Verrouillage du domaine)
-        if (window.location.hostname !== "os.ichef.ch" && window.location.hostname !== "localhost" && window.location.hostname !== "127.0.0.1") {
-            document.documentElement.innerHTML = "<h1 style='color:red; text-align:center; margin-top:20%; font-family:sans-serif;'>🛑 VIOLATION DE LICENCE iCHEF OS</h1>";
-            throw new Error("Exécution non autorisée hors du domaine officiel.");
-        }
+        // 🔒 FORÇAGE DE L'URL DU SERVEUR RENDER
+        const SERVER_URL = "https://tableau-system.onrender.com";
 
-        // 🛡️ BOUCLIER 2 : ANTI-SNOOPING (Bloque F12, Ctrl+U, Inspecteur)
-        document.addEventListener('contextmenu', event => event.preventDefault());
-        document.onkeydown = function(e) {
-            if(e.keyCode == 123) return false; 
-            if(e.ctrlKey && e.shiftKey && e.keyCode == 'I'.charCodeAt(0)) return false; 
-            if(e.ctrlKey && e.shiftKey && e.keyCode == 'J'.charCodeAt(0)) return false; 
-            if(e.ctrlKey && e.keyCode == 'U'.charCodeAt(0)) return false; 
-        }
+        // Dès que la page est chargée, on active nos boutons et nos vérifications
+        document.addEventListener('DOMContentLoaded', () => {
+            
+            const loginBtn = document.getElementById('login-btn');
+            const pinInput = document.getElementById('pin');
+            const tenantInput = document.getElementById('tenantID');
 
-        const SERVER_URL = (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1" || window.location.protocol === "file:") 
-            ? "http://localhost:10000" : "https://tableau-system.onrender.com";
+            // 1. Branchement robuste du clic sur le bouton
+            loginBtn.addEventListener('click', authenticate);
 
-        // 🌟 AUTOMATISATION DU MODE DÉMO 
-        window.addEventListener('load', () => {
+            // 2. Remplissage automatique si on arrive via une URL de démo
             const urlParams = new URLSearchParams(window.location.search);
             const urlTenant = urlParams.get('tenantID');
             
-            if (urlTenant === 'demo' || urlTenant === 'demo_pizzeria') {
-                document.getElementById('tenantID').value = urlTenant;
-                document.getElementById('pin').value = "0000";
-                
-                let btn = document.getElementById('login-btn');
-                btn.innerText = "🌟 CONNEXION DÉMO...";
-                
-                setTimeout(() => {
-                    authenticate();
-                }, 800); // Petit délai pour laisser au client le temps de voir la magie opérer
+            if (urlTenant === 'demo') {
+                tenantInput.value = "demo";
+                pinInput.value = "0000";
+                setTimeout(() => authenticate(), 800); 
             }
+
+            // 3. Validation avec la touche "Entrée" du clavier
+            pinInput.addEventListener('keypress', function (e) {
+                if (e.key === 'Enter') authenticate();
+            });
+            tenantInput.addEventListener('keypress', function (e) {
+                if (e.key === 'Enter') pinInput.focus();
+            });
         });
 
+        // La fonction principale de connexion
         async function authenticate() {
             const tenantID = document.getElementById('tenantID').value.trim().toLowerCase();
             const pin = document.getElementById('pin').value.trim();
             const errorMsg = document.getElementById('error-msg');
             const btn = document.getElementById('login-btn');
 
+            // Vérification basique
             if (!tenantID || !pin) {
                 errorMsg.innerHTML = "Veuillez saisir l'identifiant et le code PIN.";
+                errorMsg.style.borderColor = "var(--gold)";
+                errorMsg.style.color = "var(--gold)";
                 errorMsg.style.display = 'block';
                 return;
             }
 
+            // Bloquer le bouton pendant l'envoi de la requête
             btn.disabled = true;
-            btn.innerText = "CONNEXION...";
-            errorMsg.style.display = 'none';
+            btn.innerText = "CONNEXION EN COURS...";
+            errorMsg.innerHTML = "⏳ Recherche du serveur iCHEF...<br><small style='color:#888;'>(Veuillez patienter quelques secondes)</small>";
+            errorMsg.style.borderColor = "#fff";
+            errorMsg.style.color = "#fff";
+            errorMsg.style.display = 'block';
 
             try {
+                // Requête vers le backend Render
                 const response = await fetch(`${SERVER_URL}/api/verify-pin`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
@@ -189,31 +191,38 @@
                 const data = await response.json();
 
                 if (data.success) {
+                    // Connexion réussie
+                    errorMsg.innerHTML = "✅ Accès Autorisé ! Redirection...";
+                    errorMsg.style.color = "#10b981"; // Vert succès
+                    errorMsg.style.borderColor = "#10b981";
+                    
                     localStorage.setItem('ichef_tenant_id', tenantID);
                     localStorage.setItem('ichef_master_pin', pin);
                     
-                    // ON ENVOIE TOUT LE MONDE SUR LE PORTAIL
-                    window.location.href = `administration.html?tenantID=${tenantID}`;
+                    // Redirection vers le tableau de bord
+                    setTimeout(() => {
+                        window.location.href = `admin.html?tenantID=${tenantID}`; 
+                    }, 500);
                 } else {
-                    errorMsg.innerHTML = data.error || "Identifiants incorrects.";
-                    errorMsg.style.display = 'block';
+                    // Mauvais mot de passe ou identifiant
+                    errorMsg.innerHTML = "❌ " + (data.error || "Identifiants incorrects.");
+                    errorMsg.style.color = "#ef4444"; // Rouge erreur
+                    errorMsg.style.borderColor = "#ef4444";
+                    
                     btn.disabled = false;
                     btn.innerText = "DÉVERROUILLER";
                 }
             } catch (err) {
-                errorMsg.innerHTML = "Connexion au réseau impossible. Réessayez.";
-                errorMsg.style.display = 'block';
+                // Le serveur n'a pas répondu ou internet est coupé
+                console.error("Erreur réseau :", err);
+                errorMsg.innerHTML = "⚠️ Impossible de joindre le serveur. Vérifiez votre connexion internet.";
+                errorMsg.style.color = "#ef4444";
+                errorMsg.style.borderColor = "#ef4444";
+                
                 btn.disabled = false;
-                btn.innerText = "DÉVERROUILLER";
+                btn.innerText = "RÉESSAYER";
             }
         }
-
-        document.getElementById('pin').addEventListener('keypress', function (e) {
-            if (e.key === 'Enter') authenticate();
-        });
-        document.getElementById('tenantID').addEventListener('keypress', function (e) {
-            if (e.key === 'Enter') document.getElementById('pin').focus();
-        });
     </script>
 </body>
 </html>
