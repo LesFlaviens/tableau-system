@@ -8,6 +8,7 @@
     
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="mobile-web-app-capable" content="yes">
     <meta name="theme-color" content="#0a0a0a">
     
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;900&family=Playfair+Display:wght@600;700&display=swap" rel="stylesheet">
@@ -114,26 +115,51 @@
         <h1>ICHEF</h1>
         <p>Authentification</p>
         
-        <input type="text" id="tenantID" placeholder="Identifiant (ex: demo)" autocomplete="off">
-        <input type="password" id="pin" placeholder="CODE PIN" autocomplete="off" inputmode="numeric" pattern="[0-9]*">
+        <input type="text" id="tenantID" placeholder="Identifiant (ex: lebistrot)" autocomplete="off">
+        <input type="password" id="pin" placeholder="CODE PIN" autocomplete="off">
         
         <button id="login-btn" class="btn" onclick="authenticate()">DÉVERROUILLER</button>
         
-        <div id="error-msg"></div>
+        <div id="error-msg">Accès refusé. Vérifiez vos identifiants.</div>
     </div>
 
+    <!-- ============================================================== -->
+    <!-- 🛡️ SCRIPT GLOBAL : À OBFUSQUER ENTIÈREMENT                     -->
+    <!-- ============================================================== -->
     <script>
-        // 🔒 FORÇAGE DE L'URL DU SERVEUR RENDER (POUR ÉVITER LE BUG LOCALHOST)
-        const SERVER_URL = "https://tableau-system.onrender.com";
+        // 🛡️ BOUCLIER 1 : DOMAIN LOCK (Verrouillage du domaine)
+        if (window.location.hostname !== "os.ichef.ch" && window.location.hostname !== "localhost" && window.location.hostname !== "127.0.0.1") {
+            document.documentElement.innerHTML = "<h1 style='color:red; text-align:center; margin-top:20%; font-family:sans-serif;'>🛑 VIOLATION DE LICENCE iCHEF OS</h1>";
+            throw new Error("Exécution non autorisée hors du domaine officiel.");
+        }
 
+        // 🛡️ BOUCLIER 2 : ANTI-SNOOPING (Bloque F12, Ctrl+U, Inspecteur)
+        document.addEventListener('contextmenu', event => event.preventDefault());
+        document.onkeydown = function(e) {
+            if(e.keyCode == 123) return false; 
+            if(e.ctrlKey && e.shiftKey && e.keyCode == 'I'.charCodeAt(0)) return false; 
+            if(e.ctrlKey && e.shiftKey && e.keyCode == 'J'.charCodeAt(0)) return false; 
+            if(e.ctrlKey && e.keyCode == 'U'.charCodeAt(0)) return false; 
+        }
+
+        const SERVER_URL = (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1" || window.location.protocol === "file:") 
+            ? "http://localhost:10000" : "https://tableau-system.onrender.com";
+
+        // 🌟 AUTOMATISATION DU MODE DÉMO 
         window.addEventListener('load', () => {
             const urlParams = new URLSearchParams(window.location.search);
             const urlTenant = urlParams.get('tenantID');
             
-            if (urlTenant === 'demo') {
-                document.getElementById('tenantID').value = "demo";
+            if (urlTenant === 'demo' || urlTenant === 'demo_pizzeria') {
+                document.getElementById('tenantID').value = urlTenant;
                 document.getElementById('pin').value = "0000";
-                setTimeout(() => authenticate(), 800); 
+                
+                let btn = document.getElementById('login-btn');
+                btn.innerText = "🌟 CONNEXION DÉMO...";
+                
+                setTimeout(() => {
+                    authenticate();
+                }, 800); // Petit délai pour laisser au client le temps de voir la magie opérer
             }
         });
 
@@ -145,19 +171,13 @@
 
             if (!tenantID || !pin) {
                 errorMsg.innerHTML = "Veuillez saisir l'identifiant et le code PIN.";
-                errorMsg.style.borderColor = "var(--gold)";
-                errorMsg.style.color = "var(--gold)";
                 errorMsg.style.display = 'block';
                 return;
             }
 
-            // AFFICHER L'ATTENTE (Très important pour le réveil de Render)
             btn.disabled = true;
             btn.innerText = "CONNEXION...";
-            errorMsg.innerHTML = "⏳ Connexion au serveur sécurisé...<br><small style='color:#888;'>(Cela peut prendre 30s au premier lancement)</small>";
-            errorMsg.style.borderColor = "#fff";
-            errorMsg.style.color = "#fff";
-            errorMsg.style.display = 'block';
+            errorMsg.style.display = 'none';
 
             try {
                 const response = await fetch(`${SERVER_URL}/api/verify-pin`, {
@@ -169,30 +189,22 @@
                 const data = await response.json();
 
                 if (data.success) {
-                    errorMsg.innerHTML = "✅ Accès Autorisé ! Redirection...";
-                    errorMsg.style.color = "#10b981"; // Vert
-                    errorMsg.style.borderColor = "#10b981";
-                    
                     localStorage.setItem('ichef_tenant_id', tenantID);
                     localStorage.setItem('ichef_master_pin', pin);
                     
-                    setTimeout(() => {
-                        window.location.href = `admin.html?tenantID=${tenantID}`; 
-                    }, 500);
+                    // ON ENVOIE TOUT LE MONDE SUR LE PORTAIL
+                    window.location.href = `administration.html?tenantID=${tenantID}`;
                 } else {
-                    errorMsg.innerHTML = "❌ " + (data.error || "Identifiants incorrects.");
-                    errorMsg.style.color = "#ef4444"; // Rouge
-                    errorMsg.style.borderColor = "#ef4444";
+                    errorMsg.innerHTML = data.error || "Identifiants incorrects.";
+                    errorMsg.style.display = 'block';
                     btn.disabled = false;
                     btn.innerText = "DÉVERROUILLER";
                 }
             } catch (err) {
-                console.error("Erreur réseau :", err);
-                errorMsg.innerHTML = "⚠️ Connexion au réseau impossible. Vérifiez votre internet ou l'état du serveur.";
-                errorMsg.style.color = "#ef4444";
-                errorMsg.style.borderColor = "#ef4444";
+                errorMsg.innerHTML = "Connexion au réseau impossible. Réessayez.";
+                errorMsg.style.display = 'block';
                 btn.disabled = false;
-                btn.innerText = "RÉESSAYER";
+                btn.innerText = "DÉVERROUILLER";
             }
         }
 
