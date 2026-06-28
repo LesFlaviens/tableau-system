@@ -1,0 +1,217 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    
+    <link rel="manifest" href="manifest.json">
+    <link rel="apple-touch-icon" href="icon-512.png">
+    <meta name="theme-color" content="#050505">
+    
+    <title>iCHEF OS - Cockpit Partenaire</title>
+    
+    <script>
+        // Vérification de la session (si pas connecté -> retour à l'accueil)
+        if (!localStorage.getItem('tenantID')) {
+            window.location.href = 'connexion.html';
+        }
+
+        // Domain Lock (Optionnel : à activer en production)
+        if (window.location.hostname !== "os.ichef.ch" && window.location.hostname !== "localhost" && window.location.hostname !== "127.0.0.1" && !window.location.hostname.includes("render.com")) {
+            document.documentElement.innerHTML = "<h1 style='color:red; text-align:center; margin-top:20%;'>🛑 VIOLATION DE LICENCE</h1>";
+            throw new Error("Domaine non autorisé.");
+        }
+    </script>
+
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;900&family=Playfair+Display:ital,wght@0,600;0,700;0,900;1,400&display=swap" rel="stylesheet">
+    
+    <script src="/socket.io/socket.io.js"></script>
+
+    <style>
+        :root {
+            --bg: #050505; --panel: #0A0A0A; --border: rgba(255, 255, 255, 0.08);
+            --text-main: #f8fafc; --text-muted: #64748b; --gold: #d4af37;
+            --success: #10b981; --danger: #ef4444;
+        }
+        body { font-family: 'Inter', sans-serif; background: var(--bg); color: var(--text-main); margin: 0; padding: 0; display: flex; flex-direction: column; min-height: 100vh; }
+        
+        /* HEADER LUXE */
+        header { 
+            background: var(--panel); border-bottom: 1px solid var(--border); padding: 20px 40px; 
+            display: flex; justify-content: space-between; align-items: center; box-shadow: 0 10px 30px rgba(0,0,0,0.5);
+        }
+        .brand { font-family: 'Playfair Display', serif; font-size: 1.5rem; font-weight: 900; color: var(--gold); display: flex; align-items: center; gap: 15px; text-transform: uppercase; letter-spacing: 2px; }
+        .network-status { display: flex; align-items: center; gap: 8px; font-size: 0.8rem; font-weight: 700; color: var(--success); letter-spacing: 1px; text-transform: uppercase; }
+        .dot { width: 8px; height: 8px; background: var(--success); border-radius: 50%; box-shadow: 0 0 10px var(--success); animation: pulse 2s infinite; }
+        @keyframes pulse { 0% { opacity: 1; } 50% { opacity: 0.4; } 100% { opacity: 1; } }
+
+        .btn-logout { background: transparent; border: 1px solid var(--border); color: var(--text-muted); padding: 8px 15px; border-radius: 6px; cursor: pointer; font-weight: 600; transition: 0.3s; }
+        .btn-logout:hover { border-color: var(--danger); color: var(--danger); }
+
+        /* GRID DES MODULES */
+        .container { padding: 40px; flex: 1; max-width: 1400px; margin: 0 auto; width: 100%; box-sizing: border-box; }
+        .greeting { font-size: 2rem; font-weight: 300; margin-bottom: 40px; }
+        .greeting strong { font-weight: 800; color: var(--gold); text-transform: uppercase; }
+
+        .modules-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 20px; }
+        
+        .module-card { 
+            background: var(--panel); border: 1px solid var(--border); border-radius: 16px; padding: 30px; 
+            text-align: center; cursor: pointer; transition: 0.3s; text-decoration: none; color: inherit; display: block;
+        }
+        .module-card:hover { transform: translateY(-5px); border-color: var(--gold); box-shadow: 0 15px 30px rgba(212,175,55,0.1); }
+        .module-icon { font-size: 3rem; margin-bottom: 15px; }
+        .module-title { font-weight: 800; font-size: 1.1rem; letter-spacing: 1px; text-transform: uppercase; margin-bottom: 5px; }
+        .module-desc { font-size: 0.8rem; color: var(--text-muted); }
+
+        /* SECTION TEMPS RÉEL (Monitoring) */
+        .live-section { margin-top: 50px; background: #0A0A0A; border: 1px solid var(--border); border-radius: 16px; padding: 30px; }
+        .live-header { display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid var(--border); padding-bottom: 15px; margin-bottom: 20px; }
+        .live-header h2 { margin: 0; font-size: 1.2rem; color: var(--gold); font-family: 'Playfair Display', serif; }
+        .stat-box { font-size: 2rem; font-weight: 900; }
+
+        @media (max-width: 768px) { header { padding: 15px 20px; flex-direction: column; gap: 15px; align-items: flex-start; } .container { padding: 20px; } }
+    </style>
+</head>
+<body>
+
+    <header>
+        <div class="brand">
+            <span id="display-tenant-name">CHEF</span>
+            <span style="font-family:'Inter', sans-serif; font-size:0.6rem; background:rgba(212,175,55,0.1); border:1px solid var(--gold); padding:4px 8px; border-radius:4px; letter-spacing:1px; color:var(--gold);" id="display-plan">PRO</span>
+        </div>
+        <div style="display:flex; align-items:center; gap:20px;">
+            <div class="network-status"><div class="dot" id="socket-dot"></div> <span id="socket-text">Synchronisé</span></div>
+            <button class="btn-logout" onclick="logout()">Déconnexion</button>
+        </div>
+    </header>
+
+    <div class="container">
+        <div class="greeting">Bienvenue sur votre écosystème, <strong id="greeting-name"></strong>.</div>
+
+        <div class="modules-grid">
+            <a href="caissetactile.html" class="module-card">
+                <div class="module-icon">📟</div>
+                <div class="module-title">Caisse Master</div>
+                <div class="module-desc">Encaissement & Plan de salle</div>
+            </a>
+
+            <a href="pack-eco.html" class="module-card">
+                <div class="module-icon">📱</div>
+                <div class="module-title">Pad Serveur</div>
+                <div class="module-desc">Prise de commande mobile</div>
+            </a>
+
+            <a href="chef.html" class="module-card">
+                <div class="module-icon">🍳</div>
+                <div class="module-title">Écran Cuisine</div>
+                <div class="module-desc">KDS - Gestion des bons</div>
+            </a>
+
+            <a href="menu-pure.html" class="module-card">
+                <div class="module-icon">🍔</div>
+                <div class="module-title">Carte & Ruptures</div>
+                <div class="module-desc">Mise à jour en temps réel</div>
+            </a>
+        </div>
+
+        <div class="live-section">
+            <div class="live-header">
+                <h2>📡 Activité en Temps Réel</h2>
+                <div style="font-size:0.8rem; color:var(--text-muted);">Moteur WebSockets Actif</div>
+            </div>
+            <div style="display:flex; gap:40px;">
+                <div>
+                    <div style="font-size:0.8rem; color:var(--text-muted); text-transform:uppercase; font-weight:700;">Tables Actives</div>
+                    <div class="stat-box" id="stat-tables">0</div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const SERVER_URL = (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1" || window.location.protocol === "file:") 
+            ? "http://localhost:10000" : "https://tableau-system.onrender.com";
+        
+        const tenantID = localStorage.getItem('tenantID');
+        const plan = localStorage.getItem('plan') || 'PRO';
+
+        // Initialisation de l'interface
+        document.getElementById('display-tenant-name').innerText = tenantID;
+        document.getElementById('greeting-name').innerText = tenantID;
+        document.getElementById('display-plan').innerText = plan;
+
+        // ==========================================
+        // 🚀 MOTEUR WEBSOCKETS (SYNCHRONISATION)
+        // ==========================================
+        let socket;
+        try {
+            socket = io(SERVER_URL);
+            
+            socket.on('connect', () => {
+                document.getElementById('socket-dot').style.background = "var(--success)";
+                document.getElementById('socket-dot').style.boxShadow = "0 0 10px var(--success)";
+                document.getElementById('socket-text').innerText = "Réseau Sécurisé";
+                document.getElementById('socket-text').style.color = "var(--success)";
+                
+                // On s'abonne uniquement au flux de CE restaurant
+                socket.emit('joinTenant', tenantID);
+            });
+
+            socket.on('disconnect', () => {
+                document.getElementById('socket-dot').style.background = "var(--danger)";
+                document.getElementById('socket-dot').style.boxShadow = "0 0 10px var(--danger)";
+                document.getElementById('socket-text').innerText = "Réseau Perdu";
+                document.getElementById('socket-text').style.color = "var(--danger)";
+            });
+
+            // Quand une commande est tapée sur un iPad ou envoyée par la salle, on met à jour le compteur
+            socket.on('updateState', (newState) => {
+                analyzeLiveState(newState);
+            });
+
+        } catch (e) {
+            console.error("Erreur d'initialisation Socket.io :", e);
+        }
+
+        // ==========================================
+        // 🔄 RÉCUPÉRATION DE L'ÉTAT INITIAL
+        // ==========================================
+        async function fetchInitialState() {
+            try {
+                let res = await fetch(`${SERVER_URL}/get-current-state?tenantID=${tenantID}`);
+                if (res.ok) {
+                    let state = await res.json();
+                    analyzeLiveState(state);
+                } else if (res.status === 403) {
+                    alert("Votre abonnement est suspendu ou votre démo est expirée.");
+                    logout();
+                }
+            } catch (err) {
+                console.error("Impossible de récupérer l'état:", err);
+            }
+        }
+        
+        function analyzeLiveState(state) {
+            if (!state || !state.activeOrders) return;
+            
+            // On compte le nombre de tables physiquement ouvertes (exclut les historiques ou les accès staff)
+            let activeTablesCount = 0;
+            for (const key in state.activeOrders) {
+                if (!['STAFF_ACCESS', 'FINANCIAL_HISTORY', 'TRAFFIC_HISTORY', 'RESERVATIONS_MASTER', 'TIMESHEETS_MASTER'].includes(key)) {
+                    activeTablesCount++;
+                }
+            }
+            document.getElementById('stat-tables').innerText = activeTablesCount;
+        }
+
+        function logout() {
+            localStorage.clear();
+            window.location.href = 'connexion.html';
+        }
+
+        // Lancement au chargement
+        fetchInitialState();
+    </script>
+</body>
+</html>
