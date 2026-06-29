@@ -17,20 +17,20 @@
     <title>iCHEF - Caisse Tactile</title>
 
     <script>
-    // 🛡️ BOUCLIER 1 : DOMAIN LOCK
-    if (window.location.hostname !== "os.ichef.ch" && window.location.hostname !== "localhost" && window.location.hostname !== "127.0.0.1") {
-        document.documentElement.innerHTML = "<h1 style='color:red; text-align:center; margin-top:20%; font-family:sans-serif;'>🛑 VIOLATION DE LICENCE iCHEF OS</h1>";
-        throw new Error("Exécution non autorisée hors du domaine officiel.");
-    }
+        // 🛡️ BOUCLIER 1 : DOMAIN LOCK
+        if (window.location.hostname !== "os.ichef.ch" && window.location.hostname !== "localhost" && window.location.hostname !== "127.0.0.1" && !window.location.hostname.includes("render.com")) {
+            document.documentElement.innerHTML = "<h1 style='color:red; text-align:center; margin-top:20%; font-family:sans-serif;'>🛑 VIOLATION DE LICENCE iCHEF OS</h1>";
+            throw new Error("Exécution non autorisée hors du domaine officiel.");
+        }
 
-    // 🛡️ BOUCLIER 2 : ANTI-SNOOPING (Bloque F12, Inspecteur, Clic-droit)
-    document.addEventListener('contextmenu', event => event.preventDefault());
-    document.onkeydown = function(e) {
-        if(e.keyCode == 123) return false; 
-        if(e.ctrlKey && e.shiftKey && e.keyCode == 'I'.charCodeAt(0)) return false; 
-        if(e.ctrlKey && e.shiftKey && e.keyCode == 'J'.charCodeAt(0)) return false; 
-        if(e.ctrlKey && e.keyCode == 'U'.charCodeAt(0)) return false; 
-    }
+        // 🛡️ BOUCLIER 2 : ANTI-SNOOPING (Bloque F12, Inspecteur, Clic-droit)
+        document.addEventListener('contextmenu', event => event.preventDefault());
+        document.onkeydown = function(e) {
+            if(e.keyCode == 123) return false; 
+            if(e.ctrlKey && e.shiftKey && e.keyCode == 'I'.charCodeAt(0)) return false; 
+            if(e.ctrlKey && e.shiftKey && e.keyCode == 'J'.charCodeAt(0)) return false; 
+            if(e.ctrlKey && e.keyCode == 'U'.charCodeAt(0)) return false; 
+        }
 
         // 1. SÉCURITÉ : Générateur d'empreinte numérique
         function getDeviceFingerprint() {
@@ -56,7 +56,7 @@
             }
 
             let tenantID = urlTenantID || storedTenantID;
-            let pin = localStorage.getItem('ichef_master_pin'); 
+            let pin = localStorage.getItem('ichef_master_pin') || localStorage.getItem('pin'); 
             
             if(!tenantID) {
                 window.location.href = 'connexionpartenaire.html';
@@ -204,9 +204,8 @@
         <div class="topbar-title">iCHEF OS — <span style="color:#fff;">Caisse Tactile</span></div>
         <div class="topbar-actions">
             <button id="badge-service-bar">🍹 SERVICE COMPTOIR ACTIVÉ</button>
-            
             <button class="nav-btn" onclick="window.location.href='minipass.html?tenantID=' + tenantID">🖥️ PASS PRODUCTION</button>
-            <button class="nav-btn" style="border-color: #f43f5e; color: #f43f5e;" onclick="window.location.href='admin.html?tenantID=' + tenantID">⚙️ ADMIN</button>
+            <button class="nav-btn" style="border-color: #f43f5e; color: #f43f5e;" onclick="window.location.href='cockpit.html?tenantID=' + tenantID">⚙️ COCKPIT</button>
         </div>
     </header>
 
@@ -222,7 +221,7 @@
 
     <script>
         const urlParams = new URLSearchParams(window.location.search);
-        let tenantID = urlParams.get('tenantID') || localStorage.getItem('ichef_tenant_id') || 'MASTER_STATE';
+        let tenantID = urlParams.get('tenantID') || localStorage.getItem('ichef_tenant_id') || localStorage.getItem('tenantID') || 'MASTER_STATE';
         const SERVER_URL = (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1" || window.location.protocol === "file:") 
             ? "http://localhost:10000" : "https://tableau-system.onrender.com";
 
@@ -286,7 +285,7 @@
                 // 🛡️ CORRECTIF JS : FILTRE AMÉLIORÉ POUR CACHER LES DONNÉES SYSTÈME
                 if (key.includes('MASTER') || key.includes('ARCHIVE') || key.includes('CATEGORIES') || 
                     key.includes('ARCHITECTURE') || key.includes('HACCP') || key.includes('STAFF') || 
-                    key.includes('SETTINGS') || key.includes('MENU')) continue;
+                    key.includes('SETTINGS') || key.includes('MENU') || key.includes('HISTORY')) continue;
                 
                 count++;
                 let t = currentActiveTables[key];
@@ -355,426 +354,45 @@
             `;
         }
 
+        // 🚨 FONCTION D'ENCAISSEMENT CORRIGÉE
         async function encaisserTicket(tableId) {
             if(!confirm(`Valider l'encaissement et archiver le ticket de la ${tableId} ?`)) return;
 
-            // Demande de nettoyage de la table sur le serveur
-            await fetch(`${SERVER_URL}/update-order?tenantID=${tenantID}`, {
-                method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({ tableId: tableId, order: null })
-            });
-
-            document.getElementById('ticket-panel').innerHTML = '<div class="empty-msg">Sélectionnez une table pour ouvrir le ticket 🧾</div>';
+            let t = currentActiveTables[tableId];
             
-            // Rafraîchissement manuel pour réactivité instantanée
-            fetchStateFromCloud();
-        }
-
-        // --- 🛡️ INITIALISATION & SYSTÈME ANTI-RUSH (WEBSOCKETS) ---
-        
-        fetchStateFromCloud(); 
-
-        const socket = io(SERVER_URL);
-        socket.emit('joinTenant', tenantID);
-
-        socket.on('updateState', (state) => {
-            if(!state) return;
-            let aO = state.activeOrders || {};
-
-            // Mise à jour des paramètres système via WebSockets
-            if (aO['SETTINGS_MASTER'] && aO['SETTINGS_MASTER'].data) {
-                systemSettings = aO['SETTINGS_MASTER'].data;
-                isServiceAuBarActive = systemSettings.serviceAuBar === true;
-                
-                let badgeBar = document.getElementById('badge-service-bar');
-                if (badgeBar) {
-                    badgeBar.style.display = isServiceAuBarActive ? 'inline-block' : 'none';
-                }
-            }
-            if (aO['ARCHITECTURE'] && aO['ARCHITECTURE'].data) {
-                globalArchitecture = aO['ARCHITECTURE'].data;
-            }
-            if (aO['CATEGORIES'] && aO['CATEGORIES'].data) {
-                categoriesCuisine = aO['CATEGORIES'].data.cuisine || [];
-                categoriesBar = aO['CATEGORIES'].data.bar || [];
-            }
-            if (aO['MENU_CUISINE'] && aO['MENU_CUISINE'].data) {
-                menuCuisine = aO['MENU_CUISINE'].data;
-            }
-            if (aO['MENU_BAR'] && aO['MENU_BAR'].data) {
-                menuBar = aO['MENU_BAR'].data;
-            }
-
-            currentActiveTables = aO;
-            renderRoomGrid();
-            
-            console.log("⚡ Mise à jour instantanée reçue du serveur !");
-        });
-
-    </script>
-</body>
-</html><!DOCTYPE html>
-<html lang="fr">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
-    
-    <link rel="manifest" href="manifest.json">
-    <link rel="apple-touch-icon" href="icon-512.png">
-    <link rel="icon" type="image/png" href="icon-512.png"> 
-    <meta name="apple-mobile-web-app-capable" content="yes">
-    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-    <meta name="mobile-web-app-capable" content="yes">
-    <meta name="theme-color" content="#0b0f19">
-    
-    <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
-
-    <title>iCHEF - Caisse Tactile</title>
-
-    <script>
-    // 🛡️ BOUCLIER 1 : DOMAIN LOCK
-    if (window.location.hostname !== "os.ichef.ch" && window.location.hostname !== "localhost" && window.location.hostname !== "127.0.0.1") {
-        document.documentElement.innerHTML = "<h1 style='color:red; text-align:center; margin-top:20%; font-family:sans-serif;'>🛑 VIOLATION DE LICENCE iCHEF OS</h1>";
-        throw new Error("Exécution non autorisée hors du domaine officiel.");
-    }
-
-    // 🛡️ BOUCLIER 2 : ANTI-SNOOPING (Bloque F12, Inspecteur, Clic-droit)
-    document.addEventListener('contextmenu', event => event.preventDefault());
-    document.onkeydown = function(e) {
-        if(e.keyCode == 123) return false; 
-        if(e.ctrlKey && e.shiftKey && e.keyCode == 'I'.charCodeAt(0)) return false; 
-        if(e.ctrlKey && e.shiftKey && e.keyCode == 'J'.charCodeAt(0)) return false; 
-        if(e.ctrlKey && e.keyCode == 'U'.charCodeAt(0)) return false; 
-    }
-
-        // 1. SÉCURITÉ : Générateur d'empreinte numérique
-        function getDeviceFingerprint() {
-            let deviceId = localStorage.getItem('ichef_device_fingerprint');
-            if (!deviceId) {
-                deviceId = 'device_' + Math.random().toString(36).substr(2, 9) + '_' + Date.now();
-                localStorage.setItem('ichef_device_fingerprint', deviceId);
-            }
-            return deviceId;
-        }
-
-        // 2. GARDE DU CORPS SECURITE UNIVERSEL (VERSION ISOLATION STRICTE 🔒)
-        (async function enforceSecurity() {
-            const urlParams = new URLSearchParams(window.location.search);
-            let urlTenantID = urlParams.get('tenantID');
-            let storedTenantID = localStorage.getItem('ichef_tenant_id');
-
-            if (urlTenantID && urlTenantID !== storedTenantID) {
-                localStorage.removeItem('EMPIRE_GLOBAL_SYNC');
-                localStorage.removeItem('ichef_master_pin');
-                if (urlTenantID) localStorage.setItem('ichef_tenant_id', urlTenantID);
-                storedTenantID = urlTenantID;
-            }
-
-            let tenantID = urlTenantID || storedTenantID;
-            let pin = localStorage.getItem('ichef_master_pin'); 
-            
-            if(!tenantID) {
-                window.location.href = 'connexionpartenaire.html';
-                return;
-            }
-
-            const SERVER_URL = (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1" || window.location.protocol === "file:") 
-                ? "http://localhost:10000" : "https://tableau-system.onrender.com";
-
-            const accessMatrix = {
-                 'CHEF': ['chef.html', 'administration.html'],
-                'CHEF_CUISINE': ['chef.html', 'administration.html'],
-                'PATISSIER': ['chef-patissier.html', 'administration.html'],
-                'CHEF_PATISSERIE': ['chef-patissier.html', 'administration.html'],
-                'BAR': ['chef-bar.html', 'administration.html'],
-                'CHEF_BAR': ['chef-bar.html', 'administration.html'],
-                'ICHEF_OS': ['admin.html', 'pack-eco.html', 'minipass.html', 'menu-qr.html','caissetactile.html', 'administration.html'],
-                'ECO': ['admin.html', 'pack-eco.html', 'minipass.html', 'menu-qr.html','caissetactile.html', 'administration.html'],
-                'BUSINESS': ['admin.html', 'pack-eco.html', 'minipass.html','caissetactile.html', 'menu-qr.html', 'administration.html'],
-                'RENTABILITE': ['admin.html', 'pack-eco.html', 'minipass.html','caissetactile.html', 'menu-qr.html', 'administration.html'],
-                'EMPIRE': ['admin.html', 'pack-eco.html', 'menu-qr.html','caissetactile.html', 'chef.html', 'menu-pure.html', 'chef-bar.html', 'menu-bar.html', 'rh.html', 'haccp.html', 'reservation.html', 'minipass.html', 'chef-patissier.html', 'administration.html', 'production.html', 'chef-production.html'],
-                'BRIGADE': ['admin.html', 'pack-eco.html', 'caissetactile.html', 'menu-qr.html', 'chef.html', 'menu-pure.html', 'chef-bar.html', 'menu-bar.html', 'rh.html', 'haccp.html', 'reservation.html', 'minipass.html', 'chef-patissier.html', 'administration.html', 'production.html', 'chef-production.html'],
-                'BRIGADES': ['admin.html', 'pack-eco.html', 'menu-qr.html','caissetactile.html', 'chef.html', 'menu-pure.html', 'chef-bar.html', 'menu-bar.html', 'rh.html', 'haccp.html', 'reservation.html', 'minipass.html', 'chef-patissier.html', 'administration.html', 'production.html', 'chef-production.html'],
-                'PREMIUM': ['admin.html', 'pack-eco.html', 'menu-qr.html', 'chef.html','caissetactile.html', 'menu-pure.html', 'chef-bar.html', 'menu-bar.html', 'rh.html', 'haccp.html', 'reservation.html', 'minipass.html', 'chef-patissier.html', 'administration.html', 'production.html', 'chef-production.html']
-            };
-
+            // 1. Sauvegarde dans le coffre-fort financier (API server.js)
             try {
-                const res = await fetch(`${SERVER_URL}/api/verify-pin`, {
+                await fetch(`${SERVER_URL}/api/save-transaction`, {
                     method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ tenantID: tenantID, pin: pin || "0000", deviceId: getDeviceFingerprint() })
-                });
-                const data = await res.json();
-
-                if(!data.success) {
-                    alert(data.error || "ACCÈS REFUSÉ (Limite d'écrans atteinte ou compte invalide).");
-                    window.location.href = 'connexionpartenaire.html';
-                    return;
-                }
-
-                const currentPlan = data.plan ? data.plan.toUpperCase() : 'CHEF';
-                let currentPage = window.location.pathname.split('/').pop().toLowerCase();
-                if(currentPage === '') currentPage = 'index.html';
-
-                const allowedPages = accessMatrix[currentPlan] || [];
-                if (!allowedPages.includes(currentPage)) {
-                    alert(`ACCÈS REFUSÉ : Votre forfait (${currentPlan}) n'inclut pas ce module.`);
-                    window.location.href = `administration.html?tenantID=${tenantID}`;
-                }
-            } catch (e) { console.error("Erreur de securite reseau", e); }
-        })();
-    </script>
-    
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=Playfair+Display:ital,wght@0,600;0,700;1,400&display=swap" rel="stylesheet">
-    <style>
-        :root {
-            --bg: #0b0f19; 
-            --panel: #151e2e; 
-            --border: rgba(255, 255, 255, 0.06); 
-            --border-strong: rgba(255, 255, 255, 0.15);
-            --text-main: #f8fafc; 
-            --text-muted: #94a3b8;
-            --gold: #d4af37; 
-            --gold-dim: rgba(212, 175, 55, 0.12);
-            --accent: #38bdf8; 
-            --danger: #ef4444; 
-            --success: #10b981;
-            --shadow: 0 10px 40px rgba(0, 0, 0, 0.3);
-            --radius-main: 16px;
-            --radius-btn: 10px;
-        }
-
-        /* BADGE SERVICE AU BAR CLIGNOTANT */
-        @keyframes pulseBadge {
-            0% { opacity: 1; transform: scale(1); box-shadow: 0 0 0 rgba(56, 189, 248, 0); }
-            50% { opacity: 0.8; transform: scale(1.03); box-shadow: 0 0 15px rgba(56, 189, 248, 0.6); }
-            100% { opacity: 1; transform: scale(1); box-shadow: 0 0 0 rgba(56, 189, 248, 0); }
-        }
-        #badge-service-bar {
-            display: none; 
-            background: #38bdf8;
-            color: #000000;
-            border: none;
-            font-weight: 800;
-            animation: pulseBadge 2s infinite;
-            padding: 8px 14px;
-            border-radius: var(--radius-btn);
-            font-size: 0.8rem;
-            text-transform: uppercase;
-            letter-spacing: 1px;
-            margin-right: 10px;
-            font-family: 'Inter', sans-serif;
-        }
-
-        /* ANIMATION TABLE PRÊTE AU BAR */
-        @keyframes pulseReady {
-            0% { box-shadow: 0 0 0 0 rgba(56, 189, 248, 0.7); border-color: var(--accent); }
-            70% { box-shadow: 0 0 0 10px rgba(56, 189, 248, 0); border-color: transparent; }
-            100% { box-shadow: 0 0 0 0 rgba(56, 189, 248, 0); border-color: var(--accent); }
-        }
-        .table-card.ready {
-            border-color: var(--accent);
-            background: rgba(56, 189, 248, 0.1);
-            animation: pulseReady 2s infinite;
-        }
-
-        * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
-        body { font-family: 'Inter', sans-serif; background: var(--bg); color: var(--text-main); margin: 0; display: flex; flex-direction: column; height: 100vh; overflow: hidden; -webkit-font-smoothing: antialiased; padding-top: env(safe-area-inset-top); }
-
-        .topbar { background: var(--panel); border-bottom: 1px solid var(--border); padding: 15px 30px; display: flex; justify-content: space-between; align-items: center; z-index: 40; }
-        .topbar-title { font-family: 'Playfair Display', serif; font-size: 1.4rem; color: var(--gold); margin: 0; font-weight: 600; letter-spacing: 1px; }
-        
-        .topbar-actions { display: flex; gap: 10px; align-items: center; }
-        .nav-btn { background: transparent; border: 1px solid var(--border-strong); color: var(--text-main); padding: 8px 16px; border-radius: var(--radius-btn); font-weight: 600; cursor: pointer; font-size: 0.8rem; text-transform: uppercase; transition: 0.2s; letter-spacing: 0.5px; }
-        .nav-btn:hover { border-color: var(--gold); color: var(--gold); background: rgba(197, 160, 89, 0.05); }
-
-        .caisse-container { flex: 1; display: flex; overflow: hidden; }
-        .tables-grid-side { flex: 1.5; padding: 25px; overflow-y: auto; display: grid; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); gap: 15px; align-content: flex-start; }
-        .order-panel-side { width: 400px; background: var(--panel); border-left: 1px solid var(--border); display: flex; flex-direction: column; height: 100%; }
-
-        .table-card { background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius-main); padding: 20px; text-align: center; cursor: pointer; transition: 0.2s; box-shadow: 0 4px 10px rgba(0,0,0,0.1); display: flex; flex-direction: column; justify-content: center; align-items: center; gap: 8px; position: relative; }
-        .table-card:hover { border-color: var(--gold); transform: translateY(-2px); }
-        
-        /* 🛡️ CORRECTIF CSS : RÈGLES ANTI-DÉBORDEMENT */
-        .table-num { 
-            font-family: 'Playfair Display', serif; 
-            font-size: 1.2rem; 
-            font-weight: 700; 
-            color: #fff; 
-            width: 100%;
-            word-wrap: break-word; 
-            overflow-wrap: break-word;
-            line-height: 1.2;
-            margin-bottom: 5px;
-        }
-        
-        .table-status { font-size: 0.75rem; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.5px; }
-
-        .empty-msg { color: var(--text-muted); text-align: center; padding: 60px 20px; font-style: italic; font-size: 0.95rem; margin: auto; }
-    </style>
-</head>
-<body>
-
-    <header class="topbar">
-        <div class="topbar-title">iCHEF OS — <span style="color:#fff;">Caisse Tactile</span></div>
-        <div class="topbar-actions">
-            <button id="badge-service-bar">🍹 SERVICE COMPTOIR ACTIVÉ</button>
-            
-            <button class="nav-btn" onclick="window.location.href='minipass.html?tenantID=' + tenantID">🖥️ PASS PRODUCTION</button>
-            <button class="nav-btn" style="border-color: #f43f5e; color: #f43f5e;" onclick="window.location.href='admin.html?tenantID=' + tenantID">⚙️ ADMIN</button>
-        </div>
-    </header>
-
-    <div class="caisse-container">
-        <div class="tables-grid-side" id="room-grid">
-             <div class="empty-msg">Chargement des tables de la salle...</div>
-        </div>
-
-        <div class="order-panel-side" id="ticket-panel">
-            <div class="empty-msg">Sélectionnez une table pour ouvrir le ticket 🧾</div>
-        </div>
-    </div>
-
-    <script>
-        const urlParams = new URLSearchParams(window.location.search);
-        let tenantID = urlParams.get('tenantID') || localStorage.getItem('ichef_tenant_id') || 'MASTER_STATE';
-        const SERVER_URL = (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1" || window.location.protocol === "file:") 
-            ? "http://localhost:10000" : "https://tableau-system.onrender.com";
-
-        let currentActiveTables = {};
-        let isServiceAuBarActive = false; 
-
-        // ⚙️ VARIABLES GLOBALES INTÉGRÉES
-        let systemSettings = {};
-        let globalArchitecture = { rooms: ['Salle Principale'], tables: [], zones: [] };
-        let menuCuisine = {};
-        let menuBar = {};
-        let categoriesCuisine = [];
-        let categoriesBar = [];
-
-        async function fetchStateFromCloud() {
-            try {
-                let r = await fetch(`${SERVER_URL}/get-current-state?tenantID=${tenantID}&_t=${Date.now()}`, { cache: 'no-store' });
-                if(r.ok) {
-                    let state = await r.json();
-                    let aO = state.activeOrders || {};
-
-                    // --- INTELLIGENCE DE SYNCHRONISATION GLOBALE COMPILÉE ---
-                    if (aO['SETTINGS_MASTER'] && aO['SETTINGS_MASTER'].data) {
-                        systemSettings = aO['SETTINGS_MASTER'].data;
-                        isServiceAuBarActive = systemSettings.serviceAuBar === true;
-                        
-                        let badgeBar = document.getElementById('badge-service-bar');
-                        if (badgeBar) {
-                            badgeBar.style.display = isServiceAuBarActive ? 'inline-block' : 'none';
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ 
+                        tenantID: tenantID, 
+                        transaction: {
+                            id: 'txn_' + Date.now(),
+                            table: tableId,
+                            total: t.total,
+                            items: t.items,
+                            date: new Date().toISOString(),
+                            typePaiement: t.typePaiement || 'Carte/Espèces'
                         }
-                    }
-                    if (aO['ARCHITECTURE'] && aO['ARCHITECTURE'].data) {
-                        globalArchitecture = aO['ARCHITECTURE'].data;
-                    }
-                    if (aO['CATEGORIES'] && aO['CATEGORIES'].data) {
-                        categoriesCuisine = aO['CATEGORIES'].data.cuisine || [];
-                        categoriesBar = aO['CATEGORIES'].data.bar || [];
-                    }
-                    if (aO['MENU_CUISINE'] && aO['MENU_CUISINE'].data) {
-                        menuCuisine = aO['MENU_CUISINE'].data;
-                    }
-                    if (aO['MENU_BAR'] && aO['MENU_BAR'].data) {
-                        menuBar = aO['MENU_BAR'].data;
-                    }
-                    // -------------------------------------------------
-
-                    currentActiveTables = aO;
-                    renderRoomGrid();
-                }
-            } catch(e) { console.error("Erreur Synchro Cloud Caisse"); }
-        }
-
-        function renderRoomGrid() {
-            const grid = document.getElementById('room-grid');
-            if(!grid) return;
-
-            let html = '';
-            let count = 0;
-
-            for(let key in currentActiveTables) {
-                // 🛡️ CORRECTIF JS : FILTRE AMÉLIORÉ POUR CACHER LES DONNÉES SYSTÈME
-                if (key.includes('MASTER') || key.includes('ARCHIVE') || key.includes('CATEGORIES') || 
-                    key.includes('ARCHITECTURE') || key.includes('HACCP') || key.includes('STAFF') || 
-                    key.includes('SETTINGS') || key.includes('MENU')) continue;
+                    })
+                });
                 
-                count++;
-                let t = currentActiveTables[key];
-                let isWeb = key.startsWith('WEB_') || key.startsWith('ORDER_');
-                let displayTitle = isWeb ? `📱 WEB ${key.replace('WEB_', '')}` : `TABLE ${key}`;
-
-                // Détection de l'alerte pour les serveurs
-                let isReady = (t.status === 'PRÊT');
-                let cardClass = (isReady && isServiceAuBarActive) ? 'table-card ready' : 'table-card';
-                let statusStyle = isReady ? 'color: var(--accent); font-weight: bold;' : '';
-
-                html += `
-                    <div class="${cardClass}" onclick="ouvrirTicket('${key}')">
-                        <div class="table-num">${displayTitle}</div>
-                        <div class="table-status" style="color:var(--gold); font-weight:bold;">${parseFloat(t.total || 0).toFixed(2)} €</div>
-                        <div class="table-status" style="${statusStyle}">${t.status || 'En cours'}</div>
-                    </div>
-                `;
+                // 2. Envoi des datas pour l'IA RH (Prédiction de trafic)
+                await fetch(`${SERVER_URL}/api/log-traffic-history`, {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ 
+                        tenantID: tenantID, 
+                        pax: t.pax || 2, 
+                        totalAmount: t.total
+                    })
+                });
+            } catch(e) {
+                console.error("Erreur de sauvegarde financière :", e);
             }
 
-            if(count === 0) {
-                grid.innerHTML = '<div class="empty-msg">Aucune commande active en salle ou sur le Web. ✨</div>';
-            } else {
-                grid.innerHTML = html;
-            }
-        }
-
-        function ouvrirTicket(tableId) {
-            const panel = document.getElementById('ticket-panel');
-            let t = currentActiveTables[tableId];
-            if(!t) return;
-
-            // ALERTE POUR LE SERVEUR SI LA COMMANDE ATTEND AU BAR
-            let alertHtml = "";
-            if (t.status === 'PRÊT' && isServiceAuBarActive) {
-                alertHtml = `
-                    <div style="background: rgba(56, 189, 248, 0.2); border: 1px solid var(--accent); color: #fff; padding: 15px; margin: 15px 25px; border-radius: 8px; text-align: center; font-weight: bold; text-transform: uppercase; animation: pulseBadge 2s infinite;">
-                        🍹 Le client doit venir récupérer sa commande !
-                    </div>
-                `;
-            }
-
-            let itemsHtml = (t.items || []).map(i => `
-                <div style="display:flex; justify-content:space-between; padding:10px 0; border-bottom:1px dashed rgba(255,255,255,0.05);">
-                    <span>${i.qty || 1}x ${i.n || i.name}</span>
-                    <span style="font-weight:bold;">${parseFloat(i.p || i.price || 0).toFixed(2)} €</span>
-                </div>
-            `).join('');
-
-            panel.innerHTML = `
-                <div style="padding:25px; border-bottom:1px solid var(--border); background:rgba(255,255,255,0.01);">
-                    <h3 style="margin:0; font-family:'Playfair Display', serif; font-size:1.4rem;">🧾 Ticket : ${tableId}</h3>
-                    <small style="color:var(--text-muted);">Mode : ${t.typePaiement || 'Salle'}</small>
-                </div>
-                ${alertHtml}
-                <div style="flex:1; overflow-y:auto; padding:25px;">
-                    ${itemsHtml}
-                </div>
-                <div style="padding:25px; border-top:1px solid var(--border); background:rgba(0,0,0,0.2);">
-                    <div style="display:flex; justify-content:space-between; font-size:1.6rem; font-weight:bold; margin-bottom:20px; font-family:'Playfair Display', serif;">
-                        <span>Total TTC</span>
-                        <span style="color:var(--gold);">${parseFloat(t.total || 0).toFixed(2)} €</span>
-                    </div>
-                    <button onclick="encaisserTicket('${tableId}')" style="width:100%; background:linear-gradient(135deg, #10b981, #059669); color:#000; border:none; padding:16px; border-radius:10px; font-weight:800; font-size:1rem; cursor:pointer; text-transform:uppercase; letter-spacing:1px;">✔️ Encaisser & Archiver</button>
-                </div>
-            `;
-        }
-
-        async function encaisserTicket(tableId) {
-            if(!confirm(`Valider l'encaissement et archiver le ticket de la ${tableId} ?`)) return;
-
-            // Demande de nettoyage de la table sur le serveur
+            // 3. Libération de la table
             await fetch(`${SERVER_URL}/update-order?tenantID=${tenantID}`, {
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},
@@ -783,7 +401,7 @@
 
             document.getElementById('ticket-panel').innerHTML = '<div class="empty-msg">Sélectionnez une table pour ouvrir le ticket 🧾</div>';
             
-            // Rafraîchissement manuel pour réactivité instantanée
+            // Rafraîchissement
             fetchStateFromCloud();
         }
 
