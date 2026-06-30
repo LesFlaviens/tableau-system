@@ -9,7 +9,7 @@
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
     <meta name="theme-color" content="#000000">
-    <title>Empire OS - Pad Serveur Master</title>
+    <title>iCHEF OS - Pad Serveur</title>
 
     <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
 
@@ -358,10 +358,11 @@
         <div class="header-left">
             <button class="menu-toggle-btn" onclick="toggleMobileMenu()">☰</button>
 
-            <div style="font-family: 'Playfair Display', serif; font-weight:600; letter-spacing:2px; font-size: 1.3rem; color: var(--gold);">PAD SERVICE</div>
+            <div style="font-family: 'Playfair Display', serif; font-weight:600; letter-spacing:2px; font-size: 1.3rem; color: var(--gold);">PAD SERVEUR</div>
             <div id="stock-tag" style="color:var(--gold); font-weight:500; font-size:0.7rem; padding: 4px 8px; border-radius: 2px; border: 1px solid var(--gold-dim); transition: 0.3s; letter-spacing: 1px;">● LIAISON SÉCURISÉE</div>
             <div id="user-badge" style="background:transparent; padding:6px 12px; border-radius:2px; font-size:0.85rem; color:var(--text-muted); border:1px solid var(--border); font-weight: 400; letter-spacing: 1px;">Utilisateur: Aucun</div>
-            <div id="badge-service-bar">🍹 COMPTOIR</div>
+            <div id="badge-service-bar" style="display:none; color:#38bdf8; font-weight:700; font-size:0.7rem; padding:4px 8px; border-radius:2px; border:1px solid rgba(56,189,248,0.35); letter-spacing:1px;">🍹 COMPTOIR</div>
+            <div id="badge-fiscal-cash" style="display:none; color:var(--gold); font-weight:700; font-size:0.7rem; padding:4px 8px; border-radius:2px; border:1px solid var(--gold-dim); letter-spacing:1px;">🧾 CAISSE FISCALE</div>
             <div id="empire-clock">00:00</div>
         </div>
         
@@ -513,9 +514,9 @@
             <div class="input-group">
                 <label style="color:var(--text-muted); font-size:0.85rem; text-transform:uppercase; margin-bottom: 5px; display: block;">Mode de Paiement & Service</label>
                 <select id="config-zone-mode" class="edit-input" style="width: 100%; box-sizing: border-box; cursor: pointer; margin-bottom: 0;">
-                    <option value="standard">🍽️ Standard (Prise de commande / Encaissement Serveur)</option>
-                    <option value="qr_nfc">📱 Autonome (QR Code / NFC Obligatoire)</option>
-                    <option value="bar">🍹 Comptoir (Retrait et Paiement au Bar)</option>
+                    <option value="standard">🍽️ Serveur / Pad — commande et paiement encadré</option>
+                    <option value="qr_nfc">📲 QR/NFC — commande client autonome</option>
+                    <option value="bar">🍹 Comptoir — retrait et paiement au bar</option>
                 </select>
             </div>
             <div class="input-group">
@@ -649,7 +650,7 @@
 
                     <div style="display: flex; flex-direction: column; gap: 10px;">
                         <button id="btn-send-kds" class="pay-btn" style="width: 100%; border-color: var(--accent); color: var(--accent); display: none; margin: 0; font-size: 1.1rem;" onclick="processOrderDispatch()">👨‍🍳 ENVOYER EN CUISINE</button>
-                        <button class="pay-btn" style="width: 100%; margin: 0; font-size: 1.1rem;" onclick="openPaymentModal()">💳 ENCAISSER</button>
+                        <button class="pay-btn" style="width: 100%; margin: 0; font-size: 1.1rem;" onclick="openPaymentModal()">🧾 ENCAISSER / CAISSE</button>
                         <div style="display:flex; gap:10px;">
                             <button class="btn-mini gold" style="flex:1; padding:15px; font-size:0.85rem;" onclick="executeSaveTableState(false, false)">💾 ATTENTE</button>
                             <button class="btn-mini sync" style="flex:1; padding:15px; font-size:0.85rem;" onclick="confirmClearTicket()">🗑️ ANNULER</button>
@@ -786,6 +787,8 @@
         let zones = safeArray('empire_zones', []);
         let configZoneId = null;
         let currentTableId_PayMode = 'standard';
+        let currentTableZoneLabel = 'Salle';
+        window.systemSettings = window.systemSettings || {};
 
         let inactivityTimer; const INACTIVITY_LIMIT = 120000; 
         let currentUser = null, currentPin = "";
@@ -1023,6 +1026,8 @@
                         if (badgeBar) {
                             badgeBar.style.display = isServiceAuBarActive ? 'flex' : 'none';
                         }
+
+                        updateCashRegisterBadge();
 
                         // 🔥 SYNCHRO ANTI-RUSH & TIME-SHIFTING 🔥
                         currentRushLevel = window.systemSettings.rushLevel || 0;
@@ -1490,7 +1495,7 @@
                     wrapper.setAttribute('data-id', z.id);
                     
                     let bgCol = z.color || '#3498db';
-                    let modeIcons = { 'standard': '🍽️', 'qr_nfc': '📱 QR/NFC', 'bar': '🍹 BAR' };
+                    let modeIcons = { 'standard': '🍽️ SERVEUR', 'qr_nfc': '📲 QR/NFC', 'bar': '🍹 BAR' };
                     let mode = z.payMode || z.mode || 'standard';
                     let icon = modeIcons[mode] || '🍽️';
 
@@ -1817,6 +1822,7 @@
                     );
 
                     if (activeZone) {
+                        currentTableZoneLabel = activeZone.label || activeZone.name || 'Zone';
                         currentTableId_PayMode = activeZone.payMode || activeZone.mode; 
                         
                         if (currentTableId_PayMode === 'qr_nfc') {
@@ -1824,20 +1830,22 @@
                             zoneBandeau.style.borderColor = activeZone.color || 'var(--alert)';
                             zoneBandeau.style.color = activeZone.color || 'var(--alert)';
                             zoneBandeau.style.background = (activeZone.color ? activeZone.color + '15' : 'rgba(239, 68, 68, 0.1)');
-                            zoneBandeau.innerHTML = `📱 ZONE AUTONOME : ENCAISSEMENT SERVEUR BLOQUÉ`;
+                            zoneBandeau.innerHTML = `📲 ZONE QR/NFC : COMMANDE CLIENT AUTONOME — ENCAISSEMENT SÉPARÉ`;
                         } 
                         else if (currentTableId_PayMode === 'bar') {
                             zoneBandeau.style.display = 'block';
                             zoneBandeau.style.borderColor = activeZone.color || '#3498db';
                             zoneBandeau.style.color = activeZone.color || '#3498db';
                             zoneBandeau.style.background = (activeZone.color ? activeZone.color + '15' : 'rgba(52, 152, 219, 0.1)');
-                            zoneBandeau.innerHTML = `🍹 ZONE BAR : LES CLIENTS PAIENT AU COMPTOIR`;
+                            zoneBandeau.innerHTML = `🍹 ZONE COMPTOIR : RETRAIT ET PAIEMENT AU BAR`;
                         }
                     } else {
                         currentTableId_PayMode = 'standard';
+                        currentTableZoneLabel = 'Salle';
                     }
                 } else {
                     currentTableId_PayMode = 'standard';
+                    currentTableZoneLabel = 'Salle';
                 }
             }
 
@@ -2390,36 +2398,171 @@
         let fidelityDiscountUsed = 0; 
         let loyaltyClientName = null;
 
+
+        // ==========================================
+        // 🧾 SÉPARATION PAD SERVEUR / CAISSE FISCALE
+        // ==========================================
+        function getCashRegisterSettings() {
+            return (window.systemSettings && window.systemSettings.cashRegister) ? window.systemSettings.cashRegister : {};
+        }
+
+        function getQrNfcSettings() {
+            return (window.systemSettings && window.systemSettings.qrNfc) ? window.systemSettings.qrNfc : {};
+        }
+
+        function isFiscalCashRegisterReady() {
+            const cash = getCashRegisterSettings();
+            return cash.enabled === true && cash.fiscalMode === true && !!(cash.backendUrl || "/api/fiscal/cash-in");
+        }
+
+        function getFiscalBackendUrl() {
+            const cash = getCashRegisterSettings();
+            return cash.backendUrl || "/api/fiscal/cash-in";
+        }
+
+        function getCurrencyCodeForPad() {
+            const currency = window.systemSettings?.currency || "€";
+            if (currency === "CHF") return "CHF";
+            if (currency === "$") return "USD";
+            if (currency === "C$") return "CAD";
+            return "EUR";
+        }
+
+        function normalizeFiscalPaymentMethod(methods) {
+            const raw = Array.isArray(methods) ? methods.map(m => String(m.method || m)).join(" + ") : String(methods || "");
+            if (raw.includes("CB") || raw.toUpperCase().includes("CARD")) return "CARD";
+            if (raw.includes("ESPÈCES") || raw.toUpperCase().includes("CASH")) return "CASH";
+            if (raw.toUpperCase().includes("STRIPE") || raw.toUpperCase().includes("ONLINE")) return "ONLINE";
+            return "OTHER";
+        }
+
+        function getCurrentPaxFromPad() {
+            try {
+                const obsInput = document.getElementById('order-obs')?.value || "";
+                const match = obsInput.match(/🍽️ (\d+) Couvert\(s\)/);
+                if (match) return parseInt(match[1]);
+                const tObj = tables.find(t => t && t.label === currentTableId);
+                return tObj?.pax || 1;
+            } catch(e) {
+                return 1;
+            }
+        }
+
+        function getCurrentZoneLabelForPad() {
+            return currentTableZoneLabel || "Salle";
+        }
+
+        function updateCashRegisterBadge() {
+            const badge = document.getElementById('badge-fiscal-cash');
+            if (!badge) return;
+
+            if (isFiscalCashRegisterReady()) {
+                badge.style.display = 'block';
+                badge.innerHTML = '🧾 CAISSE FISCALE ACTIVE';
+                badge.style.color = 'var(--gold)';
+                badge.style.borderColor = 'var(--gold)';
+            } else {
+                badge.style.display = 'block';
+                badge.innerHTML = '🧾 CAISSE SÉPARÉE';
+                badge.style.color = 'var(--text-muted)';
+                badge.style.borderColor = 'var(--border)';
+            }
+        }
+
+        async function sendPadPaymentToFiscalBackend({ totalHT, tvaTotals }) {
+            const fiscalBackendUrl = getFiscalBackendUrl();
+            const normalizedMethod = normalizeFiscalPaymentMethod(paymentsDone);
+            const currency = getCurrencyCodeForPad();
+
+            const payload = {
+                tenantID: appTenantID,
+                tableId: currentTableId,
+                deviceId: getDeviceFingerprint(),
+                source: "PAD_SERVEUR",
+                payment: {
+                    method: normalizedMethod,
+                    currency: currency,
+                    amount: Number(currentTableTotal.toFixed(2)),
+                    details: paymentsDone
+                },
+                orderSnapshot: {
+                    tableId: currentTableId,
+                    zone: getCurrentZoneLabelForPad(),
+                    mode: currentTableId_PayMode || "standard",
+                    pax: getCurrentPaxFromPad(),
+                    total: Number(currentTableTotal.toFixed(2)),
+                    totalHT: Number(totalHT.toFixed(2)),
+                    tva: tvaTotals,
+                    items: currentTicket,
+                    waiter: currentUser ? currentUser.name : null,
+                    cashedAt: new Date().toISOString()
+                }
+            };
+
+            const response = await fetch(`${APP_SERVER_URL}${fiscalBackendUrl.startsWith('/') ? fiscalBackendUrl : '/' + fiscalBackendUrl}`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(payload)
+            });
+
+            const data = await response.json().catch(() => ({}));
+
+            if (!response.ok || data.success === false) {
+                throw new Error(data.error || "Erreur lors de la création du ticket fiscal.");
+            }
+
+            return data;
+        }
+
        function openPaymentModal() {
             if (currentGlobalScheduledMode === 'closed') {
                 return alert("🛑 IMPOSSIBLE : Le restaurant est programmé comme FERMÉ à cette heure-ci.");
             }
 
-            let isQrRequired = (typeof currentTableId_PayMode !== 'undefined' && currentTableId_PayMode === 'qr_nfc') || (currentGlobalScheduledMode === 'qr_nfc');
-            if (isQrRequired) {
-                return alert("🛑 IMPOSSIBLE : En raison de la Zone ou de l'Heure actuelle, le mode AUTONOME est activé. Le client doit payer lui-même depuis son smartphone via QR Code ou NFC.");
+            if (currentTicket.length === 0) return alert("Table vide.");
+
+            let td = activeOrders[currentTableId];
+            if (!td || !td.items || td.items.length !== currentTicket.length) {
+                return alert("⚠️ Sauvegardez les modifications avant d'encaisser.");
             }
 
-            if(currentTicket.length === 0) return alert("Table vide."); 
-            let td = activeOrders[currentTableId]; 
-            if(!td || !td.items || td.items.length !== currentTicket.length) return alert("⚠️ Sauvegardez les modifications avant d'encaisser.");
-            
-            document.getElementById('pay-modal-title').innerText = "TABLE " + currentTableId; 
+            const isQrOrderZone = (typeof currentTableId_PayMode !== 'undefined' && currentTableId_PayMode === 'qr_nfc') || (currentGlobalScheduledMode === 'qr_nfc');
+
+            if (isQrOrderZone) {
+                const ok = confirm(
+                    "📲 Cette table est en zone QR/NFC.\n\n" +
+                    "QR/NFC = prise de commande client.\n" +
+                    "Caisse = encaissement séparé.\n\n" +
+                    "Continuer vers l'encaissement depuis le Pad Serveur ?"
+                );
+                if (!ok) return;
+            }
+
+            if (!isFiscalCashRegisterReady()) {
+                const ok = confirm(
+                    "⚠️ Module caisse fiscale non activé.\n\n" +
+                    "Le Pad Serveur peut garder un historique interne, mais cela ne remplace pas un ticket fiscal signé.\n\n" +
+                    "Continuer en historique interne non fiscal ?"
+                );
+                if (!ok) return;
+            }
+
+            document.getElementById('pay-modal-title').innerText = "TABLE " + currentTableId;
             document.getElementById('pay-modal-total').innerText = currentTableTotal.toFixed(2) + " €";
-            
+
             paymentsDone = [];
             fidelityDiscountUsed = 0;
             currentPayRemaining = currentTableTotal;
             updatePaymentUI();
-            
+
             let lZone = document.getElementById('loyalty-zone');
-            if(isLoyaltyActive) {
+            if (isLoyaltyActive) {
                 lZone.style.display = 'flex';
                 updateLoyaltyUI();
             } else {
                 lZone.style.display = 'none';
             }
-            
+
             document.getElementById('payment-modal').classList.add('open');
         }
 
@@ -2549,52 +2692,91 @@
             }
 
             document.getElementById('payment-modal').classList.remove('open');
-            window.print(); 
-            
-            setTimeout(async () => {
-                try {
-                    const state = await API.getState();
-                    
-                    let totalHT = 0; let tvaTotals = {};
-                    currentTicket.forEach(i => {
-                        let ligneTTC = (parseFloat(i.p)||0) * (i.qty||1);
-                        let rate = parseFloat(i.tva) || 10;
-                        let ligneHT = ligneTTC / (1 + (rate / 100));
-                        totalHT += ligneHT;
-                        tvaTotals[rate] = (tvaTotals[rate] || 0) + (ligneTTC - ligneHT);
+
+            try {
+                const state = await API.getState();
+
+                let totalHT = 0;
+                let tvaTotals = {};
+
+                currentTicket.forEach(i => {
+                    let ligneTTC = (parseFloat(i.p) || 0) * (i.qty || 1);
+                    let rate = parseFloat(i.tva) || 10;
+                    let ligneHT = ligneTTC / (1 + (rate / 100));
+                    totalHT += ligneHT;
+                    tvaTotals[rate] = (tvaTotals[rate] || 0) + (ligneTTC - ligneHT);
+                });
+
+                let fiscalResult = null;
+                let fiscalStatus = "INTERNAL_HISTORY_ONLY";
+
+                if (isFiscalCashRegisterReady()) {
+                    fiscalResult = await sendPadPaymentToFiscalBackend({
+                        totalHT,
+                        tvaTotals
                     });
 
-                    if(isLoyaltyActive && currentLoyaltyPhone && globalLoyaltyData[currentLoyaltyPhone]) {
-                        let montantEligibleCashback = currentTableTotal - fidelityDiscountUsed;
-                        if(montantEligibleCashback > 0) {
-                            let argentGagne = montantEligibleCashback * (loyaltyPercent / 100);
-                            globalLoyaltyData[currentLoyaltyPhone].points += argentGagne;
-                            
-                            await API.update('LOYALTY_MASTER', globalLoyaltyData);
-                            alert(`🎁 Le client ${globalLoyaltyData[currentLoyaltyPhone].name} vient de gagner ${argentGagne.toFixed(2)} € sur sa cagnotte !`);
-                        }
+                    fiscalStatus = "FISCALIZED";
+                } else {
+                    const ok = confirm(
+                        "⚠️ Attention : cette clôture sera uniquement un historique interne.\n\n" +
+                        "Aucun ticket fiscal signé ne sera généré par iChef OS.\n\n" +
+                        "Confirmer la clôture interne ?"
+                    );
+                    if (!ok) return;
+                }
+
+                if (isLoyaltyActive && currentLoyaltyPhone && globalLoyaltyData[currentLoyaltyPhone]) {
+                    let montantEligibleCashback = currentTableTotal - fidelityDiscountUsed;
+                    if (montantEligibleCashback > 0) {
+                        let argentGagne = montantEligibleCashback * (loyaltyPercent / 100);
+                        globalLoyaltyData[currentLoyaltyPhone].points += argentGagne;
+
+                        await API.update('LOYALTY_MASTER', globalLoyaltyData);
+                        alert(`🎁 Le client ${globalLoyaltyData[currentLoyaltyPhone].name} vient de gagner ${argentGagne.toFixed(2)} € sur sa cagnotte !`);
                     }
+                }
 
-                    let transaction = {
-                        id: 'TX_' + Date.now(),
-                        date: new Date().toISOString(),
-                        method: paymentsDone.map(h => h.method).join(' + '),
-                        totalTTC: parseFloat(currentTableTotal.toFixed(2)),
-                        totalHT: parseFloat(totalHT.toFixed(2)),
-                        tva: tvaTotals,
-                        source: 'Caisse Salle (' + currentTableId + ')',
-                        items: currentTicket
-                    };
+                let transaction = {
+                    id: 'TX_' + Date.now(),
+                    date: new Date().toISOString(),
+                    method: paymentsDone.map(h => h.method).join(' + '),
+                    payments: paymentsDone,
+                    totalTTC: parseFloat(currentTableTotal.toFixed(2)),
+                    totalHT: parseFloat(totalHT.toFixed(2)),
+                    tva: tvaTotals,
+                    source: 'Pad Serveur (' + currentTableId + ')',
+                    zone: getCurrentZoneLabelForPad(),
+                    mode: currentTableId_PayMode || "standard",
+                    fiscalStatus: fiscalStatus,
+                    fiscalTicket: fiscalResult ? {
+                        ticketNumber: fiscalResult.ticket?.ticketNumber || fiscalResult.ticket?.ticket_number || null,
+                        chainHash: fiscalResult.ticket?.chainHash || fiscalResult.ticket?.chain_hash || null,
+                        createdAt: fiscalResult.ticket?.createdAt || fiscalResult.ticket?.created_at || null
+                    } : null,
+                    items: currentTicket
+                };
 
-                    let historyNode = state.activeOrders['FINANCIAL_HISTORY'] || { data: [] };
-                    historyNode.data.push(transaction);
-                    await API.update('FINANCIAL_HISTORY', historyNode.data);
-                } catch(e) {}
-                
+                let historyNode = state.activeOrders['FINANCIAL_HISTORY'] || { data: [] };
+                historyNode.data.push(transaction);
+                await API.update('FINANCIAL_HISTORY', historyNode.data);
+
                 await API.update(currentTableId, null, true);
-                closeOrder(); 
+                window.print();
+
+                if (fiscalStatus === "FISCALIZED") {
+                    alert("✅ Ticket fiscal généré et table clôturée.");
+                } else {
+                    alert("✅ Table clôturée en historique interne non fiscal.");
+                }
+
+                closeOrder();
                 renderFloor();
-            }, 500);
+
+            } catch (e) {
+                console.error("Erreur clôture Pad Serveur :", e);
+                alert("❌ Encaissement refusé : " + (e.message || "erreur inconnue"));
+            }
         }
 
         function openHistoryDrawer() {
