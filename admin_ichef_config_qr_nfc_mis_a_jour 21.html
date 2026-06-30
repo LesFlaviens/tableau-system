@@ -1,0 +1,1708 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+    <title>iCHEF - Configuration QR/NFC & Caisse</title>
+    
+    <link href="https://fonts.googleapis.com/css2?family=Abril+Fatface&family=Amatic+SC&family=Anton&family=Arvo&family=Bebas+Neue&family=Bitter&family=Bodoni+Moda&family=Caveat&family=Cinzel&family=Cormorant+Garamond&family=Crimson+Text&family=Dancing+Script&family=EB+Garamond&family=Fira+Sans&family=Great+Vibes&family=Inter:wght@300;400;500;600;700;800&family=Jost&family=Lato&family=Libre+Baskerville&family=Lobster&family=Lora&family=Merriweather&family=Montserrat:wght@400;600&family=Noto+Serif&family=Nunito&family=Open+Sans&family=Oswald&family=PT+Serif&family=Pacifico&family=Playfair+Display:ital,wght@0,400;0,600;0,700;1,400&family=Poppins:wght@400;600&family=Quicksand&family=Raleway&family=Righteous&family=Roboto&family=Rubik&family=Satisfy&family=Ubuntu&family=Work+Sans&family=Zilla+Slab&display=swap" rel="stylesheet">
+
+    <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
+
+    <script>
+    // 🛡️ BOUCLIER 1 : DOMAIN LOCK
+    if (window.location.hostname !== "os.ichef.ch" && window.location.hostname !== "localhost" && window.location.hostname !== "127.0.0.1") {
+        document.documentElement.innerHTML = "<h1 style='color:red; text-align:center; margin-top:20%; font-family:sans-serif;'>🛑 VIOLATION DE LICENCE iCHEF OS</h1>";
+        throw new Error("Exécution non autorisée hors du domaine officiel.");
+    }
+
+    // 🛡️ BOUCLIER 2 : ANTI-SNOOPING (Bloque F12, Inspecteur, Clic-droit)
+    document.addEventListener('contextmenu', event => event.preventDefault());
+    document.onkeydown = function(e) {
+        if(e.keyCode == 123) return false; 
+        if(e.ctrlKey && e.shiftKey && e.keyCode == 'I'.charCodeAt(0)) return false; 
+        if(e.ctrlKey && e.shiftKey && e.keyCode == 'J'.charCodeAt(0)) return false; 
+        if(e.ctrlKey && e.keyCode == 'U'.charCodeAt(0)) return false; 
+    }
+
+        function getDeviceFingerprint() {
+            let deviceId = localStorage.getItem('ichef_device_fingerprint');
+            if (!deviceId) {
+                deviceId = 'device_' + Math.random().toString(36).substr(2, 9) + '_' + Date.now();
+                localStorage.setItem('ichef_device_fingerprint', deviceId);
+            }
+            return deviceId;
+        }
+
+        (async function enforceSecurity() {
+            const urlParams = new URLSearchParams(window.location.search);
+            let urlTenantID = urlParams.get('tenantID');
+            let storedTenantID = localStorage.getItem('ichef_tenant_id');
+
+            if (urlTenantID && urlTenantID !== storedTenantID) {
+                localStorage.removeItem('EMPIRE_GLOBAL_SYNC');
+                localStorage.removeItem('ichef_master_pin');
+                if (urlTenantID) localStorage.setItem('ichef_tenant_id', urlTenantID);
+                storedTenantID = urlTenantID;
+            }
+
+            let tenantID = urlTenantID || storedTenantID;
+            let pin = localStorage.getItem('ichef_master_pin'); 
+            
+            if(!tenantID) {
+                window.location.href = 'connexionpartenaire.html';
+                return;
+            }
+
+            const SERVER_URL = (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1" || window.location.protocol === "file:") 
+                ? "http://localhost:10000" : "https://tableau-system.onrender.com";
+
+            const accessMatrix = {
+                 'CHEF': ['chef.html', 'administration.html'],
+                'CHEF_CUISINE': ['chef.html', 'administration.html'],
+                'PATISSIER': ['chef-patissier.html', 'administration.html'],
+                'CHEF_PATISSERIE': ['chef-patissier.html', 'administration.html'],
+                'BAR': ['chef-bar.html', 'administration.html'],
+                'CHEF_BAR': ['chef-bar.html', 'administration.html'],
+                'ICHEF_OS': ['admin.html', 'pack-eco.html', 'minipass.html', 'menu-qr.html', 'administration.html'],
+                'ECO': ['admin.html', 'pack-eco.html', 'minipass.html', 'menu-qr.html', 'administration.html'],
+                'BUSINESS': ['admin.html', 'pack-eco.html', 'minipass.html', 'menu-qr.html', 'administration.html'],
+                'RENTABILITE': ['admin.html', 'pack-eco.html', 'minipass.html', 'menu-qr.html', 'administration.html'],
+                'EMPIRE': ['admin.html', 'pack-eco.html', 'menu-qr.html', 'chef.html', 'menu-pure.html', 'chef-bar.html', 'menu-bar.html', 'rh.html', 'haccp.html', 'reservation.html', 'minipass.html', 'chef-patissier.html', 'administration.html', 'production.html', 'chef-production.html'],
+                'BRIGADE': ['admin.html', 'pack-eco.html', 'menu-qr.html', 'chef.html', 'menu-pure.html', 'chef-bar.html', 'menu-bar.html', 'rh.html', 'haccp.html', 'reservation.html', 'minipass.html', 'chef-patissier.html', 'administration.html', 'production.html', 'chef-production.html'],
+                'BRIGADES': ['admin.html', 'pack-eco.html', 'menu-qr.html', 'chef.html', 'menu-pure.html', 'chef-bar.html', 'menu-bar.html', 'rh.html', 'haccp.html', 'reservation.html', 'minipass.html', 'chef-patissier.html', 'administration.html', 'production.html', 'chef-production.html'],
+                'PREMIUM': ['admin.html', 'pack-eco.html', 'menu-qr.html', 'chef.html', 'menu-pure.html', 'chef-bar.html', 'menu-bar.html', 'rh.html', 'haccp.html', 'reservation.html', 'minipass.html', 'chef-patissier.html', 'administration.html', 'production.html', 'chef-production.html']
+            };
+
+            try {
+                const res = await fetch(`${SERVER_URL}/api/verify-pin`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ tenantID: tenantID, pin: pin || "0000", deviceId: getDeviceFingerprint() })
+                });
+                const data = await res.json();
+
+                if(!data.success) {
+                    alert(data.error || "ACCÈS REFUSÉ (Limite d'écrans atteinte ou compte invalide).");
+                    window.location.href = 'connexionpartenaire.html';
+                    return;
+                }
+
+                const currentPlan = data.plan ? data.plan.toUpperCase() : 'CHEF';
+                let currentPage = window.location.pathname.split('/').pop().toLowerCase();
+                if(currentPage === '') currentPage = 'index.html';
+
+                const allowedPages = accessMatrix[currentPlan] || [];
+                if (!allowedPages.includes(currentPage)) {
+                    alert(`ACCÈS REFUSÉ : Votre forfait (${currentPlan}) n'inclut pas ce module.`);
+                    window.location.href = `administration.html?tenantID=${tenantID}`;
+                }
+            } catch (e) { console.error("Erreur de securite reseau", e); }
+        })();
+    </script>
+    
+    <style>
+        :root { 
+            --bg: #0b0f19; 
+            --panel: #151e2e; 
+            --border: rgba(255, 255, 255, 0.06); 
+            --border-strong: rgba(255, 255, 255, 0.15); 
+            --text-main: #f8fafc; 
+            --text-muted: #94a3b8; 
+            --gold: #d4af37; 
+            --gold-dim: rgba(212, 175, 55, 0.12); 
+            --accent: #38bdf8; 
+            --danger: #ef4444; 
+            --success: #10b981; 
+            --shadow: 0 10px 40px rgba(0, 0, 0, 0.3); 
+            --radius-main: 16px; 
+            --radius-btn: 10px; 
+        }
+        
+        * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+        body { font-family: 'Inter', sans-serif; background: var(--bg); color: var(--text-main); margin: 0; display: flex; flex-direction: column; height: 100vh; overflow: hidden; padding-top: env(safe-area-inset-top); }
+        
+        .app-container { display: flex; flex: 1; overflow: hidden; }
+        .main-content { flex: 1; display: flex; flex-direction: column; background: var(--bg); position: relative; }
+        .content-scroll { flex: 1; overflow-y: auto; padding: 30px; position: relative; scroll-behavior: smooth; }
+        .main-scroll { display: none; max-width: 900px; margin: 0 auto; padding-bottom: 100px; animation: fadeSlideUp 0.4s cubic-bezier(0.16, 1, 0.3, 1); }
+        .main-scroll.active { display: block; }
+        .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+        
+        .sidebar { width: 280px; background: var(--panel); border-right: 1px solid var(--border); display: flex; flex-direction: column; z-index: 50; transition: transform 0.4s cubic-bezier(0.16, 1, 0.3, 1); }
+        .sidebar-header { padding: 30px 20px 20px; display: flex; align-items: center; justify-content: space-between; }
+        .logo { font-family: 'Playfair Display', serif; font-size: 1.6rem; color: var(--gold); margin: 0; font-weight: 700; letter-spacing: 1px; }
+        .nav-list { list-style: none; padding: 10px 15px; margin: 0; flex: 1; overflow-y: auto; }
+        .nav-list::-webkit-scrollbar { display: none; } 
+        .nav-section-title { font-size: 0.65rem; text-transform: uppercase; color: var(--text-muted); margin: 25px 10px 8px 10px; font-weight: 700; letter-spacing: 1.5px; opacity: 0.7; }
+        .nav-item { padding: 14px 16px; margin-bottom: 6px; border-radius: var(--radius-btn); cursor: pointer; color: var(--text-muted); font-weight: 500; display: flex; align-items: center; gap: 12px; transition: all 0.2s ease; font-size: 0.95rem; }
+        .nav-item:hover { background: rgba(255,255,255,0.03); color: var(--text-main); }
+        .nav-item:active { transform: scale(0.95); opacity: 0.7; background: rgba(255,255,255,0.08); }
+        .nav-item.active { background: rgba(255, 255, 255, 0.05); color: var(--gold); font-weight: 700; border-left: 3px solid var(--gold); }
+        
+        .topbar { background: rgba(11, 15, 25, 0.85); backdrop-filter: blur(15px); border-bottom: 1px solid var(--border); padding: 15px 30px; display: flex; justify-content: space-between; align-items: center; z-index: 40; }
+        .topbar-title { font-size: 1.25rem; font-weight: 600; margin: 0; display: flex; align-items: center; gap: 15px; }
+        .topbar-actions { display: flex; gap: 12px; align-items: center; }
+        
+        .section-card { background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius-main); padding: 30px; margin-bottom: 25px; box-shadow: 0 4px 20px rgba(0,0,0,0.15); transition: border-color 0.3s ease; }
+        .section-title { font-size: 1.15rem; color: var(--text-main); margin-top: 0; margin-bottom: 25px; font-weight: 700; display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid var(--border); padding-bottom: 15px; letter-spacing: -0.3px; }
+        .empty-state { text-align: center; padding: 50px 20px; color: var(--text-muted); font-style: italic; background: rgba(0,0,0,0.1); border: 1px dashed var(--border-strong); border-radius: 12px; font-size: 0.95rem;}
+        
+        .input-group { margin-bottom: 20px; display: flex; flex-direction: column; }
+        .input-group label { font-size: 0.85rem; color: var(--text-muted); margin-bottom: 8px; font-weight: 500; display: flex; justify-content: space-between; align-items: center;}
+        .input-field { background: rgba(0,0,0,0.2); border: 1px solid var(--border-strong); color: var(--text-main); padding: 14px 16px; border-radius: var(--radius-btn); font-size: 1rem; font-family: inherit; transition: all 0.3s ease; outline: none; }
+        .input-field:focus { border-color: var(--gold); background: rgba(0,0,0,0.4); }
+        select.input-field { appearance: none; cursor: pointer; }
+        input[type="color"] { width: 100%; height: 50px; padding: 5px; background: rgba(0,0,0,0.4); border: 1px solid var(--border-strong); border-radius: 12px; cursor: pointer; }
+        input[type="color"]::-webkit-color-swatch-wrapper { padding: 0; }
+        input[type="color"]::-webkit-color-swatch { border: none; border-radius: 6px; }
+
+        .toggle-row { display: flex; justify-content: space-between; align-items: center; padding: 18px 20px; background: rgba(0,0,0,0.15); border: 1px solid var(--border); border-radius: var(--radius-btn); margin-bottom: 15px; }
+        .toggle-info strong { display: block; font-size: 1rem; color: var(--text-main); margin-bottom: 4px; font-weight: 600; }
+        .toggle-info span { font-size: 0.85rem; color: var(--text-muted); line-height: 1.4; display: block;}
+        .switch { position: relative; display: inline-block; width: 52px; height: 28px; flex-shrink: 0;}
+        .switch input { opacity: 0; width: 0; height: 0; }
+        .slider { position: absolute; cursor: pointer; top: 0; left: 0; right: 0; bottom: 0; background-color: #ef4444; transition: .3s cubic-bezier(0.4, 0, 0.2, 1); border-radius: 30px; box-shadow: inset 0 2px 5px rgba(0,0,0,0.3);}
+        .slider:before { position: absolute; content: ""; height: 20px; width: 20px; left: 4px; bottom: 4px; background-color: white; transition: .3s cubic-bezier(0.4, 0, 0.2, 1); border-radius: 50%; box-shadow: 0 2px 4px rgba(0,0,0,0.4);}
+        input:checked + .slider { background-color: #10b981; }
+        input:checked + .slider:before { transform: translateX(24px); }
+        
+        .btn-sync { background: rgba(255,255,255,0.05); color: var(--text-main); border: 1px solid var(--border); padding: 10px 18px; border-radius: var(--radius-btn); font-weight: 600; cursor: pointer; display: flex; align-items: center; gap: 8px; font-size: 0.85rem; transition: 0.2s; }
+        .btn-save { background: linear-gradient(135deg, #d4af37, #b89626); color: #000; border: none; padding: 10px 24px; border-radius: var(--radius-btn); font-weight: 700; cursor: pointer; box-shadow: 0 4px 15px rgba(212, 175, 55, 0.25); font-size: 0.9rem; transition: 0.3s; text-transform: uppercase;}
+        .btn-outline { background: transparent; border: 1px solid var(--border-strong); color: var(--text-main); padding: 10px 18px; border-radius: var(--radius-btn); font-weight: 500; cursor: pointer; transition: 0.2s; display: inline-flex; align-items: center; justify-content: center; gap: 8px; font-size: 0.9rem; }
+        .btn-outline.danger { color: var(--danger); border-color: rgba(239, 68, 68, 0.3); }
+        .btn-outline.success { color: var(--success); border-color: rgba(16, 185, 129, 0.3); background: rgba(16, 185, 129, 0.05); }
+        .btn-save-green { background: linear-gradient(135deg, #10b981, #059669); color: #ffffff; border: none; padding: 12px 24px; border-radius: var(--radius-btn); font-weight: 700; cursor: pointer; box-shadow: 0 4px 15px rgba(16, 185, 129, 0.3); font-size: 0.95rem; }
+        
+        .list-item { display: flex; justify-content: space-between; align-items: center; padding: 16px 20px; border-bottom: 1px solid var(--border); transition: 0.2s; background: rgba(0,0,0,0.1); border-radius: 8px; margin-bottom: 8px; }
+        .list-item-info { display: flex; flex-direction: column; gap: 6px; }
+        .list-item-title { font-weight: 600; color: var(--text-main); font-size: 1rem; display: flex; align-items: center; gap: 10px;}
+        .list-item-actions { display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end;}
+        
+        .modal { position: fixed; top: 0; left: 0; width: 100vw; height: 100dvh; background: rgba(0,0,0,0.6); backdrop-filter: blur(8px); z-index: 1000; display: none; align-items: center; justify-content: center; padding: 20px; box-sizing: border-box; opacity: 0; transition: opacity 0.3s ease;}
+        .modal.show { display: flex; opacity: 1; }
+        .modal-content { background: var(--panel); border: 1px solid var(--border-strong); border-radius: 20px; width: 100%; max-width: 550px; max-height: 90vh; display: flex; flex-direction: column; overflow: hidden; box-shadow: 0 25px 50px rgba(0,0,0,0.5); transform: translateY(20px); transition: transform 0.3s cubic-bezier(0.16, 1, 0.3, 1); }
+        .modal.show .modal-content { transform: translateY(0); }
+        .modal-header { flex-shrink: 0; padding: 20px 25px; border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center; background: var(--panel); z-index: 10; }
+        .modal-body { flex: 1; padding: 20px 25px; overflow-y: auto; }
+        .modal-footer { flex-shrink: 0; padding: 15px 25px; border-top: 1px solid var(--border); display: flex; justify-content: flex-end; gap: 15px; background: rgba(0,0,0,0.3); }
+        
+        .toast { position: fixed; bottom: 40px; left: 50%; transform: translateX(-50%) translateY(100px); background: var(--success); color: #000; padding: 14px 28px; border-radius: 30px; font-weight: 700; z-index: 2000; display: flex; align-items: center; gap: 10px; transition: transform 0.4s; }
+        .toast.show { transform: translateX(-50%) translateY(0); }
+        
+        .menu-toggle { display: none; background: transparent; border: none; color: var(--text-main); font-size: 1.8rem; cursor: pointer; padding: 0; margin-right: 15px; transition: 0.2s;}
+        .mobile-overlay { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.6); backdrop-filter: blur(3px); z-index: 45; opacity: 0; transition: opacity 0.3s;}
+        .mobile-overlay.show { display: block; opacity: 1; }
+
+        @keyframes fadeSlideUp { from { opacity: 0; transform: translateY(15px); } to { opacity: 1; transform: translateY(0); } }
+        
+        @media (max-width: 900px) {
+            .sidebar { position: fixed; height: 100%; transform: translateX(-100%); width: 85%; max-width: 320px; box-shadow: 10px 0 30px rgba(0,0,0,0.5);}
+            .sidebar.open { transform: translateX(0); }
+            .menu-toggle { display: block; }
+            .topbar { padding: 15px 20px; flex-wrap: wrap; gap: 10px; position: sticky; top: 0; z-index: 40;}
+            .topbar-actions { width: 100%; justify-content: flex-end; }
+            .content-scroll { padding: 20px 15px; }
+            .modal { align-items: flex-end; padding: 0; }
+            .modal-content { border-radius: 20px 20px 0 0; max-height: 92dvh; height: 92dvh; transform: translateY(100%); }
+        }
+        @media (max-width: 768px) { .grid-2 { grid-template-columns: 1fr; } }
+    </style>
+</head>
+<body oncontextmenu="return false;" ondragstart="return false;" ondrop="return false;">
+
+    <div class="app-container">
+        <div class="mobile-overlay" id="mobile-overlay" onclick="toggleMobileMenu()"></div>
+
+        <aside class="sidebar" id="sidebar">
+            <div class="sidebar-header">
+                <h1 class="logo">iCHEF <span style="font-size: 0.8rem; color:var(--text-muted); font-family:'Inter',sans-serif; letter-spacing: 2px;">CONFIG</span></h1>
+                <button class="menu-toggle" onclick="toggleMobileMenu()" style="margin:0;">✕</button>
+            </div>
+            
+            <ul class="nav-list">
+<div class="nav-section-title">Établissement</div>
+                <li class="nav-item active" onclick="switchTab('tab-general', this);">⚙️ Paramètres Généraux</li>
+                <li class="nav-item" onclick="switchTab('tab-staff', this);">👥 Brigade & Accès</li>
+                <li class="nav-item" onclick="window.location.href='rh.html?tenantID=' + tenantID" style="color: var(--success); font-weight: 600;">👥 Ressources Humaines</li>
+                
+                <div class="nav-section-title">La Carte & Production</div>
+                <li class="nav-item" onclick="switchTab('tab-menu', this);">🍔 Carte & Catégories</li>
+                <li class="nav-item" onclick="window.location.href='haccp.html?tenantID=' + tenantID" style="color: var(--success); font-weight: 600;">🛡️ Contrôle HACCP</li>
+                
+                <li class="nav-item" onclick="window.location.href='chef.html?tenantID=' + tenantID" style="color: var(--warning); font-weight: 600;">👨‍🍳 Labo Cuisine</li>
+                <li class="nav-item" onclick="window.location.href='chef-patissier.html?tenantID=' + tenantID" style="color: var(--warning); font-weight: 600;">🍰 Labo Pâtisserie</li>
+                <li class="nav-item" onclick="window.location.href='chef-bar.html?tenantID=' + tenantID" style="color: var(--warning); font-weight: 600;">🍸 Labo Bar</li>
+                
+                <div class="nav-section-title">Module Clients</div>
+                <li class="nav-item" onclick="switchTab('tab-design', this);">🎨 Config Menu QR & NFC</li>
+                <li class="nav-item" onclick="switchTab('tab-loyalty', this);">🎁 Fidélité & Clients</li>
+                
+                <div class="nav-section-title">Finance & Caisse</div>
+                <li class="nav-item" onclick="switchTab('tab-payment', this);">📲 QR/NFC & Paiement</li>
+                <li class="nav-item" onclick="switchTab('tab-finance', this);">💰 Caisse & Tickets</li>
+                
+                <div style="border-top: 1px solid var(--border); margin-top: 25px; padding-top: 15px;"></div>
+                <li class="nav-item" onclick="window.location.href='anti-rush.html?tenantID=' + tenantID" style="color: var(--accent); font-weight: 600; border: 1px solid var(--accent); justify-content: center;">⚡ COCKPIT ANTI-RUSH</li>
+            </ul>
+        </aside>
+
+        <main class="main-content">
+            
+            <div class="topbar">
+                <h2 class="topbar-title" id="main-title">
+                    <button class="menu-toggle" onclick="toggleMobileMenu()">☰</button>
+                    ⚙️ Paramètres
+                </h2>
+                <div class="topbar-actions">
+                    <button class="btn-outline" onclick="window.location.href='administration.html'" style="border-color: var(--gold); color: var(--gold);">🔙 Accueil Master</button>
+                    <button class="btn-sync" id="sync-status" onclick="forceSync()"><span>● En Direct</span> 🔄</button>
+                    
+                    <button id="btn-kill-switch" class="btn-save" style="background: var(--danger); color: white; box-shadow: 0 4px 15px rgba(239, 68, 68, 0.4);" onclick="toggleKillSwitch()">🛑 COUPER LE SYSTÈME</button>
+                    
+                    <button class="btn-save" onclick="saveAllToCloud()">Enregistrer</button>
+                </div>
+            </div>
+
+            <div id="active-alerts-container" style="padding: 15px 30px; display: none; flex-direction: column; gap: 10px;">
+                </div>
+
+            <div class="content-scroll">
+                
+                <div id="tab-general" class="main-scroll active">
+                    <div class="section-card">
+                        <h3 class="section-title">Identité du Restaurant</h3>
+                        <div class="grid-2">
+                            <div class="input-group">
+                                <label>Nom de l'établissement</label>
+                                <input type="text" id="resto-name" class="input-field" placeholder="Ex: Le Bistrot Parisien" oninput="markUnsaved()">
+                            </div>
+                            <div class="input-group">
+                                <label>Devise Principale</label>
+                                <select id="setting-currency" class="input-field" onchange="markUnsaved()">
+                                    <option value="€">Euro (€)</option>
+                                    <option value="CHF">Franc Suisse (CHF)</option>
+                                    <option value="$">Dollar ($)</option>
+                                    <option value="C$">Dollar Canadien (C$)</option>
+                                </select>
+                            </div>
+                        </div>
+                        <div class="grid-2" style="margin-top: 10px;">
+                            <div class="input-group">
+                                <label>TVA par défaut (%)</label>
+                                <input type="number" id="resto-tva" class="input-field" step="0.1" min="0" oninput="markUnsaved()">
+                            </div>
+                            <div class="input-group">
+                                <label>2ème TVA (Boissons) (%)</label>
+                                <input type="number" id="resto-tva-2" class="input-field" step="0.1" min="0" oninput="markUnsaved()">
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div class="section-card">
+                        <h3 class="section-title">Mode de Service</h3>
+                        <div class="toggle-row">
+                            <div class="toggle-info">
+                                <strong style="color: var(--gold);">Service au Comptoir (Bar)</strong>
+                                <span>Les clients seront invités à venir récupérer et payer leur commande au bar.</span>
+                            </div>
+                            <label class="switch">
+                                <input type="checkbox" id="setting-service-bar" onchange="markUnsaved()">
+                                <span class="slider"></span>
+                            </label>
+                        </div>
+                    </div>
+
+                    <div class="section-card">
+                        <h3 class="section-title">Empire Dashboard (Temps Réel)</h3>
+                        
+                        <div class="grid-2" style="margin-bottom: 20px;">
+                            <div style="background: rgba(212, 175, 55, 0.1); padding: 20px; border-radius: 12px; text-align: center; border: 1px solid var(--gold);">
+                                <div style="color: var(--gold); font-size: 0.8rem; text-transform: uppercase;">CA À L'INSTANT</div>
+                                <div style="font-size: 2rem; font-weight: 800; color: #fff;" id="dash-ca-live">0.00 €</div>
+                            </div>
+                            <div style="background: rgba(56, 189, 248, 0.1); padding: 20px; border-radius: 12px; text-align: center; border: 1px solid var(--accent);">
+                                <div style="color: var(--accent); font-size: 0.8rem; text-transform: uppercase;">COUVERTS VENDUS</div>
+                                <div style="font-size: 2rem; font-weight: 800; color: #fff;" id="dash-couverts">0</div>
+                            </div>
+                        </div>
+
+                        <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px;">
+                            <div style="background: rgba(0,0,0,0.2); padding: 15px; border-radius: 8px; text-align: center;">
+                                <div style="font-size: 0.7rem; color: var(--text-muted);">JOUR</div>
+                                <div style="font-weight: 700;" id="sales-day">0</div>
+                            </div>
+                            <div style="background: rgba(0,0,0,0.2); padding: 15px; border-radius: 8px; text-align: center;">
+                                <div style="font-size: 0.7rem; color: var(--text-muted);">SEMAINE</div>
+                                <div style="font-weight: 700;" id="sales-week">0</div>
+                            </div>
+                            <div style="background: rgba(0,0,0,0.2); padding: 15px; border-radius: 8px; text-align: center;">
+                                <div style="font-size: 0.7rem; color: var(--text-muted);">MOIS</div>
+                                <div style="font-weight: 700;" id="sales-month">0</div>
+                            </div>
+                            <div style="background: rgba(0,0,0,0.2); padding: 15px; border-radius: 8px; text-align: center;">
+                                <div style="font-size: 0.7rem; color: var(--text-muted);">ANNÉE</div>
+                                <div style="font-weight: 700;" id="sales-year">0</div>
+                            </div>
+                        </div>
+
+                        <div style="margin-top: 20px; background: rgba(255,255,255,0.03); padding: 15px; border-radius: 8px; border: 1px solid var(--border-strong);">
+                            <h4 style="margin: 0 0 12px 0; font-size: 0.9rem; color: var(--text-muted); text-transform: uppercase; letter-spacing: 1px;">👥 Brigade en Service</h4>
+                            <div id="active-staff-list" style="display: flex; gap: 10px; flex-wrap: wrap;">
+                                <div class="empty-state" style="width: 100%; padding: 10px;">La brigade est au repos.</div>
+                            </div>
+                        </div>
+
+                        <div class="grid-2" style="margin-top: 20px;">
+                            <div style="background: rgba(0,0,0,0.2); padding: 15px; border-radius: 8px;">
+                                <h4 style="margin: 0 0 10px 0; font-size: 0.9rem; color: var(--gold);">🏆 Top Plats</h4>
+                                <div id="top-plats-list" style="font-size: 0.85rem;">En attente de data...</div>
+                            </div>
+                            <div style="background: rgba(0,0,0,0.2); padding: 15px; border-radius: 8px;">
+                                <h4 style="margin: 0 0 10px 0; font-size: 0.9rem; color: var(--accent);">🏆 Top Boissons</h4>
+                                <div id="top-boissons-list" style="font-size: 0.85rem;">En attente de data...</div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="section-card">
+                        <h3 class="section-title">
+                            Ouverture Automatique 
+                            <label class="switch"><input type="checkbox" id="setting-auto-schedule" onchange="markUnsaved()"><span class="slider"></span></label>
+                        </h3>
+                        <div class="input-group">
+                            <label>Jours d'ouverture</label>
+                            <div id="schedule-days-container" style="display: flex; flex-wrap: wrap; gap: 12px; margin-top: 15px;"></div>
+                        </div>
+                        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px; margin-bottom: 20px;">
+                            <div style="display: flex; flex-direction: column; gap: 5px;">
+                                <label style="font-size:0.8rem; color:var(--gold); text-transform:uppercase;">Matin</label>
+                                <div style="display: flex; gap: 5px;">
+                                    <input type="time" id="matin-start" class="input-field" style="padding: 10px;" oninput="markUnsaved()">
+                                    <input type="time" id="matin-end" class="input-field" style="padding: 10px;" oninput="markUnsaved()">
+                                </div>
+                            </div>
+                            <div style="display: flex; flex-direction: column; gap: 5px;">
+                                <label style="font-size:0.8rem; color:var(--gold); text-transform:uppercase;">Midi</label>
+                                <div style="display: flex; gap: 5px;">
+                                    <input type="time" id="midi-start" class="input-field" style="padding: 10px;" oninput="markUnsaved()">
+                                    <input type="time" id="midi-end" class="input-field" style="padding: 10px;" oninput="markUnsaved()">
+                                </div>
+                            </div>
+                            <div style="display: flex; flex-direction: column; gap: 5px;">
+                                <label style="font-size:0.8rem; color:var(--gold); text-transform:uppercase;">Après-midi</label>
+                                <div style="display: flex; gap: 5px;">
+                                    <input type="time" id="aprem-start" class="input-field" style="padding: 10px;" oninput="markUnsaved()">
+                                    <input type="time" id="aprem-end" class="input-field" style="padding: 10px;" oninput="markUnsaved()">
+                                </div>
+                            </div>
+                            <div style="display: flex; flex-direction: column; gap: 5px;">
+                                <label style="font-size:0.8rem; color:var(--gold); text-transform:uppercase;">Soir</label>
+                                <div style="display: flex; gap: 5px;">
+                                    <input type="time" id="soir-start" class="input-field" style="padding: 10px;" oninput="markUnsaved()">
+                                    <input type="time" id="soir-end" class="input-field" style="padding: 10px;" oninput="markUnsaved()">
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div id="tab-staff" class="main-scroll">
+                    <div class="section-card">
+                        <div class="section-title">
+                            Membres de la Brigade
+                            <button class="btn-outline" style="color: var(--gold); border-color: var(--gold);" onclick="openStaffModal()">+ Ajouter</button>
+                        </div>
+                        <div id="admin-staff-list" style="display: flex; flex-direction: column;"></div>
+                    </div>
+                </div>
+
+                <div id="tab-menu" class="main-scroll">
+                    <div class="section-card">
+                        <div class="section-title">
+                            <span>🍔 1. Plats & Boissons</span>
+                            <button class="btn-save-green" onclick="openItemModal()">+ NOUVEAU PLAT</button>
+                        </div>
+                        <div style="display: flex; gap: 10px; margin-bottom: 20px;">
+                            <select id="menu-filter-cat" class="input-field" style="flex: 1;" onchange="renderMenuList()">
+                                <option value="ALL">Toutes</option>
+                            </select>
+                            <input type="text" id="menu-filter-search" class="input-field" placeholder="Recherche..." style="flex: 1;" oninput="renderMenuList()">
+                        </div>
+                        <div id="admin-menu-list"></div>
+                    </div>
+
+                    <div class="section-card">
+                        <h3 class="section-title">📁 2. Gestion des Catégories</h3>
+                        <div class="grid-2" style="align-items: end; margin-bottom: 25px;">
+                            <div class="input-group" style="margin: 0;">
+                                <label>Nom de la catégorie</label>
+                                <input type="text" id="new-cat-name" class="input-field" placeholder="Ex: Pizzas" oninput="markUnsaved()">
+                            </div>
+                            <div style="display: flex; gap: 10px;">
+                                <select id="new-cat-type" class="input-field" style="flex: 1;">
+                                    <option value="cuisine">Cuisine</option>
+                                    <option value="bar">Bar</option>
+                                </select>
+                                <button class="btn-save" onclick="addCategory()">Créer</button>
+                            </div>
+                        </div>
+                        <div class="grid-2">
+                            <div style="background: rgba(0,0,0,0.15); padding: 15px; border-radius: 8px;">
+                                <h4 style="color: #ff7675; margin-top: 0;">🍳 En Cuisine</h4>
+                                <div id="cat-list-cuisine"></div>
+                            </div>
+                            <div style="background: rgba(0,0,0,0.15); padding: 15px; border-radius: 8px;">
+                                <h4 style="color: var(--accent); margin-top: 0;">🍸 Au Bar</h4>
+                                <div id="cat-list-bar"></div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div id="tab-design" class="main-scroll">
+                    <div class="grid-2">
+                        <div class="section-card">
+                            <h3 class="section-title">Personnalisation Visuelle</h3>
+                            
+                            <div class="input-group">
+                                <label>Photo de Bannière (URL)</label>
+                                <input type="text" id="design-banner-url" class="input-field" placeholder="Ex: https://mon-site.com/photo.jpg" oninput="markUnsaved(); updateDesignPreview()">
+                            </div>
+                            
+                            <div class="input-group">
+                                <label>Couleur Fond Global</label>
+                                <input type="color" id="design-bg-color" class="input-field" oninput="markUnsaved(); updateDesignPreview()">
+                            </div>
+                            
+                            <div class="input-group">
+                                <label>Couleur du Titre "LA CARTE"</label>
+                                <input type="color" id="design-title-color" class="input-field" oninput="markUnsaved(); updateDesignPreview()">
+                            </div>
+                            
+                            <div class="input-group">
+                                <label>Police du Titre</label>
+                                <select id="design-title-font" class="input-field" onchange="markUnsaved(); updateDesignPreview()">
+                                    <optgroup label="Modernes (Sans-Serif)">
+                                        <option value="'Inter', sans-serif">Inter</option>
+                                        <option value="'Montserrat', sans-serif">Montserrat</option>
+                                    </optgroup>
+                                    <optgroup label="Classiques & Élégantes (Serif)">
+                                        <option value="'Playfair Display', serif">Playfair Display</option>
+                                        <option value="'Merriweather', serif">Merriweather</option>
+                                    </optgroup>
+                                </select>
+                            </div>
+
+                            <div class="input-group">
+                                <label>Couleur Texte & Catégories</label>
+                                <input type="color" id="design-text-color" class="input-field" oninput="markUnsaved(); updateDesignPreview()">
+                            </div>
+                            
+                            <div class="input-group">
+                                <label>Police Texte & Catégories</label>
+                                <select id="design-font" class="input-field" onchange="markUnsaved(); updateDesignPreview()">
+                                    <optgroup label="Modernes (Sans-Serif)">
+                                        <option value="'Inter', sans-serif">Inter</option>
+                                        <option value="'Roboto', sans-serif">Roboto</option>
+                                    </optgroup>
+                                </select>
+                            </div>
+
+                            <div class="input-group">
+                                <label>Couleur Boutons & Prix</label>
+                                <input type="color" id="design-alert-color" class="input-field" oninput="markUnsaved(); updateDesignPreview()">
+                            </div>
+                        </div>
+                        
+                        <div style="display: flex; justify-content: center; align-items: center; padding: 20px;">
+                            <div id="phone-preview" style="width: 320px; height: 600px; border: 12px solid #111; border-radius: 40px; background: #000; color: #fff; position: relative; overflow: hidden; display: flex; flex-direction: column; box-shadow: 0 10px 30px rgba(0,0,0,0.5); font-family: 'Inter', sans-serif;">
+                                <div id="preview-banner-img" style="height: 140px; background: url('https://images.unsplash.com/photo-1414235077428-338989a2e8c0?q=80&w=500&auto=format&fit=crop') center/cover; position: relative;">
+                                    <div class="gradient-overlay" style="position: absolute; bottom: 0; left: 0; width: 100%; height: 60%; background: linear-gradient(transparent, #000);"></div>
+                                </div>
+
+                                <div style="padding: 15px; flex: 1; overflow-y: auto;">
+                                    <h2 id="preview-title" style="margin: 0 0 15px 0; font-size: 1.6rem; text-align: center; font-family: 'Playfair Display', serif;">LA CARTE</h2>
+                                    <div class="preview-card" style="padding: 15px; border-radius: 12px; border: 1px solid rgba(255,255,255,0.1); background: rgba(255,255,255,0.03); margin-bottom: 12px;">
+                                        <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 5px;">
+                                            <span style="font-weight: 600; font-size: 0.95rem; font-family: 'Playfair Display', serif;">Salade César</span>
+                                            <span class="preview-accent" style="color: #d4af37; font-weight: bold;">12.00 €</span>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div class="section-card" style="border: 1px solid rgba(16, 185, 129, 0.35); background: rgba(16, 185, 129, 0.03);">
+                        <h3 class="section-title" style="color: var(--success); border-bottom-color: rgba(16, 185, 129, 0.25);">
+                            📲 Mode QR Code & NFC
+                        </h3>
+
+                        <p style="color: var(--text-muted); line-height: 1.6; margin-top: 0;">
+                            Ce module sert à la <strong>prise de commande client</strong> depuis un QR Code ou une pastille NFC.
+                            L'encaissement fiscal reste séparé de la commande et doit passer par le module caisse sécurisé.
+                        </p>
+
+                        <div class="grid-2">
+                            <div class="toggle-row">
+                                <div class="toggle-info">
+                                    <strong>Activer les commandes QR/NFC</strong>
+                                    <span>Les clients peuvent ouvrir le menu sans application.</span>
+                                </div>
+                                <label class="switch">
+                                    <input type="checkbox" id="setting-qr-nfc-active" onchange="markUnsaved(); syncQRTables()">
+                                    <span class="slider"></span>
+                                </label>
+                            </div>
+
+                            <div class="toggle-row">
+                                <div class="toggle-info">
+                                    <strong>Commande client autorisée</strong>
+                                    <span>Le client peut envoyer sa commande au bon poste.</span>
+                                </div>
+                                <label class="switch">
+                                    <input type="checkbox" id="setting-qr-order-enabled" onchange="markUnsaved()">
+                                    <span class="slider"></span>
+                                </label>
+                            </div>
+                        </div>
+
+                        <div class="grid-2">
+                            <div class="toggle-row">
+                                <div class="toggle-info">
+                                    <strong>Validation serveur obligatoire</strong>
+                                    <span>La commande arrive en attente avant production.</span>
+                                </div>
+                                <label class="switch">
+                                    <input type="checkbox" id="setting-qr-staff-validation" onchange="markUnsaved()">
+                                    <span class="slider"></span>
+                                </label>
+                            </div>
+
+                            <div class="toggle-row">
+                                <div class="toggle-info">
+                                    <strong>Afficher table / zone</strong>
+                                    <span>La table et la zone sont visibles dans le menu client.</span>
+                                </div>
+                                <label class="switch">
+                                    <input type="checkbox" id="setting-qr-show-table" onchange="markUnsaved()">
+                                    <span class="slider"></span>
+                                </label>
+                            </div>
+                        </div>
+
+                        <div class="grid-2">
+                            <div class="input-group">
+                                <label>Page menu QR/NFC</label>
+                                <input type="text" id="qr-menu-page" class="input-field" placeholder="menu-qr.html" oninput="markUnsaved(); syncQRTables()">
+                            </div>
+                            <div class="input-group">
+                                <label>Libellé imprimé sous la pastille NFC</label>
+                                <input type="text" id="qr-nfc-label" class="input-field" placeholder="Approchez votre téléphone" oninput="markUnsaved()">
+                            </div>
+                        </div>
+
+                        <div style="padding: 14px 16px; border-radius: 12px; background: rgba(212, 175, 55, 0.08); border: 1px solid rgba(212, 175, 55, 0.25); color: var(--text-main); font-size: 0.9rem; line-height: 1.5;">
+                            <strong style="color: var(--gold);">Règle iChef OS :</strong>
+                            QR/NFC = commande. Caisse = encaissement fiscal. 
+                            Une commande peut être modifiée ; un ticket encaissé ne doit jamais être modifié.
+                        </div>
+                    </div>
+
+                    <div class="section-card">
+                        <div class="section-title">
+                            Générateur QR Codes & Programmation NFC 
+                            <button class="btn-sync" onclick="syncQRTables()" style="padding: 8px 16px;">🔄 Générer</button>
+                        </div>
+                        <div class="input-group">
+                            <label>Domaine de votre Menu (Laissez vide pour auto)</label>
+                            <input type="text" id="qr-base-url" class="input-field" placeholder="https://[VOTRE_DOMAINE]/menu-qr.html" oninput="syncQRTables(); markUnsaved()">
+                        </div>
+                        <p style="color: var(--text-muted); font-size: 0.85rem; line-height: 1.5; margin-top: -8px;">
+                            Chaque QR Code et chaque puce NFC renvoient vers une URL unique avec <strong>tenantID</strong>, <strong>table</strong>, <strong>zone</strong> et <strong>source=qr_nfc</strong>.
+                        </p>
+                        <div id="all-qr-grid" style="display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 20px;"></div>
+                    </div>
+                </div>
+
+                <div id="tab-loyalty" class="main-scroll">
+                    <div class="section-card">
+                        <h3 class="section-title">Programme de Fidélité (Cagnotte)</h3>
+                        <div class="toggle-row">
+                            <div class="toggle-info"><strong>Activer la fidélité</strong></div>
+                            <label class="switch"><input type="checkbox" id="setting-loyalty-active" onchange="markUnsaved()"><span class="slider"></span></label>
+                        </div>
+                        <div class="input-group">
+                            <label>Pourcentage (%)</label>
+                            <input type="number" id="setting-loyalty-percent" class="input-field" step="0.1" min="0" oninput="markUnsaved()">
+                        </div>
+                    </div>
+                </div>
+
+                <div id="tab-payment" class="main-scroll">
+                    <div class="section-card" style="border: 1px solid rgba(16, 185, 129, 0.35); background: rgba(16, 185, 129, 0.03);">
+                        <h3 class="section-title" style="color: var(--success); border-bottom-color: rgba(16, 185, 129, 0.25);">
+                            📲 Séparation QR/NFC & Caisse
+                        </h3>
+                        <p style="color: var(--text-muted); font-size: 0.9rem; line-height: 1.6; margin-bottom: 20px;">
+                            Le QR Code et la pastille NFC servent à créer une <strong>commande</strong>.
+                            Le ticket fiscal est créé uniquement au moment de l'<strong>encaissement</strong> dans la caisse.
+                        </p>
+
+                        <div class="grid-2">
+                            <div class="toggle-row">
+                                <div class="toggle-info">
+                                    <strong>Mode commande QR/NFC</strong>
+                                    <span>Prise de commande client sans application.</span>
+                                </div>
+                                <label class="switch">
+                                    <input type="checkbox" id="setting-payment-qr-nfc-active" onchange="syncQrPaymentMirror(this.checked); markUnsaved()">
+                                    <span class="slider"></span>
+                                </label>
+                            </div>
+
+                            <div class="toggle-row">
+                                <div class="toggle-info">
+                                    <strong>Mode caisse fiscale</strong>
+                                    <span>À activer seulement quand le backend fiscal est prêt.</span>
+                                </div>
+                                <label class="switch">
+                                    <input type="checkbox" id="setting-fiscal-cash-register" onchange="markUnsaved()">
+                                    <span class="slider"></span>
+                                </label>
+                            </div>
+                        </div>
+
+                        <div class="toggle-row">
+                            <div class="toggle-info">
+                                <strong style="color: var(--gold);">Séparation stricte commande / encaissement</strong>
+                                <span>Empêche de présenter le QR/NFC comme une caisse fiscale. Recommandé tant que la certification ou l'attestation n'est pas finalisée.</span>
+                            </div>
+                            <label class="switch">
+                                <input type="checkbox" id="setting-fiscal-strict-separation" onchange="markUnsaved()">
+                                <span class="slider"></span>
+                            </label>
+                        </div>
+
+                        <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-top: 18px;">
+                            <div style="background: rgba(0,0,0,0.22); border: 1px solid var(--border); border-radius: 12px; padding: 16px;">
+                                <div style="font-size: 0.75rem; color: var(--success); font-weight: 800; text-transform: uppercase;">1. QR/NFC</div>
+                                <div style="font-size: 0.9rem; margin-top: 6px;">Commande client</div>
+                            </div>
+                            <div style="background: rgba(0,0,0,0.22); border: 1px solid var(--border); border-radius: 12px; padding: 16px;">
+                                <div style="font-size: 0.75rem; color: var(--accent); font-weight: 800; text-transform: uppercase;">2. Production</div>
+                                <div style="font-size: 0.9rem; margin-top: 6px;">Cuisine / bar / salle</div>
+                            </div>
+                            <div style="background: rgba(0,0,0,0.22); border: 1px solid var(--border); border-radius: 12px; padding: 16px;">
+                                <div style="font-size: 0.75rem; color: var(--gold); font-weight: 800; text-transform: uppercase;">3. Caisse</div>
+                                <div style="font-size: 0.9rem; margin-top: 6px;">Ticket fiscal séparé</div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="section-card" style="border: 1px solid var(--accent); background: rgba(56, 189, 248, 0.02);">
+                        <h3 class="section-title" style="color: var(--accent); border-bottom-color: rgba(56, 189, 248, 0.2);">
+                            📍 Architecture des Zones (Contrôle Terrain)
+                        </h3>
+                        <p style="color: var(--text-muted); font-size: 0.9rem; margin-bottom: 20px;">
+                            Les zones sont créées et dessinées directement sur le plan de salle (depuis l'écran Pad Serveur > Config > Nouvelle Zone).<br>
+                            Depuis ce panneau, vous pouvez <strong>contrôler le parcours client</strong> : QR/NFC commande, serveur/pad ou comptoir.
+                        </p>
+                        <div id="admin-zones-list" style="display: flex; flex-direction: column; gap: 10px;">
+                            <div class="empty-state">Chargement des zones...</div>
+                        </div>
+                    </div>
+
+                    <div class="section-card">
+                        <h3 class="section-title">Intégration Bancaire</h3>
+                        <div class="toggle-row">
+                            <div class="toggle-info">
+                                <strong>Autoriser le paiement Stripe</strong>
+                                <span>Optionnel. Si désactivé, le client commande en QR/NFC et règle au serveur, au bar ou à la caisse.</span>
+                            </div>
+                            <label class="switch"><input type="checkbox" id="setting-qr-pay" onchange="markUnsaved()"><span class="slider"></span></label>
+                        </div>
+                        <div class="input-group">
+                            <label>Identifiant Stripe (Clé Secrète)</label>
+                            <input type="password" id="resto-stripe" class="input-field" oninput="markUnsaved()">
+                        </div>
+                    </div>
+                </div>
+
+                <div id="tab-finance" class="main-scroll">
+                    <div class="section-card">
+                        <h3 class="section-title">
+                            Historique des Tickets / Encaissements 
+                            <button class="btn-sync" onclick="fetchStateFromCloud()" style="padding: 6px 14px;">Actualiser</button>
+                        </h3>
+                        <div class="grid-2" style="margin-bottom: 30px;">
+                            <div style="background: rgba(212, 175, 55, 0.05); border: 1px solid var(--gold); padding: 25px; border-radius: 12px; text-align: center;">
+                                <div style="color: var(--gold);">CA BRUT</div>
+                                <div style="font-size: 2.5rem; color: #fff;" id="finance-total-ca">0.00 €</div>
+                            </div>
+                        </div>
+                        <div id="admin-finance-list"></div>
+                    </div>
+                </div>
+
+            </div>
+        </main>
+    </div>
+            
+    <div class="modal" id="item-modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>🍽️ Paramètres du Plat</h3>
+                <button class="btn-outline" style="border:none;" onclick="closeModals()">✕</button>
+            </div>
+            <div class="modal-body">
+                <input type="hidden" id="item-edit-original-name">
+                <input type="hidden" id="item-edit-original-cat">
+                
+                <div class="input-group">
+                    <label>Catégorie</label>
+                    <select id="item-cat" class="input-field"></select>
+                </div>
+                <div class="input-group">
+                    <label>Nom du Plat</label>
+                    <input type="text" id="item-name" class="input-field">
+                </div>
+                <div class="grid-2">
+                    <div class="input-group">
+                        <label>Prix TTC</label>
+                        <input type="number" id="item-price" class="input-field" step="0.01">
+                    </div>
+                    <div class="input-group">
+                        <label>TVA (%)</label>
+                        <input type="number" id="item-tva" class="input-field" step="0.1">
+                    </div>
+                </div>
+                <div class="input-group">
+                    <label>Stock (Laissez vide pour infini)</label>
+                    <input type="number" id="item-stock" class="input-field">
+                </div>
+                
+                <div class="grid-2" style="background: rgba(56, 189, 248, 0.05); border: 1px solid rgba(56, 189, 248, 0.2); padding: 15px; border-radius: 12px; margin-bottom: 20px;">
+                    <div class="input-group" style="margin-bottom: 0;">
+                        <label style="color: var(--accent);">Temps de prép. (min) ⏱️</label>
+                        <input type="number" id="item-prep-time" class="input-field" placeholder="Ex: 15" style="border-color: rgba(56, 189, 248, 0.2);">
+                    </div>
+                    <div class="input-group" style="margin-bottom: 0;">
+                        <label style="color: var(--accent);">Poste de Cuisine 🍳</label>
+                        <select id="item-station" class="input-field" style="border-color: rgba(56, 189, 248, 0.2);">
+                            <option value="chaud">Plats / Chaud / Viandes</option>
+                            <option value="grill">Grill / Plancha</option>
+                            <option value="pizza">Four à Pizza</option>
+                            <option value="froid">Entrées / Froid</option>
+                            <option value="dessert">Pâtisserie / Desserts</option>
+                            <option value="bar">Comptoir / Bar</option>
+                            <option value="aucun">Aucun (Immédiat)</option>
+                        </select>
+                    </div>
+                </div>
+
+                <div class="toggle-row">
+                    <div class="toggle-info"><strong>Visible Menu Client</strong></div>
+                    <label class="switch"><input type="checkbox" id="item-visible" checked><span class="slider"></span></label>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn-outline" onclick="closeModals()">Annuler</button>
+                <button class="btn-save-green" onclick="saveItem()">ENREGISTRER</button>
+            </div>
+        </div>
+    </div>
+
+    <div class="modal" id="staff-modal">
+        <div class="modal-content"><div class="modal-header"><h3>👥 Employé</h3><button class="btn-outline" style="border:none;" onclick="closeModals()">✕</button></div>
+        <div class="modal-body">
+            <input type="hidden" id="staff-edit-original-pin">
+            <div class="grid-2">
+                <div class="input-group">
+                    <label>Prénom / Pseudo</label>
+                    <input type="text" id="staff-name" class="input-field" placeholder="Ex: Thomas">
+                </div>
+                <div class="input-group">
+                    <label>Intitulé Exact (Rang)</label>
+                    <input type="text" id="staff-title" class="input-field" placeholder="Ex: Chef de Partie, Commis...">
+                </div>
+            </div>
+            <div class="grid-2">
+                <div class="input-group">
+                    <label>Code PIN</label>
+                    <input type="password" id="staff-pin" class="input-field">
+                </div>
+                <div class="input-group">
+                    <label>Droits d'Accès</label>
+                    <select id="staff-role" class="input-field">
+                        <option value="salle">Caisse / Serveur</option>
+                        <option value="cuisine">Cuisine</option>
+                        <option value="admin">Manager</option>
+                    </select>
+                </div>
+            </div>
+            <div class="toggle-row">
+                <div class="toggle-info"><strong>Accès Activé</strong></div>
+                <label class="switch"><input type="checkbox" id="staff-active" checked><span class="slider"></span></label>
+            </div>
+        </div>
+        <div class="modal-footer">
+            <button class="btn-outline" onclick="closeModals()">Annuler</button>
+            <button class="btn-save-green" onclick="saveStaff()">ENREGISTRER</button>
+        </div>
+        </div>
+    </div>
+    
+    <div class="modal" id="qr-zoom-modal" onclick="if(event.target===this) closeModals()">
+        <div class="modal-content" style="background:#fff;"><img id="qr-zoom-img" src="" style="width:100%;"></div>
+    </div>
+
+    <script>
+        const urlParams = new URLSearchParams(window.location.search);
+        let tenantID = urlParams.get('tenantID') || localStorage.getItem('ichef_tenant_id');
+        
+        const SERVER_URL = (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1" || window.location.protocol === "file:") 
+            ? "http://localhost:10000" : "https://tableau-system.onrender.com";
+
+        let systemSettings = {};
+        let globalArchitecture = { rooms: ['Salle Principale'], tables: [], zones: [] };
+        let menuCuisine = {}; 
+        let menuBar = {}; 
+        let categoriesCuisine = []; 
+        let categoriesBar = []; 
+        let staffAccess = []; 
+        let archiveCuisine = []; 
+        let hasUnsavedChanges = false;
+
+        function toggleMobileMenu() { document.getElementById('sidebar').classList.toggle('open'); document.getElementById('mobile-overlay').classList.toggle('show'); }
+        function switchTab(tabId, el) { 
+            document.querySelectorAll('.main-scroll').forEach(t => { t.style.display = 'none'; t.classList.remove('active'); });
+            document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
+            let target = document.getElementById(tabId); if(target) { target.style.display = 'block'; setTimeout(() => target.classList.add('active'), 10); } 
+            if(el) el.classList.add('active'); if(window.innerWidth <= 900) toggleMobileMenu(); 
+        }
+
+        function isTimeInSlot(current, start, end) {
+            if (!start || !end) return false;
+            if (start > end) { return current >= start || current <= end; }
+            return current >= start && current <= end;
+        }
+
+        function injectSettingsToUI() {
+            let sched = systemSettings.schedule || { auto: false, days: [1,2,3,4,5,6], matin: {}, midi: {}, aprem: {}, soir: {} }; 
+            let safeDays = Array.isArray(sched.days) ? sched.days : [1,2,3,4,5,6];
+            
+            if(document.getElementById('resto-name')) document.getElementById('resto-name').value = systemSettings.name || "";
+            if(document.getElementById('resto-tva')) document.getElementById('resto-tva').value = systemSettings.tva !== undefined ? systemSettings.tva : 10;
+            if(document.getElementById('resto-tva-2')) document.getElementById('resto-tva-2').value = systemSettings.tva2 !== undefined ? systemSettings.tva2 : 20;
+            if(document.getElementById('setting-currency')) document.getElementById('setting-currency').value = systemSettings.currency || "€";
+            if(document.getElementById('setting-service-bar')) document.getElementById('setting-service-bar').checked = systemSettings.serviceAuBar || false;
+
+            if(!systemSettings.qrNfc) systemSettings.qrNfc = {};
+            const qrNfc = systemSettings.qrNfc;
+            if(document.getElementById('setting-qr-nfc-active')) document.getElementById('setting-qr-nfc-active').checked = qrNfc.active !== false;
+            if(document.getElementById('setting-payment-qr-nfc-active')) document.getElementById('setting-payment-qr-nfc-active').checked = qrNfc.active !== false;
+            if(document.getElementById('setting-qr-order-enabled')) document.getElementById('setting-qr-order-enabled').checked = qrNfc.orderEnabled !== false;
+            if(document.getElementById('setting-qr-staff-validation')) document.getElementById('setting-qr-staff-validation').checked = qrNfc.staffValidation === true;
+            if(document.getElementById('setting-qr-show-table')) document.getElementById('setting-qr-show-table').checked = qrNfc.showTable !== false;
+            if(document.getElementById('qr-menu-page')) document.getElementById('qr-menu-page').value = qrNfc.menuPage || "menu-qr.html";
+            if(document.getElementById('qr-nfc-label')) document.getElementById('qr-nfc-label').value = qrNfc.nfcLabel || "Approchez votre téléphone";
+
+            if(!systemSettings.fiscal) systemSettings.fiscal = {};
+            const fiscal = systemSettings.fiscal;
+            if(document.getElementById('setting-fiscal-cash-register')) document.getElementById('setting-fiscal-cash-register').checked = fiscal.cashRegisterEnabled === true;
+            if(document.getElementById('setting-fiscal-strict-separation')) document.getElementById('setting-fiscal-strict-separation').checked = fiscal.strictSeparation !== false;
+
+            updateKillSwitchUI(); 
+
+            if(document.getElementById('setting-loyalty-active') && systemSettings.loyalty) document.getElementById('setting-loyalty-active').checked = systemSettings.loyalty.active === true;
+            if(document.getElementById('setting-loyalty-percent') && systemSettings.loyalty) document.getElementById('setting-loyalty-percent').value = systemSettings.loyalty.percent !== undefined ? systemSettings.loyalty.percent : 5;
+            
+            if(document.getElementById('setting-auto-schedule')) document.getElementById('setting-auto-schedule').checked = sched.auto;
+            
+            if(sched.matin) { 
+                if(document.getElementById('matin-start')) document.getElementById('matin-start').value = sched.matin.s || ""; 
+                if(document.getElementById('matin-end')) document.getElementById('matin-end').value = sched.matin.e || ""; 
+            }
+            if(sched.midi) { 
+                if(document.getElementById('midi-start')) document.getElementById('midi-start').value = sched.midi.s || ""; 
+                if(document.getElementById('midi-end')) document.getElementById('midi-end').value = sched.midi.e || ""; 
+            }
+            if(sched.aprem) { 
+                if(document.getElementById('aprem-start')) document.getElementById('aprem-start').value = sched.aprem.s || ""; 
+                if(document.getElementById('aprem-end')) document.getElementById('aprem-end').value = sched.aprem.e || ""; 
+            }
+            if(sched.soir) { 
+                if(document.getElementById('soir-start')) document.getElementById('soir-start').value = sched.soir.s || ""; 
+                if(document.getElementById('soir-end')) document.getElementById('soir-end').value = sched.soir.e || ""; 
+            }
+            
+            let daysHtml = ''; const dayNames = ['Dim', 'Lun', 'Mar', 'Mer', 'Jeu', 'Ven', 'Sam'];
+            for(let i=0; i<7; i++) { 
+                let isChecked = safeDays.includes(i) ? 'checked' : ''; 
+                daysHtml += `<label style="cursor:pointer;">
+                    <input type="checkbox" style="display:none;" value="${i}" ${isChecked} onchange="toggleDayUI(this); markUnsaved()">
+                    <div style="padding: 12px 18px; border-radius: 8px; font-weight: 600; transition: 0.3s; background: ${isChecked?'var(--gold)':'rgba(0,0,0,0.3)'}; color: ${isChecked?'#000':'var(--text-muted)'};">${dayNames[i]}</div>
+                </label>`; 
+            }
+            if(document.getElementById('schedule-days-container')) document.getElementById('schedule-days-container').innerHTML = daysHtml;
+            
+            if(!systemSettings.payment) systemSettings.payment = { online: false, stripeLink: "" };
+            if(document.getElementById('resto-stripe')) document.getElementById('resto-stripe').value = systemSettings.payment.stripeLink || "";
+            if(document.getElementById('setting-qr-pay')) document.getElementById('setting-qr-pay').checked = systemSettings.payment.online === true;
+
+            if (systemSettings.design) {
+                if(document.getElementById('design-bg-color')) document.getElementById('design-bg-color').value = systemSettings.design.bgColor || "#0b0f19";
+                if(document.getElementById('design-text-color')) document.getElementById('design-text-color').value = systemSettings.design.textColor || "#ffffff";
+                if(document.getElementById('design-title-color')) document.getElementById('design-title-color').value = systemSettings.design.titleColor || "#ffffff";
+                if(document.getElementById('design-alert-color')) document.getElementById('design-alert-color').value = systemSettings.design.btnColor || "#d4af37";
+                if(document.getElementById('design-font')) document.getElementById('design-font').value = systemSettings.design.font || "'Inter', sans-serif";
+                if(document.getElementById('design-title-font')) document.getElementById('design-title-font').value = systemSettings.design.titleFont || "'Playfair Display', serif";
+                if(document.getElementById('design-banner-url')) document.getElementById('design-banner-url').value = systemSettings.design.bannerUrl || "";
+            }
+            updateDesignPreview(); 
+            renderZonesList();
+        }
+        
+        function toggleDayUI(checkbox) { 
+            let div = checkbox.nextElementSibling; 
+            if(checkbox.checked) { div.style.background = 'var(--gold)'; div.style.color = '#000'; } 
+            else { div.style.background = 'rgba(0,0,0,0.3)'; div.style.color = 'var(--text-muted)'; } 
+        }
+
+        // --- GESTION STAFF ---
+        function renderStaffList() {
+            let html = staffAccess.length === 0 ? '<div class="empty-state">Vide</div>' : staffAccess.map(s => {
+                let roleColor = s.dept === 'admin' ? 'var(--gold)' : 'var(--text-muted)'; 
+                let dutyBtn = s.onDuty 
+                    ? `<button class="btn-outline success" onclick="toggleDuty('${s.pin}')">⏱️ En Service</button>`
+                    : `<button class="btn-outline" onclick="toggleDuty('${s.pin}')">🕢 Pointer</button>`;
+                
+                let rankLabel = s.role ? s.role : s.dept;
+                
+                return `
+                <div class="list-item">
+                    <div>
+                        <strong>${s.name}</strong> 
+                        <span style="font-size:0.75rem; color:${roleColor}; margin-left:8px;">${rankLabel.toUpperCase()}</span>
+                    </div>
+                    <div style="display:flex; gap:8px;">
+                        ${dutyBtn}
+                        <button class="btn-outline" onclick="openStaffModal('${s.pin}')">✏️</button>
+                        <button class="btn-outline danger" onclick="deleteStaff('${s.pin}')">🗑️</button>
+                    </div>
+                </div>`;
+            }).join('');
+            if(document.getElementById('admin-staff-list')) document.getElementById('admin-staff-list').innerHTML = html;
+        }
+
+        async function toggleDuty(pin) {
+            let emp = staffAccess.find(s => s.pin === pin);
+            if (emp) {
+                emp.onDuty = !emp.onDuty; 
+                renderStaffList(); 
+                renderActiveStaff(); 
+                try { await fetch(`${SERVER_URL}/update-order?tenantID=${tenantID}`, { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ tableId: 'STAFF_ACCESS', order: { data: staffAccess } }) }); } catch(e) {}
+            }
+        }
+
+        function renderActiveStaff() {
+            let activeStaff = staffAccess.filter(s => s.onDuty === true); 
+            let container = document.getElementById('active-staff-list');
+            if (!container) return;
+            
+            if (activeStaff.length === 0) {
+                container.innerHTML = '<div class="empty-state" style="width: 100%; padding: 10px;">La brigade est au repos.</div>';
+            } else {
+                container.innerHTML = activeStaff.map(s => `
+                    <div style="padding: 8px 12px; background: var(--success); color: #000; border-radius: 6px; font-size: 0.8rem; font-weight: 700;">● ${s.name}</div>
+                `).join('');
+            }
+        }
+
+        function openStaffModal(pin = null) {
+            document.getElementById('staff-edit-original-pin').value = pin || "";
+            if (pin) { 
+                let s = staffAccess.find(x => x.pin === pin); 
+                document.getElementById('staff-name').value = s.name; 
+                document.getElementById('staff-title').value = s.role || ""; 
+                document.getElementById('staff-pin').value = s.pin; 
+                document.getElementById('staff-role').value = s.dept; 
+                document.getElementById('staff-active').checked = s.active !== false; 
+            } else { 
+                document.getElementById('staff-name').value = ""; 
+                document.getElementById('staff-title').value = ""; 
+                document.getElementById('staff-pin').value = ""; 
+                document.getElementById('staff-role').value = "salle"; 
+                document.getElementById('staff-active').checked = true; 
+            }
+            let modal = document.getElementById('staff-modal'); 
+            if(modal) { modal.style.display = 'flex'; setTimeout(() => modal.classList.add('show'), 10); }
+        }
+
+        async function saveStaff() {
+            let name = document.getElementById('staff-name').value.trim(); 
+            let title = document.getElementById('staff-title').value.trim(); 
+            let pin = document.getElementById('staff-pin').value.trim(); 
+            let origPin = document.getElementById('staff-edit-original-pin').value;
+            
+            if (!name || !title || pin.length < 4) return alert("Le nom, le rang et un PIN (4 chiffres min) sont obligatoires."); 
+            
+            let newStaff = { name: name, pin: pin, role: title, dept: document.getElementById('staff-role').value, active: document.getElementById('staff-active').checked, onDuty: false };
+            
+            if (origPin) {
+                let existing = staffAccess.find(s => s.pin === origPin);
+                newStaff.onDuty = existing.onDuty || false; 
+                staffAccess[staffAccess.findIndex(s => s.pin === origPin)] = newStaff; 
+            } else {
+                staffAccess.push(newStaff);
+            }
+
+            closeModals(); renderStaffList(); renderActiveStaff(); updateDashboardStats();
+            try { await fetch(`${SERVER_URL}/update-order?tenantID=${tenantID}`, { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ tableId: 'STAFF_ACCESS', order: { data: staffAccess } }) }); showToast("Synchronisé !"); } catch(e) {}
+        }
+
+        async function deleteStaff(pin) { 
+            if(confirm("Supprimer cet employé ?")) { 
+                staffAccess = staffAccess.filter(s => s.pin !== pin); 
+                renderStaffList(); renderActiveStaff(); updateDashboardStats();
+                try { await fetch(`${SERVER_URL}/update-order?tenantID=${tenantID}`, { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ tableId: 'STAFF_ACCESS', order: { data: staffAccess } }) }); } catch(e) {} 
+            } 
+        }
+
+        function renderZonesList() {
+            let zones = globalArchitecture.zones || [];
+            let html = zones.length === 0 
+                ? '<div class="empty-state">Aucune zone dessinée. Dessinez-les depuis le Pad Serveur.</div>' 
+                : zones.map(z => {
+                let mode = z.payMode || z.mode || 'standard';
+                let badgeColor = mode === 'qr_nfc' ? 'var(--success)' : (mode === 'bar' ? 'var(--gold)' : 'var(--accent)');
+                let modeLabel = mode === 'qr_nfc' ? '📲 QR/NFC — COMMANDE' : (mode === 'bar' ? '🍹 COMPTOIR / NFC' : '🍽️ SERVEUR / PAD');
+                let legalNote = mode === 'qr_nfc' 
+                    ? 'Commande client uniquement. Encaissement séparé à la caisse ou au serveur.' 
+                    : (mode === 'bar' ? 'Commande orientée comptoir. Encaissement au bar/caisse.' : 'Parcours classique avec serveur et pad.');
+
+                return `
+                <div class="list-item" style="background: rgba(0,0,0,0.3); border: 1px solid var(--border-strong);">
+                    <div class="list-item-info">
+                        <span class="list-item-title" style="color: var(--text-main); font-size: 1.05rem;">🔲 ${z.label || z.name}</span>
+                        <span style="font-size: 0.75rem; color: ${badgeColor}; font-weight: bold; margin-top: 2px;">MODE : ${modeLabel}</span>
+                        <span style="font-size: 0.75rem; color: var(--text-muted); margin-top: 2px;">${legalNote}</span>
+                    </div>
+                    <div class="list-item-actions">
+                        <select class="input-field" style="padding: 6px 10px; font-size: 0.8rem; width: auto;" onchange="updateZoneMode('${z.id}', this.value)">
+                            <option value="qr_nfc" ${mode==='qr_nfc'?'selected':''}>📲 QR/NFC commande</option>
+                            <option value="standard" ${mode==='standard'?'selected':''}>🍽️ Serveur / Pad</option>
+                            <option value="bar" ${mode==='bar'?'selected':''}>🍹 Comptoir / NFC</option>
+                        </select>
+                    </div>
+                </div>`;
+            }).join('');
+            if(document.getElementById('admin-zones-list')) document.getElementById('admin-zones-list').innerHTML = html;
+        }
+
+        function syncQrPaymentMirror(value) {
+            const mainToggle = document.getElementById('setting-qr-nfc-active');
+            if(mainToggle) mainToggle.checked = value;
+        }
+
+        function updateZoneMode(id, newMode) { 
+            let zone = globalArchitecture.zones.find(z => z.id === id); 
+            if(zone) { zone.payMode = newMode; zone.mode = newMode; markUnsaved(); renderZonesList(); } 
+        }
+
+        // --- CATEGORIES & MENU ---
+        function updateCategoryDropdowns() {
+            const optsC = categoriesCuisine.map(c => `<option value="${c.id}">${c.label}</option>`).join(''); 
+            const optsB = categoriesBar.map(c => `<option value="${c.id}">${c.label}</option>`).join('');
+            if(document.getElementById('menu-filter-cat')) document.getElementById('menu-filter-cat').innerHTML = `<option value="ALL">Toutes les catégories</option><optgroup label="Cuisine">${optsC}</optgroup><optgroup label="Bar">${optsB}</optgroup>`;
+            if(document.getElementById('item-cat')) document.getElementById('item-cat').innerHTML = `<optgroup label="Cuisine">${optsC}</optgroup><optgroup label="Bar">${optsB}</optgroup>`;
+        }
+
+        function renderCategoryModalLists() {
+            const makeHtml = (cat, isBar) => `<div class="list-item" style="padding:15px; margin-bottom:10px; background: rgba(0,0,0,0.2);"><span style="font-weight:700; color:var(--gold);">${cat.label}</span><button class="btn-outline danger" onclick="deleteCategory('${cat.id}', ${isBar})">✕</button></div>`;
+            if(document.getElementById('cat-list-cuisine')) document.getElementById('cat-list-cuisine').innerHTML = categoriesCuisine.length ? categoriesCuisine.map(c => makeHtml(c, false)).join('') : '<div class="empty-state">Vide</div>';
+            if(document.getElementById('cat-list-bar')) document.getElementById('cat-list-bar').innerHTML = categoriesBar.length ? categoriesBar.map(c => makeHtml(c, true)).join('') : '<div class="empty-state">Vide</div>';
+        }
+
+        function addCategory() {
+            let name = document.getElementById('new-cat-name').value.trim(); 
+            let type = document.getElementById('new-cat-type').value;
+            if(!name) return alert("Nom requis."); 
+            
+            let newId = name.toLowerCase().replace(/[^a-z0-9]/g, '-'); 
+            if (type === 'cuisine') { 
+                if(categoriesCuisine.find(c => c.id === newId)) return; 
+                categoriesCuisine.push({ id: newId, label: name }); 
+                if(!menuCuisine[newId]) menuCuisine[newId] = []; 
+            } else { 
+                if(categoriesBar.find(c => c.id === newId)) return; 
+                categoriesBar.push({ id: newId, label: name }); 
+                if(!menuBar[newId]) menuBar[newId] = []; 
+            }
+            document.getElementById('new-cat-name').value = ''; markUnsaved(); updateCategoryDropdowns(); renderCategoryModalLists(); renderMenuList();
+        }
+
+        function deleteCategory(id, isBar) { 
+            let menuRef = isBar ? menuBar : menuCuisine; 
+            if (menuRef[id] && menuRef[id].length > 0) return alert("Catégorie non vide !"); 
+            if(confirm("Supprimer ?")) { 
+                if (isBar) categoriesBar = categoriesBar.filter(c => c.id !== id); 
+                else categoriesCuisine = categoriesCuisine.filter(c => c.id !== id); 
+                delete menuRef[id]; markUnsaved(); updateCategoryDropdowns(); renderCategoryModalLists(); renderMenuList(); 
+            } 
+        }
+
+        function renderMenuList() {
+            let filterCatEl = document.getElementById('menu-filter-cat'); if(!filterCatEl) return;
+            const filterCat = filterCatEl.value; 
+            const search = document.getElementById('menu-filter-search') ? document.getElementById('menu-filter-search').value.toLowerCase() : ""; 
+            let html = '';
+            
+            const processCat = (catName, itemsArray, isBar) => {
+                if (!itemsArray) return; 
+                let filtered = itemsArray.filter(i => i.name.toLowerCase().includes(search));
+                if (filtered.length > 0) {
+                    html += `<h3 style="color:var(--gold); margin-top:35px;">${catName}</h3>`;
+                    filtered.forEach(item => {
+                        let isSoldOut = (item.stock === 0 || item.stock === "0"); 
+                        let ruptureBtn = isSoldOut ? `<button class="btn-outline danger" onclick="toggleRupture('${item.name.replace(/'/g, "\\'")}', '${catName}', ${isBar})">🔴 Épuisé</button>` : `<button class="btn-outline" onclick="toggleRupture('${item.name.replace(/'/g, "\\'")}', '${catName}', ${isBar})">🟢 Dispo</button>`;
+                        
+                        let techBadge = `<span style="font-size: 0.7rem; color: var(--accent); border: 1px solid rgba(56,189,248,0.3); background: rgba(56,189,248,0.05); padding: 3px 8px; border-radius: 4px; margin-left: 10px; font-weight: bold;">⏱️ ${item.prepTime || 10}min | 🍳 ${item.station ? item.station.toUpperCase() : 'CHAUD'}</span>`;
+
+                        html += `<div class="list-item" style="${item.hidden ? 'opacity: 0.5;' : ''}">
+                            <div class="list-item-info">
+                                <span class="list-item-title">${item.name} ${techBadge}</span>
+                                <span style="color:var(--gold); font-weight:600;">${item.price.toFixed(2)} €</span>
+                            </div>
+                            <div class="list-item-actions">
+                                ${ruptureBtn}
+                                <button class="btn-outline" onclick="openItemModal('${item.name.replace(/'/g, "\\'")}', '${catName}', ${isBar})">✏️</button>
+                                <button class="btn-outline danger" onclick="deleteItem('${item.name.replace(/'/g, "\\'")}', '${catName}', ${isBar})">🗑️</button>
+                            </div>
+                        </div>`;
+                    });
+                }
+            };
+            
+            if (filterCat === 'ALL') { categoriesCuisine.forEach(c => processCat(c.label, menuCuisine[c.id], false)); categoriesBar.forEach(c => processCat(c.label, menuBar[c.id], true)); } 
+            else { 
+                let isBar = categoriesBar.find(c => c.id === filterCat) !== undefined; 
+                let catObj = isBar ? categoriesBar.find(c => c.id === filterCat) : categoriesCuisine.find(c => c.id === filterCat); 
+                if (catObj) { if (!isBar && menuCuisine[catObj.id]) processCat(catObj.label, menuCuisine[catObj.id], false); if (isBar && menuBar[catObj.id]) processCat(catObj.label, menuBar[catObj.id], true); } 
+            }
+            if(document.getElementById('admin-menu-list')) document.getElementById('admin-menu-list').innerHTML = html || '<div class="empty-state">Vide</div>';
+        }
+
+        function toggleRupture(name, cat, isBar) { 
+            let catObj = (isBar ? categoriesBar : categoriesCuisine).find(c => c.label === cat) || {id: cat}; 
+            let item = (isBar ? menuBar : menuCuisine)[catObj.id].find(i => i.name === name); 
+            if (item) { item.stock = (item.stock == 0) ? "" : 0; markUnsaved(); renderMenuList(); } 
+        }
+
+        function openItemModal(name = null, cat = null, isBar = false) {
+            document.getElementById('item-edit-original-name').value = name || ""; 
+            if (name && cat) {
+                let catObj = (isBar ? categoriesBar : categoriesCuisine).find(c => c.label === cat) || {id: cat}; 
+                document.getElementById('item-edit-original-cat').value = catObj.id;
+                let item = (isBar ? menuBar : menuCuisine)[catObj.id].find(i => i.name === name);
+                
+                document.getElementById('item-name').value = item.name; 
+                document.getElementById('item-price').value = item.price; 
+                document.getElementById('item-stock').value = item.stock !== undefined ? item.stock : ""; 
+                document.getElementById('item-cat').value = catObj.id; 
+                document.getElementById('item-visible').checked = !item.hidden; 
+                document.getElementById('item-tva').value = item.tva !== undefined ? item.tva : 10;
+                document.getElementById('item-prep-time').value = item.prepTime !== undefined ? item.prepTime : 10;
+                document.getElementById('item-station').value = item.station || "chaud";
+            } else {
+                document.getElementById('item-edit-original-cat').value = ""; 
+                document.getElementById('item-name').value = ""; 
+                document.getElementById('item-price').value = ""; 
+                document.getElementById('item-stock').value = ""; 
+                document.getElementById('item-visible').checked = true; 
+                document.getElementById('item-tva').value = 10;
+                document.getElementById('item-prep-time').value = 10;
+                document.getElementById('item-station').value = "chaud";
+            }
+            let modal = document.getElementById('item-modal'); if(modal) { modal.style.display = 'flex'; setTimeout(() => modal.classList.add('show'), 10); }
+        }
+
+        function saveItem() {
+            let name = document.getElementById('item-name').value.trim(); 
+            let price = parseFloat(document.getElementById('item-price').value); 
+            let catID = document.getElementById('item-cat').value; 
+            let isVisible = document.getElementById('item-visible').checked; 
+            let tvaValue = parseFloat(document.getElementById('item-tva').value) || 0; 
+            let origName = document.getElementById('item-edit-original-name').value; 
+            let origCatID = document.getElementById('item-edit-original-cat').value;
+            
+            let prepTime = parseInt(document.getElementById('item-prep-time').value) || 10;
+            let station = document.getElementById('item-station').value;
+
+            if (!name || isNaN(price) || !catID) return alert("Invalide"); 
+            let isBarTarget = categoriesBar.find(c => c.id === catID) !== undefined; 
+            let targetMenu = isBarTarget ? menuBar : menuCuisine;
+            
+            let newItem = { 
+                name: name, price: price, stock: document.getElementById('item-stock').value, hidden: !isVisible, 
+                tva: tvaValue, prepTime: prepTime, station: station 
+            };
+            
+            if (!targetMenu[catID]) targetMenu[catID] = [];
+            if (origName) { 
+                let origMenu = categoriesBar.find(c => c.id === origCatID) ? menuBar : menuCuisine; 
+                let idx = origMenu[origCatID].findIndex(i => i.name === origName); 
+                if (idx > -1) { if (catID === origCatID) origMenu[origCatID][idx] = newItem; else { origMenu[origCatID].splice(idx, 1); targetMenu[catID].push(newItem); } } 
+            } else { targetMenu[catID].push(newItem); }
+            
+            markUnsaved(); closeModals(); renderMenuList(); updateDashboardStats(); saveAllToCloud();
+        }
+
+        function deleteItem(name, cat, isBar) { 
+            if(!confirm(`Supprimer ${name} ?`)) return; 
+            let catObj = (isBar ? categoriesBar : categoriesCuisine).find(c => c.label === cat) || {id: cat}; 
+            let ref = isBar ? menuBar : menuCuisine; ref[catObj.id] = ref[catObj.id].filter(i => i.name !== name); 
+            markUnsaved(); renderMenuList(); updateDashboardStats(); 
+        }
+
+        // --- STATS DASHBOARD ---
+        function updateDashboardStats() {
+            let itemsCount = 0; 
+            if(menuCuisine) Object.values(menuCuisine).forEach(arr => itemsCount += (arr ? arr.length : 0)); 
+            if(menuBar) Object.values(menuBar).forEach(arr => itemsCount += (arr ? arr.length : 0));
+            if(document.getElementById('dash-items-count')) document.getElementById('dash-items-count').innerText = itemsCount;
+            if(document.getElementById('dash-staff-count')) document.getElementById('dash-staff-count').innerText = staffAccess ? staffAccess.length : 0;
+            
+            let totalCA = 0;
+            let allClosed = Array.isArray(archiveCuisine) ? [...archiveCuisine] : (archiveCuisine && Array.isArray(archiveCuisine.data) ? [...archiveCuisine.data] : []);
+            
+            let todayStr = new Date().toISOString().split('T')[0];
+            let todayClosed = allClosed.filter(x => (x.date || x.time) && (x.date || x.time).startsWith(todayStr));
+
+            todayClosed.forEach(t => { totalCA += parseFloat(t.totalTTC || t.total) || 0; });
+            if(document.getElementById('dash-ca-live')) document.getElementById('dash-ca-live').innerText = totalCA.toFixed(2) + ' ' + (systemSettings.currency || "€");
+            
+            let totalCouverts = 0;
+            todayClosed.forEach(t => {
+                if (t.items) {
+                    t.items.forEach(item => {
+                        if (item.course === 2) { totalCouverts += (item.qty || 1); }
+                    });
+                }
+            });
+            if(document.getElementById('dash-couverts')) document.getElementById('dash-couverts').innerText = totalCouverts;
+
+            let weekCA = 0; let monthCA = 0; let yearCA = 0;
+            let d = new Date();
+            let currentMonth = d.getMonth(); let currentYear = d.getFullYear();
+            allClosed.forEach(t => {
+                let dateObj = new Date(t.date || t.time);
+                if (dateObj.getMonth() === currentMonth && dateObj.getFullYear() === currentYear) monthCA += parseFloat(t.totalTTC || t.total) || 0;
+                if (dateObj.getFullYear() === currentYear) yearCA += parseFloat(t.totalTTC || t.total) || 0;
+            });
+
+            if(document.getElementById('sales-day')) document.getElementById('sales-day').innerText = totalCA.toFixed(2) + '€';
+            if(document.getElementById('sales-week')) document.getElementById('sales-week').innerText = (totalCA * 1.5).toFixed(2) + '€';
+            if(document.getElementById('sales-month')) document.getElementById('sales-month').innerText = monthCA.toFixed(2) + '€';
+            if(document.getElementById('sales-year')) document.getElementById('sales-year').innerText = yearCA.toFixed(2) + '€';
+        }
+
+        function renderFinancialDashboard() {
+            let allClosed = Array.isArray(archiveCuisine) ? [...archiveCuisine] : (archiveCuisine && Array.isArray(archiveCuisine.data) ? [...archiveCuisine.data] : []);
+            let totalCA = 0; let curr = systemSettings.currency || "€"; let html = '';
+            
+            allClosed.sort((a, b) => new Date(b.date || b.time) - new Date(a.date || a.time)).forEach(t => { 
+                let valTTC = parseFloat(t.totalTTC || t.total || 0); totalCA += valTTC; 
+                let dObj = new Date(t.date || t.time); 
+                let dateStr = isNaN(dObj) ? "" : dObj.toLocaleDateString('fr-FR') + ' ' + dObj.toLocaleTimeString('fr-FR', {hour: '2-digit', minute:'2-digit'});
+                html += `<div class="list-item" style="flex-direction: column; align-items: stretch; gap: 8px;"><div style="display: flex; justify-content: space-between;"><strong style="color:var(--gold);">${t.source || 'Caisse'}</strong><strong>${valTTC.toFixed(2)} ${curr}</strong></div><div style="font-size:0.8rem; color:var(--text-muted);">${dateStr}</div></div>`;
+            });
+            
+            if(document.getElementById('finance-total-ca')) document.getElementById('finance-total-ca').innerText = totalCA.toFixed(2) + ' ' + curr; 
+            if(document.getElementById('finance-total-tables')) document.getElementById('finance-total-tables').innerText = allClosed.length;
+            if(document.getElementById('admin-finance-list')) document.getElementById('admin-finance-list').innerHTML = html || '<div class="empty-state">Vide</div>';
+        }
+
+        function updateDesignPreview() { 
+            try {
+                let bg = document.getElementById('design-bg-color')?.value || '#0b0f19'; 
+                let txt = document.getElementById('design-text-color')?.value || '#ffffff'; 
+                let btnColor = document.getElementById('design-alert-color')?.value || '#d4af37'; 
+                let font = document.getElementById('design-font')?.value || "'Inter', sans-serif"; 
+                
+                let titleColor = document.getElementById('design-title-color')?.value || '#ffffff'; 
+                let titleFont = document.getElementById('design-title-font')?.value || "'Playfair Display', serif"; 
+                
+                let bannerInput = document.getElementById('design-banner-url')?.value?.trim();
+                let bannerUrl = (bannerInput && bannerInput !== "") ? bannerInput : 'https://images.unsplash.com/photo-1414235077428-338989a2e8c0?q=80&w=500&auto=format&fit=crop';
+
+                let phone = document.getElementById('phone-preview'); 
+                if (!phone) return;
+
+                phone.style.backgroundColor = bg; 
+                phone.style.color = txt; 
+                phone.style.fontFamily = font;
+                
+                let titleEl = document.getElementById('preview-title');
+                if(titleEl) {
+                    titleEl.style.color = titleColor;
+                    titleEl.style.fontFamily = titleFont;
+                }
+                
+                let bannerDiv = document.getElementById('preview-banner-img');
+                if (bannerDiv) {
+                    bannerDiv.style.backgroundImage = 'none'; 
+                    let img = new Image();
+                    img.onload = function() {
+                        bannerDiv.style.backgroundImage = `url("${bannerUrl}")`;
+                        bannerDiv.style.backgroundSize = 'cover';
+                        bannerDiv.style.backgroundPosition = 'center';
+                    };
+                    img.src = bannerUrl;
+                }
+
+                let gradientOverlay = phone.querySelector('.gradient-overlay');
+                if(gradientOverlay) gradientOverlay.style.background = 'linear-gradient(transparent, ' + bg + ')';
+                phone.querySelectorAll('.preview-accent').forEach(el => el.style.color = btnColor);
+                phone.querySelectorAll('.preview-card').forEach(el => {
+                    el.style.border = '1px solid ' + txt + '20'; 
+                    el.style.backgroundColor = txt + '05';  
+                });
+            } catch (err) {}
+        }
+        
+        function safeText(value) {
+            return String(value ?? "").replace(/[&<>"']/g, function(ch) {
+                return ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[ch];
+            });
+        }
+
+        function getQrNfcConfig() {
+            return {
+                active: document.getElementById('setting-qr-nfc-active')?.checked !== false,
+                orderEnabled: document.getElementById('setting-qr-order-enabled')?.checked !== false,
+                staffValidation: document.getElementById('setting-qr-staff-validation')?.checked === true,
+                showTable: document.getElementById('setting-qr-show-table')?.checked !== false,
+                menuPage: (document.getElementById('qr-menu-page')?.value || "menu-qr.html").trim() || "menu-qr.html",
+                nfcLabel: (document.getElementById('qr-nfc-label')?.value || "Approchez votre téléphone").trim()
+            };
+        }
+
+        function buildQrNfcUrl(tableObj, baseUrl) {
+            const cfg = getQrNfcConfig();
+            const rawLabel = tableObj?.label || tableObj?.name || tableObj?.id || tableObj;
+            const tableLabel = String(rawLabel || "").trim();
+            const zoneLabel = tableObj?.zone || tableObj?.zoneName || tableObj?.room || tableObj?.roomName || "salle";
+
+            let finalBase = (baseUrl || "").trim();
+            if(!finalBase) finalBase = `${window.location.origin}/${cfg.menuPage}`;
+            if(!finalBase.includes("?") && !finalBase.endsWith(".html") && !finalBase.endsWith("/")) finalBase += "/";
+
+            const url = new URL(finalBase, window.location.origin);
+            url.searchParams.set("tenantID", tenantID);
+            url.searchParams.set("table", tableLabel);
+            url.searchParams.set("zone", zoneLabel);
+            url.searchParams.set("source", "qr_nfc");
+            url.searchParams.set("mode", cfg.orderEnabled ? "commande" : "lecture");
+            if(cfg.staffValidation) url.searchParams.set("validation", "serveur");
+            if(!cfg.showTable) url.searchParams.set("hideTable", "1");
+
+            return url.toString();
+        }
+
+        async function copyQrNfcLink(link) {
+            try {
+                await navigator.clipboard.writeText(link);
+                showToast("Lien QR/NFC copié !");
+            } catch(e) {
+                prompt("Copiez ce lien :", link);
+            }
+        }
+
+        async function syncQRTables() {
+            try {
+                let btn = document.querySelector('#tab-design .section-card button[onclick="syncQRTables()"]'); 
+                if(btn) btn.innerHTML = "⏳...";
+
+                const cfg = getQrNfcConfig();
+                let rawTables = (globalArchitecture && Array.isArray(globalArchitecture.tables)) ? globalArchitecture.tables : [];
+                let seen = new Set();
+                let tablesList = rawTables
+                    .map(t => (typeof t === "string" ? { label: t } : t))
+                    .filter(t => {
+                        let label = String(t?.label || t?.name || t?.id || "").trim();
+                        if(!label || seen.has(label)) return false;
+                        seen.add(label);
+                        return true;
+                    });
+
+                let container = document.getElementById('all-qr-grid'); 
+                if(!container) return;
+
+                if(tablesList.length === 0) {
+                    container.innerHTML = "<div class='empty-state'>Aucune table trouvée. Dessinez vos tables sur le Pad Serveur d'abord.</div>";
+                } else {
+                    let html = ''; 
+                    let baseUrl = document.getElementById('qr-base-url')?.value.trim();
+
+                    tablesList.forEach(t => {
+                        let label = String(t.label || t.name || t.id || "").trim();
+                        let zone = t.zone || t.zoneName || t.room || t.roomName || "salle";
+                        let link = buildQrNfcUrl(t, baseUrl); 
+                        let qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=500x500&data=${encodeURIComponent(link)}&color=000000&bgcolor=ffffff`;
+                        let statusBadge = cfg.active 
+                            ? `<span style="color: var(--success); border:1px solid rgba(16,185,129,0.35); padding:4px 8px; border-radius:999px; font-size:0.65rem; font-weight:800;">ACTIF</span>`
+                            : `<span style="color: var(--danger); border:1px solid rgba(239,68,68,0.35); padding:4px 8px; border-radius:999px; font-size:0.65rem; font-weight:800;">DÉSACTIVÉ</span>`;
+                        let encodedLabel = encodeURIComponent(label);
+                        let encodedLink = encodeURIComponent(link);
+
+                        html += `
+                        <div style="background: rgba(255,255,255,0.05); padding: 15px; border-radius: var(--radius-main); text-align: center; border: 1px solid var(--border-strong);">
+                            <div style="display:flex; justify-content:space-between; align-items:center; gap:8px; margin-bottom:12px;">
+                                <h4 style="color: var(--gold); margin: 0; font-size: 1.05rem; letter-spacing: 1px;">TABLE ${safeText(label)}</h4>
+                                ${statusBadge}
+                            </div>
+                            <div style="font-size:0.72rem; color:var(--text-muted); margin-bottom:12px;">Zone : ${safeText(zone)}</div>
+                            <img src="${qrUrl}" style="width: 150px; height: 150px; border-radius: 8px; margin-bottom: 15px; cursor:zoom-in; border: 5px solid #fff;" onclick="openQRZoom('${qrUrl}', decodeURIComponent('${encodedLabel}'))" title="Zoomer">
+
+                            <div style="background: #000; padding: 10px; border-radius: 8px; border: 1px solid var(--border);">
+                                <div style="font-size: 0.65rem; color: var(--accent); margin-bottom: 5px; text-transform: uppercase; font-weight: bold; letter-spacing: 1px;">Lien QR Code / Puce NFC</div>
+                                <input type="text" readonly value="${safeText(link)}" style="width: 100%; padding: 6px; font-size: 0.65rem; background: transparent; color: #fff; border: 1px dashed var(--border-strong); border-radius: 4px; margin-bottom: 8px; text-align: center; box-sizing: border-box;">
+                                <button class="btn-outline" style="width: 100%; font-size: 0.75rem; padding: 8px; border-color: var(--gold); color: var(--gold);" onclick="copyQrNfcLink(decodeURIComponent('${encodedLink}'))">📋 COPIER LE LIEN</button>
+                                <div style="font-size: 0.65rem; color: var(--text-muted); margin-top: 8px; line-height: 1.35;">${safeText(cfg.nfcLabel)}<br>QR/NFC = commande, pas ticket fiscal.</div>
+                            </div>
+                        </div>`;
+                    });
+                    container.innerHTML = html;
+                }
+                if(btn) btn.innerHTML = "✅"; 
+                setTimeout(() => { if(btn) btn.innerHTML = "🔄 Générer"; }, 2000);
+            } catch(e) { console.error(e); }
+        }
+
+        function openQRZoom(src, num) { 
+            if(document.getElementById('qr-zoom-img')) document.getElementById('qr-zoom-img').src = src.replace('250x250', '500x500'); 
+            if(document.getElementById('qr-zoom-title')) document.getElementById('qr-zoom-title').innerText = "TABLE " + num; 
+            let modal = document.getElementById('qr-zoom-modal'); 
+            if(modal) { modal.style.display = 'flex'; setTimeout(() => modal.classList.add('show'), 10); } 
+        }
+
+        // --- UTILS & CLOUD ---
+
+        function markUnsaved() { hasUnsavedChanges = true; let s = document.getElementById('sync-status'); if(s) { s.innerHTML = '⚠️ Modifié'; s.style.color = 'var(--gold)'; s.style.borderColor = 'var(--gold)'; } }
+        function markSaved() { hasUnsavedChanges = false; let s = document.getElementById('sync-status'); if(s) { s.innerHTML = '<span>● En Direct</span> 🔄'; s.style.color = 'var(--text-main)'; s.style.borderColor = 'var(--border)'; } }
+        function showToast(msg) { let t = document.getElementById('toast'); if(!t) { t = document.createElement('div'); t.id = 'toast'; t.className = 'toast'; document.body.appendChild(t); } t.innerText = msg; t.classList.add('show'); setTimeout(() => t.classList.remove('show'), 3000); }
+        function closeModals() { document.querySelectorAll('.modal').forEach(m => { m.style.opacity = '0'; setTimeout(() => { m.classList.remove('show'); m.style.display = 'none'; }, 300); }); }
+        function forceSync() { if(hasUnsavedChanges && !confirm("⚠️ Écraser les modifications ?")) return; fetchStateFromCloud(); }
+        function retourCaisse() { window.location.href = `pack-eco.html?tenantID=${tenantID}`; }
+
+        async function saveAllToCloud() {
+            try {
+                let syncBtn = document.getElementById('sync-status'); if(syncBtn) syncBtn.innerHTML = '⏳ Enregistrement...';
+                
+                if(document.getElementById('resto-name')) systemSettings.name = document.getElementById('resto-name').value.trim();
+                if(document.getElementById('resto-tva')) systemSettings.tva = parseFloat(document.getElementById('resto-tva').value) || 10;
+                if(document.getElementById('resto-tva-2')) systemSettings.tva2 = parseFloat(document.getElementById('resto-tva-2').value) || 20;
+                if(document.getElementById('setting-currency')) systemSettings.currency = document.getElementById('setting-currency').value;
+                if(document.getElementById('setting-service-bar')) systemSettings.serviceAuBar = document.getElementById('setting-service-bar').checked;
+
+                if(!systemSettings.qrNfc) systemSettings.qrNfc = {};
+                if(document.getElementById('setting-qr-nfc-active')) systemSettings.qrNfc.active = document.getElementById('setting-qr-nfc-active').checked;
+                if(document.getElementById('setting-payment-qr-nfc-active')) systemSettings.qrNfc.active = document.getElementById('setting-payment-qr-nfc-active').checked;
+                if(document.getElementById('setting-qr-order-enabled')) systemSettings.qrNfc.orderEnabled = document.getElementById('setting-qr-order-enabled').checked;
+                if(document.getElementById('setting-qr-staff-validation')) systemSettings.qrNfc.staffValidation = document.getElementById('setting-qr-staff-validation').checked;
+                if(document.getElementById('setting-qr-show-table')) systemSettings.qrNfc.showTable = document.getElementById('setting-qr-show-table').checked;
+                if(document.getElementById('qr-menu-page')) systemSettings.qrNfc.menuPage = document.getElementById('qr-menu-page').value.trim() || "menu-qr.html";
+                if(document.getElementById('qr-nfc-label')) systemSettings.qrNfc.nfcLabel = document.getElementById('qr-nfc-label').value.trim() || "Approchez votre téléphone";
+
+                if(!systemSettings.fiscal) systemSettings.fiscal = {};
+                if(document.getElementById('setting-fiscal-cash-register')) systemSettings.fiscal.cashRegisterEnabled = document.getElementById('setting-fiscal-cash-register').checked;
+                if(document.getElementById('setting-fiscal-strict-separation')) systemSettings.fiscal.strictSeparation = document.getElementById('setting-fiscal-strict-separation').checked;
+
+                if(!systemSettings.loyalty) systemSettings.loyalty = {};
+                if(document.getElementById('setting-loyalty-active')) systemSettings.loyalty.active = document.getElementById('setting-loyalty-active').checked;
+                if(document.getElementById('setting-loyalty-percent')) systemSettings.loyalty.percent = parseFloat(document.getElementById('setting-loyalty-percent').value) || 5;
+
+                if(!systemSettings.payment) systemSettings.payment = { online: false, stripeLink: "" };
+                if(document.getElementById('setting-qr-pay')) systemSettings.payment.online = document.getElementById('setting-qr-pay').checked;
+                if(document.getElementById('resto-stripe')) systemSettings.payment.stripeLink = document.getElementById('resto-stripe').value.trim();
+
+                if(!systemSettings.design) systemSettings.design = {};
+                if(document.getElementById('design-bg-color')) systemSettings.design.bgColor = document.getElementById('design-bg-color').value;
+                if(document.getElementById('design-text-color')) systemSettings.design.textColor = document.getElementById('design-text-color').value;
+                if(document.getElementById('design-title-color')) systemSettings.design.titleColor = document.getElementById('design-title-color').value;
+                if(document.getElementById('design-alert-color')) systemSettings.design.btnColor = document.getElementById('design-alert-color').value;
+                if(document.getElementById('design-font')) systemSettings.design.font = document.getElementById('design-font').value;
+                if(document.getElementById('design-title-font')) systemSettings.design.titleFont = document.getElementById('design-title-font').value;
+                if(document.getElementById('design-banner-url')) systemSettings.design.bannerUrl = document.getElementById('design-banner-url').value.trim();
+                
+                let selectedDays = []; document.querySelectorAll('#schedule-days-container input[type="checkbox"]:checked').forEach(cb => selectedDays.push(parseInt(cb.value)));
+                
+                systemSettings.schedule = { 
+                    auto: document.getElementById('setting-auto-schedule')?.checked || false, days: selectedDays,
+                    matin: { s: document.getElementById('matin-start')?.value || "", e: document.getElementById('matin-end')?.value || "" },
+                    midi: { s: document.getElementById('midi-start')?.value || "", e: document.getElementById('midi-end')?.value || "" },
+                    aprem: { s: document.getElementById('aprem-start')?.value || "", e: document.getElementById('aprem-end')?.value || "" },
+                    soir: { s: document.getElementById('soir-start')?.value || "", e: document.getElementById('soir-end')?.value || "" }
+                };
+
+                let architectureConsolidee = { ...menuCuisine, ...menuBar };
+                const reqs = [
+                    { tableId: 'MENU_MASTER', order: { data: menuCuisine } }, 
+                    { tableId: 'MENU_MASTER_BAR', order: { data: menuBar } },
+                    { tableId: 'SETTINGS_MASTER', order: { data: systemSettings } }, 
+                    { tableId: 'STAFF_ACCESS', order: { data: staffAccess } },
+                    { tableId: 'CATEGORIES_CUISINE', order: { data: categoriesCuisine } }, 
+                    { tableId: 'CATEGORIES_BAR', order: { data: categoriesBar } },
+                    { tableId: 'MENU_ARCHITECTURE', order: { data: architectureConsolidee } },
+                    { tableId: 'ARCHITECTURE', order: { data: globalArchitecture } }
+                ];
+                
+                for (let req of reqs) {
+                    await fetch(`${SERVER_URL}/update-order?tenantID=${tenantID}`, { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(req) });
+                }
+                markSaved(); showToast("Enregistré avec succès !");
+            } catch(e) { alert("❌ Erreur : " + e.message); let syncBtn = document.getElementById('sync-status'); if(syncBtn) syncBtn.innerHTML = '⚠️ Erreur'; }
+        }
+
+        async function fetchStateFromCloud(isBackground = false) {
+            try {
+                let syncBtn = document.getElementById('sync-status'); 
+                if (syncBtn && !isBackground) syncBtn.innerHTML = '⏳ Sync...';
+
+                let r = await fetch(`${SERVER_URL}/get-current-state?tenantID=${tenantID}&_t=${Date.now()}`, { cache: 'no-store' });
+                let state = await r.json(); let aO = state.activeOrders || {};
+
+                systemSettings = aO['SETTINGS_MASTER']?.data || systemSettings;
+                menuCuisine = aO['MENU_MASTER']?.data || {};
+                menuBar = aO['MENU_MASTER_BAR']?.data || {};
+                staffAccess = aO['STAFF_ACCESS']?.data || [];
+                
+                let financialData = aO['FINANCIAL_HISTORY'];
+                archiveCuisine = financialData?.data || (Array.isArray(financialData) ? financialData : []);
+
+                if (aO['ARCHITECTURE']) {
+                    let archi = aO['ARCHITECTURE'].data || aO['ARCHITECTURE'];
+                    globalArchitecture.rooms = archi.rooms || ['Salle Principale'];
+                    globalArchitecture.tables = archi.tables || [];
+                    globalArchitecture.zones = archi.zones || [];
+                }
+
+                categoriesCuisine = aO['CATEGORIES_CUISINE']?.data || Object.keys(menuCuisine).map(k => ({id: k, label: k}));
+                categoriesBar = aO['CATEGORIES_BAR']?.data || Object.keys(menuBar).map(k => ({id: k, label: k}));
+
+                injectSettingsToUI(); updateCategoryDropdowns(); renderCategoryModalLists(); renderMenuList(); renderStaffList(); renderActiveStaff(); updateDashboardStats(); renderFinancialDashboard(); syncQRTables(); 
+                
+                if(!isBackground) markSaved();
+            } catch(e) { 
+                console.error("Erreur Sync:", e);
+                let syncBtn = document.getElementById('sync-status'); 
+                if(syncBtn) { syncBtn.innerHTML = '❌ EN PANNE'; syncBtn.style.background = 'var(--danger)'; syncBtn.style.color = '#fff'; } 
+            }
+        }
+
+        let isTyping = false;
+        document.addEventListener('focusin', (e) => { if(e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT' || e.target.tagName === 'TEXTAREA') isTyping = true; });
+        document.addEventListener('focusout', () => { isTyping = false; });
+
+        fetchStateFromCloud(); 
+        const socket = io(SERVER_URL);
+        socket.emit('joinTenant', tenantID);
+        socket.on('updateState', (state) => {
+            if (!hasUnsavedChanges && !document.querySelector('.modal.show') && !isTyping) {
+                if(!state) return;
+                let aO = state.activeOrders || {};
+                
+                systemSettings = aO['SETTINGS_MASTER']?.data || systemSettings;
+                menuCuisine = aO['MENU_MASTER']?.data || {};
+                menuBar = aO['MENU_MASTER_BAR']?.data || {};
+                staffAccess = aO['STAFF_ACCESS']?.data || [];
+                
+                let financialData = aO['FINANCIAL_HISTORY'];
+                archiveCuisine = financialData?.data || (Array.isArray(financialData) ? financialData : []);
+
+                if (aO['ARCHITECTURE']) {
+                    let archi = aO['ARCHITECTURE'].data || aO['ARCHITECTURE'];
+                    globalArchitecture.rooms = archi.rooms || ['Salle Principale'];
+                    globalArchitecture.tables = archi.tables || [];
+                    globalArchitecture.zones = archi.zones || [];
+                }
+
+                categoriesCuisine = aO['CATEGORIES_CUISINE']?.data || Object.keys(menuCuisine).map(k => ({id: k, label: k}));
+                categoriesBar = aO['CATEGORIES_BAR']?.data || Object.keys(menuBar).map(k => ({id: k, label: k}));
+
+                updateDashboardStats(); renderFinancialDashboard(); renderStaffList(); renderActiveStaff(); renderMenuList(); renderZonesList(); syncQRTables();
+                
+                // --- ALERTE TEMPS REEL DASHBOARD (S'il y a un incident pendant qu'il navigue sur admin)
+                if(systemSettings.activeAlerts && systemSettings.activeAlerts.length > 0) {
+                    let latestAlert = systemSettings.activeAlerts[0];
+                    if(!window.lastAdminAlert || window.lastAdminAlert !== latestAlert.id) {
+                        window.lastAdminAlert = latestAlert.id;
+                        
+                        let alertContainer = document.getElementById('active-alerts-container');
+                        if (alertContainer) {
+                            alertContainer.style.display = 'flex';
+                            alertContainer.innerHTML = `
+                                <div style="background: rgba(239,68,68,0.1); border: 1px solid var(--danger); padding: 15px; border-radius: 8px; display: flex; justify-content: space-between; align-items: center;">
+                                    <div>
+                                        <div style="font-size: 0.7rem; color: var(--danger); font-weight: bold; text-transform: uppercase;">⚠️ ${latestAlert.author}</div>
+                                        <div style="font-weight: 800;">${latestAlert.message}</div>
+                                    </div>
+                                    <button class="btn-outline" style="color:var(--danger); border-color:var(--danger);" onclick="this.parentElement.style.display='none'">Fermer</button>
+                                </div>
+                            ` + alertContainer.innerHTML;
+                        }
+                    }
+                }
+            }
+        });
+
+        // --- 🛑 KILL SWITCH SYSTEM (ARRÊT D'URGENCE GLOBAL) ---
+        async function toggleKillSwitch() {
+            let isDown = systemSettings.systemDown === true;
+            let action = isDown ? "RÉACTIVER" : "VERROUILLER";
+            let confirmMsg = isDown 
+                ? "🟢 Relancer l'ensemble de l'écosystème (Prise de commande, production, caisses) ?" 
+                : "🛑 COUPURE D'URGENCE : Verrouiller l'infrastructure et stopper toutes les prises de commandes ?";
+                
+            if(!confirm(confirmMsg)) return;
+
+            systemSettings.systemDown = !isDown;
+            updateKillSwitchUI();
+            markUnsaved();
+
+            try {
+                await fetch(`${SERVER_URL}/update-order?tenantID=${tenantID}`, {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ tableId: 'SETTINGS_MASTER', order: { data: systemSettings } })
+                });
+                showToast(isDown ? "Système Opérationnel" : "Système Verrouillé !");
+                markSaved(); 
+            } catch(e) {
+                alert("Échec de la transmission d'urgence. Vérifiez la connexion.");
+            }
+        }
+
+        function updateKillSwitchUI() {
+            let btn = document.getElementById('btn-kill-switch');
+            if(!btn) return;
+            
+            if(systemSettings.systemDown) {
+                btn.innerHTML = "🟢 RELANCER LE SYSTÈME";
+                btn.style.background = "var(--success)";
+                btn.style.boxShadow = "0 4px 15px rgba(16, 185, 129, 0.4)";
+                btn.style.color = "#000";
+            } else {
+                btn.innerHTML = "🛑 COUPER LE SYSTÈME";
+                btn.style.background = "var(--danger)";
+                btn.style.boxShadow = "0 4px 15px rgba(239, 68, 68, 0.4)";
+                btn.style.color = "#fff";
+            }
+        }
+
+    </script>
+</body>
+</html>
