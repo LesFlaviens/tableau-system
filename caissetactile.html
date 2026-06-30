@@ -15,7 +15,7 @@
     <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 
-    <title>iCHEF - Caisse Tactile & Analyses</title>
+    <title>iCHEF OS - Caisse & Analyses</title>
 
     <script>
         // 🛡️ BOUCLIER 1 : DOMAIN LOCK
@@ -167,11 +167,11 @@
 
     <header class="topbar">
         <div class="topbar-title">
-            iCHEF OS — <span style="color:#fff;">Caisse Tactile</span>
-            <span class="badge-fiscal">✓ Conforme Normes Fiscales</span>
+            iCHEF OS — <span style="color:#fff;">Caisse & Analyses</span>
+            <span class="badge-fiscal" id="cash-register-badge">Caisse séparée</span>
         </div>
         <div class="topbar-actions">
-            <button class="nav-btn" style="border-color: var(--success); color: var(--success);" onclick="openFiscalModal()">🛡️ SÉCURITÉ FISCALE</button>
+            <button class="nav-btn" style="border-color: var(--success); color: var(--success);" onclick="openFiscalModal()">🛡️ ARCHITECTURE CAISSE</button>
             <button class="nav-btn" style="border-color: var(--gold); color: var(--gold);" onclick="openStatsModal()">📊 ANALYSES & STATS</button>
             <button class="nav-btn" onclick="window.location.href='minipass.html?tenantID=' + tenantID">🖥️ PASS PRODUCTION</button>
             <button class="nav-btn" style="border-color: #f43f5e; color: #f43f5e;" onclick="window.location.href='cockpit.html?tenantID=' + tenantID">⚙️ COCKPIT</button>
@@ -189,36 +189,36 @@
 
     <div id="fiscal-modal" class="stats-modal">
         <div class="stats-header">
-            <h2 style="color: var(--success);">🛡️ Conformité & Sécurité iCHEF OS</h2>
+            <h2 style="color: var(--success);">🛡️ Architecture Caisse iCHEF OS</h2>
             <button class="close-btn" onclick="closeFiscalModal()">×</button>
         </div>
         
         <div style="flex: 1; overflow-y: auto;">
             <div style="text-align: center; padding: 30px 20px 0 20px;">
                 <p style="color: var(--text-muted); font-size: 1.1rem; max-width: 800px; margin: 0 auto;">
-                    Votre système de caisse iCHEF OS intègre nativement les exigences légales liées à la loi anti-fraude à la TVA et aux normes de certification (type NF525).
+                    iCHEF OS Caisse peut fonctionner avec un backend fiscal sécurisé : tickets inaltérables, chaînage cryptographique, signature numérique, journal d’audit, clôtures et export fiscal. La conformité officielle doit être documentée par attestation individuelle ou certification selon la version déployée.
                 </p>
             </div>
             
             <div class="fiscal-grid">
                 <div class="fiscal-card">
                     <h3>🔒 Inaltérabilité</h3>
-                    <p><strong>Impossible de modifier ou effacer un ticket une fois encaissé.</strong> Toute correction ou annulation fait l'objet d'une trace écrite indélébile et horodatée.</p>
+                    <p><strong>Un ticket encaissé ne doit jamais être modifié directement.</strong> Toute correction doit passer par une annulation ou un ticket inverse tracé.</p>
                 </div>
                 
                 <div class="fiscal-card">
                     <h3>🔐 Sécurisation</h3>
-                    <p><strong>Les données doivent être cryptées</strong> (pour éviter qu'un restaurateur ne "triche" dans la base de données). Chaque transaction possède une signature électronique unique (hash cryptographique).</p>
+                    <p><strong>Le backend fiscal doit générer un hash et une signature.</strong> La preuve fiscale ne doit pas dépendre uniquement du navigateur.</p>
                 </div>
 
                 <div class="fiscal-card">
                     <h3>📅 Conservation</h3>
-                    <p><strong>Clôtures journalières, mensuelles et annuelles obligatoires.</strong> Le système impose des périodes de clôture strictes pour garantir la validation des périodes comptables.</p>
+                    <p><strong>Les tickets, paiements, TVA, clôtures et journaux d’audit doivent être conservés.</strong> La conservation doit être exploitable en cas de contrôle.</p>
                 </div>
 
                 <div class="fiscal-card">
                     <h3>🗄️ Archivage</h3>
-                    <p><strong>Figer les données sur une période donnée</strong> pour pouvoir les fournir à l'administration fiscale. L'export des données se fait dans un format standardisé et inaltérable.</p>
+                    <p><strong>Les exports fiscaux doivent être figés et vérifiables.</strong> Idéalement avec manifeste, hash et signature.</p>
                 </div>
             </div>
         </div>
@@ -283,6 +283,131 @@
         let currentActiveTables = {};
 
         // ----------------------------------------------------
+        // 🧾 PARAMÈTRES CAISSE — SANS TOUCHER AUX CONNEXIONS
+        // ----------------------------------------------------
+        function extractSettingsPayload(value) {
+            if (!value) return {};
+            if (value.data && typeof value.data === "object") return value.data;
+            if (value.settings && typeof value.settings === "object") return value.settings;
+            if (value.order && value.order.data && typeof value.order.data === "object") return value.order.data;
+            if (value.order && typeof value.order === "object") return value.order;
+            return value;
+        }
+
+        function getCashRegisterSettings() {
+            try {
+                const cloudSettings = extractSettingsPayload(
+                    currentActiveTables.SETTINGS_MASTER ||
+                    currentActiveTables.settings_master ||
+                    currentActiveTables.SETTINGS ||
+                    null
+                );
+
+                if (cloudSettings && cloudSettings.cashRegister) {
+                    return {
+                        enabled: cloudSettings.cashRegister.enabled === true,
+                        fiscalMode: cloudSettings.cashRegister.fiscalMode === true,
+                        backendUrl: cloudSettings.cashRegister.backendUrl || "/api/fiscal/cash-in"
+                    };
+                }
+            } catch (e) {}
+
+            try {
+                const raw = localStorage.getItem("ICHEF_CASH_REGISTER_SETTINGS");
+                if (raw) {
+                    const localSettings = JSON.parse(raw);
+                    return {
+                        enabled: localSettings.enabled === true,
+                        fiscalMode: localSettings.fiscalMode === true,
+                        backendUrl: localSettings.backendUrl || "/api/fiscal/cash-in"
+                    };
+                }
+            } catch (e) {}
+
+            return {
+                enabled: false,
+                fiscalMode: false,
+                backendUrl: "/api/fiscal/cash-in"
+            };
+        }
+
+        function isFiscalCashRegisterReady() {
+            const cash = getCashRegisterSettings();
+            return cash.enabled === true && cash.fiscalMode === true;
+        }
+
+        function updateCashRegisterBadge() {
+            const badge = document.getElementById("cash-register-badge");
+            if (!badge) return;
+
+            if (isFiscalCashRegisterReady()) {
+                badge.textContent = "Caisse fiscale active";
+                badge.style.color = "var(--success)";
+                badge.style.borderColor = "var(--success)";
+                badge.style.background = "rgba(16, 185, 129, 0.1)";
+            } else {
+                badge.textContent = "Caisse séparée";
+                badge.style.color = "var(--gold)";
+                badge.style.borderColor = "var(--gold)";
+                badge.style.background = "rgba(212, 175, 55, 0.1)";
+            }
+        }
+
+        function getPaymentLabel(paymentMethod) {
+            if (paymentMethod === "CARD") return "Carte bancaire";
+            if (paymentMethod === "CASH") return "Espèces";
+            if (paymentMethod === "OTHER") return "Autre";
+            return paymentMethod || "Non précisé";
+        }
+
+        function buildFiscalEndpoint(path) {
+            const endpoint = path || "/api/fiscal/cash-in";
+            if (endpoint.startsWith("http://") || endpoint.startsWith("https://")) return endpoint;
+            return `${SERVER_URL}${endpoint.startsWith("/") ? endpoint : "/" + endpoint}`;
+        }
+
+        async function sendTicketToFiscalBackend(tableId, ticketData, paymentMethod) {
+            const cash = getCashRegisterSettings();
+            const fiscalUrl = buildFiscalEndpoint(cash.backendUrl);
+
+            const fiscalResponse = await fetch(fiscalUrl, {
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/json"
+                },
+                body: JSON.stringify({
+                    tenantID: tenantID,
+                    tableId: tableId,
+                    deviceId: getDeviceFingerprint(),
+                    source: "CAISSE_ICHEF_OS",
+                    payment: {
+                        method: paymentMethod,
+                        label: getPaymentLabel(paymentMethod),
+                        currency: "EUR",
+                        amount: Number(ticketData.total || 0)
+                    },
+                    orderSnapshot: {
+                        tableId: tableId,
+                        pax: ticketData.pax || 1,
+                        total: Number(ticketData.total || 0),
+                        items: ticketData.items || [],
+                        status: "PAID",
+                        source: ticketData.source || (String(tableId).startsWith("WEB_") || String(tableId).startsWith("ORDER_") ? "QR_NFC" : "PAD_OR_CAISSE"),
+                        cashedAt: new Date().toISOString()
+                    }
+                })
+            });
+
+            const fiscalData = await fiscalResponse.json();
+
+            if (!fiscalResponse.ok || !fiscalData.success) {
+                throw new Error(fiscalData.error || "Erreur backend fiscal.");
+            }
+
+            return fiscalData;
+        }
+
+        // ----------------------------------------------------
         // 💳 MOTEUR DE LA CAISSE TACTILE
         // ----------------------------------------------------
         async function fetchStateFromCloud() {
@@ -291,6 +416,7 @@
                 if(r.ok) {
                     let state = await r.json();
                     currentActiveTables = state.activeOrders || {};
+                    updateCashRegisterBadge();
                     renderRoomGrid();
                 }
             } catch(e) { console.error("Erreur Caisse", e); }
@@ -323,47 +449,161 @@
         function ouvrirTicket(tableId) {
             const panel = document.getElementById('ticket-panel');
             let t = currentActiveTables[tableId];
-            if(!t) return;
+            if (!t) return;
 
             let itemsHtml = (t.items || []).map(i => `
                 <div style="display:flex; justify-content:space-between; padding:10px 0; border-bottom:1px dashed rgba(255,255,255,0.05);">
-                    <span>${i.qty || 1}x ${i.n || i.name}</span><span style="font-weight:bold;">${parseFloat(i.p || i.price || 0).toFixed(2)} €</span>
+                    <span>${i.qty || 1}x ${i.n || i.name}</span>
+                    <span style="font-weight:bold;">${parseFloat(i.p || i.price || 0).toFixed(2)} €</span>
                 </div>
             `).join('');
+
+            const sourceLabel = String(tableId).startsWith("WEB_") || String(tableId).startsWith("ORDER_")
+                ? "Commande QR/NFC"
+                : "Commande serveur";
 
             panel.innerHTML = `
                 <div style="padding:25px; border-bottom:1px solid var(--border);">
                     <h3 style="margin:0; font-family:'Playfair Display', serif;">🧾 Ticket : ${tableId}</h3>
+                    <div style="font-size:0.75rem; color:var(--text-muted); margin-top:8px;">${sourceLabel}</div>
                 </div>
-                <div style="flex:1; overflow-y:auto; padding:25px;">${itemsHtml}</div>
+
+                <div style="flex:1; overflow-y:auto; padding:25px;">
+                    ${itemsHtml || '<div class="empty-msg">Aucun article sur ce ticket.</div>'}
+                </div>
+
                 <div style="padding:25px; border-top:1px solid var(--border); background:rgba(0,0,0,0.2);">
                     <div style="display:flex; justify-content:space-between; font-size:1.6rem; font-weight:bold; margin-bottom:20px;">
-                        <span>Total</span><span style="color:var(--gold);">${parseFloat(t.total || 0).toFixed(2)} €</span>
+                        <span>Total</span>
+                        <span style="color:var(--gold);">${parseFloat(t.total || 0).toFixed(2)} €</span>
                     </div>
-                    <button onclick="encaisserTicket('${tableId}')" style="width:100%; background:var(--success); color:#000; border:none; padding:16px; border-radius:10px; font-weight:bold; cursor:pointer; display:flex; align-items:center; justify-content:center; gap:10px;">
-                        <span>✔️ ENCAISSER</span>
+
+                    <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px;">
+                        <button onclick="encaisserTicket('${tableId}', 'CARD')" style="background:var(--success); color:#000; border:none; padding:16px; border-radius:10px; font-weight:bold; cursor:pointer;">
+                            CB
+                        </button>
+
+                        <button onclick="encaisserTicket('${tableId}', 'CASH')" style="background:var(--gold); color:#000; border:none; padding:16px; border-radius:10px; font-weight:bold; cursor:pointer;">
+                            ESPÈCES
+                        </button>
+                    </div>
+
+                    <button onclick="encaisserTicket('${tableId}', 'OTHER')" style="width:100%; margin-top:10px; background:transparent; color:var(--text-main); border:1px solid var(--border-strong); padding:14px; border-radius:10px; font-weight:bold; cursor:pointer;">
+                        AUTRE PAIEMENT
                     </button>
-                    <div style="text-align:center; font-size:0.7rem; color:var(--success); margin-top:10px; opacity:0.8;">🔒 Transaction inaltérable & cryptée</div>
+
+                    <div style="text-align:center; font-size:0.7rem; color:var(--text-muted); margin-top:10px; opacity:0.9;">
+                        ${isFiscalCashRegisterReady()
+                            ? "🔒 Ticket fiscal généré côté serveur"
+                            : "⚠️ Caisse fiscale non activée : clôture interne uniquement"}
+                    </div>
                 </div>
             `;
         }
 
-        async function encaisserTicket(tableId) {
-            if(!confirm(`Valider l'encaissement pour ${tableId} ?`)) return;
-            let t = currentActiveTables[tableId];
-            
-            try {
-                // Sauvegarde de l'argent et du trafic (Transaction cryptée côté serveur)
-                await fetch(`${SERVER_URL}/api/save-transaction`, { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ tenantID: tenantID, transaction: { id: 'txn_'+Date.now(), table: tableId, total: t.total, items: t.items, date: new Date().toISOString() } }) });
-                await fetch(`${SERVER_URL}/api/log-traffic-history`, { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ tenantID: tenantID, pax: t.pax || 2, totalAmount: t.total }) });
-            } catch(e) {}
+        async function encaisserTicket(tableId, paymentMethod = "CARD") {
+            const t = currentActiveTables[tableId];
 
-            await fetch(`${SERVER_URL}/update-order?tenantID=${tenantID}`, { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ tableId: tableId, order: null }) });
-            document.getElementById('ticket-panel').innerHTML = '<div class="empty-msg">Ticket fermé et sécurisé 🔒</div>';
-            fetchStateFromCloud();
+            if (!t) {
+                alert("Ticket introuvable.");
+                return;
+            }
+
+            const total = Number(t.total || 0).toFixed(2);
+
+            if (!confirm(`Valider l'encaissement de ${total} € pour ${tableId} ?`)) {
+                return;
+            }
+
+            let fiscalData = null;
+            let fiscalStatus = "INTERNAL_ONLY";
+
+            try {
+                if (isFiscalCashRegisterReady()) {
+                    fiscalData = await sendTicketToFiscalBackend(tableId, t, paymentMethod);
+                    fiscalStatus = "FISCALIZED";
+                } else {
+                    const ok = confirm(`⚠️ Mode caisse fiscale non activé.
+
+Cette clôture sera enregistrée en historique interne uniquement.
+Aucun ticket fiscal signé ne sera généré par iChef OS.
+
+Confirmer la clôture interne ?`);
+
+                    if (!ok) return;
+                }
+
+                await fetch(`${SERVER_URL}/api/save-transaction`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        tenantID: tenantID,
+                        transaction: {
+                            id: fiscalData?.ticket?.id || 'txn_' + Date.now(),
+                            table: tableId,
+                            total: Number(t.total || 0),
+                            items: t.items || [],
+                            paymentMethod: paymentMethod,
+                            paymentLabel: getPaymentLabel(paymentMethod),
+                            fiscalStatus: fiscalStatus,
+                            fiscalTicketNumber: fiscalData?.ticket?.ticketNumber || null,
+                            fiscalChainHash: fiscalData?.ticket?.chainHash || null,
+                            source: String(tableId).startsWith("WEB_") || String(tableId).startsWith("ORDER_") ? "QR_NFC" : "PAD_OR_CAISSE",
+                            date: new Date().toISOString()
+                        }
+                    })
+                });
+
+                await fetch(`${SERVER_URL}/api/log-traffic-history`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        tenantID: tenantID,
+                        pax: t.pax || 2,
+                        totalAmount: Number(t.total || 0)
+                    })
+                });
+
+                await fetch(`${SERVER_URL}/update-order?tenantID=${tenantID}`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        tableId: tableId,
+                        order: null
+                    })
+                });
+
+                document.getElementById('ticket-panel').innerHTML = `
+                    <div class="empty-msg">
+                        <div style="font-size:1.1rem; color:var(--success); font-weight:bold; margin-bottom:10px;">
+                            Ticket clôturé 🔒
+                        </div>
+
+                        <div style="font-size:0.85rem; color:var(--text-muted); line-height:1.6;">
+                            Paiement : ${getPaymentLabel(paymentMethod)}<br>
+                            Statut : ${fiscalStatus === "FISCALIZED" ? "Ticket fiscal généré" : "Historique interne uniquement"}<br>
+                            ${fiscalData?.ticket?.ticketNumber ? "N° fiscal : " + fiscalData.ticket.ticketNumber + "<br>" : ""}
+                            ${fiscalData?.ticket?.chainHash ? "Hash : " + fiscalData.ticket.chainHash.substring(0, 16) + "..." : ""}
+                        </div>
+                    </div>
+                `;
+
+                fetchStateFromCloud();
+
+            } catch (error) {
+                console.error("Erreur encaissement :", error);
+                alert("Encaissement refusé : " + error.message);
+            }
         }
 
         // WebSockets
+        updateCashRegisterBadge();
         fetchStateFromCloud(); 
         const socket = io(SERVER_URL);
         socket.emit('joinTenant', tenantID);
