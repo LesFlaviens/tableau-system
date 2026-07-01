@@ -2388,44 +2388,119 @@
 
         // --- STATS DASHBOARD ---
         function updateDashboardStats() {
-            let itemsCount = 0; 
-            if(menuCuisine) Object.values(menuCuisine).forEach(arr => itemsCount += (arr ? arr.length : 0)); 
-            if(menuBar) Object.values(menuBar).forEach(arr => itemsCount += (arr ? arr.length : 0));
-            if(document.getElementById('dash-items-count')) document.getElementById('dash-items-count').innerText = itemsCount;
-            if(document.getElementById('dash-staff-count')) document.getElementById('dash-staff-count').innerText = staffAccess ? staffAccess.length : 0;
-            
-            let totalCA = 0;
-            let allClosed = Array.isArray(archiveCuisine) ? [...archiveCuisine] : (archiveCuisine && Array.isArray(archiveCuisine.data) ? [...archiveCuisine.data] : []);
-            
-            let todayStr = new Date().toISOString().split('T')[0];
-            let todayClosed = allClosed.filter(x => (x.date || x.time) && (x.date || x.time).startsWith(todayStr));
+            let itemsCount = 0;
+            if (menuCuisine) Object.values(menuCuisine).forEach(arr => itemsCount += (arr ? arr.length : 0));
+            if (menuBar) Object.values(menuBar).forEach(arr => itemsCount += (arr ? arr.length : 0));
 
-            todayClosed.forEach(t => { totalCA += parseFloat(t.totalTTC || t.total) || 0; });
-            if(document.getElementById('dash-ca-live')) document.getElementById('dash-ca-live').innerText = totalCA.toFixed(2) + ' ' + (systemSettings.currency || "€");
-            
-            let totalCouverts = 0;
-            todayClosed.forEach(t => {
-                if (t.items) {
-                    t.items.forEach(item => {
-                        if (item.course === 2) { totalCouverts += (item.qty || 1); }
+            if (document.getElementById('dash-items-count')) {
+                document.getElementById('dash-items-count').innerText = itemsCount;
+            }
+
+            if (document.getElementById('dash-staff-count')) {
+                document.getElementById('dash-staff-count').innerText = staffAccess ? staffAccess.length : 0;
+            }
+
+            const allClosed = Array.isArray(archiveCuisine)
+                ? [...archiveCuisine]
+                : (archiveCuisine && Array.isArray(archiveCuisine.data) ? [...archiveCuisine.data] : []);
+
+            const currency = systemSettings.currency || "€";
+            const now = new Date();
+
+            const startOfDay = new Date(now);
+            startOfDay.setHours(0, 0, 0, 0);
+
+            const endOfDay = new Date(now);
+            endOfDay.setHours(23, 59, 59, 999);
+
+            const startOfWeek = new Date(now);
+            const dayIndex = (startOfWeek.getDay() + 6) % 7;
+            startOfWeek.setDate(startOfWeek.getDate() - dayIndex);
+            startOfWeek.setHours(0, 0, 0, 0);
+
+            const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+            const startOfYear = new Date(now.getFullYear(), 0, 1);
+
+            const getTicketDate = (ticket) => {
+                const raw = ticket?.date || ticket?.time || ticket?.createdAt || ticket?.paidAt || ticket?.closedAt || ticket?.timestamp;
+                if (!raw) return null;
+
+                const d = new Date(raw);
+                return isNaN(d.getTime()) ? null : d;
+            };
+
+            const getTicketTotal = (ticket) => {
+                return parseFloat(ticket?.totalTTC || ticket?.total || ticket?.amount || ticket?.ttc || 0) || 0;
+            };
+
+            const getTicketCovers = (ticket) => {
+                const direct = parseFloat(ticket?.covers || ticket?.couverts || ticket?.guests || ticket?.people || 0) || 0;
+                if (direct > 0) return direct;
+
+                let counted = 0;
+                if (Array.isArray(ticket?.items)) {
+                    ticket.items.forEach(item => {
+                        if (item.course === 2 || item.type === "plat" || item.category === "PLATS") {
+                            counted += parseFloat(item.qty || item.quantity || 1) || 1;
+                        }
                     });
                 }
-            });
-            if(document.getElementById('dash-couverts')) document.getElementById('dash-couverts').innerText = totalCouverts;
+                return counted;
+            };
 
-            let weekCA = 0; let monthCA = 0; let yearCA = 0;
-            let d = new Date();
-            let currentMonth = d.getMonth(); let currentYear = d.getFullYear();
-            allClosed.forEach(t => {
-                let dateObj = new Date(t.date || t.time);
-                if (dateObj.getMonth() === currentMonth && dateObj.getFullYear() === currentYear) monthCA += parseFloat(t.totalTTC || t.total) || 0;
-                if (dateObj.getFullYear() === currentYear) yearCA += parseFloat(t.totalTTC || t.total) || 0;
+            let dayCA = 0;
+            let weekCA = 0;
+            let monthCA = 0;
+            let yearCA = 0;
+            let totalCouverts = 0;
+
+            allClosed.forEach(ticket => {
+                const ticketDate = getTicketDate(ticket);
+                if (!ticketDate) return;
+
+                const total = getTicketTotal(ticket);
+
+                if (ticketDate >= startOfYear && ticketDate <= endOfDay) {
+                    yearCA += total;
+                }
+
+                if (ticketDate >= startOfMonth && ticketDate <= endOfDay) {
+                    monthCA += total;
+                }
+
+                if (ticketDate >= startOfWeek && ticketDate <= endOfDay) {
+                    weekCA += total;
+                }
+
+                if (ticketDate >= startOfDay && ticketDate <= endOfDay) {
+                    dayCA += total;
+                    totalCouverts += getTicketCovers(ticket);
+                }
             });
 
-            if(document.getElementById('sales-day')) document.getElementById('sales-day').innerText = totalCA.toFixed(2) + '€';
-            if(document.getElementById('sales-week')) document.getElementById('sales-week').innerText = (totalCA * 1.5).toFixed(2) + '€';
-            if(document.getElementById('sales-month')) document.getElementById('sales-month').innerText = monthCA.toFixed(2) + '€';
-            if(document.getElementById('sales-year')) document.getElementById('sales-year').innerText = yearCA.toFixed(2) + '€';
+            if (document.getElementById('dash-ca-live')) {
+                document.getElementById('dash-ca-live').innerText = dayCA.toFixed(2) + ' ' + currency;
+            }
+
+            if (document.getElementById('dash-couverts')) {
+                document.getElementById('dash-couverts').innerText = totalCouverts;
+            }
+
+            if (document.getElementById('sales-day')) {
+                document.getElementById('sales-day').innerText = dayCA.toFixed(2) + ' ' + currency;
+            }
+
+            if (document.getElementById('sales-week')) {
+                document.getElementById('sales-week').innerText = weekCA.toFixed(2) + ' ' + currency;
+            }
+
+            if (document.getElementById('sales-month')) {
+                document.getElementById('sales-month').innerText = monthCA.toFixed(2) + ' ' + currency;
+            }
+
+            if (document.getElementById('sales-year')) {
+                document.getElementById('sales-year').innerText = yearCA.toFixed(2) + ' ' + currency;
+            }
         }
 
         function renderFinancialDashboard() {
@@ -2921,8 +2996,10 @@
 
         function parseTicketDate(ticket) {
             const raw = ticket?.date || ticket?.createdAt || ticket?.paidAt || ticket?.time || ticket?.timestamp || ticket?.closedAt || ticket?.lockedAt;
-            const d = raw ? new Date(raw) : new Date();
-            return isNaN(d.getTime()) ? new Date() : d;
+            if (!raw) return null;
+
+            const d = new Date(raw);
+            return isNaN(d.getTime()) ? null : d;
         }
 
         function getTicketTotalHourly(ticket) {
@@ -2995,30 +3072,13 @@
         }
 
         function buildHourlyDemoTickets() {
-            const now = new Date();
-            const names = ["Entrecôte 500g", "Plat du jour", "Crevette", "6 Huîtres", "Supp Salade", "Burger maison", "Verre de vin", "Café"];
-            return names.map((name, index) => {
-                const d = new Date(now);
-                d.setHours([10, 11, 12, 14, 15, 16, 18, 22][index] || 12, 0, 0, 0);
-                const price = [49, 15, 13, 12, 4.5, 22, 8, 3][index] || 10;
-                return {
-                    date: d.toISOString(),
-                    total: price,
-                    covers: index < 2 ? 2 : 1,
-                    paymentMethod: index % 2 === 0 ? "CARD" : "CASH",
-                    items: [{ name, qty: 1, price }]
-                };
-            });
+            // Sécurité commerciale : aucune donnée fictive.
+            // Le tableau de bord doit afficher uniquement les vrais tickets clôturés.
+            return [];
         }
 
         function normalizeHourlyTickets() {
-            let tickets = getFilteredHourlyTickets();
-
-            if (!tickets.length) {
-                tickets = buildHourlyDemoTickets();
-            }
-
-            return tickets;
+            return getFilteredHourlyTickets();
         }
 
         function renderHourlyKPIs(tickets) {
@@ -3054,7 +3114,10 @@
             for (let h = 0; h < 24; h++) byHour[h] = 0;
 
             tickets.forEach(t => {
-                const h = parseTicketDate(t).getHours();
+                const ticketDate = parseTicketDate(t);
+                if (!ticketDate) return;
+
+                const h = ticketDate.getHours();
                 byHour[h] += getTicketTotalHourly(t);
             });
 
@@ -3064,7 +3127,7 @@
             Object.keys(byHour).forEach(h => {
                 const value = byHour[h];
                 const pct = Math.max(2, (value / max) * 100);
-                if (value > 0 || [10,11,12,14,15,16,18,22].includes(Number(h))) {
+                if (value > 0) {
                     html += `
                         <div class="hourly-mini-hour">${String(h).padStart(2, "0")} h</div>
                         <div class="hourly-mini-bar-bg" title="${formatMoneyHourly(value)}">
@@ -3090,6 +3153,8 @@
 
             tickets.forEach(t => {
                 const d = parseTicketDate(t);
+                if (!d) return;
+
                 const hour = d.getHours();
                 const dayIndex = (d.getDay() + 6) % 7;
                 if (matrix[hour]) matrix[hour][dayIndex] += getTicketTotalHourly(t);
@@ -3271,8 +3336,10 @@
 
         function parsePopularityTicketDate(ticket) {
             const raw = ticket?.date || ticket?.createdAt || ticket?.paidAt || ticket?.time || ticket?.timestamp || ticket?.closedAt || ticket?.lockedAt;
-            const d = raw ? new Date(raw) : new Date();
-            return isNaN(d.getTime()) ? new Date() : d;
+            if (!raw) return null;
+
+            const d = new Date(raw);
+            return isNaN(d.getTime()) ? null : d;
         }
 
         function getPopularityItemName(item) {
@@ -3315,6 +3382,7 @@
 
             history.forEach(ticket => {
                 const d = parsePopularityTicketDate(ticket);
+                if (!d) return;
                 if (period !== "all" && (d < start || d > end)) return;
 
                 const items = Array.isArray(ticket?.items) ? ticket.items : [];
@@ -3406,40 +3474,15 @@
         }
 
         function getPopularityDemoRows() {
-            const data = [
-                ["Salade De Fruit", "DESSERTS", 22, 7, 1, [3,4,5,6,3,3,0], {10:2,11:4,12:6,14:3,16:5,18:2}],
-                ["Saint-Honoré", "DESSERTS", 19, 8, 2.2, [2,4,3,5,3,2,0], {11:3,13:4,15:6,17:2}],
-                ["Tarte Citron", "DESSERTS", 17, 6.5, 1.6, [1,3,5,4,2,2,0], {12:4,15:7,16:3}],
-                ["Baba Au Rhum", "DESSERTS", 12, 7.5, 2.1, [1,2,2,3,2,2,0], {14:3,15:4,19:2}],
-                ["Cheesecake Maison", "DESSERTS", 11, 7, 1.8, [2,1,3,2,2,1,0], {11:2,15:4,16:3}],
-                ["Mousse Au Chocolat", "DESSERTS", 9, 6, 1.4, [1,2,2,2,1,1,0], {12:2,16:5}],
-                ["Crème Brûlée", "DESSERTS", 9, 6.5, 1.5, [1,1,3,1,2,1,0], {13:2,15:3,18:3}],
-                ["Paris Brest", "DESSERTS", 7, 7, 2, [0,1,2,1,2,1,0], {14:2,16:3}],
-                ["Moelleux Au Chocolat", "DESSERTS", 6, 8, 2.4, [1,1,1,2,1,0,0], {15:3,21:2}],
-                ["Muffin Chocolat", "DESSERTS", 4, 4.5, 1.1, [0,1,1,1,1,0,0], {10:1,11:2}]
-            ];
-
-            return data.map(([name, category, quantity, price, unitCost, byDay, byHour]) => ({
-                key: `${category}__${name}`,
-                name,
-                category,
-                active: true,
-                quantity,
-                gross: Number((quantity * price).toFixed(2)),
-                costTotal: Number((quantity * unitCost).toFixed(2)),
-                profit: Number((quantity * (price - unitCost)).toFixed(2)),
-                price,
-                unitCost,
-                byDay,
-                byHour
-            }));
+            // Sécurité commerciale : aucune donnée fictive.
+            // Si aucune vente et aucune carte n’existent, l’écran doit rester à zéro.
+            return [];
         }
 
         function buildPopularityDataset() {
             let rows = collectPopularityRowsFromHistory();
 
             if (!rows.length) rows = collectPopularityRowsFromCatalog();
-            if (!rows.length) rows = getPopularityDemoRows();
 
             return rows.sort((a, b) => b.quantity - a.quantity);
         }
