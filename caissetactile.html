@@ -15,7 +15,7 @@
     <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 
-    <title>iCHEF OS - Caisse Séparée & Fiscalisation</title>
+    <title>iCHEF OS - Caisse Tactile</title>
 
     <script>
         // 🛡️ BOUCLIER 1 : DOMAIN LOCK
@@ -236,7 +236,7 @@
 
     <header class="topbar">
         <div class="topbar-title">
-            iCHEF OS — <span style="color:#fff;">Caisse & Analyses</span>
+            iCHEF OS — <span style="color:#fff;">Caisse tactile</span>
             <span class="badge-fiscal" id="cash-register-badge">Caisse séparée — fiscalisation serveur</span>
         </div>
         <div class="topbar-actions">
@@ -461,6 +461,42 @@
             return paymentMethod || "Non précisé";
         }
 
+        function getFiscalSettingsFromState() {
+            try {
+                const cloudSettings = extractSettingsPayload(
+                    currentActiveTables.SETTINGS_MASTER ||
+                    currentActiveTables.settings_master ||
+                    currentActiveTables.SETTINGS ||
+                    null
+                );
+
+                return {
+                    currency: cloudSettings?.taxConfig?.currency || cloudSettings?.currency || "EUR",
+                    country: cloudSettings?.taxConfig?.country || (cloudSettings?.currency === "CHF" ? "CH" : "FR"),
+                    taxConfig: cloudSettings?.taxConfig || null
+                };
+            } catch (e) {
+                return { currency: "EUR", country: "FR", taxConfig: null };
+            }
+        }
+
+        function normalizeCurrencyForFiscalPayload(currency) {
+            if (currency === "€") return "EUR";
+            if (currency === "CHF") return "CHF";
+            if (currency === "$") return "USD";
+            if (currency === "C$") return "CAD";
+            return currency || "EUR";
+        }
+
+        function getDisplayCurrency() {
+            const fiscal = getFiscalSettingsFromState();
+            return fiscal.currency || "€";
+        }
+
+        function formatMoney(amount) {
+            return `${parseFloat(amount || 0).toFixed(2)} ${getDisplayCurrency()}`;
+        }
+
         function buildFiscalEndpoint(path) {
             const endpoint = path || "/api/fiscal/cash-in";
             if (endpoint.startsWith("http://") || endpoint.startsWith("https://")) return endpoint;
@@ -488,9 +524,10 @@
                     payment: {
                         method: paymentMethod,
                         label: getPaymentLabel(paymentMethod),
-                        currency: "EUR",
+                        currency: normalizeCurrencyForFiscalPayload(getFiscalSettingsFromState().currency),
                         amount: Number(ticketData.total || 0)
                     },
+                    fiscalContext: getFiscalSettingsFromState(),
                     orderSnapshot: {
                         tableId: tableId,
                         pax: ticketData.pax || 1,
@@ -543,7 +580,7 @@
                 html += `
                     <div class="table-card" onclick="ouvrirTicket('${key}')">
                         <div class="table-num">${displayTitle}</div>
-                        <div class="table-status" style="color:var(--gold); font-weight:bold;">${parseFloat(t.total || 0).toFixed(2)} €</div>
+                        <div class="table-status" style="color:var(--gold); font-weight:bold;">${formatMoney(t.total || 0)}</div>
                         <div class="table-status">${t.status || 'En cours'}</div>
                     </div>
                 `;
@@ -559,7 +596,7 @@
             let itemsHtml = (t.items || []).map(i => `
                 <div style="display:flex; justify-content:space-between; padding:10px 0; border-bottom:1px dashed rgba(255,255,255,0.05);">
                     <span>${i.qty || 1}x ${i.n || i.name}</span>
-                    <span style="font-weight:bold;">${parseFloat(i.p || i.price || 0).toFixed(2)} €</span>
+                    <span style="font-weight:bold;">${formatMoney(i.p || i.price || 0)}</span>
                 </div>
             `).join('');
 
@@ -580,7 +617,7 @@
                 <div style="padding:25px; border-top:1px solid var(--border); background:rgba(0,0,0,0.2);">
                     <div style="display:flex; justify-content:space-between; font-size:1.6rem; font-weight:bold; margin-bottom:20px;">
                         <span>Total</span>
-                        <span style="color:var(--gold);">${parseFloat(t.total || 0).toFixed(2)} €</span>
+                        <span style="color:var(--gold);">${formatMoney(t.total || 0)}</span>
                     </div>
 
                     <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px;">
@@ -614,9 +651,9 @@
                 return;
             }
 
-            const total = Number(t.total || 0).toFixed(2);
+            const total = formatMoney(t.total || 0);
 
-            if (!confirm(`Valider l'encaissement de ${total} € pour ${tableId} ?`)) {
+            if (!confirm(`Valider l'encaissement de ${total} pour ${tableId} ?`)) {
                 return;
             }
 
