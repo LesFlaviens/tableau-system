@@ -30,9 +30,9 @@
             if(e.ctrlKey && e.keyCode == 'U'.charCodeAt(0)) return false; 
         }
 
-        // 🌟 IDENTIFICATION MODE DÉMO
+        // 🌟 IDENTIFICATION MODE DÉMO (Inclut DEMO-LIVE)
         const urlParamsSec = new URLSearchParams(window.location.search);
-        const isDemoMode = (urlParamsSec.get('tenantID') === 'demo' || urlParamsSec.get('tenantID') === 'demo_pizzeria');
+        const isDemoMode = (urlParamsSec.get('tenantID') === 'demo' || urlParamsSec.get('tenantID') === 'demo_pizzeria' || urlParamsSec.get('tenantID') === 'DEMO-LIVE');
     </script>
 
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;900&family=Playfair+Display:ital,wght@0,600;0,700;0,900;1,400&display=swap" rel="stylesheet">
@@ -42,6 +42,10 @@
             --text-main: #f8fafc; --text-muted: #64748b; --gold: #d4af37;
             --accent: #10b981; --danger: #ef4444; --surface-hover: #141414;
         }
+        
+        /* 🔒 Anti-Race Condition */
+        html { opacity: 0; transition: opacity 0.2s ease-in-out; }
+
         body { font-family: 'Inter', sans-serif; background: var(--bg); color: var(--text-main); margin: 0; padding: 25px; box-sizing: border-box; display: flex; flex-direction: column; gap: 20px; }
         
         header { background: var(--panel); border: 1px solid var(--border-strong); padding: 20px; border-radius: 12px; display: flex; justify-content: space-between; align-items: center; box-shadow: 0 10px 30px rgba(0,0,0,0.5); flex-wrap: wrap; gap: 15px;}
@@ -196,7 +200,22 @@
             document.querySelectorAll('button, select').forEach(el => el.disabled = state);
         }
 
+        // 🎯 FONCTION EXCLUSIVE AU MODE DÉMO (Génère une fausse liste de restaurants)
+        function loadMockedTenants() {
+            allTenants = [
+                { id: 'DEMO-LIVE', name: 'Restaurant iChef (Démo)', email: 'demo@ichef.ch', phone: '06 12 34 56 78', pack: 'PREMIUM', activeScreens: 2, maxScreens: 5, pin: '0000', status: 'ACTIF', addons: [] },
+                { id: 'PIZZA-ROMA', name: 'Pizzeria Roma', email: 'contact@roma.fr', phone: '01 23 45 67 89', pack: 'BUSINESS', activeScreens: 1, maxScreens: 3, pin: '1234', status: 'ACTIF', addons: ['menu-qr.html'] },
+                { id: 'LE-BISTROT', name: 'Le Bistrot du Coin', email: 'bistrot@gmail.com', phone: '', pack: 'ECO', activeScreens: 4, maxScreens: 2, pin: '9876', status: 'SUSPENDU', addons: [] }
+            ];
+            renderTenantsTable();
+            document.documentElement.style.opacity = "1";
+        }
+
         async function loadAllTenants() {
+            if (isDemoMode) {
+                return loadMockedTenants();
+            }
+
             setSyncState(true);
             try {
                 let res = await fetch(`${SERVER_URL}/api/get-all-tenants-admin`, {
@@ -208,12 +227,15 @@
                 if (data.success) {
                     allTenants = data.tenants || [];
                     renderTenantsTable();
+                    document.documentElement.style.opacity = "1";
                 } else {
                     alert("⛔ ERREUR : Clé d'authentification SuperAdmin refusée par le serveur.");
+                    document.documentElement.style.opacity = "1";
                 }
             } catch(e) { 
                 console.error("Erreur BDD:", e);
                 alert("📡 Connexion au serveur perdue. Vérifiez votre réseau.");
+                document.documentElement.style.opacity = "1";
             } finally {
                 setSyncState(false);
             }
@@ -292,7 +314,7 @@
                         </td>
                         <td>
                             <div class="flex-actions" style="flex-direction:column; gap:6px;">
-                                <a href="cockpit.html?tenantID=${t.id}" target="_blank" class="btn-action btn-success" style="text-align:center; text-decoration:none;">Accéder (Spy)</a>
+                                <a href="cockpit.html?tenantID=${t.id}" target="_blank" class="btn-action btn-success" style="text-align:center; text-decoration:none;" onclick="if(isDemoMode){alert('🔒 Mode Démo : Accès Espion désactivé.'); return false;}">Accéder (Spy)</a>
                                 ${toggleStatusBtn}
                                 <button class="btn-action btn-danger" onclick="supprimerCompteDefinitif('${t.id}')">Détruire</button>
                             </div>
@@ -307,6 +329,7 @@
         // ===============================================
         
         function ouvrirModalAddons(tenantID, currentAddonsStr) {
+            if (isDemoMode) return alert("🔒 Mode Démo : La modification des options est désactivée.");
             currentEditingTenant = tenantID;
             let currentAddons = currentAddonsStr.split(',').map(s => s.trim());
 
@@ -353,7 +376,7 @@
 
         async function executerAction(tenantID, action, payload = {}) {
             // 🌟 SÉCURITÉ DÉMO : Bloque les altérations du réseau
-            if (isDemoMode) return alert("🔒 Mode Démo : Les actions SuperAdmin (Modification de forfait, suppression, etc.) sont désactivées pour protéger la base de données.");
+            if (isDemoMode) return alert("🔒 Mode Démo : Les actions SuperAdmin (Modification de forfait, suspension, suppression) sont désactivées pour protéger la base de données.");
 
             if (isSyncing) return; // Sécurité anti-spam
             setSyncState(true);
@@ -381,6 +404,11 @@
         }
 
         function changerForfait(tenantID, nouveauPack) {
+            if (isDemoMode) {
+                alert("🔒 Mode Démo : Le changement de forfait est bloqué.");
+                loadAllTenants(); // Remet le menu déroulant à sa position d'origine
+                return;
+            }
             if(confirm(`⚠️ CONFIRMATION REQUISE :\nVoulez-vous vraiment basculer le restaurant ${tenantID.toUpperCase()} sur le forfait [${nouveauPack}] ?`)) {
                 executerAction(tenantID, 'set_plan', { newPlan: nouveauPack });
             } else {
@@ -389,6 +417,7 @@
         }
 
         function modifierNombreEcrans(tenantID, currentMax) {
+            if (isDemoMode) return alert("🔒 Mode Démo : La modification du nombre d'écrans est désactivée.");
             let nouveauMax = prompt(`🖥️ Saisissez le NOUVEAU nombre maximum d'écrans autorisés pour le restaurant ${tenantID.toUpperCase()} :`, currentMax);
             if (nouveauMax === null) return;
             
@@ -401,12 +430,14 @@
         }
 
         function modifierPinManuel(tenantID) {
+            if (isDemoMode) return alert("🔒 Mode Démo : Le changement de PIN est désactivé.");
             let nouveauPin = prompt(`🔢 Saisissez le NOUVEAU Code PIN Master pour ${tenantID.toUpperCase()}\n(4 chiffres minimum) :`);
             if (!nouveauPin || nouveauPin.trim().length < 4) return alert("Code invalide ou annulé.");
             executerAction(tenantID, 'set_pin', { manualPin: nouveauPin.trim() });
         }
 
         function supprimerCompteDefinitif(tenantID) {
+            if (isDemoMode) return alert("🔒 Mode Démo : La destruction de compte est désactivée.");
             if (confirm(`🚨 DESTRUCTION ATOMIQUE DU COMPTE 🚨\n\nVous êtes sur le point de détruire DÉFINITIVEMENT le restaurant : ${tenantID.toUpperCase()}.\nCette action effacera toute sa base de données, son plan de salle et ses historiques.\n\nÊtes-vous absolument sûr ?`)) {
                 executerAction(tenantID, 'delete');
             }
