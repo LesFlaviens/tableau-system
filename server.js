@@ -685,6 +685,49 @@ Flavien Iché & l'équipe iCHEF`,
 });
 
 // ==========================================
+// 📞 API TWILIO : DEMANDE DE RAPPEL (Bouton site web)
+// ==========================================
+app.post('/api/twilio/call-me', async (req, res) => {
+    const { phone } = req.body;
+    
+    if (!twilioClient) {
+        console.error("Erreur : twilioClient n'est pas initialisé.");
+        return res.status(500).json({ success: false, error: "Twilio non configuré." });
+    }
+
+    try {
+        const envTwilioNum = process.env.TWILIO_PHONE_NUMBER || '+14155238886';
+        const fromNumber = `whatsapp:${envTwilioNum.replace('whatsapp:', '')}`;
+
+        // 1. Alerte WhatsApp envoyée à TOI (Flavien) pour te prévenir
+        await twilioClient.messages.create({
+            body: `🚨 DEMANDE DE RAPPEL URGENT 🚨\nUn prospect sur le site demande à être rappelé immédiatement sur ce numéro :\n📞 ${phone}`,
+            from: fromNumber,
+            to: `whatsapp:${NUMERO_FLAVIEN.replace('whatsapp:', '')}`
+        });
+
+        // 2. Message WhatsApp de confirmation envoyé au CLIENT
+        let clientPhone = phone.trim().replace(/\s+/g, '');
+        if (clientPhone.startsWith('0')) {
+            // Remplace le 0 initial par +33 (France par défaut si le client s'est trompé)
+            clientPhone = '+33' + clientPhone.substring(1);
+        }
+
+        await twilioClient.messages.create({
+            body: `✅ iCHEF OS : Votre demande de rappel a bien été reçue. Notre équipe a été alertée et va vous contacter sur ce numéro d'ici quelques instants.`,
+            from: fromNumber,
+            to: `whatsapp:${clientPhone}`
+        });
+
+        console.log(`Demande de rappel traitée avec succès pour le numéro : ${phone}`);
+        res.json({ success: true, message: "Demande traitée avec succès." });
+
+    } catch (error) {
+        console.error("❌ Erreur Twilio Rappel :", error.message);
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+// ==========================================
 //  ANTI NO-SHOW (Empreinte Bancaire)
 // ==========================================
 app.post('/api/create-hold-intent', async (req, res) => {
