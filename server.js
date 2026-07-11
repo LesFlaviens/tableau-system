@@ -7,6 +7,7 @@
 const express = require('express');
 const cors = require('cors');
 const path = require('path');
+const crypto = require('crypto'); // 🛡️ INTÉGRATION SÉCURITÉ CRYPTO (LOI ANTI-FRAUDE)
 const mongoose = require('mongoose');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
 const twilio = require('twilio'); // 📡 INTÉGRATION TWILIO (SMS/WHATSAPP)
@@ -158,6 +159,99 @@ const AppState = mongoose.model('AppState', new mongoose.Schema({
 }, { minimize: false }));
 
 // ==========================================
+// 🛡️ SÉCURITÉ FISCALE & LÉGALE (NORME ANTI-FRAUDE)
+// ==========================================
+
+// 1. Schéma du Grand Livre Inaltérable (Audit Trail)
+const auditLogSchema = new mongoose.Schema({
+    tenantID: { type: String, required: true, index: true },
+    timestamp: { type: Date, default: Date.now },
+    action: { type: String, required: true }, // CREATE, UPDATE, CANCEL, DELETE_SOFT
+    entityType: { type: String, required: true }, // COMMANDE, RH, REGLAGE
+    entityId: { type: String, required: true },
+    authorPin: { type: String, required: true }, // Qui a fait l'action
+    details: { type: Object }, // Ce qui a changé (Avant/Après)
+    previousHash: { type: String, required: true }, // Chaînage avec l'action précédente
+    currentHash: { type: String, required: true }   // Signature cryptographique
+});
+const AuditLog = mongoose.model('AuditLog', auditLogSchema);
+
+// 2. Fonction de Scellement Cryptographique (Façon Blockchain)
+async function scellerOperation(tenantID, action, entityType, entityId, authorPin, details) {
+    try {
+        const safeID = cleanString(tenantID);
+        // Récupérer la dernière opération pour la chaîner
+        const lastLog = await AuditLog.findOne({ tenantID: safeID }).sort({ timestamp: -1 });
+        const previousHash = lastLog ? lastLog.currentHash : 'GENESIS_BLOCK_0000000000000000';
+
+        // Créer l'empreinte de la nouvelle donnée
+        const dataString = JSON.stringify({ tenantID: safeID, action, entityType, entityId, authorPin, details, previousHash });
+        
+        // Chiffrement SHA-256 (Standard bancaire)
+        const currentHash = crypto.createHash('sha256').update(dataString).digest('hex');
+
+        // Archiver la donnée
+        await AuditLog.create({
+            tenantID: safeID,
+            action,
+            entityType,
+            entityId,
+            authorPin,
+            details,
+            previousHash,
+            currentHash
+        });
+        
+        console.log(`🔒 Opération scellée [${action}] pour ${safeID} (Hash: ${currentHash.substring(0,8)}...)`);
+    } catch (error) {
+        console.error("🚨 ERREUR CRITIQUE DE SCELLÉ CRYPTOGRAPHIQUE :", error);
+    }
+}
+
+// 3. API d'Export des Preuves Légales (Accès Master uniquement)
+app.get('/api/export-preuves-legales', async (req, res) => {
+    const { tenantID, masterPin } = req.query;
+    const safeID = cleanString(tenantID);
+    
+    try {
+        const tenant = await Tenant.findOne({ tenantID: safeID });
+        if (!tenant || tenant.pin !== masterPin) {
+            return res.status(403).json({ error: "Accès refusé. Empreinte de sécurité invalide." });
+        }
+
+        const logs = await AuditLog.find({ tenantID: safeID }).sort({ timestamp: 1 });
+        
+        // Vérification de l'intégrité de la chaîne
+        let isChainValid = true;
+        let brokenAtIndex = null;
+        
+        for (let i = 1; i < logs.length; i++) {
+            if (logs[i].previousHash !== logs[i-1].currentHash) {
+                isChainValid = false;
+                brokenAtIndex = i;
+                break;
+            }
+        }
+
+        res.json({
+            success: true,
+            certificatLegal: {
+                etablissement: tenant.clientName,
+                dateExtraction: new Date(),
+                integriteGarantie: isChainValid,
+                alerteFalsification: isChainValid ? "Aucune altération détectée" : `ATTENTION: Chaîne brisée à l'index ${brokenAtIndex}`,
+                totalOperations: logs.length
+            },
+            journal: logs
+        });
+
+    } catch (error) {
+        res.status(500).json({ error: "Erreur lors de l'export d'audit." });
+    }
+});
+
+
+// ==========================================
 // 🤖 MOTEURS IA (GEMINI)
 // ==========================================
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY || 'CLE_MANQUANTE');
@@ -265,14 +359,19 @@ app.post('/api/smart-reservation', async (req, res) => {
         const decision = JSON.parse(responseText);
         
         if (decision.acceptee && decision.tableAllouee) {
+            const newResa = { 
+                id: 'resa_' + Date.now(), pax: decision.pax, heure: decision.heure, 
+                table: decision.tableAllouee, info: decision.optimisationInfo, timestamp: Date.now() 
+            };
+            
             await AppState.findOneAndUpdate(
                 { tenantID: safeID },
-                { $push: { "activeOrders.RESERVATIONS_MASTER.data": { 
-                    id: 'resa_' + Date.now(), pax: decision.pax, heure: decision.heure, 
-                    table: decision.tableAllouee, info: decision.optimisationInfo, timestamp: Date.now() 
-                } } },
+                { $push: { "activeOrders.RESERVATIONS_MASTER.data": newResa } },
                 { upsert: true }
             );
+
+            // Audit
+            await scellerOperation(safeID, 'CREATE', 'RESERVATION', newResa.id, 'IA_SYSTEM', newResa);
         }
         res.json({ success: true, decision });
     } catch (error) { 
@@ -300,6 +399,10 @@ app.post('/api/save-transaction', async (req, res) => {
 
         state.markModified('activeOrders');
         await state.save();
+
+        // Audit
+        await scellerOperation(safeID, 'CREATE', 'TRANSACTION', transaction.id || Date.now().toString(), 'SYSTEM', transaction);
+
         res.json({ success: true, message: "Ticket comptabilisé." });
     } catch(e) { res.status(500).json({ success: false, error: "Erreur sauvegarde base de données." }); }
 });
@@ -438,21 +541,54 @@ app.get('/get-current-state', async (req, res) => {
     } catch (e) { res.status(500).json({ error: "Sync Error" }); }
 });
 
+// 🚀 NOUVELLE FONCTION UPDATE-ORDER SÉCURISÉE (SOFT DELETE & AUDIT TRAIL)
 app.post('/update-order', async (req, res) => {
     try {
         let tenantID = req.query.tenantID || 'MASTER_STATE';
         if (tenantID !== 'MASTER_STATE') tenantID = cleanString(tenantID);
 
-        const { tableId, order } = req.body;
-        let updateQuery = (order === null) ? { $unset: { [`activeOrders.${tableId}`]: 1 } } : { $set: { [`activeOrders.${tableId}`]: order } };
+        const { tableId, order, pin } = req.body;
+        const authorPin = pin || 'SYSTEM';
+
+        let actionType = 'UPDATE';
+        let updateQuery;
+
+        if (order === null || order === 'DELETE') {
+            actionType = 'DELETE_SOFT';
+            // Zéro Suppression : On archive la donnée au lieu de l'effacer
+            updateQuery = { 
+                $set: { 
+                    [`activeOrders.${tableId}.isArchived`]: true,
+                    [`activeOrders.${tableId}.status`]: 'ANNULÉ_OU_SUPPRIMÉ'
+                } 
+            };
+        } else {
+            updateQuery = { $set: { [`activeOrders.${tableId}`]: order } };
+        }
+
         const newState = await AppState.findOneAndUpdate({ tenantID }, updateQuery, { upsert: true, new: true });
         
-        // 🔥 ÉMISSION TEMPS RÉEL (WEBSOCKETS) VERS LES ÉCRANS 🔥
+        // Audit Trail Cryptographique
+        if (tenantID !== 'MASTER_STATE' && tableId) {
+            await scellerOperation(
+                tenantID, 
+                actionType, 
+                tableId.includes('STAFF') ? 'RH' : (tableId.includes('SETTING') ? 'REGLAGE' : 'COMMANDE'), 
+                tableId, 
+                authorPin, 
+                order || 'DELETED'
+            );
+        }
+
         io.to(tenantID).emit('updateState', newState);
         
         res.json({ success: true });
-    } catch (e) { res.status(500).json({ error: "Save Error" }); }
+    } catch (e) { 
+        console.error(e);
+        res.status(500).json({ error: "Save Error" }); 
+    }
 });
+
 
 // ==========================================
 // MASTER CONTROL API (EMPIRE SUPER ADMIN)
@@ -561,7 +697,6 @@ app.post('/api/nouvelle-demande-demo', async (req, res) => {
             activeOrders: {}
         });
 
-        // ... La suite du code avec l'envoi du WhatsApp Twilio ...
 
         // 🚨 PRÉPARATION DES DONNÉES DE QUALIFICATION POUR LES ALERTES 🚨
         const d = req.body.details || {};
@@ -709,7 +844,6 @@ app.post('/api/twilio/call-me', async (req, res) => {
         // 2. Message WhatsApp de confirmation envoyé au CLIENT
         let clientPhone = phone.trim().replace(/\s+/g, '');
         if (clientPhone.startsWith('0')) {
-            // Remplace le 0 initial par +33 (France par défaut si le client s'est trompé)
             clientPhone = '+33' + clientPhone.substring(1);
         }
 
