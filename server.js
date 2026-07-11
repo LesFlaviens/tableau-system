@@ -919,8 +919,97 @@ app.post('/api/log-traffic-history', async (req, res) => {
 });
 
 // ==========================================
-// 🧠 IA RH : PRÉDICTIONS ET PLANNINGS (YIELD MANAGEMENT)
+// 🧠 IA DIRECTEUR OPÉRATIONNEL & FINANCIER (VISION 360°)
 // ==========================================
+app.post('/api/ai-executive-report', async (req, res) => {
+    const { tenantID, currentStock, recentSales, financialStats } = req.body;
+    const safeID = cleanString(tenantID);
+
+    try {
+        // 1. Récupération des données du restaurant (Trafic, Historique)
+        let state = await AppState.findOne({ tenantID: safeID });
+        let history = state?.activeOrders?.TRAFFIC_HISTORY?.data || [];
+        
+        // 2. Création du super-prompt pour Gemini
+        const prompt = `Tu es l'IA "Directeur Financier et Supply Chain" d'iCHEF OS.
+        Analyse les données du restaurant suivantes :
+        - Ventes récentes : ${JSON.stringify(recentSales || history.slice(0, 30))}
+        - Stocks actuels : ${JSON.stringify(currentStock || 'Non spécifié')}
+        - Chiffres financiers : ${JSON.stringify(financialStats || 'Non spécifié')}
+
+        Ta mission est de fournir un rapport exécutif ultra-précis. 
+        RÉPONDS UNIQUEMENT AVEC CE JSON STRICT (SANS MARKDOWN, SANS TEXTE AUTOUR) :
+        {
+            "previsionVentes": "Explication courte des tendances de ventes pour les 7 prochains jours.",
+            "alertesRupture": ["Produit A (reste 2 jours)", "Produit B (critique)"],
+            "commandesFournisseurs": [
+                { "fournisseur": "Nom", "articles": ["10kg Tomates", "5L Huile"] }
+            ],
+            "detectionAnomalies": "Explication si des pertes, du coulage ou des annulations suspectes sont détectées.",
+            "recommandationMenu": ["Plat X (Grosse marge, à pousser)", "Plat Y (Populaire, à garder)"],
+            "analyseMarge": "Explication claire de la baisse/hausse de la marge et du chiffre d'affaires, avec 1 conseil d'action."
+        }`;
+
+        const model = genAI.getGenerativeModel({ model: "gemini-1.5-pro" }); // On utilise le modèle Pro car la tâche est complexe
+        const result = await model.generateContent(prompt);
+        
+        let responseText = result.response.text().trim();
+        const ticks = String.fromCharCode(96, 96, 96);
+        responseText = responseText.split(ticks + 'json').join('').split(ticks).join('').trim();
+        if (!responseText.startsWith("{")) responseText = responseText.substring(responseText.indexOf("{"));
+        
+        res.json({ success: true, report: JSON.parse(responseText) });
+    } catch (error) {
+        console.error("Erreur IA Executive Report:", error);
+        res.status(500).json({ success: false, error: "L'analyse IA est momentanément indisponible." });
+    }
+});
+
+// ==========================================
+// 🎙️ ASSISTANT VOCAL DU DIRECTEUR (CONVERSATION EN DIRECT)
+// ==========================================
+app.post('/api/voice-assistant', async (req, res) => {
+    const { tenantID, spokenQuery } = req.body;
+    const safeID = cleanString(tenantID);
+
+    try {
+        // On récupère l'état instantané du restaurant pour que l'IA sache ce qui se passe TOUT DE SUITE
+        let state = await AppState.findOne({ tenantID: safeID });
+        let activeStaff = 0;
+        if (state?.activeOrders?.STAFF_ACCESS?.data) {
+            activeStaff = state.activeOrders.STAFF_ACCESS.data.filter(s => s.onDuty).length;
+        }
+
+        const prompt = `Tu es l'assistant vocal privé du directeur du restaurant intégré à iCHEF OS. Tu t'appelles iCHEF.
+        Le directeur te parle au micro et te demande : "${spokenQuery}"
+
+        Contexte instantané du restaurant :
+        - Employés actuellement pointés : ${activeStaff}
+        - Date et Heure : ${new Date().toLocaleString('fr-FR')}
+        
+        RÉDIGE TA RÉPONSE COMME SI TU LA PARLAIS (Style Jarvis dans Iron Man). 
+        Sois concis, direct, très professionnel, et apporte des solutions. Ne mets pas d'emojis, car ta réponse sera lue par une voix de synthèse.
+        
+        JSON RÉPONSE ATTENDUE (SANS MARKDOWN) :
+        {
+            "vocalResponse": "Texte exact à prononcer par le haut-parleur",
+            "actionToTrigger": "NONE" // Mets un mot-clé si une action système est requise (ex: "OPEN_STATS", "CALL_STAFF")
+        }`;
+
+        const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+        const result = await model.generateContent(prompt);
+        
+        let responseText = result.response.text().trim();
+        const ticks = String.fromCharCode(96, 96, 96);
+        responseText = responseText.split(ticks + 'json').join('').split(ticks).join('').trim();
+        if (!responseText.startsWith("{")) responseText = responseText.substring(responseText.indexOf("{"));
+        
+        res.json({ success: true, aiReply: JSON.parse(responseText) });
+    } catch (error) {
+        console.error("Erreur Assistant Vocal:", error);
+        res.status(500).json({ success: false, error: "Connexion vocale perdue." });
+    }
+});
 app.post('/api/predict-hr-schedule', async (req, res) => {
     const { tenantID, staffList } = req.body;
     const safeID = cleanString(tenantID);
