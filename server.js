@@ -18,9 +18,8 @@ const http = require('http');
 const { Server } = require('socket.io');
 
 // ==========================================
-// CONFIGURATION DES CLÉS (AVEC VALEURS DE SECOURS ANTI-CRASH)
+// CONFIGURATION DES CLÉS
 // ==========================================
-// SÉCURITÉ MAÎTRE DE L'EMPIRE (Super Admin)
 const ADMIN_PASS = process.env.ADMIN_PASS || 'Empire2026';
 
 const stripeKey = process.env.STRIPE_SECRET_KEY || 'sk_test_51TN80JQ9Dw3nOfA4I3XTxPl5FR4ddYmU9Jw2pGmfa0eABz2P6wAzK8RMzHw2XilulLXxFmY2oEDgau4TcScOf9WK00ajIEuweB'; 
@@ -35,20 +34,20 @@ const app = express();
 app.set('trust proxy', 1);
 const server = http.createServer(app);
 
-const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS || 'https://os.ichef.ch,http://localhost:10000')
-    .split(',')
-    .map(v => v.trim())
-    .filter(Boolean);
+// 🔓 CORRECTION CORS : MOTEUR DYNAMIQUE POUR NE PLUS BLOQUER LES CLIENTS
+const corsOptions = {
+    origin: function (origin, callback) {
+        // Renvoie l'origine exacte au navigateur (Indispensable pour credentials: true)
+        callback(null, true);
+    },
+    credentials: true,
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'Origin', 'Accept', 'X-CSRF-Token', 'X-iCHEF-Device', 'X-iCHEF-Master-Device', 'Idempotency-Key']
+};
 
-const io = new Server(server, {
-    cors: {
-        origin(origin, callback) {
-            if (!origin || ALLOWED_ORIGINS.includes(origin)) return callback(null, true);
-            callback(new Error('Origine Socket.IO non autorisée'));
-        },
-        credentials: true
-    }
-});
+const io = new Server(server, { cors: corsOptions });
+
+app.use(cors(corsOptions));
 
 // 👇 DÉBLOCAGE DES VIDÉOS & RESSOURCES 👇
 app.use(express.static(__dirname));
@@ -56,7 +55,7 @@ app.use(express.static(__dirname));
 const PORT = process.env.PORT || 10000;
 
 // Configurations de sessions sécurisées
-const COOKIE_SECURE = true; // Forcé à true pour l'utilisation obligatoire avec SameSite=None en production
+const COOKIE_SECURE = true; 
 const SESSION_TTL_MS = 30 * 60 * 1000;
 const MASTER_SESSION_TTL_MS = 20 * 60 * 1000;
 
@@ -90,7 +89,7 @@ function setCookie(res, name, value, maxAge) {
         `${name}=${encodeURIComponent(value)}`,
         'Path=/',
         'HttpOnly',
-        'SameSite=None', // 🔓 AUTORISE LA LECTURE CROSS-DOMAIN (os.ichef.ch <-> onrender.com)
+        'SameSite=None', // 🔓 AUTORISE LA LECTURE CROSS-DOMAIN
         'Secure',        // 🔒 REQUIS PAR LES NAVIGATEURS AVEC SAMESITE=NONE
         `Max-Age=${Math.floor(maxAge / 1000)}`
     ];
@@ -126,17 +125,6 @@ function verifyPinHash(pin, storedHash) {
     const actual = crypto.scryptSync(String(pin), salt, 64).toString('hex');
     return safeEqual(actual, expected);
 }
-
-// Sécurité des requêtes (CORS)
-app.use(cors({
-    origin(origin, callback) {
-        if (!origin || ALLOWED_ORIGINS.includes(origin)) return callback(null, true);
-        callback(new Error('Origine CORS non autorisée'));
-    },
-    credentials: true,
-    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization', 'Origin', 'Accept', 'X-CSRF-Token', 'X-iCHEF-Device', 'X-iCHEF-Master-Device', 'Idempotency-Key']
-}));
 
 // 🚨 SÉCURITÉ STRIPE : On utilise raw() uniquement pour la route webhook
 app.use('/webhook', express.raw({ type: 'application/json' }));
@@ -1200,80 +1188,6 @@ app.post('/update-order', async (req, res) => {
     }
 });
 
-
-// ==========================================
-// MASTER CONTROL API (EMPIRE SUPER ADMIN)
-// ==========================================
-app.post('/api/get-all-tenants-admin', async (req, res) => {
-    if (!safeEqual(req.body.masterKey, ADMIN_PASS)) return res.status(401).json({ success: false, error: "Acces Refuse." });
-    try {
-        const tenantsData = await Tenant.find({});
-        const formattedTenants = tenantsData.map(t => ({
-            id: t.tenantID, name: t.clientName || "Sans Nom", 
-            email: t.email || "Non renseigné", phone: t.phone || "Non renseigné",
-            pack: t.plan, specialite: t.specialite, addons: t.addons || [],
-            maxScreens: t.maxScreens, maxStaff: t.maxStaff,
-            activeScreens: t.registeredDevices ? t.registeredDevices.length : 0, 
-            status: t.status
-        }));
-        res.json({ success: true, tenants: formattedTenants });
-    } catch(err) { res.status(500).json({ success: false }); }
-});
-
-app.post('/api/admin-action', async (req, res) => {
-    if (!safeEqual(req.body.masterKey, ADMIN_PASS)) return res.status(401).json({ success: false, error: "Acces Refuse." });
-    try {
-        const { tenantID, action, newPlan, manualScreens, manualPin, manualMaxStaff, maxScreens, addons } = req.body;
-        const safeID = cleanString(tenantID);
-
-        if (action === 'set_screens' && manualScreens) {
-            await Tenant.findOneAndUpdate({ tenantID: safeID }, { maxScreens: parseInt(manualScreens) });
-        }
-        else if (action === 'set_max_staff' && manualMaxStaff) {
-            await Tenant.findOneAndUpdate({ tenantID: safeID }, { maxStaff: parseInt(manualMaxStaff) });
-        }
-        else if (action === 'set_pin' && manualPin) {
-            await Tenant.findOneAndUpdate({ tenantID: safeID }, { pinHash: hashPin(manualPin.trim()), registeredDevices: [] });
-        }
-        else if (action === 'set_addons' && Array.isArray(addons)) {
-            await Tenant.findOneAndUpdate({ tenantID: safeID }, { addons: addons });
-        }
-        else if (action === 'set_plan' && newPlan) { 
-            let limit = 1; let staffLimit = 1;
-            const upperPlan = newPlan.toUpperCase();
-            if (['CHEF', 'PATISSIER', 'BAR', 'CHEF_CUISINE', 'CHEF_PATISSERIE', 'CHEF_BAR'].includes(upperPlan)) { limit = 1; staffLimit = 1; } 
-            else if (['BUSINESS', 'RENTABILITE', 'ECO', 'PACK_A'].includes(upperPlan)) { limit = 5; staffLimit = 999; } 
-            else if (['BRIGADE', 'EMPIRE', 'BRIGADES', 'PREMIUM'].includes(upperPlan)) { limit = 50; staffLimit = 999; } 
-            
-            await Tenant.findOneAndUpdate({ tenantID: safeID }, { plan: upperPlan, maxScreens: limit, maxStaff: staffLimit }, { new: true });
-        }
-        else if (action === 'set_max_screens') {
-            if (!maxScreens || isNaN(maxScreens) || maxScreens < 1) {
-                return res.status(400).json({ success: false, error: "Nombre invalide." });
-            }
-            await Tenant.findOneAndUpdate({ tenantID: safeID }, { maxScreens: parseInt(maxScreens) });
-        }
-        else if (action === 'reset_devices') await Tenant.findOneAndUpdate({ tenantID: safeID }, { registeredDevices: [] });
-        else if (action === 'suspend') await Tenant.findOneAndUpdate({ tenantID: safeID }, { status: 'SUSPENDU', registeredDevices: [] });
-        else if (action === 'activate') {
-            await Tenant.findOneAndUpdate({ tenantID: safeID }, { status: 'ACTIF' });
-        }
-        else if (action === 'delete' || action === 'archive') { await Tenant.findOneAndUpdate({ tenantID: safeID }, { status: 'SUSPENDU', archivedAt: new Date(), registeredDevices: [] }); }
-        
-        res.json({ success: true });
-    } catch (err) { res.status(500).json({ success: false, error: err.message }); }
-});
-
-// ==========================================
-// OUTIL DE DIAGNOSTIC
-// ==========================================
-app.get('/debug-fichiers', (req, res) => {
-    const fs = require('fs');
-    fs.readdir(__dirname, (err, files) => {
-        if (err) return res.status(500).json({ erreur: "Impossible de lire le dossier" });
-        res.json({ dossier_actuel: __dirname, fichiers_trouves: files });
-    });
-});
 
 // ==========================================
 // 🌟 GESTION DES WEBSOCKETS (SYNCHRONISATION DES ÉCRANS EN SALLE/CUISINE)
