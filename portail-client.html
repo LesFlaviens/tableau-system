@@ -3,7 +3,12 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>Empire OS | Déploiement de l'Infrastructure</title>
+    <meta http-equiv="Cache-Control" content="no-store, no-cache, must-revalidate, private">
+    <meta http-equiv="Pragma" content="no-cache">
+    <meta http-equiv="Expires" content="0">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; connect-src 'self' https://tableau-system.onrender.com; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data:; object-src 'none'; base-uri 'self'; frame-ancestors 'none'; form-action 'self'; upgrade-insecure-requests">
+
+    <title>iCHEF OS | Déploiement Client Sécurisé</title>
     <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@300;400;500;600;700;800&family=Playfair+Display:ital,wght@0,600;0,900;1,400&display=swap" rel="stylesheet">
     
     <style>
@@ -171,13 +176,13 @@
     <div class="setup-box" id="step-1-loading">
         <div class="loader" id="spinner"></div>
         <h1>EMPIRE OS</h1>
-        <p id="loading-text" style="color: var(--text-main);">Analyse de la session cryptographique en cours...</p>
+        <p id="loading-text" style="color: var(--text-main);">Vérification sécurisée du paiement et du lien d’activation…</p>
     </div>
 
     <!-- ETAPE 2 : FORMULAIRE DE DEPLOIEMENT -->
     <div class="setup-box" id="step-2-form" style="display: none;">
         <h1>INITIALISATION</h1>
-        <p>Paiement validé. Configurez votre matrice.</p>
+        <p>Paiement vérifié. Configurez votre espace client.</p>
         
         <div class="detected-plan">
             <span>🛡️ Licence :</span>
@@ -187,155 +192,290 @@
         
         <div class="input-group">
             <label>Nom de l'établissement</label>
-            <input type="text" id="reg-name" placeholder="Ex: Le Majestic" required>
+            <input type="text" id="reg-name" placeholder="Ex: Le Majestic" required maxlength="120" autocomplete="organization">
         </div>
 
         <div class="input-group">
             <label>Identifiant Réseau (ID unique)</label>
-            <input type="text" id="reg-id" placeholder="ex: majestic-paris" style="text-transform: lowercase;" required title="Sans espaces, lettres et tirets uniquement">
+            <input type="text" id="reg-id" placeholder="ex: majestic-paris" style="text-transform: lowercase;" required minlength="3" maxlength="48" autocomplete="off" title="Sans espaces, lettres et tirets uniquement">
         </div>
 
         <div class="input-group">
             <label>Email du Gérant (Administrateur)</label>
-            <input type="email" id="reg-email" placeholder="direction@domaine.com" required>
+            <input type="email" id="reg-email" placeholder="direction@domaine.com" required maxlength="254" autocomplete="email">
         </div>
 
         <div class="input-group">
-            <label>Téléphone Sécurisé</label>
-            <input type="tel" id="reg-phone" placeholder="+33 6 00 00 00 00" required>
+            <label>Téléphone du gérant</label>
+            <input type="tel" id="reg-phone" placeholder="+33 6 00 00 00 00" required maxlength="24" autocomplete="tel">
         </div>
         
-        <button class="btn" id="btn-activate" onclick="activateAccount()">Déployer l'Écosystème</button>
+        <button class="btn" id="btn-activate" onclick="activateAccount()">Déployer l’écosystème</button>
         <p id="error-msg" style="color: var(--danger); font-weight: 600; display: none; margin-top: 20px; text-transform: none;"></p>
     </div>
 
     <!-- ETAPE 3 : SUCCES & CODE PIN -->
     <div class="setup-box" id="success-screen">
         <h1 style="color: var(--gold);">SYSTÈME OPÉRATIONNEL</h1>
-        <p>Votre base de données privée est instanciée.<br><br>Voici votre <strong>CLÉ DE SÉCURITÉ MAÎTRE</strong>. Elle est indispensable pour accéder aux panneaux d'administration B2B.</p>
+        <p>Votre base de données privée est instanciée.<br><br>Votre espace client sécurisé est prêt.</p>
         
         <div class="pin-display" id="generated-pin">----</div>
         
-        <button class="btn" onclick="goToAdmin()">Ouvrir le Centre de Commandes</button>
+        <button class="btn" onclick="goToAdmin()">Ouvrir l’administration</button>
     </div>
 
     <script>
-        const SERVER_URL = (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1" || window.location.protocol === "file:") 
-        ? "http://localhost:10000" 
-        : "https://tableau-system.onrender.com";
+"use strict";
 
-        const urlParams = new URLSearchParams(window.location.search);
-        const session_id = urlParams.get('session_id');
-        const urlPlan = urlParams.get('plan') || 'EMPIRE';
-        const urlSpec = urlParams.get('specialite');
-        let currentTenantID = "";
+const SERVER_URL = (["localhost", "127.0.0.1"].includes(window.location.hostname) || window.location.protocol === "file:")
+    ? "http://localhost:10000"
+    : "https://tableau-system.onrender.com";
 
-        // 🧠 ASSEMBLAGE INTELLIGENT DU FORFAIT
-        let finalDetectedPlan = urlPlan.toUpperCase();
-        if (finalDetectedPlan === 'CHEF' || finalDetectedPlan === 'EMPIRE') {
-            if (urlSpec && urlSpec.toLowerCase() === 'bar') finalDetectedPlan = 'EMPIRE_BAR';
-            else if (urlSpec && (urlSpec.toLowerCase() === 'patisserie' || urlSpec.toLowerCase() === 'patissier')) finalDetectedPlan = 'EMPIRE_PATISSERIE';
-            else finalDetectedPlan = 'EMPIRE_CUISINE';
-        }
+const urlParams = new URLSearchParams(window.location.search);
+const activationToken = urlParams.get("activation_token") || "";
+const sessionId = urlParams.get("session_id") || "";
+const claimedPlan = (urlParams.get("plan") || "").toUpperCase();
+const claimedSpeciality = (urlParams.get("specialite") || "").toLowerCase();
 
-        window.onload = () => {
-            if (session_id) {
-                setTimeout(() => {
-                    let textAffiche = finalDetectedPlan.replace('_', ' ');
-                    document.getElementById('display-plan').innerText = textAffiche;
-                    document.getElementById('reg-plan').value = finalDetectedPlan;
+let currentTenantID = "";
+let csrfToken = "";
+let verifiedActivation = null;
+let activationInProgress = false;
 
-                    document.getElementById('step-1-loading').style.display = 'none';
-                    document.getElementById('step-2-form').style.display = 'block';
-                }, 1500); // Faux délai pour l'effet de sécurité premium
-            } else {
-                document.getElementById('spinner').style.display = 'none';
-                const loadingText = document.getElementById('loading-text');
-                loadingText.innerHTML = "<span style='color: var(--danger); font-weight:700; font-size: 1.2rem;'>Accès Refusé.</span><br><br>Ce sas est strictement réservé au déploiement initial après transaction.<br><br><a href='administration.html' style='color: var(--gold); text-decoration:none; font-weight:700; padding: 10px; display: inline-block; border: 1px solid var(--gold); border-radius: 6px; margin-top: 15px;'>Se connecter à un système existant</a>";
-            }
-        };
+function secureDeviceId() {
+    let id = sessionStorage.getItem("ichef_activation_device_id");
+    if (!id) {
+        id = crypto.randomUUID
+            ? crypto.randomUUID()
+            : `activation-${Date.now()}-${crypto.getRandomValues(new Uint32Array(1))[0]}`;
+        sessionStorage.setItem("ichef_activation_device_id", id);
+    }
+    return id;
+}
 
-        // Formatage de l'ID en temps réel (minuscules et tirets uniquement)
-        document.getElementById('reg-id').addEventListener('input', function(e) {
-            this.value = this.value.toLowerCase().replace(/[^a-z0-9-]/g, '-');
+async function secureFetch(path, options = {}) {
+    const headers = new Headers(options.headers || {});
+    headers.set("X-iCHEF-Device", secureDeviceId());
+    if (csrfToken) headers.set("X-CSRF-Token", csrfToken);
+
+    const response = await fetch(`${SERVER_URL}${path}`, {
+        ...options,
+        headers,
+        credentials: "include",
+        cache: "no-store",
+        redirect: "error"
+    });
+
+    if (response.status === 401 || response.status === 403) {
+        throw new Error("Session d'activation invalide ou expirée.");
+    }
+    return response;
+}
+
+function setError(message) {
+    const errorMsg = document.getElementById("error-msg");
+    errorMsg.textContent = message;
+    errorMsg.style.display = "block";
+}
+
+function clearError() {
+    const errorMsg = document.getElementById("error-msg");
+    errorMsg.textContent = "";
+    errorMsg.style.display = "none";
+}
+
+function showRefused(message) {
+    document.getElementById("spinner").style.display = "none";
+    const loadingText = document.getElementById("loading-text");
+    loadingText.textContent = message;
+    loadingText.style.color = "var(--danger)";
+}
+
+function normalizeTenantId(value) {
+    return value
+        .toLowerCase()
+        .normalize("NFD")
+        .replace(/[\u0300-\u036f]/g, "")
+        .replace(/[^a-z0-9-]/g, "-")
+        .replace(/-+/g, "-")
+        .replace(/^-|-$/g, "")
+        .slice(0, 48);
+}
+
+function validateEmail(email) {
+    return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
+}
+
+function validatePhone(phone) {
+    return /^\+?[0-9\s().-]{8,24}$/.test(phone);
+}
+
+async function audit(action, details = {}) {
+    try {
+        await secureFetch("/api/audit/events", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ action, details, page: "client-activation" })
+        });
+    } catch (_) {}
+}
+
+async function verifyActivationSession() {
+    if (!activationToken && !sessionId) {
+        showRefused("Accès refusé : lien d’activation manquant.");
+        return;
+    }
+
+    try {
+        const response = await secureFetch("/api/client-activation/verify", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                activationToken,
+                sessionId,
+                claimedPlan,
+                claimedSpeciality
+            })
         });
 
-        async function activateAccount() {
-            const btn = document.getElementById('btn-activate');
-            const errorMsg = document.getElementById('error-msg');
-            
-            const name = document.getElementById('reg-name').value.trim();
-            const id = document.getElementById('reg-id').value.trim();
-            const email = document.getElementById('reg-email').value.trim();
-            const phone = document.getElementById('reg-phone').value.trim();
-            const plan = document.getElementById('reg-plan').value;
+        const data = await response.json();
 
-            if (!name || !id || !email || !phone) {
-                errorMsg.innerText = "⚠️ Veuillez remplir tous les champs.";
-                errorMsg.style.display = 'block';
-                return;
-            }
-
-            if (!/^[a-z0-9-]+$/.test(id)) {
-                errorMsg.innerText = "⚠️ L'identifiant réseau est invalide.";
-                errorMsg.style.display = 'block';
-                return;
-            }
-
-            btn.disabled = true;
-            btn.innerText = "DÉPLOIEMENT EN COURS...";
-            errorMsg.style.display = 'none';
-
-            try {
-                const response = await fetch(`${SERVER_URL}/api/activate`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ 
-                        sessionId: session_id, 
-                        clientName: name, 
-                        tenantID: id, 
-                        email: email,
-                        phone: phone,
-                        plan: finalDetectedPlan,
-                        specialite: urlSpec || 'cuisine' 
-                    })
-                });
-
-                const data = await response.json();
-
-                if (data.success) {
-                    currentTenantID = id;
-                    
-                    // Conservation des clés locales pour que tes autres fichiers fonctionnent sans bug
-                    localStorage.setItem('ichef_tenant_id', id);
-                    localStorage.setItem('ichef_master_pin', data.dedicatedPin);
-                    localStorage.setItem('ichef_email', email);
-                    localStorage.setItem('ichef_phone', phone);
-
-                    document.getElementById('step-2-form').style.display = 'none';
-                    document.getElementById('success-screen').style.display = 'block';
-                    
-                    // Animation d'affichage du PIN
-                    let pinDisplay = document.getElementById('generated-pin');
-                    pinDisplay.innerText = data.dedicatedPin;
-
-                } else {
-                    errorMsg.innerText = "Erreur Système : " + (data.error || "Cet identifiant réseau est probablement déjà alloué.");
-                    errorMsg.style.display = 'block';
-                    btn.disabled = false;
-                    btn.innerText = "DÉPLOYER L'ÉCOSYSTÈME";
-                }
-            } catch (err) {
-                errorMsg.innerText = "Erreur de communication avec les serveurs maîtres.";
-                errorMsg.style.display = 'block';
-                btn.disabled = false;
-                btn.innerText = "DÉPLOYER L'ÉCOSYSTÈME";
-            }
+        if (!response.ok || !data.success || !data.activationValid || data.alreadyUsed) {
+            throw new Error(data.error || "Ce lien d’activation est invalide, expiré ou déjà utilisé.");
         }
 
-        function goToAdmin() {
-            window.location.href = `administration.html?tenantID=${currentTenantID}`;
-        }
-    </script>
+        verifiedActivation = {
+            activationId: data.activationId,
+            plan: data.plan,
+            speciality: data.speciality,
+            customerEmail: data.customerEmail || "",
+            expiresAt: data.expiresAt
+        };
+
+        csrfToken = data.csrfToken || "";
+        document.getElementById("display-plan").textContent = String(data.plan || "LICENCE").replaceAll("_", " ");
+        document.getElementById("reg-plan").value = data.plan || "";
+        if (data.customerEmail) document.getElementById("reg-email").value = data.customerEmail;
+
+        document.getElementById("step-1-loading").style.display = "none";
+        document.getElementById("step-2-form").style.display = "block";
+
+        await audit("CLIENT_ACTIVATION_LINK_VERIFIED", {
+            activationId: data.activationId,
+            plan: data.plan
+        });
+    } catch (error) {
+        console.error(error);
+        showRefused(error.message || "Impossible de vérifier le lien d’activation.");
+    }
+}
+
+document.getElementById("reg-id").addEventListener("input", function () {
+    this.value = normalizeTenantId(this.value);
+});
+
+async function activateAccount() {
+    if (activationInProgress) return;
+
+    const btn = document.getElementById("btn-activate");
+    const name = document.getElementById("reg-name").value.trim();
+    const tenantID = normalizeTenantId(document.getElementById("reg-id").value);
+    const email = document.getElementById("reg-email").value.trim().toLowerCase();
+    const phone = document.getElementById("reg-phone").value.trim();
+
+    clearError();
+
+    if (!verifiedActivation) return setError("Session d’activation non vérifiée.");
+    if (!name || !tenantID || !email || !phone) return setError("Veuillez remplir tous les champs.");
+    if (name.length < 2 || name.length > 120) return setError("Le nom de l’établissement doit contenir entre 2 et 120 caractères.");
+    if (!/^[a-z0-9](?:[a-z0-9-]{1,46}[a-z0-9])?$/.test(tenantID)) {
+        return setError("L’identifiant doit contenir 3 à 48 caractères, sans espace, et ne pas commencer ou finir par un tiret.");
+    }
+    if (!validateEmail(email)) return setError("Adresse email invalide.");
+    if (!validatePhone(phone)) return setError("Numéro de téléphone invalide.");
+
+    activationInProgress = true;
+    btn.disabled = true;
+    btn.textContent = "DÉPLOIEMENT SÉCURISÉ...";
+
+    try {
+        const response = await secureFetch("/api/client-activation/activate", {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json",
+                "Idempotency-Key": verifiedActivation.activationId
+            },
+            body: JSON.stringify({
+                activationId: verifiedActivation.activationId,
+                activationToken,
+                sessionId,
+                clientName: name,
+                tenantID,
+                email,
+                phone
+            })
+        });
+
+        const data = await response.json();
+        if (!response.ok || !data.success) throw new Error(data.error || "Activation refusée.");
+
+        currentTenantID = data.tenantID || tenantID;
+
+        localStorage.removeItem("ichef_master_pin");
+        localStorage.removeItem("pin");
+        localStorage.setItem("ichef_tenant_id", currentTenantID);
+
+        document.getElementById("step-2-form").style.display = "none";
+        document.getElementById("success-screen").style.display = "block";
+
+        const pinDisplay = document.getElementById("generated-pin");
+        pinDisplay.textContent = data.oneTimeRecoveryCode || "ENVOYÉ";
+
+        const explanation = document.querySelector("#success-screen p");
+        explanation.innerHTML = data.oneTimeRecoveryCode
+            ? "Votre espace client a été créé.<br><br>Voici un <strong>CODE DE RÉCUPÉRATION À USAGE UNIQUE</strong>. Conservez-le hors ligne : il ne sera plus affiché."
+            : "Votre espace client a été créé.<br><br>Le lien de création du code administrateur a été envoyé à l’adresse email vérifiée.";
+
+        await audit("CLIENT_ACCOUNT_ACTIVATED", {
+            activationId: verifiedActivation.activationId,
+            tenantID: currentTenantID,
+            plan: verifiedActivation.plan
+        });
+    } catch (error) {
+        console.error(error);
+        setError(error.message || "Erreur de communication avec le serveur.");
+        btn.disabled = false;
+        btn.textContent = "DÉPLOYER L’ÉCOSYSTÈME";
+        activationInProgress = false;
+    }
+}
+
+async function goToAdmin() {
+    if (!currentTenantID) return;
+
+    try {
+        const response = await secureFetch("/api/client-activation/complete", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                activationId: verifiedActivation?.activationId,
+                tenantID: currentTenantID
+            })
+        });
+
+        const data = await response.json();
+        if (!response.ok || !data.success) throw new Error(data.error || "Impossible de finaliser l’activation.");
+
+        location.replace(`administration.html?tenantID=${encodeURIComponent(currentTenantID)}`);
+    } catch (error) {
+        alert(error.message || "Finalisation impossible.");
+    }
+}
+
+window.addEventListener("pageshow", (event) => {
+    if (event.persisted) location.reload();
+});
+
+window.addEventListener("load", verifyActivationSession);
+</script>
 </body>
-</html>
