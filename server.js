@@ -1,7 +1,7 @@
 /**
  * ==============================================================
- * 🧠 iCHEF EMPIRE OS — SERVER BACKEND SÉCURISÉ (V. FORTERESSE)
- * Version complète : sessions, anti-fraude, démos individuelles
+ * 🧠 iCHEF EMPIRE OS — ENGINE SERVER BACKEND (V. FORTERESSE)
+ * Version 100% complète : Sécurité, Anti-Fraude, IA, WebSockets
  * ==============================================================
  */
 
@@ -55,6 +55,7 @@ app.use(express.static(__dirname));
 
 const PORT = process.env.PORT || 10000;
 
+// Configurations de sessions sécurisées
 const COOKIE_SECURE = true; // Forcé à true pour l'utilisation obligatoire avec SameSite=None en production
 const SESSION_TTL_MS = 30 * 60 * 1000;
 const MASTER_SESSION_TTL_MS = 20 * 60 * 1000;
@@ -70,13 +71,15 @@ app.use((req, res, next) => {
     next();
 });
 
+// ==========================================
+// OUTILS DE COOKIES ET CRYPTOGRAPHIE (SESSIONS)
+// ==========================================
 function parseCookies(req) {
     const raw = req.headers.cookie || '';
     return raw.split(';').reduce((acc, part) => {
         const i = part.indexOf('=');
         if (i > -1) {
-            acc[decodeURIComponent(part.slice(0, i).trim())] =
-                decodeURIComponent(part.slice(i + 1).trim());
+            acc[decodeURIComponent(part.slice(0, i).trim())] = decodeURIComponent(part.slice(i + 1).trim());
         }
         return acc;
     }, {});
@@ -851,6 +854,53 @@ function calculateNet(p) {
 }
 
 // ==========================================
+// 🧠 IA RH : PRÉDICTIONS ET PLANNINGS (YIELD MANAGEMENT)
+// ==========================================
+app.post('/api/predict-hr-schedule', async (req, res) => {
+    const { tenantID, staffList } = req.body;
+    const safeID = cleanString(tenantID);
+
+    try {
+        let state = await AppState.findOne({ tenantID: safeID });
+        let history = [];
+        if (state && state.activeOrders && state.activeOrders['TRAFFIC_HISTORY']) {
+            history = state.activeOrders['TRAFFIC_HISTORY'].data || [];
+        }
+
+        if (history.length < 50) {
+            return res.json({ success: true, message: "L'IA a besoin de plus d'historique de service (au moins 50 tables enregistrées) pour établir une prédiction fiable." });
+        }
+
+        let summary = history.map(h => `Jour:${h.dayOfWeek}-Heure:${h.hour}-Pax:${h.pax}`);
+
+        const prompt = `Tu es le Directeur des Ressources Humaines IA d'un restaurant. 
+        Voici l'historique de fréquentation récent : ${JSON.stringify(summary)}. 
+        Voici le staff actuel : ${JSON.stringify(staffList)}.
+        
+        MISSION : Analyse ces données et renvoie un JSON STRICT (SANS MARKDOWN) avec :
+        1. "rushPeriods" : Les 3 créneaux de la semaine où il faut absolument tout le monde.
+        2. "deadPeriods" : Les 3 créneaux où on peut envoyer le staff en repos.
+        3. "hiringAdvice" : Faut-il recruter ? (Oui/Non) et pourquoi (justification courte).
+        4. "vacationSuggestions" : Le meilleur moment du mois pour autoriser des congés longs.
+        
+        Format attendu : { "rushPeriods": ["Jeudi 20h", ...], "deadPeriods": [...], "hiringAdvice": "...", "vacationSuggestions": "..." }`;
+
+        const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+        const result = await model.generateContent(prompt);
+        
+        let responseText = result.response.text().trim();
+        const ticks = String.fromCharCode(96, 96, 96);
+        responseText = responseText.split(ticks + 'json').join('').split(ticks).join('').trim();
+        
+        if (!responseText.startsWith("{")) responseText = responseText.substring(responseText.indexOf("{"));
+        
+        res.json({ success: true, prediction: JSON.parse(responseText) });
+    } catch (error) { 
+        res.status(500).json({ success: false, error: "Erreur de prédiction IA." }); 
+    }
+});
+
+// ==========================================
 //  IA SMART-RESERVATION (Yield Management & Time-Shifting)
 // ==========================================
 app.post('/api/smart-reservation', async (req, res) => {
@@ -1229,7 +1279,7 @@ app.get('/debug-fichiers', (req, res) => {
 // 🌟 GESTION DES WEBSOCKETS (SYNCHRONISATION DES ÉCRANS EN SALLE/CUISINE)
 // ==========================================
 io.on('connection', (socket) => {
-    console.log('¼ Nouvelle connexion écran détectée (ID: ' + socket.id + ')');
+    console.log('📡 Nouvelle connexion écran détectée (ID: ' + socket.id + ')');
     
     socket.on('joinTenant', (tenantID) => {
         const safeID = cleanString(tenantID);
