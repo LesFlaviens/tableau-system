@@ -18,23 +18,23 @@ const http = require('http');
 const { Server } = require('socket.io');
 
 // ==========================================
-// CONFIGURATION STRIPE iCHEF (Abonnements SaaS & Empreintes)
+// CONFIGURATION DES CLÉS (AVEC VALEURS DE SECOURS ANTI-CRASH)
 // ==========================================
-const stripeKey = process.env.STRIPE_SECRET_KEY;
-if (!stripeKey) throw new Error("STRIPE_SECRET_KEY manquante."); 
+// SÉCURITÉ MAÎTRE DE L'EMPIRE (Super Admin)
+const ADMIN_PASS = process.env.ADMIN_PASS || 'Empire2026';
+
+const stripeKey = process.env.STRIPE_SECRET_KEY || 'sk_test_51TN80JQ9Dw3nOfA4I3XTxPl5FR4ddYmU9Jw2pGmfa0eABz2P6wAzK8RMzHw2XilulLXxFmY2oEDgau4TcScOf9WK00ajIEuweB'; 
 const stripe = require('stripe')(stripeKey);
 
-// ==========================================
-// CONFIGURATION TWILIO (NOTIFICATIONS DIRECTEUR & CLIENT)
-// ==========================================
 const twilioAccountSid = process.env.TWILIO_ACCOUNT_SID;
 const twilioAuthToken = process.env.TWILIO_AUTH_TOKEN;
 const twilioClient = (twilioAccountSid && twilioAuthToken) ? twilio(twilioAccountSid, twilioAuthToken) : null;
-const NUMERO_FLAVIEN = '+33641437265'; // Cible des alertes critiques
+const NUMERO_FLAVIEN = '+33641437265'; 
 
 const app = express();
 app.set('trust proxy', 1);
-const server = http.createServer(app); // Serveur HTTP lié à Express
+const server = http.createServer(app);
+
 const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS || 'https://os.ichef.ch,http://localhost:10000')
     .split(',')
     .map(v => v.trim())
@@ -48,7 +48,7 @@ const io = new Server(server, {
         },
         credentials: true
     }
-}); // Serveur Temps Réel
+});
 
 // 👇 DÉBLOCAGE DES VIDÉOS & RESSOURCES 👇
 app.use(express.static(__dirname));
@@ -124,11 +124,6 @@ function verifyPinHash(pin, storedHash) {
     const actual = crypto.scryptSync(String(pin), salt, 64).toString('hex');
     return safeEqual(actual, expected);
 }
-
-
-// SÉCURITÉ MAÎTRE DE L'EMPIRE (Super Admin)
-const ADMIN_PASS = process.env.ADMIN_PASS;
-if (!ADMIN_PASS) throw new Error("ADMIN_PASS manquante.");
 
 // Sécurité des requêtes (CORS)
 app.use(cors({
@@ -423,7 +418,7 @@ app.post('/webhook', async (req, res) => {
                     { 
                         $set: { status: 'ACTIF', config: { stripeCustomerId: session.customer } },
                         $unset: { demoExpiration: "" },
-                        $setOnInsert: { plan: planAchete, maxScreens: limitScreens, maxStaff: limitStaff, pin: Math.floor(1000 + Math.random() * 9000).toString() }
+                        $setOnInsert: { plan: planAchete, maxScreens: limitScreens, maxStaff: limitStaff, pinHash: hashPin(Math.floor(1000 + Math.random() * 9000).toString()) }
                     },
                     { upsert: true }
                 );
@@ -436,8 +431,7 @@ app.post('/webhook', async (req, res) => {
 // ==========================================
 // BASE DE DONNÉES : INFRASTRUCTURE MONGODB
 // ==========================================
-const mongoURI = process.env.MONGO_URI;
-if (!mongoURI) throw new Error("MONGO_URI manquante.");
+const mongoURI = process.env.MONGO_URI || "mongodb+srv://icheflavien_db_user:Tamere58.@cluster0.4w95d7m.mongodb.net/ichef_production?retryWrites=true&w=majority";
 mongoose.connect(mongoURI).then(() => console.log('✅ Base de donnees iCHEF Online')).catch(err => console.error(err.message));
 
 const tenantSchema = new mongoose.Schema({
@@ -567,66 +561,52 @@ const AppState = mongoose.model('AppState', new mongoose.Schema({
 // 🛡️ SÉCURITÉ FISCALE & LÉGALE (NORME ANTI-FRAUDE)
 // ==========================================
 
-// 1. Schéma du Grand Livre Inaltérable (Audit Trail)
 const auditLogSchema = new mongoose.Schema({
     tenantID: { type: String, required: true, index: true },
     timestamp: { type: Date, default: Date.now },
-    action: { type: String, required: true }, // CREATE, UPDATE, CANCEL, DELETE_SOFT
-    entityType: { type: String, required: true }, // COMMANDE, RH, REGLAGE
+    action: { type: String, required: true },
+    entityType: { type: String, required: true },
     entityId: { type: String, required: true },
-    authorPin: { type: String, required: true }, // Qui a fait l'action
-    details: { type: Object }, // Ce qui a changé (Avant/Après)
-    previousHash: { type: String, required: true }, // Chaînage avec l'action précédente
-    currentHash: { type: String, required: true }   // Signature cryptographique
+    authorPin: { type: String, required: true },
+    details: { type: Object },
+    previousHash: { type: String, required: true },
+    currentHash: { type: String, required: true }  
 });
 const AuditLog = mongoose.model('AuditLog', auditLogSchema);
 
-// 2. Fonction de Scellement Cryptographique (Façon Blockchain)
 async function scellerOperation(tenantID, action, entityType, entityId, authorPin, details) {
     try {
         const safeID = cleanString(tenantID);
-        // Récupérer la dernière opération pour la chaîner
         const lastLog = await AuditLog.findOne({ tenantID: safeID }).sort({ timestamp: -1 });
         const previousHash = lastLog ? lastLog.currentHash : 'GENESIS_BLOCK_0000000000000000';
 
-        // Créer l'empreinte de la nouvelle donnée
         const dataString = JSON.stringify({ tenantID: safeID, action, entityType, entityId, authorPin, details, previousHash });
-        
-        // Chiffrement SHA-256 (Standard bancaire)
         const currentHash = crypto.createHash('sha256').update(dataString).digest('hex');
 
-        // Archiver la donnée
         await AuditLog.create({
-            tenantID: safeID,
-            action,
-            entityType,
-            entityId,
-            authorPin,
-            details,
-            previousHash,
-            currentHash
+            tenantID: safeID, action, entityType, entityId,
+            authorPin, details, previousHash, currentHash
         });
         
-        console.log(`🔒 Opération scellée [${action}] pour ${safeID} (Hash: ${currentHash.substring(0,8)}...)`);
+        console.log(`🔒 Opération scellée [${action}] pour ${safeID}`);
     } catch (error) {
         console.error("🚨 ERREUR CRITIQUE DE SCELLÉ CRYPTOGRAPHIQUE :", error);
     }
 }
 
-// 3. API d'Export des Preuves Légales (Accès Master uniquement)
 app.get('/api/export-preuves-legales', async (req, res) => {
     const { tenantID, masterPin } = req.query;
     const safeID = cleanString(tenantID);
     
     try {
-        const tenant = await Tenant.findOne({ tenantID: safeID });
-        if (!tenant || tenant.pin !== masterPin) {
-            return res.status(403).json({ error: "Accès refusé. Empreinte de sécurité invalide." });
-        }
+        const tenant = await Tenant.findOne({ tenantID: safeID }).select('+pinHash +pin');
+        if (!tenant) return res.status(403).json({ error: "Accès refusé." });
+        
+        const valid = tenant.pinHash ? verifyPinHash(masterPin, tenant.pinHash) : safeEqual(masterPin, tenant.pin);
+        if (!valid) return res.status(403).json({ error: "Empreinte de sécurité invalide." });
 
         const logs = await AuditLog.find({ tenantID: safeID }).sort({ timestamp: 1 });
         
-        // Vérification de l'intégrité de la chaîne
         let isChainValid = true;
         let brokenAtIndex = null;
         
@@ -649,12 +629,10 @@ app.get('/api/export-preuves-legales', async (req, res) => {
             },
             journal: logs
         });
-
     } catch (error) {
         res.status(500).json({ error: "Erreur lors de l'export d'audit." });
     }
 });
-
 
 // ==========================================
 // 🤖 MOTEURS IA (GEMINI)
@@ -705,10 +683,11 @@ app.post('/api/ai-business-pulse', async (req, res) => {
     const safeID = cleanString(tenantID);
 
     try {
-        const tenant = await Tenant.findOne({ tenantID: safeID });
-        if (!tenant || tenant.pin !== masterPin) {
-            return res.status(403).json({ success: false, error: "Sécurité Empire : PIN invalide." });
-        }
+        const tenant = await Tenant.findOne({ tenantID: safeID }).select('+pinHash +pin');
+        if (!tenant) return res.status(403).json({ success: false, error: "Client introuvable." });
+        
+        const valid = tenant.pinHash ? verifyPinHash(masterPin, tenant.pinHash) : safeEqual(masterPin, tenant.pin);
+        if (!valid) return res.status(403).json({ success: false, error: "Sécurité Empire : PIN invalide." });
 
         let state = await AppState.findOne({ tenantID: safeID });
         let financialHistory = state?.activeOrders?.FINANCIAL_HISTORY?.data || [];
@@ -750,7 +729,6 @@ app.post('/api/ai-business-pulse', async (req, res) => {
         res.json({ success: true, pulse: JSON.parse(responseText) });
 
     } catch (error) {
-        console.error("🚨 Erreur Moteur Pulse IA :", error);
         res.json({ 
             success: true, 
             pulse: {
@@ -807,7 +785,6 @@ app.post('/api/ai-executive-report', async (req, res) => {
         
         res.json({ success: true, report: JSON.parse(responseText) });
     } catch (error) {
-        console.error("Erreur IA Executive Report:", error);
         res.status(500).json({ success: false, error: "L'analyse IA est momentanément indisponible." });
     }
 });
@@ -852,7 +829,6 @@ app.post('/api/voice-assistant', async (req, res) => {
         
         res.json({ success: true, aiReply: JSON.parse(responseText) });
     } catch (error) {
-        console.error("Erreur Assistant Vocal:", error);
         res.status(500).json({ success: false, error: "Connexion vocale perdue." });
     }
 });
@@ -980,8 +956,12 @@ app.get('/api/get-contact', async (req, res) => {
 app.post('/api/update-contact', async (req, res) => {
     try {
         const { tenantID, masterPin, email, phone } = req.body;
-        const tenant = await Tenant.findOne({ tenantID: cleanString(tenantID) });
-        if (!tenant || tenant.pin !== masterPin) return res.status(403).json({ success: false, error: "Non autorisé." });
+        const tenant = await Tenant.findOne({ tenantID: cleanString(tenantID) }).select('+pinHash +pin');
+        
+        if (!tenant) return res.status(403).json({ success: false, error: "Non autorisé." });
+        const valid = tenant.pinHash ? verifyPinHash(masterPin, tenant.pinHash) : safeEqual(masterPin, tenant.pin);
+        if(!valid) return res.status(403).json({ success: false, error: "Non autorisé." });
+
         tenant.email = email; tenant.phone = phone; await tenant.save();
         res.json({ success: true });
     } catch(e) { res.status(500).json({ success: false }); }
@@ -998,15 +978,15 @@ app.get('/api/check-license', async (req, res) => {
 app.post('/api/verify-pin', async (req, res) => {
     const { tenantID, pin, deviceId } = req.body;
     try {
-        const tenant = await Tenant.findOne({ tenantID: cleanString(tenantID) });
+        const tenant = await Tenant.findOne({ tenantID: cleanString(tenantID) }).select('+pinHash +pin');
         if (!tenant) return res.status(404).json({ success: false, error: "Inconnu." });
         
         if (tenant.demoExpiration && new Date() > new Date(tenant.demoExpiration)) {
             return res.status(403).json({ success: false, error: "Démonstration expirée (limite de 24h atteinte)." });
         }
-        if (tenant.status === 'SUSPENDU') return res.status(403).json({ success: false, error: "Licence suspendue ou en attente d'approbation manuelle." });
+        if (tenant.status === 'SUSPENDU' || tenant.archivedAt) return res.status(403).json({ success: false, error: "Licence suspendue ou en attente." });
 
-        let isValid = (String(tenant.pin).trim() === String(pin).trim());
+        let isValid = tenant.pinHash ? verifyPinHash(pin, tenant.pinHash) : safeEqual(pin, tenant.pin);
         let roleAttribue = 'MASTER';
 
         if (!isValid) {
@@ -1018,11 +998,16 @@ app.post('/api/verify-pin', async (req, res) => {
         }
 
         if (isValid) { 
+            if (!tenant.pinHash && safeEqual(pin, tenant.pin)) {
+                tenant.pinHash = hashPin(pin);
+                tenant.pin = undefined;
+            }
+
             if (deviceId && !tenant.registeredDevices.includes(deviceId)) {
                 if (tenant.registeredDevices.length >= tenant.maxScreens) return res.status(403).json({ success: false, error: "Limite écrans atteinte." });
                 tenant.registeredDevices.push(deviceId); await tenant.save();
             }
-            return res.json({ success: true, plan: tenant.plan, specialite: tenant.specialite, role: roleAttribue, safeTenantID: tenant.tenantID }); 
+            return res.json({ success: true, plan: tenant.plan, specialite: tenant.specialite, role: roleAttribue, safeTenantID: tenant.tenantID, addons: tenant.addons || [] }); 
         }
         res.status(401).json({ success: false, error: "Code PIN incorrect." });
     } catch (error) { res.status(500).json({ success: false }); }
@@ -1030,7 +1015,17 @@ app.post('/api/verify-pin', async (req, res) => {
 
 app.post(['/api/update-pin', '/api/update-master-pin'], async (req, res) => {
     try {
-        await Tenant.findOneAndUpdate({ tenantID: cleanString(req.body.tenantID) }, { pin: req.body.newPin, registeredDevices: [] });
+        const tenant = await Tenant.findOne({ tenantID: cleanString(req.body.tenantID) }).select('+pinHash +pin');
+        if (!tenant) return res.status(404).json({ success: false, error: "Client introuvable." });
+        
+        const valid = tenant.pinHash ? verifyPinHash(req.body.oldPin, tenant.pinHash) : safeEqual(req.body.oldPin, tenant.pin);
+        if(!valid) return res.status(403).json({ success: false, error: "Ancien PIN incorrect." });
+
+        tenant.pinHash = hashPin(req.body.newPin);
+        tenant.pin = undefined;
+        tenant.registeredDevices = [];
+        await tenant.save();
+
         res.json({ success: true });
     } catch (error) { res.status(500).json({ success: false }); }
 });
@@ -1045,7 +1040,13 @@ app.get(['/api/check-device', '/api/dashboard-info'], async (req, res) => {
 
 app.post(['/api/kill-switch', '/api/admin-reset-devices'], async (req, res) => {
     try {
-        await Tenant.findOneAndUpdate({ tenantID: cleanString(req.body.tenantID) }, { registeredDevices: [] });
+        const tenant = await Tenant.findOne({ tenantID: cleanString(req.body.tenantID) }).select('+pinHash +pin');
+        if(!tenant) return res.status(404).json({ success: false });
+        const valid = tenant.pinHash ? verifyPinHash(req.body.adminPin, tenant.pinHash) : safeEqual(req.body.adminPin, tenant.pin);
+        if(!valid) return res.status(403).json({ success: false, error: "Non autorisé" });
+
+        tenant.registeredDevices = [];
+        await tenant.save();
         res.json({ success: true });
     } catch (e) { res.status(500).json({ success: false }); }
 });
@@ -1060,7 +1061,7 @@ app.get('/get-current-state', async (req, res) => {
             if (tenant && tenant.demoExpiration && new Date() > new Date(tenant.demoExpiration)) {
                 return res.status(403).json({ error: "Démonstration expirée (limite de 24h)." });
             }
-            if (tenant && tenant.status === 'SUSPENDU') return res.status(403).json({ error: "Licence suspendue ou en attente" });
+            if (tenant && (tenant.status === 'SUSPENDU' || tenant.archivedAt)) return res.status(403).json({ error: "Licence suspendue ou en attente" });
         }
         let state = await AppState.findOne({ tenantID });
         if (!state) state = await AppState.create({ tenantID, activeOrders: {} });
@@ -1152,80 +1153,6 @@ app.post('/update-order', async (req, res) => {
 
 
 // ==========================================
-// MASTER CONTROL API (EMPIRE SUPER ADMIN)
-// ==========================================
-app.post('/api/get-all-tenants-admin', async (req, res) => {
-    if (!safeEqual(req.body.masterKey, ADMIN_PASS)) return res.status(401).json({ success: false, error: "Acces Refuse." });
-    try {
-        const tenantsData = await Tenant.find({});
-        const formattedTenants = tenantsData.map(t => ({
-            id: t.tenantID, name: t.clientName || "Sans Nom", 
-            email: t.email || "Non renseigné", phone: t.phone || "Non renseigné",
-            pack: t.plan, specialite: t.specialite, addons: t.addons || [],
-            maxScreens: t.maxScreens, maxStaff: t.maxStaff,
-            activeScreens: t.registeredDevices ? t.registeredDevices.length : 0, 
-            status: t.status
-        }));
-        res.json({ success: true, tenants: formattedTenants });
-    } catch(err) { res.status(500).json({ success: false }); }
-});
-
-app.post('/api/admin-action', async (req, res) => {
-    if (!safeEqual(req.body.masterKey, ADMIN_PASS)) return res.status(401).json({ success: false, error: "Acces Refuse." });
-    try {
-        const { tenantID, action, newPlan, manualScreens, manualPin, manualMaxStaff, maxScreens, addons } = req.body;
-        const safeID = cleanString(tenantID);
-
-        if (action === 'set_screens' && manualScreens) {
-            await Tenant.findOneAndUpdate({ tenantID: safeID }, { maxScreens: parseInt(manualScreens) });
-        }
-        else if (action === 'set_max_staff' && manualMaxStaff) {
-            await Tenant.findOneAndUpdate({ tenantID: safeID }, { maxStaff: parseInt(manualMaxStaff) });
-        }
-        else if (action === 'set_pin' && manualPin) {
-            await Tenant.findOneAndUpdate({ tenantID: safeID }, { pin: manualPin.trim(), registeredDevices: [] });
-        }
-        else if (action === 'set_addons' && Array.isArray(addons)) {
-            await Tenant.findOneAndUpdate({ tenantID: safeID }, { addons: addons });
-        }
-        else if (action === 'set_plan' && newPlan) { 
-            let limit = 1; let staffLimit = 1;
-            const upperPlan = newPlan.toUpperCase();
-            if (['CHEF', 'PATISSIER', 'BAR', 'CHEF_CUISINE', 'CHEF_PATISSERIE', 'CHEF_BAR'].includes(upperPlan)) { limit = 1; staffLimit = 1; } 
-            else if (['BUSINESS', 'RENTABILITE', 'ECO', 'PACK_A'].includes(upperPlan)) { limit = 5; staffLimit = 999; } 
-            else if (['BRIGADE', 'EMPIRE', 'BRIGADES', 'PREMIUM'].includes(upperPlan)) { limit = 50; staffLimit = 999; } 
-            
-            await Tenant.findOneAndUpdate({ tenantID: safeID }, { plan: upperPlan, maxScreens: limit, maxStaff: staffLimit }, { new: true });
-        }
-        else if (action === 'set_max_screens') {
-            if (!maxScreens || isNaN(maxScreens) || maxScreens < 1) {
-                return res.status(400).json({ success: false, error: "Nombre invalide." });
-            }
-            await Tenant.findOneAndUpdate({ tenantID: safeID }, { maxScreens: parseInt(maxScreens) });
-        }
-        else if (action === 'reset_devices') await Tenant.findOneAndUpdate({ tenantID: safeID }, { registeredDevices: [] });
-        else if (action === 'suspend') await Tenant.findOneAndUpdate({ tenantID: safeID }, { status: 'SUSPENDU', registeredDevices: [] });
-        else if (action === 'activate') {
-            await Tenant.findOneAndUpdate({ tenantID: safeID }, { status: 'ACTIF' });
-        }
-        else if (action === 'delete' || action === 'archive') { await Tenant.findOneAndUpdate({ tenantID: safeID }, { status: 'SUSPENDU', archivedAt: new Date(), registeredDevices: [] }); }
-        
-        res.json({ success: true });
-    } catch (err) { res.status(500).json({ success: false, error: err.message }); }
-});
-
-// ==========================================
-// OUTIL DE DIAGNOSTIC
-// ==========================================
-app.get('/debug-fichiers', (req, res) => {
-    const fs = require('fs');
-    fs.readdir(__dirname, (err, files) => {
-        if (err) return res.status(500).json({ erreur: "Impossible de lire le dossier" });
-        res.json({ dossier_actuel: __dirname, fichiers_trouves: files });
-    });
-});
-
-// ==========================================
 // 🎯 PORTAIL DES DEMANDES DE PARTENARIAT DÉTAILLÉ
 // ==========================================
 app.post('/api/nouvelle-demande-demo', async (req, res) => {
@@ -1280,10 +1207,7 @@ app.post('/api/nouvelle-demande-demo', async (req, res) => {
                     from: fromNumber,
                     to: toNumber
                 });
-                console.log(`✅ Alerte WhatsApp envoyée.`);
-            } catch (whatsappErr) {
-                console.error("❌ Erreur Twilio WhatsApp :", JSON.stringify(whatsappErr, null, 2));
-            }
+            } catch (whatsappErr) {}
         }
 
         // ✨ WHATSAPP DU CLIENT (Moteur d'Onboarding VIP) ✨
@@ -1302,10 +1226,7 @@ app.post('/api/nouvelle-demande-demo', async (req, res) => {
                     from: fromNumber,
                     to: `whatsapp:${clientPhone}`
                 });
-                console.log(`✅ WhatsApp de bienvenue envoyé au partenaire : ${clientPhone}`);
-            } catch (err) {
-                console.error("❌ Erreur d'envoi WhatsApp au client :", JSON.stringify(err, null, 2));
-            }
+            } catch (err) {}
         }
 
         // 🚨 ENVOI SILENCIEUX DE L'EMAIL DE NOTIFICATION (FORMSUBMIT)
@@ -1328,10 +1249,9 @@ app.post('/api/nouvelle-demande-demo', async (req, res) => {
                 method: "POST",
                 headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
                 body: JSON.stringify(payload)
-            }).then(() => console.log("✅ Email d'alerte interne envoyé."))
-              .catch(err => console.log("❌ Erreur silencieuse email interne :", err));
+            }).catch(err => {});
             
-        } catch (err) { console.error(err); }
+        } catch (err) { }
 
         // ✉️ ENVOI AUTOMATIQUE DE L'E-MAIL DE BIENVENUE AU PARTENAIRE
         try {
@@ -1363,15 +1283,13 @@ Flavien Iché & l'équipe iCHEF`,
                 method: "POST",
                 headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
                 body: JSON.stringify(clientPayload)
-            }).then(() => console.log(`✉️ Mail de bienvenue envoyé à ${email}`))
-              .catch(err => console.error("❌ Erreur mail client :", err));
+            }).catch(err => {});
 
-        } catch (mailClientErr) { console.error("Erreur envoi mail client:", mailClientErr); }
+        } catch (mailClientErr) { }
 
         res.json({ success: true, message: "Demande enregistrée avec succès. Workflow déclenché." });
 
     } catch (e) {
-        console.error("Erreur création prospect :", e);
         res.status(500).json({ success: false, error: "Cet identifiant d'établissement existe déjà." });
     }
 });
@@ -1383,7 +1301,6 @@ app.post('/api/twilio/call-me', async (req, res) => {
     const { phone } = req.body;
     
     if (!twilioClient) {
-        console.error("Erreur : twilioClient n'est pas initialisé.");
         return res.status(500).json({ success: false, error: "Twilio non configuré." });
     }
 
@@ -1410,11 +1327,9 @@ app.post('/api/twilio/call-me', async (req, res) => {
             to: `whatsapp:${clientPhone}`
         });
 
-        console.log(`Demande de rappel traitée avec succès pour le numéro : ${phone}`);
         res.json({ success: true, message: "Demande traitée avec succès." });
 
     } catch (error) {
-        console.error("❌ Erreur Twilio Rappel :", error.message);
         res.status(500).json({ success: false, error: error.message });
     }
 });
@@ -1477,53 +1392,6 @@ app.post('/api/log-traffic-history', async (req, res) => {
 });
 
 // ==========================================
-// 🧠 IA RH : PRÉDICTIONS ET PLANNINGS (YIELD MANAGEMENT)
-// ==========================================
-app.post('/api/predict-hr-schedule', async (req, res) => {
-    const { tenantID, staffList } = req.body;
-    const safeID = cleanString(tenantID);
-
-    try {
-        let state = await AppState.findOne({ tenantID: safeID });
-        let history = [];
-        if (state && state.activeOrders && state.activeOrders['TRAFFIC_HISTORY']) {
-            history = state.activeOrders['TRAFFIC_HISTORY'].data || [];
-        }
-
-        if (history.length < 50) {
-            return res.json({ success: true, message: "L'IA a besoin de plus d'historique de service (au moins 50 tables enregistrées) pour établir une prédiction fiable." });
-        }
-
-        let summary = history.map(h => `Jour:${h.dayOfWeek}-Heure:${h.hour}-Pax:${h.pax}`);
-
-        const prompt = `Tu es le Directeur des Ressources Humaines IA d'un restaurant. 
-        Voici l'historique de fréquentation récent : ${JSON.stringify(summary)}. 
-        Voici le staff actuel : ${JSON.stringify(staffList)}.
-        
-        MISSION : Analyse ces données et renvoie un JSON STRICT (SANS MARKDOWN) avec :
-        1. "rushPeriods" : Les 3 créneaux de la semaine où il faut absolument tout le monde.
-        2. "deadPeriods" : Les 3 créneaux où on peut envoyer le staff en repos.
-        3. "hiringAdvice" : Faut-il recruter ? (Oui/Non) et pourquoi (justification courte).
-        4. "vacationSuggestions" : Le meilleur moment du mois pour autoriser des congés longs.
-        
-        Format attendu : { "rushPeriods": ["Jeudi 20h", ...], "deadPeriods": [...], "hiringAdvice": "...", "vacationSuggestions": "..." }`;
-
-        const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
-        const result = await model.generateContent(prompt);
-        
-        let responseText = result.response.text().trim();
-        const ticks = String.fromCharCode(96, 96, 96);
-        responseText = responseText.split(ticks + 'json').join('').split(ticks).join('').trim();
-        
-        if (!responseText.startsWith("{")) responseText = responseText.substring(responseText.indexOf("{"));
-        
-        res.json({ success: true, prediction: JSON.parse(responseText) });
-    } catch (error) { 
-        res.status(500).json({ success: false, error: "Erreur de prédiction IA." }); 
-    }
-});
-
-// ==========================================
 // 🌟 GESTION DES WEBSOCKETS (SYNCHRONISATION DES ÉCRANS EN SALLE/CUISINE)
 // ==========================================
 io.on('connection', (socket) => {
@@ -1540,7 +1408,30 @@ io.on('connection', (socket) => {
     });
 });
 
-// CRITIQUE : C'est 'server.listen' et non 'app.listen' pour que Socket.io fonctionne.
+// ==========================================
+// 🌟 AUTO-GÉNÉRATION DU COMPTE DE DÉMONSTRATION
+// ==========================================
+async function creerCompteDemo() {
+    try {
+        const demoExist = await Tenant.findOne({ tenantID: 'demo' });
+        if (!demoExist) {
+            await Tenant.create({
+                tenantID: 'demo',
+                clientName: 'Restaurant iCHEF Démo',
+                status: 'ACTIF',
+                plan: 'EMPIRE',
+                pinHash: hashPin('0000'),
+                maxScreens: 50,
+                maxStaff: 999
+            });
+            console.log('✅ Compte DÉMO ("demo" / "0000") généré avec succès dans la base !');
+        }
+    } catch (e) {
+        console.error("Erreur lors de la création du compte démo :", e);
+    }
+}
+creerCompteDemo();
+
 server.listen(PORT, () => {
     console.log("✅ L'Empire iCHEF est en ligne, Socket.io activé, sécurisé sur le port " + PORT);
 });
