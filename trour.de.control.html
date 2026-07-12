@@ -31,7 +31,6 @@
         }
 
         // 🌟 IDENTIFICATION MODE DÉMO 
-        // Ajout de DEMO-LIVE à la liste des identifiants de test
         const urlParamsSec = new URLSearchParams(window.location.search);
         const isDemoMode = (urlParamsSec.get('tenantID') === 'demo' || urlParamsSec.get('tenantID') === 'demo_pizzeria' || urlParamsSec.get('tenantID') === 'DEMO-LIVE');
     </script>
@@ -190,6 +189,7 @@
         let allTenants = [];
         let currentEditingTenant = null;
         let isSyncing = false; // Anti-spam
+        let masterCsrfToken = ''; // Jeton CSRF de sécurité obligatoire
 
         function setSyncState(state) {
             isSyncing = state;
@@ -197,7 +197,7 @@
             document.querySelectorAll('button, select').forEach(el => el.disabled = state);
         }
 
-        // 🎯 FONCTION EXCLUSIVE AU MODE DÉMO (Génère une fausse liste de restaurants)
+        // 🎯 FONCTION EXCLUSIVE AU MODE DÉMO
         function loadMockedTenants() {
             allTenants = [
                 { id: 'DEMO-LIVE', name: 'Restaurant iChef (Démo)', email: 'demo@ichef.ch', phone: '06 12 34 56 78', pack: 'PREMIUM', activeScreens: 2, maxScreens: 5, pin: '0000', status: 'ACTIF', addons: [] },
@@ -213,22 +213,46 @@
             }
 
             setSyncState(true);
+            
             try {
-                let res = await fetch(`${SERVER_URL}/api/get-all-tenants-admin`, {
+                // 1. Étape d'Authentification
+                let authRes = await fetch(`${SERVER_URL}/api/master/login`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ masterKey: ADMIN_PASS })
+                    body: JSON.stringify({ masterKey: ADMIN_PASS, deviceId: 'TOUR_DE_CONTROLE' }),
+                    credentials: 'include' // Obligatoire pour enregistrer le cookie
                 });
+
+                let authData = await authRes.json();
+                
+                if (!authRes.ok || !authData.success) {
+                    alert("⛔ ERREUR : Clé d'authentification SuperAdmin refusée par le serveur.");
+                    return setSyncState(false);
+                }
+
+                masterCsrfToken = authData.csrfToken;
+
+                // 2. Étape de Récupération des données
+                let res = await fetch(`${SERVER_URL}/api/master/tenants`, {
+                    method: 'GET',
+                    headers: { 
+                        'Content-Type': 'application/json',
+                        'X-CSRF-Token': masterCsrfToken 
+                    },
+                    credentials: 'include'
+                });
+
                 let data = await res.json();
+                
                 if (data.success) {
                     allTenants = data.tenants || [];
                     renderTenantsTable();
                 } else {
-                    alert("⛔ ERREUR : Clé d'authentification SuperAdmin refusée par le serveur.");
+                    alert("⛔ ERREUR : Accès aux données refusé. Session corrompue.");
                 }
             } catch(e) { 
                 console.error("Erreur BDD:", e);
-                alert("📡 Connexion au serveur perdue. Vérifiez votre réseau.");
+                alert("📡 Connexion au serveur perdue. Si vous utilisez Render (Offre gratuite), patientez 40 secondes le temps du réveil et rechargez la page.");
             } finally {
                 setSyncState(false);
             }
@@ -253,7 +277,6 @@
                     ? `<button class="btn-action btn-danger" onclick="executerAction('${t.id}', 'suspend')">Suspendre</button>`
                     : `<button class="btn-action btn-success" onclick="executerAction('${t.id}', 'activate')">Activer</button>`;
 
-                // Gestion de l'affichage des Add-ons
                 let userAddons = t.addons || [];
                 let addonsHtml = userAddons.length > 0 
                     ? userAddons.map(a => `<span class="addon-badge">${formatAddonName(a)}</span>`).join('') 
@@ -299,8 +322,8 @@
                             </div>
                         </td>
                         <td>
-                            <span style="font-family:monospace; font-size:1.15rem; font-weight:bold; letter-spacing:2px; color:var(--text-main);">${t.pin}</span>
-                            <button class="btn-action btn-edit" style="margin-left:10px; padding:4px 8px; font-size:0.65rem;" onclick="modifierPinManuel('${t.id}')">Changer</button>
+                            <span style="font-family:monospace; font-size:1.15rem; font-weight:bold; letter-spacing:2px; color:var(--text-main);">PROTECTED</span>
+                            <button class="btn-action btn-edit" style="margin-left:10px; padding:4px 8px; font-size:0.65rem;" onclick="modifierPinManuel('${t.id}')">Reset</button>
                         </td>
                         <td>
                             <span class="status-badge ${statusClass}">${t.status}</span>
@@ -309,7 +332,7 @@
                             <div class="flex-actions" style="flex-direction:column; gap:6px;">
                                 <a href="cockpit.html?tenantID=${t.id}" target="_blank" class="btn-action btn-success" style="text-align:center; text-decoration:none;" onclick="if(isDemoMode){alert('🔒 Mode Démo : Accès Espion désactivé.'); return false;}">Accéder (Spy)</a>
                                 ${toggleStatusBtn}
-                                <button class="btn-action btn-danger" onclick="supprimerCompteDefinitif('${t.id}')">Détruire</button>
+                                <button class="btn-action btn-danger" onclick="supprimerCompteDefinitif('${t.id}')">Archiver</button>
                             </div>
                         </td>
                     </tr>
@@ -353,42 +376,51 @@
 
         function sauvegarderAddonsModal() {
             if(!currentEditingTenant) return;
-            
-            // Récupère toutes les checkboxes cochées dans la modale
             let checkboxes = document.querySelectorAll('.addon-checkbox:checked');
             let selectedAddons = Array.from(checkboxes).map(cb => cb.value);
-            
-            // Envoi synchrone à la base de données
             executerAction(currentEditingTenant, 'set_addons', { addons: selectedAddons });
             fermerAddonsModal();
         }
 
         // ===============================================
-        // ⚙️ COMMANDES D'ADMINISTRATION CENTRALISÉE
+        // ⚙️ COMMANDES D'ADMINISTRATION CENTRALISÉE V. FORTERESSE
         // ===============================================
 
         async function executerAction(tenantID, action, payload = {}) {
-            // 🌟 SÉCURITÉ DÉMO : Bloque les altérations du réseau
-            if (isDemoMode) return alert("🔒 Mode Démo : Les actions SuperAdmin (Modification, suspension, suppression) sont désactivées pour protéger la base de données.");
-
-            if (isSyncing) return; // Sécurité anti-spam
+            if (isDemoMode) return alert("🔒 Mode Démo : Les actions SuperAdmin sont désactivées pour protéger la base de données.");
+            if (isSyncing) return;
+            
             setSyncState(true);
+
+            // Ajout du motif obligatoire exigé par le nouveau backend V. FORTERESSE (8 caractères mini)
+            if (!payload.reason) {
+                payload.reason = "Opération Master validée depuis la Tour de Contrôle";
+            }
             
             try {
-                let bodyData = { masterKey: ADMIN_PASS, tenantID, action, ...payload };
-                let res = await fetch(`${SERVER_URL}/api/admin-action`, {
+                let bodyData = { tenantID, action, payload }; 
+                
+                let res = await fetch(`${SERVER_URL}/api/master/tenant-action`, {
                     method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(bodyData)
+                    headers: { 
+                        'Content-Type': 'application/json',
+                        'X-CSRF-Token': masterCsrfToken // Jeton de sécurité obligatoire
+                    },
+                    body: JSON.stringify(bodyData),
+                    credentials: 'include'
                 });
                 
                 let data = await res.json();
                 
                 if (res.ok && data.success) {
-                    await loadAllTenants(); // Rechargement strict pour garantir la synchro
+                    // Gestion spécifique du retour du PIN temporaire généré par le backend
+                    if (action === 'reset_admin_pin' && data.temporaryPin) {
+                        alert(`✅ Opération réussie !\n\nLe nouveau PIN provisoire pour ${tenantID.toUpperCase()} est : ${data.temporaryPin}\n\nVeuillez transmettre ce code au responsable de l'établissement.`);
+                    }
+                    await loadAllTenants(); 
                 } else {
-                    alert(`❌ Échec de la synchronisation : ${data.error || "Action rejetée."}`);
-                    await loadAllTenants(); // Rechargement pour remettre la vue à jour
+                    alert(`❌ Échec de la synchronisation : ${data.error || "Action rejetée par le serveur."}`);
+                    await loadAllTenants(); 
                 }
             } catch(e) { 
                 alert("🚨 Erreur critique de communication avec la base de données."); 
@@ -399,13 +431,13 @@
         function changerForfait(tenantID, nouveauPack) {
             if (isDemoMode) {
                 alert("🔒 Mode Démo : Le changement de forfait est bloqué.");
-                loadAllTenants(); // Remet le menu déroulant à sa position d'origine
+                loadAllTenants();
                 return;
             }
             if(confirm(`⚠️ CONFIRMATION REQUISE :\nVoulez-vous vraiment basculer le restaurant ${tenantID.toUpperCase()} sur le forfait [${nouveauPack}] ?`)) {
                 executerAction(tenantID, 'set_plan', { newPlan: nouveauPack });
             } else {
-                loadAllTenants(); // Rétablit le select visuellement
+                loadAllTenants(); 
             }
         }
 
@@ -418,21 +450,22 @@
             if (isNaN(val) || val < 1) {
                 return alert("Valeur invalide. Le minimum est 1 écran.");
             }
-
             executerAction(tenantID, 'set_max_screens', { maxScreens: val });
         }
 
         function modifierPinManuel(tenantID) {
             if (isDemoMode) return alert("🔒 Mode Démo : Le changement de PIN est désactivé.");
-            let nouveauPin = prompt(`🔢 Saisissez le NOUVEAU Code PIN Master pour ${tenantID.toUpperCase()}\n(4 chiffres minimum) :`);
-            if (!nouveauPin || nouveauPin.trim().length < 4) return alert("Code invalide ou annulé.");
-            executerAction(tenantID, 'set_pin', { manualPin: nouveauPin.trim() });
+            if (confirm(`⚠️ Voulez-vous vraiment générer un NOUVEAU code PIN aléatoire pour le client ${tenantID.toUpperCase()} ?\n\nLe code actuel sera immédiatement invalidé, ce qui déconnectera potentiellement la direction.`)) {
+                executerAction(tenantID, 'reset_admin_pin', { reason: "Demande de réinitialisation Master" });
+            }
         }
 
         function supprimerCompteDefinitif(tenantID) {
-            if (isDemoMode) return alert("🔒 Mode Démo : La destruction de compte est désactivée.");
-            if (confirm(`🚨 DESTRUCTION ATOMIQUE DU COMPTE 🚨\n\nVous êtes sur le point de détruire DÉFINITIVEMENT le restaurant : ${tenantID.toUpperCase()}.\nCette action effacera toute sa base de données, son plan de salle et ses historiques.\n\nÊtes-vous absolument sûr ?`)) {
-                executerAction(tenantID, 'delete');
+            if (isDemoMode) return alert("🔒 Mode Démo : L'archivage de compte est désactivé.");
+            if (confirm(`🚨 ARCHIVAGE DU COMPTE 🚨\n\nVous êtes sur le point d'archiver et de suspendre DÉFINITIVEMENT le restaurant : ${tenantID.toUpperCase()}.\nÊtes-vous absolument sûr ?`)) {
+                let motif = prompt("Veuillez saisir un motif obligatoire pour le registre (ex: Résiliation, Impayé...) :");
+                if (!motif || motif.length < 8) return alert("❌ Opération annulée. Un motif de 8 caractères minimum est requis par la V. FORTERESSE.");
+                executerAction(tenantID, 'archive', { reason: motif });
             }
         }
 
@@ -472,7 +505,6 @@
 
         // Lancement initial
         window.addEventListener('load', () => {
-            // Afficher ou cacher le bouton selon si l'app est déjà installée
             if (window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone) {
                 document.getElementById('pwa-install-btn').style.display = 'none';
             } else {
