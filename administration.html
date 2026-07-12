@@ -2,6 +2,7 @@
 <html lang="fr">
 <head>
     <meta charset="UTF-8">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; connect-src 'self' https://tableau-system.onrender.com https://ipapi.co; img-src 'self' data:; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; script-src 'self' 'unsafe-inline'; frame-ancestors 'none'; base-uri 'self'; form-action 'self' https://checkout.stripe.com; upgrade-insecure-requests">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
     <meta http-equiv="Pragma" content="no-cache" />
@@ -24,11 +25,13 @@
             ? "http://localhost:10000" : "https://tableau-system.onrender.com";
 
         // 🔒 SÉCURITÉ : Générateur d'empreinte numérique
-        function getDeviceFingerprint() {
-            let deviceId = localStorage.getItem('ichef_device_fingerprint');
+        async function getDeviceFingerprint() {
+            let deviceId = localStorage.getItem('ichef_device_id');
             if (!deviceId) {
-                deviceId = 'device_' + Math.random().toString(36).substr(2, 9) + '_' + Date.now();
-                localStorage.setItem('ichef_device_fingerprint', deviceId);
+                deviceId = (crypto && crypto.randomUUID)
+                    ? crypto.randomUUID()
+                    : `device_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+                localStorage.setItem('ichef_device_id', deviceId);
             }
             return deviceId;
         }
@@ -36,80 +39,62 @@
         // 🔒 SÉCURITÉ : Validation de licence stricte & ADD-ONS avant affichage du DOM
         (async function enforceSecurity() {
             const urlParams = new URLSearchParams(window.location.search);
-            let urlTenantID = urlParams.get('tenantID');
+            const urlTenantID = urlParams.get('tenantID');
+            const storedTenantID = localStorage.getItem('ichef_tenant_id');
 
-            if (urlTenantID && urlTenantID !== window.tenantID) {
+            if (urlTenantID && storedTenantID && urlTenantID !== storedTenantID) {
                 localStorage.removeItem('EMPIRE_GLOBAL_SYNC');
-                localStorage.removeItem('ichef_master_pin');
-                if (urlTenantID) localStorage.setItem('ichef_tenant_id', urlTenantID);
-                window.tenantID = urlTenantID;
+                sessionStorage.removeItem('ichef_csrf_token');
+                sessionStorage.removeItem('ichef_session_hint');
             }
 
-            let pin = localStorage.getItem('ichef_master_pin'); 
-            
-            // 🌟 INJECTION DU MODE DÉMO : Auto-connexion pour les prospects
-            if (window.tenantID === 'demo' || window.tenantID === 'demo_pizzeria') {
-                if (!pin) {
-                    pin = "0000"; // Code PIN par défaut pour le compte de démonstration
-                    localStorage.setItem('ichef_master_pin', pin);
-                }
-            }
-            
-            if(!window.tenantID) {
-                window.location.href = 'connexionpartenaire.html';
+            window.tenantID = urlTenantID || storedTenantID;
+            if (!window.tenantID) {
+                window.location.replace('connexionpartenaire.html');
                 return;
             }
 
-            const accessMatrix = {
-                'PACK_A': ['admin.html', 'administration.html','portail-staff.html', 'minipass.html', 'production.html', 'caissetactile.html', 'pack-eco.html', 'menu-qr.html', 'haccp.html'],
-                'CHEF': ['chef.html', 'administration.html'],
-                'CHEF_CUISINE': ['chef.html', 'administration.html'],
-                'PATISSIER': ['chef-patissier.html', 'administration.html'],
-                'CHEF_PATISSERIE': ['chef-patissier.html', 'administration.html'],
-                'BAR': ['chef-bar.html', 'administration.html'],
-                'CHEF_BAR': ['chef-bar.html', 'administration.html'],
-                'ICHEF_OS': ['chef.html', 'portail-staff.html', 'chef-bar.html','administration.html', 'admin.html', 'pack-eco.html', 'caissetactile.html', 'minipass.html', 'production.html', 'menu-qr.html'],
-                'ECO': ['portail-staff.html','admin.html', 'pack-eco.html','caissetactile.html', 'minipass.html', 'production.html', 'menu-qr.html', 'administration.html', 'haccp.html'],
-                'BUSINESS': ['portail-staff.html','admin.html', 'pack-eco.html', 'runner-pass1.html','bar.html','caissetactile.html', 'minipass.html', 'production.html', 'menu-qr.html', 'administration.html', 'haccp.html'],
-                'RENTABILITE': ['portail-staff.html','admin.html', 'pack-eco.html','runner-pass1.html','bar.html', 'caissetactile.html', 'minipass.html', 'production.html', 'menu-qr.html', 'administration.html', 'haccp.html'],
-                'EMPIRE': ['portail-staff.html','admin.html', 'pack-eco.html', 'bar.html','runner-pass1.html','caissetactile.html', 'menu-qr.html', 'chef.html', 'menu-pure.html', 'chef-bar.html', 'menu-bar.html', 'rh.html', 'haccp.html', 'reservation.html', 'minipass.html', 'production.html', 'chef-patissier.html', 'administration.html'],
-                'BRIGADE': ['portail-staff.html','admin.html', 'pack-eco.html', 'bar.html','runner-pass1.html','caissetactile.html', 'menu-qr.html', 'chef.html', 'menu-pure.html', 'chef-bar.html', 'menu-bar.html', 'rh.html', 'haccp.html', 'reservation.html', 'minipass.html', 'production.html', 'chef-patissier.html', 'administration.html'],
-                'BRIGADES': ['admin.html', 'portail-staff.html', 'pack-eco.html', 'bar.html','runner-pass1.html','caissetactile.html', 'menu-qr.html', 'chef.html', 'menu-pure.html', 'chef-bar.html', 'menu-bar.html', 'rh.html', 'haccp.html', 'reservation.html', 'minipass.html', 'production.html', 'chef-patissier.html', 'administration.html'],
-                'PREMIUM': ['admin.html', 'portail-staff.html', 'pack-eco.html', 'bar.html','runner-pass1.html','caissetactile.html', 'menu-qr.html', 'chef.html', 'menu-pure.html', 'chef-bar.html', 'menu-bar.html', 'rh.html', 'haccp.html', 'reservation.html', 'minipass.html', 'production.html', 'chef-patissier.html', 'administration.html']
-            };
+            localStorage.setItem('ichef_tenant_id', window.tenantID);
 
             try {
-                const res = await fetch(`${window.SERVER_URL}/api/verify-pin`, {
+                const deviceId = await getDeviceFingerprint();
+                const res = await fetch(`${window.SERVER_URL}/api/security/bootstrap`, {
                     method: 'POST',
+                    credentials: 'include',
+                    cache: 'no-store',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ tenantID: window.tenantID, pin: pin || "0000", deviceId: getDeviceFingerprint() })
+                    body: JSON.stringify({
+                        tenantID: window.tenantID,
+                        deviceId,
+                        module: 'administration.html'
+                    })
                 });
+
+                if (res.status === 401 || res.status === 403) {
+                    window.location.replace(`connexionpartenaire.html?tenantID=${encodeURIComponent(window.tenantID)}`);
+                    return;
+                }
+
                 const data = await res.json();
-
-                if(!data.success) {
-                    alert(data.error || "ACCÈS REFUSÉ (Limite d'écrans atteinte ou compte invalide).");
-                    window.location.href = 'connexionpartenaire.html';
-                    return;
+                if (!res.ok || !data.success || !data.sessionActive) {
+                    throw new Error(data.error || 'Session invalide');
                 }
 
-                const currentPlan = data.plan ? data.plan.toUpperCase() : 'CHEF';
-                const userAddons = data.addons || []; 
+                window.ICHEF_SECURITY = {
+                    csrfToken: data.csrfToken || '',
+                    user: data.user || null,
+                    permissions: Array.isArray(data.permissions) ? data.permissions : [],
+                    plan: String(data.plan || 'CHEF').toUpperCase(),
+                    addons: Array.isArray(data.addons) ? data.addons : [],
+                    deviceId
+                };
 
-                let currentPage = window.location.pathname.split('/').pop().toLowerCase();
-                if(currentPage === '') currentPage = 'index.html';
-
-                const allowedPages = accessMatrix[currentPlan] || [];
-                
-                // 🌟 VÉRIFICATION HYBRIDE (Forfait de base OU Add-on)
-                if (!allowedPages.includes(currentPage) && !userAddons.includes(currentPage) && currentPage !== 'administration.html') {
-                    alert(`ACCÈS REFUSÉ : Votre forfait (${currentPlan}) n'inclut pas ce module.`);
-                    window.location.href = `administration.html?tenantID=${window.tenantID}`;
-                    return;
-                }
-
-                document.documentElement.style.opacity = "1";
-            } catch (e) { 
-                console.error("Erreur de securite reseau", e); 
+                sessionStorage.setItem('ichef_csrf_token', window.ICHEF_SECURITY.csrfToken);
+                document.documentElement.style.opacity = '1';
+            } catch (e) {
+                console.error('Erreur de sécurité réseau', e);
+                document.documentElement.style.opacity = '1';
+                document.body.innerHTML = `<main style="min-height:100vh;display:grid;place-items:center;background:#050505;color:#fff;font-family:Inter,sans-serif;padding:24px;text-align:center"><div><h1 style="color:#ef4444">Accès sécurisé indisponible</h1><p>La session n’a pas pu être vérifiée. Reconnectez-vous.</p><button onclick="location.href='connexionpartenaire.html?tenantID=${encodeURIComponent(window.tenantID || '')}'" style="padding:12px 18px;cursor:pointer">Se reconnecter</button></div></main>`;
             }
         })();
     </script>
@@ -491,20 +476,65 @@
 
         window.logicielManager = {
             tenantID: null,
-            masterPin: null,
             SERVER_URL: window.SERVER_URL,
+            csrfToken: null,
+            permissions: [],
             currentSelectedAddon: null,
             isDemoMode: false, 
 
+            hasPermission: function(permission) {
+                return this.permissions.includes('*') || this.permissions.includes(permission);
+            },
+
+            apiFetch: async function(path, options = {}) {
+                const headers = new Headers(options.headers || {});
+                if (!headers.has('Content-Type') && options.body) headers.set('Content-Type', 'application/json');
+                if (this.csrfToken) headers.set('X-CSRF-Token', this.csrfToken);
+                headers.set('X-iCHEF-Device', (window.ICHEF_SECURITY && window.ICHEF_SECURITY.deviceId) || '');
+
+                const response = await fetch(`${this.SERVER_URL}${path}`, {
+                    ...options,
+                    headers,
+                    credentials: 'include',
+                    cache: 'no-store'
+                });
+
+                if (response.status === 401 || response.status === 403) {
+                    sessionStorage.clear();
+                    window.location.replace(`connexionpartenaire.html?tenantID=${encodeURIComponent(this.tenantID || '')}`);
+                    throw new Error('Session expirée');
+                }
+                return response;
+            },
+
+            audit: async function(action, details = {}) {
+                try {
+                    await this.apiFetch('/api/audit/events', {
+                        method: 'POST',
+                        body: JSON.stringify({
+                            tenantID: this.tenantID,
+                            module: 'ADMINISTRATION',
+                            action,
+                            details,
+                            clientTime: new Date().toISOString()
+                        })
+                    });
+                } catch (e) {
+                    console.warn('Journalisation indisponible', e);
+                }
+            },
             init: async function() {
                 this.tenantID = window.tenantID;
-                this.masterPin = localStorage.getItem('ichef_master_pin');
+                this.csrfToken = (window.ICHEF_SECURITY && window.ICHEF_SECURITY.csrfToken) || sessionStorage.getItem('ichef_csrf_token') || '';
+                this.permissions = (window.ICHEF_SECURITY && window.ICHEF_SECURITY.permissions) || [];
                 this.isDemoMode = (this.tenantID === 'demo' || this.tenantID === 'demo_pizzeria');
 
-                if (!this.tenantID || !this.masterPin) {
-                    window.location.href = "connexionpartenaire.html";
+                if (!this.tenantID || !window.ICHEF_SECURITY || !window.ICHEF_SECURITY.user) {
+                    window.location.replace(`connexionpartenaire.html?tenantID=${encodeURIComponent(this.tenantID || '')}`);
                     return;
                 }
+
+                await this.audit('ADMIN_SESSION_OPENED', { demo: this.isDemoMode });
 
                 const urlParams = new URLSearchParams(window.location.search);
                 if(urlParams.get('upgrade') === 'success') {
@@ -528,7 +558,7 @@
                 const planLabel = document.getElementById('plan-label');
                 
                 try {
-                    const res = await fetch(`${this.SERVER_URL}/api/check-license?tenantID=${this.tenantID}&_t=${Date.now()}`);
+                    const res = await this.apiFetch(`/api/check-license?tenantID=${encodeURIComponent(this.tenantID)}&_t=${Date.now()}`);
                     const data = await res.json();
                     
                     if (!data.success || data.status === 'SUSPENDU') {
@@ -640,7 +670,7 @@
             loadStaffList: async function() {
                 const listDiv = document.getElementById('dashboard-staff-list');
                 try {
-                    const r = await fetch(`${this.SERVER_URL}/get-current-state?tenantID=${this.tenantID}&_t=${Date.now()}`);
+                    const r = await this.apiFetch(`/get-current-state?tenantID=${encodeURIComponent(this.tenantID)}&_t=${Date.now()}`);
                     if(r.ok) {
                         const state = await r.json();
                         const staffData = (state.activeOrders && state.activeOrders['STAFF_ACCESS']) ? state.activeOrders['STAFF_ACCESS'].data : [];
@@ -671,10 +701,10 @@
 
             loadScreenStats: async function() {
                 try {
-                    const res = await fetch(`${this.SERVER_URL}/api/check-license?tenantID=${this.tenantID}`);
+                    const res = await this.apiFetch(`/api/check-license?tenantID=${encodeURIComponent(this.tenantID)}`);
                     const data = await res.json();
                     
-                    const countRes = await fetch(`${this.SERVER_URL}/api/dashboard-info?tenantID=${this.tenantID}`);
+                    const countRes = await this.apiFetch(`/api/dashboard-info?tenantID=${encodeURIComponent(this.tenantID)}`);
                     const countData = await countRes.json();
                     
                     if (data.success && countData.success) {
@@ -690,25 +720,25 @@
             },
 
             resetEcrans: async function() {
-                if(this.isDemoMode) return alert("🔒 Mode Démo : La réinitialisation des écrans est désactivée pour éviter de perturber les autres utilisateurs en test.");
+                if (this.isDemoMode) return alert("🔒 Mode Démo : action désactivée.");
+                if (!this.hasPermission('DEVICES_RESET')) return alert("Action non autorisée pour votre rôle.");
+                if (!confirm("ATTENTION : tous les écrans seront déconnectés. Continuer ?")) return;
 
-                if(!confirm("ATTENTION : Cela va déconnecter TOUS les écrans actuels de votre restaurant. Êtes-vous sûr de vouloir forcer la libération des connexions ?")) return;
-                
+                const reason = prompt("Motif obligatoire de la libération des connexions :");
+                if (!reason || reason.trim().length < 5) return alert("Un motif d’au moins 5 caractères est obligatoire.");
+
                 try {
-                    const res = await fetch(`${this.SERVER_URL}/api/admin-reset-devices`, {
+                    const res = await this.apiFetch('/api/admin-reset-devices', {
                         method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ tenantID: this.tenantID, adminPin: this.masterPin })
+                        body: JSON.stringify({ tenantID: this.tenantID, reason: reason.trim() })
                     });
                     const data = await res.json();
-                    if(data.success) {
-                        alert("Toutes les connexions ont été libérées. Vos écrans peuvent se reconnecter.");
-                        this.loadScreenStats();
-                    } else {
-                        alert("Erreur : Action non autorisée ou code PIN invalide.");
-                    }
-                } catch(e) {
-                    alert("Erreur réseau. Vérifiez votre connexion.");
+                    if (!res.ok || !data.success) throw new Error(data.error || 'Action refusée');
+                    await this.audit('DEVICES_RESET', { reason: reason.trim() });
+                    alert("Toutes les connexions ont été libérées.");
+                    this.loadScreenStats();
+                } catch (e) {
+                    alert("Erreur : " + e.message);
                 }
             },
 
@@ -716,7 +746,7 @@
                 if(this.isDemoMode) return alert("🔒 Mode Démo : L'achat d'écrans supplémentaires n'est pas disponible sur le compte de démonstration.");
 
                 try {
-                    const res = await fetch(`${this.SERVER_URL}/api/stripe/create-screen-upgrade-session`, {
+                    const res = await this.apiFetch('/api/stripe/create-screen-upgrade-session', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({ tenantID: this.tenantID, quantity: parseInt(qty) })
@@ -735,7 +765,7 @@
 
             chargerCoordonnees: async function() {
                 try {
-                    const res = await fetch(`${this.SERVER_URL}/api/get-contact?tenantID=${this.tenantID}`);
+                    const res = await this.apiFetch(`/api/get-contact?tenantID=${encodeURIComponent(this.tenantID)}`);
                     const data = await res.json();
                     if (data.success && data.contact) {
                         if(data.contact.email) document.getElementById('user-email').value = data.contact.email;
@@ -747,64 +777,56 @@
             },
 
             sauvegarderCoordonnees: async function() {
-                if(this.isDemoMode) return alert("🔒 Mode Démo : L'enregistrement des coordonnées est désactivé.");
+                if (this.isDemoMode) return alert("🔒 Mode Démo : enregistrement désactivé.");
+                if (!this.hasPermission('CONTACT_UPDATE')) return alert("Action non autorisée pour votre rôle.");
 
                 const email = document.getElementById('user-email').value.trim();
                 const phone = document.getElementById('user-phone').value.trim();
-                
-                if(!email && !phone) return alert("Veuillez remplir au moins un champ.");
-                
+                if (!email && !phone) return alert("Veuillez remplir au moins un champ.");
+                if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return alert("Adresse email invalide.");
+
                 try {
-                    const res = await fetch(`${this.SERVER_URL}/api/update-contact`, {
+                    const res = await this.apiFetch('/api/update-contact', {
                         method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ tenantID: this.tenantID, masterPin: this.masterPin, email: email, phone: phone })
+                        body: JSON.stringify({ tenantID: this.tenantID, email, phone })
                     });
                     const data = await res.json();
-                    if(data.success) alert("Informations enregistrées avec succès.");
-                    else alert("Erreur lors de l'enregistrement. Vérifiez votre connexion.");
-                } catch(e) {
-                    alert("Erreur réseau lors de la sauvegarde.");
+                    if (!res.ok || !data.success) throw new Error(data.error || 'Enregistrement refusé');
+                    await this.audit('CONTACT_UPDATED', { emailChanged: Boolean(email), phoneChanged: Boolean(phone) });
+                    alert("Informations enregistrées avec succès.");
+                } catch (e) {
+                    alert("Erreur : " + e.message);
                 }
             },
 
             modifierPinMaster: async function() {
-                if(this.isDemoMode) return alert("🔒 Mode Démo : La modification du code PIN Administrateur est désactivée.");
+                if (this.isDemoMode) return alert("🔒 Mode Démo : modification désactivée.");
+                if (!this.hasPermission('MASTER_PIN_CHANGE')) return alert("Action non autorisée pour votre rôle.");
 
-                const newPin = prompt("Entrez votre NOUVEAU code PIN (entre 4 et 9 chiffres) :");
-                if(!newPin) return;
-                
-                if(!/^\d{4,9}$/.test(newPin)) {
-                    return alert("Invalide. Le code doit contenir entre 4 et 9 chiffres.");
+                const currentPin = prompt("Saisissez votre code administrateur actuel :");
+                if (!currentPin) return;
+                const newPin = prompt("Nouveau code PIN administrateur (6 à 9 chiffres) :");
+                if (!newPin) return;
+                if (!/^\d{6,9}$/.test(newPin)) return alert("Le nouveau code doit contenir entre 6 et 9 chiffres.");
+                if (/^(\d)\1+$/.test(newPin) || ['123456','654321','000000','111111'].includes(newPin)) {
+                    return alert("Ce code est trop simple.");
                 }
-
-                if(newPin === "0000" || newPin === "1234") {
-                    return alert("Code trop simple. Veuillez choisir un code plus sécurisé.");
-                }
-
-                const confirmPin = prompt("Confirmez votre nouveau code PIN :");
-                if(newPin !== confirmPin) {
-                    return alert("Les codes ne correspondent pas. Annulé.");
-                }
+                const confirmPin = prompt("Confirmez le nouveau code PIN :");
+                if (newPin !== confirmPin) return alert("Les codes ne correspondent pas.");
 
                 try {
-                    const res = await fetch(`${this.SERVER_URL}/api/update-master-pin`, {
+                    const res = await this.apiFetch('/api/security/change-master-pin', {
                         method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ tenantID: this.tenantID, oldPin: this.masterPin, newPin: newPin })
+                        body: JSON.stringify({ tenantID: this.tenantID, currentPin, newPin })
                     });
-                    
                     const data = await res.json();
-                    if (data.success) {
-                        localStorage.setItem('ichef_master_pin', newPin);
-                        this.masterPin = newPin;
-                        alert("✅ Code PIN synchronisé et mis à jour avec succès. Attention : Toutes les sessions actives ont été déconnectées par sécurité.");
-                        this.loadScreenStats();
-                    } else {
-                        alert("Erreur : " + (data.error || "Mise à jour refusée par le serveur."));
-                    }
-                } catch(e) {
-                    alert("📡 Erreur réseau : Le serveur met trop de temps à répondre. Attendez 1 minute et réessayez.");
+                    currentPin.replace(/./g, '0');
+                    if (!res.ok || !data.success) throw new Error(data.error || 'Mise à jour refusée');
+                    await this.audit('MASTER_PIN_CHANGED');
+                    alert("Code modifié. Toutes les autres sessions ont été révoquées.");
+                    await this.logout(false);
+                } catch (e) {
+                    alert("Erreur : " + e.message);
                 }
             },
 
@@ -812,7 +834,7 @@
                 if(this.isDemoMode) return alert("🔒 Mode Démo : L'accès au portail de facturation sécurisé Stripe est désactivé.");
 
                 try {
-                    const res = await fetch(`${this.SERVER_URL}/api/stripe/create-customer-portal-session`, {
+                    const res = await this.apiFetch('/api/stripe/create-customer-portal-session', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({ tenantID: this.tenantID })
@@ -853,11 +875,20 @@
                 document.getElementById('sos-message').value = "";
             },
 
-            logout: function() {
-                if(confirm("Confirmer la déconnexion ? Cela libérera cet écran du système iCHEF.")) {
-                    localStorage.removeItem('ichef_tenant_id');
-                    localStorage.removeItem('ichef_master_pin');
-                    window.location.href = "connexionpartenaire.html";
+            logout: async function(askConfirmation = true) {
+                if (askConfirmation && !confirm("Confirmer la déconnexion ?")) return;
+                try {
+                    await this.audit('ADMIN_LOGOUT');
+                    await this.apiFetch('/api/auth/logout', {
+                        method: 'POST',
+                        body: JSON.stringify({ tenantID: this.tenantID })
+                    });
+                } catch (e) {
+                    console.warn('Déconnexion serveur incomplète', e);
+                } finally {
+                    sessionStorage.clear();
+                    localStorage.removeItem('EMPIRE_GLOBAL_SYNC');
+                    window.location.replace(`connexionpartenaire.html?tenantID=${encodeURIComponent(this.tenantID || '')}`);
                 }
             }
         };
