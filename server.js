@@ -34,20 +34,19 @@ const app = express();
 app.set('trust proxy', 1);
 const server = http.createServer(app);
 
-const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS || 'https://os.ichef.ch,http://localhost:10000')
-    .split(',')
-    .map(v => v.trim())
-    .filter(Boolean);
+// 🔓 CORRECTION CORS : MOTEUR DYNAMIQUE POUR NE PLUS BLOQUER LES CLIENTS
+const corsOptions = {
+    origin: function (origin, callback) {
+        callback(null, true);
+    },
+    credentials: true,
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'Origin', 'Accept', 'X-CSRF-Token', 'X-iCHEF-Device', 'X-iCHEF-Master-Device', 'Idempotency-Key']
+};
 
-const io = new Server(server, {
-    cors: {
-        origin(origin, callback) {
-            if (!origin || ALLOWED_ORIGINS.includes(origin)) return callback(null, true);
-            callback(new Error('Origine Socket.IO non autorisée'));
-        },
-        credentials: true
-    }
-});
+const io = new Server(server, { cors: corsOptions });
+
+app.use(cors(corsOptions));
 
 // 👇 DÉBLOCAGE DES VIDÉOS & RESSOURCES 👇
 app.use(express.static(__dirname));
@@ -89,8 +88,8 @@ function setCookie(res, name, value, maxAge) {
         `${name}=${encodeURIComponent(value)}`,
         'Path=/',
         'HttpOnly',
-        'SameSite=None', 
-        'Secure',        
+        'SameSite=None', // 🔓 AUTORISE LA LECTURE CROSS-DOMAIN
+        'Secure',        // 🔒 REQUIS PAR LES NAVIGATEURS AVEC SAMESITE=NONE
         `Max-Age=${Math.floor(maxAge / 1000)}`
     ];
     res.append('Set-Cookie', attrs.join('; '));
@@ -126,18 +125,9 @@ function verifyPinHash(pin, storedHash) {
     return safeEqual(actual, expected);
 }
 
-// Sécurité des requêtes (CORS)
-app.use(cors({
-    origin(origin, callback) {
-        if (!origin || ALLOWED_ORIGINS.includes(origin)) return callback(null, true);
-        callback(new Error('Origine CORS non autorisée'));
-    },
-    credentials: true,
-    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization', 'Origin', 'Accept', 'X-CSRF-Token', 'X-iCHEF-Device', 'X-iCHEF-Master-Device', 'Idempotency-Key']
-}));
-
+// 🚨 SÉCURITÉ STRIPE : On utilise raw() uniquement pour la route webhook
 app.use('/webhook', express.raw({ type: 'application/json' }));
+
 app.use(express.json({ limit: '100mb' })); 
 app.use(express.urlencoded({ extended: true, limit: '100mb' }));
 app.use(express.static(path.join(__dirname)));
@@ -152,6 +142,7 @@ app.get('/', (req, res) => {
     res.sendFile(path.join(__dirname, 'vitrine.html'));
 });
 
+// Ta route d'administration officielle (Tour de Contrôle)
 app.get('/panel-ichef', (req, res) => {
     if (req.query.pass === ADMIN_PASS) {
         res.sendFile(path.join(__dirname, 'empire.html'));
@@ -303,7 +294,9 @@ app.post('/api/auth/logout', async (req, res) => {
 
 // ROUTINES MASTER / SUPERADMIN
 app.post('/api/master/login', async (req, res) => {
-    if (!safeEqual(req.body.masterKey, ADMIN_PASS)) return res.status(401).json({ success: false, error: 'Clé SuperAdmin invalide.' });
+    if (!safeEqual(req.body.masterKey, ADMIN_PASS)) {
+        return res.status(401).json({ success: false, error: 'Clé SuperAdmin invalide.' });
+    }
 
     const token = randomToken();
     const csrfToken = randomToken(24);
