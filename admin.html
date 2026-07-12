@@ -3,7 +3,11 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
-    <title>iCHEF - Configuration Générale</title>
+    <meta http-equiv="Cache-Control" content="no-store, no-cache, must-revalidate, private">
+    <meta http-equiv="Pragma" content="no-cache">
+    <meta http-equiv="Expires" content="0">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; connect-src 'self' https://tableau-system.onrender.com wss://tableau-system.onrender.com https://cdn.socket.io https://cdn.jsdelivr.net; script-src 'self' 'unsafe-inline' https://cdn.socket.io https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data: blob: https:; object-src 'none'; base-uri 'self'; frame-ancestors 'none'; form-action 'self'; upgrade-insecure-requests">
+    <title>iCHEF - Configuration Générale Sécurisée</title>
     
     <link href="https://fonts.googleapis.com/css2?family=Abril+Fatface&family=Amatic+SC&family=Anton&family=Arvo&family=Bebas+Neue&family=Bitter&family=Bodoni+Moda&family=Caveat&family=Cinzel&family=Cormorant+Garamond&family=Crimson+Text&family=Dancing+Script&family=EB+Garamond&family=Fira+Sans&family=Great+Vibes&family=Inter:wght@300;400;500;600;700;800&family=Jost&family=Lato&family=Libre+Baskerville&family=Lobster&family=Lora&family=Merriweather&family=Montserrat:wght@400;600&family=Noto+Serif&family=Nunito&family=Open+Sans&family=Oswald&family=PT+Serif&family=Pacifico&family=Playfair+Display:ital,wght@0,400;0,600;0,700;1,400&family=Poppins:wght@400;600&family=Quicksand&family=Raleway&family=Righteous&family=Roboto&family=Rubik&family=Satisfy&family=Ubuntu&family=Work+Sans&family=Zilla+Slab&display=swap" rel="stylesheet">
 
@@ -11,95 +15,102 @@
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 
     <script>
-    // 🛡️ BOUCLIER 1 : DOMAIN LOCK
-    if (window.location.hostname !== "os.ichef.ch" && window.location.hostname !== "localhost" && window.location.hostname !== "127.0.0.1") {
-        document.documentElement.innerHTML = "<h1 style='color:red; text-align:center; margin-top:20%; font-family:sans-serif;'>🛑 VIOLATION DE LICENCE iCHEF OS</h1>";
-        throw new Error("Exécution non autorisée hors du domaine officiel.");
+    "use strict";
+
+    // Sécurité front-end : la véritable autorisation reste obligatoirement côté serveur.
+    if (!["os.ichef.ch", "localhost", "127.0.0.1"].includes(window.location.hostname)) {
+        document.documentElement.innerHTML = "<h1 style='color:red;text-align:center;margin-top:20%;font-family:sans-serif'>Accès iCHEF OS non autorisé</h1>";
+        throw new Error("Domaine non autorisé");
     }
 
-    // 🛡️ BOUCLIER 2 : ANTI-SNOOPING (Bloque F12, Inspecteur, Clic-droit)
-    document.addEventListener('contextmenu', event => event.preventDefault());
-    document.onkeydown = function(e) {
-        if(e.keyCode == 123) return false; 
-        if(e.ctrlKey && e.shiftKey && e.keyCode == 'I'.charCodeAt(0)) return false; 
-        if(e.ctrlKey && e.shiftKey && e.keyCode == 'J'.charCodeAt(0)) return false; 
-        if(e.ctrlKey && e.keyCode == 'U'.charCodeAt(0)) return false; 
-    }
+    window.ICHEF_SECURITY = {
+        tenantID: new URLSearchParams(location.search).get("tenantID") || localStorage.getItem("ichef_tenant_id"),
+        serverURL: (["localhost", "127.0.0.1"].includes(location.hostname) || location.protocol === "file:")
+            ? "http://localhost:10000"
+            : "https://tableau-system.onrender.com",
+        csrfToken: null,
+        user: null,
+        permissions: [],
+        deviceId: null,
+        ready: false
+    };
 
-        function getDeviceFingerprint() {
-            let deviceId = localStorage.getItem('ichef_device_fingerprint');
-            if (!deviceId) {
-                deviceId = 'device_' + Math.random().toString(36).substr(2, 9) + '_' + Date.now();
-                localStorage.setItem('ichef_device_fingerprint', deviceId);
-            }
-            return deviceId;
+    function getDeviceFingerprint() {
+        let id = localStorage.getItem("ichef_device_id");
+        if (!id) {
+            id = (crypto.randomUUID ? crypto.randomUUID() : `device-${Date.now()}-${crypto.getRandomValues(new Uint32Array(1))[0]}`);
+            localStorage.setItem("ichef_device_id", id);
         }
+        return id;
+    }
 
-        (async function enforceSecurity() {
-            const urlParams = new URLSearchParams(window.location.search);
-            let urlTenantID = urlParams.get('tenantID');
-            let storedTenantID = localStorage.getItem('ichef_tenant_id');
+    function hasPermission(permission) {
+        return window.ICHEF_SECURITY.permissions.includes("*") || window.ICHEF_SECURITY.permissions.includes(permission);
+    }
 
-            if (urlTenantID && urlTenantID !== storedTenantID) {
-                localStorage.removeItem('EMPIRE_GLOBAL_SYNC');
-                localStorage.removeItem('ichef_master_pin');
-                if (urlTenantID) localStorage.setItem('ichef_tenant_id', urlTenantID);
-                storedTenantID = urlTenantID;
-            }
+    async function secureFetch(input, init = {}) {
+        const url = typeof input === "string" ? input : input.url;
+        const sameBackend = url.startsWith(window.ICHEF_SECURITY.serverURL) || url.startsWith("/");
+        const headers = new Headers(init.headers || {});
+        if (sameBackend && window.ICHEF_SECURITY.csrfToken) headers.set("X-CSRF-Token", window.ICHEF_SECURITY.csrfToken);
+        if (sameBackend) {
+            headers.set("X-iCHEF-Device", window.ICHEF_SECURITY.deviceId || getDeviceFingerprint());
+            headers.set("X-iCHEF-Tenant", window.ICHEF_SECURITY.tenantID || "");
+        }
+        const response = await window.fetch(input, {
+            ...init,
+            headers,
+            credentials: sameBackend ? "include" : (init.credentials || "same-origin"),
+            cache: sameBackend ? "no-store" : init.cache
+        });
+        if (sameBackend && response.status === 401) {
+            localStorage.removeItem("ichef_master_pin");
+            location.replace("connexionpartenaire.html");
+            throw new Error("Session expirée");
+        }
+        if (sameBackend && response.status === 403) throw new Error("Action non autorisée");
+        return response;
+    }
 
-            let tenantID = urlTenantID || storedTenantID;
-            let pin = localStorage.getItem('ichef_master_pin'); 
-            
-            if(!tenantID) {
-                window.location.href = 'connexionpartenaire.html';
-                return;
-            }
+    async function auditEvent(action, details = {}) {
+        try {
+            await secureFetch(`${window.ICHEF_SECURITY.serverURL}/api/audit/events`, {
+                method: "POST",
+                headers: {"Content-Type": "application/json"},
+                body: JSON.stringify({ action, details, page: location.pathname })
+            });
+        } catch (_) { /* Le serveur doit journaliser aussi indépendamment du client. */ }
+    }
 
-            const SERVER_URL = (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1" || window.location.protocol === "file:") 
-                ? "http://localhost:10000" : "https://tableau-system.onrender.com";
-
-            const accessMatrix = {
-                 'CHEF': ['chef.html', 'administration.html'],
-                'CHEF_CUISINE': ['chef.html', 'administration.html'],
-                'PATISSIER': ['chef-patissier.html', 'administration.html'],
-                'CHEF_PATISSERIE': ['chef-patissier.html', 'administration.html'],
-                'BAR': ['chef-bar.html', 'administration.html'],
-                'CHEF_BAR': ['chef-bar.html', 'administration.html'],
-                'ICHEF_OS': ['admin.html', 'pack-eco.html', 'minipass.html', 'menu-qr.html', 'administration.html'],
-                'ECO': ['admin.html', 'pack-eco.html', 'minipass.html', 'menu-qr.html', 'administration.html'],
-                'BUSINESS': ['admin.html', 'pack-eco.html', 'minipass.html', 'menu-qr.html', 'administration.html'],
-                'RENTABILITE': ['admin.html', 'pack-eco.html', 'minipass.html', 'menu-qr.html', 'administration.html'],
-                'EMPIRE': ['admin.html', 'pack-eco.html', 'menu-qr.html', 'chef.html', 'menu-pure.html', 'chef-bar.html', 'menu-bar.html', 'rh.html', 'haccp.html', 'reservation.html', 'minipass.html', 'chef-patissier.html', 'administration.html', 'production.html', 'chef-production.html'],
-                'BRIGADE': ['admin.html', 'pack-eco.html', 'menu-qr.html', 'chef.html', 'menu-pure.html', 'chef-bar.html', 'menu-bar.html', 'rh.html', 'haccp.html', 'reservation.html', 'minipass.html', 'chef-patissier.html', 'administration.html', 'production.html', 'chef-production.html'],
-                'BRIGADES': ['admin.html', 'pack-eco.html', 'menu-qr.html', 'chef.html', 'menu-pure.html', 'chef-bar.html', 'menu-bar.html', 'rh.html', 'haccp.html', 'reservation.html', 'minipass.html', 'chef-patissier.html', 'administration.html', 'production.html', 'chef-production.html'],
-                'PREMIUM': ['admin.html', 'pack-eco.html', 'menu-qr.html', 'chef.html', 'menu-pure.html', 'chef-bar.html', 'menu-bar.html', 'rh.html', 'haccp.html', 'reservation.html', 'minipass.html', 'chef-patissier.html', 'administration.html', 'production.html', 'chef-production.html']
-            };
-
-            try {
-                const res = await fetch(`${SERVER_URL}/api/verify-pin`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ tenantID: tenantID, pin: pin || "0000", deviceId: getDeviceFingerprint() })
-                });
-                const data = await res.json();
-
-                if(!data.success) {
-                    alert(data.error || "ACCÈS REFUSÉ (Limite d'écrans atteinte ou compte invalide).");
-                    window.location.href = 'connexionpartenaire.html';
-                    return;
-                }
-
-                const currentPlan = data.plan ? data.plan.toUpperCase() : 'CHEF';
-                let currentPage = window.location.pathname.split('/').pop().toLowerCase();
-                if(currentPage === '') currentPage = 'index.html';
-
-                const allowedPages = accessMatrix[currentPlan] || [];
-                if (!allowedPages.includes(currentPage)) {
-                    alert(`ACCÈS REFUSÉ : Votre forfait (${currentPlan}) n'inclut pas ce module.`);
-                    window.location.href = `administration.html?tenantID=${tenantID}`;
-                }
-            } catch (e) { console.error("Erreur de securite reseau", e); }
-        })();
+    (async function enforceSecurity() {
+        const sec = window.ICHEF_SECURITY;
+        sec.deviceId = getDeviceFingerprint();
+        localStorage.removeItem("ichef_master_pin");
+        localStorage.removeItem("pin");
+        if (!sec.tenantID) return location.replace("connexionpartenaire.html");
+        localStorage.setItem("ichef_tenant_id", sec.tenantID);
+        try {
+            const res = await secureFetch(`${sec.serverURL}/api/security/bootstrap`, {
+                method: "POST",
+                headers: {"Content-Type": "application/json"},
+                body: JSON.stringify({ tenantID: sec.tenantID, deviceId: sec.deviceId, requestedModule: "administration.html" })
+            });
+            if (!res.ok) throw new Error("Session ou licence invalide");
+            const data = await res.json();
+            if (!data.success || !data.sessionValid || !data.moduleAllowed) throw new Error(data.error || "Accès refusé");
+            sec.csrfToken = data.csrfToken || null;
+            sec.user = data.user || null;
+            sec.permissions = Array.isArray(data.permissions) ? data.permissions : [];
+            sec.ready = true;
+            window.tenantID = sec.tenantID;
+            window.SERVER_URL = sec.serverURL;
+            await auditEvent("ADMIN_CONFIG_OPEN", { module: "configuration-generale" });
+        } catch (error) {
+            console.error(error);
+            alert("Accès refusé ou session expirée. Veuillez vous reconnecter.");
+            location.replace("connexionpartenaire.html");
+        }
+    })();
     </script>
     
     <style>
@@ -997,7 +1008,7 @@
 
     </style>
 </head>
-<body oncontextmenu="return false;" ondragstart="return false;" ondrop="return false;">
+<body oncontextmenu="return false;" ondragstart="return false;" ondrop="return false;" data-security-version="2026.07-secure">
 
     <div class="app-container">
         <div class="mobile-overlay" id="mobile-overlay" onclick="toggleMobileMenu()"></div>
@@ -1840,6 +1851,10 @@
     </div>
 
     <script>
+        function escapeHTML(value) {
+            return String(value ?? "").replace(/[&<>'"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;","'":"&#39;",'"':"&quot;"}[c]));
+        }
+
         async function chargerAnalysesIA() {
     const gridContainer = document.getElementById('ia-cards-loading');
     const refreshBtn = document.querySelector('.btn-ia-refresh');
@@ -1852,19 +1867,17 @@
     // Détection automatique de tes variables d'URL iCHEF
     const urlParams = new URLSearchParams(window.location.search);
     const localTenantID = urlParams.get('tenantID') || localStorage.getItem('ichef_tenant_id') || localStorage.getItem('tenantID');
-    const localMasterPin = localStorage.getItem('ichef_master_pin') || localStorage.getItem('pin') || "0000";
 
     // Détection de ton URL Serveur
     const SERVER_URL = (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1") 
         ? "http://localhost:10000" : "https://tableau-system.onrender.com";
 
     try {
-        const response = await fetch(`${SERVER_URL}/api/ai-business-pulse`, {
+        const response = await secureFetch(`${SERVER_URL}/api/ai-business-pulse`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ 
-                tenantID: localTenantID, 
-                masterPin: localMasterPin 
+                tenantID: localTenantID 
             })
         });
         
@@ -1875,19 +1888,19 @@
             
             // On injecte les résultats proprement mis en forme dans la page
             gridContainer.innerHTML = `
-                <div class="ia-pulse-card" style="border-left: 3px solid var(--gold);">${p.previsionVentes}</div>
-                <div class="ia-pulse-card" style="border-left: 3px solid var(--accent);">${p.analyseCA}</div>
-                <div class="ia-pulse-card" style="border-left: 3px solid var(--danger);">${p.analyseMarges}</div>
+                <div class="ia-pulse-card" style="border-left: 3px solid var(--gold);">${escapeHTML(p.previsionVentes)}</div>
+                <div class="ia-pulse-card" style="border-left: 3px solid var(--accent);">${escapeHTML(p.analyseCA)}</div>
+                <div class="ia-pulse-card" style="border-left: 3px solid var(--danger);">${escapeHTML(p.analyseMarges)}</div>
                 
                 <div class="ia-pulse-recos-card">
                     <strong>💡 RECOMMANDATIONS DE LA BRIGADE COMPTABLE :</strong>
                     <ul>
-                        ${p.recommandations.map(reco => `<li>${reco}</li>`).join('')}
+                        ${(p.recommandations || []).map(reco => `<li>${escapeHTML(reco)}</li>`).join('')}
                     </ul>
                 </div>
             `;
         } else {
-            gridContainer.innerHTML = `<div style="color: var(--danger); grid-column: 1/-1; text-align: center; padding: 20px;">❌ Erreur : ${data.error}</div>`;
+            gridContainer.innerHTML = `<div style="color: var(--danger); grid-column: 1/-1; text-align: center; padding: 20px;">❌ Erreur : ${escapeHTML(data.error)}</div>`;
         }
     } catch (error) {
         console.error("Erreur Pulse IA:", error);
@@ -1899,10 +1912,9 @@
     }
 }
         const urlParams = new URLSearchParams(window.location.search);
-        let tenantID = urlParams.get('tenantID') || localStorage.getItem('ichef_tenant_id');
+        let tenantID = window.ICHEF_SECURITY.tenantID;
         
-        const SERVER_URL = (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1" || window.location.protocol === "file:") 
-            ? "http://localhost:10000" : "https://tableau-system.onrender.com";
+        const SERVER_URL = window.ICHEF_SECURITY.serverURL;
 
         let systemSettings = {};
         let globalArchitecture = { rooms: ['Salle Principale'], tables: [], zones: [] };
@@ -2265,7 +2277,7 @@
                 emp.onDuty = !emp.onDuty; 
                 renderStaffList(); 
                 renderActiveStaff(); 
-                try { await fetch(`${SERVER_URL}/update-order?tenantID=${tenantID}`, { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ tableId: 'STAFF_ACCESS', order: { data: staffAccess } }) }); } catch(e) {}
+                try { await secureFetch(`${SERVER_URL}/update-order?tenantID=${tenantID}`, { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ tableId: 'STAFF_ACCESS', order: { data: staffAccess } }) }); } catch(e) {}
             }
         }
 
@@ -2322,14 +2334,18 @@
             }
 
             closeModals(); renderStaffList(); renderActiveStaff(); updateDashboardStats();
-            try { await fetch(`${SERVER_URL}/update-order?tenantID=${tenantID}`, { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ tableId: 'STAFF_ACCESS', order: { data: staffAccess } }) }); showToast("Synchronisé !"); } catch(e) {}
+            try { await secureFetch(`${SERVER_URL}/update-order?tenantID=${tenantID}`, { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ tableId: 'STAFF_ACCESS', order: { data: staffAccess } }) }); showToast("Synchronisé !"); } catch(e) {}
         }
 
-        async function deleteStaff(pin) { 
+        async function deleteStaff(pin) {
+            if (!hasPermission("STAFF_DELETE")) return alert("Permission insuffisante.");
+            const reason = prompt("Motif de désactivation du collaborateur :");
+            if (!reason || reason.trim().length < 3) return;
+            await auditEvent("STAFF_DEACTIVATION_REQUESTED", { reason: reason.trim() }); 
             if(confirm("Supprimer cet employé ?")) { 
                 staffAccess = staffAccess.filter(s => s.pin !== pin); 
                 renderStaffList(); renderActiveStaff(); updateDashboardStats();
-                try { await fetch(`${SERVER_URL}/update-order?tenantID=${tenantID}`, { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ tableId: 'STAFF_ACCESS', order: { data: staffAccess } }) }); } catch(e) {} 
+                try { await secureFetch(`${SERVER_URL}/update-order?tenantID=${tenantID}`, { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ tableId: 'STAFF_ACCESS', order: { data: staffAccess } }) }); } catch(e) {} 
             } 
         }
 
@@ -2418,7 +2434,8 @@
             document.getElementById('new-cat-name').value = ''; markUnsaved(); updateCategoryDropdowns(); renderCategoryModalLists(); renderMenuList();
         }
 
-        function deleteCategory(id, isBar) { 
+        function deleteCategory(id, isBar) {
+            if (!hasPermission("MENU_WRITE")) return alert("Permission insuffisante."); 
             let menuRef = isBar ? menuBar : menuCuisine; 
             if (menuRef[id] && menuRef[id].length > 0) return alert("Catégorie non vide !"); 
             if(confirm("Supprimer ?")) { 
@@ -2553,7 +2570,8 @@
             markUnsaved(); closeModals(); renderMenuList(); updateDashboardStats(); saveAllToCloud();
         }
 
-        function deleteItem(name, cat, isBar) { 
+        function deleteItem(name, cat, isBar) {
+            if (!hasPermission("MENU_WRITE")) return alert("Permission insuffisante."); 
             if(!confirm(`Supprimer ${name} ?`)) return; 
             let catObj = (isBar ? categoriesBar : categoriesCuisine).find(c => c.label === cat) || {id: cat}; 
             let ref = isBar ? menuBar : menuCuisine; ref[catObj.id] = ref[catObj.id].filter(i => i.name !== name); 
@@ -2924,6 +2942,8 @@
         function retourCaisse() { window.location.href = `pack-eco.html?tenantID=${tenantID}`; }
 
         async function saveAllToCloud() {
+            if (!hasPermission("CONFIG_WRITE")) return alert("Action non autorisée.");
+            await auditEvent("CONFIG_SAVE_REQUESTED");
             try {
                 let syncBtn = document.getElementById('sync-status'); if(syncBtn) syncBtn.innerHTML = '⏳ Enregistrement...';
                 
@@ -3002,7 +3022,7 @@
                 ];
                 
                 for (let req of reqs) {
-                    await fetch(`${SERVER_URL}/update-order?tenantID=${tenantID}`, { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(req) });
+                    await secureFetch(`${SERVER_URL}/update-order?tenantID=${tenantID}`, { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(req) });
                 }
                 markSaved(); showToast("Enregistré avec succès !");
             } catch(e) { alert("❌ Erreur : " + e.message); let syncBtn = document.getElementById('sync-status'); if(syncBtn) syncBtn.innerHTML = '⚠️ Erreur'; }
@@ -3013,7 +3033,7 @@
                 let syncBtn = document.getElementById('sync-status'); 
                 if (syncBtn && !isBackground) syncBtn.innerHTML = '⏳ Sync...';
 
-                let r = await fetch(`${SERVER_URL}/get-current-state?tenantID=${tenantID}&_t=${Date.now()}`, { cache: 'no-store' });
+                let r = await secureFetch(`${SERVER_URL}/get-current-state?tenantID=${tenantID}&_t=${Date.now()}`, { cache: 'no-store' });
                 let state = await r.json(); let aO = state.activeOrders || {};
 
                 systemSettings = aO['SETTINGS_MASTER']?.data || systemSettings;
@@ -3102,6 +3122,10 @@
 
         // --- 🛑 KILL SWITCH SYSTEM (ARRÊT D'URGENCE GLOBAL) ---
         async function toggleKillSwitch() {
+            if (!hasPermission("SYSTEM_KILL_SWITCH")) return alert("Permission administrateur requise.");
+            const reason = prompt("Motif obligatoire pour cette action critique :");
+            if (!reason || reason.trim().length < 5) return alert("Motif obligatoire.");
+            await auditEvent("KILL_SWITCH_REQUESTED", { reason: reason.trim() });
             let isDown = systemSettings.systemDown === true;
             let action = isDown ? "RÉACTIVER" : "VERROUILLER";
             let confirmMsg = isDown 
@@ -3115,7 +3139,7 @@
             markUnsaved();
 
             try {
-                await fetch(`${SERVER_URL}/update-order?tenantID=${tenantID}`, {
+                await secureFetch(`${SERVER_URL}/update-order?tenantID=${tenantID}`, {
                     method: 'POST',
                     headers: {'Content-Type': 'application/json'},
                     body: JSON.stringify({ tableId: 'SETTINGS_MASTER', order: { data: systemSettings } })
