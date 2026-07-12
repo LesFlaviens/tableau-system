@@ -1,6 +1,6 @@
 /**
  * ==============================================================
- * 🧠 iCHEF EMPIRE OS — SERVER BACKEND SÉCURISÉ
+ * 🧠 iCHEF EMPIRE OS — SERVER BACKEND SÉCURISÉ (V. FORTERESSE)
  * Version complète : sessions, anti-fraude, démos individuelles
  * ==============================================================
  */
@@ -55,7 +55,7 @@ app.use(express.static(__dirname));
 
 const PORT = process.env.PORT || 10000;
 
-const COOKIE_SECURE = process.env.NODE_ENV === 'production';
+const COOKIE_SECURE = true; // Forcé à true pour l'utilisation obligatoire avec SameSite=None en production
 const SESSION_TTL_MS = 30 * 60 * 1000;
 const MASTER_SESSION_TTL_MS = 20 * 60 * 1000;
 
@@ -66,7 +66,7 @@ app.use((req, res, next) => {
     res.setHeader('X-Frame-Options', 'DENY');
     res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
     res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
-    if (COOKIE_SECURE) res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
+    res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
     next();
 });
 
@@ -87,16 +87,15 @@ function setCookie(res, name, value, maxAge) {
         `${name}=${encodeURIComponent(value)}`,
         'Path=/',
         'HttpOnly',
-        'SameSite=Strict',
+        'SameSite=None', // 🔓 AUTORISE LA LECTURE CROSS-DOMAIN (os.ichef.ch <-> onrender.com)
+        'Secure',        // 🔒 REQUIS PAR LES NAVIGATEURS AVEC SAMESITE=NONE
         `Max-Age=${Math.floor(maxAge / 1000)}`
     ];
-    if (COOKIE_SECURE) attrs.push('Secure');
     res.append('Set-Cookie', attrs.join('; '));
 }
 
 function clearCookie(res, name) {
-    const attrs = [`${name}=`, 'Path=/', 'HttpOnly', 'SameSite=Strict', 'Max-Age=0'];
-    if (COOKIE_SECURE) attrs.push('Secure');
+    const attrs = [`${name}=`, 'Path=/', 'HttpOnly', 'SameSite=None', 'Secure', 'Max-Age=0'];
     res.append('Set-Cookie', attrs.join('; '));
 }
 
@@ -1153,249 +1152,84 @@ app.post('/update-order', async (req, res) => {
 
 
 // ==========================================
-// 🎯 PORTAIL DES DEMANDES DE PARTENARIAT DÉTAILLÉ
+// MASTER CONTROL API (EMPIRE SUPER ADMIN)
 // ==========================================
-app.post('/api/nouvelle-demande-demo', async (req, res) => {
+app.post('/api/get-all-tenants-admin', async (req, res) => {
+    if (!safeEqual(req.body.masterKey, ADMIN_PASS)) return res.status(401).json({ success: false, error: "Acces Refuse." });
     try {
-        const { tenantID, restaurant, email, phone } = req.body;
-        console.log(`🌟 ENREGISTREMENT SÉCURISÉ NOUVEAU PARTENAIRE : ${restaurant}`);
-        
-        const codePinAlea = Math.floor(1000 + Math.random() * 9000).toString();
-        const expirationTime = new Date(Date.now() + 24 * 60 * 60 * 1000);
+        const tenantsData = await Tenant.find({});
+        const formattedTenants = tenantsData.map(t => ({
+            id: t.tenantID, name: t.clientName || "Sans Nom", 
+            email: t.email || "Non renseigné", phone: t.phone || "Non renseigné",
+            pack: t.plan, specialite: t.specialite, addons: t.addons || [],
+            maxScreens: t.maxScreens, maxStaff: t.maxStaff,
+            activeScreens: t.registeredDevices ? t.registeredDevices.length : 0, 
+            status: t.status
+        }));
+        res.json({ success: true, tenants: formattedTenants });
+    } catch(err) { res.status(500).json({ success: false }); }
+});
 
-        // 👉 C'EST ICI QUE LE COMPTE EST CRÉÉ POUR TA TOUR DE CONTRÔLE
-        await Tenant.create({
-            tenantID: cleanString(tenantID),
-            clientName: restaurant,
-            email: email,
-            phone: phone,
-            status: 'SUSPENDU', // En attente de ta validation
-            plan: 'EMPIRE',     
-            specialite: 'cuisine',
-            pinHash: hashPin(codePinAlea),   
-            maxScreens: 5,
-            maxStaff: 999,
-            registeredDevices: [],
-            demoExpiration: expirationTime
-        });
+app.post('/api/admin-action', async (req, res) => {
+    if (!safeEqual(req.body.masterKey, ADMIN_PASS)) return res.status(401).json({ success: false, error: "Acces Refuse." });
+    try {
+        const { tenantID, action, newPlan, manualScreens, manualPin, manualMaxStaff, maxScreens, addons } = req.body;
+        const safeID = cleanString(tenantID);
 
-        // 2. Initialisation des commandes (vide au départ)
-        await AppState.create({
-            tenantID: cleanString(tenantID),
-            activeOrders: {}
-        });
-
-        // 🚨 PRÉPARATION DES DONNÉES DE QUALIFICATION POUR LES ALERTES 🚨
-        const d = req.body.details || {};
-        let qualification = `Type Précis: ${d.type || 'Non précisé'}\n`;
-        if (d.type && d.type.includes('hotel')) {
-            qualification += `🏨 Catégorie: ${d.stars || 'N/A'} - 🚪 Chambres: ${d.rooms || 0}\n`;
+        if (action === 'set_screens' && manualScreens) {
+            await Tenant.findOneAndUpdate({ tenantID: safeID }, { maxScreens: parseInt(manualScreens) });
         }
-        if (d.type && d.type.includes('resto')) {
-            qualification += `🪑 Couverts: ${d.seats || 0}\n📍 Zones: ${d.zones || 'N/A'}\n`;
+        else if (action === 'set_max_staff' && manualMaxStaff) {
+            await Tenant.findOneAndUpdate({ tenantID: safeID }, { maxStaff: parseInt(manualMaxStaff) });
         }
-
-        // 📡 ENVOI DE L'ALERTE WHATSAPP DIRECTEUR (TWILIO)
-        if (twilioClient) {
-            try {
-                const envTwilioNum = process.env.TWILIO_PHONE_NUMBER || '';
-                const fromNumber = `whatsapp:${envTwilioNum.replace('whatsapp:', '')}`;
-                const toNumber = `whatsapp:${NUMERO_FLAVIEN.replace('whatsapp:', '')}`;
-
-                await twilioClient.messages.create({
-                    body: `🔥 NOUVEAU PARTENAIRE QUALIFIÉ : ${restaurant}\n📞 Tél: ${phone}\n🆔 TenantID: ${tenantID}\n\n📊 INFOS PROFIL :\n${qualification}\n🎯 PROJET: ${d.projet || 'Aucun'}`,
-                    from: fromNumber,
-                    to: toNumber
-                });
-            } catch (whatsappErr) {}
+        else if (action === 'set_pin' && manualPin) {
+            await Tenant.findOneAndUpdate({ tenantID: safeID }, { pinHash: hashPin(manualPin.trim()), registeredDevices: [] });
         }
-
-        // ✨ WHATSAPP DU CLIENT (Moteur d'Onboarding VIP) ✨
-        if (twilioClient && phone) {
-            try {
-                let clientPhone = phone.trim().replace(/\s+/g, '');
-                if (clientPhone.startsWith('0')) {
-                    clientPhone = '+33' + clientPhone.substring(1);
-                }
-
-                const envTwilioNum = process.env.TWILIO_PHONE_NUMBER || '';
-                const fromNumber = `whatsapp:${envTwilioNum.replace('whatsapp:', '')}`;
-
-                await twilioClient.messages.create({
-                    body: `✨ Bienvenue chez iCHEF OS, ${restaurant} !\n\nVotre écosystème sur-mesure est en cours de préparation par notre équipe.\n\n🔑 VOS ACCÈS PROVISOIRES :\n🆔 Identifiant : ${tenantID}\n🔒 Code PIN : ${codePinAlea}\n\nUn expert va vous contacter sous 24h.\nL'équipe iCHEF.`,
-                    from: fromNumber,
-                    to: `whatsapp:${clientPhone}`
-                });
-            } catch (err) {}
+        else if (action === 'set_addons' && Array.isArray(addons)) {
+            await Tenant.findOneAndUpdate({ tenantID: safeID }, { addons: addons });
         }
-
-        // 🚨 ENVOI SILENCIEUX DE L'EMAIL DE NOTIFICATION (FORMSUBMIT)
-        try {
-            const urlEmail = "https://formsubmit.co/ajax/iche.flavien@ichef.ch";
-            const payload = {
-                _subject: `🚨 iCHEF OS : Nouveau Lead Qualifié - ${restaurant}`,
-                "Établissement": restaurant,
-                "Téléphone": phone,
-                "Email du gérant": email,
-                "Identifiant Généré (ID)": tenantID,
-                "Code PIN d'accès temporaire": codePinAlea,
-                "Qualification Profil": qualification,
-                "Projet / Besoin exprimé": d.projet || 'Aucun détail fourni',
-                "Statut": "Bloqué (En attente d'activation manuelle depuis votre panel Admin)",
-                _template: "box" 
-            };
-
-            fetch(urlEmail, {
-                method: "POST",
-                headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
-                body: JSON.stringify(payload)
-            }).catch(err => {});
+        else if (action === 'set_plan' && newPlan) { 
+            let limit = 1; let staffLimit = 1;
+            const upperPlan = newPlan.toUpperCase();
+            if (['CHEF', 'PATISSIER', 'BAR', 'CHEF_CUISINE', 'CHEF_PATISSERIE', 'CHEF_BAR'].includes(upperPlan)) { limit = 1; staffLimit = 1; } 
+            else if (['BUSINESS', 'RENTABILITE', 'ECO', 'PACK_A'].includes(upperPlan)) { limit = 5; staffLimit = 999; } 
+            else if (['BRIGADE', 'EMPIRE', 'BRIGADES', 'PREMIUM'].includes(upperPlan)) { limit = 50; staffLimit = 999; } 
             
-        } catch (err) { }
-
-        // ✉️ ENVOI AUTOMATIQUE DE L'E-MAIL DE BIENVENUE AU PARTENAIRE
-        try {
-            const urlEmailClient = `https://formsubmit.co/ajax/${email}`; 
-            const clientPayload = {
-                _subject: "✨ Bienvenue dans l'élite iCHEF OS — Préparation de votre écosystème",
-                "Message de la Brigade iCHEF": `Bonjour, vous ne devenez pas un simple numéro ou un "client" de plus. Vous devenez un véritable Partenaire. 
-
-Étant nous-mêmes issus du monde de la restauration, nous connaissons la réalité du terrain : la pression du coup de feu, les serveurs débordés, et ces dizaines de commandes supplémentaires qui s'évaporent parce que les clients n'osent pas solliciter une équipe déjà à 200%.
-
-Votre espace privé est actuellement en cours de pré-génération sur nos serveurs sécurisés.
-
-VOS IDENTIFIANTS PROVISOIRES :
-🆔 ID Restaurant : ${tenantID}
-🔑 Code PIN Master : ${codePinAlea}
-
-PROCHAINES ÉTAPES :
-1. L'Appel de Synchronisation (Sous 24h) : Un expert de notre brigade va vous contacter sur ce numéro : ${phone}. Ce sera un appel court pour comprendre la topographie de vos espaces.
-2. Le Paramétrage Sur-Mesure : Nous configurons votre carte, le Mode Anti-Rush et les options de Time-Shifting.
-3. Le Déploiement : Vous recevrez vos puces NFC haut de gamme, prêtes à poser.
-
-Préparez-vous à vivre votre premier service sans stress.
-
-Flavien Iché & l'équipe iCHEF`,
-                _template: "box"
-            };
-
-            fetch(urlEmailClient, {
-                method: "POST",
-                headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
-                body: JSON.stringify(clientPayload)
-            }).catch(err => {});
-
-        } catch (mailClientErr) { }
-
-        res.json({ success: true, message: "Demande enregistrée avec succès. Workflow déclenché." });
-
-    } catch (e) {
-        res.status(500).json({ success: false, error: "Cet identifiant d'établissement existe déjà." });
-    }
-});
-
-// ==========================================
-// 📞 API TWILIO : DEMANDE DE RAPPEL (Bouton site web)
-// ==========================================
-app.post('/api/twilio/call-me', async (req, res) => {
-    const { phone } = req.body;
-    
-    if (!twilioClient) {
-        return res.status(500).json({ success: false, error: "Twilio non configuré." });
-    }
-
-    try {
-        const envTwilioNum = process.env.TWILIO_PHONE_NUMBER || '+14155238886';
-        const fromNumber = `whatsapp:${envTwilioNum.replace('whatsapp:', '')}`;
-
-        // 1. Alerte WhatsApp envoyée à TOI (Flavien) pour te prévenir
-        await twilioClient.messages.create({
-            body: `🚨 DEMANDE DE RAPPEL URGENT 🚨\nUn prospect sur le site demande à être rappelé immédiatement sur ce numéro :\n📞 ${phone}`,
-            from: fromNumber,
-            to: `whatsapp:${NUMERO_FLAVIEN.replace('whatsapp:', '')}`
-        });
-
-        // 2. Message WhatsApp de confirmation envoyé au CLIENT
-        let clientPhone = phone.trim().replace(/\s+/g, '');
-        if (clientPhone.startsWith('0')) {
-            clientPhone = '+33' + clientPhone.substring(1);
+            await Tenant.findOneAndUpdate({ tenantID: safeID }, { plan: upperPlan, maxScreens: limit, maxStaff: staffLimit }, { new: true });
         }
-
-        await twilioClient.messages.create({
-            body: `✅ iCHEF OS : Votre demande de rappel a bien été reçue. Notre équipe a été alertée et va vous contacter sur ce numéro d'ici quelques instants.`,
-            from: fromNumber,
-            to: `whatsapp:${clientPhone}`
-        });
-
-        res.json({ success: true, message: "Demande traitée avec succès." });
-
-    } catch (error) {
-        res.status(500).json({ success: false, error: error.message });
-    }
-});
-
-// ==========================================
-//  ANTI NO-SHOW (Empreinte Bancaire)
-// ==========================================
-app.post('/api/create-hold-intent', async (req, res) => {
-    try {
-        const { tenantID, guests, date, time } = req.body;
-        const amountPerPerson = 50; 
-        const totalAmount = (parseInt(guests) || 1) * amountPerPerson * 100;
-
-        const paymentIntent = await stripe.paymentIntents.create({
-            amount: totalAmount,
-            currency: 'eur',
-            payment_method_types: ['card'],
-            capture_method: 'manual', 
-            metadata: { tenantID: tenantID, type: 'ANTI_NO_SHOW', date: date, time: time, guests: guests },
-        });
-
-        res.json({ success: true, clientSecret: paymentIntent.client_secret, holdAmount: totalAmount / 100 });
-    } catch (error) {
-        console.error("Erreur Stripe Empreinte:", error);
-        res.status(500).json({ success: false, error: "Impossible de créer l'empreinte bancaire." });
-    }
-});
-
-// ==========================================
-//  MOTEUR ANALYTIQUE : MÉMOIRE À LONG TERME (BIG DATA)
-// ==========================================
-app.post('/api/log-traffic-history', async (req, res) => {
-    const { tenantID, pax, totalAmount } = req.body;
-    if (!tenantID || !pax) return res.status(400).json({ success: false });
-
-    const safeID = cleanString(tenantID);
-    const now = new Date();
-    
-    const trafficData = {
-        id: 'traf_' + Date.now(),
-        timestamp: now.getTime(),
-        dateStr: now.toISOString().split('T')[0], 
-        dayOfWeek: now.getDay(), 
-        hour: now.getHours(),
-        month: now.getMonth(),
-        pax: parseInt(pax),
-        revenue: parseFloat(totalAmount || 0)
-    };
-
-    try {
-        await AppState.findOneAndUpdate(
-            { tenantID: safeID },
-            { $push: { "activeOrders.TRAFFIC_HISTORY.data": trafficData } },
-            { upsert: true }
-        );
+        else if (action === 'set_max_screens') {
+            if (!maxScreens || isNaN(maxScreens) || maxScreens < 1) {
+                return res.status(400).json({ success: false, error: "Nombre invalide." });
+            }
+            await Tenant.findOneAndUpdate({ tenantID: safeID }, { maxScreens: parseInt(maxScreens) });
+        }
+        else if (action === 'reset_devices') await Tenant.findOneAndUpdate({ tenantID: safeID }, { registeredDevices: [] });
+        else if (action === 'suspend') await Tenant.findOneAndUpdate({ tenantID: safeID }, { status: 'SUSPENDU', registeredDevices: [] });
+        else if (action === 'activate') {
+            await Tenant.findOneAndUpdate({ tenantID: safeID }, { status: 'ACTIF' });
+        }
+        else if (action === 'delete' || action === 'archive') { await Tenant.findOneAndUpdate({ tenantID: safeID }, { status: 'SUSPENDU', archivedAt: new Date(), registeredDevices: [] }); }
+        
         res.json({ success: true });
-    } catch (e) {
-        res.status(500).json({ success: false, error: "Erreur d'archivage" });
-    }
+    } catch (err) { res.status(500).json({ success: false, error: err.message }); }
+});
+
+// ==========================================
+// OUTIL DE DIAGNOSTIC
+// ==========================================
+app.get('/debug-fichiers', (req, res) => {
+    const fs = require('fs');
+    fs.readdir(__dirname, (err, files) => {
+        if (err) return res.status(500).json({ erreur: "Impossible de lire le dossier" });
+        res.json({ dossier_actuel: __dirname, fichiers_trouves: files });
+    });
 });
 
 // ==========================================
 // 🌟 GESTION DES WEBSOCKETS (SYNCHRONISATION DES ÉCRANS EN SALLE/CUISINE)
 // ==========================================
 io.on('connection', (socket) => {
-    console.log('✅ Nouvelle connexion écran détectée (ID: ' + socket.id + ')');
+    console.log('¼ Nouvelle connexion écran détectée (ID: ' + socket.id + ')');
     
     socket.on('joinTenant', (tenantID) => {
         const safeID = cleanString(tenantID);
