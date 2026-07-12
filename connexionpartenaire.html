@@ -253,9 +253,9 @@
         </div>
     </div>
 
-    <script>
+<script>
         // 🛡️ BOUCLIER 1 : DOMAIN LOCK
-        if (window.location.hostname !== "os.ichef.ch" && window.location.hostname !== "localhost" && window.location.hostname !== "127.0.0.1") {
+        if (window.location.hostname !== "os.ichef.ch" && window.location.hostname !== "localhost" && window.location.hostname !== "127.0.0.1" && !window.location.hostname.includes("render.com")) {
             document.documentElement.innerHTML = "<h1 style='color:red; text-align:center; margin-top:20%; font-family:sans-serif;'>🛑 VIOLATION DE LICENCE iCHEF OS</h1>";
             throw new Error("Exécution non autorisée hors du domaine officiel.");
         }
@@ -269,7 +269,6 @@
             if(e.ctrlKey && e.keyCode == 'U'.charCodeAt(0)) return false; 
         }
 
-        // Générateur d'ID Appareil
         function getDeviceFingerprint() {
             let deviceId = localStorage.getItem('ichef_device_fingerprint');
             if (!deviceId) {
@@ -279,13 +278,24 @@
             return deviceId;
         }
 
-        // Nettoyer les sessions précédentes au chargement
-        window.onload = function() {
-            localStorage.removeItem('ichef_tenant_id');
-            localStorage.removeItem('ichef_master_pin');
+        // AUTO-CONNEXION SÉCURISÉE (Chemin relatif)
+        window.onload = async function() {
+            try {
+                // 🚨 Chemin Relatif : /api/...
+                const res = await fetch(`/api/security/bootstrap`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    credentials: 'same-origin'
+                });
+                const data = await res.json();
+                
+                if (data.success && data.sessionValid) {
+                    const storedTenantID = localStorage.getItem('ichef_tenant_id');
+                    if (storedTenantID) window.location.href = `administration.html?tenantID=${encodeURIComponent(storedTenantID)}`;
+                }
+            } catch (e) { console.log("Aucune session active détectée."); }
         };
 
-        // Navigation fluide entre écrans
         function switchScreen(screen) {
             document.getElementById('screen-login').style.display = screen === 'login' ? 'block' : 'none';
             document.getElementById('screen-demo').style.display = screen === 'demo' ? 'block' : 'none';
@@ -293,12 +303,11 @@
             document.getElementById('screen-expired').style.display = screen === 'expired' ? 'block' : 'none';
         }
 
-        // Validation par touche Entrée
         document.getElementById('pinCode').addEventListener('keypress', function (e) {
             if (e.key === 'Enter') login();
         });
 
-        // REQUÊTE DE CONNEXION PARTENAIRE
+        // 🔐 FONCTION DE LOGIN (CHEMIN RELATIF)
         async function login() {
             const tenant = document.getElementById('tenantID').value.trim().toLowerCase();
             const pin = document.getElementById('pinCode').value.trim();
@@ -309,7 +318,6 @@
             btn.innerText = "Vérification...";
             btn.disabled = true;
 
-            // 🛑 VÉRIFICATION DE L'EXPIRATION DES 48H AVANT LE SERVEUR
             const expirationTime = localStorage.getItem('demo_expire_' + tenant);
             if (expirationTime && Date.now() > parseInt(expirationTime)) {
                 switchScreen('expired');
@@ -318,13 +326,12 @@
                 return;
             }
 
-            const SERVER_URL = (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1" || window.location.protocol === "file:") 
-                ? "http://localhost:10000" : "https://tableau-system.onrender.com";
-
             try {
-                const res = await fetch(`${SERVER_URL}/api/verify-pin`, {
+                // 🚨 MAGIE ICI : On utilise /api/auth/pin-login en chemin relatif !
+                const res = await fetch(`/api/auth/pin-login`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
+                    credentials: 'same-origin', // Plus besoin de Cross-Domain !
                     body: JSON.stringify({ tenantID: tenant, pin: pin, deviceId: getDeviceFingerprint() })
                 });
                 
@@ -332,7 +339,7 @@
                 
                 if(data.success) {
                     localStorage.setItem('ichef_tenant_id', tenant);
-                    localStorage.setItem('ichef_master_pin', pin);
+                    localStorage.setItem('ichef_csrf_token', data.csrfToken);
                     window.location.href = `administration.html?tenantID=${encodeURIComponent(tenant)}`;
                 } else {
                     alert(data.error || "Identifiants incorrects ou licence suspendue.");
@@ -346,7 +353,7 @@
             }
         }
 
-        // ENVOI DE LA DEMANDE DE DÉMO ET DÉCLENCHEMENT DU COMPTEUR 48H
+        // ENVOI DE LA DEMANDE DE DÉMO
         async function genererDemo(event) {
             event.preventDefault();
             let btnSubmit = document.getElementById('btn-submit');
@@ -362,11 +369,9 @@
             let randomNum = Math.floor(Math.random() * 1000);
             let generatedTenantID = `demo_${cleanName}${randomNum}`;
 
-            const SERVER_URL = (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1" || window.location.protocol === "file:") 
-                ? "http://localhost:10000" : "https://tableau-system.onrender.com";
-
             try {
-                const res = await fetch(`${SERVER_URL}/api/nouvelle-demande-demo`, {
+                // 🚨 Chemin Relatif : /api/...
+                const res = await fetch(`/api/nouvelle-demande-demo`, {
                     method: 'POST', 
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ tenantID: generatedTenantID, restaurant: restoName, siret: siret, email: email, phone: phone })
@@ -380,7 +385,6 @@
                     return;
                 }
 
-                // ⏳ ACTIVATION DU COMPTEUR 48 HEURES DANS LE NAVIGATEUR
                 const quaranteHuitHeuresEnMs = 48 * 60 * 60 * 1000;
                 localStorage.setItem('demo_expire_' + generatedTenantID, Date.now() + quaranteHuitHeuresEnMs);
 
@@ -390,13 +394,11 @@
                 btnSubmit.disabled = false;
                 return;
             }
-
             switchScreen('result');
         }
 
-        // ====== SCRIPT PILOTE TÉLÉCHARGEMENT APP (PWA) ======
+        // PWA
         let deferredPrompt;
-
         window.addEventListener('beforeinstallprompt', (e) => {
             e.preventDefault();
             deferredPrompt = e;
@@ -407,19 +409,12 @@
         function ouvrirGuideInstallation() {
             const modal = document.getElementById('pwa-modal');
             modal.style.display = 'flex';
-            
             if (deferredPrompt) {
                 modal.style.display = 'none';
                 deferredPrompt.prompt();
-                deferredPrompt.userChoice.then((choiceResult) => {
-                    if (choiceResult.outcome === 'accepted') {
-                        console.log('iCHEF App Installée par le client.');
-                    }
-                    deferredPrompt = null;
-                });
+                deferredPrompt.userChoice.then((choiceResult) => { deferredPrompt = null; });
             }
         }
-
         if (window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone) {
             document.getElementById('pwa-install-btn').style.display = 'none';
         }
