@@ -18,63 +18,39 @@
     
     <title>iCHEF OS - Administration & Modules en ligne</title>
     
-    <script>
-        // Déclaration globale du cerveau
-        window.tenantID = new URLSearchParams(window.location.search).get('tenantID') || localStorage.getItem('ichef_tenant_id');
-        window.SERVER_URL = (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1" || window.location.protocol === "file:") 
-            ? "http://localhost:10000" : "https://tableau-system.onrender.com";
+<script>
+        // 🔒 INITIALISATION ET SÉCURITÉ LOCALE
+        const urlParams = new URLSearchParams(window.location.search);
+        window.tenantID = urlParams.get('tenantID') || localStorage.getItem('ichef_tenant_id');
+        window.SERVER_URL = "https://tableau-system.onrender.com";
 
-        // 🔒 SÉCURITÉ : Générateur d'empreinte numérique
-        async function getDeviceFingerprint() {
-            let deviceId = localStorage.getItem('ichef_device_id');
-            if (!deviceId) {
-                deviceId = (crypto && crypto.randomUUID)
-                    ? crypto.randomUUID()
-                    : `device_${Date.now()}_${Math.random().toString(36).slice(2)}`;
-                localStorage.setItem('ichef_device_id', deviceId);
-            }
-            return deviceId;
+        if (!window.tenantID) {
+            window.location.replace('connexionpartenaire.html');
         }
 
-        // 🔒 SÉCURITÉ : Validation de licence stricte & ADD-ONS avant affichage du DOM
-        (async function enforceSecurity() {
-            const urlParams = new URLSearchParams(window.location.search);
-            const urlTenantID = urlParams.get('tenantID');
-            const storedTenantID = localStorage.getItem('ichef_tenant_id');
+        // On récupère le jeton de sécurité généré lors de la connexion
+        window.csrfToken = localStorage.getItem('ichef_csrf_token') || '';
 
-            if (urlTenantID && storedTenantID && urlTenantID !== storedTenantID) {
-                localStorage.removeItem('EMPIRE_GLOBAL_SYNC');
-                sessionStorage.removeItem('ichef_csrf_token');
-                sessionStorage.removeItem('ichef_session_hint');
+        // 🚀 Fonction universelle pour parler au serveur en toute sécurité
+        async function secureFetch(path, options = {}) {
+            const headers = new Headers(options.headers || {});
+            if (!headers.has('Content-Type') && options.body) headers.set('Content-Type', 'application/json');
+            if (window.csrfToken) headers.set('X-CSRF-Token', window.csrfToken);
+
+            const response = await fetch(`${window.SERVER_URL}${path}`, {
+                ...options,
+                headers,
+                credentials: 'include', // Indispensable pour que le serveur accepte
+                cache: 'no-store'
+            });
+
+            if (response.status === 401 || response.status === 403) {
+                alert("Session expirée. Veuillez vous reconnecter.");
+                window.location.replace(`connexionpartenaire.html?tenantID=${encodeURIComponent(window.tenantID)}`);
+                throw new Error('Session expirée');
             }
-
-            window.tenantID = urlTenantID || storedTenantID;
-            if (!window.tenantID) {
-                window.location.replace('connexionpartenaire.html');
-                return;
-            }
-
-            localStorage.setItem('ichef_tenant_id', window.tenantID);
-
-            try {
-                const deviceId = await getDeviceFingerprint();
-                
-                // 🚨 Session validée localement pour débloquer l'interface !
-                window.ICHEF_SECURITY = {
-                    csrfToken: localStorage.getItem('ichef_csrf_token') || sessionStorage.getItem('ichef_csrf_token') || '',
-                    user: { nom: "Admin", role: "MANAGER" },
-                    permissions: ['*'], // Donne tous les accès d'administration
-                    plan: 'CHEF', // Sera écrasé par la vraie licence dans quelques millisecondes
-                    addons: [],
-                    deviceId: deviceId
-                };
-
-                document.documentElement.style.opacity = '1';
-            } catch (e) {
-                console.error('Erreur d\'initialisation', e);
-                window.location.replace(`connexionpartenaire.html?tenantID=${encodeURIComponent(window.tenantID || '')}`);
-            }
-        })();
+            return response;
+        }
     </script>
     
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&family=Playfair+Display:wght@400;900&display=swap" rel="stylesheet">
