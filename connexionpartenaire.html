@@ -284,6 +284,7 @@
             localStorage.removeItem('ichef_master_pin');
         };
 
+        // 🚨 TON LIEN DE SERVEUR OFFICIEL
         const SERVER_URL = "https://tableau-system.onrender.com";
 
         function switchScreen(screen) {
@@ -297,7 +298,7 @@
             if (e.key === 'Enter') login();
         });
 
-        // 🔐 FONCTION DE LOGIN SÉCURISÉE (VERIFY-PIN au lieu de AUTH/PIN-LOGIN qui n'existait pas)
+        // 🔐 LA NOUVELLE FONCTION DE LOGIN (Avec la bonne serrure)
         async function login() {
             const tenant = document.getElementById('tenantID').value.trim().toLowerCase();
             const pin = document.getElementById('pinCode').value.trim();
@@ -317,18 +318,25 @@
             }
 
             try {
-                // Utilisation de la route confirmée dans ton server.js actuel
-                const res = await fetch(`${SERVER_URL}/api/verify-pin`, {
+                // 🚨 C'EST ICI LA CORRECTION : auth/pin-login
+                const res = await fetch(`${SERVER_URL}/api/auth/pin-login`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
+                    credentials: 'include', // Obligatoire pour la sécurité
                     body: JSON.stringify({ tenantID: tenant, pin: pin, deviceId: getDeviceFingerprint() })
                 });
                 
+                // Si la page n'existe pas (Erreur 404), on lève une erreur
+                if (!res.ok && res.status === 404) {
+                    throw new Error("Route introuvable sur le serveur.");
+                }
+
                 const data = await res.json();
                 
                 if(data.success) {
                     localStorage.setItem('ichef_tenant_id', tenant);
                     localStorage.setItem('ichef_master_pin', pin);
+                    localStorage.setItem('ichef_csrf_token', data.csrfToken);
                     window.location.href = `administration.html?tenantID=${encodeURIComponent(tenant)}`;
                 } else {
                     alert(data.error || "Identifiants incorrects ou licence suspendue.");
@@ -337,52 +345,10 @@
                 }
             } catch(e) {
                 alert("Erreur de connexion au serveur central.");
+                console.error(e);
                 btn.innerText = "Se Connecter";
                 btn.disabled = false;
             }
-        }
-
-        // ENVOI DE LA DEMANDE DE DÉMO
-        async function genererDemo(event) {
-            event.preventDefault();
-            let btnSubmit = document.getElementById('btn-submit');
-            btnSubmit.innerText = "Transmission de la fiche..."; 
-            btnSubmit.disabled = true;
-
-            let restoName = document.getElementById('lead-resto').value.trim();
-            let siret = document.getElementById('lead-siret').value.trim();
-            let email = document.getElementById('lead-email').value.trim();
-            let phone = document.getElementById('lead-phone').value.trim();
-
-            let cleanName = restoName.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-z0-9]/g, '');
-            let randomNum = Math.floor(Math.random() * 1000);
-            let generatedTenantID = `demo_${cleanName}${randomNum}`;
-
-            try {
-                const res = await fetch(`${SERVER_URL}/api/nouvelle-demande-demo`, {
-                    method: 'POST', 
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ tenantID: generatedTenantID, restaurant: restoName, siret: siret, email: email, phone: phone })
-                });
-                const data = await res.json();
-                
-                if(!data.success) {
-                    alert(data.error);
-                    btnSubmit.innerText = "Activer mon essai de 48h";
-                    btnSubmit.disabled = false;
-                    return;
-                }
-
-                const quaranteHuitHeuresEnMs = 48 * 60 * 60 * 1000;
-                localStorage.setItem('demo_expire_' + generatedTenantID, Date.now() + quaranteHuitHeuresEnMs);
-
-            } catch (e) {
-                alert("Erreur de communication avec le serveur cloud.");
-                btnSubmit.innerText = "Activer mon essai de 48h";
-                btnSubmit.disabled = false;
-                return;
-            }
-            switchScreen('result');
         }
 
         // PWA
