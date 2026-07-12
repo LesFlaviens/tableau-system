@@ -1,6 +1,7 @@
 /**
  * ==============================================================
- * 🧠 iCHEF EMPIRE OS — ENGINE SERVER BACKEND (V. FORTERESSE)
+ * 🧠 iCHEF EMPIRE OS — SERVER BACKEND SÉCURISÉ
+ * Version complète : sessions, anti-fraude, démos individuelles
  * ==============================================================
  */
 
@@ -19,7 +20,8 @@ const { Server } = require('socket.io');
 // ==========================================
 // CONFIGURATION STRIPE iCHEF (Abonnements SaaS & Empreintes)
 // ==========================================
-const stripeKey = process.env.STRIPE_SECRET_KEY || 'sk_test_51TN80JQ9Dw3nOfA4I3XTxPl5FR4ddYmU9Jw2pGmfa0eABz2P6wAzK8RMzHw2XilulLXxFmY2oEDgau4TcScOf9WK00ajIEuweB'; 
+const stripeKey = process.env.STRIPE_SECRET_KEY;
+if (!stripeKey) throw new Error("STRIPE_SECRET_KEY manquante."); 
 const stripe = require('stripe')(stripeKey);
 
 // ==========================================
@@ -31,19 +33,113 @@ const twilioClient = (twilioAccountSid && twilioAuthToken) ? twilio(twilioAccoun
 const NUMERO_FLAVIEN = '+33641437265'; // Cible des alertes critiques
 
 const app = express();
+app.set('trust proxy', 1);
 const server = http.createServer(app); // Serveur HTTP lié à Express
-const io = new Server(server, { cors: { origin: '*' } }); // Serveur Temps Réel
+const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS || 'https://os.ichef.ch,http://localhost:10000')
+    .split(',')
+    .map(v => v.trim())
+    .filter(Boolean);
+
+const io = new Server(server, {
+    cors: {
+        origin(origin, callback) {
+            if (!origin || ALLOWED_ORIGINS.includes(origin)) return callback(null, true);
+            callback(new Error('Origine Socket.IO non autorisée'));
+        },
+        credentials: true
+    }
+}); // Serveur Temps Réel
 
 // 👇 DÉBLOCAGE DES VIDÉOS & RESSOURCES 👇
 app.use(express.static(__dirname));
 
 const PORT = process.env.PORT || 10000;
 
+const COOKIE_SECURE = process.env.NODE_ENV === 'production';
+const SESSION_TTL_MS = 30 * 60 * 1000;
+const MASTER_SESSION_TTL_MS = 20 * 60 * 1000;
+
+app.disable('x-powered-by');
+
+app.use((req, res, next) => {
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('X-Frame-Options', 'DENY');
+    res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+    res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
+    if (COOKIE_SECURE) res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
+    next();
+});
+
+function parseCookies(req) {
+    const raw = req.headers.cookie || '';
+    return raw.split(';').reduce((acc, part) => {
+        const i = part.indexOf('=');
+        if (i > -1) {
+            acc[decodeURIComponent(part.slice(0, i).trim())] =
+                decodeURIComponent(part.slice(i + 1).trim());
+        }
+        return acc;
+    }, {});
+}
+
+function setCookie(res, name, value, maxAge) {
+    const attrs = [
+        `${name}=${encodeURIComponent(value)}`,
+        'Path=/',
+        'HttpOnly',
+        'SameSite=Strict',
+        `Max-Age=${Math.floor(maxAge / 1000)}`
+    ];
+    if (COOKIE_SECURE) attrs.push('Secure');
+    res.append('Set-Cookie', attrs.join('; '));
+}
+
+function clearCookie(res, name) {
+    const attrs = [`${name}=`, 'Path=/', 'HttpOnly', 'SameSite=Strict', 'Max-Age=0'];
+    if (COOKIE_SECURE) attrs.push('Secure');
+    res.append('Set-Cookie', attrs.join('; '));
+}
+
+function randomToken(bytes = 32) {
+    return crypto.randomBytes(bytes).toString('hex');
+}
+
+function digest(value) {
+    return crypto.createHash('sha256').update(String(value)).digest('hex');
+}
+
+function safeEqual(a, b) {
+    const aa = Buffer.from(String(a || ''));
+    const bb = Buffer.from(String(b || ''));
+    return aa.length === bb.length && crypto.timingSafeEqual(aa, bb);
+}
+
+function hashPin(pin, salt = crypto.randomBytes(16).toString('hex')) {
+    return `${salt}:${crypto.scryptSync(String(pin), salt, 64).toString('hex')}`;
+}
+
+function verifyPinHash(pin, storedHash) {
+    if (!storedHash || !storedHash.includes(':')) return false;
+    const [salt, expected] = storedHash.split(':');
+    const actual = crypto.scryptSync(String(pin), salt, 64).toString('hex');
+    return safeEqual(actual, expected);
+}
+
+
 // SÉCURITÉ MAÎTRE DE L'EMPIRE (Super Admin)
-const ADMIN_PASS = process.env.ADMIN_PASS || 'Empire2026';
+const ADMIN_PASS = process.env.ADMIN_PASS;
+if (!ADMIN_PASS) throw new Error("ADMIN_PASS manquante.");
 
 // Sécurité des requêtes (CORS)
-app.use(cors({ origin: '*', methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'], allowedHeaders: ['Content-Type', 'Authorization', 'Origin', 'Accept'] }));
+app.use(cors({
+    origin(origin, callback) {
+        if (!origin || ALLOWED_ORIGINS.includes(origin)) return callback(null, true);
+        callback(new Error('Origine CORS non autorisée'));
+    },
+    credentials: true,
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'Origin', 'Accept', 'X-CSRF-Token', 'X-iCHEF-Device', 'X-iCHEF-Master-Device', 'Idempotency-Key']
+}));
 
 // 🚨 SÉCURITÉ STRIPE : On utilise raw() uniquement pour la route webhook
 app.use('/webhook', express.raw({ type: 'application/json' }));
@@ -53,6 +149,10 @@ app.use(express.urlencoded({ extended: true, limit: '100mb' }));
 app.use(express.static(path.join(__dirname)));
 
 const cleanString = (str) => String(str || "").trim().toLowerCase();
+
+app.get('/health', (req, res) => {
+    res.json({ success: true, status: 'online', time: new Date().toISOString() });
+});
 
 app.get('/', (req, res) => {
     res.sendFile(path.join(__dirname, 'vitrine.html'));
@@ -65,6 +165,213 @@ app.get('/panel-ichef', (req, res) => {
     } else {
         res.status(403).send('🛑 Accès Refusé. Sécurité Empire iCHEF.');
     }
+});
+
+
+// ==========================================
+// AUTHENTIFICATION ET SESSIONS SÉCURISÉES
+// ==========================================
+app.post('/api/auth/pin-login', async (req, res) => {
+    const tenantID = cleanString(req.body.tenantID);
+    const pin = String(req.body.pin || '');
+    const deviceId = String(req.body.deviceId || '');
+
+    try {
+        const tenant = await Tenant.findOne({ tenantID }).select('+pin +pinHash');
+        if (!tenant) return res.status(404).json({ success: false, error: 'Établissement inconnu.' });
+        if (tenant.status !== 'ACTIF' || tenant.archivedAt) {
+            return res.status(403).json({ success: false, error: 'Licence inactive.' });
+        }
+        if (tenant.demoExpiration && new Date() > new Date(tenant.demoExpiration)) {
+            return res.status(403).json({ success: false, error: 'Démonstration expirée.' });
+        }
+
+        const valid = tenant.pinHash ? verifyPinHash(pin, tenant.pinHash) : safeEqual(pin, tenant.pin);
+        if (!valid) return res.status(401).json({ success: false, error: 'Code PIN incorrect.' });
+
+        if (!tenant.pinHash) {
+            tenant.pinHash = hashPin(pin);
+            tenant.pin = undefined;
+        }
+
+        if (deviceId && !tenant.registeredDevices.includes(deviceId)) {
+            if (tenant.registeredDevices.length >= tenant.maxScreens) {
+                return res.status(403).json({ success: false, error: 'Limite d’écrans atteinte.' });
+            }
+            tenant.registeredDevices.push(deviceId);
+        }
+
+        await tenant.save();
+
+        const session = await createTenantSession({
+            tenantID,
+            userId: 'MASTER',
+            role: 'MASTER',
+            permissions: ['*'],
+            deviceId,
+            req,
+            res
+        });
+
+        res.json({
+            success: true,
+            csrfToken: session.csrfToken,
+            plan: tenant.plan,
+            specialite: tenant.specialite,
+            role: 'MASTER',
+            safeTenantID: tenant.tenantID
+        });
+    } catch (error) {
+        console.error(error);
+        res.status(500).json({ success: false, error: 'Erreur d’authentification.' });
+    }
+});
+
+app.post('/api/security/bootstrap', async (req, res) => {
+    const session = await getTenantSession(req);
+    if (!session) return res.status(401).json({ success: false, sessionValid: false });
+
+    const tenant = await Tenant.findOne({ tenantID: session.tenantID });
+    if (!tenant || tenant.status !== 'ACTIF' || tenant.archivedAt) {
+        return res.status(403).json({ success: false, error: 'Licence inactive.' });
+    }
+
+    res.json({
+        success: true,
+        sessionValid: true,
+        moduleAllowed: true,
+        csrfToken: session.csrfToken,
+        permissions: session.permissions,
+        user: { id: session.userId, role: session.role },
+        plan: tenant.plan,
+        addons: tenant.addons || []
+    });
+});
+
+app.post('/api/security/heartbeat', requireTenantSession, async (req, res) => {
+    res.json({
+        success: true,
+        sessionValid: true,
+        deviceAllowed: true,
+        suspicious: false,
+        expiresAt: req.ichefSession.expiresAt,
+        csrfToken: req.ichefSession.csrfToken
+    });
+});
+
+app.post('/api/auth/logout', async (req, res) => {
+    const token = parseCookies(req).ichef_session;
+    if (token) await Session.updateOne({ tokenHash: digest(token) }, { revokedAt: new Date() });
+    clearCookie(res, 'ichef_session');
+    res.json({ success: true });
+});
+
+app.post('/api/master/login', async (req, res) => {
+    if (!safeEqual(req.body.masterKey, ADMIN_PASS)) {
+        return res.status(401).json({ success: false, error: 'Clé SuperAdmin invalide.' });
+    }
+
+    const token = randomToken();
+    const csrfToken = randomToken(24);
+
+    await MasterSession.create({
+        tokenHash: digest(token),
+        csrfToken,
+        deviceId: req.body.deviceId || '',
+        expiresAt: new Date(Date.now() + MASTER_SESSION_TTL_MS)
+    });
+
+    setCookie(res, 'ichef_master_session', token, MASTER_SESSION_TTL_MS);
+    res.json({ success: true, csrfToken });
+});
+
+app.post('/api/master/bootstrap', requireMasterSession, async (req, res) => {
+    res.json({
+        success: true,
+        sessionValid: true,
+        moduleAllowed: true,
+        csrfToken: req.masterSession.csrfToken,
+        permissions: req.masterSession.permissions,
+        user: { id: req.masterSession.userId, role: 'SUPERADMIN' }
+    });
+});
+
+app.get('/api/master/tenants', requireMasterSession, async (req, res) => {
+    const tenants = await Tenant.find({ archivedAt: null }).lean();
+    res.json({
+        success: true,
+        tenants: tenants.map(t => ({
+            id: t.tenantID,
+            name: t.clientName || 'Sans nom',
+            email: t.email || '',
+            phone: t.phone || '',
+            pack: t.plan,
+            specialite: t.specialite,
+            addons: t.addons || [],
+            maxScreens: t.maxScreens,
+            maxStaff: t.maxStaff,
+            activeScreens: t.registeredDevices?.length || 0,
+            status: t.status
+        }))
+    });
+});
+
+app.post('/api/master/tenant-action', requireMasterSession, async (req, res) => {
+    const { tenantID, action, payload = {} } = req.body;
+    const safeID = cleanString(tenantID);
+    const reason = String(payload.reason || '').trim();
+
+    if (reason.length < 8) {
+        return res.status(400).json({ success: false, error: 'Motif obligatoire.' });
+    }
+
+    const tenant = await Tenant.findOne({ tenantID: safeID }).select('+pin +pinHash');
+    if (!tenant) return res.status(404).json({ success: false, error: 'Client introuvable.' });
+
+    if (action === 'set_plan') tenant.plan = String(payload.newPlan || '').toUpperCase();
+    else if (action === 'set_max_screens') tenant.maxScreens = Number(payload.maxScreens);
+    else if (action === 'reset_devices') tenant.registeredDevices = [];
+    else if (action === 'suspend') {
+        tenant.status = 'SUSPENDU';
+        tenant.registeredDevices = [];
+    }
+    else if (action === 'activate') tenant.status = 'ACTIF';
+    else if (action === 'archive') {
+        tenant.status = 'SUSPENDU';
+        tenant.archivedAt = new Date();
+        tenant.registeredDevices = [];
+    }
+    else if (action === 'set_addons') tenant.addons = Array.isArray(payload.addons) ? payload.addons : [];
+    else if (action === 'reset_admin_pin') {
+        const temporaryPin = String(Math.floor(100000 + Math.random() * 900000));
+        tenant.pinHash = hashPin(temporaryPin);
+        tenant.pin = undefined;
+        tenant.registeredDevices = [];
+        await tenant.save();
+        return res.json({ success: true, temporaryPin });
+    }
+    else return res.status(400).json({ success: false, error: 'Action inconnue.' });
+
+    await tenant.save();
+    res.json({ success: true });
+});
+
+app.post('/api/master/heartbeat', requireMasterSession, async (req, res) => {
+    res.json({
+        success: true,
+        sessionValid: true,
+        suspicious: false,
+        deviceRevoked: false,
+        csrfToken: req.masterSession.csrfToken,
+        expiresAt: req.masterSession.expiresAt
+    });
+});
+
+app.post('/api/master/logout', async (req, res) => {
+    const token = parseCookies(req).ichef_master_session;
+    if (token) await MasterSession.updateOne({ tokenHash: digest(token) }, { revokedAt: new Date() });
+    clearCookie(res, 'ichef_master_session');
+    res.json({ success: true });
 });
 
 // ==========================================
@@ -129,7 +436,8 @@ app.post('/webhook', async (req, res) => {
 // ==========================================
 // BASE DE DONNÉES : INFRASTRUCTURE MONGODB
 // ==========================================
-const mongoURI = process.env.MONGO_URI || "mongodb+srv://icheflavien_db_user:Tamere58.@cluster0.4w95d7m.mongodb.net/ichef_production?retryWrites=true&w=majority";
+const mongoURI = process.env.MONGO_URI;
+if (!mongoURI) throw new Error("MONGO_URI manquante.");
 mongoose.connect(mongoURI).then(() => console.log('✅ Base de donnees iCHEF Online')).catch(err => console.error(err.message));
 
 const tenantSchema = new mongoose.Schema({
@@ -144,7 +452,10 @@ const tenantSchema = new mongoose.Schema({
         default: 'BUSINESS' 
     },
     specialite: { type: String, default: 'cuisine' },
-    pin: { type: String, default: '9999' }, 
+    pin: { type: String, select: false },
+    pinHash: { type: String, select: false },
+    addons: { type: [String], default: [] },
+    archivedAt: Date, 
     maxScreens: { type: Number, default: 5 }, 
     maxStaff: { type: Number, default: 999 },
     registeredDevices: [String], 
@@ -152,6 +463,100 @@ const tenantSchema = new mongoose.Schema({
     demoExpiration: { type: Date }
 });
 const Tenant = mongoose.model('Tenant', tenantSchema);
+
+const Session = mongoose.model('Session', new mongoose.Schema({
+    tokenHash: { type: String, required: true, unique: true, index: true },
+    tenantID: { type: String, required: true, index: true },
+    userId: String,
+    role: String,
+    permissions: { type: [String], default: [] },
+    deviceId: String,
+    csrfToken: String,
+    expiresAt: { type: Date, required: true, index: { expires: 0 } },
+    revokedAt: Date,
+    lastSeenAt: { type: Date, default: Date.now }
+}));
+
+const MasterSession = mongoose.model('MasterSession', new mongoose.Schema({
+    tokenHash: { type: String, required: true, unique: true, index: true },
+    userId: { type: String, default: 'SUPERADMIN' },
+    permissions: { type: [String], default: ['*'] },
+    deviceId: String,
+    csrfToken: String,
+    expiresAt: { type: Date, required: true, index: { expires: 0 } },
+    revokedAt: Date,
+    lastSeenAt: { type: Date, default: Date.now }
+}));
+
+async function createTenantSession({ tenantID, userId, role, permissions, deviceId, req, res }) {
+    const token = randomToken();
+    const csrfToken = randomToken(24);
+    await Session.create({
+        tokenHash: digest(token),
+        tenantID,
+        userId,
+        role,
+        permissions,
+        deviceId,
+        csrfToken,
+        expiresAt: new Date(Date.now() + SESSION_TTL_MS)
+    });
+    setCookie(res, 'ichef_session', token, SESSION_TTL_MS);
+    return { csrfToken };
+}
+
+async function getTenantSession(req) {
+    const token = parseCookies(req).ichef_session;
+    if (!token) return null;
+    return Session.findOne({
+        tokenHash: digest(token),
+        revokedAt: null,
+        expiresAt: { $gt: new Date() }
+    });
+}
+
+async function requireTenantSession(req, res, next) {
+    const session = await getTenantSession(req);
+    if (!session) return res.status(401).json({ success: false, error: 'Session expirée.' });
+
+    if (['POST', 'PUT', 'PATCH', 'DELETE'].includes(req.method) &&
+        req.get('X-CSRF-Token') !== session.csrfToken) {
+        return res.status(403).json({ success: false, error: 'Jeton CSRF invalide.' });
+    }
+
+    session.lastSeenAt = new Date();
+    session.expiresAt = new Date(Date.now() + SESSION_TTL_MS);
+    await session.save();
+    req.ichefSession = session;
+    next();
+}
+
+async function getMasterSession(req) {
+    const token = parseCookies(req).ichef_master_session;
+    if (!token) return null;
+    return MasterSession.findOne({
+        tokenHash: digest(token),
+        revokedAt: null,
+        expiresAt: { $gt: new Date() }
+    });
+}
+
+async function requireMasterSession(req, res, next) {
+    const session = await getMasterSession(req);
+    if (!session) return res.status(401).json({ success: false, error: 'Session SuperAdmin expirée.' });
+
+    if (['POST', 'PUT', 'PATCH', 'DELETE'].includes(req.method) &&
+        req.get('X-CSRF-Token') !== session.csrfToken) {
+        return res.status(403).json({ success: false, error: 'Jeton CSRF SuperAdmin invalide.' });
+    }
+
+    session.lastSeenAt = new Date();
+    session.expiresAt = new Date(Date.now() + MASTER_SESSION_TTL_MS);
+    await session.save();
+    req.masterSession = session;
+    next();
+}
+
 
 const AppState = mongoose.model('AppState', new mongoose.Schema({
     tenantID: { type: String, required: true, unique: true },
@@ -750,13 +1155,13 @@ app.post('/update-order', async (req, res) => {
 // MASTER CONTROL API (EMPIRE SUPER ADMIN)
 // ==========================================
 app.post('/api/get-all-tenants-admin', async (req, res) => {
-    if (req.body.masterKey !== ADMIN_PASS) return res.status(401).json({ success: false, error: "Acces Refuse." });
+    if (!safeEqual(req.body.masterKey, ADMIN_PASS)) return res.status(401).json({ success: false, error: "Acces Refuse." });
     try {
         const tenantsData = await Tenant.find({});
         const formattedTenants = tenantsData.map(t => ({
             id: t.tenantID, name: t.clientName || "Sans Nom", 
             email: t.email || "Non renseigné", phone: t.phone || "Non renseigné",
-            pack: t.plan, specialite: t.specialite, pin: t.pin,
+            pack: t.plan, specialite: t.specialite, addons: t.addons || [],
             maxScreens: t.maxScreens, maxStaff: t.maxStaff,
             activeScreens: t.registeredDevices ? t.registeredDevices.length : 0, 
             status: t.status
@@ -766,7 +1171,7 @@ app.post('/api/get-all-tenants-admin', async (req, res) => {
 });
 
 app.post('/api/admin-action', async (req, res) => {
-    if (req.body.masterKey !== ADMIN_PASS) return res.status(401).json({ success: false, error: "Acces Refuse." });
+    if (!safeEqual(req.body.masterKey, ADMIN_PASS)) return res.status(401).json({ success: false, error: "Acces Refuse." });
     try {
         const { tenantID, action, newPlan, manualScreens, manualPin, manualMaxStaff, maxScreens, addons } = req.body;
         const safeID = cleanString(tenantID);
@@ -801,9 +1206,9 @@ app.post('/api/admin-action', async (req, res) => {
         else if (action === 'reset_devices') await Tenant.findOneAndUpdate({ tenantID: safeID }, { registeredDevices: [] });
         else if (action === 'suspend') await Tenant.findOneAndUpdate({ tenantID: safeID }, { status: 'SUSPENDU', registeredDevices: [] });
         else if (action === 'activate') {
-            await Tenant.findOneAndUpdate({ tenantID: safeID }, { status: 'ACTIF', $unset: { demoExpiration: "" } });
+            await Tenant.findOneAndUpdate({ tenantID: safeID }, { status: 'ACTIF' });
         }
-        else if (action === 'delete') { await Tenant.findOneAndDelete({ tenantID: safeID }); await AppState.findOneAndDelete({ tenantID: safeID }); }
+        else if (action === 'delete' || action === 'archive') { await Tenant.findOneAndUpdate({ tenantID: safeID }, { status: 'SUSPENDU', archivedAt: new Date(), registeredDevices: [] }); }
         
         res.json({ success: true });
     } catch (err) { res.status(500).json({ success: false, error: err.message }); }
@@ -840,7 +1245,7 @@ app.post('/api/nouvelle-demande-demo', async (req, res) => {
             status: 'SUSPENDU', // En attente de ta validation
             plan: 'EMPIRE',     
             specialite: 'cuisine',
-            pin: codePinAlea,   
+            pinHash: hashPin(codePinAlea),   
             maxScreens: 5,
             maxStaff: 999,
             registeredDevices: [],
@@ -1134,30 +1539,6 @@ io.on('connection', (socket) => {
         console.log(`❌ Écran déconnecté (ID: ${socket.id})`);
     });
 });
-
-// ==========================================
-// 🌟 AUTO-GÉNÉRATION DU COMPTE DE DÉMONSTRATION
-// ==========================================
-async function creerCompteDemo() {
-    try {
-        const demoExist = await Tenant.findOne({ tenantID: 'demo' });
-        if (!demoExist) {
-            await Tenant.create({
-                tenantID: 'demo',
-                clientName: 'Restaurant iCHEF Démo',
-                status: 'ACTIF',
-                plan: 'EMPIRE',
-                pin: '0000',
-                maxScreens: 50,
-                maxStaff: 999
-            });
-            console.log('✅ Compte DÉMO ("demo" / "0000") généré avec succès dans la base !');
-        }
-    } catch (e) {
-        console.error("Erreur lors de la création du compte démo :", e);
-    }
-}
-creerCompteDemo();
 
 // CRITIQUE : C'est 'server.listen' et non 'app.listen' pour que Socket.io fonctionne.
 server.listen(PORT, () => {
