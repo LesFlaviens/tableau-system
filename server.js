@@ -42,14 +42,15 @@ const PORT = process.env.PORT || 10000;
 // SÉCURITÉ MAÎTRE DE L'EMPIRE (Super Admin)
 const ADMIN_PASS = process.env.ADMIN_PASS || 'Empire2026';
 
-// Sécurité des requêtes (CORS) - CONFIGURATION DYNAMIQUE POUR ACCEPTER LES COOKIES
+// Sécurité des requêtes (CORS) - CONFIGURATION DYNAMIQUE POUR ACCEPTER LES COOKIES ET LES BADGES
 app.use(cors({
     origin: function (origin, callback) {
         callback(null, true);
     },
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization', 'Origin', 'Accept', 'X-CSRF-Token', 'X-iCHEF-Device', 'X-iCHEF-Master-Device', 'Idempotency-Key']
+    // 🚨 CORRECTION ICI : Ajout du badge 'X-iCHEF-Tenant' à la liste des invités 🚨
+    allowedHeaders: ['Content-Type', 'Authorization', 'Origin', 'Accept', 'X-CSRF-Token', 'X-iCHEF-Device', 'X-iCHEF-Master-Device', 'X-iCHEF-Tenant', 'Idempotency-Key']
 }));
 
 // 🚨 SÉCURITÉ STRIPE : On utilise raw() uniquement pour la route webhook
