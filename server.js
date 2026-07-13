@@ -75,6 +75,32 @@ app.get('/panel-ichef', (req, res) => {
     }
 });
 
+// =========================================================================
+// 🧠 MOTEUR IA : ANALYSE DU SERVICE ET RECOMMANDATIONS (COMPTABLE VIRTUEL)
+// =========================================================================
+app.post('/api/ai-business-pulse', (req, res) => {
+    try {
+        const { tenantID } = req.body;
+        
+        // Pour l'instant, on simule l'analyse de l'IA avec des données pertinentes
+        // Plus tard, on pourra brancher ça sur les vraies datas en temps réel du restaurant
+        const analyseIA = {
+            previsionVentes: "📈 Tendance : +15% de fréquentation estimée ce soir par rapport au mois dernier.",
+            analyseCA: "💰 Chiffre d'affaires en bonne voie. Panier moyen supérieur de 2.50€ à la moyenne.",
+            analyseMarges: "🥩 Food-cost maîtrisé : Marge brute moyenne estimée à 72%.",
+            recommandations: [
+                "Rupture imminente détectée sur 'Tartare de Saumon', prévenez la salle.",
+                "Le ratio des boissons est faible aujourd'hui, incitez l'équipe à proposer des apéritifs ou cafés.",
+                "Prévoyez un renfort au poste Chaud entre 19h30 et 20h45 vu la tendance des commandes."
+            ]
+        };
+
+        res.json({ success: true, pulse: analyseIA });
+    } catch (error) {
+        console.error("Erreur Moteur IA :", error);
+        res.status(500).json({ success: false, error: "Erreur d'analyse IA." });
+    }
+});
 // ==========================================
 // WEBHOOK STRIPE : SÉCURITÉ ANTI-IMPAYÉS & UPSELL 
 // ==========================================
