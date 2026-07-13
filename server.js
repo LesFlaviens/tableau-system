@@ -82,18 +82,36 @@ app.post('/api/ai-business-pulse', (req, res) => {
     try {
         const { tenantID } = req.body;
         
-        // Pour l'instant, on simule l'analyse de l'IA avec des données pertinentes
-        // Plus tard, on pourra brancher ça sur les vraies datas en temps réel du restaurant
-        const analyseIA = {
-            previsionVentes: "📈 Tendance : +15% de fréquentation estimée ce soir par rapport au mois dernier.",
-            analyseCA: "💰 Chiffre d'affaires en bonne voie. Panier moyen supérieur de 2.50€ à la moyenne.",
-            analyseMarges: "🥩 Food-cost maîtrisé : Marge brute moyenne estimée à 72%.",
-            recommandations: [
-                "Rupture imminente détectée sur 'Tartare de Saumon', prévenez la salle.",
-                "Le ratio des boissons est faible aujourd'hui, incitez l'équipe à proposer des apéritifs ou cafés.",
-                "Prévoyez un renfort au poste Chaud entre 19h30 et 20h45 vu la tendance des commandes."
-            ]
-        };
+        // 1. L'IA va regarder les vraies données du restaurant
+        const tenantData = tenantsData[tenantID] || {};
+        const archiveCaisse = tenantData['FINANCIAL_HISTORY']?.data || [];
+        const menuCuisine = tenantData['MENU_MASTER']?.data || {};
+
+        let analyseIA = {};
+
+        // 2. Si le restaurant est vide (pas de ventes ou pas de menu)
+        if (archiveCaisse.length === 0) {
+            analyseIA = {
+                previsionVentes: "📊 Prévisions en pause : L'IA a besoin de vos premières ventes pour calculer une tendance fiable.",
+                analyseCA: "💤 Caisse en attente : Commencez votre premier service pour voir l'évolution du Chiffre d'Affaires en direct.",
+                analyseMarges: "⚙️ Marges non calculées : Ajoutez vos articles et leurs coûts pour activer ce module.",
+                recommandations: [
+                    "Créez votre carte dans l'onglet 'Carte & Catégories'.",
+                    "Passez vos premières commandes via le Pad Serveur.",
+                    "L'algorithme s'affinera automatiquement dès votre premier 'Z de Caisse'."
+                ]
+            };
+        } else {
+            // 3. (Plus tard) Quand il y aura des ventes, l'IA calculera les vraies statistiques ici !
+            analyseIA = {
+                previsionVentes: "📈 L'algorithme analyse vos ventes en cours...",
+                analyseCA: "💰 Calcul du panier moyen en fonction de vos vrais tickets...",
+                analyseMarges: "🥩 Food-cost : analyse de la rentabilité de votre carte...",
+                recommandations: [
+                    "L'analyse de vos tickets est en cours de traitement."
+                ]
+            };
+        }
 
         res.json({ success: true, pulse: analyseIA });
     } catch (error) {
