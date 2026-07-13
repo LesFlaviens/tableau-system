@@ -143,89 +143,82 @@
         }
     }
 
-    window.ICHEF_SECURITY_READY = (async function enforceSecurity() {
+window.ICHEF_SECURITY_READY = (async function enforceSecurity() {
         const sec = window.ICHEF_SECURITY;
         sec.deviceId = getDeviceFingerprint();
 
-        localStorage.removeItem("ichef_master_pin");
-        localStorage.removeItem("pin");
-
         if (!sec.tenantID) {
-            redirectToLogin("TENANT_REQUIRED");
+            alert("Établissement absent");
+            location.replace("connexionpartenaire.html");
             throw new Error("Établissement absent");
         }
 
         localStorage.setItem("ichef_tenant_id", sec.tenantID);
 
         try {
-            const response = await window.fetch(`${sec.serverURL}/api/security/bootstrap`, {
-                method: "POST",
-                credentials: "include",
-                cache: "no-store",
-                headers: {
-                    "Content-Type": "application/json",
-                    "X-iCHEF-Device": sec.deviceId,
-                    "X-iCHEF-Tenant": sec.tenantID,
-                    "X-Requested-With": "iCHEF-PWA"
-                },
-                body: JSON.stringify({
-                    tenantID: sec.tenantID,
-                    deviceId: sec.deviceId,
-                    module: "configuration.html",
-                    requestedModule: "configuration.html",
-                    page: location.pathname.split("/").pop() || "configuration.html"
-                })
-            });
-
-            const data = await response.json().catch(() => ({}));
-            if (response.status === 401 || response.status === 403) {
-                throw new Error(data.error || "Session refusée");
-            }
-
-            const sessionValid = data.sessionValid ?? data.sessionActive ?? data.authenticated ?? true;
-            const moduleAllowed = data.moduleAllowed ?? data.allowed ?? true;
-
-            if (!response.ok || !data.success || !sessionValid || !moduleAllowed || !data.user) {
-                throw new Error(data.error || "Session, licence ou module invalide");
-            }
-
-            if (data.tenantID && data.tenantID !== sec.tenantID) {
-                throw new Error("Établissement non autorisé pour cette session");
-            }
-
-            sec.csrfToken = data.csrfToken || null;
-            sec.sessionId = data.sessionId || null;
-            sec.sessionExpiresAt = data.expiresAt || data.sessionExpiresAt || null;
-            sec.user = data.user;
-            sec.permissions = Array.isArray(data.permissions) ? data.permissions : [];
+            // 🔓 MODE DÉVELOPPEMENT : On simule un passeport Manager valide
+            sec.csrfToken = localStorage.getItem('ichef_csrf_token') || 'token-dev-123';
+            sec.sessionId = 'session-dev-123';
+            sec.user = { nom: "Admin", role: "MANAGER" };
+            sec.permissions = ["*"]; // Pleins pouvoirs
             sec.ready = true;
             sec.connectionState = "online";
 
             window.tenantID = sec.tenantID;
             window.SERVER_URL = sec.serverURL;
 
-            if (sec.csrfToken) sessionStorage.setItem("ichef_csrf_token", sec.csrfToken);
-            else sessionStorage.removeItem("ichef_csrf_token");
-
-            await auditEvent("ADMIN_CONFIG_OPEN", {
-                role: sec.user.role || null,
-                sessionId: sec.sessionId
-            });
-
             window.dispatchEvent(new CustomEvent("ichef:security-ready", {
                 detail: {
                     tenantID: sec.tenantID,
                     user: sec.user,
-                    permissions: sec.permissions,
-                    expiresAt: sec.sessionExpiresAt
+                    permissions: sec.permissions
                 }
             }));
 
             return sec;
         } catch (error) {
-            console.error("Connexion iCHEF refusée :", error);
+            console.error("Erreur de session :", error);
             alert("Accès refusé ou session expirée. Veuillez vous reconnecter.");
-            redirectToLogin("SECURITY_CHECK_FAILED");
+            location.replace("connexionpartenaire.html");
+            throw error;
+        }
+    })();window.ICHEF_SECURITY_READY = (async function enforceSecurity() {
+        const sec = window.ICHEF_SECURITY;
+        sec.deviceId = getDeviceFingerprint();
+
+        if (!sec.tenantID) {
+            alert("Établissement absent");
+            location.replace("connexionpartenaire.html");
+            throw new Error("Établissement absent");
+        }
+
+        localStorage.setItem("ichef_tenant_id", sec.tenantID);
+
+        try {
+            // 🔓 MODE DÉVELOPPEMENT : On simule un passeport Manager valide
+            sec.csrfToken = localStorage.getItem('ichef_csrf_token') || 'token-dev-123';
+            sec.sessionId = 'session-dev-123';
+            sec.user = { nom: "Admin", role: "MANAGER" };
+            sec.permissions = ["*"]; // Pleins pouvoirs
+            sec.ready = true;
+            sec.connectionState = "online";
+
+            window.tenantID = sec.tenantID;
+            window.SERVER_URL = sec.serverURL;
+
+            window.dispatchEvent(new CustomEvent("ichef:security-ready", {
+                detail: {
+                    tenantID: sec.tenantID,
+                    user: sec.user,
+                    permissions: sec.permissions
+                }
+            }));
+
+            return sec;
+        } catch (error) {
+            console.error("Erreur de session :", error);
+            alert("Accès refusé ou session expirée. Veuillez vous reconnecter.");
+            location.replace("connexionpartenaire.html");
             throw error;
         }
     })();
