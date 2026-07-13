@@ -76,6 +76,108 @@ app.get('/panel-ichef', (req, res) => {
 });
 
 // =========================================================================
+// 🤖 MOTEUR IA 2 : PRÉVISION DES RÉSERVATIONS ET DU SERVICE
+// =========================================================================
+app.post('/api/ai-reservation-forecast', async (req, res) => {
+    try {
+        const { tenantID } = req.body;
+
+        if (!tenantID) {
+            return res.status(400).json({ success: false, error: "ID Restaurant manquant" });
+        }
+
+        // On récupère les données en direct du restaurant
+        const tenantData = global.tenantsData && global.tenantsData[tenantID] 
+                            ? global.tenantsData[tenantID] 
+                            : {};
+
+        const reservations = tenantData['RESERVATIONS_MASTER']?.data || [];
+        
+        // 1. Calcul du nombre de couverts prévus pour aujourd'hui
+        let couvertsAujourdhui = 0;
+        
+        // On récupère la date du jour (format YYYY-MM-DD)
+        // Attention au fuseau horaire de la France/Suisse
+        const now = new Date();
+        const offset = now.getTimezoneOffset() * 60000;
+        const todayStr = new Date(now.getTime() - offset).toISOString().split('T')[0];
+
+        reservations.forEach(res => {
+            // On compte les réservations du jour qui ne sont pas annulées
+            if (!res.date || res.date === todayStr) {
+                if (res.status !== 'cancelled' && res.status !== 'annulé') {
+                    couvertsAujourdhui += parseInt(res.couverts || res.pax || 0);
+                }
+            }
+        });
+
+        // 2. L'Intelligence Artificielle génère ses conseils en fonction des couverts
+        let tendance = "Calme";
+        let alerteActive = false;
+        let alerteMessage = "";
+        let conseils = [];
+        let staffSalle = 1;
+        let staffCuisine = 1;
+
+        if (couvertsAujourdhui === 0) {
+            tendance = "Aucune réservation";
+            conseils = [
+                "Le cahier est vide pour ce soir. Partagez votre lien de réservation QR sur vos réseaux sociaux.",
+                "Vérifiez que votre Menu Web (Click & Collect) est bien activé pour compenser le manque en salle."
+            ];
+        } else if (couvertsAujourdhui <= 15) {
+            tendance = "Calme";
+            staffSalle = 1;
+            staffCuisine = 1;
+            conseils = [
+                "Profitez de ce service calme pour avancer sur la mise en place du week-end.",
+                "Incitez vos serveurs à proposer des ventes additionnelles (cocktails, cafés gourmands)."
+            ];
+        } else if (couvertsAujourdhui <= 40) {
+            tendance = "Soutenu";
+            staffSalle = 2;
+            staffCuisine = 2;
+            conseils = [
+                "Bonne dynamique. Prévoyez une mise en place classique au poste chaud.",
+                "Faites un point avec l'équipe sur les plats du jour et les ruptures éventuelles."
+            ];
+        } else {
+            tendance = "Très Intense (Rush)";
+            // Estimation mathématique rapide (1 serveur pour 20 pax, 1 cuisto pour 25 pax)
+            staffSalle = Math.ceil(couvertsAujourdhui / 20);
+            staffCuisine = Math.ceil(couvertsAujourdhui / 25);
+            alerteActive = true;
+            alerteMessage = `Forte affluence (${couvertsAujourdhui} pax). Préparez le Cockpit Anti-Rush !`;
+            conseils = [
+                "Dès le début du service, activez le Time-Shifting depuis le Cockpit Anti-Rush pour réguler les commandes QR.",
+                "Préparez et dressez vos entrées et desserts en avance pour soulager le coup de feu.",
+                "Prévoyez un renfort pour l'envoi des boissons (Limonadier)."
+            ];
+        }
+
+        // 3. Estimation financière (Ici on utilise un ticket moyen théorique de 32€ si pas d'historique)
+        const ticketMoyenEstimatif = 32.50;
+        const caEstime = (couvertsAujourdhui * ticketMoyenEstimatif).toFixed(2);
+
+        // 4. Constitution de la réponse finale
+        const forecast = {
+            couverts: couvertsAujourdhui,
+            tendance: tendance,
+            caEstime: caEstime,
+            staffRecommande: `${staffSalle} en salle, ${staffCuisine} en cuisine`,
+            alerteActive: alerteActive,
+            alerteMessage: alerteMessage,
+            conseils: conseils
+        };
+
+        res.json({ success: true, forecast: forecast });
+    } catch (error) {
+        console.error("Erreur Prévision IA :", error);
+        res.status(500).json({ success: false, error: "Erreur serveur lors de la prévision." });
+    }
+});
+
+// =========================================================================
 // 🧠 MOTEUR IA : ANALYSE DU SERVICE ET RECOMMANDATIONS (COMPTABLE VIRTUEL)
 // =========================================================================
 app.post('/api/ai-business-pulse', async (req, res) => {
