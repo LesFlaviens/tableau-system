@@ -78,19 +78,28 @@ app.get('/panel-ichef', (req, res) => {
 // =========================================================================
 // 🧠 MOTEUR IA : ANALYSE DU SERVICE ET RECOMMANDATIONS (COMPTABLE VIRTUEL)
 // =========================================================================
-app.post('/api/ai-business-pulse', (req, res) => {
+app.post('/api/ai-business-pulse', async (req, res) => {
     try {
         const { tenantID } = req.body;
-        
-        // 1. L'IA va regarder les vraies données du restaurant
-        const tenantData = tenantsData[tenantID] || {};
+
+        if (!tenantID) {
+            return res.status(400).json({ success: false, error: "ID Restaurant manquant" });
+        }
+
+        // 1. On va chercher les données stockées dans ton serveur Redis/Local
+        // Si tu utilises Redis : const tenantDataStr = await redisClient.get(`tenant:${tenantID}`);
+        // Pour l'instant, on lit directement la variable en mémoire du serveur (state)
+        const tenantData = global.tenantsData && global.tenantsData[tenantID] 
+                            ? global.tenantsData[tenantID] 
+                            : {};
+
         const archiveCaisse = tenantData['FINANCIAL_HISTORY']?.data || [];
         const menuCuisine = tenantData['MENU_MASTER']?.data || {};
 
         let analyseIA = {};
 
-        // 2. Si le restaurant est vide (pas de ventes ou pas de menu)
-        if (archiveCaisse.length === 0) {
+        // 2. Si le restaurant est vide (pas de ventes)
+        if (!archiveCaisse || archiveCaisse.length === 0) {
             analyseIA = {
                 previsionVentes: "📊 Prévisions en pause : L'IA a besoin de vos premières ventes pour calculer une tendance fiable.",
                 analyseCA: "💤 Caisse en attente : Commencez votre premier service pour voir l'évolution du Chiffre d'Affaires en direct.",
@@ -102,7 +111,7 @@ app.post('/api/ai-business-pulse', (req, res) => {
                 ]
             };
         } else {
-            // 3. (Plus tard) Quand il y aura des ventes, l'IA calculera les vraies statistiques ici !
+            // 3. Quand il y a des ventes, l'IA simule l'analyse
             analyseIA = {
                 previsionVentes: "📈 L'algorithme analyse vos ventes en cours...",
                 analyseCA: "💰 Calcul du panier moyen en fonction de vos vrais tickets...",
@@ -116,7 +125,7 @@ app.post('/api/ai-business-pulse', (req, res) => {
         res.json({ success: true, pulse: analyseIA });
     } catch (error) {
         console.error("Erreur Moteur IA :", error);
-        res.status(500).json({ success: false, error: "Erreur d'analyse IA." });
+        res.status(500).json({ success: false, error: "Erreur serveur lors de l'analyse." });
     }
 });
 // ==========================================
