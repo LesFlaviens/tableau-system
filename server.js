@@ -74,7 +74,104 @@ app.get('/panel-ichef', (req, res) => {
         res.status(403).send('🛑 Accès Refusé. Sécurité Empire iCHEF.');
     }
 });
+// =========================================================================
+// 🥇 MOTEUR IA 3 : RENTABILITÉ & FOOD-COST (INGÉNIERIE DE MENU)
+// =========================================================================
+app.post('/api/ai-profitability', async (req, res) => {
+    try {
+        const { tenantID } = req.body;
+        if (!tenantID) return res.status(400).json({ success: false, error: "ID Restaurant manquant" });
 
+        const tenantData = global.tenantsData && global.tenantsData[tenantID] ? global.tenantsData[tenantID] : {};
+        const menuCuisine = tenantData['MENU_MASTER']?.data || {};
+        const menuBar = tenantData['MENU_MASTER_BAR']?.data || {};
+
+        let allItems = [];
+
+        // Fonction mathématique pour estimer le coût si le restaurateur n'a pas encore saisi ses fiches techniques
+        const estimateCost = (name, price) => {
+            const txt = name.toLowerCase();
+            if (/vin|champagne|cocktail|bi[eè]re/.test(txt)) return price * 0.25; // 25% de coût matière
+            if (/dessert|patisserie|café/.test(txt)) return price * 0.28;
+            if (/plat|burger|viande|poisson/.test(txt)) return price * 0.35; // 35% de coût matière
+            if (/pizza|pâte|pasta/.test(txt)) return price * 0.20; // Super marge
+            return price * 0.30;
+        };
+
+        // Rassembler tous les articles de la carte
+        Object.values(menuCuisine).forEach(arr => allItems.push(...arr));
+        Object.values(menuBar).forEach(arr => allItems.push(...arr));
+
+        if (allItems.length === 0) {
+            return res.json({
+                success: true,
+                rentabilite: {
+                    topRentable: "N/A",
+                    pireRentable: "N/A",
+                    margeMoyenne: "0",
+                    recommandations: ["Créez vos premiers plats dans la carte pour que l'IA puisse analyser vos marges."]
+                }
+            });
+        }
+
+        // Calcul des marges pour chaque plat
+        let platsAvecMarge = allItems.map(item => {
+            let prix = parseFloat(item.price || 0);
+            // On utilise le coût réel s'il est renseigné, sinon l'estimation de l'IA
+            let cout = parseFloat(item.cost || 0) || estimateCost(item.name, prix);
+            let marge = prix - cout;
+            let pourcentage = prix > 0 ? (marge / prix) * 100 : 0;
+
+            return {
+                name: item.name,
+                prix: prix,
+                cout: cout,
+                marge: marge,
+                pourcentage: pourcentage
+            };
+        }).filter(p => p.prix > 0);
+
+        // Tri par marge absolue (du plat qui rapporte le + d'argent au plat qui rapporte le -)
+        platsAvecMarge.sort((a, b) => b.marge - a.marge);
+
+        let topPlat = platsAvecMarge[0];
+        let pirePlat = platsAvecMarge[platsAvecMarge.length - 1];
+
+        // Calcul de la marge moyenne globale du restaurant
+        let margeTotale = platsAvecMarge.reduce((sum, p) => sum + p.pourcentage, 0);
+        let margeMoyenne = (margeTotale / platsAvecMarge.length).toFixed(1);
+
+        let recommandations = [];
+        
+        if (topPlat && pirePlat) {
+            recommandations.push(`⭐ Le plat "${topPlat.name}" rapporte ${topPlat.marge.toFixed(2)} de marge par assiette. Dites à l'équipe en salle de le suggérer en priorité !`);
+            
+            if (pirePlat.pourcentage < 55) {
+                recommandations.push(`📉 Alerte Food-Cost : "${pirePlat.name}" vous coûte trop cher à produire (Ne rapporte que ${pirePlat.marge.toFixed(2)}). Envisagez d'augmenter son prix ou d'ajuster les portions.`);
+            }
+            
+            if (margeMoyenne < 70) {
+                recommandations.push(`📦 Votre marge brute moyenne est de ${margeMoyenne}%. Négociez avec vos fournisseurs ou revoyez vos fiches techniques pour dépasser les 70%.`);
+            } else {
+                recommandations.push(`💰 Excellente gestion ! Votre carte est hautement rentable avec une marge moyenne de ${margeMoyenne}%.`);
+            }
+        }
+
+        res.json({
+            success: true,
+            rentabilite: {
+                topRentable: topPlat ? topPlat.name : "N/A",
+                pireRentable: pirePlat ? pirePlat.name : "N/A",
+                margeMoyenne: margeMoyenne,
+                recommandations: recommandations
+            }
+        });
+
+    } catch (error) {
+        console.error("Erreur IA Rentabilité :", error);
+        res.status(500).json({ success: false, error: "Erreur serveur IA." });
+    }
+});
 // =========================================================================
 // 🤖 MOTEUR IA 2 : PRÉVISION DES RÉSERVATIONS ET DU SERVICE
 // =========================================================================
