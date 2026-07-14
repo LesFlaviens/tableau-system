@@ -719,7 +719,7 @@ app.post('/api/twilio/call-me', async (req, res) => {
         await twilioClient.messages.create({
             body: `🚨 iCHEF OS - RAPPEL URGENT 🚨\nUn prospect sur la vitrine demande à être rappelé immédiatement.\n📞 Numéro : ${phone}`,
             from: fromNumber,
-            to: '+33641437265'
+            to: '+330641437265'
         });
 
         console.log(`✅ Alerte de rappel SMS envoyée à Flavien pour le numéro : ${phone}`);
