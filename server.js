@@ -711,8 +711,8 @@ app.post('/api/twilio/call-me', async (req, res) => {
         const transporter = nodemailer.createTransport({
             service: 'gmail',
             auth: {
-                user: 'flavieniche@gmail.com', // 👈 REMPLACE PAR TON ADRESSE GMAIL
-                pass: 'nakdnjxhyjjemeef' // 👈 Ton code Google sans espaces
+                user: 'flavieniche@gmail.com, // 👈 REMPLACE PAR TON ADRESSE GMAIL
+                pass: 'atebfwhijmgmavcy' // 👈 Ton code Google sans espaces
             }
         });
 
