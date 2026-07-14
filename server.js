@@ -1059,7 +1059,7 @@ app.post('/api/nouvelle-demande-demo', async (req, res) => {
             try {
                 const envTwilioNum = process.env.TWILIO_PHONE_NUMBER || '';
                 const fromNumber = envTwilioNum.replace('whatsapp:', '');
-                const toNumber = '+33641437265';
+                const toNumber = '+330641437265';
 
                 await twilioClient.messages.create({
                     body: `🔥 NOUVEAU PARTENAIRE QUALIFIÉ : ${restaurant}\n📞 Tél: ${phone}\n🆔 TenantID: ${tenantID}\n\n📊 INFOS PROFIL :\n${qualification}\n🎯 PROJET: ${d.projet || 'Aucun'}`,
