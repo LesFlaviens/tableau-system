@@ -701,49 +701,8 @@ app.post('/api/smart-reservation', async (req, res) => {
 });
 
 // ==========================================
-// 📱 INTÉGRATION TWILIO (SMS CLIENTS & ALERTES)
-// ==========================================
-// Route API pour déclencher l'envoi d'un SMS
-app.post('/api/send-sms', async (req, res) => {
-    try {
-        const { to, message, tenantID } = req.body;
-
-        if (!twilioClient) {
-            return res.status(500).json({ success: false, error: "Twilio n'est pas configuré sur le serveur cloud." });
-        }
-
-        if (!to || !message) {
-            return res.status(400).json({ success: false, error: "Le numéro de téléphone ou le message est manquant." });
-        }
-
-        // Formatage du numéro (Twilio exige le format international)
-        let formattedPhone = to.trim().replace(/\s+/g, '');
-        if (formattedPhone.startsWith('0')) {
-            formattedPhone = '+33' + formattedPhone.substring(1); 
-        } else if (!formattedPhone.startsWith('+')) {
-            formattedPhone = '+' + formattedPhone;
-        }
-
-        console.log(`📩 Tentative d'envoi d'un SMS à ${formattedPhone}...`);
-
-        const response = await twilioClient.messages.create({
-            body: message,
-            from: twilioPhoneNumber,
-            to: formattedPhone
-        });
-
-        console.log("✅ SMS envoyé avec succès, SID:", response.sid);
-        res.json({ success: true, sid: response.sid, message: "SMS envoyé !" });
-
-    } catch (error) {
-        console.error("❌ Erreur d'envoi Twilio :", error.message);
-        res.status(500).json({ success: false, error: error.message });
-    }
-});
-
-// =========================================================================
 // 📞 API TWILIO : DEMANDE DE RAPPEL (Bouton site web)
-// =========================================================================
+// ==========================================
 app.post('/api/twilio/call-me', async (req, res) => {
     const { phone } = req.body;
     
@@ -754,26 +713,27 @@ app.post('/api/twilio/call-me', async (req, res) => {
 
     try {
         const envTwilioNum = process.env.TWILIO_PHONE_NUMBER || '+14155238886';
-        // 🛑 On enlève "whatsapp:" pour forcer le mode SMS classique
         const fromNumber = envTwilioNum.replace('whatsapp:', '');
 
-        // 1. Alerte SMS envoyée à TOI (Flavien) pour te prévenir
+        // 1. Alerte SMS envoyée à TOI (Flavien)
         await twilioClient.messages.create({
             body: `🚨 DEMANDE DE RAPPEL URGENT 🚨\nUn prospect sur le site demande à être rappelé immédiatement sur ce numéro :\n📞 ${phone}`,
             from: fromNumber,
-            to: '+33641437265' // Ton numéro direct
+            to: '+33641437265'
         });
 
         // 2. Message SMS de confirmation envoyé au CLIENT
         let clientPhone = phone.trim().replace(/\s+/g, '');
         if (clientPhone.startsWith('0')) {
             clientPhone = '+33' + clientPhone.substring(1);
+        } else if (!clientPhone.startsWith('+')) {
+            clientPhone = '+' + clientPhone;
         }
 
         await twilioClient.messages.create({
             body: `✅ iCHEF OS : Votre demande de rappel a bien été reçue. Notre équipe a été alertée et va vous contacter sur ce numéro d'ici quelques instants.`,
             from: fromNumber,
-            to: clientPhone // Envoi SMS direct au client
+            to: clientPhone
         });
 
         console.log(`Demande de rappel SMS traitée avec succès pour le numéro : ${phone}`);
@@ -1113,7 +1073,6 @@ app.post('/api/nouvelle-demande-demo', async (req, res) => {
         if (twilioClient) {
             try {
                 const envTwilioNum = process.env.TWILIO_PHONE_NUMBER || '';
-                // 🛑 On enlève "whatsapp:"
                 const fromNumber = envTwilioNum.replace('whatsapp:', '');
                 const toNumber = '+33641437265';
 
@@ -1134,10 +1093,11 @@ app.post('/api/nouvelle-demande-demo', async (req, res) => {
                 let clientPhone = phone.trim().replace(/\s+/g, '');
                 if (clientPhone.startsWith('0')) {
                     clientPhone = '+33' + clientPhone.substring(1);
+                } else if (!clientPhone.startsWith('+')) {
+                    clientPhone = '+' + clientPhone;
                 }
 
                 const envTwilioNum = process.env.TWILIO_PHONE_NUMBER || '';
-                // 🛑 On enlève "whatsapp:"
                 const fromNumber = envTwilioNum.replace('whatsapp:', '');
 
                 await twilioClient.messages.create({
@@ -1150,74 +1110,6 @@ app.post('/api/nouvelle-demande-demo', async (req, res) => {
                 console.error("❌ Erreur d'envoi SMS au client :", JSON.stringify(err, null, 2));
             }
         }
-
-        // 🚨 ENVOI SILENCIEUX DE L'EMAIL DE NOTIFICATION (FORMSUBMIT)
-        try {
-            const urlEmail = "https://formsubmit.co/ajax/iche.flavien@ichef.ch";
-            const payload = {
-                _subject: `🚨 iCHEF OS : Nouveau Lead Qualifié - ${restaurant}`,
-                "Établissement": restaurant,
-                "Téléphone": phone,
-                "Email du gérant": email,
-                "Identifiant Généré (ID)": tenantID,
-                "Code PIN d'accès temporaire": codePinAlea,
-                "Qualification Profil": qualification,
-                "Projet / Besoin exprimé": d.projet || 'Aucun détail fourni',
-                "Statut": "Bloqué (En attente d'activation manuelle depuis votre panel Admin)",
-                _template: "box" 
-            };
-
-            fetch(urlEmail, {
-                method: "POST",
-                headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
-                body: JSON.stringify(payload)
-            }).then(() => console.log("✅ Email d'alerte interne envoyé."))
-              .catch(err => console.log("❌ Erreur silencieuse email interne :", err));
-            
-        } catch (err) { console.error(err); }
-
-        // ✉️ ENVOI AUTOMATIQUE DE L'E-MAIL DE BIENVENUE AU PARTENAIRE
-        try {
-            const urlEmailClient = `https://formsubmit.co/ajax/${email}`; 
-            const clientPayload = {
-                _subject: "✨ Bienvenue dans l'élite iCHEF OS — Préparation de votre écosystème",
-                "Message de la Brigade iCHEF": `Bonjour, vous ne devenez pas un simple numéro ou un "client" de plus. Vous devenez un véritable Partenaire. 
-
-Étant nous-mêmes issus du monde de la restauration, nous connaissons la réalité du terrain : la pression du coup de feu, les serveurs débordés, et ces dizaines de commandes supplémentaires qui s'évaporent parce que les clients n'osent pas solliciter une équipe déjà à 200%.
-
-Votre espace privé est actuellement en cours de pré-génération sur nos serveurs sécurisés.
-
-VOS IDENTIFIANTS PROVISOIRES :
-🆔 ID Restaurant : ${tenantID}
-🔑 Code PIN Master : ${codePinAlea}
-
-PROCHAINES ÉTAPES :
-1. L'Appel de Synchronisation (Sous 24h) : Un expert de notre brigade va vous contacter sur ce numéro : ${phone}. Ce sera un appel court pour comprendre la topographie de vos espaces.
-2. Le Paramétrage Sur-Mesure : Nous configurons votre carte, le Mode Anti-Rush et les options de Time-Shifting.
-3. Le Déploiement : Vous recevrez vos puces NFC haut de gamme, prêtes à poser.
-
-Préparez-vous à vivre votre premier service sans stress.
-
-Flavien Iché & l'équipe iCHEF`,
-                _template: "box"
-            };
-
-            fetch(urlEmailClient, {
-                method: "POST",
-                headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
-                body: JSON.stringify(clientPayload)
-            }).then(() => console.log(`✉️ Mail de bienvenue envoyé à ${email}`))
-              .catch(err => console.error("❌ Erreur mail client :", err));
-
-        } catch (mailClientErr) { console.error("Erreur envoi mail client:", mailClientErr); }
-
-        res.json({ success: true, message: "Demande enregistrée avec succès. Workflow déclenché." });
-
-    } catch (e) {
-        console.error("Erreur création prospect :", e);
-        res.status(500).json({ success: false, error: "Cet identifiant d'établissement existe déjà." });
-    }
-});
 
         // 🚨 ENVOI SILENCIEUX DE L'EMAIL DE NOTIFICATION (FORMSUBMIT)
         try {
