@@ -711,13 +711,13 @@ app.post('/api/twilio/call-me', async (req, res) => {
         const transporter = nodemailer.createTransport({
             service: 'gmail',
             auth: {
-                user: 'TON_EMAIL@gmail.com', // 👈 REMPLACE PAR TON ADRESSE GMAIL
+                user: 'flavieniche@gmail.com', // 👈 REMPLACE PAR TON ADRESSE GMAIL
                 pass: 'jovbwjpbnjtovktc' // 👈 Ton code Google sans espaces
             }
         });
 
         const mailOptions = {
-            from: 'TON_EMAIL@gmail.com', // 👈 REMPLACE PAR TON ADRESSE GMAIL
+            from: 'flavieniche@gmail.com', // 👈 REMPLACE PAR TON ADRESSE GMAIL
             to: 'iche.flavien@ichef.ch', // 👈 L'adresse de réception
             subject: '🚨 iCHEF OS - RAPPEL URGENT 🚨',
             text: `Un prospect sur la vitrine demande à être rappelé immédiatement.\n\n📞 Numéro : ${phone}`
