@@ -1230,7 +1230,68 @@ Flavien Iché & l'équipe iCHEF`,
         res.status(500).json({ success: false, error: "Cet identifiant d'établissement existe déjà." });
     }
 });
+// =========================================================================
+// 📱 INTÉGRATION TWILIO (SMS CLIENTS & ALERTES)
+// =========================================================================
+const twilio = require('twilio');
 
+// Récupération des clés depuis l'environnement Render
+const TWILIO_ACCOUNT_SID = process.env.TWILIO_ACCOUNT_SID;
+const TWILIO_AUTH_TOKEN = process.env.TWILIO_AUTH_TOKEN;
+const TWILIO_PHONE_NUMBER = process.env.TWILIO_PHONE_NUMBER;
+
+let twilioClient = null;
+
+// Initialisation sécurisée
+if (TWILIO_ACCOUNT_SID && TWILIO_AUTH_TOKEN) {
+    try {
+        twilioClient = twilio(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN);
+        console.log("✅ Module Twilio activé et connecté !");
+    } catch (err) {
+        console.error("❌ Erreur d'initialisation Twilio :", err.message);
+    }
+} else {
+    console.warn("⚠️ Twilio DÉSACTIVÉ : Les variables d'environnement (SID ou Token) sont manquantes.");
+}
+
+// Route API pour déclencher l'envoi d'un SMS
+app.post('/api/send-sms', async (req, res) => {
+    try {
+        const { to, message, tenantID } = req.body;
+
+        if (!twilioClient) {
+            return res.status(500).json({ success: false, error: "Twilio n'est pas configuré sur le serveur cloud." });
+        }
+
+        if (!to || !message) {
+            return res.status(400).json({ success: false, error: "Le numéro de téléphone ou le message est manquant." });
+        }
+
+        // Formatage du numéro (Twilio exige le format international, ex: +33612345678)
+        let formattedPhone = to.trim().replace(/\s+/g, '');
+        if (formattedPhone.startsWith('0')) {
+            // Par défaut on passe en +33 (France), à adapter si tu es en Suisse (+41)
+            formattedPhone = '+33' + formattedPhone.substring(1); 
+        } else if (!formattedPhone.startsWith('+')) {
+            formattedPhone = '+' + formattedPhone;
+        }
+
+        console.log(`📩 Tentative d'envoi d'un SMS à ${formattedPhone}...`);
+
+        const response = await twilioClient.messages.create({
+            body: message,
+            from: TWILIO_PHONE_NUMBER,
+            to: formattedPhone
+        });
+
+        console.log("✅ SMS envoyé avec succès, SID:", response.sid);
+        res.json({ success: true, sid: response.sid, message: "SMS envoyé !" });
+
+    } catch (error) {
+        console.error("❌ Erreur d'envoi Twilio :", error.message);
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
 // ==========================================
 // 📞 API TWILIO : DEMANDE DE RAPPEL (Bouton site web)
 // ==========================================
