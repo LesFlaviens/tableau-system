@@ -717,7 +717,7 @@ app.post('/api/call-me-email', async (req, res) => {
             _template: "box"
         };
 
-        const response = await fetch("https://formsubmit.co/ajax/iche.flavien@ichef.ch", {
+   const response = await fetch("https://formsubmit.co/ajax/flavieniche@gmail.com", {
             method: "POST",
             headers: { 
                 'Content-Type': 'application/json', 
