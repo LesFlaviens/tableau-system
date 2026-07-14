@@ -1,3 +1,4 @@
+const nodemailer = require('nodemailer');
 /**
  * ==============================================================
  * 🧠 iCHEF EMPIRE OS — ENGINE SERVER BACKEND (V. FORTERESSE)
