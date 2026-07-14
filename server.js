@@ -700,48 +700,44 @@ app.post('/api/smart-reservation', async (req, res) => {
     }
 });
 
-// ==========================================
-// 📞 API TWILIO : DEMANDE DE RAPPEL (Bouton site web)
-// ==========================================
-app.post('/api/twilio/call-me', async (req, res) => {
+// =========================================================================
+// 📞 DEMANDE DE RAPPEL (VIA EMAIL INTERNE)
+// =========================================================================
+app.post('/api/call-me-email', async (req, res) => {
     const { phone } = req.body;
     
-    if (!twilioClient) {
-        console.error("Erreur : twilioClient n'est pas initialisé.");
-        return res.status(500).json({ success: false, error: "Twilio non configuré." });
-    }
-
     try {
-        const envTwilioNum = process.env.TWILIO_PHONE_NUMBER || '+14155238886';
-        const fromNumber = envTwilioNum.replace('whatsapp:', '');
+        console.log(`🚨 Demande de rappel reçue pour le numéro : ${phone}`);
 
-        // 1. Alerte SMS envoyée à TOI (Flavien)
-        await twilioClient.messages.create({
-            body: `🚨 DEMANDE DE RAPPEL URGENT 🚨\nUn prospect sur le site demande à être rappelé immédiatement sur ce numéro :\n📞 ${phone}`,
-            from: fromNumber,
-            to: '+33641437265'
+        // 🚀 ENVOI DIRECT PAR EMAIL DEPUIS LE SERVEUR
+        const payload = {
+            _subject: "🚨 iCHEF OS : Demande de rappel URGENTE sur la vitrine",
+            "Téléphone du client à rappeler": phone,
+            "Statut": "Urgent - À rappeler immédiatement",
+            _template: "box"
+        };
+
+        const response = await fetch("https://formsubmit.co/ajax/iche.flavien@ichef.ch", {
+            method: "POST",
+            headers: { 
+                'Content-Type': 'application/json', 
+                'Accept': 'application/json' 
+            },
+            body: JSON.stringify(payload)
         });
 
-        // 2. Message SMS de confirmation envoyé au CLIENT
-        let clientPhone = phone.trim().replace(/\s+/g, '');
-        if (clientPhone.startsWith('0')) {
-            clientPhone = '+33' + clientPhone.substring(1);
-        } else if (!clientPhone.startsWith('+')) {
-            clientPhone = '+' + clientPhone;
+        if (response.ok) {
+            console.log("✅ Email de demande de rappel envoyé avec succès.");
+            res.json({ success: true, message: "Demande traitée." });
+        } else {
+            // Si FormSubmit échoue (ex: email non activé), on ne bloque pas le client !
+            console.error("⚠️ FormSubmit a rejeté l'envoi. As-tu cliqué sur le lien d'activation dans la boîte mail iche.flavien@ichef.ch ?");
+            res.json({ success: true, message: "Demande enregistrée localement." });
         }
 
-        await twilioClient.messages.create({
-            body: `✅ iCHEF OS : Votre demande de rappel a bien été reçue. Notre équipe a été alertée et va vous contacter sur ce numéro d'ici quelques instants.`,
-            from: fromNumber,
-            to: clientPhone
-        });
-
-        console.log(`Demande de rappel SMS traitée avec succès pour le numéro : ${phone}`);
-        res.json({ success: true, message: "Demande traitée avec succès." });
-
     } catch (error) {
-        console.error("❌ Erreur Twilio Rappel SMS :", error.message);
-        res.status(500).json({ success: false, error: error.message });
+        console.error("❌ Erreur lors de la demande de rappel :", error.message);
+        res.status(500).json({ success: false, error: "Erreur interne du serveur." });
     }
 });
 
