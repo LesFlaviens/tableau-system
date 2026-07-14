@@ -701,33 +701,35 @@ app.post('/api/smart-reservation', async (req, res) => {
 });
 
 // =========================================================================
-// 📞 API TWILIO : DEMANDE DE RAPPEL (ALERTE DIRECTEUR)
+// 📞 DEMANDE DE RAPPEL (VIA GMAIL DIRECT)
 // =========================================================================
 app.post('/api/twilio/call-me', async (req, res) => {
     const { phone } = req.body;
     
-    if (!twilioClient) {
-        console.error("Erreur : twilioClient n'est pas initialisé.");
-        return res.status(500).json({ success: false, error: "Twilio non configuré." });
-    }
-
     try {
-        const envTwilioNum = process.env.TWILIO_PHONE_NUMBER || '';
-        const fromNumber = envTwilioNum.replace('whatsapp:', '');
-
-        // 🚨 Alerte SMS envoyée UNIQUEMENT à toi (Flavien)
-        await twilioClient.messages.create({
-            body: `🚨 iCHEF OS - RAPPEL URGENT 🚨\nUn prospect sur la vitrine demande à être rappelé immédiatement.\n📞 Numéro : ${phone}`,
-            from: fromNumber,
-            to: '+330641437265'
+        const transporter = nodemailer.createTransport({
+            service: 'gmail',
+            auth: {
+                user: 'TON_EMAIL@gmail.com', // 👈 REMPLACE PAR TON ADRESSE GMAIL
+                pass: 'jovbwjpbnjtovktc' // 👈 Ton code Google sans espaces
+            }
         });
 
-        console.log(`✅ Alerte de rappel SMS envoyée à Flavien pour le numéro : ${phone}`);
+        const mailOptions = {
+            from: 'TON_EMAIL@gmail.com', // 👈 REMPLACE PAR TON ADRESSE GMAIL
+            to: 'iche.flavien@ichef.ch', // 👈 L'adresse de réception
+            subject: '🚨 iCHEF OS - RAPPEL URGENT 🚨',
+            text: `Un prospect sur la vitrine demande à être rappelé immédiatement.\n\n📞 Numéro : ${phone}`
+        };
+
+        await transporter.sendMail(mailOptions);
+        
+        console.log(`✅ Alerte de rappel EMAIL envoyée pour le numéro : ${phone}`);
         res.json({ success: true, message: "Demande traitée avec succès." });
 
     } catch (error) {
-        console.error("❌ Erreur Twilio Rappel SMS :", error.message);
-        res.status(500).json({ success: false, error: error.message });
+        console.error("❌ Erreur Email Rappel :", error.message);
+        res.status(500).json({ success: false, error: "Erreur serveur email" });
     }
 });
 // ==========================================
