@@ -741,9 +741,9 @@ app.post('/api/send-sms', async (req, res) => {
     }
 });
 
-// ==========================================
+// =========================================================================
 // 📞 API TWILIO : DEMANDE DE RAPPEL (Bouton site web)
-// ==========================================
+// =========================================================================
 app.post('/api/twilio/call-me', async (req, res) => {
     const { phone } = req.body;
     
@@ -754,16 +754,17 @@ app.post('/api/twilio/call-me', async (req, res) => {
 
     try {
         const envTwilioNum = process.env.TWILIO_PHONE_NUMBER || '+14155238886';
-        const fromNumber = `whatsapp:${envTwilioNum.replace('whatsapp:', '')}`;
+        // 🛑 On enlève "whatsapp:" pour forcer le mode SMS classique
+        const fromNumber = envTwilioNum.replace('whatsapp:', '');
 
-        // 1. Alerte WhatsApp envoyée à TOI (Flavien) pour te prévenir
+        // 1. Alerte SMS envoyée à TOI (Flavien) pour te prévenir
         await twilioClient.messages.create({
             body: `🚨 DEMANDE DE RAPPEL URGENT 🚨\nUn prospect sur le site demande à être rappelé immédiatement sur ce numéro :\n📞 ${phone}`,
             from: fromNumber,
-            to: `whatsapp:${NUMERO_FLAVIEN.replace('whatsapp:', '')}`
+            to: '+33641437265' // Ton numéro direct
         });
 
-        // 2. Message WhatsApp de confirmation envoyé au CLIENT
+        // 2. Message SMS de confirmation envoyé au CLIENT
         let clientPhone = phone.trim().replace(/\s+/g, '');
         if (clientPhone.startsWith('0')) {
             clientPhone = '+33' + clientPhone.substring(1);
@@ -772,14 +773,14 @@ app.post('/api/twilio/call-me', async (req, res) => {
         await twilioClient.messages.create({
             body: `✅ iCHEF OS : Votre demande de rappel a bien été reçue. Notre équipe a été alertée et va vous contacter sur ce numéro d'ici quelques instants.`,
             from: fromNumber,
-            to: `whatsapp:${clientPhone}`
+            to: clientPhone // Envoi SMS direct au client
         });
 
-        console.log(`Demande de rappel traitée avec succès pour le numéro : ${phone}`);
+        console.log(`Demande de rappel SMS traitée avec succès pour le numéro : ${phone}`);
         res.json({ success: true, message: "Demande traitée avec succès." });
 
     } catch (error) {
-        console.error("❌ Erreur Twilio Rappel :", error.message);
+        console.error("❌ Erreur Twilio Rappel SMS :", error.message);
         res.status(500).json({ success: false, error: error.message });
     }
 });
@@ -1108,25 +1109,26 @@ app.post('/api/nouvelle-demande-demo', async (req, res) => {
             qualification += `🪑 Couverts: ${d.seats || 0}\n📍 Zones: ${d.zones || 'N/A'}\n`;
         }
 
-        // 📡 ENVOI DE L'ALERTE WHATSAPP DIRECTEUR (TWILIO)
+        // 📡 ENVOI DE L'ALERTE SMS DIRECTEUR (TWILIO)
         if (twilioClient) {
             try {
-                const envTwilioNum = twilioPhoneNumber || '';
-                const fromNumber = `whatsapp:${envTwilioNum.replace('whatsapp:', '')}`;
-                const toNumber = `whatsapp:${NUMERO_FLAVIEN.replace('whatsapp:', '')}`;
+                const envTwilioNum = process.env.TWILIO_PHONE_NUMBER || '';
+                // 🛑 On enlève "whatsapp:"
+                const fromNumber = envTwilioNum.replace('whatsapp:', '');
+                const toNumber = '+33641437265';
 
                 await twilioClient.messages.create({
                     body: `🔥 NOUVEAU PARTENAIRE QUALIFIÉ : ${restaurant}\n📞 Tél: ${phone}\n🆔 TenantID: ${tenantID}\n\n📊 INFOS PROFIL :\n${qualification}\n🎯 PROJET: ${d.projet || 'Aucun'}`,
                     from: fromNumber,
                     to: toNumber
                 });
-                console.log(`✅ Alerte WhatsApp envoyée.`);
-            } catch (whatsappErr) {
-                console.error("❌ Erreur Twilio WhatsApp :", JSON.stringify(whatsappErr, null, 2));
+                console.log(`✅ Alerte SMS envoyée.`);
+            } catch (smsErr) {
+                console.error("❌ Erreur Twilio SMS :", JSON.stringify(smsErr, null, 2));
             }
         }
 
-        // ✨ WHATSAPP DU CLIENT (Moteur d'Onboarding VIP) ✨
+        // ✨ SMS DU CLIENT (Moteur d'Onboarding VIP) ✨
         if (twilioClient && phone) {
             try {
                 let clientPhone = phone.trim().replace(/\s+/g, '');
@@ -1134,19 +1136,88 @@ app.post('/api/nouvelle-demande-demo', async (req, res) => {
                     clientPhone = '+33' + clientPhone.substring(1);
                 }
 
-                const envTwilioNum = twilioPhoneNumber || '';
-                const fromNumber = `whatsapp:${envTwilioNum.replace('whatsapp:', '')}`;
+                const envTwilioNum = process.env.TWILIO_PHONE_NUMBER || '';
+                // 🛑 On enlève "whatsapp:"
+                const fromNumber = envTwilioNum.replace('whatsapp:', '');
 
                 await twilioClient.messages.create({
                     body: `✨ Bienvenue chez iCHEF OS, ${restaurant} !\n\nVotre écosystème sur-mesure est en cours de préparation par notre équipe.\n\n🔑 VOS ACCÈS PROVISOIRES :\n🆔 Identifiant : ${tenantID}\n🔒 Code PIN : ${codePinAlea}\n\nUn expert va vous contacter sous 24h.\nL'équipe iCHEF.`,
                     from: fromNumber,
-                    to: `whatsapp:${clientPhone}`
+                    to: clientPhone // SMS Normal
                 });
-                console.log(`✅ WhatsApp de bienvenue envoyé au partenaire : ${clientPhone}`);
+                console.log(`✅ SMS de bienvenue envoyé au partenaire : ${clientPhone}`);
             } catch (err) {
-                console.error("❌ Erreur d'envoi WhatsApp au client :", JSON.stringify(err, null, 2));
+                console.error("❌ Erreur d'envoi SMS au client :", JSON.stringify(err, null, 2));
             }
         }
+
+        // 🚨 ENVOI SILENCIEUX DE L'EMAIL DE NOTIFICATION (FORMSUBMIT)
+        try {
+            const urlEmail = "https://formsubmit.co/ajax/iche.flavien@ichef.ch";
+            const payload = {
+                _subject: `🚨 iCHEF OS : Nouveau Lead Qualifié - ${restaurant}`,
+                "Établissement": restaurant,
+                "Téléphone": phone,
+                "Email du gérant": email,
+                "Identifiant Généré (ID)": tenantID,
+                "Code PIN d'accès temporaire": codePinAlea,
+                "Qualification Profil": qualification,
+                "Projet / Besoin exprimé": d.projet || 'Aucun détail fourni',
+                "Statut": "Bloqué (En attente d'activation manuelle depuis votre panel Admin)",
+                _template: "box" 
+            };
+
+            fetch(urlEmail, {
+                method: "POST",
+                headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+                body: JSON.stringify(payload)
+            }).then(() => console.log("✅ Email d'alerte interne envoyé."))
+              .catch(err => console.log("❌ Erreur silencieuse email interne :", err));
+            
+        } catch (err) { console.error(err); }
+
+        // ✉️ ENVOI AUTOMATIQUE DE L'E-MAIL DE BIENVENUE AU PARTENAIRE
+        try {
+            const urlEmailClient = `https://formsubmit.co/ajax/${email}`; 
+            const clientPayload = {
+                _subject: "✨ Bienvenue dans l'élite iCHEF OS — Préparation de votre écosystème",
+                "Message de la Brigade iCHEF": `Bonjour, vous ne devenez pas un simple numéro ou un "client" de plus. Vous devenez un véritable Partenaire. 
+
+Étant nous-mêmes issus du monde de la restauration, nous connaissons la réalité du terrain : la pression du coup de feu, les serveurs débordés, et ces dizaines de commandes supplémentaires qui s'évaporent parce que les clients n'osent pas solliciter une équipe déjà à 200%.
+
+Votre espace privé est actuellement en cours de pré-génération sur nos serveurs sécurisés.
+
+VOS IDENTIFIANTS PROVISOIRES :
+🆔 ID Restaurant : ${tenantID}
+🔑 Code PIN Master : ${codePinAlea}
+
+PROCHAINES ÉTAPES :
+1. L'Appel de Synchronisation (Sous 24h) : Un expert de notre brigade va vous contacter sur ce numéro : ${phone}. Ce sera un appel court pour comprendre la topographie de vos espaces.
+2. Le Paramétrage Sur-Mesure : Nous configurons votre carte, le Mode Anti-Rush et les options de Time-Shifting.
+3. Le Déploiement : Vous recevrez vos puces NFC haut de gamme, prêtes à poser.
+
+Préparez-vous à vivre votre premier service sans stress.
+
+Flavien Iché & l'équipe iCHEF`,
+                _template: "box"
+            };
+
+            fetch(urlEmailClient, {
+                method: "POST",
+                headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+                body: JSON.stringify(clientPayload)
+            }).then(() => console.log(`✉️ Mail de bienvenue envoyé à ${email}`))
+              .catch(err => console.error("❌ Erreur mail client :", err));
+
+        } catch (mailClientErr) { console.error("Erreur envoi mail client:", mailClientErr); }
+
+        res.json({ success: true, message: "Demande enregistrée avec succès. Workflow déclenché." });
+
+    } catch (e) {
+        console.error("Erreur création prospect :", e);
+        res.status(500).json({ success: false, error: "Cet identifiant d'établissement existe déjà." });
+    }
+});
 
         // 🚨 ENVOI SILENCIEUX DE L'EMAIL DE NOTIFICATION (FORMSUBMIT)
         try {
