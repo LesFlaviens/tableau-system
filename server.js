@@ -712,7 +712,7 @@ app.post('/api/twilio/call-me', async (req, res) => {
             service: 'gmail',
             auth: {
                 user: 'flavieniche@gmail.com', // 👈 REMPLACE PAR TON ADRESSE GMAIL
-                pass: 'jovbwjpbnjtovktc' // 👈 Ton code Google sans espaces
+                pass: 'nakdnjxhyjjemeef' // 👈 Ton code Google sans espaces
             }
         });
 
