@@ -23,12 +23,25 @@ const stripeKey = process.env.STRIPE_SECRET_KEY || 'sk_test_51TN80JQ9Dw3nOfA4I3X
 const stripe = require('stripe')(stripeKey);
 
 // ==========================================
-// CONFIGURATION TWILIO (NOTIFICATIONS DIRECTEUR & CLIENT)
+// CONFIGURATION TWILIO UNIQUE & GLOBALE
 // ==========================================
 const twilioAccountSid = process.env.TWILIO_ACCOUNT_SID;
 const twilioAuthToken = process.env.TWILIO_AUTH_TOKEN;
-const twilioClient = (twilioAccountSid && twilioAuthToken) ? twilio(twilioAccountSid, twilioAuthToken) : null;
+const twilioPhoneNumber = process.env.TWILIO_PHONE_NUMBER;
 const NUMERO_FLAVIEN = '+33641437265'; // Cible des alertes critiques
+
+let twilioClient = null;
+
+if (twilioAccountSid && twilioAuthToken) {
+    try {
+        twilioClient = twilio(twilioAccountSid, twilioAuthToken);
+        console.log("✅ Module Twilio activé et connecté !");
+    } catch (err) {
+        console.error("❌ Erreur d'initialisation Twilio :", err.message);
+    }
+} else {
+    console.warn("⚠️ Twilio DÉSACTIVÉ : Les variables d'environnement (SID ou Token) sont manquantes.");
+}
 
 const app = express();
 const server = http.createServer(app); // Serveur HTTP lié à Express
@@ -42,14 +55,13 @@ const PORT = process.env.PORT || 10000;
 // SÉCURITÉ MAÎTRE DE L'EMPIRE (Super Admin)
 const ADMIN_PASS = process.env.ADMIN_PASS || 'Empire2026';
 
-// Sécurité des requêtes (CORS) - CONFIGURATION DYNAMIQUE POUR ACCEPTER LES COOKIES ET LES BADGES
+// Sécurité des requêtes (CORS)
 app.use(cors({
     origin: function (origin, callback) {
         callback(null, true);
     },
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-    // 🚨 CORRECTION ICI : Ajout du badge 'X-iCHEF-Tenant' à la liste des invités 🚨
     allowedHeaders: ['Content-Type', 'Authorization', 'Origin', 'Accept', 'X-CSRF-Token', 'X-iCHEF-Device', 'X-iCHEF-Master-Device', 'X-iCHEF-Tenant', 'Idempotency-Key']
 }));
 
@@ -74,6 +86,7 @@ app.get('/panel-ichef', (req, res) => {
         res.status(403).send('🛑 Accès Refusé. Sécurité Empire iCHEF.');
     }
 });
+
 // =========================================================================
 // 🥇 MOTEUR IA 3 : RENTABILITÉ & FOOD-COST (INGÉNIERIE DE MENU)
 // =========================================================================
@@ -88,17 +101,15 @@ app.post('/api/ai-profitability', async (req, res) => {
 
         let allItems = [];
 
-        // Fonction mathématique pour estimer le coût si le restaurateur n'a pas encore saisi ses fiches techniques
         const estimateCost = (name, price) => {
             const txt = name.toLowerCase();
-            if (/vin|champagne|cocktail|bi[eè]re/.test(txt)) return price * 0.25; // 25% de coût matière
+            if (/vin|champagne|cocktail|bi[eè]re/.test(txt)) return price * 0.25; 
             if (/dessert|patisserie|café/.test(txt)) return price * 0.28;
-            if (/plat|burger|viande|poisson/.test(txt)) return price * 0.35; // 35% de coût matière
-            if (/pizza|pâte|pasta/.test(txt)) return price * 0.20; // Super marge
+            if (/plat|burger|viande|poisson/.test(txt)) return price * 0.35; 
+            if (/pizza|pâte|pasta/.test(txt)) return price * 0.20; 
             return price * 0.30;
         };
 
-        // Rassembler tous les articles de la carte
         Object.values(menuCuisine).forEach(arr => allItems.push(...arr));
         Object.values(menuBar).forEach(arr => allItems.push(...arr));
 
@@ -114,10 +125,8 @@ app.post('/api/ai-profitability', async (req, res) => {
             });
         }
 
-        // Calcul des marges pour chaque plat
         let platsAvecMarge = allItems.map(item => {
             let prix = parseFloat(item.price || 0);
-            // On utilise le coût réel s'il est renseigné, sinon l'estimation de l'IA
             let cout = parseFloat(item.cost || 0) || estimateCost(item.name, prix);
             let marge = prix - cout;
             let pourcentage = prix > 0 ? (marge / prix) * 100 : 0;
@@ -131,13 +140,11 @@ app.post('/api/ai-profitability', async (req, res) => {
             };
         }).filter(p => p.prix > 0);
 
-        // Tri par marge absolue (du plat qui rapporte le + d'argent au plat qui rapporte le -)
         platsAvecMarge.sort((a, b) => b.marge - a.marge);
 
         let topPlat = platsAvecMarge[0];
         let pirePlat = platsAvecMarge[platsAvecMarge.length - 1];
 
-        // Calcul de la marge moyenne globale du restaurant
         let margeTotale = platsAvecMarge.reduce((sum, p) => sum + p.pourcentage, 0);
         let margeMoyenne = (margeTotale / platsAvecMarge.length).toFixed(1);
 
@@ -172,6 +179,7 @@ app.post('/api/ai-profitability', async (req, res) => {
         res.status(500).json({ success: false, error: "Erreur serveur IA." });
     }
 });
+
 // =========================================================================
 // 🤖 MOTEUR IA 2 : PRÉVISION DES RÉSERVATIONS ET DU SERVICE
 // =========================================================================
@@ -183,24 +191,17 @@ app.post('/api/ai-reservation-forecast', async (req, res) => {
             return res.status(400).json({ success: false, error: "ID Restaurant manquant" });
         }
 
-        // On récupère les données en direct du restaurant
         const tenantData = global.tenantsData && global.tenantsData[tenantID] 
                             ? global.tenantsData[tenantID] 
                             : {};
 
         const reservations = tenantData['RESERVATIONS_MASTER']?.data || [];
-        
-        // 1. Calcul du nombre de couverts prévus pour aujourd'hui
         let couvertsAujourdhui = 0;
-        
-        // On récupère la date du jour (format YYYY-MM-DD)
-        // Attention au fuseau horaire de la France/Suisse
         const now = new Date();
         const offset = now.getTimezoneOffset() * 60000;
         const todayStr = new Date(now.getTime() - offset).toISOString().split('T')[0];
 
         reservations.forEach(res => {
-            // On compte les réservations du jour qui ne sont pas annulées
             if (!res.date || res.date === todayStr) {
                 if (res.status !== 'cancelled' && res.status !== 'annulé') {
                     couvertsAujourdhui += parseInt(res.couverts || res.pax || 0);
@@ -208,7 +209,6 @@ app.post('/api/ai-reservation-forecast', async (req, res) => {
             }
         });
 
-        // 2. L'Intelligence Artificielle génère ses conseils en fonction des couverts
         let tendance = "Calme";
         let alerteActive = false;
         let alerteMessage = "";
@@ -240,7 +240,6 @@ app.post('/api/ai-reservation-forecast', async (req, res) => {
             ];
         } else {
             tendance = "Très Intense (Rush)";
-            // Estimation mathématique rapide (1 serveur pour 20 pax, 1 cuisto pour 25 pax)
             staffSalle = Math.ceil(couvertsAujourdhui / 20);
             staffCuisine = Math.ceil(couvertsAujourdhui / 25);
             alerteActive = true;
@@ -252,11 +251,9 @@ app.post('/api/ai-reservation-forecast', async (req, res) => {
             ];
         }
 
-        // 3. Estimation financière (Ici on utilise un ticket moyen théorique de 32€ si pas d'historique)
         const ticketMoyenEstimatif = 32.50;
         const caEstime = (couvertsAujourdhui * ticketMoyenEstimatif).toFixed(2);
 
-        // 4. Constitution de la réponse finale
         const forecast = {
             couverts: couvertsAujourdhui,
             tendance: tendance,
@@ -285,9 +282,6 @@ app.post('/api/ai-business-pulse', async (req, res) => {
             return res.status(400).json({ success: false, error: "ID Restaurant manquant" });
         }
 
-        // 1. On va chercher les données stockées dans ton serveur Redis/Local
-        // Si tu utilises Redis : const tenantDataStr = await redisClient.get(`tenant:${tenantID}`);
-        // Pour l'instant, on lit directement la variable en mémoire du serveur (state)
         const tenantData = global.tenantsData && global.tenantsData[tenantID] 
                             ? global.tenantsData[tenantID] 
                             : {};
@@ -297,7 +291,6 @@ app.post('/api/ai-business-pulse', async (req, res) => {
 
         let analyseIA = {};
 
-        // 2. Si le restaurant est vide (pas de ventes)
         if (!archiveCaisse || archiveCaisse.length === 0) {
             analyseIA = {
                 previsionVentes: "📊 Prévisions en pause : L'IA a besoin de vos premières ventes pour calculer une tendance fiable.",
@@ -310,7 +303,6 @@ app.post('/api/ai-business-pulse', async (req, res) => {
                 ]
             };
         } else {
-            // 3. Quand il y a des ventes, l'IA simule l'analyse
             analyseIA = {
                 previsionVentes: "📈 L'algorithme analyse vos ventes en cours...",
                 analyseCA: "💰 Calcul du panier moyen en fonction de vos vrais tickets...",
@@ -327,6 +319,7 @@ app.post('/api/ai-business-pulse', async (req, res) => {
         res.status(500).json({ success: false, error: "Erreur serveur lors de l'analyse." });
     }
 });
+
 // ==========================================
 // WEBHOOK STRIPE : SÉCURITÉ ANTI-IMPAYÉS & UPSELL 
 // ==========================================
@@ -421,54 +414,36 @@ const AppState = mongoose.model('AppState', new mongoose.Schema({
 // ==========================================
 // 🛡️ SÉCURITÉ FISCALE & LÉGALE (NORME ANTI-FRAUDE)
 // ==========================================
-
-// 1. Schéma du Grand Livre Inaltérable (Audit Trail)
 const auditLogSchema = new mongoose.Schema({
     tenantID: { type: String, required: true, index: true },
     timestamp: { type: Date, default: Date.now },
-    action: { type: String, required: true }, // CREATE, UPDATE, CANCEL, DELETE_SOFT
-    entityType: { type: String, required: true }, // COMMANDE, RH, REGLAGE
+    action: { type: String, required: true },
+    entityType: { type: String, required: true },
     entityId: { type: String, required: true },
-    authorPin: { type: String, required: true }, // Qui a fait l'action
-    details: { type: Object }, // Ce qui a changé (Avant/Après)
-    previousHash: { type: String, required: true }, // Chaînage avec l'action précédente
-    currentHash: { type: String, required: true }   // Signature cryptographique
+    authorPin: { type: String, required: true },
+    details: { type: Object },
+    previousHash: { type: String, required: true },
+    currentHash: { type: String, required: true }  
 });
 const AuditLog = mongoose.model('AuditLog', auditLogSchema);
 
-// 2. Fonction de Scellement Cryptographique (Façon Blockchain)
 async function scellerOperation(tenantID, action, entityType, entityId, authorPin, details) {
     try {
         const safeID = cleanString(tenantID);
-        // Récupérer la dernière opération pour la chaîner
         const lastLog = await AuditLog.findOne({ tenantID: safeID }).sort({ timestamp: -1 });
         const previousHash = lastLog ? lastLog.currentHash : 'GENESIS_BLOCK_0000000000000000';
 
-        // Créer l'empreinte de la nouvelle donnée
         const dataString = JSON.stringify({ tenantID: safeID, action, entityType, entityId, authorPin, details, previousHash });
-        
-        // Chiffrement SHA-256 (Standard bancaire)
         const currentHash = crypto.createHash('sha256').update(dataString).digest('hex');
 
-        // Archiver la donnée
         await AuditLog.create({
-            tenantID: safeID,
-            action,
-            entityType,
-            entityId,
-            authorPin,
-            details,
-            previousHash,
-            currentHash
+            tenantID: safeID, action, entityType, entityId, authorPin, details, previousHash, currentHash
         });
         
         console.log(`🔒 Opération scellée [${action}] pour ${safeID} (Hash: ${currentHash.substring(0,8)}...)`);
-    } catch (error) {
-        console.error("🚨 ERREUR CRITIQUE DE SCELLÉ CRYPTOGRAPHIQUE :", error);
-    }
+    } catch (error) { console.error("🚨 ERREUR CRITIQUE DE SCELLÉ CRYPTOGRAPHIQUE :", error); }
 }
 
-// 3. API d'Export des Preuves Légales (Accès Master uniquement)
 app.get('/api/export-preuves-legales', async (req, res) => {
     const { tenantID, masterPin } = req.query;
     const safeID = cleanString(tenantID);
@@ -481,7 +456,6 @@ app.get('/api/export-preuves-legales', async (req, res) => {
 
         const logs = await AuditLog.find({ tenantID: safeID }).sort({ timestamp: 1 });
         
-        // Vérification de l'intégrité de la chaîne
         let isChainValid = true;
         let brokenAtIndex = null;
         
@@ -505,11 +479,8 @@ app.get('/api/export-preuves-legales', async (req, res) => {
             journal: logs
         });
 
-    } catch (error) {
-        res.status(500).json({ error: "Erreur lors de l'export d'audit." });
-    }
+    } catch (error) { res.status(500).json({ error: "Erreur lors de l'export d'audit." }); }
 });
-
 
 // ==========================================
 // 🤖 MOTEURS IA (GEMINI)
@@ -550,76 +521,6 @@ app.post('/analyse-ticket', async (req, res) => {
         
         res.json({ success: true, resultat: JSON.parse(text) });
     } catch (error) { res.status(500).json({ success: false, error: error.message }); }
-});
-
-// ==========================================
-// 🧠 MOTEUR DE PRÉVISION & AUDIT COMMERCIAL IA
-// ==========================================
-app.post('/api/ai-business-pulse', async (req, res) => {
-    const { tenantID, masterPin } = req.body;
-    const safeID = cleanString(tenantID);
-
-    try {
-        const tenant = await Tenant.findOne({ tenantID: safeID });
-        if (!tenant || tenant.pin !== masterPin) {
-            return res.status(403).json({ success: false, error: "Sécurité Empire : PIN invalide." });
-        }
-
-        let state = await AppState.findOne({ tenantID: safeID });
-        let financialHistory = state?.activeOrders?.FINANCIAL_HISTORY?.data || [];
-        let trafficHistory = state?.activeOrders?.TRAFFIC_HISTORY?.data || [];
-        
-        let salesSample = financialHistory.slice(0, 50);
-        let trafficSample = trafficHistory.slice(0, 50);
-
-        const prompt = `Tu es l'expert en Yield Management et Auditeur Financier d'iCHEF OS.
-        Analyse les données réelles de cet établissement :
-        - Historique Récent des Ventes (CA & Plats) : ${JSON.stringify(salesSample)}
-        - Historique de Fréquentation (Couverts/Pax) : ${JSON.stringify(trafficSample)}
-        - Plan Actuel du Restaurant : ${tenant.plan}
-        - Date et heure du jour : ${new Date().toLocaleString('fr-FR')}
-
-        MISSION : Génère des prévisions et des analyses basées sur ces chiffres.
-        Sois extrêmement percutant, utilise des phrases courtes et incisives (style tableau de bord de direction).
-        
-        Tu DOIS répondre UNIQUE AVEC CE JSON STRICT (SANS ENROBAGE MARKDOWN, SANS BLABLA) :
-        {
-            "previsionVentes": "📈 Demain : XX couverts prévus basés sur les tendances.",
-            "analyseCA": "📊 Chiffre d'affaires stable/en baisse. Les créneaux du [Jour] entre [Heure] et [Heure] sont les plus performants.",
-            "analyseMarges": "⚠️ Votre marge baisse/progresse à cause de [Raison précise liée aux plats ou catégories].",
-            "recommandations": [
-                "💰 Augmentez le [Nom d'un plat populaire] de [X] € pour optimiser la marge.",
-                "🎯 Mettez en avant [Nom d'un plat à forte marge] via le Menu Caméléon pour booster le ticket moyen.",
-                "👥 Ajustez le staff : période creuse détectée le [Jour] midi."
-            ]
-        }`;
-
-        const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
-        const result = await model.generateContent(prompt);
-        
-        let responseText = result.response.text().trim();
-        const ticks = String.fromCharCode(96, 96, 96);
-        responseText = responseText.split(ticks + 'json').join('').split(ticks).join('').trim();
-        if (!responseText.startsWith("{")) responseText = responseText.substring(responseText.indexOf("{"));
-        
-        res.json({ success: true, pulse: JSON.parse(responseText) });
-
-    } catch (error) {
-        console.error("🚨 Erreur Moteur Pulse IA :", error);
-        res.json({ 
-            success: true, 
-            pulse: {
-                previsionVentes: "📈 Demain : 145 couverts prévus (Calcul basé sur la moyenne de la saison)",
-                analyseCA: "📊 Volume d'affaires en progression constante sur les services du soir.",
-                analyseMarges: "⚠️ Marge brute sous surveillance. Attention au coût des matières premières sur les viandes.",
-                recommandations: [
-                    "💰 Augmentez le Burger de 1.00 € (Popularité forte, marge améliorable).",
-                    "🎯 Poussez les suggestions du chef en début de service.",
-                    "⚡ Activez le Time-Shifting automatique dès 20h00."
-                ]
-            }
-        });
-    }
 });
 
 // ==========================================
@@ -796,6 +697,90 @@ app.post('/api/smart-reservation', async (req, res) => {
     } catch (error) { 
         console.error("Erreur Smart-Reservation:", error);
         res.status(500).json({ success: false, error: "L'IA du Maître d'Hôtel est momentanément indisponible." }); 
+    }
+});
+
+// ==========================================
+// 📱 INTÉGRATION TWILIO (SMS CLIENTS & ALERTES)
+// ==========================================
+// Route API pour déclencher l'envoi d'un SMS
+app.post('/api/send-sms', async (req, res) => {
+    try {
+        const { to, message, tenantID } = req.body;
+
+        if (!twilioClient) {
+            return res.status(500).json({ success: false, error: "Twilio n'est pas configuré sur le serveur cloud." });
+        }
+
+        if (!to || !message) {
+            return res.status(400).json({ success: false, error: "Le numéro de téléphone ou le message est manquant." });
+        }
+
+        // Formatage du numéro (Twilio exige le format international)
+        let formattedPhone = to.trim().replace(/\s+/g, '');
+        if (formattedPhone.startsWith('0')) {
+            formattedPhone = '+33' + formattedPhone.substring(1); 
+        } else if (!formattedPhone.startsWith('+')) {
+            formattedPhone = '+' + formattedPhone;
+        }
+
+        console.log(`📩 Tentative d'envoi d'un SMS à ${formattedPhone}...`);
+
+        const response = await twilioClient.messages.create({
+            body: message,
+            from: twilioPhoneNumber,
+            to: formattedPhone
+        });
+
+        console.log("✅ SMS envoyé avec succès, SID:", response.sid);
+        res.json({ success: true, sid: response.sid, message: "SMS envoyé !" });
+
+    } catch (error) {
+        console.error("❌ Erreur d'envoi Twilio :", error.message);
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+
+// ==========================================
+// 📞 API TWILIO : DEMANDE DE RAPPEL (Bouton site web)
+// ==========================================
+app.post('/api/twilio/call-me', async (req, res) => {
+    const { phone } = req.body;
+    
+    if (!twilioClient) {
+        console.error("Erreur : twilioClient n'est pas initialisé.");
+        return res.status(500).json({ success: false, error: "Twilio non configuré." });
+    }
+
+    try {
+        const envTwilioNum = process.env.TWILIO_PHONE_NUMBER || '+14155238886';
+        const fromNumber = `whatsapp:${envTwilioNum.replace('whatsapp:', '')}`;
+
+        // 1. Alerte WhatsApp envoyée à TOI (Flavien) pour te prévenir
+        await twilioClient.messages.create({
+            body: `🚨 DEMANDE DE RAPPEL URGENT 🚨\nUn prospect sur le site demande à être rappelé immédiatement sur ce numéro :\n📞 ${phone}`,
+            from: fromNumber,
+            to: `whatsapp:${NUMERO_FLAVIEN.replace('whatsapp:', '')}`
+        });
+
+        // 2. Message WhatsApp de confirmation envoyé au CLIENT
+        let clientPhone = phone.trim().replace(/\s+/g, '');
+        if (clientPhone.startsWith('0')) {
+            clientPhone = '+33' + clientPhone.substring(1);
+        }
+
+        await twilioClient.messages.create({
+            body: `✅ iCHEF OS : Votre demande de rappel a bien été reçue. Notre équipe a été alertée et va vous contacter sur ce numéro d'ici quelques instants.`,
+            from: fromNumber,
+            to: `whatsapp:${clientPhone}`
+        });
+
+        console.log(`Demande de rappel traitée avec succès pour le numéro : ${phone}`);
+        res.json({ success: true, message: "Demande traitée avec succès." });
+
+    } catch (error) {
+        console.error("❌ Erreur Twilio Rappel :", error.message);
+        res.status(500).json({ success: false, error: error.message });
     }
 });
 
@@ -1126,7 +1111,7 @@ app.post('/api/nouvelle-demande-demo', async (req, res) => {
         // 📡 ENVOI DE L'ALERTE WHATSAPP DIRECTEUR (TWILIO)
         if (twilioClient) {
             try {
-                const envTwilioNum = process.env.TWILIO_PHONE_NUMBER || '';
+                const envTwilioNum = twilioPhoneNumber || '';
                 const fromNumber = `whatsapp:${envTwilioNum.replace('whatsapp:', '')}`;
                 const toNumber = `whatsapp:${NUMERO_FLAVIEN.replace('whatsapp:', '')}`;
 
@@ -1149,7 +1134,7 @@ app.post('/api/nouvelle-demande-demo', async (req, res) => {
                     clientPhone = '+33' + clientPhone.substring(1);
                 }
 
-                const envTwilioNum = process.env.TWILIO_PHONE_NUMBER || '';
+                const envTwilioNum = twilioPhoneNumber || '';
                 const fromNumber = `whatsapp:${envTwilioNum.replace('whatsapp:', '')}`;
 
                 await twilioClient.messages.create({
@@ -1228,110 +1213,6 @@ Flavien Iché & l'équipe iCHEF`,
     } catch (e) {
         console.error("Erreur création prospect :", e);
         res.status(500).json({ success: false, error: "Cet identifiant d'établissement existe déjà." });
-    }
-});
-// =========================================================================
-// 📱 INTÉGRATION TWILIO (SMS CLIENTS & ALERTES)
-// =========================================================================
-const twilio = require('twilio');
-
-// Récupération des clés depuis l'environnement Render
-const TWILIO_ACCOUNT_SID = process.env.TWILIO_ACCOUNT_SID;
-const TWILIO_AUTH_TOKEN = process.env.TWILIO_AUTH_TOKEN;
-const TWILIO_PHONE_NUMBER = process.env.TWILIO_PHONE_NUMBER;
-
-let twilioClient = null;
-
-// Initialisation sécurisée
-if (TWILIO_ACCOUNT_SID && TWILIO_AUTH_TOKEN) {
-    try {
-        twilioClient = twilio(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN);
-        console.log("✅ Module Twilio activé et connecté !");
-    } catch (err) {
-        console.error("❌ Erreur d'initialisation Twilio :", err.message);
-    }
-} else {
-    console.warn("⚠️ Twilio DÉSACTIVÉ : Les variables d'environnement (SID ou Token) sont manquantes.");
-}
-
-// Route API pour déclencher l'envoi d'un SMS
-app.post('/api/send-sms', async (req, res) => {
-    try {
-        const { to, message, tenantID } = req.body;
-
-        if (!twilioClient) {
-            return res.status(500).json({ success: false, error: "Twilio n'est pas configuré sur le serveur cloud." });
-        }
-
-        if (!to || !message) {
-            return res.status(400).json({ success: false, error: "Le numéro de téléphone ou le message est manquant." });
-        }
-
-        // Formatage du numéro (Twilio exige le format international, ex: +33612345678)
-        let formattedPhone = to.trim().replace(/\s+/g, '');
-        if (formattedPhone.startsWith('0')) {
-            // Par défaut on passe en +33 (France), à adapter si tu es en Suisse (+41)
-            formattedPhone = '+33' + formattedPhone.substring(1); 
-        } else if (!formattedPhone.startsWith('+')) {
-            formattedPhone = '+' + formattedPhone;
-        }
-
-        console.log(`📩 Tentative d'envoi d'un SMS à ${formattedPhone}...`);
-
-        const response = await twilioClient.messages.create({
-            body: message,
-            from: TWILIO_PHONE_NUMBER,
-            to: formattedPhone
-        });
-
-        console.log("✅ SMS envoyé avec succès, SID:", response.sid);
-        res.json({ success: true, sid: response.sid, message: "SMS envoyé !" });
-
-    } catch (error) {
-        console.error("❌ Erreur d'envoi Twilio :", error.message);
-        res.status(500).json({ success: false, error: error.message });
-    }
-});
-// ==========================================
-// 📞 API TWILIO : DEMANDE DE RAPPEL (Bouton site web)
-// ==========================================
-app.post('/api/twilio/call-me', async (req, res) => {
-    const { phone } = req.body;
-    
-    if (!twilioClient) {
-        console.error("Erreur : twilioClient n'est pas initialisé.");
-        return res.status(500).json({ success: false, error: "Twilio non configuré." });
-    }
-
-    try {
-        const envTwilioNum = process.env.TWILIO_PHONE_NUMBER || '+14155238886';
-        const fromNumber = `whatsapp:${envTwilioNum.replace('whatsapp:', '')}`;
-
-        // 1. Alerte WhatsApp envoyée à TOI (Flavien) pour te prévenir
-        await twilioClient.messages.create({
-            body: `🚨 DEMANDE DE RAPPEL URGENT 🚨\nUn prospect sur le site demande à être rappelé immédiatement sur ce numéro :\n📞 ${phone}`,
-            from: fromNumber,
-            to: `whatsapp:${NUMERO_FLAVIEN.replace('whatsapp:', '')}`
-        });
-
-        // 2. Message WhatsApp de confirmation envoyé au CLIENT
-        let clientPhone = phone.trim().replace(/\s+/g, '');
-        if (clientPhone.startsWith('0')) {
-            clientPhone = '+33' + clientPhone.substring(1);
-        }
-
-        await twilioClient.messages.create({
-            body: `✅ iCHEF OS : Votre demande de rappel a bien été reçue. Notre équipe a été alertée et va vous contacter sur ce numéro d'ici quelques instants.`,
-            from: fromNumber,
-            to: `whatsapp:${clientPhone}`
-        });
-
-        console.log(`Demande de rappel traitée avec succès pour le numéro : ${phone}`);
-        res.json({ success: true, message: "Demande traitée avec succès." });
-
-    } catch (error) {
-        console.error("❌ Erreur Twilio Rappel :", error.message);
-        res.status(500).json({ success: false, error: error.message });
     }
 });
 
