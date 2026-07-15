@@ -542,33 +542,99 @@ app.post('/api/ai-executive-report', async (req, res) => {
         - Chiffres financiers : ${JSON.stringify(financialStats || 'Non spécifié')}
 
         Ta mission est de fournir un rapport exécutif ultra-précis. 
-        RÉPONDS UNIQUEMENT AVEC CE JSON STRICT (SANS MARKDOWN, SANS TEXTE AUTOUR) :
+        RÉPONDS UNIQUEMENT AVEC CE JSON STRICT (SANS AUCUN TEXTE AUTOUR, AUCUNE BALISE MARKDOWN) :
         {
-            "previsionVentes": "Explication courte des tendances de ventes pour les 7 prochains jours.",
-            "alertesRupture": ["Produit A (reste 2 jours)", "Produit B (critique)"],
+            "previsionVentes": "Explication courte.",
+            "alertesRupture": ["Produit A", "Produit B"],
             "commandesFournisseurs": [
-                { "fournisseur": "Nom", "articles": ["10kg Tomates", "5L Huile"] }
+                { "fournisseur": "Nom", "articles": ["10kg Tomates"] }
             ],
-            "detectionAnomalies": "Explication si des pertes, du coulage ou des annulations suspectes sont détectées.",
-            "recommandationMenu": ["Plat X (Grosse marge, à pousser)", "Plat Y (Populaire, à garder)"],
-            "analyseMarge": "Explication claire de la baisse/hausse de la marge et du chiffre d'affaires, avec 1 conseil d'action."
+            "detectionAnomalies": "Explication courte.",
+            "recommandationMenu": ["Plat X"],
+            "analyseMarge": "Explication claire."
         }`;
 
-        const model = genAI.getGenerativeModel({ model: "gemini-1.5-pro" }); 
+        const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
         const result = await model.generateContent(prompt);
+        let responseText = result.response.text();
         
-        let responseText = result.response.text().trim();
-        const ticks = String.fromCharCode(96, 96, 96);
-        responseText = responseText.split(ticks + 'json').join('').split(ticks).join('').trim();
-        if (!responseText.startsWith("{")) responseText = responseText.substring(responseText.indexOf("{"));
+        // --- LE NETTOYAGE INDESTRUCTIBLE ---
+        // 1. On enlève les balises markdown que l'IA rajoute souvent
+        responseText = responseText.replace(/```json/gi, "").replace(/```/g, "");
+        // 2. On enlève les espaces vides au début et à la fin
+        responseText = responseText.trim();
+        // 3. On repère la vraie première et dernière accolade du JSON
+        const firstBrace = responseText.indexOf('{');
+        const lastBrace = responseText.lastIndexOf('}');
+        
+        // 4. Si on a trouvé un JSON, on découpe exactement à cet endroit
+        if (firstBrace !== -1 && lastBrace !== -1 && lastBrace >= firstBrace) {
+            responseText = responseText.substring(firstBrace, lastBrace + 1);
+        } else {
+            throw new Error("Impossible de trouver un format JSON dans la réponse de l'IA.");
+        }
         
         res.json({ success: true, report: JSON.parse(responseText) });
     } catch (error) {
-        console.error("Erreur IA Executive Report:", error);
+        console.error("🚨 Erreur IA Executive Report:", error);
+        res.status(500).json({ success: false, error: "L'analyse IA est momentanément indisponible." });
+    }
+});// ==========================================
+// 🧠 IA DIRECTEUR OPÉRATIONNEL & FINANCIER (VISION 360°)
+// ==========================================
+app.post('/api/ai-executive-report', async (req, res) => {
+    const { tenantID, currentStock, recentSales, financialStats } = req.body;
+    const safeID = cleanString(tenantID);
+
+    try {
+        let state = await AppState.findOne({ tenantID: safeID });
+        let history = state?.activeOrders?.TRAFFIC_HISTORY?.data || [];
+        
+        const prompt = `Tu es l'IA "Directeur Financier et Supply Chain" d'iCHEF OS.
+        Analyse les données du restaurant suivantes :
+        - Ventes récentes : ${JSON.stringify(recentSales || history.slice(0, 30))}
+        - Stocks actuels : ${JSON.stringify(currentStock || 'Non spécifié')}
+        - Chiffres financiers : ${JSON.stringify(financialStats || 'Non spécifié')}
+
+        Ta mission est de fournir un rapport exécutif ultra-précis. 
+        RÉPONDS UNIQUEMENT AVEC CE JSON STRICT (SANS AUCUN TEXTE AUTOUR, AUCUNE BALISE MARKDOWN) :
+        {
+            "previsionVentes": "Explication courte.",
+            "alertesRupture": ["Produit A", "Produit B"],
+            "commandesFournisseurs": [
+                { "fournisseur": "Nom", "articles": ["10kg Tomates"] }
+            ],
+            "detectionAnomalies": "Explication courte.",
+            "recommandationMenu": ["Plat X"],
+            "analyseMarge": "Explication claire."
+        }`;
+
+        const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+        const result = await model.generateContent(prompt);
+        let responseText = result.response.text();
+        
+        // --- LE NETTOYAGE INDESTRUCTIBLE ---
+        // 1. On enlève les balises markdown que l'IA rajoute souvent
+        responseText = responseText.replace(/```json/gi, "").replace(/```/g, "");
+        // 2. On enlève les espaces vides au début et à la fin
+        responseText = responseText.trim();
+        // 3. On repère la vraie première et dernière accolade du JSON
+        const firstBrace = responseText.indexOf('{');
+        const lastBrace = responseText.lastIndexOf('}');
+        
+        // 4. Si on a trouvé un JSON, on découpe exactement à cet endroit
+        if (firstBrace !== -1 && lastBrace !== -1 && lastBrace >= firstBrace) {
+            responseText = responseText.substring(firstBrace, lastBrace + 1);
+        } else {
+            throw new Error("Impossible de trouver un format JSON dans la réponse de l'IA.");
+        }
+        
+        res.json({ success: true, report: JSON.parse(responseText) });
+    } catch (error) {
+        console.error("🚨 Erreur IA Executive Report:", error);
         res.status(500).json({ success: false, error: "L'analyse IA est momentanément indisponible." });
     }
 });
-
 // ==========================================
 // 🎙️ ASSISTANT VOCAL DU DIRECTEUR (CONVERSATION EN DIRECT)
 // ==========================================
