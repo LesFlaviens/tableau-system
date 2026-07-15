@@ -524,7 +524,68 @@ app.post('/analyse-ticket', async (req, res) => {
         res.json({ success: true, resultat: JSON.parse(text) });
     } catch (error) { res.status(500).json({ success: false, error: error.message }); }
 });
+// ==========================================
+// 🧠 IA DIRECTEUR OPÉRATIONNEL & FINANCIER (VISION 360°) - VERSION HTTP STABLE
+// ==========================================
+app.post('/api/ai-executive-report', async (req, res) => {
+    const { tenantID, currentStock, recentSales, financialStats } = req.body;
+    const safeID = cleanString(tenantID);
 
+    try {
+        let state = await AppState.findOne({ tenantID: safeID });
+        let history = state?.activeOrders?.TRAFFIC_HISTORY?.data || [];
+        
+        const prompt = `Tu es l'IA "Directeur Financier et Supply Chain" d'iCHEF OS.
+        Analyse les données du restaurant suivantes :
+        - Ventes récentes : ${JSON.stringify(recentSales || history.slice(0, 30))}
+        - Stocks actuels : ${JSON.stringify(currentStock || 'Non spécifié')}
+        - Chiffres financiers : ${JSON.stringify(financialStats || 'Non spécifié')}
+
+        Ta mission est de fournir un rapport exécutif ultra-précis. 
+        TU DOIS RÉPONDRE UNIQUEMENT ET STRICTEMENT AVEC LE JSON CI-DESSOUS. N'ÉCRIS RIEN AUTOUR.
+        {
+            "previsionVentes": "Explication courte.",
+            "alertesRupture": ["Alerte 1", "Alerte 2"],
+            "commandesFournisseurs": [
+                { "fournisseur": "Nom", "articles": ["10kg Tomates"] }
+            ],
+            "detectionAnomalies": "Explication courte.",
+            "recommandationMenu": ["Plat X"],
+            "analyseMarge": "Explication claire."
+        }`;
+
+        // 🚀 BY-PASS SDK : Appel direct à l'API Google en v1beta via fetch natif
+        const apiKey = process.env.GEMINI_API_KEY || 'CLE_MANQUANTE';
+        const aiResponse = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                contents: [{ parts: [{ text: prompt }] }]
+            })
+        });
+
+        const aiData = await aiResponse.json();
+        
+        if (!aiData.candidates || !aiData.candidates[0]?.content?.parts[0]?.text) {
+            throw new Error("L'API Google n'a pas renvoyé de structure valide. Vérifie tes variables d'environnement.");
+        }
+
+        let responseText = aiData.candidates[0].content.parts[0].text.trim();
+        responseText = responseText.replace(/```json/gi, "").replace(/```/g, "").trim();
+        
+        const firstBrace = responseText.indexOf('{');
+        const lastBrace = responseText.lastIndexOf('}');
+        if (firstBrace !== -1 && lastBrace !== -1) {
+            responseText = responseText.substring(firstBrace, lastBrace + 1);
+        }
+
+        res.json({ success: true, report: JSON.parse(responseText) });
+
+    } catch (error) {
+        console.error("🚨 Erreur IA Executive Report:", error.message);
+        res.status(500).json({ success: false, error: "L'analyse IA est momentanément indisponible." });
+    }
+});
 // ==========================================
 // 🎙️ ASSISTANT VOCAL DU DIRECTEUR (CONVERSATION EN DIRECT) - VERSION HTTP STABLE
 // ==========================================
