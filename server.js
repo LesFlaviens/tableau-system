@@ -529,46 +529,49 @@ app.post('/analyse-ticket', async (req, res) => {
 // ==========================================
 app.post('/api/ai-executive-report', async (req, res) => {
     const { tenantID, currentStock, recentSales, financialStats } = req.body;
-    const safeID = cleanString(tenantID);
 
     try {
-        let state = await AppState.findOne({ tenantID: safeID });
-        let history = state?.activeOrders?.TRAFFIC_HISTORY?.data || [];
+        // On utilise le modèle le plus standard et stable pour éviter les erreurs 404
+        const model = genAI.getGenerativeModel({ model: "gemini-pro" }); 
         
-        const prompt = `Tu es l'IA "Directeur Financier et Supply Chain" d'iCHEF OS.
-        Analyse les données du restaurant suivantes :
-        - Ventes récentes : ${JSON.stringify(recentSales || history.slice(0, 30))}
-        - Stocks actuels : ${JSON.stringify(currentStock || 'Non spécifié')}
-        - Chiffres financiers : ${JSON.stringify(financialStats || 'Non spécifié')}
-
+        const prompt = `Tu es l'IA "Directeur Financier et Opérationnel" d'un restaurant.
+        Analyse brièvement ces données :
+        - Ventes : ${JSON.stringify(recentSales || 'Aucune donnée')}
+        
         Ta mission est de fournir un rapport exécutif ultra-précis. 
-        RÉPONDS UNIQUEMENT AVEC CE JSON STRICT (SANS MARKDOWN, SANS TEXTE AUTOUR) :
+        TU DOIS RÉPONDRE UNIQUEMENT ET STRICTEMENT AVEC LE JSON CI-DESSOUS. 
+        N'ÉCRIS AUCUN MOT AVANT OU APRÈS LE JSON.
         {
-            "previsionVentes": "Explication courte des tendances de ventes pour les 7 prochains jours.",
-            "alertesRupture": ["Produit A (reste 2 jours)", "Produit B (critique)"],
+            "previsionVentes": "Explication courte.",
+            "alertesRupture": ["Alerte 1", "Alerte 2"],
             "commandesFournisseurs": [
-                { "fournisseur": "Nom", "articles": ["10kg Tomates", "5L Huile"] }
+                { "fournisseur": "Nom", "articles": ["10kg Tomates"] }
             ],
-            "detectionAnomalies": "Explication si des pertes, du coulage ou des annulations suspectes sont détectées.",
-            "recommandationMenu": ["Plat X (Grosse marge, à pousser)", "Plat Y (Populaire, à garder)"],
-            "analyseMarge": "Explication claire de la baisse/hausse de la marge et du chiffre d'affaires, avec 1 conseil d'action."
+            "detectionAnomalies": "Explication courte.",
+            "recommandationMenu": ["Plat X"],
+            "analyseMarge": "Explication claire."
         }`;
 
-const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
         const result = await model.generateContent(prompt);
-        
         let responseText = result.response.text().trim();
-        const ticks = String.fromCharCode(96, 96, 96);
-        responseText = responseText.split(ticks + 'json').join('').split(ticks).join('').trim();
-        if (!responseText.startsWith("{")) responseText = responseText.substring(responseText.indexOf("{"));
         
-        res.json({ success: true, report: JSON.parse(responseText) });
+        // 🧽 Nettoyage ultra-agressif (enlève les balises Markdown que l'IA rajoute parfois)
+        responseText = responseText.replace(/```json/gi, "").replace(/```/g, "").trim();
+        
+        const firstBrace = responseText.indexOf('{');
+        const lastBrace = responseText.lastIndexOf('}');
+        if (firstBrace !== -1 && lastBrace !== -1) {
+            responseText = responseText.substring(firstBrace, lastBrace + 1);
+        }
+
+        const finalJSON = JSON.parse(responseText);
+        res.json({ success: true, report: finalJSON });
+
     } catch (error) {
-        console.error("Erreur IA Executive Report:", error);
+        console.error("🚨 Erreur IA Executive Report:", error);
         res.status(500).json({ success: false, error: "L'analyse IA est momentanément indisponible." });
     }
 });
-
 // ==========================================
 // 🎙️ ASSISTANT VOCAL DU DIRECTEUR (CONVERSATION EN DIRECT)
 // ==========================================
