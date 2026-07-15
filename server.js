@@ -88,52 +88,129 @@ app.get('/panel-ichef', (req, res) => {
     }
 });
 
-// =========================================================================
-// 🚀 FONCTION BY-PASS GOOGLE GEMINI (VERSION INDESTRUCTIBLE HTTPS)
-// =========================================================================
-const https = require('https');
+// ==========================================
+// 🤖 MOTEURS IA TEXTUELS (SDK GOOGLE OFFICIEL À JOUR)
+// ==========================================
+const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY || 'CLE_MANQUANTE');
 
-function callGeminiDirect(prompt) {
-    return new Promise((resolve, reject) => {
-        const apiKey = process.env.GEMINI_API_KEY || 'CLE_MANQUANTE';
-        const data = JSON.stringify({ contents: [{ parts: [{ text: prompt }] }] });
+// 1. RAPPORT EXÉCUTIF 360°
+app.post('/api/ai-executive-report', async (req, res) => {
+    const { tenantID, currentStock, recentSales, financialStats } = req.body;
+    try {
+        let state = await AppState.findOne({ tenantID: cleanString(tenantID) });
+        let history = state?.activeOrders?.TRAFFIC_HISTORY?.data || [];
+        
+        const prompt = `Tu es l'IA "Directeur Financier" d'iCHEF OS.
+        Données : Ventes: ${JSON.stringify(recentSales || history.slice(0, 30))} | Stocks: ${JSON.stringify(currentStock || 'N/A')}
+        RÉPONDS UNIQUEMENT ET STRICTEMENT AVEC LE JSON CI-DESSOUS. N'ÉCRIS RIEN D'AUTRE.
+        {
+            "previsionVentes": "Explication courte.",
+            "alertesRupture": ["Alerte 1", "Alerte 2"],
+            "commandesFournisseurs": [{ "fournisseur": "Nom", "articles": ["10kg Tomates"] }],
+            "detectionAnomalies": "Explication courte.",
+            "recommandationMenu": ["Plat X"],
+            "analyseMarge": "Explication claire."
+        }`;
 
-        const options = {
-            hostname: 'generativelanguage.googleapis.com',
-            path: `/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`,
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                'Content-Length': Buffer.byteLength(data)
-            }
-        };
+        const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+        const result = await model.generateContent(prompt);
+        let responseText = result.response.text().trim();
+        
+        responseText = responseText.replace(/```json/gi, "").replace(/```/g, "").trim();
+        const firstBrace = responseText.indexOf('{');
+        const lastBrace = responseText.lastIndexOf('}');
+        if (firstBrace !== -1 && lastBrace !== -1) responseText = responseText.substring(firstBrace, lastBrace + 1);
 
-        const req = https.request(options, (res) => {
-            let body = '';
-            res.on('data', (chunk) => body += chunk);
-            res.on('end', () => {
-                try {
-                    const json = JSON.parse(body);
-                    // Si Google refuse la clé ou l'accès, on l'affiche en rouge dans Render !
-                    if (json.error) {
-                        console.error("❌ ERREUR GOOGLE API :", json.error.message);
-                        return reject(new Error(json.error.message));
-                    }
-                    if (!json.candidates || !json.candidates[0].content.parts[0].text) {
-                        return reject(new Error("Format inattendu reçu de Google."));
-                    }
-                    resolve(json.candidates[0].content.parts[0].text);
-                } catch (e) {
-                    reject(e);
-                }
-            });
-        });
+        res.json({ success: true, report: JSON.parse(responseText) });
+    } catch (error) {
+        console.error("🚨 Erreur IA Rapport:", error.message);
+        res.status(500).json({ success: false, error: "Analyse indisponible." });
+    }
+});
 
-        req.on('error', (e) => reject(e));
-        req.write(data);
-        req.end();
-    });
-}
+// 2. ASSISTANT VOCAL
+app.post('/api/voice-assistant', async (req, res) => {
+    const { tenantID, spokenQuery } = req.body;
+    try {
+        let state = await AppState.findOne({ tenantID: cleanString(tenantID) });
+        let activeStaff = state?.activeOrders?.STAFF_ACCESS?.data?.filter(s => s.onDuty).length || 0;
+
+        const prompt = `Tu es iCHEF, assistant vocal. Le directeur demande: "${spokenQuery}". Staff actif: ${activeStaff}. Date: ${new Date().toLocaleString('fr-FR')}. Réponds comme Jarvis. JSON STRICT : { "vocalResponse": "Texte à dire", "actionToTrigger": "NONE" }`;
+
+        const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+        const result = await model.generateContent(prompt);
+        let responseText = result.response.text().trim();
+        
+        responseText = responseText.replace(/```json/gi, "").replace(/```/g, "").trim();
+        if (!responseText.startsWith("{")) responseText = responseText.substring(responseText.indexOf("{"));
+        
+        res.json({ success: true, aiReply: JSON.parse(responseText) });
+    } catch (error) { 
+        console.error("🚨 Erreur Voix:", error.message);
+        res.status(500).json({ success: false }); 
+    }
+});// ==========================================
+// 🤖 MOTEURS IA TEXTUELS (SDK GOOGLE OFFICIEL À JOUR)
+// ==========================================
+const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY || 'CLE_MANQUANTE');
+
+// 1. RAPPORT EXÉCUTIF 360°
+app.post('/api/ai-executive-report', async (req, res) => {
+    const { tenantID, currentStock, recentSales, financialStats } = req.body;
+    try {
+        let state = await AppState.findOne({ tenantID: cleanString(tenantID) });
+        let history = state?.activeOrders?.TRAFFIC_HISTORY?.data || [];
+        
+        const prompt = `Tu es l'IA "Directeur Financier" d'iCHEF OS.
+        Données : Ventes: ${JSON.stringify(recentSales || history.slice(0, 30))} | Stocks: ${JSON.stringify(currentStock || 'N/A')}
+        RÉPONDS UNIQUEMENT ET STRICTEMENT AVEC LE JSON CI-DESSOUS. N'ÉCRIS RIEN D'AUTRE.
+        {
+            "previsionVentes": "Explication courte.",
+            "alertesRupture": ["Alerte 1", "Alerte 2"],
+            "commandesFournisseurs": [{ "fournisseur": "Nom", "articles": ["10kg Tomates"] }],
+            "detectionAnomalies": "Explication courte.",
+            "recommandationMenu": ["Plat X"],
+            "analyseMarge": "Explication claire."
+        }`;
+
+        const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+        const result = await model.generateContent(prompt);
+        let responseText = result.response.text().trim();
+        
+        responseText = responseText.replace(/```json/gi, "").replace(/```/g, "").trim();
+        const firstBrace = responseText.indexOf('{');
+        const lastBrace = responseText.lastIndexOf('}');
+        if (firstBrace !== -1 && lastBrace !== -1) responseText = responseText.substring(firstBrace, lastBrace + 1);
+
+        res.json({ success: true, report: JSON.parse(responseText) });
+    } catch (error) {
+        console.error("🚨 Erreur IA Rapport:", error.message);
+        res.status(500).json({ success: false, error: "Analyse indisponible." });
+    }
+});
+
+// 2. ASSISTANT VOCAL
+app.post('/api/voice-assistant', async (req, res) => {
+    const { tenantID, spokenQuery } = req.body;
+    try {
+        let state = await AppState.findOne({ tenantID: cleanString(tenantID) });
+        let activeStaff = state?.activeOrders?.STAFF_ACCESS?.data?.filter(s => s.onDuty).length || 0;
+
+        const prompt = `Tu es iCHEF, assistant vocal. Le directeur demande: "${spokenQuery}". Staff actif: ${activeStaff}. Date: ${new Date().toLocaleString('fr-FR')}. Réponds comme Jarvis. JSON STRICT : { "vocalResponse": "Texte à dire", "actionToTrigger": "NONE" }`;
+
+        const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+        const result = await model.generateContent(prompt);
+        let responseText = result.response.text().trim();
+        
+        responseText = responseText.replace(/```json/gi, "").replace(/```/g, "").trim();
+        if (!responseText.startsWith("{")) responseText = responseText.substring(responseText.indexOf("{"));
+        
+        res.json({ success: true, aiReply: JSON.parse(responseText) });
+    } catch (error) { 
+        console.error("🚨 Erreur Voix:", error.message);
+        res.status(500).json({ success: false }); 
+    }
+});
 
 // =========================================================================
 // 🥇 MOTEUR IA 3 : RENTABILITÉ & FOOD-COST (INGÉNIERIE DE MENU)
