@@ -526,58 +526,56 @@ app.post('/analyse-ticket', async (req, res) => {
 });
 
 // ==========================================
-// 🧠 IA DIRECTEUR OPÉRATIONNEL & FINANCIER (VISION 360°) - UNIQUE ET STABLE
+// 🎙️ ASSISTANT VOCAL DU DIRECTEUR (CONVERSATION EN DIRECT) - VERSION HTTP STABLE
 // ==========================================
-app.post('/api/ai-executive-report', async (req, res) => {
-    const { tenantID, currentStock, recentSales, financialStats } = req.body;
+app.post('/api/voice-assistant', async (req, res) => {
+    const { tenantID, spokenQuery } = req.body;
     const safeID = cleanString(tenantID);
 
     try {
         let state = await AppState.findOne({ tenantID: safeID });
-        let history = state?.activeOrders?.TRAFFIC_HISTORY?.data || [];
-        
-        const model = genAI.getGenerativeModel({ model: "gemini-pro" }); 
-        
-        const prompt = `Tu es l'IA "Directeur Financier et Supply Chain" d'iCHEF OS.
-        Analyse les données du restaurant suivantes :
-        - Ventes récentes : ${JSON.stringify(recentSales || history.slice(0, 30))}
-        - Stocks actuels : ${JSON.stringify(currentStock || 'Non spécifié')}
-        - Chiffres financiers : ${JSON.stringify(financialStats || 'Non spécifié')}
-
-        Ta mission est de fournir un rapport exécutif ultra-précis. 
-        TU DOIS RÉPONDRE UNIQUEMENT ET STRICTEMENT AVEC LE JSON CI-DESSOUS. 
-        N'ÉCRIS AUCUN MOT AVANT OU APRÈS LE JSON.
-        {
-            "previsionVentes": "Explication courte.",
-            "alertesRupture": ["Alerte 1", "Alerte 2"],
-            "commandesFournisseurs": [
-                { "fournisseur": "Nom", "articles": ["10kg Tomates"] }
-            ],
-            "detectionAnomalies": "Explication courte.",
-            "recommandationMenu": ["Plat X"],
-            "analyseMarge": "Explication claire."
-        }`;
-
-        const result = await model.generateContent(prompt);
-        let responseText = result.response.text().trim();
-        
-        responseText = responseText.replace(/```json/gi, "").replace(/```/g, "").trim();
-        
-        const firstBrace = responseText.indexOf('{');
-        const lastBrace = responseText.lastIndexOf('}');
-        if (firstBrace !== -1 && lastBrace !== -1) {
-            responseText = responseText.substring(firstBrace, lastBrace + 1);
+        let activeStaff = 0;
+        if (state?.activeOrders?.STAFF_ACCESS?.data) {
+            activeStaff = state.activeOrders.STAFF_ACCESS.data.filter(s => s.onDuty).length;
         }
 
-        const finalJSON = JSON.parse(responseText);
-        res.json({ success: true, report: finalJSON });
+        const prompt = `Tu es l'assistant vocal privé du directeur du restaurant intégré à iCHEF OS. Tu t'appelles iCHEF.
+        Le directeur te parle au micro et te demande : "${spokenQuery}"
+        Contexte instantané du restaurant :
+        - Employés actuellement pointés : ${activeStaff}
+        - Date et Heure : ${new Date().toLocaleString('fr-FR')}
+        
+        RÉDIGE TA RÉPONSE COMME SI TU LA PARLAIS (Style Jarvis dans Iron Man). 
+        Sois concis, direct, très professionnel, et apporte des solutions. Ne mets pas d'emojis, car ta réponse sera lue par une voix de synthèse.
+        
+        JSON RÉPONSE ATTENDUE (SANS MARKDOWN) :
+        {
+            "vocalResponse": "Texte exact à prononcer par le haut-parleur",
+            "actionToTrigger": "NONE" 
+        }`;
 
+        // 🚀 BY-PASS SDK : Connexion HTTP directe
+        const apiKey = process.env.GEMINI_API_KEY || 'CLE_MANQUANTE';
+        const aiResponse = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                contents: [{ parts: [{ text: prompt }] }]
+            })
+        });
+
+        const aiData = await aiResponse.json();
+        let responseText = aiData.candidates[0].content.parts[0].text.trim();
+        
+        responseText = responseText.replace(/```json/gi, "").replace(/```/g, "").trim();
+        if (!responseText.startsWith("{")) responseText = responseText.substring(responseText.indexOf("{"));
+        
+        res.json({ success: true, aiReply: JSON.parse(responseText) });
     } catch (error) {
-        console.error("🚨 Erreur IA Executive Report:", error);
-        res.status(500).json({ success: false, error: "L'analyse IA est momentanément indisponible." });
+        console.error("Erreur Assistant Vocal:", error.message);
+        res.status(500).json({ success: false, error: "Connexion vocale perdue." });
     }
 });
-
 // ==========================================
 // 🎙️ ASSISTANT VOCAL DU DIRECTEUR (CONVERSATION EN DIRECT)
 // ==========================================
