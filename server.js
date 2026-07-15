@@ -554,7 +554,7 @@ app.post('/api/ai-executive-report', async (req, res) => {
             "analyseMarge": "Explication claire de la baisse/hausse de la marge et du chiffre d'affaires, avec 1 conseil d'action."
         }`;
 
-        const model = genAI.getGenerativeModel({ model: "gemini-1.5-pro" }); 
+const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
         const result = await model.generateContent(prompt);
         
         let responseText = result.response.text().trim();
