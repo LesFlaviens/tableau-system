@@ -554,7 +554,7 @@ app.post('/api/ai-executive-report', async (req, res) => {
             "analyseMarge": "Explication claire."
         }`;
 
-        const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
         const result = await model.generateContent(prompt);
         let responseText = result.response.text();
         
@@ -609,7 +609,7 @@ app.post('/api/ai-executive-report', async (req, res) => {
             "analyseMarge": "Explication claire."
         }`;
 
-        const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
         const result = await model.generateContent(prompt);
         let responseText = result.response.text();
         
@@ -736,7 +736,7 @@ app.post('/api/smart-reservation', async (req, res) => {
           "optimisationInfo": "Notes internes pour le manager" 
         }`;
 
-        const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
         const result = await model.generateContent(prompt);
         
         let responseText = result.response.text().trim();
