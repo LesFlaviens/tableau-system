@@ -89,21 +89,50 @@ app.get('/panel-ichef', (req, res) => {
 });
 
 // =========================================================================
-// 🚀 FONCTION BY-PASS GOOGLE GEMINI (RÉSOUD L'ERREUR 404/500 DES ANCIENS SDK)
+// 🚀 FONCTION BY-PASS GOOGLE GEMINI (VERSION INDESTRUCTIBLE HTTPS)
 // =========================================================================
-async function callGeminiDirect(prompt) {
-    const apiKey = process.env.GEMINI_API_KEY || 'CLE_MANQUANTE';
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`;
-    const response = await fetch(url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }] })
+const https = require('https');
+
+function callGeminiDirect(prompt) {
+    return new Promise((resolve, reject) => {
+        const apiKey = process.env.GEMINI_API_KEY || 'CLE_MANQUANTE';
+        const data = JSON.stringify({ contents: [{ parts: [{ text: prompt }] }] });
+
+        const options = {
+            hostname: 'generativelanguage.googleapis.com',
+            path: `/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`,
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'Content-Length': Buffer.byteLength(data)
+            }
+        };
+
+        const req = https.request(options, (res) => {
+            let body = '';
+            res.on('data', (chunk) => body += chunk);
+            res.on('end', () => {
+                try {
+                    const json = JSON.parse(body);
+                    // Si Google refuse la clé ou l'accès, on l'affiche en rouge dans Render !
+                    if (json.error) {
+                        console.error("❌ ERREUR GOOGLE API :", json.error.message);
+                        return reject(new Error(json.error.message));
+                    }
+                    if (!json.candidates || !json.candidates[0].content.parts[0].text) {
+                        return reject(new Error("Format inattendu reçu de Google."));
+                    }
+                    resolve(json.candidates[0].content.parts[0].text);
+                } catch (e) {
+                    reject(e);
+                }
+            });
+        });
+
+        req.on('error', (e) => reject(e));
+        req.write(data);
+        req.end();
     });
-    const data = await response.json();
-    if (!data.candidates || !data.candidates[0].content.parts[0].text) {
-        throw new Error("L'API Google n'a pas répondu correctement.");
-    }
-    return data.candidates[0].content.parts[0].text;
 }
 
 // =========================================================================
