@@ -614,6 +614,7 @@ app.post('/api/voice-assistant', async (req, res) => {
     }
 });
 
+
 // ==========================================
 // 🔴 ENGINE DE CALCUL DE TEMPS RH INTÉGRÉ
 // ==========================================
@@ -632,6 +633,54 @@ function calculateNet(p) {
     return Math.max(0, total);
 }
 
+// ==========================================
+// 🧠 IA DIRECTEUR OPÉRATIONNEL & FINANCIER (VISION 360°)
+// ==========================================
+app.post('/api/ai-executive-report', async (req, res) => {
+    const { tenantID, currentStock, recentSales, financialStats } = req.body;
+    const safeID = cleanString(tenantID);
+
+    try {
+        let state = await AppState.findOne({ tenantID: safeID });
+        let history = state?.activeOrders?.TRAFFIC_HISTORY?.data || [];
+        
+        const prompt = `Tu es l'IA "Directeur Financier et Supply Chain" d'iCHEF OS.
+        Analyse les données du restaurant suivantes :
+        - Ventes récentes : ${JSON.stringify(recentSales || history.slice(0, 30))}
+        - Stocks actuels : ${JSON.stringify(currentStock || 'Non spécifié')}
+        - Chiffres financiers : ${JSON.stringify(financialStats || 'Non spécifié')}
+
+        Ta mission est de fournir un rapport exécutif ultra-précis. 
+        RÉPONDS UNIQUEMENT AVEC CE JSON STRICT (SANS AUCUN TEXTE AUTOUR) :
+        {
+            "previsionVentes": "Explication courte.",
+            "alertesRupture": ["Produit A", "Produit B"],
+            "commandesFournisseurs": [
+                { "fournisseur": "Nom", "articles": ["10kg Tomates"] }
+            ],
+            "detectionAnomalies": "Explication courte.",
+            "recommandationMenu": ["Plat X"],
+            "analyseMarge": "Explication claire."
+        }`;
+
+        // 🔥 CORRECTION : Modèle "Flash" (ultra-rapide pour éviter les erreurs 500)
+        const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" }); 
+        const result = await model.generateContent(prompt);
+        
+        let responseText = result.response.text().trim();
+        
+        // 🔥 CORRECTION : Nettoyage blindé du texte (on coupe tout ce qui n'est pas du code)
+        const ticks = String.fromCharCode(96, 96, 96);
+        responseText = responseText.split(ticks + 'json').join('').split(ticks).join('').trim();
+        if (!responseText.startsWith("{")) responseText = responseText.substring(responseText.indexOf("{"));
+        if (!responseText.endsWith("}")) responseText = responseText.substring(0, responseText.lastIndexOf("}") + 1);
+        
+        res.json({ success: true, report: JSON.parse(responseText) });
+    } catch (error) {
+        console.error("Erreur IA Executive Report:", error);
+        res.status(500).json({ success: false, error: "L'analyse IA est momentanément indisponible." });
+    }
+});
 // ==========================================
 //  IA SMART-RESERVATION (Yield Management & Time-Shifting)
 // ==========================================
