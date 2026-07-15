@@ -89,6 +89,24 @@ app.get('/panel-ichef', (req, res) => {
 });
 
 // =========================================================================
+// 🚀 FONCTION BY-PASS GOOGLE GEMINI (RÉSOUD L'ERREUR 404/500 DES ANCIENS SDK)
+// =========================================================================
+async function callGeminiDirect(prompt) {
+    const apiKey = process.env.GEMINI_API_KEY || 'CLE_MANQUANTE';
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`;
+    const response = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }] })
+    });
+    const data = await response.json();
+    if (!data.candidates || !data.candidates[0].content.parts[0].text) {
+        throw new Error("L'API Google n'a pas répondu correctement.");
+    }
+    return data.candidates[0].content.parts[0].text;
+}
+
+// =========================================================================
 // 🥇 MOTEUR IA 3 : RENTABILITÉ & FOOD-COST (INGÉNIERIE DE MENU)
 // =========================================================================
 app.post('/api/ai-profitability', async (req, res) => {
@@ -484,25 +502,7 @@ app.get('/api/export-preuves-legales', async (req, res) => {
 });
 
 // ==========================================
-// 🚀 FONCTION BY-PASS DIRECT GOOGLE POUR LE TEXTE (Évite les erreurs 404 du SDK)
-// ==========================================
-async function callGeminiDirect(prompt) {
-    const apiKey = process.env.GEMINI_API_KEY || 'CLE_MANQUANTE';
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`;
-    const response = await fetch(url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }] })
-    });
-    const data = await response.json();
-    if (!data.candidates || !data.candidates[0].content.parts[0].text) {
-        throw new Error("L'API Google n'a pas renvoyé de réponse valide.");
-    }
-    return data.candidates[0].content.parts[0].text;
-}
-
-// ==========================================
-// 🤖 MOTEURS IA (GEMINI SDK pour les Images, Fetch pour le texte)
+// 🤖 MOTEURS IA - GESTION DES IMAGES (HACCP & FACTURES)
 // ==========================================
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY || 'CLE_MANQUANTE');
 
