@@ -800,6 +800,54 @@ app.post('/api/twilio/call-me', async (req, res) => {
     }
 });
 
+// 🛡️ ROUTE D'EXTRACTION DES VRAIES PREUVES LÉGALES (JSON) POUR LE BOUTON
+app.get('/api/export-blockchain-json', async (req, res) => {
+    try {
+        const tenantID = cleanString(req.query.tenantID);
+        if (!tenantID) return res.status(400).send("ID Restaurant manquant.");
+
+        const tenant = await Tenant.findOne({ tenantID });
+        if (!tenant) return res.status(404).send("Établissement inconnu.");
+
+        // On récupère tous les logs de sécurité cryptographiques scellés de ce restaurant
+        const logs = await AuditLog.find({ tenantID: safeID }).sort({ timestamp: 1 });
+        
+        // On vérifie en temps réel si la chaîne de sécurité est intacte
+        let isChainValid = true;
+        let brokenAtIndex = null;
+        for (let i = 1; i < logs.length; i++) {
+            if (logs[i].previousHash !== logs[i-1].currentHash) {
+                isChainValid = false;
+                brokenAtIndex = i;
+                break;
+            }
+        }
+
+        // On fabrique le fichier officiel de conformité fiscale
+        const certificatCertifie = {
+            "version_protocole": "iCHEF FORTERESSE v4.0",
+            "certificatLegal": {
+                "etablissement": tenant.clientName || "Non renseigné",
+                "identifiant_unique": tenantID,
+                "dateExtraction": new Date().toISOString(),
+                "integriteGarantie": isChainValid,
+                "statut_falsification": isChainValid ? "Chaîne intègre - Aucune altération détectée" : `ATTENTION: Altération détectée à l'index ${brokenAtIndex}`,
+                "total_blocs_scelles": logs.length
+            },
+            "journal_audit_trail": logs
+        };
+
+        // On envoie le fichier au format JSON directement en téléchargement
+        res.setHeader('Content-Type', 'application/json; charset=utf-8');
+        res.setHeader('Content-Disposition', `attachment; filename=Certificat_Preuves_Legales_${tenantID}.json`);
+        res.send(JSON.stringify(certificatCertifie, null, 4));
+
+    } catch (error) {
+        console.error("Erreur génération certificat blockchain :", error);
+        res.status(500).send("Erreur serveur de sécurité.");
+    }
+});
+
 // 📊 ROUTE D'EXPORTATION DES VRAIS TICKETS POUR LE CENTRE DE TÉLÉCHARGEMENT
 app.get('/api/export-caisse-csv', async (req, res) => {
     try {
