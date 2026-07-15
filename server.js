@@ -3,7 +3,6 @@ const nodemailer = require('nodemailer');
  * ==============================================================
  * 🧠 iCHEF EMPIRE OS — ENGINE SERVER BACKEND (V. FORTERESSE)
  * ==============================================================
- * Stable version aligned with legacy Google Gemini SDK
  */
 
 const express = require('express');
@@ -219,7 +218,7 @@ app.post('/api/ai-reservation-forecast', async (req, res) => {
         let staffCuisine = 1;
 
         if (couvertsAujourdhui === 0) {
-            tance = "Aucune réservation";
+            tendance = "Aucune réservation";
             conseils = [
                 "Le cahier est vide pour ce soir. Partagez votre lien de réservation QR sur vos réseaux sociaux.",
                 "Vérifiez que votre Menu Web (Click & Collect) est bien activé pour compenser le manque en salle."
@@ -485,7 +484,25 @@ app.get('/api/export-preuves-legales', async (req, res) => {
 });
 
 // ==========================================
-// 🤖 MOTEURS IA (GEMINI ALIGNÉ COMPLET EN VERSION STABLE)
+// 🚀 FONCTION BY-PASS DIRECT GOOGLE POUR LE TEXTE (Évite les erreurs 404 du SDK)
+// ==========================================
+async function callGeminiDirect(prompt) {
+    const apiKey = process.env.GEMINI_API_KEY || 'CLE_MANQUANTE';
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`;
+    const response = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }] })
+    });
+    const data = await response.json();
+    if (!data.candidates || !data.candidates[0].content.parts[0].text) {
+        throw new Error("L'API Google n'a pas renvoyé de réponse valide.");
+    }
+    return data.candidates[0].content.parts[0].text;
+}
+
+// ==========================================
+// 🤖 MOTEURS IA (GEMINI SDK pour les Images, Fetch pour le texte)
 // ==========================================
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY || 'CLE_MANQUANTE');
 
@@ -496,7 +513,7 @@ app.post('/api/scan-invoice', async (req, res) => {
         const base64Data = imageBase64.includes(',') ? imageBase64.split(',')[1] : imageBase64;
         const imagePart = { inlineData: { data: base64Data, mimeType: mimeType || "image/jpeg" } };
         const prompt = 'Analyse cette image de facture. Extrais les informations. RESPOND ONLY WITH JSON WITHOUT MARKDOWN TEXT: { "fournisseur": "Nom", "adresse": "Adresse", "telephone": "Tel", "email": "Email", "devise": "€", "date": "JJ/MM/AAAA", "totalHT": 0.00, "tva": 0.00, "totalTTC": 0.00, "articles": [{ "nom": "nom", "categorie": "catégorie", "quantite": "qty", "prixUnitaire": 0.00 }] }';
-        const model = genAI.getGenerativeModel({ model: "gemini-pro" });
+        const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
         const result = await model.generateContent([prompt, imagePart]);
         
         let responseText = result.response.text().trim();
@@ -514,7 +531,7 @@ app.post('/analyse-ticket', async (req, res) => {
     try {
         const imagePart = { inlineData: { data: image, mimeType: mimeType || "image/jpeg" } };
         const prompt = 'Analyse cette étiquette de traçabilité. JSON NO MARKDOWN: { "nom": "Nom du produit", "lot": "Numéro", "dlc": "JJ/MM/AAAA" }';
-        const model = genAI.getGenerativeModel({ model: "gemini-pro" });
+        const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
         const result = await model.generateContent([prompt, imagePart]);
         
         let text = result.response.text().trim();
@@ -524,8 +541,9 @@ app.post('/analyse-ticket', async (req, res) => {
         res.json({ success: true, resultat: JSON.parse(text) });
     } catch (error) { res.status(500).json({ success: false, error: error.message }); }
 });
+
 // ==========================================
-// 🧠 IA DIRECTEUR OPÉRATIONNEL & FINANCIER (VISION 360°) - VERSION HTTP STABLE
+// 🧠 IA DIRECTEUR OPÉRATIONNEL & FINANCIER (VISION 360°)
 // ==========================================
 app.post('/api/ai-executive-report', async (req, res) => {
     const { tenantID, currentStock, recentSales, financialStats } = req.body;
@@ -542,10 +560,10 @@ app.post('/api/ai-executive-report', async (req, res) => {
         - Chiffres financiers : ${JSON.stringify(financialStats || 'Non spécifié')}
 
         Ta mission est de fournir un rapport exécutif ultra-précis. 
-        TU DOIS RÉPONDRE UNIQUEMENT ET STRICTEMENT AVEC LE JSON CI-DESSOUS. N'ÉCRIS RIEN AUTOUR.
+        RÉPONDS UNIQUEMENT AVEC CE JSON STRICT (SANS AUCUN TEXTE AUTOUR) :
         {
             "previsionVentes": "Explication courte.",
-            "alertesRupture": ["Alerte 1", "Alerte 2"],
+            "alertesRupture": ["Produit A", "Produit B"],
             "commandesFournisseurs": [
                 { "fournisseur": "Nom", "articles": ["10kg Tomates"] }
             ],
@@ -554,89 +572,20 @@ app.post('/api/ai-executive-report', async (req, res) => {
             "analyseMarge": "Explication claire."
         }`;
 
-        // 🚀 BY-PASS SDK : Appel direct à l'API Google en v1beta via fetch natif
-        const apiKey = process.env.GEMINI_API_KEY || 'CLE_MANQUANTE';
-        const aiResponse = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                contents: [{ parts: [{ text: prompt }] }]
-            })
-        });
-
-        const aiData = await aiResponse.json();
+        let responseText = await callGeminiDirect(prompt);
         
-        if (!aiData.candidates || !aiData.candidates[0]?.content?.parts[0]?.text) {
-            throw new Error("L'API Google n'a pas renvoyé de structure valide. Vérifie tes variables d'environnement.");
-        }
-
-        let responseText = aiData.candidates[0].content.parts[0].text.trim();
-        responseText = responseText.replace(/```json/gi, "").replace(/```/g, "").trim();
+        const ticks = String.fromCharCode(96, 96, 96);
+        responseText = responseText.split(ticks + 'json').join('').split(ticks).join('').trim();
+        if (!responseText.startsWith("{")) responseText = responseText.substring(responseText.indexOf("{"));
+        if (!responseText.endsWith("}")) responseText = responseText.substring(0, responseText.lastIndexOf("}") + 1);
         
-        const firstBrace = responseText.indexOf('{');
-        const lastBrace = responseText.lastIndexOf('}');
-        if (firstBrace !== -1 && lastBrace !== -1) {
-            responseText = responseText.substring(firstBrace, lastBrace + 1);
-        }
-
         res.json({ success: true, report: JSON.parse(responseText) });
-
     } catch (error) {
-        console.error("🚨 Erreur IA Executive Report:", error.message);
+        console.error("Erreur IA Executive Report:", error);
         res.status(500).json({ success: false, error: "L'analyse IA est momentanément indisponible." });
     }
 });
-// ==========================================
-// 🎙️ ASSISTANT VOCAL DU DIRECTEUR (CONVERSATION EN DIRECT) - VERSION HTTP STABLE
-// ==========================================
-app.post('/api/voice-assistant', async (req, res) => {
-    const { tenantID, spokenQuery } = req.body;
-    const safeID = cleanString(tenantID);
 
-    try {
-        let state = await AppState.findOne({ tenantID: safeID });
-        let activeStaff = 0;
-        if (state?.activeOrders?.STAFF_ACCESS?.data) {
-            activeStaff = state.activeOrders.STAFF_ACCESS.data.filter(s => s.onDuty).length;
-        }
-
-        const prompt = `Tu es l'assistant vocal privé du directeur du restaurant intégré à iCHEF OS. Tu t'appelles iCHEF.
-        Le directeur te parle au micro et te demande : "${spokenQuery}"
-        Contexte instantané du restaurant :
-        - Employés actuellement pointés : ${activeStaff}
-        - Date et Heure : ${new Date().toLocaleString('fr-FR')}
-        
-        RÉDIGE TA RÉPONSE COMME SI TU LA PARLAIS (Style Jarvis dans Iron Man). 
-        Sois concis, direct, très professionnel, et apporte des solutions. Ne mets pas d'emojis, car ta réponse sera lue par une voix de synthèse.
-        
-        JSON RÉPONSE ATTENDUE (SANS MARKDOWN) :
-        {
-            "vocalResponse": "Texte exact à prononcer par le haut-parleur",
-            "actionToTrigger": "NONE" 
-        }`;
-
-        // 🚀 BY-PASS SDK : Connexion HTTP directe
-        const apiKey = process.env.GEMINI_API_KEY || 'CLE_MANQUANTE';
-        const aiResponse = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                contents: [{ parts: [{ text: prompt }] }]
-            })
-        });
-
-        const aiData = await aiResponse.json();
-        let responseText = aiData.candidates[0].content.parts[0].text.trim();
-        
-        responseText = responseText.replace(/```json/gi, "").replace(/```/g, "").trim();
-        if (!responseText.startsWith("{")) responseText = responseText.substring(responseText.indexOf("{"));
-        
-        res.json({ success: true, aiReply: JSON.parse(responseText) });
-    } catch (error) {
-        console.error("Erreur Assistant Vocal:", error.message);
-        res.status(500).json({ success: false, error: "Connexion vocale perdue." });
-    }
-});
 // ==========================================
 // 🎙️ ASSISTANT VOCAL DU DIRECTEUR (CONVERSATION EN DIRECT)
 // ==========================================
@@ -667,10 +616,8 @@ app.post('/api/voice-assistant', async (req, res) => {
             "actionToTrigger": "NONE" 
         }`;
 
-        const model = genAI.getGenerativeModel({ model: "gemini-pro" });
-        const result = await model.generateContent(prompt);
+        let responseText = await callGeminiDirect(prompt);
         
-        let responseText = result.response.text().trim();
         const ticks = String.fromCharCode(96, 96, 96);
         responseText = responseText.split(ticks + 'json').join('').split(ticks).join('').trim();
         if (!responseText.startsWith("{")) responseText = responseText.substring(responseText.indexOf("{"));
@@ -681,6 +628,7 @@ app.post('/api/voice-assistant', async (req, res) => {
         res.status(500).json({ success: false, error: "Connexion vocale perdue." });
     }
 });
+
 
 // ==========================================
 // 🔴 ENGINE DE CALCUL DE TEMPS RH INTÉGRÉ
@@ -738,10 +686,8 @@ app.post('/api/smart-reservation', async (req, res) => {
           "optimisationInfo": "Notes internes pour le manager" 
         }`;
 
-        const model = genAI.getGenerativeModel({ model: "gemini-pro" });
-        const result = await model.generateContent(prompt);
+        let responseText = await callGeminiDirect(prompt);
         
-        let responseText = result.response.text().trim();
         const ticks = String.fromCharCode(96, 96, 96);
         responseText = responseText.split(ticks + 'json').join('').split(ticks).join('').trim();
         
@@ -780,7 +726,7 @@ app.post('/api/twilio/request-demo', async (req, res) => {
             service: 'gmail',
             auth: {
                 user: 'flavieniche@gmail.com',
-                pass: 'atebfwhijmgmavcy'
+                pass: 'atebfwhijmgmavcy' // Utilise ton mot de passe d'application Google de 16 lettres
             }
         });
 
@@ -1041,6 +987,7 @@ app.post('/update-order', async (req, res) => {
     }
 });
 
+
 // ==========================================
 // MASTER CONTROL API (EMPIRE SUPER ADMIN)
 // ==========================================
@@ -1225,7 +1172,7 @@ app.post('/api/nouvelle-demande-demo', async (req, res) => {
             
         } catch (err) { console.error(err); }
 
-        // 🛒 ENVOI AUTOMATIQUE DE L'E-MAIL DE BIENVENUE AU PARTENAIRE
+        // ✉️ ENVOI AUTOMATIQUE DE L'E-MAIL DE BIENVENUE AU PARTENAIRE
         try {
             const urlEmailClient = `https://formsubmit.co/ajax/${email}`; 
             const clientPayload = {
@@ -1357,10 +1304,8 @@ app.post('/api/predict-hr-schedule', async (req, res) => {
         
         Format attendu : { "rushPeriods": ["Jeudi 20h", ...], "deadPeriods": [...], "hiringAdvice": "...", "vacationSuggestions": "..." }`;
 
-        const model = genAI.getGenerativeModel({ model: "gemini-pro" });
-        const result = await model.generateContent(prompt);
+        let responseText = await callGeminiDirect(prompt);
         
-        let responseText = result.response.text().trim();
         const ticks = String.fromCharCode(96, 96, 96);
         responseText = responseText.split(ticks + 'json').join('').split(ticks).join('').trim();
         
