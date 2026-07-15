@@ -1322,7 +1322,7 @@ app.post('/api/predict-hr-schedule', async (req, res) => {
         
         Format attendu : { "rushPeriods": ["Jeudi 20h", ...], "deadPeriods": [...], "hiringAdvice": "...", "vacationSuggestions": "..." }`;
 
-        const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
         const result = await model.generateContent(prompt);
         
         let responseText = result.response.text().trim();
