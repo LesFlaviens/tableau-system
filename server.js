@@ -799,6 +799,47 @@ app.post('/api/twilio/call-me', async (req, res) => {
         res.status(500).json({ success: false, error: "Erreur serveur email" });
     }
 });
+
+// 📊 ROUTE D'EXPORTATION DES VRAIS TICKETS POUR LE CENTRE DE TÉLÉCHARGEMENT
+app.get('/api/export-caisse-csv', async (req, res) => {
+    try {
+        const tenantID = cleanString(req.query.tenantID);
+        if (!tenantID) return res.status(400).send("ID Restaurant manquant.");
+
+        // On récupère l'état de la caisse pour ce restaurant
+        const state = await AppState.findOne({ tenantID });
+        const history = state?.activeOrders?.FINANCIAL_HISTORY?.data || [];
+
+        // Si aucun ticket n'est trouvé
+        if (history.length === 0) {
+            return res.send("Date,Numero Ticket,Montant,Moyen Paiement\nAucune transaction enregistree,,,\n");
+        }
+
+        // On construit l'en-tête du fichier CSV
+        let csvContent = "Date,Numero Ticket,Montant,Moyen Paiement\n";
+
+        // On boucle sur chaque vrai ticket stocké en base de données
+        history.forEach(tck => {
+            const date = tck.date || new Date(tck.timestamp || Date.now()).toLocaleDateString('fr-FR');
+            const id = tck.id || "TCK-INCONNU";
+            const montant = tck.total || tck.amount || 0;
+            const methode = tck.method || tck.paymentMethod || "Non spécifié";
+            
+            csvContent += `${date},${id},${montant} €,\"${methode}\"\n`;
+        });
+
+        // On configure les en-têtes HTTP pour forcer le navigateur à télécharger un fichier
+        res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+        res.setHeader('Content-Disposition', 'attachment; filename=Export_Comptable_Z_Caisse.csv');
+        
+        // On envoie le contenu du fichier
+        res.send(csvContent);
+
+    } catch (error) {
+        console.error("Erreur export CSV :", error);
+        res.status(500).send("Erreur serveur lors de la génération de l'export.");
+    }
+});
 // ==========================================
 // API RESTAURANT SYNCHRONISATION
 // ==========================================
