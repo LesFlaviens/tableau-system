@@ -700,7 +700,38 @@ app.post('/api/smart-reservation', async (req, res) => {
         res.status(500).json({ success: false, error: "L'IA du Maître d'Hôtel est momentanément indisponible." }); 
     }
 });
+// =========================================================================
+// ✉️ DEMANDE DE DÉMO COMPLÈTE (VIA GMAIL DIRECT)
+// =========================================================================
+app.post('/api/twilio/request-demo', async (req, res) => {
+    const { name, email, phone } = req.body;
+    
+    try {
+        const transporter = nodemailer.createTransport({
+            service: 'gmail',
+            auth: {
+                user: 'flavieniche@gmail.com',
+                pass: 'atebfwhijmgmavcy' // Utilise ton mot de passe d'application Google de 16 lettres
+            }
+        });
 
+        const mailOptions = {
+            from: 'flavieniche@gmail.com',
+            to: 'iche.flavien@ichef.ch',
+            subject: `🚨 iCHEF OS - NOUVELLE DEMANDE DE DÉMO : ${name} 🚨`,
+            text: `Un nouveau prospect demande une démonstration de l'écosystème iCHEF OS.\n\n👤 Nom / Établissement : ${name}\n📧 Adresse E-mail : ${email}\n📞 Numéro de téléphone : ${phone}`
+        };
+
+        await transporter.sendMail(mailOptions);
+        
+        console.log(`✅ Alerte de démo EMAIL envoyée pour : ${name}`);
+        res.json({ success: true, message: "Demande de démo traitée avec succès." });
+
+    } catch (error) {
+        console.error("❌ Erreur Email Démo :", error.message);
+        res.status(500).json({ success: false, error: "Erreur serveur email démo" });
+    }
+});
 // =========================================================================
 // 📞 DEMANDE DE RAPPEL (VIA GMAIL DIRECT)
 // =========================================================================
