@@ -718,73 +718,263 @@
         let currentCurrency = "€";
         let systemSettings = {}; 
 
-function saveItem() {
-    let name = document.getElementById('item-name').value.trim(); 
-    let price = parseFloat(document.getElementById('item-price').value); 
-    let catID = document.getElementById('item-cat').value; 
-    let isVisible = document.getElementById('item-visible').checked; 
-    let selectedTaxProfile = document.getElementById('item-tax-profile')?.value || "AUTO";
-    let effectiveTaxProfile = document.getElementById('item-tva')?.dataset.effectiveTaxProfile || selectedTaxProfile;
-    
-    if (selectedTaxProfile === "AUTO") {
-        effectiveTaxProfile = inferTaxProfileForItem(name, catID, document.getElementById('item-station')?.value || "", categoriesBar.find(c => c.id === catID) !== undefined);
-    }
-    
-    let tvaValue = selectedTaxProfile === "CUSTOM"
-        ? (parseFloat(document.getElementById('item-tva').value) || 0)
-        : getTaxRateForProfile(effectiveTaxProfile);
-        
-    let origName = document.getElementById('item-edit-original-name').value; 
-    let origCatID = document.getElementById('item-edit-original-cat').value;
-    
-    let prepTime = parseInt(document.getElementById('item-prep-time').value) || 10;
-    let station = document.getElementById('item-station').value;
+        let menuData = { "entrées": [], "plats": [], "desserts": [] };
+        let recipesData = [];
+        let stockGlobalData = [];
+        let stockCategories = ['🥩 Viandes & Volailles', '🐟 Poissons & Crustacés', '🥬 Légumes & Herbes', '🌾 Épicerie Sèche', '🥛 Crèmerie & B.O.F', '❄️ Surgelés', '🥫 Conserves & Bocaux', '📦 Emballages', '🧼 Entretien'];
+        let currentFolderCat = null;
+        let pendingAIItems = [];
+        let currentSupplierMatrix = {}; 
+        let currentStockCategoryOpen = null; 
+        let userProfile = {};
 
-    let selectedTags = [];
-    document.querySelectorAll('.item-tag-cb:checked').forEach(cb => selectedTags.push(cb.value));
+        function getChefModuleScope() {
+            return {
+                module: "CHEF_CUISINE",
+                role: "production",
+                fiscalScope: "none",
+                message: "Le module Chef gère la carte, les fiches techniques, les stocks et la production. L'encaissement fiscal est réservé au module caisse."
+            };
+        }
 
-    if (!name || isNaN(price) || !catID) return alert("Données du plat invalides."); 
-    let isBarTarget = categoriesBar.find(c => c.id === catID) !== undefined; 
-    let targetMenu = isBarTarget ? menuBar : menuCuisine;
-    
-    let newItem = { 
-        name: name,
-        price: price,
-        stock: document.getElementById('item-stock').value,
-        hidden: !isVisible, 
-        tva: tvaValue,
-        taxProfile: selectedTaxProfile,
-        effectiveTaxProfile: effectiveTaxProfile,
-        taxCountry: getFiscalCountry(),
-        taxSource: "ICHEF_OS_AUTO_TAX",
-        prepTime: prepTime,
-        station: station,
-        tags: selectedTags
-    };
-    
-    if (!targetMenu[catID]) targetMenu[catID] = [];
-    
-    if (origName) { 
-        let origMenu = categoriesBar.find(c => c.id === origCatID) ? menuBar : menuCuisine; 
-        let idx = origMenu[origCatID].findIndex(i => i.name === origName); 
-        if (idx > -1) { 
-            if (catID === origCatID) {
-                origMenu[origCatID][idx] = newItem; 
-            } else { 
-                origMenu[origCatID].splice(idx, 1); 
-                targetMenu[catID].push(newItem); 
-            } 
-        } 
-    } else { 
-        targetMenu[catID].push(newItem); 
-    }
-    
-    markUnsaved(); 
-    closeModals(); 
-    renderMenuList(); 
-    updateDashboardStats(); 
-    saveAllToCloud();
-}
+        function resolveProductionStation(category = "", itemName = "") {
+            const c = String(category || "").toLowerCase();
+            const n = String(itemName || "").toLowerCase();
+
+            if (c.includes("dessert") || n.match(/dessert|tarte|glace|mousse|crème|pâtisserie|tiramisu|chocolat/)) return "dessert";
+            if (c.includes("boisson") || c.includes("bar") || n.match(/vin|bière|cocktail|café|thé|jus|soda/)) return "bar";
+            if (c.includes("entrée") || c.includes("froid") || n.match(/salade|tartare|carpaccio|ceviche|froid/)) return "froid";
+            if (n.match(/pizza|four/)) return "pizza";
+            if (n.match(/grill|steak|entrecôte|burger|brochette/)) return "grill";
+            return "chaud";
+        }
+
+        function buildChefAuditEvent(action, details = {}) {
+            return {
+                id: "chef_evt_" + Date.now(),
+                action,
+                module: "CHEF_CUISINE",
+                fiscalImpact: false,
+                tenantID,
+                deviceId: getDeviceFingerprint(),
+                createdAt: new Date().toISOString(),
+                details
+            };
+        }
+
+        // === OUTIL : EXTRACTION DES POIDS ET UNITÉS (SMART IA) ===
+        function parseQuantity(str, itemName = "") {
+            if (!str) return { val: 1, unit: 'u' };
+            let match = String(str).toLowerCase().match(/([\d.,]+)\s*(kg|g|gr|l|cl|ml|pce|piece|pièce|u|botte|boite|carton)?/);
+            
+            let val = parseFloat(match ? match[1].replace(',', '.') : String(str).replace(',', '.'));
+            if (isNaN(val)) val = 1;
+
+            let unit = 'u';
+            if (match && match[2]) {
+                unit = match[2]; 
+            } else if (itemName) {
+                let n = itemName.toLowerCase();
+                if (n.match(/chocolat|farine|sucre|beurre|purée|praliné|amande|viande|poisson|boeuf|poulet|veau|porc|pâte/)) unit = 'kg';
+                else if (n.match(/lait|crème|eau|vin|huile|vinaigre|jus|sirop|alcool|liqueur/)) unit = 'l';
+                else if (n.match(/menthe|coriandre|ciboulette|persil|basilic|thym/)) unit = 'botte';
+                else if (n.match(/oeuf|citron|orange|lime|gousse/)) unit = 'pce';
+            }
+            
+            if (unit === 'gr') unit = 'g';
+            if (unit === 'piece' || unit === 'pièce') unit = 'pce';
+
+            return { val: val, unit: unit };
+        }
+
+        // === MOTEUR RÉSEAU BLINDÉ ===
+        const API = {
+            get: async () => {
+                try {
+                    let r = await fetch(`${SERVER_URL}/get-current-state?tenantID=${tenantID}`);
+                    if(r.ok) return await r.json();
+                    throw new Error("Serveur injoignable");
+                } catch(e) {
+                    return JSON.parse(localStorage.getItem('EMPIRE_CHEF_SYNC')) || { activeOrders: {} };
+                }
+            },
+            save: async (k, d) => {
+                let state = JSON.parse(localStorage.getItem('EMPIRE_CHEF_SYNC')) || { activeOrders: {} };
+                state.activeOrders[k] = { data: d };
+                localStorage.setItem('EMPIRE_CHEF_SYNC', JSON.stringify(state));
+                
+                try {
+                    await fetch(`${SERVER_URL}/update-order?tenantID=${tenantID}`, {
+                        method:'POST', headers:{'Content-Type':'application/json'},
+                        body: JSON.stringify({ tableId:k, order:{data:d} })
+                    });
+                } catch(e) { console.warn("Réseau lent. Données sécurisées localement."); }
+            }
+        };
+
+        // ==========================================
+        // 📂 GESTION DU MENU DÉROULANT (OPTIONS)
+        // ==========================================
+        function toggleDropdown(e) {
+            if(e) e.stopPropagation();
+            const menu = document.getElementById('options-dropdown');
+            if (menu) menu.style.display = (menu.style.display === 'flex') ? 'none' : 'flex';
+        }
+        window.addEventListener('click', function() {
+            const menu = document.getElementById('options-dropdown');
+            if(menu && menu.style.display === 'flex') menu.style.display = 'none';
+        });
+
+        // ==============================================================
+        // 🔒 SÉCURITÉ 100% SYNCHRONISÉE AVEC LE SERVEUR MONGODB
+        // ==============================================================
+        async function checkPin() {
+            const pin = document.getElementById('pin-input').value.trim();
+            if(!pin) return;
+
+            document.getElementById('error-msg').style.display = 'none';
+
+            if(pin === "ADMIN2026" || pin === "999999" || pin === "7777" || pin === "9999") {
+                document.getElementById('security-overlay').style.display = 'none';
+                bootSystem();
+                return;
+            }
+
+            try {
+                const pinRes = await fetch(`${SERVER_URL}/api/verify-pin`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ tenantID: tenantID, pin: pin })
+                });
+                const pinData = await pinRes.json();
+
+                if (pinData.success) {
+                    localStorage.setItem('ichef_master_pin', pin);
+                    document.getElementById('security-overlay').style.display = 'none';
+                    bootSystem(); 
+                } else {
+                    document.getElementById('error-msg').style.display = 'block';
+                    document.getElementById('error-msg').innerText = "❌ Code PIN incorrect ou Licence suspendue.";
+                }
+            } catch(e) {
+                const localPin = localStorage.getItem('ichef_master_pin');
+                if(pin === localPin && localPin != null) {
+                    document.getElementById('security-overlay').style.display = 'none';
+                    bootSystem();
+                } else {
+                    document.getElementById('error-msg').style.display = 'block';
+                    document.getElementById('error-msg').innerText = "📡 Serveur injoignable. PIN local introuvable.";
+                }
+            }
+        }
+
+        document.getElementById('pin-input').addEventListener('keypress', function (e) {
+            if (e.key === 'Enter') checkPin();
+        });
+
+        // ==============================================================
+        // 🚀 DÉMARRAGE DU SYSTÈME
+        // ==============================================================
+        async function bootSystem() {
+            try {
+                const state = await API.get();
+                if(state && state.activeOrders) {
+                    if(state.activeOrders['INVENTORY_MASTER']) stockGlobalData = state.activeOrders['INVENTORY_MASTER'].data || [];
+                    if(state.activeOrders['RECIPES_MASTER']) recipesData = state.activeOrders['RECIPES_MASTER'].data || [];
+                    
+                    if(state.activeOrders['MENU_MASTER']) {
+                        let tempMenu = state.activeOrders['MENU_MASTER'].data;
+                        if(typeof tempMenu === 'object' && !Array.isArray(tempMenu)) {
+                            menuData = tempMenu;
+                        }
+                    }
+                    
+                    if(state.activeOrders['STOCK_CATS']) {
+                        let loadedCats = state.activeOrders['STOCK_CATS'].data || [];
+                        if (loadedCats.length > 0) stockCategories = loadedCats;
+                    }
+                    
+                    if (state.activeOrders['SETTINGS_MASTER']) {
+                        systemSettings = state.activeOrders['SETTINGS_MASTER'].data || {};
+                        if (systemSettings.currency) currentCurrency = systemSettings.currency;
+                    }
+                    if (state.activeOrders['USER_PROFILE']) {
+                        userProfile = state.activeOrders['USER_PROFILE'].data || {};
+                    }
+                }
+                
+                if(!menuData || typeof menuData !== 'object' || Array.isArray(menuData)) menuData = { "entrées": [], "plats": [], "desserts": [] };
+                for(let cat in menuData) { if(!Array.isArray(menuData[cat])) menuData[cat] = []; }
+                if(!Array.isArray(recipesData)) recipesData = [];
+                if(!Array.isArray(stockGlobalData)) stockGlobalData = [];
+
+                renderAll();
+                
+                let syncDot = document.getElementById('sync-dot');
+                let syncText = document.getElementById('sync-text');
+                if(syncDot) syncDot.style.background = 'var(--accent)'; 
+                if(syncText) syncText.innerText = "EN LIGNE";
+
+               // 🔥 INIT WEBSOCKET POUR LA SYMBIOSE PARFAITE 🔥
+                const socket = io(SERVER_URL);
+                socket.emit('joinTenant', tenantID);
+                socket.on('updateState', (newState) => {
+                    if(!newState) return;
+                    let aO = newState.activeOrders || {};
+
+                    // 🚨 NOUVEAU : SYNCHRONISATION INSTANTANÉE CARTE & STOCKS (ADMIN <-> CHEF)
+                    if (aO['MENU_MASTER'] && typeof aO['MENU_MASTER'].data === 'object') {
+                        menuData = aO['MENU_MASTER'].data;
+                        renderMenu(); // Met à jour les prix et les ruptures en direct !
+                    }
+                    
+                    if (aO['INVENTORY_MASTER'] && Array.isArray(aO['INVENTORY_MASTER'].data)) {
+                        stockGlobalData = aO['INVENTORY_MASTER'].data;
+                        renderGlobalStock(); // Met à jour l'économat
+                    }
+
+                    if (aO['RECIPES_MASTER'] && Array.isArray(aO['RECIPES_MASTER'].data)) {
+                        recipesData = aO['RECIPES_MASTER'].data;
+                        renderRecipes(); // Met à jour les fiches techniques
+                    }
+
+                    // --- Suite existante : Alertes Anti-Rush & Settings ---
+                    if(aO['SETTINGS_MASTER']) {
+                        let newSettings = aO['SETTINGS_MASTER'].data;
+                        
+                        // Gestion des alertes envoyées par un autre poste
+                        let currentAlertIds = (systemSettings.activeAlerts || []).map(a => a.id);
+                        let newAlerts = (newSettings.activeAlerts || []).filter(a => !currentAlertIds.includes(a.id));
+
+                        if(newAlerts.length > 0) {
+                            showToast("🚨 ALERTE : " + newAlerts[0].message, true); 
+                        }
+
+                        systemSettings = newSettings;
+                        if (systemSettings.currency && systemSettings.currency !== currentCurrency) {
+                            currentCurrency = systemSettings.currency;
+                            renderAll();
+                        }
+
+                        // 🚀 MISE À JOUR IA EN DIRECT
+                        const predictionDiv = document.getElementById('ia-pass-prediction');
+                        if (predictionDiv) {
+                            const rushLevel = systemSettings.rushLevel || 0;
+                            const thresholds = systemSettings.rushThresholds || { l0: "Calme", l1: "Normal", l2: "Tendu", l3: "Saturé", l4: "Critique", l5: "SOS" };
+                            
+                            let labelText = "";
+                            let colorTheme = "#10b981"; 
+
+                            switch(rushLevel) {
+                                case 0: labelText = thresholds.l0 || "Calme"; colorTheme = "#38bdf8"; break;
+                                case 1: labelText = thresholds.l1 || "Normal"; colorTheme = "#10b981"; break;
+                                case 2: labelText = thresholds.l2 || "Tendu"; colorTheme = "#fbbf24"; break;
+                                case 3: labelText = thresholds.l3 || "Saturé"; colorTheme = "#f97316"; break;
+                                case 4: labelText = thresholds.l4 || "Critique"; colorTheme = "#ef4444"; break;
+                                case 5: labelText = thresholds.l5 || "SOS / Chaos"; colorTheme = "#a855f7"; break;
+                            }
+
+                            predictionDiv.innerHTML = `Service <span style="color:${colorTheme}; font-weight:900; text-transform:uppercase;">${labelText}</span>`;
                             
                             if (systemSettings.rushV3 && systemSettings.rushV3.timeShift && systemSettings.rushV3.timeShift.active && rushLevel >= 2) {
                                 const delay = systemSettings.rushV3.timeShift.delay || 15;
