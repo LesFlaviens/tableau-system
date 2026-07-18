@@ -2768,6 +2768,7 @@ async function secureFetch(input, init = {}) {
         }
 
         function openItemModal(name = null, cat = null, isBar = false) {
+            document.querySelectorAll('.item-tag-cb').forEach(cb => cb.checked = false);
             document.getElementById('item-edit-original-name').value = name || ""; 
             if (name && cat) {
                 let catObj = (isBar ? categoriesBar : categoriesCuisine).find(c => c.label === cat) || {id: cat}; 
@@ -2800,8 +2801,6 @@ async function secureFetch(input, init = {}) {
         }
 
       
-            let selectedTags = [];
-document.querySelectorAll('.item-tag-cb:checked').forEach(cb => selectedTags.push(cb.value));
         function saveItem() {
             let name = document.getElementById('item-name').value.trim(); 
             let price = parseFloat(document.getElementById('item-price').value); 
@@ -2809,21 +2808,67 @@ document.querySelectorAll('.item-tag-cb:checked').forEach(cb => selectedTags.pus
             let isVisible = document.getElementById('item-visible').checked; 
             let selectedTaxProfile = document.getElementById('item-tax-profile')?.value || "AUTO";
             let effectiveTaxProfile = document.getElementById('item-tva')?.dataset.effectiveTaxProfile || selectedTaxProfile;
-            if (selectedTaxProfile === "AUTO") effectiveTaxProfile = inferTaxProfileForItem(name, catID, document.getElementById('item-station')?.value || "", categoriesBar.find(c => c.id === catID) !== undefined);
+            
+            if (selectedTaxProfile === "AUTO") {
+                effectiveTaxProfile = inferTaxProfileForItem(name, catID, document.getElementById('item-station')?.value || "", categoriesBar.find(c => c.id === catID) !== undefined);
+            }
+            
             let tvaValue = selectedTaxProfile === "CUSTOM"
                 ? (parseFloat(document.getElementById('item-tva').value) || 0)
                 : getTaxRateForProfile(effectiveTaxProfile);
+                
             let origName = document.getElementById('item-edit-original-name').value; 
             let origCatID = document.getElementById('item-edit-original-cat').value;
             
             let prepTime = parseInt(document.getElementById('item-prep-time').value) || 10;
             let station = document.getElementById('item-station').value;
 
+            // 🚨 ICI : On récupère les tags BIEN À L'INTÉRIEUR de la fonction
+            let selectedTags = [];
+            document.querySelectorAll('.item-tag-cb:checked').forEach(cb => selectedTags.push(cb.value));
+
             if (!name || isNaN(price) || !catID) return alert("Invalide"); 
             let isBarTarget = categoriesBar.find(c => c.id === catID) !== undefined; 
             let targetMenu = isBarTarget ? menuBar : menuCuisine;
             
-         let newItem = { 
+            // 🚨 LA NOUVELLE DÉCLARATION DU PLAT
+            let newItem = { 
+                name: name,
+                price: price,
+                stock: document.getElementById('item-stock').value,
+                hidden: !isVisible, 
+                tva: tvaValue,
+                taxProfile: selectedTaxProfile,
+                effectiveTaxProfile: effectiveTaxProfile,
+                taxCountry: getFiscalCountry(),
+                taxSource: "ICHEF_OS_AUTO_TAX",
+                prepTime: prepTime,
+                station: station,
+                tags: selectedTags // 👈 Ajout des tags ici
+            };
+            
+            if (!targetMenu[catID]) targetMenu[catID] = [];
+            if (origName) { 
+                let origMenu = categoriesBar.find(c => c.id === origCatID) ? menuBar : menuCuisine; 
+                let idx = origMenu[origCatID].findIndex(i => i.name === origName); 
+                if (idx > -1) { 
+                    if (catID === origCatID) {
+                        origMenu[origCatID][idx] = newItem; 
+                    } else { 
+                        origMenu[origCatID].splice(idx, 1); 
+                        targetMenu[catID].push(newItem); 
+                    } 
+                } 
+            } else { 
+                targetMenu[catID].push(newItem); 
+            }
+            
+            markUnsaved(); 
+            closeModals(); 
+            renderMenuList(); 
+            updateDashboardStats(); 
+            saveAllToCloud();
+        }
     name: name,
     price: price,
     stock: document.getElementById('item-stock').value,
