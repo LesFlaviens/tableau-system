@@ -1169,9 +1169,9 @@ app.get('/debug-fichiers', (req, res) => {
     });
 });
 
-// ==========================================
-// 🎯 PORTAIL DES DEMANDES DE PARTENARIAT DÉTAILLÉ
-// ==========================================
+// =========================================================================
+// 🎯 PORTAIL DES DEMANDES DE PARTENARIAT (VITRINE & DEMO) + ALERTES SMS
+// =========================================================================
 app.post('/api/nouvelle-demande-demo', async (req, res) => {
     try {
         const { tenantID, restaurant, email, phone } = req.body;
@@ -1180,13 +1180,13 @@ app.post('/api/nouvelle-demande-demo', async (req, res) => {
         const codePinAlea = Math.floor(1000 + Math.random() * 9000).toString();
         const expirationTime = new Date(Date.now() + 24 * 60 * 60 * 1000);
 
-        // 👉 C'EST ICI QUE LE COMPTE EST CRÉÉ POUR TA TOUR DE CONTRÔLE
+        // 1. Création du compte dans la base de données
         await Tenant.create({
             tenantID: cleanString(tenantID),
             clientName: restaurant,
             email: email,
             phone: phone,
-            status: 'SUSPENDU', // En attente de ta validation
+            status: 'SUSPENDU', // En attente de ta validation dans l'Empire Panel
             plan: 'EMPIRE',     
             specialite: 'cuisine',
             pin: codePinAlea,   
@@ -1196,41 +1196,39 @@ app.post('/api/nouvelle-demande-demo', async (req, res) => {
             demoExpiration: expirationTime
         });
 
-        // 2. Initialisation des commandes (vide au départ)
+        // Initialisation de l'état des commandes
         await AppState.create({
             tenantID: cleanString(tenantID),
             activeOrders: {}
         });
 
-        // 🚨 PRÉPARATION DES DONNÉES DE QUALIFICATION POUR LES ALERTES 🚨
+        // Préparation des détails pour l'alerte
         const d = req.body.details || {};
         let qualification = `Type Précis: ${d.type || 'Non précisé'}\n`;
-        if (d.type && d.type.includes('hotel')) {
-            qualification += `🏨 Catégorie: ${d.stars || 'N/A'} - 🚪 Chambres: ${d.rooms || 0}\n`;
-        }
-        if (d.type && d.type.includes('resto')) {
-            qualification += `🪑 Couverts: ${d.seats || 0}\n📍 Zones: ${d.zones || 'N/A'}\n`;
-        }
+        if (d.type && d.type.includes('hotel')) qualification += `🏨 Catégorie: ${d.stars || 'N/A'} - 🚪 Chambres: ${d.rooms || 0}\n`;
+        if (d.type && d.type.includes('resto')) qualification += `🪑 Couverts: ${d.seats || 0}\n📍 Zones: ${d.zones || 'N/A'}\n`;
 
-        // 📡 ENVOI DE L'ALERTE SMS DIRECTEUR (TWILIO)
+        // 📡 1ère ALERTE SMS : Pour toi (Le Directeur)
         if (twilioClient) {
             try {
                 const envTwilioNum = process.env.TWILIO_PHONE_NUMBER || '';
-                const fromNumber = envTwilioNum.replace('whatsapp:', '');
-                const toNumber = '+330641437265';
+                const fromNumber = envTwilioNum.replace('whatsapp:', '').trim();
+                
+                // ✅ LE NUMÉRO CORRIGÉ (Format international strict sans le 0)
+                const toNumber = '+33641437265'; 
 
                 await twilioClient.messages.create({
-                    body: `🔥 NOUVEAU PARTENAIRE QUALIFIÉ : ${restaurant}\n📞 Tél: ${phone}\n🆔 TenantID: ${tenantID}\n\n📊 INFOS PROFIL :\n${qualification}\n🎯 PROJET: ${d.projet || 'Aucun'}`,
+                    body: `🔥 iCHEF OS — NOUVEAU LEAD VITRINE !\n\nÉtablissement: ${restaurant}\n📞 Tél: ${phone}\n✉️ Email: ${email}\n🆔 ID Généré: ${tenantID}\n\n📊 PROFIL :\n${qualification}`,
                     from: fromNumber,
                     to: toNumber
                 });
-                console.log(`✅ Alerte SMS envoyée.`);
+                console.log(`✅ Alerte SMS Directeur envoyée avec succès.`);
             } catch (smsErr) {
-                console.error("❌ Erreur Twilio SMS :", JSON.stringify(smsErr, null, 2));
+                console.error("❌ Échec de l'envoi de l'alerte SMS Directeur :", smsErr.message);
             }
         }
 
-        // ✨ SMS DU CLIENT (Moteur d'Onboarding VIP) ✨
+        // 📱 2ème ALERTE SMS : Le SMS automatique de bienvenue pour ton client
         if (twilioClient && phone) {
             try {
                 let clientPhone = phone.trim().replace(/\s+/g, '');
@@ -1241,20 +1239,20 @@ app.post('/api/nouvelle-demande-demo', async (req, res) => {
                 }
 
                 const envTwilioNum = process.env.TWILIO_PHONE_NUMBER || '';
-                const fromNumber = envTwilioNum.replace('whatsapp:', '');
+                const fromNumber = envTwilioNum.replace('whatsapp:', '').trim();
 
                 await twilioClient.messages.create({
-                    body: `✨ Bienvenue chez iCHEF OS, ${restaurant} !\n\nVotre écosystème sur-mesure est en cours de préparation par notre équipe.\n\n🔑 VOS ACCÈS PROVISOIRES :\n🆔 Identifiant : ${tenantID}\n🔒 Code PIN : ${codePinAlea}\n\nUn expert va vous contacter sous 24h.\nL'équipe iCHEF.`,
+                    body: `✨ Bienvenue chez iCHEF OS, ${restaurant} !\n\nVotre écosystème sur-mesure est en cours de génération.\n\n🔑 ACCÈS PROVISOIRES :\n🆔 Identifiant : ${tenantID}\n🔒 Code PIN : ${codePinAlea}\n\nUn expert de notre brigade va vous contacter sous 24h pour valider votre installation.\nL'équipe iCHEF.`,
                     from: fromNumber,
-                    to: clientPhone // SMS Normal
+                    to: clientPhone
                 });
-                console.log(`✅ SMS de bienvenue envoyé au partenaire : ${clientPhone}`);
+                console.log(`✅ SMS de bienvenue envoyé au client : ${clientPhone}`);
             } catch (err) {
-                console.error("❌ Erreur d'envoi SMS au client :", JSON.stringify(err, null, 2));
+                console.error("❌ Échec de l'envoi du SMS de bienvenue au client :", err.message);
             }
         }
 
-        // 🚨 ENVOI SILENCIEUX DE L'EMAIL DE NOTIFICATION (FORMSUBMIT)
+        // 🚨 3ème ALERTE : Envoi de l'e-mail de notification interne (FormSubmit)
         try {
             const urlEmail = "https://formsubmit.co/ajax/iche.flavien@ichef.ch";
             const payload = {
@@ -1265,63 +1263,135 @@ app.post('/api/nouvelle-demande-demo', async (req, res) => {
                 "Identifiant Généré (ID)": tenantID,
                 "Code PIN d'accès temporaire": codePinAlea,
                 "Qualification Profil": qualification,
-                "Projet / Besoin exprimé": d.projet || 'Aucun détail fourni',
-                "Statut": "Bloqué (En attente d'activation manuelle depuis votre panel Admin)",
-                _template: "box" 
+                "Statut": "Bloqué (En attente d'activation manuelle depuis votre panel Admin)"
             };
 
             fetch(urlEmail, {
                 method: "POST",
                 headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
                 body: JSON.stringify(payload)
-            }).then(() => console.log("✅ Email d'alerte interne envoyé."))
-              .catch(err => console.log("❌ Erreur silencieuse email interne :", err));
+            }).then(() => console.log("✅ Email d'alerte interne envoyé."));
             
-        } catch (err) { console.error(err); }
+        } catch (err) { console.error("Erreur e-mail alerte :", err.message); }
 
-        // ✉️ ENVOI AUTOMATIQUE DE L'E-MAIL DE BIENVENUE AU PARTENAIRE
-        try {
-            const urlEmailClient = `https://formsubmit.co/ajax/${email}`; 
-            const clientPayload = {
-                _subject: "✨ Bienvenue dans l'élite iCHEF OS — Préparation de votre écosystème",
-                "Message de la Brigade iCHEF": `Bonjour, vous ne devenez pas un simple numéro ou un "client" de plus. Vous devenez un véritable Partenaire. 
-
-Étant nous-mêmes issus du monde de la restauration, nous connaissons la réalité du terrain : la pression du coup de feu, les serveurs débordés, et ces dizaines de commandes supplémentaires qui s'évaporent parce que les clients n'osent pas solliciter une équipe déjà à 200%.
-
-Votre espace privé est actuellement en cours de pré-génération sur nos serveurs sécurisés.
-
-VOS IDENTIFIANTS PROVISOIRES :
-🆔 ID Restaurant : ${tenantID}
-🔑 Code PIN Master : ${codePinAlea}
-
-PROCHAINES ÉTAPES :
-1. L'Appel de Synchronisation (Sous 24h) : Un expert de notre brigade va vous contacter sur ce numéro : ${phone}. Ce sera un appel court pour comprendre la topographie de vos espaces.
-2. Le Paramétrage Sur-Mesure : Nous configurons votre carte, le Mode Anti-Rush et les options de Time-Shifting.
-3. Le Déploiement : Vous recevrez vos puces NFC haut de gamme, prêtes à poser.
-
-Préparez-vous à vivre votre premier service sans stress.
-
-Flavien Iché & l'équipe iCHEF`,
-                _template: "box"
-            };
-
-            fetch(urlEmailClient, {
-                method: "POST",
-                headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
-                body: JSON.stringify(clientPayload)
-            }).then(() => console.log(`✉️ Mail de bienvenue envoyé à ${email}`))
-              .catch(err => console.error("❌ Erreur mail client :", err));
-
-        } catch (mailClientErr) { console.error("Erreur envoi mail client:", mailClientErr); }
-
-        res.json({ success: true, message: "Demande enregistrée avec succès. Workflow déclenché." });
+        res.json({ success: true, message: "Demande enregistrée avec succès. Workflows Twilio et Email déclenchés." });
 
     } catch (e) {
         console.error("Erreur création prospect :", e);
-        res.status(500).json({ success: false, error: "Cet identifiant d'établissement existe déjà." });
+        res.status(500).json({ success: false, error: "Cet identifiant d'établissement existe déjà ou erreur serveur." });
+    }
+});// =========================================================================
+// 🎯 PORTAIL DES DEMANDES DE PARTENARIAT (VITRINE & DEMO) + ALERTES SMS
+// =========================================================================
+app.post('/api/nouvelle-demande-demo', async (req, res) => {
+    try {
+        const { tenantID, restaurant, email, phone } = req.body;
+        console.log(`🌟 ENREGISTREMENT SÉCURISÉ NOUVEAU PARTENAIRE : ${restaurant}`);
+        
+        const codePinAlea = Math.floor(1000 + Math.random() * 9000).toString();
+        const expirationTime = new Date(Date.now() + 24 * 60 * 60 * 1000);
+
+        // 1. Création du compte dans la base de données
+        await Tenant.create({
+            tenantID: cleanString(tenantID),
+            clientName: restaurant,
+            email: email,
+            phone: phone,
+            status: 'SUSPENDU', // En attente de ta validation dans l'Empire Panel
+            plan: 'EMPIRE',     
+            specialite: 'cuisine',
+            pin: codePinAlea,   
+            maxScreens: 5,
+            maxStaff: 999,
+            registeredDevices: [],
+            demoExpiration: expirationTime
+        });
+
+        // Initialisation de l'état des commandes
+        await AppState.create({
+            tenantID: cleanString(tenantID),
+            activeOrders: {}
+        });
+
+        // Préparation des détails pour l'alerte
+        const d = req.body.details || {};
+        let qualification = `Type Précis: ${d.type || 'Non précisé'}\n`;
+        if (d.type && d.type.includes('hotel')) qualification += `🏨 Catégorie: ${d.stars || 'N/A'} - 🚪 Chambres: ${d.rooms || 0}\n`;
+        if (d.type && d.type.includes('resto')) qualification += `🪑 Couverts: ${d.seats || 0}\n📍 Zones: ${d.zones || 'N/A'}\n`;
+
+        // 📡 1ère ALERTE SMS : Pour toi (Le Directeur)
+        if (twilioClient) {
+            try {
+                const envTwilioNum = process.env.TWILIO_PHONE_NUMBER || '';
+                const fromNumber = envTwilioNum.replace('whatsapp:', '').trim();
+                
+                // ✅ LE NUMÉRO CORRIGÉ (Format international strict sans le 0)
+                const toNumber = '+33641437265'; 
+
+                await twilioClient.messages.create({
+                    body: `🔥 iCHEF OS — NOUVEAU LEAD VITRINE !\n\nÉtablissement: ${restaurant}\n📞 Tél: ${phone}\n✉️ Email: ${email}\n🆔 ID Généré: ${tenantID}\n\n📊 PROFIL :\n${qualification}`,
+                    from: fromNumber,
+                    to: toNumber
+                });
+                console.log(`✅ Alerte SMS Directeur envoyée avec succès.`);
+            } catch (smsErr) {
+                console.error("❌ Échec de l'envoi de l'alerte SMS Directeur :", smsErr.message);
+            }
+        }
+
+        // 📱 2ème ALERTE SMS : Le SMS automatique de bienvenue pour ton client
+        if (twilioClient && phone) {
+            try {
+                let clientPhone = phone.trim().replace(/\s+/g, '');
+                if (clientPhone.startsWith('0')) {
+                    clientPhone = '+33' + clientPhone.substring(1);
+                } else if (!clientPhone.startsWith('+')) {
+                    clientPhone = '+' + clientPhone;
+                }
+
+                const envTwilioNum = process.env.TWILIO_PHONE_NUMBER || '';
+                const fromNumber = envTwilioNum.replace('whatsapp:', '').trim();
+
+                await twilioClient.messages.create({
+                    body: `✨ Bienvenue chez iCHEF OS, ${restaurant} !\n\nVotre écosystème sur-mesure est en cours de génération.\n\n🔑 ACCÈS PROVISOIRES :\n🆔 Identifiant : ${tenantID}\n🔒 Code PIN : ${codePinAlea}\n\nUn expert de notre brigade va vous contacter sous 24h pour valider votre installation.\nL'équipe iCHEF.`,
+                    from: fromNumber,
+                    to: clientPhone
+                });
+                console.log(`✅ SMS de bienvenue envoyé au client : ${clientPhone}`);
+            } catch (err) {
+                console.error("❌ Échec de l'envoi du SMS de bienvenue au client :", err.message);
+            }
+        }
+
+        // 🚨 3ème ALERTE : Envoi de l'e-mail de notification interne (FormSubmit)
+        try {
+            const urlEmail = "https://formsubmit.co/ajax/iche.flavien@ichef.ch";
+            const payload = {
+                _subject: `🚨 iCHEF OS : Nouveau Lead Qualifié - ${restaurant}`,
+                "Établissement": restaurant,
+                "Téléphone": phone,
+                "Email du gérant": email,
+                "Identifiant Généré (ID)": tenantID,
+                "Code PIN d'accès temporaire": codePinAlea,
+                "Qualification Profil": qualification,
+                "Statut": "Bloqué (En attente d'activation manuelle depuis votre panel Admin)"
+            };
+
+            fetch(urlEmail, {
+                method: "POST",
+                headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+                body: JSON.stringify(payload)
+            }).then(() => console.log("✅ Email d'alerte interne envoyé."));
+            
+        } catch (err) { console.error("Erreur e-mail alerte :", err.message); }
+
+        res.json({ success: true, message: "Demande enregistrée avec succès. Workflows Twilio et Email déclenchés." });
+
+    } catch (e) {
+        console.error("Erreur création prospect :", e);
+        res.status(500).json({ success: false, error: "Cet identifiant d'établissement existe déjà ou erreur serveur." });
     }
 });
-
 // ==========================================
 //  ANTI NO-SHOW (Empreinte Bancaire)
 // ==========================================
