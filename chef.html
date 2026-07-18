@@ -1756,33 +1756,153 @@
             document.getElementById('tab-'+t).classList.add('active');
         }
 
-        function startMarketDictation(id, btnId) {
-            const S = window.SpeechRecognition || window.webkitSpeechRecognition;
-            if(!S) return; const r = new S(); r.lang='fr-FR';
-            r.onstart = () => document.getElementById(btnId).classList.add('recording-active');
-            r.onresult = (e) => { document.getElementById(id).value = e.results[0][0].transcript; calcSmartPlate(); };
-            r.onend = () => document.getElementById(btnId).classList.remove('recording-active');
-            r.start();
+        // === DICTÉE VOCALE DES PLATS ===
+        // Modification isolée : aucune connexion, API, sécurité ou synchronisation n'est modifiée.
+        let activeSpeechRecognition = null;
+        let activeSpeechButtonId = null;
+
+        function stopActiveDictation() {
+            if (activeSpeechRecognition) {
+                try { activeSpeechRecognition.stop(); } catch (e) { /* déjà arrêtée */ }
+            }
+        }
+
+        function startMarketDictation(inputId, btnId) {
+            const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+            if (!SpeechRecognition) {
+                alert("La dictée vocale n'est pas disponible sur ce navigateur. Utilisez Chrome ou Edge et autorisez le microphone.");
+                return;
+            }
+
+            if (activeSpeechRecognition && activeSpeechButtonId === btnId) {
+                stopActiveDictation();
+                return;
+            }
+            stopActiveDictation();
+
+            const input = document.getElementById(inputId);
+            const btn = document.getElementById(btnId);
+            if (!input || !btn) return;
+
+            const recognition = new SpeechRecognition();
+            const originalButton = btn.innerHTML;
+            recognition.lang = 'fr-FR';
+            recognition.continuous = false;
+            recognition.interimResults = false;
+            recognition.maxAlternatives = 1;
+
+            activeSpeechRecognition = recognition;
+            activeSpeechButtonId = btnId;
+
+            recognition.onstart = () => {
+                btn.classList.add('recording-active');
+                btn.innerHTML = '⏹️';
+                btn.title = 'Arrêter la dictée';
+            };
+
+            recognition.onresult = (event) => {
+                const transcript = event.results[0][0].transcript.trim();
+                if (transcript) {
+                    input.value = transcript;
+                    input.dispatchEvent(new Event('input', { bubbles: true }));
+                    input.dispatchEvent(new Event('change', { bubbles: true }));
+                    calcSmartPlate();
+                }
+            };
+
+            recognition.onerror = (event) => {
+                if (event.error !== 'aborted' && event.error !== 'no-speech') {
+                    console.warn('Erreur de dictée vocale :', event.error);
+                }
+            };
+
+            recognition.onend = () => {
+                btn.classList.remove('recording-active');
+                btn.innerHTML = originalButton;
+                btn.title = 'Démarrer la dictée';
+                if (activeSpeechRecognition === recognition) {
+                    activeSpeechRecognition = null;
+                    activeSpeechButtonId = null;
+                }
+            };
+
+            try { recognition.start(); }
+            catch (error) { console.warn('Impossible de démarrer la dictée :', error); }
         }
 
         function startDictation(inputId, btnId) {
             const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-            if (!SpeechRecognition) return alert("Non supporté.");
+            if (!SpeechRecognition) {
+                alert("La dictée vocale n'est pas disponible sur ce navigateur. Utilisez Chrome ou Edge et autorisez le microphone.");
+                return;
+            }
+
+            if (activeSpeechRecognition && activeSpeechButtonId === btnId) {
+                stopActiveDictation();
+                return;
+            }
+            stopActiveDictation();
+
+            const input = document.getElementById(inputId);
+            const btn = document.getElementById(btnId);
+            if (!input || !btn) return;
+
             const recognition = new SpeechRecognition();
-            recognition.lang = 'fr-FR'; recognition.continuous = true; recognition.interimResults = false;
-            let input = document.getElementById(inputId); let btn = document.getElementById(btnId);
-            const orig = btn.innerHTML; let oldPh = input.placeholder;
-            input.placeholder = "🔴 Parlez (pause = saut de ligne)...";
-            recognition.start();
-            recognition.onstart = () => { btn.classList.add('recording-active'); btn.innerHTML = '🔴'; };
-            recognition.onresult = function(event) {
-                let speechResult = event.results[event.results.length - 1][0].transcript.trim();
-                input.value += (input.value ? '\n' : '') + speechResult;
+            const originalButton = btn.innerHTML;
+            const originalPlaceholder = input.placeholder;
+            const isTextarea = input.tagName.toLowerCase() === 'textarea';
+
+            recognition.lang = 'fr-FR';
+            recognition.continuous = true;
+            recognition.interimResults = false;
+            recognition.maxAlternatives = 1;
+
+            activeSpeechRecognition = recognition;
+            activeSpeechButtonId = btnId;
+
+            recognition.onstart = () => {
+                btn.classList.add('recording-active');
+                btn.innerHTML = '⏹️';
+                btn.title = 'Arrêter la dictée';
+                input.placeholder = '🔴 Parlez, puis appuyez sur le bouton pour arrêter...';
+            };
+
+            recognition.onresult = (event) => {
+                let addedText = '';
+                for (let i = event.resultIndex; i < event.results.length; i++) {
+                    if (event.results[i].isFinal) {
+                        const transcript = event.results[i][0].transcript.trim();
+                        if (transcript) addedText += (addedText ? ' ' : '') + transcript;
+                    }
+                }
+                if (!addedText) return;
+
+                const separator = input.value ? (isTextarea ? '\n' : ' ') : '';
+                input.value += separator + addedText;
+                input.dispatchEvent(new Event('input', { bubbles: true }));
+                input.dispatchEvent(new Event('change', { bubbles: true }));
                 input.scrollTop = input.scrollHeight;
             };
-            input.addEventListener('blur', () => { recognition.stop(); input.placeholder = oldPh; }, {once: true});
-            recognition.onerror = function(event) { input.placeholder = oldPh; btn.classList.remove('recording-active'); btn.innerHTML = orig; };
-            recognition.onend = () => { btn.classList.remove('recording-active'); btn.innerHTML = orig; input.placeholder = oldPh; };
+
+            recognition.onerror = (event) => {
+                if (event.error !== 'aborted' && event.error !== 'no-speech') {
+                    console.warn('Erreur de dictée vocale :', event.error);
+                }
+            };
+
+            recognition.onend = () => {
+                btn.classList.remove('recording-active');
+                btn.innerHTML = originalButton;
+                btn.title = 'Démarrer la dictée';
+                input.placeholder = originalPlaceholder;
+                if (activeSpeechRecognition === recognition) {
+                    activeSpeechRecognition = null;
+                    activeSpeechButtonId = null;
+                }
+            };
+
+            try { recognition.start(); }
+            catch (error) { console.warn('Impossible de démarrer la dictée :', error); }
         }
 
         // ⛶ LOGIQUE DU MODE KIOSQUE AVEC CONNEXION TOTALE (ANTI-VEILLE)
@@ -1983,6 +2103,3 @@
     </script>
 </body>
 </html>
-
-
-
