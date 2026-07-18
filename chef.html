@@ -710,153 +710,65 @@
     </div>
 
     <script>
-        const urlParams = new URLSearchParams(window.location.search);
-        const tenantID = urlParams.get('tenantID') || localStorage.getItem('ichef_tenant_id');
-        const SERVER_URL = (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1" || window.location.protocol === "file:") 
-            ? "http://localhost:10000" : "https://tableau-system.onrender.com";
-        
-        let currentCurrency = "€";
-        let systemSettings = {}; 
+        let menuData = { "entrées": [], "plats": [], "desserts": [] };
+        let categoriesCuisine = []; // 🚨 NOUVEAU : Synchro parfaite avec l'Admin
+        let recipesData = [];
+        let stockGlobalData = [];
+        let stockCategories = ['🥩 Viandes & Volailles', '🐟 Poissons & Crustacés', '🥬 Légumes & Herbes', '🌾 Épicerie Sèche', '🥛 Crèmerie & B.O.F', '❄️ Surgelés', '🥫 Conserves & Bocaux', '📦 Emballages', '🧼 Entretien'];
+        let currentFolderCat = null;
+        let pendingAIItems = [];
+        let currentSupplierMatrix = {}; 
+        let currentStockCategoryOpen = null; 
+        let userProfile = {};
 
-function saveItem() {
-    let name = document.getElementById('item-name').value.trim(); 
-    let price = parseFloat(document.getElementById('item-price').value); 
-    let catID = document.getElementById('item-cat').value; 
-    let isVisible = document.getElementById('item-visible').checked; 
-    let selectedTaxProfile = document.getElementById('item-tax-profile')?.value || "AUTO";
-    let effectiveTaxProfile = document.getElementById('item-tva')?.dataset.effectiveTaxProfile || selectedTaxProfile;
-    
-    if (selectedTaxProfile === "AUTO") {
-        effectiveTaxProfile = inferTaxProfileForItem(name, catID, document.getElementById('item-station')?.value || "", categoriesBar.find(c => c.id === catID) !== undefined);
-    }
-    
-    let tvaValue = selectedTaxProfile === "CUSTOM"
-        ? (parseFloat(document.getElementById('item-tva').value) || 0)
-        : getTaxRateForProfile(effectiveTaxProfile);
-        
-    let origName = document.getElementById('item-edit-original-name').value; 
-    let origCatID = document.getElementById('item-edit-original-cat').value;
-    
-    let prepTime = parseInt(document.getElementById('item-prep-time').value) || 10;
-    let station = document.getElementById('item-station').value;
-
-    let selectedTags = [];
-    document.querySelectorAll('.item-tag-cb:checked').forEach(cb => selectedTags.push(cb.value));
-
-    if (!name || isNaN(price) || !catID) return alert("Données du plat invalides."); 
-    let isBarTarget = categoriesBar.find(c => c.id === catID) !== undefined; 
-    let targetMenu = isBarTarget ? menuBar : menuCuisine;
-    
-    let newItem = { 
-        name: name,
-        price: price,
-        stock: document.getElementById('item-stock').value,
-        hidden: !isVisible, 
-        tva: tvaValue,
-        taxProfile: selectedTaxProfile,
-        effectiveTaxProfile: effectiveTaxProfile,
-        taxCountry: getFiscalCountry(),
-        taxSource: "ICHEF_OS_AUTO_TAX",
-        prepTime: prepTime,
-        station: station,
-        tags: selectedTags
-    };
-    
-    if (!targetMenu[catID]) targetMenu[catID] = [];
-    
-    if (origName) { 
-        let origMenu = categoriesBar.find(c => c.id === origCatID) ? menuBar : menuCuisine; 
-        let idx = origMenu[origCatID].findIndex(i => i.name === origName); 
-        if (idx > -1) { 
-            if (catID === origCatID) {
-                origMenu[origCatID][idx] = newItem; 
-            } else { 
-                origMenu[origCatID].splice(idx, 1); 
-                targetMenu[catID].push(newItem); 
-            } 
-        } 
-    } else { 
-        targetMenu[catID].push(newItem); 
-    }
-    
-    markUnsaved(); 
-    closeModals(); 
-    renderMenuList(); 
-    updateDashboardStats(); 
-    saveAllToCloud();
-}
-                            
-                            if (systemSettings.rushV3 && systemSettings.rushV3.timeShift && systemSettings.rushV3.timeShift.active && rushLevel >= 2) {
-                                const delay = systemSettings.rushV3.timeShift.delay || 15;
-                                predictionDiv.innerHTML += ` <span style="color:#94a3b8; font-weight:normal; font-size:0.75rem;">(Annoncer +${delay}m d'attente)</span>`;
-                            }
-                        }
-                    }
-                });
-
-            } catch (error) {
-                console.error("Crash démarrage:", error);
-                let syncDot = document.getElementById('sync-dot');
-                let syncText = document.getElementById('sync-text');
-                if(syncDot) syncDot.style.background = 'var(--alert)';
-                if(syncText) syncText.innerText = "ERREUR DE DONNÉES";
-                renderAll(); 
-            }
-        }
-
-        // ==============================================================
-        // 🔄 SYMBIOSE PARFAITE : ALERTES ET NOTIFICATIONS
-        // ==============================================================
-        function showToast(msg, isAlert = false) {
-            let t = document.getElementById('toast');
-            t.innerText = msg;
-            t.className = 'toast'; 
-            if(isAlert) {
-                t.classList.add('alert');
-                t.innerHTML = "⚠️ " + msg;
-                try { new Audio('https://assets.mixkit.co/active_storage/sfx/2869/2869-preview.mp3').play(); } catch(e){}
-            }
-            
-            t.classList.add('show');
-            setTimeout(() => t.classList.remove('show'), isAlert ? 6000 : 3500);
-        }
-
-        function renderAll() { 
-            try { renderMenu(); } catch(e) { console.error("Erreur Menu", e); }
-            try { renderRecipeCategoryDropdown(); } catch(e) { console.error("Erreur Dropdown Cat", e); }
-            try { renderStockCategoryDropdown(); } catch(e) { console.error("Erreur Dropdown Stock", e); }
-            try { renderRecipes(); } catch(e) { console.error("Erreur Recettes", e); }
-            try { renderGlobalStock(); } catch(e) { console.error("Erreur Stock", e); }
-            try { renderSuppliers(); } catch(e) { console.error("Erreur Fournisseurs", e); }
-        }
-
-        // === PROFIL ===
-        async function openProfileModal() {
-            document.getElementById('prof-nom').value = userProfile.nom || '';
-            document.getElementById('prof-prenom').value = userProfile.prenom || '';
-            document.getElementById('prof-email').value = userProfile.email || '';
-            document.getElementById('prof-adresse').value = userProfile.adresse || '';
-            openInvModal('profile-modal');
-        }
-
-        async function saveProfile() {
-            const profile = {
-                nom: document.getElementById('prof-nom').value.trim(),
-                prenom: document.getElementById('prof-prenom').value.trim(),
-                email: document.getElementById('prof-email').value.trim(),
-                adresse: document.getElementById('prof-adresse').value.trim()
+        function getChefModuleScope() {
+            return {
+                module: "CHEF_CUISINE",
+                role: "production",
+                fiscalScope: "none",
+                message: "Le module Chef gère la carte, les fiches techniques, les stocks et la production. L'encaissement fiscal est réservé au module caisse."
             };
-            if (!profile.email.endsWith('.fr') && profile.email !== "") {
-                return alert("⚠️ L'email doit se terminer par .fr");
-            }
-            await API.save('USER_PROFILE', profile);
-            alert("✅ Profil mis à jour !");
-            closeInvModal('profile-modal');
         }
+
+        function resolveProductionStation(category = "", itemName = "") {
+            const c = String(category || "").toLowerCase();
+            const n = String(itemName || "").toLowerCase();
+            if (c.includes("dessert") || n.match(/dessert|tarte|glace|mousse|crème|pâtisserie|tiramisu|chocolat/)) return "dessert";
+            if (c.includes("boisson") || c.includes("bar") || n.match(/vin|bière|cocktail|café|thé|jus|soda/)) return "bar";
+            if (c.includes("entrée") || c.includes("froid") || n.match(/salade|tartare|carpaccio|ceviche|froid/)) return "froid";
+            if (n.match(/pizza|four/)) return "pizza";
+            if (n.match(/grill|steak|entrecôte|burger|brochette/)) return "grill";
+            return "chaud";
+        }
+
+        // === MOTEUR RÉSEAU BLINDÉ ===
+        const API = {
+            get: async () => {
+                try {
+                    let r = await fetch(`${SERVER_URL}/get-current-state?tenantID=${tenantID}`);
+                    if(r.ok) return await r.json();
+                    throw new Error("Serveur injoignable");
+                } catch(e) {
+                    return JSON.parse(localStorage.getItem('EMPIRE_CHEF_SYNC')) || { activeOrders: {} };
+                }
+            },
+            save: async (k, d) => {
+                let state = JSON.parse(localStorage.getItem('EMPIRE_CHEF_SYNC')) || { activeOrders: {} };
+                state.activeOrders[k] = { data: d };
+                localStorage.setItem('EMPIRE_CHEF_SYNC', JSON.stringify(state));
+                
+                try {
+                    await fetch(`${SERVER_URL}/update-order?tenantID=${tenantID}`, {
+                        method:'POST', headers:{'Content-Type':'application/json'},
+                        body: JSON.stringify({ tableId:k, order:{data:d} })
+                    });
+                } catch(e) { console.warn("Réseau lent. Données sécurisées localement."); }
+            }
+        };
 
         async function syncMenuToCloud() {
-            // Le chef de cuisine sauvegarde tout dans MENU_MASTER
             await API.save('MENU_MASTER', menuData);
+            await API.save('CATEGORIES_CUISINE', categoriesCuisine); // On synchronise les catégories avec l'Admin !
         }
 
         // === IMPORT / EXPORT RECETTES ET CARTE ===
@@ -896,24 +808,35 @@ function saveItem() {
         // === GESTION CATÉGORIES ===
         function renderRecipeCategoryDropdown() {
             const select = document.getElementById('market-category'); if (!select) return;
-            select.innerHTML = Object.keys(menuData).map(cat => `<option value="${cat}">${cat.toUpperCase()}</option>`).join('');
+            select.innerHTML = categoriesCuisine.map(c => `<option value="${c.id}">${c.label.toUpperCase()}</option>`).join('');
         }
+
         async function addRecipeCategory() {
             let newCat = prompt("🏷️ Nom de la nouvelle catégorie de la carte :");
             if(newCat && newCat.trim() !== "") {
-                let key = newCat.trim().toLowerCase();
-                if(!menuData[key]) { menuData[key] = []; renderAll(); await syncMenuToCloud(); 
+                let key = newCat.trim().toLowerCase().replace(/[^a-z0-9]/g, '-');
+                if(!menuData[key]) { 
+                    menuData[key] = []; 
+                    categoriesCuisine.push({ id: key, label: newCat.trim() });
+                    renderAll(); 
+                    await syncMenuToCloud(); 
                 } else alert("⚠️ Cette catégorie existe déjà.");
             }
         }
+
+        async function removeRecipeCategory(catToRemove) {
+            if(menuData[catToRemove] && menuData[catToRemove].length > 0) { 
+                if(!confirm(`⚠️ Supprimer cette catégorie et ses ${menuData[catToRemove].length} créations ?`)) return; 
+            }
+            delete menuData[catToRemove]; 
+            categoriesCuisine = categoriesCuisine.filter(c => c.id !== catToRemove);
+            renderAll(); 
+            await syncMenuToCloud();
+        }
+
         async function removeCurrentDropdownCategory() {
             let select = document.getElementById('market-category'); let catToRemove = select ? select.value : null; if(!catToRemove) return;
-            if(menuData[catToRemove].length > 0) { if(!confirm(`⚠️ Supprimer "${catToRemove.toUpperCase()}" et ses ${menuData[catToRemove].length} créations ?`)) return; }
-            delete menuData[catToRemove]; renderAll(); await syncMenuToCloud();
-        }
-        async function removeRecipeCategory(catToRemove) {
-            if(menuData[catToRemove].length > 0) { if(!confirm(`⚠️ Supprimer "${catToRemove.toUpperCase()}" et ses ${menuData[catToRemove].length} créations ?`)) return; }
-            delete menuData[catToRemove]; renderAll(); await syncMenuToCloud();
+            await removeRecipeCategory(catToRemove);
         }
 
         function renderStockCategoryDropdown() {
@@ -931,15 +854,25 @@ function saveItem() {
             if(confirm(`🗑️ Supprimer la catégorie "${cat}" ?`)) { stockCategories = stockCategories.filter(c => c !== cat); renderAll(); await API.save('STOCK_CATS', stockCategories); }
         }
 
-    // === CARTE VISUELLE ===
+        // === CARTE VISUELLE DU CHEF ===
         function renderMenu() {
             const grid = document.getElementById('dynamic-menu-grid'); if(!grid) return; let html = '';
-            for (let cat in menuData) {
+            
+            if (categoriesCuisine.length === 0) {
+                grid.innerHTML = `<div class="menu-category" style="border: 1px dashed var(--gold); background: transparent; justify-content:center; align-items:center; padding: 40px; cursor:pointer;" onclick="addRecipeCategory()"><div style="font-size: 2.5rem; color: var(--gold); margin-bottom: 15px;">➕</div><div style="font-weight: 800; color: var(--gold);">NOUVELLE CATÉGORIE</div></div>`;
+                return;
+            }
+
+            categoriesCuisine.forEach(catObj => {
+                let cat = catObj.id;
+                let catLabel = catObj.label;
+                if (!menuData[cat]) menuData[cat] = [];
+                
                 let itemsCount = menuData[cat].length;
                 let itemsHtml = menuData[cat].map(i => {
                     let currentStock = i.stock !== undefined ? i.stock : 99; let stockColor = currentStock <= 5 ? 'var(--alert)' : 'var(--slate)';
                     
-                    // 🚨 NOUVEAU : AFFICHAGE DES BADGES ALLERGÈNES POUR LE CHEF
+                    // Badges Allergènes pour le Chef
                     let tagsAlert = '';
                     if (i.tags && i.tags.length > 0) {
                         const tagMap = { 'vegan': '🌿', 'vege': '🥗', 'nogluten': '🌾', 'nopork': '🐷', 'spicy': '🌶️' };
@@ -963,7 +896,7 @@ function saveItem() {
 
                 html += `
                 <div class="menu-category">
-                    <div class="category-header"><div style="display:flex; align-items:center; gap:10px;">${cat.toUpperCase()}<span class="count-badge">${itemsCount}</span></div><button onclick="removeRecipeCategory('${cat}')" style="background:transparent; border:none; color:var(--alert); cursor:pointer; font-size:1.2rem;">✖</button></div>
+                    <div class="category-header"><div style="display:flex; align-items:center; gap:10px;">${catLabel.toUpperCase()}<span class="count-badge">${itemsCount}</span></div><button onclick="removeRecipeCategory('${cat}')" style="background:transparent; border:none; color:var(--alert); cursor:pointer; font-size:1.2rem;">✖</button></div>
                     <div style="padding:20px; display:flex; flex-direction:column; background:var(--panel);">
                         ${itemsHtml}
                         <div style="display:flex; flex-direction:column; gap:12px; margin-top: 15px; border-top: 1px dashed var(--border-strong); padding-top: 20px;">
@@ -976,7 +909,8 @@ function saveItem() {
                         </div>
                     </div>
                 </div>`;
-            }
+            });
+
             html += `<div class="menu-category" style="border: 1px dashed var(--gold); background: transparent; justify-content:center; align-items:center; padding: 40px; cursor:pointer; box-shadow:none; transition: 0.2s;" onclick="addRecipeCategory()" onmouseover="this.style.background='var(--panel)'" onmouseout="this.style.background='transparent'"><div style="font-size: 2.5rem; color: var(--gold); margin-bottom: 15px;">➕</div><div style="font-weight: 800; color: var(--gold); letter-spacing: 1px; text-align:center; font-size: 0.85rem;">NOUVELLE CATÉGORIE</div></div>`;
             grid.innerHTML = html;
         }
@@ -985,10 +919,9 @@ function saveItem() {
             const nameInput = document.getElementById(`add-name-${cat}`); const priceInput = document.getElementById(`add-price-${cat}`); const stockInput = document.getElementById(`add-stock-${cat}`);
             if (!nameInput.value || !priceInput.value) return alert("Nom et prix requis.");
             let stockVal = stockInput.value ? parseInt(stockInput.value) : 99;
-            
             let newTva = systemSettings.tva !== undefined ? systemSettings.tva : 10; 
-            
-            menuData[cat].push({ id: Date.now(), name: nameInput.value.trim(), price: parseFloat(priceInput.value), stock: stockVal, tva: newTva });
+            if(!menuData[cat]) menuData[cat] = [];
+            menuData[cat].push({ id: Date.now(), name: nameInput.value.trim(), price: parseFloat(priceInput.value), stock: stockVal, tva: newTva, tags: [] });
             nameInput.value = ''; priceInput.value = ''; stockInput.value = ''; renderAll(); 
             await syncMenuToCloud();
         }
@@ -1702,8 +1635,6 @@ function saveItem() {
                 createdAt: nowIso
             };
             
-            // Un plat créé depuis le labo doit être visible par défaut (hidden: false)
-            // Fiscalement : le Chef publie la carte, mais n'encaisse pas.
             let newItem = {
                 id: Date.now(),
                 name: name,
@@ -1714,7 +1645,8 @@ function saveItem() {
                 station: station,
                 sourceModule: chefScope.module,
                 fiscalImpact: false,
-                createdAt: nowIso
+                createdAt: nowIso,
+                tags: []
             };
 
             recipesData.unshift(recipeObj);
@@ -1913,6 +1845,125 @@ function saveItem() {
         // =========================================================================
         // BOOT SYSTEM AUTOMATIQUE
         // =========================================================================
+        async function bootSystem() {
+            try {
+                const state = await API.get();
+                if(state && state.activeOrders) {
+                    if(state.activeOrders['INVENTORY_MASTER']) stockGlobalData = state.activeOrders['INVENTORY_MASTER'].data || [];
+                    if(state.activeOrders['RECIPES_MASTER']) recipesData = state.activeOrders['RECIPES_MASTER'].data || [];
+                    
+                    if(state.activeOrders['MENU_MASTER']) {
+                        let tempMenu = state.activeOrders['MENU_MASTER'].data;
+                        if(typeof tempMenu === 'object' && !Array.isArray(tempMenu)) menuData = tempMenu;
+                    }
+                    
+                    if(state.activeOrders['CATEGORIES_CUISINE']) {
+                        let loadedCats = state.activeOrders['CATEGORIES_CUISINE'].data || [];
+                        if (loadedCats.length > 0) categoriesCuisine = loadedCats;
+                    } else {
+                        categoriesCuisine = Object.keys(menuData).map(k => ({id: k, label: k}));
+                    }
+                    
+                    if(state.activeOrders['STOCK_CATS']) {
+                        let loadedCats = state.activeOrders['STOCK_CATS'].data || [];
+                        if (loadedCats.length > 0) stockCategories = loadedCats;
+                    }
+                    
+                    if (state.activeOrders['SETTINGS_MASTER']) {
+                        systemSettings = state.activeOrders['SETTINGS_MASTER'].data || {};
+                        if (systemSettings.currency) currentCurrency = systemSettings.currency;
+                    }
+                    if (state.activeOrders['USER_PROFILE']) {
+                        userProfile = state.activeOrders['USER_PROFILE'].data || {};
+                    }
+                }
+                
+                if(!menuData || typeof menuData !== 'object' || Array.isArray(menuData)) menuData = {};
+                if(!Array.isArray(recipesData)) recipesData = [];
+                if(!Array.isArray(stockGlobalData)) stockGlobalData = [];
+
+                renderAll();
+                
+                let syncDot = document.getElementById('sync-dot');
+                let syncText = document.getElementById('sync-text');
+                if(syncDot) syncDot.style.background = 'var(--accent)'; 
+                if(syncText) syncText.innerText = "EN LIGNE";
+
+                // 🔥 INIT WEBSOCKET POUR LA SYMBIOSE PARFAITE 🔥
+                const socket = io(SERVER_URL);
+                socket.emit('joinTenant', tenantID);
+                socket.on('updateState', (newState) => {
+                    if(!newState) return;
+                    let aO = newState.activeOrders || {};
+
+                    let shouldRenderMenu = false;
+
+                    if (aO['MENU_MASTER'] && typeof aO['MENU_MASTER'].data === 'object') {
+                        menuData = aO['MENU_MASTER'].data;
+                        shouldRenderMenu = true;
+                    }
+                    
+                    if (aO['CATEGORIES_CUISINE'] && Array.isArray(aO['CATEGORIES_CUISINE'].data)) {
+                        categoriesCuisine = aO['CATEGORIES_CUISINE'].data;
+                        shouldRenderMenu = true;
+                    }
+
+                    if (shouldRenderMenu) renderMenu();
+                    
+                    if (aO['INVENTORY_MASTER'] && Array.isArray(aO['INVENTORY_MASTER'].data)) {
+                        stockGlobalData = aO['INVENTORY_MASTER'].data;
+                        renderGlobalStock();
+                    }
+
+                    if (aO['RECIPES_MASTER'] && Array.isArray(aO['RECIPES_MASTER'].data)) {
+                        recipesData = aO['RECIPES_MASTER'].data;
+                        renderRecipes();
+                    }
+
+                    if(aO['SETTINGS_MASTER']) {
+                        let newSettings = aO['SETTINGS_MASTER'].data;
+                        
+                        let currentAlertIds = (systemSettings.activeAlerts || []).map(a => a.id);
+                        let newAlerts = (newSettings.activeAlerts || []).filter(a => !currentAlertIds.includes(a.id));
+
+                        if(newAlerts.length > 0) {
+                            showToast("🚨 ALERTE : " + newAlerts[0].message, true); 
+                        }
+
+                        systemSettings = newSettings;
+                        if (systemSettings.currency && systemSettings.currency !== currentCurrency) {
+                            currentCurrency = systemSettings.currency;
+                            renderAll();
+                        }
+
+                        const predictionDiv = document.getElementById('ia-pass-prediction');
+                        if (predictionDiv) {
+                            const rushLevel = systemSettings.rushLevel || 0;
+                            const thresholds = systemSettings.rushThresholds || { l0: "Calme", l1: "Normal", l2: "Tendu", l3: "Saturé", l4: "Critique", l5: "SOS" };
+                            
+                            let labelText = "Calme"; let colorTheme = "#38bdf8"; 
+                            switch(rushLevel) {
+                                case 0: labelText = thresholds.l0 || "Calme"; colorTheme = "#38bdf8"; break;
+                                case 1: labelText = thresholds.l1 || "Normal"; colorTheme = "#10b981"; break;
+                                case 2: labelText = thresholds.l2 || "Tendu"; colorTheme = "#fbbf24"; break;
+                                case 3: labelText = thresholds.l3 || "Saturé"; colorTheme = "#f97316"; break;
+                                case 4: labelText = thresholds.l4 || "Critique"; colorTheme = "#ef4444"; break;
+                                case 5: labelText = thresholds.l5 || "SOS / Chaos"; colorTheme = "#a855f7"; break;
+                            }
+                            predictionDiv.innerHTML = `Calcul de la charge du service... <br><span style="color:${colorTheme}; font-weight:900; text-transform:uppercase;">${labelText}</span>`;
+                        }
+                    }
+                });
+
+            } catch (error) {
+                console.error("Crash démarrage:", error);
+                let syncDot = document.getElementById('sync-dot');
+                let syncText = document.getElementById('sync-text');
+                if(syncDot) syncDot.style.background = 'var(--alert)';
+                if(syncText) syncText.innerText = "ERREUR DE DONNÉES";
+            }
+        }
+
         setTimeout(checkPin, 100);
 
     </script>
