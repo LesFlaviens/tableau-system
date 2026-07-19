@@ -809,8 +809,8 @@ app.get('/api/export-blockchain-json', async (req, res) => {
         const tenant = await Tenant.findOne({ tenantID });
         if (!tenant) return res.status(404).send("Établissement inconnu.");
 
-        // On récupère tous les logs de sécurité cryptographiques scellés de ce restaurant
-        const logs = await AuditLog.find({ tenantID: safeID }).sort({ timestamp: 1 });
+        // 🔥 CORRECTION : On utilise bien tenantID ici pour éviter le crash
+        const logs = await AuditLog.find({ tenantID: tenantID }).sort({ timestamp: 1 });
         
         // On vérifie en temps réel si la chaîne de sécurité est intacte
         let isChainValid = true;
@@ -847,6 +847,7 @@ app.get('/api/export-blockchain-json', async (req, res) => {
         res.status(500).send("Erreur serveur de sécurité.");
     }
 });
+
 
 // 📊 ROUTE D'EXPORTATION DES VRAIS TICKETS POUR LE CENTRE DE TÉLÉCHARGEMENT
 app.get('/api/export-caisse-csv', async (req, res) => {
