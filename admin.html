@@ -2741,6 +2741,13 @@ async function secureFetch(input, init = {}) {
 
       let currentEditingItem = null; // Garde en mémoire le plat qu'on modifie
 
+        function getDeptRefs(department) {
+            // Technique pour éviter les crashs si les variables ne sont pas encore chargées
+            if (department === 'bar') return { cats: window.categoriesBar || [], menu: window.menuBar || {} };
+            if (department === 'patisserie') return { cats: window.categoriesPatisserie || [], menu: window.menuPatisserie || {} };
+            return { cats: window.categoriesCuisine || [], menu: window.menuCuisine || {} };
+        }
+
         function renderMenuList() {
             let filterCatEl = document.getElementById('menu-filter-cat'); if(!filterCatEl) return;
             const filterCat = filterCatEl.value; 
@@ -2765,8 +2772,8 @@ async function secureFetch(input, init = {}) {
                         html += `<div class="list-item" style="${item.hidden ? 'opacity: 0.5;' : ''}">
                             <div class="list-item-info">
                                 <span class="list-item-title">${item.name} ${techBadge}</span>
-                                <span style="color:var(--gold); font-weight:600;">${parseFloat(item.price||0).toFixed(2)} ${(systemSettings.currency || "€")}</span>
-                                <span style="font-size:0.72rem; color:var(--success); border:1px solid rgba(16,185,129,0.25); padding:2px 7px; border-radius:6px; width:max-content;">TVA ${item.tva ?? systemSettings.tva ?? 10}% — ${item.effectiveTaxProfile || item.taxProfile || "AUTO"}</span>
+                                <span style="color:var(--gold); font-weight:600;">${parseFloat(item.price||0).toFixed(2)} ${(window.systemSettings?.currency || "€")}</span>
+                                <span style="font-size:0.72rem; color:var(--success); border:1px solid rgba(16,185,129,0.25); padding:2px 7px; border-radius:6px; width:max-content;">TVA ${item.tva ?? window.systemSettings?.tva ?? 10}% — ${item.effectiveTaxProfile || item.taxProfile || "AUTO"}</span>
                             </div>
                             <div class="list-item-actions">
                                 ${ruptureBtn}
@@ -2778,21 +2785,29 @@ async function secureFetch(input, init = {}) {
                 }
             };
             
+            let catCuisine = window.categoriesCuisine || [];
+            let catBar = window.categoriesBar || [];
+            let catPat = window.categoriesPatisserie || [];
+
+            let menuC = window.menuCuisine || {};
+            let menuB = window.menuBar || {};
+            let menuP = window.menuPatisserie || {};
+
             if (filterCat === 'ALL') { 
-                categoriesCuisine.forEach(c => processCat(c.id, c.label, menuCuisine[c.id], 'cuisine')); 
-                categoriesBar.forEach(c => processCat(c.id, c.label, menuBar[c.id], 'bar')); 
-                if(typeof categoriesPatisserie !== 'undefined') categoriesPatisserie.forEach(c => processCat(c.id, c.label, menuPatisserie[c.id], 'patisserie'));
+                catCuisine.forEach(c => processCat(c.id, c.label, menuC[c.id], 'cuisine')); 
+                catBar.forEach(c => processCat(c.id, c.label, menuB[c.id], 'bar')); 
+                catPat.forEach(c => processCat(c.id, c.label, menuP[c.id], 'patisserie'));
             } 
             else { 
-                let isBar = categoriesBar.find(c => c.id === filterCat) !== undefined; 
-                let isPat = typeof categoriesPatisserie !== 'undefined' && categoriesPatisserie.find(c => c.id === filterCat) !== undefined;
+                let isBar = catBar.find(c => c.id === filterCat) !== undefined; 
+                let isPat = catPat.find(c => c.id === filterCat) !== undefined;
                 let dept = isBar ? 'bar' : (isPat ? 'patisserie' : 'cuisine');
-                let catObj = isBar ? categoriesBar.find(c => c.id === filterCat) : (isPat ? categoriesPatisserie.find(c => c.id === filterCat) : categoriesCuisine.find(c => c.id === filterCat)); 
+                let catObj = isBar ? catBar.find(c => c.id === filterCat) : (isPat ? catPat.find(c => c.id === filterCat) : catCuisine.find(c => c.id === filterCat)); 
                 
                 if (catObj) { 
-                    if (dept === 'cuisine' && menuCuisine[catObj.id]) processCat(catObj.id, catObj.label, menuCuisine[catObj.id], dept); 
-                    if (dept === 'bar' && menuBar[catObj.id]) processCat(catObj.id, catObj.label, menuBar[catObj.id], dept); 
-                    if (dept === 'patisserie' && typeof menuPatisserie !== 'undefined' && menuPatisserie[catObj.id]) processCat(catObj.id, catObj.label, menuPatisserie[catObj.id], dept);
+                    if (dept === 'cuisine' && menuC[catObj.id]) processCat(catObj.id, catObj.label, menuC[catObj.id], dept); 
+                    if (dept === 'bar' && menuB[catObj.id]) processCat(catObj.id, catObj.label, menuB[catObj.id], dept); 
+                    if (dept === 'patisserie' && menuP[catObj.id]) processCat(catObj.id, catObj.label, menuP[catObj.id], dept);
                 } 
             }
             if(document.getElementById('admin-menu-list')) document.getElementById('admin-menu-list').innerHTML = html || '<div class="empty-state">Vide</div>';
@@ -2806,30 +2821,17 @@ async function secureFetch(input, init = {}) {
 
         function openItemModal(itemId = null, catId = null, department = 'cuisine') {
             updateCategoryDropdowns();
-
-            const originalName = document.getElementById('item-edit-original-name');
-            const originalCat = document.getElementById('item-edit-original-cat');
-            const catSelect = document.getElementById('item-cat');
             const tagBoxes = document.querySelectorAll('.item-tag-cb');
-
-            originalName.value = '';
-            originalCat.value = '';
             tagBoxes.forEach(cb => { cb.checked = false; });
 
             if (itemId && catId) {
-                // MISE À JOUR D'UN PLAT
                 currentEditingItem = { id: itemId, catId: catId, dept: department };
                 let refs = getDeptRefs(department);
                 const item = (refs.menu[catId] || []).find(entry => entry.id === itemId);
 
-                if (!item) {
-                    alert('Plat introuvable.');
-                    return;
-                }
+                if (!item) return alert('Plat introuvable.');
 
-                originalName.value = item.name || '';
-                originalCat.value = catId;
-                catSelect.value = catId;
+                document.getElementById('item-cat').value = catId;
                 document.getElementById('item-name').value = item.name || '';
                 document.getElementById('item-price').value = item.price ?? '';
                 document.getElementById('item-stock').value = item.stock ?? '';
@@ -2837,10 +2839,10 @@ async function secureFetch(input, init = {}) {
                 document.getElementById('item-station').value = item.station || 'aucun';
                 document.getElementById('item-tax-profile').value = item.taxProfile || 'AUTO';
                 document.getElementById('item-visible').checked = item.hidden !== true;
+                
                 const tags = Array.isArray(item.tags) ? item.tags : [];
                 tagBoxes.forEach(cb => { cb.checked = tags.includes(cb.value); });
             } else {
-                // NOUVEAU PLAT
                 currentEditingItem = null;
                 document.getElementById('item-name').value = '';
                 document.getElementById('item-price').value = '';
@@ -2849,7 +2851,7 @@ async function secureFetch(input, init = {}) {
                 document.getElementById('item-station').value = 'aucun';
                 document.getElementById('item-tax-profile').value = 'AUTO';
                 document.getElementById('item-visible').checked = true;
-                if (catSelect.options.length) catSelect.selectedIndex = 0;
+                if (document.getElementById('item-cat').options.length) document.getElementById('item-cat').selectedIndex = 0;
             }
 
             refreshItemTaxUI();
@@ -2866,13 +2868,15 @@ async function secureFetch(input, init = {}) {
             let newCatId = document.getElementById('item-cat').value; 
             let isVisible = document.getElementById('item-visible').checked; 
             let selectedTaxProfile = document.getElementById('item-tax-profile')?.value || "AUTO";
-            let effectiveTaxProfile = document.getElementById('item-tva')?.dataset.effectiveTaxProfile || selectedTaxProfile;
             
-            // Trouver le département de la NOUVELLE catégorie cible
+            let catBar = window.categoriesBar || [];
+            let catPat = window.categoriesPatisserie || [];
+
             let newDept = 'cuisine';
-            if (categoriesBar.find(c => c.id === newCatId)) newDept = 'bar';
-            else if (typeof categoriesPatisserie !== 'undefined' && categoriesPatisserie.find(c => c.id === newCatId)) newDept = 'patisserie';
+            if (catBar.find(c => c.id === newCatId)) newDept = 'bar';
+            else if (catPat.find(c => c.id === newCatId)) newDept = 'patisserie';
             
+            let effectiveTaxProfile = document.getElementById('item-tva')?.dataset.effectiveTaxProfile || selectedTaxProfile;
             if (selectedTaxProfile === "AUTO") {
                 effectiveTaxProfile = inferTaxProfileForItem(name, newCatId, document.getElementById('item-station')?.value || "", newDept === 'bar');
             }
@@ -2887,14 +2891,13 @@ async function secureFetch(input, init = {}) {
             let selectedTags = [];
             document.querySelectorAll('.item-tag-cb:checked').forEach(cb => selectedTags.push(cb.value));
 
-            if (!name || isNaN(price) || !newCatId) return alert("Données du plat invalides."); 
+            if (!name || isNaN(price) || !newCatId) return alert("Nom et prix invalides."); 
             
             let targetRefs = getDeptRefs(newDept);
             let targetMenu = targetRefs.menu;
             if (!targetMenu[newCatId]) targetMenu[newCatId] = [];
             
             let newItemObj = { 
-                id: Date.now(), // Valeur par défaut
                 name: name,
                 price: price,
                 stock: document.getElementById('item-stock').value,
@@ -2910,28 +2913,27 @@ async function secureFetch(input, init = {}) {
             };
 
             if (currentEditingItem) {
-                // MISE À JOUR
-                newItemObj.id = currentEditingItem.id; // Garder l'ancien ID !
+                // MISE À JOUR D'UN PLAT EXISTANT
+                newItemObj.id = currentEditingItem.id; // On garde son vrai ID
                 let origRefs = getDeptRefs(currentEditingItem.dept);
                 let origMenu = origRefs.menu;
                 
-                // Retirer de l'ancienne catégorie
                 if (origMenu[currentEditingItem.catId]) {
                     origMenu[currentEditingItem.catId] = origMenu[currentEditingItem.catId].filter(i => i.id !== currentEditingItem.id);
                 }
-                // Ajouter dans la nouvelle catégorie
                 targetMenu[newCatId].push(newItemObj);
             } else {
-                // NOUVEAU PLAT
+                // CRÉATION D'UN NOUVEAU PLAT
+                newItemObj.id = Date.now();
                 targetMenu[newCatId].push(newItemObj);
             }
             
-            currentEditingItem = null; // Réinitialise l'état
+            currentEditingItem = null; 
             markUnsaved(); 
             closeModals(); 
             renderMenuList(); 
             updateDashboardStats(); 
-            saveAllToCloud(); // Synchronisation instantanée
+            saveAllToCloud(); 
         }
 
         function deleteItem(itemId, catId, department) {
@@ -2948,6 +2950,7 @@ async function secureFetch(input, init = {}) {
             updateDashboardStats(); 
             saveAllToCloud();
         }
+
         function renderFinancialDashboard() {
             let allClosed = Array.isArray(archiveCuisine) ? [...archiveCuisine] : (archiveCuisine && Array.isArray(archiveCuisine.data) ? [...archiveCuisine.data] : []);
             let totalCA = 0; let curr = systemSettings.currency || "€"; let html = '';
@@ -3055,7 +3058,7 @@ async function secureFetch(input, init = {}) {
                 url = new URL(`${window.location.origin}/menu-qr.html`);
             }
 
-            url.searchParams.set("tenantID", tenantID);
+            url.searchParams.set("tenantID", window.ICHEF_SECURITY.tenantID);
             url.searchParams.set("table", tableLabel);
             url.searchParams.set("zone", zone);
             url.searchParams.set("source", "qr_nfc");
