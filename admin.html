@@ -3431,12 +3431,62 @@ async function secureFetch(input, init = {}) {
                 console.error('Connexion temps réel refusée :', error);
             });
 
-            socket.on('updateState', (state) => {
-            if (!hasUnsavedChanges && !document.querySelector('.modal.show') && !isTyping) {
+           socket.on('updateState', (state) => {
                 if(!state) return;
                 let aO = state.activeOrders || {};
                 
+                // 1. MISE À JOUR DE LA MÉMOIRE (TOUJOURS)
                 systemSettings = aO['SETTINGS_MASTER']?.data || systemSettings;
+                menuCuisine = aO['MENU_MASTER']?.data || menuCuisine;
+                menuBar = aO['MENU_MASTER_BAR']?.data || menuBar;
+                staffAccess = aO['STAFF_ACCESS']?.data || staffAccess;
+                
+                let financialData = aO['FINANCIAL_HISTORY'];
+                archiveCuisine = financialData?.data || (Array.isArray(financialData) ? financialData : archiveCuisine);
+
+                if (aO['ARCHITECTURE']) {
+                    let archi = aO['ARCHITECTURE'].data || aO['ARCHITECTURE'];
+                    globalArchitecture.rooms = archi.rooms || ['Salle Principale'];
+                    globalArchitecture.tables = archi.tables || [];
+                    globalArchitecture.zones = archi.zones || [];
+                }
+
+                categoriesCuisine = aO['CATEGORIES_CUISINE']?.data || categoriesCuisine;
+                categoriesBar = aO['CATEGORIES_BAR']?.data || categoriesBar;
+
+                // 2. MISE À JOUR VISUELLE (SEULEMENT SI LE PATRON NE TRAVAILLE PAS)
+                if (!hasUnsavedChanges && !document.querySelector('.modal.show') && !isTyping) {
+                    applyFiscalCountryProfile(false); updateDashboardStats(); renderFinancialDashboard(); renderStaffList(); renderActiveStaff(); renderMenuList();
+                    
+                    loadAIProfitability();
+                    
+                    // --- ALERTE TEMPS REEL DASHBOARD ---
+                    if(systemSettings.activeAlerts && systemSettings.activeAlerts.length > 0) {
+                        let latestAlert = systemSettings.activeAlerts[0];
+                        if(!window.lastAdminAlert || window.lastAdminAlert !== latestAlert.id) {
+                            window.lastAdminAlert = latestAlert.id;
+                            
+                            let alertContainer = document.getElementById('active-alerts-container');
+                            if (alertContainer) {
+                                alertContainer.style.display = 'flex';
+                                alertContainer.innerHTML = `
+                                    <div style="background: rgba(239,68,68,0.1); border: 1px solid var(--danger); padding: 15px; border-radius: 8px; display: flex; justify-content: space-between; align-items: center;">
+                                        <div>
+                                            <div style="font-size: 0.7rem; color: var(--danger); font-weight: bold; text-transform: uppercase;">⚠️ ${latestAlert.author}</div>
+                                            <div style="font-weight: 800;">${latestAlert.message}</div>
+                                        </div>
+                                        <button class="btn-outline" style="color:var(--danger); border-color:var(--danger);" onclick="this.parentElement.style.display='none'">Fermer</button>
+                                    </div>
+                                ` + alertContainer.innerHTML;
+                            }
+                        }
+                    }
+                } else {
+                    // Optionnel : un petit point pour prévenir l'Admin que des données sont arrivées
+                    let syncBtn = document.getElementById('sync-status');
+                    if(syncBtn) { syncBtn.innerHTML = '⚠️ Modif du Chef reçue (Cliquez "En Direct" pour voir)'; syncBtn.style.color = 'var(--accent)'; syncBtn.style.borderColor = 'var(--accent)'; }
+                }
+            });
                 menuCuisine = aO['MENU_MASTER']?.data || {};
                 menuBar = aO['MENU_MASTER_BAR']?.data || {};
                 staffAccess = aO['STAFF_ACCESS']?.data || [];
