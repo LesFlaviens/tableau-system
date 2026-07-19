@@ -1117,72 +1117,102 @@
         function renderMenu() {
             const grid = document.getElementById('dynamic-menu-grid'); 
             if(!grid) return; 
-            let html = '';
             
-            // Sécurité : si la carte est cassée, on la réinitialise
-            if(!menuData || typeof menuData !== 'object' || Array.isArray(menuData)) {
-                menuData = { "entrées": [], "plats": [], "desserts": [] };
-            }
+            try {
+                let html = '';
+                
+                // 1. Sécurité : si la carte est corrompue, on la réinitialise proprement
+                if(!menuData || typeof menuData !== 'object' || Array.isArray(menuData)) {
+                    menuData = { "entrées": [], "plats": [], "desserts": [] };
+                }
 
-            for (let cat in menuData) {
-                if(!Array.isArray(menuData[cat])) menuData[cat] = [];
-                
-                // 🔥 LE FILTRE MAGIQUE : Supprime les plats "fantômes" qui font crasher l'écran
-                menuData[cat] = menuData[cat].filter(i => i && typeof i === 'object');
-                
-                let itemsCount = menuData[cat].length;
-                let itemsHtml = menuData[cat].map(i => {
-                    let currentStock = i.stock !== undefined ? i.stock : 99; 
-                    let stockColor = currentStock <= 5 ? 'var(--alert)' : 'var(--slate)';
+                let catIndex = 0; // Sécurise les identifiants HTML
+
+                for (let cat in menuData) {
+                    if (!menuData.hasOwnProperty(cat)) continue; // Évite les crashs invisibles
                     
-                    let tagsAlert = '';
-                    if (i.tags && Array.isArray(i.tags) && i.tags.length > 0) {
-                        const tagMap = { 'vegan': '🌿', 'vege': '🥗', 'nogluten': '🌾', 'nopork': '🐷', 'spicy': '🌶️' };
-                        tagsAlert = `<span style="font-size: 0.8rem; margin-left: 8px; background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.1); padding: 2px 6px; border-radius: 4px; pointer-events: none;">` + 
-                            i.tags.map(t => tagMap[t] || t).join(' ') + 
-                        `</span>`;
-                    }
+                    if(!Array.isArray(menuData[cat])) menuData[cat] = [];
+                    
+                    // 🔥 2. FILTRE MAGIQUE : Supprime les plats "fantômes"
+                    menuData[cat] = menuData[cat].filter(i => i && typeof i === 'object');
+                    
+                    // 🔥 3. ANTI-CRASH HTML : Gère les apostrophes dans les noms de catégories (ex: "Plats d'été")
+                    let safeCat = String(cat).replace(/'/g, "\\'").replace(/"/g, '&quot;');
+                    let safeCatId = "cat_" + catIndex;
+                    
+                    let itemsCount = menuData[cat].length;
+                    let itemsHtml = menuData[cat].map(i => {
+                        let currentStock = i.stock !== undefined ? i.stock : 99; 
+                        let stockColor = currentStock <= 5 ? 'var(--alert)' : 'var(--slate)';
+                        
+                        let tagsAlert = '';
+                        if (i.tags && Array.isArray(i.tags) && i.tags.length > 0) {
+                            const tagMap = { 'vegan': '🌿', 'vege': '🥗', 'nogluten': '🌾', 'nopork': '🐷', 'spicy': '🌶️' };
+                            tagsAlert = `<span style="font-size: 0.8rem; margin-left: 8px; background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.1); padding: 2px 6px; border-radius: 4px; pointer-events: none;">` + 
+                                i.tags.map(t => tagMap[t] || t).join(' ') + 
+                            `</span>`;
+                        }
 
-                    return `
-                    <div style="background:var(--bg); border:1px solid var(--border-strong); border-radius:8px; padding:15px; margin-bottom: 10px; display:flex; flex-direction:column; gap:12px;">
-                        <div style="display:flex; justify-content:space-between; align-items:flex-start; flex-wrap:wrap; gap:10px;">
-                            <b onclick="editItemName('${cat}', ${i.id})" style="cursor:pointer; color:var(--text-main); white-space:pre-wrap; line-height:1.5; flex:1; min-width:150px; font-size:0.95rem;" title="Modifier le texte">${i.name || 'Sans Nom'} ${tagsAlert}</b>
-                            <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
-                                <span style="color:${stockColor}; font-weight:800; cursor:pointer; background:var(--panel); padding:8px 12px; border-radius:6px; border:1px solid var(--border-strong); font-size:0.8rem;" onclick="updateDishStock('${cat}', ${i.id})">Dispo: ${currentStock}</span>
-                                <span style="color:var(--gold); font-weight:800; cursor:pointer; background:var(--panel); padding:8px 12px; border-radius:6px; border:1px solid var(--border-strong); font-size:0.8rem;" onclick="editItemPrice('${cat}', ${i.id})">${parseFloat(i.price||0).toFixed(2)} ${currentCurrency}</span>
-                                <button onclick="deleteMenuItem('${cat}', ${i.id})" style="background:var(--panel); border:1px solid var(--border-strong); border-radius:6px; color:var(--alert); padding:8px 12px; cursor:pointer; font-weight:bold;">✖</button>
+                        let safeName = String(i.name || 'Sans Nom').replace(/'/g, "\\'").replace(/"/g, '&quot;');
+
+                        return `
+                        <div style="background:var(--bg); border:1px solid var(--border-strong); border-radius:8px; padding:15px; margin-bottom: 10px; display:flex; flex-direction:column; gap:12px;">
+                            <div style="display:flex; justify-content:space-between; align-items:flex-start; flex-wrap:wrap; gap:10px;">
+                                <b onclick="editItemName('${safeCat}', ${i.id})" style="cursor:pointer; color:var(--text-main); white-space:pre-wrap; line-height:1.5; flex:1; min-width:150px; font-size:0.95rem;" title="Modifier le texte">${safeName} ${tagsAlert}</b>
+                                <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+                                    <span style="color:${stockColor}; font-weight:800; cursor:pointer; background:var(--panel); padding:8px 12px; border-radius:6px; border:1px solid var(--border-strong); font-size:0.8rem;" onclick="updateDishStock('${safeCat}', ${i.id})">Dispo: ${currentStock}</span>
+                                    <span style="color:var(--gold); font-weight:800; cursor:pointer; background:var(--panel); padding:8px 12px; border-radius:6px; border:1px solid var(--border-strong); font-size:0.8rem;" onclick="editItemPrice('${safeCat}', ${i.id})">${parseFloat(i.price||0).toFixed(2)} ${currentCurrency}</span>
+                                    <button onclick="deleteMenuItem('${safeCat}', ${i.id})" style="background:var(--panel); border:1px solid var(--border-strong); border-radius:6px; color:var(--alert); padding:8px 12px; cursor:pointer; font-weight:bold;">✖</button>
+                                </div>
+                            </div>
+                        </div>`;
+                    }).join('');
+
+                    html += `
+                    <div class="menu-category">
+                        <div class="category-header"><div style="display:flex; align-items:center; gap:10px;">${String(cat).toUpperCase()}<span class="count-badge">${itemsCount}</span></div><button onclick="removeRecipeCategory('${safeCat}')" style="background:transparent; border:none; color:var(--alert); cursor:pointer; font-size:1.2rem;">✖</button></div>
+                        <div style="padding:20px; display:flex; flex-direction:column; background:var(--panel);">
+                            ${itemsHtml}
+                            <div style="display:flex; flex-direction:column; gap:12px; margin-top: 15px; border-top: 1px dashed var(--border-strong); padding-top: 20px;">
+                                <textarea id="add-name-${safeCatId}" placeholder="Nom du plat..." style="width:100%; min-height: 60px; resize:vertical; padding:12px;"></textarea>
+                                <div class="flex-mobile-col" style="display:flex; gap:12px; align-items:center;">
+                                    <input type="number" id="add-stock-${safeCatId}" placeholder="Qté" style="flex:1;">
+                                    <input type="number" id="add-price-${safeCatId}" placeholder="Prix ${currentCurrency}" style="flex:1;">
+                                    <button class="add-btn primary" style="flex:2;" onclick="addMenuItemSafe('${safeCat}', '${safeCatId}')">Ajouter</button>
+                                </div>
                             </div>
                         </div>
                     </div>`;
-                }).join('');
-
-                html += `
-                <div class="menu-category">
-                    <div class="category-header"><div style="display:flex; align-items:center; gap:10px;">${cat.toUpperCase()}<span class="count-badge">${itemsCount}</span></div><button onclick="removeRecipeCategory('${cat}')" style="background:transparent; border:none; color:var(--alert); cursor:pointer; font-size:1.2rem;">✖</button></div>
-                    <div style="padding:20px; display:flex; flex-direction:column; background:var(--panel);">
-                        ${itemsHtml}
-                        <div style="display:flex; flex-direction:column; gap:12px; margin-top: 15px; border-top: 1px dashed var(--border-strong); padding-top: 20px;">
-                            <textarea id="add-name-${cat}" placeholder="Nom du plat..." style="width:100%; min-height: 60px; resize:vertical; padding:12px;"></textarea>
-                            <div class="flex-mobile-col" style="display:flex; gap:12px; align-items:center;">
-                                <input type="number" id="add-stock-${cat}" placeholder="Qté" style="flex:1;">
-                                <input type="number" id="add-price-${cat}" placeholder="Prix ${currentCurrency}" style="flex:1;">
-                                <button class="add-btn primary" style="flex:2;" onclick="addMenuItem('${cat}')">Ajouter</button>
-                            </div>
-                        </div>
-                    </div>
+                    
+                    catIndex++;
+                }
+                
+                html += `<div class="menu-category" style="border: 1px dashed var(--gold); background: transparent; justify-content:center; align-items:center; padding: 40px; cursor:pointer; box-shadow:none; transition: 0.2s;" onclick="addRecipeCategory()" onmouseover="this.style.background='var(--panel)'" onmouseout="this.style.background='transparent'"><div style="font-size: 2.5rem; color: var(--gold); margin-bottom: 15px;">➕</div><div style="font-weight: 800; color: var(--gold); letter-spacing: 1px; text-align:center; font-size: 0.85rem;">NOUVELLE CATÉGORIE</div></div>`;
+                grid.innerHTML = html;
+                
+            } catch (err) {
+                console.error("Erreur critique RenderMenu:", err);
+                grid.innerHTML = `<div style="padding: 30px; text-align:center; color: var(--alert); border: 1px dashed var(--alert); border-radius: 8px; margin-top: 20px;">
+                    <h3>⚠️ La carte est bloquée par une donnée corrompue</h3>
+                    <p style="font-size:0.85rem; color:var(--text-muted);">L'interface a été protégée contre un crash total.</p>
+                    <button class="add-btn primary" style="max-width: 300px; margin-top: 15px;" onclick="menuData={}; renderMenu(); syncMenuToCloud();">RÉINITIALISER LA CARTE À ZÉRO</button>
                 </div>`;
             }
-            html += `<div class="menu-category" style="border: 1px dashed var(--gold); background: transparent; justify-content:center; align-items:center; padding: 40px; cursor:pointer; box-shadow:none; transition: 0.2s;" onclick="addRecipeCategory()" onmouseover="this.style.background='var(--panel)'" onmouseout="this.style.background='transparent'"><div style="font-size: 2.5rem; color: var(--gold); margin-bottom: 15px;">➕</div><div style="font-weight: 800; color: var(--gold); letter-spacing: 1px; text-align:center; font-size: 0.85rem;">NOUVELLE CATÉGORIE</div></div>`;
-            grid.innerHTML = html;
         }
 
-        async function addMenuItem(cat) {
-            const nameInput = document.getElementById(`add-name-${cat}`); const priceInput = document.getElementById(`add-price-${cat}`); const stockInput = document.getElementById(`add-stock-${cat}`);
+        async function addMenuItemSafe(cat, safeCatId) {
+            const nameInput = document.getElementById(`add-name-${safeCatId}`); 
+            const priceInput = document.getElementById(`add-price-${safeCatId}`); 
+            const stockInput = document.getElementById(`add-stock-${safeCatId}`);
             if (!nameInput.value || !priceInput.value) return alert("Nom et prix requis.");
             let stockVal = stockInput.value ? parseInt(stockInput.value) : 99;
             let newTva = systemSettings.tva !== undefined ? systemSettings.tva : 10; 
+            
+            if (!menuData[cat]) menuData[cat] = [];
             menuData[cat].push({ id: Date.now(), name: nameInput.value.trim(), price: parseFloat(priceInput.value), stock: stockVal, tva: newTva });
-            nameInput.value = ''; priceInput.value = ''; stockInput.value = ''; renderAll(); 
+            
+            nameInput.value = ''; priceInput.value = ''; stockInput.value = ''; 
+            renderAll(); 
             await syncMenuToCloud();
         }
 
@@ -1205,39 +1235,6 @@
         }
 
         async function deleteMenuItem(cat, id) { if(confirm("Supprimer cette création de la carte ?")) { menuData[cat] = menuData[cat].filter(item => item.id !== id); renderAll(); await syncMenuToCloud(); } }
-
-        async function addMenuItem(cat) {
-            const nameInput = document.getElementById(`add-name-${cat}`); const priceInput = document.getElementById(`add-price-${cat}`); const stockInput = document.getElementById(`add-stock-${cat}`);
-            if (!nameInput.value || !priceInput.value) return alert("Nom et prix requis.");
-            let stockVal = stockInput.value ? parseInt(stockInput.value) : 99;
-            
-            let newTva = systemSettings.tva !== undefined ? systemSettings.tva : 10; 
-            
-            menuData[cat].push({ id: Date.now(), name: nameInput.value.trim(), price: parseFloat(priceInput.value), stock: stockVal, tva: newTva });
-            nameInput.value = ''; priceInput.value = ''; stockInput.value = ''; renderAll(); 
-            await syncMenuToCloud();
-        }
-
-        async function updateDishStock(cat, id) {
-            let item = menuData[cat].find(x => x.id === id); if(!item) return;
-            let shortName = item.name.split('\n')[0]; let newStock = prompt(`📦 Portions à la carte pour :\n"${shortName}" ?`, item.stock !== undefined ? item.stock : 99);
-            if(newStock !== null && newStock.trim() !== "") { let parsedStock = parseInt(newStock); if(!isNaN(parsedStock) && parsedStock >= 0) { item.stock = parsedStock; renderAll(); await syncMenuToCloud(); } else alert("⚠️ Quantité invalide."); }
-        }
-
-        async function editItemPrice(cat, id) {
-            let item = menuData[cat].find(x => x.id === id); if(!item) return;
-            let newPrice = prompt(`💰 Nouveau prix pour "${item.name.split('\n')[0]}" :`, item.price);
-            if(newPrice && newPrice.trim() !== "") { let parsed = parseFloat(newPrice.replace(',', '.')); if(!isNaN(parsed)) { item.price = parsed; renderAll(); await syncMenuToCloud(); } }
-        }
-
-        async function editItemName(cat, id) {
-            let item = menuData[cat].find(x => x.id === id); if(!item) return;
-            let newName = prompt(`✏️ Nouveau nom / description :`, item.name);
-            if(newName && newName.trim() !== "") { item.name = newName.trim(); renderAll(); await syncMenuToCloud(); }
-        }
-
-        async function deleteMenuItem(cat, id) { if(confirm("Supprimer cette création de la carte ?")) { menuData[cat] = menuData[cat].filter(item => item.id !== id); renderAll(); await syncMenuToCloud(); } }
-
         // === INVENTAIRE & IA ===
         function openInvModal(modalId) { document.getElementById(modalId).style.display = 'flex'; }
         function closeInvModal(modalId) { document.getElementById(modalId).style.display = 'none'; }
