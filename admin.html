@@ -2739,23 +2739,26 @@ async function secureFetch(input, init = {}) {
             return { cats: categoriesCuisine, menu: menuCuisine };
         }
 
+      let currentEditingItem = null; // Garde en mémoire le plat qu'on modifie
+
         function renderMenuList() {
             let filterCatEl = document.getElementById('menu-filter-cat'); if(!filterCatEl) return;
             const filterCat = filterCatEl.value; 
             const search = document.getElementById('menu-filter-search') ? document.getElementById('menu-filter-search').value.toLowerCase() : ""; 
             let html = '';
             
-            const processCat = (catName, itemsArray, department) => {
+            const processCat = (catId, catLabel, itemsArray, department) => {
                 if (!itemsArray) return; 
                 let filtered = itemsArray.filter(i => (i.name || "").toLowerCase().includes(search));
                 if (filtered.length > 0) {
-                    html += `<h3 style="color:var(--gold); margin-top:35px;">${catName}</h3>`;
+                    html += `<h3 style="color:var(--gold); margin-top:35px;">${catLabel}</h3>`;
                     filtered.forEach(item => {
                         let isSoldOut = (item.stock === 0 || item.stock === "0"); 
-                        let safeName = (item.name || "").replace(/'/g, "\\'").replace(/"/g, '&quot;');
-                        let safeCatName = catName.replace(/'/g, "\\'");
                         
-                        let ruptureBtn = isSoldOut ? `<button class="btn-outline danger" onclick="toggleRupture('${safeName}', '${safeCatName}', '${department}')">🔴 Épuisé</button>` : `<button class="btn-outline" onclick="toggleRupture('${safeName}', '${safeCatName}', '${department}')">🟢 Dispo</button>`;
+                        // 🔥 UTILISATION STRICTE DES IDs POUR ÉVITER LES BUGS D'APOSTROPHES
+                        let ruptureBtn = isSoldOut 
+                            ? `<button class="btn-outline danger" onclick="toggleRupture(${item.id}, '${catId}', '${department}')">🔴 Épuisé</button>` 
+                            : `<button class="btn-outline" onclick="toggleRupture(${item.id}, '${catId}', '${department}')">🟢 Dispo</button>`;
                         
                         let techBadge = `<span style="font-size: 0.7rem; color: var(--accent); border: 1px solid rgba(56,189,248,0.3); background: rgba(56,189,248,0.05); padding: 3px 8px; border-radius: 4px; margin-left: 10px; font-weight: bold;">⏱️ ${item.prepTime || 10}min | 🍳 ${item.station ? item.station.toUpperCase() : 'CHAUD'}</span>`;
 
@@ -2767,8 +2770,8 @@ async function secureFetch(input, init = {}) {
                             </div>
                             <div class="list-item-actions">
                                 ${ruptureBtn}
-                                <button class="btn-outline" onclick="openItemModal('${safeName}', '${safeCatName}', '${department}')">✏️</button>
-                                <button class="btn-outline danger" onclick="deleteItem('${safeName}', '${safeCatName}', '${department}')">🗑️</button>
+                                <button class="btn-outline" onclick="openItemModal(${item.id}, '${catId}', '${department}')">✏️</button>
+                                <button class="btn-outline danger" onclick="deleteItem(${item.id}, '${catId}', '${department}')">🗑️</button>
                             </div>
                         </div>`;
                     });
@@ -2776,9 +2779,9 @@ async function secureFetch(input, init = {}) {
             };
             
             if (filterCat === 'ALL') { 
-                categoriesCuisine.forEach(c => processCat(c.label, menuCuisine[c.id], 'cuisine')); 
-                categoriesBar.forEach(c => processCat(c.label, menuBar[c.id], 'bar')); 
-                if(typeof categoriesPatisserie !== 'undefined') categoriesPatisserie.forEach(c => processCat(c.label, menuPatisserie[c.id], 'patisserie'));
+                categoriesCuisine.forEach(c => processCat(c.id, c.label, menuCuisine[c.id], 'cuisine')); 
+                categoriesBar.forEach(c => processCat(c.id, c.label, menuBar[c.id], 'bar')); 
+                if(typeof categoriesPatisserie !== 'undefined') categoriesPatisserie.forEach(c => processCat(c.id, c.label, menuPatisserie[c.id], 'patisserie'));
             } 
             else { 
                 let isBar = categoriesBar.find(c => c.id === filterCat) !== undefined; 
@@ -2787,22 +2790,21 @@ async function secureFetch(input, init = {}) {
                 let catObj = isBar ? categoriesBar.find(c => c.id === filterCat) : (isPat ? categoriesPatisserie.find(c => c.id === filterCat) : categoriesCuisine.find(c => c.id === filterCat)); 
                 
                 if (catObj) { 
-                    if (dept === 'cuisine' && menuCuisine[catObj.id]) processCat(catObj.label, menuCuisine[catObj.id], dept); 
-                    if (dept === 'bar' && menuBar[catObj.id]) processCat(catObj.label, menuBar[catObj.id], dept); 
-                    if (dept === 'patisserie' && typeof menuPatisserie !== 'undefined' && menuPatisserie[catObj.id]) processCat(catObj.label, menuPatisserie[catObj.id], dept);
+                    if (dept === 'cuisine' && menuCuisine[catObj.id]) processCat(catObj.id, catObj.label, menuCuisine[catObj.id], dept); 
+                    if (dept === 'bar' && menuBar[catObj.id]) processCat(catObj.id, catObj.label, menuBar[catObj.id], dept); 
+                    if (dept === 'patisserie' && typeof menuPatisserie !== 'undefined' && menuPatisserie[catObj.id]) processCat(catObj.id, catObj.label, menuPatisserie[catObj.id], dept);
                 } 
             }
             if(document.getElementById('admin-menu-list')) document.getElementById('admin-menu-list').innerHTML = html || '<div class="empty-state">Vide</div>';
         }
 
-        function toggleRupture(name, cat, department) { 
+        function toggleRupture(itemId, catId, department) { 
             let refs = getDeptRefs(department);
-            let catObj = refs.cats.find(c => c.label === cat) || {id: cat}; 
-            let item = (refs.menu[catObj.id] || []).find(i => i.name === name); 
+            let item = (refs.menu[catId] || []).find(i => i.id === itemId); 
             if (item) { item.stock = (item.stock == 0) ? "" : 0; markUnsaved(); renderMenuList(); } 
         }
 
-        function openItemModal(name = null, catName = null, department = 'cuisine') {
+        function openItemModal(itemId = null, catId = null, department = 'cuisine') {
             updateCategoryDropdowns();
 
             const originalName = document.getElementById('item-edit-original-name');
@@ -2810,23 +2812,24 @@ async function secureFetch(input, init = {}) {
             const catSelect = document.getElementById('item-cat');
             const tagBoxes = document.querySelectorAll('.item-tag-cb');
 
-            originalName.value = name || '';
+            originalName.value = '';
             originalCat.value = '';
             tagBoxes.forEach(cb => { cb.checked = false; });
 
-            if (name && catName) {
+            if (itemId && catId) {
+                // MISE À JOUR D'UN PLAT
+                currentEditingItem = { id: itemId, catId: catId, dept: department };
                 let refs = getDeptRefs(department);
-                const category = refs.cats.find(c => c.label === catName || c.id === catName);
-                const categoryId = category ? category.id : catName;
-                const item = (refs.menu[categoryId] || []).find(entry => entry.name === name);
+                const item = (refs.menu[catId] || []).find(entry => entry.id === itemId);
 
                 if (!item) {
                     alert('Plat introuvable.');
                     return;
                 }
 
-                originalCat.value = categoryId;
-                catSelect.value = categoryId;
+                originalName.value = item.name || '';
+                originalCat.value = catId;
+                catSelect.value = catId;
                 document.getElementById('item-name').value = item.name || '';
                 document.getElementById('item-price').value = item.price ?? '';
                 document.getElementById('item-stock').value = item.stock ?? '';
@@ -2837,6 +2840,8 @@ async function secureFetch(input, init = {}) {
                 const tags = Array.isArray(item.tags) ? item.tags : [];
                 tagBoxes.forEach(cb => { cb.checked = tags.includes(cb.value); });
             } else {
+                // NOUVEAU PLAT
+                currentEditingItem = null;
                 document.getElementById('item-name').value = '';
                 document.getElementById('item-price').value = '';
                 document.getElementById('item-stock').value = '';
@@ -2858,40 +2863,38 @@ async function secureFetch(input, init = {}) {
         function saveItem() {
             let name = document.getElementById('item-name').value.trim(); 
             let price = parseFloat(document.getElementById('item-price').value); 
-            let catID = document.getElementById('item-cat').value; 
+            let newCatId = document.getElementById('item-cat').value; 
             let isVisible = document.getElementById('item-visible').checked; 
             let selectedTaxProfile = document.getElementById('item-tax-profile')?.value || "AUTO";
             let effectiveTaxProfile = document.getElementById('item-tva')?.dataset.effectiveTaxProfile || selectedTaxProfile;
             
-            // Trouver le département de la catégorie cible
-            let targetDept = 'cuisine';
-            if (categoriesBar.find(c => c.id === catID)) targetDept = 'bar';
-            else if (typeof categoriesPatisserie !== 'undefined' && categoriesPatisserie.find(c => c.id === catID)) targetDept = 'patisserie';
+            // Trouver le département de la NOUVELLE catégorie cible
+            let newDept = 'cuisine';
+            if (categoriesBar.find(c => c.id === newCatId)) newDept = 'bar';
+            else if (typeof categoriesPatisserie !== 'undefined' && categoriesPatisserie.find(c => c.id === newCatId)) newDept = 'patisserie';
             
             if (selectedTaxProfile === "AUTO") {
-                effectiveTaxProfile = inferTaxProfileForItem(name, catID, document.getElementById('item-station')?.value || "", targetDept === 'bar');
+                effectiveTaxProfile = inferTaxProfileForItem(name, newCatId, document.getElementById('item-station')?.value || "", newDept === 'bar');
             }
             
             let tvaValue = selectedTaxProfile === "CUSTOM"
                 ? (parseFloat(document.getElementById('item-tva').value) || 0)
                 : getTaxRateForProfile(effectiveTaxProfile);
                 
-            let origName = document.getElementById('item-edit-original-name').value; 
-            let origCatID = document.getElementById('item-edit-original-cat').value;
-            
             let prepTime = parseInt(document.getElementById('item-prep-time').value) || 10;
             let station = document.getElementById('item-station').value;
 
             let selectedTags = [];
             document.querySelectorAll('.item-tag-cb:checked').forEach(cb => selectedTags.push(cb.value));
 
-            if (!name || isNaN(price) || !catID) return alert("Données du plat invalides."); 
+            if (!name || isNaN(price) || !newCatId) return alert("Données du plat invalides."); 
             
-            let targetRefs = getDeptRefs(targetDept);
+            let targetRefs = getDeptRefs(newDept);
             let targetMenu = targetRefs.menu;
+            if (!targetMenu[newCatId]) targetMenu[newCatId] = [];
             
-            let newItem = { 
-                id: Date.now(),
+            let newItemObj = { 
+                id: Date.now(), // Valeur par défaut
                 name: name,
                 price: price,
                 stock: document.getElementById('item-stock').value,
@@ -2905,214 +2908,46 @@ async function secureFetch(input, init = {}) {
                 station: station,
                 tags: selectedTags
             };
-            
-            if (!targetMenu[catID]) targetMenu[catID] = [];
-            
-            if (origName) { 
-                let origDept = 'cuisine';
-                if (categoriesBar.find(c => c.id === origCatID)) origDept = 'bar';
-                else if (typeof categoriesPatisserie !== 'undefined' && categoriesPatisserie.find(c => c.id === origCatID)) origDept = 'patisserie';
-                
-                let origRefs = getDeptRefs(origDept);
+
+            if (currentEditingItem) {
+                // MISE À JOUR
+                newItemObj.id = currentEditingItem.id; // Garder l'ancien ID !
+                let origRefs = getDeptRefs(currentEditingItem.dept);
                 let origMenu = origRefs.menu;
                 
-                let idx = (origMenu[origCatID] || []).findIndex(i => i.name === origName); 
-                if (idx > -1) { 
-                    newItem.id = origMenu[origCatID][idx].id || Date.now(); // Conserve the original ID
-                    if (catID === origCatID) {
-                        origMenu[origCatID][idx] = newItem; 
-                    } else { 
-                        origMenu[origCatID].splice(idx, 1); 
-                        targetMenu[catID].push(newItem); 
-                    } 
-                } else {
-                    targetMenu[catID].push(newItem); 
+                // Retirer de l'ancienne catégorie
+                if (origMenu[currentEditingItem.catId]) {
+                    origMenu[currentEditingItem.catId] = origMenu[currentEditingItem.catId].filter(i => i.id !== currentEditingItem.id);
                 }
-            } else { 
-                targetMenu[catID].push(newItem); 
+                // Ajouter dans la nouvelle catégorie
+                targetMenu[newCatId].push(newItemObj);
+            } else {
+                // NOUVEAU PLAT
+                targetMenu[newCatId].push(newItemObj);
             }
             
+            currentEditingItem = null; // Réinitialise l'état
             markUnsaved(); 
             closeModals(); 
             renderMenuList(); 
             updateDashboardStats(); 
-            saveAllToCloud(); // Synchronisation instantanée sur Render
+            saveAllToCloud(); // Synchronisation instantanée
         }
 
-        function deleteItem(name, cat, department) {
+        function deleteItem(itemId, catId, department) {
             if (!hasPermission("MENU_WRITE")) return alert("Permission insuffisante."); 
-            if(!confirm(`Supprimer ${name} ?`)) return; 
+            if(!confirm(`Êtes-vous sûr de vouloir supprimer ce produit ?`)) return; 
+            
             let refs = getDeptRefs(department);
-            let catObj = refs.cats.find(c => c.label === cat) || {id: cat}; 
-            refs.menu[catObj.id] = (refs.menu[catObj.id] || []).filter(i => i.name !== name); 
-            markUnsaved(); renderMenuList(); updateDashboardStats(); 
+            if (refs.menu[catId]) {
+                refs.menu[catId] = refs.menu[catId].filter(i => i.id !== itemId); 
+            }
+            
+            markUnsaved(); 
+            renderMenuList(); 
+            updateDashboardStats(); 
+            saveAllToCloud();
         }
-    
-    // Structuration propre de l'objet produit pour iCHEF Cloud
-    let newItem = { 
-        name: name,
-        price: price,
-        stock: document.getElementById('item-stock').value,
-        hidden: !isVisible, 
-        tva: tvaValue,
-        taxProfile: selectedTaxProfile,
-        effectiveTaxProfile: effectiveTaxProfile,
-        taxCountry: getFiscalCountry(),
-        taxSource: "ICHEF_OS_AUTO_TAX",
-        prepTime: prepTime,
-        station: station,
-        tags: selectedTags
-    };
-    
-    if (!targetMenu[catID]) targetMenu[catID] = [];
-    
-    if (origName) { 
-        let origMenu = categoriesBar.find(c => c.id === origCatID) ? menuBar : menuCuisine; 
-        let idx = origMenu[origCatID].findIndex(i => i.name === origName); 
-        if (idx > -1) { 
-            if (catID === origCatID) {
-                origMenu[origCatID][idx] = newItem; 
-            } else { 
-                origMenu[origCatID].splice(idx, 1); 
-                targetMenu[catID].push(newItem); 
-            } 
-        } 
-    } else { 
-        targetMenu[catID].push(newItem); 
-    }
-    
-    markUnsaved(); 
-    closeModals(); 
-    renderMenuList(); 
-    updateDashboardStats(); 
-    saveAllToCloud(); // Synchronisation instantanée sur Render
-}
-
-        function deleteItem(name, cat, isBar) {
-            if (!hasPermission("MENU_WRITE")) return alert("Permission insuffisante."); 
-            if(!confirm(`Supprimer ${name} ?`)) return; 
-            let catObj = (isBar ? categoriesBar : categoriesCuisine).find(c => c.label === cat) || {id: cat}; 
-            let ref = isBar ? menuBar : menuCuisine; ref[catObj.id] = ref[catObj.id].filter(i => i.name !== name); 
-            markUnsaved(); renderMenuList(); updateDashboardStats(); 
-        }
-
-        // --- STATS DASHBOARD ---
-        function updateDashboardStats() {
-            let itemsCount = 0;
-            if (menuCuisine) Object.values(menuCuisine).forEach(arr => itemsCount += (arr ? arr.length : 0));
-            if (menuBar) Object.values(menuBar).forEach(arr => itemsCount += (arr ? arr.length : 0));
-
-            if (document.getElementById('dash-items-count')) {
-                document.getElementById('dash-items-count').innerText = itemsCount;
-            }
-
-            if (document.getElementById('dash-staff-count')) {
-                document.getElementById('dash-staff-count').innerText = staffAccess ? staffAccess.length : 0;
-            }
-
-            const allClosed = Array.isArray(archiveCuisine)
-                ? [...archiveCuisine]
-                : (archiveCuisine && Array.isArray(archiveCuisine.data) ? [...archiveCuisine.data] : []);
-
-            const currency = systemSettings.currency || "€";
-            const now = new Date();
-
-            const startOfDay = new Date(now);
-            startOfDay.setHours(0, 0, 0, 0);
-
-            const endOfDay = new Date(now);
-            endOfDay.setHours(23, 59, 59, 999);
-
-            const startOfWeek = new Date(now);
-            const dayIndex = (startOfWeek.getDay() + 6) % 7;
-            startOfWeek.setDate(startOfWeek.getDate() - dayIndex);
-            startOfWeek.setHours(0, 0, 0, 0);
-
-            const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
-            const startOfYear = new Date(now.getFullYear(), 0, 1);
-
-            const getTicketDate = (ticket) => {
-                const raw = ticket?.date || ticket?.time || ticket?.createdAt || ticket?.paidAt || ticket?.closedAt || ticket?.timestamp;
-                if (!raw) return null;
-
-                const d = new Date(raw);
-                return isNaN(d.getTime()) ? null : d;
-            };
-
-            const getTicketTotal = (ticket) => {
-                return parseFloat(ticket?.totalTTC || ticket?.total || ticket?.amount || ticket?.ttc || 0) || 0;
-            };
-
-            const getTicketCovers = (ticket) => {
-                const direct = parseFloat(ticket?.covers || ticket?.couverts || ticket?.guests || ticket?.people || 0) || 0;
-                if (direct > 0) return direct;
-
-                let counted = 0;
-                if (Array.isArray(ticket?.items)) {
-                    ticket.items.forEach(item => {
-                        if (item.course === 2 || item.type === "plat" || item.category === "PLATS") {
-                            counted += parseFloat(item.qty || item.quantity || 1) || 1;
-                        }
-                    });
-                }
-                return counted;
-            };
-
-            let dayCA = 0;
-            let weekCA = 0;
-            let monthCA = 0;
-            let yearCA = 0;
-            let totalCouverts = 0;
-
-            allClosed.forEach(ticket => {
-                const ticketDate = getTicketDate(ticket);
-                if (!ticketDate) return;
-
-                const total = getTicketTotal(ticket);
-
-                if (ticketDate >= startOfYear && ticketDate <= endOfDay) {
-                    yearCA += total;
-                }
-
-                if (ticketDate >= startOfMonth && ticketDate <= endOfDay) {
-                    monthCA += total;
-                }
-
-                if (ticketDate >= startOfWeek && ticketDate <= endOfDay) {
-                    weekCA += total;
-                }
-
-                if (ticketDate >= startOfDay && ticketDate <= endOfDay) {
-                    dayCA += total;
-                    totalCouverts += getTicketCovers(ticket);
-                }
-            });
-
-            if (document.getElementById('dash-ca-live')) {
-                document.getElementById('dash-ca-live').innerText = dayCA.toFixed(2) + ' ' + currency;
-            }
-
-            if (document.getElementById('dash-couverts')) {
-                document.getElementById('dash-couverts').innerText = totalCouverts;
-            }
-
-            if (document.getElementById('sales-day')) {
-                document.getElementById('sales-day').innerText = dayCA.toFixed(2) + ' ' + currency;
-            }
-
-            if (document.getElementById('sales-week')) {
-                document.getElementById('sales-week').innerText = weekCA.toFixed(2) + ' ' + currency;
-            }
-
-            if (document.getElementById('sales-month')) {
-                document.getElementById('sales-month').innerText = monthCA.toFixed(2) + ' ' + currency;
-            }
-
-            if (document.getElementById('sales-year')) {
-                document.getElementById('sales-year').innerText = yearCA.toFixed(2) + ' ' + currency;
-            }
-        }
-
         function renderFinancialDashboard() {
             let allClosed = Array.isArray(archiveCuisine) ? [...archiveCuisine] : (archiveCuisine && Array.isArray(archiveCuisine.data) ? [...archiveCuisine.data] : []);
             let totalCA = 0; let curr = systemSettings.currency || "€"; let html = '';
