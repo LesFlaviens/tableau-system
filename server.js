@@ -1168,7 +1168,339 @@ app.get('/debug-fichiers', (req, res) => {
         res.json({ dossier_actuel: __dirname, fichiers_trouves: files });
     });
 });
+// ==========================================
+// 🌟 SYNCHRONISATION CENTRALISÉE DES CARTES
+// admin.html ↔ cuisine / pâtisserie / bar
+// ==========================================
 
+const MENU_SYNC_KEYS = Object.freeze({
+    CUISINE: {
+        menuKey: "MENU_CUISINE",
+        categoriesKey: "CATEGORIES_CUISINE",
+        legacyMenuKey: "MENU_MASTER"
+    },
+
+    PATISSERIE: {
+        menuKey: "MENU_PATISSERIE",
+        categoriesKey: "CATEGORIES_PATISSERIE",
+        legacyMenuKey: "MENU_MASTER_PATISSERIE"
+    },
+
+    BAR: {
+        menuKey: "MENU_BAR",
+        categoriesKey: "CATEGORIES_BAR",
+        legacyMenuKey: "MENU_MASTER_BAR"
+    }
+});
+
+function normalizeMenuDepartment(value) {
+    const department = String(value || "")
+        .trim()
+        .toUpperCase();
+
+    if (department === "PÂTISSERIE") {
+        return "PATISSERIE";
+    }
+
+    return MENU_SYNC_KEYS[department]
+        ? department
+        : null;
+}
+
+io.on("connection", socket => {
+    console.log(
+        `✅ Nouvelle connexion écran détectée : ${socket.id}`
+    );
+
+    socket.on("joinTenant", async tenantID => {
+        const safeID = cleanString(tenantID);
+
+        if (!safeID) {
+            return;
+        }
+
+        socket.join(safeID);
+        socket.data.tenantID = safeID;
+
+        console.log(
+            `📡 Écran ${socket.id} connecté au restaurant ${safeID}`
+        );
+
+        /*
+         * Envoie immédiatement l’état actuel au nouvel écran.
+         */
+        try {
+            const currentState = await AppState.findOne({
+                tenantID: safeID
+            });
+
+            if (currentState) {
+                socket.emit("updateState", currentState);
+            }
+        } catch (error) {
+            console.error(
+                "Erreur chargement initial Socket.IO :",
+                error.message
+            );
+        }
+    });
+
+    /*
+     * Reçoit les changements de :
+     * - admin.html
+     * - chef.html
+     * - chef-patissier.html
+     * - chef-bar.html
+     */
+    socket.on(
+        "syncMenu",
+        async (payload = {}, callback) => {
+            try {
+                const safeID = cleanString(
+                    payload.tenantID ||
+                    socket.data.tenantID
+                );
+
+                const department =
+                    normalizeMenuDepartment(
+                        payload.department
+                    );
+
+                const config = department
+                    ? MENU_SYNC_KEYS[department]
+                    : null;
+
+                if (!safeID || !config) {
+                    const error =
+                        "Restaurant ou département invalide.";
+
+                    if (typeof callback === "function") {
+                        callback({
+                            success: false,
+                            error
+                        });
+                    }
+
+                    return;
+                }
+
+                const menu = payload.menu;
+                const categories = payload.categories;
+
+                if (
+                    !menu ||
+                    typeof menu !== "object" ||
+                    Array.isArray(menu)
+                ) {
+                    if (typeof callback === "function") {
+                        callback({
+                            success: false,
+                            error: "Format de carte invalide."
+                        });
+                    }
+
+                    return;
+                }
+
+                if (!Array.isArray(categories)) {
+                    if (typeof callback === "function") {
+                        callback({
+                            success: false,
+                            error:
+                                "Format de catégories invalide."
+                        });
+                    }
+
+                    return;
+                }
+
+                const updatedAt =
+                    new Date().toISOString();
+
+                const source = String(
+                    payload.source || "UNKNOWN"
+                ).slice(0, 100);
+
+                /*
+                 * Sauvegarde le menu et ses catégories
+                 * dans une seule opération MongoDB.
+                 */
+                const updateFields = {
+                    [`activeOrders.${config.menuKey}`]: {
+                        data: menu,
+                        department,
+                        source,
+                        updatedAt
+                    },
+
+                    [`activeOrders.${config.categoriesKey}`]: {
+                        data: categories,
+                        department,
+                        source,
+                        updatedAt
+                    }
+                };
+
+                /*
+                 * Garde temporairement les anciennes clés
+                 * pour ne pas casser les anciennes pages.
+                 */
+                if (config.legacyMenuKey) {
+                    updateFields[
+                        `activeOrders.${config.legacyMenuKey}`
+                    ] = {
+                        data: menu,
+                        department,
+                        source,
+                        updatedAt
+                    };
+                }
+
+                const newState =
+                    await AppState.findOneAndUpdate(
+                        {
+                            tenantID: safeID
+                        },
+                        {
+                            $set: updateFields
+                        },
+                        {
+                            upsert: true,
+                            new: true,
+                            setDefaultsOnInsert: true
+                        }
+                    );
+
+                const itemsCount =
+                    Object.values(menu).reduce(
+                        (total, items) => {
+                            return total + (
+                                Array.isArray(items)
+                                    ? items.length
+                                    : 0
+                            );
+                        },
+                        0
+                    );
+
+                /*
+                 * Trace la modification dans le journal
+                 * de sécurité existant.
+                 */
+                await scellerOperation(
+                    safeID,
+                    "UPDATE",
+                    `MENU_${department}`,
+                    config.menuKey,
+                    payload.pin || "SYSTEM",
+                    {
+                        source,
+                        updatedAt,
+                        categoriesCount:
+                            categories.length,
+                        itemsCount
+                    }
+                );
+
+                /*
+                 * Actualise tous les écrans du restaurant :
+                 * admin, cuisine, pâtisserie et bar.
+                 */
+                io.to(safeID).emit(
+                    "updateState",
+                    newState
+                );
+
+                io.to(safeID).emit(
+                    "menuSynced",
+                    {
+                        tenantID: safeID,
+                        department,
+                        menuKey:
+                            config.menuKey,
+                        categoriesKey:
+                            config.categoriesKey,
+                        updatedAt,
+                        source
+                    }
+                );
+
+                if (typeof callback === "function") {
+                    callback({
+                        success: true,
+                        department,
+                        updatedAt
+                    });
+                }
+            } catch (error) {
+                console.error(
+                    "❌ Erreur syncMenu :",
+                    error
+                );
+
+                if (typeof callback === "function") {
+                    callback({
+                        success: false,
+                        error:
+                            "Erreur serveur pendant la synchronisation."
+                    });
+                }
+            }
+        }
+    );
+
+    /*
+     * Permet à une page de réclamer l’état complet
+     * après une reconnexion Internet.
+     */
+    socket.on(
+        "requestMenuState",
+        async (payload = {}, callback) => {
+            try {
+                const safeID = cleanString(
+                    payload.tenantID ||
+                    socket.data.tenantID
+                );
+
+                if (!safeID) {
+                    return;
+                }
+
+                const currentState =
+                    await AppState.findOne({
+                        tenantID: safeID
+                    });
+
+                if (currentState) {
+                    socket.emit(
+                        "updateState",
+                        currentState
+                    );
+                }
+
+                if (typeof callback === "function") {
+                    callback({
+                        success: true
+                    });
+                }
+            } catch (error) {
+                if (typeof callback === "function") {
+                    callback({
+                        success: false,
+                        error:
+                            "État des menus indisponible."
+                    });
+                }
+            }
+        }
+    );
+
+    socket.on("disconnect", () => {
+        console.log(
+            `❌ Écran déconnecté : ${socket.id}`
+        );
+    });
+});
 // =========================================================================
 // 🎯 PORTAIL DES DEMANDES DE PARTENARIAT (VITRINE & DEMO) + ALERTES SMS
 // =========================================================================
