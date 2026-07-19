@@ -1169,24 +1169,20 @@ app.get('/debug-fichiers', (req, res) => {
         res.json({ dossier_actuel: __dirname, fichiers_trouves: files });
     });
 });
-// ==========================================
-// 🌟 SYNCHRONISATION CENTRALISÉE DES CARTES
-// admin.html ↔ cuisine / pâtisserie / bar
-// ==========================================
-
+/ =========================================================================
+// 🌟 SYNCHRONISATION CENTRALISÉE DES CARTES (CUISINE / PATISSERIE / BAR)
+// =========================================================================
 const MENU_SYNC_KEYS = Object.freeze({
     CUISINE: {
         menuKey: "MENU_CUISINE",
         categoriesKey: "CATEGORIES_CUISINE",
         legacyMenuKey: "MENU_MASTER"
     },
-
     PATISSERIE: {
         menuKey: "MENU_PATISSERIE",
         categoriesKey: "CATEGORIES_PATISSERIE",
         legacyMenuKey: "MENU_MASTER_PATISSERIE"
     },
-
     BAR: {
         menuKey: "MENU_BAR",
         categoriesKey: "CATEGORIES_BAR",
@@ -1197,15 +1193,10 @@ const MENU_SYNC_KEYS = Object.freeze({
 function normalizeMenuDepartment(value) {
     const department = String(value || "")
         .trim()
-        .toUpperCase();
+        .toUpperCase()
+        .normalize("NFD").replace(/[\u0300-\u036f]/g, ""); // Supprime les accents automatiquement (PÂTISSERIE -> PATISSERIE)
 
-    if (department === "PÂTISSERIE") {
-        return "PATISSERIE";
-    }
-
-    return MENU_SYNC_KEYS[department]
-        ? department
-        : null;
+    return MENU_SYNC_KEYS[department] ? department : null;
 }
 
 // 🔥 LE SEUL ET UNIQUE BLOC io.on('connection') 🔥
