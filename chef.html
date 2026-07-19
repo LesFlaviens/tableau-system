@@ -1048,9 +1048,85 @@
             closeInvModal('profile-modal');
         }
 
+// ==============================================================
+        // 🚀 WEBSOCKET & SYNCHRONISATION HAUTE VITESSE
+        // ==============================================================
+        const MENU_DEPARTMENT = 'CUISINE';
+        const MENU_KEY = 'MENU_CUISINE';
+        const CATEGORIES_KEY = 'CATEGORIES_CUISINE';
+        const PAGE_SOURCE = 'chef.html';
+
+        window.ichefSocket = io(SERVER_URL, {
+            transports: ['websocket', 'polling'],
+            reconnection: true,
+            reconnectionAttempts: Infinity,
+            reconnectionDelay: 1000,
+            reconnectionDelayMax: 5000,
+            timeout: 10000
+        });
+        
+        const socket = window.ichefSocket;
+
+        socket.on('connect', () => {
+            socket.emit('joinTenant', tenantID);
+            let syncDot = document.getElementById('sync-dot');
+            let syncText = document.getElementById('sync-text');
+            if(syncDot) syncDot.style.background = 'var(--success)';
+            if(syncText) syncText.innerText = "EN LIGNE";
+        });
+
+        socket.on('disconnect', () => {
+            const syncDot = document.getElementById('sync-dot');
+            const syncText = document.getElementById('sync-text');
+            if (syncDot) syncDot.style.background = 'var(--alert)';
+            if (syncText) syncText.innerText = 'HORS LIGNE';
+        });
+
+        // ==============================================================
+        // 💾 SAUVEGARDE ET DIFFUSION (CHEF -> ADMIN)
+        // ==============================================================
         async function syncMenuToCloud() {
-            // Le chef de cuisine sauvegarde tout dans MENU_MASTER
-            await API.save('MENU_MASTER', menuData);
+            try {
+                let syncDot = document.getElementById('sync-dot');
+                let syncText = document.getElementById('sync-text');
+                if(syncDot) syncDot.style.background = 'var(--gold)';
+                if(syncText) syncText.innerText = 'SAUVEGARDE...';
+
+                // On formate les catégories pour que l'Admin les lise correctement ({id, label})
+                const categoriesCuisine = Object.keys(menuData).map(cat => ({ 
+                    id: cat, 
+                    label: cat.toUpperCase() 
+                }));
+
+                // 1. Sauvegarde de sécurité classique via l'API REST
+                await API.save(MENU_KEY, menuData);
+                await API.save(CATEGORIES_KEY, categoriesCuisine);
+                await API.save('MENU_MASTER', menuData); // Rétrocompatibilité ancienne caisse
+
+                // 2. Envoi de la notification en temps réel via Socket.io
+                if (socket?.connected) {
+                    socket.emit('syncMenu', {
+                        tenantID: tenantID,
+                        department: MENU_DEPARTMENT,
+                        menu: menuData,
+                        categories: categoriesCuisine,
+                        source: PAGE_SOURCE,
+                        pin: localStorage.getItem('ichef_master_pin') || 'SYSTEM'
+                    }, (response) => {
+                        // Callback de confirmation du serveur
+                        if(response && response.success) {
+                            if(syncDot) syncDot.style.background = 'var(--success)';
+                            if(syncText) syncText.innerText = 'EN LIGNE';
+                        }
+                    });
+                }
+            } catch (error) {
+                console.error('Erreur synchronisation cuisine :', error);
+                const syncDot = document.getElementById('sync-dot');
+                const syncText = document.getElementById('sync-text');
+                if (syncDot) syncDot.style.background = 'var(--alert)';
+                if (syncText) syncText.innerText = 'ERREUR SYNC';
+            }
         }
 
         // === IMPORT / EXPORT RECETTES ET CARTE ===
