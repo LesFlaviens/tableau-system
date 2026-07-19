@@ -2728,56 +2728,76 @@ async function secureFetch(input, init = {}) {
             } 
         }
 
+       function getDeptRefs(department) {
+            if (department === 'bar') return { cats: categoriesBar, menu: menuBar };
+            if (department === 'patisserie') return { cats: typeof categoriesPatisserie !== 'undefined' ? categoriesPatisserie : [], menu: typeof menuPatisserie !== 'undefined' ? menuPatisserie : {} };
+            return { cats: categoriesCuisine, menu: menuCuisine };
+        }
+
         function renderMenuList() {
             let filterCatEl = document.getElementById('menu-filter-cat'); if(!filterCatEl) return;
             const filterCat = filterCatEl.value; 
             const search = document.getElementById('menu-filter-search') ? document.getElementById('menu-filter-search').value.toLowerCase() : ""; 
             let html = '';
             
-            const processCat = (catName, itemsArray, isBar) => {
+            const processCat = (catName, itemsArray, department) => {
                 if (!itemsArray) return; 
-                let filtered = itemsArray.filter(i => i.name.toLowerCase().includes(search));
+                let filtered = itemsArray.filter(i => (i.name || "").toLowerCase().includes(search));
                 if (filtered.length > 0) {
                     html += `<h3 style="color:var(--gold); margin-top:35px;">${catName}</h3>`;
                     filtered.forEach(item => {
                         let isSoldOut = (item.stock === 0 || item.stock === "0"); 
-                        let ruptureBtn = isSoldOut ? `<button class="btn-outline danger" onclick="toggleRupture('${item.name.replace(/'/g, "\\'")}', '${catName}', ${isBar})">🔴 Épuisé</button>` : `<button class="btn-outline" onclick="toggleRupture('${item.name.replace(/'/g, "\\'")}', '${catName}', ${isBar})">🟢 Dispo</button>`;
+                        let safeName = (item.name || "").replace(/'/g, "\\'").replace(/"/g, '&quot;');
+                        let safeCatName = catName.replace(/'/g, "\\'");
+                        
+                        let ruptureBtn = isSoldOut ? `<button class="btn-outline danger" onclick="toggleRupture('${safeName}', '${safeCatName}', '${department}')">🔴 Épuisé</button>` : `<button class="btn-outline" onclick="toggleRupture('${safeName}', '${safeCatName}', '${department}')">🟢 Dispo</button>`;
                         
                         let techBadge = `<span style="font-size: 0.7rem; color: var(--accent); border: 1px solid rgba(56,189,248,0.3); background: rgba(56,189,248,0.05); padding: 3px 8px; border-radius: 4px; margin-left: 10px; font-weight: bold;">⏱️ ${item.prepTime || 10}min | 🍳 ${item.station ? item.station.toUpperCase() : 'CHAUD'}</span>`;
 
                         html += `<div class="list-item" style="${item.hidden ? 'opacity: 0.5;' : ''}">
                             <div class="list-item-info">
                                 <span class="list-item-title">${item.name} ${techBadge}</span>
-                                <span style="color:var(--gold); font-weight:600;">${item.price.toFixed(2)} ${(systemSettings.currency || "€")}</span>
+                                <span style="color:var(--gold); font-weight:600;">${parseFloat(item.price||0).toFixed(2)} ${(systemSettings.currency || "€")}</span>
                                 <span style="font-size:0.72rem; color:var(--success); border:1px solid rgba(16,185,129,0.25); padding:2px 7px; border-radius:6px; width:max-content;">TVA ${item.tva ?? systemSettings.tva ?? 10}% — ${item.effectiveTaxProfile || item.taxProfile || "AUTO"}</span>
                             </div>
                             <div class="list-item-actions">
                                 ${ruptureBtn}
-                                <button class="btn-outline" onclick="openItemModal('${item.name.replace(/'/g, "\\'")}', '${catName}', ${isBar})">✏️</button>
-                                <button class="btn-outline danger" onclick="deleteItem('${item.name.replace(/'/g, "\\'")}', '${catName}', ${isBar})">🗑️</button>
+                                <button class="btn-outline" onclick="openItemModal('${safeName}', '${safeCatName}', '${department}')">✏️</button>
+                                <button class="btn-outline danger" onclick="deleteItem('${safeName}', '${safeCatName}', '${department}')">🗑️</button>
                             </div>
                         </div>`;
                     });
                 }
             };
             
-            if (filterCat === 'ALL') { categoriesCuisine.forEach(c => processCat(c.label, menuCuisine[c.id], false)); categoriesBar.forEach(c => processCat(c.label, menuBar[c.id], true)); } 
+            if (filterCat === 'ALL') { 
+                categoriesCuisine.forEach(c => processCat(c.label, menuCuisine[c.id], 'cuisine')); 
+                categoriesBar.forEach(c => processCat(c.label, menuBar[c.id], 'bar')); 
+                if(typeof categoriesPatisserie !== 'undefined') categoriesPatisserie.forEach(c => processCat(c.label, menuPatisserie[c.id], 'patisserie'));
+            } 
             else { 
                 let isBar = categoriesBar.find(c => c.id === filterCat) !== undefined; 
-                let catObj = isBar ? categoriesBar.find(c => c.id === filterCat) : categoriesCuisine.find(c => c.id === filterCat); 
-                if (catObj) { if (!isBar && menuCuisine[catObj.id]) processCat(catObj.label, menuCuisine[catObj.id], false); if (isBar && menuBar[catObj.id]) processCat(catObj.label, menuBar[catObj.id], true); } 
+                let isPat = typeof categoriesPatisserie !== 'undefined' && categoriesPatisserie.find(c => c.id === filterCat) !== undefined;
+                let dept = isBar ? 'bar' : (isPat ? 'patisserie' : 'cuisine');
+                let catObj = isBar ? categoriesBar.find(c => c.id === filterCat) : (isPat ? categoriesPatisserie.find(c => c.id === filterCat) : categoriesCuisine.find(c => c.id === filterCat)); 
+                
+                if (catObj) { 
+                    if (dept === 'cuisine' && menuCuisine[catObj.id]) processCat(catObj.label, menuCuisine[catObj.id], dept); 
+                    if (dept === 'bar' && menuBar[catObj.id]) processCat(catObj.label, menuBar[catObj.id], dept); 
+                    if (dept === 'patisserie' && typeof menuPatisserie !== 'undefined' && menuPatisserie[catObj.id]) processCat(catObj.label, menuPatisserie[catObj.id], dept);
+                } 
             }
             if(document.getElementById('admin-menu-list')) document.getElementById('admin-menu-list').innerHTML = html || '<div class="empty-state">Vide</div>';
         }
 
-        function toggleRupture(name, cat, isBar) { 
-            let catObj = (isBar ? categoriesBar : categoriesCuisine).find(c => c.label === cat) || {id: cat}; 
-            let item = (isBar ? menuBar : menuCuisine)[catObj.id].find(i => i.name === name); 
+        function toggleRupture(name, cat, department) { 
+            let refs = getDeptRefs(department);
+            let catObj = refs.cats.find(c => c.label === cat) || {id: cat}; 
+            let item = (refs.menu[catObj.id] || []).find(i => i.name === name); 
             if (item) { item.stock = (item.stock == 0) ? "" : 0; markUnsaved(); renderMenuList(); } 
         }
 
-
-        function openItemModal(name = null, catName = null, isBar = false) {
+        function openItemModal(name = null, catName = null, department = 'cuisine') {
             updateCategoryDropdowns();
 
             const originalName = document.getElementById('item-edit-original-name');
@@ -2790,11 +2810,10 @@ async function secureFetch(input, init = {}) {
             tagBoxes.forEach(cb => { cb.checked = false; });
 
             if (name && catName) {
-                const categories = isBar ? categoriesBar : categoriesCuisine;
-                const menu = isBar ? menuBar : menuCuisine;
-                const category = categories.find(c => c.label === catName || c.id === catName);
+                let refs = getDeptRefs(department);
+                const category = refs.cats.find(c => c.label === catName || c.id === catName);
                 const categoryId = category ? category.id : catName;
-                const item = (menu[categoryId] || []).find(entry => entry.name === name);
+                const item = (refs.menu[categoryId] || []).find(entry => entry.name === name);
 
                 if (!item) {
                     alert('Plat introuvable.');
@@ -2831,35 +2850,98 @@ async function secureFetch(input, init = {}) {
             }
         }
 
-     function saveItem() {
-    let name = document.getElementById('item-name').value.trim(); 
-    let price = parseFloat(document.getElementById('item-price').value); 
-    let catID = document.getElementById('item-cat').value; 
-    let isVisible = document.getElementById('item-visible').checked; 
-    let selectedTaxProfile = document.getElementById('item-tax-profile')?.value || "AUTO";
-    let effectiveTaxProfile = document.getElementById('item-tva')?.dataset.effectiveTaxProfile || selectedTaxProfile;
-    
-    if (selectedTaxProfile === "AUTO") {
-        effectiveTaxProfile = inferTaxProfileForItem(name, catID, document.getElementById('item-station')?.value || "", categoriesBar.find(c => c.id === catID) !== undefined);
-    }
-    
-    let tvaValue = selectedTaxProfile === "CUSTOM"
-        ? (parseFloat(document.getElementById('item-tva').value) || 0)
-        : getTaxRateForProfile(effectiveTaxProfile);
-        
-    let origName = document.getElementById('item-edit-original-name').value; 
-    let origCatID = document.getElementById('item-edit-original-cat').value;
-    
-    let prepTime = parseInt(document.getElementById('item-prep-time').value) || 10;
-    let station = document.getElementById('item-station').value;
+        function saveItem() {
+            let name = document.getElementById('item-name').value.trim(); 
+            let price = parseFloat(document.getElementById('item-price').value); 
+            let catID = document.getElementById('item-cat').value; 
+            let isVisible = document.getElementById('item-visible').checked; 
+            let selectedTaxProfile = document.getElementById('item-tax-profile')?.value || "AUTO";
+            let effectiveTaxProfile = document.getElementById('item-tva')?.dataset.effectiveTaxProfile || selectedTaxProfile;
+            
+            // Trouver le département de la catégorie cible
+            let targetDept = 'cuisine';
+            if (categoriesBar.find(c => c.id === catID)) targetDept = 'bar';
+            else if (typeof categoriesPatisserie !== 'undefined' && categoriesPatisserie.find(c => c.id === catID)) targetDept = 'patisserie';
+            
+            if (selectedTaxProfile === "AUTO") {
+                effectiveTaxProfile = inferTaxProfileForItem(name, catID, document.getElementById('item-station')?.value || "", targetDept === 'bar');
+            }
+            
+            let tvaValue = selectedTaxProfile === "CUSTOM"
+                ? (parseFloat(document.getElementById('item-tva').value) || 0)
+                : getTaxRateForProfile(effectiveTaxProfile);
+                
+            let origName = document.getElementById('item-edit-original-name').value; 
+            let origCatID = document.getElementById('item-edit-original-cat').value;
+            
+            let prepTime = parseInt(document.getElementById('item-prep-time').value) || 10;
+            let station = document.getElementById('item-station').value;
 
-    // Récupération sécurisée des allergènes/régimes cochés
-    let selectedTags = [];
-    document.querySelectorAll('.item-tag-cb:checked').forEach(cb => selectedTags.push(cb.value));
+            let selectedTags = [];
+            document.querySelectorAll('.item-tag-cb:checked').forEach(cb => selectedTags.push(cb.value));
 
-    if (!name || isNaN(price) || !catID) return alert("Données du plat invalides."); 
-    let isBarTarget = categoriesBar.find(c => c.id === catID) !== undefined; 
-    let targetMenu = isBarTarget ? menuBar : menuCuisine;
+            if (!name || isNaN(price) || !catID) return alert("Données du plat invalides."); 
+            
+            let targetRefs = getDeptRefs(targetDept);
+            let targetMenu = targetRefs.menu;
+            
+            let newItem = { 
+                id: Date.now(),
+                name: name,
+                price: price,
+                stock: document.getElementById('item-stock').value,
+                hidden: !isVisible, 
+                tva: tvaValue,
+                taxProfile: selectedTaxProfile,
+                effectiveTaxProfile: effectiveTaxProfile,
+                taxCountry: getFiscalCountry(),
+                taxSource: "ICHEF_OS_AUTO_TAX",
+                prepTime: prepTime,
+                station: station,
+                tags: selectedTags
+            };
+            
+            if (!targetMenu[catID]) targetMenu[catID] = [];
+            
+            if (origName) { 
+                let origDept = 'cuisine';
+                if (categoriesBar.find(c => c.id === origCatID)) origDept = 'bar';
+                else if (typeof categoriesPatisserie !== 'undefined' && categoriesPatisserie.find(c => c.id === origCatID)) origDept = 'patisserie';
+                
+                let origRefs = getDeptRefs(origDept);
+                let origMenu = origRefs.menu;
+                
+                let idx = (origMenu[origCatID] || []).findIndex(i => i.name === origName); 
+                if (idx > -1) { 
+                    newItem.id = origMenu[origCatID][idx].id || Date.now(); // Conserve the original ID
+                    if (catID === origCatID) {
+                        origMenu[origCatID][idx] = newItem; 
+                    } else { 
+                        origMenu[origCatID].splice(idx, 1); 
+                        targetMenu[catID].push(newItem); 
+                    } 
+                } else {
+                    targetMenu[catID].push(newItem); 
+                }
+            } else { 
+                targetMenu[catID].push(newItem); 
+            }
+            
+            markUnsaved(); 
+            closeModals(); 
+            renderMenuList(); 
+            updateDashboardStats(); 
+            saveAllToCloud(); // Synchronisation instantanée sur Render
+        }
+
+        function deleteItem(name, cat, department) {
+            if (!hasPermission("MENU_WRITE")) return alert("Permission insuffisante."); 
+            if(!confirm(`Supprimer ${name} ?`)) return; 
+            let refs = getDeptRefs(department);
+            let catObj = refs.cats.find(c => c.label === cat) || {id: cat}; 
+            refs.menu[catObj.id] = (refs.menu[catObj.id] || []).filter(i => i.name !== name); 
+            markUnsaved(); renderMenuList(); updateDashboardStats(); 
+        }
     
     // Structuration propre de l'objet produit pour iCHEF Cloud
     let newItem = { 
