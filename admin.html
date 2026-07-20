@@ -3184,71 +3184,128 @@ function updateDashboardStats() {
 
         let socket = null;
 
-async function startAuthenticatedApplication() {
-            await window.ICHEF_SECURITY_READY;
-            tenantID = window.ICHEF_SECURITY.tenantID;
+// =========================================
+// 🛠️ CONFIGURATION ET INFRASTRUCTURE FRONT-END
+// =========================================
+function updateDesignPreview() { 
+    try {
+        let bg = document.getElementById('design-bg-color')?.value || '#0b0f19'; 
+        let txt = document.getElementById('design-text-color')?.value || '#ffffff'; 
+        let btnColor = document.getElementById('design-alert-color')?.value || '#d4af37'; 
+        let font = document.getElementById('design-font')?.value || "'Inter', sans-serif"; 
+        
+        let titleColor = document.getElementById('design-title-color')?.value || '#ffffff'; 
+        let titleFont = document.getElementById('design-title-font')?.value || "'Playfair Display', serif"; 
+        
+        let bannerInput = document.getElementById('design-banner-url')?.value?.trim();
+        let bannerUrl = (bannerInput && bannerInput !== "") ? bannerInput : 'https://images.unsplash.com/photo-1414235077428-338989a2e8c0?q=80&w=500&auto=format&fit=crop';
 
-            // 1. On charge la base de données au démarrage
-            await fetchStateFromCloud();
+        let phone = document.getElementById('phone-preview'); 
+        if (!phone) return;
 
-            // 2. On allume le talkie-walkie
-            socket = io(SERVER_URL, {
-                transports: ['websocket', 'polling'],
-                withCredentials: true,
-                auth: {
-                    tenantID,
-                    deviceId: window.ICHEF_SECURITY.deviceId,
-                    csrfToken: window.ICHEF_SECURITY.csrfToken || ''
-                },
-                query: { tenantID }
-            });
-
-            socket.on('connect', () => {
-                window.ICHEF_SECURITY.connectionState = 'online';
-                // 🔥 On envoie bien l'objet contenant le tenantID pour la radio
-                socket.emit('joinTenant', {
-                    tenantID,
-                    deviceId: window.ICHEF_SECURITY.deviceId
-                });
-            });
-
-            socket.on('connect_error', (error) => {
-                window.ICHEF_SECURITY.connectionState = 'degraded';
-                console.error('Connexion temps réel refusée :', error);
-            });
-
-            // 3. L'ÉCOUTEUR MAGIQUE (Sans interruption de frappe)
-            socket.on('updateState', (state) => {
-                if(!state) return;
-                
-                // Si l'admin est occupé (en train de taper, pop-up ouverte, modif non sauvée)
-                if (hasUnsavedChanges || document.querySelector('.modal.show') || isTyping) {
-                    let syncBtn = document.getElementById('sync-status');
-                    if(syncBtn) { 
-                        syncBtn.innerHTML = '⚠️ Modif du Chef (Cliquer)'; 
-                        syncBtn.style.color = '#fff'; 
-                        syncBtn.style.background = 'var(--accent)'; 
-                        syncBtn.style.borderColor = 'var(--accent)'; 
-                        syncBtn.onclick = () => { 
-                            fetchStateFromCloud(false); 
-                            // Remet le bouton à son état normal après le clic
-                            syncBtn.style.background = 'transparent';
-                            syncBtn.style.color = 'var(--text-main)';
-                            syncBtn.style.borderColor = 'var(--border)';
-                        };
-                    }
-                    return; 
-                }
-
-                // Si l'admin a les mains libres : mise à jour instantanée en arrière-plan !
-                showToast("📡 Carte mise à jour par le Chef !");
-                fetchStateFromCloud(true);
-            });
+        phone.style.backgroundColor = bg; 
+        phone.style.color = txt; 
+        phone.style.fontFamily = font;
+        
+        let titleEl = document.getElementById('preview-title');
+        if(titleEl) {
+            titleEl.style.color = titleColor;
+            titleEl.style.fontFamily = titleFont;
+        }
+        
+        let bannerDiv = document.getElementById('preview-banner-img');
+        if (bannerDiv) {
+            bannerDiv.style.backgroundImage = 'none'; 
+            let img = new Image();
+            img.onload = function() {
+                bannerDiv.style.backgroundImage = `url("${bannerUrl}")`;
+                bannerDiv.style.backgroundSize = 'cover';
+                bannerDiv.style.backgroundPosition = 'center';
+            };
+            img.src = bannerUrl;
         }
 
-        startAuthenticatedApplication().catch(error => {
-            console.error("Initialisation sécurisée interrompue", error);
+        let gradientOverlay = phone.querySelector('.gradient-overlay');
+        if(gradientOverlay) gradientOverlay.style.background = 'linear-gradient(transparent, ' + bg + ')';
+        phone.querySelectorAll('.preview-accent').forEach(el => el.style.color = btnColor);
+        phone.querySelectorAll('.preview-card').forEach(el => {
+            el.style.border = '1px solid ' + txt + '20'; 
+            el.style.backgroundColor = txt + '05';  
         });
+    } catch (err) {}
+}
+
+let isTyping = false;
+document.addEventListener('focusin', (e) => { if(e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT' || e.target.tagName === 'TEXTAREA') isTyping = true; });
+document.addEventListener('focusout', () => { isTyping = false; });
+
+let socket = null;
+
+async function startAuthenticatedApplication() {
+    await window.ICHEF_SECURITY_READY;
+    tenantID = window.ICHEF_SECURITY.tenantID;
+
+    // 1. On charge la base de données au démarrage
+    await fetchStateFromCloud();
+
+    // 2. On allume le talkie-walkie
+    socket = io(SERVER_URL, {
+        transports: ['websocket', 'polling'],
+        withCredentials: true,
+        auth: {
+            tenantID,
+            deviceId: window.ICHEF_SECURITY.deviceId,
+            csrfToken: window.ICHEF_SECURITY.csrfToken || ''
+        },
+        query: { tenantID }
+    });
+
+    socket.on('connect', () => {
+        window.ICHEF_SECURITY.connectionState = 'online';
+        // 🔥 On envoie bien l'objet contenant le tenantID pour la radio
+        socket.emit('joinTenant', {
+            tenantID,
+            deviceId: window.ICHEF_SECURITY.deviceId
+        });
+    });
+
+    socket.on('connect_error', (error) => {
+        window.ICHEF_SECURITY.connectionState = 'degraded';
+        console.error('Connexion temps réel refusée :', error);
+    });
+
+    // 3. L'ÉCOUTEUR MAGIQUE (Sans interruption de frappe)
+    socket.on('updateState', (state) => {
+        if(!state) return;
+        
+        // Si l'admin est occupé (en train de taper, pop-up ouverte, modif non sauvée)
+        if (hasUnsavedChanges || document.querySelector('.modal.show') || isTyping) {
+            let syncBtn = document.getElementById('sync-status');
+            if(syncBtn) { 
+                syncBtn.innerHTML = '⚠️ Modif du Chef (Cliquer)'; 
+                syncBtn.style.color = '#fff'; 
+                syncBtn.style.background = 'var(--accent)'; 
+                syncBtn.style.borderColor = 'var(--accent)'; 
+                syncBtn.onclick = () => { 
+                    fetchStateFromCloud(false); 
+                    // Remet le bouton à son état normal après le clic
+                    syncBtn.style.background = 'transparent';
+                    syncBtn.style.color = 'var(--text-main)';
+                    syncBtn.style.borderColor = 'var(--border)';
+                };
+            }
+            return; 
+        }
+
+        // Si l'admin a les mains libres : mise à jour instantanée en arrière-plan !
+        showToast("📡 Carte mise à jour par le Chef !");
+        fetchStateFromCloud(true);
+    });
+}
+
+startAuthenticatedApplication().catch(error => {
+    console.error("Initialisation sécurisée interrompue", error);
+});
 
         // --- 🛑 KILL SWITCH SYSTEM (ARRÊT D'URGENCE GLOBAL) ---
         async function toggleKillSwitch() {
