@@ -503,6 +503,38 @@
         </div>
     </div>
 
+
+    <div id="dish-edit-modal" class="modal">
+        <div class="modal-content" style="max-width:560px;">
+            <h3>✏️ Modifier le plat</h3>
+            <input type="hidden" id="dish-edit-original-category">
+            <input type="hidden" id="dish-edit-id">
+            <div style="display:flex; flex-direction:column; gap:14px;">
+                <label style="font-size:.75rem; font-weight:800; color:var(--text-muted);">NOM / DESCRIPTION</label>
+                <textarea id="dish-edit-name" rows="3" placeholder="Nom du plat"></textarea>
+                <div class="flex-mobile-col" style="display:flex; gap:12px;">
+                    <div style="flex:1;"><label style="font-size:.75rem; font-weight:800; color:var(--text-muted);">PRIX</label><input id="dish-edit-price" type="number" min="0" step="0.01"></div>
+                    <div style="flex:1;"><label style="font-size:.75rem; font-weight:800; color:var(--text-muted);">DISPONIBILITÉ</label><input id="dish-edit-stock" type="number" min="0" step="1"></div>
+                    <div style="flex:1;"><label style="font-size:.75rem; font-weight:800; color:var(--text-muted);">TVA %</label><input id="dish-edit-tva" type="number" min="0" max="100" step="0.1"></div>
+                </div>
+                <label style="font-size:.75rem; font-weight:800; color:var(--text-muted);">CATÉGORIE</label>
+                <select id="dish-edit-category"></select>
+                <label style="font-size:.75rem; font-weight:800; color:var(--text-muted);">ICÔNES / ALLERGÈNES</label>
+                <div style="display:flex; flex-wrap:wrap; gap:12px; padding:12px; border:1px solid var(--border-strong); border-radius:8px; background:var(--bg);">
+                    <label><input type="checkbox" value="vegan" class="dish-tag" style="width:auto; min-height:auto;"> 🌿 Vegan</label>
+                    <label><input type="checkbox" value="vege" class="dish-tag" style="width:auto; min-height:auto;"> 🥗 Végétarien</label>
+                    <label><input type="checkbox" value="nogluten" class="dish-tag" style="width:auto; min-height:auto;"> 🌾 Sans gluten</label>
+                    <label><input type="checkbox" value="nopork" class="dish-tag" style="width:auto; min-height:auto;"> 🐷 Sans porc</label>
+                    <label><input type="checkbox" value="spicy" class="dish-tag" style="width:auto; min-height:auto;"> 🌶️ Épicé</label>
+                </div>
+            </div>
+            <div class="flex-mobile-col" style="display:flex; gap:12px; margin-top:22px;">
+                <button class="add-btn" style="flex:1;" onclick="closeDishEditor()">Annuler</button>
+                <button class="add-btn primary" style="flex:2;" id="dish-edit-save-btn" onclick="saveDishEditor()">Enregistrer les modifications</button>
+            </div>
+        </div>
+    </div>
+
     <div class="nav-master">
         <div class="header-brand" style="display:flex; align-items:center; gap:12px; flex-wrap:wrap;">
             <h1 class="logo-text">iCHEF.</h1>
@@ -1151,6 +1183,7 @@
                                 <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
                                     <span style="color:${stockColor}; font-weight:800; cursor:pointer; background:var(--panel); padding:8px 12px; border-radius:6px; border:1px solid var(--border-strong); font-size:0.8rem;" onclick="updateDishStock('${safeCat}', ${i.id})">Dispo: ${currentStock}</span>
                                     <span style="color:var(--gold); font-weight:800; cursor:pointer; background:var(--panel); padding:8px 12px; border-radius:6px; border:1px solid var(--border-strong); font-size:0.8rem;" onclick="editItemPrice('${safeCat}', ${i.id})">${parseFloat(i.price||0).toFixed(2)} ${currentCurrency}</span>
+                                    <button onclick="openDishEditor('${safeCat}', ${i.id})" title="Modifier tout le plat" style="background:var(--panel); border:1px solid var(--border-strong); border-radius:6px; color:var(--gold); padding:8px 12px; cursor:pointer; font-weight:bold;">✏️</button>
                                     <button onclick="deleteMenuItem('${safeCat}', ${i.id})" style="background:var(--panel); border:1px solid var(--border-strong); border-radius:6px; color:var(--alert); padding:8px 12px; cursor:pointer; font-weight:bold;">✖</button>
                                 </div>
                             </div>
@@ -1192,6 +1225,93 @@
                 
             } catch (err) {
                 console.error("Erreur RenderMenu:", err);
+            }
+        }
+
+
+        function openDishEditor(cat, id) {
+            const list = menuData[cat];
+            if (!Array.isArray(list)) return;
+            const item = list.find(x => String(x.id) === String(id));
+            if (!item) return;
+
+            document.getElementById('dish-edit-original-category').value = cat;
+            document.getElementById('dish-edit-id').value = String(item.id);
+            document.getElementById('dish-edit-name').value = item.name || '';
+            document.getElementById('dish-edit-price').value = Number(item.price || 0);
+            document.getElementById('dish-edit-stock').value = item.stock !== undefined ? Number(item.stock) : 99;
+            document.getElementById('dish-edit-tva').value = item.tva ?? systemSettings.tva ?? 10;
+
+            const categorySelect = document.getElementById('dish-edit-category');
+            categorySelect.innerHTML = Object.keys(menuData).map(key =>
+                `<option value="${String(key).replace(/"/g, '&quot;')}">${String(key).toUpperCase()}</option>`
+            ).join('');
+            categorySelect.value = cat;
+
+            const activeTags = Array.isArray(item.tags) ? item.tags : [];
+            document.querySelectorAll('.dish-tag').forEach(box => {
+                box.checked = activeTags.includes(box.value);
+            });
+
+            const modal = document.getElementById('dish-edit-modal');
+            modal.style.display = 'flex';
+            document.getElementById('dish-edit-name').focus();
+        }
+
+        function closeDishEditor() {
+            const modal = document.getElementById('dish-edit-modal');
+            if (modal) modal.style.display = 'none';
+        }
+
+        async function saveDishEditor() {
+            const originalCat = document.getElementById('dish-edit-original-category').value;
+            const id = document.getElementById('dish-edit-id').value;
+            const targetCat = document.getElementById('dish-edit-category').value;
+            const name = document.getElementById('dish-edit-name').value.trim();
+            const price = parseFloat(String(document.getElementById('dish-edit-price').value).replace(',', '.'));
+            const stock = parseInt(document.getElementById('dish-edit-stock').value, 10);
+            const tva = parseFloat(String(document.getElementById('dish-edit-tva').value).replace(',', '.'));
+            const tags = Array.from(document.querySelectorAll('.dish-tag:checked')).map(box => box.value);
+
+            if (!name) return alert('Le nom du plat est obligatoire.');
+            if (!Number.isFinite(price) || price < 0) return alert('Le prix est invalide.');
+            if (!Number.isInteger(stock) || stock < 0) return alert('La disponibilité est invalide.');
+            if (!Number.isFinite(tva) || tva < 0 || tva > 100) return alert('Le taux de TVA est invalide.');
+
+            const sourceList = menuData[originalCat];
+            if (!Array.isArray(sourceList)) return alert('Catégorie introuvable.');
+            const index = sourceList.findIndex(x => String(x.id) === String(id));
+            if (index < 0) return alert('Plat introuvable.');
+
+            const saveBtn = document.getElementById('dish-edit-save-btn');
+            saveBtn.disabled = true;
+            saveBtn.innerText = 'ENREGISTREMENT...';
+
+            try {
+                const updatedItem = { ...sourceList[index], name, price, stock, tva, tags };
+                if (targetCat !== originalCat) {
+                    sourceList.splice(index, 1);
+                    if (!Array.isArray(menuData[targetCat])) menuData[targetCat] = [];
+                    menuData[targetCat].push(updatedItem);
+                } else {
+                    sourceList[index] = updatedItem;
+                }
+
+                closeDishEditor();
+                renderAll();
+                await syncMenuToCloud();
+                const toast = document.getElementById('toast');
+                if (toast) {
+                    toast.innerText = '✅ Plat modifié et synchronisé';
+                    toast.classList.add('show');
+                    setTimeout(() => toast.classList.remove('show'), 2200);
+                }
+            } catch (error) {
+                console.error('Erreur modification plat :', error);
+                alert('Impossible d’enregistrer la modification.');
+            } finally {
+                saveBtn.disabled = false;
+                saveBtn.innerText = 'Enregistrer les modifications';
             }
         }
 
