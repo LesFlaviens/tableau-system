@@ -1146,7 +1146,7 @@ function renderAll() {
                     // 🔥 2. FILTRE MAGIQUE : Supprime les plats "fantômes"
                     menuData[cat] = menuData[cat].filter(i => i && typeof i === 'object');
                     
-                    // 🔥 3. ANTI-CRASH HTML : Gère les apostrophes dans les noms de catégories (ex: "Plats d'été")
+                    // 🔥 3. ANTI-CRASH HTML : Gère les apostrophes dans les noms de catégories
                     let safeCat = String(cat).replace(/'/g, "\\'").replace(/"/g, '&quot;');
                     let safeCatId = "cat_" + catIndex;
                     
@@ -1164,11 +1164,15 @@ function renderAll() {
                         }
 
                         let safeName = String(i.name || 'Sans Nom').replace(/'/g, "\\'").replace(/"/g, '&quot;');
+                        let tvaVal = i.tva ?? (typeof systemSettings !== 'undefined' ? systemSettings.tva : 10) ?? 10;
 
                         return `
                         <div style="background:var(--bg); border:1px solid var(--border-strong); border-radius:8px; padding:15px; margin-bottom: 10px; display:flex; flex-direction:column; gap:12px;">
                             <div style="display:flex; justify-content:space-between; align-items:flex-start; flex-wrap:wrap; gap:10px;">
-                                <b onclick="editItemName('${safeCat}', ${i.id})" style="cursor:pointer; color:var(--text-main); white-space:pre-wrap; line-height:1.5; flex:1; min-width:150px; font-size:0.95rem;" title="Modifier le texte">${safeName} ${tagsAlert}</b>
+                                <div style="flex:1; min-width:150px;">
+                                    <b onclick="editItemName('${safeCat}', ${i.id})" style="cursor:pointer; color:var(--text-main); white-space:pre-wrap; line-height:1.5; font-size:0.95rem;" title="Modifier le texte">${safeName} ${tagsAlert}</b>
+                                    <div style="font-size:0.72rem; color:var(--success); border:1px solid rgba(16,185,129,0.25); padding:2px 7px; border-radius:6px; width:max-content; margin-top: 5px;">TVA ${tvaVal}% — ${i.effectiveTaxProfile || i.taxProfile || "AUTO"}</div>
+                                </div>
                                 <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
                                     <span style="color:${stockColor}; font-weight:800; cursor:pointer; background:var(--panel); padding:8px 12px; border-radius:6px; border:1px solid var(--border-strong); font-size:0.8rem;" onclick="updateDishStock('${safeCat}', ${i.id})">Dispo: ${currentStock}</span>
                                     <span style="color:var(--gold); font-weight:800; cursor:pointer; background:var(--panel); padding:8px 12px; border-radius:6px; border:1px solid var(--border-strong); font-size:0.8rem;" onclick="editItemPrice('${safeCat}', ${i.id})">${parseFloat(i.price||0).toFixed(2)} ${currentCurrency}</span>
@@ -1216,7 +1220,7 @@ function renderAll() {
             const stockInput = document.getElementById(`add-stock-${safeCatId}`);
             if (!nameInput.value || !priceInput.value) return alert("Nom et prix requis.");
             let stockVal = stockInput.value ? parseInt(stockInput.value) : 99;
-            let newTva = systemSettings.tva !== undefined ? systemSettings.tva : 10; 
+            let newTva = (typeof systemSettings !== 'undefined' && systemSettings.tva !== undefined) ? systemSettings.tva : 10; 
             
             if (!menuData[cat]) menuData[cat] = [];
             menuData[cat].push({ id: Date.now(), name: nameInput.value.trim(), price: parseFloat(priceInput.value), stock: stockVal, tva: newTva });
@@ -1226,10 +1230,21 @@ function renderAll() {
             await syncMenuToCloud();
         }
 
+        let isSavingStock = false;
         async function updateDishStock(cat, id) {
+            if (isSavingStock) return; // Anti-spam clic
             let item = menuData[cat].find(x => x.id === id); if(!item) return;
             let shortName = item.name.split('\n')[0]; let newStock = prompt(`📦 Portions à la carte pour :\n"${shortName}" ?`, item.stock !== undefined ? item.stock : 99);
-            if(newStock !== null && newStock.trim() !== "") { let parsedStock = parseInt(newStock); if(!isNaN(parsedStock) && parsedStock >= 0) { item.stock = parsedStock; renderAll(); await syncMenuToCloud(); } else alert("⚠️ Quantité invalide."); }
+            if(newStock !== null && newStock.trim() !== "") { 
+                let parsedStock = parseInt(newStock); 
+                if(!isNaN(parsedStock) && parsedStock >= 0) { 
+                    item.stock = parsedStock; 
+                    renderAll(); 
+                    isSavingStock = true;
+                    await syncMenuToCloud(); 
+                    isSavingStock = false;
+                } else alert("⚠️ Quantité invalide."); 
+            }
         }
 
         async function editItemPrice(cat, id) {
