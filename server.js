@@ -1491,7 +1491,8 @@ io.on("connection", socket => {
 socket.on("disconnect", () => {
         console.log(`❌ Écran déconnecté : ${socket.id}`);
     });
-}); // ⚠️ CETTE ACCOLADE EST CRUCIALE ! Elle ferme le gros bloc io.on("connection")
+
+}); // 🔥 FERMETURE DÉFINITIVE DU BLOC DES CONNEXIONS ÉCRANS 🔥
 
 // ==========================================
 // 🌟 AUTO-GÉNÉRATION DU COMPTE DE DÉMONSTRATION
@@ -1517,37 +1518,7 @@ async function creerCompteDemo() {
 }
 creerCompteDemo();
 
-server.listen(PORT, () => {
-    console.log("✅ L'Empire iCHEF est en ligne, Socket.io activé, sécurisé sur le port " + PORT);
-});socket.on("disconnect", () => {
-        console.log(`❌ Écran déconnecté : ${socket.id}`);
-    });
-}); // ⚠️ CETTE ACCOLADE EST CRUCIALE ! Elle ferme le gros bloc io.on("connection")
-
-// ==========================================
-// 🌟 AUTO-GÉNÉRATION DU COMPTE DE DÉMONSTRATION
-// ==========================================
-async function creerCompteDemo() {
-    try {
-        const demoExist = await Tenant.findOne({ tenantID: 'demo' });
-        if (!demoExist) {
-            await Tenant.create({
-                tenantID: 'demo',
-                clientName: 'Restaurant iCHEF Démo',
-                status: 'ACTIF',
-                plan: 'EMPIRE',
-                pin: '0000',
-                maxScreens: 50,
-                maxStaff: 999
-            });
-            console.log('✅ Compte DÉMO ("demo" / "0000") généré avec succès dans la base !');
-        }
-    } catch (e) {
-        console.error("Erreur lors de la création du compte démo :", e);
-    }
-}
-creerCompteDemo();
-
+// 🔥 DÉMARRAGE DU SERVEUR (DOIT ÊTRE TOUT SEUL À LA FIN) 🔥
 server.listen(PORT, () => {
     console.log("✅ L'Empire iCHEF est en ligne, Socket.io activé, sécurisé sur le port " + PORT);
 });
