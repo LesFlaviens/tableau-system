@@ -1202,6 +1202,9 @@ function normalizeMenuDepartment(value) {
 // 🔥 LE SEUL ET UNIQUE BLOC io.on('connection') 🔥
 io.on("connection", socket => {
     console.log(`✅ Nouvelle connexion écran détectée : ${socket.id}`);
+// 🔥 LE SEUL ET UNIQUE BLOC io.on('connection') 🔥
+io.on("connection", socket => {
+    console.log(`✅ Nouvelle connexion écran détectée : ${socket.id}`);
 
     // CORRECTION CRITIQUE DU BUG [object Object]
     socket.on("joinTenant", async (payload) => {
@@ -1489,7 +1492,7 @@ io.on("connection", socket => {
             `❌ Écran déconnecté : ${socket.id}`
         );
     });
-});
+}); // <--- C'est CETTE accolade qui manquait pour fermer 'io.on' !
 
 // ==========================================
 // 🌟 AUTO-GÉNÉRATION DU COMPTE DE DÉMONSTRATION
