@@ -2733,28 +2733,32 @@ async function secureFetch(input, init = {}) {
             } 
         }
 
-   function getDeptRefs(department) {
-            // 🔥 CORRECTION : On enlève le "window." pour que le code trouve les plats !
-            if (department === 'bar') return { cats: categoriesBar || [], menu: menuBar || {} };
-            if (department === 'patisserie') return { cats: categoriesPatisserie || [], menu: menuPatisserie || {} };
-            return { cats: categoriesCuisine || [], menu: menuCuisine || {} };
+  function getDeptRefs(department) {
+            // 🔥 CORRECTION : On pointe DIRECTEMENT vers la vraie mémoire, sans créer de brouillons !
+            if (department === 'bar') return { cats: categoriesBar, menu: menuBar };
+            if (department === 'patisserie') return { cats: categoriesPatisserie, menu: menuPatisserie };
+            return { cats: categoriesCuisine, menu: menuCuisine };
         }
 
         function renderMenuList() {
-            let filterCatEl = document.getElementById('menu-filter-cat'); if(!filterCatEl) return;
+            let filterCatEl = document.getElementById('menu-filter-cat'); 
+            if(!filterCatEl) return;
             const filterCat = filterCatEl.value; 
             const search = document.getElementById('menu-filter-search') ? document.getElementById('menu-filter-search').value.toLowerCase() : ""; 
             let html = '';
             
             const processCat = (catId, catLabel, itemsArray, department) => {
-                if (!itemsArray) return; 
-                let filtered = itemsArray.filter(i => (i.name || "").toLowerCase().includes(search));
+                // Blindage : on s'assure qu'on lit bien une liste de plats
+                let arr = itemsArray;
+                if (arr && !Array.isArray(arr) && Array.isArray(arr.data)) arr = arr.data;
+                if (!arr || !Array.isArray(arr)) return; 
+                
+                let filtered = arr.filter(i => (i.name || "").toLowerCase().includes(search));
                 if (filtered.length > 0) {
-                    html += `<h3 style="color:var(--gold); margin-top:35px;">${catLabel}</h3>`;
+                    html += `<h3 style="color:var(--gold); margin-top:35px; border-bottom: 1px dashed var(--border); padding-bottom: 10px;">📂 ${catLabel}</h3>`;
                     filtered.forEach(item => {
                         let isSoldOut = (item.stock === 0 || item.stock === "0"); 
                         
-                        // 🔥 BLINDAGE ABSOLU DES PARAMÈTRES POUR ÉVITER LES CRASHS D'APOSTROPHES
                         let jsSafeName = String(item.name || "").replace(/\\/g, "\\\\").replace(/'/g, "\\'").replace(/"/g, "&quot;");
                         let jsSafeCat = String(catId || "").replace(/\\/g, "\\\\").replace(/'/g, "\\'").replace(/"/g, "&quot;");
                         
@@ -2768,11 +2772,14 @@ async function secureFetch(input, init = {}) {
                         
                         let techBadge = `<span style="font-size: 0.7rem; color: var(--accent); border: 1px solid rgba(56,189,248,0.3); background: rgba(56,189,248,0.05); padding: 3px 8px; border-radius: 4px; margin-left: 10px; font-weight: bold;">⏱️ ${item.prepTime || 10}min | 🍳 ${item.station ? item.station.toUpperCase() : 'CHAUD'}</span>`;
 
+                        let curr = (typeof systemSettings !== 'undefined' && systemSettings.currency) ? systemSettings.currency : "€";
+                        let tvaVal = item.tva ?? (typeof systemSettings !== 'undefined' ? systemSettings.tva : 10) ?? 10;
+
                         html += `<div class="list-item" style="${item.hidden ? 'opacity: 0.5;' : ''}">
                             <div class="list-item-info">
                                 <span class="list-item-title">${item.name} ${techBadge}</span>
-                                <span style="color:var(--gold); font-weight:600;">${parseFloat(item.price||0).toFixed(2)} ${(systemSettings?.currency || "€")}</span>
-                                <span style="font-size:0.72rem; color:var(--success); border:1px solid rgba(16,185,129,0.25); padding:2px 7px; border-radius:6px; width:max-content;">TVA ${item.tva ?? systemSettings?.tva ?? 10}% — ${item.effectiveTaxProfile || item.taxProfile || "AUTO"}</span>
+                                <span style="color:var(--gold); font-weight:600;">${parseFloat(item.price||0).toFixed(2)} ${curr}</span>
+                                <span style="font-size:0.72rem; color:var(--success); border:1px solid rgba(16,185,129,0.25); padding:2px 7px; border-radius:6px; width:max-content;">TVA ${tvaVal}% — ${item.effectiveTaxProfile || item.taxProfile || "AUTO"}</span>
                             </div>
                             <div class="list-item-actions">
                                 ${ruptureBtn}
@@ -2784,7 +2791,7 @@ async function secureFetch(input, init = {}) {
                 }
             };
             
-            // 🔥 CORRECTION : Retrait des "window." qui bloquaient la lecture de la mémoire
+            // Assignations sécurisées
             let catCuisine = categoriesCuisine || [];
             let catBar = categoriesBar || [];
             let catPat = categoriesPatisserie || [];
@@ -2797,6 +2804,16 @@ async function secureFetch(input, init = {}) {
                 catCuisine.forEach(c => processCat(c.id, c.label, menuC[c.id], 'cuisine')); 
                 catBar.forEach(c => processCat(c.id, c.label, menuB[c.id], 'bar')); 
                 catPat.forEach(c => processCat(c.id, c.label, menuP[c.id], 'patisserie'));
+                
+                // 🕵️‍♂️ SÉCURITÉ ANTI-OUBLI : Si des plats sont enregistrés mais ont perdu leur catégorie, on force leur affichage ici !
+                const usedC = new Set(catCuisine.map(c => c.id));
+                Object.keys(menuC).forEach(k => { if (!usedC.has(k)) processCat(k, "Cuisine (Catégorie Orpheline)", menuC[k], 'cuisine'); });
+                
+                const usedB = new Set(catBar.map(c => c.id));
+                Object.keys(menuB).forEach(k => { if (!usedB.has(k)) processCat(k, "Bar (Catégorie Orpheline)", menuB[k], 'bar'); });
+                
+                const usedP = new Set(catPat.map(c => c.id));
+                Object.keys(menuP).forEach(k => { if (!usedP.has(k)) processCat(k, "Pâtisserie (Catégorie Orpheline)", menuP[k], 'patisserie'); });
             } 
             else { 
                 let isBar = catBar.find(c => c.id === filterCat) !== undefined; 
@@ -2808,9 +2825,14 @@ async function secureFetch(input, init = {}) {
                     if (dept === 'cuisine' && menuC[catObj.id]) processCat(catObj.id, catObj.label, menuC[catObj.id], dept); 
                     if (dept === 'bar' && menuB[catObj.id]) processCat(catObj.id, catObj.label, menuB[catObj.id], dept); 
                     if (dept === 'patisserie' && menuP[catObj.id]) processCat(catObj.id, catObj.label, menuP[catObj.id], dept);
-                } 
+                } else {
+                    // Si on cherche une catégorie orpheline via le dropdown
+                    if (menuC[filterCat]) processCat(filterCat, filterCat, menuC[filterCat], 'cuisine');
+                    if (menuB[filterCat]) processCat(filterCat, filterCat, menuB[filterCat], 'bar');
+                    if (menuP[filterCat]) processCat(filterCat, filterCat, menuP[filterCat], 'patisserie');
+                }
             }
-            if(document.getElementById('admin-menu-list')) document.getElementById('admin-menu-list').innerHTML = html || '<div class="empty-state">Vide</div>';
+            if(document.getElementById('admin-menu-list')) document.getElementById('admin-menu-list').innerHTML = html || '<div class="empty-state" style="padding: 30px;">Aucun plat n\'a été trouvé. Créez un NOUVEAU PLAT pour commencer !</div>';
         }
             
             let catCuisine = window.categoriesCuisine || [];
