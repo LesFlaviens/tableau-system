@@ -2998,129 +2998,212 @@ async function secureFetch(input, init = {}) {
     function markSaved() { hasUnsavedChanges = false; let s = document.getElementById('sync-status'); if(s) { s.innerHTML = '<span>● En Direct</span> 🔄'; s.style.color = 'var(--text-main)'; s.style.borderColor = 'var(--border)'; } }
     function showToast(msg) { let t = document.getElementById('toast'); if(!t) { t = document.createElement('div'); t.id = 'toast'; t.className = 'toast'; document.body.appendChild(t); } t.innerText = msg; t.classList.add('show'); setTimeout(() => t.classList.remove('show'), 3000); }
 function closeModals() { 
-        // 🔥 CORRECTION 1 : On supprime le délai (setTimeout) pour ne plus figer l'interface !
-        document.querySelectorAll('.modal').forEach(m => { 
-            m.style.opacity = '0'; 
-            m.classList.remove('show'); 
-            m.style.display = 'none'; 
-        }); 
-    }
-    
-    function forceSync() { if(hasUnsavedChanges && !confirm("⚠️ Écraser les modifications ?")) return; fetchStateFromCloud(); }
-    function retourCaisse() { window.location.href = `pack-eco.html?tenantID=${tenantID}`; }
-
-    async function saveAllToCloud() {
-        if (!hasPermission("CONFIG_WRITE")) return alert("Action non autorisée.");
-        await auditEvent("CONFIG_SAVE_REQUESTED");
-        try {
-            let syncBtn = document.getElementById('sync-status'); if(syncBtn) syncBtn.innerHTML = '⏳ Enregistrement...';
-            
-            if(document.getElementById('resto-name')) systemSettings.name = document.getElementById('resto-name').value.trim();
-
-            systemSettings.taxConfig = buildTaxConfigFromUI();
-            systemSettings.currency = systemSettings.taxConfig.currency;
-            systemSettings.tva = systemSettings.taxConfig.rates.RESTAURATION;
-            systemSettings.tva2 = systemSettings.taxConfig.rates.ALCOHOL;
-            systemSettings.tvaReduced = systemSettings.taxConfig.rates.REDUCED_TAKEAWAY;
-            systemSettings.tvaLodging = systemSettings.taxConfig.rates.LODGING;
-
-            if(document.getElementById('setting-service-bar')) systemSettings.serviceAuBar = document.getElementById('setting-service-bar').checked;
-
-            if(!systemSettings.loyalty) systemSettings.loyalty = {};
-            if(document.getElementById('setting-loyalty-active')) systemSettings.loyalty.active = document.getElementById('setting-loyalty-active').checked;
-            if(document.getElementById('setting-loyalty-percent')) systemSettings.loyalty.percent = parseFloat(document.getElementById('setting-loyalty-percent').value) || 5;
-
-            if(!systemSettings.payment) systemSettings.payment = { online: false, stripeLink: "" };
-            if(document.getElementById('setting-qr-pay')) systemSettings.payment.online = document.getElementById('setting-qr-pay').checked;
-            if(document.getElementById('resto-stripe')) systemSettings.payment.stripeLink = document.getElementById('resto-stripe').value.trim();
-
-            if(!systemSettings.design) systemSettings.design = {};
-            if(document.getElementById('design-bg-color')) systemSettings.design.bgColor = document.getElementById('design-bg-color').value;
-            if(document.getElementById('design-text-color')) systemSettings.design.textColor = document.getElementById('design-text-color').value;
-            if(document.getElementById('design-title-color')) systemSettings.design.titleColor = document.getElementById('design-title-color').value;
-            if(document.getElementById('design-alert-color')) systemSettings.design.btnColor = document.getElementById('design-alert-color').value;
-            if(document.getElementById('design-font')) systemSettings.design.font = document.getElementById('design-font').value;
-            if(document.getElementById('design-title-font')) systemSettings.design.titleFont = document.getElementById('design-title-font').value;
-            if(document.getElementById('design-banner-url')) systemSettings.design.bannerUrl = document.getElementById('design-banner-url').value.trim();
-
-            systemSettings.qrNfc = {
-                active: document.getElementById('setting-qrnfc-active')?.checked !== false,
-                orderEnabled: document.getElementById('setting-qrnfc-order-enabled')?.checked !== false,
-                waiterValidation: document.getElementById('setting-qrnfc-waiter-validation')?.checked === true,
-                showTableZone: document.getElementById('setting-qrnfc-show-table-zone')?.checked !== false,
-                page: document.getElementById('setting-qrnfc-page')?.value.trim() || "menu-qr.html",
-                label: document.getElementById('setting-qrnfc-label')?.value.trim() || "Posez votre téléphone ici",
-                source: "qr_nfc",
-                mode: "commande"
-            };
-
-            systemSettings.cashRegister = {
-                enabled: document.getElementById('setting-cash-register-enabled')?.checked === true,
-                fiscalMode: document.getElementById('setting-fiscal-mode')?.checked === true,
-                backendUrl: document.getElementById('setting-fiscal-backend-url')?.value.trim() || "/api/fiscal/cash-in",
-                separation: {
-                    qrNfc: "commande",
-                    caisse: "encaissement_fiscal"
-                },
-                taxConfig: systemSettings.taxConfig
-            };
-
-            let selectedDays = []; document.querySelectorAll('#schedule-days-container input[type="checkbox"]:checked').forEach(cb => selectedDays.push(parseInt(cb.value)));
-            
-            systemSettings.schedule = { 
-                auto: document.getElementById('setting-auto-schedule')?.checked || false, days: selectedDays,
-                matin: { s: document.getElementById('matin-start')?.value || "", e: document.getElementById('matin-end')?.value || "" },
-                midi: { s: document.getElementById('midi-start')?.value || "", e: document.getElementById('midi-end')?.value || "" },
-                aprem: { s: document.getElementById('aprem-start')?.value || "", e: document.getElementById('aprem-end')?.value || "" },
-                soir: { s: document.getElementById('soir-start')?.value || "", e: document.getElementById('soir-end')?.value || "" }
-            };
-
-            let architectureConsolidee = { ...menuCuisine, ...menuBar, ...menuPatisserie };
-            const reqs = [
-                { tableId: 'MENU_MASTER', order: { data: menuCuisine } }, 
-                { tableId: 'MENU_MASTER_BAR', order: { data: menuBar } },
-                { tableId: 'MENU_MASTER_PATISSERIE', order: { data: menuPatisserie } },
-                { tableId: 'SETTINGS_MASTER', order: { data: systemSettings } }, 
-                { tableId: 'STAFF_ACCESS', order: { data: staffAccess } },
-                { tableId: 'CATEGORIES_CUISINE', order: { data: categoriesCuisine } }, 
-                { tableId: 'CATEGORIES_BAR', order: { data: categoriesBar } },
-                { tableId: 'CATEGORIES_PATISSERIE', order: { data: categoriesPatisserie } },
-                { tableId: 'MENU_ARCHITECTURE', order: { data: architectureConsolidee } },
-                { tableId: 'ARCHITECTURE', order: { data: globalArchitecture } }
-            ];
-            
-            // 🔥 CORRECTION 2 : On remplace "Promise.all" par une boucle séquentielle (File d'attente)
-            // Cela empêche le serveur Render de s'étouffer sous les 10 requêtes simultanées.
-            for (const req of reqs) {
-                await secureFetch(`${SERVER_URL}/update-order?tenantID=${tenantID}`, { 
-                    method: 'POST', 
-                    headers: {'Content-Type': 'application/json'}, 
-                    body: JSON.stringify(req) 
-                });
-            }
-
-            markSaved(); showToast("Enregistré avec succès !");
-
-            if (socket && socket.connected) {
-                socket.emit('updateState', {
-                    tenantID: tenantID,
-                    activeOrders: {
-                        'MENU_MASTER': { data: menuCuisine },
-                        'MENU_MASTER_BAR': { data: menuBar },
-                        'MENU_MASTER_PATISSERIE': { data: menuPatisserie },
-                        'CATEGORIES_CUISINE': { data: categoriesCuisine },
-                        'CATEGORIES_BAR': { data: categoriesBar },
-                        'CATEGORIES_PATISSERIE': { data: categoriesPatisserie }
-                    }
-                });
-            }
-
-        } catch(e) { 
-            alert("❌ Erreur : " + e.message); 
-            let syncBtn = document.getElementById('sync-status'); 
-            if(syncBtn) syncBtn.innerHTML = '⚠️ Erreur'; 
+            // 🔥 CORRECTION 1 : On supprime le "voile invisible" qui bloque l'écran !
+            document.querySelectorAll('.modal').forEach(m => { 
+                m.classList.remove('show'); 
+                setTimeout(() => {
+                    m.style.display = 'none'; 
+                    m.style.opacity = ''; // Réinitialisation vitale
+                }, 300);
+            }); 
         }
-    }
+
+        function forceSync() { if(hasUnsavedChanges && !confirm("⚠️ Écraser les modifications ?")) return; fetchStateFromCloud(); }
+        function retourCaisse() { window.location.href = `pack-eco.html?tenantID=${tenantID}`; }
+
+        function saveItem() {
+            let name = document.getElementById('item-name').value.trim(); 
+            let price = parseFloat(document.getElementById('item-price').value); 
+            let newCatId = document.getElementById('item-cat').value; 
+            let isVisible = document.getElementById('item-visible').checked; 
+            let selectedTaxProfile = document.getElementById('item-tax-profile')?.value || "AUTO";
+            
+            let catBar = categoriesBar || [];
+            let catPat = categoriesPatisserie || [];
+
+            let newDept = 'cuisine';
+            if (catBar.find(c => c.id === newCatId)) newDept = 'bar';
+            else if (catPat.find(c => c.id === newCatId)) newDept = 'patisserie';
+            
+            let effectiveTaxProfile = document.getElementById('item-tva')?.dataset.effectiveTaxProfile || selectedTaxProfile;
+            if (selectedTaxProfile === "AUTO") {
+                effectiveTaxProfile = inferTaxProfileForItem(name, newCatId, document.getElementById('item-station')?.value || "", newDept === 'bar');
+            }
+            
+            let tvaValue = selectedTaxProfile === "CUSTOM"
+                ? (parseFloat(document.getElementById('item-tva').value) || 0)
+                : getTaxRateForProfile(effectiveTaxProfile);
+                
+            let prepTime = parseInt(document.getElementById('item-prep-time').value) || 10;
+            let station = document.getElementById('item-station').value;
+
+            let selectedTags = [];
+            document.querySelectorAll('.item-tag-cb:checked').forEach(cb => selectedTags.push(cb.value));
+
+            if (!name || isNaN(price) || !newCatId) return alert("Nom et prix invalides."); 
+            
+            let targetRefs = getDeptRefs(newDept);
+            let targetMenu = targetRefs.menu;
+            if (!targetMenu[newCatId]) targetMenu[newCatId] = [];
+            
+            let newItemObj = { 
+                name: name,
+                price: price,
+                stock: document.getElementById('item-stock').value,
+                hidden: !isVisible, 
+                tva: tvaValue,
+                taxProfile: selectedTaxProfile,
+                effectiveTaxProfile: effectiveTaxProfile,
+                taxCountry: getFiscalCountry(),
+                taxSource: "ICHEF_OS_AUTO_TAX",
+                prepTime: prepTime,
+                station: station,
+                tags: selectedTags
+            };
+
+            if (currentEditingItem) {
+                newItemObj.id = currentEditingItem.id; 
+                let origRefs = getDeptRefs(currentEditingItem.dept);
+                let origMenu = origRefs.menu;
+                
+                if (origMenu[currentEditingItem.catId]) {
+                    origMenu[currentEditingItem.catId] = origMenu[currentEditingItem.catId].filter(i => String(i.id) !== String(currentEditingItem.id) && i.name !== currentEditingItem.id);
+                }
+                targetMenu[newCatId].push(newItemObj);
+            } else {
+                newItemObj.id = Date.now();
+                targetMenu[newCatId].push(newItemObj);
+            }
+            
+            currentEditingItem = null; 
+            markUnsaved(); 
+            closeModals(); 
+            renderMenuList(); 
+            if (typeof updateDashboardStats === 'function') updateDashboardStats(); 
+            saveAllToCloud(); 
+        }
+
+        // 🔥 CORRECTION 2 : Un "verrou" pour empêcher de lancer plusieurs sauvegardes en même temps
+        let isSavingToCloud = false; 
+
+        async function saveAllToCloud() {
+            if (!hasPermission("CONFIG_WRITE")) return alert("Action non autorisée.");
+            if (isSavingToCloud) return; // Si ça sauvegarde déjà, on bloque !
+            
+            isSavingToCloud = true;
+            await auditEvent("CONFIG_SAVE_REQUESTED");
+            
+            try {
+                let syncBtn = document.getElementById('sync-status'); if(syncBtn) syncBtn.innerHTML = '⏳ Enregistrement...';
+                
+                if(document.getElementById('resto-name')) systemSettings.name = document.getElementById('resto-name').value.trim();
+
+                systemSettings.taxConfig = buildTaxConfigFromUI();
+                systemSettings.currency = systemSettings.taxConfig.currency;
+                systemSettings.tva = systemSettings.taxConfig.rates.RESTAURATION;
+                systemSettings.tva2 = systemSettings.taxConfig.rates.ALCOHOL;
+                systemSettings.tvaReduced = systemSettings.taxConfig.rates.REDUCED_TAKEAWAY;
+                systemSettings.tvaLodging = systemSettings.taxConfig.rates.LODGING;
+
+                if(document.getElementById('setting-service-bar')) systemSettings.serviceAuBar = document.getElementById('setting-service-bar').checked;
+
+                if(!systemSettings.loyalty) systemSettings.loyalty = {};
+                if(document.getElementById('setting-loyalty-active')) systemSettings.loyalty.active = document.getElementById('setting-loyalty-active').checked;
+                if(document.getElementById('setting-loyalty-percent')) systemSettings.loyalty.percent = parseFloat(document.getElementById('setting-loyalty-percent').value) || 5;
+
+                if(!systemSettings.payment) systemSettings.payment = { online: false, stripeLink: "" };
+                if(document.getElementById('setting-qr-pay')) systemSettings.payment.online = document.getElementById('setting-qr-pay').checked;
+                if(document.getElementById('resto-stripe')) systemSettings.payment.stripeLink = document.getElementById('resto-stripe').value.trim();
+
+                if(!systemSettings.design) systemSettings.design = {};
+                if(document.getElementById('design-bg-color')) systemSettings.design.bgColor = document.getElementById('design-bg-color').value;
+                if(document.getElementById('design-text-color')) systemSettings.design.textColor = document.getElementById('design-text-color').value;
+                if(document.getElementById('design-title-color')) systemSettings.design.titleColor = document.getElementById('design-title-color').value;
+                if(document.getElementById('design-alert-color')) systemSettings.design.btnColor = document.getElementById('design-alert-color').value;
+                if(document.getElementById('design-font')) systemSettings.design.font = document.getElementById('design-font').value;
+                if(document.getElementById('design-title-font')) systemSettings.design.titleFont = document.getElementById('design-title-font').value;
+                if(document.getElementById('design-banner-url')) systemSettings.design.bannerUrl = document.getElementById('design-banner-url').value.trim();
+
+                systemSettings.qrNfc = {
+                    active: document.getElementById('setting-qrnfc-active')?.checked !== false,
+                    orderEnabled: document.getElementById('setting-qrnfc-order-enabled')?.checked !== false,
+                    waiterValidation: document.getElementById('setting-qrnfc-waiter-validation')?.checked === true,
+                    showTableZone: document.getElementById('setting-qrnfc-show-table-zone')?.checked !== false,
+                    page: document.getElementById('setting-qrnfc-page')?.value.trim() || "menu-qr.html",
+                    label: document.getElementById('setting-qrnfc-label')?.value.trim() || "Posez votre téléphone ici",
+                    source: "qr_nfc",
+                    mode: "commande"
+                };
+
+                systemSettings.cashRegister = {
+                    enabled: document.getElementById('setting-cash-register-enabled')?.checked === true,
+                    fiscalMode: document.getElementById('setting-fiscal-mode')?.checked === true,
+                    backendUrl: document.getElementById('setting-fiscal-backend-url')?.value.trim() || "/api/fiscal/cash-in",
+                    separation: {
+                        qrNfc: "commande",
+                        caisse: "encaissement_fiscal"
+                    },
+                    taxConfig: systemSettings.taxConfig
+                };
+
+                let selectedDays = []; document.querySelectorAll('#schedule-days-container input[type="checkbox"]:checked').forEach(cb => selectedDays.push(parseInt(cb.value)));
+                
+                systemSettings.schedule = { 
+                    auto: document.getElementById('setting-auto-schedule')?.checked || false, days: selectedDays,
+                    matin: { s: document.getElementById('matin-start')?.value || "", e: document.getElementById('matin-end')?.value || "" },
+                    midi: { s: document.getElementById('midi-start')?.value || "", e: document.getElementById('midi-end')?.value || "" },
+                    aprem: { s: document.getElementById('aprem-start')?.value || "", e: document.getElementById('aprem-end')?.value || "" },
+                    soir: { s: document.getElementById('soir-start')?.value || "", e: document.getElementById('soir-end')?.value || "" }
+                };
+
+                let architectureConsolidee = { ...menuCuisine, ...menuBar, ...menuPatisserie };
+                const reqs = [
+                    { tableId: 'MENU_MASTER', order: { data: menuCuisine } }, 
+                    { tableId: 'MENU_MASTER_BAR', order: { data: menuBar } },
+                    { tableId: 'MENU_MASTER_PATISSERIE', order: { data: menuPatisserie } },
+                    { tableId: 'SETTINGS_MASTER', order: { data: systemSettings } }, 
+                    { tableId: 'STAFF_ACCESS', order: { data: staffAccess } },
+                    { tableId: 'CATEGORIES_CUISINE', order: { data: categoriesCuisine } }, 
+                    { tableId: 'CATEGORIES_BAR', order: { data: categoriesBar } },
+                    { tableId: 'CATEGORIES_PATISSERIE', order: { data: categoriesPatisserie } },
+                    { tableId: 'MENU_ARCHITECTURE', order: { data: architectureConsolidee } },
+                    { tableId: 'ARCHITECTURE', order: { data: globalArchitecture } }
+                ];
+                
+                // 🔥 CORRECTION 3 : Envoi à la queue-leu-leu (séquentiel) pour ne pas faire planter Render
+                for (let req of reqs) {
+                    await secureFetch(`${SERVER_URL}/update-order?tenantID=${tenantID}`, { 
+                        method: 'POST', 
+                        headers: {'Content-Type': 'application/json'}, 
+                        body: JSON.stringify(req) 
+                    });
+                }
+
+                markSaved(); showToast("Enregistré avec succès !");
+
+                if (socket && socket.connected) {
+                    socket.emit('updateState', {
+                        tenantID: tenantID,
+                        activeOrders: {
+                            'MENU_MASTER': { data: menuCuisine },
+                            'MENU_MASTER_BAR': { data: menuBar },
+                            'MENU_MASTER_PATISSERIE': { data: menuPatisserie },
+                            'CATEGORIES_CUISINE': { data: categoriesCuisine },
+                            'CATEGORIES_BAR': { data: categoriesBar },
+                            'CATEGORIES_PATISSERIE': { data: categoriesPatisserie }
+                        }
+                    });
+                }
+
+            } catch(e) { 
+                alert("❌ Erreur : " + e.message); 
+                let syncBtn = document.getElementById('sync-status'); 
+                if(syncBtn) syncBtn.innerHTML = '⚠️ Erreur'; 
+            } finally {
+                // On libère le verrou quoi qu'il arrive
+                isSavingToCloud = false; 
+            }
+        }
 
    async function fetchStateFromCloud(isBackground = false) {
     try {
