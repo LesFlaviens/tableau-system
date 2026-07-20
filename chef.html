@@ -850,10 +850,13 @@
                     if(state.activeOrders['INVENTORY_MASTER']) stockGlobalData = state.activeOrders['INVENTORY_MASTER'].data || [];
                     if(state.activeOrders['RECIPES_MASTER']) recipesData = state.activeOrders['RECIPES_MASTER'].data || [];
                     
-                    if(state.activeOrders['MENU_MASTER']) {
-                        let tempMenu = state.activeOrders['MENU_MASTER'].data;
-                        if(typeof tempMenu === 'object' && !Array.isArray(tempMenu)) {
-                            menuData = tempMenu;
+                    // La carte cuisine est la source commune à admin.html et chef.html.
+                    // MENU_MASTER reste seulement un secours pour les anciennes données.
+                    const menuOrder = state.activeOrders['MENU_CUISINE'] || state.activeOrders['MENU_MASTER'];
+                    if(menuOrder) {
+                        const tempMenu = menuOrder.data;
+                        if(tempMenu && typeof tempMenu === 'object' && !Array.isArray(tempMenu)) {
+                            menuData = JSON.parse(JSON.stringify(tempMenu));
                         }
                     }
                     if(state.activeOrders['STOCK_CATS']) {
@@ -923,8 +926,9 @@
             let aO = state.activeOrders || {};
             let updated = false;
 
-            if (aO['MENU_MASTER'] && typeof aO['MENU_MASTER'].data === 'object' && !Array.isArray(aO['MENU_MASTER'].data)) {
-                menuData = aO['MENU_MASTER'].data;
+            const incomingMenuOrder = aO['MENU_CUISINE'] || aO['MENU_MASTER'];
+            if (incomingMenuOrder && incomingMenuOrder.data && typeof incomingMenuOrder.data === 'object' && !Array.isArray(incomingMenuOrder.data)) {
+                menuData = JSON.parse(JSON.stringify(incomingMenuOrder.data));
                 for(let cat in menuData) { if(!Array.isArray(menuData[cat])) menuData[cat] = []; }
                 updated = true;
             }
@@ -945,10 +949,16 @@
 
         // 🔥 SAUVEGARDE MENU SECURISEE ANTI-SPAM
         let isSyncingMenu = false;
+        let menuSavePending = false;
         async function syncMenuToCloud() {
-            if (isSyncingMenu) return;
+            if (isSyncingMenu) {
+                menuSavePending = true;
+                return;
+            }
             isSyncingMenu = true;
-            try {
+            do {
+                menuSavePending = false;
+                try {
                 let syncDot = document.getElementById('sync-dot');
                 let syncText = document.getElementById('sync-text');
                 if(syncDot) syncDot.style.background = 'var(--gold)';
@@ -975,11 +985,15 @@
                     if(syncDot) syncDot.style.background = 'var(--success)';
                     if(syncText) syncText.innerText = 'EN LIGNE';
                 }
-            } catch (error) {
-                console.error('Erreur synchronisation :', error);
-            } finally {
-                isSyncingMenu = false;
-            }
+                } catch (error) {
+                    console.error('Erreur synchronisation :', error);
+                    const syncDot = document.getElementById('sync-dot');
+                    const syncText = document.getElementById('sync-text');
+                    if(syncDot) syncDot.style.background = 'var(--alert)';
+                    if(syncText) syncText.innerText = 'ERREUR SAUVEGARDE';
+                }
+            } while (menuSavePending);
+            isSyncingMenu = false;
         }
 
         // === IMPORT / EXPORT RECETTES ET CARTE ===
@@ -1035,6 +1049,38 @@
         async function removeRecipeCategory(catToRemove) {
             if(menuData[catToRemove].length > 0) { if(!confirm(`⚠️ Supprimer "${catToRemove.toUpperCase()}" et ses ${menuData[catToRemove].length} créations ?`)) return; }
             delete menuData[catToRemove]; renderAll(); await syncMenuToCloud();
+        }
+
+        async function renameRecipeCategory(oldCat) {
+            if(!Object.prototype.hasOwnProperty.call(menuData, oldCat)) return;
+            const proposed = prompt('✏️ Nouveau nom de la catégorie :', oldCat);
+            if(proposed === null) return;
+            const newCat = proposed.trim().toLowerCase();
+            if(!newCat || newCat === oldCat) return;
+            if(Object.prototype.hasOwnProperty.call(menuData, newCat)) {
+                alert('⚠️ Cette catégorie existe déjà.');
+                return;
+            }
+            const rebuilt = {};
+            Object.keys(menuData).forEach(cat => {
+                rebuilt[cat === oldCat ? newCat : cat] = menuData[cat];
+            });
+            menuData = rebuilt;
+            renderAll();
+            await syncMenuToCloud();
+        }
+
+        async function moveRecipeCategory(cat, direction) {
+            const keys = Object.keys(menuData);
+            const index = keys.indexOf(cat);
+            const target = index + direction;
+            if(index < 0 || target < 0 || target >= keys.length) return;
+            [keys[index], keys[target]] = [keys[target], keys[index]];
+            const rebuilt = {};
+            keys.forEach(key => { rebuilt[key] = menuData[key]; });
+            menuData = rebuilt;
+            renderAll();
+            await syncMenuToCloud();
         }
 
         function renderStockCategoryDropdown() {
@@ -1113,7 +1159,18 @@
 
                     html += `
                     <div class="menu-category">
-                        <div class="category-header"><div style="display:flex; align-items:center; gap:10px;">${String(cat).toUpperCase()}<span class="count-badge">${itemsCount}</span></div><button onclick="removeRecipeCategory('${safeCat}')" style="background:transparent; border:none; color:var(--alert); cursor:pointer; font-size:1.2rem;">✖</button></div>
+                        <div class="category-header">
+                            <div style="display:flex; align-items:center; gap:10px; min-width:0;">
+                                <span style="overflow:hidden; text-overflow:ellipsis;">${String(cat).toUpperCase()}</span>
+                                <span class="count-badge">${itemsCount}</span>
+                            </div>
+                            <div style="display:flex; align-items:center; gap:5px;">
+                                <button type="button" onclick="moveRecipeCategory('${safeCat}', -1)" title="Déplacer à gauche" style="background:transparent; border:none; color:var(--text-muted); cursor:pointer; font-size:1rem; padding:5px;">◀</button>
+                                <button type="button" onclick="moveRecipeCategory('${safeCat}', 1)" title="Déplacer à droite" style="background:transparent; border:none; color:var(--text-muted); cursor:pointer; font-size:1rem; padding:5px;">▶</button>
+                                <button type="button" onclick="renameRecipeCategory('${safeCat}')" title="Renommer" style="background:transparent; border:none; color:var(--gold); cursor:pointer; font-size:1rem; padding:5px;">✏️</button>
+                                <button type="button" onclick="removeRecipeCategory('${safeCat}')" title="Supprimer" style="background:transparent; border:none; color:var(--alert); cursor:pointer; font-size:1.2rem; padding:5px;">✖</button>
+                            </div>
+                        </div>
                         <div style="padding:20px; display:flex; flex-direction:column; background:var(--panel);">
                             ${itemsHtml}
                             <div style="display:flex; flex-direction:column; gap:12px; margin-top: 15px; border-top: 1px dashed var(--border-strong); padding-top: 20px;">
