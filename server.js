@@ -1199,16 +1199,12 @@ function normalizeMenuDepartment(value) {
 
     return MENU_SYNC_KEYS[department] ? department : null;
 }
-
 // 🔥 LE SEUL ET UNIQUE BLOC io.on('connection') 🔥
 io.on("connection", socket => {
     console.log(`✅ Nouvelle connexion écran détectée : ${socket.id}`);
-// 🔥 LE SEUL ET UNIQUE BLOC io.on('connection') 🔥
-io.on("connection", socket => {
-    console.log(`✅ Nouvelle connexion écran détectée : ${socket.id}`);
-
     // CORRECTION CRITIQUE DU BUG [object Object]
     socket.on("joinTenant", async (payload) => {
+        
         let rawID = typeof payload === 'object' ? payload.tenantID : payload;
         const safeID = cleanString(rawID);
 
