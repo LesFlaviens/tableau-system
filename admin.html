@@ -2895,6 +2895,95 @@ async function secureFetch(input, init = {}) {
             
             let tvaValue = selectedTaxProfile === "CUSTOM"
                 ? (parseFloat(document.getElementById('item-tva').value) || 0)
+                : getTaxRateForProfile(effectiveTaxProfile);
+                
+            let prepTime = parseInt(document.getElementById('item-prep-time').value) || 10;
+            let station = document.getElementById('item-station').value;
+
+            let selectedTags = [];
+            document.querySelectorAll('.item-tag-cb:checked').forEach(cb => selectedTags.push(cb.value));
+
+            if (!name || isNaN(price) || !newCatId) return alert("Nom et prix invalides."); 
+            
+            let targetRefs = getDeptRefs(newDept);
+            let targetMenu = targetRefs.menu;
+            if (!targetMenu[newCatId]) targetMenu[newCatId] = [];
+            
+            let newItemObj = { 
+                name: name,
+                price: price,
+                stock: document.getElementById('item-stock').value,
+                hidden: !isVisible, 
+                tva: tvaValue,
+                taxProfile: selectedTaxProfile,
+                effectiveTaxProfile: effectiveTaxProfile,
+                taxCountry: getFiscalCountry(),
+                taxSource: "ICHEF_OS_AUTO_TAX",
+                prepTime: prepTime,
+                station: station,
+                tags: selectedTags
+            };
+
+            if (currentEditingItem) {
+                // MISE À JOUR D'UN PLAT EXISTANT
+                newItemObj.id = currentEditingItem.id; // Garder l'ancien ID (ou nom)
+                let origRefs = getDeptRefs(currentEditingItem.dept);
+                let origMenu = origRefs.menu;
+                
+                if (origMenu[currentEditingItem.catId]) {
+                    origMenu[currentEditingItem.catId] = origMenu[currentEditingItem.catId].filter(i => String(i.id) !== String(currentEditingItem.id) && i.name !== currentEditingItem.id);
+                }
+                targetMenu[newCatId].push(newItemObj);
+            } else {
+                // CRÉATION D'UN NOUVEAU PLAT
+                newItemObj.id = Date.now();
+                targetMenu[newCatId].push(newItemObj);
+            }
+            
+            currentEditingItem = null; 
+            markUnsaved(); 
+            closeModals(); 
+            renderMenuList(); 
+            updateDashboardStats(); 
+            saveAllToCloud(); 
+        }
+
+        function deleteItem(itemIdOrName, catId, department) {
+            if (!hasPermission("MENU_WRITE")) return alert("Permission insuffisante."); 
+            if(!confirm(`Êtes-vous sûr de vouloir supprimer ce produit ?`)) return; 
+            
+            let refs = getDeptRefs(department);
+            if (refs.menu[catId]) {
+                refs.menu[catId] = refs.menu[catId].filter(i => String(i.id) !== String(itemIdOrName) && i.name !== itemIdOrName); 
+            }
+            
+            markUnsaved(); 
+            renderMenuList(); 
+            updateDashboardStats(); 
+            saveAllToCloud();
+        }
+
+        function saveItem() {
+            let name = document.getElementById('item-name').value.trim(); 
+            let price = parseFloat(document.getElementById('item-price').value); 
+            let newCatId = document.getElementById('item-cat').value; 
+            let isVisible = document.getElementById('item-visible').checked; 
+            let selectedTaxProfile = document.getElementById('item-tax-profile')?.value || "AUTO";
+            
+            let catBar = window.categoriesBar || [];
+            let catPat = window.categoriesPatisserie || [];
+
+            let newDept = 'cuisine';
+            if (catBar.find(c => c.id === newCatId)) newDept = 'bar';
+            else if (catPat.find(c => c.id === newCatId)) newDept = 'patisserie';
+            
+            let effectiveTaxProfile = document.getElementById('item-tva')?.dataset.effectiveTaxProfile || selectedTaxProfile;
+            if (selectedTaxProfile === "AUTO") {
+                effectiveTaxProfile = inferTaxProfileForItem(name, newCatId, document.getElementById('item-station')?.value || "", newDept === 'bar');
+            }
+            
+            let tvaValue = selectedTaxProfile === "CUSTOM"
+                ? (parseFloat(document.getElementById('item-tva').value) || 0)
                 : getTaxRateForProfile
 
         function renderFinancialDashboard() {
