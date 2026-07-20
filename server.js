@@ -1169,7 +1169,8 @@ app.get('/debug-fichiers', (req, res) => {
         res.json({ dossier_actuel: __dirname, fichiers_trouves: files });
     });
 });
-/ =========================================================================
+
+// =========================================================================
 // 🌟 SYNCHRONISATION CENTRALISÉE DES CARTES (CUISINE / PATISSERIE / BAR)
 // =========================================================================
 const MENU_SYNC_KEYS = Object.freeze({
