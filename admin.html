@@ -2114,159 +2114,1094 @@
     </div>
 
 <script>
-        // =========================================================
-        // 🛡️ STUBS DE SÉCURITÉ (Évite les crashs des modules inachevés)
-        // =========================================================
-        window.loadAIProfitability = window.loadAIProfitability || function() { console.warn("Module IA en attente."); };
-        window.renderItemPopularityDashboard = window.renderItemPopularityDashboard || function() {};
-        window.setHourlySalesPeriod = window.setHourlySalesPeriod || function() {};
-        window.setPopularityCategories = window.setPopularityCategories || function() {};
-        window.ouvrirAuditAdmin = window.ouvrirAuditAdmin || function() { alert("Le module d'audit légal est en cours de développement."); };
-        window.loadAdminAudit = window.loadAdminAudit || function() {};
-        window.toggleKillSwitch = window.toggleKillSwitch || function() { alert("Le Kill Switch n'est pas encore connecté au serveur."); };
-        window.updateKillSwitchUI = window.updateKillSwitchUI || function() {};
-        window.syncQRTables = window.syncQRTables || function() { console.warn("Génération QR/NFC en attente."); };
-        window.updateDashboardStats = window.updateDashboardStats || function() {};
+    // =========================================================
+    // 🛡️ STUBS DE SÉCURITÉ (Évite les crashs des modules inachevés)
+    // =========================================================
+    window.loadAIProfitability = window.loadAIProfitability || function() { console.warn("Module IA en attente."); };
+    window.renderItemPopularityDashboard = window.renderItemPopularityDashboard || function() {};
+    window.setHourlySalesPeriod = window.setHourlySalesPeriod || function() {};
+    window.setPopularityCategories = window.setPopularityCategories || function() {};
+    window.ouvrirAuditAdmin = window.ouvrirAuditAdmin || function() { alert("Le module d'audit légal est en cours de développement."); };
+    window.loadAdminAudit = window.loadAdminAudit || function() {};
+    window.toggleKillSwitch = window.toggleKillSwitch || function() { alert("Le Kill Switch n'est pas encore connecté au serveur."); };
+    window.updateKillSwitchUI = window.updateKillSwitchUI || function() {};
+    window.syncQRTables = window.syncQRTables || function() { console.warn("Génération QR/NFC en attente."); };
+    window.updateDashboardStats = window.updateDashboardStats || function() {};
 
-        // =========================================================
-        // 🎙️ DICTÉE VOCALE DES PLATS
-        // =========================================================
-        function startItemDictation(inputId, buttonId) {
-            const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-            if (!SpeechRecognition) {
-                alert("La dictée vocale n’est pas prise en charge par ce navigateur.");
-                return;
+    function escapeHTML(value) {
+        return String(value ?? "").replace(/[&<>'"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;","'":"&#39;",'"':"&quot;"}[c]));
+    }
+
+    async function chargerAnalysesIA() {
+        const gridContainer = document.getElementById('ia-cards-loading');
+        const refreshBtn = document.querySelector('.btn-ia-refresh');
+        
+        refreshBtn.innerText = "Calcul IA en cours...";
+        refreshBtn.disabled = true;
+        gridContainer.innerHTML = `<div style="color: var(--gold); font-style: italic; grid-column: 1/-1; text-align: center; padding: 20px;">🤖 iCHEF OS interroge les algorithmes prédictifs...</div>`;
+
+        const urlParams = new URLSearchParams(window.location.search);
+        const localTenantID = urlParams.get('tenantID') || localStorage.getItem('ichef_tenant_id') || localStorage.getItem('tenantID');
+
+        const SERVER_URL = (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1") 
+            ? "http://localhost:10000" : "https://tableau-system.onrender.com";
+
+        try {
+            const response = await secureFetch(`${SERVER_URL}/api/ai-business-pulse`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ 
+                    tenantID: localTenantID 
+                })
+            });
+            
+            const data = await response.json();
+            
+            if (data.success) {
+                const p = data.pulse;
+                
+                gridContainer.innerHTML = `
+                    <div class="ia-pulse-card" style="border-left: 3px solid var(--gold);">${escapeHTML(p.previsionVentes)}</div>
+                    <div class="ia-pulse-card" style="border-left: 3px solid var(--accent);">${escapeHTML(p.analyseCA)}</div>
+                    <div class="ia-pulse-card" style="border-left: 3px solid var(--danger);">${escapeHTML(p.analyseMarges)}</div>
+                    
+                    <div class="ia-pulse-recos-card">
+                        <strong>💡 RECOMMANDATIONS DE LA BRIGADE COMPTABLE :</strong>
+                        <ul>
+                            ${(p.recommandations || []).map(reco => `<li>${escapeHTML(reco)}</li>`).join('')}
+                        </ul>
+                    </div>
+                `;
+            } else {
+                gridContainer.innerHTML = `<div style="color: var(--danger); grid-column: 1/-1; text-align: center; padding: 20px;">❌ Erreur : ${escapeHTML(data.error)}</div>`;
             }
+        } catch (error) {
+            console.error("Erreur Pulse IA:", error);
+            gridContainer.innerHTML = `<div style="color: var(--danger); grid-column: 1/-1; text-align: center; padding: 20px;">❌ Impossible de joindre le serveur iCHEF Cloud.</div>`;
+        } finally {
+            refreshBtn.innerText = "⚡ ANALYSER LE SERVICE";
+            refreshBtn.disabled = false;
+        }
+    }
 
-            const input = document.getElementById(inputId);
-            const button = document.getElementById(buttonId);
-            if (!input || !button) return;
+    const urlParams = new URLSearchParams(window.location.search);
+    let tenantID = window.ICHEF_SECURITY.tenantID;
+    const SERVER_URL = window.ICHEF_SECURITY.serverURL;
 
-            const recognition = new SpeechRecognition();
-            recognition.lang = "fr-FR";
-            recognition.continuous = false;
-            recognition.interimResults = false;
-            recognition.maxAlternatives = 1;
+    let systemSettings = {};
+    let globalArchitecture = { rooms: ['Salle Principale'], tables: [], zones: [] };
+    let menuCuisine = {}; 
+    let menuBar = {}; 
+    let menuPatisserie = {}; 
+    let categoriesCuisine = []; 
+    let categoriesBar = []; 
+    let categoriesPatisserie = []; 
+    let staffAccess = []; 
+    let archiveCuisine = []; 
+    let hasUnsavedChanges = false;
+    let currentEditingItem = null;
 
-            const originalContent = button.innerHTML;
-            const originalTitle = button.title;
+    function toggleMobileMenu() { 
+        document.getElementById('sidebar').classList.toggle('open'); 
+        document.getElementById('mobile-overlay').classList.toggle('show'); 
+    }
+    
+    function switchTab(tabId, el) { 
+        document.querySelectorAll('.main-scroll').forEach(t => { t.style.display = 'none'; t.classList.remove('active'); });
+        document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
+        let target = document.getElementById(tabId); 
+        if(target) { target.style.display = 'block'; setTimeout(() => target.classList.add('active'), 10); } 
+        if(el) el.classList.add('active'); 
+        if(window.innerWidth <= 900) toggleMobileMenu(); 
+    }
 
-            recognition.onstart = () => {
-                button.innerHTML = "🔴";
-                button.title = "Écoute en cours…";
-                button.disabled = true;
-            };
+    const TAX_COUNTRY_PROFILES = {
+        FR: {
+            label: "France",
+            currency: "€",
+            rates: { RESTAURATION: 10, ALCOHOL: 20, REDUCED_TAKEAWAY: 5.5, LODGING: 10, NORMAL: 20 },
+            labels: { RESTAURATION: "Restauration / consommation immédiate", ALCOHOL: "Boissons alcoolisées", REDUCED_TAKEAWAY: "Produits éligibles au taux réduit / emporter", LODGING: "Hébergement / restauration hôtelière", NORMAL: "Taux normal" }
+        },
+        CH: {
+            label: "Suisse",
+            currency: "CHF",
+            rates: { RESTAURATION: 8.1, ALCOHOL: 8.1, REDUCED_TAKEAWAY: 2.6, LODGING: 3.8, NORMAL: 8.1 },
+            labels: { RESTAURATION: "Restauration / taux normal", ALCOHOL: "Alcool / taux normal", REDUCED_TAKEAWAY: "Taux réduit", LODGING: "Taux spécial hébergement", NORMAL: "Taux normal" }
+        }
+    };
 
-            recognition.onresult = (event) => {
-                const transcript = event.results?.[0]?.[0]?.transcript?.trim();
-                if (!transcript) return;
+    function getFiscalCountry() {
+        const el = document.getElementById("setting-fiscal-country");
+        if (el && el.value) return el.value;
+        if (systemSettings.taxConfig && systemSettings.taxConfig.country) return systemSettings.taxConfig.country;
+        if ((systemSettings.currency || "") === "CHF") return "CH";
+        return "FR";
+    }
 
-                input.value = transcript.charAt(0).toUpperCase() + transcript.slice(1);
-                input.dispatchEvent(new Event("input", { bubbles: true }));
-                input.dispatchEvent(new Event("change", { bubbles: true }));
-                input.focus();
-            };
+    function getActiveTaxProfile() {
+        const country = getFiscalCountry();
+        if (country === "CH") return TAX_COUNTRY_PROFILES.CH;
+        if (country === "FR") return TAX_COUNTRY_PROFILES.FR;
+        return systemSettings.taxConfig || TAX_COUNTRY_PROFILES.FR;
+    }
 
-            recognition.onerror = (event) => {
-                console.warn("Dictée vocale indisponible :", event.error);
-                if (event.error !== "no-speech" && event.error !== "aborted") {
-                    alert("La retranscription vocale n’a pas pu être effectuée.");
-                }
-            };
+    function setTaxFieldValue(id, value) {
+        const el = document.getElementById(id);
+        if (el) el.value = Number(value || 0);
+    }
 
-            recognition.onend = () => {
-                button.innerHTML = originalContent;
-                button.title = originalTitle;
-                button.disabled = false;
-            };
+    function applyFiscalCountryProfile(shouldMarkUnsaved = false) {
+        const country = getFiscalCountry();
+        const profile = getActiveTaxProfile();
+        const currencyEl = document.getElementById("setting-currency");
 
-            recognition.start();
+        if (country === "FR" || country === "CH") {
+            if (currencyEl) currencyEl.value = profile.currency;
+            setTaxFieldValue("resto-tva", profile.rates.RESTAURATION);
+            setTaxFieldValue("resto-tva-2", profile.rates.ALCOHOL);
+            setTaxFieldValue("resto-tva-reduced", profile.rates.REDUCED_TAKEAWAY);
+            setTaxFieldValue("resto-tva-lodging", profile.rates.LODGING);
+
+            const modeLabel = document.getElementById("tax-auto-mode-label");
+            if (modeLabel) modeLabel.value = `Automatique — ${profile.label}`;
+
+            updateTaxChips(profile);
         }
 
-        // =========================================================
-        // ⚙️ RÉPARATION DE LA SYNCHRONISATION CLOUD
-        // =========================================================
-        async function fetchStateFromCloud(isBackground = false) {
-            try {
-                let syncBtn = document.getElementById('sync-status'); 
-                if (syncBtn && !isBackground) syncBtn.innerHTML = '⏳ Sync...';
+        refreshItemTaxUI();
+        if (shouldMarkUnsaved) markUnsaved();
+    }
 
-                let r = await secureFetch(`${SERVER_URL}/get-current-state?tenantID=${tenantID}&_t=${Date.now()}`, { cache: 'no-store' });
-                if (!r.ok) throw new Error("Erreur réseau");
-                
-                let state = await r.json(); 
-                let aO = state.activeOrders || {};
+    function updateTaxChips(profile) {
+        const chipRestaurant = document.getElementById("tax-chip-restaurant");
+        const chipAlcohol = document.getElementById("tax-chip-alcohol");
+        const chipReduced = document.getElementById("tax-chip-reduced");
+        const chipLodging = document.getElementById("tax-chip-lodging");
 
-                systemSettings = aO['SETTINGS_MASTER']?.data || systemSettings;
-                menuCuisine = aO['MENU_MASTER']?.data || {};
-                menuBar = aO['MENU_MASTER_BAR']?.data || {};
-                menuPatisserie = aO['MENU_MASTER_PATISSERIE']?.data || {}; 
-                
-                let catC = aO['CATEGORIES_CUISINE']?.data || [];
-                let catB = aO['CATEGORIES_BAR']?.data || [];
-                let catP = aO['CATEGORIES_PATISSERIE']?.data || []; 
+        if (chipRestaurant) chipRestaurant.innerText = `${profile.rates.RESTAURATION} % — ${profile.labels.RESTAURATION}`;
+        if (chipAlcohol) chipAlcohol.innerText = `${profile.rates.ALCOHOL} % — ${profile.labels.ALCOHOL}`;
+        if (chipReduced) chipReduced.innerText = `${profile.rates.REDUCED_TAKEAWAY} % — ${profile.labels.REDUCED_TAKEAWAY}`;
+        if (chipLodging) chipLodging.innerText = `${profile.rates.LODGING} % — ${profile.labels.LODGING}`;
+    }
 
-                // Auto-réparation catégories orphelines
-                Object.keys(menuCuisine).forEach(cat => { if (!catC.find(c => c.id === cat)) catC.push({ id: cat, label: cat.toUpperCase() }); });
-                Object.keys(menuBar).forEach(cat => { if (!catB.find(c => c.id === cat)) catB.push({ id: cat, label: cat.toUpperCase() }); });
-                Object.keys(menuPatisserie).forEach(cat => { if (!catP.find(c => c.id === cat)) catP.push({ id: cat, label: cat.toUpperCase() }); });
+    function syncCountryFromCurrency() {
+        const currency = document.getElementById("setting-currency")?.value || systemSettings.currency || "€";
+        const countryEl = document.getElementById("setting-fiscal-country");
+        if (!countryEl) return;
 
-                categoriesCuisine = catC;
-                categoriesBar = catB;
-                categoriesPatisserie = catP; 
-                staffAccess = aO['STAFF_ACCESS']?.data || [];
-                
-                let financialData = aO['FINANCIAL_HISTORY'];
-                archiveCuisine = financialData?.data || (Array.isArray(financialData) ? financialData : []);
+        if (currency === "CHF") countryEl.value = "CH";
+        else if (currency === "€") countryEl.value = "FR";
+        else countryEl.value = "CUSTOM";
 
-                if (aO['ARCHITECTURE']) {
-                    let archi = aO['ARCHITECTURE'].data || aO['ARCHITECTURE'];
-                    globalArchitecture.rooms = archi.rooms || ['Salle Principale'];
-                    globalArchitecture.tables = archi.tables || [];
-                    globalArchitecture.zones = archi.zones || [];
-                }
+        applyFiscalCountryProfile(false);
+    }
 
-                // Exécution sécurisée bloc par bloc (si un plante, le reste continue)
-                try { injectSettingsToUI(); } catch(e) { console.error("Erreur Settings", e); }
-                try { updateCategoryDropdowns(); } catch(e) { console.error("Erreur Dropdowns", e); }
-                try { renderCategoryModalLists(); } catch(e) { console.error("Erreur Modal Cat", e); }
-                try { renderMenuList(); } catch(e) { console.error("Erreur Menu", e); }
-                try { renderStaffList(); } catch(e) { console.error("Erreur Staff", e); }
-                try { renderActiveStaff(); } catch(e) { console.error("Erreur Active Staff", e); }
-                try { updateDashboardStats(); } catch(e) { console.error("Erreur Stats", e); }
-                try { renderFinancialDashboard(); } catch(e) { console.error("Erreur Finance", e); }
-                try { loadAIProfitability(); } catch(e) { console.error("Erreur IA", e); }
-                
-                // On libère le statut SEULEMENT si tout s'est bien passé
-                if(!isBackground) markSaved();
-                
-            } catch(e) { 
-                console.error("Échec critique de la synchronisation:", e);
-                let syncBtn = document.getElementById('sync-status'); 
-                if(syncBtn) { 
-                    syncBtn.innerHTML = '❌ EN PANNE'; 
-                    syncBtn.style.background = 'var(--danger)'; 
-                    syncBtn.style.color = '#fff'; 
-                } 
+    function getCategoryLabelFromId(catID) {
+        const cat = categoriesCuisine.find(c => c.id === catID) || categoriesBar.find(c => c.id === catID) || categoriesPatisserie.find(c => c.id === catID);
+        return cat ? cat.label : catID || "";
+    }
+
+    function inferTaxProfileForItem(name, catID, station, isBarTarget) {
+        const text = `${name || ""} ${catID || ""} ${getCategoryLabelFromId(catID)} ${station || ""}`.toLowerCase();
+        if (/(vin|wine|bi[eè]re|beer|champagne|prosecco|alcool|alcohol|whisky|vodka|rhum|rum|gin|tequila|liqueur|digestif|apéritif|aperitif|cocktail|spritz|mojito|pastis|porto)/i.test(text)) return "ALCOHOL";
+        if (/(h[oô]tel|hotel|chambre|room|hébergement|hebergement|nuitée|nuitee|lodging)/i.test(text)) return "LODGING";
+        if (/(emporter|takeaway|take-away|livraison|delivery|boutique|épicerie|epicerie|pain|baguette|viennoiserie|patisserie emballée|pâtisserie emballée)/i.test(text)) return "REDUCED_TAKEAWAY";
+        return "RESTAURATION";
+    }
+
+    function getTaxRateForProfile(profileName) {
+        const activeProfile = getActiveTaxProfile();
+        const rates = activeProfile.rates || TAX_COUNTRY_PROFILES.FR.rates;
+        return Number(rates[profileName] ?? rates.RESTAURATION ?? 10);
+    }
+
+    function refreshItemTaxUI() {
+        const taxProfileEl = document.getElementById("item-tax-profile");
+        const taxInput = document.getElementById("item-tva");
+        if (!taxProfileEl || !taxInput) return;
+
+        const name = document.getElementById("item-name")?.value || "";
+        const catID = document.getElementById("item-cat")?.value || "";
+        const station = document.getElementById("item-station")?.value || "";
+        const isBarTarget = categoriesBar.find(c => c.id === catID) !== undefined;
+
+        let selectedProfile = taxProfileEl.value || "AUTO";
+        let effectiveProfile = selectedProfile === "AUTO"
+            ? inferTaxProfileForItem(name, catID, station, isBarTarget)
+            : selectedProfile;
+
+        if (selectedProfile === "CUSTOM") {
+            taxInput.readOnly = false;
+            taxInput.classList.remove("tax-rate-readonly");
+            if (!taxInput.value) taxInput.value = getTaxRateForProfile("RESTAURATION");
+            return;
+        }
+
+        taxInput.readOnly = true;
+        taxInput.classList.add("tax-rate-readonly");
+        taxInput.value = getTaxRateForProfile(effectiveProfile);
+        taxInput.dataset.effectiveTaxProfile = effectiveProfile;
+    }
+
+    function buildTaxConfigFromUI() {
+        const country = getFiscalCountry();
+        const activeProfile = getActiveTaxProfile();
+        return {
+            country: country,
+            label: activeProfile.label || "Personnalisé",
+            currency: document.getElementById("setting-currency")?.value || activeProfile.currency || "€",
+            mode: country === "CUSTOM" ? "CUSTOM" : "AUTO_FR_CH",
+            rates: {
+                RESTAURATION: parseFloat(document.getElementById("resto-tva")?.value) || activeProfile.rates.RESTAURATION,
+                ALCOHOL: parseFloat(document.getElementById("resto-tva-2")?.value) || activeProfile.rates.ALCOHOL,
+                REDUCED_TAKEAWAY: parseFloat(document.getElementById("resto-tva-reduced")?.value) || activeProfile.rates.REDUCED_TAKEAWAY,
+                LODGING: parseFloat(document.getElementById("resto-tva-lodging")?.value) || activeProfile.rates.LODGING,
+                NORMAL: activeProfile.rates.NORMAL
+            },
+            source: "ICHEF_OS_ADMIN_AUTO_TAX",
+            appliedAt: new Date().toISOString()
+        };
+    }
+
+    function injectSettingsToUI() {
+        let sched = systemSettings.schedule || { auto: false, days: [1,2,3,4,5,6], matin: {}, midi: {}, aprem: {}, soir: {} }; 
+        let safeDays = Array.isArray(sched.days) ? sched.days : [1,2,3,4,5,6];
+        
+        if(document.getElementById('resto-name')) document.getElementById('resto-name').value = systemSettings.name || "";
+
+        const taxConfig = systemSettings.taxConfig || {};
+        const inferredCountry = taxConfig.country || ((systemSettings.currency || "€") === "CHF" ? "CH" : "FR");
+
+        if(document.getElementById('setting-fiscal-country')) document.getElementById('setting-fiscal-country').value = inferredCountry;
+        if(document.getElementById('setting-currency')) document.getElementById('setting-currency').value = taxConfig.currency || systemSettings.currency || (inferredCountry === "CH" ? "CHF" : "€");
+
+        applyFiscalCountryProfile(false);
+
+        if (taxConfig.rates) {
+            if(document.getElementById('resto-tva')) document.getElementById('resto-tva').value = taxConfig.rates.RESTAURATION ?? systemSettings.tva ?? document.getElementById('resto-tva').value;
+            if(document.getElementById('resto-tva-2')) document.getElementById('resto-tva-2').value = taxConfig.rates.ALCOHOL ?? systemSettings.tva2 ?? document.getElementById('resto-tva-2').value;
+            if(document.getElementById('resto-tva-reduced')) document.getElementById('resto-tva-reduced').value = taxConfig.rates.REDUCED_TAKEAWAY ?? document.getElementById('resto-tva-reduced').value;
+            if(document.getElementById('resto-tva-lodging')) document.getElementById('resto-tva-lodging').value = taxConfig.rates.LODGING ?? document.getElementById('resto-tva-lodging').value;
+        }
+
+        if(document.getElementById('setting-service-bar')) document.getElementById('setting-service-bar').checked = systemSettings.serviceAuBar || false;
+
+        if(document.getElementById('setting-loyalty-active') && systemSettings.loyalty) document.getElementById('setting-loyalty-active').checked = systemSettings.loyalty.active === true;
+        if(document.getElementById('setting-loyalty-percent') && systemSettings.loyalty) document.getElementById('setting-loyalty-percent').value = systemSettings.loyalty.percent !== undefined ? systemSettings.loyalty.percent : 5;
+        
+        if(document.getElementById('setting-auto-schedule')) document.getElementById('setting-auto-schedule').checked = sched.auto;
+        
+        if(sched.matin) { 
+            if(document.getElementById('matin-start')) document.getElementById('matin-start').value = sched.matin.s || ""; 
+            if(document.getElementById('matin-end')) document.getElementById('matin-end').value = sched.matin.e || ""; 
+        }
+        if(sched.midi) { 
+            if(document.getElementById('midi-start')) document.getElementById('midi-start').value = sched.midi.s || ""; 
+            if(document.getElementById('midi-end')) document.getElementById('midi-end').value = sched.midi.e || ""; 
+        }
+        if(sched.aprem) { 
+            if(document.getElementById('aprem-start')) document.getElementById('aprem-start').value = sched.aprem.s || ""; 
+            if(document.getElementById('aprem-end')) document.getElementById('aprem-end').value = sched.aprem.e || ""; 
+        }
+        if(sched.soir) { 
+            if(document.getElementById('soir-start')) document.getElementById('soir-start').value = sched.soir.s || ""; 
+            if(document.getElementById('soir-end')) document.getElementById('soir-end').value = sched.soir.e || ""; 
+        }
+        
+        let daysHtml = ''; const dayNames = ['Dim', 'Lun', 'Mar', 'Mer', 'Jeu', 'Ven', 'Sam'];
+        for(let i=0; i<7; i++) { 
+            let isChecked = safeDays.includes(i) ? 'checked' : ''; 
+            daysHtml += `<label style="cursor:pointer;">
+                <input type="checkbox" style="display:none;" value="${i}" ${isChecked} onchange="toggleDayUI(this); markUnsaved()">
+                <div style="padding: 12px 18px; border-radius: 8px; font-weight: 600; transition: 0.3s; background: ${isChecked?'var(--gold)':'rgba(0,0,0,0.3)'}; color: ${isChecked?'#000':'var(--text-muted)'};">${dayNames[i]}</div>
+            </label>`; 
+        }
+        if(document.getElementById('schedule-days-container')) document.getElementById('schedule-days-container').innerHTML = daysHtml;
+        
+        if(document.getElementById('resto-stripe') && systemSettings.payment) document.getElementById('resto-stripe').value = systemSettings.payment.stripeLink || "";
+        if(document.getElementById('setting-qr-pay') && systemSettings.payment) document.getElementById('setting-qr-pay').checked = systemSettings.payment.online === true;
+
+        const qrNfcSettings = systemSettings.qrNfc || {};
+        const cashRegisterSettings = systemSettings.cashRegister || {};
+
+        if (document.getElementById('setting-qrnfc-active')) document.getElementById('setting-qrnfc-active').checked = qrNfcSettings.active !== false;
+        if (document.getElementById('setting-qrnfc-order-enabled')) document.getElementById('setting-qrnfc-order-enabled').checked = qrNfcSettings.orderEnabled !== false;
+        if (document.getElementById('setting-qrnfc-waiter-validation')) document.getElementById('setting-qrnfc-waiter-validation').checked = qrNfcSettings.waiterValidation === true;
+        if (document.getElementById('setting-qrnfc-show-table-zone')) document.getElementById('setting-qrnfc-show-table-zone').checked = qrNfcSettings.showTableZone !== false;
+        if (document.getElementById('setting-qrnfc-page')) document.getElementById('setting-qrnfc-page').value = qrNfcSettings.page || "menu-qr.html";
+        if (document.getElementById('setting-qrnfc-label')) document.getElementById('setting-qrnfc-label').value = qrNfcSettings.label || "Posez votre téléphone ici";
+        if (document.getElementById('setting-cash-register-enabled')) document.getElementById('setting-cash-register-enabled').checked = cashRegisterSettings.enabled === true;
+        if (document.getElementById('setting-fiscal-mode')) document.getElementById('setting-fiscal-mode').checked = cashRegisterSettings.fiscalMode === true;
+        if (document.getElementById('setting-fiscal-backend-url')) document.getElementById('setting-fiscal-backend-url').value = cashRegisterSettings.backendUrl || "/api/fiscal/cash-in";
+
+        if (systemSettings.design) {
+            if(document.getElementById('design-bg-color')) document.getElementById('design-bg-color').value = systemSettings.design.bgColor || "#0b0f19";
+            if(document.getElementById('design-text-color')) document.getElementById('design-text-color').value = systemSettings.design.textColor || "#ffffff";
+            if(document.getElementById('design-title-color')) document.getElementById('design-title-color').value = systemSettings.design.titleColor || "#ffffff";
+            if(document.getElementById('design-alert-color')) document.getElementById('design-alert-color').value = systemSettings.design.btnColor || "#d4af37";
+            if(document.getElementById('design-font')) document.getElementById('design-font').value = systemSettings.design.font || "'Inter', sans-serif";
+            if(document.getElementById('design-title-font')) document.getElementById('design-title-font').value = systemSettings.design.titleFont || "'Playfair Display', serif";
+            if(document.getElementById('design-banner-url')) document.getElementById('design-banner-url').value = systemSettings.design.bannerUrl || "";
+        }
+
+        if(!systemSettings.reviews) systemSettings.reviews = { active: false, url: "" };
+        if(document.getElementById('setting-reviews-active')) document.getElementById('setting-reviews-active').checked = systemSettings.reviews.active;
+        if(document.getElementById('setting-reviews-url')) document.getElementById('setting-reviews-url').value = systemSettings.reviews.url;
+
+        updateDesignPreview(); 
+        renderZonesList();
+    }
+    
+    function toggleDayUI(checkbox) { 
+        let div = checkbox.nextElementSibling; 
+        if(checkbox.checked) { div.style.background = 'var(--gold)'; div.style.color = '#000'; } 
+        else { div.style.background = 'rgba(0,0,0,0.3)'; div.style.color = 'var(--text-muted)'; } 
+    }
+
+    function renderStaffList() {
+        let html = staffAccess.length === 0 ? '<div class="empty-state">Vide</div>' : staffAccess.map(s => {
+            let roleColor = s.dept === 'admin' ? 'var(--gold)' : 'var(--text-muted)'; 
+            let dutyBtn = s.onDuty 
+                ? `<button class="btn-outline success" onclick="toggleDuty('${s.pin}')">⏱️ En Service</button>`
+                : `<button class="btn-outline" onclick="toggleDuty('${s.pin}')">🕢 Pointer</button>`;
+            let rankLabel = s.role ? s.role : s.dept;
+            
+            return `
+            <div class="list-item">
+                <div>
+                    <strong>${s.name}</strong> 
+                    <span style="font-size:0.75rem; color:${roleColor}; margin-left:8px;">${rankLabel.toUpperCase()}</span>
+                </div>
+                <div style="display:flex; gap:8px;">
+                    ${dutyBtn}
+                    <button class="btn-outline" onclick="openStaffModal('${s.pin}')">✏️</button>
+                    <button class="btn-outline danger" onclick="deleteStaff('${s.pin}')">🗑️</button>
+                </div>
+            </div>`;
+        }).join('');
+        if(document.getElementById('admin-staff-list')) document.getElementById('admin-staff-list').innerHTML = html;
+    }
+
+    async function toggleDuty(pin) {
+        let emp = staffAccess.find(s => s.pin === pin);
+        if (emp) {
+            emp.onDuty = !emp.onDuty; 
+            renderStaffList(); 
+            renderActiveStaff(); 
+            try { await secureFetch(`${SERVER_URL}/update-order?tenantID=${tenantID}`, { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ tableId: 'STAFF_ACCESS', order: { data: staffAccess } }) }); } catch(e) {}
+        }
+    }
+
+    function renderActiveStaff() {
+        let activeStaff = staffAccess.filter(s => s.onDuty === true); 
+        let container = document.getElementById('active-staff-list');
+        if (!container) return;
+        
+        if (activeStaff.length === 0) {
+            container.innerHTML = '<div class="empty-state" style="width: 100%; padding: 10px;">La brigade est au repos.</div>';
+        } else {
+            container.innerHTML = activeStaff.map(s => `
+                <div style="padding: 8px 12px; background: var(--success); color: #000; border-radius: 6px; font-size: 0.8rem; font-weight: 700;">● ${s.name}</div>
+            `).join('');
+        }
+    }
+
+    function openStaffModal(pin = null) {
+        document.getElementById('staff-edit-original-pin').value = pin || "";
+        if (pin) { 
+            let s = staffAccess.find(x => x.pin === pin); 
+            document.getElementById('staff-name').value = s.name; 
+            document.getElementById('staff-title').value = s.role || ""; 
+            document.getElementById('staff-pin').value = s.pin; 
+            document.getElementById('staff-role').value = s.dept; 
+            document.getElementById('staff-active').checked = s.active !== false; 
+        } else { 
+            document.getElementById('staff-name').value = ""; 
+            document.getElementById('staff-title').value = ""; 
+            document.getElementById('staff-pin').value = ""; 
+            document.getElementById('staff-role').value = "salle"; 
+            document.getElementById('staff-active').checked = true; 
+        }
+        let modal = document.getElementById('staff-modal'); 
+        if(modal) { modal.style.display = 'flex'; setTimeout(() => modal.classList.add('show'), 10); }
+    }
+
+    async function saveStaff() {
+        let name = document.getElementById('staff-name').value.trim(); 
+        let title = document.getElementById('staff-title').value.trim(); 
+        let pin = document.getElementById('staff-pin').value.trim(); 
+        let origPin = document.getElementById('staff-edit-original-pin').value;
+        
+        if (!name || !title || pin.length < 4) return alert("Le nom, le rang et un PIN (4 chiffres min) sont obligatoires."); 
+        
+        let newStaff = { name: name, pin: pin, role: title, dept: document.getElementById('staff-role').value, active: document.getElementById('staff-active').checked, onDuty: false };
+        
+        if (origPin) {
+            let existing = staffAccess.find(s => s.pin === origPin);
+            newStaff.onDuty = existing.onDuty || false; 
+            staffAccess[staffAccess.findIndex(s => s.pin === origPin)] = newStaff; 
+        } else {
+            staffAccess.push(newStaff);
+        }
+
+        closeModals(); renderStaffList(); renderActiveStaff(); updateDashboardStats();
+        try { await secureFetch(`${SERVER_URL}/update-order?tenantID=${tenantID}`, { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ tableId: 'STAFF_ACCESS', order: { data: staffAccess } }) }); showToast("Synchronisé !"); } catch(e) {}
+    }
+
+    async function deleteStaff(pin) {
+        if (!hasPermission("STAFF_DELETE")) return alert("Permission insuffisante.");
+        const reason = prompt("Motif de désactivation du collaborateur :");
+        if (!reason || reason.trim().length < 3) return;
+        await auditEvent("STAFF_DEACTIVATION_REQUESTED", { reason: reason.trim() }); 
+        if(confirm("Supprimer cet employé ?")) { 
+            staffAccess = staffAccess.filter(s => s.pin !== pin); 
+            renderStaffList(); renderActiveStaff(); updateDashboardStats();
+            try { await secureFetch(`${SERVER_URL}/update-order?tenantID=${tenantID}`, { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ tableId: 'STAFF_ACCESS', order: { data: staffAccess } }) }); } catch(e) {} 
+        } 
+    }
+
+    function renderZonesList() {
+        let zones = globalArchitecture.zones || [];
+        let html = zones.length === 0 
+            ? '<div class="empty-state">Aucune zone dessinée. Dessinez-les depuis le Pad Serveur.</div>' 
+            : zones.map(z => {
+                let mode = z.payMode || z.mode || 'standard';
+                let badgeColor = mode === 'qr_nfc' ? 'var(--gold)' : mode === 'bar' ? 'var(--accent)' : 'var(--success)';
+                let modeLabel = mode === 'qr_nfc' ? '📲 QR/NFC — Commande client' : mode === 'bar' ? '🍹 Comptoir — Paiement au bar' : '🍽️ Serveur — Paiement au pad/caisse';
+
+                return `
+                    <div class="list-item" style="background: rgba(0,0,0,0.3); border: 1px solid var(--border-strong);">
+                        <div class="list-item-info">
+                            <span class="list-item-title" style="color: var(--text-main); font-size: 1.05rem;">
+                                🔲 ${z.label || z.name}
+                            </span>
+                            <span style="font-size: 0.75rem; color: ${badgeColor}; font-weight: bold; margin-top: 2px;">
+                                MODE : ${modeLabel}
+                            </span>
+                        </div>
+                        <div class="list-item-actions">
+                            <select class="input-field" style="padding: 6px 10px; font-size: 0.8rem; width: auto;" onchange="updateZoneMode('${z.id}', this.value)">
+                                <option value="qr_nfc" ${mode === 'qr_nfc' ? 'selected' : ''}>📲 QR/NFC — Commande</option>
+                                <option value="standard" ${mode === 'standard' ? 'selected' : ''}>🍽️ Serveur / Pad</option>
+                                <option value="bar" ${mode === 'bar' ? 'selected' : ''}>🍹 Comptoir / Bar</option>
+                            </select>
+                        </div>
+                    </div>
+                `;
+            }).join('');
+
+        if (document.getElementById('admin-zones-list')) {
+            document.getElementById('admin-zones-list').innerHTML = html;
+        }
+    }
+
+    function updateZoneMode(id, newMode) { 
+        let zone = globalArchitecture.zones.find(z => z.id === id); 
+        if(zone) { zone.payMode = newMode; zone.mode = newMode; markUnsaved(); renderZonesList(); } 
+    }
+
+    function updateCategoryDropdowns() {
+        const optsC = categoriesCuisine.map(c => `<option value="${c.id}">${c.label}</option>`).join(''); 
+        const optsB = categoriesBar.map(c => `<option value="${c.id}">${c.label}</option>`).join('');
+        const optsP = categoriesPatisserie.map(c => `<option value="${c.id}">${c.label}</option>`).join('');
+        
+        const dropdown = document.getElementById('menu-filter-cat');
+        if(dropdown) dropdown.innerHTML = `<option value="ALL">Toutes les catégories</option><optgroup label="Cuisine">${optsC}</optgroup><optgroup label="Bar">${optsB}</optgroup><optgroup label="Pâtisserie">${optsP}</optgroup>`;
+        
+        const itemCat = document.getElementById('item-cat');
+        if(itemCat) itemCat.innerHTML = `<optgroup label="Cuisine">${optsC}</optgroup><optgroup label="Bar">${optsB}</optgroup><optgroup label="Pâtisserie">${optsP}</optgroup>`;
+    }
+
+    function renderCategoryModalLists() {
+        const makeHtml = (cat, dept) => `<div class="list-item" style="padding:15px; margin-bottom:10px; background: rgba(0,0,0,0.2);"><span style="font-weight:700; color:var(--gold);">${cat.label}</span><button class="btn-outline danger" onclick="deleteCategory('${cat.id}', '${dept}')">✕</button></div>`;
+        if(document.getElementById('cat-list-cuisine')) document.getElementById('cat-list-cuisine').innerHTML = categoriesCuisine.length ? categoriesCuisine.map(c => makeHtml(c, 'cuisine')).join('') : '<div class="empty-state">Vide</div>';
+        if(document.getElementById('cat-list-bar')) document.getElementById('cat-list-bar').innerHTML = categoriesBar.length ? categoriesBar.map(c => makeHtml(c, 'bar')).join('') : '<div class="empty-state">Vide</div>';
+    }
+
+    function addCategory() {
+        let name = document.getElementById('new-cat-name').value.trim(); 
+        let type = document.getElementById('new-cat-type').value;
+        if(!name) return alert("Nom requis."); 
+        
+        let newId = name.toLowerCase().replace(/[^a-z0-9]/g, '-'); 
+        if (type === 'cuisine') { 
+            if(categoriesCuisine.find(c => c.id === newId)) return; 
+            categoriesCuisine.push({ id: newId, label: name }); 
+            if(!menuCuisine[newId]) menuCuisine[newId] = []; 
+        } else if (type === 'bar') { 
+            if(categoriesBar.find(c => c.id === newId)) return; 
+            categoriesBar.push({ id: newId, label: name }); 
+            if(!menuBar[newId]) menuBar[newId] = []; 
+        } else {
+            if(categoriesPatisserie.find(c => c.id === newId)) return; 
+            categoriesPatisserie.push({ id: newId, label: name }); 
+            if(!menuPatisserie[newId]) menuPatisserie[newId] = []; 
+        }
+        document.getElementById('new-cat-name').value = ''; markUnsaved(); updateCategoryDropdowns(); renderCategoryModalLists(); renderMenuList();
+    }
+
+    function deleteCategory(id, dept) {
+        if (!hasPermission("MENU_WRITE")) return alert("Permission insuffisante."); 
+        let menuRef = dept === 'bar' ? menuBar : (dept === 'patisserie' ? menuPatisserie : menuCuisine); 
+        if (menuRef[id] && menuRef[id].length > 0) return alert("Catégorie non vide !"); 
+        if(confirm("Supprimer ?")) { 
+            if (dept === 'bar') categoriesBar = categoriesBar.filter(c => c.id !== id); 
+            else if (dept === 'patisserie') categoriesPatisserie = categoriesPatisserie.filter(c => c.id !== id);
+            else categoriesCuisine = categoriesCuisine.filter(c => c.id !== id); 
+            delete menuRef[id]; markUnsaved(); updateCategoryDropdowns(); renderCategoryModalLists(); renderMenuList(); 
+        } 
+    }
+
+    function getDeptRefs(department) {
+        if (department === 'bar') return { cats: categoriesBar, menu: menuBar };
+        if (department === 'patisserie') return { cats: categoriesPatisserie, menu: menuPatisserie };
+        return { cats: categoriesCuisine, menu: menuCuisine };
+    }
+
+    function renderMenuList() {
+        let filterCatEl = document.getElementById('menu-filter-cat'); 
+        if(!filterCatEl) return;
+        const filterCat = filterCatEl.value; 
+        const search = document.getElementById('menu-filter-search') ? document.getElementById('menu-filter-search').value.toLowerCase() : ""; 
+        let html = '';
+        
+        const processCat = (catId, catLabel, itemsArray, department) => {
+            let arr = itemsArray;
+            if (arr && !Array.isArray(arr) && Array.isArray(arr.data)) arr = arr.data;
+            if (!arr || !Array.isArray(arr)) return; 
+            
+            let filtered = arr.filter(i => (i.name || "").toLowerCase().includes(search));
+            if (filtered.length > 0) {
+                html += `<h3 style="color:var(--gold); margin-top:35px; border-bottom: 1px dashed var(--border); padding-bottom: 10px;">📂 ${catLabel}</h3>`;
+                filtered.forEach(item => {
+                    let isSoldOut = (item.stock === 0 || item.stock === "0"); 
+                    let jsSafeName = String(item.name || "").replace(/\\/g, "\\\\").replace(/'/g, "\\'").replace(/"/g, "&quot;");
+                    let jsSafeCat = String(catId || "").replace(/\\/g, "\\\\").replace(/'/g, "\\'").replace(/"/g, "&quot;");
+                    
+                    let itemIdParam = item.id ? `'${item.id}'` : `'${jsSafeName}'`;
+                    let catIdParam = `'${jsSafeCat}'`;
+                    let deptParam = `'${department}'`;
+                    
+                    let ruptureBtn = isSoldOut 
+                        ? `<button class="btn-outline danger" onclick="toggleRupture(${itemIdParam}, ${catIdParam}, ${deptParam})">🔴 Épuisé</button>` 
+                        : `<button class="btn-outline" onclick="toggleRupture(${itemIdParam}, ${catIdParam}, ${deptParam})">🟢 Dispo</button>`;
+                    
+                    let techBadge = `<span style="font-size: 0.7rem; color: var(--accent); border: 1px solid rgba(56,189,248,0.3); background: rgba(56,189,248,0.05); padding: 3px 8px; border-radius: 4px; margin-left: 10px; font-weight: bold;">⏱️ ${item.prepTime || 10}min | 🍳 ${item.station ? item.station.toUpperCase() : 'CHAUD'}</span>`;
+
+                    let curr = (typeof systemSettings !== 'undefined' && systemSettings.currency) ? systemSettings.currency : "€";
+                    let tvaVal = item.tva ?? (typeof systemSettings !== 'undefined' ? systemSettings.tva : 10) ?? 10;
+
+                    html += `<div class="list-item" style="${item.hidden ? 'opacity: 0.5;' : ''}">
+                        <div class="list-item-info">
+                            <span class="list-item-title">${item.name} ${techBadge}</span>
+                            <span style="color:var(--gold); font-weight:600;">${parseFloat(item.price||0).toFixed(2)} ${curr}</span>
+                            <span style="font-size:0.72rem; color:var(--success); border:1px solid rgba(16,185,129,0.25); padding:2px 7px; border-radius:6px; width:max-content;">TVA ${tvaVal}% — ${item.effectiveTaxProfile || item.taxProfile || "AUTO"}</span>
+                        </div>
+                        <div class="list-item-actions">
+                            ${ruptureBtn}
+                            <button class="btn-outline" onclick="openItemModal(${itemIdParam}, ${catIdParam}, ${deptParam})">✏️</button>
+                            <button class="btn-outline danger" onclick="deleteItem(${itemIdParam}, ${catIdParam}, ${deptParam})">🗑️</button>
+                        </div>
+                    </div>`;
+                });
+            }
+        };
+        
+        let catCuisine = categoriesCuisine || [];
+        let catBar = categoriesBar || [];
+        let catPat = categoriesPatisserie || [];
+
+        let menuC = menuCuisine || {};
+        let menuB = menuBar || {};
+        let menuP = menuPatisserie || {};
+
+        if (filterCat === 'ALL') { 
+            catCuisine.forEach(c => processCat(c.id, c.label, menuC[c.id], 'cuisine')); 
+            catBar.forEach(c => processCat(c.id, c.label, menuB[c.id], 'bar')); 
+            catPat.forEach(c => processCat(c.id, c.label, menuP[c.id], 'patisserie'));
+            
+            const usedC = new Set(catCuisine.map(c => c.id));
+            Object.keys(menuC).forEach(k => { if (!usedC.has(k)) processCat(k, "Cuisine (Catégorie Orpheline)", menuC[k], 'cuisine'); });
+            
+            const usedB = new Set(catBar.map(c => c.id));
+            Object.keys(menuB).forEach(k => { if (!usedB.has(k)) processCat(k, "Bar (Catégorie Orpheline)", menuB[k], 'bar'); });
+            
+            const usedP = new Set(catPat.map(c => c.id));
+            Object.keys(menuP).forEach(k => { if (!usedP.has(k)) processCat(k, "Pâtisserie (Catégorie Orpheline)", menuP[k], 'patisserie'); });
+        } else { 
+            let isBar = catBar.find(c => c.id === filterCat) !== undefined; 
+            let isPat = catPat.find(c => c.id === filterCat) !== undefined;
+            let dept = isBar ? 'bar' : (isPat ? 'patisserie' : 'cuisine');
+            let catObj = isBar ? catBar.find(c => c.id === filterCat) : (isPat ? catPat.find(c => c.id === filterCat) : catCuisine.find(c => c.id === filterCat)); 
+            
+            if (catObj) { 
+                if (dept === 'cuisine' && menuC[catObj.id]) processCat(catObj.id, catObj.label, menuC[catObj.id], dept); 
+                if (dept === 'bar' && menuB[catObj.id]) processCat(catObj.id, catObj.label, menuB[catObj.id], dept); 
+                if (dept === 'patisserie' && menuP[catObj.id]) processCat(catObj.id, catObj.label, menuP[catObj.id], dept);
+            } else {
+                if (menuC[filterCat]) processCat(filterCat, filterCat, menuC[filterCat], 'cuisine');
+                if (menuB[filterCat]) processCat(filterCat, filterCat, menuB[filterCat], 'bar');
+                if (menuP[filterCat]) processCat(filterCat, filterCat, menuP[filterCat], 'patisserie');
             }
         }
+        if(document.getElementById('admin-menu-list')) document.getElementById('admin-menu-list').innerHTML = html || '<div class="empty-state" style="padding: 30px;">Aucun plat n\'a été trouvé. Créez un NOUVEAU PLAT pour commencer !</div>';
+    }
 
-        function toggleMenuIchef() {
-            document.getElementById("dropdownList").classList.toggle("show-menu");
+    function toggleRupture(itemIdOrName, catId, department) { 
+        let refs = getDeptRefs(department);
+        let item = (refs.menu[catId] || []).find(i => String(i.id) === String(itemIdOrName) || i.name === itemIdOrName); 
+        if (item) { item.stock = (item.stock == 0) ? "" : 0; markUnsaved(); renderMenuList(); } 
+    }
+
+    function openItemModal(itemIdOrName = null, catId = null, department = 'cuisine') {
+        updateCategoryDropdowns();
+        const tagBoxes = document.querySelectorAll('.item-tag-cb');
+        tagBoxes.forEach(cb => { cb.checked = false; });
+
+        if (itemIdOrName && catId) {
+            let refs = getDeptRefs(department);
+            const item = (refs.menu[catId] || []).find(entry => String(entry.id) === String(itemIdOrName) || entry.name === itemIdOrName);
+
+            if (!item) return alert('Plat introuvable.');
+
+            currentEditingItem = { id: item.id || item.name, catId: catId, dept: department };
+
+            document.getElementById('item-cat').value = catId;
+            document.getElementById('item-name').value = item.name || '';
+            document.getElementById('item-price').value = item.price ?? '';
+            document.getElementById('item-stock').value = item.stock ?? '';
+            document.getElementById('item-prep-time').value = item.prepTime ?? '';
+            document.getElementById('item-station').value = item.station || 'aucun';
+            document.getElementById('item-tax-profile').value = item.taxProfile || 'AUTO';
+            document.getElementById('item-visible').checked = item.hidden !== true;
+            
+            const tags = Array.isArray(item.tags) ? item.tags : [];
+            tagBoxes.forEach(cb => { cb.checked = tags.includes(cb.value); });
+        } else {
+            currentEditingItem = null;
+            document.getElementById('item-name').value = '';
+            document.getElementById('item-price').value = '';
+            document.getElementById('item-stock').value = '';
+            document.getElementById('item-prep-time').value = '';
+            document.getElementById('item-station').value = 'aucun';
+            document.getElementById('item-tax-profile').value = 'AUTO';
+            document.getElementById('item-visible').checked = true;
+            if (document.getElementById('item-cat').options.length) document.getElementById('item-cat').selectedIndex = 0;
         }
 
-        window.onclick = function(event) {
-            if (!event.target.matches('.drop-btn-ichef')) {
-                var dropdowns = document.getElementsByClassName("dropdown-content-ichef");
-                for (var i = 0; i < dropdowns.length; i++) {
-                    var openDropdown = dropdowns[i];
-                    if (openDropdown.classList.contains('show-menu')) {
-                        openDropdown.classList.remove('show-menu');
+        refreshItemTaxUI();
+        const modal = document.getElementById('item-modal');
+        if (modal) {
+            modal.style.display = 'flex';
+            setTimeout(() => modal.classList.add('show'), 10);
+        }
+    }
+
+    function saveItem() {
+        let name = document.getElementById('item-name').value.trim(); 
+        let price = parseFloat(document.getElementById('item-price').value); 
+        let newCatId = document.getElementById('item-cat').value; 
+        let isVisible = document.getElementById('item-visible').checked; 
+        let selectedTaxProfile = document.getElementById('item-tax-profile')?.value || "AUTO";
+        
+        let catBar = window.categoriesBar || [];
+        let catPat = window.categoriesPatisserie || [];
+
+        let newDept = 'cuisine';
+        if (catBar.find(c => c.id === newCatId)) newDept = 'bar';
+        else if (catPat.find(c => c.id === newCatId)) newDept = 'patisserie';
+        
+        let effectiveTaxProfile = document.getElementById('item-tva')?.dataset.effectiveTaxProfile || selectedTaxProfile;
+        if (selectedTaxProfile === "AUTO") {
+            effectiveTaxProfile = inferTaxProfileForItem(name, newCatId, document.getElementById('item-station')?.value || "", newDept === 'bar');
+        }
+        
+        let tvaValue = selectedTaxProfile === "CUSTOM"
+            ? (parseFloat(document.getElementById('item-tva').value) || 0)
+            : getTaxRateForProfile(effectiveTaxProfile);
+            
+        let prepTime = parseInt(document.getElementById('item-prep-time').value) || 10;
+        let station = document.getElementById('item-station').value;
+
+        let selectedTags = [];
+        document.querySelectorAll('.item-tag-cb:checked').forEach(cb => selectedTags.push(cb.value));
+
+        if (!name || isNaN(price) || !newCatId) return alert("Nom et prix invalides."); 
+        
+        let targetRefs = getDeptRefs(newDept);
+        let targetMenu = targetRefs.menu;
+        if (!targetMenu[newCatId]) targetMenu[newCatId] = [];
+        
+        let newItemObj = { 
+            name: name,
+            price: price,
+            stock: document.getElementById('item-stock').value,
+            hidden: !isVisible, 
+            tva: tvaValue,
+            taxProfile: selectedTaxProfile,
+            effectiveTaxProfile: effectiveTaxProfile,
+            taxCountry: getFiscalCountry(),
+            taxSource: "ICHEF_OS_AUTO_TAX",
+            prepTime: prepTime,
+            station: station,
+            tags: selectedTags
+        };
+
+        if (currentEditingItem) {
+            newItemObj.id = currentEditingItem.id;
+            let origRefs = getDeptRefs(currentEditingItem.dept);
+            let origMenu = origRefs.menu;
+            
+            if (origMenu[currentEditingItem.catId]) {
+                origMenu[currentEditingItem.catId] = origMenu[currentEditingItem.catId].filter(i => String(i.id) !== String(currentEditingItem.id) && i.name !== currentEditingItem.id);
+            }
+            targetMenu[newCatId].push(newItemObj);
+        } else {
+            newItemObj.id = Date.now();
+            targetMenu[newCatId].push(newItemObj);
+        }
+        
+        currentEditingItem = null; 
+        markUnsaved(); 
+        closeModals(); 
+        renderMenuList(); 
+        if (typeof updateDashboardStats === 'function') updateDashboardStats(); 
+        saveAllToCloud(); 
+    }
+
+    function deleteItem(itemId, catId, department) {
+        if (!hasPermission("MENU_WRITE")) return alert("Permission insuffisante."); 
+        if(!confirm(`Êtes-vous sûr de vouloir supprimer ce produit ?`)) return; 
+        
+        let refs = getDeptRefs(department);
+        if (refs.menu[catId]) {
+            refs.menu[catId] = refs.menu[catId].filter(i => i.id !== itemId); 
+        }
+        
+        markUnsaved(); 
+        renderMenuList(); 
+        if (typeof updateDashboardStats === 'function') updateDashboardStats(); 
+        saveAllToCloud();
+    }
+
+    function renderFinancialDashboard() {
+        let allClosed = Array.isArray(archiveCuisine) ? [...archiveCuisine] : (archiveCuisine && Array.isArray(archiveCuisine.data) ? [...archiveCuisine.data] : []);
+        let totalCA = 0; let curr = systemSettings.currency || "€"; let html = '';
+        
+        allClosed.sort((a, b) => new Date(b.date || b.time) - new Date(a.date || a.time)).forEach(t => { 
+            let valTTC = parseFloat(t.totalTTC || t.total || 0); totalCA += valTTC; 
+            let dObj = new Date(t.date || t.time); 
+            let dateStr = isNaN(dObj) ? "" : dObj.toLocaleDateString('fr-FR') + ' ' + dObj.toLocaleTimeString('fr-FR', {hour: '2-digit', minute:'2-digit'});
+            html += `<div class="list-item" style="flex-direction: column; align-items: stretch; gap: 8px;"><div style="display: flex; justify-content: space-between;"><strong style="color:var(--gold);">${t.source || 'Caisse'}</strong><strong>${valTTC.toFixed(2)} ${curr}</strong></div><div style="font-size:0.8rem; color:var(--text-muted);">${dateStr}</div></div>`;
+        });
+        
+        if(document.getElementById('finance-total-ca')) document.getElementById('finance-total-ca').innerText = totalCA.toFixed(2) + ' ' + curr; 
+        if(document.getElementById('admin-finance-list')) document.getElementById('admin-finance-list').innerHTML = html || '<div class="empty-state">Vide</div>';
+    }
+
+    function markUnsaved() { hasUnsavedChanges = true; let s = document.getElementById('sync-status'); if(s) { s.innerHTML = '⚠️ Modifié'; s.style.color = 'var(--gold)'; s.style.borderColor = 'var(--gold)'; } }
+    function markSaved() { hasUnsavedChanges = false; let s = document.getElementById('sync-status'); if(s) { s.innerHTML = '<span>● En Direct</span> 🔄'; s.style.color = 'var(--text-main)'; s.style.borderColor = 'var(--border)'; } }
+    function showToast(msg) { let t = document.getElementById('toast'); if(!t) { t = document.createElement('div'); t.id = 'toast'; t.className = 'toast'; document.body.appendChild(t); } t.innerText = msg; t.classList.add('show'); setTimeout(() => t.classList.remove('show'), 3000); }
+    function closeModals() { document.querySelectorAll('.modal').forEach(m => { m.style.opacity = '0'; setTimeout(() => { m.classList.remove('show'); m.style.display = 'none'; }, 300); }); }
+    function forceSync() { if(hasUnsavedChanges && !confirm("⚠️ Écraser les modifications ?")) return; fetchStateFromCloud(); }
+
+    async function saveAllToCloud() {
+        if (!hasPermission("CONFIG_WRITE")) return alert("Action non autorisée.");
+        await auditEvent("CONFIG_SAVE_REQUESTED");
+        try {
+            let syncBtn = document.getElementById('sync-status'); if(syncBtn) syncBtn.innerHTML = '⏳ Enregistrement...';
+            
+            if(document.getElementById('resto-name')) systemSettings.name = document.getElementById('resto-name').value.trim();
+
+            systemSettings.taxConfig = buildTaxConfigFromUI();
+            systemSettings.currency = systemSettings.taxConfig.currency;
+            systemSettings.tva = systemSettings.taxConfig.rates.RESTAURATION;
+            systemSettings.tva2 = systemSettings.taxConfig.rates.ALCOHOL;
+            systemSettings.tvaReduced = systemSettings.taxConfig.rates.REDUCED_TAKEAWAY;
+            systemSettings.tvaLodging = systemSettings.taxConfig.rates.LODGING;
+
+            if(document.getElementById('setting-service-bar')) systemSettings.serviceAuBar = document.getElementById('setting-service-bar').checked;
+
+            if(!systemSettings.loyalty) systemSettings.loyalty = {};
+            if(document.getElementById('setting-loyalty-active')) systemSettings.loyalty.active = document.getElementById('setting-loyalty-active').checked;
+            if(document.getElementById('setting-loyalty-percent')) systemSettings.loyalty.percent = parseFloat(document.getElementById('setting-loyalty-percent').value) || 5;
+
+            if(!systemSettings.payment) systemSettings.payment = { online: false, stripeLink: "" };
+            if(document.getElementById('setting-qr-pay')) systemSettings.payment.online = document.getElementById('setting-qr-pay').checked;
+            if(document.getElementById('resto-stripe')) systemSettings.payment.stripeLink = document.getElementById('resto-stripe').value.trim();
+
+            if(!systemSettings.design) systemSettings.design = {};
+            if(document.getElementById('design-bg-color')) systemSettings.design.bgColor = document.getElementById('design-bg-color').value;
+            if(document.getElementById('design-text-color')) systemSettings.design.textColor = document.getElementById('design-text-color').value;
+            if(document.getElementById('design-title-color')) systemSettings.design.titleColor = document.getElementById('design-title-color').value;
+            if(document.getElementById('design-alert-color')) systemSettings.design.btnColor = document.getElementById('design-alert-color').value;
+            if(document.getElementById('design-font')) systemSettings.design.font = document.getElementById('design-font').value;
+            if(document.getElementById('design-title-font')) systemSettings.design.titleFont = document.getElementById('design-title-font').value;
+            if(document.getElementById('design-banner-url')) systemSettings.design.bannerUrl = document.getElementById('design-banner-url').value.trim();
+
+            systemSettings.qrNfc = {
+                active: document.getElementById('setting-qrnfc-active')?.checked !== false,
+                orderEnabled: document.getElementById('setting-qrnfc-order-enabled')?.checked !== false,
+                waiterValidation: document.getElementById('setting-qrnfc-waiter-validation')?.checked === true,
+                showTableZone: document.getElementById('setting-qrnfc-show-table-zone')?.checked !== false,
+                page: document.getElementById('setting-qrnfc-page')?.value.trim() || "menu-qr.html",
+                label: document.getElementById('setting-qrnfc-label')?.value.trim() || "Posez votre téléphone ici",
+                source: "qr_nfc",
+                mode: "commande"
+            };
+
+            systemSettings.cashRegister = {
+                enabled: document.getElementById('setting-cash-register-enabled')?.checked === true,
+                fiscalMode: document.getElementById('setting-fiscal-mode')?.checked === true,
+                backendUrl: document.getElementById('setting-fiscal-backend-url')?.value.trim() || "/api/fiscal/cash-in",
+                separation: {
+                    qrNfc: "commande",
+                    caisse: "encaissement_fiscal"
+                },
+                taxConfig: systemSettings.taxConfig
+            };
+
+            let selectedDays = []; document.querySelectorAll('#schedule-days-container input[type="checkbox"]:checked').forEach(cb => selectedDays.push(parseInt(cb.value)));
+            
+            systemSettings.schedule = { 
+                auto: document.getElementById('setting-auto-schedule')?.checked || false, days: selectedDays,
+                matin: { s: document.getElementById('matin-start')?.value || "", e: document.getElementById('matin-end')?.value || "" },
+                midi: { s: document.getElementById('midi-start')?.value || "", e: document.getElementById('midi-end')?.value || "" },
+                aprem: { s: document.getElementById('aprem-start')?.value || "", e: document.getElementById('aprem-end')?.value || "" },
+                soir: { s: document.getElementById('soir-start')?.value || "", e: document.getElementById('soir-end')?.value || "" }
+            };
+
+            let architectureConsolidee = { ...menuCuisine, ...menuBar, ...menuPatisserie };
+            const reqs = [
+                { tableId: 'MENU_MASTER', order: { data: menuCuisine } }, 
+                { tableId: 'MENU_MASTER_BAR', order: { data: menuBar } },
+                { tableId: 'MENU_MASTER_PATISSERIE', order: { data: menuPatisserie } },
+                { tableId: 'SETTINGS_MASTER', order: { data: systemSettings } }, 
+                { tableId: 'STAFF_ACCESS', order: { data: staffAccess } },
+                { tableId: 'CATEGORIES_CUISINE', order: { data: categoriesCuisine } }, 
+                { tableId: 'CATEGORIES_BAR', order: { data: categoriesBar } },
+                { tableId: 'CATEGORIES_PATISSERIE', order: { data: categoriesPatisserie } },
+                { tableId: 'MENU_ARCHITECTURE', order: { data: architectureConsolidee } },
+                { tableId: 'ARCHITECTURE', order: { data: globalArchitecture } }
+            ];
+            
+            await Promise.all(reqs.map(req => 
+                secureFetch(`${SERVER_URL}/update-order?tenantID=${tenantID}`, { 
+                    method: 'POST', 
+                    headers: {'Content-Type': 'application/json'}, 
+                    body: JSON.stringify(req) 
+                })
+            ));
+
+            markSaved(); showToast("Enregistré avec succès !");
+
+            if (socket && socket.connected) {
+                socket.emit('updateState', {
+                    tenantID: tenantID,
+                    activeOrders: {
+                        'MENU_MASTER': { data: menuCuisine },
+                        'MENU_MASTER_BAR': { data: menuBar },
+                        'MENU_MASTER_PATISSERIE': { data: menuPatisserie },
+                        'CATEGORIES_CUISINE': { data: categoriesCuisine },
+                        'CATEGORIES_BAR': { data: categoriesBar },
+                        'CATEGORIES_PATISSERIE': { data: categoriesPatisserie }
                     }
-                }
+                });
             }
+        } catch(e) { 
+            alert("❌ Erreur : " + e.message); 
+            let syncBtn = document.getElementById('sync-status'); 
+            if(syncBtn) { 
+                syncBtn.innerHTML = '⚠️ Erreur'; 
+                syncBtn.style.background = 'var(--danger)'; 
+                syncBtn.style.color = '#fff'; 
+            } 
         }
-    </script>
+    } 
+
+    async function fetchStateFromCloud(isBackground = false) {
+        try {
+            let syncBtn = document.getElementById('sync-status'); 
+            if (syncBtn && !isBackground) syncBtn.innerHTML = '⏳ Sync...';
+
+            let r = await secureFetch(`${SERVER_URL}/get-current-state?tenantID=${tenantID}&_t=${Date.now()}`, { cache: 'no-store' });
+            if (!r.ok) throw new Error("Erreur réseau");
+
+            let state = await r.json(); 
+            let aO = state.activeOrders || {};
+
+            systemSettings = aO['SETTINGS_MASTER']?.data || systemSettings;
+            menuCuisine = aO['MENU_MASTER']?.data || {};
+            menuBar = aO['MENU_MASTER_BAR']?.data || {};
+            menuPatisserie = aO['MENU_MASTER_PATISSERIE']?.data || {}; 
+            
+            let catC = aO['CATEGORIES_CUISINE']?.data || [];
+            let catB = aO['CATEGORIES_BAR']?.data || [];
+            let catP = aO['CATEGORIES_PATISSERIE']?.data || []; 
+
+            Object.keys(menuCuisine).forEach(cat => {
+                if (!catC.find(c => c.id === cat)) catC.push({ id: cat, label: cat.toUpperCase() });
+            });
+            Object.keys(menuBar).forEach(cat => {
+                if (!catB.find(c => c.id === cat)) catB.push({ id: cat, label: cat.toUpperCase() });
+            });
+            Object.keys(menuPatisserie).forEach(cat => {
+                if (!catP.find(c => c.id === cat)) catP.push({ id: cat, label: cat.toUpperCase() }); 
+            });
+
+            categoriesCuisine = catC;
+            categoriesBar = catB;
+            categoriesPatisserie = catP; 
+            staffAccess = aO['STAFF_ACCESS']?.data || [];
+            
+            let financialData = aO['FINANCIAL_HISTORY'];
+            archiveCuisine = financialData?.data || (Array.isArray(financialData) ? financialData : []);
+
+            if (aO['ARCHITECTURE']) {
+                let archi = aO['ARCHITECTURE'].data || aO['ARCHITECTURE'];
+                globalArchitecture.rooms = archi.rooms || ['Salle Principale'];
+                globalArchitecture.tables = archi.tables || [];
+                globalArchitecture.zones = archi.zones || [];
+            }
+
+            try { injectSettingsToUI(); } catch(e) { console.error("Erreur Settings", e); }
+            try { updateCategoryDropdowns(); } catch(e) { console.error("Erreur Dropdowns", e); }
+            try { renderCategoryModalLists(); } catch(e) { console.error("Erreur Modal Cat", e); }
+            try { renderMenuList(); } catch(e) { console.error("Erreur Menu", e); }
+            try { renderStaffList(); } catch(e) { console.error("Erreur Staff", e); }
+            try { renderActiveStaff(); } catch(e) { console.error("Erreur Active Staff", e); }
+            try { updateDashboardStats(); } catch(e) { console.error("Erreur Stats", e); }
+            try { renderFinancialDashboard(); } catch(e) { console.error("Erreur Finance", e); }
+            try { loadAIProfitability(); } catch(e) { console.error("Erreur IA", e); }
+            
+            if(!isBackground) markSaved();
+            
+        } catch(e) { 
+            console.error("Échec de la synchronisation:", e);
+            let syncBtn = document.getElementById('sync-status'); 
+            if(syncBtn) { 
+                syncBtn.innerHTML = '❌ EN PANNE'; 
+                syncBtn.style.background = 'var(--danger)'; 
+                syncBtn.style.color = '#fff'; 
+            } 
+        }
+    }
+
+    function updateDashboardStats() {}
+
+    let isTyping = false;
+    document.addEventListener('focusin', (e) => { if(e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT' || e.target.tagName === 'TEXTAREA') isTyping = true; });
+    document.addEventListener('focusout', () => { isTyping = false; });
+
+    let socket = null;
+
+    function updateDesignPreview() { 
+        try {
+            let bg = document.getElementById('design-bg-color')?.value || '#0b0f19'; 
+            let txt = document.getElementById('design-text-color')?.value || '#ffffff'; 
+            let btnColor = document.getElementById('design-alert-color')?.value || '#d4af37'; 
+            let font = document.getElementById('design-font')?.value || "'Inter', sans-serif"; 
+            
+            let titleColor = document.getElementById('design-title-color')?.value || '#ffffff'; 
+            let titleFont = document.getElementById('design-title-font')?.value || "'Playfair Display', serif"; 
+            
+            let bannerInput = document.getElementById('design-banner-url')?.value?.trim();
+            let bannerUrl = (bannerInput && bannerInput !== "") ? bannerInput : 'https://images.unsplash.com/photo-1414235077428-338989a2e8c0?q=80&w=500&auto=format&fit=crop';
+
+            let phone = document.getElementById('phone-preview'); 
+            if (!phone) return;
+
+            phone.style.backgroundColor = bg; 
+            phone.style.color = txt; 
+            phone.style.fontFamily = font;
+            
+            let titleEl = document.getElementById('preview-title');
+            if(titleEl) {
+                titleEl.style.color = titleColor;
+                titleEl.style.fontFamily = titleFont;
+            }
+            
+            let bannerDiv = document.getElementById('preview-banner-img');
+            if (bannerDiv) {
+                bannerDiv.style.backgroundImage = 'none'; 
+                let img = new Image();
+                img.onload = function() {
+                    bannerDiv.style.backgroundImage = `url("${bannerUrl}")`;
+                    bannerDiv.style.backgroundSize = 'cover';
+                    bannerDiv.style.backgroundPosition = 'center';
+                };
+                img.src = bannerUrl;
+            }
+
+            let gradientOverlay = phone.querySelector('.gradient-overlay');
+            if(gradientOverlay) gradientOverlay.style.background = 'linear-gradient(transparent, ' + bg + ')';
+            phone.querySelectorAll('.preview-accent').forEach(el => el.style.color = btnColor);
+            phone.querySelectorAll('.preview-card').forEach(el => {
+                el.style.border = '1px solid ' + txt + '20'; 
+                el.style.backgroundColor = txt + '05';  
+            });
+        } catch (err) {}
+    }
+
+    async function startAuthenticatedApplication() {
+        await window.ICHEF_SECURITY_READY;
+        tenantID = window.ICHEF_SECURITY.tenantID;
+
+        await fetchStateFromCloud();
+
+        socket = io(SERVER_URL, {
+            transports: ['websocket', 'polling'],
+            withCredentials: true,
+            auth: {
+                tenantID,
+                deviceId: window.ICHEF_SECURITY.deviceId,
+                csrfToken: window.ICHEF_SECURITY.csrfToken || ''
+            },
+            query: { tenantID }
+        });
+
+        socket.on('connect', () => {
+            window.ICHEF_SECURITY.connectionState = 'online';
+            socket.emit('joinTenant', {
+                tenantID,
+                deviceId: window.ICHEF_SECURITY.deviceId
+            });
+        });
+
+        socket.on('connect_error', (error) => {
+            window.ICHEF_SECURITY.connectionState = 'degraded';
+            console.error('Connexion temps réel refusée :', error);
+        });
+
+        socket.on('updateState', (state) => {
+            if(!state) return;
+            
+            if (hasUnsavedChanges || document.querySelector('.modal.show') || isTyping) {
+                let syncBtn = document.getElementById('sync-status');
+                if(syncBtn) { 
+                    syncBtn.innerHTML = '⚠️ Modif du Chef (Cliquer)'; 
+                    syncBtn.style.color = '#fff'; 
+                    syncBtn.style.background = 'var(--accent)'; 
+                    syncBtn.style.borderColor = 'var(--accent)'; 
+                    syncBtn.onclick = () => { 
+                        fetchStateFromCloud(false); 
+                        syncBtn.style.background = 'transparent';
+                        syncBtn.style.color = 'var(--text-main)';
+                        syncBtn.style.borderColor = 'var(--border)';
+                    };
+                }
+                return; 
+            }
+
+            showToast("📡 Carte mise à jour par le Chef !");
+            fetchStateFromCloud(true);
+        });
+    }
+
+    startAuthenticatedApplication().catch(error => {
+        console.error("Initialisation sécurisée interrompue", error);
+    });
+</script>
     <script>
         function startItemDictation(inputId, buttonId) {
             const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
