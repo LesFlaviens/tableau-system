@@ -9,8 +9,9 @@
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
     <meta name="theme-color" content="#000000">
-    <title>iCHEF OS - Pad Serveur sécurisé</title>
-    <!-- Sécurité : authentification et autorisations exclusivement côté serveur. -->
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; connect-src 'self' https://tableau-system.onrender.com http://localhost:10000 ws://localhost:10000 wss://tableau-system.onrender.com; script-src 'self' 'unsafe-inline' https://cdn.socket.io; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com data:; img-src 'self' data: blob:; media-src 'self' data: blob:; object-src 'none'; base-uri 'self'; frame-ancestors 'none'; form-action 'self'; upgrade-insecure-requests">
+    <title>iCHEF OS - Pad Serveur sécurisé renforcé</title>
+    <!-- Sécurité renforcée : aucune clé ni PIN en dur ; authentification et autorisations exclusivement côté serveur. -->
 
     <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
 
@@ -48,53 +49,84 @@
         user: null,
         permissions: new Set(),
         authenticatedAt: null,
-        lastActivityAt: Date.now()
+        lastActivityAt: Date.now(),
+        bootstrapComplete: false
     };
 
-    (async function enforceSecurity() {
+    function securityBlock(message = 'Sécurité indisponible. Reconnexion requise.') {
+        document.documentElement.dataset.securityBlocked = 'true';
+        const render = () => {
+            let overlay = document.getElementById('ichef-security-block');
+            if (!overlay) {
+                overlay = document.createElement('div');
+                overlay.id = 'ichef-security-block';
+                overlay.style.cssText = 'position:fixed;inset:0;z-index:2147483647;background:#050505;color:#FAF0E6;display:flex;align-items:center;justify-content:center;text-align:center;padding:30px;font-family:Inter,sans-serif';
+                document.body.appendChild(overlay);
+            }
+            overlay.innerHTML = `<div><h2 style="color:#C5A059;letter-spacing:2px">ACCÈS SÉCURISÉ</h2><p>${String(message).replace(/[<>&"']/g, '')}</p><button onclick="location.reload()" style="margin-top:15px;padding:12px 20px;background:#C5A059;border:0;border-radius:4px;font-weight:700;cursor:pointer">RÉESSAYER</button></div>`;
+        };
+        if (document.body) render(); else document.addEventListener('DOMContentLoaded', render, { once: true });
+    }
+
+    window.ICHEF_SECURITY_READY = (async function enforceSecurity() {
         const params = new URLSearchParams(window.location.search);
-        const urlTenantID = params.get('tenantID');
+        const rawUrlTenantID = params.get('tenantID');
         const storedTenantID = localStorage.getItem('ichef_tenant_id');
+        const validTenant = value => typeof value === 'string' && /^[A-Za-z0-9_-]{2,80}$/.test(value);
 
-        if (urlTenantID && !/^[A-Za-z0-9_-]{2,80}$/.test(urlTenantID)) {
-            throw new Error('tenantID invalide');
+        if (rawUrlTenantID && !validTenant(rawUrlTenantID)) {
+            securityBlock('Identifiant restaurant invalide.');
+            throw new Error('INVALID_TENANT');
         }
-        if (urlTenantID && urlTenantID !== storedTenantID) {
+        if (storedTenantID && !validTenant(storedTenantID)) {
+            localStorage.removeItem('ichef_tenant_id');
+        }
+        if (rawUrlTenantID && storedTenantID && rawUrlTenantID !== storedTenantID) {
             localStorage.removeItem('EMPIRE_GLOBAL_SYNC');
-            localStorage.setItem('ichef_tenant_id', urlTenantID);
+            localStorage.removeItem('empire_architecture');
+            localStorage.removeItem('empire_rooms');
+            localStorage.removeItem('empire_zones');
         }
 
-        const tenantID = urlTenantID || storedTenantID;
+        const tenantID = rawUrlTenantID || (validTenant(storedTenantID) ? storedTenantID : null);
         if (!tenantID) {
             window.location.replace('connexionpartenaire.html');
-            return;
+            return false;
         }
+        localStorage.setItem('ichef_tenant_id', tenantID);
 
         const SERVER_URL = (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1')
             ? 'http://localhost:10000'
             : 'https://tableau-system.onrender.com';
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 12000);
 
         try {
             const response = await fetch(`${SERVER_URL}/api/security/bootstrap`, {
                 method: 'POST',
                 credentials: 'include',
                 cache: 'no-store',
-                headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'iCHEF-PWA' },
+                redirect: 'error',
+                referrerPolicy: 'same-origin',
+                signal: controller.signal,
+                headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'iCHEF-PWA', 'Accept': 'application/json' },
                 body: JSON.stringify({ tenantID, deviceId: window.ICHEF_SECURITY.deviceId, page: location.pathname.split('/').pop() || 'index.html' })
             });
             const data = await response.json().catch(() => ({}));
             if (!response.ok || !data.success) {
-                alert(data.error || 'Terminal non autorisé.');
-                window.location.replace('connexionpartenaire.html');
-                return;
+                securityBlock('Terminal non autorisé ou session invalide.');
+                setTimeout(() => window.location.replace('connexionpartenaire.html'), 1200);
+                return false;
             }
-            window.ICHEF_SECURITY.csrfToken = data.csrfToken || null;
+            window.ICHEF_SECURITY.csrfToken = typeof data.csrfToken === 'string' ? data.csrfToken : null;
+            window.ICHEF_SECURITY.bootstrapComplete = true;
+            return true;
         } catch (error) {
-            console.error('Initialisation sécurité impossible', error);
-            document.addEventListener('DOMContentLoaded', () => {
-                const tag = document.getElementById('stock-tag');
-                if (tag) tag.textContent = '● SÉCURITÉ INDISPONIBLE';
-            });
+            console.error('Initialisation sécurité impossible');
+            securityBlock(error && error.name === 'AbortError' ? 'Le serveur de sécurité ne répond pas.' : 'Connexion sécurisée impossible.');
+            return false;
+        } finally {
+            clearTimeout(timeout);
         }
     })();
     </script>
@@ -403,9 +435,6 @@
             <p style="color: #fff; font-size: 0.85rem; font-weight: 800; margin: 0; text-transform: uppercase;">PROCÉDURE IOS :</p>
             <p style="color: var(--text-muted); font-size: 0.8rem; margin: 5px 0 0 0;">Menu Partage > Sur l'écran d'accueil.</p>
         </div>
-        <button onclick="requestMaintenanceOverride()" style="margin-top: 30px; background: transparent; border: 1px solid var(--border); color: var(--text-muted); padding: 10px 20px; border-radius: 4px; font-size: 0.75rem; cursor: pointer; text-transform: uppercase; font-weight: 600;">
-            ACCÈS MAINTENANCE SÉCURISÉ
-        </button>
     </div>
 
     <div id="login-screen">
@@ -837,8 +866,10 @@
         // -------------------------------------------------------------
 
         const appUrlParams = new URLSearchParams(window.location.search);
-        let appTenantID = appUrlParams.get('tenantID') || localStorage.getItem('ichef_tenant_id');
+        const appTenantCandidate = appUrlParams.get('tenantID') || localStorage.getItem('ichef_tenant_id');
+        let appTenantID = (/^[A-Za-z0-9_-]{2,80}$/.test(appTenantCandidate || '')) ? appTenantCandidate : null;
         if (!appTenantID) window.location.replace('connexionpartenaire.html');
+        window.tenantID = appTenantID;
         const APP_SERVER_URL = (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1" || window.location.protocol === "file:") 
         ? "http://localhost:10000" : "https://tableau-system.onrender.com";
         
@@ -883,7 +914,7 @@
         let currentTableZoneLabel = 'Salle';
         window.systemSettings = window.systemSettings || {};
 
-        let inactivityTimer; const INACTIVITY_LIMIT = 120000; 
+        let inactivityTimer; const INACTIVITY_LIMIT = 15 * 60 * 1000; 
         let currentUser = null, currentPin = "";
         let syncInterval = null; let clockInterval = null;
 
@@ -894,17 +925,199 @@
             return headers;
         }
 
-        async function secureFetch(path, options = {}) {
-            const response = await fetch(`${APP_SERVER_URL}${path}`, {
-                credentials: 'include', cache: 'no-store', ...options,
-                headers: securityHeaders(options.headers || {})
+
+        // -------------------------------------------------------------
+        // FIABILITÉ ENTREPRISE : IDENTIFIANTS, FILE HORS LIGNE ET REPRISE
+        // -------------------------------------------------------------
+        function createSecureId(prefix = 'id') {
+            const uuid = (window.crypto && typeof window.crypto.randomUUID === 'function')
+                ? window.crypto.randomUUID()
+                : `${Date.now()}-${Math.random().toString(16).slice(2)}-${Math.random().toString(16).slice(2)}`;
+            return `${prefix}_${uuid}`;
+        }
+
+        const ICHEF_OFFLINE_DB = 'ichef_pad_secure_queue_v1';
+        const ICHEF_OFFLINE_STORE = 'requests';
+        let offlineFlushRunning = false;
+
+        function openOfflineDatabase() {
+            return new Promise((resolve, reject) => {
+                if (!('indexedDB' in window)) return reject(new Error('INDEXEDDB_UNAVAILABLE'));
+                const request = indexedDB.open(ICHEF_OFFLINE_DB, 1);
+                request.onupgradeneeded = () => {
+                    const db = request.result;
+                    if (!db.objectStoreNames.contains(ICHEF_OFFLINE_STORE)) {
+                        const store = db.createObjectStore(ICHEF_OFFLINE_STORE, { keyPath: 'queueId' });
+                        store.createIndex('createdAt', 'createdAt', { unique: false });
+                        store.createIndex('tenantID', 'tenantID', { unique: false });
+                    }
+                };
+                request.onsuccess = () => resolve(request.result);
+                request.onerror = () => reject(request.error || new Error('OFFLINE_DB_OPEN_FAILED'));
             });
-            if (response.status === 401 || response.status === 403) {
-                await auditEvent('SESSION_REJECTED', { path, status: response.status }, false);
-                forceLocalLogout('Session expirée ou accès refusé.');
-                throw new Error('SESSION_EXPIRED');
+        }
+
+        async function enqueueOfflineRequest(entry) {
+            const safeEntry = {
+                queueId: entry.queueId || createSecureId('queue'),
+                idempotencyKey: entry.idempotencyKey || createSecureId('idem'),
+                tenantID: appTenantID,
+                path: entry.path,
+                method: String(entry.method || 'POST').toUpperCase(),
+                body: entry.body || null,
+                createdAt: entry.createdAt || new Date().toISOString(),
+                attempts: Number(entry.attempts || 0),
+                tableId: entry.tableId || null,
+                itemIds: Array.isArray(entry.itemIds) ? entry.itemIds : []
+            };
+            const db = await openOfflineDatabase();
+            await new Promise((resolve, reject) => {
+                const tx = db.transaction(ICHEF_OFFLINE_STORE, 'readwrite');
+                tx.objectStore(ICHEF_OFFLINE_STORE).put(safeEntry);
+                tx.oncomplete = resolve;
+                tx.onerror = () => reject(tx.error || new Error('OFFLINE_QUEUE_WRITE_FAILED'));
+            });
+            db.close();
+            updateNetworkBadge();
+            return safeEntry;
+        }
+
+        async function getOfflineRequests() {
+            const db = await openOfflineDatabase();
+            const rows = await new Promise((resolve, reject) => {
+                const tx = db.transaction(ICHEF_OFFLINE_STORE, 'readonly');
+                const req = tx.objectStore(ICHEF_OFFLINE_STORE).getAll();
+                req.onsuccess = () => resolve(req.result || []);
+                req.onerror = () => reject(req.error || new Error('OFFLINE_QUEUE_READ_FAILED'));
+            });
+            db.close();
+            return rows.filter(row => row.tenantID === appTenantID).sort((a,b) => String(a.createdAt).localeCompare(String(b.createdAt)));
+        }
+
+        async function deleteOfflineRequest(queueId) {
+            const db = await openOfflineDatabase();
+            await new Promise((resolve, reject) => {
+                const tx = db.transaction(ICHEF_OFFLINE_STORE, 'readwrite');
+                tx.objectStore(ICHEF_OFFLINE_STORE).delete(queueId);
+                tx.oncomplete = resolve;
+                tx.onerror = () => reject(tx.error || new Error('OFFLINE_QUEUE_DELETE_FAILED'));
+            });
+            db.close();
+        }
+
+        function markQueuedItemsDelivered(entry) {
+            if (!entry || !entry.tableId || !Array.isArray(entry.itemIds)) return;
+            const apply = items => (items || []).forEach(item => {
+                if (entry.itemIds.includes(item.itemId)) {
+                    item.isSent = true;
+                    item.pendingSync = false;
+                    item.sendStatus = 'received';
+                    item.sentAt = new Date().toISOString();
+                }
+            });
+            if (activeOrders[entry.tableId]?.items) apply(activeOrders[entry.tableId].items);
+            if (currentTableId === entry.tableId) {
+                apply(currentTicket);
+                renderTicket();
             }
-            return response;
+        }
+
+        async function flushOfflineQueue() {
+            if (offlineFlushRunning || !navigator.onLine || !currentUser) return;
+            offlineFlushRunning = true;
+            try {
+                const entries = await getOfflineRequests();
+                for (const entry of entries) {
+                    try {
+                        const response = await secureFetch(entry.path, {
+                            method: entry.method,
+                            headers: { 'X-Idempotency-Key': entry.idempotencyKey },
+                            body: entry.body,
+                            disableOfflineQueue: true
+                        });
+                        const result = await response.clone().json().catch(() => ({}));
+                        if (!response.ok || result.success === false) {
+                            if (response.status >= 400 && response.status < 500 && response.status !== 408 && response.status !== 429) {
+                                await auditEvent('OFFLINE_REQUEST_REJECTED', { queueId: entry.queueId, path: entry.path, status: response.status }, false);
+                            }
+                            break;
+                        }
+                        await deleteOfflineRequest(entry.queueId);
+                        markQueuedItemsDelivered(entry);
+                        await auditEvent('OFFLINE_REQUEST_SYNCED', { queueId: entry.queueId, path: entry.path, tableId: entry.tableId }, false);
+                    } catch (error) {
+                        break;
+                    }
+                }
+            } catch (error) {
+                console.warn('Synchronisation hors ligne différée.');
+            } finally {
+                offlineFlushRunning = false;
+                updateNetworkBadge();
+            }
+        }
+
+        async function secureFetch(path, options = {}) {
+            if (typeof path !== 'string' || !path.startsWith('/') || path.startsWith('//')) throw new Error('INVALID_API_PATH');
+            if (!window.ICHEF_SECURITY.bootstrapComplete) {
+                const ready = await window.ICHEF_SECURITY_READY;
+                if (!ready) throw new Error('SECURITY_BOOTSTRAP_FAILED');
+            }
+
+            const method = String(options.method || 'GET').toUpperCase();
+            const attempts = method === 'GET' ? 2 : 1;
+            const disableOfflineQueue = options.disableOfflineQueue === true;
+            const queueMeta = options.queueMeta || null;
+            const idempotencyKey = options.idempotencyKey || (method === 'GET' ? null : createSecureId('idem'));
+            let lastError = null;
+
+            for (let attempt = 0; attempt < attempts; attempt++) {
+                const controller = new AbortController();
+                const timeout = setTimeout(() => controller.abort(), 12000);
+                try {
+                    const response = await fetch(`${APP_SERVER_URL}${path}`, {
+                        credentials: 'include', cache: 'no-store', redirect: 'error', referrerPolicy: 'same-origin', ...options,
+                        method,
+                        signal: controller.signal,
+                        headers: securityHeaders({
+                            'Accept': 'application/json',
+                            ...(idempotencyKey ? { 'X-Idempotency-Key': idempotencyKey } : {}),
+                            ...(options.headers || {})
+                        })
+                    });
+                    if (response.status === 401 || response.status === 403) {
+                        auditEvent('SESSION_REJECTED', { path: path.split('?')[0], status: response.status }, false);
+                        forceLocalLogout('Session expirée ou accès refusé.');
+                        throw new Error('SESSION_EXPIRED');
+                    }
+                    if (response.status === 429) throw new Error('TOO_MANY_REQUESTS');
+                    if (response.status >= 500 && attempt + 1 < attempts) {
+                        await new Promise(resolve => setTimeout(resolve, 400));
+                        continue;
+                    }
+                    return response;
+                } catch (error) {
+                    lastError = error;
+                    if (error && error.message === 'SESSION_EXPIRED') throw error;
+                    if (attempt + 1 < attempts) await new Promise(resolve => setTimeout(resolve, 400));
+                } finally {
+                    clearTimeout(timeout);
+                }
+            }
+            if (!disableOfflineQueue && method !== 'GET' && queueMeta && (!navigator.onLine || lastError?.name === 'AbortError' || lastError instanceof TypeError)) {
+                const queued = await enqueueOfflineRequest({
+                    ...queueMeta,
+                    path,
+                    method,
+                    body: options.body || null,
+                    idempotencyKey
+                });
+                return new Response(JSON.stringify({ success: true, queued: true, queueId: queued.queueId }), {
+                    status: 202,
+                    headers: { 'Content-Type': 'application/json' }
+                });
+            }
+            throw lastError || new Error('NETWORK_UNAVAILABLE');
         }
 
         async function auditEvent(action, details = {}, throwOnError = true) {
@@ -935,6 +1148,12 @@
             return true;
         }
 
+        function isManagerUser() {
+            if (!currentUser) return false;
+            const role = String(currentUser.role || '').toLowerCase();
+            return hasPermission('ADMIN_ACCESS') || hasPermission('MANAGER_ACCESS') || role === 'manager' || role === 'master' || role === 'admin';
+        }
+
         const API = {
             getState: async () => {
                 const response = await secureFetch(`/api/state/current?tenantID=${encodeURIComponent(appTenantID)}`);
@@ -960,8 +1179,13 @@
                     return result;
                 }
 
+                const itemIds = isOrder && Array.isArray(data?.items)
+                    ? data.items.filter(item => item?.productionRequested && !item?.isSent).map(item => item.itemId).filter(Boolean)
+                    : [];
                 const response = await secureFetch('/api/orders/upsert', {
                     method: 'POST',
+                    idempotencyKey: audit.idempotencyKey || createSecureId('order'),
+                    queueMeta: isOrder ? { tableId: normalizedKey, itemIds } : null,
                     body: JSON.stringify({ tenantID: appTenantID, tableId: normalizedKey, order: isOrder ? data : { data }, expectedVersion: audit.expectedVersion || null, reason: audit.reason || null })
                 });
                 const result = await response.json().catch(() => ({}));
@@ -976,7 +1200,7 @@
             clearTimeout(inactivityTimer);
             if (currentUser) inactivityTimer = setTimeout(() => logout('INACTIVITY'), INACTIVITY_LIMIT);
         }
-        ['touchstart', 'click', 'mousemove', 'keypress'].forEach(e => document.addEventListener(e, resetInactivityTimer, { passive: true }));
+        ['touchstart', 'pointerdown', 'click', 'keydown'].forEach(e => document.addEventListener(e, resetInactivityTimer, { passive: true }));
 
         function appendPin(n) {
             if (currentPin.length >= 12) return;
@@ -989,40 +1213,62 @@
             document.getElementById('pin-display').innerText = '';
         }
 
+        let loginInProgress = false;
+        let localLoginFailures = 0;
+        let localLoginBlockedUntil = 0;
+
         async function submitPin() {
+            if (loginInProgress) return;
+            if (Date.now() < localLoginBlockedUntil) return alert('⏳ Trop de tentatives. Réessayez dans quelques instants.');
+
             const pin = currentPin;
             clearPin();
             if (!/^\d{4,12}$/.test(pin)) return alert('❌ Code PIN invalide.');
 
+            loginInProgress = true;
+            const controller = new AbortController();
+            const timeout = setTimeout(() => controller.abort(), 12000);
             try {
+                const ready = await window.ICHEF_SECURITY_READY;
+                if (!ready) throw new Error('SECURITY_BOOTSTRAP_FAILED');
+
                 const response = await fetch(`${APP_SERVER_URL}/api/auth/pin-login`, {
-                    method: 'POST', credentials: 'include', cache: 'no-store',
-                    headers: securityHeaders(),
+                    method: 'POST', credentials: 'include', cache: 'no-store', redirect: 'error', referrerPolicy: 'same-origin', signal: controller.signal,
+                    headers: securityHeaders({ 'Accept': 'application/json' }),
                     body: JSON.stringify({ tenantID: appTenantID, pin, deviceId: window.ICHEF_SECURITY.deviceId, module: 'PAD_SERVEUR' })
                 });
                 const data = await response.json().catch(() => ({}));
-                if (!response.ok || !data.success) {
-                    alert(data.lockedUntil ? `❌ Compte verrouillé jusqu'à ${data.lockedUntil}.` : '❌ Code incorrect ou accès refusé.');
+                if (!response.ok || !data.success || !data.user) {
+                    localLoginFailures += 1;
+                    if (localLoginFailures >= 5) {
+                        localLoginBlockedUntil = Date.now() + 30000;
+                        localLoginFailures = 0;
+                    }
+                    alert('❌ Code incorrect ou accès refusé.');
                     return;
                 }
 
-                window.ICHEF_SECURITY.sessionToken = data.accessToken || null;
-                window.ICHEF_SECURITY.csrfToken = data.csrfToken || window.ICHEF_SECURITY.csrfToken;
-                window.ICHEF_SECURITY.permissions = new Set(Array.isArray(data.permissions) ? data.permissions : []);
+                localLoginFailures = 0;
+                window.ICHEF_SECURITY.sessionToken = typeof data.accessToken === 'string' ? data.accessToken : null;
+                window.ICHEF_SECURITY.csrfToken = typeof data.csrfToken === 'string' ? data.csrfToken : window.ICHEF_SECURITY.csrfToken;
+                window.ICHEF_SECURITY.permissions = new Set(Array.isArray(data.permissions) ? data.permissions.filter(p => typeof p === 'string') : []);
                 window.ICHEF_SECURITY.user = data.user;
                 window.ICHEF_SECURITY.authenticatedAt = Date.now();
 
                 currentUser = {
-                    id: data.user.id,
-                    name: data.user.name,
-                    role: data.user.role,
+                    id: String(data.user.id || ''),
+                    name: String(data.user.name || 'Utilisateur'),
+                    role: String(data.user.role || 'Employé'),
                     sessionId: data.sessionId || null
                 };
                 await auditEvent('LOGIN_SUCCESS', { module: 'PAD_SERVEUR' }, false);
                 unlockPadWithUser(currentUser);
             } catch (error) {
-                console.error('Authentification impossible', error);
-                alert('❌ Connexion sécurisée indisponible.');
+                console.error('Authentification impossible');
+                alert(error && error.name === 'AbortError' ? '❌ Le serveur ne répond pas.' : '❌ Connexion sécurisée indisponible.');
+            } finally {
+                clearTimeout(timeout);
+                loginInProgress = false;
             }
         }
 
@@ -1072,7 +1318,7 @@
         function unlockPadWithUser(user) {
             document.getElementById('user-badge').innerText = `Badge: ${user.name} (${user.role})`;
             document.getElementById('login-screen').style.display = 'none';
-            const canAdmin = hasPermission('ADMIN_ACCESS');
+            const canAdmin = isManagerUser();
             document.querySelectorAll('.admin').forEach(e => e.style.display = canAdmin ? 'block' : 'none');
             renderRooms(); renderFloor(); connectEmpireH24(); resetInactivityTimer();
         }
@@ -1095,6 +1341,7 @@
             currentPin = '';
             window.ICHEF_SECURITY.sessionToken = null;
             window.ICHEF_SECURITY.user = null;
+            window.ICHEF_SECURITY.csrfToken = null;
             window.ICHEF_SECURITY.permissions = new Set();
             document.getElementById('login-screen').style.display = 'flex';
             clearPin();
@@ -1105,6 +1352,24 @@
             if (document.fullscreenElement && document.exitFullscreen) document.exitFullscreen().catch(() => {});
             if (message) alert(message);
         }
+
+        function updateNetworkBadge() {
+            const tag = document.getElementById('stock-tag');
+            if (!tag) return;
+            if (navigator.onLine) {
+                tag.textContent = currentUser ? '● LIAISON SÉCURISÉE' : '● EN ATTENTE DE CONNEXION';
+                tag.style.color = 'var(--gold)';
+            } else {
+                tag.textContent = '● HORS LIGNE — MODE LOCAL';
+                tag.style.color = 'var(--alert)';
+            }
+        }
+        window.addEventListener('online', () => { updateNetworkBadge(); if (currentUser) syncData(); });
+        window.addEventListener('offline', updateNetworkBadge);
+        window.addEventListener('pagehide', () => {
+            if (syncInterval) clearInterval(syncInterval);
+            if (clockInterval) clearInterval(clockInterval);
+        });
 
         function connectEmpireH24() { 
             let currentGlobalScheduledMode = 'standard'; 
@@ -1264,7 +1529,10 @@
                     checkGlobalAlerts();
                     if(!isDraggingTable) renderFloor();
                 }
-            } catch(e) {}
+            } catch(e) {
+                updateNetworkBadge();
+                if (e && e.message !== 'SESSION_EXPIRED') console.warn('Synchronisation différée');
+            }
         }
 
         async function checkGlobalAlerts() {
@@ -1296,7 +1564,7 @@
         }
 
         function openAdminCatalog() {
-            if (!currentUser || currentUser.role !== 'Manager') return alert("⛔ Accès Manager requis");
+            if (!isManagerUser()) return alert("⛔ Accès Manager requis");
             document.getElementById('admin-catalog-modal').classList.add('open');
             document.getElementById('sas-max-input').value = localSasConfig.maxTables || 5;
             document.getElementById('sas-time-input').value = localSasConfig.delay || 60;
@@ -1347,7 +1615,7 @@
         }
 
         async function openDashboard() {
-            if (!currentUser || currentUser.role !== 'Manager') return alert("⛔ Accès Direction requis");
+            if (!isManagerUser()) return alert("⛔ Accès Direction requis");
             document.getElementById('dashboard-modal').classList.add('open');
             const container = document.getElementById('dashboard-content');
             container.innerHTML = '<div style="color:var(--text-muted); text-align:center;">Chargement...</div>';
@@ -1419,7 +1687,7 @@
                 
                 let assignBtn = '';
                 if(r.date === new Date().toISOString().split('T')[0] && !r.assignedTable) {
-                    if (currentUser && currentUser.role === 'Manager') assignBtn = `<button class="btn-mini gold" style="padding:10px; border-radius: 2px;" onclick="startAssignResa(${r.id})">📍 ASSIGNER</button>`;
+                    if (isManagerUser()) assignBtn = `<button class="btn-mini gold" style="padding:10px; border-radius: 2px;" onclick="startAssignResa(${r.id})">📍 ASSIGNER</button>`;
                     else assignBtn = `<div style="color:var(--text-muted); font-size:0.7rem; font-weight:500; border: 1px solid var(--border); padding: 4px 8px; border-radius: 2px;">🔒 MANAGER</div>`;
                 } else if (r.assignedTable) assignBtn = `<div style="color:var(--text-main); font-weight:600; font-size:0.85rem; letter-spacing: 1px;">📍 TABLE ${r.assignedTable}</div>`;
 
@@ -1441,7 +1709,7 @@
         }
 
         async function autoAssignToday() {
-            if (!currentUser || currentUser.role !== 'Manager') return alert("⛔ Accès Manager requis");
+            if (!isManagerUser()) return alert("⛔ Accès Manager requis");
             let todayStr = new Date().toISOString().split('T')[0];
             let resasToAssign = reservationsData.filter(r => r.date === todayStr && r.status === 'confirmed' && !r.assignedTable);
             if (resasToAssign.length === 0) return alert("Aucune réservation en attente d'assignation pour aujourd'hui.");
@@ -1527,7 +1795,7 @@
             }
         }
 
-        function unlockArchiMode() { if (!currentUser || currentUser.role !== 'Manager') return alert("⛔ Accès Manager requis"); isArchiMode = true; document.body.classList.add('edit-mode'); renderRooms(); renderFloor(); }
+        function unlockArchiMode() { if (!isManagerUser()) return alert("⛔ Accès Manager requis"); isArchiMode = true; document.body.classList.add('edit-mode'); renderRooms(); renderFloor(); }
         async function closeArchiMode() { isArchiMode = false; document.body.classList.remove('edit-mode'); renderRooms(); renderFloor(); }
         function saveArchitecture() { pushArchitecture(); closeArchiMode(); }
         
@@ -2440,35 +2708,80 @@
         }
 
         async function sendOrderToKDS(isTimeShifted = false) {
-            let count = 0;
-            currentTicket.forEach(i => { 
-                if (!i.isSent) { 
-                    i.isSent = true; 
-                    i.itemId = Date.now(); 
-                    if(!isTimeShifted) i.timeShifted = false; 
-                    count++; 
-                } 
+            const pendingItems = currentTicket.filter(item => !item.isSent && item.sendStatus !== 'sending');
+            if (pendingItems.length === 0) return showToast('Aucun nouvel article à envoyer.');
+
+            pendingItems.forEach(item => {
+                item.itemId = item.itemId || createSecureId('item');
+                item.orderId = item.orderId || createSecureId('order');
+                item.productionRequested = true;
+                item.sendStatus = 'sending';
+                item.pendingSync = false;
+                item.requestedAt = new Date().toISOString();
+                if (!isTimeShifted) item.timeShifted = false;
             });
-            if (count > 0) {
+            renderTicket();
+
+            try {
+                const result = await executeSaveTableState(false, true, {
+                    idempotencyKey: createSecureId('kds'),
+                    itemIds: pendingItems.map(item => item.itemId)
+                });
+                if (result?.queued) {
+                    pendingItems.forEach(item => {
+                        item.isSent = false;
+                        item.pendingSync = true;
+                        item.sendStatus = 'queued';
+                    });
+                    renderTicket();
+                    showToast(`📡 ${pendingItems.length} article(s) conservé(s) hors ligne. Envoi automatique au retour du réseau.`);
+                    return;
+                }
+                pendingItems.forEach(item => {
+                    item.isSent = true;
+                    item.pendingSync = false;
+                    item.sendStatus = 'received';
+                    item.sentAt = new Date().toISOString();
+                });
                 renderTicket();
-                await executeSaveTableState(false, true); 
-                alert(`✅ ${count} plats/boissons envoyés en production !`);
+                showToast(`✅ ${pendingItems.length} plats/boissons reçus par la production.`);
+            } catch (error) {
+                pendingItems.forEach(item => {
+                    item.isSent = false;
+                    item.pendingSync = false;
+                    item.sendStatus = 'error';
+                });
+                renderTicket();
+                await auditEvent('KDS_SEND_FAILED', { tableId: currentTableId, itemIds: pendingItems.map(i => i.itemId) }, false);
+                alert('❌ La production n’a pas confirmé la réception. La commande reste sur le Pad et peut être renvoyée.');
             }
         }
 
-        function executeSaveTableState(fireAllNew = false, keepOpen = false) {
-            if(currentTicket.length === 0 && !keepOpen) return;
-            let itemsToSave = JSON.parse(JSON.stringify(currentTicket));
-            let obsToSave = document.getElementById('order-obs').value.trim();
-            let targetTable = currentTableId;
-            
-            if(!keepOpen) { closeOrder(); renderFloor(); }
+        async function executeSaveTableState(fireAllNew = false, keepOpen = false, saveOptions = {}) {
+            if (currentTicket.length === 0 && !keepOpen) return { success: true, empty: true };
+            const itemsToSave = JSON.parse(JSON.stringify(currentTicket));
+            const obsToSave = document.getElementById('order-obs')?.value.trim() || '';
+            const targetTable = currentTableId;
+            if (!targetTable) throw new Error('TABLE_REQUIRED');
 
-            setTimeout(async () => {
-                try {
-                    await API.update(targetTable, { items: itemsToSave, time: new Date().toLocaleTimeString('fr-FR', {hour:'2-digit', minute:'2-digit'}), status: 'pending', observations: obsToSave }, true);
-                } catch(e) {}
-            }, 10);
+            const orderPayload = {
+                orderId: activeOrders[targetTable]?.orderId || createSecureId('order'),
+                version: Number(activeOrders[targetTable]?.version || 0),
+                items: itemsToSave,
+                time: new Date().toLocaleTimeString('fr-FR', { hour:'2-digit', minute:'2-digit' }),
+                updatedAt: new Date().toISOString(),
+                status: 'pending',
+                observations: obsToSave
+            };
+
+            const result = await API.update(targetTable, orderPayload, true, {
+                expectedVersion: activeOrders[targetTable]?.version || null,
+                idempotencyKey: saveOptions.idempotencyKey || createSecureId('save')
+            });
+
+            activeOrders[targetTable] = { ...orderPayload, ...(result.order || {}), version: result.version ?? orderPayload.version };
+            if (!keepOpen) { closeOrder(); renderFloor(); }
+            return result;
         }
 
         // ==========================================
@@ -2782,9 +3095,17 @@
                 }
             };
 
-            const response = await fetch(`${APP_SERVER_URL}${fiscalBackendUrl.startsWith('/') ? fiscalBackendUrl : '/' + fiscalBackendUrl}`, {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
+            const fiscalPath = fiscalBackendUrl.startsWith('/') ? fiscalBackendUrl : '/' + fiscalBackendUrl;
+            const paymentIdempotencyKey = createSecureId('payment');
+            payload.paymentRequestId = paymentIdempotencyKey;
+
+            // Un paiement fiscal ne doit jamais être mis en file hors ligne.
+            if (!navigator.onLine) throw new Error('PAYMENT_REQUIRES_ONLINE_CONNECTION');
+
+            const response = await secureFetch(fiscalPath, {
+                method: 'POST',
+                idempotencyKey: paymentIdempotencyKey,
+                disableOfflineQueue: true,
                 body: JSON.stringify(payload)
             });
 
