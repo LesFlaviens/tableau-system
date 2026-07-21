@@ -87,7 +87,61 @@ app.get('/panel-ichef', (req, res) => {
         res.status(403).send('🛑 Accès Refusé. Sécurité Empire iCHEF.');
     }
 });
+// =========================================================================
+// 🔮 MOTEUR IA 4 : PRÉDICTION RH ET PLANNING INTÉLLIGENT
+// =========================================================================
+app.post('/api/predict-hr-schedule', async (req, res) => {
+    const { tenantID, staffList } = req.body;
+    const safeID = cleanString(tenantID);
 
+    if (!tenantID) {
+        return res.status(400).json({ success: false, error: "ID Restaurant manquant" });
+    }
+
+    try {
+        // Récupération des données du restaurant (Réservations, Ventes)
+        let state = await AppState.findOne({ tenantID: safeID });
+        let reservations = state?.activeOrders?.RESERVATIONS_MASTER?.data || [];
+        let financialHistory = state?.activeOrders?.FINANCIAL_HISTORY?.data || [];
+
+        const prompt = `Tu es l'IA "Directeur des Ressources Humaines" d'iCHEF OS.
+        Analyse les effectifs et l'historique du restaurant pour prédire la charge de travail :
+        - Effectif actuel : ${JSON.stringify(staffList)}
+        - Réservations récentes : ${JSON.stringify(reservations.slice(-20))}
+        - Transactions récentes : ${JSON.stringify(financialHistory.slice(-20))}
+
+        Ta mission est d'optimiser le planning et de prévenir les sous-effectifs.
+        RÉPONDS UNIQUEMENT AVEC CE JSON STRICT (SANS AUCUN TEXTE AUTOUR, AUCUNE BALISE MARKDOWN) :
+        {
+            "rushPeriods": ["Jour HH:MM - HH:MM (Raison/Risque)"],
+            "deadPeriods": ["Jour HH:MM - HH:MM (Repos conseillé)"],
+            "vacationSuggestions": "Explication claire sur la meilleure période pour accorder des congés.",
+            "hiringAdvice": "Explication claire : Faut-il recruter ou l'effectif actuel suffit-il ?"
+        }`;
+
+        const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
+        const result = await model.generateContent(prompt);
+        let responseText = result.response.text();
+        
+        // --- NETTOYAGE INDESTRUCTIBLE DU JSON ---
+        responseText = responseText.replace(/```json/gi, "").replace(/```/g, "").trim();
+        const firstBrace = responseText.indexOf('{');
+        const lastBrace = responseText.lastIndexOf('}');
+        
+        if (firstBrace !== -1 && lastBrace !== -1 && lastBrace >= firstBrace) {
+            responseText = responseText.substring(firstBrace, lastBrace + 1);
+        } else {
+            throw new Error("Impossible de trouver un format JSON dans la réponse de l'IA.");
+        }
+        
+        // Renvoi de la prédiction au frontend (rh.html)
+        res.json({ success: true, prediction: JSON.parse(responseText) });
+
+    } catch (error) {
+        console.error("🚨 Erreur IA RH Predict:", error);
+        res.status(500).json({ success: false, error: "L'analyse IA RH a besoin de plus de données d'historique pour fonctionner." });
+    }
+});
 // =========================================================================
 // 🥇 MOTEUR IA 3 : RENTABILITÉ & FOOD-COST (INGÉNIERIE DE MENU)
 // =========================================================================
