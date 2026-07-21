@@ -86,19 +86,17 @@ app.get('/panel-ichef', (req, res) => {
     } else {
         res.status(403).send('🛑 Accès Refusé. Sécurité Empire iCHEF.');
     }
-});
-// =========================================================================
-// 🚀 MOTEUR IA 5 : PRÉDICTION ANTI-RUSH EN TEMPS RÉEL (COCKPIT)
+});// =========================================================================
+// 🚀 MOTEUR IA 5 : PRÉDICTION ANTI-RUSH AVANCÉE (SCORES PAR POSTE & AUTO)
 // =========================================================================
 app.post('/api/anti-rush-predict', async (req, res) => {
-    const { tenantID } = req.body;
+    const { tenantID, isAutoPilotEnabled } = req.body;
     if (!tenantID) return res.status(400).json({ success: false, error: "ID Restaurant manquant" });
 
     try {
         const safeID = cleanString(tenantID);
         let state = await AppState.findOne({ tenantID: safeID });
         
-        // On récupère les données vitales pour l'IA
         let reservations = state?.activeOrders?.RESERVATIONS_MASTER?.data || [];
         let currentOrders = [];
         for (let key in state?.activeOrders) {
@@ -107,22 +105,33 @@ app.post('/api/anti-rush-predict', async (req, res) => {
             }
         }
 
-        const prompt = `Tu es l'IA "Chef Exécutif et Régulateur" d'iCHEF OS.
-        Analyse la situation en temps réel du restaurant :
-        - Réservations : ${JSON.stringify(reservations)}
-        - Commandes en cours : ${JSON.stringify(currentOrders)}
+        const prompt = `Tu es l'IA "Directeur des Opérations" d'iCHEF OS.
+        Analyse la situation en temps réel :
+        - Réservations à venir : ${JSON.stringify(reservations.slice(-20))}
+        - Commandes en cours (plats à préparer) : ${JSON.stringify(currentOrders)}
         - Heure actuelle : ${new Date().toLocaleTimeString('fr-FR', {timeZone: "Europe/Paris"})}
+        - Mode Pilote Automatique : ${isAutoPilotEnabled ? 'ACTIVÉ' : 'DÉSACTIVÉ'}
 
-        Évalue la tension en cuisine pour la prochaine heure et donne des directives à la brigade.
-        RÉPONDS UNIQUEMENT AVEC CE JSON STRICT (SANS AUCUNE BALISE MARKDOWN) :
+        Évalue la tension par poste. 
+        RÉPONDS UNIQUEMENT AVEC CE JSON STRICT (SANS BALISE MARKDOWN) :
         {
-            "minutesUntilRush": 15, 
-            "loadPercentage": 85,
-            "confidence": 92,
+            "globalLoad": 82,
+            "minutesUntilRush": 18,
+            "stationScores": {
+                "chaud": 85,
+                "froid": 40,
+                "desserts": 30,
+                "bar": 61,
+                "salle": 70
+            },
+            "forecastTimeline": [60, 82, 95, 75], 
             "recommendations": [
-                "Lancer la cuisson de 10 steaks hachés",
-                "Monter 5 bases de salades",
-                "Préchauffer la deuxième friteuse"
+                "Préparer 12 burgers",
+                "Allumer la seconde friteuse"
+            ],
+            "autoActionsSuggested": [
+                "Activer Time-Shifting (+15min)",
+                "Désactiver temporairement les plats complexes"
             ]
         }`;
 
