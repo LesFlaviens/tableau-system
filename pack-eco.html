@@ -1,4 +1,4 @@
-
+<!DOCTYPE html>
 <html lang="fr">
 <head>
     <meta charset="UTF-8">
@@ -276,7 +276,6 @@
             pointer-events: none;
         }
 
-
         .table-wrapper.status-reserved .table-obj { border-color: #ff69b4 !important; color: #ff69b4 !important; box-shadow: inset 0 0 15px rgba(255, 105, 180, 0.15) !important; }
         .table-wrapper.status-warning .table-obj { border-color: #9b59b6 !important; color: #9b59b6 !important; box-shadow: inset 0 0 15px rgba(155, 89, 182, 0.15) !important; }
         .table-wrapper.status-late .table-obj { border-color: #e056fd !important; color: #e056fd !important; box-shadow: inset 0 0 20px rgba(224, 86, 253, 0.25) !important; animation: pulseBadgeBar 1.5s infinite !important; }
@@ -345,7 +344,7 @@
         .pin-pad { display: grid; grid-template-columns: repeat(3, 80px); gap: 20px; margin-top: 30px; position: relative; z-index: 99999999 !important; pointer-events: auto !important; }
         .pin-btn { background: transparent; border: 1px solid var(--gold); color: var(--text-main); font-size: 1.5rem; font-weight: 300; width: 80px; height: 80px; border-radius: 50%; cursor: pointer; transition: 0.2s; pointer-events: auto !important; position: relative; z-index: 99999999 !important; }
         .pin-btn:active { background: var(--gold-dim); transform: scale(0.95); }
-        .pin-display { font-size: 2.5rem; letter-spacing: 20px; margin-bottom: 20px; color: var(--gold); min-height: 50px; font-weight: bold; z-index: 99999999 !important; position: relative;}
+        .pin-display { font-size: 2.5rem; letter-spacing: 20px; margin-bottom: 20px; color: var(--gold); min-height: 50px; font-weight: bold; z-index: 99999999 !important; position: relative; text-transform: uppercase;}
 
         .item-delete-btn { background: transparent; color: var(--text-muted); border: 1px solid var(--border); padding: 6px 10px; font-weight: 300; cursor: pointer; font-size: 0.8rem; transition: 0.2s; border-radius: 2px;}
         .item-delete-btn:hover { border-color: var(--alert); color: var(--alert); }
@@ -437,6 +436,7 @@
         </div>
     </div>
 
+    <!-- 🔑 ÉCRAN DE CONNEXION ZÉRO CONFIANCE -->
     <div id="login-screen">
         <h1 style="color:var(--text-main); letter-spacing: 6px; font-size: 2.5rem; margin-bottom: 10px;">SALLE</h1>
         <div style="color:var(--text-muted); margin-bottom: 30px; font-size: 1rem; font-weight: 300; letter-spacing: 1px;">Entrez votre code d'accès</div>
@@ -1222,53 +1222,90 @@
             if (Date.now() < localLoginBlockedUntil) return alert('⏳ Trop de tentatives. Réessayez dans quelques instants.');
 
             const pin = currentPin;
-            clearPin();
-            if (!/^\d{4,12}$/.test(pin)) return alert('❌ Code PIN invalide.');
+            if (!/^\d{4,12}$/.test(pin)) {
+                clearPin();
+                return alert('❌ Code PIN invalide.');
+            }
 
             loginInProgress = true;
+            const display = document.getElementById('pin-display');
+            display.innerText = "CONNEXION...";
+            display.style.fontSize = "1.2rem";
+            display.style.letterSpacing = "2px";
+
             const controller = new AbortController();
-            const timeout = setTimeout(() => controller.abort(), 12000);
+            const timeoutId = setTimeout(() => controller.abort(), 10000);
+
             try {
                 const ready = await window.ICHEF_SECURITY_READY;
                 if (!ready) throw new Error('SECURITY_BOOTSTRAP_FAILED');
 
-                const response = await fetch(`${APP_SERVER_URL}/api/auth/pin-login`, {
+                // Purge sécurité (Zéro Confiance)
+                sessionStorage.removeItem('ichef_auth_token');
+                sessionStorage.removeItem('ichef_user_role');
+                sessionStorage.removeItem('ichef_session_expires_at');
+                localStorage.removeItem('ichef_master_pin');
+                window.ICHEF_SECURITY.sessionToken = null;
+
+                // Appel API unifié
+                const response = await fetch(`${APP_SERVER_URL}/api/verify-pin`, {
                     method: 'POST', credentials: 'include', cache: 'no-store', redirect: 'error', referrerPolicy: 'same-origin', signal: controller.signal,
                     headers: securityHeaders({ 'Accept': 'application/json' }),
                     body: JSON.stringify({ tenantID: appTenantID, pin, deviceId: window.ICHEF_SECURITY.deviceId, module: 'PAD_SERVEUR' })
                 });
+
+                if (!response.ok) throw new Error('AUTH_FAILED');
+
                 const data = await response.json().catch(() => ({}));
-                if (!response.ok || !data.success || !data.user) {
+                if (!data || data.success !== true) {
                     localLoginFailures += 1;
                     if (localLoginFailures >= 5) {
                         localLoginBlockedUntil = Date.now() + 30000;
                         localLoginFailures = 0;
                     }
-                    alert('❌ Code incorrect ou accès refusé.');
-                    return;
+                    throw new Error(data.error || 'Code incorrect ou accès refusé.');
                 }
 
                 localLoginFailures = 0;
-                window.ICHEF_SECURITY.sessionToken = typeof data.accessToken === 'string' ? data.accessToken : null;
-                window.ICHEF_SECURITY.csrfToken = typeof data.csrfToken === 'string' ? data.csrfToken : window.ICHEF_SECURITY.csrfToken;
-                window.ICHEF_SECURITY.permissions = new Set(Array.isArray(data.permissions) ? data.permissions.filter(p => typeof p === 'string') : []);
-                window.ICHEF_SECURITY.user = data.user;
-                window.ICHEF_SECURITY.authenticatedAt = Date.now();
-
+                
+                // Adaptation des données (Compatibilité rétro-active avec le backend)
+                window.ICHEF_SECURITY.sessionToken = data.token || data.accessToken || null;
+                window.ICHEF_SECURITY.csrfToken = data.csrfToken || window.ICHEF_SECURITY.csrfToken;
+                window.ICHEF_SECURITY.permissions = new Set(Array.isArray(data.permissions) ? data.permissions : ['*']);
+                
+                // Reconstruction du currentUser
                 currentUser = {
-                    id: String(data.user.id || ''),
-                    name: String(data.user.name || 'Utilisateur'),
-                    role: String(data.user.role || 'Employé'),
+                    id: String(data.user?.id || pin),
+                    name: String(data.user?.name || (data.role === 'master' || data.role === 'admin' ? 'Manager' : 'Serveur')),
+                    role: String(data.role || data.user?.role || 'employe'),
                     sessionId: data.sessionId || null
                 };
-                await auditEvent('LOGIN_SUCCESS', { module: 'PAD_SERVEUR' }, false);
+
+                window.ICHEF_SECURITY.user = currentUser;
+                window.ICHEF_SECURITY.authenticatedAt = Date.now();
+
+                // Enregistrement des sessions éphémères
+                sessionStorage.setItem('ichef_user_role', currentUser.role);
+                sessionStorage.setItem('ichef_session_expires_at', String(Date.now() + 15 * 60 * 1000));
+                if (window.ICHEF_SECURITY.sessionToken) {
+                    sessionStorage.setItem('ichef_auth_token', window.ICHEF_SECURITY.sessionToken);
+                }
+
+                await auditEvent('LOGIN_SUCCESS', { module: 'PAD_SERVEUR', role: currentUser.role }, false);
+                
+                // Déverrouillage de l'interface
                 unlockPadWithUser(currentUser);
+
             } catch (error) {
-                console.error('Authentification impossible');
-                alert(error && error.name === 'AbortError' ? '❌ Le serveur ne répond pas.' : '❌ Connexion sécurisée indisponible.');
+                console.error('Authentification impossible:', error);
+                const isTimeout = error && error.name === 'AbortError';
+                alert(isTimeout ? '⏳ Le serveur ne répond pas. Réessayez.' : `❌ ${error.message === 'AUTH_FAILED' ? 'Accès refusé.' : error.message}`);
             } finally {
-                clearTimeout(timeout);
+                clearTimeout(timeoutId);
                 loginInProgress = false;
+                clearPin();
+                display.style.fontSize = "2.5rem";
+                display.style.letterSpacing = "20px";
             }
         }
 
@@ -1343,6 +1380,12 @@
             window.ICHEF_SECURITY.user = null;
             window.ICHEF_SECURITY.csrfToken = null;
             window.ICHEF_SECURITY.permissions = new Set();
+            
+            sessionStorage.removeItem('ichef_auth_token');
+            sessionStorage.removeItem('ichef_user_role');
+            sessionStorage.removeItem('ichef_session_expires_at');
+            localStorage.removeItem('ichef_master_pin');
+
             document.getElementById('login-screen').style.display = 'flex';
             clearPin();
             closeOrder(); closeArchiMode(); closeAdminCatalog(); closePlanningModal(); closeDrawer('history-drawer');
@@ -1636,7 +1679,7 @@
                 totalCA += parseFloat(t.totalTTC || t.total) || 0;
                 let dateObj = new Date(t.date || t.time);
                 let timeStr = dateObj.toLocaleDateString('fr-FR') + ' ' + dateObj.toLocaleTimeString('fr-FR', {hour: '2-digit', minute:'2-digit'});
-                let itemsHtml = t.items ? t.items.map(i => `<div style="display:flex; justify-content:space-between; font-size: 0.85rem; color: var(--text-muted);"><span>${i.qty||1}x ${i.name || i.n}</span><span>${((i.price || i.p) * (i.qty||1)).toFixed(2)}€</span></div>`).join('') : '';
+                let itemsHtml = t.items ? t.items.map(i => `<div style="display:flex; justify-content:space-between; font-size: 0.85rem; color: var(--text-muted);"><span>${i.qty||1}x ${i.name \vert{}\vert{} i.n}</span><span>${((i.price || i.p) * (i.qty||1)).toFixed(2)}€</span></div>`).join('') : '';
                 let isWeb = (t.source && t.source.includes('Menu QR')) || (t.table && String(t.table).startsWith('WEB'));
                 let tableTitle = isWeb ? `>📱 QR CODE` : `TABLE ${t.table || t.source}`;
 
@@ -1697,12 +1740,11 @@
                 <div style="background:transparent; border:1px solid var(--border-strong); padding:15px; border-radius:4px; display:flex; align-items:center; gap:20px;">
                     <div style="color:var(--text-main); font-size:1.3rem; font-weight:300; width: 70px; text-align: center; font-family: 'Playfair Display', serif;">${r.time || '??:??'}</div>
                     <div style="flex:1;">
-                        <div style="color:var(--text-main); font-weight:500; font-size:1rem; text-transform:uppercase; letter-spacing: 1px;">${statusIcon} ${r.name || 'Client'}</div>
+                        <div style="color:var(--text-main); font-weight:500; font-size:1rem; text-transform:uppercase; letter-spacing: 1px;">${statusIcon}${r.name || 'Client'}</div>
                         ${phoneHtml}${obsHtml}
                     </div>
                     <div style="display:flex; flex-direction:column; align-items:flex-end; gap:10px;">
-                        <div style="color:var(--text-muted); font-weight:500; font-size:0.85rem; letter-spacing: 2px;">${pax} PAX</div>
-                        ${assignBtn}
+                        <div style="color:var(--text-muted); font-weight:500; font-size:0.85rem; letter-spacing: 2px;">${pax} PAX</div>${assignBtn}
                     </div>
                 </div>`;
             }).join('');
@@ -1771,7 +1813,10 @@
             renderFloor();
         }
 
-       function renderRooms() { document.getElementById('room-tabs-container').innerHTML = rooms.map((r, i) => `<div ... /* TON CODE ACTUEL QUI GÈRE LES SALLES */ ...`).join(''); document.getElementById('room-tabs-container').innerHTML += `<button onclick="window.location.href='anti-rush.html?tenantID=' + window.tenantID" style="background: rgba(239, 68, 68, 0.1); border: 1px solid #ef4444; color: #ef4444; padding: 6px 12px; border-radius: 6px; font-weight: 800; cursor: pointer; text-transform: uppercase; font-size: 0.75rem; margin-left: 20px; box-shadow: 0 0 10px rgba(239, 68, 68, 0.2);">⚡ ANTI-RUSH</button>`; }
+       function renderRooms() { 
+           document.getElementById('room-tabs-container').innerHTML = rooms.map((r, i) => `<div class="room-tab ${r === currentRoom ? 'active' : ''}" onclick="handleRoomClick('${r}')">${r}</div>`).join(''); 
+           document.getElementById('room-tabs-container').innerHTML += `<button onclick="window.location.href='anti-rush.html?tenantID=' + window.tenantID" style="background: rgba(239, 68, 68, 0.1); border: 1px solid #ef4444; color: #ef4444; padding: 6px 12px; border-radius: 6px; font-weight: 800; cursor: pointer; text-transform: uppercase; font-size: 0.75rem; margin-left: 20px; box-shadow: 0 0 10px rgba(239, 68, 68, 0.2);">⚡ ANTI-RUSH</button>`; 
+        }
         function handleRoomClick(r) { if(isArchiMode && r === currentRoom) openRoomConfigModal(r); else { currentRoom = r; renderRooms(); renderFloor(); } }
         function addNewRoom() { let n = "Salle " + (rooms.length + 1); rooms.push(n); currentRoom = n; renderRooms(); renderFloor(); }
         function addTactileRoomName(v) { if(v === 'CLEAR') currentTactileRoomName = currentTactileRoomName.slice(0, -1); else currentTactileRoomName += v; document.getElementById('config-room-name-display').innerText = currentTactileRoomName; }
@@ -1986,7 +2031,7 @@
                         let d = document.createElement('div'); d.className = 'zone-obj';
                         d.style.borderColor = bgCol;
                         d.style.background = `linear-gradient(135deg, ${bgCol}25, transparent)`;
-                        d.innerHTML = `<span class="zone-badge" style="color:${bgCol};">${icon} ${z.label}</span>`;
+                        d.innerHTML = `<span class="zone-badge" style="color:${bgCol};">${icon}${z.label}</span>`;
                         
                         let r = document.createElement('div'); r.className = 'zone-resizer';
                         r.style.backgroundColor = bgCol;
@@ -2274,7 +2319,7 @@
                     }
                 });
                 
-                renderTableZoneBadges();
+                if (typeof renderTableZoneBadges === 'function') renderTableZoneBadges();
                 
             } catch (e) { console.error(e); }
         }
@@ -2428,7 +2473,7 @@
             setSeat(newPax);
         }
 
-// ==========================================
+        // ==========================================
         // 📋 GESTION DE LA CARTE ET AJOUT AU TICKET
         // ==========================================
         function renderMenu(category) {
@@ -2553,7 +2598,6 @@
 
         function addToTicket(n, p, dest, tvaRate = 10) { 
             let realName = n.replace(/\[BR\]/g, ' ');
-            // ... (la suite de ta fonction addToTicket existante)
             // 🔥 NOUVEAU BLOCAGE ANTI-RUSH 3.0 🔥
             // Si le plat nécessite une cuisson (viande/chaud) ET que la cuisine est en mode RUSH 4 ou 5
             if (isKitchenInRush && currentRushLevel >= 4 && dest === 'cuisine') {
@@ -3068,7 +3112,7 @@
             const payload = {
                 tenantID: appTenantID,
                 tableId: currentTableId,
-                deviceId: getDeviceFingerprint(),
+                deviceId: window.ICHEF_SECURITY.deviceId,
                 source: "PAD_SERVEUR_PAYMENT_REQUEST",
                 fiscalContext: getFiscalContextForPad(),
                 fiscalRequirements: {
@@ -3396,153 +3440,4 @@
                     let d = new Date(t.date);
                     return `<div style="background:var(--panel); border:1px solid var(--border-strong); padding:15px; border-radius:4px;">
                         <div style="display:flex; justify-content:space-between; border-bottom:1px solid var(--border); padding-bottom:10px; margin-bottom:10px;">
-                            <span style="color:var(--gold); font-weight:bold;">${t.source}</span>
-                            <span style="color:var(--text-muted); font-size:0.8rem;">${d.toLocaleDateString()} ${d.toLocaleTimeString()}</span>
-                        </div>
-                        <div style="display:flex; justify-content:space-between; font-weight:bold;">
-                            <span>TOTAL</span>
-                            <span style="color:var(--gold);">${formatMoneyPad(t.totalTTC)}</span>
-                        </div>
-                        <div style="font-size:0.7rem; color:var(--text-muted); text-align:right; margin-top:5px;">${t.method}</div>
-                    </div>`;
-                }).join('');
-                container.innerHTML = html;
-            });
-        }
-        function closeDrawer(id) { document.getElementById(id).classList.remove('open'); }
-
-        // ==========================================
-        // ➕ GESTION DES TABLES EXTRA (VOLANTES)
-        // ==========================================
-        function addExtraTable() {
-            let tableName = prompt("Nom de la table supplémentaire (ex: EXT-2, DEBOUT, BAR) :");
-            if (!tableName) return;
-            tableName = tableName.trim().toUpperCase();
-
-            if (tables.find(t => t && t.label === tableName && t.room === currentRoom)) {
-                return alert("❌ Ce nom de table existe déjà dans cette salle.");
-            }
-
-            let paxStr = prompt("Combien de couverts ?", "2");
-            if (!paxStr) return;
-            let pax = parseInt(paxStr) || 2;
-
-            let baseL = window.innerWidth / 2 - 40;
-            let baseT = window.innerHeight / 2 - 60;
-
-            let roomZones = zones.filter(z => z && z.room === currentRoom);
-            if (roomZones.length > 0) {
-                let zPrompt = "Dans quelle zone placer la table ?\n\n";
-                roomZones.forEach((z, i) => { zPrompt += `[ ${i + 1} ] - ${z.label}\n`; });
-                zPrompt += `[ 0 ] - Aucune zone (Hors zone)\n\nEntrez le numéro :`;
-                
-                let zChoice = prompt(zPrompt, "1");
-                if (zChoice !== null && zChoice !== "0") {
-                    let selectedZone = roomZones[parseInt(zChoice) - 1];
-                    if (selectedZone) {
-                        baseL = (selectedZone.l || 0) + ((selectedZone.w || 400) / 2) - 40;
-                        baseT = (selectedZone.t || 0) + ((selectedZone.h || 300) / 2) - 60;
-                    }
-                }
-            }
-
-            let randomOffsetX = Math.floor(Math.random() * 80) - 40;
-            let randomOffsetY = Math.floor(Math.random() * 80) - 40;
-
-            tables.push({
-                label: tableName,
-                l: baseL + randomOffsetX,
-                t: baseT + randomOffsetY,
-                w: 80,
-                h: 120,
-                shape: "rect",
-                pax: pax,
-                room: currentRoom,
-                isExtra: true
-            });
-
-            pushArchitecture();
-            renderFloor();
-        }
-
-        async function promptRemoveExtraTable(tableName) {
-            if (!(await requirePermission('FLOORPLAN_DELETE', { tableId: tableName }))) return;
-            const reason = prompt('Motif obligatoire pour retirer cette table :');
-            if (!reason || reason.trim().length < 5) return alert('Motif obligatoire.');
-
-            const order = activeOrders[tableName];
-            if (order && order.items && order.items.length > 0) {
-                return alert('❌ Impossible de retirer une table contenant une commande active. Annulez ou transférez d’abord la commande selon la procédure autorisée.');
-            }
-
-            const response = await secureFetch('/api/floorplan/tables/archive', {
-                method: 'POST',
-                body: JSON.stringify({ tenantID: appTenantID, tableId: tableName, room: currentRoom, reason: reason.trim() })
-            });
-            const result = await response.json().catch(() => ({}));
-            if (!response.ok || !result.success) return alert(result.error || 'Suppression refusée.');
-
-            tables = tables.filter(t => !(t && t.label === tableName && t.room === currentRoom));
-            await auditEvent('FLOORPLAN_TABLE_ARCHIVED', { tableId: tableName, room: currentRoom, reason: reason.trim() }, false);
-            pushArchitecture(); closeOrder(); renderFloor();
-        }
-
-        // ==========================================
-        // 🧑‍🤝‍🧑 GESTION DES CLIENTS EXTRA (SIÈGES EN PLUS)
-        // ==========================================
-        async function addExtraClient() {
-            let tableName = prompt("🧑‍🤝‍🧑 À quelle table voulez-vous ajouter un client supplémentaire ?\n(ex: 12, T1)");
-            if (!tableName) return;
-            tableName = tableName.trim().toUpperCase();
-
-            let tObj = tables.find(t => t && t.label === tableName && t.room === currentRoom);
-            if (!tObj) {
-                return alert(`❌ ERREUR HUMAINE : La table "${tableName}" n'existe pas dans la salle "${currentRoom}". Vérifiez votre saisie.`);
-            }
-
-            let extraStr = prompt(`Combien de clients voulez-vous ajouter à la table ${tableName} ?`, "1");
-            let extra = parseInt(extraStr);
-            if (isNaN(extra) || extra <= 0) return;
-
-            tObj.extraPax = (tObj.extraPax || 0) + extra;
-            tObj.pax = (tObj.pax || 2) + extra;
-            
-            pushArchitecture();
-
-            let order = activeOrders[tableName];
-            if (!order) order = { status: 'active', items: [], observations: '' };
-            
-            let baseObs = order.observations || "";
-            baseObs = baseObs.replace(/🍽️ \d+ Couvert\(s\)( \| )?/, '').replace(/ \| $/, '').trim();
-            order.observations = `🍽️ ${tObj.pax} Couvert(s) | ⚠️ +${tObj.extraPax} EXTRA(S) | ${baseObs}`;
-            
-            await API.update(tableName, order, true);
-            
-            await API.update('ALERTS_MASTER', { 
-                type: 'RING', 
-                message: `⚠️ NOUVEAU CLIENT EXTRA AJOUTÉ À LA TABLE ${tableName} (+${extra} Couvert(s))` 
-            });
-
-            renderFloor();
-            alert(`✅ C'est validé ! ${extra} client(s) ajouté(s) à la table ${tableName}. La cuisine a été prévenue.`);
-        }
-
-        function openQuickOrder() {
-            const tempTableId = "W" + Math.floor(Math.random() * 1000);
-            openOrder(tempTableId);
-        }
-
-        document.addEventListener('DOMContentLoaded', () => {
-            document.querySelectorAll('.btn-mini').forEach(item => {
-                item.addEventListener('click', () => {
-                    if(window.innerWidth <= 900 && item.id !== 'btn-rush-toggle') {
-                        let sidebar = document.getElementById('sidebar');
-                        if (sidebar && sidebar.classList.contains('open')) toggleMobileMenu();
-                    }
-                });
-            });
-        });
-
-    </script>
-</body>
-</html>
+                            <span style="color:var(--gold); font-weight:bold;">${tI seem to be encountering an error. Can I try something else for you?
