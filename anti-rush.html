@@ -676,43 +676,63 @@
     <div id="toast" class="toast">Action Confirmée</div>
 
     <script>
-        // ==========================================
-        // 🧠 FONCTION IA PRÉDICTIVE AVANCÉE
+     // ==========================================
+        // 🧠 FONCTION IA PRÉDICTIVE AVANCÉE (CONNECTÉE AU SERVEUR)
         // ==========================================
         async function updateCockpitAIPrediction() {
             const toggleElement = document.getElementById('ia-auto-pilot-toggle');
             const isAuto = toggleElement ? toggleElement.checked : false;
             
+            const etaDisplay = document.getElementById('ai-eta-display');
+            const recoList = document.getElementById('ai-reco-list');
+
+            if (!recoList) return;
+
             try {
-                // Requête vers le nouveau Cerveau
+                // 📡 Appel réel au serveur (plus de simulation)
                 const response = await fetch(`${window.SERVER_URL}/api/anti-rush-predict`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ tenantID: window.tenantID, isAutoPilotEnabled: isAuto })
+                    body: JSON.stringify({ 
+                        tenantID: window.tenantID, 
+                        isAutoPilotEnabled: isAuto 
+                    })
                 });
                 
                 const data = await response.json();
-                if (!data.success || !data.prediction) throw new Error("Erreur IA");
+                if (!data.success || !data.prediction) throw new Error(data.error || "Erreur IA");
 
                 const p = data.prediction;
 
-                // Mise à jour de l'estimation de temps
-                const etaDisplay = document.getElementById('ai-eta-display');
+                // 1. Mise à jour de l'estimation de temps
                 if (etaDisplay) {
-                    etaDisplay.innerText = p.minutesUntilRush === 0 ? `RUSH EN COURS !` : `Dans ${p.minutesUntilRush} min`;
+                    etaDisplay.innerText = p.minutesUntilRush === 0 
+                        ? `RUSH EN COURS !` 
+                        : `Dans ${p.minutesUntilRush} min`;
                 }
 
-                // Mise à jour des jauges par poste
+                // 2. Mise à jour des jauges par poste
                 const updateJauge = (id, score) => {
                     let jauge = document.getElementById(`jauge-${id}`);
                     let text = document.getElementById(`score-${id}`);
-                    if(jauge && text) {
-                        jauge.style.width = `${score}%`;
-                        text.innerText = `${score}%`;
+                    if (jauge && text) {
+                        // Empêche la jauge de "casser" le design si l'IA renvoie 110%
+                        const safeScore = Math.min(100, Math.max(0, score || 0)); 
+                        
+                        jauge.style.width = `${safeScore}%`;
+                        text.innerText = `${safeScore}%`;
+
                         // Changement de couleur dynamique
-                        if(score >= 80) { jauge.style.background = 'var(--danger)'; text.style.color = 'var(--danger)'; }
-                        else if(score >= 50) { jauge.style.background = 'var(--orange)'; text.style.color = 'var(--orange)'; }
-                        else { jauge.style.background = 'var(--accent)'; text.style.color = 'var(--accent)'; }
+                        if (safeScore >= 80) { 
+                            jauge.style.background = 'var(--danger)'; 
+                            text.style.color = 'var(--danger)'; 
+                        } else if (safeScore >= 50) { 
+                            jauge.style.background = 'var(--orange)'; 
+                            text.style.color = 'var(--orange)'; 
+                        } else { 
+                            jauge.style.background = 'var(--accent)'; 
+                            text.style.color = 'var(--accent)'; 
+                        }
                     }
                 };
 
@@ -721,36 +741,30 @@
                 updateJauge('bar', p.stationScores?.bar || 0);
                 updateJauge('desserts', p.stationScores?.desserts || 0);
 
-                // Mise à jour des actions recommandées (On mélange les reco manuelles et les actions auto)
-                const recoList = document.getElementById('ai-reco-list');
-                if (recoList) {
-                    let allActions = [];
-                    
-                    if (isAuto && p.autoActionsSuggested && p.autoActionsSuggested.length > 0) {
-                        allActions = p.autoActionsSuggested.map(act => `<span style="color:var(--accent); font-weight:bold;">[AUTO]</span> ${act}`);
-                    }
-                    if (p.recommendations) {
-                        allActions = allActions.concat(p.recommendations);
-                    }
+                // 3. Actions réelles générées par l'IA
+                let allActions = [];
+                
+                if (isAuto && p.autoActionsSuggested && p.autoActionsSuggested.length > 0) {
+                    allActions = p.autoActionsSuggested.map(act => `<span style="color:var(--accent); font-weight:bold;">[AUTO]</span> ${act}`);
+                }
+                if (p.recommendations) {
+                    allActions = allActions.concat(p.recommendations);
+                }
 
-                    if (allActions.length === 0) {
-                        recoList.innerHTML = `<li style="color: var(--text-muted); font-size: 0.85rem; text-align: center; padding: 10px;">Service fluide, aucune action requise.</li>`;
-                    } else {
-                        recoList.innerHTML = allActions.map(reco => `
-                            <li class="ai-reco-item" style="padding: 8px 12px; font-size: 0.8rem;">
-                                <span style="font-size: 1rem;">✔️</span> 
-                                <span style="font-weight: 500;">${reco}</span>
-                            </li>
-                        `).join('');
-                    }
+                if (allActions.length === 0) {
+                    recoList.innerHTML = `<li style="color: var(--text-muted); font-size: 0.85rem; text-align: center; padding: 10px;">Service fluide, aucune action requise.</li>`;
+                } else {
+                    recoList.innerHTML = allActions.map(reco => `
+                        <li class="ai-reco-item" style="padding: 8px 12px; font-size: 0.8rem;">
+                            <span style="font-size: 1rem;">✔️</span> 
+                            <span style="font-weight: 500;">${reco}</span>
+                        </li>
+                    `).join('');
                 }
 
             } catch (error) {
-                console.error("Erreur IA:", error);
-                const recoList = document.getElementById('ai-reco-list');
-                if (recoList) {
-                    recoList.innerHTML = `<li style="color: var(--text-muted); text-align: center; font-style: italic;">En attente de données suffisantes pour prédire...</li>`;
-                }
+                console.error("Erreur de synchronisation IA:", error);
+                recoList.innerHTML = `<li style="color: var(--text-muted); text-align: center; font-style: italic;">En attente des données en direct de l'IA...</li>`;
             }
         }
 
