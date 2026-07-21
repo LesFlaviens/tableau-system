@@ -88,6 +88,67 @@ app.get('/panel-ichef', (req, res) => {
     }
 });
 // =========================================================================
+// 🚀 MOTEUR IA 5 : PRÉDICTION ANTI-RUSH EN TEMPS RÉEL (COCKPIT)
+// =========================================================================
+app.post('/api/anti-rush-predict', async (req, res) => {
+    const { tenantID } = req.body;
+    if (!tenantID) return res.status(400).json({ success: false, error: "ID Restaurant manquant" });
+
+    try {
+        const safeID = cleanString(tenantID);
+        let state = await AppState.findOne({ tenantID: safeID });
+        
+        // On récupère les données vitales pour l'IA
+        let reservations = state?.activeOrders?.RESERVATIONS_MASTER?.data || [];
+        let currentOrders = [];
+        for (let key in state?.activeOrders) {
+            if (!key.includes('MASTER') && !key.includes('ARCHITECTURE')) {
+                currentOrders.push(state.activeOrders[key]);
+            }
+        }
+
+        const prompt = `Tu es l'IA "Chef Exécutif et Régulateur" d'iCHEF OS.
+        Analyse la situation en temps réel du restaurant :
+        - Réservations : ${JSON.stringify(reservations)}
+        - Commandes en cours : ${JSON.stringify(currentOrders)}
+        - Heure actuelle : ${new Date().toLocaleTimeString('fr-FR', {timeZone: "Europe/Paris"})}
+
+        Évalue la tension en cuisine pour la prochaine heure et donne des directives à la brigade.
+        RÉPONDS UNIQUEMENT AVEC CE JSON STRICT (SANS AUCUNE BALISE MARKDOWN) :
+        {
+            "minutesUntilRush": 15, 
+            "loadPercentage": 85,
+            "confidence": 92,
+            "recommendations": [
+                "Lancer la cuisson de 10 steaks hachés",
+                "Monter 5 bases de salades",
+                "Préchauffer la deuxième friteuse"
+            ]
+        }`;
+
+        const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
+        const result = await model.generateContent(prompt);
+        let responseText = result.response.text();
+        
+        // --- NETTOYAGE INDESTRUCTIBLE DU JSON ---
+        responseText = responseText.replace(/```json/gi, "").replace(/```/g, "").trim();
+        const firstBrace = responseText.indexOf('{');
+        const lastBrace = responseText.lastIndexOf('}');
+        
+        if (firstBrace !== -1 && lastBrace !== -1 && lastBrace >= firstBrace) {
+            responseText = responseText.substring(firstBrace, lastBrace + 1);
+        } else {
+            throw new Error("Format JSON non trouvé.");
+        }
+        
+        res.json({ success: true, prediction: JSON.parse(responseText) });
+
+    } catch (error) {
+        console.error("🚨 Erreur IA Anti-Rush:", error);
+        res.status(500).json({ success: false, error: "Analyse momentanément indisponible." });
+    }
+});
+// =========================================================================
 // 🔮 MOTEUR IA 4 : PRÉDICTION RH ET PLANNING INTÉLLIGENT
 // =========================================================================
 app.post('/api/predict-hr-schedule', async (req, res) => {
