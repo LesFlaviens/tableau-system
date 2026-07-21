@@ -259,7 +259,7 @@
             document.getElementById('btn-login').style.pointerEvents = 'none';
 
             try {
-                // 1. LES CODES MASTER EN DUR (Priorité absolue, pas besoin de vérifier avec le serveur)
+                // 1. LES CODES MASTER EN DUR (Toujours actifs en cas d'urgence)
                 if (pin === "999999" || pin === "9999" || pin === "7777") {
                     localStorage.setItem('ichef_tenant_id', tenantID);
                     localStorage.setItem('ichef_master_pin', pin);
@@ -267,51 +267,45 @@
                     return; 
                 }
 
-                // 2. VÉRIFICATION AVEC L'API (Sans le deviceId qui faisait tout planter)
-                let isMasterPin = false;
-                try {
-                    const resVerify = await fetch(`${SERVER_URL}/api/verify-pin`, {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ tenantID: tenantID, pin: pin })
-                    });
-                    const dataVerify = await resVerify.json();
-                    isMasterPin = dataVerify.success;
-                } catch(e) { }
+                // 2. VÉRIFICATION CENTRALISÉE AVEC L'API (Gère le Master ET le Staff)
+                const resVerify = await fetch(`${SERVER_URL}/api/verify-pin`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ tenantID: tenantID, pin: pin })
+                });
+                
+                const dataVerify = await resVerify.json();
 
-                // Si le serveur dit que c'est le code d'abonnement (Patron)
-                if (isMasterPin) {
-                    localStorage.setItem('ichef_tenant_id', tenantID);
-                    localStorage.setItem('ichef_master_pin', pin);
-                    window.location.href = `administration.html?tenantID=${tenantID}`;
-                    return; 
+                if (!dataVerify.success) {
+                    throw new Error(dataVerify.error || "Code PIN incorrect ou compte suspendu.");
                 }
 
-                // 3. SI CE N'EST VRAIMENT PAS LE PATRON, ON REGARDE L'ÉQUIPE STAFF
-                let rState = await fetch(`${SERVER_URL}/get-current-state?tenantID=${tenantID}`);
-                if (!rState.ok) throw new Error("Identifiant Restaurant introuvable.");
-                let stateData = await rState.json();
-
-                let staffList = (stateData.activeOrders && stateData.activeOrders['STAFF_ACCESS']) ? stateData.activeOrders['STAFF_ACCESS'].data : [];
-                let matchedStaff = staffList.find(s => s.pin === pin);
-
-                if (!matchedStaff) throw new Error("Code PIN invalide.");
-                if (matchedStaff.active === false) throw new Error("Compte suspendu.");
-
-                // AIGUILLAGE STAFF
-                let dailyPoste = matchedStaff.dept || 'salle'; 
-                let targetPage = 'pack-eco.html';
+                // 3. AIGUILLAGE INTELLIGENT BASÉ SUR LE RÔLE RENVOYÉ PAR LE SERVEUR
+                const safeID = dataVerify.safeTenantID || tenantID;
+                const role = dataVerify.role || 'MASTER';
                 
-                if (dailyPoste === 'admin') targetPage = 'administration.html';
-                else if (dailyPoste === 'salle') targetPage = 'pack-eco.html';
-                else if (dailyPoste === 'cuisine') targetPage = 'chef.html';
-                else if (dailyPoste === 'patisserie') targetPage = 'chef-patissier.html';
-                else if (dailyPoste === 'bar') targetPage = 'chef-bar.html';
+                localStorage.setItem('ichef_tenant_id', safeID);
+                
+                let targetPage = 'pack-eco.html';
 
-                localStorage.setItem('ichef_tenant_id', tenantID);
+                if (role === 'MASTER' || role === 'admin') {
+                    // C'est un patron ou un manager admin
+                    localStorage.setItem('ichef_master_pin', pin);
+                    targetPage = 'administration.html';
+                } else if (role === 'cuisine') {
+                    targetPage = 'chef.html';
+                } else if (role === 'patisserie') {
+                    targetPage = 'chef-patissier.html';
+                } else if (role === 'bar') {
+                    targetPage = 'chef-bar.html';
+                } else {
+                    // Par défaut, le rôle "salle" ou "employé normal"
+                    targetPage = 'pack-eco.html';
+                }
 
+                // Redirection fluide
                 setTimeout(() => {
-                    window.location.href = `${targetPage}?tenantID=${tenantID}`;
+                    window.location.href = `${targetPage}?tenantID=${safeID}`;
                 }, 300);
 
             } catch (error) {
