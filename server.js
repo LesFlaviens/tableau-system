@@ -63,7 +63,8 @@ app.use(cors({
     },
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization', 'Origin', 'Accept', 'X-CSRF-Token', 'X-iCHEF-Device', 'X-iCHEF-Master-Device', 'X-iCHEF-Tenant', 'Idempotency-Key']
+    // 🔥 AJOUT DE 'X-Requested-With' POUR DÉBLOQUER LE PAD SERVEUR 🔥
+    allowedHeaders: ['Content-Type', 'Authorization', 'Origin', 'Accept', 'X-CSRF-Token', 'X-iCHEF-Device', 'X-iCHEF-Master-Device', 'X-iCHEF-Tenant', 'Idempotency-Key', 'X-Requested-With']
 }));
 
 // 🚨 SÉCURITÉ STRIPE : On utilise raw() uniquement pour la route webhook
