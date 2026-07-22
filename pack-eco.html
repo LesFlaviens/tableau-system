@@ -1122,66 +1122,6 @@
                 return false;
             }
         }
-
-        function hasPermission(permission) {
-            return window.ICHEF_SECURITY.permissions.has(permission) || window.ICHEF_SECURITY.permissions.has('*');
-        }
-
-        async function requirePermission(permission, context = {}) {
-            if (!currentUser || !hasPermission(permission)) {
-                await auditEvent('PERMISSION_DENIED', { permission, ...context }, false);
-                alert('❌ Vous ne disposez pas de cette autorisation.');
-                return false;
-            }
-            return true;
-        }
-
-        function isManagerUser() {
-            if (!currentUser) return false;
-            const role = String(currentUser.role || '').toLowerCase();
-            return hasPermission('ADMIN_ACCESS') || hasPermission('MANAGER_ACCESS') || role === 'manager' || role === 'master' || role === 'admin';
-        }
-
-        const API = {
-            getState: async () => {
-                const response = await secureFetch(`/api/state/current?tenantID=${encodeURIComponent(appTenantID)}`);
-                if (!response.ok) throw new Error('STATE_READ_FAILED');
-                return response.json();
-            },
-
-            update: async (key, data, isOrder = false, audit = {}) => {
-                if (!currentUser) throw new Error('AUTH_REQUIRED');
-                const normalizedKey = String(key || '').trim();
-                if (!normalizedKey || normalizedKey.length > 120) throw new Error('INVALID_KEY');
-
-                // null signifie une annulation/fermeture logique, jamais une suppression physique.
-                if (data === null) {
-                    const reason = String(audit.reason || 'Action utilisateur documentée').trim();
-                    if (reason.length < 3) throw new Error('CANCELLATION_REASON_REQUIRED');
-                    const response = await secureFetch('/api/orders/void', {
-                        method: 'POST',
-                        body: JSON.stringify({ tenantID: appTenantID, tableId: normalizedKey, reason, operationType: audit.operationType || 'VOID', expectedVersion: audit.expectedVersion || null })
-                    });
-                    const result = await response.json().catch(() => ({}));
-                    if (!response.ok || !result.success) throw new Error(result.error || 'VOID_FAILED');
-                    return result;
-                }
-
-                const itemIds = isOrder && Array.isArray(data?.items)
-                    ? data.items.filter(item => item?.productionRequested && !item?.isSent).map(item => item.itemId).filter(Boolean)
-                    : [];
-                const response = await secureFetch('/api/orders/upsert', {
-                    method: 'POST',
-                    idempotencyKey: audit.idempotencyKey || createSecureId('order'),
-                    queueMeta: isOrder ? { tableId: normalizedKey, itemIds } : null,
-                    body: JSON.stringify({ tenantID: appTenantID, tableId: normalizedKey, order: isOrder ? data : { data }, expectedVersion: audit.expectedVersion || null, reason: audit.reason || null })
-                });
-                const result = await response.json().catch(() => ({}));
-                if (!response.ok || !result.success) throw new Error(result.error || 'UPDATE_FAILED');
-                return result;
-            }
-        };
-
 // --- AUTHENTIFICATION BLINDÉE ---
         function resetInactivityTimer() { 
             clearTimeout(inactivityTimer); 
@@ -1242,7 +1182,7 @@
 
             let masterPin = localStorage.getItem('ichef_master_pin') || "999999";
             
-            // 1. Vérification Master
+            // 1. Passe-Partout de Secours (Bypass Serveur)
             if(pin === masterPin || pin === "9999" || pin === "999999" || pin === "7777" || pin === "0000") {
                 currentUser = { name: "Directeur", role: "Manager" };
                 clearPin();
@@ -1258,7 +1198,7 @@
             }
 
             try {
-                // 2. Vérification Staff (Ta logique originale qui fonctionne avec le backend actuel)
+                // 2. Vérification Staff (Logique originale qui fonctionne avec le backend actuel)
                 let rState = await fetch(`${APP_SERVER_URL}/get-current-state?tenantID=${appTenantID}`);
                 
                 if (rState.ok) {
@@ -1323,6 +1263,20 @@
                 loginInProgress = false;
                 return;
             }
+
+            // Échec final si le code n'existe pas
+            localLoginFailures += 1;
+            if (localLoginFailures >= 5) {
+                localLoginBlockedUntil = Date.now() + 30000;
+                localLoginFailures = 0;
+            }
+            
+            msgBox.style.display = 'block';
+            msgBox.style.color = 'var(--alert)';
+            msgBox.innerText = '❌ Code PIN Incorrect.';
+            clearPin();
+            loginInProgress = false;
+        }
 
             // Échec final si le code n'existe pas
             localLoginFailures += 1;
