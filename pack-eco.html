@@ -1,4 +1,3 @@
-
 <html lang="fr">
 <head>
     <meta charset="UTF-8">
@@ -1503,39 +1502,155 @@
             renderFloor();
         }
 
-       function renderRooms() { document.getElementById('room-tabs-container').innerHTML = rooms.map((r, i) => `<div ... /* TON CODE ACTUEL QUI GÈRE LES SALLES */ ...`).join(''); document.getElementById('room-tabs-container').innerHTML += `<button onclick="window.location.href='anti-rush.html?tenantID=' + window.tenantID" style="background: rgba(239, 68, 68, 0.1); border: 1px solid #ef4444; color: #ef4444; padding: 6px 12px; border-radius: 6px; font-weight: 800; cursor: pointer; text-transform: uppercase; font-size: 0.75rem; margin-left: 20px; box-shadow: 0 0 10px rgba(239, 68, 68, 0.2);">⚡ ANTI-RUSH</button>`; }
-        function handleRoomClick(r) { if(isArchiMode && r === currentRoom) openRoomConfigModal(r); else { currentRoom = r; renderRooms(); renderFloor(); } }
-        function addNewRoom() { let n = "Salle " + (rooms.length + 1); rooms.push(n); currentRoom = n; renderRooms(); renderFloor(); }
-        function addTactileRoomName(v) { if(v === 'CLEAR') currentTactileRoomName = currentTactileRoomName.slice(0, -1); else currentTactileRoomName += v; document.getElementById('config-room-name-display').innerText = currentTactileRoomName; }
+        function escapeHtml(value) {
+            return String(value ?? '')
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;')
+                .replace(/'/g, '&#039;');
+        }
+
+        function renderRooms() {
+            const container = document.getElementById('room-tabs-container');
+            if (!container) return;
+
+            container.innerHTML = '';
+
+            rooms.forEach(room => {
+                const tab = document.createElement('div');
+                tab.className = 'room-tab' + (room === currentRoom ? ' active' : '');
+                tab.textContent = room;
+                tab.setAttribute('role', 'button');
+                tab.setAttribute('tabindex', '0');
+                tab.setAttribute('aria-current', room === currentRoom ? 'page' : 'false');
+                tab.onclick = () => handleRoomClick(room);
+                tab.onkeydown = event => {
+                    if (event.key === 'Enter' || event.key === ' ') {
+                        event.preventDefault();
+                        handleRoomClick(room);
+                    }
+                };
+                container.appendChild(tab);
+            });
+
+            const antiRushButton = document.createElement('button');
+            antiRushButton.type = 'button';
+            antiRushButton.className = 'btn-mini';
+            antiRushButton.textContent = '⚡ ANTI-RUSH';
+            antiRushButton.style.cssText = 'background:rgba(239,68,68,.1);border-color:#ef4444;color:#ef4444;margin-left:20px;box-shadow:0 0 10px rgba(239,68,68,.2);';
+            antiRushButton.onclick = () => {
+                window.location.href = 'anti-rush.html?tenantID=' + encodeURIComponent(appTenantID || '');
+            };
+            container.appendChild(antiRushButton);
+        }
+
+        function handleRoomClick(room) {
+            if (isArchiMode && room === currentRoom) {
+                openRoomConfigModal(room);
+                return;
+            }
+            currentRoom = room;
+            renderRooms();
+            renderFloor();
+        }
+
+        function addNewRoom() {
+            let index = rooms.length + 1;
+            let name = 'Salle ' + index;
+            while (rooms.includes(name)) {
+                index += 1;
+                name = 'Salle ' + index;
+            }
+            rooms.push(name);
+            currentRoom = name;
+            renderRooms();
+            renderFloor();
+        }
+
+        function addTactileRoomName(value) {
+            if (value === 'CLEAR') currentTactileRoomName = currentTactileRoomName.slice(0, -1);
+            else currentTactileRoomName += value;
+            document.getElementById('config-room-name-display').innerText = currentTactileRoomName;
+        }
         
         function openRoomConfigModal(r) { configRoomOldName = r; currentTactileRoomName = r; document.getElementById('config-room-name-display').innerText = currentTactileRoomName; document.getElementById('room-config-modal').style.display = 'flex'; }
         function closeRoomConfigModal() { configRoomOldName = null; document.getElementById('room-config-modal').style.display = 'none'; }
-        function saveRoomConfig() {
-            if(!configRoomOldName) return; let n = currentTactileRoomName.trim();
-            if(n && n !== configRoomOldName) {
-                let idx = rooms.indexOf(configRoomOldName); if(idx > -1) rooms[idx] = n;
-                tables.forEach(t => { if(t && t.room === configRoomOldName) t.room = n; });
-                if(currentRoom === configRoomOldName) currentRoom = n;
+        async function saveRoomConfig() {
+            if (!configRoomOldName) return;
+
+            const oldName = configRoomOldName;
+            const newName = currentTactileRoomName.trim();
+
+            if (!newName) return alert('Le nom de la salle ne peut pas être vide.');
+            if (newName !== oldName && rooms.includes(newName)) {
+                return alert('Une salle porte déjà ce nom.');
             }
-            closeRoomConfigModal(); renderRooms(); renderFloor(); pushArchitecture();
+
+            if (newName !== oldName) {
+                const roomIndex = rooms.indexOf(oldName);
+                if (roomIndex > -1) rooms[roomIndex] = newName;
+
+                tables.forEach(table => {
+                    if (table && table.room === oldName) table.room = newName;
+                });
+
+                zones.forEach(zone => {
+                    if (zone && zone.room === oldName) zone.room = newName;
+                });
+
+                if (currentRoom === oldName) currentRoom = newName;
+            }
+
+            closeRoomConfigModal();
+            renderRooms();
+            renderFloor();
+            await pushArchitecture();
         }
-        function deleteCurrentRoom() {
-            if(rooms.length <= 1) return alert("Impossible de supprimer la dernière salle.");
-            if(confirm(`Supprimer la salle "${configRoomOldName}" et TOUTES ses tables ?`)) {
-                tables = tables.filter(t => t && t.room !== configRoomOldName); rooms = rooms.filter(r => r !== configRoomOldName); currentRoom = rooms[0];
-                closeRoomConfigModal(); renderRooms(); renderFloor(); pushArchitecture();
-            }
+
+        async function deleteCurrentRoom() {
+            if (!configRoomOldName) return;
+            if (rooms.length <= 1) return alert('Impossible de supprimer la dernière salle.');
+
+            const roomToDelete = configRoomOldName;
+            if (!confirm(`Supprimer la salle "${roomToDelete}", ses tables et ses zones ?`)) return;
+
+            tables = tables.filter(table => table && table.room !== roomToDelete);
+            zones = zones.filter(zone => zone && zone.room !== roomToDelete);
+            rooms = rooms.filter(room => room !== roomToDelete);
+            currentRoom = rooms[0];
+
+            closeRoomConfigModal();
+            renderRooms();
+            renderFloor();
+            await pushArchitecture();
         }
 
         function unlockArchiMode() { if (!currentUser || currentUser.role !== 'Manager') return alert("⛔ Accès Manager requis"); isArchiMode = true; document.body.classList.add('edit-mode'); renderRooms(); renderFloor(); }
         async function closeArchiMode() { isArchiMode = false; document.body.classList.remove('edit-mode'); renderRooms(); renderFloor(); }
-        function saveArchitecture() { pushArchitecture(); closeArchiMode(); }
+        async function saveArchitecture() {
+            const saved = await pushArchitecture();
+            if (saved) await closeArchiMode();
+        }
         
-        async function pushArchitecture() { 
-            await API.update('ARCHITECTURE', { rooms: rooms, tables: tables, zones: zones }); 
-            localStorage.setItem('empire_architecture', JSON.stringify(tables)); 
-            localStorage.setItem('empire_rooms', JSON.stringify(rooms)); 
-            localStorage.setItem('empire_zones', JSON.stringify(zones));
+        async function pushArchitecture() {
+            const architecture = {
+                rooms: Array.isArray(rooms) ? rooms : [],
+                tables: Array.isArray(tables) ? tables : [],
+                zones: Array.isArray(zones) ? zones : []
+            };
+
+            try {
+                await API.update('ARCHITECTURE', architecture);
+                localStorage.setItem('empire_architecture', JSON.stringify(architecture.tables));
+                localStorage.setItem('empire_rooms', JSON.stringify(architecture.rooms));
+                localStorage.setItem('empire_zones', JSON.stringify(architecture.zones));
+                return true;
+            } catch (error) {
+                console.error('Erreur de sauvegarde de l’architecture :', error);
+                alert('La sauvegarde du plan a échoué. Vérifiez la connexion au serveur.');
+                return false;
+            }
         }
 
         function addNewTable() {
@@ -3224,4 +3339,4 @@
 
     </script>
 </body>
-</html>
+</html
