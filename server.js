@@ -526,6 +526,8 @@ const tenantSchema = new mongoose.Schema({
     maxStaff: { type: Number, default: 999 },
     registeredDevices: [String], 
     config: { stripeCustomerId: String },
+    demoExpiration: { type: Date }
+});
 const Tenant = mongoose.model('Tenant', tenantSchema);
 
 const AppState = mongoose.model('AppState', new mongoose.Schema({
@@ -533,14 +535,6 @@ const AppState = mongoose.model('AppState', new mongoose.Schema({
     activeOrders: { type: Object, default: {} }
 }, { minimize: false }));
 
-// 👉 COLLER ICI LA ROUTE /api/security/bootstrap
-
-// =============================================================
-// 🛡️ INITIALISATION SÉCURITÉ DU PAD
-// =============================================================
-app.post('/api/security/bootstrap', async (req, res) => {
-    ...
-});
 // ==========================================
 // 🛡️ SÉCURITÉ FISCALE & LÉGALE (NORME ANTI-FRAUDE)
 // ==========================================
