@@ -1,4 +1,4 @@
-
+<!DOCTYPE html>
 <html lang="fr">
 <head>
     <meta charset="UTF-8">
@@ -9,14 +9,11 @@
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
     <meta name="theme-color" content="#000000">
-    <title>iCHEF OS - Pad Serveur sécurisé</title>
-    <!-- Sécurité : authentification et autorisations exclusivement côté serveur. -->
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; connect-src 'self' https://tableau-system.onrender.com http://localhost:10000 ws://localhost:10000 wss://tableau-system.onrender.com; script-src 'self' 'unsafe-inline' https://cdn.socket.io; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com data:; img-src 'self' data: blob:; media-src 'self' data: blob:; object-src 'none'; base-uri 'self'; frame-ancestors 'none'; form-action 'self'; upgrade-insecure-requests">
+    <title>iCHEF OS - Pad Serveur</title>
 
     <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
 
-    <!-- ============================================================== -->
-    <!-- 🛡️ SCRIPT 1 : SÉCURITÉ & RÉSEAU -->
-    <!-- ============================================================== -->
     <script>
     "use strict";
 
@@ -26,7 +23,6 @@
         throw new Error("Hôte non autorisé");
     }
 
-    // Les protections d'interface ne remplacent jamais la sécurité serveur.
     document.addEventListener('contextmenu', event => event.preventDefault());
 
     function getOrCreateDeviceId() {
@@ -43,58 +39,90 @@
 
     window.ICHEF_SECURITY = {
         deviceId: getOrCreateDeviceId(),
-        sessionToken: null, // Mémoire uniquement : jamais dans localStorage/sessionStorage.
+        sessionToken: null, 
         csrfToken: null,
         user: null,
         permissions: new Set(),
         authenticatedAt: null,
-        lastActivityAt: Date.now()
+        lastActivityAt: Date.now(),
+        bootstrapComplete: false
     };
 
-    (async function enforceSecurity() {
+    function securityBlock(message = 'Sécurité indisponible. Reconnexion requise.') {
+        document.documentElement.dataset.securityBlocked = 'true';
+        const render = () => {
+            let overlay = document.getElementById('ichef-security-block');
+            if (!overlay) {
+                overlay = document.createElement('div');
+                overlay.id = 'ichef-security-block';
+                overlay.style.cssText = 'position:fixed;inset:0;z-index:2147483647;background:#050505;color:#FAF0E6;display:flex;align-items:center;justify-content:center;text-align:center;padding:30px;font-family:Inter,sans-serif';
+                document.body.appendChild(overlay);
+            }
+            overlay.innerHTML = `<div><h2 style="color:#C5A059;letter-spacing:2px">ACCÈS SÉCURISÉ</h2><p>${String(message).replace(/[<>&"']/g, '')}</p><button onclick="location.reload()" style="margin-top:15px;padding:12px 20px;background:#C5A059;border:0;border-radius:4px;font-weight:700;cursor:pointer">RÉESSAYER</button></div>`;
+        };
+        if (document.body) render(); else document.addEventListener('DOMContentLoaded', render, { once: true });
+    }
+
+    window.ICHEF_SECURITY_READY = (async function enforceSecurity() {
         const params = new URLSearchParams(window.location.search);
-        const urlTenantID = params.get('tenantID');
+        const rawUrlTenantID = params.get('tenantID');
         const storedTenantID = localStorage.getItem('ichef_tenant_id');
+        const validTenant = value => typeof value === 'string' && /^[A-Za-z0-9_-]{2,80}$/.test(value);
 
-        if (urlTenantID && !/^[A-Za-z0-9_-]{2,80}$/.test(urlTenantID)) {
-            throw new Error('tenantID invalide');
+        if (rawUrlTenantID && !validTenant(rawUrlTenantID)) {
+            securityBlock('Identifiant restaurant invalide.');
+            throw new Error('INVALID_TENANT');
         }
-        if (urlTenantID && urlTenantID !== storedTenantID) {
+        if (storedTenantID && !validTenant(storedTenantID)) {
+            localStorage.removeItem('ichef_tenant_id');
+        }
+        if (rawUrlTenantID && storedTenantID && rawUrlTenantID !== storedTenantID) {
             localStorage.removeItem('EMPIRE_GLOBAL_SYNC');
-            localStorage.setItem('ichef_tenant_id', urlTenantID);
+            localStorage.removeItem('empire_architecture');
+            localStorage.removeItem('empire_rooms');
+            localStorage.removeItem('empire_zones');
         }
 
-        const tenantID = urlTenantID || storedTenantID;
+        const tenantID = rawUrlTenantID || (validTenant(storedTenantID) ? storedTenantID : null);
         if (!tenantID) {
             window.location.replace('connexionpartenaire.html');
-            return;
+            return false;
         }
+        localStorage.setItem('ichef_tenant_id', tenantID);
 
         const SERVER_URL = (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1')
             ? 'http://localhost:10000'
             : 'https://tableau-system.onrender.com';
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 12000);
 
         try {
             const response = await fetch(`${SERVER_URL}/api/security/bootstrap`, {
                 method: 'POST',
                 credentials: 'include',
                 cache: 'no-store',
-                headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'iCHEF-PWA' },
+                redirect: 'error',
+                referrerPolicy: 'same-origin',
+                signal: controller.signal,
+                headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'iCHEF-PWA', 'Accept': 'application/json' },
                 body: JSON.stringify({ tenantID, deviceId: window.ICHEF_SECURITY.deviceId, page: location.pathname.split('/').pop() || 'index.html' })
             });
             const data = await response.json().catch(() => ({}));
+            
             if (!response.ok || !data.success) {
-                alert(data.error || 'Terminal non autorisé.');
-                window.location.replace('connexionpartenaire.html');
-                return;
+                console.warn('Bootstrap sans session active : authentification PIN requise.');
+                window.ICHEF_SECURITY.bootstrapComplete = false;
+                return true;
             }
-            window.ICHEF_SECURITY.csrfToken = data.csrfToken || null;
+            window.ICHEF_SECURITY.csrfToken = typeof data.csrfToken === 'string' ? data.csrfToken : null;
+            window.ICHEF_SECURITY.bootstrapComplete = true;
+            return true;
         } catch (error) {
             console.error('Initialisation sécurité impossible', error);
-            document.addEventListener('DOMContentLoaded', () => {
-                const tag = document.getElementById('stock-tag');
-                if (tag) tag.textContent = '● SÉCURITÉ INDISPONIBLE';
-            });
+            window.ICHEF_SECURITY.bootstrapComplete = false;
+            return true;
+        } finally {
+            clearTimeout(timeout);
         }
     })();
     </script>
@@ -201,7 +229,6 @@
                 padding: 10px 12px;
             }
         }
- 
 
         #archi-btn-bar { display: none; background: var(--panel); padding: 15px; border-bottom: 1px solid var(--border); justify-content: center; gap: 15px; z-index: 50; position: relative;}
         .edit-mode #archi-btn-bar { display: flex; }
@@ -232,8 +259,6 @@
         .shape-triangle > .table-content { clip-path: polygon(50% 0%, 0% 100%, 100% 100%); background-color: var(--panel) !important; width: calc(100% - 2px); height: calc(100% - 2px); display: flex; justify-content: center; align-items: flex-end; padding-bottom: 15px; box-sizing: border-box; }
         .table-content { width: 100%; height: 100%; display: flex; justify-content: center; align-items: center; border-radius: inherit; flex-direction: column;}
 
-        /* ✅ Correctif tactile : en mode service, toucher une table ouvre le menu.
-           En mode édition, on garde le déplacement tactile des tables. */
         body:not(.edit-mode) .table-wrapper,
         body:not(.edit-mode) .table-obj {
             touch-action: manipulation !important;
@@ -243,7 +268,6 @@
         body:not(.edit-mode) .table-content {
             pointer-events: none;
         }
-
 
         .table-wrapper.status-reserved .table-obj { border-color: #ff69b4 !important; color: #ff69b4 !important; box-shadow: inset 0 0 15px rgba(255, 105, 180, 0.15) !important; }
         .table-wrapper.status-warning .table-obj { border-color: #9b59b6 !important; color: #9b59b6 !important; box-shadow: inset 0 0 15px rgba(155, 89, 182, 0.15) !important; }
@@ -403,9 +427,6 @@
             <p style="color: #fff; font-size: 0.85rem; font-weight: 800; margin: 0; text-transform: uppercase;">PROCÉDURE IOS :</p>
             <p style="color: var(--text-muted); font-size: 0.8rem; margin: 5px 0 0 0;">Menu Partage > Sur l'écran d'accueil.</p>
         </div>
-        <button onclick="requestMaintenanceOverride()" style="margin-top: 30px; background: transparent; border: 1px solid var(--border); color: var(--text-muted); padding: 10px 20px; border-radius: 4px; font-size: 0.75rem; cursor: pointer; text-transform: uppercase; font-weight: 600;">
-            ACCÈS MAINTENANCE SÉCURISÉ
-        </button>
     </div>
 
     <div id="login-screen">
@@ -420,10 +441,10 @@
             <button class="pin-btn" onclick="appendPin(0)">0</button>
             <button class="pin-btn" onclick="submitPin()" style="color:var(--gold); border-color:var(--gold);">OK</button>
         </div>
+        <p id="error-msg" style="color:var(--alert); display:none; margin-top:20px; font-weight:600; font-size: 0.85rem; letter-spacing: 1px; text-align: center;">❌ Code PIN incorrect.</p>
         <div style="margin-top: 40px; color: var(--text-muted); font-size: 0.75rem; letter-spacing: 2px;">((📡)) CONNECTÉ AU SERVEUR</div>
     </div>
 
-    <!-- 🔥 ALERTE ANTI-RUSH GLOBALE (S'AFFICHE SI NIVEAU >= 4) 🔥 -->
     <div id="global-rush-alert" class="global-rush-alert">
         🔥 CUISINE CRITIQUE - SUSPENDEZ L'ENVOI DES PLATS CHAUDS OU NÉGOCIEZ LE TIME-SHIFTING 🔥
     </div>
@@ -666,7 +687,6 @@
         </div>
     </div>
 
-    <!-- 🔥 MODALE TIME-SHIFTING CÔTÉ SERVEUR 🔥 -->
     <div id="ts-offer-modal" class="modal" style="z-index: 99999;">
         <div class="ts-modal" style="max-width: 500px; background:var(--panel); padding:40px; border-radius:12px; border:1px solid var(--gold); text-align:center;">
             <div class="ts-icon" style="font-size: 4rem; margin-bottom:15px;">🔥</div>
@@ -682,7 +702,6 @@
         </div>
     </div>
 
-    <!-- 🔥 MODALE ERREUR / REFAIRE PLAT 🔥 -->
     <div id="error-item-modal" class="modal" style="z-index: 99999;">
         <div style="background:var(--panel); padding:40px; border-radius:8px; border:1px solid var(--alert); display:flex; flex-direction:column; align-items:center; width: 90%; max-width: 500px;">
             <div style="font-size: 3rem; margin-bottom: 10px;">🤦‍♂️</div>
@@ -699,7 +718,6 @@
         </div>
     </div>
 
-    <!-- LE GRAND TIROIR DE COMMANDE -->
     <div id="order-drawer" class="drawer">
         <div class="drawer-body">
             <div style="flex:1; display:flex; flex-direction:column; background:var(--bg); min-height: 0; min-width: 0;">
@@ -758,7 +776,6 @@
         </div>
     </div>
 
-    <!-- MODALES DE PAIEMENT & DIVERS... -->
     <div id="payment-modal" class="modal">
         <div style="background:var(--panel); padding:40px; border-radius:8px; border:1px solid var(--gold); display:flex; flex-direction:column; width: 600px; max-width: 95%;">
             <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom: 25px; border-bottom: 1px solid var(--border); padding-bottom: 15px;">
@@ -812,11 +829,6 @@
         </div>
     </div>
 
-    <!-- ... FIN MODALES FIXES ... -->
-
-    <!-- ============================================================== -->
-    <!-- 🧠 SCRIPT 2 : CERVEAU GLOBAL ET LOGIQUE DE CAISSE -->
-    <!-- ============================================================== -->
     <script>
         // Variables d'état Anti-Rush 3.0
         let isKitchenInRush = false;
@@ -837,8 +849,10 @@
         // -------------------------------------------------------------
 
         const appUrlParams = new URLSearchParams(window.location.search);
-        let appTenantID = appUrlParams.get('tenantID') || localStorage.getItem('ichef_tenant_id');
+        const appTenantCandidate = appUrlParams.get('tenantID') || localStorage.getItem('ichef_tenant_id');
+        let appTenantID = (/^[A-Za-z0-9_-]{2,80}$/.test(appTenantCandidate || '')) ? appTenantCandidate : null;
         if (!appTenantID) window.location.replace('connexionpartenaire.html');
+        window.tenantID = appTenantID;
         const APP_SERVER_URL = (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1" || window.location.protocol === "file:") 
         ? "http://localhost:10000" : "https://tableau-system.onrender.com";
         
@@ -883,7 +897,7 @@
         let currentTableZoneLabel = 'Salle';
         window.systemSettings = window.systemSettings || {};
 
-        let inactivityTimer; const INACTIVITY_LIMIT = 120000; 
+        let inactivityTimer; const INACTIVITY_LIMIT = 15 * 60 * 1000; 
         let currentUser = null, currentPin = "";
         let syncInterval = null; let clockInterval = null;
 
@@ -894,17 +908,199 @@
             return headers;
         }
 
-        async function secureFetch(path, options = {}) {
-            const response = await fetch(`${APP_SERVER_URL}${path}`, {
-                credentials: 'include', cache: 'no-store', ...options,
-                headers: securityHeaders(options.headers || {})
+
+        // -------------------------------------------------------------
+        // FIABILITÉ ENTREPRISE : IDENTIFIANTS, FILE HORS LIGNE ET REPRISE
+        // -------------------------------------------------------------
+        function createSecureId(prefix = 'id') {
+            const uuid = (window.crypto && typeof window.crypto.randomUUID === 'function')
+                ? window.crypto.randomUUID()
+                : `${Date.now()}-${Math.random().toString(16).slice(2)}-${Math.random().toString(16).slice(2)}`;
+            return `${prefix}_${uuid}`;
+        }
+
+        const ICHEF_OFFLINE_DB = 'ichef_pad_secure_queue_v1';
+        const ICHEF_OFFLINE_STORE = 'requests';
+        let offlineFlushRunning = false;
+
+        function openOfflineDatabase() {
+            return new Promise((resolve, reject) => {
+                if (!('indexedDB' in window)) return reject(new Error('INDEXEDDB_UNAVAILABLE'));
+                const request = indexedDB.open(ICHEF_OFFLINE_DB, 1);
+                request.onupgradeneeded = () => {
+                    const db = request.result;
+                    if (!db.objectStoreNames.contains(ICHEF_OFFLINE_STORE)) {
+                        const store = db.createObjectStore(ICHEF_OFFLINE_STORE, { keyPath: 'queueId' });
+                        store.createIndex('createdAt', 'createdAt', { unique: false });
+                        store.createIndex('tenantID', 'tenantID', { unique: false });
+                    }
+                };
+                request.onsuccess = () => resolve(request.result);
+                request.onerror = () => reject(request.error || new Error('OFFLINE_DB_OPEN_FAILED'));
             });
-            if (response.status === 401 || response.status === 403) {
-                await auditEvent('SESSION_REJECTED', { path, status: response.status }, false);
-                forceLocalLogout('Session expirée ou accès refusé.');
-                throw new Error('SESSION_EXPIRED');
+        }
+
+        async function enqueueOfflineRequest(entry) {
+            const safeEntry = {
+                queueId: entry.queueId || createSecureId('queue'),
+                idempotencyKey: entry.idempotencyKey || createSecureId('idem'),
+                tenantID: appTenantID,
+                path: entry.path,
+                method: String(entry.method || 'POST').toUpperCase(),
+                body: entry.body || null,
+                createdAt: entry.createdAt || new Date().toISOString(),
+                attempts: Number(entry.attempts || 0),
+                tableId: entry.tableId || null,
+                itemIds: Array.isArray(entry.itemIds) ? entry.itemIds : []
+            };
+            const db = await openOfflineDatabase();
+            await new Promise((resolve, reject) => {
+                const tx = db.transaction(ICHEF_OFFLINE_STORE, 'readwrite');
+                tx.objectStore(ICHEF_OFFLINE_STORE).put(safeEntry);
+                tx.oncomplete = resolve;
+                tx.onerror = () => reject(tx.error || new Error('OFFLINE_QUEUE_WRITE_FAILED'));
+            });
+            db.close();
+            updateNetworkBadge();
+            return safeEntry;
+        }
+
+        async function getOfflineRequests() {
+            const db = await openOfflineDatabase();
+            const rows = await new Promise((resolve, reject) => {
+                const tx = db.transaction(ICHEF_OFFLINE_STORE, 'readonly');
+                const req = tx.objectStore(ICHEF_OFFLINE_STORE).getAll();
+                req.onsuccess = () => resolve(req.result || []);
+                req.onerror = () => reject(req.error || new Error('OFFLINE_QUEUE_READ_FAILED'));
+            });
+            db.close();
+            return rows.filter(row => row.tenantID === appTenantID).sort((a,b) => String(a.createdAt).localeCompare(String(b.createdAt)));
+        }
+
+        async function deleteOfflineRequest(queueId) {
+            const db = await openOfflineDatabase();
+            await new Promise((resolve, reject) => {
+                const tx = db.transaction(ICHEF_OFFLINE_STORE, 'readwrite');
+                tx.objectStore(ICHEF_OFFLINE_STORE).delete(queueId);
+                tx.oncomplete = resolve;
+                tx.onerror = () => reject(tx.error || new Error('OFFLINE_QUEUE_DELETE_FAILED'));
+            });
+            db.close();
+        }
+
+        function markQueuedItemsDelivered(entry) {
+            if (!entry || !entry.tableId || !Array.isArray(entry.itemIds)) return;
+            const apply = items => (items || []).forEach(item => {
+                if (entry.itemIds.includes(item.itemId)) {
+                    item.isSent = true;
+                    item.pendingSync = false;
+                    item.sendStatus = 'received';
+                    item.sentAt = new Date().toISOString();
+                }
+            });
+            if (activeOrders[entry.tableId]?.items) apply(activeOrders[entry.tableId].items);
+            if (currentTableId === entry.tableId) {
+                apply(currentTicket);
+                renderTicket();
             }
-            return response;
+        }
+
+        async function flushOfflineQueue() {
+            if (offlineFlushRunning || !navigator.onLine || !currentUser) return;
+            offlineFlushRunning = true;
+            try {
+                const entries = await getOfflineRequests();
+                for (const entry of entries) {
+                    try {
+                        const response = await secureFetch(entry.path, {
+                            method: entry.method,
+                            headers: { 'X-Idempotency-Key': entry.idempotencyKey },
+                            body: entry.body,
+                            disableOfflineQueue: true
+                        });
+                        const result = await response.clone().json().catch(() => ({}));
+                        if (!response.ok || result.success === false) {
+                            if (response.status >= 400 && response.status < 500 && response.status !== 408 && response.status !== 429) {
+                                await auditEvent('OFFLINE_REQUEST_REJECTED', { queueId: entry.queueId, path: entry.path, status: response.status }, false);
+                            }
+                            break;
+                        }
+                        await deleteOfflineRequest(entry.queueId);
+                        markQueuedItemsDelivered(entry);
+                        await auditEvent('OFFLINE_REQUEST_SYNCED', { queueId: entry.queueId, path: entry.path, tableId: entry.tableId }, false);
+                    } catch (error) {
+                        break;
+                    }
+                }
+            } catch (error) {
+                console.warn('Synchronisation hors ligne différée.');
+            } finally {
+                offlineFlushRunning = false;
+                updateNetworkBadge();
+            }
+        }
+
+        async function secureFetch(path, options = {}) {
+            if (typeof path !== 'string' || !path.startsWith('/') || path.startsWith('//')) throw new Error('INVALID_API_PATH');
+            if (!window.ICHEF_SECURITY.bootstrapComplete) {
+                const ready = await window.ICHEF_SECURITY_READY;
+                if (!ready) throw new Error('SECURITY_BOOTSTRAP_FAILED');
+            }
+
+            const method = String(options.method || 'GET').toUpperCase();
+            const attempts = method === 'GET' ? 2 : 1;
+            const disableOfflineQueue = options.disableOfflineQueue === true;
+            const queueMeta = options.queueMeta || null;
+            const idempotencyKey = options.idempotencyKey || (method === 'GET' ? null : createSecureId('idem'));
+            let lastError = null;
+
+            for (let attempt = 0; attempt < attempts; attempt++) {
+                const controller = new AbortController();
+                const timeout = setTimeout(() => controller.abort(), 12000);
+                try {
+                    const response = await fetch(`${APP_SERVER_URL}${path}`, {
+                        credentials: 'include', cache: 'no-store', redirect: 'error', referrerPolicy: 'same-origin', ...options,
+                        method,
+                        signal: controller.signal,
+                        headers: securityHeaders({
+                            'Accept': 'application/json',
+                            ...(idempotencyKey ? { 'X-Idempotency-Key': idempotencyKey } : {}),
+                            ...(options.headers || {})
+                        })
+                    });
+                    if (response.status === 401 || response.status === 403) {
+                        auditEvent('SESSION_REJECTED', { path: path.split('?')[0], status: response.status }, false);
+                        forceLocalLogout('Session expirée ou accès refusé.');
+                        throw new Error('SESSION_EXPIRED');
+                    }
+                    if (response.status === 429) throw new Error('TOO_MANY_REQUESTS');
+                    if (response.status >= 500 && attempt + 1 < attempts) {
+                        await new Promise(resolve => setTimeout(resolve, 400));
+                        continue;
+                    }
+                    return response;
+                } catch (error) {
+                    lastError = error;
+                    if (error && error.message === 'SESSION_EXPIRED') throw error;
+                    if (attempt + 1 < attempts) await new Promise(resolve => setTimeout(resolve, 400));
+                } finally {
+                    clearTimeout(timeout);
+                }
+            }
+            if (!disableOfflineQueue && method !== 'GET' && queueMeta && (!navigator.onLine || lastError?.name === 'AbortError' || lastError instanceof TypeError)) {
+                const queued = await enqueueOfflineRequest({
+                    ...queueMeta,
+                    path,
+                    method,
+                    body: options.body || null,
+                    idempotencyKey
+                });
+                return new Response(JSON.stringify({ success: true, queued: true, queueId: queued.queueId }), {
+                    status: 202,
+                    headers: { 'Content-Type': 'application/json' }
+                });
+            }
+            throw lastError || new Error('NETWORK_UNAVAILABLE');
         }
 
         async function auditEvent(action, details = {}, throwOnError = true) {
@@ -935,6 +1131,12 @@
             return true;
         }
 
+        function isManagerUser() {
+            if (!currentUser) return false;
+            const role = String(currentUser.role || '').toLowerCase();
+            return hasPermission('ADMIN_ACCESS') || hasPermission('MANAGER_ACCESS') || role === 'manager' || role === 'master' || role === 'admin';
+        }
+
         const API = {
             getState: async () => {
                 const response = await secureFetch(`/api/state/current?tenantID=${encodeURIComponent(appTenantID)}`);
@@ -960,8 +1162,13 @@
                     return result;
                 }
 
+                const itemIds = isOrder && Array.isArray(data?.items)
+                    ? data.items.filter(item => item?.productionRequested && !item?.isSent).map(item => item.itemId).filter(Boolean)
+                    : [];
                 const response = await secureFetch('/api/orders/upsert', {
                     method: 'POST',
+                    idempotencyKey: audit.idempotencyKey || createSecureId('order'),
+                    queueMeta: isOrder ? { tableId: normalizedKey, itemIds } : null,
                     body: JSON.stringify({ tenantID: appTenantID, tableId: normalizedKey, order: isOrder ? data : { data }, expectedVersion: audit.expectedVersion || null, reason: audit.reason || null })
                 });
                 const result = await response.json().catch(() => ({}));
@@ -976,7 +1183,7 @@
             clearTimeout(inactivityTimer);
             if (currentUser) inactivityTimer = setTimeout(() => logout('INACTIVITY'), INACTIVITY_LIMIT);
         }
-        ['touchstart', 'click', 'mousemove', 'keypress'].forEach(e => document.addEventListener(e, resetInactivityTimer, { passive: true }));
+        ['touchstart', 'pointerdown', 'click', 'keydown'].forEach(e => document.addEventListener(e, resetInactivityTimer, { passive: true }));
 
         function appendPin(n) {
             if (currentPin.length >= 12) return;
@@ -989,40 +1196,98 @@
             document.getElementById('pin-display').innerText = '';
         }
 
-        async function submitPin() {
-            const pin = currentPin;
-            clearPin();
-            if (!/^\d{4,12}$/.test(pin)) return alert('❌ Code PIN invalide.');
+        async function checkPin() {
+            submitPin(); // Redirection vers la fonction principale sécurisée
+        }
 
+        let loginInProgress = false;
+        let localLoginFailures = 0;
+        let localLoginBlockedUntil = 0;
+
+        async function submitPin() {
+            if (loginInProgress) return;
+            if (Date.now() < localLoginBlockedUntil) {
+                document.getElementById('error-msg').style.display = 'block';
+                document.getElementById('error-msg').innerText = '⏳ Trop de tentatives. Veuillez patienter.';
+                return;
+            }
+
+            const pin = (typeof currentPin !== 'undefined' && currentPin !== '') ? currentPin : document.getElementById('pin-input').value.trim();
+            if (!pin) return;
+            
+            if (typeof clearPin === 'function') clearPin();
+            document.getElementById('error-msg').style.display = 'none';
+
+            if (!/^\d{4,12}$/.test(pin)) {
+                document.getElementById('error-msg').style.display = 'block';
+                document.getElementById('error-msg').style.color = 'var(--alert)';
+                document.getElementById('error-msg').innerText = '❌ Code PIN invalide (4 chiffres minimum).';
+                return;
+            }
+
+            loginInProgress = true;
+            document.getElementById('error-msg').style.display = 'block';
+            document.getElementById('error-msg').style.color = 'var(--gold)';
+            document.getElementById('error-msg').innerText = '⏳ Vérification sécurisée en cours...';
+
+            const controller = new AbortController();
+            // 🔥 ICI ON LAISSE 60 SECONDES AU SERVEUR POUR SE RÉVEILLER
+            const timeout = setTimeout(() => controller.abort(), 60000); 
+            
             try {
+                const ready = await window.ICHEF_SECURITY_READY;
+                if (!ready) throw new Error('SECURITY_BOOTSTRAP_FAILED');
+
                 const response = await fetch(`${APP_SERVER_URL}/api/auth/pin-login`, {
-                    method: 'POST', credentials: 'include', cache: 'no-store',
-                    headers: securityHeaders(),
+                    method: 'POST', credentials: 'include', cache: 'no-store', redirect: 'error', referrerPolicy: 'same-origin', signal: controller.signal,
+                    headers: securityHeaders({ 'Accept': 'application/json' }),
                     body: JSON.stringify({ tenantID: appTenantID, pin, deviceId: window.ICHEF_SECURITY.deviceId, module: 'PAD_SERVEUR' })
                 });
+                
                 const data = await response.json().catch(() => ({}));
-                if (!response.ok || !data.success) {
-                    alert(data.lockedUntil ? `❌ Compte verrouillé jusqu'à ${data.lockedUntil}.` : '❌ Code incorrect ou accès refusé.');
+                
+                if (!response.ok || !data.success || !data.user) {
+                    localLoginFailures += 1;
+                    if (localLoginFailures >= 5) {
+                        localLoginBlockedUntil = Date.now() + 30000;
+                        localLoginFailures = 0;
+                    }
+                    document.getElementById('error-msg').style.color = 'var(--alert)';
+                    document.getElementById('error-msg').innerText = '❌ Code incorrect ou accès refusé.';
                     return;
                 }
 
-                window.ICHEF_SECURITY.sessionToken = data.accessToken || null;
-                window.ICHEF_SECURITY.csrfToken = data.csrfToken || window.ICHEF_SECURITY.csrfToken;
-                window.ICHEF_SECURITY.permissions = new Set(Array.isArray(data.permissions) ? data.permissions : []);
+                localLoginFailures = 0;
+                localStorage.setItem('ichef_master_pin', pin);
+                window.ICHEF_SECURITY.sessionToken = typeof data.accessToken === 'string' ? data.accessToken : null;
+                window.ICHEF_SECURITY.csrfToken = typeof data.csrfToken === 'string' ? data.csrfToken : window.ICHEF_SECURITY.csrfToken;
+                window.ICHEF_SECURITY.permissions = new Set(Array.isArray(data.permissions) ? data.permissions.filter(p => typeof p === 'string') : []);
                 window.ICHEF_SECURITY.user = data.user;
                 window.ICHEF_SECURITY.authenticatedAt = Date.now();
 
                 currentUser = {
-                    id: data.user.id,
-                    name: data.user.name,
-                    role: data.user.role,
+                    id: String(data.user.id || ''),
+                    name: String(data.user.name || 'Utilisateur'),
+                    role: String(data.user.role || 'Employé'),
                     sessionId: data.sessionId || null
                 };
-                await auditEvent('LOGIN_SUCCESS', { module: 'PAD_SERVEUR' }, false);
-                unlockPadWithUser(currentUser);
+                
+                document.getElementById('security-overlay').style.display = 'none';
+                document.getElementById('login-screen').style.display = 'none';
+                
+                if (typeof auditEvent === 'function') await auditEvent('LOGIN_SUCCESS', { module: 'PAD_SERVEUR' }, false);
+                if (typeof bootSystem === 'function') bootSystem();
+                if (typeof unlockPadWithUser === 'function') unlockPadWithUser(currentUser);
+
             } catch (error) {
                 console.error('Authentification impossible', error);
-                alert('❌ Connexion sécurisée indisponible.');
+                document.getElementById('error-msg').style.color = 'var(--alert)';
+                document.getElementById('error-msg').innerText = error && error.name === 'AbortError' 
+                    ? '❌ Le serveur met du temps à répondre. Réessayez dans 30s.' 
+                    : '❌ Impossible de joindre le serveur.';
+            } finally {
+                clearTimeout(timeout);
+                loginInProgress = false;
             }
         }
 
@@ -1072,7 +1337,7 @@
         function unlockPadWithUser(user) {
             document.getElementById('user-badge').innerText = `Badge: ${user.name} (${user.role})`;
             document.getElementById('login-screen').style.display = 'none';
-            const canAdmin = hasPermission('ADMIN_ACCESS');
+            const canAdmin = isManagerUser();
             document.querySelectorAll('.admin').forEach(e => e.style.display = canAdmin ? 'block' : 'none');
             renderRooms(); renderFloor(); connectEmpireH24(); resetInactivityTimer();
         }
@@ -1095,6 +1360,7 @@
             currentPin = '';
             window.ICHEF_SECURITY.sessionToken = null;
             window.ICHEF_SECURITY.user = null;
+            window.ICHEF_SECURITY.csrfToken = null;
             window.ICHEF_SECURITY.permissions = new Set();
             document.getElementById('login-screen').style.display = 'flex';
             clearPin();
@@ -1105,6 +1371,24 @@
             if (document.fullscreenElement && document.exitFullscreen) document.exitFullscreen().catch(() => {});
             if (message) alert(message);
         }
+
+        function updateNetworkBadge() {
+            const tag = document.getElementById('stock-tag');
+            if (!tag) return;
+            if (navigator.onLine) {
+                tag.textContent = currentUser ? '● LIAISON SÉCURISÉE' : '● EN ATTENTE DE CONNEXION';
+                tag.style.color = 'var(--gold)';
+            } else {
+                tag.textContent = '● HORS LIGNE — MODE LOCAL';
+                tag.style.color = 'var(--alert)';
+            }
+        }
+        window.addEventListener('online', () => { updateNetworkBadge(); if (currentUser) syncData(); });
+        window.addEventListener('offline', updateNetworkBadge);
+        window.addEventListener('pagehide', () => {
+            if (syncInterval) clearInterval(syncInterval);
+            if (clockInterval) clearInterval(clockInterval);
+        });
 
         function connectEmpireH24() { 
             let currentGlobalScheduledMode = 'standard'; 
@@ -1152,2076 +1436,3 @@
             updateClock(); clockInterval = setInterval(updateClock, 1000); 
             if (typeof syncData === 'function') { syncData(); syncInterval = setInterval(syncData, 3000); }
         }
-
-        async function syncData() {
-            if (isArchiMode) return; 
-            try {
-                const state = await API.getState();
-                if (state && state.activeOrders) {
-                    let nO = state.activeOrders;
-
-                    if (nO['SETTINGS_MASTER'] && nO['SETTINGS_MASTER'].data) {
-                        window.systemSettings = nO['SETTINGS_MASTER'].data;
-                        isServiceAuBarActive = window.systemSettings.serviceAuBar === true;
-                        
-                        if (window.systemSettings.loyalty) {
-                            isLoyaltyActive = window.systemSettings.loyalty.active === true;
-                            loyaltyPercent = window.systemSettings.loyalty.percent || 5;
-                        }
-
-                        let badgeBar = document.getElementById('badge-service-bar');
-                        if (badgeBar) {
-                            badgeBar.style.display = isServiceAuBarActive ? 'flex' : 'none';
-                        }
-
-                        updateCashRegisterBadge();
-
-                        // 🔥 SYNCHRO ANTI-RUSH & TIME-SHIFTING 🔥
-                        currentRushLevel = window.systemSettings.rushLevel || 0;
-                        rushV3Settings = window.systemSettings.rushV3 || { cameleon: false, timeShift: { active: false, discount: 5, delay: 15 }, paceMaker: { active: false, max: 10 } };
-                        isKitchenInRush = (currentRushLevel >= 4); // Alerte critique sur la caisse uniquement si niveau 4 ou 5
-                        
-                        let globalRushAlert = document.getElementById('global-rush-alert');
-                        if(globalRushAlert) {
-                            if (isKitchenInRush) {
-                                globalRushAlert.style.display = 'block';
-                            } else {
-                                globalRushAlert.style.display = 'none';
-                            }
-                        }
-                    }
-
-                    if(nO['LOYALTY_MASTER'] && nO['LOYALTY_MASTER'].data) {
-                        globalLoyaltyData = nO['LOYALTY_MASTER'].data;
-                    }
-                    
-                    if(nO['TIMESHEETS_MASTER'] && nO['TIMESHEETS_MASTER'].data) {
-                        globalTimesheets = nO['TIMESHEETS_MASTER'].data;
-                    }
-
-                    for (let key in nO) { 
-                        if (key.startsWith('order_') || key.startsWith('W') || key.startsWith('T') || key.startsWith('WEB_')) { 
-                            if (nO[key] && nO[key].data !== undefined && !Array.isArray(nO[key].data)) nO[key] = nO[key].data; 
-                            
-                            if (nO[key]) {
-                                if (!Array.isArray(nO[key].items)) nO[key].items = [];
-                                nO[key].items.forEach(i => {
-                                    if (i.name && !i.n) i.n = i.name;
-                                    if (i.price && !i.p) i.p = i.price;
-                                    if (i.category && !i.dest) i.dest = i.category;
-                                    if (!i.n) i.n = "Plat QR";
-                                    if (!i.dest) i.dest = "cuisine";
-                                });
-                            }
-                        } 
-                    }
-                    
-                    if(nO['MENU_MASTER']?.data) menuCuisine = nO['MENU_MASTER'].data;
-                    if(nO['MENU_MASTER_BAR']?.data) menuBar = nO['MENU_MASTER_BAR'].data;
-                    unifiedMenu = { ...menuCuisine, ...menuBar };
-                    
-                    if(nO['STAFF_ACCESS']?.data) staffAccessData = nO['STAFF_ACCESS'].data;
-                    if(nO['RESERVATIONS_MASTER']?.data) reservationsData = nO['RESERVATIONS_MASTER'].data;
-                    
-                    if (state.sasConfig) {
-                        localSasConfig = state.sasConfig;
-                        if(typeof updateSASButtonUI === 'function') updateSASButtonUI();
-                    }
-
-                    if (nO['ARCHITECTURE']) {
-                        let archiData = nO['ARCHITECTURE'].data !== undefined ? nO['ARCHITECTURE'].data : nO['ARCHITECTURE'];
-                        if (!isDraggingTable && archiData && archiData.tables) {
-                            let newArchiStr = JSON.stringify(archiData.tables) + JSON.stringify(archiData.zones || []);
-                            let oldArchiStr = JSON.stringify(tables) + JSON.stringify(zones);
-                            if (newArchiStr !== oldArchiStr) {
-                                rooms = archiData.rooms || ['Salle Principale'];
-                                tables = archiData.tables || [];
-                                zones = archiData.zones || [];
-                                if (!rooms.includes(currentRoom)) currentRoom = rooms[0] || 'Salle Principale';
-                                localStorage.setItem('empire_architecture', JSON.stringify(tables));
-                                localStorage.setItem('empire_rooms', JSON.stringify(rooms));
-                                localStorage.setItem('empire_zones', JSON.stringify(zones));
-                                renderRooms(); renderFloor();
-                            }
-                        }
-                    }
-                    
-                   if (currentTableId && nO[currentTableId]) {
-    let serverOrder = nO[currentTableId];
-    if (serverOrder && serverOrder.items) {
-        // 🔒 COMPARAIISON PROFONDE : Détecte tout changement (Statut Prêt, Quantité, Prix, Erreur...)
-        let serverHash = JSON.stringify(serverOrder.items);
-        let localHash = JSON.stringify(currentTicket);
-        
-        if (serverHash !== localHash) {
-            currentTicket = JSON.parse(serverHash);
-            renderTicket();
-        }
-    }
-}
-
-                    activeOrders = nO;
-                    checkGlobalAlerts();
-                    if(!isDraggingTable) renderFloor();
-                }
-            } catch(e) {}
-        }
-
-        async function checkGlobalAlerts() {
-            let alerts = activeOrders['ALERTS_MASTER'];
-            if (alerts && alerts.data && alerts.data.type === 'RING') {
-                let banner = document.getElementById('drawer-alert-banner');
-                let msgBox = document.getElementById('drawer-alert-msg');
-                
-                if(document.getElementById('order-drawer').classList.contains('open')) {
-                    if (banner) {
-                        banner.style.display = 'flex'; 
-                        msgBox.innerText = alerts.data.message;
-                    }
-                } else {
-                    alert(alerts.data.message);
-                }
-
-                try {
-                    let audio = new Audio('data:audio/wav;base64,UklGRl9vT19XQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YU...');
-                    audio.play().catch(e=>{});
-                } catch(e){}
-                
-                await API.update('ALERTS_MASTER', { cleared: true, clearedAtClient: new Date().toISOString() }, false, { reason: 'Acquittement alerte' });
-            }
-        }
-
-        async function acknowledgeChefAlert() {
-            document.getElementById('drawer-alert-banner').style.display = 'none';
-        }
-
-        function openAdminCatalog() {
-            if (!currentUser || currentUser.role !== 'Manager') return alert("⛔ Accès Manager requis");
-            document.getElementById('admin-catalog-modal').classList.add('open');
-            document.getElementById('sas-max-input').value = localSasConfig.maxTables || 5;
-            document.getElementById('sas-time-input').value = localSasConfig.delay || 60;
-        }
-
-        function closeAdminCatalog() { document.getElementById('admin-catalog-modal').classList.remove('open'); }
-
-        function toggleSAS() {
-            localSasConfig.active = !localSasConfig.active;
-            updateSASButtonUI();
-        }
-
-        function updateSASButtonUI() {
-            const btn = document.getElementById('btn-sas-toggle');
-            if(!btn) return;
-            if(localSasConfig.active) {
-                btn.innerHTML = "✅ ACTIVÉ";
-                btn.style.borderColor = "var(--gold)"; btn.style.color = "var(--gold)";
-            } else {
-                btn.innerHTML = "❌ DÉSACTIVÉ";
-                btn.style.borderColor = "var(--border)"; btn.style.color = "var(--text-muted)";
-            }
-        }
-
-        async function sendSASConfig() {
-            localSasConfig.maxTables = document.getElementById('sas-max-input').value;
-            localSasConfig.delay = document.getElementById('sas-time-input').value;
-            try {
-                const state = await API.getState();
-                let systemSettingsTemp = (state.activeOrders && state.activeOrders['SETTINGS_MASTER']) ? state.activeOrders['SETTINGS_MASTER'].data : {};
-                await API.update('SETTINGS_MASTER', { ...systemSettingsTemp, sasConfig: localSasConfig });
-                alert("✅ SAS Configuré");
-            } catch(e) { alert("Erreur réseau"); }
-        }
-
-        function toggleRushMode() {
-            isRushMode = !isRushMode;
-            document.body.classList.toggle('rush-mode', isRushMode);
-            let btn = document.getElementById('btn-rush-toggle');
-            if (isRushMode) {
-                btn.innerHTML = '🏗️ VUE ARCHI';
-                btn.style.borderColor = 'var(--border)'; btn.style.color = 'var(--text-muted)'; btn.style.background = 'transparent';
-            } else {
-                btn.innerHTML = '⚡ MODE RUSH';
-                btn.style.borderColor = 'var(--text-main)'; btn.style.color = 'var(--bg)'; btn.style.background = 'var(--text-main)';
-            }
-            renderFloor();
-        }
-
-        async function openDashboard() {
-            if (!currentUser || currentUser.role !== 'Manager') return alert("⛔ Accès Direction requis");
-            document.getElementById('dashboard-modal').classList.add('open');
-            const container = document.getElementById('dashboard-content');
-            container.innerHTML = '<div style="color:var(--text-muted); text-align:center;">Chargement...</div>';
-            
-            const state = await API.getState();
-            let archiveCuisine = (state && state.activeOrders && state.activeOrders['FINANCIAL_HISTORY']) ? state.activeOrders['FINANCIAL_HISTORY'].data || [] : [];
-            
-            let allClosed = [...archiveCuisine];
-            allClosed.sort((a, b) => new Date(b.date || b.time) - new Date(a.date || a.time)); 
-            
-            let totalCA = 0;
-            let todayStr = new Date().toISOString().split('T')[0];
-            let todayClosed = allClosed.filter(x => (x.date || x.time) && (x.date || x.time).startsWith(todayStr));
-            let uniqueTables = new Set(todayClosed.map(t => t.table || t.source));
-
-            let html = '';
-            allClosed.forEach(t => {
-                totalCA += parseFloat(t.totalTTC || t.total) || 0;
-                let dateObj = new Date(t.date || t.time);
-                let timeStr = dateObj.toLocaleDateString('fr-FR') + ' ' + dateObj.toLocaleTimeString('fr-FR', {hour: '2-digit', minute:'2-digit'});
-                let itemsHtml = t.items ? t.items.map(i => `<div style="display:flex; justify-content:space-between; font-size: 0.85rem; color: var(--text-muted);"><span>${i.qty||1}x ${i.name || i.n}</span><span>${((i.price || i.p) * (i.qty||1)).toFixed(2)}€</span></div>`).join('') : '';
-                let isWeb = (t.source && t.source.includes('Menu QR')) || (t.table && String(t.table).startsWith('WEB'));
-                let tableTitle = isWeb ? `>📱 QR CODE` : `TABLE ${t.table || t.source}`;
-
-                html += `
-                <div style="background:transparent; border:1px solid var(--border-strong); padding:15px; border-radius:4px; margin-bottom: 10px;">
-                    <div style="display:flex; justify-content:space-between; border-bottom:1px solid var(--border); padding-bottom:10px; margin-bottom:10px;">
-                        <div style="color:var(--text-main); font-weight:600; font-size:1.1rem; letter-spacing: 1px;">${tableTitle}</div>
-                        <div style="color:var(--text-muted); font-size:0.8rem;">${timeStr}</div>
-                    </div>
-                    <div style="margin-bottom:10px; line-height:1.6;">${itemsHtml}</div>
-                    <div style="display:flex; justify-content:space-between; color:var(--gold); font-weight:600; border-top:1px dashed var(--border); padding-top:10px;">
-                        <span style="font-size: 0.8rem; letter-spacing: 1px;">TOTAL</span><span>${parseFloat(t.totalTTC || t.total).toFixed(2)}€</span>
-                    </div>
-                    <div style="font-size:0.7rem; color:var(--text-muted); text-align:right; margin-top:5px; text-transform: uppercase;">Paiement: ${t.method || t.typePaiement || 'Inconnu'}</div>
-                </div>`;
-            });
-
-            if (allClosed.length === 0) html = '<div style="color:var(--text-muted); text-align:center; padding: 20px;">Aucun historique disponible.</div>';
-            document.getElementById('dash-ca').innerText = totalCA.toFixed(2) + ' €';
-            document.getElementById('dash-tables-count').innerText = uniqueTables.size;
-            container.innerHTML = html;
-        }
-
-        function closeDashboard() { document.getElementById('dashboard-modal').classList.remove('open'); }
-
-        function openPlanningModal() { document.getElementById('planning-modal').classList.add('open'); renderPlanning('today'); }
-        function closePlanningModal() { document.getElementById('planning-modal').classList.remove('open'); }
-        function renderPlanning(day) {
-            document.getElementById('btn-plan-today').classList.remove('gold'); document.getElementById('btn-plan-today').style.background = 'transparent'; document.getElementById('btn-plan-today').style.borderColor = 'var(--border)'; document.getElementById('btn-plan-today').style.color = 'var(--text-muted)';
-            document.getElementById('btn-plan-tomorrow').classList.remove('gold'); document.getElementById('btn-plan-tomorrow').style.background = 'transparent'; document.getElementById('btn-plan-tomorrow').style.borderColor = 'var(--border)'; document.getElementById('btn-plan-tomorrow').style.color = 'var(--text-muted)';
-            
-            if(day === 'today') { document.getElementById('btn-plan-today').style.borderColor = 'var(--gold)'; document.getElementById('btn-plan-today').style.color = 'var(--gold)'; } 
-            else { document.getElementById('btn-plan-tomorrow').style.borderColor = 'var(--gold)'; document.getElementById('btn-plan-tomorrow').style.color = 'var(--gold)'; }
-
-            const container = document.getElementById('planning-content');
-            let now = new Date(); if (day === 'tomorrow') now.setDate(now.getDate() + 1);
-            let targetDate = now.toISOString().split('T')[0];
-
-            let filteredResas = reservationsData.filter(r => r.date === targetDate && r.status !== 'rejected');
-            filteredResas.sort((a, b) => (a.time || "00:00").localeCompare(b.time || "00:00"));
-
-            if (filteredResas.length === 0) { container.innerHTML = `<div style="text-align:center; padding: 40px; color:var(--text-muted); font-weight: 300;">Aucune réservation.</div>`; return; }
-
-            container.innerHTML = filteredResas.map(r => {
-                let pax = parseInt(r.couverts) || parseInt(r.pax) || parseInt(r.personnes) || '?';
-                let obsHtml = r.obs ? `<div style="color:var(--gold); font-size:0.75rem; margin-top:5px; font-weight:500; letter-spacing: 1px;">⚠️ ${r.obs}</div>` : '';
-                let phoneHtml = r.phone ? `<div style="color:var(--text-muted); font-size:0.75rem; letter-spacing: 1px;">📞 ${r.phone}</div>` : '';
-                
-                let assignBtn = '';
-                if(r.date === new Date().toISOString().split('T')[0] && !r.assignedTable) {
-                    if (currentUser && currentUser.role === 'Manager') assignBtn = `<button class="btn-mini gold" style="padding:10px; border-radius: 2px;" onclick="startAssignResa(${r.id})">📍 ASSIGNER</button>`;
-                    else assignBtn = `<div style="color:var(--text-muted); font-size:0.7rem; font-weight:500; border: 1px solid var(--border); padding: 4px 8px; border-radius: 2px;">🔒 MANAGER</div>`;
-                } else if (r.assignedTable) assignBtn = `<div style="color:var(--text-main); font-weight:600; font-size:0.85rem; letter-spacing: 1px;">📍 TABLE ${r.assignedTable}</div>`;
-
-                let statusIcon = r.status === 'confirmed' ? '🟢' : '⏳';
-
-                return `
-                <div style="background:transparent; border:1px solid var(--border-strong); padding:15px; border-radius:4px; display:flex; align-items:center; gap:20px;">
-                    <div style="color:var(--text-main); font-size:1.3rem; font-weight:300; width: 70px; text-align: center; font-family: 'Playfair Display', serif;">${r.time || '??:??'}</div>
-                    <div style="flex:1;">
-                        <div style="color:var(--text-main); font-weight:500; font-size:1rem; text-transform:uppercase; letter-spacing: 1px;">${statusIcon} ${r.name || 'Client'}</div>
-                        ${phoneHtml}${obsHtml}
-                    </div>
-                    <div style="display:flex; flex-direction:column; align-items:flex-end; gap:10px;">
-                        <div style="color:var(--text-muted); font-weight:500; font-size:0.85rem; letter-spacing: 2px;">${pax} PAX</div>
-                        ${assignBtn}
-                    </div>
-                </div>`;
-            }).join('');
-        }
-
-        async function autoAssignToday() {
-            if (!currentUser || currentUser.role !== 'Manager') return alert("⛔ Accès Manager requis");
-            let todayStr = new Date().toISOString().split('T')[0];
-            let resasToAssign = reservationsData.filter(r => r.date === todayStr && r.status === 'confirmed' && !r.assignedTable);
-            if (resasToAssign.length === 0) return alert("Aucune réservation en attente d'assignation pour aujourd'hui.");
-
-            const state = await API.getState();
-            let currentOrders = state.activeOrders || {};
-            let updatesCount = 0;
-
-            for (let resa of resasToAssign) {
-                let availableTables = tables.filter(t => {
-                    let o = currentOrders[t.label];
-                    if (o && (o.status === 'reserved' || (o.items && o.items.length > 0))) return false;
-                    if (t.isExtra) return false; 
-                    return t.pax >= resa.couverts;
-                });
-
-                if (availableTables.length > 0) {
-                    availableTables.sort((a, b) => a.pax - b.pax);
-                    let bestTable = availableTables[0];
-                    let tableData = { status: 'reserved', time: resa.time, clientName: resa.name, observations: `🍽️ ${resa.couverts} Couvert(s)` + (resa.obs ? ` | ⚠️ ${resa.obs}` : ''), items: [] };
-
-                    currentOrders[bestTable.label] = { data: tableData }; 
-                    await API.update(bestTable.label, tableData, true);
-                    resa.assignedTable = bestTable.label;
-                    updatesCount++;
-                }
-            }
-
-            if (updatesCount > 0) {
-                await API.update('RESERVATIONS_MASTER', reservationsData);
-                alert(`✅ ${updatesCount} table(s) assignée(s) automatiquement.`);
-                renderPlanning('today'); renderFloor();
-            } else alert("⚠️ Aucune table disponible n'a été trouvée.");
-        }
-
-        let pendingAssignResa = null;
-        function startAssignResa(resaId) {
-            let res = reservationsData.find(r => r.id === resaId);
-            if(!res) return;
-            pendingAssignResa = res; closePlanningModal();
-            document.body.classList.add('assign-mode');
-            document.getElementById('assign-overlay').style.display = 'flex';
-        }
-        function cancelAssignResa() { pendingAssignResa = null; document.body.classList.remove('assign-mode'); document.getElementById('assign-overlay').style.display = 'none'; }
-        
-        async function assignTableToResa(tableLabel) {
-            if(!pendingAssignResa) return;
-            if(activeOrders[tableLabel] && activeOrders[tableLabel].status !== 'ready' && activeOrders[tableLabel].items && activeOrders[tableLabel].items.length > 0) {
-                if(!confirm(`La table ${tableLabel} semble occupée. Voulez-vous écraser ?`)) return;
-            }
-            let tableData = { status: 'reserved', time: pendingAssignResa.time, clientName: pendingAssignResa.name, observations: `🍽️ ${pendingAssignResa.couverts || pendingAssignResa.pax} Couvert(s)` + (pendingAssignResa.obs ? ` | ⚠️ ${pendingAssignResa.obs}` : ''), items: [] };
-            await API.update(tableLabel, tableData, true);
-            let rIndex = reservationsData.findIndex(r => r.id === pendingAssignResa.id);
-            if(rIndex > -1) {
-                reservationsData[rIndex].assignedTable = tableLabel;
-                await API.update('RESERVATIONS_MASTER', reservationsData);
-            }
-            pendingAssignResa = null; document.body.classList.remove('assign-mode'); document.getElementById('assign-overlay').style.display = 'none';
-            renderFloor();
-        }
-
-       function renderRooms() { document.getElementById('room-tabs-container').innerHTML = rooms.map((r, i) => `<div ... /* TON CODE ACTUEL QUI GÈRE LES SALLES */ ...`).join(''); document.getElementById('room-tabs-container').innerHTML += `<button onclick="window.location.href='anti-rush.html?tenantID=' + window.tenantID" style="background: rgba(239, 68, 68, 0.1); border: 1px solid #ef4444; color: #ef4444; padding: 6px 12px; border-radius: 6px; font-weight: 800; cursor: pointer; text-transform: uppercase; font-size: 0.75rem; margin-left: 20px; box-shadow: 0 0 10px rgba(239, 68, 68, 0.2);">⚡ ANTI-RUSH</button>`; }
-        function handleRoomClick(r) { if(isArchiMode && r === currentRoom) openRoomConfigModal(r); else { currentRoom = r; renderRooms(); renderFloor(); } }
-        function addNewRoom() { let n = "Salle " + (rooms.length + 1); rooms.push(n); currentRoom = n; renderRooms(); renderFloor(); }
-        function addTactileRoomName(v) { if(v === 'CLEAR') currentTactileRoomName = currentTactileRoomName.slice(0, -1); else currentTactileRoomName += v; document.getElementById('config-room-name-display').innerText = currentTactileRoomName; }
-        
-        function openRoomConfigModal(r) { configRoomOldName = r; currentTactileRoomName = r; document.getElementById('config-room-name-display').innerText = currentTactileRoomName; document.getElementById('room-config-modal').style.display = 'flex'; }
-        function closeRoomConfigModal() { configRoomOldName = null; document.getElementById('room-config-modal').style.display = 'none'; }
-        function saveRoomConfig() {
-            if(!configRoomOldName) return; let n = currentTactileRoomName.trim();
-            if(n && n !== configRoomOldName) {
-                let idx = rooms.indexOf(configRoomOldName); if(idx > -1) rooms[idx] = n;
-                tables.forEach(t => { if(t && t.room === configRoomOldName) t.room = n; });
-                if(currentRoom === configRoomOldName) currentRoom = n;
-            }
-            closeRoomConfigModal(); renderRooms(); renderFloor(); pushArchitecture();
-        }
-        function deleteCurrentRoom() {
-            if(rooms.length <= 1) return alert("Impossible de supprimer la dernière salle.");
-            if(confirm(`Supprimer la salle "${configRoomOldName}" et TOUTES ses tables ?`)) {
-                tables = tables.filter(t => t && t.room !== configRoomOldName); rooms = rooms.filter(r => r !== configRoomOldName); currentRoom = rooms[0];
-                closeRoomConfigModal(); renderRooms(); renderFloor(); pushArchitecture();
-            }
-        }
-
-        function unlockArchiMode() { if (!currentUser || currentUser.role !== 'Manager') return alert("⛔ Accès Manager requis"); isArchiMode = true; document.body.classList.add('edit-mode'); renderRooms(); renderFloor(); }
-        async function closeArchiMode() { isArchiMode = false; document.body.classList.remove('edit-mode'); renderRooms(); renderFloor(); }
-        function saveArchitecture() { pushArchitecture(); closeArchiMode(); }
-        
-        async function pushArchitecture() { 
-            await API.update('ARCHITECTURE', { rooms: rooms, tables: tables, zones: zones }); 
-            localStorage.setItem('empire_architecture', JSON.stringify(tables)); 
-            localStorage.setItem('empire_rooms', JSON.stringify(rooms)); 
-            localStorage.setItem('empire_zones', JSON.stringify(zones));
-        }
-
-        function addNewTable() {
-            let nextNum = 1; tables.filter(t => t && t.room === currentRoom).forEach(t => { let m = t.label.match(/\d+/); if(m && parseInt(m[0]) >= nextNum) nextNum = parseInt(m[0]) + 1; });
-            tables.push({ label: "T" + nextNum, l: window.innerWidth/2 - 40, t: window.innerHeight/2 - 60, w: 80, h: 120, shape: "rect", pax: 4, room: currentRoom }); 
-            renderFloor();
-        }
-        function addTactileTableName(v) { if(v === 'CLEAR') currentTactileName = currentTactileName.slice(0, -1); else currentTactileName += v; document.getElementById('config-table-name-display').innerText = currentTactileName; }
-        function setShape(s) { document.getElementById('config-table-shape').value = s; }
-        
-        function openTableConfigModal(id) {
-            let t = tables.find(x => x && x.label === id && x.room === currentRoom); if(!t) return;
-            configTableId = id; currentTactileName = t.label; 
-            document.getElementById('config-table-name-display').innerText = currentTactileName; 
-            document.getElementById('config-table-shape').value = t.shape || 'rect';
-            document.getElementById('config-table-pax').value = t.pax || 4; 
-            document.getElementById('table-config-modal').style.display = 'flex';
-        }
-        function closeTableConfigModal() { configTableId = null; document.getElementById('table-config-modal').style.display = 'none'; }
-        function saveTableConfig() {
-            let t = tables.find(x => x && x.label === configTableId && x.room === currentRoom);
-            if(t) {
-                let n = currentTactileName.trim();
-                if(n && n !== t.label) { if(activeOrders[t.label]) { activeOrders[n] = activeOrders[t.label]; delete activeOrders[t.label]; } t.label = n; }
-                t.shape = document.getElementById('config-table-shape').value;
-                t.pax = parseInt(document.getElementById('config-table-pax').value) || 4; 
-            }
-            closeTableConfigModal(); renderFloor(); 
-        }
-        function deleteCurrentTable() { if(confirm("Supprimer cette table ?")) { tables = tables.filter(t => !(t && t.label === configTableId && t.room === currentRoom)); closeTableConfigModal(); renderFloor(); } }
-        function changeConfigPax(delta) { let input = document.getElementById('config-table-pax'); let val = parseInt(input.value) || 2; val = Math.max(1, val + delta); input.value = val; }
-
-        function makeInteractive(elmnt, tableObj, resizerElnt) {
-            let p1=0, p2=0, p3=0, p4=0, iW, iH, iX, iY;
-            elmnt.onmousedown = dragMD; elmnt.ontouchstart = dragTS;
-            resizerElnt.onmousedown = resMD; resizerElnt.ontouchstart = resTS;
-            function dragMD(e) { if(!isArchiMode || e.target === resizerElnt) return; e.preventDefault(); p3=e.clientX; p4=e.clientY; document.onmouseup=close; document.onmousemove=drag; }
-            function dragTS(e) { if(!isArchiMode || e.target === resizerElnt) return; p3=e.touches[0].clientX; p4=e.touches[0].clientY; document.ontouchend=close; document.ontouchmove=tDrag; }
-            function drag(e) { e.preventDefault(); isDraggingTable=true; p1=p3-e.clientX; p2=p4-e.clientY; p3=e.clientX; p4=e.clientY; updatePos(); }
-            function tDrag(e) { isDraggingTable=true; p1=p3-e.touches[0].clientX; p2=p4-e.touches[0].clientY; p3=e.touches[0].clientX; p4=e.touches[0].clientY; updatePos(); }
-            function updatePos() { elmnt.style.top = (elmnt.offsetTop-p2)+"px"; elmnt.style.left = (elmnt.offsetLeft-p1)+"px"; tableObj.t = elmnt.offsetTop; tableObj.l = elmnt.offsetLeft; }
-            function resMD(e) { if(!isArchiMode) return; e.preventDefault(); e.stopPropagation(); iW=elmnt.offsetWidth; iH=elmnt.offsetHeight; iX=e.clientX; iY=e.clientY; document.onmouseup=close; document.onmousemove=res; }
-            function resTS(e) { if(!isArchiMode) return; e.stopPropagation(); iW=elmnt.offsetWidth; iH=elmnt.offsetHeight; iX=e.touches[0].clientX; iY=e.touches[0].clientY; document.ontouchend=close; document.ontouchmove=tRes; }
-            function res(e) { e.preventDefault(); isDraggingTable=true; updateDim(e.clientX, e.clientY); }
-            function tRes(e) { isDraggingTable=true; updateDim(e.touches[0].clientX, e.touches[0].clientY); }
-            function updateDim(cX, cY) { let nW = Math.max(40, iW+(cX-iX)); let nH = Math.max(40, iH+(cY-iY)); elmnt.style.width=nW+"px"; elmnt.style.height=nH+"px"; tableObj.w=nW; tableObj.h=nH; }
-            function close() { document.onmouseup=null; document.onmousemove=null; document.ontouchend=null; document.ontouchmove=null; setTimeout(()=>{isDraggingTable=false; renderFloor(); }, 50); } 
-        }
-
-        // --- LOGIQUE DES ZONES ---
-        function addNewZone() {
-            let nextId = "Z" + (zones.length + 1) + "_" + Date.now();
-            zones.push({ id: nextId, label: "Nouvelle Zone", l: 50, t: 50, w: 400, h: 300, room: currentRoom, color: "#3498db", payMode: "standard" });
-            renderFloor();
-        }
-        function openZoneConfigModal(id) {
-            let z = zones.find(x => x.id === id && x.room === currentRoom); if(!z) return;
-            configZoneId = id;
-            document.getElementById('config-zone-name').value = z.label || "";
-            document.getElementById('config-zone-mode').value = z.payMode || "standard";
-            document.getElementById('config-zone-color').value = z.color || "#3498db";
-            document.getElementById('zone-config-modal').style.display = 'flex';
-        }
-        function closeZoneConfigModal() { configZoneId = null; document.getElementById('zone-config-modal').style.display = 'none'; }
-        function saveZoneConfig() {
-            let z = zones.find(x => x.id === configZoneId && x.room === currentRoom);
-            if(z) {
-                z.label = document.getElementById('config-zone-name').value.trim();
-                z.payMode = document.getElementById('config-zone-mode').value;
-                z.color = document.getElementById('config-zone-color').value;
-            }
-            closeZoneConfigModal(); renderFloor(); pushArchitecture();
-        }
-        function deleteCurrentZone() {
-            if(confirm("Supprimer cette zone ?")) {
-                zones = zones.filter(z => !(z.id === configZoneId && z.room === currentRoom));
-                closeZoneConfigModal(); renderFloor(); pushArchitecture();
-            }
-        }
-
-        // =========================================================
-        // ✅ CORRECTIF TABLE → OUVERTURE DU MENU DE COMMANDE
-        // =========================================================
-        function getZoneForTable(tableLabel) {
-            try {
-                let tableObj = tables.find(t => t && t.label === tableLabel && t.room === currentRoom);
-                if (!tableObj || !Array.isArray(zones)) return null;
-
-                let tableCenterY = (tableObj.t || 0) + ((tableObj.h || 120) / 2);
-                let tableCenterX = (tableObj.l || 0) + ((tableObj.w || 80) / 2);
-
-                return zones.find(z =>
-                    z.room === currentRoom &&
-                    tableCenterX >= (z.l || 0) &&
-                    tableCenterX <= ((z.l || 0) + (z.w || 400)) &&
-                    tableCenterY >= (z.t || 0) &&
-                    tableCenterY <= ((z.t || 0) + (z.h || 300))
-                ) || null;
-            } catch (e) {
-                console.warn("Zone table introuvable :", e);
-                return null;
-            }
-        }
-
-        function checkZoneAccess(tableLabel) {
-            const activeZone = getZoneForTable(tableLabel);
-
-            if (activeZone) {
-                currentTableZoneLabel = activeZone.label || activeZone.name || "Zone";
-                currentTableId_PayMode = activeZone.payMode || activeZone.mode || "standard";
-            } else {
-                currentTableZoneLabel = "Salle";
-                currentTableId_PayMode = "standard";
-            }
-
-            // Le Pad serveur doit toujours pouvoir ouvrir la commande.
-            // QR/NFC ou BAR changent seulement l'information affichée et le mode d'encaissement.
-            return true;
-        }
-
-        function handleTableOrderTap(tableOpenKey, tableLabel) {
-            const now = Date.now();
-
-            // Évite le double déclenchement touchend + click sur tablette.
-            if (window.__lastPadTableTapAt && now - window.__lastPadTableTapAt < 280) {
-                return;
-            }
-            window.__lastPadTableTapAt = now;
-
-            try {
-                if (isArchiMode) return;
-                if (pendingAssignResa) {
-                    assignTableToResa(tableLabel || tableOpenKey);
-                    return;
-                }
-
-                const labelForZone = tableLabel || tableOpenKey;
-                if (!checkZoneAccess(labelForZone)) return;
-
-                openOrder(tableOpenKey || tableLabel);
-            } catch (err) {
-                console.error("Impossible d'ouvrir la commande :", err);
-                alert("Impossible d'ouvrir le menu de commande. Vérifiez la table ou rechargez le Pad serveur.");
-            }
-        }
-
-        function renderFloor() {
-            try {
-                let floor = document.getElementById('floor-plan'); floor.innerHTML = '';
-                let hasTables = tables.filter(t => t && t.room === currentRoom).length > 0;
-                
-                let tablesEnAttente = [];
-                for (let tLabel in activeOrders) {
-                    let order = activeOrders[tLabel];
-                    if (order && order.items && order.items.length > 0 && order.status !== 'reserved') {
-                        let unfired = order.items.filter(i => !i.fired);
-                        let hasReady = order.items.some(i => i.done);
-                        if (unfired.length > 0 && !hasReady) tablesEnAttente.push({ label: tLabel, time: Math.min(...unfired.map(i => i.itemId)) });
-                    }
-                }
-                tablesEnAttente.sort((a, b) => a.time - b.time);
-                let ordrePriorite = {}; tablesEnAttente.forEach((t, index) => { ordrePriorite[t.label] = index + 1; });
-                
-                for(let k in activeOrders) { if(activeOrders[k]) delete activeOrders[k]._isMapped; }
-
-                // 🔲 DESSIN DES ZONES SPATIALES
-                let zoneContainers = {};
-                zones.filter(z => z && z.room === currentRoom).forEach(z => {
-                    let wrapper = document.createElement('div'); wrapper.className = 'zone-wrapper';
-                    wrapper.setAttribute('data-id', z.id);
-                    
-                    let bgCol = z.color || '#3498db';
-                    let modeIcons = { 'standard': '🍽️ SERVEUR', 'qr_nfc': '📲 QR/NFC', 'bar': '🍹 BAR' };
-                    let mode = z.payMode || z.mode || 'standard';
-                    let icon = modeIcons[mode] || '🍽️';
-
-                    if (!isRushMode) {
-                        wrapper.style.left = (z.l||0)+'px'; wrapper.style.top = (z.t||0)+'px'; wrapper.style.width = (z.w||400)+'px'; wrapper.style.height = (z.h||300)+'px';
-                        
-                        let d = document.createElement('div'); d.className = 'zone-obj';
-                        d.style.borderColor = bgCol;
-                        d.style.background = `linear-gradient(135deg, ${bgCol}25, transparent)`;
-                        d.innerHTML = `<span class="zone-badge" style="color:${bgCol};">${icon} ${z.label}</span>`;
-                        
-                        let r = document.createElement('div'); r.className = 'zone-resizer';
-                        r.style.backgroundColor = bgCol;
-                        
-                        wrapper.appendChild(d); wrapper.appendChild(r);
-                        d.onclick = (e) => { if(isArchiMode) { if(!isDraggingTable && e.target !== r) openZoneConfigModal(z.id); } };
-                        if (isArchiMode) makeInteractive(wrapper, z, r);
-                    } else {
-                        let labelHtml = '';
-                        let rushColor = bgCol;
-                        if (mode === 'qr_nfc') { rushColor = '#fbbf24'; labelHtml = `ZONE AUTONOME <span style="font-size:0.75rem; font-weight:400; opacity:0.8; margin-left:10px;">💳 PAIEMENT CLIENT (QR)</span>`; } 
-                        else if (mode === 'bar') { rushColor = '#ef4444'; labelHtml = `ZONE COMPTOIR <span style="font-size:0.75rem; font-weight:400; opacity:0.8; margin-left:10px;">🚶 RETRAIT & PAIEMENT BAR</span>`; } 
-                        else { rushColor = '#10b981'; labelHtml = `ZONE CLASSIQUE <span style="font-size:0.75rem; font-weight:400; opacity:0.8; margin-left:10px;">👨‍🍳 COMMANDE SERVEUR</span>`; }
-
-                        wrapper.style.position = 'relative';
-                        wrapper.style.width = '100%';
-                        wrapper.style.height = 'auto';
-                        wrapper.style.minHeight = '140px';
-                        wrapper.style.display = 'flex';
-                        wrapper.style.flexWrap = 'wrap';
-                        wrapper.style.gap = '15px';
-                        wrapper.style.padding = '60px 20px 20px 20px';
-                        wrapper.style.border = `2px dashed ${rushColor}`;
-                        wrapper.style.borderRadius = '12px';
-                        wrapper.style.backgroundColor = `${rushColor}15`;
-                        wrapper.style.marginBottom = '15px';
-
-                        let title = document.createElement('div');
-                        title.style.position = 'absolute';
-                        title.style.top = '15px';
-                        title.style.left = '20px';
-                        title.innerHTML = `<span style="color:${rushColor}; font-size: 1.1rem; font-weight: 800; letter-spacing: 1px; text-transform: uppercase;">${icon} ${z.label} | ${labelHtml}</span>`;
-                        wrapper.appendChild(title);
-                    }
-                    
-                    zoneContainers[z.id] = wrapper;
-                    floor.appendChild(wrapper);
-                });
-
-                let unassignedWrapper = null;
-                if (isRushMode) {
-                    unassignedWrapper = document.createElement('div');
-                    unassignedWrapper.className = 'zone-wrapper unassigned-zone';
-                    unassignedWrapper.style.position = 'relative';
-                    unassignedWrapper.style.width = '100%';
-                    unassignedWrapper.style.minHeight = '120px';
-                    unassignedWrapper.style.display = 'flex';
-                    unassignedWrapper.style.flexWrap = 'wrap';
-                    unassignedWrapper.style.gap = '15px';
-                    unassignedWrapper.style.padding = '50px 20px 20px 20px';
-                    unassignedWrapper.style.border = `2px dashed var(--border-strong)`;
-                    unassignedWrapper.style.borderRadius = '12px';
-                    
-                    let title = document.createElement('div');
-                    title.style.position = 'absolute';
-                    title.style.top = '15px';
-                    title.style.left = '20px';
-                    title.innerHTML = `<span style="color:var(--text-muted); font-size: 1rem; font-weight: 700; letter-spacing: 1px; text-transform: uppercase;">🍽️ TABLES HORS ZONE</span>`;
-                    unassignedWrapper.appendChild(title);
-                }
-
-                if (hasTables) {
-                    tables.forEach(t => { if(t && !t.room) t.room = rooms[0] || 'Salle Principale'; });
-                    tables.filter(t => t && t.room === currentRoom).forEach(t => {
-                        let tStatus = ''; let isActive = false;
-                        let orderKey = Object.keys(activeOrders).find(k => k.toLowerCase() === t.label.toLowerCase() || ('t' + k).toLowerCase() === t.label.toLowerCase() || k.toLowerCase().replace(/[^a-z0-9]/gi, '') === t.label.toLowerCase().replace(/[^a-z0-9]/gi, ''));
-                        let orderData = orderKey ? activeOrders[orderKey] : null;
-                        if(orderData) orderData._isMapped = true; 
-
-                        let isReady = false;
-                        let maxDelayMin = 0;
-
-                        if (orderData && orderData.status === 'PRÊT') isReady = true;
-                        if (orderData && orderData.items && orderData.items.length > 0) {
-                            let allDone = orderData.items.every(i => i.done);
-                            if (allDone) isReady = true;
-
-                            orderData.items.forEach(i => {
-                                if (i.isSent && !i.served && i.itemId) {
-                                    let delay = (Date.now() - parseInt(i.itemId)) / 60000;
-                                    if (delay > maxDelayMin) maxDelayMin = delay;
-                                }
-                            });
-                        }
-
-                        if (orderData) {
-                            if (orderData.alerteRouge) tStatus = 'alert';
-                            else if (orderData.status === 'reserved') tStatus = 'reserved';
-                            else if (orderData.status === 'EN ATTENTE PAIEMENT') tStatus = 'payment';
-                            else if (isReady && isServiceAuBarActive) tStatus = 'ready-bar'; 
-                            else if (orderData.items && orderData.items.length > 0) { 
-                                isActive = true; tStatus = 'active'; 
-                                if (!isReady) {
-                                    if (maxDelayMin >= 25) tStatus = 'late';
-                                    else if (maxDelayMin >= 15) tStatus = 'warning';
-                                }
-                            }
-                        }
-
-                        let wrapper = document.createElement('div'); wrapper.className = 'table-wrapper';
-                        wrapper.setAttribute('data-id', t.label);
-                        if(tStatus) wrapper.classList.add('status-' + tStatus);
-                        if(orderData && orderData.status === 'reserved') wrapper.classList.add('status-reserved');
-                        if(t.isExtra) wrapper.classList.add('extra');
-                        
-                        wrapper.style.left=(t.l||0)+'px'; wrapper.style.top=(t.t||0)+'px'; wrapper.style.width=(t.w||80)+'px'; wrapper.style.height=(t.h||120)+'px';
-
-                        let pax = parseInt(t.pax) || 4;
-                        if (orderData && orderData.observations) { let match = orderData.observations.match(/🍽️ (\d+) Couvert\(s\)/); if (match) pax = parseInt(match[1]); }
-
-                        let extraPax = parseInt(t.extraPax) || 0;
-
-                        for(let i=0; i<pax; i++) {
-                            let angle = (i / pax) * 2 * Math.PI - (Math.PI / 2); 
-                            let c = document.createElement('div'); c.className = 'chair';
-                            let rx = (t.w || 80) / 2 + 12; let ry = (t.h || 120) / 2 + 12;
-                            let cx = (t.w || 80) / 2 + rx * Math.cos(angle) - 7; let cy = (t.h || 120) / 2 + ry * Math.sin(angle) - 7;
-                            c.style.left = cx + 'px'; c.style.top = cy + 'px';
-                            
-                            if (isActive || isArchiMode) { 
-                                c.innerText = i + 1; 
-                                c.style.background = 'transparent'; 
-                                
-                                if (i >= (pax - extraPax)) {
-                                    c.style.border = '2px solid var(--gold)';
-                                    c.style.color = 'var(--gold)';
-                                    c.style.boxShadow = '0 0 10px var(--gold)';
-                                    c.style.fontWeight = 'bold';
-                                } else {
-                                    c.style.border = '1px solid var(--text-muted)'; 
-                                    c.style.color = 'var(--text-muted)';
-                                    
-                                    if(tStatus === 'reserved') { c.style.borderColor = '#ff69b4'; c.style.color = '#ff69b4'; }
-                                    else if(tStatus === 'payment') { c.style.borderColor = '#bdc3c7'; c.style.color = '#bdc3c7'; }
-                                    else if(tStatus === 'active') { c.style.borderColor = '#3498db'; c.style.color = '#3498db'; }
-                                    else if(tStatus === 'alert') { c.style.borderColor = 'var(--alert)'; c.style.color = 'var(--alert)'; }
-                                    else if(tStatus === 'warning') { c.style.borderColor = '#9b59b6'; c.style.color = '#9b59b6'; }
-                                    else if(tStatus === 'late') { c.style.borderColor = '#e056fd'; c.style.color = '#e056fd'; }
-                                    else if(tStatus === 'ready-bar') { c.style.borderColor = '#38bdf8'; c.style.color = '#38bdf8'; }
-                                }
-                            }
-                            wrapper.appendChild(c);
-                        }
-
-                        let d = document.createElement('div'); d.className = 'table-obj shape-' + (t.shape || 'rect');
-                        let contentHtml = '';
-                        if (tStatus === 'alert') contentHtml = `<span style="text-align:center; display:block;">⚠️<br>${t.label || '?'}</span>`;
-                        else contentHtml = `<span style="text-align:center; display:block; font-family: 'Playfair Display', serif; font-weight:600;">${t.label || '?'}</span>`;
-                        
-                        if (isActive && !isReady && maxDelayMin >= 1) {
-                            let chronoColor = (tStatus === 'late') ? '#e056fd' : (tStatus === 'warning' ? '#9b59b6' : '#3498db');
-                            contentHtml += `<span style="font-size:0.6rem; color:${chronoColor}; margin-top:2px; font-weight:bold; letter-spacing: 1px;">⏱ ${Math.floor(maxDelayMin)} min</span>`;
-                        }
-
-                        if(orderData && orderData.status === 'reserved') {
-                             contentHtml += `<span style="font-size:0.5rem; color:#ff69b4; margin-top:4px; font-weight:500; text-transform:uppercase; letter-spacing: 1px;">${orderData.clientName.substring(0,10)}</span>`;
-                             contentHtml += `<span style="font-size:0.65rem; color:var(--text-main); margin-top:2px; font-weight:400; font-family: 'Playfair Display', serif;">${orderData.time}</span>`;
-                        } else if (orderData && orderData.isWeb) {
-                             contentHtml += `<span style="font-size:0.55rem; color:var(--bg); margin-top:5px; font-weight:600; background:var(--text-main); padding:2px 6px; border-radius:2px; letter-spacing: 1px;">WEB</span>`;
-                             contentHtml += `<span style="font-size:0.65rem; color:var(--text-main); font-weight:400; margin-top:5px; font-family: 'Playfair Display', serif;">${orderData.totalStr || ''}</span>`;
-                        } else if (t.isExtra && t.pax) {
-                            contentHtml += `<span style="font-size:0.65rem; color:var(--text-muted); margin-top:5px; font-weight:500; letter-spacing: 1px;">👤 ${t.pax}</span>`;
-                        }
-
-                        d.innerHTML = `<div class="table-content">${contentHtml}</div>`;
-                        let r = document.createElement('div'); r.className = 'table-resizer'; 
-                        wrapper.appendChild(d); wrapper.appendChild(r);
-                        
-                        let clickTimer = null;
-                        d.onclick = (e) => { 
-                            if(isArchiMode) { if(!isDraggingTable && e.target !== r) openTableConfigModal(t.label); } 
-                            else if(pendingAssignResa) { assignTableToResa(t.label); } 
-                            else if (isRushMode) {
-                                if (clickTimer == null) { clickTimer = setTimeout(() => { clickTimer = null; handleTableOrderTap(orderKey || t.label, t.label); }, 300); } 
-                                else { clearTimeout(clickTimer); clickTimer = null; }
-                            } 
-                            else { 
-                                handleTableOrderTap(orderKey || t.label, t.label); 
-                            }
-                        };
-
-                        d.ontouchend = (e) => {
-                            if (!isArchiMode) {
-                                e.preventDefault();
-                                handleTableOrderTap(orderKey || t.label, t.label);
-                            }
-                        };
-
-                        makeInteractive(wrapper, t, r); 
-                        
-                        if (isRushMode) {
-                            let tableCenterY = (t.t || 0) + ((t.h || 120) / 2);
-                            let tableCenterX = (t.l || 0) + ((t.w || 80) / 2);
-                            
-                            let activeZone = zones.find(z => 
-                                z.room === currentRoom &&
-                                tableCenterX >= (z.l || 0) && tableCenterX <= ((z.l || 0) + (z.w || 400)) &&
-                                tableCenterY >= (z.t || 0) && tableCenterY <= ((z.t || 0) + (z.h || 300))
-                            );
-
-                            if (activeZone && zoneContainers[activeZone.id]) {
-                                zoneContainers[activeZone.id].appendChild(wrapper);
-                            } else {
-                                if (!unassignedWrapper.parentNode) floor.appendChild(unassignedWrapper);
-                                unassignedWrapper.appendChild(wrapper);
-                            }
-                        } else {
-                            floor.appendChild(wrapper);
-                        }
-                    });
-                }
-
-                // COMMANDES WEB
-                let webOrders = Object.keys(activeOrders).filter(k => {
-                    let orderData = activeOrders[k];
-                    if (!orderData || orderData._isMapped) return false;
-                    let isOrder = k.startsWith('order_') || k.startsWith('W') || k.startsWith('T') || k.startsWith('WEB_');
-                    if (!isOrder) return false;
-                    if (orderData.items && orderData.items.length > 0) return true;
-                    if (orderData.status === 'EN ATTENTE PAIEMENT') return true;
-                    if (orderData.isWeb) return true;
-                    return false;
-                });
-
-                let webStartX = 20; let webStartY = 20;
-                webOrders.forEach((orderKey, index) => {
-                    let orderData = activeOrders[orderKey];
-                    let d = document.createElement('div');
-                    
-                    let statusClass = 'status-active';
-                    let isReady = orderData.status === 'PRÊT' || (orderData.items && orderData.items.length > 0 && orderData.items.every(i => i.done));
-                    let maxDelayMin = 0;
-
-                    if (orderData.items && orderData.items.length > 0) {
-                        orderData.items.forEach(i => {
-                            if (i.isSent && !i.served && i.itemId) {
-                                let delay = (Date.now() - parseInt(i.itemId)) / 60000;
-                                if (delay > maxDelayMin) maxDelayMin = delay;
-                            }
-                        });
-                    }
-                    
-                    if (orderData.alerteRouge) statusClass = 'status-alert';
-                    else if (orderData.status === 'reserved') statusClass = 'status-reserved';
-                    else if (orderData.status === 'EN ATTENTE PAIEMENT') statusClass = 'status-payment';
-                    else if (isReady && isServiceAuBarActive) statusClass = 'status-ready-bar';
-                    else if (!isReady) {
-                        if (maxDelayMin >= 25) statusClass = 'status-late';
-                        else if (maxDelayMin >= 15) statusClass = 'status-warning';
-                    }
-                    
-                    d.className = `table-obj shape-rect ${statusClass}`; 
-                    
-                    if (isRushMode) {
-                        d.style.position = 'relative';
-                    } else {
-                        d.style.left = webStartX + (index * 130) + 'px'; d.style.top = webStartY + 'px';
-                    }
-
-                    d.style.width = '110px'; d.style.height = '90px'; d.style.zIndex = '100'; d.style.cursor = 'pointer';
-
-                    let clientName = orderData.clientName ? orderData.clientName.substring(0,12) : 'Client Web';
-                    let displayTitle = orderKey.startsWith('WEB_') ? `QR` : `Table ${orderKey}`;
-
-                    let contentHtml = `<span style="color:var(--text-main); font-weight:600; font-size:0.75rem; letter-spacing: 1px;">${displayTitle}</span>`;
-                    
-                    if (!isReady && maxDelayMin >= 1 && statusClass !== 'status-alert') {
-                        let chronoColor = (statusClass === 'status-late') ? '#e056fd' : (statusClass === 'status-warning' ? '#9b59b6' : '#3498db');
-                        contentHtml += `<span style="font-size:0.6rem; color:${chronoColor}; margin-top:2px; font-weight:bold;">⏱ ${Math.floor(maxDelayMin)} min</span>`;
-                    }
-
-                    if(statusClass === 'status-alert') contentHtml += `<span style="font-size:1.5rem; margin-top:5px;">⚠️</span>`;
-                    else {
-                        contentHtml += `<span style="font-size:0.65rem; color:var(--text-muted); margin-top:8px; font-weight:400; text-align:center;">${clientName}</span>`;
-                        contentHtml += `<span style="font-size:0.75rem; color:var(--gold); font-weight:500; margin-top:5px; font-family: 'Playfair Display', serif;">${orderData.totalStr || ''}</span>`;
-                    }
-
-                    d.innerHTML = `<div class="table-content">${contentHtml}</div>`;
-                    d.onclick = () => { openOrder(orderKey); };
-                    
-                    if(isRushMode && unassignedWrapper) {
-                        unassignedWrapper.appendChild(d);
-                    } else {
-                        floor.appendChild(d);
-                    }
-                });
-                
-                renderTableZoneBadges();
-                
-            } catch (e) { console.error(e); }
-        }
-
-        // ==========================================
-        // 🍽️ GESTION DU TIROIR DE COMMANDE 🍽️
-        // ==========================================
-        function openOrder(tableLabel) {
-            const orderDrawer = document.getElementById('order-drawer');
-            if (!orderDrawer) {
-                console.error("order-drawer introuvable");
-                alert("Le tiroir de commande est introuvable dans cette page.");
-                return;
-            }
-
-            currentTableId = tableLabel;
-            currentLoyaltyPhone = null; 
-            
-            // 🔲 GESTION DU ZONING SPATIAL
-            let tableObj = tables.find(t => t && t.label === tableLabel && t.room === currentRoom);
-
-            // BOUTON RETIRER UNIQUEMENT POUR TABLES EXTRA
-            let extraBtnHtml = (tableObj && tableObj.isExtra) ? ` <button class="btn-mini" style="border-color:var(--alert); color:var(--alert); padding:4px 8px; margin-left:15px; font-size:0.7rem;" onclick="promptRemoveExtraTable('${tableLabel}')">🗑️ RETIRER</button>` : '';
-            document.getElementById('ticket-table-name').innerHTML = "TABLE " + tableLabel + extraBtnHtml;
-
-            let zoneBandeau = document.getElementById('drawer-zone-alert');
-            
-            if (zoneBandeau) {
-                zoneBandeau.style.display = 'none'; 
-                
-                if (tableObj && typeof zones !== 'undefined') {
-                    let tableCenterY = (tableObj.t || 0) + ((tableObj.h || 120) / 2);
-                    let tableCenterX = (tableObj.l || 0) + ((tableObj.w || 80) / 2);
-                    
-                    let activeZone = zones.find(z => 
-                        z.room === currentRoom &&
-                        tableCenterX >= (z.l || 0) && tableCenterX <= ((z.l || 0) + (z.w || 400)) &&
-                        tableCenterY >= (z.t || 0) && tableCenterY <= ((z.t || 0) + (z.h || 300))
-                    );
-
-                    if (activeZone) {
-                        currentTableZoneLabel = activeZone.label || activeZone.name || 'Zone';
-                        currentTableId_PayMode = activeZone.payMode || activeZone.mode; 
-                        
-                        if (currentTableId_PayMode === 'qr_nfc') {
-                            zoneBandeau.style.display = 'block';
-                            zoneBandeau.style.borderColor = activeZone.color || 'var(--alert)';
-                            zoneBandeau.style.color = activeZone.color || 'var(--alert)';
-                            zoneBandeau.style.background = (activeZone.color ? activeZone.color + '15' : 'rgba(239, 68, 68, 0.1)');
-                            zoneBandeau.innerHTML = `📲 ZONE QR/NFC : COMMANDE CLIENT AUTONOME — ENCAISSEMENT SÉPARÉ`;
-                        } 
-                        else if (currentTableId_PayMode === 'bar') {
-                            zoneBandeau.style.display = 'block';
-                            zoneBandeau.style.borderColor = activeZone.color || '#3498db';
-                            zoneBandeau.style.color = activeZone.color || '#3498db';
-                            zoneBandeau.style.background = (activeZone.color ? activeZone.color + '15' : 'rgba(52, 152, 219, 0.1)');
-                            zoneBandeau.innerHTML = `🍹 ZONE COMPTOIR : RETRAIT ET PAIEMENT AU BAR`;
-                        }
-                    } else {
-                        currentTableId_PayMode = 'standard';
-                        currentTableZoneLabel = 'Salle';
-                    }
-                } else {
-                    currentTableId_PayMode = 'standard';
-                    currentTableZoneLabel = 'Salle';
-                }
-            }
-
-            if(activeOrders[tableLabel] && activeOrders[tableLabel].status === 'reserved') {
-                currentTicket = [];
-                document.getElementById('order-obs').value = activeOrders[tableLabel].observations || '';
-            } else {
-                currentTicket = (activeOrders[tableLabel] && activeOrders[tableLabel].items) ? JSON.parse(JSON.stringify(activeOrders[tableLabel].items)) : [];
-                currentTicket.forEach(i => { if (i.isSent === undefined) i.isSent = true; });
-                document.getElementById('order-obs').value = (activeOrders[tableLabel] && activeOrders[tableLabel].observations) ? activeOrders[tableLabel].observations : '';
-            }
-            
-            if (tableObj && tableObj.isExtra && currentTicket.length === 0 && document.getElementById('order-obs').value === '') {
-                document.getElementById('order-obs').value = `🍽️ ${tableObj.pax || 1} Couvert(s)`;
-            }
-            
-            let needsUpdate = false;
-            currentTicket.forEach(i => { if (i.done && !i.served) { i.served = true; needsUpdate = true; } });
-            if (needsUpdate && activeOrders[currentTableId]) {
-                let updatedOrder = activeOrders[currentTableId];
-                updatedOrder.items = currentTicket;
-                API.update(currentTableId, updatedOrder, true);
-            }
-
-            renderSeatBar(); renderMenu('MenuJour'); renderTicket(); checkTableAlertState(currentTableId); 
-            orderDrawer.classList.add('open');
-        }
-
-        function closeOrder() { 
-            document.getElementById('order-drawer').classList.remove('open');
-            currentTableId = null; 
-            currentLoyaltyPhone = null;
-        }
-
-        function checkTableAlertState(tableId) {
-            let order = activeOrders[tableId];
-            let banner = document.getElementById('drawer-alert-banner');
-            let msgBox = document.getElementById('drawer-alert-msg');
-            
-            let isReady = false;
-            if (order && order.status === 'PRÊT') isReady = true;
-            if (order && order.items && order.items.length > 0) {
-                let allDone = order.items.every(i => i.done);
-                if (allDone) isReady = true;
-            }
-
-            let sba = document.getElementById('drawer-service-bar-alert');
-            if (sba) {
-                sba.style.display = (isReady && isServiceAuBarActive) ? 'block' : 'none';
-            }
-
-            if (order && order.alerteRouge) {
-                banner.style.display = 'flex'; msgBox.innerText = order.alerteRouge;
-            } else { banner.style.display = 'none'; }
-        }
-
-        // ==========================================
-        // 🪑 GESTION DES SIÈGES ET COUVERTS
-        // ==========================================
-        function renderSeatBar() {
-            let pax = 2;
-            let obsInput = document.getElementById('order-obs').value;
-            let match = obsInput.match(/🍽️ (\d+) Couvert\(s\)/);
-            if(match) pax = parseInt(match[1]);
-            else { let tObj = tables.find(t => t && t.label === currentTableId); if(tObj && tObj.pax) pax = tObj.pax; }
-
-            let html = `<span style="color:var(--text-muted); font-size:0.75rem; font-weight:500; align-self:center; margin-right:10px; letter-spacing: 1px; text-transform: uppercase;">Cibler :</span>`;
-            html += `<button class="btn-mini seat-btn ${currentSeat===0?'gold':''}" onclick="setSeat(0)" style="margin-right: 10px;">🍽️ CENTRE</button>`;
-            for(let i=1; i<=pax; i++) { html += `<button class="btn-mini seat-btn ${currentSeat===i?'gold':''}" onclick="setSeat(${i})">👤 ${i}</button>`; }
-            html += `<button class="btn-mini" style="background:transparent; border:1px dashed var(--border); display:flex; justify-content:center; align-items:center;" onclick="addExtraSeatToBar()">+</button>`;
-            
-            let container = document.getElementById('seat-bar-container');
-            if(container) container.innerHTML = html;
-        }
-
-        function setSeat(s) { currentSeat = s; renderSeatBar(); }
-        function addExtraSeatToBar() {
-            let maxC = 0; let obsInput = document.getElementById('order-obs').value;
-            let match = obsInput.match(/🍽️ (\d+) Couvert\(s\)/);
-            if(match) maxC = parseInt(match[1]);
-            let newPax = maxC + 1;
-            let baseObs = obsInput.replace(/🍽️ \d+ Couvert\(s\)( \| )?/, '').replace(/ \| $/, '').trim();
-            document.getElementById('order-obs').value = baseObs === "" ? `🍽️ ${newPax} Couvert(s)` : `🍽️ ${newPax} Couvert(s) | ${baseObs}`;
-            let tObj = tables.find(t => t && t.label === currentTableId);
-            if (tObj) { tObj.pax = newPax; pushArchitecture(); }
-            setSeat(newPax);
-        }
-
-// ==========================================
-        // 📋 GESTION DE LA CARTE ET AJOUT AU TICKET
-        // ==========================================
-        function renderMenu(category) {
-            currentCategory = category; let itemsToDisplay = [];
-            
-            if (category === 'MenuJour') {
-                currentCourseDefault = 2;
-                for(let k in unifiedMenu) {
-                    if(k.toLowerCase().includes('jour') || k.toLowerCase().includes('sugg')) {
-                        if(unifiedMenu[k]) itemsToDisplay.push(...unifiedMenu[k].map(i => ({...i, dest: 'cuisine', isMenuJour: true})));
-                    }
-                }
-            }
-            else if (category === 'Entrées') { 
-                currentCourseDefault = 1; 
-                for(let k in unifiedMenu) {
-                    if(k.toLowerCase().includes('entr') || k.toLowerCase().includes('tapas') || k.toLowerCase().includes('apér') || k.toLowerCase().includes('aper') || k.toLowerCase().includes('partag')) {
-                        if(unifiedMenu[k]) itemsToDisplay.push(...unifiedMenu[k].map(i => ({...i, dest: 'cuisine'})));
-                    }
-                }
-            } 
-            else if (category === 'Desserts') { 
-                currentCourseDefault = 3; 
-                for(let k in unifiedMenu) {
-                    if(k.toLowerCase().includes('dessert') || k.toLowerCase().includes('glace') || k.toLowerCase().includes('sucr') || k.toLowerCase().includes('fromag')) {
-                        if(unifiedMenu[k]) itemsToDisplay.push(...unifiedMenu[k].map(i => ({...i, dest: 'cuisine'})));
-                    }
-                }
-            } 
-            else if (category === 'Plats') { 
-                currentCourseDefault = 2; 
-                for(let k in unifiedMenu) {
-                    let kl = k.toLowerCase();
-                    let isMenu = kl.includes('jour') || kl.includes('sugg');
-                    let isEntree = kl.includes('entr') || kl.includes('tapas') || kl.includes('apér') || kl.includes('aper') || kl.includes('partag');
-                    let isDessert = kl.includes('dessert') || kl.includes('glace') || kl.includes('sucr') || kl.includes('fromag');
-
-                    if (!isMenu && !isEntree && !isDessert) {
-                        if(unifiedMenu[k]) itemsToDisplay.push(...unifiedMenu[k].map(i => ({...i, dest: 'cuisine'})));
-                    }
-                }
-            } 
-            else if (category === 'Boissons') { 
-                currentCourseDefault = 0; 
-                for(let key in unifiedMenu) { 
-                    if(unifiedMenu[key] && unifiedMenu[key][0] && unifiedMenu[key][0].dest === 'bar') {
-                        itemsToDisplay.push(...unifiedMenu[key]);
-                    }
-                } 
-            }
-
-            document.querySelectorAll('.drawer .menu-tab').forEach(b => {
-                b.classList.remove('gold'); 
-                b.style.background = 'transparent'; 
-                b.style.borderColor = 'var(--border)'; 
-                b.style.color = 'var(--text-muted)';
-                
-                let btnText = b.innerText.toUpperCase();
-                let isActive = false;
-                
-                if(category === 'MenuJour' && btnText.includes('SUGGESTIONS')) isActive = true;
-                if(category === 'Entrées' && btnText.includes('ENTRÉES')) isActive = true;
-                if(category === 'Plats' && btnText.includes('PLATS')) isActive = true;
-                if(category === 'Desserts' && btnText.includes('DESSERTS')) isActive = true;
-                if(category === 'Boissons' && btnText.includes('BAR')) isActive = true;
-
-                if(isActive) {
-                    b.classList.add('gold'); 
-                    b.style.background = 'transparent'; 
-                    b.style.borderColor = 'var(--gold)'; 
-                    b.style.color = 'var(--gold)';
-                }
-            });
-
-            const container = document.getElementById('menu-grid');
-            if (itemsToDisplay.length === 0) { 
-                container.innerHTML = `<div style="grid-column:1/-1; text-align:center; color:var(--text-muted); padding:40px; font-style:italic; font-weight: 300;">Aucun plat dans cette catégorie.<br><br><span style="font-size: 0.85rem;">Veuillez ajouter des plats depuis le Panneau d'Administration.</span></div>`; 
-                return; 
-            }
-
-            container.innerHTML = itemsToDisplay.map(item => {
-                if (item.hidden === true) return '';
-                let isSoldOut = (item.stock === 0 || item.stock === "0");
-                let cleanName = item.name.replace(/\n/g, '<br>');
-                let escapedName = escapeQuotes(item.name);
-                let price = parseFloat(item.price) || 0;
-                let tvaRate = parseFloat(item.tva) || 10;
-                
-                let stockHtml = '';
-                if (item.stock !== "" && item.stock !== undefined && item.stock > 0) {
-                    let badgeClass = 'stock-badge';
-                    if (item.stock <= stockAlerts.red) badgeClass += ' alert-red';
-                    else if (item.stock <= stockAlerts.orange) badgeClass += ' alert-orange';
-                    else if (item.stock <= stockAlerts.yellow) badgeClass += ' alert-yellow';
-                    else if (item.stock <= stockAlerts.green) badgeClass += ' alert-green';
-                    stockHtml = `<div class="${badgeClass}">${item.stock}</div>`;
-                }
-
-                // 🚨 NOUVEAU : AFFICHAGE DES BADGES ALLERGÈNES SUR LE PAD SERVEUR
-                let tagsAlert = '';
-                if (item.tags && item.tags.length > 0) {
-                    const tagMap = { 'vegan': '🌿', 'vege': '🥗', 'nogluten': '🌾', 'nopork': '🐷', 'spicy': '🌶️' };
-                    tagsAlert = `<div style="position: absolute; bottom: 8px; left: 10px; font-size: 0.75rem; pointer-events: none; opacity: 0.8;">` + 
-                        item.tags.map(t => tagMap[t] || t).join(' ') + 
-                    `</div>`;
-                }
-
-                let clickAction = (item.isMenuJour) ? `addMenuToTicket('${escapedName}', ${price}, '${item.dest}', ${tvaRate})` : `addToTicket('${escapedName}', ${price}, '${item.dest}', ${tvaRate})`;
-
-                return `
-                    <button class="btn-item ${isSoldOut ? 'sold-out' : ''}" onclick="${clickAction}" style="position: relative; padding-bottom: 25px;">
-                        ${stockHtml}
-                        <span style="pointer-events:none;">${cleanName}</span>
-                        ${tagsAlert}
-                        <span class="price" style="pointer-events:none; font-family: 'Playfair Display', serif;">${formatMoneyPad(price)}</span>
-                    </button>
-                `;
-            }).join('');
-        }
-
-        function escapeQuotes(str) { return str.replace(/'/g, "\\'").replace(/"/g, '&quot;').replace(/\n/g, '[BR]').replace(/\r/g, ''); }
-
-        function addToTicket(n, p, dest, tvaRate = 10) { 
-            let realName = n.replace(/\[BR\]/g, ' ');
-            // ... (la suite de ta fonction addToTicket existante)
-            // 🔥 NOUVEAU BLOCAGE ANTI-RUSH 3.0 🔥
-            // Si le plat nécessite une cuisson (viande/chaud) ET que la cuisine est en mode RUSH 4 ou 5
-            if (isKitchenInRush && currentRushLevel >= 4 && dest === 'cuisine') {
-                let isColdPlat = realName.toLowerCase().includes('salade') || realName.toLowerCase().includes('froid') || realName.toLowerCase().includes('tartare') || realName.toLowerCase().includes('glace');
-                if (!isColdPlat) {
-                    alert(`🛑 ARRÊT DE PRODUCTION !\nLa cuisine est saturée (Niveau ${currentRushLevel}). Veuillez suspendre l'envoi de plats chauds pour le moment ou inciter les clients à commander froid.`);
-                }
-            }
-
-            if(['entrecôte', 'entrecote', 'bœuf', 'boeuf', 'steak', 'burger', 'filet', 'canard', 'agneau', 'viande', 'tartare', 'onglet', 'bavette', 'côte', 'cote'].some(m => realName.toLowerCase().includes(m))) {
-                pendingCuissonItem = { n: realName, p, dest, tvaRate }; 
-                document.getElementById('cuisson-item-name').innerText = realName; 
-                document.getElementById('cuisson-modal').classList.add('open'); 
-                return;
-            }
-            executeAddToCart(realName, p, dest, currentCourseDefault, n, tvaRate);
-        }
-
-        let pendingCuissonItem = null;
-        function confirmCuisson(niv) { if(pendingCuissonItem) { executeAddToCart(`${pendingCuissonItem.n} (${niv})`, pendingCuissonItem.p, pendingCuissonItem.dest, currentCourseDefault, pendingCuissonItem.n, pendingCuissonItem.tvaRate); cancelCuisson(); } }
-        function cancelCuisson() { pendingCuissonItem = null; document.getElementById('cuisson-modal').classList.remove('open'); }
-
-        function executeAddToCart(n, p, dest, courseOverride, originalName, tvaRate = 10) { 
-            let cId = courseOverride !== undefined ? courseOverride : currentCourseDefault;
-            let seatId = currentSeat; 
-            let e = currentTicket.find(i => i.n === n && !i.done && !i.served && !i.isSent && i.course === cId && !i.obs && !i.isOffered && (i.seat || 0) === seatId && i.tva === tvaRate); 
-            if(e) e.qty = (e.qty||1)+1; 
-            else currentTicket.push({ id: Date.now()+Math.random(), itemId: Date.now(), n: n.replace(/\[BR\]/g, ' '), originalName: (originalName || n).replace(/\[BR\]/g, '\n'), p, tva: tvaRate, qty: 1, done: false, served: false, dest, savedToDB: false, isOffered: false, course: cId, obs: "", seat: seatId, isSent: false }); 
-            renderTicket(); 
-        }
-
-        function addMenuToTicket(n, p, dest, tvaRate = 10) {
-            let parts = n.split('[BR]');
-            if (parts.length <= 1) {
-                let cleanN = n.replace('🌟 ', '').trim();
-                executeAddToCart("🥗 Entrée (" + cleanN + ")", 0, dest, 1, n, tvaRate);
-                executeAddToCart("🔥 Plat (" + cleanN + ")", p, dest, 2, n, tvaRate);
-                executeAddToCart("🍰 Dessert (" + cleanN + ")", 0, dest, 3, n, tvaRate);
-                return;
-            }
-            let entree = parts[0] ? "🥗 " + parts[0].trim() : null;
-            let plat = parts[1] ? "🔥 " + parts[1].trim() : null;
-            let dessert = parts[2] ? "🍰 " + parts[2].trim() : null;
-            if (entree) executeAddToCart(entree, 0, dest, 1, n, tvaRate); 
-            if (plat) executeAddToCart(plat, p, dest, 2, n, tvaRate);       
-            if (dessert) executeAddToCart(dessert, 0, dest, 3, n, tvaRate); 
-            for(let i=3; i<parts.length; i++) { if(parts[i].trim() !== '') executeAddToCart("🍰 " + parts[i].trim(), 0, dest, 3, n, tvaRate); }
-        }
-
-        function renderTicket() {
-            let list = document.getElementById('ticket-list');
-            let total = 0; let totalHT = 0; let tvaTotals = { '5.5': 0, '10': 0, '20': 0, '0': 0 };
-            let htmlByCourse = { 0: '', 1: '', 2: '', 3: '' };
-            let courseNames = { 0: '🍸 BOISSONS', 1: '🥗 ENTRÉES', 2: '🔥 PLATS', 3: '🍰 DESSERTS' };
-
-            currentTicket.forEach((i, idx) => {
-                if(!i) return; let q = i.qty || 1; 
-                let ligneTTC = (parseFloat(i.p)||0) * q;
-                total += ligneTTC;
-
-                let rate = parseFloat(i.tva) || 10;
-                let ligneHT = ligneTTC / (1 + (rate / 100));
-                let ligneTVA = ligneTTC - ligneHT;
-                totalHT += ligneHT;
-                if(tvaTotals[rate] !== undefined) tvaTotals[rate] += ligneTVA; else tvaTotals[rate] = ligneTVA;
-
-                let cleanName = i.n.replace(/\n/g, ' + ');
-                let c = i.course !== undefined ? i.course : 2; 
-                let statusHtml = ''; let opacityStyle = "";
-                
-                if (!i.isSent) statusHtml = `<button class="btn-mini" style="border-color: var(--text-main); color: var(--text-main); padding: 4px 8px; font-size: 0.6rem;">NOUVEAU</button>`;
-                else if (i.served) { statusHtml = `<button class="btn-mini" style="border-color: var(--text-muted); color: var(--text-muted); padding: 4px 8px; font-size: 0.6rem;">SERVI</button>`; opacityStyle = "opacity: 0.4;"; }
-              else if (i.done) statusHtml = `<button class="btn-mini" style="background: #10b981; color: #000; border-color: #10b981; padding: 4px 8px; font-size: 0.7rem; font-weight: 800; cursor: pointer; box-shadow: 0 0 10px rgba(16,185,129,0.5);" onclick="markAsServed(${idx}); event.stopPropagation();">✋ RÉCUPÉRER</button>`;
-                else statusHtml = `<button class="btn-mini" style="border-color: var(--gold); color: var(--gold); padding: 4px 8px; font-size: 0.6rem;">ATTENTE</button>`;
-                
-                let seatBadge = (i.seat && i.seat > 0) ? `<span style="color:var(--text-muted); font-size:0.75rem; margin-right:8px; font-weight:500;">👤 ${i.seat}</span>` : `<span style="color:var(--text-muted); font-size:0.7rem; margin-right:8px; font-weight:400;">🍽️ CTR</span>`;
-                let priceHtml = i.isOffered ? `<span style="margin-right:10px; font-weight:500; color:var(--gold); font-size: 0.8rem; letter-spacing: 1px;">🎁 OFFERT</span>` : `<span style="margin-right:10px; font-weight:500; font-size: 0.95rem; font-family: 'Playfair Display', serif;">${formatMoneyPad(ligneTTC)}</span>`;
-                let obsDisplay = i.obs ? `<span style="font-size:0.7rem; color:var(--gold); margin-left: 5px; font-weight: 500;">⚠️ ${i.obs}</span>` : `<span style="font-size:0.65rem; color:var(--border-strong); font-weight: 300; margin-left: 5px;">+ Obs</span>`;
-
-                // 🔥 BOUTON D'ERREUR POUR LES PLATS DÉJÀ ENVOYÉS 🔥
-                let errorBtnHtml = i.isSent && !i.served ? `<button class="item-error-btn" onclick="openErrorModal(${idx}); event.stopPropagation();">REFAIRE</button>` : `<button class="item-delete-btn" onclick="removeTicketItem(${idx}); event.stopPropagation();">✕</button>`;
-
-                let itemHtml = `
-                <div class="ticket-item-row" style="${opacityStyle}">
-                    <div style="flex:1; cursor:pointer;" onclick="openEditItem(${idx})">
-                        <div style="font-weight:400; font-size:0.95rem; color: var(--text-main);">${seatBadge}${q>1?`<span style="color:var(--gold); font-weight:600;">${q}x</span> `:""}${cleanName||'?'}</div>
-                        <div style="display:flex; align-items:center; gap:8px; margin-top:6px;">${statusHtml}${obsDisplay}</div>
-                    </div>
-                    <div style="display: flex; align-items: center; gap: 10px;">
-                        ${priceHtml}
-                        ${errorBtnHtml}
-                    </div>
-                </div>`;
-                htmlByCourse[c] += itemHtml;
-            }); 
-
-            let finalHtml = '';
-            [0, 1, 2, 3].forEach(c => { if(htmlByCourse[c] !== '') finalHtml += `<div class="course-card"><div class="course-card-header"><span class="course-title">${courseNames[c]}</span></div><div class="course-body">${htmlByCourse[c]}</div></div>`; });
-            
-            if(finalHtml === '') finalHtml = `<div style="text-align:center; color:var(--text-muted); font-weight: 300; padding:40px 0; border: 1px dashed var(--border-strong); border-radius: 4px;">En attente de saisie...</div>`;
-            
-            list.innerHTML = finalHtml;
-            document.getElementById('ticket-total-price').innerText = `${formatMoneyPad(total)}`;
-            currentTableTotal = total;
-
-            let tvaStr = Object.entries(tvaTotals).filter(([k,v]) => v>0).map(([k,v]) => `TVA ${k}%: ${formatMoneyPad(v)}`).join(' | ');
-            if(!tvaStr) tvaStr = "Aucune TVA";
-            document.getElementById('ticket-tva').innerText = tvaStr + ` (HT: ${formatMoneyPad(totalHT)})`;
-
-            let hasUnsent = currentTicket.some(i => !i.isSent);
-            let btnSend = document.getElementById('btn-send-kds');
-            if (hasUnsent) {
-                btnSend.style.display = 'block';
-            } else {
-                btnSend.style.display = 'none';
-            }
-        }
-
-        // 🔥 LOGIQUE ANTI-RUSH : VÉRIFICATION AVANT ENVOI 🔥
-        function processOrderDispatch() {
-            if (isKitchenInRush && rushV3Settings.timeShift && rushV3Settings.timeShift.active) {
-                let hasHotDishes = currentTicket.some(i => !i.isSent && i.dest === 'cuisine');
-                if (hasHotDishes) {
-                    document.getElementById('server-ts-discount').innerText = `-${rushV3Settings.timeShift.discount}%`;
-                    document.getElementById('server-ts-delay').innerText = `${rushV3Settings.timeShift.delay} min`;
-                    document.getElementById('ts-offer-modal').classList.add('open');
-                    return; 
-                }
-            }
-            sendOrderToKDS(false);
-        }
-
-        function acceptTimeShiftServer() {
-            document.getElementById('ts-offer-modal').classList.remove('open');
-            let multiplier = 1 - (rushV3Settings.timeShift.discount / 100);
-            
-            currentTicket.forEach(i => {
-                if (!i.isSent) {
-                    i.p = i.p * multiplier; 
-                    i.timeShifted = true; 
-                    i.obs = (i.obs ? i.obs + " | " : "") + `⏱️ DÉCALÉ (+${rushV3Settings.timeShift.delay}m)`;
-                }
-            });
-            
-            sendOrderToKDS(true);
-            showToast(`✅ Le client a accepté l'offre ! Envoi différé.`);
-        }
-
-        function refuseTimeShiftServer() {
-            document.getElementById('ts-offer-modal').classList.remove('open');
-            sendOrderToKDS(false);
-        }
-
-        async function sendOrderToKDS(isTimeShifted = false) {
-            let count = 0;
-            currentTicket.forEach(i => { 
-                if (!i.isSent) { 
-                    i.isSent = true; 
-                    i.itemId = Date.now(); 
-                    if(!isTimeShifted) i.timeShifted = false; 
-                    count++; 
-                } 
-            });
-            if (count > 0) {
-                renderTicket();
-                await executeSaveTableState(false, true); 
-                alert(`✅ ${count} plats/boissons envoyés en production !`);
-            }
-        }
-
-        function executeSaveTableState(fireAllNew = false, keepOpen = false) {
-            if(currentTicket.length === 0 && !keepOpen) return;
-            let itemsToSave = JSON.parse(JSON.stringify(currentTicket));
-            let obsToSave = document.getElementById('order-obs').value.trim();
-            let targetTable = currentTableId;
-            
-            if(!keepOpen) { closeOrder(); renderFloor(); }
-
-            setTimeout(async () => {
-                try {
-                    await API.update(targetTable, { items: itemsToSave, time: new Date().toLocaleTimeString('fr-FR', {hour:'2-digit', minute:'2-digit'}), status: 'pending', observations: obsToSave }, true);
-                } catch(e) {}
-            }, 10);
-        }
-
-        // ==========================================
-        // 🤦‍♂️ GESTION DES ERREURS HUMAINES (NOUVEAU)
-        // ==========================================
-        let pendingErrorIndex = null;
-        
-        function openErrorModal(idx) {
-            pendingErrorIndex = idx;
-            document.getElementById('error-item-title').innerText = currentTicket[idx].n.replace(/\n/g, ' ');
-            document.getElementById('error-item-modal').classList.add('open');
-        }
-
-        function closeErrorModal() {
-            pendingErrorIndex = null;
-            document.getElementById('error-item-modal').classList.remove('open');
-        }
-
-        async function executeErrorItem(motif) {
-            if(pendingErrorIndex === null) return;
-            
-            let item = currentTicket[pendingErrorIndex];
-            let userName = currentUser ? currentUser.name : "Serveur";
-            
-            // 1. On annule l'ancien plat (Il passe à 0€ pour la compta et on taggue Pertes)
-            item.originalPrice = item.originalPrice !== undefined ? item.originalPrice : item.p; 
-            item.p = 0; 
-            item.isOffered = true; // Pour ne pas le facturer au client
-            item.obs = `❌ ANNULÉ (${motif})`;
-            item.done = true; // On le sort du scope de la cuisine
-
-            // 2. On recrée un NOUVEAU plat identique avec la priorité absolue
-            let newItem = JSON.parse(JSON.stringify(item));
-            newItem.id = Date.now() + Math.random();
-            newItem.itemId = Date.now(); // Reset du chrono pour la cuisine
-            newItem.p = item.originalPrice; // Le client paiera ce nouveau plat
-            newItem.isOffered = false;
-            newItem.done = false;
-            newItem.served = false;
-            newItem.isSent = true; // Déjà envoyé pour trigger l'alarme
-            newItem.timeShifted = false; // Ne DOIT PAS passer par le sas d'attente
-            newItem.obs = `🔥 URGENT : REFAIRE (${motif})`; // Le tag rouge pour le chef
-
-            currentTicket.push(newItem);
-            
-            closeErrorModal(); 
-            renderTicket();
-            executeSaveTableState(false, true);
-
-            // 3. On déclenche l'Alerte Rouge Générale sur tous les postes
-            const alerte = {
-                id: 'alert_' + Date.now(),
-                type: 'humain',
-                message: `Table ${currentTableId} : Refaire ${newItem.n} (${motif})`,
-                author: userName,
-                timestamp: Date.now()
-            };
-
-            try {
-                const state = await API.getState();
-                let settings = (state.activeOrders && state.activeOrders['SETTINGS_MASTER']) ? state.activeOrders['SETTINGS_MASTER'].data : {};
-                if (!settings.activeAlerts) settings.activeAlerts = [];
-                settings.activeAlerts.unshift(alerte);
-                await API.update('SETTINGS_MASTER', settings);
-                
-                showToast("🚨 CUISINE ALERTÉE ! Le plat repart en priorité.", true);
-            } catch(e) {}
-        }
-
-
-        // ==========================================
-        // ✏️ ÉDITION DES BONS ET MODALES STANDARDS
-        // ==========================================
-        let pendingEditIndex = null;
-        function openEditItem(idx) { 
-            pendingEditIndex = idx; let item = currentTicket[idx]; 
-            document.getElementById('edit-item-title').innerText = item.n.replace(/\n/g, ' '); 
-            document.getElementById('edit-item-price').value = item.p; 
-            document.getElementById('edit-item-obs').value = item.obs || ""; 
-            document.getElementById('edit-item-course').value = item.course !== undefined ? item.course : 2;
-            document.getElementById('edit-item-seat').value = item.seat || 0;
-            updateEditSeatDisplay(item.seat || 0); 
-            document.getElementById('edit-item-modal').classList.add('open'); 
-        }
-        function closeEditModal() { pendingEditIndex = null; document.getElementById('edit-item-modal').classList.remove('open'); }
-        
-        function updateEditSeatDisplay(seatNum) { document.getElementById('edit-item-seat-display').innerText = seatNum === 0 ? '🍽️ CENTRE' : '👤 C' + seatNum; }
-        function cycleEditSeat() {
-            let input = document.getElementById('edit-item-seat');
-            let next = (parseInt(input.value) || 0) + 1;
-            if (next > 8) next = 0; 
-            input.value = next; updateEditSeatDisplay(next);
-        }
-
-        function saveItemEdit() {
-            if(pendingEditIndex === null) return; 
-            let p = parseFloat(document.getElementById('edit-item-price').value);
-            let c = parseInt(document.getElementById('edit-item-course').value);
-            let seat = parseInt(document.getElementById('edit-item-seat').value) || 0;
-            let obsVal = document.getElementById('edit-item-obs').value.trim();
-            if(!isNaN(p)) { currentTicket[pendingEditIndex].p = p; currentTicket[pendingEditIndex].obs = obsVal; currentTicket[pendingEditIndex].course = c; currentTicket[pendingEditIndex].seat = seat; }
-            closeEditModal(); renderTicket();
-            executeSaveTableState(false, true);
-        }
-
-        function offerItem() {
-            if(pendingEditIndex === null) return;
-            let item = currentTicket[pendingEditIndex];
-            let maxQty = item.qty || 1;
-            let qtyToOfferStr = prompt(`Combien de "${item.n.replace(/\n/g, ' ')}" voulez-vous offrir ? (Max: ${maxQty})`, "1");
-            if (!qtyToOfferStr) return; 
-            let qtyToOffer = parseInt(qtyToOfferStr);
-            if (isNaN(qtyToOffer) || qtyToOffer <= 0 || qtyToOffer > maxQty) return alert("⚠️ Quantité invalide.");
-
-            if (qtyToOffer === maxQty) {
-                item.originalPrice = item.originalPrice !== undefined ? item.originalPrice : item.p; 
-                item.p = 0; item.isOffered = true; item.obs = (item.obs ? item.obs + " | " : "") + "🎁 Geste Co.";
-            } else {
-                item.qty = maxQty - qtyToOffer; 
-                let offeredItem = JSON.parse(JSON.stringify(item)); 
-                offeredItem.id = Date.now() + Math.random(); offeredItem.qty = qtyToOffer;
-                offeredItem.originalPrice = offeredItem.originalPrice !== undefined ? offeredItem.originalPrice : offeredItem.p;
-                offeredItem.p = 0; offeredItem.isOffered = true; offeredItem.obs = (offeredItem.obs ? offeredItem.obs + " | " : "") + "🎁 Geste Co.";
-                currentTicket.push(offeredItem);
-            }
-            closeEditModal(); renderTicket();
-            executeSaveTableState(false, true);
-        }
-
-        function openSurMesureModal() { document.getElementById('sm-name').value = ''; document.getElementById('sm-price').value = ''; document.getElementById('sur-mesure-modal').classList.add('open'); }
-        function closeSurMesureModal() { document.getElementById('sur-mesure-modal').classList.remove('open'); }
-        function addSurMesure() {
-            let n = document.getElementById('sm-name').value.trim();
-            let p = parseFloat(document.getElementById('sm-price').value) || 0;
-            let c = parseInt(document.getElementById('sm-course').value);
-            let tvaRate = parseFloat(document.getElementById('sm-tva').value);
-            if(!n) return alert("Veuillez entrer un nom.");
-            let dest = (c === 0) ? 'bar' : 'cuisine';
-            executeAddToCart("✏️ " + n, p, dest, c, "✏️ " + n, tvaRate);
-            closeSurMesureModal();
-        }
-
-        let pendingCancelIndex = null;
-        function removeTicketItem(idx) { pendingCancelIndex = idx; document.getElementById('cancel-item-name').innerText = `${currentTicket[idx].n.replace(/\n/g, ' ')}`; document.getElementById('cancel-modal').classList.add('open'); }
-        function abortCancelItem() { pendingCancelIndex = null; document.getElementById('cancel-modal').classList.remove('open'); }
-        async function executeCancelItem(raison) {
-            if (pendingCancelIndex === null) return;
-            const reason = String(raison || '').trim();
-            if (reason.length < 3) return alert('Motif d’annulation obligatoire.');
-            if (!(await requirePermission('ORDER_ITEM_CANCEL', { tableId: currentTableId }))) return;
-
-            const item = currentTicket[pendingCancelIndex];
-            const cancelledSnapshot = JSON.parse(JSON.stringify(item));
-            if (item.qty > 1) item.qty -= 1; else currentTicket.splice(pendingCancelIndex, 1);
-            await auditEvent('ORDER_ITEM_CANCELLED', { tableId: currentTableId, reason, item: cancelledSnapshot });
-            pendingCancelIndex = null;
-            document.getElementById('cancel-modal').classList.remove('open');
-            renderTicket();
-            await executeSaveTableState(false, true);
-        }
-
-        function confirmClearTicket() { if(currentTicket.length === 0) return; document.getElementById('clear-ticket-modal').classList.add('open'); }
-        function abortClearTicket() { document.getElementById('clear-ticket-modal').classList.remove('open'); }
-        async function executeClearTicket(raison) {
-            const reason = String(raison || '').trim();
-            if (reason.length < 3) return alert('Motif obligatoire.');
-            if (!(await requirePermission('ORDER_VOID', { tableId: currentTableId }))) return;
-            const tableId = currentTableId;
-            await API.update(tableId, null, true, { reason, operationType: 'ORDER_VOID' });
-            await auditEvent('ORDER_VOID_REQUESTED', { tableId, reason }, false);
-            currentTicket = [];
-            renderTicket();
-            document.getElementById('clear-ticket-modal').classList.remove('open');
-            closeOrder(); renderFloor();
-        }
-
-        // ==========================================
-        // 💳 SYSTÈME D'ENCAISSEMENT ET FIDÉLITÉ
-        // ==========================================
-        let paymentsDone = [];
-        let currentTableTotal = 0;
-        let currentPayRemaining = 0;
-        let fidelityDiscountUsed = 0; 
-        let loyaltyClientName = null;
-
-
-        // ==========================================
-        // 🧾 SÉPARATION PAD SERVEUR / CAISSE FISCALE
-        // ==========================================
-        function getCashRegisterSettings() {
-            return (window.systemSettings && window.systemSettings.cashRegister) ? window.systemSettings.cashRegister : {};
-        }
-
-        function getQrNfcSettings() {
-            return (window.systemSettings && window.systemSettings.qrNfc) ? window.systemSettings.qrNfc : {};
-        }
-
-        function isFiscalCashRegisterReady() {
-            const cash = getCashRegisterSettings();
-            return cash.enabled === true && cash.fiscalMode === true && !!(cash.backendUrl || "/api/fiscal/cash-in");
-        }
-
-        function getFiscalBackendUrl() {
-            const cash = getCashRegisterSettings();
-            return cash.backendUrl || "/api/fiscal/cash-in";
-        }
-
-        function getCurrencyCodeForPad() {
-            const currency = window.systemSettings?.taxConfig?.currency || window.systemSettings?.currency || "€";
-            if (currency === "CHF") return "CHF";
-            if (currency === "$") return "USD";
-            if (currency === "C$") return "CAD";
-            return "EUR";
-        }
-
-        function getDisplayCurrencyForPad() {
-            return window.systemSettings?.taxConfig?.currency || window.systemSettings?.currency || "€";
-        }
-
-        function formatMoneyPad(amount) {
-            return `${(parseFloat(amount) || 0).toFixed(2)} ${getDisplayCurrencyForPad()}`;
-        }
-
-        function getFiscalContextForPad() {
-            return {
-                country: window.systemSettings?.taxConfig?.country || (getCurrencyCodeForPad() === "CHF" ? "CH" : "FR"),
-                currency: getCurrencyCodeForPad(),
-                displayCurrency: getDisplayCurrencyForPad(),
-                taxConfig: window.systemSettings?.taxConfig || null,
-                source: "PAD_SERVEUR_CONTEXT"
-            };
-        }
-
-        function openCaisseTactileFromPad() {
-            window.location.href = `caissetactile.html?tenantID=${appTenantID}`;
-        }
-
-        function normalizeFiscalPaymentMethod(methods) {
-            const raw = Array.isArray(methods) ? methods.map(m => String(m.method || m)).join(" + ") : String(methods || "");
-            if (raw.includes("CB") || raw.toUpperCase().includes("CARD")) return "CARD";
-            if (raw.includes("ESPÈCES") || raw.toUpperCase().includes("CASH")) return "CASH";
-            if (raw.toUpperCase().includes("STRIPE") || raw.toUpperCase().includes("ONLINE")) return "ONLINE";
-            return "OTHER";
-        }
-
-        function getCurrentPaxFromPad() {
-            try {
-                const obsInput = document.getElementById('order-obs')?.value || "";
-                const match = obsInput.match(/🍽️ (\d+) Couvert\(s\)/);
-                if (match) return parseInt(match[1]);
-                const tObj = tables.find(t => t && t.label === currentTableId);
-                return tObj?.pax || 1;
-            } catch(e) {
-                return 1;
-            }
-        }
-
-        function getCurrentZoneLabelForPad() {
-            return currentTableZoneLabel || "Salle";
-        }
-
-        function updateCashRegisterBadge() {
-            const badge = document.getElementById('badge-fiscal-cash');
-            if (!badge) return;
-
-            if (isFiscalCashRegisterReady()) {
-                badge.style.display = 'block';
-                badge.innerHTML = '🧾 CAISSE SERVEUR ACTIVE';
-                badge.style.color = 'var(--gold)';
-                badge.style.borderColor = 'var(--gold)';
-            } else {
-                badge.style.display = 'block';
-                badge.innerHTML = '🧾 CAISSE SÉPARÉE — PAD NON FISCAL';
-                badge.style.color = 'var(--text-muted)';
-                badge.style.borderColor = 'var(--border)';
-            }
-        }
-
-        async function sendPadPaymentToFiscalBackend({ totalHT, tvaTotals }) {
-            const fiscalBackendUrl = getFiscalBackendUrl();
-            const normalizedMethod = normalizeFiscalPaymentMethod(paymentsDone);
-            const currency = getCurrencyCodeForPad();
-
-            const payload = {
-                tenantID: appTenantID,
-                tableId: currentTableId,
-                deviceId: getDeviceFingerprint(),
-                source: "PAD_SERVEUR_PAYMENT_REQUEST",
-                fiscalContext: getFiscalContextForPad(),
-                fiscalRequirements: {
-                    frontendNotice: "Le Pad Serveur transmet la demande d'encaissement ; la preuve fiscale doit être créée, signée et conservée côté serveur.",
-                    expectedBackendControls: ["ticket_number", "hash_chain", "digital_signature", "audit_log", "daily_closure", "archive_export"]
-                },
-                payment: {
-                    method: normalizedMethod,
-                    currency: currency,
-                    amount: Number(currentTableTotal.toFixed(2)),
-                    details: paymentsDone
-                },
-                orderSnapshot: {
-                    tableId: currentTableId,
-                    zone: getCurrentZoneLabelForPad(),
-                    mode: currentTableId_PayMode || "standard",
-                    pax: getCurrentPaxFromPad(),
-                    total: Number(currentTableTotal.toFixed(2)),
-                    totalHT: Number(totalHT.toFixed(2)),
-                    tva: tvaTotals,
-                    items: currentTicket,
-                    waiter: currentUser ? currentUser.name : null,
-                    cashedAt: new Date().toISOString()
-                }
-            };
-
-            const response = await fetch(`${APP_SERVER_URL}${fiscalBackendUrl.startsWith('/') ? fiscalBackendUrl : '/' + fiscalBackendUrl}`, {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify(payload)
-            });
-
-            const data = await response.json().catch(() => ({}));
-
-            if (!response.ok || data.success === false) {
-                throw new Error(data.error || "Erreur lors de la création du ticket fiscal.");
-            }
-
-            return data;
-        }
-
-       function openPaymentModal() {
-            if (currentGlobalScheduledMode === 'closed') {
-                return alert("🛑 IMPOSSIBLE : Le restaurant est programmé comme FERMÉ à cette heure-ci.");
-            }
-
-            if (currentTicket.length === 0) return alert("Table vide.");
-
-            let td = activeOrders[currentTableId];
-            if (!td || !td.items || td.items.length !== currentTicket.length) {
-                return alert("⚠️ Sauvegardez les modifications avant d'encaisser.");
-            }
-
-            const isQrOrderZone = (typeof currentTableId_PayMode !== 'undefined' && currentTableId_PayMode === 'qr_nfc') || (currentGlobalScheduledMode === 'qr_nfc');
-
-            if (isQrOrderZone) {
-                const ok = confirm(
-                    "📲 Cette table est en zone QR/NFC.\n\n" +
-                    "QR/NFC = prise de commande client.\n" +
-                    "Caisse = encaissement séparé.\n\n" +
-                    "Continuer vers l'encaissement depuis le Pad Serveur ?"
-                );
-                if (!ok) return;
-            }
-
-            if (!isFiscalCashRegisterReady()) {
-                alert(
-                    "Encaissement bloqué.\n\n" +
-                    "Le Pad Serveur n'est pas une caisse fiscale autonome.\n" +
-                    "Activez la caisse fiscale serveur dans l'administration ou ouvrez caissetactile.html.\n\n" +
-                    "Aucun règlement client ne doit être clôturé en historique interne depuis le Pad."
-                );
-                return;
-            }
-
-            document.getElementById('pay-modal-title').innerText = "TABLE " + currentTableId;
-            document.getElementById('pay-modal-total').innerText = formatMoneyPad(currentTableTotal);
-
-            paymentsDone = [];
-            fidelityDiscountUsed = 0;
-            currentPayRemaining = currentTableTotal;
-            updatePaymentUI();
-
-            let lZone = document.getElementById('loyalty-zone');
-            if (isLoyaltyActive) {
-                lZone.style.display = 'flex';
-                updateLoyaltyUI();
-            } else {
-                lZone.style.display = 'none';
-            }
-
-            document.getElementById('payment-modal').classList.add('open');
-        }
-
-        function openLoyaltyPrompt() {
-            let phone = prompt("📱 Numéro de téléphone du client (ex: 0612345678) :");
-            if (!phone) return;
-            phone = phone.replace(/\s+/g, '');
-            if(phone.length < 8) return alert("Numéro invalide.");
-            
-            currentLoyaltyPhone = phone;
-            
-            if(!globalLoyaltyData[phone]) {
-                let name = prompt("✨ Nouveau client ! Quel est son prénom/nom ?");
-                globalLoyaltyData[phone] = { name: name || 'Client', points: 0 };
-            }
-            
-            loyaltyClientName = globalLoyaltyData[phone].name;
-            updateLoyaltyUI();
-        }
-
-        function updateLoyaltyUI() {
-            let statusText = document.getElementById('loyalty-status-text');
-            let actionBtn = document.getElementById('btn-loyalty-action');
-            
-            if(!currentLoyaltyPhone) {
-                statusText.innerText = "Aucun compte lié.";
-                actionBtn.innerText = "ASSOCIER";
-                actionBtn.setAttribute("onclick", "openLoyaltyPrompt()");
-            } else {
-                let solde = globalLoyaltyData[currentLoyaltyPhone].points || 0;
-                statusText.innerHTML = `Connecté : <b>${loyaltyClientName}</b><br>Cagnotte dispo : <strong style="color:var(--text-main); font-size:1rem;">${solde.toFixed(2)} €</strong>`;
-                
-                if (solde > 0 && currentPayRemaining > 0) {
-                    actionBtn.innerText = "DÉDUIRE";
-                    actionBtn.setAttribute("onclick", "useLoyaltyPoints()");
-                } else {
-                    actionBtn.innerText = "MODIFIER";
-                    actionBtn.setAttribute("onclick", "openLoyaltyPrompt()");
-                }
-            }
-        }
-
-        function useLoyaltyPoints() {
-            if(!currentLoyaltyPhone || !globalLoyaltyData[currentLoyaltyPhone]) return;
-            let solde = globalLoyaltyData[currentLoyaltyPhone].points || 0;
-            
-            let maxDeductible = Math.min(solde, currentPayRemaining);
-            let deductStr = prompt(`Combien de la cagnotte voulez-vous utiliser ?\nMax possible: ${maxDeductible.toFixed(2)}€`, maxDeductible.toFixed(2));
-            
-            if(!deductStr) return;
-            let deduct = parseFloat(deductStr.replace(',', '.'));
-            
-            if(isNaN(deduct) || deduct <= 0 || deduct > maxDeductible + 0.05) return alert("Montant invalide.");
-            
-            fidelityDiscountUsed += deduct;
-            globalLoyaltyData[currentLoyaltyPhone].points -= deduct; 
-            
-            paymentsDone.push({ method: '🎁 CAGNOTTE', amount: deduct });
-            currentPayRemaining -= deduct;
-            if(currentPayRemaining < 0) currentPayRemaining = 0;
-            
-            updateLoyaltyUI();
-            updatePaymentUI();
-        }
-
-        function setRemainderAmount() {
-            document.getElementById('pay-amount-input').value = currentPayRemaining.toFixed(2);
-        }
-
-        function processPartialPayment(method) {
-            let amtInput = document.getElementById('pay-amount-input').value;
-            let amt = parseFloat(amtInput.replace(',', '.'));
-            if(isNaN(amt) || amt <= 0) return alert("⚠️ Saisissez un montant valide.");
-            
-            let isVoucher = (method === 'TR' || method === 'CV');
-            if(!isVoucher && amt > currentPayRemaining + 0.05) return alert("⚠️ Le montant dépasse le reste à payer.");
-            if (isVoucher && amt > currentPayRemaining) { if (!confirm(`On ne rend pas la monnaie sur les ${method}. Valider ?`)) return; }
-
-            if (method === 'ESPÈCES') {
-                let cashGivenStr = prompt(`💵 Espèces données par le client ?\n(Reste à payer : ${amt.toFixed(2)}€)`);
-                if (!cashGivenStr) return; 
-                let cashGiven = parseFloat(cashGivenStr.replace(',', '.'));
-                if (isNaN(cashGiven) || cashGiven < amt) return alert("⚠️ Montant insuffisant.");
-                let changeDue = cashGiven - amt;
-                if (changeDue > 0) alert(`💰 MONNAIE À RENDRE : ${changeDue.toFixed(2)} €`);
-            }
-            
-            paymentsDone.push({ method: method, amount: amt });
-            currentPayRemaining -= amt;
-            if(currentPayRemaining < 0) currentPayRemaining = 0;
-            updatePaymentUI();
-        }
-
-        function updatePaymentUI() {
-            document.getElementById('pay-remaining').innerText = formatMoneyPad(currentPayRemaining);
-            document.getElementById('pay-amount-input').value = currentPayRemaining.toFixed(2);
-            
-            let histList = document.getElementById('payment-history');
-            if(paymentsDone.length === 0) histList.innerHTML = '<span style="color:var(--text-muted); font-weight: 300;">Aucun paiement enregistré</span>';
-            else {
-                histList.innerHTML = paymentsDone.map(p => `
-                    <div style="display:flex; justify-content:space-between; color:var(--text-main); font-weight:500; background:transparent; padding:10px 0; border-bottom:1px solid var(--border-strong);">
-                        <span>${p.method}</span>
-                        <span style="color:var(--gold); font-family: 'Playfair Display', serif;">${formatMoneyPad(p.amount)}</span>
-                    </div>
-                 `).join('');
-            }
-            
-            if(currentPayRemaining <= 0) {
-                document.querySelector('.pay-methods').style.display = 'none';
-                document.getElementById('pay-amount-input').style.display = 'none';
-                document.getElementById('btn-close-table').style.display = 'block';
-            } else {
-                document.querySelector('.pay-methods').style.display = 'flex';
-                document.getElementById('pay-amount-input').style.display = 'block';
-                document.getElementById('btn-close-table').style.display = 'none';
-            }
-        }
-
-        function closePaymentModal() { document.getElementById('payment-modal').classList.remove('open'); }
-
-        async function finalizeTablePayment() {
-            if (typeof isDemoMode !== 'undefined' && isDemoMode) {
-                document.getElementById('payment-modal').classList.remove('open');
-                closeOrder();
-                return alert("✅ [MODE DÉMO] Paiement encaissé fictivement. Historique non sauvegardé.");
-            }
-
-            document.getElementById('payment-modal').classList.remove('open');
-
-            try {
-                const state = await API.getState();
-
-                let totalHT = 0;
-                let tvaTotals = {};
-
-                currentTicket.forEach(i => {
-                    let ligneTTC = (parseFloat(i.p) || 0) * (i.qty || 1);
-                    let rate = parseFloat(i.tva) || 10;
-                    let ligneHT = ligneTTC / (1 + (rate / 100));
-                    totalHT += ligneHT;
-                    tvaTotals[rate] = (tvaTotals[rate] || 0) + (ligneTTC - ligneHT);
-                });
-
-                let fiscalResult = null;
-                let fiscalStatus = "INTERNAL_HISTORY_ONLY";
-
-                if (isFiscalCashRegisterReady()) {
-                    fiscalResult = await sendPadPaymentToFiscalBackend({
-                        totalHT,
-                        tvaTotals
-                    });
-
-                    fiscalStatus = "FISCALIZED";
-                } else {
-                    alert(
-                        "Encaissement refusé.\n\n" +
-                        "La caisse fiscale serveur n'est pas active.\n" +
-                        "Le Pad Serveur peut gérer la commande et le service, mais il ne doit pas clôturer un règlement client sans ticket fiscal serveur."
-                    );
-                    return;
-                }
-
-                if (isLoyaltyActive && currentLoyaltyPhone && globalLoyaltyData[currentLoyaltyPhone]) {
-                    let montantEligibleCashback = currentTableTotal - fidelityDiscountUsed;
-                    if (montantEligibleCashback > 0) {
-                        let argentGagne = montantEligibleCashback * (loyaltyPercent / 100);
-                        globalLoyaltyData[currentLoyaltyPhone].points += argentGagne;
-
-                        await API.update('LOYALTY_MASTER', globalLoyaltyData);
-                        alert(`🎁 Le client ${globalLoyaltyData[currentLoyaltyPhone].name} vient de gagner ${argentGagne.toFixed(2)} € sur sa cagnotte !`);
-                    }
-                }
-
-                let transaction = {
-                    id: 'TX_' + Date.now(),
-                    date: new Date().toISOString(),
-                    method: paymentsDone.map(h => h.method).join(' + '),
-                    payments: paymentsDone,
-                    totalTTC: parseFloat(currentTableTotal.toFixed(2)),
-                    totalHT: parseFloat(totalHT.toFixed(2)),
-                    tva: tvaTotals,
-                    source: 'Pad Serveur (' + currentTableId + ')',
-                    zone: getCurrentZoneLabelForPad(),
-                    mode: currentTableId_PayMode || "standard",
-                    fiscalStatus: fiscalStatus,
-                    fiscalTicket: fiscalResult ? {
-                        ticketNumber: fiscalResult.ticket?.ticketNumber || fiscalResult.ticket?.ticket_number || null,
-                        chainHash: fiscalResult.ticket?.chainHash || fiscalResult.ticket?.chain_hash || null,
-                        createdAt: fiscalResult.ticket?.createdAt || fiscalResult.ticket?.created_at || null
-                    } : null,
-                    items: currentTicket
-                };
-
-                let historyNode = state.activeOrders['FINANCIAL_HISTORY'] || { data: [] };
-                historyNode.data.push(transaction);
-                await API.update('FINANCIAL_HISTORY', historyNode.data);
-
-                await API.update(currentTableId, null, true, { reason: 'Clôture de table après encaissement validé', operationType: 'TABLE_CLOSED' });
-                window.print();
-
-                if (fiscalStatus === "FISCALIZED") {
-                    alert("✅ Ticket fiscal généré et table clôturée.");
-                } else {
-                    alert("⚠️ Clôture interne non autorisée en production.");
-                }
-
-                closeOrder();
-                renderFloor();
-
-            } catch (e) {
-                console.error("Erreur clôture Pad Serveur :", e);
-                alert("❌ Encaissement refusé : " + (e.message || "erreur inconnue"));
-            }
-        }
-
-        function openHistoryDrawer() {
-            document.getElementById('history-drawer').classList.add('open');
-            API.getState().then(s => {
-                let hData = s.activeOrders['FINANCIAL_HISTORY'] ? s.activeOrders['FINANCIAL_HISTORY'].data : [];
-                let container = document.getElementById('history-content');
-                if(hData.length === 0) { container.innerHTML = '<div style="color:var(--text-muted); text-align:center;">Aucun historique</div>'; return; }
-                
-                hData.sort((a,b) => new Date(b.date) - new Date(a.date));
-                let html = hData.map(t => {
-                    let d = new Date(t.date);
-                    return `<div style="background:var(--panel); border:1px solid var(--border-strong); padding:15px; border-radius:4px;">
-                        <div style="display:flex; justify-content:space-between; border-bottom:1px solid var(--border); padding-bottom:10px; margin-bottom:10px;">
-                            <span style="color:var(--gold); font-weight:bold;">${t.source}</span>
-                            <span style="color:var(--text-muted); font-size:0.8rem;">${d.toLocaleDateString()} ${d.toLocaleTimeString()}</span>
-                        </div>
-                        <div style="display:flex; justify-content:space-between; font-weight:bold;">
-                            <span>TOTAL</span>
-                            <span style="color:var(--gold);">${formatMoneyPad(t.totalTTC)}</span>
-                        </div>
-                        <div style="font-size:0.7rem; color:var(--text-muted); text-align:right; margin-top:5px;">${t.method}</div>
-                    </div>`;
-                }).join('');
-                container.innerHTML = html;
-            });
-        }
-        function closeDrawer(id) { document.getElementById(id).classList.remove('open'); }
-
-        // ==========================================
-        // ➕ GESTION DES TABLES EXTRA (VOLANTES)
-        // ==========================================
-        function addExtraTable() {
-            let tableName = prompt("Nom de la table supplémentaire (ex: EXT-2, DEBOUT, BAR) :");
-            if (!tableName) return;
-            tableName = tableName.trim().toUpperCase();
-
-            if (tables.find(t => t && t.label === tableName && t.room === currentRoom)) {
-                return alert("❌ Ce nom de table existe déjà dans cette salle.");
-            }
-
-            let paxStr = prompt("Combien de couverts ?", "2");
-            if (!paxStr) return;
-            let pax = parseInt(paxStr) || 2;
-
-            let baseL = window.innerWidth / 2 - 40;
-            let baseT = window.innerHeight / 2 - 60;
-
-            let roomZones = zones.filter(z => z && z.room === currentRoom);
-            if (roomZones.length > 0) {
-                let zPrompt = "Dans quelle zone placer la table ?\n\n";
-                roomZones.forEach((z, i) => { zPrompt += `[ ${i + 1} ] - ${z.label}\n`; });
-                zPrompt += `[ 0 ] - Aucune zone (Hors zone)\n\nEntrez le numéro :`;
-                
-                let zChoice = prompt(zPrompt, "1");
-                if (zChoice !== null && zChoice !== "0") {
-                    let selectedZone = roomZones[parseInt(zChoice) - 1];
-                    if (selectedZone) {
-                        baseL = (selectedZone.l || 0) + ((selectedZone.w || 400) / 2) - 40;
-                        baseT = (selectedZone.t || 0) + ((selectedZone.h || 300) / 2) - 60;
-                    }
-                }
-            }
-
-            let randomOffsetX = Math.floor(Math.random() * 80) - 40;
-            let randomOffsetY = Math.floor(Math.random() * 80) - 40;
-
-            tables.push({
-                label: tableName,
-                l: baseL + randomOffsetX,
-                t: baseT + randomOffsetY,
-                w: 80,
-                h: 120,
-                shape: "rect",
-                pax: pax,
-                room: currentRoom,
-                isExtra: true
-            });
-
-            pushArchitecture();
-            renderFloor();
-        }
-
-        async function promptRemoveExtraTable(tableName) {
-            if (!(await requirePermission('FLOORPLAN_DELETE', { tableId: tableName }))) return;
-            const reason = prompt('Motif obligatoire pour retirer cette table :');
-            if (!reason || reason.trim().length < 5) return alert('Motif obligatoire.');
-
-            const order = activeOrders[tableName];
-            if (order && order.items && order.items.length > 0) {
-                return alert('❌ Impossible de retirer une table contenant une commande active. Annulez ou transférez d’abord la commande selon la procédure autorisée.');
-            }
-
-            const response = await secureFetch('/api/floorplan/tables/archive', {
-                method: 'POST',
-                body: JSON.stringify({ tenantID: appTenantID, tableId: tableName, room: currentRoom, reason: reason.trim() })
-            });
-            const result = await response.json().catch(() => ({}));
-            if (!response.ok || !result.success) return alert(result.error || 'Suppression refusée.');
-
-            tables = tables.filter(t => !(t && t.label === tableName && t.room === currentRoom));
-            await auditEvent('FLOORPLAN_TABLE_ARCHIVED', { tableId: tableName, room: currentRoom, reason: reason.trim() }, false);
-            pushArchitecture(); closeOrder(); renderFloor();
-        }
-
-        // ==========================================
-        // 🧑‍🤝‍🧑 GESTION DES CLIENTS EXTRA (SIÈGES EN PLUS)
-        // ==========================================
-        async function addExtraClient() {
-            let tableName = prompt("🧑‍🤝‍🧑 À quelle table voulez-vous ajouter un client supplémentaire ?\n(ex: 12, T1)");
-            if (!tableName) return;
-            tableName = tableName.trim().toUpperCase();
-
-            let tObj = tables.find(t => t && t.label === tableName && t.room === currentRoom);
-            if (!tObj) {
-                return alert(`❌ ERREUR HUMAINE : La table "${tableName}" n'existe pas dans la salle "${currentRoom}". Vérifiez votre saisie.`);
-            }
-
-            let extraStr = prompt(`Combien de clients voulez-vous ajouter à la table ${tableName} ?`, "1");
-            let extra = parseInt(extraStr);
-            if (isNaN(extra) || extra <= 0) return;
-
-            tObj.extraPax = (tObj.extraPax || 0) + extra;
-            tObj.pax = (tObj.pax || 2) + extra;
-            
-            pushArchitecture();
-
-            let order = activeOrders[tableName];
-            if (!order) order = { status: 'active', items: [], observations: '' };
-            
-            let baseObs = order.observations || "";
-            baseObs = baseObs.replace(/🍽️ \d+ Couvert\(s\)( \| )?/, '').replace(/ \| $/, '').trim();
-            order.observations = `🍽️ ${tObj.pax} Couvert(s) | ⚠️ +${tObj.extraPax} EXTRA(S) | ${baseObs}`;
-            
-            await API.update(tableName, order, true);
-            
-            await API.update('ALERTS_MASTER', { 
-                type: 'RING', 
-                message: `⚠️ NOUVEAU CLIENT EXTRA AJOUTÉ À LA TABLE ${tableName} (+${extra} Couvert(s))` 
-            });
-
-            renderFloor();
-            alert(`✅ C'est validé ! ${extra} client(s) ajouté(s) à la table ${tableName}. La cuisine a été prévenue.`);
-        }
-
-        function openQuickOrder() {
-            const tempTableId = "W" + Math.floor(Math.random() * 1000);
-            openOrder(tempTableId);
-        }
-
-        document.addEventListener('DOMContentLoaded', () => {
-            document.querySelectorAll('.btn-mini').forEach(item => {
-                item.addEventListener('click', () => {
-                    if(window.innerWidth <= 900 && item.id !== 'btn-rush-toggle') {
-                        let sidebar = document.getElementById('sidebar');
-                        if (sidebar && sidebar.classList.contains('open')) toggleMobileMenu();
-                    }
-                });
-            });
-        });
-
-    </script>
-</body>
-</html>
