@@ -9,127 +9,46 @@
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
     <meta name="theme-color" content="#000000">
-    <title>iCHEF OS - Pad Serveur</title>
+    <title>Empire OS - Pad Serveur Master</title>
 
-    <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
-
-    <!-- ============================================================== -->
-    <!-- 🛡️ SCRIPT 1 : SÉCURITÉ & RÉSEAU -->
-    <!-- ============================================================== -->
-  <script>
-    "use strict";
-
-    const ICHEF_ALLOWED_HOSTS = new Set(["os.ichef.ch", "localhost", "127.0.0.1"]);
-    if (!ICHEF_ALLOWED_HOSTS.has(window.location.hostname)) {
-        document.documentElement.innerHTML = "<h1 style='color:red;text-align:center;margin-top:20%;font-family:sans-serif'>🛑 ACCÈS NON AUTORISÉ</h1>";
-        throw new Error("Hôte non autorisé");
-    }
-
-    document.addEventListener('contextmenu', event => event.preventDefault());
-
-    function getOrCreateDeviceId() {
-        const key = 'ichef_device_id';
-        let deviceId = localStorage.getItem(key);
-        if (!deviceId) {
-            const bytes = new Uint8Array(24);
-            crypto.getRandomValues(bytes);
-            deviceId = 'dev_' + Array.from(bytes, b => b.toString(16).padStart(2, '0')).join('');
-            localStorage.setItem(key, deviceId);
-        }
-        return deviceId;
-    }
-
-    window.ICHEF_SECURITY = {
-        deviceId: getOrCreateDeviceId(),
-        sessionToken: null, 
-        csrfToken: null,
-        user: null,
-        permissions: new Set(),
-        authenticatedAt: null,
-        lastActivityAt: Date.now(),
-        bootstrapComplete: false
-    };
-
-    function securityBlock(message = 'Sécurité indisponible. Reconnexion requise.') {
-        document.documentElement.dataset.securityBlocked = 'true';
-        const render = () => {
-            let overlay = document.getElementById('ichef-security-block');
-            if (!overlay) {
-                overlay = document.createElement('div');
-                overlay.id = 'ichef-security-block';
-                overlay.style.cssText = 'position:fixed;inset:0;z-index:2147483647;background:#050505;color:#FAF0E6;display:flex;align-items:center;justify-content:center;text-align:center;padding:30px;font-family:Inter,sans-serif';
-                document.body.appendChild(overlay);
+    <script>
+        function getDeviceFingerprint() {
+            let deviceId = localStorage.getItem('ichef_device_fingerprint');
+            if (!deviceId) {
+                deviceId = 'device_' + Math.random().toString(36).substr(2, 9) + '_' + Date.now();
+                localStorage.setItem('ichef_device_fingerprint', deviceId);
             }
-            overlay.innerHTML = `<div><h2 style="color:#C5A059;letter-spacing:2px">ACCÈS SÉCURISÉ</h2><p>${String(message).replace(/[<>&"']/g, '')}</p><button onclick="location.reload()" style="margin-top:15px;padding:12px 20px;background:#C5A059;border:0;border-radius:4px;font-weight:700;cursor:pointer">RÉESSAYER</button></div>`;
-        };
-        if (document.body) render(); else document.addEventListener('DOMContentLoaded', render, { once: true });
-    }
-
-    window.ICHEF_SECURITY_READY = (async function enforceSecurity() {
-        const params = new URLSearchParams(window.location.search);
-        const rawUrlTenantID = params.get('tenantID');
-        const storedTenantID = localStorage.getItem('ichef_tenant_id');
-        const validTenant = value => typeof value === 'string' && /^[A-Za-z0-9_-]{2,80}$/.test(value);
-
-        if (rawUrlTenantID && !validTenant(rawUrlTenantID)) {
-            securityBlock('Identifiant restaurant invalide.');
-            throw new Error('INVALID_TENANT');
-        }
-        if (storedTenantID && !validTenant(storedTenantID)) {
-            localStorage.removeItem('ichef_tenant_id');
-        }
-        if (rawUrlTenantID && storedTenantID && rawUrlTenantID !== storedTenantID) {
-            localStorage.removeItem('EMPIRE_GLOBAL_SYNC');
-            localStorage.removeItem('empire_architecture');
-            localStorage.removeItem('empire_rooms');
-            localStorage.removeItem('empire_zones');
+            return deviceId;
         }
 
-        const tenantID = rawUrlTenantID || (validTenant(storedTenantID) ? storedTenantID : null);
-        if (!tenantID) {
-            window.location.replace('connexionpartenaire.html');
-            return false;
-        }
-        localStorage.setItem('ichef_tenant_id', tenantID);
-
-        const SERVER_URL = (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1')
-            ? 'http://localhost:10000'
-            : 'https://tableau-system.onrender.com';
-        const controller = new AbortController();
-        const timeout = setTimeout(() => controller.abort(), 12000);
-
-        try {
-            const response = await fetch(`${SERVER_URL}/api/security/bootstrap`, {
-                method: 'POST',
-                credentials: 'include',
-                cache: 'no-store',
-                redirect: 'error',
-                referrerPolicy: 'same-origin',
-                signal: controller.signal,
-                headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'iCHEF-PWA', 'Accept': 'application/json' },
-                body: JSON.stringify({ tenantID, deviceId: window.ICHEF_SECURITY.deviceId, page: location.pathname.split('/').pop() || 'index.html' })
-            });
-            const data = await response.json().catch(() => ({}));
-            
-            if (!response.ok || !data.success) {
-                console.warn('Bootstrap sans session active : authentification PIN requise.');
-                window.ICHEF_SECURITY.bootstrapComplete = false;
-                return true;
+        (function initApp() {
+            const urlParams = new URLSearchParams(window.location.search);
+            let urlTenantID = urlParams.get('tenantID');
+            if (urlTenantID) {
+                localStorage.setItem('ichef_tenant_id', urlTenantID);
             }
-            window.ICHEF_SECURITY.csrfToken = typeof data.csrfToken === 'string' ? data.csrfToken : null;
-            window.ICHEF_SECURITY.bootstrapComplete = true;
-            return true;
-        } catch (error) {
-            console.error('Initialisation sécurité impossible', error);
-            window.ICHEF_SECURITY.bootstrapComplete = false;
-            return true;
-        } finally {
-            clearTimeout(timeout);
+        })();
+
+        // Fonction d'ouverture du Menu Mobile pour le Pad
+        function toggleMobileMenu() {
+            const sidebar = document.getElementById('sidebar');
+            const overlay = document.getElementById('mobile-overlay');
+            if(sidebar) sidebar.classList.toggle('open');
+            if(overlay) {
+                if(overlay.classList.contains('show')) {
+                    overlay.style.opacity = '0';
+                    setTimeout(() => overlay.classList.remove('show'), 300);
+                } else {
+                    overlay.classList.add('show');
+                    setTimeout(() => overlay.style.opacity = '1', 10);
+                }
+            }
         }
-    })();
     </script>
+
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&family=Playfair+Display:wght@400;600;700&display=swap" rel="stylesheet">
     <style>
+        /* 💎 DESIGN NOIR PROFOND & BLANC IVOIRE (PALACE) 💎 */
         :root { 
             --bg: #000000; --panel: #0A0A0A; --border: rgba(250, 240, 230, 0.15); --border-strong: rgba(250, 240, 230, 0.3);
             --text-main: #FAF0E6; --text-muted: #8A857D; --gold: #C5A059; --gold-dim: rgba(197, 160, 89, 0.08);
@@ -137,19 +56,55 @@
             --ordered: #FAF0E6; --ordered-dim: rgba(250, 240, 230, 0.05); --shadow: 0 10px 30px rgba(0, 0, 0, 0.9); --blur: blur(10px);
         }
 
-        .mobile-overlay { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.6); backdrop-filter: blur(3px); z-index: 99; opacity: 0; transition: opacity 0.3s ease; }
+        /* 📱 MENU COULISSANT MOBILE */
+        .mobile-overlay {
+            display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+            background: rgba(0,0,0,0.6); backdrop-filter: blur(3px); z-index: 99; 
+            opacity: 0; transition: opacity 0.3s ease;
+        }
         .mobile-overlay.show { display: block; opacity: 1; }
-        .menu-toggle-btn { display: none; background: transparent; border: none; color: var(--gold); font-size: 2rem; cursor: pointer; padding: 5px 15px; z-index: 101; }
-        
+
+        .menu-toggle-btn {
+            display: none; background: transparent; border: none; color: var(--gold, #C5A059);
+            font-size: 2rem; cursor: pointer; padding: 5px 15px; z-index: 101;
+        }
+
         @media (max-width: 900px) {
             .menu-toggle-btn { display: block; }
-            .sidebar, #sidebar { position: fixed; top: 0; left: 0; height: 100%; width: 280px; max-width: 85%; transform: translateX(-100%); z-index: 100; transition: transform 0.4s cubic-bezier(0.16, 1, 0.3, 1); box-shadow: 10px 0 30px rgba(0,0,0,0.5); background: var(--panel); }
+            
+            .sidebar, #sidebar {
+                position: fixed; top: 0; left: 0; height: 100%; width: 280px; max-width: 85%;
+                transform: translateX(-100%); z-index: 100;
+                transition: transform 0.4s cubic-bezier(0.16, 1, 0.3, 1);
+                box-shadow: 10px 0 30px rgba(0,0,0,0.5); background: var(--panel, #0A0A0A);
+            }
+            
             .sidebar.open, #sidebar.open { transform: translateX(0); }
         }
 
-        .swipe-row { display: flex; gap: 10px; overflow-x: auto; flex-wrap: nowrap; -webkit-overflow-scrolling: touch; scrollbar-width: none; -ms-overflow-style: none; }
+        /* ✨ SCROLL HORIZONTAL FLUIDE (SANS SCROLLBAR) ✨ */
+        .swipe-row {
+            display: flex; gap: 10px; overflow-x: auto; flex-wrap: nowrap;
+            -webkit-overflow-scrolling: touch; scrollbar-width: none; -ms-overflow-style: none;
+        }
         .swipe-row::-webkit-scrollbar { display: none; }
         .swipe-row > * { flex-shrink: 0; }
+
+        @keyframes pulseBadgeBar {
+            0% { opacity: 1; box-shadow: 0 0 0 rgba(56, 189, 248, 0); }
+            50% { opacity: 0.8; box-shadow: 0 0 15px rgba(56, 189, 248, 0.6); }
+            100% { opacity: 1; box-shadow: 0 0 0 rgba(56, 189, 248, 0); }
+        }
+        #badge-service-bar {
+            display: none; background: rgba(56, 189, 248, 0.1); color: #38bdf8; border: 1px solid #38bdf8;
+            padding: 6px 12px; border-radius: 2px; font-size: 0.75rem; font-weight: 600; text-transform: uppercase;
+            letter-spacing: 1px; animation: pulseBadgeBar 2s infinite; white-space: nowrap;
+        }
+        .status-ready-bar .table-obj {
+            border-color: #38bdf8 !important; color: #38bdf8 !important;
+            box-shadow: inset 0 0 15px rgba(56, 189, 248, 0.25) !important;
+            animation: pulseBadgeBar 2s infinite !important;
+        }
 
         body { font-family: 'Inter', sans-serif; background: var(--bg); color: var(--text-main); margin: 0; height: 100vh; display: flex; flex-direction: column; overflow: hidden; touch-action: manipulation; -webkit-tap-highlight-color: transparent;}
         h1, h2, h3 { font-family: 'Playfair Display', serif; font-weight: 600; letter-spacing: 1px; }
@@ -194,11 +149,13 @@
         .table-content { width: 100%; height: 100%; display: flex; justify-content: center; align-items: center; border-radius: inherit; flex-direction: column;}
 
         .table-wrapper.status-reserved .table-obj { border-color: #ff69b4 !important; color: #ff69b4 !important; box-shadow: inset 0 0 15px rgba(255, 105, 180, 0.15) !important; }
+        /* ⏱️ COULEURS SPÉCIFIQUES POUR L'ATTENTE EN CUISINE */
         .table-wrapper.status-warning .table-obj { border-color: #9b59b6 !important; color: #9b59b6 !important; box-shadow: inset 0 0 15px rgba(155, 89, 182, 0.15) !important; }
         .table-wrapper.status-late .table-obj { border-color: #e056fd !important; color: #e056fd !important; box-shadow: inset 0 0 20px rgba(224, 86, 253, 0.25) !important; animation: pulseBadgeBar 1.5s infinite !important; }
         .table-wrapper.status-payment .table-obj { border-color: #bdc3c7 !important; color: #bdc3c7 !important; box-shadow: inset 0 0 15px rgba(189, 195, 199, 0.15) !important; }
         .table-wrapper.status-alert .table-obj { border-color: var(--alert) !important; color: var(--alert) !important; box-shadow: 0 0 15px rgba(217, 83, 79, 0.3) !important; }
         
+        /* 🔲 DESIGN DES ZONES SPATIALES */
         .zone-wrapper { position: absolute; box-sizing: border-box; touch-action: none; z-index: 0; pointer-events: none; }
         .zone-obj { width: 100%; height: 100%; border: 2px dashed rgba(255,255,255,0.2); border-radius: 12px; display: flex; align-items: flex-start; justify-content: center; padding-top: 15px; font-weight: 600; font-size: 1rem; letter-spacing: 2px; text-transform: uppercase; pointer-events: auto; cursor: default; transition: 0.3s; }
         .edit-mode .zone-obj { border-style: solid; border-width: 3px; cursor: move; }
@@ -253,6 +210,17 @@
         .ticket-item-row { display:flex; justify-content:space-between; align-items:center; padding:12px; border:1px solid transparent; border-bottom-color: var(--border); background: transparent; transition: 0.2s; border-radius: 4px;}
         .ticket-item-row:hover { background: rgba(250, 240, 230, 0.02); border-color: var(--border); }
 
+        /* 🚨 CLARTÉ DES ZONES DE PAIEMENT EN MODE RUSH */
+        .rush-payment-label {
+            display: none; position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); 
+            font-size: 1.1rem; font-weight: 800; text-align: center; text-transform: uppercase; letter-spacing: 2px; 
+            text-shadow: 0 5px 15px rgba(0,0,0,0.9); pointer-events: none; z-index: 0; width: 100%;
+            background: rgba(0,0,0,0.8); padding: 15px 0; border-top: 2px solid currentColor;
+            border-bottom: 2px solid currentColor; backdrop-filter: blur(5px);
+        }
+        .rush-mode .rush-payment-label { display: block; animation: fadeInZone 0.4s ease-out; }
+        @keyframes fadeInZone { from { opacity: 0; transform: translate(-50%, -30%); } to { opacity: 1; transform: translate(-50%, -50%); } }
+
         /* MODALS */
         .modal { position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; background: rgba(0, 0, 0, 0.9); z-index: 20000; display: none; flex-direction: column; align-items: center; justify-content: center; backdrop-filter: var(--blur); -webkit-backdrop-filter: var(--blur);}
         .modal.open { display: flex !important; }
@@ -265,9 +233,6 @@
 
         .item-delete-btn { background: transparent; color: var(--text-muted); border: 1px solid var(--border); padding: 6px 10px; font-weight: 300; cursor: pointer; font-size: 0.8rem; transition: 0.2s; border-radius: 2px;}
         .item-delete-btn:hover { border-color: var(--alert); color: var(--alert); }
-        
-        .item-error-btn { background: rgba(217,83,79,0.1); color: var(--alert); border: 1px solid var(--alert); padding: 6px 10px; font-weight: 700; cursor: pointer; font-size: 0.8rem; transition: 0.2s; border-radius: 2px;}
-        .item-error-btn:hover { background: var(--alert); color: #fff; }
 
         .pay-btn { background: transparent; border: 1px solid var(--border); color: var(--text-main); padding: 15px 30px; font-size: 0.9rem; font-weight: 500; letter-spacing: 2px; cursor: pointer; width: 300px; margin-bottom: 10px; text-transform: uppercase; transition: 0.2s; border-radius: 4px; display: flex; align-items: center; justify-content: center; gap: 10px;}
         .pay-btn:hover { border-color: var(--gold); color: var(--gold); background: var(--gold-dim);}
@@ -296,14 +261,6 @@
         .cuisson-btn:active { transform: scale(0.98); }
 
         #empire-clock { color: var(--gold); font-weight: 400; font-size: 1.1rem; letter-spacing: 2px; margin-left: 15px; font-family: 'Playfair Display', serif;}
-
-        /* 🔥 CSS ANTI-RUSH & TIME-SHIFTING 🔥 */
-        @keyframes pulseAlertRed { 0% { background-color: rgba(239, 68, 68, 0.1); } 50% { background-color: rgba(239, 68, 68, 0.3); } 100% { background-color: rgba(239, 68, 68, 0.1); } }
-        .global-rush-alert { display: none; background: rgba(239, 68, 68, 0.2); color: #ef4444; text-align: center; padding: 12px; font-weight: 900; font-size: 0.85rem; text-transform: uppercase; letter-spacing: 2px; border-bottom: 1px solid #ef4444; animation: pulseAlertRed 2s infinite; }
-        
-        .ts-modal { background: #111; border: 2px solid var(--gold); border-radius: 12px; padding: 30px; text-align: center; width: 100%; max-width: 400px; box-shadow: 0 10px 30px rgba(212, 175, 55, 0.2); }
-        .ts-modal h3 { color: var(--gold); margin-top: 0; font-size: 1.4rem; letter-spacing: 1px; }
-        .ts-modal p { color: var(--text-main); font-size: 0.95rem; line-height: 1.5; margin-bottom: 25px; }
 
         @media (min-width: 1025px) {
             .drawer-body { flex-direction: row !important; }
@@ -335,26 +292,10 @@
         input[type="number"]::-webkit-inner-spin-button, input[type="number"]::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
     </style>
 </head>
+
 <body oncontextmenu="return false;" ondragstart="return false;" ondrop="return false;">
 
     <div class="mobile-overlay" id="mobile-overlay" onclick="toggleMobileMenu()"></div>
-
-    <div id="pwa-strict-lock" style="display: none; position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; background: #000; z-index: 9999999; flex-direction: column; justify-content: center; align-items: center; text-align: center; padding: 20px; box-sizing: border-box;">
-        <h1 style="color: #fff; font-size: 1.5rem; font-weight: 900; margin: 0; letter-spacing: 2px; text-transform: uppercase;">MODULE CAISSE</h1>
-        <p style="color: var(--text-muted); max-width: 420px; font-size: 0.95rem; margin-top: 15px; margin-bottom: 35px; line-height: 1.6; font-weight: 500;">
-            Protocole de sécurité : Ce terminal doit être installé en mode PWA autonome pour isoler la navigation et stabiliser le flux réseau.
-        </p>
-        <button id="btn-force-install" style="background: #fff; color: #000; border: none; padding: 16px 35px; font-size: 0.9rem; font-weight: 900; border-radius: 4px; cursor: pointer; text-transform: uppercase; letter-spacing: 1px;">
-            INSTALLER LE TERMINAL
-        </button>
-        <div id="ios-instruction" style="display: none; margin-top: 20px; border: 1px solid var(--border); padding: 15px; border-radius: 4px;">
-            <p style="color: #fff; font-size: 0.85rem; font-weight: 800; margin: 0; text-transform: uppercase;">PROCÉDURE IOS :</p>
-            <p style="color: var(--text-muted); font-size: 0.8rem; margin: 5px 0 0 0;">Menu Partage > Sur l'écran d'accueil.</p>
-        </div>
-        <button onclick="document.getElementById('pwa-strict-lock').style.display='none'" style="margin-top: 30px; background: transparent; border: 1px solid var(--border); color: var(--text-muted); padding: 10px 20px; border-radius: 4px; font-size: 0.75rem; cursor: pointer; text-transform: uppercase; font-weight: 600;">
-            OUTREPASSER (MAINTENANCE)
-        </button>
-    </div>
 
     <div id="login-screen">
         <h1 style="color:var(--text-main); letter-spacing: 6px; font-size: 2.5rem; margin-bottom: 10px;">SALLE</h1>
@@ -371,20 +312,14 @@
         <div style="margin-top: 40px; color: var(--text-muted); font-size: 0.75rem; letter-spacing: 2px;">((📡)) CONNECTÉ AU SERVEUR</div>
     </div>
 
-    <!-- 🔥 ALERTE ANTI-RUSH GLOBALE (S'AFFICHE SI NIVEAU >= 4) 🔥 -->
-    <div id="global-rush-alert" class="global-rush-alert">
-        🔥 CUISINE CRITIQUE - SUSPENDEZ L'ENVOI DES PLATS CHAUDS OU NÉGOCIEZ LE TIME-SHIFTING 🔥
-    </div>
-
     <header>
         <div class="header-left">
             <button class="menu-toggle-btn" onclick="toggleMobileMenu()">☰</button>
 
-            <div style="font-family: 'Playfair Display', serif; font-weight:600; letter-spacing:2px; font-size: 1.3rem; color: var(--gold);">PAD SERVEUR</div>
+            <div style="font-family: 'Playfair Display', serif; font-weight:600; letter-spacing:2px; font-size: 1.3rem; color: var(--gold);">PAD SERVICE</div>
             <div id="stock-tag" style="color:var(--gold); font-weight:500; font-size:0.7rem; padding: 4px 8px; border-radius: 2px; border: 1px solid var(--gold-dim); transition: 0.3s; letter-spacing: 1px;">● LIAISON SÉCURISÉE</div>
             <div id="user-badge" style="background:transparent; padding:6px 12px; border-radius:2px; font-size:0.85rem; color:var(--text-muted); border:1px solid var(--border); font-weight: 400; letter-spacing: 1px;">Utilisateur: Aucun</div>
-            <div id="badge-service-bar" style="display:none; color:#38bdf8; font-weight:700; font-size:0.7rem; padding:4px 8px; border-radius:2px; border:1px solid rgba(56,189,248,0.35); letter-spacing:1px;">🍹 COMPTOIR</div>
-            <div id="badge-fiscal-cash" style="display:none; color:var(--gold); font-weight:700; font-size:0.7rem; padding:4px 8px; border-radius:2px; border:1px solid var(--gold-dim); letter-spacing:1px;">🧾 CAISSE FISCALE</div>
+            <div id="badge-service-bar">🍹 COMPTOIR</div>
             <div id="empire-clock">00:00</div>
         </div>
         
@@ -396,8 +331,8 @@
             <button class="btn-mini" onclick="addExtraTable()">➕ TABLE EXTRA</button>
             <button class="btn-mini" onclick="openHistoryDrawer()">📜 HISTO.</button>
             <button id="btn-planning" class="btn-mini" onclick="openPlanningModal()">📅 PLAN.</button>
-            <button class="btn-mini admin" id="btn-admin" onclick="openAdminCatalog()">⚙️ CONFIG</button>
-            <button class="btn-mini" onclick="window.location.href='administration.html?tenantID=' + tenantID" style="border-color: var(--gold); color: var(--gold);">🔙 RETOUR</button>
+           <button class="btn-mini admin" id="btn-admin" onclick="openAdminCatalog()">⚙️ CONFIG</button>
+            <button class="btn-mini" onclick="window.location.href='administration.html'" style="border-color: var(--gold); color: var(--gold);">🔙 RETOUR</button>
             <button class="btn-mini sync" onclick="logout()">🔒 QUITTER</button>
         </div>
     </header>
@@ -536,9 +471,9 @@
             <div class="input-group">
                 <label style="color:var(--text-muted); font-size:0.85rem; text-transform:uppercase; margin-bottom: 5px; display: block;">Mode de Paiement & Service</label>
                 <select id="config-zone-mode" class="edit-input" style="width: 100%; box-sizing: border-box; cursor: pointer; margin-bottom: 0;">
-                    <option value="standard">🍽️ Serveur / Pad — commande et paiement encadré</option>
-                    <option value="qr_nfc">📲 QR/NFC — commande client autonome</option>
-                    <option value="bar">🍹 Comptoir — retrait et paiement au bar</option>
+                    <option value="standard">🍽️ Standard (Prise de commande / Encaissement Serveur)</option>
+                    <option value="qr_nfc">📱 Autonome (QR Code / NFC Obligatoire)</option>
+                    <option value="bar">🍹 Comptoir (Retrait et Paiement au Bar)</option>
                 </select>
             </div>
             <div class="input-group">
@@ -591,40 +526,6 @@
         </div>
     </div>
 
-    <!-- 🔥 MODALE TIME-SHIFTING CÔTÉ SERVEUR 🔥 -->
-    <div id="ts-offer-modal" class="modal" style="z-index: 99999;">
-        <div class="ts-modal" style="max-width: 500px; background:var(--panel); padding:40px; border-radius:12px; border:1px solid var(--gold); text-align:center;">
-            <div class="ts-icon" style="font-size: 4rem; margin-bottom:15px;">🔥</div>
-            <h2 class="ts-title" style="color: var(--alert); margin-bottom:20px; font-family:'Inter', sans-serif; font-weight:900;">Cuisine en Zone Rouge</h2>
-            <p class="ts-desc" style="font-size: 1.1rem; color:var(--text-main); margin-bottom:30px; line-height:1.6;">
-                Le système vous suggère de proposer le <strong>Time-Shifting</strong> à cette table.<br><br>
-                Proposez-leur <span id="server-ts-discount" style="color:var(--gold); font-weight:800; font-size:1.4rem;">-5%</span> sur l'addition s'ils acceptent de décaler l'envoi de leurs plats chauds de <span id="server-ts-delay" style="color:var(--accent); font-weight:800;">15 min</span>.
-            </p>
-            <div style="display: flex; gap: 10px; flex-direction: column;">
-                <button class="pay-btn" style="border-color: var(--gold); color: #000; background: var(--gold); width: 100%; margin:0; font-weight:800;" onclick="acceptTimeShiftServer()">✅ LE CLIENT ACCEPTE</button>
-                <button class="pay-btn cancel" style="border-color: var(--border); color: var(--text-muted); width: 100%; margin:0;" onclick="refuseTimeShiftServer()">LE CLIENT REFUSE (Forcer l'envoi)</button>
-            </div>
-        </div>
-    </div>
-
-    <!-- 🔥 MODALE ERREUR / REFAIRE PLAT 🔥 -->
-    <div id="error-item-modal" class="modal" style="z-index: 99999;">
-        <div style="background:var(--panel); padding:40px; border-radius:8px; border:1px solid var(--alert); display:flex; flex-direction:column; align-items:center; width: 90%; max-width: 500px;">
-            <div style="font-size: 3rem; margin-bottom: 10px;">🤦‍♂️</div>
-            <h2 style="color:var(--alert); font-size: 1.6rem; margin-bottom: 15px; letter-spacing: 2px; text-transform: uppercase;">Urgence / Erreur</h2>
-            <h3 style="color:var(--text-main); margin-bottom: 25px; font-size: 1.1rem; font-weight: 400; text-align: center;">Vous devez refaire le plat :<br><strong id="error-item-title" style="color:var(--gold);">Nom</strong> ?</h3>
-            
-            <p style="color:var(--text-muted); font-size:0.85rem; margin-bottom:20px; text-align:center;">Un ticket prioritaire absolu sera envoyé en cuisine. Le plat d'origine sera annulé et tracé en "Pertes".</p>
-            
-            <button class="cancel-btn" style="width:100%; border-color: var(--alert); color: var(--alert); margin-bottom: 10px;" onclick="executeErrorItem('Tombé en salle / Erreur Serveur')">💥 TOMBÉ / ERREUR SERVEUR</button>
-            <button class="cancel-btn" style="width:100%; border-color: var(--alert); color: var(--alert); margin-bottom: 10px;" onclick="executeErrorItem('Retour Client (Froid, pas bon...)')">🍽️ RETOUR CLIENT (NON CONFORME)</button>
-            <button class="cancel-btn" style="width:100%; border-color: var(--warning); color: var(--warning); margin-bottom: 10px;" onclick="executeErrorItem('Changement d\'avis Client')">🔄 LE CLIENT A CHANGÉ D'AVIS</button>
-            
-            <button class="cancel-btn abort" style="width:100%; border-color: transparent; color: var(--text-main); margin-top: 15px;" onclick="closeErrorModal()">🔙 ANNULER</button>
-        </div>
-    </div>
-
-    <!-- LE GRAND TIROIR DE COMMANDE -->
     <div id="order-drawer" class="drawer">
         <div class="drawer-body">
             <div style="flex:1; display:flex; flex-direction:column; background:var(--bg); min-height: 0; min-width: 0;">
@@ -671,8 +572,8 @@
                     <div id="ticket-tva" style="text-align: right; color: var(--text-muted); font-size: 0.75rem; margin-top: 5px; margin-bottom: 15px; letter-spacing: 1px;">TVA : 0.00€</div>
 
                     <div style="display: flex; flex-direction: column; gap: 10px;">
-                        <button id="btn-send-kds" class="pay-btn" style="width: 100%; border-color: var(--accent); color: var(--accent); display: none; margin: 0; font-size: 1.1rem;" onclick="processOrderDispatch()">👨‍🍳 ENVOYER EN CUISINE</button>
-                        <button class="pay-btn" style="width: 100%; margin: 0; font-size: 1.1rem;" onclick="openPaymentModal()">🧾 ENCAISSER / CAISSE</button>
+                        <button id="btn-send-kds" class="pay-btn" style="width: 100%; border-color: var(--accent); color: var(--accent); display: none; margin: 0; font-size: 1.1rem;" onclick="sendOrderToKDS()">👨‍🍳 ENVOYER EN CUISINE</button>
+                        <button class="pay-btn" style="width: 100%; margin: 0; font-size: 1.1rem;" onclick="openPaymentModal()">💳 ENCAISSER</button>
                         <div style="display:flex; gap:10px;">
                             <button class="btn-mini gold" style="flex:1; padding:15px; font-size:0.85rem;" onclick="executeSaveTableState(false, false)">💾 ATTENTE</button>
                             <button class="btn-mini sync" style="flex:1; padding:15px; font-size:0.85rem;" onclick="confirmClearTicket()">🗑️ ANNULER</button>
@@ -683,7 +584,6 @@
         </div>
     </div>
 
-    <!-- MODALES DE PAIEMENT & DIVERS... -->
     <div id="payment-modal" class="modal">
         <div style="background:var(--panel); padding:40px; border-radius:8px; border:1px solid var(--gold); display:flex; flex-direction:column; width: 600px; max-width: 95%;">
             <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom: 25px; border-bottom: 1px solid var(--border); padding-bottom: 15px;">
@@ -737,37 +637,199 @@
         </div>
     </div>
 
-    <!-- ... FIN MODALES FIXES ... -->
+    <div id="cuisson-modal" class="modal">
+        <div style="background:var(--panel); padding:40px; border-radius:8px; border:1px solid var(--border); display:flex; flex-direction:column; align-items:center; max-height: 90vh; overflow-y: auto; width: 90%; max-width: 450px;">
+            <h2 style="color:var(--text-main); font-size: 1.6rem; margin-top: 0; margin-bottom: 10px; letter-spacing: 2px; text-transform: uppercase;">🔥 Cuisson Requise</h2>
+            <h3 style="color:var(--gold); font-size: 1.1rem; margin-bottom: 30px; text-align: center; font-weight: 400; font-family: 'Playfair Display', serif;" id="cuisson-item-name">Plat</h3>
+            
+            <button class="cuisson-btn" onclick="confirmCuisson('Bleu')">🔵 BLEU</button>
+            <button class="cuisson-btn" onclick="confirmCuisson('Entre Bleu et Saignant')">🟣 ENTRE BLEU ET SAIGNANT</button>
+            <button class="cuisson-btn" onclick="confirmCuisson('Saignant')">🔴 SAIGNANT</button>
+            <button class="cuisson-btn" onclick="confirmCuisson('Entre Saignant et À point')">🏮 ENTRE SAIGNANT ET À POINT</button>
+            <button class="cuisson-btn" onclick="confirmCuisson('À point')">🟠 À POINT</button>
+            <button class="cuisson-btn" onclick="confirmCuisson('Bien cuit')">🟤 BIEN CUIT</button>
+            
+            <button class="pay-btn cancel" style="width: 100%; padding: 15px; font-size: 0.9rem; margin-top: 25px;" onclick="cancelCuisson()">❌ ANNULER</button>
+        </div>
+    </div>
 
-    <!-- ============================================================== -->
-    <!-- 🧠 SCRIPT 2 : CERVEAU GLOBAL ET LOGIQUE DE CAISSE -->
-    <!-- ============================================================== -->
+    <div id="edit-item-modal" class="modal">
+        <div style="background:var(--panel); padding:40px; border-radius:8px; border:1px solid var(--border); display:flex; flex-direction:column; align-items:center; width: 90%; max-width: 450px;">
+            <h2 style="color:var(--text-main); font-size: 1.6rem; margin-bottom: 15px; letter-spacing: 2px; text-transform: uppercase;">✏️ Ajuster</h2>
+            <h3 style="color:var(--gold); margin-bottom: 25px; font-size: 1.2rem; font-weight: 400; font-family: 'Playfair Display', serif;" id="edit-item-title">Nom</h3>
+            
+            <button class="pay-btn" style="border-color: var(--border-strong); color: var(--text-muted); width: 100%; margin-bottom: 20px; font-size: 0.85rem;" onclick="offerItem()">🎁 OFFRIR CET ARTICLE</button>
+            
+            <div style="display:flex; align-items:center; justify-content:center; gap:15px; width: 100%; margin-bottom: 20px; border-top: 1px dashed var(--border); padding-top: 20px;">
+                <label style="color:var(--text-muted); font-size: 0.85rem; letter-spacing: 1px; text-transform: uppercase;">Convive :</label>
+                <div id="edit-item-seat-display" style="background:transparent; color:var(--text-main); border:1px solid var(--border-strong); padding:8px 15px; border-radius:4px; font-weight:500; font-size:0.95rem;">TOUS</div>
+                <input type="hidden" id="edit-item-seat" value="0">
+                <button class="btn-mini" onclick="cycleEditSeat()" style="padding: 10px 15px;">CHANGER</button>
+            </div>
+
+            <select id="edit-item-course" class="edit-input" style="font-weight: 400; cursor: pointer;">
+                <option value="0">🍸 APÉRITIFS / BOISSONS</option>
+                <option value="1">🥗 ENTRÉES</option>
+                <option value="2">🔥 PLATS</option>
+                <option value="3">🍰 DESSERTS</option>
+            </select>
+
+            <input type="number" id="edit-item-price" class="edit-input" step="0.01" placeholder="Nouveau Prix">
+            <input type="text" id="edit-item-obs" class="edit-input" placeholder="Observation (Sans sel, etc...)">
+            
+            <button class="pay-btn" style="border-color: var(--gold); color: var(--gold); width: 100%; margin-top: 10px;" onclick="saveItemEdit()">✅ VALIDER</button>
+            <button class="pay-btn cancel" style="width: 100%;" onclick="closeEditModal()">❌ ANNULER</button>
+        </div>
+    </div>
+
+    <div id="sur-mesure-modal" class="modal">
+        <div style="background:var(--panel); padding:40px; border-radius:8px; border:1px solid var(--border); display:flex; flex-direction:column; align-items:center; box-shadow: var(--shadow); width: 90%; max-width: 450px;">
+            <h2 style="color:var(--text-main); font-size: 1.6rem; margin-top: 0; margin-bottom: 25px; letter-spacing: 2px; text-transform: uppercase;">✏️ Saisie Libre</h2>
+            <input type="text" id="sm-name" class="edit-input" style="width: 100%; box-sizing:border-box;" placeholder="Nom (ex: Supplément...)">
+            <input type="number" id="sm-price" class="edit-input" style="width: 100%; box-sizing:border-box;" step="0.01" placeholder="Prix de vente TTC">
+            <select id="sm-tva" class="edit-input" style="width: 100%; box-sizing:border-box; font-weight: 400; cursor: pointer;">
+                <option value="10">TVA 10% (Nourriture / Softs)</option>
+                <option value="20">TVA 20% (Alcools)</option>
+                <option value="5.5">TVA 5.5% (Emporter / Eau)</option>
+                <option value="0">TVA 0% (Exonéré)</option>
+            </select>
+            <select id="sm-course" class="edit-input" style="width: 100%; box-sizing:border-box; font-weight: 400; cursor: pointer;">
+                <option value="0">🍸 BOISSON (Bar)</option>
+                <option value="1">🥗 ENTRÉE (Cuisine)</option>
+                <option value="2" selected>🔥 PLAT (Cuisine)</option>
+                <option value="3">🍰 DESSERT (Cuisine)</option>
+            </select>
+            <button class="pay-btn" style="width: 100%; border-color: var(--gold); color: var(--gold); margin-top: 10px;" onclick="addSurMesure()">✅ AJOUTER</button>
+            <button class="pay-btn cancel" style="width: 100%;" onclick="closeSurMesureModal()">❌ ANNULER</button>
+        </div>
+    </div>
+
+    <div id="cancel-modal" class="modal">
+        <div style="background:var(--panel); padding:40px; border-radius:8px; border:1px solid var(--border); display:flex; flex-direction:column; align-items:center; width: 90%; max-width: 450px;">
+            <h2 style="color:var(--text-main); font-size: 1.6rem; margin-bottom: 15px; letter-spacing: 2px; text-transform: uppercase;">⚠️ Annuler ?</h2>
+            <h3 style="color:var(--gold); font-size: 1.1rem; margin-bottom: 30px; font-weight: 400; font-family: 'Playfair Display', serif;" id="cancel-item-name">Nom du plat</h3>
+            <button class="cancel-btn" style="width:100%; border-color: var(--border-strong); color: var(--text-muted);" onclick="executeCancelItem('Erreur de frappe')">ERREUR DE FRAPPE</button>
+            <button class="cancel-btn" style="width:100%; border-color: var(--border-strong); color: var(--text-muted);" onclick="executeCancelItem('Client change d\'avis')">CLIENT CHANGE D'AVIS</button>
+            <button class="cancel-btn" style="width:100%; border-color: var(--border-strong); color: var(--text-muted);" onclick="executeCancelItem('Rupture de stock')">RUPTURE DE STOCK</button>
+            <button class="cancel-btn" style="width:100%; border-color: var(--border-strong); color: var(--text-muted);" onclick="executeCancelItem('Retour (Non conforme)')">RETOUR CUISINE/BAR</button>
+            <button class="cancel-btn abort" style="width:100%; border-color: transparent; color: var(--text-main); margin-top: 15px;" onclick="abortCancelItem()">🔙 RETOUR</button>
+        </div>
+    </div>
+
+    <div id="clear-ticket-modal" class="modal">
+        <div style="background:var(--panel); padding:40px; border-radius:8px; border:1px solid var(--alert); display:flex; flex-direction:column; align-items:center; width: 90%; max-width: 450px;">
+            <h2 style="color:var(--alert); font-size: 1.6rem; margin-bottom: 15px; letter-spacing: 2px; text-transform: uppercase;">⚠️ TOUT EFFACER ?</h2>
+            <h3 style="color:var(--text-muted); font-size: 0.95rem; margin-bottom: 30px; text-align: center; font-weight: 400; line-height: 1.5;">Attention, cette action supprimera l'intégralité de la commande.</h3>
+            <button class="cancel-btn" style="width:100%; border-color: var(--alert); color: var(--alert);" onclick="executeClearTicket('Erreur de frappe globale')">❌ ERREUR GLOBALE</button>
+            <button class="cancel-btn" style="width:100%; border-color: var(--alert); color: var(--alert);" onclick="executeClearTicket('Le client est parti')">❌ LE CLIENT EST PARTI</button>
+            <button class="cancel-btn abort" style="width:100%; border-color: transparent; color: var(--text-main);" onclick="abortClearTicket()">🔙 ANNULER</button>
+        </div>
+    </div>
+
+    <div id="assign-overlay" style="position: fixed; top: 30px; left: 50%; transform: translateX(-50%); background: rgba(0,0,0,0.9); backdrop-filter: var(--blur); color: var(--gold); padding: 15px 30px; border: 1px solid var(--gold); font-weight: 400; font-size: 0.9rem; letter-spacing: 2px; text-transform: uppercase; z-index: 50000; display: none; justify-content: center; align-items: center; gap: 20px; pointer-events: none; border-radius: 4px; box-shadow: 0 5px 15px rgba(0,0,0,0.5);">
+        <span>👇 CLIQUEZ SUR LA TABLE POUR ASSIGNER LA RÉSERVATION 👇</span>
+        <button style="background: transparent; color: var(--text-main); border: 1px solid var(--border-strong); padding: 8px 15px; border-radius: 4px; font-weight: 500; cursor: pointer; pointer-events: auto; font-size: 0.75rem;" onclick="cancelAssignResa()">✕ ANNULER</button>
+    </div>
+
     <script>
-        // Variables d'état Anti-Rush 3.0
-        let isKitchenInRush = false;
-        let rushV3Settings = { cameleon: false, timeShift: { active: false, discount: 5, delay: 15 }, paceMaker: { active: false, max: 10 } };
-        let currentRushLevel = 1;
+        // ==========================================
+        // 📍 SYNCHRONISATION DES ZONES & MODE RUSH
+        // ==========================================
 
-        window.addEventListener('load', () => {
-            if (typeof isDemoMode !== 'undefined' && isDemoMode) {
-                let badge = document.createElement('div');
-                badge.innerHTML = "MODE DÉMO - LECTURE SEULE";
-                badge.style.cssText = "position:fixed; top:10px; right:10px; background:var(--alert); color:white; padding:5px 10px; border-radius:5px; font-weight:bold; z-index:99999; font-size:12px; pointer-events:none;";
-                document.body.appendChild(badge);
+        function getTableServiceMode(tableId) {
+            if (!window.systemSettings || !window.systemSettings.tableZones || !window.systemSettings.zones) return 'standard';
+            let zoneId = window.systemSettings.tableZones[tableId];
+            if (!zoneId) return 'standard';
+            let zone = window.systemSettings.zones.find(z => z.id === zoneId);
+            return zone ? zone.mode : 'standard';
+        }
 
-                setTimeout(() => {
-                    currentPin = "0000";
-                    submitPin();
-                }, 800);
+        function renderTableZoneBadges() {
+            document.querySelectorAll('.table-element').forEach(tableEl => {
+                let tId = tableEl.getAttribute('data-id');
+                if(!tId) return;
+                
+                let mode = getTableServiceMode(tId);
+                let oldBadge = tableEl.querySelector('.zone-mode-badge');
+                if(oldBadge) oldBadge.remove();
+
+                let badgeHtml = '';
+                if (mode === 'qr_nfc') {
+                    badgeHtml = '<div class="zone-mode-badge" style="position:absolute; top:-10px; right:-10px; background:#fbbf24; box-shadow: 0 0 10px rgba(251,191,36,0.6); border-radius:50%; width:24px; height:24px; display:flex; align-items:center; justify-content:center; font-size:0.75rem; z-index:10;" title="Paiement Carte">📱</div>';
+                } else if (mode === 'bar') {
+                    badgeHtml = '<div class="zone-mode-badge" style="position:absolute; top:-10px; right:-10px; background:#ef4444; box-shadow: 0 0 10px rgba(239,68,68,0.6); border-radius:50%; width:24px; height:24px; display:flex; align-items:center; justify-content:center; font-size:0.75rem; z-index:10;" title="Retrait Bar">🍹</div>';
+                }
+                
+                if(badgeHtml) tableEl.insertAdjacentHTML('beforeend', badgeHtml);
+            });
+        }
+
+        function checkZoneAccess(tableId) {
+            let mode = getTableServiceMode(tableId);
+            let isRushActive = false;
+            
+            let rushBtn = document.getElementById('btn-rush-toggle');
+            if (rushBtn && rushBtn.innerText.includes('VUE ARCHI')) isRushActive = true; 
+            else if (window.systemSettings && window.systemSettings.antiRush) isRushActive = true;
+
+            if (isRushActive) {
+                if (mode === 'qr_nfc') {
+                    alert("🛑 MODE RUSH : Cette table est dans une Zone Autonome (Paiement par scan client uniquement). Prise de commande manuelle bloquée.");
+                    return false;
+                }
+                if (mode === 'bar') {
+                    alert("🍹 MODE RUSH : Zone Comptoir. Les clients de cette zone doivent commander directement au bar.");
+                    return false;
+                }
             }
-        });
+            return true;
+        }
 
-        // -------------------------------------------------------------
-        // FONCTIONS D'INTERFACE DE BASE
-        // -------------------------------------------------------------
+        // ==========================================
+        // 🎨 AFFICHAGE MASSIF DES MODES DE PAIEMENT
+        // ==========================================
+        function applyZonePaymentVisuals() {
+            if (!window.systemSettings || !window.systemSettings.zones) return;
+
+            document.querySelectorAll('.zone-wrapper').forEach(zoneWrapper => {
+                let zId = zoneWrapper.getAttribute('data-id');
+                if(!zId) return;
+                
+                let zoneData = window.systemSettings.zones.find(z => z.id === zId);
+                if (!zoneData) return;
+
+                let mode = zoneData.payMode || zoneData.mode; // Compatibilité ancien/nouveau
+                let zoneObj = zoneWrapper.querySelector('.zone-obj');
+                
+                let oldLabel = zoneWrapper.querySelector('.rush-payment-label');
+                if(oldLabel) oldLabel.remove();
+
+                let labelHtml = '';
+                let color = '';
+
+                if (mode === 'qr_nfc') {
+                    color = '#fbbf24'; 
+                    labelHtml = `<div class="rush-payment-label" style="color: ${color};">📱 ZONE AUTONOME<br><span style="font-size:0.75rem; color:#fff; font-weight:500;">💳 Le client paie seul (QR/NFC)</span></div>`;
+                } else if (mode === 'bar') {
+                    color = '#ef4444'; 
+                    labelHtml = `<div class="rush-payment-label" style="color: ${color};">🍹 ZONE COMPTOIR<br><span style="font-size:0.75rem; color:#fff; font-weight:500;">🚶 Commande directe au Bar</span></div>`;
+                } else {
+                    color = '#10b981'; 
+                    labelHtml = `<div class="rush-payment-label" style="color: ${color};">🍽️ ZONE CLASSIQUE<br><span style="font-size:0.75rem; color:#fff; font-weight:500;">👨‍🍳 Prise de commande Pad Serveur</span></div>`;
+                }
+
+                zoneWrapper.insertAdjacentHTML('beforeend', labelHtml);
+                
+                if(zoneObj) {
+                    zoneObj.style.borderColor = color;
+                    zoneObj.style.boxShadow = `inset 0 0 20px ${color}20`;
+                }
+            });
+        }
 
         const appUrlParams = new URLSearchParams(window.location.search);
         let appTenantID = appUrlParams.get('tenantID') || localStorage.getItem('ichef_tenant_id') || 'MASTER_STATE';
+
         const APP_SERVER_URL = (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1" || window.location.protocol === "file:") 
         ? "http://localhost:10000" : "https://tableau-system.onrender.com";
         
@@ -791,6 +853,7 @@
         let staffAccessData = []; 
         let localSasConfig = { active: false, maxTables: 5, delay: 60 }; 
         let unifiedMenu = {};
+        
         let globalTimesheets = {};
 
         let isLoyaltyActive = false;
@@ -806,15 +869,17 @@
         let currentRoom = rooms[0] || 'Salle Principale';
         let configRoomOldName = null, currentTactileRoomName = "";
         let tables = safeArray('empire_architecture', [ {label:"T1", l:550, t:500, w:80, h:120, shape:"rect", pax: 4, room: "Salle Principale"} ]);
+        
+        // 🔲 VARIABLES DES ZONES SPATIALES
         let zones = safeArray('empire_zones', []);
         let configZoneId = null;
         let currentTableId_PayMode = 'standard';
-        let currentTableZoneLabel = 'Salle';
-        window.systemSettings = window.systemSettings || {};
 
         let inactivityTimer; const INACTIVITY_LIMIT = 120000; 
         let currentUser = null, currentPin = "";
-        let syncInterval = null; let clockInterval = null;
+        
+        let syncInterval = null;
+        let clockInterval = null;
 
         const API = {
             getState: async () => {
@@ -869,7 +934,7 @@
         async function submitPin() {
             let masterPin = localStorage.getItem('ichef_master_pin') || "999999";
             
-            if(currentPin === masterPin || currentPin === "9999" || currentPin === "999999" || currentPin === "7777" || currentPin === "0000") {
+            if(currentPin === masterPin || currentPin === "9999" || currentPin === "999999" || currentPin === "7777") {
                 currentUser = { name: "Directeur", role: "Manager" };
                 unlockPadWithUser(currentUser); 
                 return;
@@ -1048,22 +1113,6 @@
                         if (badgeBar) {
                             badgeBar.style.display = isServiceAuBarActive ? 'flex' : 'none';
                         }
-
-                        updateCashRegisterBadge();
-
-                        // 🔥 SYNCHRO ANTI-RUSH & TIME-SHIFTING 🔥
-                        currentRushLevel = window.systemSettings.rushLevel || 0;
-                        rushV3Settings = window.systemSettings.rushV3 || { cameleon: false, timeShift: { active: false, discount: 5, delay: 15 }, paceMaker: { active: false, max: 10 } };
-                        isKitchenInRush = (currentRushLevel >= 4); // Alerte critique sur la caisse uniquement si niveau 4 ou 5
-                        
-                        let globalRushAlert = document.getElementById('global-rush-alert');
-                        if(globalRushAlert) {
-                            if (isKitchenInRush) {
-                                globalRushAlert.style.display = 'block';
-                            } else {
-                                globalRushAlert.style.display = 'none';
-                            }
-                        }
                     }
 
                     if(nO['LOYALTY_MASTER'] && nO['LOYALTY_MASTER'].data) {
@@ -1121,19 +1170,31 @@
                         }
                     }
                     
-                   if (currentTableId && nO[currentTableId]) {
-    let serverOrder = nO[currentTableId];
-    if (serverOrder && serverOrder.items) {
-        // 🔒 COMPARAIISON PROFONDE : Détecte tout changement (Statut Prêt, Quantité, Prix, Erreur...)
-        let serverHash = JSON.stringify(serverOrder.items);
-        let localHash = JSON.stringify(currentTicket);
-        
-        if (serverHash !== localHash) {
-            currentTicket = JSON.parse(serverHash);
-            renderTicket();
-        }
-    }
-}
+                    let currentStockValue = 0;
+                    for (let cat in menuCuisine) {
+                        if (menuCuisine[cat]) {
+                            menuCuisine[cat].forEach(item => {
+                                if (item.stock && parseInt(item.stock) > 0) currentStockValue += (parseFloat(item.price) || 0) * parseInt(item.stock);
+                            });
+                        }
+                    }
+                    for (let cat in menuBar) {
+                        if (menuBar[cat]) {
+                            menuBar[cat].forEach(item => {
+                                if (item.stock && parseInt(item.stock) > 0) currentStockValue += (parseFloat(item.price) || 0) * parseInt(item.stock);
+                            });
+                        }
+                    }
+                    let stockTracker = document.getElementById('stock-tracker');
+                    if (stockTracker) stockTracker.innerText = currentStockValue.toFixed(2) + ' €';
+
+                    if (currentTableId && nO[currentTableId]) {
+                        let serverOrder = nO[currentTableId];
+                        if (serverOrder && serverOrder.items && serverOrder.items.length !== currentTicket.length) {
+                            currentTicket = JSON.parse(JSON.stringify(serverOrder.items));
+                            renderTicket();
+                        }
+                    }
 
                     activeOrders = nO;
                     checkGlobalAlerts();
@@ -1378,7 +1439,7 @@
             renderFloor();
         }
 
-       function renderRooms() { document.getElementById('room-tabs-container').innerHTML = rooms.map((r, i) => `<div ... /* TON CODE ACTUEL QUI GÈRE LES SALLES */ ...`).join(''); document.getElementById('room-tabs-container').innerHTML += `<button onclick="window.location.href='anti-rush.html?tenantID=' + window.tenantID" style="background: rgba(239, 68, 68, 0.1); border: 1px solid #ef4444; color: #ef4444; padding: 6px 12px; border-radius: 6px; font-weight: 800; cursor: pointer; text-transform: uppercase; font-size: 0.75rem; margin-left: 20px; box-shadow: 0 0 10px rgba(239, 68, 68, 0.2);">⚡ ANTI-RUSH</button>`; }
+        function renderRooms() { document.getElementById('room-tabs-container').innerHTML = rooms.map((r, i) => `<div class="room-tab ${r === currentRoom ? 'active' : 'inactive'}" onclick="handleRoomClick('${r}')">${r}</div>`).join(''); }
         function handleRoomClick(r) { if(isArchiMode && r === currentRoom) openRoomConfigModal(r); else { currentRoom = r; renderRooms(); renderFloor(); } }
         function addNewRoom() { let n = "Salle " + (rooms.length + 1); rooms.push(n); currentRoom = n; renderRooms(); renderFloor(); }
         function addTactileRoomName(v) { if(v === 'CLEAR') currentTactileRoomName = currentTactileRoomName.slice(0, -1); else currentTactileRoomName += v; document.getElementById('config-room-name-display').innerText = currentTactileRoomName; }
@@ -1517,11 +1578,12 @@
                     wrapper.setAttribute('data-id', z.id);
                     
                     let bgCol = z.color || '#3498db';
-                    let modeIcons = { 'standard': '🍽️ SERVEUR', 'qr_nfc': '📲 QR/NFC', 'bar': '🍹 BAR' };
+                    let modeIcons = { 'standard': '🍽️', 'qr_nfc': '📱 QR/NFC', 'bar': '🍹 BAR' };
                     let mode = z.payMode || z.mode || 'standard';
                     let icon = modeIcons[mode] || '🍽️';
 
                     if (!isRushMode) {
+                        // MODE ARCHITECTE
                         wrapper.style.left = (z.l||0)+'px'; wrapper.style.top = (z.t||0)+'px'; wrapper.style.width = (z.w||400)+'px'; wrapper.style.height = (z.h||300)+'px';
                         
                         let d = document.createElement('div'); d.className = 'zone-obj';
@@ -1536,6 +1598,7 @@
                         d.onclick = (e) => { if(isArchiMode) { if(!isDraggingTable && e.target !== r) openZoneConfigModal(z.id); } };
                         if (isArchiMode) makeInteractive(wrapper, z, r);
                     } else {
+                        // MODE RUSH Conteneur Flexbox
                         let labelHtml = '';
                         let rushColor = bgCol;
                         if (mode === 'qr_nfc') { rushColor = '#fbbf24'; labelHtml = `ZONE AUTONOME <span style="font-size:0.75rem; font-weight:400; opacity:0.8; margin-left:10px;">💳 PAIEMENT CLIENT (QR)</span>`; } 
@@ -1638,6 +1701,7 @@
                         let pax = parseInt(t.pax) || 4;
                         if (orderData && orderData.observations) { let match = orderData.observations.match(/🍽️ (\d+) Couvert\(s\)/); if (match) pax = parseInt(match[1]); }
 
+                        // CHAISES OR POUR CLIENT EXTRA
                         let extraPax = parseInt(t.extraPax) || 0;
 
                         for(let i=0; i<pax; i++) {
@@ -1651,6 +1715,7 @@
                                 c.innerText = i + 1; 
                                 c.style.background = 'transparent'; 
                                 
+                                // SIÈGE EXTRA (OR)
                                 if (i >= (pax - extraPax)) {
                                     c.style.border = '2px solid var(--gold)';
                                     c.style.color = 'var(--gold)';
@@ -1844,7 +1909,6 @@
                     );
 
                     if (activeZone) {
-                        currentTableZoneLabel = activeZone.label || activeZone.name || 'Zone';
                         currentTableId_PayMode = activeZone.payMode || activeZone.mode; 
                         
                         if (currentTableId_PayMode === 'qr_nfc') {
@@ -1852,22 +1916,20 @@
                             zoneBandeau.style.borderColor = activeZone.color || 'var(--alert)';
                             zoneBandeau.style.color = activeZone.color || 'var(--alert)';
                             zoneBandeau.style.background = (activeZone.color ? activeZone.color + '15' : 'rgba(239, 68, 68, 0.1)');
-                            zoneBandeau.innerHTML = `📲 ZONE QR/NFC : COMMANDE CLIENT AUTONOME — ENCAISSEMENT SÉPARÉ`;
+                            zoneBandeau.innerHTML = `📱 ZONE AUTONOME : ENCAISSEMENT SERVEUR BLOQUÉ`;
                         } 
                         else if (currentTableId_PayMode === 'bar') {
                             zoneBandeau.style.display = 'block';
                             zoneBandeau.style.borderColor = activeZone.color || '#3498db';
                             zoneBandeau.style.color = activeZone.color || '#3498db';
                             zoneBandeau.style.background = (activeZone.color ? activeZone.color + '15' : 'rgba(52, 152, 219, 0.1)');
-                            zoneBandeau.innerHTML = `🍹 ZONE COMPTOIR : RETRAIT ET PAIEMENT AU BAR`;
+                            zoneBandeau.innerHTML = `🍹 ZONE BAR : LES CLIENTS PAIENT AU COMPTOIR`;
                         }
                     } else {
                         currentTableId_PayMode = 'standard';
-                        currentTableZoneLabel = 'Salle';
                     }
                 } else {
                     currentTableId_PayMode = 'standard';
-                    currentTableZoneLabel = 'Salle';
                 }
             }
 
@@ -2072,15 +2134,6 @@
         function addToTicket(n, p, dest, tvaRate = 10) { 
             let realName = n.replace(/\[BR\]/g, ' ');
             
-            // 🔥 NOUVEAU BLOCAGE ANTI-RUSH 3.0 🔥
-            // Si le plat nécessite une cuisson (viande/chaud) ET que la cuisine est en mode RUSH 4 ou 5
-            if (isKitchenInRush && currentRushLevel >= 4 && dest === 'cuisine') {
-                let isColdPlat = realName.toLowerCase().includes('salade') || realName.toLowerCase().includes('froid') || realName.toLowerCase().includes('tartare') || realName.toLowerCase().includes('glace');
-                if (!isColdPlat) {
-                    alert(`🛑 ARRÊT DE PRODUCTION !\nLa cuisine est saturée (Niveau ${currentRushLevel}). Veuillez suspendre l'envoi de plats chauds pour le moment ou inciter les clients à commander froid.`);
-                }
-            }
-
             if(['entrecôte', 'entrecote', 'bœuf', 'boeuf', 'steak', 'burger', 'filet', 'canard', 'agneau', 'viande', 'tartare', 'onglet', 'bavette', 'côte', 'cote'].some(m => realName.toLowerCase().includes(m))) {
                 pendingCuissonItem = { n: realName, p, dest, tvaRate }; 
                 document.getElementById('cuisson-item-name').innerText = realName; 
@@ -2116,14 +2169,17 @@
             let plat = parts[1] ? "🔥 " + parts[1].trim() : null;
             let dessert = parts[2] ? "🍰 " + parts[2].trim() : null;
             if (entree) executeAddToCart(entree, 0, dest, 1, n, tvaRate); 
-            if (plat) executeAddToCart(plat, p, dest, 2, n, tvaRate);       
+            if (plat) executeAddToCart(plat, p, dest, 2, n, tvaRate);      
             if (dessert) executeAddToCart(dessert, 0, dest, 3, n, tvaRate); 
             for(let i=3; i<parts.length; i++) { if(parts[i].trim() !== '') executeAddToCart("🍰 " + parts[i].trim(), 0, dest, 3, n, tvaRate); }
         }
 
         function renderTicket() {
             let list = document.getElementById('ticket-list');
-            let total = 0; let totalHT = 0; let tvaTotals = { '5.5': 0, '10': 0, '20': 0, '0': 0 };
+            let total = 0;
+            let totalHT = 0;
+            let tvaTotals = { '5.5': 0, '10': 0, '20': 0, '0': 0 };
+
             let htmlByCourse = { 0: '', 1: '', 2: '', 3: '' };
             let courseNames = { 0: '🍸 BOISSONS', 1: '🥗 ENTRÉES', 2: '🔥 PLATS', 3: '🍰 DESSERTS' };
 
@@ -2136,7 +2192,8 @@
                 let ligneHT = ligneTTC / (1 + (rate / 100));
                 let ligneTVA = ligneTTC - ligneHT;
                 totalHT += ligneHT;
-                if(tvaTotals[rate] !== undefined) tvaTotals[rate] += ligneTVA; else tvaTotals[rate] = ligneTVA;
+                if(tvaTotals[rate] !== undefined) tvaTotals[rate] += ligneTVA;
+                else tvaTotals[rate] = ligneTVA;
 
                 let cleanName = i.n.replace(/\n/g, ' + ');
                 let c = i.course !== undefined ? i.course : 2; 
@@ -2144,15 +2201,12 @@
                 
                 if (!i.isSent) statusHtml = `<button class="btn-mini" style="border-color: var(--text-main); color: var(--text-main); padding: 4px 8px; font-size: 0.6rem;">NOUVEAU</button>`;
                 else if (i.served) { statusHtml = `<button class="btn-mini" style="border-color: var(--text-muted); color: var(--text-muted); padding: 4px 8px; font-size: 0.6rem;">SERVI</button>`; opacityStyle = "opacity: 0.4;"; }
-              else if (i.done) statusHtml = `<button class="btn-mini" style="background: #10b981; color: #000; border-color: #10b981; padding: 4px 8px; font-size: 0.7rem; font-weight: 800; cursor: pointer; box-shadow: 0 0 10px rgba(16,185,129,0.5);" onclick="markAsServed(${idx}); event.stopPropagation();">✋ RÉCUPÉRER</button>`;
+                else if (i.done) statusHtml = `<button class="btn-mini" style="background: var(--accent); color: #000; border-color: var(--accent); padding: 4px 8px; font-size: 0.6rem;">PRÊT</button>`;
                 else statusHtml = `<button class="btn-mini" style="border-color: var(--gold); color: var(--gold); padding: 4px 8px; font-size: 0.6rem;">ATTENTE</button>`;
                 
                 let seatBadge = (i.seat && i.seat > 0) ? `<span style="color:var(--text-muted); font-size:0.75rem; margin-right:8px; font-weight:500;">👤 ${i.seat}</span>` : `<span style="color:var(--text-muted); font-size:0.7rem; margin-right:8px; font-weight:400;">🍽️ CTR</span>`;
                 let priceHtml = i.isOffered ? `<span style="margin-right:10px; font-weight:500; color:var(--gold); font-size: 0.8rem; letter-spacing: 1px;">🎁 OFFERT</span>` : `<span style="margin-right:10px; font-weight:500; font-size: 0.95rem; font-family: 'Playfair Display', serif;">${ligneTTC.toFixed(2)}€</span>`;
                 let obsDisplay = i.obs ? `<span style="font-size:0.7rem; color:var(--gold); margin-left: 5px; font-weight: 500;">⚠️ ${i.obs}</span>` : `<span style="font-size:0.65rem; color:var(--border-strong); font-weight: 300; margin-left: 5px;">+ Obs</span>`;
-
-                // 🔥 BOUTON D'ERREUR POUR LES PLATS DÉJÀ ENVOYÉS 🔥
-                let errorBtnHtml = i.isSent && !i.served ? `<button class="item-error-btn" onclick="openErrorModal(${idx}); event.stopPropagation();">REFAIRE</button>` : `<button class="item-delete-btn" onclick="removeTicketItem(${idx}); event.stopPropagation();">✕</button>`;
 
                 let itemHtml = `
                 <div class="ticket-item-row" style="${opacityStyle}">
@@ -2160,10 +2214,8 @@
                         <div style="font-weight:400; font-size:0.95rem; color: var(--text-main);">${seatBadge}${q>1?`<span style="color:var(--gold); font-weight:600;">${q}x</span> `:""}${cleanName||'?'}</div>
                         <div style="display:flex; align-items:center; gap:8px; margin-top:6px;">${statusHtml}${obsDisplay}</div>
                     </div>
-                    <div style="display: flex; align-items: center; gap: 10px;">
-                        ${priceHtml}
-                        ${errorBtnHtml}
-                    </div>
+                    ${priceHtml}
+                    <button class="item-delete-btn" onclick="removeTicketItem(${idx}); event.stopPropagation();">✕</button>
                 </div>`;
                 htmlByCourse[c] += itemHtml;
             }); 
@@ -2190,51 +2242,9 @@
             }
         }
 
-        // 🔥 LOGIQUE ANTI-RUSH : VÉRIFICATION AVANT ENVOI 🔥
-        function processOrderDispatch() {
-            if (isKitchenInRush && rushV3Settings.timeShift && rushV3Settings.timeShift.active) {
-                let hasHotDishes = currentTicket.some(i => !i.isSent && i.dest === 'cuisine');
-                if (hasHotDishes) {
-                    document.getElementById('server-ts-discount').innerText = `-${rushV3Settings.timeShift.discount}%`;
-                    document.getElementById('server-ts-delay').innerText = `${rushV3Settings.timeShift.delay} min`;
-                    document.getElementById('ts-offer-modal').classList.add('open');
-                    return; 
-                }
-            }
-            sendOrderToKDS(false);
-        }
-
-        function acceptTimeShiftServer() {
-            document.getElementById('ts-offer-modal').classList.remove('open');
-            let multiplier = 1 - (rushV3Settings.timeShift.discount / 100);
-            
-            currentTicket.forEach(i => {
-                if (!i.isSent) {
-                    i.p = i.p * multiplier; 
-                    i.timeShifted = true; 
-                    i.obs = (i.obs ? i.obs + " | " : "") + `⏱️ DÉCALÉ (+${rushV3Settings.timeShift.delay}m)`;
-                }
-            });
-            
-            sendOrderToKDS(true);
-            showToast(`✅ Le client a accepté l'offre ! Envoi différé.`);
-        }
-
-        function refuseTimeShiftServer() {
-            document.getElementById('ts-offer-modal').classList.remove('open');
-            sendOrderToKDS(false);
-        }
-
-        async function sendOrderToKDS(isTimeShifted = false) {
+        async function sendOrderToKDS() {
             let count = 0;
-            currentTicket.forEach(i => { 
-                if (!i.isSent) { 
-                    i.isSent = true; 
-                    i.itemId = Date.now(); 
-                    if(!isTimeShifted) i.timeShifted = false; 
-                    count++; 
-                } 
-            });
+            currentTicket.forEach(i => { if (!i.isSent) { i.isSent = true; i.itemId = Date.now(); count++; } });
             if (count > 0) {
                 renderTicket();
                 await executeSaveTableState(false, true); 
@@ -2257,77 +2267,6 @@
             }, 10);
         }
 
-        // ==========================================
-        // 🤦‍♂️ GESTION DES ERREURS HUMAINES (NOUVEAU)
-        // ==========================================
-        let pendingErrorIndex = null;
-        
-        function openErrorModal(idx) {
-            pendingErrorIndex = idx;
-            document.getElementById('error-item-title').innerText = currentTicket[idx].n.replace(/\n/g, ' ');
-            document.getElementById('error-item-modal').classList.add('open');
-        }
-
-        function closeErrorModal() {
-            pendingErrorIndex = null;
-            document.getElementById('error-item-modal').classList.remove('open');
-        }
-
-        async function executeErrorItem(motif) {
-            if(pendingErrorIndex === null) return;
-            
-            let item = currentTicket[pendingErrorIndex];
-            let userName = currentUser ? currentUser.name : "Serveur";
-            
-            // 1. On annule l'ancien plat (Il passe à 0€ pour la compta et on taggue Pertes)
-            item.originalPrice = item.originalPrice !== undefined ? item.originalPrice : item.p; 
-            item.p = 0; 
-            item.isOffered = true; // Pour ne pas le facturer au client
-            item.obs = `❌ ANNULÉ (${motif})`;
-            item.done = true; // On le sort du scope de la cuisine
-
-            // 2. On recrée un NOUVEAU plat identique avec la priorité absolue
-            let newItem = JSON.parse(JSON.stringify(item));
-            newItem.id = Date.now() + Math.random();
-            newItem.itemId = Date.now(); // Reset du chrono pour la cuisine
-            newItem.p = item.originalPrice; // Le client paiera ce nouveau plat
-            newItem.isOffered = false;
-            newItem.done = false;
-            newItem.served = false;
-            newItem.isSent = true; // Déjà envoyé pour trigger l'alarme
-            newItem.timeShifted = false; // Ne DOIT PAS passer par le sas d'attente
-            newItem.obs = `🔥 URGENT : REFAIRE (${motif})`; // Le tag rouge pour le chef
-
-            currentTicket.push(newItem);
-            
-            closeErrorModal(); 
-            renderTicket();
-            executeSaveTableState(false, true);
-
-            // 3. On déclenche l'Alerte Rouge Générale sur tous les postes
-            const alerte = {
-                id: 'alert_' + Date.now(),
-                type: 'humain',
-                message: `Table ${currentTableId} : Refaire ${newItem.n} (${motif})`,
-                author: userName,
-                timestamp: Date.now()
-            };
-
-            try {
-                const state = await API.getState();
-                let settings = (state.activeOrders && state.activeOrders['SETTINGS_MASTER']) ? state.activeOrders['SETTINGS_MASTER'].data : {};
-                if (!settings.activeAlerts) settings.activeAlerts = [];
-                settings.activeAlerts.unshift(alerte);
-                await API.update('SETTINGS_MASTER', settings);
-                
-                showToast("🚨 CUISINE ALERTÉE ! Le plat repart en priorité.", true);
-            } catch(e) {}
-        }
-
-
-        // ==========================================
-        // ✏️ ÉDITION DES BONS ET MODALES STANDARDS
-        // ==========================================
         let pendingEditIndex = null;
         function openEditItem(idx) { 
             pendingEditIndex = idx; let item = currentTicket[idx]; 
@@ -2411,180 +2350,42 @@
         function abortClearTicket() { document.getElementById('clear-ticket-modal').classList.remove('open'); }
         async function executeClearTicket(raison) { currentTicket = []; renderTicket(); await API.update(currentTableId, null, true); document.getElementById('clear-ticket-modal').classList.remove('open'); closeOrder(); renderFloor(); }
 
-        // ==========================================
-        // 💳 SYSTÈME D'ENCAISSEMENT ET FIDÉLITÉ
-        // ==========================================
         let paymentsDone = [];
         let currentTableTotal = 0;
         let currentPayRemaining = 0;
         let fidelityDiscountUsed = 0; 
         let loyaltyClientName = null;
 
-
-        // ==========================================
-        // 🧾 SÉPARATION PAD SERVEUR / CAISSE FISCALE
-        // ==========================================
-        function getCashRegisterSettings() {
-            return (window.systemSettings && window.systemSettings.cashRegister) ? window.systemSettings.cashRegister : {};
-        }
-
-        function getQrNfcSettings() {
-            return (window.systemSettings && window.systemSettings.qrNfc) ? window.systemSettings.qrNfc : {};
-        }
-
-        function isFiscalCashRegisterReady() {
-            const cash = getCashRegisterSettings();
-            return cash.enabled === true && cash.fiscalMode === true && !!(cash.backendUrl || "/api/fiscal/cash-in");
-        }
-
-        function getFiscalBackendUrl() {
-            const cash = getCashRegisterSettings();
-            return cash.backendUrl || "/api/fiscal/cash-in";
-        }
-
-        function getCurrencyCodeForPad() {
-            const currency = window.systemSettings?.currency || "€";
-            if (currency === "CHF") return "CHF";
-            if (currency === "$") return "USD";
-            if (currency === "C$") return "CAD";
-            return "EUR";
-        }
-
-        function normalizeFiscalPaymentMethod(methods) {
-            const raw = Array.isArray(methods) ? methods.map(m => String(m.method || m)).join(" + ") : String(methods || "");
-            if (raw.includes("CB") || raw.toUpperCase().includes("CARD")) return "CARD";
-            if (raw.includes("ESPÈCES") || raw.toUpperCase().includes("CASH")) return "CASH";
-            if (raw.toUpperCase().includes("STRIPE") || raw.toUpperCase().includes("ONLINE")) return "ONLINE";
-            return "OTHER";
-        }
-
-        function getCurrentPaxFromPad() {
-            try {
-                const obsInput = document.getElementById('order-obs')?.value || "";
-                const match = obsInput.match(/🍽️ (\d+) Couvert\(s\)/);
-                if (match) return parseInt(match[1]);
-                const tObj = tables.find(t => t && t.label === currentTableId);
-                return tObj?.pax || 1;
-            } catch(e) {
-                return 1;
-            }
-        }
-
-        function getCurrentZoneLabelForPad() {
-            return currentTableZoneLabel || "Salle";
-        }
-
-        function updateCashRegisterBadge() {
-            const badge = document.getElementById('badge-fiscal-cash');
-            if (!badge) return;
-
-            if (isFiscalCashRegisterReady()) {
-                badge.style.display = 'block';
-                badge.innerHTML = '🧾 CAISSE FISCALE ACTIVE';
-                badge.style.color = 'var(--gold)';
-                badge.style.borderColor = 'var(--gold)';
-            } else {
-                badge.style.display = 'block';
-                badge.innerHTML = '🧾 CAISSE SÉPARÉE';
-                badge.style.color = 'var(--text-muted)';
-                badge.style.borderColor = 'var(--border)';
-            }
-        }
-
-        async function sendPadPaymentToFiscalBackend({ totalHT, tvaTotals }) {
-            const fiscalBackendUrl = getFiscalBackendUrl();
-            const normalizedMethod = normalizeFiscalPaymentMethod(paymentsDone);
-            const currency = getCurrencyCodeForPad();
-
-            const payload = {
-                tenantID: appTenantID,
-                tableId: currentTableId,
-                deviceId: getDeviceFingerprint(),
-                source: "PAD_SERVEUR",
-                payment: {
-                    method: normalizedMethod,
-                    currency: currency,
-                    amount: Number(currentTableTotal.toFixed(2)),
-                    details: paymentsDone
-                },
-                orderSnapshot: {
-                    tableId: currentTableId,
-                    zone: getCurrentZoneLabelForPad(),
-                    mode: currentTableId_PayMode || "standard",
-                    pax: getCurrentPaxFromPad(),
-                    total: Number(currentTableTotal.toFixed(2)),
-                    totalHT: Number(totalHT.toFixed(2)),
-                    tva: tvaTotals,
-                    items: currentTicket,
-                    waiter: currentUser ? currentUser.name : null,
-                    cashedAt: new Date().toISOString()
-                }
-            };
-
-            const response = await fetch(`${APP_SERVER_URL}${fiscalBackendUrl.startsWith('/') ? fiscalBackendUrl : '/' + fiscalBackendUrl}`, {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify(payload)
-            });
-
-            const data = await response.json().catch(() => ({}));
-
-            if (!response.ok || data.success === false) {
-                throw new Error(data.error || "Erreur lors de la création du ticket fiscal.");
-            }
-
-            return data;
-        }
-
        function openPaymentModal() {
             if (currentGlobalScheduledMode === 'closed') {
                 return alert("🛑 IMPOSSIBLE : Le restaurant est programmé comme FERMÉ à cette heure-ci.");
             }
 
-            if (currentTicket.length === 0) return alert("Table vide.");
-
-            let td = activeOrders[currentTableId];
-            if (!td || !td.items || td.items.length !== currentTicket.length) {
-                return alert("⚠️ Sauvegardez les modifications avant d'encaisser.");
+            let isQrRequired = (typeof currentTableId_PayMode !== 'undefined' && currentTableId_PayMode === 'qr_nfc') || (currentGlobalScheduledMode === 'qr_nfc');
+            if (isQrRequired) {
+                return alert("🛑 IMPOSSIBLE : En raison de la Zone ou de l'Heure actuelle, le mode AUTONOME est activé. Le client doit payer lui-même depuis son smartphone via QR Code ou NFC.");
             }
 
-            const isQrOrderZone = (typeof currentTableId_PayMode !== 'undefined' && currentTableId_PayMode === 'qr_nfc') || (currentGlobalScheduledMode === 'qr_nfc');
-
-            if (isQrOrderZone) {
-                const ok = confirm(
-                    "📲 Cette table est en zone QR/NFC.\n\n" +
-                    "QR/NFC = prise de commande client.\n" +
-                    "Caisse = encaissement séparé.\n\n" +
-                    "Continuer vers l'encaissement depuis le Pad Serveur ?"
-                );
-                if (!ok) return;
-            }
-
-            if (!isFiscalCashRegisterReady()) {
-                const ok = confirm(
-                    "⚠️ Module caisse fiscale non activé.\n\n" +
-                    "Le Pad Serveur peut garder un historique interne, mais cela ne remplace pas un ticket fiscal signé.\n\n" +
-                    "Continuer en historique interne non fiscal ?"
-                );
-                if (!ok) return;
-            }
-
-            document.getElementById('pay-modal-title').innerText = "TABLE " + currentTableId;
+            if(currentTicket.length === 0) return alert("Table vide."); 
+            let td = activeOrders[currentTableId]; 
+            if(!td || !td.items || td.items.length !== currentTicket.length) return alert("⚠️ Sauvegardez les modifications avant d'encaisser.");
+            
+            document.getElementById('pay-modal-title').innerText = "TABLE " + currentTableId; 
             document.getElementById('pay-modal-total').innerText = currentTableTotal.toFixed(2) + " €";
-
+            
             paymentsDone = [];
             fidelityDiscountUsed = 0;
             currentPayRemaining = currentTableTotal;
             updatePaymentUI();
-
+            
             let lZone = document.getElementById('loyalty-zone');
-            if (isLoyaltyActive) {
+            if(isLoyaltyActive) {
                 lZone.style.display = 'flex';
                 updateLoyaltyUI();
             } else {
                 lZone.style.display = 'none';
             }
-
+            
             document.getElementById('payment-modal').classList.add('open');
         }
 
@@ -2707,98 +2508,468 @@
         function closePaymentModal() { document.getElementById('payment-modal').classList.remove('open'); }
 
         async function finalizeTablePayment() {
-            if (typeof isDemoMode !== 'undefined' && isDemoMode) {
-                document.getElementById('payment-modal').classList.remove('open');
-                closeOrder();
-                return alert("✅ [MODE DÉMO] Paiement encaissé fictivement. Historique non sauvegardé.");
-            }
-
             document.getElementById('payment-modal').classList.remove('open');
-
-            try {
-                const state = await API.getState();
-
-                let totalHT = 0;
-                let tvaTotals = {};
-
-                currentTicket.forEach(i => {
-                    let ligneTTC = (parseFloat(i.p) || 0) * (i.qty || 1);
-                    let rate = parseFloat(i.tva) || 10;
-                    let ligneHT = ligneTTC / (1 + (rate / 100));
-                    totalHT += ligneHT;
-                    tvaTotals[rate] = (tvaTotals[rate] || 0) + (ligneTTC - ligneHT);
-                });
-
-                let fiscalResult = null;
-                let fiscalStatus = "INTERNAL_HISTORY_ONLY";
-
-                if (isFiscalCashRegisterReady()) {
-                    fiscalResult = await sendPadPaymentToFiscalBackend({
-                        totalHT,
-                        tvaTotals
+            window.print(); 
+            
+            setTimeout(async () => {
+                try {
+                    const state = await API.getState();
+                    
+                    let totalHT = 0; let tvaTotals = {};
+                    currentTicket.forEach(i => {
+                        let ligneTTC = (parseFloat(i.p)||0) * (i.qty||1);
+                        let rate = parseFloat(i.tva) || 10;
+                        let ligneHT = ligneTTC / (1 + (rate / 100));
+                        totalHT += ligneHT;
+                        tvaTotals[rate] = (tvaTotals[rate] || 0) + (ligneTTC - ligneHT);
                     });
 
-                    fiscalStatus = "FISCALIZED";
-                } else {
-                    const ok = confirm(
-                        "⚠️ Attention : cette clôture sera uniquement un historique interne.\n\n" +
-                        "Aucun ticket fiscal signé ne sera généré par iChef OS.\n\n" +
-                        "Confirmer la clôture interne ?"
-                    );
-                    if (!ok) return;
-                }
+                    if(isLoyaltyActive && currentLoyaltyPhone && globalLoyaltyData[currentLoyaltyPhone]) {
+                        let montantEligibleCashback = currentTableTotal - fidelityDiscountUsed;
+                        if(montantEligibleCashback > 0) {
+                            let argentGagne = montantEligibleCashback * (loyaltyPercent / 100);
+                            globalLoyaltyData[currentLoyaltyPhone].points += argentGagne;
+                            
+                            await API.update('LOYALTY_MASTER', globalLoyaltyData);
+                            alert(`🎁 Le client ${globalLoyaltyData[currentLoyaltyPhone].name} vient de gagner ${argentGagne.toFixed(2)} € sur sa cagnotte !`);
+                        }
+                    }
 
-                if (isLoyaltyActive && currentLoyaltyPhone && globalLoyaltyData[currentLoyaltyPhone]) {
-                    let montantEligibleCashback = currentTableTotal - fidelityDiscountUsed;
-                    if (montantEligibleCashback > 0) {
-                        let argentGagne = montantEligibleCashback * (loyaltyPercent / 100);
-                        globalLoyaltyData[currentLoyaltyPhone].points += argentGagne;
+                    let transaction = {
+                        id: 'TX_' + Date.now(),
+                        date: new Date().toISOString(),
+                        method: paymentsDone.map(h => h.method).join(' + '),
+                        totalTTC: parseFloat(currentTableTotal.toFixed(2)),
+                        totalHT: parseFloat(totalHT.toFixed(2)),
+                        tva: tvaTotals,
+                        source: 'Caisse Salle (' + currentTableId + ')',
+                        items: currentTicket
+                    };
 
-                        await API.update('LOYALTY_MASTER', globalLoyaltyData);
-                        alert(`🎁 Le client ${globalLoyaltyData[currentLoyaltyPhone].name} vient de gagner ${argentGagne.toFixed(2)} € sur sa cagnotte !`);
+                    let historyNode = state.activeOrders['FINANCIAL_HISTORY'] || { data: [] };
+                    historyNode.data.push(transaction);
+                    await API.update('FINANCIAL_HISTORY', historyNode.data);
+                } catch(e) {}
+                
+                await API.update(currentTableId, null, true);
+                closeOrder(); 
+                renderFloor();
+            }, 500);
+        }
+
+        function openHistoryDrawer() {
+            document.getElementById('history-drawer').classList.add('open');
+            API.getState().then(s => {
+                let hData = s.activeOrders['FINANCIAL_HISTORY'] ? s.activeOrders['FINANCIAL_HISTORY'].data : [];
+                let container = document.getElementById('history-content');
+                if(hData.length === 0) { container.innerHTML = '<div style="color:var(--text-muted); text-align:center;">Aucun historique</div>'; return; }
+                
+                hData.sort((a,b) => new Date(b.date) - new Date(a.date));
+                let html = hData.map(t => {
+                    let d = new Date(t.date);
+                    return `<div style="background:var(--panel); border:1px solid var(--border-strong); padding:15px; border-radius:4px;">
+                        <div style="display:flex; justify-content:space-between; border-bottom:1px solid var(--border); padding-bottom:10px; margin-bottom:10px;">
+                            <span style="color:var(--gold); font-weight:bold;">${t.source}</span>
+                            <span style="color:var(--text-muted); font-size:0.8rem;">${d.toLocaleDateString()} ${d.toLocaleTimeString()}</span>
+                        </div>
+                        <div style="display:flex; justify-content:space-between; font-weight:bold;">
+                            <span>TOTAL</span>
+                            <span style="color:var(--gold);">${t.totalTTC.toFixed(2)}€</span>
+                        </div>
+                        <div style="font-size:0.7rem; color:var(--text-muted); text-align:right; margin-top:5px;">${t.method}</div>
+                    </div>`;
+                }).join('');
+                container.innerHTML = html;
+            });
+        }
+        function closeDrawer(id) { document.getElementById(id).classList.remove('open'); }
+
+        // ==========================================
+        // ➕ GESTION DES TABLES EXTRA (VOLANTES)
+        // ==========================================
+        function addExtraTable() {
+            let tableName = prompt("Nom de la table supplémentaire (ex: EXT-2, DEBOUT, BAR) :");
+            if (!tableName) return;
+            tableName = tableName.trim().toUpperCase();
+
+            if (tables.find(t => t && t.label === tableName && t.room === currentRoom)) {
+                return alert("❌ Ce nom de table existe déjà dans cette salle.");
+            }
+
+            let paxStr = prompt("Combien de couverts ?", "2");
+            if (!paxStr) return;
+            let pax = parseInt(paxStr) || 2;
+
+            let baseL = window.innerWidth / 2 - 40;
+            let baseT = window.innerHeight / 2 - 60;
+
+            let roomZones = zones.filter(z => z && z.room === currentRoom);
+            if (roomZones.length > 0) {
+                let zPrompt = "Dans quelle zone placer la table ?\n\n";
+                roomZones.forEach((z, i) => { zPrompt += `[ ${i + 1} ] - ${z.label}\n`; });
+                zPrompt += `[ 0 ] - Aucune zone (Hors zone)\n\nEntrez le numéro :`;
+                
+                let zChoice = prompt(zPrompt, "1");
+                if (zChoice !== null && zChoice !== "0") {
+                    let selectedZone = roomZones[parseInt(zChoice) - 1];
+                    if (selectedZone) {
+                        baseL = (selectedZone.l || 0) + ((selectedZone.w || 400) / 2) - 40;
+                        baseT = (selectedZone.t || 0) + ((selectedZone.h || 300) / 2) - 60;
                     }
                 }
-
-                let transaction = {
-                    id: 'TX_' + Date.now(),
-                    date: new Date().toISOString(),
-                    method: paymentsDone.map(h => h.method).join(' + '),
-                    payments: paymentsDone,
-                    totalTTC: parseFloat(currentTableTotal.toFixed(2)),
-                    totalHT: parseFloat(totalHT.toFixed(2)),
-                    tva: tvaTotals,
-                    source: 'Pad Serveur (' + currentTableId + ')',
-                    zone: getCurrentZoneLabelForPad(),
-                    mode: currentTableId_PayMode || "standard",
-                    fiscalStatus: fiscalStatus,
-                    fiscalTicket: fiscalResult ? {
-                        ticketNumber: fiscalResult.ticket?.ticketNumber || fiscalResult.ticket?.ticket_number || null,
-                        chainHash: fiscalResult.ticket?.chainHash || fiscalResult.ticket?.chain_hash || null,
-                        createdAt: fiscalResult.ticket?.createdAt || fiscalResult.ticket?.created_at || null
-                    } : null,
-                    items: currentTicket
-                };
-
-                let historyNode = state.activeOrders['FINANCIAL_HISTORY'] || { data: [] };
-                historyNode.data.push(transaction);
-                await API.update('FINANCIAL_HISTORY', historyNode.data);
-
-                await API.update(currentTableId, null, true);
-                window.print();
-
-                if (fiscalStatus === "FISCALIZED") {
-                    alert("✅ Ticket fiscal généré et table clôturée.");
-                } else {
-                    alert("✅ Table clôturée en historique interne non fiscal.");
-                }
-
-                closeOrder();
-                renderFloor();
-
-            } catch (e) {
-                console.error("Erreur clôture Pad Serveur :", e);
-                alert("❌ Encaissement refusé : " + (e.message || "erreur inconnue"));
             }
+
+            let randomOffsetX = Math.floor(Math.random() * 80) - 40;
+            let randomOffsetY = Math.floor(Math.random() * 80) - 40;
+
+            tables.push({
+                label: tableName,
+                l: baseL + randomOffsetX,
+                t: baseT + randomOffsetY,
+                w: 80,
+                h: 120,
+                shape: "rect",
+                pax: pax,
+                room: currentRoom,
+                isExtra: true
+            });
+
+            pushArchitecture();
+            renderFloor();
+        }
+
+        function promptRemoveExtraTable(tableName) {
+            let pin = prompt("🔐 Entrez votre code PIN pour retirer cette table :");
+            if (!pin) return;
+
+            let masterPin = localStorage.getItem('ichef_master_pin') || "999999";
+            let isValid = (pin === masterPin || pin === "9999" || pin === "7777");
+            
+            if (!isValid && typeof staffAccessData !== 'undefined') {
+                let staff = staffAccessData.find(s => s.pin === pin);
+                if (staff && staff.active !== false) isValid = true;
+            }
+
+            if (!isValid) return alert("❌ Code PIN incorrect ou accès refusé.");
+
+            let order = activeOrders[tableName];
+            if (order && order.items && order.items.length > 0) {
+                if (!confirm("⚠️ La table a des commandes en cours ! Êtes-vous sûr de vouloir la supprimer ?")) return;
+            }
+
+            tables = tables.filter(t => !(t && t.label === tableName && t.room === currentRoom));
+            API.update(tableName, null, true); 
+            
+function executeSaveTableState(fireAllNew = false, keepOpen = false) {
+            if(currentTicket.length === 0 && !keepOpen) return;
+            let itemsToSave = JSON.parse(JSON.stringify(currentTicket));
+            let obsToSave = document.getElementById('order-obs').value.trim();
+            let targetTable = currentTableId;
+            
+            if(!keepOpen) { closeOrder(); renderFloor(); }
+
+            setTimeout(async () => {
+                try {
+                    // On préserve le statut "PRÊT" ou "PAIEMENT" pour ne pas couper la notification du client
+                    let existingOrder = activeOrders[targetTable];
+                    let currentStatus = (existingOrder && existingOrder.status) ? existingOrder.status : 'pending';
+                    if (currentStatus !== 'PRÊT' && currentStatus !== 'EN ATTENTE PAIEMENT') {
+                        currentStatus = 'pending';
+                    }
+
+                    await API.update(targetTable, { items: itemsToSave, time: new Date().toLocaleTimeString('fr-FR', {hour:'2-digit', minute:'2-digit'}), status: currentStatus, observations: obsToSave }, true);
+                } catch(e) {}
+            }, 10);
+        }
+
+        let pendingEditIndex = null;
+        function openEditItem(idx) { 
+            pendingEditIndex = idx; let item = currentTicket[idx]; 
+            document.getElementById('edit-item-title').innerText = item.n.replace(/\n/g, ' '); 
+            document.getElementById('edit-item-price').value = item.p; 
+            document.getElementById('edit-item-obs').value = item.obs || ""; 
+            document.getElementById('edit-item-course').value = item.course !== undefined ? item.course : 2;
+            document.getElementById('edit-item-seat').value = item.seat || 0;
+            updateEditSeatDisplay(item.seat || 0); 
+            document.getElementById('edit-item-modal').classList.add('open'); 
+        }
+        function closeEditModal() { pendingEditIndex = null; document.getElementById('edit-item-modal').classList.remove('open'); }
+        
+        function updateEditSeatDisplay(seatNum) { document.getElementById('edit-item-seat-display').innerText = seatNum === 0 ? '🍽️ CENTRE' : '👤 C' + seatNum; }
+        function cycleEditSeat() {
+            let input = document.getElementById('edit-item-seat');
+            let next = (parseInt(input.value) || 0) + 1;
+            if (next > 8) next = 0; 
+            input.value = next; updateEditSeatDisplay(next);
+        }
+
+        function saveItemEdit() {
+            if(pendingEditIndex === null) return; 
+            let p = parseFloat(document.getElementById('edit-item-price').value);
+            let c = parseInt(document.getElementById('edit-item-course').value);
+            let seat = parseInt(document.getElementById('edit-item-seat').value) || 0;
+            let obsVal = document.getElementById('edit-item-obs').value.trim();
+            if(!isNaN(p)) { currentTicket[pendingEditIndex].p = p; currentTicket[pendingEditIndex].obs = obsVal; currentTicket[pendingEditIndex].course = c; currentTicket[pendingEditIndex].seat = seat; }
+            closeEditModal(); renderTicket();
+            executeSaveTableState(false, true);
+        }
+
+        function offerItem() {
+            if(pendingEditIndex === null) return;
+            let item = currentTicket[pendingEditIndex];
+            let maxQty = item.qty || 1;
+            let qtyToOfferStr = prompt(`Combien de "${item.n.replace(/\n/g, ' ')}" voulez-vous offrir ? (Max: ${maxQty})`, "1");
+            if (!qtyToOfferStr) return; 
+            let qtyToOffer = parseInt(qtyToOfferStr);
+            if (isNaN(qtyToOffer) || qtyToOffer <= 0 || qtyToOffer > maxQty) return alert("⚠️ Quantité invalide.");
+
+            if (qtyToOffer === maxQty) {
+                item.originalPrice = item.originalPrice !== undefined ? item.originalPrice : item.p; 
+                item.p = 0; item.isOffered = true; item.obs = (item.obs ? item.obs + " | " : "") + "🎁 Geste Co.";
+            } else {
+                item.qty = maxQty - qtyToOffer; 
+                let offeredItem = JSON.parse(JSON.stringify(item)); 
+                offeredItem.id = Date.now() + Math.random(); offeredItem.qty = qtyToOffer;
+                offeredItem.originalPrice = offeredItem.originalPrice !== undefined ? offeredItem.originalPrice : offeredItem.p;
+                offeredItem.p = 0; offeredItem.isOffered = true; offeredItem.obs = (offeredItem.obs ? offeredItem.obs + " | " : "") + "🎁 Geste Co.";
+                currentTicket.push(offeredItem);
+            }
+            closeEditModal(); renderTicket();
+            executeSaveTableState(false, true);
+        }
+
+        function openSurMesureModal() { document.getElementById('sm-name').value = ''; document.getElementById('sm-price').value = ''; document.getElementById('sur-mesure-modal').classList.add('open'); }
+        function closeSurMesureModal() { document.getElementById('sur-mesure-modal').classList.remove('open'); }
+        function addSurMesure() {
+            let n = document.getElementById('sm-name').value.trim();
+            let p = parseFloat(document.getElementById('sm-price').value) || 0;
+            let c = parseInt(document.getElementById('sm-course').value);
+            let tvaRate = parseFloat(document.getElementById('sm-tva').value);
+            if(!n) return alert("Veuillez entrer un nom.");
+            let dest = (c === 0) ? 'bar' : 'cuisine';
+            executeAddToCart("✏️ " + n, p, dest, c, "✏️ " + n, tvaRate);
+            closeSurMesureModal();
+        }
+
+        let pendingCancelIndex = null;
+        function removeTicketItem(idx) { pendingCancelIndex = idx; document.getElementById('cancel-item-name').innerText = `${currentTicket[idx].n.replace(/\n/g, ' ')}`; document.getElementById('cancel-modal').classList.add('open'); }
+        function abortCancelItem() { pendingCancelIndex = null; document.getElementById('cancel-modal').classList.remove('open'); }
+        function executeCancelItem(raison) {
+            if(pendingCancelIndex === null) return; 
+            if (currentTicket[pendingCancelIndex].qty > 1) currentTicket[pendingCancelIndex].qty -= 1; else currentTicket.splice(pendingCancelIndex, 1);
+            pendingCancelIndex = null; document.getElementById('cancel-modal').classList.remove('open'); renderTicket();
+            executeSaveTableState(false, true);
+        }
+
+        function confirmClearTicket() { if(currentTicket.length === 0) return; document.getElementById('clear-ticket-modal').classList.add('open'); }
+        function abortClearTicket() { document.getElementById('clear-ticket-modal').classList.remove('open'); }
+        async function executeClearTicket(raison) { currentTicket = []; renderTicket(); await API.update(currentTableId, null, true); document.getElementById('clear-ticket-modal').classList.remove('open'); closeOrder(); renderFloor(); }
+
+        let paymentsDone = [];
+        let currentTableTotal = 0;
+        let currentPayRemaining = 0;
+        let fidelityDiscountUsed = 0; 
+        let loyaltyClientName = null;
+
+       function openPaymentModal() {
+            if (typeof currentGlobalScheduledMode !== 'undefined' && currentGlobalScheduledMode === 'closed') {
+                return alert("🛑 IMPOSSIBLE : Le restaurant est programmé comme FERMÉ à cette heure-ci.");
+            }
+
+            let isQrRequired = (typeof currentTableId_PayMode !== 'undefined' && currentTableId_PayMode === 'qr_nfc') || (typeof currentGlobalScheduledMode !== 'undefined' && currentGlobalScheduledMode === 'qr_nfc');
+            if (isQrRequired && !isRushMode) {
+                return alert("🛑 IMPOSSIBLE : En raison de la Zone ou de l'Heure actuelle, le mode AUTONOME est activé. Le client doit payer lui-même depuis son smartphone via QR Code ou NFC.");
+            }
+
+            if(currentTicket.length === 0) return alert("Table vide."); 
+            let td = activeOrders[currentTableId]; 
+            if(!td || !td.items || td.items.length !== currentTicket.length) return alert("⚠️ Sauvegardez les modifications avant d'encaisser.");
+            
+            document.getElementById('pay-modal-title').innerText = "TABLE " + currentTableId; 
+            document.getElementById('pay-modal-total').innerText = currentTableTotal.toFixed(2) + " €";
+            
+            paymentsDone = [];
+            fidelityDiscountUsed = 0;
+            currentPayRemaining = currentTableTotal;
+            updatePaymentUI();
+            
+            let lZone = document.getElementById('loyalty-zone');
+            if(isLoyaltyActive) {
+                lZone.style.display = 'flex';
+                updateLoyaltyUI();
+            } else {
+                lZone.style.display = 'none';
+            }
+            
+            document.getElementById('payment-modal').classList.add('open');
+        }
+
+        function openLoyaltyPrompt() {
+            let phone = prompt("📱 Numéro de téléphone du client (ex: 0612345678) :");
+            if (!phone) return;
+            phone = phone.replace(/\s+/g, '');
+            if(phone.length < 8) return alert("Numéro invalide.");
+            
+            currentLoyaltyPhone = phone;
+            
+            if(!globalLoyaltyData[phone]) {
+                let name = prompt("✨ Nouveau client ! Quel est son prénom/nom ?");
+                globalLoyaltyData[phone] = { name: name || 'Client', points: 0 };
+            }
+            
+            loyaltyClientName = globalLoyaltyData[phone].name;
+            updateLoyaltyUI();
+        }
+
+        function updateLoyaltyUI() {
+            let statusText = document.getElementById('loyalty-status-text');
+            let actionBtn = document.getElementById('btn-loyalty-action');
+            
+            if(!currentLoyaltyPhone) {
+                statusText.innerText = "Aucun compte lié.";
+                actionBtn.innerText = "ASSOCIER";
+                actionBtn.setAttribute("onclick", "openLoyaltyPrompt()");
+            } else {
+                let solde = globalLoyaltyData[currentLoyaltyPhone].points || 0;
+                statusText.innerHTML = `Connecté : <b>${loyaltyClientName}</b><br>Cagnotte dispo : <strong style="color:var(--text-main); font-size:1rem;">${solde.toFixed(2)} €</strong>`;
+                
+                if (solde > 0 && currentPayRemaining > 0) {
+                    actionBtn.innerText = "DÉDUIRE";
+                    actionBtn.setAttribute("onclick", "useLoyaltyPoints()");
+                } else {
+                    actionBtn.innerText = "MODIFIER";
+                    actionBtn.setAttribute("onclick", "openLoyaltyPrompt()");
+                }
+            }
+        }
+
+        function useLoyaltyPoints() {
+            if(!currentLoyaltyPhone || !globalLoyaltyData[currentLoyaltyPhone]) return;
+            let solde = globalLoyaltyData[currentLoyaltyPhone].points || 0;
+            
+            let maxDeductible = Math.min(solde, currentPayRemaining);
+            let deductStr = prompt(`Combien de la cagnotte voulez-vous utiliser ?\nMax possible: ${maxDeductible.toFixed(2)}€`, maxDeductible.toFixed(2));
+            
+            if(!deductStr) return;
+            let deduct = parseFloat(deductStr.replace(',', '.'));
+            
+            if(isNaN(deduct) || deduct <= 0 || deduct > maxDeductible + 0.05) return alert("Montant invalide.");
+            
+            fidelityDiscountUsed += deduct;
+            globalLoyaltyData[currentLoyaltyPhone].points -= deduct; 
+            
+            paymentsDone.push({ method: '🎁 CAGNOTTE', amount: deduct });
+            currentPayRemaining -= deduct;
+            if(currentPayRemaining < 0) currentPayRemaining = 0;
+            
+            updateLoyaltyUI();
+            updatePaymentUI();
+        }
+
+        function setRemainderAmount() {
+            document.getElementById('pay-amount-input').value = currentPayRemaining.toFixed(2);
+        }
+
+        function processPartialPayment(method) {
+            let amtInput = document.getElementById('pay-amount-input').value;
+            let amt = parseFloat(amtInput.replace(',', '.'));
+            if(isNaN(amt) || amt <= 0) return alert("⚠️ Saisissez un montant valide.");
+            
+            let isVoucher = (method === 'TR' || method === 'CV');
+            if(!isVoucher && amt > currentPayRemaining + 0.05) return alert("⚠️ Le montant dépasse le reste à payer.");
+            if (isVoucher && amt > currentPayRemaining) { if (!confirm(`On ne rend pas la monnaie sur les ${method}. Valider ?`)) return; }
+
+            if (method === 'ESPÈCES') {
+                let cashGivenStr = prompt(`💵 Espèces données par le client ?\n(Reste à payer : ${amt.toFixed(2)}€)`);
+                if (!cashGivenStr) return; 
+                let cashGiven = parseFloat(cashGivenStr.replace(',', '.'));
+                if (isNaN(cashGiven) || cashGiven < amt) return alert("⚠️ Montant insuffisant.");
+                let changeDue = cashGiven - amt;
+                if (changeDue > 0) alert(`💰 MONNAIE À RENDRE : ${changeDue.toFixed(2)} €`);
+            }
+            
+            paymentsDone.push({ method: method, amount: amt });
+            currentPayRemaining -= amt;
+            if(currentPayRemaining < 0) currentPayRemaining = 0;
+            updatePaymentUI();
+        }
+
+        function updatePaymentUI() {
+            document.getElementById('pay-remaining').innerText = currentPayRemaining.toFixed(2) + " €";
+            document.getElementById('pay-amount-input').value = currentPayRemaining.toFixed(2);
+            
+            let histList = document.getElementById('payment-history');
+            if(paymentsDone.length === 0) histList.innerHTML = '<span style="color:var(--text-muted); font-weight: 300;">Aucun paiement enregistré</span>';
+            else {
+                histList.innerHTML = paymentsDone.map(p => `
+                    <div style="display:flex; justify-content:space-between; color:var(--text-main); font-weight:500; background:transparent; padding:10px 0; border-bottom:1px solid var(--border-strong);">
+                        <span>${p.method}</span>
+                        <span style="color:var(--gold); font-family: 'Playfair Display', serif;">${p.amount.toFixed(2)} €</span>
+                    </div>
+                 `).join('');
+            }
+            
+            if(currentPayRemaining <= 0) {
+                document.querySelector('.pay-methods').style.display = 'none';
+                document.getElementById('pay-amount-input').style.display = 'none';
+                document.getElementById('btn-close-table').style.display = 'block';
+            } else {
+                document.querySelector('.pay-methods').style.display = 'flex';
+                document.getElementById('pay-amount-input').style.display = 'block';
+                document.getElementById('btn-close-table').style.display = 'none';
+            }
+        }
+
+        function closePaymentModal() { document.getElementById('payment-modal').classList.remove('open'); }
+
+        async function finalizeTablePayment() {
+            document.getElementById('payment-modal').classList.remove('open');
+            window.print(); 
+            
+            setTimeout(async () => {
+                try {
+                    const state = await API.getState();
+                    
+                    let totalHT = 0; let tvaTotals = {};
+                    currentTicket.forEach(i => {
+                        let ligneTTC = (parseFloat(i.p)||0) * (i.qty||1);
+                        let rate = parseFloat(i.tva) || 10;
+                        let ligneHT = ligneTTC / (1 + (rate / 100));
+                        totalHT += ligneHT;
+                        tvaTotals[rate] = (tvaTotals[rate] || 0) + (ligneTTC - ligneHT);
+                    });
+
+                    if(isLoyaltyActive && currentLoyaltyPhone && globalLoyaltyData[currentLoyaltyPhone]) {
+                        let montantEligibleCashback = currentTableTotal - fidelityDiscountUsed;
+                        if(montantEligibleCashback > 0) {
+                            let argentGagne = montantEligibleCashback * (loyaltyPercent / 100);
+                            globalLoyaltyData[currentLoyaltyPhone].points += argentGagne;
+                            
+                            await API.update('LOYALTY_MASTER', globalLoyaltyData);
+                            alert(`🎁 Le client ${globalLoyaltyData[currentLoyaltyPhone].name} vient de gagner ${argentGagne.toFixed(2)} € sur sa cagnotte !`);
+                        }
+                    }
+
+                    let transaction = {
+                        id: 'TX_' + Date.now(),
+                        date: new Date().toISOString(),
+                        method: paymentsDone.map(h => h.method).join(' + '),
+                        totalTTC: parseFloat(currentTableTotal.toFixed(2)),
+                        totalHT: parseFloat(totalHT.toFixed(2)),
+                        tva: tvaTotals,
+                        source: 'Caisse Salle (' + currentTableId + ')',
+                        items: currentTicket
+                    };
+
+                    let historyNode = state.activeOrders['FINANCIAL_HISTORY'] || { data: [] };
+                    historyNode.data.push(transaction);
+                    await API.update('FINANCIAL_HISTORY', historyNode.data);
+                } catch(e) {}
+                
+                await API.update(currentTableId, null, true);
+                closeOrder(); 
+                renderFloor();
+            }, 500);
         }
 
         function openHistoryDrawer() {
@@ -2949,22 +3120,213 @@
             alert(`✅ C'est validé ! ${extra} client(s) ajouté(s) à la table ${tableName}. La cuisine a été prévenue.`);
         }
 
-        function openQuickOrder() {
-            const tempTableId = "W" + Math.floor(Math.random() * 1000);
-            openOrder(tempTableId);
-        }
-
+        // ==========================================
+        // 📱 GESTION FERMETURE AUTOMATIQUE MENU MOBILE
+        // ==========================================
         document.addEventListener('DOMContentLoaded', () => {
             document.querySelectorAll('.btn-mini').forEach(item => {
                 item.addEventListener('click', () => {
                     if(window.innerWidth <= 900 && item.id !== 'btn-rush-toggle') {
                         let sidebar = document.getElementById('sidebar');
-                        if (sidebar && sidebar.classList.contains('open')) toggleMobileMenu();
+                        if (sidebar && sidebar.classList.contains('open')) {
+                            if(typeof toggleMobileMenu === 'function') toggleMobileMenu();
+                        }
                     }
                 });
             });
         });
 
+        // ========================================================
+        // 🏗️ MECHANICAL SUB-SYSTEM: ARCHITECTURE & STRUCTURE MODE
+        // ========================================================
+        function unlockArchiMode() {
+            if (!currentUser || currentUser.role !== 'Manager') return alert("⛔ Accès Manager requis");
+            isArchiMode = true;
+            document.body.classList.add('edit-mode');
+            renderRooms();
+            renderFloor();
+        }
+
+        async function closeArchiMode() {
+            isArchiMode = false;
+            document.body.classList.remove('edit-mode');
+            renderRooms();
+            renderFloor();
+        }
+
+        function saveArchitecture() {
+            pushArchitecture();
+            closeArchiMode();
+        }
+        
+        async function pushArchitecture() { 
+            await API.update('ARCHITECTURE', { rooms: rooms, tables: tables, zones: zones }); 
+            localStorage.setItem('empire_architecture', JSON.stringify(tables)); 
+            localStorage.setItem('empire_rooms', JSON.stringify(rooms)); 
+            localStorage.setItem('empire_zones', JSON.stringify(zones));
+        }
+
+        // --- CONFIGURATION DES SALLES ---
+        function renderRooms() {
+            const container = document.getElementById('room-tabs-container');
+            if(container) {
+                container.innerHTML = rooms.map(r => `<div class="room-tab ${r === currentRoom ? 'active' : 'inactive'}" onclick="handleRoomClick('${r}')">${r}</div>`).join('');
+            }
+        }
+
+        function handleRoomClick(r) {
+            if(isArchiMode && r === currentRoom) {
+                openRoomConfigModal(r);
+            } else {
+                currentRoom = r;
+                renderRooms();
+                renderFloor();
+            }
+        }
+
+        function addNewRoom() {
+            let n = "Salle " + (rooms.length + 1);
+            rooms.push(n);
+            currentRoom = n;
+            renderRooms();
+            renderFloor();
+        }
+
+        function addTactileRoomName(v) {
+            if(v === 'CLEAR') currentTactileRoomName = currentTactileRoomName.slice(0, -1);
+            else currentTactileRoomName += v;
+            document.getElementById('config-room-name-display').innerText = currentTactileRoomName;
+        }
+        
+        function openRoomConfigModal(r) {
+            configRoomOldName = r;
+            currentTactileRoomName = r;
+            document.getElementById('config-room-name-display').innerText = currentTactileRoomName;
+            document.getElementById('room-config-modal').style.display = 'flex';
+        }
+
+        function closeRoomConfigModal() {
+            configRoomOldName = null;
+            document.getElementById('room-config-modal').style.display = 'none';
+        }
+
+        function saveRoomConfig() {
+            if(!configRoomOldName) return;
+            let n = currentTactileRoomName.trim();
+            if(n && n !== configRoomOldName) {
+                let idx = rooms.indexOf(configRoomOldName);
+                if(idx > -1) rooms[idx] = n;
+                tables.forEach(t => { if(t && t.room === configRoomOldName) t.room = n; });
+                zones.forEach(z => { if(z && z.room === configRoomOldName) z.room = n; });
+                if(currentRoom === configRoomOldName) currentRoom = n;
+            }
+            closeRoomConfigModal();
+            renderRooms();
+            renderFloor();
+            pushArchitecture();
+        }
+
+        function deleteCurrentRoom() {
+            if(rooms.length <= 1) return alert("Impossible de supprimer la dernière salle.");
+            if(confirm(`Supprimer la salle "${configRoomOldName}" et TOUTES ses tables et zones ?`)) {
+                tables = tables.filter(t => t && t.room !== configRoomOldName);
+                zones = zones.filter(z => z && z.room !== configRoomOldName);
+                rooms = rooms.filter(r => r !== configRoomOldName);
+                currentRoom = rooms[0];
+                closeRoomConfigModal();
+                renderRooms();
+                renderFloor();
+                pushArchitecture();
+            }
+        }
+
+        // --- CONFIGURATION DES TABLES (STRUCTURE) ---
+        function addNewTable() {
+            let nextNum = 1;
+            tables.filter(t => t && t.room === currentRoom).forEach(t => {
+                let m = t.label.match(/\d+/);
+                if(m && parseInt(m[0]) >= nextNum) nextNum = parseInt(m[0]) + 1;
+            });
+            tables.push({ label: "T" + nextNum, l: 400, t: 400, w: 80, h: 120, shape: "rect", pax: 4, room: currentRoom }); 
+            renderFloor();
+        }
+
+        let currentTactileName = "";
+        function addTactileTableName(v) {
+            if(v === 'CLEAR') currentTactileName = currentTactileName.slice(0, -1);
+            else currentTactileName += v;
+            document.getElementById('config-table-name-display').innerText = currentTactileName;
+        }
+
+        function setShape(s) {
+            document.getElementById('config-table-shape').value = s;
+        }
+        
+        function openTableConfigModal(id) {
+            let t = tables.find(x => x && x.label === id && x.room === currentRoom);
+            if(!t) return;
+            configTableId = id;
+            currentTactileName = t.label; 
+            document.getElementById('config-table-name-display').innerText = currentTactileName; 
+            document.getElementById('config-table-shape').value = t.shape || 'rect';
+            document.getElementById('config-table-pax').value = t.pax || 4; 
+            document.getElementById('table-config-modal').style.display = 'flex';
+        }
+
+        function closeTableConfigModal() {
+            configTableId = null;
+            document.getElementById('table-config-modal').style.display = 'none';
+        }
+
+        function saveTableConfig() {
+            let t = tables.find(x => x && x.label === configTableId && x.room === currentRoom);
+            if(t) {
+                let n = currentTactileName.trim();
+                if(n && n !== t.label) {
+                    if(activeOrders[t.label]) { activeOrders[n] = activeOrders[t.label]; delete activeOrders[t.label]; }
+                    t.label = n;
+                }
+                t.shape = document.getElementById('config-table-shape').value;
+                t.pax = parseInt(document.getElementById('config-table-pax').value) || 4; 
+            }
+            closeTableConfigModal();
+            renderFloor(); 
+        }
+
+        function deleteCurrentTable() {
+            if(confirm("Supprimer cette table ?")) {
+                tables = tables.filter(t => !(t && t.label === configTableId && t.room === currentRoom));
+                closeTableConfigModal();
+                renderFloor();
+            }
+        }
+
+        function changeConfigPax(delta) {
+            let input = document.getElementById('config-table-pax');
+            let val = parseInt(input.value) || 2;
+            val = Math.max(1, val + delta);
+            input.value = val;
+        }
+
+        // --- ENGINE: DRAG & DROP DES TABLES ET ZONES ---
+        function makeInteractive(elmnt, tableObj, resizerElnt) {
+            let p1=0, p2=0, p3=0, p4=0, iW, iH, iX, iY;
+            elmnt.onmousedown = dragMD; elmnt.ontouchstart = dragTS;
+            if(resizerElnt) {
+                resizerElnt.onmousedown = resMD; resizerElnt.ontouchstart = resTS;
+            }
+            function dragMD(e) { if(!isArchiMode || e.target === resizerElnt) return; e.preventDefault(); p3=e.clientX; p4=e.clientY; document.onmouseup=close; document.onmousemove=drag; }
+            function dragTS(e) { if(!isArchiMode || e.target === resizerElnt) return; p3=e.touches[0].clientX; p4=e.touches[0].clientY; document.ontouchend=close; document.ontouchmove=tDrag; }
+            function drag(e) { e.preventDefault(); isDraggingTable=true; p1=p3-e.clientX; p2=p4-e.clientY; p3=e.clientX; p4=e.clientY; updatePos(); }
+            function tDrag(e) { isDraggingTable=true; p1=p3-e.touches[0].clientX; p2=p4-e.touches[0].clientY; p3=e.touches[0].clientX; p4=e.touches[0].clientY; updatePos(); }
+            function updatePos() { elmnt.style.top = (elmnt.offsetTop-p2)+"px"; elmnt.style.left = (elmnt.offsetLeft-p1)+"px"; tableObj.t = elmnt.offsetTop; tableObj.l = elmnt.offsetLeft; }
+            function resMD(e) { if(!isArchiMode) return; e.preventDefault(); e.stopPropagation(); iW=elmnt.offsetWidth; iH=elmnt.offsetHeight; iX=e.clientX; iY=e.clientY; document.onmouseup=close; document.onmousemove=res; }
+            function resTS(e) { if(!isArchiMode) return; e.stopPropagation(); iW=elmnt.offsetWidth; iH=elmnt.offsetHeight; iX=e.touches[0].clientX; iY=e.touches[0].clientY; document.ontouchend=close; document.ontouchmove=tRes; }
+            function res(e) { e.preventDefault(); isDraggingTable=true; updateDim(e.clientX, e.clientY); }
+            function tRes(e) { isDraggingTable=true; updateDim(e.touches[0].clientX, e.touches[0].clientY); }
+            function updateDim(cX, cY) { let nW = Math.max(40, iW+(cX-iX)); let nH = Math.max(40, iH+(cY-iY)); elmnt.style.width=nW+"px"; elmnt.style.height=nH+"px"; tableObj.w=nW; tableObj.h=nH; }
+            function close() { document.onmouseup=null; document.onmousemove=null; document.ontouchend=null; document.ontouchmove=null; setTimeout(()=>{isDraggingTable=false;}, 50); } 
+        }
     </script>
 </body>
 </html>
