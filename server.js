@@ -1127,10 +1127,26 @@ app.get('/api/check-license', async (req, res) => {
 });
 
 app.post('/api/verify-pin', async (req, res) => {
+
+    console.log("VERIFY PIN =", req.body);
+
     const { tenantID, pin, deviceId } = req.body;
+
     try {
-        const tenant = await Tenant.findOne({ tenantID: cleanString(tenantID) });
-        if (!tenant) return res.status(404).json({ success: false, error: "Inconnu." });
+
+        console.log("tenantID reçu :", tenantID);
+
+        const tenant = await Tenant.findOne({
+            tenantID: cleanString(tenantID)
+        });
+
+        console.log("Tenant trouvé :", tenant);
+
+        if (!tenant)
+            return res.status(404).json({
+                success: false,
+                error: "Inconnu."
+            });
         
         if (tenant.demoExpiration && new Date() > new Date(tenant.demoExpiration)) {
             return res.status(403).json({ success: false, error: "Démonstration expirée (limite de 24h atteinte)." });
