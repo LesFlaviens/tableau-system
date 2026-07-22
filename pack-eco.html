@@ -56,12 +56,12 @@
             try {
                 const deviceId = await getDeviceFingerprint();
                 
-                // 🚨 Session validée localement pour débloquer l'interface !
+                // Contexte local minimal. Les droits réels doivent venir du serveur après authentification.
                 window.ICHEF_SECURITY = {
                     csrfToken: localStorage.getItem('ichef_csrf_token') || sessionStorage.getItem('ichef_csrf_token') || '',
-                    user: { nom: "Admin", role: "MANAGER" },
-                    permissions: ['*'], // Donne tous les accès d'administration
-                    plan: 'CHEF', // Sera écrasé par la vraie licence dans quelques millisecondes
+                    user: null,
+                    permissions: [],
+                    plan: null,
                     addons: [],
                     deviceId: deviceId
                 };
@@ -134,7 +134,7 @@
 
     <script>
         const appUrlParams = new URLSearchParams(window.location.search);
-        let appTenantID = appUrlParams.get('tenantID') || localStorage.getItem('ichef_tenant_id') || 'MASTER_STATE';
+        const appTenantID = appUrlParams.get('tenantID') || localStorage.getItem('ichef_tenant_id');
         const APP_SERVER_URL = (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1" || window.location.protocol === "file:") 
         ? "http://localhost:10000" : "https://tableau-system.onrender.com";
         
@@ -167,61 +167,102 @@
 
         async function submitPin() {
             if (loginInProgress) return;
-            
-            let msgBox = document.getElementById('error-msg');
-            if(msgBox) msgBox.style.display = 'none';
 
-            const pin = currentPin;
-            if (!pin) return;
+            const msgBox = document.getElementById('error-msg');
+            const pin = currentPin.trim();
+
+            if (!pin) {
+                if (msgBox) {
+                    msgBox.style.display = 'block';
+                    msgBox.style.color = 'var(--alert)';
+                    msgBox.innerText = '❌ Saisissez votre code PIN.';
+                }
+                return;
+            }
+
+            if (!appTenantID) {
+                if (msgBox) {
+                    msgBox.style.display = 'block';
+                    msgBox.style.color = 'var(--alert)';
+                    msgBox.innerText = '❌ Établissement non identifié. Reconnectez-vous.';
+                }
+                return;
+            }
 
             loginInProgress = true;
-            if(msgBox) {
+            if (msgBox) {
                 msgBox.style.display = 'block';
                 msgBox.style.color = 'var(--gold)';
                 msgBox.innerText = '⏳ Vérification...';
             }
 
-            // 🔥 BYPASS ABSOLU (Permet d'entrer même si la BDD est vide) 
-                currentUser = { name: "Directeur", role: "Manager" };
-                clearPin();
-                
-                let loginScreen = document.getElementById('login-screen');
-                if (loginScreen) loginScreen.style.display = 'none';
-                
-                unlockPadWithUser(currentUser); 
-                loginInProgress = false;
-                return;
-            }
-
             try {
-                let rState = await fetch(`${APP_SERVER_URL}/get-current-state?tenantID=${appTenantID}`);
-                if (rState.ok) {
-                    let stateData = await rState.json();
-                    let staffList = (stateData.activeOrders && stateData.activeOrders['STAFF_ACCESS']) ? stateData.activeOrders['STAFF_ACCESS'].data : [];
-                    let staffUser = staffList.find(s => s.pin === pin);
-                    
-                    if (staffUser) {
-                        if (staffUser.active === false) { 
-                            if(msgBox) { msgBox.style.display = 'block'; msgBox.style.color = 'var(--alert)'; msgBox.innerText = "❌ Accès suspendu."; }
-                            clearPin(); 
-                            loginInProgress = false;
-                            return; 
-                        }
-                        
-                        currentUser = { name: staffUser.name, role: (staffUser.dept === 'admin') ? 'Manager' : 'Serveur' };
-                        clearPin();
-                        let loginScreen = document.getElementById('login-screen');
-                        if (loginScreen) loginScreen.style.display = 'none';
-                        unlockPadWithUser(currentUser);
-                        loginInProgress = false;
-                        return;
+                const response = await fetch(
+                    `${APP_SERVER_URL}/get-current-state?tenantID=${encodeURIComponent(appTenantID)}`,
+                    {
+                        method: 'GET',
+                        headers: { 'Accept': 'application/json' },
+                        cache: 'no-store'
                     }
-                }
-            } catch(e) { }
+                );
 
-            if(msgBox) { msgBox.style.display = 'block'; msgBox.style.color = 'var(--alert)'; msgBox.innerText = '❌ Code PIN Incorrect.'; }
-            clearPin();
-            loginInProgress = false;
+                if (!response.ok) {
+                    throw new Error(`Erreur serveur ${response.status}`);
+                }
+
+                const stateData = await response.json();
+                const staffData = stateData?.activeOrders?.STAFF_ACCESS?.data;
+                const staffList = Array.isArray(staffData) ? staffData : [];
+
+                const staffUser = staffList.find((staff) => {
+                    if (!staff || staff.pin === undefined || staff.pin === null) return false;
+                    return String(staff.pin).trim() === pin;
+                });
+
+                if (!staffUser) {
+                    if (msgBox) {
+                        msgBox.style.display = 'block';
+                        msgBox.style.color = 'var(--alert)';
+                        msgBox.innerText = '❌ Code PIN incorrect.';
+                    }
+                    clearPin();
+                    return;
+                }
+
+                if (staffUser.active === false) {
+                    if (msgBox) {
+                        msgBox.style.display = 'block';
+                        msgBox.style.color = 'var(--alert)';
+                        msgBox.innerText = '❌ Accès suspendu.';
+                    }
+                    clearPin();
+                    return;
+                }
+
+                const department = String(staffUser.dept || '').toLowerCase();
+                const role = department === 'admin' ? 'Manager' : 'Serveur';
+                const name = staffUser.name || staffUser.nom || 'Utilisateur';
+
+                currentUser = { name, role };
+                window.ICHEF_SECURITY.user = { nom: name, role: role.toUpperCase() };
+                window.ICHEF_SECURITY.permissions = Array.isArray(staffUser.permissions) ? staffUser.permissions : [];
+
+                clearPin();
+                const loginScreen = document.getElementById('login-screen');
+                if (loginScreen) loginScreen.style.display = 'none';
+
+                unlockPadWithUser(currentUser);
+            } catch (error) {
+                console.error('Erreur de connexion au serveur :', error);
+                if (msgBox) {
+                    msgBox.style.display = 'block';
+                    msgBox.style.color = 'var(--alert)';
+                    msgBox.innerText = '❌ Serveur indisponible. Réessayez dans quelques instants.';
+                }
+                clearPin();
+            } finally {
+                loginInProgress = false;
+            }
         }
 
         function unlockPadWithUser(user) {
@@ -241,13 +282,24 @@
             clearTimeout(inactivityTimer); 
         }
 
+        let empireSocket = null;
+
         function connectEmpireH24() {
-            let socket = io(APP_SERVER_URL, {
-                transports: ['websocket', 'polling']
+            if (!appTenantID || typeof io !== 'function') return;
+            if (empireSocket?.connected) return;
+
+            empireSocket = io(APP_SERVER_URL, {
+                transports: ['websocket', 'polling'],
+                reconnection: true
             });
-            socket.on('connect', () => {
-                socket.emit('joinTenant', appTenantID);
-                console.log("🟢 Socket connecté avec succès !");
+
+            empireSocket.on('connect', () => {
+                empireSocket.emit('joinTenant', appTenantID);
+                console.log('🟢 Socket connecté avec succès !');
+            });
+
+            empireSocket.on('connect_error', (error) => {
+                console.error('Erreur WebSocket :', error.message);
             });
         }
     </script>
