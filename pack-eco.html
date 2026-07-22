@@ -1,3 +1,4 @@
+
 <html lang="fr">
 <head>
     <meta charset="UTF-8">
@@ -991,81 +992,56 @@
         async function submitPin() {
             const pin = currentPin;
             clearPin();
-            if (!/^\d{4,12}$/.test(pin)) return alert('❌ Code PIN invalide.');
+
+            if (!/^\d{4,12}$/.test(pin)) {
+                return alert('❌ Code PIN invalide.');
+            }
 
             try {
-                const response = await fetch(`${APP_SERVER_URL}/api/auth/pin-login`, {
-                    method: 'POST', credentials: 'include', cache: 'no-store',
+                const response = await fetch(`${APP_SERVER_URL}/api/verify-pin`, {
+                    method: 'POST',
+                    credentials: 'include',
+                    cache: 'no-store',
                     headers: securityHeaders(),
-                    body: JSON.stringify({ tenantID: appTenantID, pin, deviceId: window.ICHEF_SECURITY.deviceId, module: 'PAD_SERVEUR' })
+                    body: JSON.stringify({
+                        tenantID: appTenantID,
+                        pin,
+                        deviceId: window.ICHEF_SECURITY.deviceId
+                    })
                 });
+
                 const data = await response.json().catch(() => ({}));
+
                 if (!response.ok || !data.success) {
-                    alert(data.lockedUntil ? `❌ Compte verrouillé jusqu'à ${data.lockedUntil}.` : '❌ Code incorrect ou accès refusé.');
+                    alert('❌ ' + (data.error || 'Code incorrect ou accès refusé.'));
                     return;
                 }
 
-                window.ICHEF_SECURITY.sessionToken = data.accessToken || null;
-                window.ICHEF_SECURITY.csrfToken = data.csrfToken || window.ICHEF_SECURITY.csrfToken;
-                window.ICHEF_SECURITY.permissions = new Set(Array.isArray(data.permissions) ? data.permissions : []);
-                window.ICHEF_SECURITY.user = data.user;
-                window.ICHEF_SECURITY.authenticatedAt = Date.now();
+                const role = data.role || 'STAFF';
+                const isManager = role === 'MASTER' || role === 'Manager';
+
+                window.ICHEF_SECURITY.permissions = new Set(
+                    isManager
+                        ? ['*', 'ADMIN_ACCESS']
+                        : ['ORDER_READ', 'ORDER_WRITE']
+                );
 
                 currentUser = {
-                    id: data.user.id,
-                    name: data.user.name,
-                    role: data.user.role,
-                    sessionId: data.sessionId || null
+                    id: data.safeTenantID || appTenantID,
+                    name: isManager ? 'Manager' : role,
+                    role: isManager ? 'Manager' : role,
+                    sessionId: null
                 };
-                await auditEvent('LOGIN_SUCCESS', { module: 'PAD_SERVEUR' }, false);
+
+                window.ICHEF_SECURITY.user = currentUser;
+                window.ICHEF_SECURITY.authenticatedAt = Date.now();
+
                 unlockPadWithUser(currentUser);
+
             } catch (error) {
                 console.error('Authentification impossible', error);
                 alert('❌ Connexion sécurisée indisponible.');
             }
-        }
-
-        async function requestMaintenanceOverride() {
-            if (!(await requirePermission('TERMINAL_MAINTENANCE'))) return;
-            const reason = prompt('Motif de maintenance obligatoire :');
-            if (!reason || reason.trim().length < 5) return alert('Motif obligatoire.');
-            await auditEvent('PWA_MAINTENANCE_OVERRIDE', { reason: reason.trim() });
-            document.getElementById('pwa-strict-lock').style.display = 'none';
-        }
-
-        async function toggleKioskMode() {
-            const elem = document.documentElement;
-            const btn = document.getElementById('btn-kiosk');
-            
-            try {
-                if (!document.fullscreenElement) {
-                    if (elem.requestFullscreen) await elem.requestFullscreen();
-                    else if (elem.webkitRequestFullscreen) await elem.webkitRequestFullscreen(); 
-                    else if (elem.msRequestFullscreen) await elem.msRequestFullscreen(); 
-                    
-                    btn.innerHTML = "✕ QUITTER";
-                    btn.style.color = "var(--gold)";
-                    btn.style.borderColor = "var(--gold)";
-
-                    if ('wakeLock' in navigator) {
-                        try {
-                            window.wakeLockObj = await navigator.wakeLock.request('screen');
-                        } catch (err) {}
-                    }
-                } else {
-                    if (document.exitFullscreen) await document.exitFullscreen();
-                    else if (document.webkitExitFullscreen) await document.webkitExitFullscreen();
-                    
-                    btn.innerHTML = "⛶ KIOSQUE";
-                    btn.style.color = "var(--text-muted)";
-                    btn.style.borderColor = "var(--border)";
-
-                    if (window.wakeLockObj) {
-                        await window.wakeLockObj.release();
-                        window.wakeLockObj = null;
-                    }
-                }
-            } catch(e) { console.error("Erreur Kiosque:", e); }
         }
 
         function unlockPadWithUser(user) {
@@ -3339,4 +3315,4 @@
 
     </script>
 </body>
-</html
+</html>
