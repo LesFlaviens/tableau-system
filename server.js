@@ -534,7 +534,70 @@ const AppState = mongoose.model('AppState', new mongoose.Schema({
     tenantID: { type: String, required: true, unique: true },
     activeOrders: { type: Object, default: {} }
 }, { minimize: false }));
+// =============================================================
+// 🛡️ INITIALISATION SÉCURITÉ DU PAD
+// =============================================================
+app.post('/api/security/bootstrap', async (req, res) => {
+    try {
+        const tenantID = cleanString(req.body?.tenantID);
+        const deviceId = String(req.body?.deviceId || '').trim();
 
+        if (!tenantID || !/^[a-z0-9_-]{2,80}$/.test(tenantID)) {
+            return res.status(400).json({
+                success: false,
+                error: 'Identifiant restaurant invalide.'
+            });
+        }
+
+        const tenant = await Tenant.findOne({ tenantID }).lean();
+
+        if (!tenant) {
+            return res.status(404).json({
+                success: false,
+                error: 'Établissement inconnu.'
+            });
+        }
+
+        if (
+            tenant.demoExpiration &&
+            new Date() > new Date(tenant.demoExpiration)
+        ) {
+            return res.status(403).json({
+                success: false,
+                error: 'Démonstration expirée.'
+            });
+        }
+
+        if (tenant.status === 'SUSPENDU') {
+            return res.status(403).json({
+                success: false,
+                error: 'Licence suspendue.'
+            });
+        }
+
+        const csrfToken = crypto.randomBytes(32).toString('hex');
+
+        res.json({
+            success: true,
+            authenticated: false,
+            requiresPin: true,
+            csrfToken,
+            tenantID: tenant.tenantID,
+            deviceRegistered:
+                deviceId &&
+                Array.isArray(tenant.registeredDevices)
+                    ? tenant.registeredDevices.includes(deviceId)
+                    : false
+        });
+    } catch (error) {
+        console.error('Erreur bootstrap :', error);
+
+        res.status(500).json({
+            success: false,
+            error: 'Erreur serveur.'
+        });
+    }
+});
 // ==========================================
 // 🛡️ SÉCURITÉ FISCALE & LÉGALE (NORME ANTI-FRAUDE)
 // ==========================================
