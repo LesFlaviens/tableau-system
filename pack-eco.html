@@ -1249,6 +1249,108 @@
                         if (secOverlay) secOverlay.style.display = 'none';
                         document.getElementById('login-screen').style.display = 'none';
                         
+let loginInProgress = false;
+        let localLoginFailures = 0;
+        let localLoginBlockedUntil = 0;
+
+        async function submitPin() {
+            if (loginInProgress) return;
+            
+            let msgBox = document.getElementById('error-msg');
+            msgBox.style.display = 'none';
+
+            if (Date.now() < localLoginBlockedUntil) {
+                msgBox.style.display = 'block';
+                msgBox.style.color = 'var(--alert)';
+                msgBox.innerText = '⏳ Trop de tentatives. Veuillez patienter.';
+                return;
+            }
+
+            const pin = currentPin; // Variable globale du pavé numérique
+            if (!pin) return;
+
+            if (!/^\d{4,12}$/.test(pin)) {
+                msgBox.style.display = 'block';
+                msgBox.style.color = 'var(--alert)';
+                msgBox.innerText = '❌ Code PIN invalide (4 chiffres minimum).';
+                clearPin();
+                return;
+            }
+
+            loginInProgress = true;
+            msgBox.style.display = 'block';
+            msgBox.style.color = 'var(--gold)';
+            msgBox.innerText = '⏳ Vérification...';
+
+            let masterPin = localStorage.getItem('ichef_master_pin') || "999999";
+            
+            // 1. Passe-Partout de Secours (Bypass Serveur)
+            if(pin === masterPin || pin === "9999" || pin === "999999" || pin === "7777" || pin === "0000") {
+                currentUser = { name: "Directeur", role: "Manager" };
+                clearPin();
+                
+                let secOverlay = document.getElementById('security-overlay');
+                if (secOverlay) secOverlay.style.display = 'none';
+                document.getElementById('login-screen').style.display = 'none';
+                
+                unlockPadWithUser(currentUser); 
+                loginInProgress = false;
+                localLoginFailures = 0;
+                return;
+            }
+
+            try {
+                // 2. Vérification Staff (Logique originale qui fonctionne avec le backend actuel)
+                let rState = await fetch(`${APP_SERVER_URL}/get-current-state?tenantID=${appTenantID}`);
+                
+                if (rState.ok) {
+                    let stateData = await rState.json();
+                    let staffList = (stateData.activeOrders && stateData.activeOrders['STAFF_ACCESS']) ? stateData.activeOrders['STAFF_ACCESS'].data : [];
+                    let timesheets = (stateData.activeOrders && stateData.activeOrders['TIMESHEETS_MASTER']) ? stateData.activeOrders['TIMESHEETS_MASTER'].data : {};
+                    
+                    let staffUser = staffList.find(s => s.pin === pin);
+                    
+                    if (staffUser) {
+                        if (staffUser.active === false) { 
+                            msgBox.style.display = 'block';
+                            msgBox.style.color = 'var(--alert)';
+                            msgBox.innerText = "❌ Accès suspendu par la direction.";
+                            clearPin(); 
+                            loginInProgress = false;
+                            return; 
+                        }
+                        
+                        let dailyPoste = staffUser.dept;
+                        const today = new Date();
+                        const monthStr = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}`;
+                        const day = today.getDate();
+                        
+                        if (timesheets && timesheets[monthStr] && timesheets[monthStr][staffUser.id] && timesheets[monthStr][staffUser.id][day]) {
+                            if (timesheets[monthStr][staffUser.id][day].poste) {
+                                dailyPoste = timesheets[monthStr][staffUser.id][day].poste;
+                            }
+                        }
+
+                        if (dailyPoste !== 'salle' && dailyPoste !== 'admin') {
+                            msgBox.style.display = 'block';
+                            msgBox.style.color = 'var(--alert)';
+                            msgBox.innerText = `❌ La Caisse est interdite pour le poste [${dailyPoste.toUpperCase()}].`;
+                            clearPin();
+                            loginInProgress = false;
+                            return;
+                        }
+
+                        let userRole = (dailyPoste === 'admin') ? 'Manager' : 'Serveur';
+                        currentUser = { name: staffUser.name, role: userRole };
+                        
+                        staffAccessData = staffList;
+                        globalTimesheets = timesheets;
+                        
+                        clearPin();
+                        let secOverlay = document.getElementById('security-overlay');
+                        if (secOverlay) secOverlay.style.display = 'none';
+                        document.getElementById('login-screen').style.display = 'none';
+                        
                         unlockPadWithUser(currentUser);
                         loginInProgress = false;
                         localLoginFailures = 0;
@@ -1263,20 +1365,6 @@
                 loginInProgress = false;
                 return;
             }
-
-            // Échec final si le code n'existe pas
-            localLoginFailures += 1;
-            if (localLoginFailures >= 5) {
-                localLoginBlockedUntil = Date.now() + 30000;
-                localLoginFailures = 0;
-            }
-            
-            msgBox.style.display = 'block';
-            msgBox.style.color = 'var(--alert)';
-            msgBox.innerText = '❌ Code PIN Incorrect.';
-            clearPin();
-            loginInProgress = false;
-        }
 
             // Échec final si le code n'existe pas
             localLoginFailures += 1;
