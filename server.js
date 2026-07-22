@@ -56,16 +56,14 @@ const PORT = process.env.PORT || 10000;
 // SÉCURITÉ MAÎTRE DE L'EMPIRE (Super Admin)
 const ADMIN_PASS = process.env.ADMIN_PASS || 'Empire2026';
 
-// Sécurité des requêtes (CORS)
 app.use(cors({
     origin: function (origin, callback) {
         callback(null, true);
     },
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-    // 🔥 AJOUT DE 'X-Requested-With' POUR DÉBLOQUER LE PAD SERVEUR 🔥
     allowedHeaders: ['Content-Type', 'Authorization', 'Origin', 'Accept', 'X-CSRF-Token', 'X-iCHEF-Device', 'X-iCHEF-Master-Device', 'X-iCHEF-Tenant', 'Idempotency-Key', 'X-Requested-With']
-}));
+}));;
 
 // 🚨 SÉCURITÉ STRIPE : On utilise raw() uniquement pour la route webhook
 app.use('/webhook', express.raw({ type: 'application/json' }));
