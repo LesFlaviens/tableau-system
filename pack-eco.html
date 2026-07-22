@@ -229,7 +229,6 @@
                 padding: 10px 12px;
             }
         }
- 
 
         #archi-btn-bar { display: none; background: var(--panel); padding: 15px; border-bottom: 1px solid var(--border); justify-content: center; gap: 15px; z-index: 50; position: relative;}
         .edit-mode #archi-btn-bar { display: flex; }
@@ -269,7 +268,6 @@
         body:not(.edit-mode) .table-content {
             pointer-events: none;
         }
-
 
         .table-wrapper.status-reserved .table-obj { border-color: #ff69b4 !important; color: #ff69b4 !important; box-shadow: inset 0 0 15px rgba(255, 105, 180, 0.15) !important; }
         .table-wrapper.status-warning .table-obj { border-color: #9b59b6 !important; color: #9b59b6 !important; box-shadow: inset 0 0 15px rgba(155, 89, 182, 0.15) !important; }
@@ -1122,7 +1120,8 @@
                 return false;
             }
         }
-// --- AUTHENTIFICATION BLINDÉE ---
+
+        // --- AUTHENTIFICATION BLINDÉE ---
         function resetInactivityTimer() { 
             clearTimeout(inactivityTimer); 
             if(currentUser) inactivityTimer = setTimeout(() => logout('INACTIVITY'), INACTIVITY_LIMIT); 
@@ -1148,108 +1147,6 @@
         }
         
         let loginInProgress = false;
-        let localLoginFailures = 0;
-        let localLoginBlockedUntil = 0;
-
-        async function submitPin() {
-            if (loginInProgress) return;
-            
-            let msgBox = document.getElementById('error-msg');
-            msgBox.style.display = 'none';
-
-            if (Date.now() < localLoginBlockedUntil) {
-                msgBox.style.display = 'block';
-                msgBox.style.color = 'var(--alert)';
-                msgBox.innerText = '⏳ Trop de tentatives. Veuillez patienter.';
-                return;
-            }
-
-            const pin = currentPin; // Variable globale du pavé numérique
-            if (!pin) return;
-
-            if (!/^\d{4,12}$/.test(pin)) {
-                msgBox.style.display = 'block';
-                msgBox.style.color = 'var(--alert)';
-                msgBox.innerText = '❌ Code PIN invalide (4 chiffres minimum).';
-                clearPin();
-                return;
-            }
-
-            loginInProgress = true;
-            msgBox.style.display = 'block';
-            msgBox.style.color = 'var(--gold)';
-            msgBox.innerText = '⏳ Vérification...';
-
-            let masterPin = localStorage.getItem('ichef_master_pin') || "999999";
-            
-            // 1. Passe-Partout de Secours (Bypass Serveur)
-            if(pin === masterPin || pin === "9999" || pin === "999999" || pin === "7777" || pin === "0000") {
-                currentUser = { name: "Directeur", role: "Manager" };
-                clearPin();
-                
-                let secOverlay = document.getElementById('security-overlay');
-                if (secOverlay) secOverlay.style.display = 'none';
-                document.getElementById('login-screen').style.display = 'none';
-                
-                unlockPadWithUser(currentUser); 
-                loginInProgress = false;
-                localLoginFailures = 0;
-                return;
-            }
-
-            try {
-                // 2. Vérification Staff (Logique originale qui fonctionne avec le backend actuel)
-                let rState = await fetch(`${APP_SERVER_URL}/get-current-state?tenantID=${appTenantID}`);
-                
-                if (rState.ok) {
-                    let stateData = await rState.json();
-                    let staffList = (stateData.activeOrders && stateData.activeOrders['STAFF_ACCESS']) ? stateData.activeOrders['STAFF_ACCESS'].data : [];
-                    let timesheets = (stateData.activeOrders && stateData.activeOrders['TIMESHEETS_MASTER']) ? stateData.activeOrders['TIMESHEETS_MASTER'].data : {};
-                    
-                    let staffUser = staffList.find(s => s.pin === pin);
-                    
-                    if (staffUser) {
-                        if (staffUser.active === false) { 
-                            msgBox.style.display = 'block';
-                            msgBox.style.color = 'var(--alert)';
-                            msgBox.innerText = "❌ Accès suspendu par la direction.";
-                            clearPin(); 
-                            loginInProgress = false;
-                            return; 
-                        }
-                        
-                        let dailyPoste = staffUser.dept;
-                        const today = new Date();
-                        const monthStr = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}`;
-                        const day = today.getDate();
-                        
-                        if (timesheets && timesheets[monthStr] && timesheets[monthStr][staffUser.id] && timesheets[monthStr][staffUser.id][day]) {
-                            if (timesheets[monthStr][staffUser.id][day].poste) {
-                                dailyPoste = timesheets[monthStr][staffUser.id][day].poste;
-                            }
-                        }
-
-                        if (dailyPoste !== 'salle' && dailyPoste !== 'admin') {
-                            msgBox.style.display = 'block';
-                            msgBox.style.color = 'var(--alert)';
-                            msgBox.innerText = `❌ La Caisse est interdite pour le poste [${dailyPoste.toUpperCase()}].`;
-                            clearPin();
-                            loginInProgress = false;
-                            return;
-                        }
-
-                        let userRole = (dailyPoste === 'admin') ? 'Manager' : 'Serveur';
-                        currentUser = { name: staffUser.name, role: userRole };
-                        
-                        staffAccessData = staffList;
-                        globalTimesheets = timesheets;
-                        
-                        clearPin();
-                        let secOverlay = document.getElementById('security-overlay');
-                        if (secOverlay) secOverlay.style.display = 'none';
-                        document.getElementById('login-screen').style.display = 'none';
-                        
-let loginInProgress = false;
         let localLoginFailures = 0;
         let localLoginBlockedUntil = 0;
 
@@ -3178,7 +3075,7 @@ let loginInProgress = false;
             const payload = {
                 tenantID: appTenantID,
                 tableId: currentTableId,
-                deviceId: getDeviceFingerprint(),
+                deviceId: window.ICHEF_SECURITY.deviceId,
                 source: "PAD_SERVEUR_PAYMENT_REQUEST",
                 fiscalContext: getFiscalContextForPad(),
                 fiscalRequirements: {
@@ -3557,102 +3454,4 @@ let loginInProgress = false;
             }
 
             let randomOffsetX = Math.floor(Math.random() * 80) - 40;
-            let randomOffsetY = Math.floor(Math.random() * 80) - 40;
-
-            tables.push({
-                label: tableName,
-                l: baseL + randomOffsetX,
-                t: baseT + randomOffsetY,
-                w: 80,
-                h: 120,
-                shape: "rect",
-                pax: pax,
-                room: currentRoom,
-                isExtra: true
-            });
-
-            pushArchitecture();
-            renderFloor();
-        }
-
-        async function promptRemoveExtraTable(tableName) {
-            if (!(await requirePermission('FLOORPLAN_DELETE', { tableId: tableName }))) return;
-            const reason = prompt('Motif obligatoire pour retirer cette table :');
-            if (!reason || reason.trim().length < 5) return alert('Motif obligatoire.');
-
-            const order = activeOrders[tableName];
-            if (order && order.items && order.items.length > 0) {
-                return alert('❌ Impossible de retirer une table contenant une commande active. Annulez ou transférez d’abord la commande selon la procédure autorisée.');
-            }
-
-            const response = await secureFetch('/api/floorplan/tables/archive', {
-                method: 'POST',
-                body: JSON.stringify({ tenantID: appTenantID, tableId: tableName, room: currentRoom, reason: reason.trim() })
-            });
-            const result = await response.json().catch(() => ({}));
-            if (!response.ok || !result.success) return alert(result.error || 'Suppression refusée.');
-
-            tables = tables.filter(t => !(t && t.label === tableName && t.room === currentRoom));
-            await auditEvent('FLOORPLAN_TABLE_ARCHIVED', { tableId: tableName, room: currentRoom, reason: reason.trim() }, false);
-            pushArchitecture(); closeOrder(); renderFloor();
-        }
-
-        // ==========================================
-        // 🧑‍🤝‍🧑 GESTION DES CLIENTS EXTRA (SIÈGES EN PLUS)
-        // ==========================================
-        async function addExtraClient() {
-            let tableName = prompt("🧑‍🤝‍🧑 À quelle table voulez-vous ajouter un client supplémentaire ?\n(ex: 12, T1)");
-            if (!tableName) return;
-            tableName = tableName.trim().toUpperCase();
-
-            let tObj = tables.find(t => t && t.label === tableName && t.room === currentRoom);
-            if (!tObj) {
-                return alert(`❌ ERREUR HUMAINE : La table "${tableName}" n'existe pas dans la salle "${currentRoom}". Vérifiez votre saisie.`);
-            }
-
-            let extraStr = prompt(`Combien de clients voulez-vous ajouter à la table ${tableName} ?`, "1");
-            let extra = parseInt(extraStr);
-            if (isNaN(extra) || extra <= 0) return;
-
-            tObj.extraPax = (tObj.extraPax || 0) + extra;
-            tObj.pax = (tObj.pax || 2) + extra;
-            
-            pushArchitecture();
-
-            let order = activeOrders[tableName];
-            if (!order) order = { status: 'active', items: [], observations: '' };
-            
-            let baseObs = order.observations || "";
-            baseObs = baseObs.replace(/🍽️ \d+ Couvert\(s\)( \| )?/, '').replace(/ \| $/, '').trim();
-            order.observations = `🍽️ ${tObj.pax} Couvert(s) | ⚠️ +${tObj.extraPax} EXTRA(S) | ${baseObs}`;
-            
-            await API.update(tableName, order, true);
-            
-            await API.update('ALERTS_MASTER', { 
-                type: 'RING', 
-                message: `⚠️ NOUVEAU CLIENT EXTRA AJOUTÉ À LA TABLE ${tableName} (+${extra} Couvert(s))` 
-            });
-
-            renderFloor();
-            alert(`✅ C'est validé ! ${extra} client(s) ajouté(s) à la table ${tableName}. La cuisine a été prévenue.`);
-        }
-
-        function openQuickOrder() {
-            const tempTableId = "W" + Math.floor(Math.random() * 1000);
-            openOrder(tempTableId);
-        }
-
-        document.addEventListener('DOMContentLoaded', () => {
-            document.querySelectorAll('.btn-mini').forEach(item => {
-                item.addEventListener('click', () => {
-                    if(window.innerWidth <= 900 && item.id !== 'btn-rush-toggle') {
-                        let sidebar = document.getElementById('sidebar');
-                        if (sidebar && sidebar.classList.contains('open')) toggleMobileMenu();
-                    }
-                });
-            });
-        });
-
-    </script>
-</body>
-</html>
+            let randomOffsetY =Sorry, something went wrong. Please try your request again.
