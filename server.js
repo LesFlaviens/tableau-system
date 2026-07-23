@@ -49,7 +49,8 @@ const server = http.createServer(app); // Serveur HTTP lié à Express
 const io = new Server(server, { cors: { origin: '*' } }); // Serveur Temps Réel
 
 // 👇 DÉBLOCAGE DES VIDÉOS & RESSOURCES 👇
-app.use(express.static(__dirname));
+app.use(express.json({ limit: '100mb' }));
+app.use(express.urlencoded({ extended: true, limit: '100mb' }));
 
 const PORT = process.env.PORT || 10000;
 
