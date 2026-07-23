@@ -9,7 +9,7 @@
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
     <meta name="theme-color" content="#000000">
-    <!-- iCHEF PATCH: COMPLET + PIN OK + ARCHITECTURE/ZONES + OUTILS VISIBLES -->
+    <!-- iCHEF PATCH: COMPLET STABLE + PIN OK + ARCHITECTURE/ZONES + PAS DE RETOUR LOGIN SUR 401/403 -->
 <title>iCHEF OS - Pad Serveur sécurisé</title>
     <!-- Sécurité : authentification et autorisations exclusivement côté serveur. -->
 
@@ -919,7 +919,7 @@
         let currentTableZoneLabel = 'Salle';
         window.systemSettings = window.systemSettings || {};
 
-        let inactivityTimer; const INACTIVITY_LIMIT = 120000; 
+        let inactivityTimer; const INACTIVITY_LIMIT = 15 * 60 * 1000; 
         let currentUser = null, currentPin = "";
         let syncInterval = null; let clockInterval = null;
 
@@ -931,15 +931,21 @@
         }
 
         async function secureFetch(path, options = {}) {
+            // Mode compatibilité avec l'authentification /api/verify-pin.
+            // Une fonction optionnelle non disponible ne doit JAMAIS fermer la session locale du Pad.
             const response = await fetch(`${APP_SERVER_URL}${path}`, {
-                credentials: 'include', cache: 'no-store', ...options,
+                credentials: 'include',
+                cache: 'no-store',
+                ...options,
                 headers: securityHeaders(options.headers || {})
             });
+
             if (response.status === 401 || response.status === 403) {
-                await auditEvent('SESSION_REJECTED', { path, status: response.status }, false);
-                forceLocalLogout('Session expirée ou accès refusé.');
-                throw new Error('SESSION_EXPIRED');
+                console.warn(
+                    `[iCHEF] Accès refusé pour ${path} (${response.status}) — session Pad conservée.`
+                );
             }
+
             return response;
         }
 
@@ -1170,12 +1176,29 @@
         }
 
         function unlockPadWithUser(user) {
-            document.getElementById('user-badge').innerText = `Badge: ${user.name} (${user.role})`;
-            document.getElementById('login-screen').style.display = 'none';
-            const canAdmin = hasPermission('ADMIN_ACCESS');
-            document.querySelectorAll('.admin').forEach(e => e.style.display = canAdmin ? 'block' : 'none');
-            renderRooms(); renderFloor(); connectEmpireH24(); resetInactivityTimer();
+            clearPin();
+
+            const badge = document.getElementById('user-badge');
+            if (badge) badge.innerText = `Badge: ${user.name}`;
+
+            const login = document.getElementById('login-screen');
+            if (login) login.style.display = 'none';
+
+            const isManager =
+                String(user?.role || '').toLowerCase() === 'manager' ||
+                String(user?.serverRole || '').toLowerCase() === 'master' ||
+                hasPermission('ADMIN_ACCESS');
+
+            document.querySelectorAll('.admin').forEach(el => {
+                el.style.display = isManager ? 'block' : 'none';
+            });
+
+            renderRooms();
+            renderFloor();
+            connectEmpireH24();
+            resetInactivityTimer();
         }
+
         async function logout(reason = 'MANUAL') {
             forceLocalLogout();
         }
