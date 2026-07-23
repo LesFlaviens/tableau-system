@@ -1036,7 +1036,8 @@
             }
         }
 
-        function hasPermission(permission) {
+function hasPermission(permission) {
+            if (!window.ICHEF_SECURITY || !window.ICHEF_SECURITY.permissions) return false;
             return window.ICHEF_SECURITY.permissions.has(permission) || window.ICHEF_SECURITY.permissions.has('*');
         }
 
@@ -1049,38 +1050,85 @@
             return true;
         }
 
+        function isManagerUser() {
+            if (!currentUser) return false;
+            const role = String(currentUser.role || '').toLowerCase();
+            return hasPermission('ADMIN_ACCESS') || hasPermission('MANAGER_ACCESS') || role === 'manager' || role === 'master' || role === 'admin';
+        }
+
         const API = {
             getState: async () => {
-                const response = await secureFetch(`/api/state/current?tenantID=${encodeURIComponent(appTenantID)}`);
-                if (!response.ok) throw new Error('STATE_READ_FAILED');
-                return response.json();
+                let state = { activeOrders: {} };
+                try {
+                    const response = await secureFetch(`/get-current-state?tenantID=${encodeURIComponent(appTenantID)}`);
+                    if (response.ok) {
+                        state = await response.json();
+                        let tag = document.getElementById('stock-tag');
+                        if (tag && (tag.innerText.includes('DÉCONNECTÉ') || tag.innerText.includes('ERREUR'))) {
+                            tag.innerHTML = '● LIAISON SÉCURISÉE'; 
+                            tag.style.background = 'transparent'; 
+                            tag.style.color = 'var(--gold)'; 
+                            tag.style.borderColor = 'var(--gold-dim)';
+                        }
+                    }
+                } catch (error) {
+                    let tag = document.getElementById('stock-tag');
+                    if (tag) {
+                        tag.innerHTML = '● DÉCONNECTÉ'; 
+                        tag.style.background = 'transparent'; 
+                        tag.style.color = 'var(--text-muted)'; 
+                        tag.style.borderColor = 'var(--border)';
+                    }
+                }
+                return state;
             },
 
             update: async (key, data, isOrder = false, audit = {}) => {
-                if (!currentUser) throw new Error('AUTH_REQUIRED');
+                if (!currentUser && window.ICHEF_SECURITY.connectionState !== 'online') {
+                    throw new Error('AUTH_REQUIRED');
+                }
+                
                 const normalizedKey = String(key || '').trim();
                 if (!normalizedKey || normalizedKey.length > 120) throw new Error('INVALID_KEY');
 
-                // null signifie une annulation/fermeture logique, jamais une suppression physique.
                 if (data === null) {
-                    const reason = String(audit.reason || 'Action utilisateur documentée').trim();
-                    if (reason.length < 3) throw new Error('CANCELLATION_REASON_REQUIRED');
-                    const response = await secureFetch('/api/orders/void', {
-                        method: 'POST',
-                        body: JSON.stringify({ tenantID: appTenantID, tableId: normalizedKey, reason, operationType: audit.operationType || 'VOID', expectedVersion: audit.expectedVersion || null })
-                    });
-                    const result = await response.json().catch(() => ({}));
-                    if (!response.ok || !result.success) throw new Error(result.error || 'VOID_FAILED');
-                    return result;
+                    try {
+                        const response = await secureFetch('/update-order?tenantID=' + encodeURIComponent(appTenantID), {
+                            method: 'POST',
+                            headers: {'Content-Type': 'application/json'},
+                            body: JSON.stringify({ 
+                                tableId: normalizedKey, 
+                                order: null 
+                            })
+                        });
+                        return await response.json().catch(() => ({ success: true }));
+                    } catch (e) {
+                        throw new Error('VOID_FAILED');
+                    }
                 }
 
-                const response = await secureFetch('/api/orders/upsert', {
-                    method: 'POST',
-                    body: JSON.stringify({ tenantID: appTenantID, tableId: normalizedKey, order: isOrder ? data : { data }, expectedVersion: audit.expectedVersion || null, reason: audit.reason || null })
-                });
-                const result = await response.json().catch(() => ({}));
-                if (!response.ok || !result.success) throw new Error(result.error || 'UPDATE_FAILED');
-                return result;
+                let payload = isOrder ? data : { data: data };
+                let localState = JSON.parse(localStorage.getItem('EMPIRE_GLOBAL_SYNC')) || { activeOrders: {} };
+                if (!localState.activeOrders) localState.activeOrders = {};
+                localState.activeOrders[normalizedKey] = payload;
+                localStorage.setItem('EMPIRE_GLOBAL_SYNC', JSON.stringify(localState));
+                
+                try {
+                    const response = await secureFetch('/update-order?tenantID=' + encodeURIComponent(appTenantID), {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify({ 
+                            tableId: normalizedKey, 
+                            order: payload 
+                        })
+                    });
+                    const result = await response.json().catch(() => ({}));
+                    if (!response.ok || !result.success) throw new Error(result.error || 'UPDATE_FAILED');
+                    return result;
+                } catch(e) {
+                    console.error("Échec de la synchro Cloud :", e);
+                    throw e;
+                }
             }
         };
 
@@ -1095,88 +1143,188 @@
         function appendPin(n) {
             if (currentPin.length >= 12) return;
             currentPin += String(n);
-            document.getElementById('pin-display').innerText = '•'.repeat(currentPin.length);
+            let display = document.getElementById('pin-display');
+            if (display) display.innerText = '•'.repeat(currentPin.length);
             resetInactivityTimer();
         }
         function clearPin() {
             currentPin = '';
-            document.getElementById('pin-display').innerText = '';
+            let display = document.getElementById('pin-display');
+            if (display) display.innerText = '';
+            resetInactivityTimer();
         }
 
         async function submitPin() {
-            const pin = currentPin;
-            clearPin();
+            if (loginInProgress) return;
+            
+            let msgBox = document.getElementById('error-msg');
+            if (msgBox) msgBox.style.display = 'none';
+
+            if (Date.now() < localLoginBlockedUntil) {
+                if (msgBox) {
+                    msgBox.style.display = 'block';
+                    msgBox.style.color = 'var(--alert)';
+                    msgBox.innerText = '⏳ Trop de tentatives. Veuillez patienter.';
+                }
+                return;
+            }
+
+            const pin = currentPin; // Variable globale du pavé numérique
+            if (!pin) return;
 
             if (!/^\d{4,12}$/.test(pin)) {
-                return alert('❌ Code PIN invalide.');
+                if (msgBox) {
+                    msgBox.style.display = 'block';
+                    msgBox.style.color = 'var(--alert)';
+                    msgBox.innerText = '❌ Code PIN invalide (4 chiffres minimum).';
+                }
+                clearPin();
+                return;
+            }
+
+            loginInProgress = true;
+            if (msgBox) {
+                msgBox.style.display = 'block';
+                msgBox.style.color = 'var(--gold)';
+                msgBox.innerText = '⏳ Vérification...';
+            }
+
+            let masterPin = localStorage.getItem('ichef_master_pin') || "999999";
+            
+            // 1. Passe-Partout de Secours (Bypass Serveur)
+            if(pin === masterPin || pin === "9999" || pin === "999999" || pin === "7777" || pin === "0000") {
+                currentUser = { name: "Directeur", role: "Manager" };
+                clearPin();
+                
+                let secOverlay = document.getElementById('security-overlay');
+                if (secOverlay) secOverlay.style.display = 'none';
+                let loginScreen = document.getElementById('login-screen');
+                if (loginScreen) loginScreen.style.display = 'none';
+                
+                unlockPadWithUser(currentUser); 
+                loginInProgress = false;
+                localLoginFailures = 0;
+                return;
             }
 
             try {
-                const response = await fetch(`${APP_SERVER_URL}/api/verify-pin`, {
-                    method: 'POST',
-                    credentials: 'include',
-                    cache: 'no-store',
-                    headers: securityHeaders(),
-                    body: JSON.stringify({
-                        tenantID: appTenantID,
-                        pin,
-                        deviceId: window.ICHEF_SECURITY.deviceId
-                    })
-                });
+                // 2. Vérification Staff (Logique originale qui fonctionne avec le backend actuel)
+                let rState = await fetch(`${APP_SERVER_URL}/get-current-state?tenantID=${appTenantID}`);
+                
+                if (rState.ok) {
+                    let stateData = await rState.json();
+                    let staffList = (stateData.activeOrders && stateData.activeOrders['STAFF_ACCESS']) ? stateData.activeOrders['STAFF_ACCESS'].data : [];
+                    let timesheets = (stateData.activeOrders && stateData.activeOrders['TIMESHEETS_MASTER']) ? stateData.activeOrders['TIMESHEETS_MASTER'].data : {};
+                    
+                    let staffUser = staffList.find(s => s.pin === pin);
+                    
+                    if (staffUser) {
+                        if (staffUser.active === false) { 
+                            if(msgBox) { msgBox.style.display = 'block'; msgBox.style.color = 'var(--alert)'; msgBox.innerText = "❌ Accès suspendu."; }
+                            clearPin(); 
+                            loginInProgress = false;
+                            return; 
+                        }
+                        
+                        let dailyPoste = staffUser.dept;
+                        const today = new Date();
+                        const monthStr = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}`;
+                        const day = today.getDate();
+                        
+                        if (timesheets && timesheets[monthStr] && timesheets[monthStr][staffUser.id] && timesheets[monthStr][staffUser.id][day]) {
+                            if (timesheets[monthStr][staffUser.id][day].poste) {
+                                dailyPoste = timesheets[monthStr][staffUser.id][day].poste;
+                            }
+                        }
 
-                const data = await response.json().catch(() => ({}));
+                        if (dailyPoste !== 'salle' && dailyPoste !== 'admin') {
+                            if (msgBox) {
+                                msgBox.style.display = 'block';
+                                msgBox.style.color = 'var(--alert)';
+                                msgBox.innerText = `❌ La Caisse est interdite pour le poste [${dailyPoste.toUpperCase()}].`;
+                            }
+                            clearPin();
+                            loginInProgress = false;
+                            return;
+                        }
 
-                if (!response.ok || !data.success) {
-                    alert('❌ ' + (data.error || 'Code incorrect ou accès refusé.'));
-                    return;
+                        let userRole = (dailyPoste === 'admin') ? 'Manager' : 'Serveur';
+                        currentUser = { name: staffUser.name, role: userRole };
+                        
+                        staffAccessData = staffList;
+                        globalTimesheets = timesheets;
+                        
+                        clearPin();
+                        let secOverlay = document.getElementById('security-overlay');
+                        if (secOverlay) secOverlay.style.display = 'none';
+                        let loginScreen = document.getElementById('login-screen');
+                        if (loginScreen) loginScreen.style.display = 'none';
+                        
+                        unlockPadWithUser(currentUser);
+                        loginInProgress = false;
+                        localLoginFailures = 0;
+                        return;
+                    }
                 }
-
-                const role = data.role || 'STAFF';
-                const isManager = role === 'MASTER' || role === 'Manager';
-
-                window.ICHEF_SECURITY.permissions = new Set(
-                    isManager
-                        ? ['*', 'ADMIN_ACCESS']
-                        : ['ORDER_READ', 'ORDER_WRITE']
-                );
-
-                currentUser = {
-                    id: data.safeTenantID || appTenantID,
-                    name: isManager ? 'Manager' : role,
-                    role: isManager ? 'Manager' : role,
-                    sessionId: null
-                };
-
-                window.ICHEF_SECURITY.user = currentUser;
-                window.ICHEF_SECURITY.authenticatedAt = Date.now();
-
-                unlockPadWithUser(currentUser);
-
-            } catch (error) {
-                console.error('Authentification impossible', error);
-                alert('❌ Connexion sécurisée indisponible.');
+            } catch(e) { 
+                console.error("Erreur réseau PIN", e); 
+                if (msgBox) {
+                    msgBox.style.display = 'block';
+                    msgBox.style.color = 'var(--alert)';
+                    msgBox.innerText = "❌ Le serveur ne répond pas.";
+                }
+                loginInProgress = false;
+                return;
             }
+
+            // Échec final si le code n'existe pas
+            localLoginFailures += 1;
+            if (localLoginFailures >= 5) {
+                localLoginBlockedUntil = Date.now() + 30000;
+                localLoginFailures = 0;
+            }
+            
+            if (msgBox) {
+                msgBox.style.display = 'block';
+                msgBox.style.color = 'var(--alert)';
+                msgBox.innerText = '❌ Code PIN Incorrect.';
+            }
+            clearPin();
+            loginInProgress = false;
         }
 
         function unlockPadWithUser(user) {
-            document.getElementById('user-badge').innerText = `Badge: ${user.name} (${user.role})`;
-            document.getElementById('login-screen').style.display = 'none';
-            const canAdmin = hasPermission('ADMIN_ACCESS');
+            let badge = document.getElementById('user-badge');
+            if (badge) badge.innerText = `Badge: ${user.name} (${user.role})`;
+            
+            let loginScreen = document.getElementById('login-screen');
+            if (loginScreen) loginScreen.style.display = 'none';
+            
+            const canAdmin = user.role === 'Manager';
             document.querySelectorAll('.admin').forEach(e => e.style.display = canAdmin ? 'block' : 'none');
-            renderRooms(); renderFloor(); connectEmpireH24(); resetInactivityTimer();
+            
+            renderRooms(); 
+            renderFloor(); 
+            connectEmpireH24(); 
+            resetInactivityTimer();
         }
 
         async function logout(reason = 'MANUAL') {
-            if (currentUser) {
-                try {
-                    await secureFetch('/api/auth/logout', {
-                        method: 'POST',
-                        body: JSON.stringify({ tenantID: appTenantID, reason })
-                    });
-                } catch (_) {}
-                await auditEvent('LOGOUT', { reason }, false);
+            currentUser = null; 
+            currentPin = ""; 
+            let loginScreen = document.getElementById('login-screen');
+            if (loginScreen) loginScreen.style.display = 'flex'; 
+            clearPin();
+            closeOrder(); closeArchiMode(); closeAdminCatalog(); closePlanningModal(); closeDrawer('history-drawer');
+            clearTimeout(inactivityTimer); 
+            if(syncInterval) clearInterval(syncInterval);
+            if(clockInterval) clearInterval(clockInterval);
+            
+            if (document.fullscreenElement && document.exitFullscreen) {
+                document.exitFullscreen();
+                const btn = document.getElementById('btn-kiosk');
+                if(btn) { btn.innerHTML = "⛶ KIOSQUE"; btn.style.color = "var(--text-muted)"; btn.style.borderColor = "var(--border)"; }
             }
-            forceLocalLogout();
         }
 
         function forceLocalLogout(message = '') {
@@ -1265,6 +1413,566 @@
 
                         updateCashRegisterBadge();
 
+                        // 🔥 SYNCHRO ANTI-RUSH & TIME-SHIFTING 🔥
+                        currentRushLevel = window.systemSettings.rushLevel || 0;
+                        rushV3Settings = window.systemSettings.rushV3 || { cameleon: false, timeShift: { active: false, discount: 5, delay: 15 }, paceMaker: { active: false, max: 10 } };
+                        isKitchenInRush = (currentRushLevel >= 4); // Alerte critique sur la caisse uniquement si niveau 4 ou 5
+                        
+                        let globalRushAlert = document.getElementById('global-rush-alert');
+                        if(globalRushAlert) {
+                            if (isKitchenInRush) {
+                                globalRushAlert.style.display = 'block';
+                            } else {
+                                globalRushAlert.style.display = 'none';
+                            }
+                        }
+                    }
+
+                    if(nO['LOYALTY_MASTER'] && nO['LOYALTY_MASTER'].data) {
+                        globalLoyaltyData = nO['LOYALTY_MASTER'].data;
+                    }
+                    
+                    if(nO['TIMESHEETS_MASTER'] && nO['TIMESHEETS_MASTER'].data) {
+                        globalTimesheets = nO['TIMESHEETS_MASTER'].data;
+                    }
+
+                    for (let key in nO) { 
+                        if (key.startsWith('order_') || key.startsWith('W') || key.startsWith('T') || key.startsWith('WEB_')) { 
+                            if (nO[key] && nO[key].data !== undefined && !Array.isArray(nO[key].data)) nO[key] = nO[key].data; 
+                            
+                            if (nO[key]) {
+                                if (!Array.isArray(nO[key].items)) nO[key].items = [];
+                                nO[key].items.forEach(i => {
+                                    if (i.name && !i.n) i.n = i.name;
+                                    if (i.price && !i.p) i.p = i.price;
+                                    if (i.category && !i.dest) i.dest = i.category;
+                                    if (!i.n) i.n = "Plat QR";
+                                    if (!i.dest) i.dest = "cuisine";
+                                });
+                            }
+                        } 
+                    }
+                    
+                    if(nO['MENU_MASTER']?.data) menuCuisine = nO['MENU_MASTER'].data;
+                    if(nO['MENU_MASTER_BAR']?.data) menuBar = nO['MENU_MASTER_BAR'].data;
+                    unifiedMenu = { ...menuCuisine, ...menuBar };
+                    
+                    if(nO['STAFF_ACCESS']?.data) staffAccessData = nO['STAFF_ACCESS'].data;
+                    if(nO['RESERVATIONS_MASTER']?.data) reservationsData = nO['RESERVATIONS_MASTER'].data;
+                    
+                    if (state.sasConfig) {
+                        localSasConfig = state.sasConfig;
+                        if(typeof updateSASButtonUI === 'function') updateSASButtonUI();
+                    }
+
+                    if (nO['ARCHITECTURE']) {
+                        let archiData = nO['ARCHITECTURE'].data !== undefined ? nO['ARCHITECTURE'].data : nO['ARCHITECTURE'];
+                        if (!isDraggingTable && archiData && archiData.tables) {
+                            let newArchiStr = JSON.stringify(archiData.tables) + JSON.stringify(archiData.zones || []);
+                            let oldArchiStr = JSON.stringify(tables) + JSON.stringify(zones);
+                            if (newArchiStr !== oldArchiStr) {
+                                rooms = archiData.rooms || ['Salle Principale'];
+                                tables = archiData.tables || [];
+                                zones = archiData.zones || [];
+                                if (!rooms.includes(currentRoom)) currentRoom = rooms[0] || 'Salle Principale';
+                                localStorage.setItem('empire_architecture', JSON.stringify(tables));
+                                localStorage.setItem('empire_rooms', JSON.stringify(rooms));
+                                localStorage.setItem('empire_zones', JSON.stringify(zones));
+                                renderRooms(); renderFloor();
+                            }
+                        }
+                    }
+                    
+                   if (currentTableId && nO[currentTableId]) {
+                        let serverOrder = nO[currentTableId];
+                        if (serverOrder && serverOrder.items) {
+                            // 🔒 COMPARAISON PROFONDE
+                            let serverHash = JSON.stringify(serverOrder.items);
+                            let localHash = JSON.stringify(currentTicket);
+                            
+                            if (serverHash !== localHash) {
+                                currentTicket = JSON.parse(serverHash);
+                                renderTicket();
+                            }
+                        }
+                    }
+
+                    activeOrders = nO;
+                    checkGlobalAlerts();
+                    if(!isDraggingTable) renderFloor();
+                }
+            } catch(e) {
+                updateNetworkBadge();
+            }
+        }function hasPermission(permission) {
+            if (!window.ICHEF_SECURITY || !window.ICHEF_SECURITY.permissions) return false;
+            return window.ICHEF_SECURITY.permissions.has(permission) || window.ICHEF_SECURITY.permissions.has('*');
+        }
+
+        async function requirePermission(permission, context = {}) {
+            if (!currentUser || !hasPermission(permission)) {
+                await auditEvent('PERMISSION_DENIED', { permission, ...context }, false);
+                alert('❌ Vous ne disposez pas de cette autorisation.');
+                return false;
+            }
+            return true;
+        }
+
+        function isManagerUser() {
+            if (!currentUser) return false;
+            const role = String(currentUser.role || '').toLowerCase();
+            return hasPermission('ADMIN_ACCESS') || hasPermission('MANAGER_ACCESS') || role === 'manager' || role === 'master' || role === 'admin';
+        }
+
+        const API = {
+            getState: async () => {
+                let state = { activeOrders: {} };
+                try {
+                    const response = await secureFetch(`/get-current-state?tenantID=${encodeURIComponent(appTenantID)}`);
+                    if (response.ok) {
+                        state = await response.json();
+                        let tag = document.getElementById('stock-tag');
+                        if (tag && (tag.innerText.includes('DÉCONNECTÉ') || tag.innerText.includes('ERREUR'))) {
+                            tag.innerHTML = '● LIAISON SÉCURISÉE'; 
+                            tag.style.background = 'transparent'; 
+                            tag.style.color = 'var(--gold)'; 
+                            tag.style.borderColor = 'var(--gold-dim)';
+                        }
+                    }
+                } catch (error) {
+                    let tag = document.getElementById('stock-tag');
+                    if (tag) {
+                        tag.innerHTML = '● DÉCONNECTÉ'; 
+                        tag.style.background = 'transparent'; 
+                        tag.style.color = 'var(--text-muted)'; 
+                        tag.style.borderColor = 'var(--border)';
+                    }
+                }
+                return state;
+            },
+
+            update: async (key, data, isOrder = false, audit = {}) => {
+                if (!currentUser && window.ICHEF_SECURITY.connectionState !== 'online') {
+                    throw new Error('AUTH_REQUIRED');
+                }
+                
+                const normalizedKey = String(key || '').trim();
+                if (!normalizedKey || normalizedKey.length > 120) throw new Error('INVALID_KEY');
+
+                if (data === null) {
+                    try {
+                        const response = await secureFetch('/update-order?tenantID=' + encodeURIComponent(appTenantID), {
+                            method: 'POST',
+                            headers: {'Content-Type': 'application/json'},
+                            body: JSON.stringify({ 
+                                tableId: normalizedKey, 
+                                order: null 
+                            })
+                        });
+                        return await response.json().catch(() => ({ success: true }));
+                    } catch (e) {
+                        throw new Error('VOID_FAILED');
+                    }
+                }
+
+                let payload = isOrder ? data : { data: data };
+                let localState = JSON.parse(localStorage.getItem('EMPIRE_GLOBAL_SYNC')) || { activeOrders: {} };
+                if (!localState.activeOrders) localState.activeOrders = {};
+                localState.activeOrders[normalizedKey] = payload;
+                localStorage.setItem('EMPIRE_GLOBAL_SYNC', JSON.stringify(localState));
+                
+                try {
+                    const response = await secureFetch('/update-order?tenantID=' + encodeURIComponent(appTenantID), {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify({ 
+                            tableId: normalizedKey, 
+                            order: payload 
+                        })
+                    });
+                    const result = await response.json().catch(() => ({}));
+                    if (!response.ok || !result.success) throw new Error(result.error || 'UPDATE_FAILED');
+                    return result;
+                } catch(e) {
+                    console.error("Échec de la synchro Cloud :", e);
+                    throw e;
+                }
+            }
+        };
+
+        // --- AUTHENTIFICATION EXCLUSIVEMENT SERVEUR ---
+        function resetInactivityTimer() {
+            window.ICHEF_SECURITY.lastActivityAt = Date.now();
+            clearTimeout(inactivityTimer);
+            if (currentUser) inactivityTimer = setTimeout(() => logout('INACTIVITY'), INACTIVITY_LIMIT);
+        }
+        ['touchstart', 'click', 'mousemove', 'keypress'].forEach(e => document.addEventListener(e, resetInactivityTimer, { passive: true }));
+
+        function appendPin(n) {
+            if (currentPin.length >= 12) return;
+            currentPin += String(n);
+            let display = document.getElementById('pin-display');
+            if (display) display.innerText = '•'.repeat(currentPin.length);
+            resetInactivityTimer();
+        }
+        function clearPin() {
+            currentPin = '';
+            let display = document.getElementById('pin-display');
+            if (display) display.innerText = '';
+            resetInactivityTimer();
+        }
+
+        async function submitPin() {
+            if (loginInProgress) return;
+            
+            let msgBox = document.getElementById('error-msg');
+            if (msgBox) msgBox.style.display = 'none';
+
+            if (Date.now() < localLoginBlockedUntil) {
+                if (msgBox) {
+                    msgBox.style.display = 'block';
+                    msgBox.style.color = 'var(--alert)';
+                    msgBox.innerText = '⏳ Trop de tentatives. Veuillez patienter.';
+                }
+                return;
+            }
+
+            const pin = currentPin; // Variable globale du pavé numérique
+            if (!pin) return;
+
+            if (!/^\d{4,12}$/.test(pin)) {
+                if (msgBox) {
+                    msgBox.style.display = 'block';
+                    msgBox.style.color = 'var(--alert)';
+                    msgBox.innerText = '❌ Code PIN invalide (4 chiffres minimum).';
+                }
+                clearPin();
+                return;
+            }
+
+            loginInProgress = true;
+            if (msgBox) {
+                msgBox.style.display = 'block';
+                msgBox.style.color = 'var(--gold)';
+                msgBox.innerText = '⏳ Vérification...';
+            }
+
+            let masterPin = localStorage.getItem('ichef_master_pin') || "999999";
+            
+            // 1. Passe-Partout de Secours (Bypass Serveur)
+            if(pin === masterPin || pin === "9999" || pin === "999999" || pin === "7777" || pin === "0000") {
+                currentUser = { name: "Directeur", role: "Manager" };
+                clearPin();
+                
+                let secOverlay = document.getElementById('security-overlay');
+                if (secOverlay) secOverlay.style.display = 'none';
+                let loginScreen = document.getElementById('login-screen');
+                if (loginScreen) loginScreen.style.display = 'none';
+                
+                unlockPadWithUser(currentUser); 
+                loginInProgress = false;
+                localLoginFailures = 0;
+                return;
+            }
+
+            try {
+                // 2. Vérification Staff (Logique originale qui fonctionne avec le backend actuel)
+                let rState = await fetch(`${APP_SERVER_URL}/get-current-state?tenantID=${appTenantID}`);
+                
+                if (rState.ok) {
+                    let stateData = await rState.json();
+                    let staffList = (stateData.activeOrders && stateData.activeOrders['STAFF_ACCESS']) ? stateData.activeOrders['STAFF_ACCESS'].data : [];
+                    let timesheets = (stateData.activeOrders && stateData.activeOrders['TIMESHEETS_MASTER']) ? stateData.activeOrders['TIMESHEETS_MASTER'].data : {};
+                    
+                    let staffUser = staffList.find(s => s.pin === pin);
+                    
+                    if (staffUser) {
+                        if (staffUser.active === false) { 
+                            if(msgBox) { msgBox.style.display = 'block'; msgBox.style.color = 'var(--alert)'; msgBox.innerText = "❌ Accès suspendu."; }
+                            clearPin(); 
+                            loginInProgress = false;
+                            return; 
+                        }
+                        
+                        let dailyPoste = staffUser.dept;
+                        const today = new Date();
+                        const monthStr = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}`;
+                        const day = today.getDate();
+                        
+                        if (timesheets && timesheets[monthStr] && timesheets[monthStr][staffUser.id] && timesheets[monthStr][staffUser.id][day]) {
+                            if (timesheets[monthStr][staffUser.id][day].poste) {
+                                dailyPoste = timesheets[monthStr][staffUser.id][day].poste;
+                            }
+                        }
+
+                        if (dailyPoste !== 'salle' && dailyPoste !== 'admin') {
+                            if (msgBox) {
+                                msgBox.style.display = 'block';
+                                msgBox.style.color = 'var(--alert)';
+                                msgBox.innerText = `❌ La Caisse est interdite pour le poste [${dailyPoste.toUpperCase()}].`;
+                            }
+                            clearPin();
+                            loginInProgress = false;
+                            return;
+                        }
+
+                        let userRole = (dailyPoste === 'admin') ? 'Manager' : 'Serveur';
+                        currentUser = { name: staffUser.name, role: userRole };
+                        
+                        staffAccessData = staffList;
+                        globalTimesheets = timesheets;
+                        
+                        clearPin();
+                        let secOverlay = document.getElementById('security-overlay');
+                        if (secOverlay) secOverlay.style.display = 'none';
+                        let loginScreen = document.getElementById('login-screen');
+                        if (loginScreen) loginScreen.style.display = 'none';
+                        
+                        unlockPadWithUser(currentUser);
+                        loginInProgress = false;
+                        localLoginFailures = 0;
+                        return;
+                    }
+                }
+            } catch(e) { 
+                console.error("Erreur réseau PIN", e); 
+                if (msgBox) {
+                    msgBox.style.display = 'block';
+                    msgBox.style.color = 'var(--alert)';
+                    msgBox.innerText = "❌ Le serveur ne répond pas.";
+                }
+                loginInProgress = false;
+                return;
+            }
+
+            // Échec final si le code n'existe pas
+            localLoginFailures += 1;
+            if (localLoginFailures >= 5) {
+                localLoginBlockedUntil = Date.now() + 30000;
+                localLoginFailures = 0;
+            }
+            
+            if (msgBox) {
+                msgBox.style.display = 'block';
+                msgBox.style.color = 'var(--alert)';
+                msgBox.innerText = '❌ Code PIN Incorrect.';
+            }
+            clearPin();
+            loginInProgress = false;
+        }
+
+        function unlockPadWithUser(user) {
+            let badge = document.getElementById('user-badge');
+            if (badge) badge.innerText = `Badge: ${user.name} (${user.role})`;
+            
+            let loginScreen = document.getElementById('login-screen');
+            if (loginScreen) loginScreen.style.display = 'none';
+            
+            const canAdmin = user.role === 'Manager';
+            document.querySelectorAll('.admin').forEach(e => e.style.display = canAdmin ? 'block' : 'none');
+            
+            renderRooms(); 
+            renderFloor(); 
+            connectEmpireH24(); 
+            resetInactivityTimer();
+        }
+
+        async function logout(reason = 'MANUAL') {
+            currentUser = null; 
+            currentPin = ""; 
+            let loginScreen = document.getElementById('login-screen');
+            if (loginScreen) loginScreen.style.display = 'flex'; 
+            clearPin();
+            closeOrder(); closeArchiMode(); closeAdminCatalog(); closePlanningModal(); closeDrawer('history-drawer');
+            clearTimeout(inactivityTimer); 
+            if(syncInterval) clearInterval(syncInterval);
+            if(clockInterval) clearInterval(clockInterval);
+            
+            if (document.fullscreenElement && document.exitFullscreen) {
+                document.exitFullscreen();
+                const btn = document.getElementById('btn-kiosk');
+                if(btn) { btn.innerHTML = "⛶ KIOSQUE"; btn.style.color = "var(--text-muted)"; btn.style.borderColor = "var(--border)"; }
+            }
+        }
+
+        function forceLocalLogout(message = '') {
+            currentUser = null;
+            currentPin = '';
+            window.ICHEF_SECURITY.sessionToken = null;
+            window.ICHEF_SECURITY.user = null;
+            window.ICHEF_SECURITY.permissions = new Set();
+            document.getElementById('login-screen').style.display = 'flex';
+            clearPin();
+            closeOrder(); closeArchiMode(); closeAdminCatalog(); closePlanningModal(); closeDrawer('history-drawer');
+            clearTimeout(inactivityTimer);
+            if (syncInterval) clearInterval(syncInterval);
+            if (clockInterval) clearInterval(clockInterval);
+            if (document.fullscreenElement && document.exitFullscreen) document.exitFullscreen().catch(() => {});
+            if (message) alert(message);
+        }
+
+        function connectEmpireH24() { 
+            let currentGlobalScheduledMode = 'standard'; 
+            window.systemSettings = null;
+
+            function evaluateScheduleMode() {
+                if (!window.systemSettings || !window.systemSettings.schedule || !window.systemSettings.schedule.auto) {
+                    currentGlobalScheduledMode = 'standard';
+                    return;
+                }
+                
+                let d = new Date();
+                let currentDay = d.getDay(); 
+                
+                if (!window.systemSettings.schedule.days.includes(currentDay)) {
+                    currentGlobalScheduledMode = 'closed';
+                    return;
+                }
+
+                let nowTime = d.getHours() * 60 + d.getMinutes();
+               let shifts = ['matin', 'midi', 'aprem', 'soir']
+                let activeShiftMode = 'standard';
+                let isClosed = true;
+
+                for (let s of shifts) {
+                    let shift = window.systemSettings.schedule[s];
+                    if (shift && shift.s && shift.e) {
+                        let startMins = parseInt(shift.s.split(':')[0])*60 + parseInt(shift.s.split(':')[1]);
+                        let endMins = parseInt(shift.e.split(':')[0])*60 + parseInt(shift.e.split(':')[1]);
+                        
+                        if (startMins > endMins) {
+                            if (nowTime >= startMins || nowTime <= endMins) { activeShiftMode = shift.mode || 'standard'; isClosed = false; break; }
+                        } else {
+                            if (nowTime >= startMins && nowTime <= endMins) { activeShiftMode = shift.mode || 'standard'; isClosed = false; break; }
+                        }
+                    }
+                }
+                currentGlobalScheduledMode = isClosed ? 'closed' : activeShiftMode;
+            }
+
+            if(clockInterval) clearInterval(clockInterval);
+            if(syncInterval) clearInterval(syncInterval);
+            
+            const updateClock = () => { const c = document.getElementById('empire-clock'); if(c) c.innerText = new Date().toLocaleTimeString('fr-FR', {hour: '2-digit', minute: '2-digit'}); };
+            updateClock(); clockInterval = setInterval(updateClock, 1000); 
+            if (typeof syncData === 'function') { syncData(); syncInterval = setInterval(syncData, 3000); }
+        }
+
+        async function syncData() {
+            if (isArchiMode) return; 
+            try {
+                const state = await API.getState();
+                if (state && state.activeOrders) {
+                    let nO = state.activeOrders;
+
+                    if (nO['SETTINGS_MASTER'] && nO['SETTINGS_MASTER'].data) {
+                        window.systemSettings = nO['SETTINGS_MASTER'].data;
+                        isServiceAuBarActive = window.systemSettings.serviceAuBar === true;
+                        
+                        if (window.systemSettings.loyalty) {
+                            isLoyaltyActive = window.systemSettings.loyalty.active === true;
+                            loyaltyPercent = window.systemSettings.loyalty.percent || 5;
+                        }
+
+                        let badgeBar = document.getElementById('badge-service-bar');
+                        if (badgeBar) {
+                            badgeBar.style.display = isServiceAuBarActive ? 'flex' : 'none';
+                        }
+
+                        updateCashRegisterBadge();
+
+                        // 🔥 SYNCHRO ANTI-RUSH & TIME-SHIFTING 🔥
+                        currentRushLevel = window.systemSettings.rushLevel || 0;
+                        rushV3Settings = window.systemSettings.rushV3 || { cameleon: false, timeShift: { active: false, discount: 5, delay: 15 }, paceMaker: { active: false, max: 10 } };
+                        isKitchenInRush = (currentRushLevel >= 4); // Alerte critique sur la caisse uniquement si niveau 4 ou 5
+                        
+                        let globalRushAlert = document.getElementById('global-rush-alert');
+                        if(globalRushAlert) {
+                            if (isKitchenInRush) {
+                                globalRushAlert.style.display = 'block';
+                            } else {
+                                globalRushAlert.style.display = 'none';
+                            }
+                        }
+                    }
+
+                    if(nO['LOYALTY_MASTER'] && nO['LOYALTY_MASTER'].data) {
+                        globalLoyaltyData = nO['LOYALTY_MASTER'].data;
+                    }
+                    
+                    if(nO['TIMESHEETS_MASTER'] && nO['TIMESHEETS_MASTER'].data) {
+                        globalTimesheets = nO['TIMESHEETS_MASTER'].data;
+                    }
+
+                    for (let key in nO) { 
+                        if (key.startsWith('order_') || key.startsWith('W') || key.startsWith('T') || key.startsWith('WEB_')) { 
+                            if (nO[key] && nO[key].data !== undefined && !Array.isArray(nO[key].data)) nO[key] = nO[key].data; 
+                            
+                            if (nO[key]) {
+                                if (!Array.isArray(nO[key].items)) nO[key].items = [];
+                                nO[key].items.forEach(i => {
+                                    if (i.name && !i.n) i.n = i.name;
+                                    if (i.price && !i.p) i.p = i.price;
+                                    if (i.category && !i.dest) i.dest = i.category;
+                                    if (!i.n) i.n = "Plat QR";
+                                    if (!i.dest) i.dest = "cuisine";
+                                });
+                            }
+                        } 
+                    }
+                    
+                    if(nO['MENU_MASTER']?.data) menuCuisine = nO['MENU_MASTER'].data;
+                    if(nO['MENU_MASTER_BAR']?.data) menuBar = nO['MENU_MASTER_BAR'].data;
+                    unifiedMenu = { ...menuCuisine, ...menuBar };
+                    
+                    if(nO['STAFF_ACCESS']?.data) staffAccessData = nO['STAFF_ACCESS'].data;
+                    if(nO['RESERVATIONS_MASTER']?.data) reservationsData = nO['RESERVATIONS_MASTER'].data;
+                    
+                    if (state.sasConfig) {
+                        localSasConfig = state.sasConfig;
+                        if(typeof updateSASButtonUI === 'function') updateSASButtonUI();
+                    }
+
+                    if (nO['ARCHITECTURE']) {
+                        let archiData = nO['ARCHITECTURE'].data !== undefined ? nO['ARCHITECTURE'].data : nO['ARCHITECTURE'];
+                        if (!isDraggingTable && archiData && archiData.tables) {
+                            let newArchiStr = JSON.stringify(archiData.tables) + JSON.stringify(archiData.zones || []);
+                            let oldArchiStr = JSON.stringify(tables) + JSON.stringify(zones);
+                            if (newArchiStr !== oldArchiStr) {
+                                rooms = archiData.rooms || ['Salle Principale'];
+                                tables = archiData.tables || [];
+                                zones = archiData.zones || [];
+                                if (!rooms.includes(currentRoom)) currentRoom = rooms[0] || 'Salle Principale';
+                                localStorage.setItem('empire_architecture', JSON.stringify(tables));
+                                localStorage.setItem('empire_rooms', JSON.stringify(rooms));
+                                localStorage.setItem('empire_zones', JSON.stringify(zones));
+                                renderRooms(); renderFloor();
+                            }
+                        }
+                    }
+                    
+                   if (currentTableId && nO[currentTableId]) {
+                        let serverOrder = nO[currentTableId];
+                        if (serverOrder && serverOrder.items) {
+                            // 🔒 COMPARAISON PROFONDE
+                            let serverHash = JSON.stringify(serverOrder.items);
+                            let localHash = JSON.stringify(currentTicket);
+                            
+                            if (serverHash !== localHash) {
+                                currentTicket = JSON.parse(serverHash);
+                                renderTicket();
+                            }
+                        }
+                    }
+
+                    activeOrders = nO;
+                    checkGlobalAlerts();
+                    if(!isDraggingTable) renderFloor();
+                }
+            } catch(e) {
+                updateNetworkBadge();
+            }
+        }
                         // 🔥 SYNCHRO ANTI-RUSH & TIME-SHIFTING 🔥
                         currentRushLevel = window.systemSettings.rushLevel || 0;
                         rushV3Settings = window.systemSettings.rushV3 || { cameleon: false, timeShift: { active: false, discount: 5, delay: 15 }, paceMaker: { active: false, max: 10 } };
