@@ -187,6 +187,8 @@
             position:absolute;box-sizing:border-box;display:flex;justify-content:center;
             align-items:center;z-index:10;
         }
+        /* Correctif tactile : les tables restent toujours au-dessus des zones et captent le toucher. */
+        .table-wrapper{pointer-events:auto;touch-action:manipulation;z-index:20}
         .table-obj{
             position:relative;width:100%;height:100%;background:var(--panel);
             border:1px solid var(--border-strong);display:flex;justify-content:center;
@@ -198,7 +200,7 @@
         .table-content{display:flex;flex-direction:column;align-items:center;justify-content:center}
         .table-rush-dot{width:7px;height:7px;border-radius:50%;margin-top:5px;background:transparent}
 
-        .zone-wrapper{position:absolute;z-index:0;pointer-events:none}
+        .zone-wrapper{position:absolute;z-index:0;pointer-events:none!important}
         .zone-obj{
             width:100%;height:100%;border:2px dashed rgba(255,255,255,.2);border-radius:12px;
             display:flex;align-items:flex-start;justify-content:center;padding-top:15px;
@@ -1516,6 +1518,28 @@ function renderAntiRush() {
 
     refreshCurrentTableRushAdvice();
 }
+
+function refreshCurrentTableRushAdvice() {
+    const box = document.getElementById('table-rush-advice');
+    if (!currentTableId || !box) return;
+
+    let text = '';
+    if (rushState.level >= 4) {
+        text = `🚨 Service ${rushState.label.toUpperCase()} — annoncer environ ${rushState.estimatedDelay} min d’attente au client.`;
+    } else if (rushState.level >= 2) {
+        text = `🔥 Service ${rushState.label.toUpperCase()} — délai estimé ${rushState.estimatedDelay} min.`;
+    }
+
+    if (text) {
+        box.textContent = text;
+        box.style.display = 'block';
+        box.style.borderColor = rushState.color;
+        box.style.color = rushState.color;
+    } else {
+        box.style.display = 'none';
+    }
+}
+
 /* RÉSEAU */
 function connectEmpireH24() {
     if (syncInterval) clearInterval(syncInterval);
@@ -1667,7 +1691,36 @@ function renderFloor() {
                     <span class="table-rush-dot" style="background:${isOccupied ? rushColor : 'transparent'}"></span>
                 </div>
             </div>`;
-        w.onclick = () => openOrder(t.label);
+        // Correctif tactile tablette/smartphone : un léger déplacement reste un scroll,
+        // un vrai tap ouvre toujours la table. Le click fantôme suivant est neutralisé.
+        let touchStartX = 0;
+        let touchStartY = 0;
+        let lastTouchOpenAt = 0;
+
+        w.addEventListener('touchstart', (e) => {
+            const touch = e.touches && e.touches[0];
+            if (!touch) return;
+            touchStartX = touch.clientX;
+            touchStartY = touch.clientY;
+        }, { passive:true });
+
+        w.addEventListener('touchend', (e) => {
+            const touch = e.changedTouches && e.changedTouches[0];
+            if (!touch) return;
+            const dx = Math.abs(touch.clientX - touchStartX);
+            const dy = Math.abs(touch.clientY - touchStartY);
+            if (dx <= 12 && dy <= 12) {
+                e.preventDefault();
+                e.stopPropagation();
+                lastTouchOpenAt = Date.now();
+                openOrder(t.label);
+            }
+        }, { passive:false });
+
+        w.onclick = () => {
+            if (Date.now() - lastTouchOpenAt < 600) return;
+            openOrder(t.label);
+        };
         floor.appendChild(w);
     });
 }
