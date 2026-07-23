@@ -5,6 +5,7 @@ const nodemailer = require('nodemailer');
  * ==============================================================
  */
 
+
 const express = require('express');
 const cors = require('cors');
 const path = require('path');
@@ -48,35 +49,128 @@ const app = express();
 const server = http.createServer(app); // Serveur HTTP lié à Express
 const io = new Server(server, { cors: { origin: '*' } }); // Serveur Temps Réel
 
-// 👇 DÉBLOCAGE DES VIDÉOS & RESSOURCES 👇
-app.use(express.json({ limit: '100mb' }));
-app.use(express.urlencoded({ extended: true, limit: '100mb' }));
 
-const PORT = process.env.PORT || 10000;
+// ==========================================================
+// 🌐 CONFIGURATION HTTP / CORS / CACHE
+// ==========================================================
 
-// SÉCURITÉ MAÎTRE DE L'EMPIRE (Super Admin)
-const ADMIN_PASS = process.env.ADMIN_PASS || 'Empire2026';
-
+// CORS global.
 app.use(cors({
     origin: function (origin, callback) {
         callback(null, true);
     },
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization', 'Origin', 'Accept', 'X-CSRF-Token', 'X-iCHEF-Device', 'X-iCHEF-Master-Device', 'X-iCHEF-Tenant', 'Idempotency-Key', 'X-Requested-With']
-}));;
+    allowedHeaders: [
+        'Content-Type',
+        'Authorization',
+        'Origin',
+        'Accept',
+        'X-CSRF-Token',
+        'X-iCHEF-Device',
+        'X-iCHEF-Master-Device',
+        'X-iCHEF-Tenant',
+        'Idempotency-Key',
+        'X-Requested-With'
+    ]
+}));
 
-// 🚨 SÉCURITÉ STRIPE : On utilise raw() uniquement pour la route webhook
+// IMPORTANT : le webhook Stripe doit recevoir le corps BRUT
+// avant express.json().
 app.use('/webhook', express.raw({ type: 'application/json' }));
 
-app.use(express.json({ limit: '100mb' })); 
-app.use(express.urlencoded({ extended: true, limit: '100mb' }));
+// Parsers pour les autres routes.
 app.use(express.json({ limit: '100mb' }));
 app.use(express.urlencoded({ extended: true, limit: '100mb' }));
+
+// ----------------------------------------------------------
+// 🚀 ANTI-CACHE iCHEF
+// ----------------------------------------------------------
+// Les clients conservent l'URL normale.
+// HTML/PWA : toujours vérifier/charger la version actuelle.
+// JS/CSS/JSON : revalidation automatique.
+
+app.use((req, res, next) => {
+    const requestPath = String(req.path || '').toLowerCase();
+
+    if (
+        requestPath.endsWith('.html') ||
+        requestPath.endsWith('.htm') ||
+        requestPath.endsWith('service-worker.js') ||
+        requestPath.endsWith('sw.js') ||
+        requestPath.endsWith('manifest.json') ||
+        requestPath.endsWith('manifest.webmanifest')
+    ) {
+        res.setHeader(
+            'Cache-Control',
+            'no-store, no-cache, must-revalidate, proxy-revalidate'
+        );
+        res.setHeader('Pragma', 'no-cache');
+        res.setHeader('Expires', '0');
+        res.setHeader('Surrogate-Control', 'no-store');
+    } else if (
+        requestPath.endsWith('.js') ||
+        requestPath.endsWith('.css') ||
+        requestPath.endsWith('.json')
+    ) {
+        res.setHeader('Cache-Control', 'no-cache, must-revalidate');
+    }
+
+    next();
+});
+
+// Une seule déclaration des fichiers statiques.
+app.use(express.static(path.join(__dirname), {
+    etag: true,
+    lastModified: true,
+    setHeaders: (res, filePath) => {
+        const lower = String(filePath || '').toLowerCase();
+
+        if (
+            lower.endsWith('.html') ||
+            lower.endsWith('.htm') ||
+            lower.endsWith('service-worker.js') ||
+            lower.endsWith('sw.js') ||
+            lower.endsWith('manifest.json') ||
+            lower.endsWith('manifest.webmanifest')
+        ) {
+            res.setHeader(
+                'Cache-Control',
+                'no-store, no-cache, must-revalidate, proxy-revalidate'
+            );
+            res.setHeader('Pragma', 'no-cache');
+            res.setHeader('Expires', '0');
+            res.setHeader('Surrogate-Control', 'no-store');
+        } else if (
+            lower.endsWith('.js') ||
+            lower.endsWith('.css') ||
+            lower.endsWith('.json')
+        ) {
+            res.setHeader('Cache-Control', 'no-cache, must-revalidate');
+        }
+    }
+}));
+
+// 👇 DÉBLOCAGE DES VIDÉOS & RESSOURCES 👇
+
+const PORT = process.env.PORT || 10000;
+
+// SÉCURITÉ MAÎTRE DE L'EMPIRE (Super Admin)
+const ADMIN_PASS = process.env.ADMIN_PASS || 'Empire2026';
+
+
+
+// 🚨 SÉCURITÉ STRIPE : On utilise raw() uniquement pour la route webhook
 
 const cleanString = (str) => String(str || "").trim().toLowerCase();
 
 app.get('/', (req, res) => {
+    res.setHeader(
+        'Cache-Control',
+        'no-store, no-cache, must-revalidate, proxy-revalidate'
+    );
+    res.setHeader('Pragma', 'no-cache');
+    res.setHeader('Expires', '0');
     res.sendFile(path.join(__dirname, 'vitrine.html'));
 });
 
