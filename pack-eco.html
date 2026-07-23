@@ -1210,7 +1210,7 @@ let localLoginBlockedUntil = 0;
 async function submitPin() {
     if (loginInProgress) return;
 
-    let msgBox = document.getElementById('error-msg');
+    const msgBox = document.getElementById('error-msg');
     msgBox.style.display = 'none';
 
     if (Date.now() < localLoginBlockedUntil) {
@@ -1220,7 +1220,7 @@ async function submitPin() {
         return;
     }
 
-    const pin = currentPin;
+    const pin = String(currentPin || '').trim();
     if (!pin) return;
 
     if (!/^\d{4,12}$/.test(pin)) {
@@ -1236,91 +1236,76 @@ async function submitPin() {
     msgBox.style.color = 'var(--gold)';
     msgBox.innerText = '⏳ Vérification...';
 
-    let masterPin = localStorage.getItem('ichef_master_pin') || "999999";
-
-    // 1. Passe-Partout de Secours (Bypass Serveur)
-    if(pin === masterPin || pin === "9999" || pin === "999999" || pin === "7777" || pin === "0000" || pin === "1234") {
-        currentUser = { name: "Directeur", role: "Manager" };
-        unlockPadWithUser(currentUser);
-        loginInProgress = false;
-        localLoginFailures = 0;
-        return;
-    }
-
     try {
-        // 2. Vérification Staff adaptée à ton architecture (get-current-state)
-        let rState = await fetch(`${APP_SERVER_URL}/get-current-state?tenantID=${appTenantID}`);
+        // Vérification centralisée côté serveur : PIN principal + PIN du personnel.
+        const response = await fetch(`${APP_SERVER_URL}/api/verify-pin`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+            cache: 'no-store',
+            body: JSON.stringify({
+                tenantID: appTenantID,
+                pin,
+                deviceId: window.ICHEF_SECURITY?.deviceId || null
+            })
+        });
 
-        if (rState.ok) {
-            let stateData = await rState.json();
-            let staffList = (stateData.activeOrders && stateData.activeOrders['STAFF_ACCESS']) ? stateData.activeOrders['STAFF_ACCESS'].data : [];
-            let timesheets = (stateData.activeOrders && stateData.activeOrders['TIMESHEETS_MASTER']) ? stateData.activeOrders['TIMESHEETS_MASTER'].data : {};
+        const data = await response.json().catch(() => ({}));
 
-            let staffUser = staffList.find(s => s.pin === pin);
-
-            if (staffUser) {
-                if (staffUser.active === false) {
-                    msgBox.style.display = 'block';
-                    msgBox.style.color = 'var(--alert)';
-                    msgBox.innerText = "❌ Accès suspendu par la direction.";
-                    clearPin();
-                    loginInProgress = false;
-                    return;
-                }
-
-                let dailyPoste = staffUser.dept;
-                const today = new Date();
-                const monthStr = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}`;
-                const day = today.getDate();
-
-                if (timesheets && timesheets[monthStr] && timesheets[monthStr][staffUser.id] && timesheets[monthStr][staffUser.id][day]) {
-                    if (timesheets[monthStr][staffUser.id][day].poste) {
-                        dailyPoste = timesheets[monthStr][staffUser.id][day].poste;
-                    }
-                }
-
-                if (dailyPoste !== 'salle' && dailyPoste !== 'admin') {
-                    msgBox.style.display = 'block';
-                    msgBox.style.color = 'var(--alert)';
-                    msgBox.innerText = `❌ La Caisse est interdite pour le poste [${(dailyPoste || '').toUpperCase()}].`;
-                    clearPin();
-                    loginInProgress = false;
-                    return;
-                }
-
-                let userRole = (dailyPoste === 'admin') ? 'Manager' : 'Serveur';
-                currentUser = { name: staffUser.name, role: userRole };
-
-                if (typeof staffAccessData !== 'undefined') staffAccessData = staffList;
-                if (typeof globalTimesheets !== 'undefined') globalTimesheets = timesheets;
-
-                unlockPadWithUser(currentUser);
-                loginInProgress = false;
+        if (!response.ok || !data.success) {
+            localLoginFailures += 1;
+            if (localLoginFailures >= 5) {
+                localLoginBlockedUntil = Date.now() + 30000;
                 localLoginFailures = 0;
-                return;
+            }
+
+            msgBox.style.display = 'block';
+            msgBox.style.color = 'var(--alert)';
+            msgBox.innerText = `❌ ${data.error || 'Code PIN incorrect.'}`;
+            clearPin();
+            return;
+        }
+
+        localLoginFailures = 0;
+
+        // Le serveur renvoie le rôle réel associé au PIN.
+        const serverRole = String(data.role || 'STAFF').trim().toLowerCase();
+        let displayName = serverRole === 'master' ? 'Directeur' : 'Utilisateur';
+        let userRole = (serverRole === 'master' || serverRole === 'admin' || serverRole === 'manager')
+            ? 'Manager'
+            : 'Serveur';
+
+        // Pour un PIN staff, récupérer le nom affiché sans refaire l'authentification localement.
+        if (serverRole !== 'master') {
+            try {
+                const stateResponse = await fetch(
+                    `${APP_SERVER_URL}/get-current-state?tenantID=${encodeURIComponent(appTenantID)}&_t=${Date.now()}`,
+                    { cache: 'no-store' }
+                );
+                if (stateResponse.ok) {
+                    const stateData = await stateResponse.json();
+                    const staffList = stateData?.activeOrders?.STAFF_ACCESS?.data || [];
+                    const staffUser = Array.isArray(staffList)
+                        ? staffList.find(s => String(s?.pin ?? '').trim() === pin)
+                        : null;
+                    if (staffUser?.name) displayName = staffUser.name;
+                }
+            } catch (_) {
+                // Le nom est secondaire : l'accès reste validé par /api/verify-pin.
             }
         }
-    } catch(e) {
-        console.error("Erreur réseau PIN", e);
+
+        currentUser = { name: displayName, role: userRole, serverRole };
+        clearPin();
+        unlockPadWithUser(currentUser);
+    } catch (e) {
+        console.error('Erreur réseau PIN', e);
         msgBox.style.display = 'block';
         msgBox.style.color = 'var(--alert)';
-        msgBox.innerText = "❌ Le serveur ne répond pas.";
+        msgBox.innerText = '❌ Impossible de joindre le serveur.';
+        clearPin();
+    } finally {
         loginInProgress = false;
-        return;
     }
-
-    // Échec final si le code n'existe pas
-    localLoginFailures += 1;
-    if (localLoginFailures >= 5) {
-        localLoginBlockedUntil = Date.now() + 30000;
-        localLoginFailures = 0;
-    }
-
-    msgBox.style.display = 'block';
-    msgBox.style.color = 'var(--alert)';
-    msgBox.innerText = '❌ Code PIN Incorrect.';
-    clearPin();
-    loginInProgress = false;
 }
 
 function unlockPadWithUser(user) {
