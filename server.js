@@ -71,7 +71,8 @@ app.use('/webhook', express.raw({ type: 'application/json' }));
 
 app.use(express.json({ limit: '100mb' })); 
 app.use(express.urlencoded({ extended: true, limit: '100mb' }));
-app.use(express.static(path.join(__dirname)));
+app.use(express.json({ limit: '100mb' }));
+app.use(express.urlencoded({ extended: true, limit: '100mb' }));
 
 const cleanString = (str) => String(str || "").trim().toLowerCase();
 
