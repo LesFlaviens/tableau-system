@@ -1,3 +1,4 @@
+
 <html lang="fr">
 <head>
     <meta charset="UTF-8">
@@ -788,16 +789,28 @@ header{
         <div id="room-tabs-container" class="swipe-row room-tabs-inline"></div>
 
         <div class="service-dock-primary">
-            <button class="dock-btn primary" onclick="openQuickOrder()" title="Nouvelle commande">
+            <button class="dock-btn primary" onclick="openQuickOrder()" title="Nouvelle commande rapide">
                 <span class="dock-icon">📝</span><span>COMMANDE</span>
             </button>
-            <button class="dock-btn" onclick="addExtraClient()" title="Ajouter un client à une table">
+
+            <button class="dock-btn" onclick="addExtraClient()" title="Ajouter un client sur une table existante">
                 <span class="dock-icon">👥</span><span>CLIENT +</span>
             </button>
-            <button id="btn-rush-toggle" class="dock-btn rush" onclick="toggleRushMode()" title="Basculer l'affichage Rush">
-                <span class="dock-icon">⚡</span><span>RUSH</span>
+
+            <button class="dock-btn" onclick="addExtraTable()" title="Ajouter une table supplémentaire">
+                <span class="dock-icon">➕</span><span>TABLE +</span>
             </button>
-            <button class="admin" onclick="unlockArchiMode();setTimeout(addNewTable,120);closeQuickFolders()">➕ Nouvelle table</button>
+
+            <button id="btn-rush-toggle" class="dock-btn rush" onclick="toggleRushMode()" title="Basculer la vue Rush">
+                <span class="dock-icon">⚡</span><span>VUE RUSH</span>
+            </button>
+
+            <button id="btn-reservations-quick" class="dock-btn reservation-quick"
+                    onclick="openPlanningModal()" title="Voir et placer les réservations">
+                <span class="dock-icon">📅</span>
+                <span>RÉSA</span>
+                <span id="reservation-count-badge" class="reservation-count-badge">0</span>
+            </button>
         </div>
 
         <div class="service-dock-folders">
@@ -933,7 +946,7 @@ header{
                 <button id="btn-plan-today" class="btn-mini gold" style="flex:1; padding: 12px; font-size: 0.9rem;" onclick="renderPlanning('today')">AUJOURD'HUI</button>
                 <button id="btn-plan-tomorrow" class="btn-mini" style="flex:1; padding: 12px; font-size: 0.9rem;" onclick="renderPlanning('tomorrow')">DEMAIN</button>
             </div>
-            <button class="pay-btn" style="width: 100%; border-color: var(--gold); color: var(--gold); margin-bottom: 20px;" onclick="autoAssignToday()">🪄 AUTO-PLACER</button>
+            <button class="pay-btn" style="width: 100%; border-color: var(--gold); color: var(--gold); margin-bottom: 20px;" onclick="smartPlacementAssistant()">🧠 AIDE INTELLIGENTE AU PLACEMENT</button>
             <div id="planning-content" style="flex:1; overflow-y:auto; display:flex; flex-direction:column; gap:12px;"></div>
         </div>
     </div>
@@ -1862,7 +1875,7 @@ async function logout(reason = 'MANUAL') {
                 
                 let assignBtn = '';
                 if(r.date === new Date().toISOString().split('T')[0] && !r.assignedTable) {
-                    if (currentUser && currentUser.role === 'Manager') assignBtn = `<button class="btn-mini gold" style="padding:10px; border-radius: 2px;" onclick="startAssignResa(${r.id})">📍 ASSIGNER</button>`;
+                    if (currentUser && currentUser.role === 'Manager') assignBtn = `<button class="btn-mini gold" style="padding:10px; border-radius: 2px;" onclick="startAssignResa(${r.id})">📍 RÉSERVER / PLACER</button>`;
                     else assignBtn = `<div style="color:var(--text-muted); font-size:0.7rem; font-weight:500; border: 1px solid var(--border); padding: 4px 8px; border-radius: 2px;">🔒 MANAGER</div>`;
                 } else if (r.assignedTable) assignBtn = `<div style="color:var(--text-main); font-weight:600; font-size:0.85rem; letter-spacing: 1px;">📍 TABLE ${r.assignedTable}</div>`;
 
@@ -1981,8 +1994,9 @@ async function logout(reason = 'MANUAL') {
             const antiRushButton = document.createElement('button');
             antiRushButton.type = 'button';
             antiRushButton.className = 'btn-mini';
-            antiRushButton.textContent = '⚡ ANTI-RUSH';
+            antiRushButton.textContent = `🧠 ANTI-RUSH ${Number(currentRushLevel || 0)}/5`;
             antiRushButton.style.cssText = 'background:rgba(239,68,68,.1);border-color:#ef4444;color:#ef4444;margin-left:20px;box-shadow:0 0 10px rgba(239,68,68,.2);';
+            antiRushButton.title = 'Détection Anti-Rush cuisine — niveau actuel';
             antiRushButton.onclick = () => {
                 window.location.href = 'anti-rush.html?tenantID=' + encodeURIComponent(appTenantID || '');
             };
@@ -4644,6 +4658,154 @@ header .nav-btns:empty{
 }
 #folder-outils button{
     min-height:40px !important;
+}
+</style>
+
+
+<script id="ichef-reservation-service-tools">
+(function(){
+
+    window.updateReservationQuickBadge = function(){
+        const badge = document.getElementById('reservation-count-badge');
+        if(!badge || typeof reservationsData === 'undefined') return;
+
+        const today = new Date().toISOString().split('T')[0];
+        const todayReservations = (Array.isArray(reservationsData) ? reservationsData : [])
+            .filter(r => r && r.date === today && r.status !== 'rejected');
+
+        badge.textContent = String(todayReservations.length);
+
+        const btn = document.getElementById('btn-reservations-quick');
+        if(btn){
+            const waiting = todayReservations.filter(r => !r.assignedTable).length;
+            btn.title = `${todayReservations.length} réservation(s) aujourd'hui · ${waiting} à placer`;
+            btn.classList.toggle('has-waiting-reservations', waiting > 0);
+        }
+    };
+
+    window.smartPlacementAssistant = async function(){
+        if (!currentUser || currentUser.role !== 'Manager') {
+            return alert("⛔ Accès Manager requis pour le placement automatique.");
+        }
+
+        const today = new Date().toISOString().split('T')[0];
+        const pending = (Array.isArray(reservationsData) ? reservationsData : [])
+            .filter(r => r && r.date === today && r.status === 'confirmed' && !r.assignedTable);
+
+        if(!pending.length){
+            return alert("✅ Toutes les réservations confirmées d'aujourd'hui sont déjà placées.");
+        }
+
+        const state = await API.getState();
+        const orders = state?.activeOrders || {};
+
+        const suggestions = [];
+        const reservedLabels = new Set();
+
+        for(const resa of pending){
+            const pax = parseInt(resa.couverts || resa.pax || resa.personnes) || 1;
+
+            const candidates = tables
+                .filter(t => {
+                    if(!t || t.isExtra) return false;
+                    if(reservedLabels.has(t.label)) return false;
+
+                    const order = orders[t.label];
+                    const occupied = order &&
+                        (order.status === 'reserved' ||
+                         (Array.isArray(order.items) && order.items.length > 0));
+
+                    return !occupied && (parseInt(t.pax) || 0) >= pax;
+                })
+                .sort((a,b) => {
+                    // Priorité à la table qui gaspille le moins de places.
+                    const wasteA = (parseInt(a.pax)||0) - pax;
+                    const wasteB = (parseInt(b.pax)||0) - pax;
+                    if(wasteA !== wasteB) return wasteA - wasteB;
+
+                    // Ensuite favoriser la salle actuellement affichée.
+                    const aCurrent = a.room === currentRoom ? 0 : 1;
+                    const bCurrent = b.room === currentRoom ? 0 : 1;
+                    return aCurrent - bCurrent;
+                });
+
+            if(candidates.length){
+                const best = candidates[0];
+                reservedLabels.add(best.label);
+                suggestions.push({
+                    reservation: resa,
+                    table: best,
+                    pax
+                });
+            }
+        }
+
+        if(!suggestions.length){
+            return alert("⚠️ Aucune table disponible ne correspond aux réservations en attente.");
+        }
+
+        const preview = suggestions.map(s => {
+            const phone = s.reservation.phone ? ` · ${s.reservation.phone}` : '';
+            return `${s.reservation.time || '??:??'} — ${s.reservation.name || 'Client'}${phone}\n`
+                 + `${s.pax} pers. → ${s.table.label} (${s.table.pax} places, ${s.table.room || 'Salle'})`;
+        }).join('\n\n');
+
+        const ok = confirm(
+            `🧠 AIDE INTELLIGENTE AU PLACEMENT\n\n`
+            + `${preview}\n\n`
+            + `Valider ces propositions ?`
+        );
+
+        if(!ok) return;
+
+        // Réutilise la fonction existante et sûre d'auto-placement.
+        await autoAssignToday();
+        updateReservationQuickBadge();
+    };
+
+    // Le compteur suit les données de réservation chargées par syncData.
+    setInterval(updateReservationQuickBadge, 1200);
+
+    if(document.readyState === 'loading'){
+        document.addEventListener('DOMContentLoaded', updateReservationQuickBadge);
+    } else {
+        updateReservationQuickBadge();
+    }
+})();
+</script>
+
+
+<style id="ichef-reservation-bar-style">
+.reservation-quick{
+    border-color:rgba(197,160,89,.5) !important;
+    color:var(--text-main) !important;
+}
+.reservation-quick.has-waiting-reservations{
+    border-color:var(--gold) !important;
+    color:var(--gold) !important;
+    box-shadow:0 0 10px rgba(197,160,89,.12);
+}
+.reservation-count-badge{
+    min-width:20px;
+    height:20px;
+    padding:0 5px;
+    display:inline-flex;
+    align-items:center;
+    justify-content:center;
+    box-sizing:border-box;
+    border-radius:10px;
+    background:var(--gold);
+    color:#000;
+    font-size:.62rem;
+    font-weight:900;
+    line-height:1;
+}
+@media(max-width:900px){
+    .reservation-count-badge{
+        min-width:18px;
+        height:18px;
+        font-size:.56rem;
+    }
 }
 </style>
 
