@@ -671,29 +671,47 @@ app.post('/api/security/bootstrap', async (req, res) => {
             });
         }
 
-        const csrfToken = crypto.randomBytes(32).toString('hex');
+const screenLimit =
+    await syncTenantScreenLimit(tenant);
 
-        res.json({
-            success: true,
-            authenticated: false,
-            requiresPin: true,
-            csrfToken,
-            tenantID: tenant.tenantID,
-            deviceRegistered:
-                deviceId &&
-                Array.isArray(tenant.registeredDevices)
-                    ? tenant.registeredDevices.includes(deviceId)
-                    : false
-        });
-    } catch (error) {
-        console.error('Erreur bootstrap :', error);
+const registeredDevices =
+    Array.isArray(tenant.registeredDevices)
+        ? tenant.registeredDevices
+        : [];
 
-        res.status(500).json({
-            success: false,
-            error: 'Erreur serveur.'
-        });
-    }
+const csrfToken =
+    crypto.randomBytes(32).toString('hex');
+
+res.json({
+    success: true,
+    authenticated: false,
+    requiresPin: true,
+    csrfToken,
+    tenantID: tenant.tenantID,
+
+    maxScreens: screenLimit,
+    registeredScreens: registeredDevices.length,
+    availableScreens: Math.max(
+        0,
+        screenLimit - registeredDevices.length
+    ),
+
+    deviceRegistered:
+        deviceId
+            ? registeredDevices.includes(deviceId)
+            : false
 });
+
+} catch (error) {
+    console.error('Erreur bootstrap :', error);
+
+    res.status(500).json({
+        success: false,
+        error: 'Erreur serveur.'
+    });
+}
+});
+const Tenant = mongoose.model('Tenant', tenantSchema);
 // ==========================================
 // 🛡️ SÉCURITÉ FISCALE & LÉGALE (NORME ANTI-FRAUDE)
 // ==========================================
