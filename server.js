@@ -599,37 +599,219 @@ app.post('/webhook', async (req, res) => {
     res.json({received: true});
 });
 
-// ==========================================
-// BASE DE DONNÉES : INFRASTRUCTURE MONGODB
-// ==========================================
-const mongoURI = process.env.MONGO_URI || "mongodb+srv://icheflavien_db_user:Tamere58.@cluster0.4w95d7m.mongodb.net/ichef_production?retryWrites=true&w=majority";
-mongoose.connect(mongoURI).then(() => console.log('✅ Base de donnees iCHEF Online')).catch(err => console.error(err.message));
+const mongoURI =
+    process.env.MONGO_URI ||
+    "TON_MONGO_URI";
+
+mongoose.connect(mongoURI)
+    .then(() => console.log('✅ Base de donnees iCHEF Online'))
+    .catch(err => console.error(err.message));
+
+
+// ==========================================================
+// 🏢 TENANT / LICENCE
+// ==========================================================
 
 const tenantSchema = new mongoose.Schema({
-    tenantID: { type: String, required: true, unique: true },
+
+    tenantID: {
+        type: String,
+        required: true,
+        unique: true
+    },
+
     clientName: String,
     email: String,
     phone: String,
-    status: { type: String, enum: ['ACTIF', 'SUSPENDU'], default: 'ACTIF' },
-    plan: { 
-        type: String, 
-        enum: ['CHEF_CUISINE', 'CHEF_PATISSERIE', 'CHEF_BAR', 'ICHEF_OS', 'RENTABILITE', 'BRIGADES', 'BRIGADE', 'BUSINESS', 'ECO', 'PREMIUM', 'CHEF', 'PATISSIER', 'BAR', 'EMPIRE', 'PACK_A'], 
-        default: 'BUSINESS' 
+
+    status: {
+        type: String,
+        enum: ['ACTIF', 'SUSPENDU'],
+        default: 'ACTIF'
     },
-    specialite: { type: String, default: 'cuisine' },
-    pin: { type: String, default: '9999' }, 
-    maxScreens: { type: Number, default: 5 }, 
-    maxStaff: { type: Number, default: 999 },
-    registeredDevices: [String], 
-    config: { stripeCustomerId: String },
-    demoExpiration: { type: Date }
+
+    plan: {
+        type: String,
+
+        enum: [
+            'CHEF_CUISINE',
+            'CHEF_PATISSERIE',
+            'CHEF_BAR',
+            'ICHEF_OS',
+            'RENTABILITE',
+            'BRIGADES',
+            'BRIGADE',
+            'BUSINESS',
+            'ECO',
+            'PREMIUM',
+            'CHEF',
+            'PATISSIER',
+            'BAR',
+            'EMPIRE',
+            'PACK_A'
+        ],
+
+        default: 'BUSINESS'
+    },
+
+    specialite: {
+        type: String,
+        default: 'cuisine'
+    },
+
+    pin: {
+        type: String,
+        default: '9999'
+    },
+
+    maxScreens: {
+        type: Number,
+        default: 5
+    },
+
+    maxStaff: {
+        type: Number,
+        default: 999
+    },
+
+    registeredDevices: {
+        type: [String],
+        default: []
+    },
+
+    config: {
+        stripeCustomerId: String
+    },
+
+    demoExpiration: {
+        type: Date
+    }
 });
+
+
 const Tenant = mongoose.model('Tenant', tenantSchema);
 
-const AppState = mongoose.model('AppState', new mongoose.Schema({
-    tenantID: { type: String, required: true, unique: true },
-    activeOrders: { type: Object, default: {} }
-}, { minimize: false }));
+
+// ==========================================================
+// 🖥️ NOMBRE D'ÉCRANS AUTORISÉS PAR PLAN
+// ==========================================================
+
+function getPlanScreenLimit(plan) {
+
+    const normalizedPlan =
+        String(plan || 'BUSINESS')
+            .trim()
+            .toUpperCase();
+
+
+    // Plans individuels
+    if ([
+        'CHEF_CUISINE',
+        'CHEF_PATISSERIE',
+        'CHEF_BAR',
+        'CHEF',
+        'PATISSIER',
+        'BAR'
+    ].includes(normalizedPlan)) {
+
+        return 1;
+    }
+
+
+    // Pack restaurant standard
+    if ([
+        'BUSINESS',
+        'RENTABILITE',
+        'ECO',
+        'PACK_A',
+        'ICHEF_OS'
+    ].includes(normalizedPlan)) {
+
+        return 5;
+    }
+
+
+    // Gros établissements
+    if ([
+        'EMPIRE',
+        'BRIGADE',
+        'BRIGADES',
+        'PREMIUM'
+    ].includes(normalizedPlan)) {
+
+        return 50;
+    }
+
+
+    // Sécurité par défaut
+    return 5;
+}
+
+
+// ==========================================================
+// 🔄 SYNCHRONISATION DE LA LICENCE
+// ==========================================================
+
+async function syncTenantScreenLimit(tenant) {
+
+    if (!tenant) {
+        return 5;
+    }
+
+
+    const expectedLimit =
+        getPlanScreenLimit(tenant.plan);
+
+
+    const currentLimit =
+        Number(tenant.maxScreens);
+
+
+    if (
+        !Number.isFinite(currentLimit) ||
+        currentLimit !== expectedLimit
+    ) {
+
+        tenant.maxScreens =
+            expectedLimit;
+
+        await tenant.save();
+
+        console.log(
+            `🖥️ Limite écrans mise à jour : ` +
+            `${tenant.tenantID} → ${expectedLimit}`
+        );
+    }
+
+
+    return expectedLimit;
+}
+
+
+// ==========================================================
+// 📦 ÉTAT DU RESTAURANT
+// ==========================================================
+
+const AppState = mongoose.model(
+    'AppState',
+
+    new mongoose.Schema({
+
+        tenantID: {
+            type: String,
+            required: true,
+            unique: true
+        },
+
+        activeOrders: {
+            type: Object,
+            default: {}
+        }
+
+    }, {
+        minimize: false
+    })
+);
 // =============================================================
 // 🛡️ INITIALISATION SÉCURITÉ DU PAD
 // =============================================================
