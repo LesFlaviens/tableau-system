@@ -711,7 +711,6 @@ res.json({
     });
 }
 });
-const Tenant = mongoose.model('Tenant', tenantSchema);
 // ==========================================
 // 🛡️ SÉCURITÉ FISCALE & LÉGALE (NORME ANTI-FRAUDE)
 // ==========================================
