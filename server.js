@@ -21,42 +21,6 @@ const { Server } = require('socket.io');
 const app = express();
 const server = http.createServer(app);
 // ==========================================================
-// 🔑 AUTHENTIFICATION PIN (OUVERTURE DES PORTES)
-// ==========================================================
-app.post('/api/verify-pin', async (req, res) => {
-    try {
-        const { tenantID, pin, deviceId } = req.body;
-        const safeID = cleanString(tenantID);
-        
-        // 1. Chercher le restaurant
-        const tenant = await Tenant.findOne({ tenantID: safeID });
-        if (!tenant) {
-            return res.status(404).json({ success: false, error: "Restaurant introuvable." });
-        }
-        
-        // 2. Vérification du PIN Master (Directeur / Manager)
-        if (tenant.pin === String(pin).trim()) {
-            return res.json({ success: true, role: 'master', safeTenantID: safeID });
-        }
-        
-        // 3. Vérification du PIN du personnel (Serveurs)
-        let state = await AppState.findOne({ tenantID: safeID });
-        let staffList = state?.activeOrders?.STAFF_ACCESS?.data || [];
-        let staffUser = staffList.find(s => String(s.pin).trim() === String(pin).trim());
-        
-        if (staffUser) {
-            return res.json({ success: true, role: 'serveur', safeTenantID: safeID });
-        }
-        
-        // 4. Si aucun PIN ne correspond
-        return res.status(401).json({ success: false, error: "Code PIN incorrect." });
-        
-    } catch (error) {
-        console.error("🚨 Erreur lors de la vérification du PIN :", error);
-        res.status(500).json({ success: false, error: "Erreur interne du serveur." });
-    }
-});
-// ==========================================================
 // 🌐 CONFIGURATION CORS UNIFIÉE (API + WEBSOCKETS)
 // ==========================================================
 const corsOptions = {
@@ -116,9 +80,6 @@ if (twilioAccountSid && twilioAuthToken) {
     console.warn("⚠️ Twilio DÉSACTIVÉ : Les variables d'environnement (SID ou Token) sont manquantes.");
 }
 
-const app = express();
-const server = http.createServer(app); // Serveur HTTP lié à Express
-const io = new Server(server, { cors: { origin: '*' } }); // Serveur Temps Réel
 
 
 // ==========================================================
