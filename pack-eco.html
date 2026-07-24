@@ -1,4 +1,3 @@
-
 <html lang="fr">
 <head>
     <meta charset="UTF-8">
@@ -1238,6 +1237,11 @@ header{
         let currentRoom = rooms[0] || 'Salle Principale';
         let configRoomOldName = null, currentTactileRoomName = "";
         let tables = safeArray('empire_architecture', [ {label:"T1", l:550, t:500, w:80, h:120, shape:"rect", pax: 4, room: "Salle Principale"} ]);
+        if (!Array.isArray(tables) || tables.length === 0) {
+            tables = [
+                {label:"T1", l:550, t:500, w:80, h:120, shape:"rect", pax:4, room: currentRoom || "Salle Principale"}
+            ];
+        }
         let zones = safeArray('empire_zones', []);
         let configZoneId = null;
         let currentTableId_PayMode = 'standard';
@@ -1521,6 +1525,17 @@ async function requestMaintenanceOverride() {
     document.getElementById('user-badge').innerText = `Badge: ${user.name}`;
     document.getElementById('login-screen').style.display = 'none';
     document.querySelectorAll('.admin').forEach(e => e.style.display = user.role === 'Manager' ? 'block' : 'none');
+
+    // Affiche immédiatement le dernier plan connu, même avant la réponse serveur.
+    try {
+        if (!Array.isArray(rooms) || rooms.length === 0) rooms = ['Salle Principale'];
+        if (!currentRoom || !rooms.includes(currentRoom)) currentRoom = rooms[0];
+        renderRooms();
+        renderFloor();
+    } catch (e) {
+        console.warn('Affichage local du plan impossible :', e);
+    }
+
     connectEmpireH24();
     resetInactivityTimer();
 }
@@ -1668,19 +1683,64 @@ async function logout(reason = 'MANUAL') {
                     }
 
                     if (nO['ARCHITECTURE']) {
-                        let archiData = nO['ARCHITECTURE'].data !== undefined ? nO['ARCHITECTURE'].data : nO['ARCHITECTURE'];
-                        if (!isDraggingTable && archiData && archiData.tables) {
-                            let newArchiStr = JSON.stringify(archiData.tables) + JSON.stringify(archiData.zones || []);
-                            let oldArchiStr = JSON.stringify(tables) + JSON.stringify(zones);
-                            if (newArchiStr !== oldArchiStr) {
-                                rooms = archiData.rooms || ['Salle Principale'];
-                                tables = archiData.tables || [];
-                                zones = archiData.zones || [];
-                                if (!rooms.includes(currentRoom)) currentRoom = rooms[0] || 'Salle Principale';
-                                localStorage.setItem('empire_architecture', JSON.stringify(tables));
-                                localStorage.setItem('empire_rooms', JSON.stringify(rooms));
-                                localStorage.setItem('empire_zones', JSON.stringify(zones));
-                                renderRooms(); renderFloor();
+                        const architectureNode = nO['ARCHITECTURE'];
+                        const rawArchitecture =
+                            architectureNode && architectureNode.data !== undefined
+                                ? architectureNode.data
+                                : architectureNode;
+
+                        let serverRooms = null;
+                        let serverTables = null;
+                        let serverZones = null;
+
+                        // Format actuel :
+                        // { rooms: [...], tables: [...], zones: [...] }
+                        if (rawArchitecture && !Array.isArray(rawArchitecture) && typeof rawArchitecture === 'object') {
+                            serverRooms = Array.isArray(rawArchitecture.rooms) ? rawArchitecture.rooms : null;
+                            serverTables = Array.isArray(rawArchitecture.tables) ? rawArchitecture.tables : null;
+                            serverZones = Array.isArray(rawArchitecture.zones) ? rawArchitecture.zones : null;
+                        }
+
+                        // Compatibilité ancien format : ARCHITECTURE.data = [tables...]
+                        if (Array.isArray(rawArchitecture)) {
+                            serverTables = rawArchitecture;
+                        }
+
+                        if (!isDraggingTable) {
+                            const localHasTables = Array.isArray(tables) && tables.length > 0;
+                            const serverHasTables = Array.isArray(serverTables) && serverTables.length > 0;
+
+                            // Ne jamais effacer un plan local valide avec un ARCHITECTURE serveur vide.
+                            if (serverHasTables || !localHasTables) {
+                                if (Array.isArray(serverRooms) && serverRooms.length > 0) {
+                                    rooms = serverRooms;
+                                } else if (!Array.isArray(rooms) || rooms.length === 0) {
+                                    rooms = ['Salle Principale'];
+                                }
+
+                                if (Array.isArray(serverTables)) {
+                                    tables = serverTables;
+                                }
+
+                                if (Array.isArray(serverZones)) {
+                                    zones = serverZones;
+                                }
+
+                                if (!currentRoom || !rooms.includes(currentRoom)) {
+                                    currentRoom = rooms[0] || 'Salle Principale';
+                                }
+
+                                localStorage.setItem('empire_architecture', JSON.stringify(tables || []));
+                                localStorage.setItem('empire_rooms', JSON.stringify(rooms || ['Salle Principale']));
+                                localStorage.setItem('empire_zones', JSON.stringify(zones || []));
+
+                                renderRooms();
+                                renderFloor();
+                            } else {
+                                console.warn(
+                                    'ARCHITECTURE serveur vide : conservation du plan local',
+                                    { localTables: tables.length }
+                                );
                             }
                         }
                     }
@@ -4794,3 +4854,4 @@ header .nav-btns:empty{
 
 </body>
 </html>
+
