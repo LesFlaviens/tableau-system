@@ -703,7 +703,6 @@ function getPlanScreenLimit(plan) {
             .trim()
             .toUpperCase();
 
-
     // Plans individuels
     if ([
         'CHEF_CUISINE',
@@ -717,7 +716,6 @@ function getPlanScreenLimit(plan) {
         return 1;
     }
 
-
     // Pack restaurant standard
     if ([
         'BUSINESS',
@@ -730,7 +728,6 @@ function getPlanScreenLimit(plan) {
         return 5;
     }
 
-
     // Gros établissements
     if ([
         'EMPIRE',
@@ -741,7 +738,6 @@ function getPlanScreenLimit(plan) {
 
         return 50;
     }
-
 
     // Sécurité par défaut
     return 5;
@@ -810,41 +806,131 @@ const AppState = mongoose.model(
         minimize: false
     })
 );
+
+
 // =============================================================
 // 🛡️ INITIALISATION SÉCURITÉ DU PAD
 // =============================================================
-async function syncTenantScreenLimit(tenant) {
 
-    if (!tenant) {
-        return 5;
-    }
+app.post('/api/security/bootstrap', async (req, res) => {
 
-    const basePlanLimit =
-        getPlanScreenLimit(tenant.plan);
+    try {
 
-    const currentLimit =
-        Number(tenant.maxScreens);
+        const tenantID =
+            cleanString(req.body?.tenantID);
 
-    // Garde les écrans supplémentaires déjà achetés
-    const effectiveLimit =
-        Number.isFinite(currentLimit) && currentLimit > 0
-            ? Math.max(currentLimit, basePlanLimit)
-            : basePlanLimit;
+        const deviceId =
+            String(req.body?.deviceId || '').trim();
 
-    if (currentLimit !== effectiveLimit) {
 
-        tenant.maxScreens = effectiveLimit;
+        if (
+            !tenantID ||
+            !/^[a-z0-9_-]{2,80}$/.test(tenantID)
+        ) {
 
-        await tenant.save();
+            return res.status(400).json({
+                success: false,
+                error: 'Identifiant restaurant invalide.'
+            });
+        }
 
-        console.log(
-            `🖥️ Limite écrans mise à jour : ` +
-            `${tenant.tenantID} → ${effectiveLimit}`
+
+        const tenant =
+            await Tenant.findOne({ tenantID });
+
+
+        if (!tenant) {
+
+            return res.status(404).json({
+                success: false,
+                error: 'Établissement inconnu.'
+            });
+        }
+
+
+        if (
+            tenant.demoExpiration &&
+            new Date() >
+                new Date(tenant.demoExpiration)
+        ) {
+
+            return res.status(403).json({
+                success: false,
+                error: 'Démonstration expirée.'
+            });
+        }
+
+
+        if (tenant.status === 'SUSPENDU') {
+
+            return res.status(403).json({
+                success: false,
+                error: 'Licence suspendue.'
+            });
+        }
+
+
+        const screenLimit =
+            await syncTenantScreenLimit(tenant);
+
+
+        const registeredDevices =
+            Array.isArray(tenant.registeredDevices)
+                ? tenant.registeredDevices
+                : [];
+
+
+        const csrfToken =
+            crypto.randomBytes(32)
+                .toString('hex');
+
+
+        return res.json({
+
+            success: true,
+
+            authenticated: false,
+
+            requiresPin: true,
+
+            csrfToken,
+
+            tenantID:
+                tenant.tenantID,
+
+            maxScreens:
+                screenLimit,
+
+            registeredScreens:
+                registeredDevices.length,
+
+            availableScreens:
+                Math.max(
+                    0,
+                    screenLimit -
+                    registeredDevices.length
+                ),
+
+            deviceRegistered:
+                deviceId
+                    ? registeredDevices.includes(deviceId)
+                    : false
+        });
+
+
+    } catch (error) {
+
+        console.error(
+            'Erreur bootstrap :',
+            error
         );
-    }
 
-    return effectiveLimit;
-}
+        return res.status(500).json({
+            success: false,
+            error: 'Erreur serveur.'
+        });
+    }
+});
 // ==========================================
 // 🛡️ SÉCURITÉ FISCALE & LÉGALE (NORME ANTI-FRAUDE)
 // ==========================================
