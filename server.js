@@ -827,7 +827,7 @@ app.post('/api/security/bootstrap', async (req, res) => {
             });
         }
 
-        const tenant = await Tenant.findOne({ tenantID }).lean();
+        const tenant = await Tenant.findOne({ tenantID });
 
         if (!tenant) {
             return res.status(404).json({
