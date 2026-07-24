@@ -2023,7 +2023,75 @@ socket.on("disconnect", () => {
     });
 
 }); // 🔥 FERMETURE DÉFINITIVE DU BLOC DES CONNEXIONS ÉCRANS 🔥
+// ==========================================================
+// 📱 RÉINITIALISATION DES APPAREILS / ÉCRANS ENREGISTRÉS
+// ==========================================================
 
+app.post(
+    ['/api/kill-switch', '/api/admin-reset-devices'],
+    async (req, res) => {
+
+        try {
+
+            const tenantID =
+                cleanString(req.body?.tenantID);
+
+            if (!tenantID) {
+                return res.status(400).json({
+                    success: false,
+                    error: "Identifiant restaurant manquant."
+                });
+            }
+
+            const tenant =
+                await Tenant.findOne({ tenantID });
+
+            if (!tenant) {
+                return res.status(404).json({
+                    success: false,
+                    error: "Établissement inconnu."
+                });
+            }
+
+            // Libère tous les anciens appareils
+            tenant.registeredDevices = [];
+
+            await tenant.save();
+
+            const screenLimit =
+                await syncTenantScreenLimit(tenant);
+
+            return res.json({
+                success: true,
+
+                message:
+                    "Tous les appareils enregistrés ont été réinitialisés.",
+
+                maxScreens:
+                    screenLimit,
+
+                registeredScreens:
+                    0,
+
+                availableScreens:
+                    screenLimit
+            });
+
+        } catch (error) {
+
+            console.error(
+                "Erreur reset appareils :",
+                error
+            );
+
+            return res.status(500).json({
+                success: false,
+                error:
+                    "Erreur serveur lors de la réinitialisation des appareils."
+            });
+        }
+    }
+);
 // ==========================================
 // 🌟 AUTO-GÉNÉRATION DU COMPTE DE DÉMONSTRATION
 // ==========================================
