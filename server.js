@@ -758,33 +758,31 @@ async function syncTenantScreenLimit(tenant) {
         return 5;
     }
 
-
-    const expectedLimit =
+    const basePlanLimit =
         getPlanScreenLimit(tenant.plan);
-
 
     const currentLimit =
         Number(tenant.maxScreens);
 
+    // Garde les écrans supplémentaires déjà achetés
+    const effectiveLimit =
+        Number.isFinite(currentLimit) && currentLimit > 0
+            ? Math.max(currentLimit, basePlanLimit)
+            : basePlanLimit;
 
-    if (
-        !Number.isFinite(currentLimit) ||
-        currentLimit !== expectedLimit
-    ) {
+    if (currentLimit !== effectiveLimit) {
 
-        tenant.maxScreens =
-            expectedLimit;
+        tenant.maxScreens = effectiveLimit;
 
         await tenant.save();
 
         console.log(
             `🖥️ Limite écrans mise à jour : ` +
-            `${tenant.tenantID} → ${expectedLimit}`
+            `${tenant.tenantID} → ${effectiveLimit}`
         );
     }
 
-
-    return expectedLimit;
+    return effectiveLimit;
 }
 
 
