@@ -1411,225 +1411,26 @@ app.get('/api/export-caisse-csv', async (req, res) => {
 // ==========================================
 // API RESTAURANT SYNCHRONISATION
 // ==========================================
-app.post('/api/save-transaction', async (req, res) => {
-    const { tenantID, transaction } = req.body;
-    if (!tenantID || !transaction) return res.status(400).json({ success: false, error: "Données de transaction manquantes." });
-    const safeID = cleanString(tenantID);
-    try {
-        let state = await AppState.findOne({ tenantID: safeID });
-        if (!state) state = new AppState({ tenantID: safeID, activeOrders: {} });
-        if (!state.activeOrders['FINANCIAL_HISTORY']) state.activeOrders['FINANCIAL_HISTORY'] = { data: [] };
-        
-        let history = state.activeOrders['FINANCIAL_HISTORY'].data || [];
-        history.unshift(transaction);
-        state.activeOrders['FINANCIAL_HISTORY'].data = history;
-
-        state.markModified('activeOrders');
-        await state.save();
-
-        await scellerOperation(safeID, 'CREATE', 'TRANSACTION', transaction.id || Date.now().toString(), 'SYSTEM', transaction);
-
-        res.json({ success: true, message: "Ticket comptabilisé." });
-    } catch(e) { res.status(500).json({ success: false, error: "Erreur sauvegarde base de données." }); }
-});
-
-app.get('/api/get-contact', async (req, res) => {
-    try {
-        const tenant = await Tenant.findOne({ tenantID: cleanString(req.query.tenantID) });
-        if (tenant) res.json({ success: true, contact: { email: tenant.email, phone: tenant.phone } });
-        else res.json({ success: false });
-    } catch(e) { res.status(500).json({ success: false }); }
-});
-
-app.post('/api/update-contact', async (req, res) => {
-    try {
-        const { tenantID, masterPin, email, phone } = req.body;
-        const tenant = await Tenant.findOne({ tenantID: cleanString(tenantID) });
-        if (!tenant || tenant.pin !== masterPin) return res.status(403).json({ success: false, error: "Non autorisé." });
-        tenant.email = email; tenant.phone = phone; await tenant.save();
-        res.json({ success: true });
-    } catch(e) { res.status(500).json({ success: false }); }
-});
-
-app.get('/api/check-license', async (req, res) => {
-    try {
-        const tenant = await Tenant.findOne({ tenantID: cleanString(req.query.tenantID) });
-        if (!tenant) return res.status(404).json({ success: false });
-        res.json({ success: true, status: tenant.status, plan: tenant.plan, specialite: tenant.specialite });
-    } catch (e) { res.status(500).json({ success: false }); }
-});
-
-app.post('/api/verify-pin', async (req, res) => {
-
-    console.log("VERIFY PIN =", req.body);
-
-    const { tenantID, pin, deviceId } = req.body;
-
-    try {
-
-        console.log("tenantID reçu :", tenantID);
-
-        const tenant = await Tenant.findOne({
-            tenantID: cleanString(tenantID)
-        });
-
-        console.log("Tenant trouvé :", tenant);
-
-        if (!tenant)
-            return res.status(404).json({
+if (isValid) { 
+    if (deviceId && !tenant.registeredDevices.includes(deviceId)) {
+        if (tenant.registeredDevices.length >= tenant.maxScreens)
+            return res.status(403).json({
                 success: false,
-                error: "Inconnu."
-            });
-        
-        if (tenant.demoExpiration && new Date() > new Date(tenant.demoExpiration)) {
-            return res.status(403).json({ success: false, error: "Démonstration expirée (limite de 24h atteinte)." });
-        }
-        if (tenant.status === 'SUSPENDU') return res.status(403).json({ success: false, error: "Licence suspendue ou en attente d'approbation manuelle." });
-
-        let isValid = (String(tenant.pin).trim() === String(pin).trim());
-        let roleAttribue = 'MASTER';
-
-        if (!isValid) {
-            const state = await AppState.findOne({ tenantID: tenant.tenantID });
-            if (state && state.activeOrders && state.activeOrders['STAFF_ACCESS']) {
-                const staffMember = (state.activeOrders['STAFF_ACCESS'].data || []).find(s => String(s.pin).trim() === String(pin).trim() && s.active === true);
-                if (staffMember) { isValid = true; roleAttribue = staffMember.dept || 'STAFF'; }
-            }
-        }
-
-        if (isValid) { 
-            if (deviceId && !tenant.registeredDevices.includes(deviceId)) {
-                if (tenant.registeredDevices.length >= tenant.maxScreens) return res.status(403).json({ success: false, error: "Limite écrans atteinte." });
-                tenant.registeredDevices.push(deviceId); await tenant.save();
-            }
-            return res.json({ success: true, plan: tenant.plan, specialite: tenant.specialite, role: roleAttribue, safeTenantID: tenant.tenantID }); 
-        }
-        res.status(401).json({ success: false, error: "Code PIN incorrect." });
-    } catch (error) { res.status(500).json({ success: false }); }
-});
-
-app.post(['/api/update-pin', '/api/update-master-pin'], async (req, res) => {
-    try {
-        await Tenant.findOneAndUpdate({ tenantID: cleanString(req.body.tenantID) }, { pin: req.body.newPin, registeredDevices: [] });
-        res.json({ success: true });
-    } catch (error) { res.status(500).json({ success: false }); }
-});
-
-app.get(['/api/check-device', '/api/dashboard-info'], async (req, res) => {
-    try {
-        const tenant = await Tenant.findOne({ tenantID: cleanString(req.query.tenantID) });
-        if (!tenant) return res.status(404).json({ success: false });
-        res.json({ success: true, activeCount: tenant.registeredDevices.length, activeDevices: tenant.registeredDevices.length, maxScreens: tenant.maxScreens });
-    } catch (e) { res.status(500).json({ success: false }); }
-});
-
-app.post(['/api/kill-switch', '/api/admin-reset-devices'], async (req, res) => {
-    try {
-        await Tenant.findOneAndUpdate({ tenantID: cleanString(req.body.tenantID) }, { registeredDevices: [] });
-        res.json({ success: true });
-    } catch (e) { res.status(500).json({ success: false }); }
-});
-
-app.get('/get-current-state', async (req, res) => {
-    try {
-        let tenantID = req.query.tenantID || 'MASTER_STATE';
-        if (tenantID !== 'MASTER_STATE') {
-            tenantID = cleanString(tenantID);
-            const tenant = await Tenant.findOne({ tenantID });
-            
-            if (tenant && tenant.demoExpiration && new Date() > new Date(tenant.demoExpiration)) {
-                return res.status(403).json({ error: "Démonstration expirée (limite de 24h)." });
-            }
-            if (tenant && tenant.status === 'SUSPENDU') return res.status(403).json({ error: "Licence suspendue ou en attente" });
-        }
-        let state = await AppState.findOne({ tenantID });
-        if (!state) state = await AppState.create({ tenantID, activeOrders: {} });
-        
-        // 🔥 CALCUL DYNAMIQUE DES HEURES ACCOMPLIES DU MOIS
-        if (state.activeOrders && state.activeOrders['STAFF_ACCESS'] && state.activeOrders['TIMESHEETS_MASTER']) {
-            const today = new Date();
-            const monthStr = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}`;
-            const daysInMonth = new Date(today.getFullYear(), today.getMonth() + 1, 0).getDate();
-            
-            const staffList = state.activeOrders['STAFF_ACCESS'].data || [];
-            const timesheets = state.activeOrders['TIMESHEETS_MASTER'].data || {};
-            const monthData = timesheets[monthStr] || {};
-
-            let stateModified = false;
-            staffList.forEach(staff => {
-                let totalHoursDone = 0;
-                for (let d = 1; d <= daysInMonth; d++) {
-                    if (monthData[staff.id] && monthData[staff.id][d]) {
-                        totalHoursDone += calculateNet(monthData[staff.id][d]);
-                    }
-                }
-                const formattedHours = parseFloat(totalHoursDone.toFixed(1));
-                if (staff.workedHours !== formattedHours) {
-                    staff.workedHours = formattedHours;
-                    stateModified = true;
-                }
+                error: "Limite écrans atteinte."
             });
 
-            if (stateModified) {
-                state.markModified('activeOrders');
-                await state.save();
-            }
-        }
-        
-        const tenantInfo = await Tenant.findOne({ tenantID });
-        const finalState = state.toObject();
-        if(tenantInfo) finalState.maxStaff = tenantInfo.maxStaff;
-        res.json(finalState);
-    } catch (e) { res.status(500).json({ error: "Sync Error" }); }
-});
-
-// 🚀 FONCTION UPDATE-ORDER SÉCURISÉE (SOFT DELETE & AUDIT TRAIL)
-app.post('/update-order', async (req, res) => {
-    try {
-        let tenantID = req.query.tenantID || 'MASTER_STATE';
-        if (tenantID !== 'MASTER_STATE') tenantID = cleanString(tenantID);
-
-        const { tableId, order, pin } = req.body;
-        const authorPin = pin || 'SYSTEM';
-
-        let actionType = 'UPDATE';
-        let updateQuery;
-
-        if (order === null || order === 'DELETE') {
-            actionType = 'DELETE_SOFT';
-            updateQuery = { 
-                $set: { 
-                    [`activeOrders.${tableId}.isArchived`]: true,
-                    [`activeOrders.${tableId}.status`]: 'ANNULÉ_OU_SUPPRIMÉ'
-                } 
-            };
-        } else {
-            updateQuery = { $set: { [`activeOrders.${tableId}`]: order } };
-        }
-
-        const newState = await AppState.findOneAndUpdate({ tenantID }, updateQuery, { upsert: true, new: true });
-        
-        // Audit Trail Cryptographique
-        if (tenantID !== 'MASTER_STATE' && tableId) {
-            await scellerOperation(
-                tenantID, 
-                actionType, 
-                tableId.includes('STAFF') ? 'RH' : (tableId.includes('SETTING') ? 'REGLAGE' : 'COMMANDE'), 
-                tableId, 
-                authorPin, 
-                order || 'DELETED'
-            );
-        }
-
-        io.to(tenantID).emit('updateState', newState);
-        
-        res.json({ success: true });
-    } catch (e) { 
-        console.error(e);
-        res.status(500).json({ error: "Save Error" }); 
+        tenant.registeredDevices.push(deviceId);
+        await tenant.save();
     }
-});
 
+    return res.json({
+        success: true,
+        plan: tenant.plan,
+        specialite: tenant.specialite,
+        role: roleAttribue,
+        safeTenantID: tenant.tenantID
+    }); 
+}
 
 // ==========================================
 // MASTER CONTROL API (EMPIRE SUPER ADMIN)
