@@ -18,6 +18,42 @@ const twilio = require('twilio'); // 📡 INTÉGRATION TWILIO (SMS/WHATSAPP)
 const http = require('http');
 const { Server } = require('socket.io');
 
+const app = express();
+const server = http.createServer(app);
+
+// ==========================================================
+// 🌐 CONFIGURATION CORS UNIFIÉE (API + WEBSOCKETS)
+// ==========================================================
+const corsOptions = {
+    origin: function (origin, callback) {
+        // Accepte toutes les requêtes (pratique pour l'app PWA, Render, et os.ichef.ch)
+        callback(null, true);
+    },
+    credentials: true,
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+    allowedHeaders: [
+        'Content-Type',
+        'Authorization',
+        'Origin',
+        'Accept',
+        'X-CSRF-Token',
+        'X-iCHEF-Device',
+        'X-iCHEF-Master-Device',
+        'X-iCHEF-Tenant',
+        'Idempotency-Key',
+        'X-Requested-With'
+    ]
+};
+
+// Application du CORS pour les routes classiques (Express / fetch)
+app.use(cors(corsOptions));
+
+// Application du CORS pour le Temps Réel (Socket.io)
+const io = new Server(server, { 
+    cors: corsOptions,
+    transports: ['websocket', 'polling'] // Force la compatibilité avec ton Pad
+});
+
 // ==========================================
 // CONFIGURATION STRIPE iCHEF (Abonnements SaaS & Empreintes)
 // ==========================================
