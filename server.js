@@ -815,84 +815,38 @@ const AppState = mongoose.model(
 // =============================================================
 // 🛡️ INITIALISATION SÉCURITÉ DU PAD
 // =============================================================
-app.post('/api/security/bootstrap', async (req, res) => {
-    try {
-        const tenantID = cleanString(req.body?.tenantID);
-        const deviceId = String(req.body?.deviceId || '').trim();
+async function syncTenantScreenLimit(tenant) {
 
-        if (!tenantID || !/^[a-z0-9_-]{2,80}$/.test(tenantID)) {
-            return res.status(400).json({
-                success: false,
-                error: 'Identifiant restaurant invalide.'
-            });
-        }
+    if (!tenant) {
+        return 5;
+    }
 
-        const tenant = await Tenant.findOne({ tenantID });
+    const basePlanLimit =
+        getPlanScreenLimit(tenant.plan);
 
-        if (!tenant) {
-            return res.status(404).json({
-                success: false,
-                error: 'Établissement inconnu.'
-            });
-        }
+    const currentLimit =
+        Number(tenant.maxScreens);
 
-        if (
-            tenant.demoExpiration &&
-            new Date() > new Date(tenant.demoExpiration)
-        ) {
-            return res.status(403).json({
-                success: false,
-                error: 'Démonstration expirée.'
-            });
-        }
+    // Garde les écrans supplémentaires déjà achetés
+    const effectiveLimit =
+        Number.isFinite(currentLimit) && currentLimit > 0
+            ? Math.max(currentLimit, basePlanLimit)
+            : basePlanLimit;
 
-        if (tenant.status === 'SUSPENDU') {
-            return res.status(403).json({
-                success: false,
-                error: 'Licence suspendue.'
-            });
-        }
+    if (currentLimit !== effectiveLimit) {
 
-const screenLimit =
-    await syncTenantScreenLimit(tenant);
+        tenant.maxScreens = effectiveLimit;
 
-const registeredDevices =
-    Array.isArray(tenant.registeredDevices)
-        ? tenant.registeredDevices
-        : [];
+        await tenant.save();
 
-const csrfToken =
-    crypto.randomBytes(32).toString('hex');
+        console.log(
+            `🖥️ Limite écrans mise à jour : ` +
+            `${tenant.tenantID} → ${effectiveLimit}`
+        );
+    }
 
-res.json({
-    success: true,
-    authenticated: false,
-    requiresPin: true,
-    csrfToken,
-    tenantID: tenant.tenantID,
-
-    maxScreens: screenLimit,
-    registeredScreens: registeredDevices.length,
-    availableScreens: Math.max(
-        0,
-        screenLimit - registeredDevices.length
-    ),
-
-    deviceRegistered:
-        deviceId
-            ? registeredDevices.includes(deviceId)
-            : false
-});
-
-} catch (error) {
-    console.error('Erreur bootstrap :', error);
-
-    res.status(500).json({
-        success: false,
-        error: 'Erreur serveur.'
-    });
+    return effectiveLimit;
 }
-});
 // ==========================================
 // 🛡️ SÉCURITÉ FISCALE & LÉGALE (NORME ANTI-FRAUDE)
 // ==========================================
