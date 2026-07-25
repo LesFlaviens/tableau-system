@@ -896,67 +896,78 @@
             if(syncInterval) clearInterval(syncInterval);
         }
 
-        // SYNCHRO H24
-        let socket = null;
-        function connectEmpireH24() { 
-            const updateClock = () => { const c = document.getElementById('empire-clock'); if(c) c.innerText = new Date().toLocaleTimeString('fr-FR', {hour: '2-digit', minute: '2-digit'}); };
-            updateClock(); 
-            if (clockInterval) clearInterval(clockInterval);
-            clockInterval = setInterval(updateClock, 1000); 
+        // =========================================================================
+// 🔄 MOTEUR DE SYNCHRONISATION TEMPS RÉEL (À remplacer dans ton vrai fichier)
+// =========================================================================
+let socket = null;
 
-            if (socket) { try { socket.disconnect(); } catch(e) {} }
-            socket = io(APP_SERVER_URL, { transports:['websocket','polling'] });
+function connectEmpireH24() { 
+    // 1. Horloge
+    const updateClock = () => { 
+        const c = document.getElementById('empire-clock'); 
+        if(c) c.innerText = new Date().toLocaleTimeString('fr-FR', {hour: '2-digit', minute: '2-digit'}); 
+    };
+    updateClock(); 
+    if (clockInterval) clearInterval(clockInterval);
+    clockInterval = setInterval(updateClock, 1000); 
+
+    // 2. Initialisation WebSockets
+    if (socket) { try { socket.disconnect(); } catch(e) {} }
+    socket = io(APP_SERVER_URL, { transports:['websocket','polling'] });
+    
+    socket.on('connect', () => { 
+        console.log("✅ Pad connecté au réseau temps réel !");
+        socket.emit('joinTenant', appTenantID); 
+    });
+
+    // 3. Réception des données du serveur en temps réel
+    socket.on('updateState', (state) => {
+        if (state && state.activeOrders) {
+            activeOrders = state.activeOrders;
             
-            socket.on('connect', () => { socket.emit('joinTenant', appTenantID); });
+            // Maj Architecture
+            if (activeOrders['ARCHITECTURE']?.data) {
+                let archi = activeOrders['ARCHITECTURE'].data;
+                rooms = archi.rooms || ['Salle Principale'];
+                tables = archi.tables || []; 
+                zones = archi.zones || [];
+                renderRooms();
+            }
+            
+            // Maj Menus
+            if(activeOrders['MENU_MASTER']?.data) menuCuisine = activeOrders['MENU_MASTER'].data;
+            if(activeOrders['MENU_MASTER_BAR']?.data) menuBar = activeOrders['MENU_MASTER_BAR'].data;
+            unifiedMenu = { ...menuCuisine, ...menuBar };
+            
+            // Maj Réservations
+            if(activeOrders['RESERVATIONS_MASTER']?.data) reservationsData = activeOrders['RESERVATIONS_MASTER'].data;
+            if(typeof updateReservationQuickBadge === 'function') updateReservationQuickBadge();
 
-            socket.on('updateState', (state) => {
-                if (state && state.activeOrders) {
-                    activeOrders = state.activeOrders;
-                    if (activeOrders['ARCHITECTURE']?.data) {
-                        let archi = activeOrders['ARCHITECTURE'].data;
-                        rooms = archi.rooms || ['Salle Principale'];
-                        tables = archi.tables || []; 
-                        zones = archi.zones || [];
-                        renderRooms();
+            // Maj Plan de salle (si on est pas en train de bouger une table)
+            if (!isDraggingTable && !currentTableId) renderFloor();
+            
+            // Maj Ticket ouvert (si le serveur/cuisine a modifié un plat en direct)
+            if (currentTableId && activeOrders[currentTableId]) {
+                let serverOrder = activeOrders[currentTableId];
+                if (serverOrder && serverOrder.items) {
+                    let serverHash = JSON.stringify(serverOrder.items);
+                    let localHash = JSON.stringify(currentTicket);
+                    if (serverHash !== localHash) {
+                        currentTicket = JSON.parse(serverHash);
+                        renderTicket();
                     }
-                    if(activeOrders['MENU_MASTER']?.data) menuCuisine = activeOrders['MENU_MASTER'].data;
-                    if(activeOrders['MENU_MASTER_BAR']?.data) menuBar = activeOrders['MENU_MASTER_BAR'].data;
-                    unifiedMenu = { ...menuCuisine, ...menuBar };
-                    if(activeOrders['RESERVATIONS_MASTER']?.data) reservationsData = activeOrders['RESERVATIONS_MASTER'].data;
-                    updateReservationQuickBadge();
-
-                    if (!isDraggingTable && !currentTableId) renderFloor();
                 }
-            });
-
-            if (syncInterval) clearInterval(syncInterval);
-            if (typeof syncData === 'function') { syncData(); syncInterval = setInterval(syncData, 4000); }
+            }
         }
+    });
 
-        async function syncData() {
-            if (isArchiMode) return; 
-            try {
-                const state = await API.getState();
-                if (state && state.activeOrders) {
-                    activeOrders = state.activeOrders;
-                    if (activeOrders['SETTINGS_MASTER']?.data) { window.systemSettings = activeOrders['SETTINGS_MASTER'].data; }
-                    if (activeOrders['ARCHITECTURE']?.data) {
-                        let archi = activeOrders['ARCHITECTURE'].data;
-                        rooms = archi.rooms || ['Salle Principale'];
-                        tables = archi.tables || []; zones = archi.zones || [];
-                        renderRooms();
-                    }
-                    if(activeOrders['MENU_MASTER']?.data) menuCuisine = activeOrders['MENU_MASTER'].data;
-                    if(activeOrders['MENU_MASTER_BAR']?.data) menuBar = activeOrders['MENU_MASTER_BAR'].data;
-                    unifiedMenu = { ...menuCuisine, ...menuBar };
-                    if(activeOrders['RESERVATIONS_MASTER']?.data) reservationsData = activeOrders['RESERVATIONS_MASTER'].data;
-                    updateReservationQuickBadge();
-                    
-                    if(!isDraggingTable && !currentTableId) renderFloor();
-                }
-            } catch(e) { console.error("Sync error", e); }
-        }
-
+    // 4. Polling de secours
+    if (syncInterval) clearInterval(syncInterval);
+    if (typeof syncData === 'function') { 
+        syncData(); 
+        syncInterval = setInterval(syncData, 4000); 
+    }
+}
         // ROOMS & FLOOR
         function renderRooms() {
             const container = document.getElementById('room-tabs-container');
