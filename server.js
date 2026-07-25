@@ -1984,6 +1984,46 @@ socket.on("disconnect", () => {
     });
 
 }); // 🔥 FERMETURE DÉFINITIVE DU BLOC DES CONNEXIONS ÉCRANS 🔥
+// =========================================================================
+// 🔄 PONT DE SYNCHRONISATION (COMMANDES & ÉTAT DES TABLES)
+// =========================================================================
+app.get('/get-current-state', async (req, res) => {
+    try {
+        const tenantID = cleanString(req.query.tenantID);
+        const state = await AppState.findOne({ tenantID });
+        res.json(state || { activeOrders: {} });
+    } catch(e) { 
+        console.error("Erreur /get-current-state:", e);
+        res.status(500).send('Error'); 
+    }
+});
+
+app.post('/update-order', async (req, res) => {
+    try {
+        const tenantID = cleanString(req.query.tenantID);
+        const { tableId, order } = req.body;
+        
+        let updateQuery = {};
+        if (order === null) {
+            updateQuery = { $unset: { [`activeOrders.${tableId}`]: "" } };
+        } else {
+            updateQuery = { $set: { [`activeOrders.${tableId}`]: order } };
+        }
+
+        const newState = await AppState.findOneAndUpdate(
+            { tenantID }, 
+            updateQuery, 
+            { upsert: true, new: true }
+        );
+        
+        // Diffuse le changement en temps réel au Pad, à la Cuisine et à la Caisse !
+        io.to(tenantID).emit("updateState", newState);
+        res.json({ success: true });
+    } catch(e) { 
+        console.error("Erreur /update-order:", e);
+        res.status(500).json({ success: false }); 
+    }
+});
 // ==========================================================
 // 📱 RÉINITIALISATION DES APPAREILS / ÉCRANS ENREGISTRÉS
 // ==========================================================
@@ -2052,7 +2092,8 @@ app.post(
             });
         }
     }
-);
+
+
 // ==========================================
 // 🌟 AUTO-GÉNÉRATION DU COMPTE DE DÉMONSTRATION
 // ==========================================
