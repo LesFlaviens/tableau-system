@@ -173,6 +173,7 @@
             <div class="topbar-left">
                 <h1 class="logo">iCHEF.</h1>
                 <span class="badge">Pass Production</span>
+<span id="connection-badge" class="badge" style="border-color:#fbbf24;color:#fbbf24;">● Connexion...</span>
                 <button class="filter-btn" style="padding:4px 8px;font-size:.65rem;" onclick="window.location.href='chef.html?tenantID=' + tenantID">🔙 Labo</button>
                 <button class="library-btn" type="button" onclick="openRecipeLibrary()">📚 Cuisine & Pâtisserie</button>
             </div>
@@ -450,84 +451,226 @@
             let html = '';
             let hasTickets = false;
 
-            let ordersArray = Object.keys(activeOrdersData)
-                .filter(k => !k.includes('MASTER') && !k.includes('ARCHIVE') && !k.startsWith('STAFF_'))
-                .map(k => ({ id: k, ...activeOrdersData[k] }))
-                .filter(o => o && Array.isArray(o.items) && (o.status === 'NOUVELLE COMMANDE' || o.status === 'EN PRÉPARATION' || o.status === 'EN ATTENTE (TIME-SHIFT)'))
-                .sort((a, b) => Number(a.time || 0) - Number(b.time || 0));
+            const allowedStatuses = new Set([
+                'PENDING',
+                'OPEN',
+                'NOUVELLE COMMANDE',
+                'EN PRÉPARATION',
+                'EN PREPARATION',
+                'EN ATTENTE (TIME-SHIFT)',
+                'EN ATTENTE',
+                'PRÊT',
+                'PRET'
+            ]);
 
-            ordersArray.forEach(order => {
-                let relevantItems = order.items.filter(item => {
-                    if(currentStation === 'all') return true;
-                    if(!item.dest && !item.station) return true;
-                    return (String(item.dest || '').toLowerCase() === currentStation || String(item.station || '').toLowerCase() === currentStation);
+            const ordersArray = Object.keys(activeOrdersData)
+                .filter(k => !isSystemKey(k))
+                .map(k => ({ id: k, ...activeOrdersData[k] }))
+                .filter(o => {
+                    if (!o || !Array.isArray(o.items) || o.items.length === 0) return false;
+
+                    const status = String(o.status || 'pending').trim().toUpperCase();
+
+                    // Compatibilité Pad serveur :
+                    // executeSaveTableState enregistre actuellement "pending".
+                    return allowedStatuses.has(status) ||
+                           o.items.some(item => item && item.isSent === true);
+                })
+                .sort((a, b) => {
+                    const ta = Number(a.createdAt || a.updatedAt || a.items?.[0]?.itemId || 0);
+                    const tb = Number(b.createdAt || b.updatedAt || b.items?.[0]?.itemId || 0);
+                    return ta - tb;
                 });
 
-                if (relevantItems.length === 0) return;
+            ordersArray.forEach(order => {
+
+                let relevantItems = order.items.filter(item => {
+                    if (!item) return false;
+
+                    // Les articles non envoyés depuis le Pad ne doivent pas entrer en production.
+                    if (item.isSent === false) return false;
+
+                    if (currentStation !== 'all') {
+                        const dest = String(item.dest || item.station || '').toLowerCase();
+
+                        // "cuisine" reste visible sur tous les postes tant qu'aucun poste précis n'est défini.
+                        if (
+                            dest &&
+                            dest !== 'cuisine' &&
+                            dest !== currentStation
+                        ) {
+                            return false;
+                        }
+                    }
+
+                    return true;
+                });
+
+                if (!relevantItems.length) return;
+
                 hasTickets = true;
 
-                let isTimeShifted = order.timeShifted && Number(order.releaseTime) > Date.now();
-                let ticketClass = "ticket";
-                let timeDisplay = formatTimeDiff(order.time);
-                let timeClass = "t-time";
+                const isTimeShifted =
+                    order.timeShifted &&
+                    Number(order.releaseTime) > Date.now();
+
+                let ticketClass = 'ticket';
+                let firstTimestamp =
+                    order.createdAt ||
+                    order.updatedAt ||
+                    relevantItems.find(i => Number(i.itemId) > 100000000000)?.itemId ||
+                    Date.now();
+
+                let timeDisplay = formatTimeDiff(firstTimestamp);
+                let timeClass = 't-time';
 
                 if (isTimeShifted) {
-                    ticketClass += " timeshift";
-                    let minLeft = Math.ceil((Number(order.releaseTime) - Date.now()) / 60000);
+                    ticketClass += ' timeshift';
+                    const minLeft = Math.ceil(
+                        (Number(order.releaseTime) - Date.now()) / 60000
+                    );
                     timeDisplay = `⏳ En attente (${minLeft}m)`;
                 } else {
-                    let diffMinutes = Math.floor((Date.now() - Number(order.time || Date.now())) / 60000);
+                    const diffMinutes =
+                        Math.floor((Date.now() - Number(firstTimestamp)) / 60000);
+
                     if (diffMinutes >= 15) {
-                        ticketClass += " urgent";
-                        timeClass += " late";
+                        ticketClass += ' urgent';
+                        timeClass += ' late';
                     }
                 }
 
-                let itemsHtml = relevantItems.map((item) => {
-                    let isDone = item.done === true;
-                    let globalIdx = order.items.indexOf(item);
+                let itemsHtml = relevantItems.map(item => {
+                    const globalIdx = order.items.indexOf(item);
+                    const isDone = item.done === true;
+                    const sequenceStatus =
+                        String(item.sequenceStatus || '').toUpperCase();
+
+                    const isWaiting =
+                        sequenceStatus === 'WAITING' ||
+                        sequenceStatus === 'DRAFT';
+
+                    const isProduction =
+                        sequenceStatus === 'PRODUCTION' ||
+                        (!sequenceStatus && item.isSent === true && !isDone);
+
+                    const sequence =
+                        Number(item.sequence || 0);
+
+                    let stateBadge = '';
+
+                    if (isWaiting) {
+                        stateBadge =
+                            `<div class="t-station" style="color:#fbbf24;border-color:rgba(251,191,36,.45)">⏸ ATTENTE${sequence ? ' S'+sequence : ''}</div>`;
+                    } else if (isDone || sequenceStatus === 'READY') {
+                        stateBadge =
+                            `<div class="t-station" style="color:#10b981;border-color:rgba(16,185,129,.45)">🔔 PRÊT${sequence ? ' S'+sequence : ''}</div>`;
+                    } else if (isProduction) {
+                        stateBadge =
+                            `<div class="t-station" style="color:#f97316;border-color:rgba(249,115,22,.45)">🔥 PROD${sequence ? ' S'+sequence : ''}</div>`;
+                    }
+
+                    const modifiers = [];
+                    if (item.cooking) modifiers.push(`🥩 ${escapeHtml(item.cooking)}`);
+
+                    if (item.modifiers?.add?.length) {
+                        modifiers.push(
+                            `➕ ${item.modifiers.add.map(escapeHtml).join(', ')}`
+                        );
+                    }
+
+                    if (item.modifiers?.remove?.length) {
+                        modifiers.push(
+                            `➖ ${item.modifiers.remove.map(escapeHtml).join(', ')}`
+                        );
+                    }
+
+                    if (item.obs) {
+                        const cleanObs = String(item.obs).trim();
+                        if (cleanObs) modifiers.push(escapeHtml(cleanObs));
+                    }
+
+                    const modifierHtml = modifiers.length
+                        ? `<div style="margin-top:5px;color:#fbbf24;font-size:.68rem;font-weight:800;line-height:1.4">${modifiers.join('<br>')}</div>`
+                        : '';
 
                     return `
-                    <div class="t-item ${isDone ? 'done' : ''}" onclick="toggleItemDone('${order.id}', ${globalIdx})">
+                    <div class="t-item ${isDone ? 'done' : ''}"
+                         style="${isWaiting ? 'opacity:.5;cursor:not-allowed;' : ''}"
+                         onclick="${isWaiting ? '' : `toggleItemDone('${order.id}', ${globalIdx})`}">
                         <div class="t-qty">${item.qty || 1}</div>
-                        <div class="t-name">${escapeHtml(item.name || item.n || 'Article')}</div>
-                        <button class="recipe-btn" type="button" title="Voir la recette" onclick="event.stopPropagation(); openRecipeByName(${JSON.stringify(item.name || item.n || '')})">📖</button>
-                        ${item.station && currentStation === 'all' ? `<div class="t-station">${escapeHtml(String(item.station).substring(0,3))}</div>` : ''}
+
+                        <div class="t-name">
+                            ${escapeHtml(item.name || item.n || 'Article')}
+                            ${modifierHtml}
+                        </div>
+
+                        ${stateBadge}
+
+                        <button class="recipe-btn"
+                                type="button"
+                                title="Voir la recette"
+                                onclick="event.stopPropagation(); openRecipeByName(${JSON.stringify(item.name || item.n || '')})">
+                            📖
+                        </button>
                     </div>`;
                 }).join('');
 
-                let allDone = relevantItems.every(i => i.done === true);
+                const productionItems = relevantItems.filter(item => {
+                    const s = String(item.sequenceStatus || '').toUpperCase();
+                    return s !== 'WAITING' && s !== 'DRAFT';
+                });
+
+                const allCurrentDone =
+                    productionItems.length > 0 &&
+                    productionItems.every(i => i.done === true);
+
                 let btnHtml = '';
 
                 if (isTimeShifted) {
-                    btnHtml = `<button class="btn-ready waiting" disabled>EN ATTENTE...</button>`;
-                } else if (allDone) {
-                    btnHtml = `<button class="btn-ready" onclick="markOrderReady('${order.id}')">🛎️ BOUCLER LE TICKET</button>`;
+                    btnHtml =
+                        `<button class="btn-ready waiting" disabled>EN ATTENTE...</button>`;
+                } else if (allCurrentDone) {
+                    btnHtml =
+                        `<button class="btn-ready" onclick="markOrderReady('${order.id}')">🛎️ PLATS PRÊTS AU PASS</button>`;
                 } else {
-                    btnHtml = `<button class="btn-ready" style="background:rgba(255,255,255,.1);color:var(--text-muted);" disabled>EN PRÉPARATION</button>`;
+                    btnHtml =
+                        `<button class="btn-ready" style="background:rgba(255,255,255,.1);color:var(--text-muted);" disabled>EN PRÉPARATION</button>`;
                 }
 
                 const tableLabel = String(order.table || order.id || '');
+
                 html += `
                 <div class="${ticketClass}">
                     <div class="t-header">
                         <div>
-                            <div class="t-table">${tableLabel.includes('WEB') ? '📱 Web ' + escapeHtml(tableLabel.replace('WEB_', '#')) : 'Table ' + escapeHtml(tableLabel)}</div>
-                            <div class="t-meta">${escapeHtml(order.typePaiement || 'Sur place')} • ${escapeHtml(order.couverts || order.pax || 2)} Pax</div>
+                            <div class="t-table">
+                                ${tableLabel.includes('WEB')
+                                    ? '📱 Web ' + escapeHtml(tableLabel.replace('WEB_', '#'))
+                                    : 'Table ' + escapeHtml(tableLabel)}
+                            </div>
+
+                            <div class="t-meta">
+                                ${escapeHtml(order.typePaiement || 'Sur place')}
+                                •
+                                ${escapeHtml(order.couverts || order.pax || 2)} Pax
+                            </div>
                         </div>
+
                         <div class="${timeClass}">${timeDisplay}</div>
                     </div>
+
                     <div class="t-body">${itemsHtml}</div>
                     <div class="t-footer">${btnHtml}</div>
                 </div>`;
             });
 
-            if(!hasTickets) {
+            if (!hasTickets) {
                 board.innerHTML = `
                 <div class="empty-state">
                     <div>👨‍🍳</div>
                     <h3>Cuisine Prête</h3>
-                    <p>Poste ${currentStation === 'all' ? 'complet' : currentStation} en attente...</p>
+                    <p>Connecté au restaurant — en attente des commandes envoyées depuis le Pad.</p>
                 </div>`;
             } else {
                 board.innerHTML = html;
@@ -548,9 +691,11 @@
 
             if (order.items[itemIndex].done) {
                 order.items[itemIndex].status = 'PRET_AU_PASS';
+                order.items[itemIndex].sequenceStatus = 'READY';
                 order.items[itemIndex].readyAt = Date.now();
             } else {
                 order.items[itemIndex].status = 'EN_PREPARATION';
+                order.items[itemIndex].sequenceStatus = 'PRODUCTION';
                 delete order.items[itemIndex].readyAt;
             }
 
@@ -568,22 +713,58 @@
         }
 
         async function markOrderReady(orderId) {
-            if(!activeOrdersData[orderId]) return;
-            let order = activeOrdersData[orderId];
+            if (!activeOrdersData[orderId]) return;
 
-            order.status = 'PRÊT';
+            const order = activeOrdersData[orderId];
+
+            // Marque uniquement la séquence actuellement produite comme prête.
+            order.items.forEach(item => {
+                const seqState = String(item.sequenceStatus || '').toUpperCase();
+
+                if (
+                    item.isSent === true &&
+                    seqState !== 'WAITING' &&
+                    seqState !== 'DRAFT' &&
+                    item.done === true
+                ) {
+                    item.status = 'PRET_AU_PASS';
+                    item.sequenceStatus = 'READY';
+                    item.readyAt = item.readyAt || Date.now();
+                }
+            });
+
+            const stillWaiting = order.items.some(item => {
+                const s = String(item.sequenceStatus || '').toUpperCase();
+                return s === 'WAITING' || s === 'DRAFT';
+            });
+
+            order.status = stillWaiting
+                ? 'EN PRÉPARATION'
+                : 'PRÊT';
+
             order.readyAt = Date.now();
 
             renderBoard();
 
             try {
-                await fetch(`${SERVER_URL}/update-order?tenantID=${tenantID}`, {
-                    method:'POST',
-                    headers:{'Content-Type':'application/json'},
-                    body:JSON.stringify({ tableId:orderId, order })
-                });
+                const r = await fetch(
+                    `${SERVER_URL}/update-order?tenantID=${encodeURIComponent(tenantID)}`,
+                    {
+                        method: 'POST',
+                        headers: {'Content-Type':'application/json'},
+                        body: JSON.stringify({
+                            tableId: orderId,
+                            order
+                        })
+                    }
+                );
+
+                if (!r.ok) {
+                    throw new Error(`HTTP ${r.status}`);
+                }
+
             } catch (e) {
-                console.error("Erreur réseau");
+                console.error('Erreur synchronisation Pass → Pad :', e);
             }
         }
 
@@ -787,9 +968,39 @@
             renderBoard();
         }
 
-        const socket = io(SERVER_URL, { transports:['websocket','polling'], reconnection:true });
+        const socket = io(SERVER_URL, {
+            transports:['websocket','polling'],
+            reconnection:true,
+            reconnectionAttempts:Infinity,
+            reconnectionDelay:1000
+        });
 
-        socket.on('connect', () => socket.emit('joinTenant', tenantID));
+        function setConnectionBadge(ok, label) {
+            const badge = document.getElementById('connection-badge');
+            if (!badge) return;
+
+            badge.textContent = ok
+                ? `● ${label || 'Connecté'}`
+                : `● ${label || 'Déconnecté'}`;
+
+            badge.style.borderColor = ok ? '#10b981' : '#ef4444';
+            badge.style.color = ok ? '#10b981' : '#ef4444';
+        }
+
+        socket.on('connect', () => {
+            socket.emit('joinTenant', tenantID);
+            setConnectionBadge(true, 'Connecté');
+            fetchInitialState();
+        });
+
+        socket.on('disconnect', () => {
+            setConnectionBadge(false, 'Déconnecté');
+        });
+
+        socket.on('connect_error', (err) => {
+            console.error('Connexion Socket.IO Production :', err);
+            setConnectionBadge(false, 'Erreur réseau');
+        });
 
         socket.on('updateState', (state) => {
             if (!state || !state.activeOrders) return;
@@ -811,10 +1022,24 @@
 
         async function fetchInitialState() {
             try {
-                let r = await fetch(`${SERVER_URL}/get-current-state?tenantID=${tenantID}&_t=${Date.now()}`, { cache:'no-store' });
-                let state = await r.json();
+                const r = await fetch(
+                    `${SERVER_URL}/get-current-state?tenantID=${encodeURIComponent(tenantID)}&_t=${Date.now()}`,
+                    { cache:'no-store' }
+                );
+
+                if (!r.ok) {
+                    throw new Error(`HTTP ${r.status}`);
+                }
+
+                const state = await r.json();
+
                 applyState(state);
-            } catch (e) {}
+                setConnectionBadge(true, 'Synchronisé');
+
+            } catch (e) {
+                console.error('Chargement état Production impossible :', e);
+                setConnectionBadge(false, 'Sync impossible');
+            }
         }
 
         setInterval(() => {
