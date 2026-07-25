@@ -3967,6 +3967,74 @@ function updateAntiRushServerPanel() {
             renderTicket();
         }
 
+        
+        // =========================================================
+        // 🍽️ SERVICE PAR SÉQUENCES / RÉCLAME
+        // =========================================================
+        function getItemSequence(item) {
+            if (Number(item?.sequence) > 0) return Number(item.sequence);
+            const c=Number(item?.course);
+            if(c===1)return 1;if(c===2)return 2;if(c===3)return 3;
+            return 0;
+        }
+        function getSequenceMap() {
+            const map=new Map();
+            currentTicket.forEach((item,idx)=>{
+                const s=getItemSequence(item);
+                if(s<=0)return;
+                if(!map.has(s))map.set(s,[]);
+                map.get(s).push({item,idx});
+            });
+            return new Map([...map.entries()].sort((a,b)=>a[0]-b[0]));
+        }
+        function getSequenceState(entries) {
+            const items=(entries||[]).map(e=>e.item||e);
+            if(items.length&&items.every(i=>i.served))return 'SERVED';
+            if(items.length&&items.every(i=>i.done))return 'READY';
+            if(items.some(i=>i.sequenceStatus==='PRODUCTION'))return 'PRODUCTION';
+            if(items.some(i=>i.isSent))return 'WAITING';
+            return 'DRAFT';
+        }
+        function canRequestSequence(seq,map=getSequenceMap()) {
+            const keys=[...map.keys()];
+            const pos=keys.indexOf(Number(seq));
+            if(pos<=0)return true;
+            return getSequenceState(map.get(keys[pos-1]))==='SERVED';
+        }
+        async function requestSequence(seq) {
+            const map=getSequenceMap(), entries=map.get(Number(seq));
+            if(!entries?.length)return;
+            if(!canRequestSequence(Number(seq),map)){
+                alert('⏸️ Servez la séquence précédente avant de réclamer la suite.');
+                return;
+            }
+            entries.forEach(({item})=>{
+                item.isSent=true;item.done=false;item.served=false;
+                item.sequenceStatus='PRODUCTION';item.requestedAt=Date.now();
+            });
+            renderTicket();
+            try{
+                await executeSaveTableState(false,true);
+                if(typeof showToast==='function')showToast(`🔥 Séquence ${seq} réclamée`);
+            }catch(e){console.error(e);}
+        }
+        function updateSequenceServicePanel() {
+            const panel=document.getElementById('sequence-service-panel');
+            if(!panel)return;
+            const map=getSequenceMap();
+            if(!map.size){panel.style.display='none';panel.innerHTML='';return;}
+            panel.style.display='block';
+            let html='<div style="padding:10px;color:var(--gold);font-weight:900">🍽️ SERVICE DU MENU</div>';
+            for(const [seq,entries] of map){
+                const state=getSequenceState(entries), allowed=canRequestSequence(seq,map);
+                let label=state==='PRODUCTION'?'🔥 EN PRODUCTION':state==='READY'?'🔔 PRÊT':state==='SERVED'?'✅ SERVI':'⏸ EN ATTENTE';
+                let btn=(state==='WAITING'||state==='DRAFT')
+                    ? `<button onclick="requestSequence(${seq})" ${allowed?'':'disabled'} style="padding:7px 10px">▶ RÉCLAMER</button>`:'';
+                html+=`<div style="display:flex;justify-content:space-between;align-items:center;padding:9px;border-top:1px solid #333"><span><b>S${seq}</b> ${label}</span>${btn}</div>`;
+            }
+            panel.innerHTML=html;
+        }
+
         function renderTicket() {
             let list = document.getElementById('ticket-list');
             let total = 0; let totalHT = 0; let tvaTotals = { '5.5': 0, '10': 0, '20': 0, '0': 0 };
