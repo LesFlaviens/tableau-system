@@ -691,39 +691,74 @@
         if (!appTenantID) window.location.replace('connexionpartenaire.html');
         const APP_SERVER_URL = (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1") ? "http://localhost:10000" : "https://tableau-system.onrender.com";
 // ==========================================
-// GESTION DU CLAVIER (TACTILE ET PHYSIQUE)
+// 🎹 GESTION DU CLAVIER (TACTILE ET PHYSIQUE)
 // ==========================================
 function appendPin(n) { 
-    if(currentPin.length < 12) currentPin += String(n); 
+    if (typeof currentPin === 'undefined') currentPin = '';
+    if (currentPin.length < 12) currentPin += String(n); 
+    
+    // Affichage direct des points jaunes
     const display = document.getElementById('pin-display');
     if (display) display.innerText = '•'.repeat(currentPin.length); 
-    resetInactivityTimer(); 
+    
+    // Effacer les anciens messages d'erreur lors de la saisie
+    const msgBox = document.getElementById('error-msg');
+    if (msgBox) msgBox.style.display = 'none';
+
+    if (typeof resetInactivityTimer === 'function') resetInactivityTimer(); 
 }
 
 function clearPin() { 
     currentPin = ''; 
     const display = document.getElementById('pin-display');
     if (display) display.innerText = ''; 
+    
+    const msgBox = document.getElementById('error-msg');
+    if (msgBox) msgBox.style.display = 'none';
 }
 
+// Activer le clavier physique de l'ordinateur
+document.addEventListener('keydown', function(event) {
+    const loginScreen = document.getElementById('login-screen');
+    
+    // On écoute le clavier uniquement si l'écran de connexion est visible
+    if (loginScreen && window.getComputedStyle(loginScreen).display !== 'none') {
+        if (event.key >= '0' && event.key <= '9') {
+            appendPin(event.key);
+        } else if (event.key === 'Backspace' || event.key === 'Delete' || event.key.toLowerCase() === 'c') {
+            event.preventDefault();
+            clearPin();
+        } else if (event.key === 'Enter') {
+            event.preventDefault();
+            if (typeof submitPin === 'function') {
+                submitPin().catch(err => console.error("Erreur submitPin:", err));
+            }
+        }
+    }
+});
+
 // ==========================================
-// VALIDATION DU CODE PIN & CONNEXION SERVEUR
+// 🔓 VALIDATION DU CODE PIN & CONNEXION SERVEUR
 // ==========================================
 async function submitPin() {
-    if (loginInProgress) return;
+    if (typeof loginInProgress !== 'undefined' && loginInProgress) return;
+    loginInProgress = true;
+
     const msgBox = document.getElementById('error-msg');
     if (msgBox) msgBox.style.display = 'none';
 
-    if (Date.now() < localLoginBlockedUntil) {
+    // Anti-BruteForce local
+    if (typeof localLoginBlockedUntil !== 'undefined' && Date.now() < localLoginBlockedUntil) {
         if (msgBox) {
             msgBox.style.display = 'block'; 
             msgBox.style.color = 'var(--alert)';
             msgBox.innerText = '⏳ Trop de tentatives. Patientez...';
         }
+        loginInProgress = false;
         return;
     }
 
-    const pin = currentPin.trim();
+    const pin = (typeof currentPin !== 'undefined' ? currentPin : '').trim();
     if (!pin || pin.length < 4) { 
         if (msgBox) {
             msgBox.style.display = 'block'; 
@@ -731,10 +766,10 @@ async function submitPin() {
             msgBox.innerText = '❌ Code invalide (4 chiffres min).'; 
         }
         clearPin(); 
+        loginInProgress = false;
         return; 
     }
 
-    loginInProgress = true; 
     if (msgBox) {
         msgBox.style.display = 'block'; 
         msgBox.style.color = 'var(--gold)'; 
@@ -746,18 +781,23 @@ async function submitPin() {
             method: 'POST', 
             headers: { 'Content-Type': 'application/json' }, 
             cache: 'no-store',
-            body: JSON.stringify({ tenantID: appTenantID, pin, deviceId: window.ICHEF_SECURITY?.deviceId })
+            body: JSON.stringify({ 
+                tenantID: appTenantID, 
+                pin: pin, 
+                deviceId: window.ICHEF_SECURITY?.deviceId 
+            })
         });
         
         const data = await response.json().catch(() => ({}));
 
         if (!response.ok || !data.success) {
-            localLoginFailures++;
-            if (localLoginFailures >= 5) { 
+            if (typeof localLoginFailures !== 'undefined') localLoginFailures++;
+            if (typeof localLoginFailures !== 'undefined' && localLoginFailures >= 5) { 
                 localLoginBlockedUntil = Date.now() + 30000; 
                 localLoginFailures = 0; 
             }
             if (msgBox) {
+                msgBox.style.display = 'block';
                 msgBox.style.color = 'var(--alert)'; 
                 msgBox.innerText = `❌ ${data.error || 'Code PIN incorrect.'}`;
             }
@@ -765,7 +805,8 @@ async function submitPin() {
             return;
         }
         
-        localLoginFailures = 0;
+        // --- SUCCÈS CONNEXION ---
+        if (typeof localLoginFailures !== 'undefined') localLoginFailures = 0;
         const serverRole = String(data.role || 'STAFF').trim().toLowerCase();
         let userRole = (serverRole === 'master' || serverRole === 'admin' || serverRole === 'manager') ? 'Manager' : 'Serveur';
         
@@ -773,10 +814,20 @@ async function submitPin() {
         if (window.ICHEF_SECURITY) window.ICHEF_SECURITY.user = currentUser;
         
         clearPin(); 
-        unlockPadWithUser(currentUser);
+
+        // 1. Appel de la fonction native
+        if (typeof unlockPadWithUser === 'function') {
+            unlockPadWithUser(currentUser);
+        }
+        
+        // 2. Sécurité de secours : Ouverture immédiate de l'interface
+        const loginScreen = document.getElementById('login-screen');
+        if (loginScreen) loginScreen.style.display = 'none';
 
     } catch (e) {
+        console.error("Erreur connexion PIN:", e);
         if (msgBox) {
+            msgBox.style.display = 'block';
             msgBox.style.color = 'var(--alert)'; 
             msgBox.innerText = '❌ Impossible de joindre le serveur.';
         }
@@ -784,83 +835,78 @@ async function submitPin() {
     } finally {
         loginInProgress = false;
     }
-}        
-// Activer le clavier physique de l'ordinateur
-document.addEventListener('keydown', function(event) {
-    const loginScreen = document.getElementById('login-screen');
-    // On écoute le clavier uniquement si l'écran de connexion est visible
-    if (loginScreen && window.getComputedStyle(loginScreen).display !== 'none') {
-        if (event.key >= '0' && event.key <= '9') {
-            appendPin(event.key);
-        } else if (event.key === 'Backspace' || event.key === 'Delete' || event.key.toLowerCase() === 'c') {
-            clearPin();
-        } else if (event.key === 'Enter') {
-            if(typeof submitPin === 'function') submitPin().catch(e => console.log(e));
+}
+
+// ==========================================
+// 🛠️ GESTION DU MENU OUTILS UNIFIÉ
+// ==========================================
+let outilsPanelState = false;
+
+function toggleOutilsMenu(event, button) {
+    if (event) { event.preventDefault(); event.stopPropagation(); }
+    const panel = document.getElementById('folder-outils');
+    if (!panel) return;
+
+    outilsPanelState = !outilsPanelState;
+    
+    if (outilsPanelState) {
+        panel.classList.add('open');
+        if (button) button.classList.add('open');
+        
+        // Positionnement dynamique sous le bouton (sauf mobile)
+        if (window.innerWidth > 900 && button) {
+            const rect = button.getBoundingClientRect();
+            const width = 280;
+            let left = rect.right - width;
+            if (left < 10) left = 10;
+            panel.style.top = (rect.bottom + 10) + 'px';
+            panel.style.left = left + 'px';
+            panel.style.right = 'auto';
+        }
+    } else {
+        closeOutilsMenu();
+    }
+}
+
+function closeOutilsMenu() {
+    outilsPanelState = false;
+    document.getElementById('folder-outils')?.classList.remove('open');
+    document.querySelector('.folder-btn')?.classList.remove('open');
+}
+
+document.addEventListener('click', function(e) {
+    const panel = document.getElementById('folder-outils');
+    const btn = document.querySelector('.folder-btn');
+    if (panel && panel.classList.contains('open')) {
+        if (!panel.contains(e.target) && (!btn || !btn.contains(e.target))) {
+            closeOutilsMenu();
         }
     }
 });
-        // GESTION DU MENU OUTILS UNIFIE
-        let outilsPanelState = false;
-        function toggleOutilsMenu(event, button) {
-            if(event) { event.preventDefault(); event.stopPropagation(); }
-            const panel = document.getElementById('folder-outils');
-            if(!panel) return;
 
-            outilsPanelState = !outilsPanelState;
-            
-            if (outilsPanelState) {
-                panel.classList.add('open');
-                if(button) button.classList.add('open');
-                
-                // Positionnement dynamique sous le bouton (sauf mobile)
-                if(window.innerWidth > 900 && button) {
-                    const rect = button.getBoundingClientRect();
-                    const width = 280;
-                    let left = rect.right - width;
-                    if(left < 10) left = 10;
-                    panel.style.top = (rect.bottom + 10) + 'px';
-                    panel.style.left = left + 'px';
-                    panel.style.right = 'auto';
-                }
-            } else {
-                closeOutilsMenu();
-            }
-        }
+// ==========================================
+// 📅 BADGE RÉSERVATIONS
+// ==========================================
+function updateReservationQuickBadge() {
+    const badge = document.getElementById('reservation-count-badge');
+    if (!badge || typeof reservationsData === 'undefined') return;
 
-        function closeOutilsMenu() {
-            outilsPanelState = false;
-            document.getElementById('folder-outils')?.classList.remove('open');
-            document.querySelector('.folder-btn')?.classList.remove('open');
-        }
+    const today = new Date().toISOString().split('T')[0];
+    const todayReservations = (Array.isArray(reservationsData) ? reservationsData : [])
+        .filter(r => r && r.date === today && r.status !== 'rejected');
 
-        document.addEventListener('click', function(e){
-            const panel = document.getElementById('folder-outils');
-            const btn = document.querySelector('.folder-btn');
-            if(panel && panel.classList.contains('open')) {
-                if(!panel.contains(e.target) && !btn.contains(e.target)) closeOutilsMenu();
-            }
-        });
+    badge.textContent = String(todayReservations.length);
 
-        // BADGE RÉSERVATIONS
-        function updateReservationQuickBadge() {
-            const badge = document.getElementById('reservation-count-badge');
-            if(!badge || typeof reservationsData === 'undefined') return;
+    const btn = document.getElementById('btn-reservations-quick');
+    if (btn) {
+        const waiting = todayReservations.filter(r => !r.assignedTable).length;
+        btn.title = `${todayReservations.length} réservation(s) aujourd'hui · ${waiting} à placer`;
+        btn.classList.toggle('has-waiting-reservations', waiting > 0);
+    }
+}
 
-            const today = new Date().toISOString().split('T')[0];
-            const todayReservations = (Array.isArray(reservationsData) ? reservationsData : [])
-                .filter(r => r && r.date === today && r.status !== 'rejected');
-
-            badge.textContent = String(todayReservations.length);
-
-            const btn = document.getElementById('btn-reservations-quick');
-            if(btn){
-                const waiting = todayReservations.filter(r => !r.assignedTable).length;
-                btn.title = `${todayReservations.length} réservation(s) aujourd'hui · ${waiting} à placer`;
-                btn.classList.toggle('has-waiting-reservations', waiting > 0);
-            }
-        }
-        setInterval(updateReservationQuickBadge, 1200);
-
+if (typeof reservationBadgeInterval !== 'undefined') clearInterval(reservationBadgeInterval);
+var reservationBadgeInterval = setInterval(updateReservationQuickBadge, 1200);
         // AIDE AU PLACEMENT (IA)
         window.smartPlacementAssistant = async function(){
             if (!currentUser || currentUser.role !== 'Manager') return alert("⛔ Accès Manager requis.");
