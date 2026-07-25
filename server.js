@@ -1347,7 +1347,7 @@ app.post('/api/twilio/call-me', async (req, res) => {
     }
 });
 
-// 🛡️ ROUTE D'EXTRACTION DES VRAIES PREUVES LÉGALES (JSON) POUR LE BOUTON
+// 🛡️ ROUTE D'EXTRACTION DES VRAIES PREUVES LÉGALES (JSON) POUR LA DGFIP
 app.get('/api/export-blockchain-json', async (req, res) => {
     try {
         const tenantID = cleanString(req.query.tenantID);
@@ -1356,10 +1356,8 @@ app.get('/api/export-blockchain-json', async (req, res) => {
         const tenant = await Tenant.findOne({ tenantID });
         if (!tenant) return res.status(404).send("Établissement inconnu.");
 
-        // 🔥 CORRECTION : On utilise bien tenantID ici pour éviter le crash
         const logs = await AuditLog.find({ tenantID: tenantID }).sort({ timestamp: 1 });
         
-        // On vérifie en temps réel si la chaîne de sécurité est intacte
         let isChainValid = true;
         let brokenAtIndex = null;
         for (let i = 1; i < logs.length; i++) {
@@ -1370,23 +1368,46 @@ app.get('/api/export-blockchain-json', async (req, res) => {
             }
         }
 
-        // On fabrique le fichier officiel de conformité fiscale
+        // FORMATAGE STRICT DGFIP (BOI-TVA-DECLA-30-10-30)
         const certificatCertifie = {
-            "version_protocole": "iCHEF FORTERESSE v4.0",
-            "certificatLegal": {
-                "etablissement": tenant.clientName || "Non renseigné",
-                "identifiant_unique": tenantID,
-                "dateExtraction": new Date().toISOString(),
-                "integriteGarantie": isChainValid,
-                "statut_falsification": isChainValid ? "Chaîne intègre - Aucune altération détectée" : `ATTENTION: Altération détectée à l'index ${brokenAtIndex}`,
-                "total_blocs_scelles": logs.length
+            "entete_logiciel": {
+                "nom_logiciel": "iCHEF OS - Module Caisse",
+                "version": "4.0.0",
+                "editeur": "iCHEF",
+                "certification": "Auto-attestation de conformité à l'Art. 286 du CGI"
             },
-            "journal_audit_trail": logs
+            "identification_assujetti": {
+                "nom_etablissement": tenant.clientName || "Non renseigné",
+                "identifiant_logiciel": tenantID,
+                "siret": tenant.siret || "NON RENSEIGNÉ",
+                "numero_tva": tenant.tvaIntra || "NON RENSEIGNÉ"
+            },
+            "donnees_techniques_export": {
+                "date_extraction_iso": new Date().toISOString(),
+                "integrite_garantie": isChainValid,
+                "statut_falsification": isChainValid ? "OK - Chaîne cryptographique intègre" : `ALERTE - Rupture de chaîne détectée à l'index ${brokenAtIndex}`,
+                "total_operations_scellees": logs.length
+            },
+            "journal_audit_trail": logs.map(log => ({
+                "date_heure": log.timestamp,
+                "type_operation": log.action,            // ex: TABLE_CLOSED, ORDER_ITEM_CANCELLED
+                "type_document": log.entityType,         // ex: TICKET, Z_CAISSE
+                "numero_document": log.entityId,         // DOIT être un numéro de ticket séquentiel
+                "caissier_id": log.authorPin,
+                // On extrait les totaux si l'opération est un encaissement
+                "montant_ttc": log.details?.totalTTC || 0,
+                "montant_ht": log.details?.totalHT || 0,
+                "repartition_tva": log.details?.tva || {},
+                "moyens_paiement": log.details?.payments || [],
+                "signature_precedente": log.previousHash,
+                "signature_courante": log.currentHash,
+                // On garde le reste des infos brutes pour la traçabilité complète
+                "donnees_brutes": log.details
+            }))
         };
 
-        // On envoie le fichier au format JSON directement en téléchargement
         res.setHeader('Content-Type', 'application/json; charset=utf-8');
-        res.setHeader('Content-Disposition', `attachment; filename=Certificat_Preuves_Legales_${tenantID}.json`);
+        res.setHeader('Content-Disposition', `attachment; filename=Archive_Fiscale_iCHEF_${tenantID}_${new Date().getTime()}.json`);
         res.send(JSON.stringify(certificatCertifie, null, 4));
 
     } catch (error) {
@@ -1394,8 +1415,6 @@ app.get('/api/export-blockchain-json', async (req, res) => {
         res.status(500).send("Erreur serveur de sécurité.");
     }
 });
-
-
 // 📊 ROUTE D'EXPORTATION DES VRAIS TICKETS POUR LE CENTRE DE TÉLÉCHARGEMENT
 app.get('/api/export-caisse-csv', async (req, res) => {
     try {
