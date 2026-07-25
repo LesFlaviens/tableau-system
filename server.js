@@ -645,16 +645,12 @@ mongoose.connect(mongoURI)
 // ==========================================================
 
 const tenantSchema = new mongoose.Schema({
+siret: { type: String, default: 'NON RENSEIGNÉ' },
+    tvaIntra: { type: String, default: 'NON RENSEIGNÉ' },
+    
+    tenantID: {type: String,required: true, unique: true},
 
-    tenantID: {
-        type: String,
-        required: true,
-        unique: true
-    },
-
-    clientName: String,
-    email: String,
-    phone: String,
+    clientName: String,email: String,phone: String,
 
     status: {
         type: String,
