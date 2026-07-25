@@ -34,11 +34,25 @@
         }
 
         function getDeviceFingerprint() {
-            let deviceId = localStorage.getItem('ichef_device_fingerprint');
+            const key = 'ichef_device_id';
+            let deviceId = localStorage.getItem(key);
+
             if (!deviceId) {
-                deviceId = 'device_' + Math.random().toString(36).substr(2, 9) + '_' + Date.now();
-                localStorage.setItem('ichef_device_fingerprint', deviceId);
+                const legacy = localStorage.getItem('ichef_device_fingerprint');
+                if (legacy) {
+                    deviceId = legacy;
+                    localStorage.setItem(key, deviceId);
+                }
             }
+
+            if (!deviceId) {
+                const bytes = new Uint8Array(24);
+                crypto.getRandomValues(bytes);
+                deviceId = 'dev_' + Array.from(bytes, b => b.toString(16).padStart(2, '0')).join('');
+                localStorage.setItem(key, deviceId);
+            }
+
+            localStorage.setItem('ichef_device_fingerprint', deviceId);
             return deviceId;
         }
 
@@ -58,7 +72,7 @@
             }
 
             let tenantID = urlTenantID || storedTenantID;
-            let pin = localStorage.getItem('ichef_master_pin') || localStorage.getItem('pin') || "0000"; 
+            let pin = localStorage.getItem('ichef_master_pin') || localStorage.getItem('pin') || ""; 
             
             if(!tenantID) { window.location.href = 'connexionpartenaire.html'; return; }
 
@@ -244,7 +258,7 @@
 
     <div style="padding: 15px 25px 0 25px;">
         <button onclick="toggleSystemInfo()" style="background: rgba(255,255,255,0.02); border: 1px dashed var(--border-strong); color: var(--text-muted); padding: 10px 15px; border-radius: 10px; font-size: 0.85rem; font-weight: 600; cursor: pointer; width: 100%; text-align: left; display: flex; justify-content: space-between; align-items: center; transition: 0.2s;">
-            <span>ℹ️ Afficher les informations système & conformité NF525</span>
+            <span>ℹ️ Afficher les informations système & profil fiscal</span>
             <span id="info-toggle-icon">▼</span>
         </button>
     </div>
@@ -283,8 +297,12 @@
             </div>
         </section>
 
+        <div id="fiscal-profile-live" class="anti-fraud-note" style="border-color:rgba(212,175,55,.38);background:rgba(212,175,55,.06);">
+            Profil fiscal : chargement…
+        </div>
+
         <div class="anti-fraud-note">
-            <strong>Principe anti-fraude NF525 :</strong> aucune vente encaissée n’est modifiée ni supprimée. Toute correction produit une écriture inverse, horodatée, identifiée et liée à l’opération d’origine. Le ticket imprimé comporte une signature cryptographique inaltérable.
+            <strong>Principe anti-fraude :</strong> aucune vente encaissée n’est modifiée ni supprimée. Toute correction produit une écriture inverse, horodatée, identifiée et liée à l’opération d’origine. Le ticket imprimé comporte une signature cryptographique inaltérable.
         </div>
     </div>
 
@@ -316,7 +334,7 @@
             <div class="receipt-hash">
                 <strong style="font-size: 0.75rem;">SIGNATURE ÉLECTRONIQUE</strong><br>
                 Hash: <span id="receipt-hash-val" style="font-family: monospace; font-weight: bold;">---</span><br>
-                <i>Conforme aux exigences d'inaltérabilité</i>
+                <i>Empreinte d'intégrité de l'opération</i>
             </div>
             <button class="nav-btn" style="width: 100%; margin-top: 20px; background: #000; color: #fff; border-color: #000;" onclick="closeReceiptAndPrint()">IMPRIMER / FERMER</button>
         </div>
@@ -331,7 +349,7 @@
         <div style="flex: 1; overflow-y: auto;">
             <div style="text-align: center; padding: 30px 20px 0 20px;">
                 <p style="color: var(--text-muted); font-size: 1.1rem; max-width: 800px; margin: 0 auto;">
-                    iCHEF OS Caisse applique une architecture anti-fraude fondée sur des écritures append-only : aucun ticket encaissé n’est écrasé ou supprimé. Les modifications, annulations, remboursements, clôtures et exports créent de nouvelles traces liées à l’opération d’origine. Le backend doit assurer le chaînage cryptographique, la signature, l’horodatage, l’archivage et la restitution des preuves.
+                    iCHEF OS Caisse applique une architecture anti-fraude fondée sur des écritures append-only : aucun ticket encaissé n’est écrasé ou supprimé. Les modifications, annulations, remboursements, clôtures et exports créent de nouvelles traces liées à l’opération d’origine. Le backend iCHEF conserve le journal de traçabilité utilisé par le server.js actuel. Le profil fiscal est piloté par les paramètres de l’établissement.
                 </p>
             </div>
             
@@ -478,6 +496,11 @@
 
         let currentActiveTables = {};
         let ticketCounter = parseInt(localStorage.getItem('ichef_ticket_counter') || '1'); // Compteur séquentiel local
+        let cashBackendOnline = false;
+        let cashSocketConnected = false;
+        let cashSyncInterval = null;
+        let cashSocket = null;
+        let lastCloudSyncAt = null;
 
         // ----------------------------------------------------
         // 🧾 PARAMÈTRES CAISSE
@@ -491,41 +514,74 @@
             return value;
         }
 
-        function getCashRegisterSettings() {
-            try {
-                const cloudSettings = extractSettingsPayload(
-                    currentActiveTables.SETTINGS_MASTER ||
-                    currentActiveTables.settings_master ||
-                    currentActiveTables.SETTINGS || null
-                );
+        function getSystemSettings() {
+            return extractSettingsPayload(
+                currentActiveTables.SETTINGS_MASTER ||
+                currentActiveTables.settings_master ||
+                currentActiveTables.SETTINGS || {}
+            );
+        }
 
-                if (cloudSettings && cloudSettings.cashRegister) {
-                    return {
-                        enabled: cloudSettings.cashRegister.enabled === true,
-                        fiscalMode: cloudSettings.cashRegister.fiscalMode === true,
-                        backendUrl: cloudSettings.cashRegister.backendUrl || "/api/fiscal/finalize-sale",
-                        auditUrl: cloudSettings.cashRegister.auditUrl || "/api/fiscal/audit-events",
-                        cancellationUrl: cloudSettings.cashRegister.cancellationUrl || "/api/fiscal/cancel-order",
-                        proofExportUrl: cloudSettings.cashRegister.proofExportUrl || "/api/fiscal/export-proof",
-                        integrityUrl: cloudSettings.cashRegister.integrityUrl || "/api/fiscal/verify-integrity",
-                        allowInternalClosure: cloudSettings.cashRegister.allowInternalClosure === true
-                    };
-                }
-            } catch (e) {}
-            return { enabled: true, fiscalMode: true, backendUrl: "/api/save-transaction", auditUrl: "/api/export-preuves-legales" }; // Default mock
+        function getFiscalProfile() {
+            const settings = getSystemSettings();
+            const tax = settings.taxConfig || {};
+            const cash = settings.cashRegister || {};
+
+            const country = String(
+                tax.country || cash.country || settings.country ||
+                ((tax.currency || cash.currency || settings.currency) === 'CHF' ? 'CH' : 'FR')
+            ).toUpperCase();
+
+            const currency = String(
+                tax.currency || cash.currency || settings.currency ||
+                (country === 'CH' ? 'CHF' : 'EUR')
+            ).toUpperCase();
+
+            return {
+                country,
+                currency: currency === 'CHF' ? 'CHF' : 'EUR',
+                displayCurrency: currency === 'CHF' ? 'CHF' : '€',
+                profile: country === 'CH' ? 'CH' : (country === 'FR' ? 'FR' : 'EU-' + country)
+            };
+        }
+
+        function getCashRegisterSettings() {
+            const settings = getSystemSettings();
+            const cash = settings.cashRegister || {};
+
+            return {
+                enabled: cash.enabled !== false,
+                fiscalMode: cash.fiscalMode !== false,
+                backendUrl: cash.backendUrl || "/api/save-transaction",
+                auditUrl: cash.auditUrl || "/api/export-preuves-legales",
+                cancellationUrl: cash.cancellationUrl || "/update-order",
+                proofExportUrl: cash.proofExportUrl || "/api/export-preuves-legales",
+                allowInternalClosure: cash.allowInternalClosure === true
+            };
         }
 
         function isFiscalCashRegisterReady() {
-            return true; // Force l'état Actif pour l'UI
+            const cash = getCashRegisterSettings();
+            return cash.enabled === true && cash.fiscalMode === true && cashBackendOnline === true;
+        }
+
+        function updateFiscalProfileUI() {
+            const box = document.getElementById('fiscal-profile-live');
+            if (!box) return;
+            const f = getFiscalProfile();
+            box.innerHTML = `<strong>Profil fiscal :</strong> ${f.profile} · ${f.country} · ${f.currency} · ${cashBackendOnline ? 'serveur synchronisé' : 'serveur à vérifier'}`;
         }
 
         function updateCashRegisterBadge() {
             const badge = document.getElementById("cash-register-badge");
             if (!badge) return;
-            badge.textContent = "Anti-fraude NF525 actif";
-            badge.style.color = "var(--success)";
-            badge.style.borderColor = "var(--success)";
-            badge.style.background = "rgba(16, 185, 129, 0.1)";
+
+            const f = getFiscalProfile();
+            badge.textContent = `${f.profile} · ${f.currency} · ${cashBackendOnline ? "SERVEUR CONNECTÉ" : "SERVEUR À VÉRIFIER"}`;
+            badge.style.color = cashBackendOnline ? "var(--success)" : "var(--gold)";
+            badge.style.borderColor = cashBackendOnline ? "var(--success)" : "var(--gold)";
+            badge.style.background = cashBackendOnline ? "rgba(16,185,129,.1)" : "rgba(212,175,55,.1)";
+            updateFiscalProfileUI();
         }
 
         function getPaymentLabel(paymentMethod) {
@@ -535,7 +591,7 @@
             return paymentMethod || "Non précisé";
         }
 
-        function getDisplayCurrency() { return "€"; }
+        function getDisplayCurrency() { return getFiscalProfile().displayCurrency; }
         function formatMoney(amount) { return `${parseFloat(amount || 0).toFixed(2)} ${getDisplayCurrency()}`; }
 
         function buildFiscalEndpoint(path) {
@@ -574,52 +630,116 @@
         async function buildSaleEnvelope(tableId, ticketData, paymentMethod) {
             const occurredAt = new Date().toISOString();
             const operationId = createUUID();
-            
-            // Numérotation séquentielle stricte
-            const formattedTicketNumber = `TCK-${String(ticketCounter).padStart(5, '0')}`;
+            const fiscal = getFiscalProfile();
+            const ticketNumber = `TCK-${String(ticketCounter).padStart(5, '0')}`;
+
             ticketCounter++;
             localStorage.setItem('ichef_ticket_counter', ticketCounter.toString());
 
+            const items = (ticketData.items || []).map(item => ({
+                name: item.n || item.name || "Article",
+                n: item.n || item.name || "Article",
+                quantity: Number(item.qty || 1),
+                qty: Number(item.qty || 1),
+                unitPrice: Number(item.p || item.price || 0),
+                p: Number(item.p || item.price || 0),
+                tva: Number(item.tva || item.vat || 0)
+            }));
+
+            const total = Number(
+                ticketData.total ||
+                items.reduce((sum, item) => sum + item.unitPrice * item.quantity, 0) ||
+                0
+            );
+
             const snapshot = {
-                ticketNumber: formattedTicketNumber,
+                ticketNumber,
                 tableId,
-                total: Number(ticketData.total || 0),
-                items: (ticketData.items || []).map(item => ({
-                    name: item.n || item.name || "Article",
-                    quantity: Number(item.qty || 1),
-                    unitPrice: Number(item.p || item.price || 0)
-                })),
+                total,
+                items,
                 status: "PAID",
-                cashedAt: occurredAt
+                cashedAt: occurredAt,
+                fiscalContext: fiscal
             };
 
+            const chainHash = await sha256Hex(snapshot);
+
             return {
-                eventType: "SALE_FINALIZED",
+                id: operationId,
                 operationId,
+                eventType: "SALE_FINALIZED",
+                date: occurredAt,
+                timestamp: occurredAt,
                 tenantID,
-                occurredAt,
+                table: tableId,
+                source: `Caisse tactile (${tableId})`,
+                method: getPaymentLabel(paymentMethod),
+                paymentMethod,
+                total,
+                amount: total,
+                totalTTC: total,
+                currency: fiscal.currency,
+                country: fiscal.country,
+                fiscalProfile: fiscal.profile,
                 actor: getActorContext(),
-                payment: { method: paymentMethod, amount: Number(ticketData.total || 0) },
+                payment: { method: paymentMethod, amount: total, currency: fiscal.currency },
                 orderSnapshot: snapshot,
-                chainHash: await sha256Hex(snapshot)
+                items,
+                chainHash
             };
         }
 
         async function sendTicketToFiscalBackend(tableId, ticketData, paymentMethod) {
             const envelope = await buildSaleEnvelope(tableId, ticketData, paymentMethod);
             queueLocalAuditCopy(envelope);
-            
-            // Envoi réel au serveur pour historiser (FINANCIAL_HISTORY)
-            try {
-                await fetch(buildFiscalEndpoint(), {
+
+            const settings = getCashRegisterSettings();
+            let endpoint = settings.backendUrl || "/api/save-transaction";
+
+            async function postEnvelope(target) {
+                const response = await fetch(buildFiscalEndpoint(target), {
                     method: "POST",
                     headers: { "Content-Type": "application/json" },
-                    credentials: 'include', // 🚨 AJOUT SÉCURITÉ CORS
-                    body: JSON.stringify({ tenantID: tenantID, transaction: envelope })
+                    credentials: "include",
+                    cache: "no-store",
+                    body: JSON.stringify({ tenantID, transaction: envelope })
                 });
-            } catch(e) { console.log("Sauvegarde serveur échouée, mais sauvé en local."); }
 
-            return { proof: { ticketNumber: envelope.orderSnapshot.ticketNumber, chainHash: envelope.chainHash, serverTimestamp: envelope.occurredAt } };
+                const data = await response.json().catch(() => ({}));
+                return { response, data };
+            }
+
+            let result = await postEnvelope(endpoint);
+
+            if (!result.response.ok &&
+                endpoint !== "/api/save-transaction" &&
+                [404, 405].includes(result.response.status)) {
+                endpoint = "/api/save-transaction";
+                result = await postEnvelope(endpoint);
+            }
+
+            if (!result.response.ok || result.data.success === false) {
+                cashBackendOnline = false;
+                updateCashRegisterBadge();
+                throw new Error(
+                    result.data.error ||
+                    `Enregistrement serveur refusé (${result.response.status}).`
+                );
+            }
+
+            cashBackendOnline = true;
+            updateCashRegisterBadge();
+
+            return {
+                success: true,
+                proof: {
+                    ticketNumber: envelope.orderSnapshot.ticketNumber,
+                    chainHash: envelope.chainHash,
+                    serverTimestamp: envelope.date,
+                    fiscalProfile: getFiscalProfile().profile
+                },
+                server: result.data
+            };
         }
 
         async function cancelOpenOrder(tableId) {
@@ -658,22 +778,63 @@
         // 🚨 Z DE CAISSE (CLÔTURE JOURNALIÈRE)
         // ----------------------------------------------------
         async function cloturerZ() {
-            if(!confirm("⚠️ ATTENTION : Vous allez générer le Z de Caisse (Clôture journalière).\n\nCette action est irréversible et scellera mathématiquement toutes les transactions de la journée dans le journal anti-fraude. Voulez-vous continuer ?")) return;
-            
+            if (!confirm(
+                "⚠️ Générer la clôture Z du jour ?\n\n" +
+                "L'événement sera enregistré et scellé côté serveur."
+            )) return;
+
             try {
-                const envelope = {
+                if (!cashBackendOnline) await fetchStateFromCloud();
+                if (!cashBackendOnline) throw new Error("Serveur indisponible : clôture Z refusée.");
+
+                const fiscal = getFiscalProfile();
+                const occurredAt = new Date().toISOString();
+                const operationId = createUUID();
+
+                const transaction = {
+                    id: operationId,
+                    operationId,
                     eventType: "DAILY_CLOSURE",
+                    date: occurredAt,
+                    timestamp: occurredAt,
                     tenantID,
-                    occurredAt: new Date().toISOString(),
-                    reason: "Clôture Z journalière manuelle",
-                    chainHash: await sha256Hex("Z_CLOSURE_" + Date.now())
+                    source: "CLOTURE_Z",
+                    method: "Z_CLOSURE",
+                    paymentMethod: "Z_CLOSURE",
+                    total: 0,
+                    amount: 0,
+                    currency: fiscal.currency,
+                    country: fiscal.country,
+                    fiscalProfile: fiscal.profile,
+                    actor: getActorContext(),
+                    chainHash: await sha256Hex({
+                        tenantID,
+                        occurredAt,
+                        operationId,
+                        type: "DAILY_CLOSURE"
+                    })
                 };
-                queueLocalAuditCopy(envelope);
-                
-                alert("✅ Z de Caisse généré et scellé cryptographiquement dans le journal d'audit.");
+
+                queueLocalAuditCopy(transaction);
+
+                const response = await fetch(`${SERVER_URL}/api/save-transaction`, {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    credentials: "include",
+                    cache: "no-store",
+                    body: JSON.stringify({ tenantID, transaction })
+                });
+
+                const data = await response.json().catch(() => ({}));
+                if (!response.ok || data.success === false) {
+                    throw new Error(data.error || "Le serveur a refusé la clôture.");
+                }
+
+                alert(`✅ Clôture Z enregistrée côté serveur (${fiscal.profile} / ${fiscal.currency}).`);
                 openAuditModal();
+
             } catch (error) {
-                alert("Erreur de clôture : " + error.message);
+                alert("Clôture refusée : " + (error.message || "erreur serveur"));
             }
         }
 
@@ -682,16 +843,28 @@
         // ----------------------------------------------------
         async function fetchStateFromCloud() {
             try {
-                let r = await fetch(`${SERVER_URL}/get-current-state?tenantID=${tenantID}&_t=${Date.now()}`, {
-                    credentials: 'include' // 🚨 AJOUT SÉCURITÉ CORS
-                });
-                if(r.ok) {
-                    let state = await r.json();
-                    currentActiveTables = state.activeOrders || {};
-                    updateCashRegisterBadge();
-                    renderRoomGrid();
-                }
-            } catch(e) { console.error("Erreur Caisse", e); }
+                const r = await fetch(
+                    `${SERVER_URL}/get-current-state?tenantID=${encodeURIComponent(tenantID)}&_t=${Date.now()}`,
+                    { credentials: 'include', cache: 'no-store' }
+                );
+
+                if (!r.ok) throw new Error(`STATE_${r.status}`);
+
+                const state = await r.json();
+                currentActiveTables = state?.activeOrders || {};
+                cashBackendOnline = true;
+                lastCloudSyncAt = Date.now();
+
+                updateCashRegisterBadge();
+                renderRoomGrid();
+                return state;
+
+            } catch (e) {
+                cashBackendOnline = false;
+                updateCashRegisterBadge();
+                console.error("Erreur synchronisation Caisse", e);
+                return null;
+            }
         }
 
         function renderRoomGrid() {
@@ -702,7 +875,8 @@
                 // 🚨 LE NOUVEAU FILTRE : On bloque l'affichage de TOUS les fichiers système
                 if (key.includes('MASTER') || key.includes('ARCHIVE') || key.includes('SETTINGS') || 
                     key.includes('HISTORY') || key.includes('HACCP') || key.includes('ARCHITECTURE') || 
-                    key.includes('STAFF') || key.includes('CATEGORIES') || key.includes('MENU')) {
+                    key.includes('STAFF') || key.includes('CATEGORIES') || key.includes('MENU') ||
+                    key.includes('FISCAL_') || key.includes('AUDIT_')) {
                     continue; // On ignore ce fichier, on passe au suivant
                 }
 
@@ -792,12 +966,28 @@
                 const fiscalData = await sendTicketToFiscalBackend(tableId, ticket, paymentMethod);
                 const proof = fiscalData.proof;
 
-                // Suppression de la table (Archivage)
-                await fetch(`${SERVER_URL}/update-order?tenantID=${tenantID}`, {
-                    method: 'POST', headers: { 'Content-Type': 'application/json' },
-                    credentials: 'include', // 🚨 AJOUT SÉCURITÉ CORS
-                    body: JSON.stringify({ tableId: tableId, order: 'DELETE', pin: localStorage.getItem('ichef_master_pin') })
-                });
+                const archiveResponse = await fetch(
+                    `${SERVER_URL}/update-order?tenantID=${encodeURIComponent(tenantID)}`,
+                    {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        credentials: 'include',
+                        cache: 'no-store',
+                        body: JSON.stringify({
+                            tableId,
+                            order: 'DELETE',
+                            pin: localStorage.getItem('ichef_master_pin') || 'SYSTEM'
+                        })
+                    }
+                );
+
+                const archiveData = await archiveResponse.json().catch(() => ({}));
+                if (!archiveResponse.ok || archiveData.success === false) {
+                    throw new Error(
+                        archiveData.error ||
+                        "Vente enregistrée mais archivage de la table refusé."
+                    );
+                }
 
                 // AFFICHER LE TICKET THERMIQUE
                 document.getElementById('receipt-restaurant-name').innerText = tenantID.toUpperCase();
@@ -835,58 +1025,110 @@
         // ==========================================
         // WEBSOCKET (Live Refresh & Bannière IA)
         // ==========================================
+        function applyRealtimeState(state) {
+            if (!state || !state.activeOrders) return;
+
+            currentActiveTables = state.activeOrders;
+            cashBackendOnline = true;
+            lastCloudSyncAt = Date.now();
+
+            updateCashRegisterBadge();
+            renderRoomGrid();
+
+            const predictionDiv = document.getElementById('ia-pass-prediction');
+            const iconDiv = document.getElementById('ia-pass-icon');
+            const settingsNode = state.activeOrders['SETTINGS_MASTER'];
+            const systemSettings = settingsNode?.data || settingsNode || {};
+
+            if (predictionDiv) {
+                const rushLevel = parseInt(systemSettings.rushLevel) || 0;
+                const thresholds = systemSettings.rushThresholds || {
+                    l0: "Calme", l1: "Normal", l2: "Tendu",
+                    l3: "Saturé", l4: "Critique", l5: "SOS"
+                };
+
+                const map = {
+                    0: [thresholds.l0 || "Calme", "#38bdf8"],
+                    1: [thresholds.l1 || "Normal", "#10b981"],
+                    2: [thresholds.l2 || "Tendu", "#fbbf24"],
+                    3: [thresholds.l3 || "Saturé", "#f97316"],
+                    4: [thresholds.l4 || "Critique", "#ef4444"],
+                    5: [thresholds.l5 || "SOS / Chaos", "#a855f7"]
+                };
+
+                const [labelText, colorTheme] = map[rushLevel] || map[0];
+                let htmlOutput =
+                    `Service <span style="color:${colorTheme};font-weight:900;text-transform:uppercase;">${labelText}</span>`;
+
+                const timeShift = systemSettings?.rushV3?.timeShift;
+                if (timeShift?.active && rushLevel >= 2) {
+                    htmlOutput +=
+                        ` <span style="color:#94a3b8;font-weight:normal;font-size:.75rem;">` +
+                        `(Attente annoncée : +${timeShift.delay || 15} min)</span>`;
+                }
+
+                predictionDiv.innerHTML = htmlOutput;
+                if (iconDiv) iconDiv.style.color = colorTheme;
+            }
+        }
+
         function initWebSocket() {
-            if(typeof io === 'undefined') return;
-            const socket = io(SERVER_URL);
-            socket.emit('joinTenant', tenantID);
-            
-            socket.on('updateState', (state) => {
-                if(!state) return;
+            if (typeof io === 'undefined') {
+                console.warn("Socket.io indisponible : polling uniquement.");
+                return;
+            }
 
-                // Rafraîchir les tables
-                if (state.activeOrders) {
-                    currentActiveTables = state.activeOrders;
-                    renderRoomGrid();
-                }
+            if (cashSocket) {
+                try { cashSocket.disconnect(); } catch (_) {}
+            }
 
-                // 🚀 MISE À JOUR DE LA BANNIÈRE IA EN DIRECT
-                const predictionDiv = document.getElementById('ia-pass-prediction');
-                const iconDiv = document.getElementById('ia-pass-icon');
-                
-                if (predictionDiv && state.activeOrders && state.activeOrders['SETTINGS_MASTER']) {
-                    const systemSettings = state.activeOrders['SETTINGS_MASTER'].data || {};
-                    const rushLevel = parseInt(systemSettings.rushLevel) || 0;
-                    
-                    const thresholds = systemSettings.rushThresholds || { l0: "Calme", l1: "Normal", l2: "Tendu", l3: "Saturé", l4: "Critique", l5: "SOS" };
-                    
-                    let labelText = "Calme"; let colorTheme = "#38bdf8"; 
+            cashSocket = io(SERVER_URL, {
+                transports: ['websocket', 'polling'],
+                reconnection: true,
+                reconnectionAttempts: Infinity,
+                reconnectionDelay: 1000,
+                timeout: 10000
+            });
 
-                    switch(rushLevel) {
-                        case 0: labelText = thresholds.l0 || "Calme"; colorTheme = "#38bdf8"; break;
-                        case 1: labelText = thresholds.l1 || "Normal"; colorTheme = "#10b981"; break;
-                        case 2: labelText = thresholds.l2 || "Tendu"; colorTheme = "#fbbf24"; break;
-                        case 3: labelText = thresholds.l3 || "Saturé"; colorTheme = "#f97316"; break;
-                        case 4: labelText = thresholds.l4 || "Critique"; colorTheme = "#ef4444"; break;
-                        case 5: labelText = thresholds.l5 || "SOS / Chaos"; colorTheme = "#a855f7"; break;
-                    }
+            cashSocket.on('connect', () => {
+                cashSocketConnected = true;
+                cashBackendOnline = true;
+                cashSocket.emit('joinTenant', tenantID);
+                updateCashRegisterBadge();
+            });
 
-                    let htmlOutput = `Service <span style="color:${colorTheme}; font-weight:900; text-transform:uppercase;">${labelText}</span>`;
-                    
-                    if (systemSettings.rushV3 && systemSettings.rushV3.timeShift && systemSettings.rushV3.timeShift.active && rushLevel >= 2) {
-                        const delay = systemSettings.rushV3.timeShift.delay || 15;
-                        htmlOutput += ` <span style="color:#94a3b8; font-weight:normal; font-size:0.75rem;">(Attente annoncée en salle : +${delay}min)</span>`;
-                    }
+            cashSocket.on('updateState', state => {
+                applyRealtimeState(state);
+            });
 
-                    predictionDiv.innerHTML = htmlOutput;
-                    if(iconDiv) iconDiv.style.color = colorTheme;
-                }
+            cashSocket.on('disconnect', () => {
+                cashSocketConnected = false;
+                updateCashRegisterBadge();
+            });
+
+            cashSocket.on('connect_error', error => {
+                cashSocketConnected = false;
+                console.warn(
+                    "Socket caisse indisponible, polling actif :",
+                    error?.message || error
+                );
             });
         }
 
-        // Lancement Caisse
+        function startCashSynchronization() {
+            if (cashSyncInterval) clearInterval(cashSyncInterval);
+
+            fetchStateFromCloud();
+
+            // Filet de sécurité commun avec le Pad.
+            cashSyncInterval = setInterval(fetchStateFromCloud, 4000);
+
+            initWebSocket();
+        }
+
+        // Lancement Caisse en symbiose avec server.js et le Pad
         updateCashRegisterBadge();
-        fetchStateFromCloud(); 
-        initWebSocket();
+        startCashSynchronization();
 
         // ----------------------------------------------------
         // 🛡️ MODALS CONFORMITÉ & AUDIT
@@ -1033,12 +1275,15 @@
                 container.style.display = 'none';
                 icon.innerText = '▼';
             }
-// Démarrage automatique du module
-        window.onload = function() {
+        }
+
+        // Rafraîchissement UI après chargement complet.
+        window.addEventListener('load', () => {
             updateCashRegisterBadge();
-            fetchStateFromCloud();
-            initWebSocket();
-        };
+            updateFiscalProfileUI();
+        });
     </script>
 </body>
 </html>
+
+
