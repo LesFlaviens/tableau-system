@@ -2873,27 +2873,14 @@ function updateAntiRushServerPanel() {
 
         function handleTableOrderTap(tableOpenKey, tableLabel) {
             try {
-                const clean = v => String(v ?? '').trim();
-                const label = clean(tableLabel);
-                const requestedKey = clean(tableOpenKey);
+                const label = String(tableLabel || tableOpenKey || '').trim();
+                if (!label) return;
 
-                const tableObj = (tables || []).find(t => {
-                    if (!t) return false;
-                    return clean(t.label) === label ||
-                           clean(t.id) === requestedKey ||
-                           clean(t.id) === label;
-                });
+                if (typeof checkZoneAccess === 'function' && !checkZoneAccess(label)) return;
 
-                const visibleLabel = clean(tableObj?.label) || label || requestedKey;
-                if (!visibleLabel) return;
-
-                if (typeof checkZoneAccess === 'function' && !checkZoneAccess(visibleLabel)) return;
-
-                // Le système de commande utilise le libellé de la table comme identifiant métier.
-                currentTableId = visibleLabel;
-
-                if (!activeOrders[currentTableId]) {
-                    activeOrders[currentTableId] = {
+                // Une table physique vide doit être ouvrable immédiatement.
+                if (!activeOrders[label]) {
+                    activeOrders[label] = {
                         items: [],
                         status: 'open',
                         observations: '',
@@ -2902,28 +2889,9 @@ function updateAntiRushServerPanel() {
                     };
                 }
 
-                openOrder(currentTableId);
-
-                // Sécurité UI : si openOrder a chargé les données mais n'a pas rendu
-                // le panneau visible, on affiche explicitement la zone de commande.
-                const orderPanel =
-                    document.getElementById('order-modal') ||
-                    document.getElementById('order-panel') ||
-                    document.getElementById('order-screen') ||
-                    document.getElementById('menu-modal');
-
-                if (orderPanel) {
-                    orderPanel.style.display = 'flex';
-                    orderPanel.classList.add('active', 'show');
-                }
-
-                if (typeof renderTicket === 'function') renderTicket();
-
+                openOrder(label);
             } catch (err) {
-                console.error("Erreur ouverture prise de commande :", err, {
-                    tableOpenKey,
-                    tableLabel
-                });
+                console.error('Erreur clic table / ouverture commande :', err);
             }
         }
 
@@ -3477,13 +3445,18 @@ function updateAntiRushServerPanel() {
                 document.getElementById('order-obs').value = `🍽️ ${tableObj.pax || 1} Couvert(s)`;
             }
 
-            renderSeatBar(); renderMenu('MenuJour'); renderTicket(); checkTableAlertState(currentTableId);
-
+            // IMPORTANT : ouvrir le tiroir AVANT les rendus.
+            // Ainsi une erreur secondaire du menu ne peut plus empêcher l'ouverture.
             orderDrawer.classList.remove('order-ticket-focus');
             orderDrawer.classList.add('open');
+            orderDrawer.style.display = 'flex';
 
-            ensureOrderMiniBar();
-            updateOrderMiniBar();
+            try { renderSeatBar(); } catch(e) { console.warn('renderSeatBar:', e); }
+            try { renderMenu('MenuJour'); } catch(e) { console.warn('renderMenu:', e); }
+            try { renderTicket(); } catch(e) { console.warn('renderTicket:', e); }
+            try { checkTableAlertState(currentTableId); } catch(e) { console.warn('checkTableAlertState:', e); }
+            try { ensureOrderMiniBar(); } catch(e) { console.warn('ensureOrderMiniBar:', e); }
+            try { updateOrderMiniBar(); } catch(e) { console.warn('updateOrderMiniBar:', e); }
         }
 
         function closeOrder() {
