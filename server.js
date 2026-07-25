@@ -2042,72 +2042,32 @@ app.post('/update-order', async (req, res) => {
 // ==========================================================
 // 📱 RÉINITIALISATION DES APPAREILS / ÉCRANS ENREGISTRÉS
 // ==========================================================
+app.post(['/api/kill-switch', '/api/admin-reset-devices'], async (req, res) => {
+    try {
+        const tenantID = cleanString(req.body?.tenantID);
+        if (!tenantID) return res.status(400).json({ success: false, error: "Identifiant manquant." });
 
-app.post(
-    ['/api/kill-switch', '/api/admin-reset-devices'],
-    async (req, res) => {
+        const tenant = await Tenant.findOne({ tenantID });
+        if (!tenant) return res.status(404).json({ success: false, error: "Établissement inconnu." });
 
-        try {
+        // Libère tous les anciens appareils
+        tenant.registeredDevices = [];
+        await tenant.save();
 
-            const tenantID =
-                cleanString(req.body?.tenantID);
+        const screenLimit = await syncTenantScreenLimit(tenant);
 
-            if (!tenantID) {
-                return res.status(400).json({
-                    success: false,
-                    error: "Identifiant restaurant manquant."
-                });
-            }
-
-            const tenant =
-                await Tenant.findOne({ tenantID });
-
-            if (!tenant) {
-                return res.status(404).json({
-                    success: false,
-                    error: "Établissement inconnu."
-                });
-            }
-
-            // Libère tous les anciens appareils
-            tenant.registeredDevices = [];
-
-            await tenant.save();
-
-            const screenLimit =
-                await syncTenantScreenLimit(tenant);
-
-            return res.json({
-                success: true,
-
-                message:
-                    "Tous les appareils enregistrés ont été réinitialisés.",
-
-                maxScreens:
-                    screenLimit,
-
-                registeredScreens:
-                    0,
-
-                availableScreens:
-                    screenLimit
-            });
-
-        } catch (error) {
-
-            console.error(
-                "Erreur reset appareils :",
-                error
-            );
-
-            return res.status(500).json({
-                success: false,
-                error:
-                    "Erreur serveur lors de la réinitialisation des appareils."
-            });
-        }
+        return res.json({
+            success: true,
+            message: "Tous les appareils enregistrés ont été réinitialisés.",
+            maxScreens: screenLimit,
+            registeredScreens: 0,
+            availableScreens: screenLimit
+        });
+    } catch (error) {
+        console.error("Erreur reset appareils :", error);
+        return res.status(500).json({ success: false, error: "Erreur serveur." });
     }
-
+}); // <--- LA PARENTHÈSE MANQUANTE ÉTAIT ICI !
 
 // ==========================================
 // 🌟 AUTO-GÉNÉRATION DU COMPTE DE DÉMONSTRATION
@@ -2117,13 +2077,8 @@ async function creerCompteDemo() {
         const demoExist = await Tenant.findOne({ tenantID: 'demo' });
         if (!demoExist) {
             await Tenant.create({
-                tenantID: 'demo',
-                clientName: 'Restaurant iCHEF Démo',
-                status: 'ACTIF',
-                plan: 'EMPIRE',
-                pin: '0000',
-                maxScreens: 50,
-                maxStaff: 999
+                tenantID: 'demo', clientName: 'Restaurant iCHEF Démo', status: 'ACTIF',
+                plan: 'EMPIRE', pin: '0000', maxScreens: 50, maxStaff: 999
             });
             console.log('✅ Compte DÉMO ("demo" / "0000") généré avec succès dans la base !');
         }
