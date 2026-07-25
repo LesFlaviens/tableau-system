@@ -2872,28 +2872,40 @@ function updateAntiRushServerPanel() {
         }
 
         function handleTableOrderTap(tableOpenKey, tableLabel) {
-            const now = Date.now();
-
-            // Évite le double déclenchement touchend + click sur tablette.
-            if (window.__lastPadTableTapAt && now - window.__lastPadTableTapAt < 280) {
-                return;
-            }
-            window.__lastPadTableTapAt = now;
-
             try {
-                if (isArchiMode) return;
-                if (pendingAssignResa) {
-                    assignTableToResa(tableLabel || tableOpenKey);
+                const clean = v => String(v ?? '').trim();
+                const label = clean(tableLabel);
+                let key = clean(tableOpenKey) || label;
+
+                if (!label && !key) return;
+
+                // Vérifie l'accès avec le vrai libellé visuel de la table.
+                const accessLabel = label || key;
+                if (typeof checkZoneAccess === 'function' && !checkZoneAccess(accessLabel)) return;
+
+                // Une table physique peut ne pas encore avoir de commande côté serveur.
+                // Dans ce cas on ouvre directement avec son label (T1, T2, T3...).
+                const existingKey = Object.keys(activeOrders || {}).find(k => {
+                    const a = clean(k).toLowerCase().replace(/[^a-z0-9]/g, '');
+                    const b = clean(label).toLowerCase().replace(/[^a-z0-9]/g, '');
+                    return a === b || a === ('t' + b) || ('t' + a) === b;
+                });
+
+                key = existingKey || label || key;
+
+                if (!key) {
+                    console.error('Table sans identifiant', { tableOpenKey, tableLabel });
                     return;
                 }
 
-                const labelForZone = tableLabel || tableOpenKey;
-                if (!checkZoneAccess(labelForZone)) return;
-
-                openOrder(tableOpenKey || tableLabel);
+                // Ne bloque plus l'ouverture d'une table vide.
+                openOrder(key);
             } catch (err) {
-                console.error("Impossible d'ouvrir la commande :", err);
-                alert("Impossible d'ouvrir le menu de commande. Vérifiez la table ou rechargez le Pad serveur.");
+                console.error("Impossible d'ouvrir la commande :", err, {
+                    tableOpenKey,
+                    tableLabel,
+                    currentRoom
+                });
             }
         }
 
