@@ -79,7 +79,7 @@
         .board::-webkit-scrollbar { height: 8px; }
         .board::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.2); border-radius: 4px; }
 
-        .ticket { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; width: 320px; flex-shrink: 0; display: flex; flex-direction: column; max-height: 100%; box-shadow: 0 10px 30px rgba(0,0,0,0.5); animation: slideIn 0.3s ease-out; }
+        .ticket { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; width: 320px; flex-shrink: 0; display: flex; flex-direction: column; max-height: 100%; box-shadow: 0 10px 30px rgba(0,0,0,0.5); }
         @keyframes slideIn { from { opacity: 0; transform: translateY(20px); } to { opacity: 1; transform: translateY(0); } }
 
         .ticket.urgent { border-color: var(--danger); box-shadow: 0 0 15px rgba(239, 68, 68, 0.2); }
@@ -477,9 +477,12 @@
                            o.items.some(item => item && item.isSent === true);
                 })
                 .sort((a, b) => {
-                    const ta = Number(a.createdAt || a.updatedAt || a.items?.[0]?.itemId || 0);
-                    const tb = Number(b.createdAt || b.updatedAt || b.items?.[0]?.itemId || 0);
-                    return ta - tb;
+                    const ta = Number(a.createdAt || a.items?.[0]?.itemId || 0);
+                    const tb = Number(b.createdAt || b.items?.[0]?.itemId || 0);
+
+                    if (ta !== tb) return ta - tb;
+
+                    return String(a.id).localeCompare(String(b.id), 'fr');
                 });
 
             ordersArray.forEach(order => {
@@ -699,7 +702,7 @@
                 delete order.items[itemIndex].readyAt;
             }
 
-            renderBoard();
+            renderBoardIfChanged(true);
 
             try {
                 await fetch(`${SERVER_URL}/update-order?tenantID=${tenantID}`, {
@@ -744,7 +747,7 @@
 
             order.readyAt = Date.now();
 
-            renderBoard();
+            renderBoardIfChanged(true);
 
             try {
                 const r = await fetch(
@@ -951,6 +954,75 @@
             if (e.key === 'Escape') closeRecipeLibrary();
         });
 
+
+        // =========================================================
+        // 🔒 RENDU STABLE — ÉVITE LES TICKETS QUI "SAUTENT"
+        // =========================================================
+        let lastBoardFingerprint = '';
+
+        function buildBoardFingerprint(orders) {
+            try {
+                const compact = {};
+
+                Object.keys(orders || {})
+                    .filter(k => !isSystemKey(k))
+                    .sort()
+                    .forEach(k => {
+                        const o = orders[k];
+                        if (!o || !Array.isArray(o.items)) return;
+
+                        compact[k] = {
+                            status: o.status || '',
+                            readyAt: o.readyAt || null,
+                            timeShifted: !!o.timeShifted,
+                            releaseTime: o.releaseTime || null,
+                            items: o.items.map(i => ({
+                                id: i.itemId || i.id || null,
+                                n: i.n || i.name || '',
+                                qty: i.qty || 1,
+                                done: !!i.done,
+                                served: !!i.served,
+                                isSent: i.isSent !== false,
+                                status: i.status || '',
+                                sequenceStatus: i.sequenceStatus || '',
+                                sequence: i.sequence || 0,
+                                cooking: i.cooking || '',
+                                obs: i.obs || '',
+                                modifiers: i.modifiers || null
+                            }))
+                        };
+                    });
+
+                return JSON.stringify(compact);
+            } catch (e) {
+                return String(Date.now());
+            }
+        }
+
+        function renderBoardIfChanged(force = false) {
+            const fingerprint = buildBoardFingerprint(activeOrdersData);
+
+            if (!force && fingerprint === lastBoardFingerprint) {
+                updateAntiRush();
+                return;
+            }
+
+            lastBoardFingerprint = fingerprint;
+
+            const board = document.getElementById('board');
+            const previousScrollLeft = board ? board.scrollLeft : 0;
+            const previousScrollTop = board ? board.scrollTop : 0;
+
+            renderBoard();
+
+            requestAnimationFrame(() => {
+                const currentBoard = document.getElementById('board');
+                if (!currentBoard) return;
+                currentBoard.scrollLeft = previousScrollLeft;
+                currentBoard.scrollTop = previousScrollTop;
+            });
+        }
+
         /* ===== SYNCHRONISATION ===== */
         function applyState(state) {
             if (!state || !state.activeOrders) return;
@@ -965,7 +1037,7 @@
                 state.systemSettings ||
                 systemSettings;
 
-            renderBoard();
+            renderBoardIfChanged(false);
         }
 
         const socket = io(SERVER_URL, {
@@ -1043,7 +1115,8 @@
         }
 
         setInterval(() => {
-            renderBoard();
+            // Anti-Rush continue à évoluer en temps réel,
+            // mais on ne reconstruit plus tous les tickets toutes les 5 secondes.
             updateAntiRush();
         }, 5000);
 
