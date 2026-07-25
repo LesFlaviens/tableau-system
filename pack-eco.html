@@ -841,38 +841,6 @@
             }
         }
         
-        // --- SUCCÈS CONNEXION ---
-        if (typeof localLoginFailures !== 'undefined') localLoginFailures = 0;
-        const serverRole = String(data.role || 'STAFF').trim().toLowerCase();
-        let userRole = (serverRole === 'master' || serverRole === 'admin' || serverRole === 'manager') ? 'Manager' : 'Serveur';
-        
-        currentUser = { name: (serverRole === 'master' ? 'Directeur' : 'Employé'), role: userRole, serverRole };
-        if (window.ICHEF_SECURITY) window.ICHEF_SECURITY.user = currentUser;
-        
-        clearPin(); 
-
-        // 1. Appel de la fonction native
-        if (typeof unlockPadWithUser === 'function') {
-            unlockPadWithUser(currentUser);
-        }
-        
-        // 2. Sécurité de secours : Ouverture immédiate de l'interface
-        const loginScreen = document.getElementById('login-screen');
-        if (loginScreen) loginScreen.style.display = 'none';
-
-    } catch (e) {
-        console.error("Erreur connexion PIN:", e);
-        if (msgBox) {
-            msgBox.style.display = 'block';
-            msgBox.style.color = 'var(--alert)'; 
-            msgBox.innerText = '❌ Impossible de joindre le serveur.';
-        }
-        clearPin();
-    } finally {
-        loginInProgress = false;
-    }
-}
-
 // ==========================================
 // 🛠️ GESTION DU MENU OUTILS UNIFIÉ
 // ==========================================
@@ -1027,67 +995,21 @@ var reservationBadgeInterval = setInterval(updateReservationQuickBadge, 1200);
         }
         ['touchstart', 'click', 'mousemove', 'keypress'].forEach(e => document.addEventListener(e, resetInactivityTimer, { passive: true }));
 
-       // Activer le clavier physique de l'ordinateur
-        document.addEventListener('keydown', function(event) {
-            const loginScreen = document.getElementById('login-screen');
-            if (loginScreen && loginScreen.style.display !== 'none') {
-                if (event.key >= '0' && event.key <= '9') {
-                    appendPin(event.key);
-                } else if (event.key === 'Backspace' || event.key === 'Delete' || event.key.toLowerCase() === 'c') {
-                    clearPin();
-                } else if (event.key === 'Enter') {
-                    submitPin().catch(e => console.log(e));
-                }
-            }
-        });
-
-        async function submitPin() {
-            if (loginInProgress) return;
-            const msgBox = document.getElementById('error-msg');
-            msgBox.style.display = 'none';
-
-            if (Date.now() < localLoginBlockedUntil) {
-                msgBox.style.display = 'block'; msgBox.innerText = '⏳ Trop de tentatives.'; return;
-            }
-
-            const pin = currentPin.trim();
-            if (!pin || pin.length < 4) { msgBox.style.display = 'block'; msgBox.innerText = '❌ Code invalide.'; clearPin(); return; }
-
-            loginInProgress = true; msgBox.style.display = 'block'; msgBox.style.color = 'var(--gold)'; msgBox.innerText = '⏳ Vérification...';
-
-            try {
-                const response = await fetch(`${APP_SERVER_URL}/api/verify-pin`, {
-                    method: 'POST', headers: { 'Content-Type': 'application/json' }, cache: 'no-store',
-                    body: JSON.stringify({ tenantID: appTenantID, pin, deviceId: window.ICHEF_SECURITY?.deviceId })
-                });
-                const data = await response.json().catch(() => ({}));
-
-                if (!response.ok || !data.success) {
-                    localLoginFailures++;
-                    if (localLoginFailures >= 5) { localLoginBlockedUntil = Date.now() + 30000; localLoginFailures = 0; }
-                    msgBox.style.color = 'var(--alert)'; msgBox.innerText = `❌ ${data.error || 'Code PIN incorrect.'}`; clearPin(); return;
-                }
-                
-                localLoginFailures = 0;
-                const serverRole = String(data.role || 'STAFF').trim().toLowerCase();
-                let userRole = (serverRole === 'master' || serverRole === 'admin' || serverRole === 'manager') ? 'Manager' : 'Serveur';
-                
-                currentUser = { name: (serverRole==='master' ? 'Directeur' : 'Employé'), role: userRole, serverRole };
-                window.ICHEF_SECURITY.user = currentUser;
-                
-                clearPin(); unlockPadWithUser(currentUser);
-            } catch (e) {
-                msgBox.style.color = 'var(--alert)'; msgBox.innerText = '❌ Impossible de joindre le serveur.'; clearPin();
-            } finally {
-                loginInProgress = false;
-            }
-        }
-
         function unlockPadWithUser(user) {
-            document.getElementById('user-badge').innerText = `Badge: ${user.name}`;
-            document.getElementById('login-screen').style.display = 'none';
-            document.querySelectorAll('.admin').forEach(e => e.style.display = user.role === 'Manager' ? 'block' : 'none');
-            renderRooms(); renderFloor(); connectEmpireH24(); resetInactivityTimer();
+            const badge = document.getElementById('user-badge');
+            const loginScreen = document.getElementById('login-screen');
+
+            if (badge) badge.innerText = `Badge: ${user.name}`;
+            if (loginScreen) loginScreen.style.display = 'none';
+
+            document.querySelectorAll('.admin').forEach(
+                e => e.style.display = user.role === 'Manager' ? 'block' : 'none'
+            );
+
+            if (typeof renderRooms === 'function') renderRooms();
+            if (typeof renderFloor === 'function') renderFloor();
+            if (typeof connectEmpireH24 === 'function') connectEmpireH24();
+            if (typeof resetInactivityTimer === 'function') resetInactivityTimer();
         }
 
         function logout() {
