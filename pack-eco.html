@@ -706,6 +706,85 @@ function clearPin() {
     if (display) display.innerText = ''; 
 }
 
+// ==========================================
+// VALIDATION DU CODE PIN & CONNEXION SERVEUR
+// ==========================================
+async function submitPin() {
+    if (loginInProgress) return;
+    const msgBox = document.getElementById('error-msg');
+    if (msgBox) msgBox.style.display = 'none';
+
+    if (Date.now() < localLoginBlockedUntil) {
+        if (msgBox) {
+            msgBox.style.display = 'block'; 
+            msgBox.style.color = 'var(--alert)';
+            msgBox.innerText = '⏳ Trop de tentatives. Patientez...';
+        }
+        return;
+    }
+
+    const pin = currentPin.trim();
+    if (!pin || pin.length < 4) { 
+        if (msgBox) {
+            msgBox.style.display = 'block'; 
+            msgBox.style.color = 'var(--alert)';
+            msgBox.innerText = '❌ Code invalide (4 chiffres min).'; 
+        }
+        clearPin(); 
+        return; 
+    }
+
+    loginInProgress = true; 
+    if (msgBox) {
+        msgBox.style.display = 'block'; 
+        msgBox.style.color = 'var(--gold)'; 
+        msgBox.innerText = '⏳ Vérification...';
+    }
+
+    try {
+        const response = await fetch(`${APP_SERVER_URL}/api/verify-pin`, {
+            method: 'POST', 
+            headers: { 'Content-Type': 'application/json' }, 
+            cache: 'no-store',
+            body: JSON.stringify({ tenantID: appTenantID, pin, deviceId: window.ICHEF_SECURITY?.deviceId })
+        });
+        
+        const data = await response.json().catch(() => ({}));
+
+        if (!response.ok || !data.success) {
+            localLoginFailures++;
+            if (localLoginFailures >= 5) { 
+                localLoginBlockedUntil = Date.now() + 30000; 
+                localLoginFailures = 0; 
+            }
+            if (msgBox) {
+                msgBox.style.color = 'var(--alert)'; 
+                msgBox.innerText = `❌ ${data.error || 'Code PIN incorrect.'}`;
+            }
+            clearPin(); 
+            return;
+        }
+        
+        localLoginFailures = 0;
+        const serverRole = String(data.role || 'STAFF').trim().toLowerCase();
+        let userRole = (serverRole === 'master' || serverRole === 'admin' || serverRole === 'manager') ? 'Manager' : 'Serveur';
+        
+        currentUser = { name: (serverRole === 'master' ? 'Directeur' : 'Employé'), role: userRole, serverRole };
+        if (window.ICHEF_SECURITY) window.ICHEF_SECURITY.user = currentUser;
+        
+        clearPin(); 
+        unlockPadWithUser(currentUser);
+
+    } catch (e) {
+        if (msgBox) {
+            msgBox.style.color = 'var(--alert)'; 
+            msgBox.innerText = '❌ Impossible de joindre le serveur.';
+        }
+        clearPin();
+    } finally {
+        loginInProgress = false;
+    }
+}        
 // Activer le clavier physique de l'ordinateur
 document.addEventListener('keydown', function(event) {
     const loginScreen = document.getElementById('login-screen');
@@ -2041,9 +2120,8 @@ header{
             <button class="pay-btn cancel" style="width:100%; max-width:none; margin-top: 15px;" onclick="closeErrorModal()">🔙 ANNULER</button>
         </div>
     </div>
-
-    
-        // ROOMS & FLOOR
+<script>
+    // ROOMS & FLOOR
         function renderRooms() {
             const container = document.getElementById('room-tabs-container');
             if (!container) return;
