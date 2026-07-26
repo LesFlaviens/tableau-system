@@ -3547,88 +3547,52 @@ function updateAntiRushServerPanel() {
         }
 
 // ==========================================
-        // 📋 GESTION DE LA CARTE ET AJOUT AU TICKET
+        // 📋 GESTION DE LA CARTE ET AJOUT AU TICKET (SYMBIOSE ADMIN)
         // ==========================================
-        function renderMenu(category) {
-            currentCategory = category; let itemsToDisplay = [];
+        let unifiedCategories = []; // Contiendra toutes les catégories fusionnées du serveur
+
+        // 1. GÉNÉRATION DES ONGLETS DYNAMIQUES
+        function renderDynamicCategories() {
+            const container = document.getElementById('dynamic-categories-container');
+            if (!container) return;
+
+            if (unifiedCategories.length === 0) {
+                container.innerHTML = `<span style="color:var(--text-muted); font-size: 0.8rem; font-style: italic;">En attente du menu de l'Administration...</span>`;
+                return;
+            }
+
+            container.innerHTML = unifiedCategories.map(cat => {
+                let isActive = (currentCategory === cat.id);
+                return `
+                <button class="btn-mini menu-tab ${isActive ? 'gold' : ''}" 
+                        style="${isActive ? 'border-color:var(--gold); color:var(--gold);' : 'border-color:var(--border); color:var(--text-muted);'} margin-right: 5px;"
+                        onclick="renderMenu('${cat.id}')">
+                    📂 ${cat.label.toUpperCase()}
+                </button>`;
+            }).join('');
+        }
+
+        // 2. AFFICHAGE INTELLIGENT DES PLATS
+        function renderMenu(categoryId) {
+            currentCategory = categoryId;
+            let itemsToDisplay = [];
             
-            if (category === 'MenuJour') {
-                currentCourseDefault = 2;
-                for(let k in unifiedMenu) {
-                    if(k.toLowerCase().includes('jour') || k.toLowerCase().includes('sugg')) {
-                        if(unifiedMenu[k]) itemsToDisplay.push(...unifiedMenu[k].map(i => ({...i, dest: 'cuisine', isMenuJour: true})));
-                    }
-                }
+            // Rafraîchir les couleurs des onglets
+            renderDynamicCategories();
+
+            // On récupère strictement les plats classés dans cette catégorie par l'Admin
+            if (unifiedMenu[categoryId]) {
+                itemsToDisplay = unifiedMenu[categoryId].filter(i => !i.hidden);
             }
-            else if (category === 'Entrées') { 
-                currentCourseDefault = 1; 
-                for(let k in unifiedMenu) {
-                    if(k.toLowerCase().includes('entr') || k.toLowerCase().includes('tapas') || k.toLowerCase().includes('apér') || k.toLowerCase().includes('aper') || k.toLowerCase().includes('partag')) {
-                        if(unifiedMenu[k]) itemsToDisplay.push(...unifiedMenu[k].map(i => ({...i, dest: 'cuisine'})));
-                    }
-                }
-            } 
-            else if (category === 'Desserts') { 
-                currentCourseDefault = 3; 
-                for(let k in unifiedMenu) {
-                    if(k.toLowerCase().includes('dessert') || k.toLowerCase().includes('glace') || k.toLowerCase().includes('sucr') || k.toLowerCase().includes('fromag')) {
-                        if(unifiedMenu[k]) itemsToDisplay.push(...unifiedMenu[k].map(i => ({...i, dest: 'cuisine'})));
-                    }
-                }
-            } 
-            else if (category === 'Plats') { 
-                currentCourseDefault = 2; 
-                for(let k in unifiedMenu) {
-                    let kl = k.toLowerCase();
-                    let isMenu = kl.includes('jour') || kl.includes('sugg');
-                    let isEntree = kl.includes('entr') || kl.includes('tapas') || kl.includes('apér') || kl.includes('aper') || kl.includes('partag');
-                    let isDessert = kl.includes('dessert') || kl.includes('glace') || kl.includes('sucr') || kl.includes('fromag');
-
-                    if (!isMenu && !isEntree && !isDessert) {
-                        if(unifiedMenu[k]) itemsToDisplay.push(...unifiedMenu[k].map(i => ({...i, dest: 'cuisine'})));
-                    }
-                }
-            } 
-            else if (category === 'Boissons') { 
-                currentCourseDefault = 0; 
-                for(let key in unifiedMenu) { 
-                    if(unifiedMenu[key] && unifiedMenu[key][0] && unifiedMenu[key][0].dest === 'bar') {
-                        itemsToDisplay.push(...unifiedMenu[key]);
-                    }
-                } 
-            }
-
-            document.querySelectorAll('.drawer .menu-tab').forEach(b => {
-                b.classList.remove('gold'); 
-                b.style.background = 'transparent'; 
-                b.style.borderColor = 'var(--border)'; 
-                b.style.color = 'var(--text-muted)';
-                
-                let btnText = b.innerText.toUpperCase();
-                let isActive = false;
-                
-                if(category === 'MenuJour' && btnText.includes('SUGGESTIONS')) isActive = true;
-                if(category === 'Entrées' && btnText.includes('ENTRÉES')) isActive = true;
-                if(category === 'Plats' && btnText.includes('PLATS')) isActive = true;
-                if(category === 'Desserts' && btnText.includes('DESSERTS')) isActive = true;
-                if(category === 'Boissons' && btnText.includes('BAR')) isActive = true;
-
-                if(isActive) {
-                    b.classList.add('gold'); 
-                    b.style.background = 'transparent'; 
-                    b.style.borderColor = 'var(--gold)'; 
-                    b.style.color = 'var(--gold)';
-                }
-            });
 
             const container = document.getElementById('menu-grid');
+            
             if (itemsToDisplay.length === 0) { 
                 container.innerHTML = `<div style="grid-column:1/-1; text-align:center; color:var(--text-muted); padding:40px; font-style:italic; font-weight: 300;">Aucun plat dans cette catégorie.<br><br><span style="font-size: 0.85rem;">Veuillez ajouter des plats depuis le Panneau d'Administration.</span></div>`; 
                 return; 
             }
 
             container.innerHTML = itemsToDisplay.map(item => {
-                if (item.hidden === true) return '';
                 let isSoldOut = (item.stock === 0 || item.stock === "0");
                 let cleanName = item.name.replace(/\n/g, '<br>');
                 let escapedName = escapeQuotes(item.name);
@@ -3645,16 +3609,19 @@ function updateAntiRushServerPanel() {
                     stockHtml = `<div class="${badgeClass}">${item.stock}</div>`;
                 }
 
-                // 🚨 NOUVEAU : AFFICHAGE DES BADGES ALLERGÈNES SUR LE PAD SERVEUR
                 let tagsAlert = '';
                 if (item.tags && item.tags.length > 0) {
-                    const tagMap = { 'vegan': '🌿', 'vege': '🥗', 'nogluten': '🌾', 'nopork': '🐷', 'spicy': '🌶️' };
+                    const tagMap = { 'vegan': '🌿', 'vege': '🥗', 'nogluten': '🌾', 'nopork': '🐷', 'spicy': '🌶️', 'lactose': '🥛' };
                     tagsAlert = `<div style="position: absolute; bottom: 8px; left: 10px; font-size: 0.75rem; pointer-events: none; opacity: 0.8;">` + 
                         item.tags.map(t => tagMap[t] || t).join(' ') + 
                     `</div>`;
                 }
 
-                let clickAction = (item.isMenuJour) ? `addMenuToTicket('${escapedName}', ${price}, '${item.dest}', ${tvaRate})` : `addToTicket('${escapedName}', ${price}, '${item.dest}', ${tvaRate})`;
+                // Destination dynamique en fonction de la catégorie
+                let isBarItem = (typeof categoriesBar !== 'undefined') ? categoriesBar.find(c => c.id === categoryId) : false;
+                let dest = item.dest || (isBarItem ? 'bar' : 'cuisine');
+                
+                let clickAction = (item.isMenuJour) ? `addMenuToTicket('${escapedName}', ${price}, '${dest}', ${tvaRate})` : `addToTicket('${escapedName}', ${price}, '${dest}', ${tvaRate})`;
 
                 return `
                     <button class="btn-item ${isSoldOut ? 'sold-out' : ''}" onclick="${clickAction}" style="position: relative; padding-bottom: 25px;">
@@ -3667,7 +3634,7 @@ function updateAntiRushServerPanel() {
             }).join('');
         }
 
-        function escapeQuotes(str) { return str.replace(/'/g, "\\'").replace(/"/g, '&quot;').replace(/\n/g, '[BR]').replace(/\r/g, ''); }
+        function escapeQuotes(str) { return String(str).replace(/'/g, "\\'").replace(/"/g, '&quot;').replace(/\n/g, '[BR]').replace(/\r/g, ''); }
 
 
         // =========================================================
