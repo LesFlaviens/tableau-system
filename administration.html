@@ -59,14 +59,51 @@
             try {
                 const deviceId = await getDeviceFingerprint();
                 
-                // 🚨 Session validée localement pour débloquer l'interface !
+                // ✅ Validation réelle auprès du server.js
+                const bootstrapRes = await fetch(
+                    `${window.SERVER_URL}/api/security/bootstrap`,
+                    {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        credentials: 'include',
+                        cache: 'no-store',
+                        body: JSON.stringify({
+                            tenantID: window.tenantID,
+                            deviceId
+                        })
+                    }
+                );
+
+                let bootstrapData = {};
+                try {
+                    bootstrapData = await bootstrapRes.json();
+                } catch (_) {}
+
+                if (!bootstrapRes.ok || !bootstrapData.success) {
+                    throw new Error(
+                        bootstrapData.error ||
+                        `Validation serveur refusée (${bootstrapRes.status})`
+                    );
+                }
+
+                const csrfToken = String(bootstrapData.csrfToken || '');
+
+                if (csrfToken) {
+                    sessionStorage.setItem('ichef_csrf_token', csrfToken);
+                    localStorage.setItem('ichef_csrf_token', csrfToken);
+                }
+
                 window.ICHEF_SECURITY = {
-                    csrfToken: localStorage.getItem('ichef_csrf_token') || sessionStorage.getItem('ichef_csrf_token') || '',
+                    csrfToken,
                     user: { nom: "Admin", role: "MANAGER" },
-                    permissions: ['*'], // Donne tous les accès d'administration
-                    plan: 'CHEF', // Sera écrasé par la vraie licence dans quelques millisecondes
-                    addons: [],
-                    deviceId: deviceId
+                    permissions: ['*'],
+                    plan: bootstrapData.plan || '',
+                    addons: Array.isArray(bootstrapData.addons) ? bootstrapData.addons : [],
+                    deviceId,
+                    maxScreens: Number(bootstrapData.maxScreens || 0),
+                    registeredScreens: Number(bootstrapData.registeredScreens || 0),
+                    availableScreens: Number(bootstrapData.availableScreens || 0),
+                    deviceRegistered: bootstrapData.deviceRegistered === true
                 };
 
                 document.documentElement.style.opacity = '1';
@@ -232,6 +269,7 @@
     <nav>
         <div class="nav-logo"><span>ICHEF</span> OS</div>
         <div style="display: flex; gap: 15px; align-items: center;">
+            <span id="server-status" style="font-size:.72rem;font-weight:800;color:#fbbf24;border:1px solid rgba(251,191,36,.4);padding:7px 10px;border-radius:999px;">● CONNEXION...</span>
             <button id="pwa-install-btn" class="btn-install-app" onclick="ouvrirGuideInstallation()">📲 Installer l'App</button>
             <button class="btn-logout" onclick="window.logicielManager.logout()">Se déconnecter</button>
         </div>
@@ -464,6 +502,46 @@
                 return this.permissions.includes('*') || this.permissions.includes(permission);
             },
 
+            setServerStatus: function(ok, label) {
+                const el = document.getElementById('server-status');
+                if (!el) return;
+
+                el.textContent = `● ${label}`;
+                el.style.color = ok ? '#10b981' : '#ef4444';
+                el.style.borderColor = ok
+                    ? 'rgba(16,185,129,.45)'
+                    : 'rgba(239,68,68,.45)';
+            },
+
+            checkServerConnection: async function() {
+                try {
+                    const res = await fetch(
+                        `${this.SERVER_URL}/api/check-license?tenantID=${encodeURIComponent(this.tenantID)}&_t=${Date.now()}`,
+                        {
+                            cache: 'no-store',
+                            credentials: 'include'
+                        }
+                    );
+
+                    const data = await res.json();
+
+                    if (res.ok && data.success && data.status !== 'SUSPENDU') {
+                        this.setServerStatus(true, 'SERVEUR CONNECTÉ');
+                        return true;
+                    }
+
+                    this.setServerStatus(false, data.status === 'SUSPENDU'
+                        ? 'LICENCE SUSPENDUE'
+                        : 'SERVEUR REFUSÉ');
+
+                    return false;
+
+                } catch (e) {
+                    this.setServerStatus(false, 'SERVEUR HORS LIGNE');
+                    return false;
+                }
+            },
+
             apiFetch: async function(path, options = {}) {
                 const headers = new Headers(options.headers || {});
                 if (!headers.has('Content-Type') && options.body) headers.set('Content-Type', 'application/json');
@@ -477,11 +555,14 @@
                     cache: 'no-store'
                 });
 
-                if (response.status === 401 || response.status === 403) {
+                if (response.status === 401) {
                     sessionStorage.clear();
-                    window.location.replace(`connexionpartenaire.html?tenantID=${encodeURIComponent(this.tenantID || '')}`);
+                    window.location.replace(
+                        `connexionpartenaire.html?tenantID=${encodeURIComponent(this.tenantID || '')}`
+                    );
                     throw new Error('Session expirée');
                 }
+
                 return response;
             },
 
@@ -526,9 +607,20 @@
                     document.getElementById('restaurant-name').innerText = this.tenantID.toUpperCase();
                 }
 
+                await this.checkServerConnection();
+
                 this.chargerCoordonnees();
                 this.loadConnectedApps();
                 this.loadScreenStats();
+
+                if (this._serverCheckTimer) {
+                    clearInterval(this._serverCheckTimer);
+                }
+
+                this._serverCheckTimer = setInterval(
+                    () => this.checkServerConnection(),
+                    20000
+                );
             },
 
             loadConnectedApps: async function() {
@@ -755,54 +847,113 @@
             },
 
             sauvegarderCoordonnees: async function() {
-                if (this.isDemoMode) return alert("🔒 Mode Démo : enregistrement désactivé.");
-                if (!this.hasPermission('CONTACT_UPDATE')) return alert("Action non autorisée pour votre rôle.");
+                if (this.isDemoMode) {
+                    return alert("🔒 Mode Démo : enregistrement désactivé.");
+                }
 
                 const email = document.getElementById('user-email').value.trim();
                 const phone = document.getElementById('user-phone').value.trim();
-                if (!email && !phone) return alert("Veuillez remplir au moins un champ.");
-                if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return alert("Adresse email invalide.");
+
+                if (!email && !phone) {
+                    return alert("Veuillez remplir au moins un champ.");
+                }
+
+                if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+                    return alert("Adresse email invalide.");
+                }
+
+                const masterPin = prompt("Code PIN administrateur pour confirmer :");
+                if (!masterPin) return;
 
                 try {
                     const res = await this.apiFetch('/api/update-contact', {
                         method: 'POST',
-                        body: JSON.stringify({ tenantID: this.tenantID, email, phone })
+                        body: JSON.stringify({
+                            tenantID: this.tenantID,
+                            masterPin: String(masterPin),
+                            email,
+                            phone
+                        })
                     });
+
                     const data = await res.json();
-                    if (!res.ok || !data.success) throw new Error(data.error || 'Enregistrement refusé');
-                    await this.audit('CONTACT_UPDATED', { emailChanged: Boolean(email), phoneChanged: Boolean(phone) });
+
+                    if (!res.ok || !data.success) {
+                        throw new Error(data.error || 'Enregistrement refusé');
+                    }
+
+                    this.audit('CONTACT_UPDATED', {
+                        emailChanged: Boolean(email),
+                        phoneChanged: Boolean(phone)
+                    }).catch(() => {});
+
                     alert("Informations enregistrées avec succès.");
+
                 } catch (e) {
                     alert("Erreur : " + e.message);
                 }
             },
 
             modifierPinMaster: async function() {
-                if (this.isDemoMode) return alert("🔒 Mode Démo : modification désactivée.");
-                if (!this.hasPermission('MASTER_PIN_CHANGE')) return alert("Action non autorisée pour votre rôle.");
+                if (this.isDemoMode) {
+                    return alert("🔒 Mode Démo : modification désactivée.");
+                }
 
                 const currentPin = prompt("Saisissez votre code administrateur actuel :");
                 if (!currentPin) return;
-                const newPin = prompt("Nouveau code PIN administrateur (6 à 9 chiffres) :");
+
+                const newPin = prompt("Nouveau code PIN administrateur (4 à 9 chiffres) :");
                 if (!newPin) return;
-                if (!/^\d{6,9}$/.test(newPin)) return alert("Le nouveau code doit contenir entre 6 et 9 chiffres.");
-                if (/^(\d)\1+$/.test(newPin) || ['123456','654321','000000','111111'].includes(newPin)) {
-                    return alert("Ce code est trop simple.");
+
+                if (!/^\d{4,9}$/.test(newPin)) {
+                    return alert("Le nouveau code doit contenir entre 4 et 9 chiffres.");
                 }
+
                 const confirmPin = prompt("Confirmez le nouveau code PIN :");
-                if (newPin !== confirmPin) return alert("Les codes ne correspondent pas.");
+                if (newPin !== confirmPin) {
+                    return alert("Les codes ne correspondent pas.");
+                }
 
                 try {
-                    const res = await this.apiFetch('/api/security/change-master-pin', {
+                    // 1. Vérifie le PIN Master actuel
+                    const verifyRes = await this.apiFetch('/api/verify-pin', {
                         method: 'POST',
-                        body: JSON.stringify({ tenantID: this.tenantID, currentPin, newPin })
+                        body: JSON.stringify({
+                            tenantID: this.tenantID,
+                            pin: String(currentPin),
+                            deviceId: ''
+                        })
                     });
-                    const data = await res.json();
-                    currentPin.replace(/./g, '0');
-                    if (!res.ok || !data.success) throw new Error(data.error || 'Mise à jour refusée');
-                    await this.audit('MASTER_PIN_CHANGED');
-                    alert("Code modifié. Toutes les autres sessions ont été révoquées.");
-                    await this.logout(false);
+
+                    const verifyData = await verifyRes.json();
+
+                    if (
+                        !verifyRes.ok ||
+                        !verifyData.success ||
+                        verifyData.role !== 'MASTER'
+                    ) {
+                        throw new Error("Code administrateur actuel incorrect.");
+                    }
+
+                    // 2. Mise à jour via la route réellement présente dans server.js
+                    const updateRes = await this.apiFetch('/api/update-master-pin', {
+                        method: 'POST',
+                        body: JSON.stringify({
+                            tenantID: this.tenantID,
+                            newPin: String(newPin)
+                        })
+                    });
+
+                    const updateData = await updateRes.json();
+
+                    if (!updateRes.ok || !updateData.success) {
+                        throw new Error(updateData.error || 'Mise à jour refusée');
+                    }
+
+                    this.audit('MASTER_PIN_CHANGED').catch(() => {});
+                    alert("Code PIN administrateur modifié.");
+                    await this.loadScreenStats();
+
                 } catch (e) {
                     alert("Erreur : " + e.message);
                 }
