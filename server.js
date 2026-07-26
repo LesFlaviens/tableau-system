@@ -2087,6 +2087,73 @@ async function creerCompteDemo() {
     }
 }
 creerCompteDemo();
+// =========================================================================
+// ⚙️ ROUTES D'ADMINISTRATION ET DE CONFIGURATION DU RESTAURANT
+// =========================================================================
+
+app.get('/api/check-license', async (req, res) => {
+    try {
+        const tenant = await Tenant.findOne({ tenantID: cleanString(req.query.tenantID) });
+        if (!tenant) return res.status(404).json({ success: false });
+        res.json({ 
+            success: true, 
+            status: tenant.status, 
+            plan: tenant.plan, 
+            specialite: tenant.specialite,
+            addons: tenant.addons || []
+        });
+    } catch (e) { res.status(500).json({ success: false }); }
+});
+
+app.get('/api/dashboard-info', async (req, res) => {
+    try {
+        const tenant = await Tenant.findOne({ tenantID: cleanString(req.query.tenantID) });
+        if (!tenant) return res.status(404).json({ success: false });
+        const screenLimit = await syncTenantScreenLimit(tenant);
+        res.json({ success: true, activeDevices: tenant.registeredDevices.length, maxScreens: screenLimit });
+    } catch (e) { res.status(500).json({ success: false }); }
+});
+
+app.get('/api/get-contact', async (req, res) => {
+    try {
+        const tenant = await Tenant.findOne({ tenantID: cleanString(req.query.tenantID) });
+        if (tenant) res.json({ success: true, contact: { email: tenant.email, phone: tenant.phone } });
+        else res.json({ success: false });
+    } catch(e) { res.status(500).json({ success: false }); }
+});
+
+app.post('/api/update-contact', async (req, res) => {
+    try {
+        const { tenantID, masterPin, email, phone } = req.body;
+        const tenant = await Tenant.findOne({ tenantID: cleanString(tenantID) });
+        if (!tenant || tenant.pin !== masterPin) return res.status(403).json({ success: false, error: "Non autorisé." });
+        tenant.email = email; 
+        tenant.phone = phone; 
+        await tenant.save();
+        res.json({ success: true });
+    } catch(e) { res.status(500).json({ success: false }); }
+});
+
+app.post('/api/update-master-pin', async (req, res) => {
+    try {
+        const { tenantID, oldPin, newPin } = req.body;
+        const tenant = await Tenant.findOne({ tenantID: cleanString(tenantID) });
+        if (!tenant || tenant.pin !== oldPin) return res.status(403).json({ success: false, error: "Ancien code PIN invalide." });
+        tenant.pin = newPin; 
+        tenant.registeredDevices = []; // Déconnecte tous les écrans par sécurité
+        await tenant.save();
+        res.json({ success: true });
+    } catch(e) { res.status(500).json({ success: false }); }
+});
+
+// Routes Stripe pour l'achat d'écrans et le portail de facturation
+app.post('/api/stripe/create-screen-upgrade-session', async (req, res) => {
+    res.json({ url: 'https://checkout.stripe.com/' });
+});
+
+app.post('/api/stripe/create-customer-portal-session', async (req, res) => {
+    res.json({ url: 'https://billing.stripe.com/' });
+});
 
 // 🔥 DÉMARRAGE DU SERVEUR (DOIT ÊTRE TOUT SEUL À LA FIN) 🔥
 server.listen(PORT, () => {
