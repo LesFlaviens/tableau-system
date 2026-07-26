@@ -2070,23 +2070,45 @@ app.post(['/api/kill-switch', '/api/admin-reset-devices'], async (req, res) => {
 }); // <--- LA PARENTHÈSE MANQUANTE ÉTAIT ICI !
 
 // ==========================================
-// 🌟 AUTO-GÉNÉRATION DU COMPTE DE DÉMONSTRATION
+// 🛠️ CRÉATION MANUELLE D'UN NOUVEAU CLIENT
 // ==========================================
-async function creerCompteDemo() {
+async function creerNouveauClient(nomRestaurant, emailContact, planChoisi) {
     try {
-        const demoExist = await Tenant.findOne({ tenantID: 'demo' });
-        if (!demoExist) {
-            await Tenant.create({
-                tenantID: 'demo', clientName: 'Restaurant iCHEF Démo', status: 'ACTIF',
-                plan: 'EMPIRE', pin: '0000', maxScreens: 50, maxStaff: 999
-            });
-            console.log('✅ Compte DÉMO ("demo" / "0000") généré avec succès dans la base !');
-        }
+        // 1. Génération d'un tenantID propre et unique (ex: "le-bistrot-9f4a")
+        const baseId = nomRestaurant.toLowerCase().trim().replace(/[^a-z0-9]/g, '-');
+        const uniqueSuffix = Math.random().toString(36).substring(2, 6);
+        const tenantID = `${baseId}-${uniqueSuffix}`;
+
+        // 2. Génération d'un code PIN maître sécurisé à 4 chiffres
+        const pin = Math.floor(1000 + Math.random() * 9000).toString();
+
+        // 3. Définition des limites selon le plan (utilise ta fonction existante)
+        const limitScreens = getPlanScreenLimit(planChoisi);
+        const limitStaff = ['CHEF', 'PATISSIER', 'BAR'].includes(planChoisi) ? 1 : 999;
+
+        // 4. Inscription dans la base de données
+        const nouveauClient = await Tenant.create({
+            tenantID: tenantID,
+            clientName: nomRestaurant,
+            email: emailContact,
+            status: 'ACTIF',
+            plan: planChoisi, 
+            pin: pin,
+            maxScreens: limitScreens,
+            maxStaff: limitStaff
+        });
+
+        console.log(`✅ Client créé avec succès : ${nomRestaurant}`);
+        console.log(`🔑 URL d'accès : https://os.iche.fr/administration.html?tenantID=${tenantID}`);
+        console.log(`🔒 PIN Maître : ${pin}`);
+
+        return nouveauClient;
+
     } catch (e) {
-        console.error("Erreur lors de la création du compte démo :", e);
+        console.error("❌ Erreur lors de la création du client :", e);
+        return null;
     }
 }
-creerCompteDemo();
 // =========================================================================
 // ⚙️ ROUTES D'ADMINISTRATION ET DE CONFIGURATION DU RESTAURANT
 // =========================================================================
