@@ -720,21 +720,28 @@
 
             const order = activeOrdersData[orderId];
 
-            // Marque uniquement la séquence actuellement produite comme prête.
-            order.items.forEach(item => {
-                const seqState = String(item.sequenceStatus || '').toUpperCase();
+           order.items.forEach((item,index)=>{
+            const dest=String(item.dest||'cuisine').toLowerCase();
+            // 🔥 IGNORER CE QUI EST EN ATTENTE DE SÉQUENCE
+            if(!['cuisine','bar'].includes(dest) || item.done || item.isSent===false || String(item.sequenceStatus || '').toUpperCase()==='WAITING') return;
+            if(String(item.status||'').toUpperCase()==='PRET_AU_PASS') return;
 
-                if (
-                    item.isSent === true &&
-                    seqState !== 'WAITING' &&
-                    seqState !== 'DRAFT' &&
-                    item.done === true
-                ) {
-                    item.status = 'PRET_AU_PASS';
-                    item.sequenceStatus = 'READY';
-                    item.readyAt = item.readyAt || Date.now();
-                }
-            });
+            const name=String(item.n||item.name||'').trim();
+            if(!name) return;
+
+            const key=`${dest}::${normalizeBatchName(name)}`;
+            if(!batches[key]){
+                batches[key]={name,dest,qty:0,tables:[],refs:[],oldestTime:now,urgent:false};
+            }
+
+            const qty=Number(item.qty||1);
+            const t=Number(item.requestedAt||item.itemId||order.time||now);
+            batches[key].qty+=qty;
+            batches[key].tables.push(tableId.replace(/^WEB_/i,''));
+            batches[key].refs.push({tableId,index});
+            batches[key].oldestTime=Math.min(batches[key].oldestTime,t);
+            if(/URGENT/i.test(String(item.obs||''))) batches[key].urgent=true;
+        });
 
             const stillWaiting = order.items.some(item => {
                 const s = String(item.sequenceStatus || '').toUpperCase();
