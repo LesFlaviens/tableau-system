@@ -4278,112 +4278,74 @@ ${count} ligne(s) · ${sequenceCount} séquence(s).
         }
 
 
-        // ==========================================
-        // ✏️ ÉDITION DES BONS ET MODALES STANDARDS
+       // ==========================================
+        // ✏️ ÉDITION DES BONS ET SÉQUENÇAGE MANUEL
         // ==========================================
         let pendingEditIndex = null;
+
+        function ensureEditModal() {
+            let modal = document.getElementById('edit-item-modal');
+            if (modal) return modal;
+
+            modal = document.createElement('div');
+            modal.id = 'edit-item-modal';
+            modal.className = 'modal';
+            modal.style.zIndex = '99999';
+            modal.innerHTML = `
+                <div class="ichef-choice-modal-card" style="max-width: 450px;">
+                    <h2 class="ichef-choice-title">✏️ ÉDITION DU PLAT</h2>
+                    <h3 id="edit-item-title" style="color:#fff; text-align:center; margin-bottom:20px; font-size:1.2rem;"></h3>
+                    
+                    <label style="color:var(--text-muted); font-size:0.75rem; font-weight:bold; letter-spacing:1px; text-transform:uppercase;">Ordre d'envoi (Séquence)</label>
+                    <select id="edit-item-course" class="ichef-modifier-input" style="margin-bottom:15px; font-weight:bold; color:var(--gold);">
+                        <option value="0">🍸 Envoi immédiat (Boissons/Tapas)</option>
+                        <option value="1">🥗 Séquence 1 (Entrées)</option>
+                        <option value="2">🔥 Séquence 2 (Plats)</option>
+                        <option value="3">🍰 Séquence 3 (Desserts)</option>
+                    </select>
+
+                    <label style="color:var(--text-muted); font-size:0.75rem; font-weight:bold; letter-spacing:1px; text-transform:uppercase;">Prix de vente (€)</label>
+                    <input type="number" id="edit-item-price" class="ichef-modifier-input" step="0.01" style="margin-bottom:15px;">
+                    
+                    <label style="color:var(--text-muted); font-size:0.75rem; font-weight:bold; letter-spacing:1px; text-transform:uppercase;">Observation spéciale</label>
+                    <input type="text" id="edit-item-obs" class="ichef-modifier-input" placeholder="Ex: Sans sel, très chaud..." style="margin-bottom:20px;">
+                    
+                    <input type="hidden" id="edit-item-seat">
+                    <div style="text-align:center; margin-bottom: 25px;">
+                        <button class="btn-mini" onclick="cycleEditSeat()" id="edit-item-seat-display" style="padding:10px 20px; border-color:var(--border-strong);">🍽️ CENTRE</button>
+                    </div>
+
+                    <div style="display:flex; gap:10px;">
+                        <button class="pay-btn cancel" style="flex:1; margin:0;" onclick="offerItem()">🎁 OFFERT</button>
+                        <button class="pay-btn" style="flex:1; margin:0; border-color:var(--gold); background:var(--gold); color:#000; font-weight:900;" onclick="saveItemEdit()">✅ VALIDER</button>
+                    </div>
+                    <button class="pay-btn cancel" style="width:100%; margin-top:15px;" onclick="closeEditModal()">❌ FERMER</button>
+                </div>
+            `;
+            document.body.appendChild(modal);
+            return modal;
+        }
+
         function openEditItem(idx) { 
-            pendingEditIndex = idx; let item = currentTicket[idx]; 
+            ensureEditModal(); // Création de la modale si elle n'existe pas
+            pendingEditIndex = idx; 
+            let item = currentTicket[idx]; 
+            
             document.getElementById('edit-item-title').innerText = item.n.replace(/\n/g, ' '); 
             document.getElementById('edit-item-price').value = item.p; 
             document.getElementById('edit-item-obs').value = item.obs || ""; 
             document.getElementById('edit-item-course').value = item.course !== undefined ? item.course : 2;
             document.getElementById('edit-item-seat').value = item.seat || 0;
             updateEditSeatDisplay(item.seat || 0); 
+            
             document.getElementById('edit-item-modal').classList.add('open'); 
         }
-        function closeEditModal() { pendingEditIndex = null; document.getElementById('edit-item-modal').classList.remove('open'); }
-        
-        function updateEditSeatDisplay(seatNum) { document.getElementById('edit-item-seat-display').innerText = seatNum === 0 ? '🍽️ CENTRE' : '👤 C' + seatNum; }
-        function cycleEditSeat() {
-            let input = document.getElementById('edit-item-seat');
-            let next = (parseInt(input.value) || 0) + 1;
-            if (next > 8) next = 0; 
-            input.value = next; updateEditSeatDisplay(next);
+
+        function closeEditModal() { 
+            pendingEditIndex = null; 
+            const modal = document.getElementById('edit-item-modal');
+            if(modal) modal.classList.remove('open'); 
         }
-
-        function saveItemEdit() {
-            if(pendingEditIndex === null) return; 
-            let p = parseFloat(document.getElementById('edit-item-price').value);
-            let c = parseInt(document.getElementById('edit-item-course').value);
-            let seat = parseInt(document.getElementById('edit-item-seat').value) || 0;
-            let obsVal = document.getElementById('edit-item-obs').value.trim();
-            if(!isNaN(p)) { currentTicket[pendingEditIndex].p = p; currentTicket[pendingEditIndex].obs = obsVal; currentTicket[pendingEditIndex].course = c; currentTicket[pendingEditIndex].seat = seat; }
-            closeEditModal(); renderTicket();
-            executeSaveTableState(false, true);
-        }
-
-        function offerItem() {
-            if(pendingEditIndex === null) return;
-            let item = currentTicket[pendingEditIndex];
-            let maxQty = item.qty || 1;
-            let qtyToOfferStr = prompt(`Combien de "${item.n.replace(/\n/g, ' ')}" voulez-vous offrir ? (Max: ${maxQty})`, "1");
-            if (!qtyToOfferStr) return; 
-            let qtyToOffer = parseInt(qtyToOfferStr);
-            if (isNaN(qtyToOffer) || qtyToOffer <= 0 || qtyToOffer > maxQty) return alert("⚠️ Quantité invalide.");
-
-            if (qtyToOffer === maxQty) {
-                item.originalPrice = item.originalPrice !== undefined ? item.originalPrice : item.p; 
-                item.p = 0; item.isOffered = true; item.obs = (item.obs ? item.obs + " | " : "") + "🎁 Geste Co.";
-            } else {
-                item.qty = maxQty - qtyToOffer; 
-                let offeredItem = JSON.parse(JSON.stringify(item)); 
-                offeredItem.id = Date.now() + Math.random(); offeredItem.qty = qtyToOffer;
-                offeredItem.originalPrice = offeredItem.originalPrice !== undefined ? offeredItem.originalPrice : offeredItem.p;
-                offeredItem.p = 0; offeredItem.isOffered = true; offeredItem.obs = (offeredItem.obs ? offeredItem.obs + " | " : "") + "🎁 Geste Co.";
-                currentTicket.push(offeredItem);
-            }
-            closeEditModal(); renderTicket();
-            executeSaveTableState(false, true);
-        }
-
-        function openSurMesureModal() { document.getElementById('sm-name').value = ''; document.getElementById('sm-price').value = ''; document.getElementById('sur-mesure-modal').classList.add('open'); }
-        function closeSurMesureModal() { document.getElementById('sur-mesure-modal').classList.remove('open'); }
-        function addSurMesure() {
-            let n = document.getElementById('sm-name').value.trim();
-            let p = parseFloat(document.getElementById('sm-price').value) || 0;
-            let c = parseInt(document.getElementById('sm-course').value);
-            let tvaRate = parseFloat(document.getElementById('sm-tva').value);
-            if(!n) return alert("Veuillez entrer un nom.");
-            let dest = (c === 0) ? 'bar' : 'cuisine';
-            executeAddToCart("✏️ " + n, p, dest, c, "✏️ " + n, tvaRate);
-            closeSurMesureModal();
-        }
-
-        let pendingCancelIndex = null;
-        function removeTicketItem(idx) { pendingCancelIndex = idx; document.getElementById('cancel-item-name').innerText = `${currentTicket[idx].n.replace(/\n/g, ' ')}`; document.getElementById('cancel-modal').classList.add('open'); }
-        function abortCancelItem() { pendingCancelIndex = null; document.getElementById('cancel-modal').classList.remove('open'); }
-        async function executeCancelItem(raison) {
-            if (pendingCancelIndex === null) return;
-            const reason = String(raison || '').trim();
-            if (reason.length < 3) return alert('Motif d’annulation obligatoire.');
-            if (!(await requirePermission('ORDER_ITEM_CANCEL', { tableId: currentTableId }))) return;
-
-            const item = currentTicket[pendingCancelIndex];
-            const cancelledSnapshot = JSON.parse(JSON.stringify(item));
-            if (item.qty > 1) item.qty -= 1; else currentTicket.splice(pendingCancelIndex, 1);
-            await auditEvent('ORDER_ITEM_CANCELLED', { tableId: currentTableId, reason, item: cancelledSnapshot });
-            pendingCancelIndex = null;
-            document.getElementById('cancel-modal').classList.remove('open');
-            renderTicket();
-            await executeSaveTableState(false, true);
-        }
-
-        function confirmClearTicket() { if(currentTicket.length === 0) return; document.getElementById('clear-ticket-modal').classList.add('open'); }
-        function abortClearTicket() { document.getElementById('clear-ticket-modal').classList.remove('open'); }
-        async function executeClearTicket(raison) {
-            const reason = String(raison || '').trim();
-            if (reason.length < 3) return alert('Motif obligatoire.');
-            if (!(await requirePermission('ORDER_VOID', { tableId: currentTableId }))) return;
-            const tableId = currentTableId;
-            await API.update(tableId, null, true, { reason, operationType: 'ORDER_VOID' });
-            await auditEvent('ORDER_VOID_REQUESTED', { tableId, reason }, false);
-            currentTicket = [];
-            renderTicket();
-            document.getElementById('clear-ticket-modal').classList.remove('open');
-            closeOrder(); renderFloor();
-        }
-
         // ==========================================
         // 💳 SYSTÈME D'ENCAISSEMENT ET FIDÉLITÉ
         // ==========================================
