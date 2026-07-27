@@ -464,6 +464,13 @@
          <button class="nav-btn" style="color: #D4AF37; border-color: #D4AF37;" onclick="window.location.href='haccp.html?from=bar'">📋 HACCP</button>
             <button class="nav-btn" style="color: var(--accent); border: 1px solid var(--accent); margin-left: 10px;" onclick="window.open('chef-bar.html?tenantID=' + tenantID, '_blank')"> PASS BAR</button>
             
+            <button class="nav-btn"
+                    style="color:var(--gold); border-color:var(--border-strong);"
+                    onclick="undoLastBarMenuChange()"
+                    title="Restaurer la carte avant la dernière modification">
+                ↩ ANNULER DERNIÈRE MODIF
+            </button>
+
             <div class="sync-status">
                 <div id="sync-dot" class="sync-dot"></div>
                 <span id="sync-text" style="color: var(--text-muted);">CONNEXION...</span>
@@ -692,16 +699,45 @@
                 }
             },
             save: async (k, d) => {
-                let state = JSON.parse(localStorage.getItem('EMPIRE_CHEF_SYNC')) || { activeOrders: {} };
+                // Copie locale de secours.
+                let state;
+                try {
+                    state = JSON.parse(localStorage.getItem('EMPIRE_CHEF_SYNC')) || { activeOrders: {} };
+                } catch (_) {
+                    state = { activeOrders: {} };
+                }
+
+                if (!state.activeOrders || typeof state.activeOrders !== 'object') {
+                    state.activeOrders = {};
+                }
+
                 state.activeOrders[k] = { data: d };
                 localStorage.setItem('EMPIRE_CHEF_SYNC', JSON.stringify(state));
-                
+
                 try {
-                    await fetch(`${SERVER_URL}/update-order?tenantID=${tenantID}`, {
-                        method:'POST', headers:{'Content-Type':'application/json'},
-                        body: JSON.stringify({ tableId:k, order:{data:d} })
-                    });
-                } catch(e) { console.warn("Réseau lent. Données sécurisées localement."); }
+                    const response = await fetch(
+                        `${SERVER_URL}/update-order?tenantID=${encodeURIComponent(tenantID)}`,
+                        {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            cache: 'no-store',
+                            body: JSON.stringify({
+                                tableId: k,
+                                order: { data: d }
+                            })
+                        }
+                    );
+
+                    if (!response.ok) {
+                        throw new Error(`HTTP ${response.status}`);
+                    }
+
+                    return true;
+
+                } catch (error) {
+                    console.error(`❌ Sauvegarde serveur impossible pour ${k}:`, error);
+                    return false;
+                }
             }
         };
 
@@ -1162,6 +1198,8 @@
         // 🛡️ BAR : SOUS-CATÉGORIES + PROTECTION ANTI-ERREUR
         // ==============================================================
         const BAR_MENU_BACKUP_KEY = 'ICHEF_BAR_MENU_LAST_GOOD';
+        const BAR_MENU_HISTORY_KEY = 'ICHEF_BAR_MENU_HISTORY';
+        const BAR_MENU_HISTORY_MAX = 10;
 
         function normalizeLabel(value) {
             return String(value || '')
@@ -1198,6 +1236,112 @@
 
         function cloneMenuSnapshot() {
             return cloneSafe(menuData, {});
+        }
+
+        function pushMenuHistory(label = 'Modification') {
+            try {
+                let history = JSON.parse(
+                    localStorage.getItem(BAR_MENU_HISTORY_KEY) || '[]'
+                );
+
+                if (!Array.isArray(history)) history = [];
+
+                history.unshift({
+                    at: new Date().toISOString(),
+                    label,
+                    menu: cloneMenuSnapshot()
+                });
+
+                history = history.slice(0, BAR_MENU_HISTORY_MAX);
+
+                localStorage.setItem(
+                    BAR_MENU_HISTORY_KEY,
+                    JSON.stringify(history)
+                );
+            } catch (error) {
+                console.warn("Historique local indisponible :", error);
+            }
+        }
+
+        async function undoLastBarMenuChange() {
+            let history = [];
+
+            try {
+                history = JSON.parse(
+                    localStorage.getItem(BAR_MENU_HISTORY_KEY) || '[]'
+                );
+            } catch (_) {}
+
+            if (!Array.isArray(history) || history.length === 0) {
+                return alert("Aucune modification récente à annuler.");
+            }
+
+            const last = history[0];
+
+            const ok = confirm(
+                `↩ ANNULER LA DERNIÈRE MODIFICATION ?\n\n${last.label || 'Modification'}\n${new Date(last.at).toLocaleString('fr-FR')}\n\nLa carte BAR précédente sera restaurée.`
+            );
+
+            if (!ok) return;
+
+            const currentMenu = cloneMenuSnapshot();
+
+            try {
+                menuData = cloneSafe(last.menu, {});
+                renderAll();
+
+                const saved = await syncMenuToCloud();
+
+                if (!saved) {
+                    menuData = currentMenu;
+                    renderAll();
+                    return alert("❌ Impossible de restaurer : le serveur n'a pas confirmé la sauvegarde.");
+                }
+
+                history.shift();
+                localStorage.setItem(
+                    BAR_MENU_HISTORY_KEY,
+                    JSON.stringify(history)
+                );
+
+                alert("✅ Dernière modification annulée.");
+
+            } catch (error) {
+                menuData = currentMenu;
+                renderAll();
+                console.error(error);
+                alert("❌ Restauration impossible.");
+            }
+        }
+
+        function productExistsAnywhere(name, ignoredId = null) {
+            const wanted = normalizeKey(name);
+
+            for (const cat of Object.keys(menuData || {})) {
+                const found = (menuData[cat] || []).some(item =>
+                    Number(item.id) !== Number(ignoredId) &&
+                    normalizeKey(item.name) === wanted
+                );
+
+                if (found) return cat;
+            }
+
+            return null;
+        }
+
+        function confirmCardCreation({ name, cat, subcategory, price, stock }) {
+            const sub = subcategory || 'Sans sous-catégorie';
+
+            return confirm(
+                `🛡️ CONTRÔLE AVANT PUBLICATION\n\n` +
+                `Produit : ${name}\n` +
+                `Catégorie : ${cat.toUpperCase()}\n` +
+                `Sous-catégorie : ${sub}\n` +
+                `Prix : ${Number(price).toFixed(2)} ${currentCurrency}\n` +
+                `Disponibilité : ${stock}\n\n` +
+                `Vérifiez bien les informations.\n\n` +
+                `OK = publier sur la carte BAR\nAnnuler = revenir sans rien modifier`
+            );
         }
 
         function saveLocalMenuBackup() {
@@ -1241,35 +1385,66 @@
             );
         }
 
-        async function guardedMenuMutation(mutator, successMessage = '') {
+        async function guardedMenuMutation(
+            mutator,
+            successMessage = '',
+            historyLabel = 'Modification de la carte BAR'
+        ) {
             const before = cloneMenuSnapshot();
+
+            // Sauvegarde locale + historique AVANT toute modification.
             saveLocalMenuBackup();
+            pushMenuHistory(historyLabel);
 
             try {
                 await mutator();
 
                 const ok = await syncMenuToCloud();
+
                 if (!ok) {
                     menuData = before;
                     renderAll();
-                    alert("❌ La sauvegarde serveur a échoué. La modification a été annulée pour éviter toute perte.");
+
+                    // Retirer l'entrée d'historique créée pour une opération non validée.
+                    try {
+                        const history = JSON.parse(
+                            localStorage.getItem(BAR_MENU_HISTORY_KEY) || '[]'
+                        );
+                        if (Array.isArray(history) && history.length) {
+                            history.shift();
+                            localStorage.setItem(
+                                BAR_MENU_HISTORY_KEY,
+                                JSON.stringify(history)
+                            );
+                        }
+                    } catch (_) {}
+
+                    alert(
+                        "❌ SAUVEGARDE NON CONFIRMÉE\n\n" +
+                        "La modification a été annulée automatiquement.\n" +
+                        "Votre carte précédente a été restaurée."
+                    );
                     return false;
                 }
 
                 if (successMessage) {
-                    const toast = document.getElementById('toast');
-                    if (toast) {
-                        toast.innerText = successMessage;
-                        toast.classList.add('show');
-                        setTimeout(() => toast.classList.remove('show'), 1800);
-                    }
+                    alert(successMessage);
                 }
+
                 return true;
+
             } catch (error) {
-                console.error("Modification Bar annulée :", error);
+                console.error("Modification BAR annulée :", error);
+
                 menuData = before;
                 renderAll();
-                alert("❌ Erreur détectée. La carte a été restaurée automatiquement.");
+
+                alert(
+                    "❌ ERREUR DÉTECTÉE\n\n" +
+                    "Aucune modification n'a été conservée.\n" +
+                    "La carte précédente a été restaurée."
+                );
+
                 return false;
             }
         }
@@ -1572,7 +1747,9 @@
         }
 
         async function addMenuItem(cat) {
-            if (!menuData[cat]) return alert("❌ Catégorie introuvable.");
+            if (!menuData[cat]) {
+                return alert("❌ Catégorie introuvable.");
+            }
 
             const domKey = safeDomKey(cat);
             const nameInput = document.getElementById(`add-name-${domKey}`);
@@ -1581,14 +1758,63 @@
             const subInput = document.getElementById(`subcat-${domKey}`);
 
             const name = normalizeLabel(nameInput?.value);
-            const price = Number(String(priceInput?.value || '').replace(',', '.'));
-            const stock = stockInput?.value === '' ? 99 : Number(stockInput?.value);
-            const subcategory = normalizeLabel(subInput?.value);
+            const price = Number(
+                String(priceInput?.value || '').replace(',', '.')
+            );
+            const stock =
+                stockInput?.value === ''
+                    ? 99
+                    : Number(stockInput?.value);
 
-            if (!name) return alert("⚠️ Le nom est obligatoire.");
-            if (!Number.isFinite(price) || price < 0) return alert("⚠️ Prix invalide.");
-            if (!Number.isInteger(stock) || stock < 0) return alert("⚠️ Quantité invalide : utilisez un nombre entier positif.");
-            if (itemExistsInCategory(cat, name)) return alert("⚠️ Ce produit existe déjà dans cette catégorie.");
+            const subcategory =
+                normalizeLabel(subInput?.value);
+
+            // ------------------------------
+            // CONTRÔLES ANTI-ERREUR HUMAINE
+            // ------------------------------
+            if (!name || name.length < 2) {
+                return alert("⚠️ Nom du produit obligatoire.");
+            }
+
+            if (name.length > 120) {
+                return alert("⚠️ Nom trop long. Maximum 120 caractères.");
+            }
+
+            if (!Number.isFinite(price) || price <= 0) {
+                return alert("⚠️ Le prix doit être supérieur à 0.");
+            }
+
+            if (price > 1000) {
+                return alert(
+                    "⚠️ Prix supérieur à 1 000. Vérifiez votre saisie avant de continuer."
+                );
+            }
+
+            if (!Number.isInteger(stock) || stock < 0 || stock > 99999) {
+                return alert(
+                    "⚠️ Quantité invalide. Entrez un nombre entier entre 0 et 99 999."
+                );
+            }
+
+            const duplicateCat =
+                productExistsAnywhere(name);
+
+            if (duplicateCat) {
+                return alert(
+                    `⚠️ DOUBLON DÉTECTÉ\n\n"${name}" existe déjà dans la catégorie : ${duplicateCat.toUpperCase()}`
+                );
+            }
+
+            // Contrôle visuel obligatoire AVANT publication.
+            if (!confirmCardCreation({
+                name,
+                cat,
+                subcategory,
+                price,
+                stock
+            })) {
+                return;
+            }
 
             const item = ensureBarItemMetadata({
                 id: Date.now(),
@@ -1599,10 +1825,14 @@
                 subcategory
             }, cat);
 
-            const ok = await guardedMenuMutation(async () => {
-                menuData[cat].push(item);
-                renderAll();
-            }, `✅ "${name}" ajouté`);
+            const ok = await guardedMenuMutation(
+                async () => {
+                    menuData[cat].push(item);
+                    renderAll();
+                },
+                `✅ "${name}" publié sur la carte BAR.`,
+                `Création : ${name}`
+            );
 
             if (ok) {
                 if (nameInput) nameInput.value = '';
@@ -1687,23 +1917,43 @@
         }
 
         async function editItemName(cat, id) {
-            const item = (menuData[cat] || []).find(x => Number(x.id) === Number(id));
+            const item = (menuData[cat] || [])
+                .find(x => Number(x.id) === Number(id));
+
             if (!item) return;
 
             const newName = normalizeLabel(
-                prompt("✏️ Nouveau nom / description :", item.name)
+                prompt(
+                    "✏️ Nouveau nom / description :",
+                    item.name
+                )
             );
 
             if (!newName || newName === item.name) return;
 
-            if (itemExistsInCategory(cat, newName, item.id)) {
-                return alert("⚠️ Un produit avec ce nom existe déjà dans cette catégorie.");
+            const duplicateCat =
+                productExistsAnywhere(newName, item.id);
+
+            if (duplicateCat) {
+                return alert(
+                    `⚠️ Ce produit existe déjà dans ${duplicateCat.toUpperCase()}.`
+                );
             }
 
-            await guardedMenuMutation(async () => {
-                item.name = newName;
-                renderAll();
-            }, `✅ Nom mis à jour`);
+            if (!confirm(
+                `CONFIRMER LA MODIFICATION ?\n\nAvant : ${item.name}\nAprès : ${newName}`
+            )) {
+                return;
+            }
+
+            await guardedMenuMutation(
+                async () => {
+                    item.name = newName;
+                    renderAll();
+                },
+                "✅ Nom mis à jour.",
+                `Renommage : ${item.name} → ${newName}`
+            );
         }
 
         async function deleteMenuItem(cat, id) {
