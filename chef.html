@@ -32,78 +32,113 @@
     }
 
         function getDeviceFingerprint() {
-            let deviceId = localStorage.getItem('ichef_device_fingerprint');
+            let deviceId =
+                localStorage.getItem('ichef_device_id') ||
+                localStorage.getItem('ichef_device_fingerprint');
+
             if (!deviceId) {
-                deviceId = 'device_' + Math.random().toString(36).substr(2, 9) + '_' + Date.now();
-                localStorage.setItem('ichef_device_fingerprint', deviceId);
+                deviceId = (window.crypto && crypto.randomUUID)
+                    ? crypto.randomUUID()
+                    : `device_${Date.now()}_${Math.random().toString(36).slice(2)}`;
             }
+
+            localStorage.setItem('ichef_device_id', deviceId);
+            localStorage.setItem('ichef_device_fingerprint', deviceId);
             return deviceId;
         }
 
         (async function enforceSecurity() {
             const urlParams = new URLSearchParams(window.location.search);
-            let urlTenantID = urlParams.get('tenantID');
-            let storedTenantID = localStorage.getItem('ichef_tenant_id');
+            const urlTenantID = String(urlParams.get('tenantID') || '').trim().toLowerCase();
+            const storedTenantID = String(localStorage.getItem('ichef_tenant_id') || '').trim().toLowerCase();
+            const tenant = urlTenantID || storedTenantID;
 
-            if (urlTenantID && urlTenantID !== storedTenantID) {
-                localStorage.removeItem('EMPIRE_GLOBAL_SYNC');
-                localStorage.removeItem('ichef_master_pin');
-                if (urlTenantID) localStorage.setItem('ichef_tenant_id', urlTenantID);
-                storedTenantID = urlTenantID;
-            }
-
-            let tenantID = urlTenantID || storedTenantID;
-            let pin = localStorage.getItem('ichef_master_pin'); 
-            
-            if(!tenantID) {
-                window.location.href = 'connexionpartenaire.html';
+            if (!tenant) {
+                window.location.replace('connexionpartenaire.html');
                 return;
             }
 
-            const SERVER_URL = (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1" || window.location.protocol === "file:") 
-                ? "http://localhost:10000" : "https://tableau-system.onrender.com";
+            if (urlTenantID && storedTenantID && urlTenantID !== storedTenantID) {
+                localStorage.removeItem('EMPIRE_GLOBAL_SYNC');
+                localStorage.removeItem('EMPIRE_CHEF_SYNC');
+                localStorage.removeItem('ichef_master_pin');
+            }
 
-            const accessMatrix = {
-                 'CHEF': ['chef.html', 'administration.html'],
-                'CHEF_CUISINE': ['chef.html', 'administration.html'],
-                'PATISSIER': ['chef-patissier.html', 'administration.html'],
-                'CHEF_PATISSERIE': ['chef-patissier.html', 'administration.html'],
-                'BAR': ['chef-bar.html', 'administration.html'],
-                'CHEF_BAR': ['chef-bar.html', 'administration.html'],
-                'ICHEF_OS': ['admin.html', 'pack-eco.html', 'minipass.html', 'menu-qr.html', 'administration.html'],
-                'ECO': ['admin.html', 'pack-eco.html', 'minipass.html', 'menu-qr.html', 'administration.html'],
-                'BUSINESS': ['admin.html', 'pack-eco.html', 'minipass.html', 'menu-qr.html', 'administration.html'],
-                'RENTABILITE': ['admin.html', 'pack-eco.html', 'minipass.html', 'menu-qr.html', 'administration.html'],
-                'EMPIRE': ['admin.html', 'pack-eco.html', 'menu-qr.html', 'chef.html', 'menu-pure.html', 'chef-bar.html', 'menu-bar.html', 'rh.html', 'haccp.html', 'reservation.html', 'minipass.html', 'chef-patissier.html', 'administration.html', 'production.html', 'chef-production.html'],
-                'BRIGADE': ['admin.html', 'pack-eco.html', 'menu-qr.html', 'chef.html', 'menu-pure.html', 'chef-bar.html', 'menu-bar.html', 'rh.html', 'haccp.html', 'reservation.html', 'minipass.html', 'chef-patissier.html', 'administration.html', 'production.html', 'chef-production.html'],
-                'BRIGADES': ['admin.html', 'pack-eco.html', 'menu-qr.html', 'chef.html', 'menu-pure.html', 'chef-bar.html', 'menu-bar.html', 'rh.html', 'haccp.html', 'reservation.html', 'minipass.html', 'chef-patissier.html', 'administration.html', 'production.html', 'chef-production.html'],
-                'PREMIUM': ['admin.html', 'pack-eco.html', 'menu-qr.html', 'chef.html', 'menu-pure.html', 'chef-bar.html', 'menu-bar.html', 'rh.html', 'haccp.html', 'reservation.html', 'minipass.html', 'chef-patissier.html', 'administration.html', 'production.html', 'chef-production.html']
-            };
+            localStorage.setItem('ichef_tenant_id', tenant);
+
+            let deviceId =
+                localStorage.getItem('ichef_device_id') ||
+                localStorage.getItem('ichef_device_fingerprint');
+
+            if (!deviceId) {
+                deviceId = (window.crypto && crypto.randomUUID)
+                    ? crypto.randomUUID()
+                    : `device_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+            }
+
+            localStorage.setItem('ichef_device_id', deviceId);
+            localStorage.setItem('ichef_device_fingerprint', deviceId);
+
+            const securityServerURL =
+                (window.location.hostname === "localhost" ||
+                 window.location.hostname === "127.0.0.1" ||
+                 window.location.protocol === "file:")
+                    ? "http://localhost:10000"
+                    : "https://tableau-system.onrender.com";
 
             try {
-                const res = await fetch(`${SERVER_URL}/api/verify-pin`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ tenantID: tenantID, pin: pin || "0000", deviceId: getDeviceFingerprint() })
-                });
-                const data = await res.json();
+                // Le partenaire est déjà authentifié avant d'arriver ici.
+                // On ne teste donc plus un faux PIN 0000 au chargement.
+                const res = await fetch(
+                    `${securityServerURL}/api/check-license?tenantID=${encodeURIComponent(tenant)}&_t=${Date.now()}`,
+                    {
+                        cache: 'no-store',
+                        credentials: 'include'
+                    }
+                );
 
-                if(!data.success) {
-                    alert(data.error || "ACCÈS REFUSÉ (Limite d'écrans atteinte ou compte invalide).");
-                    window.location.href = 'connexionpartenaire.html';
+                let data = {};
+                try { data = await res.json(); } catch (_) {}
+
+                if (res.status === 404) {
+                    localStorage.removeItem('ichef_tenant_id');
+                    window.location.replace('connexionpartenaire.html');
                     return;
                 }
 
-                const currentPlan = data.plan ? data.plan.toUpperCase() : 'CHEF';
-                let currentPage = window.location.pathname.split('/').pop().toLowerCase();
-                if(currentPage === '') currentPage = 'index.html';
-
-                const allowedPages = accessMatrix[currentPlan] || [];
-                if (!allowedPages.includes(currentPage)) {
-                    alert(`ACCÈS REFUSÉ : Votre forfait (${currentPlan}) n'inclut pas ce module.`);
-                    window.location.href = `administration.html?tenantID=${tenantID}`;
+                if (data.status === 'SUSPENDU') {
+                    alert("Licence iCHEF suspendue.");
+                    window.location.replace(`administration.html?tenantID=${encodeURIComponent(tenant)}`);
+                    return;
                 }
-            } catch (e) { console.error("Erreur de securite reseau", e); }
+
+                window.ICHEF_SECURITY = {
+                    tenantID: tenant,
+                    deviceId,
+                    csrfToken:
+                        sessionStorage.getItem('ichef_csrf_token') ||
+                        localStorage.getItem('ichef_csrf_token') ||
+                        '',
+                    plan: data.plan || '',
+                    status: data.status || '',
+                    connectionState: res.ok ? 'online' : 'degraded'
+                };
+
+            } catch (e) {
+                console.warn("Contrôle licence momentanément indisponible :", e);
+
+                window.ICHEF_SECURITY = {
+                    tenantID: tenant,
+                    deviceId,
+                    csrfToken:
+                        sessionStorage.getItem('ichef_csrf_token') ||
+                        localStorage.getItem('ichef_csrf_token') ||
+                        '',
+                    plan: '',
+                    status: '',
+                    connectionState: 'degraded'
+                };
+            }
         })();
     </script>
     <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -1015,7 +1050,7 @@
             try {
                 const pinRes = await fetch(`${SERVER_URL}/api/verify-pin`, {
                     method: 'POST', headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ tenantID: tenantID, pin: pin })
+                    body: JSON.stringify({ tenantID: tenantID, pin: pin, deviceId: getDeviceFingerprint() })
                 });
                 const pinData = await pinRes.json();
 
@@ -1049,7 +1084,7 @@
                     
                     // La carte cuisine est la source commune à admin.html et chef.html.
                     // MENU_MASTER reste seulement un secours pour les anciennes données.
-                    const menuOrder = state.activeOrders['MENU_CUISINE'] || state.activeOrders['MENU_MASTER'];
+                    const menuOrder = state.activeOrders['MENU_MASTER'] || state.activeOrders['MENU_CUISINE'];
                     if(menuOrder) {
                         const tempMenu = menuOrder.data;
                         if(tempMenu && typeof tempMenu === 'object' && !Array.isArray(tempMenu)) {
@@ -1094,13 +1129,27 @@
         // 🚀 WEBSOCKET & SYNCHRONISATION HAUTE VITESSE
         // ==============================================================
         window.ichefSocket = io(SERVER_URL, {
-            transports: ['websocket', 'polling'], reconnection: true,
-            reconnectionAttempts: Infinity, reconnectionDelay: 1000, timeout: 10000
+            transports: ['websocket', 'polling'],
+            reconnection: true,
+            reconnectionAttempts: Infinity,
+            reconnectionDelay: 1000,
+            reconnectionDelayMax: 5000,
+            timeout: 10000,
+            withCredentials: true,
+            auth: {
+                tenantID: tenantID,
+                deviceId: getDeviceFingerprint(),
+                csrfToken: window.ICHEF_SECURITY?.csrfToken || ''
+            },
+            query: { tenantID: tenantID }
         });
         const socket = window.ichefSocket;
 
         socket.on('connect', () => {
-            socket.emit('joinTenant', tenantID);
+            socket.emit('joinTenant', {
+                tenantID: tenantID,
+                deviceId: getDeviceFingerprint()
+            });
             let syncDot = document.getElementById('sync-dot');
             let syncText = document.getElementById('sync-text');
             if(syncDot) syncDot.style.background = 'var(--success)';
@@ -1123,7 +1172,7 @@
             let aO = state.activeOrders || {};
             let updated = false;
 
-            const incomingMenuOrder = aO['MENU_CUISINE'] || aO['MENU_MASTER'];
+            const incomingMenuOrder = aO['MENU_MASTER'] || aO['MENU_CUISINE'];
             if (incomingMenuOrder && incomingMenuOrder.data && typeof incomingMenuOrder.data === 'object' && !Array.isArray(incomingMenuOrder.data)) {
                 menuData = JSON.parse(JSON.stringify(incomingMenuOrder.data));
                 for(let cat in menuData) { if(!Array.isArray(menuData[cat])) menuData[cat] = []; }
