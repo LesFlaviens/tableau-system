@@ -1076,36 +1076,51 @@
         // 🔄 SYMBIOSE PARFAITE : SÉPARATION CUISINE / BAR POUR L'ADMIN
         // ==============================================================
         async function syncMenuToCloud() {
-            // Chef-Bar possède uniquement son secteur.
-            // Il remonte ses données vers ADMIN via les clés BAR,
-            // sans jamais écrire dans MENU_MASTER cuisine/pâtisserie.
             const cleanBarMenu = {};
 
             Object.keys(menuData || {}).forEach(cat => {
-                if (Array.isArray(menuData[cat])) {
-                    cleanBarMenu[cat] = cloneSafe(menuData[cat], []);
-                }
+                if (!Array.isArray(menuData[cat])) return;
+
+                cleanBarMenu[cat] = menuData[cat].map(item =>
+                    ensureBarItemMetadata(cloneSafe(item, {}), cat)
+                );
             });
 
             const categoriesBar = Object.keys(cleanBarMenu).map(cat => ({
                 id: cat,
                 label: String(cat).toUpperCase(),
-                department: 'BAR'
+                department: 'BAR',
+                subcategories: getSubcategories(cat)
             }));
 
-            await API.save('MENU_MASTER_BAR', cleanBarMenu);
-            await API.save('CATEGORIES_BAR', categoriesBar);
+            const menuOk = await API.save('MENU_MASTER_BAR', cleanBarMenu);
+            const categoriesOk = await API.save('CATEGORIES_BAR', categoriesBar);
 
-            // Compatibilité ancienne interface Admin :
-            // les données restent explicitement identifiées BAR.
-            localStorage.setItem(
-                'ICHEF_CHEF_BAR_LAST_SYNC',
-                JSON.stringify({
-                    tenantID,
-                    at: new Date().toISOString(),
-                    categories: categoriesBar.length
-                })
-            );
+            const ok = menuOk && categoriesOk;
+
+            const syncDot = document.getElementById('sync-dot');
+            const syncText = document.getElementById('sync-text');
+
+            if (syncDot) {
+                syncDot.style.background = ok ? 'var(--accent)' : 'var(--alert)';
+            }
+
+            if (syncText) {
+                syncText.innerText = ok ? 'EN LIGNE' : 'ERREUR SAUVEGARDE';
+            }
+
+            if (ok) {
+                localStorage.setItem(
+                    'ICHEF_CHEF_BAR_LAST_SYNC',
+                    JSON.stringify({
+                        tenantID,
+                        at: new Date().toISOString(),
+                        categories: categoriesBar.length
+                    })
+                );
+            }
+
+            return ok;
         }
 
         // === IMPORT / EXPORT RECETTES ET CARTE ===
@@ -1142,27 +1157,260 @@
             reader.readAsText(file);
         }
 
-        // === GESTION CATÉGORIES ===
-        function renderRecipeCategoryDropdown() {
-            const select = document.getElementById('market-category'); if (!select) return;
-            select.innerHTML = Object.keys(menuData).map(cat => `<option value="${cat}">${cat.toUpperCase()}</option>`).join('');
+
+        // ==============================================================
+        // 🛡️ BAR : SOUS-CATÉGORIES + PROTECTION ANTI-ERREUR
+        // ==============================================================
+        const BAR_MENU_BACKUP_KEY = 'ICHEF_BAR_MENU_LAST_GOOD';
+
+        function normalizeLabel(value) {
+            return String(value || '')
+                .trim()
+                .replace(/\s+/g, ' ');
         }
-        async function addRecipeCategory() {
-            let newCat = prompt("🏷️ Nom de la nouvelle catégorie de la carte :");
-            if(newCat && newCat.trim() !== "") {
-                let key = newCat.trim().toLowerCase();
-                if(!menuData[key]) { menuData[key] = []; renderAll(); await syncMenuToCloud(); 
-                } else alert("⚠️ Cette catégorie existe déjà.");
+
+        function normalizeKey(value) {
+            return normalizeLabel(value).toLocaleLowerCase('fr-FR');
+        }
+
+        function escapeHtml(value) {
+            return String(value ?? '')
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;')
+                .replace(/'/g, '&#039;');
+        }
+
+        function jsArg(value) {
+            return JSON.stringify(String(value ?? ''));
+        }
+
+        function safeDomKey(value) {
+            let hash = 0;
+            const str = String(value || '');
+            for (let i = 0; i < str.length; i++) {
+                hash = ((hash << 5) - hash) + str.charCodeAt(i);
+                hash |= 0;
+            }
+            return `bar_${Math.abs(hash)}`;
+        }
+
+        function cloneMenuSnapshot() {
+            return cloneSafe(menuData, {});
+        }
+
+        function saveLocalMenuBackup() {
+            try {
+                localStorage.setItem(
+                    BAR_MENU_BACKUP_KEY,
+                    JSON.stringify({
+                        at: new Date().toISOString(),
+                        menu: cloneMenuSnapshot()
+                    })
+                );
+            } catch (_) {}
+        }
+
+        function restoreLocalMenuBackup() {
+            try {
+                const backup = JSON.parse(localStorage.getItem(BAR_MENU_BACKUP_KEY) || 'null');
+                if (!backup?.menu || typeof backup.menu !== 'object') return false;
+                menuData = cloneSafe(backup.menu, {});
+                renderAll();
+                return true;
+            } catch (_) {
+                return false;
             }
         }
-        async function removeCurrentDropdownCategory() {
-            let select = document.getElementById('market-category'); let catToRemove = select ? select.value : null; if(!catToRemove) return;
-            if(menuData[catToRemove].length > 0) { if(!confirm(`⚠️ Supprimer "${catToRemove.toUpperCase()}" et ses ${menuData[catToRemove].length} plats ?`)) return; }
-            delete menuData[catToRemove]; renderAll(); await syncMenuToCloud();
+
+        function getSubcategories(cat) {
+            const items = Array.isArray(menuData[cat]) ? menuData[cat] : [];
+            return [...new Set(
+                items
+                    .map(item => normalizeLabel(item?.subcategory))
+                    .filter(Boolean)
+            )].sort((a, b) => a.localeCompare(b, 'fr'));
         }
+
+        function itemExistsInCategory(cat, name, ignoredId = null) {
+            const wanted = normalizeKey(name);
+            return (menuData[cat] || []).some(item =>
+                item.id !== ignoredId &&
+                normalizeKey(item.name) === wanted
+            );
+        }
+
+        async function guardedMenuMutation(mutator, successMessage = '') {
+            const before = cloneMenuSnapshot();
+            saveLocalMenuBackup();
+
+            try {
+                await mutator();
+
+                const ok = await syncMenuToCloud();
+                if (!ok) {
+                    menuData = before;
+                    renderAll();
+                    alert("❌ La sauvegarde serveur a échoué. La modification a été annulée pour éviter toute perte.");
+                    return false;
+                }
+
+                if (successMessage) {
+                    const toast = document.getElementById('toast');
+                    if (toast) {
+                        toast.innerText = successMessage;
+                        toast.classList.add('show');
+                        setTimeout(() => toast.classList.remove('show'), 1800);
+                    }
+                }
+                return true;
+            } catch (error) {
+                console.error("Modification Bar annulée :", error);
+                menuData = before;
+                renderAll();
+                alert("❌ Erreur détectée. La carte a été restaurée automatiquement.");
+                return false;
+            }
+        }
+
+        function askStrictDeletion(label) {
+            const confirmation = prompt(
+                `⚠️ SUPPRESSION DÉFINITIVE\n\nPour supprimer "${label}", écrivez exactement : SUPPRIMER`
+            );
+            return confirmation === 'SUPPRIMER';
+        }
+
+        function ensureBarItemMetadata(item, cat) {
+            item.department = 'BAR';
+            item.category = cat;
+            item.subcategory = normalizeLabel(item.subcategory);
+            return item;
+        }
+
+        // === GESTION CATÉGORIES ===
+        function renderRecipeCategoryDropdown() {
+            const select = document.getElementById('market-category');
+            if (!select) return;
+
+            select.innerHTML = Object.keys(menuData)
+                .sort((a, b) => a.localeCompare(b, 'fr'))
+                .map(cat => `<option value="${escapeHtml(cat)}">${escapeHtml(cat.toUpperCase())}</option>`)
+                .join('');
+        }
+
+        async function addRecipeCategory() {
+            const newCat = normalizeLabel(
+                prompt("🏷️ Nom de la nouvelle catégorie BAR :")
+            );
+
+            if (!newCat) return;
+
+            const duplicate = Object.keys(menuData)
+                .some(cat => normalizeKey(cat) === normalizeKey(newCat));
+
+            if (duplicate) {
+                return alert("⚠️ Cette catégorie existe déjà.");
+            }
+
+            await guardedMenuMutation(async () => {
+                menuData[normalizeKey(newCat)] = [];
+                renderAll();
+            }, `✅ Catégorie "${newCat}" créée`);
+        }
+
+        async function removeCurrentDropdownCategory() {
+            const select = document.getElementById('market-category');
+            const catToRemove = select ? select.value : null;
+            if (!catToRemove) return;
+            return removeRecipeCategory(catToRemove);
+        }
+
         async function removeRecipeCategory(catToRemove) {
-            if(menuData[catToRemove].length > 0) { if(!confirm(`⚠️ Supprimer "${catToRemove.toUpperCase()}" et ses ${menuData[catToRemove].length} plats ?`)) return; }
-            delete menuData[catToRemove]; renderAll(); await syncMenuToCloud();
+            if (!Object.prototype.hasOwnProperty.call(menuData, catToRemove)) return;
+
+            const count = Array.isArray(menuData[catToRemove])
+                ? menuData[catToRemove].length
+                : 0;
+
+            const label = `${catToRemove.toUpperCase()}${count ? ` (${count} produit${count > 1 ? 's' : ''})` : ''}`;
+
+            if (!askStrictDeletion(label)) {
+                return alert("Suppression annulée.");
+            }
+
+            await guardedMenuMutation(async () => {
+                delete menuData[catToRemove];
+                renderAll();
+            }, `🗑️ Catégorie "${catToRemove}" supprimée`);
+        }
+
+        async function addSubcategory(cat) {
+            if (!menuData[cat]) return;
+
+            const sub = normalizeLabel(
+                prompt(`➕ Nouvelle sous-catégorie dans "${cat.toUpperCase()}" :`)
+            );
+
+            if (!sub) return;
+
+            const existing = getSubcategories(cat);
+            if (existing.some(s => normalizeKey(s) === normalizeKey(sub))) {
+                return alert("⚠️ Cette sous-catégorie existe déjà.");
+            }
+
+            // Une sous-catégorie vide est mémorisée localement dans le catalogue.
+            // Elle sera réellement persistée dès qu'un produit y sera ajouté.
+            const domKey = safeDomKey(cat);
+            const select = document.getElementById(`subcat-${domKey}`);
+            if (select) {
+                const option = document.createElement('option');
+                option.value = sub;
+                option.textContent = sub;
+                select.appendChild(option);
+                select.value = sub;
+            }
+
+            alert(`✅ Sous-catégorie "${sub}" prête. Ajoutez maintenant un produit dedans.`);
+        }
+
+        async function renameSubcategory(cat, oldSub) {
+            const newSub = normalizeLabel(
+                prompt(`✏️ Nouveau nom pour "${oldSub}" :`, oldSub)
+            );
+            if (!newSub || normalizeKey(newSub) === normalizeKey(oldSub)) return;
+
+            if (getSubcategories(cat).some(s =>
+                normalizeKey(s) === normalizeKey(newSub) &&
+                normalizeKey(s) !== normalizeKey(oldSub)
+            )) {
+                return alert("⚠️ Une sous-catégorie avec ce nom existe déjà.");
+            }
+
+            await guardedMenuMutation(async () => {
+                (menuData[cat] || []).forEach(item => {
+                    if (normalizeKey(item.subcategory) === normalizeKey(oldSub)) {
+                        item.subcategory = newSub;
+                    }
+                });
+                renderAll();
+            }, `✅ Sous-catégorie renommée`);
+        }
+
+        async function removeSubcategory(cat, sub) {
+            const affected = (menuData[cat] || [])
+                .filter(item => normalizeKey(item.subcategory) === normalizeKey(sub));
+
+            if (!affected.length) return;
+
+            if (!askStrictDeletion(`${sub} (${affected.length} produit${affected.length > 1 ? 's' : ''})`)) {
+                return alert("Suppression annulée.");
+            }
+
+            await guardedMenuMutation(async () => {
+                affected.forEach(item => item.subcategory = '');
+                renderAll();
+            }, `✅ Produits replacés dans "${cat}" sans sous-catégorie`);
         }
 
         function renderStockCategoryDropdown() {
@@ -1182,77 +1430,295 @@
 
         // === CARTE VISUELLE ===
         function renderMenu() {
-            const grid = document.getElementById('dynamic-menu-grid'); if(!grid) return; let html = '';
-            for (let cat in menuData) {
-                let itemsCount = menuData[cat].length;
-                let itemsHtml = menuData[cat].map(i => {
-                    let currentStock = i.stock !== undefined ? i.stock : 99; let stockColor = currentStock <= 5 ? 'var(--alert)' : 'var(--slate)';
-                    return `
-                    <div style="background:var(--bg); border:1px solid var(--border-strong); border-radius:8px; padding:15px; margin-bottom: 10px; display:flex; flex-direction:column; gap:12px;">
-                        <div style="display:flex; justify-content:space-between; align-items:flex-start; flex-wrap:wrap; gap:10px;">
-                            <b onclick="editItemName('${cat}', ${i.id})" style="cursor:pointer; color:var(--text-main); white-space:pre-wrap; line-height:1.5; flex:1; min-width:150px; font-size:0.95rem;" title="Modifier le texte">${i.name}</b>
-                            <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
-                                <span style="color:${stockColor}; font-weight:800; cursor:pointer; background:var(--panel); padding:8px 12px; border-radius:6px; border:1px solid var(--border-strong); font-size:0.8rem;" onclick="updateDishStock('${cat}', ${i.id})">Dispo: ${currentStock}</span>
-                                <span style="color:var(--gold); font-weight:800; cursor:pointer; background:var(--panel); padding:8px 12px; border-radius:6px; border:1px solid var(--border-strong); font-size:0.8rem;" onclick="editItemPrice('${cat}', ${i.id})">${parseFloat(i.price||0).toFixed(2)} ${currentCurrency}</span>
-                                <button onclick="deleteMenuItem('${cat}', ${i.id})" style="background:var(--panel); border:1px solid var(--border-strong); border-radius:6px; color:var(--alert); padding:8px 12px; cursor:pointer; font-weight:bold;">✖</button>
+            const grid = document.getElementById('dynamic-menu-grid');
+            if (!grid) return;
+
+            let html = '';
+
+            for (const cat of Object.keys(menuData)) {
+                if (!Array.isArray(menuData[cat])) menuData[cat] = [];
+
+                const items = menuData[cat];
+                const domKey = safeDomKey(cat);
+                const subcategories = getSubcategories(cat);
+
+                const grouped = new Map();
+                grouped.set('', []);
+
+                subcategories.forEach(sub => grouped.set(sub, []));
+
+                items.forEach(item => {
+                    ensureBarItemMetadata(item, cat);
+                    const sub = normalizeLabel(item.subcategory);
+                    if (!grouped.has(sub)) grouped.set(sub, []);
+                    grouped.get(sub).push(item);
+                });
+
+                let groupsHtml = '';
+
+                for (const [sub, groupItems] of grouped.entries()) {
+                    if (!groupItems.length && sub === '') continue;
+
+                    const title = sub || 'Sans sous-catégorie';
+
+                    const itemsHtml = groupItems.map(i => {
+                        const currentStock =
+                            Number.isFinite(Number(i.stock)) ? Number(i.stock) : 99;
+
+                        const stockColor =
+                            currentStock <= 5 ? 'var(--alert)' : 'var(--slate)';
+
+                        return `
+                            <div style="background:var(--bg); border:1px solid var(--border-strong); border-radius:8px; padding:15px; margin-bottom:10px; display:flex; flex-direction:column; gap:12px;">
+                                <div style="display:flex; justify-content:space-between; align-items:flex-start; flex-wrap:wrap; gap:10px;">
+                                    <div style="flex:1; min-width:150px;">
+                                        <b onclick='editItemName(${jsArg(cat)}, ${Number(i.id)})'
+                                           style="cursor:pointer; color:var(--text-main); white-space:pre-wrap; line-height:1.5; font-size:.95rem;"
+                                           title="Modifier le nom">${escapeHtml(i.name)}</b>
+                                        ${sub ? `<div style="margin-top:6px; font-size:.7rem; color:var(--gold); text-transform:uppercase; letter-spacing:1px;">${escapeHtml(sub)}</div>` : ''}
+                                    </div>
+
+                                    <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+                                        <span style="color:${stockColor}; font-weight:800; cursor:pointer; background:var(--panel); padding:8px 12px; border-radius:6px; border:1px solid var(--border-strong); font-size:.8rem;"
+                                              onclick='updateDishStock(${jsArg(cat)}, ${Number(i.id)})'>Dispo: ${currentStock}</span>
+
+                                        <span style="color:var(--gold); font-weight:800; cursor:pointer; background:var(--panel); padding:8px 12px; border-radius:6px; border:1px solid var(--border-strong); font-size:.8rem;"
+                                              onclick='editItemPrice(${jsArg(cat)}, ${Number(i.id)})'>${Number(i.price || 0).toFixed(2)} ${escapeHtml(currentCurrency)}</span>
+
+                                        <button onclick='moveItemSubcategory(${jsArg(cat)}, ${Number(i.id)})'
+                                                title="Changer de sous-catégorie"
+                                                style="background:var(--panel); border:1px solid var(--border-strong); border-radius:6px; color:var(--text-main); padding:8px 12px; cursor:pointer;">↕</button>
+
+                                        <button onclick='deleteMenuItem(${jsArg(cat)}, ${Number(i.id)})'
+                                                style="background:var(--panel); border:1px solid var(--border-strong); border-radius:6px; color:var(--alert); padding:8px 12px; cursor:pointer; font-weight:bold;">✖</button>
+                                    </div>
+                                </div>
+                            </div>`;
+                    }).join('');
+
+                    groupsHtml += `
+                        <div style="margin-bottom:18px;">
+                            <div style="display:flex; justify-content:space-between; gap:10px; align-items:center; padding:8px 4px; border-bottom:1px solid var(--border-strong); margin-bottom:10px;">
+                                <div style="font-size:.78rem; font-weight:900; color:${sub ? 'var(--gold)' : 'var(--text-muted)'}; text-transform:uppercase; letter-spacing:1.2px;">
+                                    ${escapeHtml(title)}
+                                    <span class="count-badge">${groupItems.length}</span>
+                                </div>
+                                ${sub ? `
+                                    <div style="display:flex; gap:6px;">
+                                        <button onclick='renameSubcategory(${jsArg(cat)}, ${jsArg(sub)})'
+                                                style="background:transparent; border:1px solid var(--border-strong); color:var(--text-muted); border-radius:6px; cursor:pointer; padding:5px 8px;">✏️</button>
+                                        <button onclick='removeSubcategory(${jsArg(cat)}, ${jsArg(sub)})'
+                                                style="background:transparent; border:1px solid var(--border-strong); color:var(--alert); border-radius:6px; cursor:pointer; padding:5px 8px;">✖</button>
+                                    </div>` : ''}
+                            </div>
+                            ${itemsHtml}
+                        </div>`;
+                }
+
+                const subOptions = [
+                    '<option value="">Sans sous-catégorie</option>',
+                    ...subcategories.map(sub =>
+                        `<option value="${escapeHtml(sub)}">${escapeHtml(sub)}</option>`
+                    )
+                ].join('');
+
+                html += `
+                    <div class="menu-category">
+                        <div class="category-header">
+                            <div style="display:flex; align-items:center; gap:10px;">
+                                ${escapeHtml(cat.toUpperCase())}
+                                <span class="count-badge">${items.length}</span>
+                            </div>
+                            <div style="display:flex; gap:8px;">
+                                <button onclick='addSubcategory(${jsArg(cat)})'
+                                        title="Ajouter une sous-catégorie"
+                                        style="background:transparent; border:1px solid var(--border-strong); color:var(--gold); cursor:pointer; border-radius:6px; padding:5px 8px;">＋ Sous-cat</button>
+                                <button onclick='removeRecipeCategory(${jsArg(cat)})'
+                                        style="background:transparent; border:none; color:var(--alert); cursor:pointer; font-size:1.2rem;">✖</button>
+                            </div>
+                        </div>
+
+                        <div style="padding:20px; display:flex; flex-direction:column; background:var(--panel);">
+                            ${groupsHtml || '<div style="color:var(--text-muted); padding:10px 0;">Aucun produit.</div>'}
+
+                            <div style="display:flex; flex-direction:column; gap:12px; margin-top:15px; border-top:1px dashed var(--border-strong); padding-top:20px;">
+                                <textarea id="add-name-${domKey}"
+                                          placeholder="Nom de la boisson / cocktail..."
+                                          style="width:100%; min-height:60px; resize:vertical; padding:12px;"></textarea>
+
+                                <select id="subcat-${domKey}">
+                                    ${subOptions}
+                                </select>
+
+                                <div class="flex-mobile-col" style="display:flex; gap:12px; align-items:center;">
+                                    <input type="number" id="add-stock-${domKey}" min="0" step="1" placeholder="Qté" style="flex:1;">
+                                    <input type="number" id="add-price-${domKey}" min="0" step="0.01" placeholder="Prix ${escapeHtml(currentCurrency)}" style="flex:1;">
+                                    <button class="add-btn primary" style="flex:2;" onclick='addMenuItem(${jsArg(cat)})'>Ajouter</button>
+                                </div>
                             </div>
                         </div>
                     </div>`;
-                }).join('');
-
-                html += `
-                <div class="menu-category">
-                    <div class="category-header"><div style="display:flex; align-items:center; gap:10px;">${cat.toUpperCase()}<span class="count-badge">${itemsCount}</span></div><button onclick="removeRecipeCategory('${cat}')" style="background:transparent; border:none; color:var(--alert); cursor:pointer; font-size:1.2rem;">✖</button></div>
-                    <div style="padding:20px; display:flex; flex-direction:column; background:var(--panel);">
-                        ${itemsHtml}
-                        <div style="display:flex; flex-direction:column; gap:12px; margin-top: 15px; border-top: 1px dashed var(--border-strong); padding-top: 20px;">
-                            <textarea id="add-name-${cat}" placeholder="Nom de la boisson / cocktail..." style="width:100%; min-height: 60px; resize:vertical; padding:12px;"></textarea>
-                            <div class="flex-mobile-col" style="display:flex; gap:12px; align-items:center;">
-                                <input type="number" id="add-stock-${cat}" placeholder="Qté" style="flex:1;">
-                                <input type="number" id="add-price-${cat}" placeholder="Prix ${currentCurrency}" style="flex:1;">
-                                <button class="add-btn primary" style="flex:2;" onclick="addMenuItem('${cat}')">Ajouter</button>
-                            </div>
-                        </div>
-                    </div>
-                </div>`;
             }
-            html += `<div class="menu-category" style="border: 1px dashed var(--gold); background: transparent; justify-content:center; align-items:center; padding: 40px; cursor:pointer; box-shadow:none; transition: 0.2s;" onclick="addRecipeCategory()" onmouseover="this.style.background='var(--panel)'" onmouseout="this.style.background='transparent'"><div style="font-size: 2.5rem; color: var(--gold); margin-bottom: 15px;">➕</div><div style="font-weight: 800; color: var(--gold); letter-spacing: 1px; text-align:center; font-size: 0.85rem;">NOUVELLE CATÉGORIE</div></div>`;
+
+            html += `
+                <div class="menu-category"
+                     style="border:1px dashed var(--gold); background:transparent; justify-content:center; align-items:center; padding:40px; cursor:pointer; box-shadow:none;"
+                     onclick="addRecipeCategory()">
+                    <div style="font-size:2.5rem; color:var(--gold); margin-bottom:15px;">➕</div>
+                    <div style="font-weight:800; color:var(--gold); letter-spacing:1px; text-align:center; font-size:.85rem;">NOUVELLE CATÉGORIE</div>
+                </div>`;
+
             grid.innerHTML = html;
         }
 
-      async function addMenuItem(cat) {
-    const nameInput = document.getElementById(`add-name-${cat}`); const priceInput = document.getElementById(`add-price-${cat}`); const stockInput = document.getElementById(`add-stock-${cat}`);
-    if (!nameInput.value || !priceInput.value) return alert("Nom et prix requis.");
-    let stockVal = stockInput.value ? parseInt(stockInput.value) : 99;
-    
-    // CORRECTION : Attribution de la TVA sans dépendre de systemSettings
-    let catLower = cat.toLowerCase();
-    let isBarCategory = catLower.includes('bar') || catLower.includes('boisson') || catLower.includes('vin') || catLower.includes('cocktail');
-    let newTva = isBarCategory ? 20 : 10; // 20% alcools, 10% cuisine par défaut
-    
-    menuData[cat].push({ id: Date.now(), name: nameInput.value.trim(), price: parseFloat(priceInput.value), stock: stockVal, tva: newTva });
-    nameInput.value = ''; priceInput.value = ''; stockInput.value = ''; renderAll(); 
-    await syncMenuToCloud();
-}
+        async function addMenuItem(cat) {
+            if (!menuData[cat]) return alert("❌ Catégorie introuvable.");
+
+            const domKey = safeDomKey(cat);
+            const nameInput = document.getElementById(`add-name-${domKey}`);
+            const priceInput = document.getElementById(`add-price-${domKey}`);
+            const stockInput = document.getElementById(`add-stock-${domKey}`);
+            const subInput = document.getElementById(`subcat-${domKey}`);
+
+            const name = normalizeLabel(nameInput?.value);
+            const price = Number(String(priceInput?.value || '').replace(',', '.'));
+            const stock = stockInput?.value === '' ? 99 : Number(stockInput?.value);
+            const subcategory = normalizeLabel(subInput?.value);
+
+            if (!name) return alert("⚠️ Le nom est obligatoire.");
+            if (!Number.isFinite(price) || price < 0) return alert("⚠️ Prix invalide.");
+            if (!Number.isInteger(stock) || stock < 0) return alert("⚠️ Quantité invalide : utilisez un nombre entier positif.");
+            if (itemExistsInCategory(cat, name)) return alert("⚠️ Ce produit existe déjà dans cette catégorie.");
+
+            const item = ensureBarItemMetadata({
+                id: Date.now(),
+                name,
+                price: Math.round(price * 100) / 100,
+                stock,
+                tva: 20,
+                subcategory
+            }, cat);
+
+            const ok = await guardedMenuMutation(async () => {
+                menuData[cat].push(item);
+                renderAll();
+            }, `✅ "${name}" ajouté`);
+
+            if (ok) {
+                if (nameInput) nameInput.value = '';
+                if (priceInput) priceInput.value = '';
+                if (stockInput) stockInput.value = '';
+            }
+        }
+
+        async function moveItemSubcategory(cat, id) {
+            const item = (menuData[cat] || []).find(x => Number(x.id) === Number(id));
+            if (!item) return;
+
+            const existing = getSubcategories(cat);
+            const list = ['Sans sous-catégorie', ...existing]
+                .map((s, i) => `${i}. ${s}`)
+                .join('\n');
+
+            const answer = prompt(
+                `↕ Déplacer "${item.name}"\n\n${list}\n\nEntrez le numéro ou écrivez un nouveau nom de sous-catégorie :`,
+                ''
+            );
+
+            if (answer === null) return;
+
+            let nextSub = '';
+            const numeric = Number(answer);
+
+            if (answer.trim() !== '' && Number.isInteger(numeric) && numeric >= 0 && numeric <= existing.length) {
+                nextSub = numeric === 0 ? '' : existing[numeric - 1];
+            } else {
+                nextSub = normalizeLabel(answer);
+            }
+
+            await guardedMenuMutation(async () => {
+                item.subcategory = nextSub;
+                renderAll();
+            }, `✅ Sous-catégorie mise à jour`);
+        }
+
         async function updateDishStock(cat, id) {
-            let item = menuData[cat].find(x => x.id === id); if(!item) return;
-            let shortName = item.name.split('\n')[0]; let newStock = prompt(`📦 Portions à la carte pour :\n"${shortName}" ?`, item.stock !== undefined ? item.stock : 99);
-            if(newStock !== null && newStock.trim() !== "") { let parsedStock = parseInt(newStock); if(!isNaN(parsedStock) && parsedStock >= 0) { item.stock = parsedStock; renderAll(); await syncMenuToCloud(); } else alert("⚠️ Quantité invalide."); }
+            const item = (menuData[cat] || []).find(x => Number(x.id) === Number(id));
+            if (!item) return;
+
+            const answer = prompt(
+                `📦 Quantité disponible pour "${item.name}" :`,
+                item.stock !== undefined ? item.stock : 99
+            );
+
+            if (answer === null) return;
+
+            const parsed = Number(answer);
+            if (!Number.isInteger(parsed) || parsed < 0) {
+                return alert("⚠️ Quantité invalide.");
+            }
+
+            await guardedMenuMutation(async () => {
+                item.stock = parsed;
+                renderAll();
+            }, `✅ Stock mis à jour`);
         }
 
         async function editItemPrice(cat, id) {
-            let item = menuData[cat].find(x => x.id === id); if(!item) return;
-            let newPrice = prompt(`💰 Nouveau prix pour "${item.name.split('\n')[0]}" :`, item.price);
-            if(newPrice && newPrice.trim() !== "") { let parsed = parseFloat(newPrice.replace(',', '.')); if(!isNaN(parsed)) { item.price = parsed; renderAll(); await syncMenuToCloud(); } }
+            const item = (menuData[cat] || []).find(x => Number(x.id) === Number(id));
+            if (!item) return;
+
+            const answer = prompt(
+                `💰 Nouveau prix pour "${item.name}" :`,
+                item.price
+            );
+
+            if (answer === null) return;
+
+            const parsed = Number(String(answer).replace(',', '.'));
+            if (!Number.isFinite(parsed) || parsed < 0) {
+                return alert("⚠️ Prix invalide.");
+            }
+
+            await guardedMenuMutation(async () => {
+                item.price = Math.round(parsed * 100) / 100;
+                renderAll();
+            }, `✅ Prix mis à jour`);
         }
 
         async function editItemName(cat, id) {
-            let item = menuData[cat].find(x => x.id === id); if(!item) return;
-            let newName = prompt(`✏️ Nouveau nom / description :`, item.name);
-            if(newName && newName.trim() !== "") { item.name = newName.trim(); renderAll(); await syncMenuToCloud(); }
+            const item = (menuData[cat] || []).find(x => Number(x.id) === Number(id));
+            if (!item) return;
+
+            const newName = normalizeLabel(
+                prompt("✏️ Nouveau nom / description :", item.name)
+            );
+
+            if (!newName || newName === item.name) return;
+
+            if (itemExistsInCategory(cat, newName, item.id)) {
+                return alert("⚠️ Un produit avec ce nom existe déjà dans cette catégorie.");
+            }
+
+            await guardedMenuMutation(async () => {
+                item.name = newName;
+                renderAll();
+            }, `✅ Nom mis à jour`);
         }
 
-        async function deleteMenuItem(cat, id) { if(confirm("Supprimer ce plat de la carte ?")) { menuData[cat] = menuData[cat].filter(item => item.id !== id); renderAll(); await syncMenuToCloud(); } }
+        async function deleteMenuItem(cat, id) {
+            const item = (menuData[cat] || []).find(x => Number(x.id) === Number(id));
+            if (!item) return;
+
+            if (!askStrictDeletion(item.name)) {
+                return alert("Suppression annulée.");
+            }
+
+            await guardedMenuMutation(async () => {
+                menuData[cat] = menuData[cat].filter(x => Number(x.id) !== Number(id));
+                renderAll();
+            }, `🗑️ "${item.name}" supprimé`);
+        }
 
         // === INVENTAIRE & IA ===
         function openInvModal(modalId) { document.getElementById(modalId).style.display = 'flex'; }
