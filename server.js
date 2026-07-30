@@ -1245,6 +1245,65 @@ function calculateNet(p) {
     return Math.max(0, total);
 }
 
+// =========================================================================
+// 📞 ASSISTANT VOCAL CLIENT (WEBHOOK VAPI.AI)
+// =========================================================================
+app.post('/api/voice-webhook', async (req, res) => {
+    try {
+        const { message } = req.body;
+
+        // On écoute uniquement les appels de fonction (Tool Calls)
+        if (message && message.type === 'tool-calls') {
+            const toolCall = message.toolCalls[0];
+            
+            // Si l'IA utilise l'outil "book_table"
+            if (toolCall.function.name === 'book_table') {
+                const { nom, couverts, date, heure, telephone, tenantID } = toolCall.function.arguments;
+
+                const safeID = cleanString(tenantID);
+                console.log(`[iCHEF VOICE] Réservation IA pour ${safeID} : ${nom}, ${couverts}pax, ${date} à ${heure}`);
+
+                const newResa = {
+                    id: 'resa_' + Date.now(),
+                    name: nom,
+                    phone: telephone || "Inconnu",
+                    date: date,
+                    time: heure,
+                    couverts: parseInt(couverts),
+                    status: 'confirmed',
+                    obs: '🤖 Via iCHEF Voice'
+                };
+
+                // 1. Sauvegarde dans la base de données (AppState)
+                const newState = await AppState.findOneAndUpdate(
+                    { tenantID: safeID },
+                    { $push: { "activeOrders.RESERVATIONS_MASTER.data": newResa } },
+                    { upsert: true, new: true }
+                );
+
+                // 2. TEMPS RÉEL : On pousse la mise à jour sur tous les écrans du restaurant
+                io.to(safeID).emit('updateState', newState);
+                
+                // 3. Scellé de sécurité anti-fraude
+                await scellerOperation(safeID, 'CREATE', 'RESERVATION_VOICE', newResa.id, 'IA_VOICE', newResa);
+
+                // 4. On donne le feu vert à l'IA pour valider vocalement au client
+                return res.json({
+                    results: [{
+                        toolCallId: toolCall.id,
+                        result: "Succès. La table est bien réservée. Confirme-le au client de manière chaleureuse."
+                    }]
+                });
+            }
+        }
+
+        res.status(200).send('OK');
+
+    } catch (error) {
+        console.error("Erreur Webhook Vapi :", error);
+        res.status(500).send("Erreur interne");
+    }
+});
 // ==========================================
 //  IA SMART-RESERVATION (Yield Management & Time-Shifting)
 // ==========================================
