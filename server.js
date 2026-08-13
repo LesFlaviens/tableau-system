@@ -152,7 +152,7 @@ app.use((req, res, next) => {
 });
 
 // Une seule déclaration des fichiers statiques.
-app.use(express.static(path.join(__dirname), {
+app.use(express.static(__dirname));
     etag: true,
     lastModified: true,
     setHeaders: (res, filePath) => {
