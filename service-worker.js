@@ -1,18 +1,22 @@
-const CACHE_NAME = 'ichef-cache-v16'; // 💥 On passe à la v16 pour forcer le nettoyage !
-const DYNAMIC_CACHE = 'ichef-dynamic-v16';
+const CACHE_NAME = 'ichef-cache-v17'; // 💥 Passage en v17 pour forcer la mise à jour !
+const DYNAMIC_CACHE = 'ichef-dynamic-v17';
 
+// ROUTAGE STRICT : Remplacement des "./" par "/" et ajout obligatoire de "/index.html"
 const ASSETS_TO_CACHE = [
-  './',
-  './connexionpartenaire.html',
-  './administration.html',
-  './pack-eco.html',
-  './chef-bar.html',
-  './chef-patissier.html',
-  './chef.html',
-  './menu-qr.html',
-  './manifest.json',
-  './icon-192.png',
-  './icon-512.png'
+  '/',
+  '/index.html',
+  '/connexionpartenaire.html',
+  '/administration.html',
+  '/pack-eco.html',
+  '/chef-bar.html',
+  '/chef-patissier.html',
+  '/chef.html',
+  '/menu-qr.html',
+  '/manifest.json',
+  '/icon-192.png',
+  '/icon-512.png',
+  '/logo-ichef.png',
+  '/mockup-ichef.png'
 ];
 
 self.addEventListener('install', (event) => {
@@ -20,7 +24,7 @@ self.addEventListener('install', (event) => {
     event.waitUntil(
         caches.open(CACHE_NAME).then((cache) => {
             return Promise.allSettled(
-                ASSETS_TO_CACHE.map(url => cache.add(url).catch(err => console.log(`Fichier ignoré : ${url}`)))
+                ASSETS_TO_CACHE.map(url => cache.add(url).catch(err => console.log(`[iCHEF SW] Fichier ignoré : ${url}`)))
             );
         })
     );
@@ -55,8 +59,7 @@ self.addEventListener('fetch', (event) => {
         
         event.respondWith(
             fetch(event.request).catch(() => {
-                // 🛡️ MAGIE HORS-LIGNE : Si l'API échoue car pas de WiFi, on renvoie un faux JSON propre.
-                // Cela empêche l'application de crasher et permet à ta file d'attente hors-ligne de prendre le relais.
+                // 🛡️ MAGIE HORS-LIGNE : Renvoi d'un statut 503 propre pour la file d'attente
                 return new Response(
                     JSON.stringify({ success: false, error: "NETWORK_UNAVAILABLE", offline: true }),
                     { headers: { 'Content-Type': 'application/json' }, status: 503 }
@@ -67,16 +70,15 @@ self.addEventListener('fetch', (event) => {
     }
 
     // 3. FICHIERS STATIQUES (Interface, CSS, Images) -> CACHE FIRST
-    // L'interface s'affiche instantanément, même si le réseau est lent
     event.respondWith(
         caches.match(event.request).then((cachedResponse) => {
             if (cachedResponse) {
                 return cachedResponse; // On sert depuis le cache immédiatement
             }
             
-            // Si ce n'est pas dans le cache, on le télécharge et on l'ajoute au cache dynamique
+            // Si non trouvé en cache, téléchargement réseau + ajout au cache dynamique
             return fetch(event.request).then((networkResponse) => {
-                // Vérification de validité de la réponse avant mise en cache
+                // Vérification stricte avant mise en cache
                 if(!networkResponse || networkResponse.status !== 200 || networkResponse.type !== 'basic') {
                     return networkResponse;
                 }
@@ -88,7 +90,7 @@ self.addEventListener('fetch', (event) => {
             }).catch(() => {
                 // Si pas de réseau et fichier non trouvé dans le cache : retour page connexion
                 if (event.request.headers.get('accept').includes('text/html')) {
-                    return caches.match('./connexionpartenaire.html');
+                    return caches.match('/connexionpartenaire.html');
                 }
             });
         })
