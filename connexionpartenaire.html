@@ -189,182 +189,122 @@
           <a href="https://os.ichef.ch/politique-de-confidentialite.html" style="color: #666; text-decoration: none; font-size: 0.75rem; font-family: 'Inter', sans-serif;">© 2026 iCHEF OS - Sécurité & Confidentialité</a>
         </div>
     </footer>
+<script>
+// 🚨 ENREGISTREMENT DU SERVICE WORKER (VITAL)
+if ('serviceWorker' in navigator) {
+    window.addEventListener('load', () => {
+        navigator.serviceWorker.register('/sw.js')
+        .then(reg => console.log('✅ Service Worker actif'))
+        .catch(err => alert('❌ Erreur critique : Le fichier sw.js est introuvable à la racine de votre site.'));
+    });
+}
 
-    <script>
-        // --- 1. ENREGISTREMENT PWA ---
-        if ('serviceWorker' in navigator) {
-            window.addEventListener('load', () => {
-                navigator.serviceWorker.register('/sw.js').catch(err => console.error('❌ SW Error:', err));
-            });
-        }
+// 🛡️ BOUCLIER 1 : DOMAIN LOCK (AJOUT DE ICHE.FR)
+const domaine = window.location.hostname;
+if (domaine !== "os.ichef.ch" && domaine !== "iche.fr" && domaine !== "www.iche.fr" && domaine !== "localhost" && domaine !== "127.0.0.1" && !domaine.includes("render.com")) {
+    document.documentElement.innerHTML = "<h1 style='color:red; text-align:center; margin-top:20%; font-family:sans-serif;'>🛑 VIOLATION DE LICENCE iCHEF OS</h1>";
+    throw new Error("Exécution non autorisée hors du domaine officiel.");
+}
 
-        // --- 2. SÉCURITÉ DE L'ENVIRONNEMENT ---
-        if (window.location.hostname !== "os.ichef.ch" && window.location.hostname !== "localhost" && window.location.hostname !== "127.0.0.1" && !window.location.hostname.includes("render.com")) {
-            document.documentElement.innerHTML = "<h1 style='color:red; text-align:center; margin-top:20%;'>🛑 VIOLATION DE LICENCE iCHEF OS</h1>";
-            throw new Error("Domaine non autorisé.");
-        }
+// 🛡️ BOUCLIER 2 : ANTI-SNOOPING
+document.addEventListener('contextmenu', event => event.preventDefault());
 
-        document.addEventListener('contextmenu', event => event.preventDefault());
-        document.onkeydown = function(e) {
-            if(e.keyCode == 123 || (e.ctrlKey && e.shiftKey && (e.keyCode == 73 || e.keyCode == 74)) || (e.ctrlKey && e.keyCode == 85)) return false; 
-        };
+function getDeviceFingerprint() {
+    let deviceId = localStorage.getItem('ichef_device_fingerprint');
+    if (!deviceId) {
+        const array = new Uint32Array(4);
+        window.crypto.getRandomValues(array);
+        deviceId = 'dev_' + Array.from(array, dec => dec.toString(16)).join('');
+        localStorage.setItem('ichef_device_fingerprint', deviceId);
+    }
+    return deviceId;
+}
 
-        // --- 3. CRYPTOGRAPHIE D'EMPREINTE APPAREIL ---
-        function getSecureDeviceFingerprint() {
-            let deviceId = localStorage.getItem('ichef_device_fingerprint');
-            if (!deviceId) {
-                // Utilisation de la cryptographie native du navigateur
-                const array = new Uint32Array(4);
-                window.crypto.getRandomValues(array);
-                deviceId = 'dev_' + Array.from(array, dec => dec.toString(16)).join('');
-                localStorage.setItem('ichef_device_fingerprint', deviceId);
-            }
-            return deviceId;
-        }
+window.onload = function() {
+    localStorage.removeItem('ichef_tenant_id');
+    localStorage.removeItem('ichef_master_pin');
+};
 
-        // --- 4. GESTION RÉSEAU (HORS-LIGNE) ---
-        window.addEventListener('offline', () => document.getElementById('offline-banner').style.display = 'block');
-        window.addEventListener('online', () => document.getElementById('offline-banner').style.display = 'none');
+const SERVER_URL = "https://tableau-system.onrender.com";
+let failedAttempts = 0;
 
-        // Nettoyage de sécurité au chargement
-        window.onload = function() {
-            localStorage.removeItem('ichef_tenant_id');
-            localStorage.removeItem('ichef_master_pin');
-        };
+function switchScreen(screen) {
+    ['login', 'demo', 'result', 'expired'].forEach(id => {
+        const el = document.getElementById('screen-' + id);
+        if (el) el.style.display = screen === id ? 'block' : 'none';
+    });
+}
 
-        const SERVER_URL = "https://tableau-system.onrender.com";
-        let failedAttempts = 0; // Compteur anti brute-force
+async function login() {
+    if (failedAttempts >= 3) return;
+    let tenant = document.getElementById('tenantID').value.toLowerCase().replace(/[^a-z0-9]/g, '');
+    let pin = document.getElementById('pinCode').value.replace(/[^0-9]/g, '');
+    const btn = document.getElementById('login-btn');
+    const msgBox = document.getElementById('lock-msg');
 
-        function switchScreen(screen) {
-            ['login', 'demo', 'result', 'expired'].forEach(id => {
-                document.getElementById('screen-' + id).style.display = screen === id ? 'block' : 'none';
-            });
-        }
+    if(!tenant || !pin) { alert("Identifiant ou PIN invalide."); return; }
 
-        document.getElementById('pinCode').addEventListener('keypress', function (e) {
-            if (e.key === 'Enter') login();
+    btn.innerText = "Authentification..."; btn.disabled = true;
+
+    try {
+        const res = await fetch(`${SERVER_URL}/api/verify-pin`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            credentials: 'include', 
+            body: JSON.stringify({ tenantID: tenant, pin: pin, deviceId: getDeviceFingerprint() })
         });
-
-        // --- 5. MOTEUR DE CONNEXION BLINDÉ ---
-        async function login() {
-            // Anti Brute-Force Check
-            if (failedAttempts >= 3) return;
-
-            // Récupération + Sanitization stricte (Anti-Injection)
-            let rawTenant = document.getElementById('tenantID').value.toLowerCase();
-            let rawPin = document.getElementById('pinCode').value;
-            
-            const tenant = rawTenant.replace(/[^a-z0-9]/g, ''); // Uniquement lettres et chiffres
-            const pin = rawPin.replace(/[^0-9]/g, ''); // Uniquement chiffres
-            
-            const btn = document.getElementById('login-btn');
-            const msgBox = document.getElementById('lock-msg');
-
-            if(!tenant || !pin) {
-                alert("Identifiant ou PIN invalide.");
-                return;
-            }
-
-            // Vérification expiration Démo
-            const expirationTime = localStorage.getItem('demo_expire_' + tenant);
-            if (expirationTime && Date.now() > parseInt(expirationTime)) {
-                switchScreen('expired');
-                return;
-            }
-
-            btn.innerText = "Authentification...";
-            btn.disabled = true;
-            msgBox.style.display = 'none';
-
-            try {
-                // Timeout Controller (Coupe la requête si le serveur met plus de 10s à répondre)
-                const controller = new AbortController();
-                const timeoutId = setTimeout(() => controller.abort(), 10000);
-
-                const res = await fetch(`${SERVER_URL}/api/verify-pin`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    credentials: 'include', 
-                    body: JSON.stringify({ tenantID: tenant, pin: pin, deviceId: getSecureDeviceFingerprint() }),
-                    signal: controller.signal
-                });
-                
-                clearTimeout(timeoutId);
-
-                if (!res.ok && res.status === 404) throw new Error("Route serveur introuvable.");
-
-                const data = await res.json();
-                
-                if(data.success) {
-                    failedAttempts = 0; // Reset
-                    localStorage.setItem('ichef_tenant_id', tenant);
-                    localStorage.setItem('ichef_master_pin', pin); // (En prod, on l'encrypte via JWT backend)
-                    localStorage.setItem('ichef_csrf_token', data.csrfToken);
-                    window.location.href = `administration.html?tenantID=${encodeURIComponent(tenant)}`;
-                } else {
-                    handleFailedAttempt(btn, msgBox, data.error);
-                }
-            } catch(e) {
-                console.error(e);
-                if (e.name === 'AbortError') {
-                    alert("Le serveur met trop de temps à répondre. Vérifiez votre connexion.");
-                } else {
-                    alert("Erreur de communication avec le serveur iCHEF.");
-                }
-                btn.innerText = "Se Connecter";
-                btn.disabled = false;
-            }
-        }
-
-        // --- 6. LOGIQUE ANTI BRUTE-FORCE ---
-        function handleFailedAttempt(btn, msgBox, errorMsg) {
-            failedAttempts++;
-            if (failedAttempts >= 3) {
-                btn.innerText = "VERROUILLÉ";
-                btn.disabled = true;
-                let seconds = 30;
-                msgBox.innerText = `Trop de tentatives. Réessayez dans ${seconds}s`;
-                msgBox.style.display = 'block';
-                
-                const timer = setInterval(() => {
-                    seconds--;
-                    msgBox.innerText = `Trop de tentatives. Réessayez dans ${seconds}s`;
-                    if (seconds <= 0) {
-                        clearInterval(timer);
-                        failedAttempts = 0;
-                        btn.innerText = "Se Connecter";
-                        btn.disabled = false;
-                        msgBox.style.display = 'none';
-                    }
-                }, 1000);
-            } else {
-                alert(errorMsg || "Code PIN incorrect.");
-                btn.innerText = "Se Connecter";
-                btn.disabled = false;
-            }
-        }
-
-        // --- PWA LOGIC ---
-        let deferredPrompt;
-        window.addEventListener('beforeinstallprompt', (e) => {
-            e.preventDefault();
-            deferredPrompt = e;
-            document.getElementById('ios-guide').style.display = 'none';
-        });
-
-        function ouvrirGuideInstallation() {
-            const modal = document.getElementById('pwa-modal');
-            modal.style.display = 'flex';
-            if (deferredPrompt) {
-                modal.style.display = 'none';
-                deferredPrompt.prompt();
-                deferredPrompt.userChoice.then(() => { deferredPrompt = null; });
-            }
-        }
         
-        if (window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone) {
-            document.getElementById('pwa-install-btn').style.display = 'none';
+        if (!res.ok && res.status === 404) throw new Error("Route introuvable.");
+        const data = await res.json();
+        
+        if(data.success) {
+            failedAttempts = 0;
+            localStorage.setItem('ichef_tenant_id', tenant);
+            localStorage.setItem('ichef_csrf_token', data.csrfToken);
+            window.location.href = `administration.html?tenantID=${encodeURIComponent(tenant)}`;
+        } else {
+            failedAttempts++;
+            alert("Code PIN incorrect ou accès refusé.");
+            btn.innerText = "Se Connecter"; btn.disabled = false;
         }
-    </script>
+    } catch(e) {
+        alert("Erreur de connexion au serveur.");
+        btn.innerText = "Se Connecter"; btn.disabled = false;
+    }
+}
+
+// 📲 MOTEUR PWA (DIAGNOSTIC INTÉGRÉ)
+let deferredPrompt;
+
+window.addEventListener('beforeinstallprompt', (e) => {
+    e.preventDefault();
+    deferredPrompt = e;
+    document.getElementById('ios-guide').style.display = 'none'; // Masque le guide iPhone si on est sur Android/PC
+});
+
+function ouvrirGuideInstallation() {
+    const modal = document.getElementById('pwa-modal');
+    
+    // Si deferredPrompt est prêt, on lance l'installation native (Android / Chrome)
+    if (deferredPrompt) {
+        deferredPrompt.prompt();
+        deferredPrompt.userChoice.then((choiceResult) => {
+            if (choiceResult.outcome === 'accepted') {
+                document.getElementById('pwa-install-btn').style.display = 'none';
+            }
+            deferredPrompt = null;
+        });
+    } 
+    // Sinon, on ouvre le guide manuel (Obligatoire pour iPhone / Safari)
+    else {
+        modal.style.display = 'flex';
+    }
+}
+
+// Masque le bouton si l'app est déjà installée
+if (window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone) {
+    document.getElementById('pwa-install-btn').style.display = 'none';
+}
+</script>
 </body>
 </html>
