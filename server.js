@@ -1,5 +1,11 @@
-const nodemailer = require('nodemailer');
-/**
+const express = require('express');
+const path = require('path');
+const nodemailer = require('nodemailer'); // Remis à sa bonne place
+
+const app = express();
+
+// 🚨 AUTORISE LE TÉLÉCHARGEMENT DES FICHIERS STATIQUES (PWA & SW)
+app.use(express.static(path.join(__dirname, 'public')))
  * ==============================================================
  * 🧠 iCHEF EMPIRE OS — ENGINE SERVER BACKEND (V. FORTERESSE)
  * ==============================================================
