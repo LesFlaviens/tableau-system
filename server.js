@@ -1,40 +1,33 @@
-JavaScript
-const express = require('express');
-const path = require('path');
-const nodemailer = require('nodemailer'); // Remis à sa bonne place
-
-const app = express();
-
-// 🚨 AUTORISE LE TÉLÉCHARGEMENT DES FICHIERS STATIQUES (PWA & SW)
-app.use(express.static(path.join(__dirname, 'public')));
-
 /**
  * =========================================================
  * 🧠 iCHEF EMPIRE OS - ENGINE SERVER BACKEND (V. FORTERESSE)
  * =========================================================
  */
 
-
+// 1. IMPORTS DES MODULES STANDARDS ET SÉCURITÉ
 const express = require('express');
-const cors = require('cors');
 const path = require('path');
+const cors = require('cors');
 const crypto = require('crypto'); // 🛡️ INTÉGRATION SÉCURITÉ CRYPTO (LOI ANTI-FRAUDE)
+const nodemailer = require('nodemailer'); 
 const mongoose = require('mongoose');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
 const twilio = require('twilio'); // 📡 INTÉGRATION TWILIO (SMS/WHATSAPP)
 
-// 🔥 WEBSOCKETS POUR LE TEMPS RÉEL 🔥
+// 2. IMPORTS POUR LE TEMPS RÉEL (WEBSOCKETS)
 const http = require('http');
 const { Server } = require('socket.io');
 
+// 3. INITIALISATION DU MOTEUR EXPRESS ET DU SERVEUR HTTP
 const app = express();
 const server = http.createServer(app);
+
 // ==========================================================
 // 🌐 CONFIGURATION CORS UNIFIÉE (API + WEBSOCKETS)
 // ==========================================================
 const corsOptions = {
     origin: function (origin, callback) {
-        // Accepte toutes les requêtes (pratique pour l'app PWA, Render, et os.ichef.ch)
+        // Accepte toutes les requêtes (pratique pour l'app PWA, Render, et iche.fr)
         callback(null, true);
     },
     credentials: true,
@@ -52,6 +45,19 @@ const corsOptions = {
         'X-Requested-With'
     ]
 };
+
+// 4. APPLICATION DES BOUCLIERS ET OUVERTURE DES ACCÈS STATIQUES
+app.use(cors(corsOptions));
+
+// 🚨 AUTORISE LE TÉLÉCHARGEMENT DES FICHIERS STATIQUES (PWA & SW)
+// Le dossier "public" doit exister physiquement à côté de ce fichier serveur.
+app.use(express.static(path.join(__dirname, 'public')));
+
+// 5. INITIALISATION DU TEMPS RÉEL (SOCKET.IO)
+const io = new Server(server, { 
+    cors: corsOptions,
+    transports: ['websocket', 'polling'] // Force la compatibilité matérielle (Pad/Caisse)
+});
 
 // Application du CORS pour les routes classiques (Express / fetch)
 app.use(cors(corsOptions));
