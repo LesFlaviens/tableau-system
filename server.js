@@ -153,7 +153,7 @@ app.use((req, res, next) => {
 });
 
 // Une seule déclaration des fichiers statiques.
-app.use(express.static(__dirname));
+app.use(express.static(__dirname, { // 👈 OUVERTURE CORRECTE ICI
     etag: true,
     lastModified: true,
     setHeaders: (res, filePath) => {
@@ -182,7 +182,7 @@ app.use(express.static(__dirname));
             res.setHeader('Cache-Control', 'no-cache, must-revalidate');
         }
     }
-}));
+})); // 👈 FERMETURE CORRECTE ICI
 
 // 👇 DÉBLOCAGE DES VIDÉOS & RESSOURCES 👇
 
