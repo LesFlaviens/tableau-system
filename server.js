@@ -13,6 +13,7 @@ const crypto = require('crypto'); // 🛡️ INTÉGRATION SÉCURITÉ CRYPTO (LOI
 const mongoose = require('mongoose');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
 const twilio = require('twilio'); // 📡 INTÉGRATION TWILIO (SMS/WHATSAPP)
+const nodemailer = require('nodemailer');
 
 // 🔥 WEBSOCKETS POUR LE TEMPS RÉEL 🔥
 const http = require('http');
