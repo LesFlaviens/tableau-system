@@ -6403,5 +6403,205 @@ function toggleOutilsMenuFinal(event, button) {
         border: 1px solid rgba(0,0,0,0.3) !important;
     }
 </style>
+    <!-- =========================================================
+     PATCH ERGONOMIE : ÉCRANS SÉPARÉS PAR ZONE (ONGLETS)
+     ========================================================= -->
+<style id="ichef-zone-navigation-style">
+    /* Barre d'onglets dynamique pour les Zones */
+    #zone-navigation-bar {
+        display: flex;
+        gap: 10px;
+        padding: 10px 20px;
+        background: #F4F4F6; /* S'intègre au fond blanc du Pad */
+        border-bottom: 2px solid rgba(0,0,0,0.05);
+        overflow-x: auto;
+        -webkit-overflow-scrolling: touch;
+        scrollbar-width: none;
+    }
+    #zone-navigation-bar::-webkit-scrollbar { display: none; }
+
+    .zone-nav-btn {
+        background: #FFFFFF;
+        border: 2px solid rgba(0,0,0,0.1);
+        color: #555555;
+        font-weight: 800;
+        padding: 12px 25px;
+        border-radius: 8px;
+        cursor: pointer;
+        white-space: nowrap;
+        font-size: 0.95rem;
+        text-transform: uppercase;
+        letter-spacing: 1px;
+        transition: 0.2s;
+        box-shadow: 0 4px 6px rgba(0,0,0,0.02);
+    }
+    .zone-nav-btn:active {
+        transform: scale(0.95);
+    }
+    .zone-nav-btn.active {
+        border-color: #000000;
+        color: #FFFFFF;
+        background: #000000;
+    }
+    
+    /* 
+       MOTEUR D'ISOLATION : 
+       Masque de force les zones et les tables qui ne sont pas ciblées.
+    */
+    body[data-active-zone]:not([data-active-zone="ALL"]) .zone-wrapper:not(.active-zone-target) {
+        display: none !important;
+    }
+    body[data-active-zone]:not([data-active-zone="ALL"]) .table-wrapper:not(.active-zone-target) {
+        display: none !important;
+    }
+    
+    /* En vue isolée, la bordure de la zone disparaît car elle devient "l'écran" entier */
+    body[data-active-zone]:not([data-active-zone="ALL"]) .zone-obj {
+        border: none !important;
+        background: transparent !important;
+    }
+    body[data-active-zone]:not([data-active-zone="ALL"]) .zone-badge {
+        display: none !important; /* Le titre est déjà affiché dans l'onglet */
+    }
+</style>
+
+<script id="ichef-zone-navigation-script">
+    let currentActiveZone = 'ALL';
+
+    function buildZoneNavigation() {
+        let navBar = document.getElementById('zone-navigation-bar');
+        if (!navBar) {
+            navBar = document.createElement('div');
+            navBar.id = 'zone-navigation-bar';
+            const wrapper = document.querySelector('.floor-plan-wrapper');
+            if (wrapper && wrapper.parentNode) {
+                wrapper.parentNode.insertBefore(navBar, wrapper);
+            }
+        }
+
+        const currentRoomZones = typeof zones !== 'undefined' ? zones.filter(z => z && z.room === currentRoom) : [];
+        
+        // Si aucune zone n'est configurée, on masque la barre
+        if (currentRoomZones.length === 0) {
+            navBar.style.display = 'none';
+            document.body.setAttribute('data-active-zone', 'ALL');
+            return;
+        }
+
+        navBar.style.display = 'flex';
+        
+        let html = `<button class="zone-nav-btn ${currentActiveZone === 'ALL' ? 'active' : ''}" onclick="switchZoneView('ALL')">👁️ VUE GLOBALE</button>`;
+        
+        currentRoomZones.forEach(z => {
+            let icon = z.payMode === 'qr_nfc' ? '📲' : z.payMode === 'bar' ? '🍹' : '🍽️';
+            html += `<button class="zone-nav-btn ${currentActiveZone === z.id ? 'active' : ''}" onclick="switchZoneView('${z.id}')">${icon} ${z.label}</button>`;
+        });
+        
+        html += `<button class="zone-nav-btn ${currentActiveZone === 'UNASSIGNED' ? 'active' : ''}" onclick="switchZoneView('UNASSIGNED')">❓ HORS ZONE</button>`;
+
+        navBar.innerHTML = html;
+    }
+
+    window.switchZoneView = function(zoneId) {
+        currentActiveZone = zoneId;
+        document.body.setAttribute('data-active-zone', zoneId);
+        buildZoneNavigation();
+        applyZoneVisibility();
+        
+        // Auto-scroll pour centrer physiquement la zone à l'écran (si on n'est pas en Vue Rush)
+        if (zoneId !== 'ALL' && zoneId !== 'UNASSIGNED' && !document.body.classList.contains('rush-mode')) {
+            const zoneObj = zones.find(z => z.id === zoneId);
+            if (zoneObj) {
+                const wrapper = document.querySelector('.floor-plan-wrapper');
+                if (wrapper) {
+                    wrapper.scrollTo({
+                        left: Math.max(0, (zoneObj.l || 0) - 50),
+                        top: Math.max(0, (zoneObj.t || 0) - 50),
+                        behavior: 'smooth'
+                    });
+                }
+            }
+        }
+    };
+
+    function applyZoneVisibility() {
+        // 1. Reset des marquages
+        document.querySelectorAll('.zone-wrapper, .table-wrapper').forEach(el => {
+            el.classList.remove('active-zone-target');
+        });
+
+        if (currentActiveZone === 'ALL') return;
+
+        // 2. Marquer la zone cible
+        const zoneEl = document.querySelector(`.zone-wrapper[data-id="${currentActiveZone}"]`);
+        if (zoneEl) zoneEl.classList.add('active-zone-target');
+
+        // 3. Marquer uniquement les tables géométriquement situées dans la zone
+        if (typeof tables !== 'undefined') {
+            tables.forEach(t => {
+                if (t.room === currentRoom) {
+                    const z = typeof getZoneForTable === 'function' ? getZoneForTable(t.label) : null;
+                    
+                    if (currentActiveZone === 'UNASSIGNED') {
+                        if (!z) {
+                            const tEl = document.querySelector(`.table-wrapper[data-id="${t.label}"]`);
+                            if (tEl) {
+                                tEl.classList.add('active-zone-target');
+                                if (tEl.parentElement && tEl.parentElement.classList.contains('zone-wrapper')) {
+                                    tEl.parentElement.classList.add('active-zone-target');
+                                }
+                            }
+                        }
+                    } else {
+                        if (z && z.id === currentActiveZone) {
+                            const tEl = document.querySelector(`.table-wrapper[data-id="${t.label}"]`);
+                            if (tEl) {
+                                tEl.classList.add('active-zone-target');
+                                if (tEl.parentElement && tEl.parentElement.classList.contains('zone-wrapper')) {
+                                    tEl.parentElement.classList.add('active-zone-target');
+                                }
+                            }
+                        }
+                    }
+                }
+            });
+        }
+    }
+
+    // Greffe chirurgicale sur les fonctions natives d'iCHEF pour que l'isolation persiste
+    if (typeof window.originalRenderFloorPatch === 'undefined') {
+        window.originalRenderFloorPatch = window.renderFloor;
+        window.renderFloor = function() {
+            if (typeof window.originalRenderFloorPatch === 'function') {
+                window.originalRenderFloorPatch();
+            }
+            buildZoneNavigation();
+            applyZoneVisibility();
+        };
+    }
+    
+    if (typeof window.originalHandleRoomClickPatch === 'undefined') {
+        window.originalHandleRoomClickPatch = window.handleRoomClick;
+        window.handleRoomClick = function(room) {
+            currentActiveZone = 'ALL';
+            if (typeof window.originalHandleRoomClickPatch === 'function') {
+                window.originalHandleRoomClickPatch(room);
+            }
+        };
+    }
+
+    // Sécurité pour le mode édition (affiche tout de force)
+    if (typeof window.originalUnlockArchiModePatch === 'undefined') {
+        window.originalUnlockArchiModePatch = window.unlockArchiMode;
+        window.unlockArchiMode = function() {
+            switchZoneView('ALL');
+            if (typeof window.originalUnlockArchiModePatch === 'function') {
+                window.originalUnlockArchiModePatch();
+            }
+        };
+    }
+
+    setTimeout(buildZoneNavigation, 500);
+</script>
 </body>
 </html>
