@@ -1811,5 +1811,409 @@
 })();
 </script>
 
+
+<style id="ichef-service-sequences-style">
+#ichef-sequence-panel{
+  flex-shrink:0;
+  border:4px solid #000;
+  border-radius:16px;
+  padding:14px;
+  margin-bottom:12px;
+  background:#fff;
+}
+#ichef-sequence-panel .seq-head{
+  display:flex;justify-content:space-between;align-items:center;gap:12px;
+  font-size:24px;font-weight:900;margin-bottom:10px;
+}
+#ichef-sequence-panel .seq-summary{
+  font-size:20px;font-weight:800;color:#555;margin-bottom:10px;
+}
+#ichef-sequence-panel .seq-actions{
+  display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;
+}
+#ichef-sequence-panel button{
+  min-height:54px;border:4px solid #000;border-radius:12px;background:#fff;
+  font-size:18px;font-weight:900;cursor:pointer;padding:8px 10px;
+}
+#ichef-sequence-panel button.primary{background:#000;color:#fff}
+#ichef-sequence-panel button.ready{border-color:#10b981;color:#087f5b}
+#ichef-sequence-panel button.warn{border-color:#C5A059;color:#8a681e}
+#ichef-sequence-panel button:disabled{opacity:.35;cursor:not-allowed}
+.item-route{
+  display:inline-block;margin:6px 6px 0 0;padding:4px 8px;border-radius:8px;
+  font-size:17px;font-weight:900;border:2px solid #777;background:#fff;
+}
+.item-seq{
+  display:inline-block;margin:6px 6px 0 0;padding:4px 8px;border-radius:8px;
+  font-size:17px;font-weight:900;border:2px solid #C5A059;color:#8a681e;background:#fff;
+}
+.item-ready{
+  display:inline-block;margin:6px 6px 0 0;padding:4px 8px;border-radius:8px;
+  font-size:17px;font-weight:900;border:2px solid #10b981;color:#087f5b;background:#fff;
+}
+@media(max-width:900px){
+  #ichef-sequence-panel .seq-actions{grid-template-columns:1fr}
+  #ichef-sequence-panel .seq-head{font-size:18px}
+  #ichef-sequence-panel .seq-summary{font-size:16px}
+  #ichef-sequence-panel button{font-size:16px}
+}
+</style>
+
+<script id="ichef-service-sequences-engine">
+(function(){
+  "use strict";
+
+  const seqNames = {0:"IMMÉDIAT",1:"ENTRÉE / 1er",2:"PLAT / 2e",3:"DESSERT / 3e"};
+
+  function esc(s){
+    return String(s??"").replace(/&/g,"&amp;").replace(/</g,"&lt;")
+      .replace(/>/g,"&gt;").replace(/"/g,"&quot;").replace(/'/g,"&#039;");
+  }
+
+  function qty(i){ return Math.max(1, parseInt(i?.qty||1,10)||1); }
+  function price(i){ return Number(i?.p ?? i?.price ?? 0)||0; }
+
+  function textKey(v){
+    return String(v||"").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g,"");
+  }
+
+  function inferRoute(item){
+    const explicit = textKey(item?.destination || item?.dest || item?.department || item?.station || item?.route);
+    if(explicit.includes("bar") || explicit.includes("boisson")) return "BAR";
+    if(explicit.includes("patis") || explicit.includes("dessert")) return "PATISSERIE";
+    if(explicit.includes("cuisine") || explicit.includes("chaud") || explicit.includes("froid")) return "CUISINE";
+
+    const name = textKey(item?.n || item?.name);
+    const cat = textKey(item?.category || item?.categoryLabel || item?.cat);
+    const hay = name + " " + cat;
+
+    if(/vin|biere|bière|cocktail|aperitif|apéritif|eau|cafe|café|the|thé|jus|soda|boisson|champagne|digestif/.test(hay)) return "BAR";
+    if(/dessert|tiramisu|glace|sorbet|gateau|gâteau|tarte|mousse|patisserie|pâtisserie|chocolat/.test(hay)) return "PATISSERIE";
+    return "CUISINE";
+  }
+
+  function inferSequence(item){
+    if(Number(item?.sequence)>0) return Number(item.sequence);
+    if(Number(item?.course)>0) return Number(item.course);
+    const route = inferRoute(item);
+    const name = textKey(item?.n || item?.name);
+    if(route==="BAR") return 0; // boissons partent au premier envoi
+    if(/entree|entrée|salade|soupe|starter/.test(name)) return 1;
+    if(route==="PATISSERIE" || /dessert/.test(name)) return 3;
+    return 2;
+  }
+
+  function normalizeServiceItem(i){
+    if(!i) return i;
+    i.qty = qty(i);
+    i.destination = inferRoute(i);
+    i.sequence = inferSequence(i);
+    if(!i.sequenceStatus){
+      if(i.served) i.sequenceStatus="SERVED";
+      else if(i.done) i.sequenceStatus="READY";
+      else if(i.isSent) i.sequenceStatus="PRODUCTION";
+      else i.sequenceStatus="DRAFT";
+    }
+    return i;
+  }
+
+  function mapSequences(){
+    const map = new Map();
+    (currentTicket||[]).forEach((raw,idx)=>{
+      const i=normalizeServiceItem(raw);
+      const s=Number(i.sequence)||0;
+      if(!map.has(s)) map.set(s,[]);
+      map.get(s).push({item:i,idx});
+    });
+    return map;
+  }
+
+  function seqState(entries){
+    const items=(entries||[]).map(x=>x.item||x);
+    if(!items.length) return "EMPTY";
+    if(items.every(i=>i.served || i.sequenceStatus==="SERVED")) return "SERVED";
+    if(items.every(i=>i.done || i.sequenceStatus==="READY")) return "READY";
+    if(items.some(i=>i.isSent || i.sequenceStatus==="PRODUCTION")) return "PRODUCTION";
+    return "DRAFT";
+  }
+
+  function firstFoodSequence(map=mapSequences()){
+    return [1,2,3].find(s=>map.get(s)?.length) || null;
+  }
+
+  function nextRequestableSequence(map=mapSequences()){
+    const food=[1,2,3].filter(s=>map.get(s)?.length);
+    for(let p=0;p<food.length;p++){
+      const s=food[p], st=seqState(map.get(s));
+      if(st==="DRAFT"){
+        if(p===0) return s;
+        const prev=food[p-1];
+        if(seqState(map.get(prev))==="SERVED") return s;
+        return null;
+      }
+    }
+    return null;
+  }
+
+  function ensurePanel(){
+    if(document.getElementById("ichef-sequence-panel")) return;
+    const sendBtn=document.getElementById("btn-send-kds");
+    if(!sendBtn?.parentElement) return;
+    const div=document.createElement("div");
+    div.id="ichef-sequence-panel";
+    sendBtn.parentElement.insertBefore(div,sendBtn);
+  }
+
+  function routeSummary(items){
+    const counts={BAR:0,CUISINE:0,PATISSERIE:0};
+    items.forEach(i=>counts[inferRoute(i)] += qty(i));
+    return `🍸 BAR ${counts.BAR} • 👨‍🍳 CUISINE ${counts.CUISINE} • 🍰 PÂTISSERIE ${counts.PATISSERIE}`;
+  }
+
+  window.showClientOrderSummary = function(){
+    const total=(currentTicket||[]).reduce((s,i)=>s+qty(i)*price(i),0);
+    const lines=(currentTicket||[]).map(i=>{
+      normalizeServiceItem(i);
+      const meta=[
+        i.cooking ? `Cuisson: ${i.cooking}` : "",
+        i.allergy ? `Allergie: ${i.allergy}` : "",
+        i.obs ? i.obs : ""
+      ].filter(Boolean).join(" • ");
+      return `${qty(i)} × ${i.n} — ${(qty(i)*price(i)).toFixed(2)} €${meta ? "\n   "+meta : ""}`;
+    }).join("\n");
+    alert(`RÉSUMÉ CLIENT — TABLE ${currentTableId||""}\n\n${lines}\n\nTOTAL : ${total.toFixed(2)} €`);
+  };
+
+  async function persistAndPublish(eventType,payload){
+    if(!currentTableId) return;
+    await secureFetch(`${APP_SERVER_URL}/update-order?tenantID=${appTenantID}`,{
+      method:"POST",
+      headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({
+        tableId:currentTableId,
+        order:{
+          items:currentTicket,
+          status:"pending",
+          source:"PAD_SERVEUR",
+          serviceFlow:{
+            updatedAt:new Date().toISOString(),
+            routeSummary:routeSummary(currentTicket)
+          }
+        }
+      })
+    });
+    if(window.ICHEF_BUS?.publish){
+      await window.ICHEF_BUS.publish(eventType,{
+        tableId:currentTableId,
+        items:JSON.parse(JSON.stringify(currentTicket)),
+        ...payload
+      },"all");
+    }
+  }
+
+  async function publishByZone(items, sequence, action){
+    const grouped={BAR:[],CUISINE:[],PATISSERIE:[]};
+    items.forEach(i=>grouped[inferRoute(i)].push(i));
+    for(const [route,arr] of Object.entries(grouped)){
+      if(!arr.length) continue;
+      const target = route==="BAR" ? "passBar" : (route==="PATISSERIE" ? "patisserieLab" : "passProduction");
+      if(window.ICHEF_BUS?.publish){
+        await window.ICHEF_BUS.publish("order.zone.dispatched",{
+          tableId:currentTableId,
+          sequence,
+          route,
+          action,
+          items:JSON.parse(JSON.stringify(arr)),
+          sentAt:new Date().toISOString()
+        },target);
+      }
+    }
+  }
+
+  window.sendFirstService = async function(){
+    if(!currentTicket?.length) return alert("Table vide.");
+    currentTicket.forEach(normalizeServiceItem);
+    const map=mapSequences();
+    const firstFood=firstFoodSequence(map);
+    const selected=[];
+
+    // boissons = toujours au premier temps
+    (map.get(0)||[]).forEach(({item})=>{
+      if(!item.isSent){
+        item.isSent=true; item.done=false; item.served=false;
+        item.sequenceStatus="PRODUCTION"; item.itemId=Date.now();
+        selected.push(item);
+      }
+    });
+
+    // première séquence nourriture disponible
+    if(firstFood){
+      (map.get(firstFood)||[]).forEach(({item})=>{
+        if(!item.isSent){
+          item.isSent=true; item.done=false; item.served=false;
+          item.sequenceStatus="PRODUCTION"; item.itemId=Date.now();
+          selected.push(item);
+        }
+      });
+    }
+
+    if(!selected.length) return alert("Le premier service est déjà envoyé.");
+    await persistAndPublish("order.dispatched",{
+      sequence:firstFood || 0,
+      mode:"FIRST_SERVICE",
+      routes:routeSummary(selected)
+    });
+    await publishByZone(selected,firstFood||0,"FIRST_SERVICE");
+    renderTicket();
+    refreshSequencePanel();
+    alert("✅ Boissons + premier service envoyés aux zones concernées.");
+  };
+
+  window.requestNextSequence = async function(){
+    currentTicket.forEach(normalizeServiceItem);
+    const map=mapSequences();
+    const seq=nextRequestableSequence(map);
+    if(!seq){
+      const food=[1,2,3].filter(s=>map.get(s)?.length);
+      const blocking=food.find(s=>["PRODUCTION","READY"].includes(seqState(map.get(s))));
+      if(blocking){
+        return alert(`⏸️ La séquence ${blocking} doit être SERVIE avant de réclamer la suite.`);
+      }
+      return alert("Aucune nouvelle séquence à réclamer.");
+    }
+
+    const entries=map.get(seq)||[];
+    const selected=[];
+    entries.forEach(({item})=>{
+      if(!item.isSent){
+        item.isSent=true;item.done=false;item.served=false;
+        item.sequenceStatus="PRODUCTION";item.requestedAt=Date.now();item.itemId=Date.now();
+        selected.push(item);
+      }
+    });
+    if(!selected.length) return;
+
+    await persistAndPublish("order.sequence.requested",{
+      sequence:seq,mode:"RECLAME_SUITE",routes:routeSummary(selected)
+    });
+    await publishByZone(selected,seq,"RECLAME_SUITE");
+    renderTicket();
+    refreshSequencePanel();
+    alert(`🔥 Séquence ${seq} réclamée et envoyée.`);
+  };
+
+  window.markSequenceServed = async function(){
+    currentTicket.forEach(normalizeServiceItem);
+    const map=mapSequences();
+    const candidates=[0,1,2,3].filter(s=>map.get(s)?.length && seqState(map.get(s))==="READY");
+    if(!candidates.length) return alert("Aucune séquence prête à marquer servie.");
+    const s=candidates[0];
+    (map.get(s)||[]).forEach(({item})=>{
+      item.served=true;item.done=true;item.sequenceStatus="SERVED";item.servedAt=Date.now();
+    });
+    await persistAndPublish("order.sequence.served",{sequence:s});
+    renderTicket();
+    refreshSequencePanel();
+  };
+
+  window.refreshSequencePanel = function(){
+    ensurePanel();
+    const panel=document.getElementById("ichef-sequence-panel");
+    if(!panel) return;
+
+    (currentTicket||[]).forEach(normalizeServiceItem);
+    const map=mapSequences();
+    const total=(currentTicket||[]).reduce((s,i)=>s+qty(i)*price(i),0);
+    const firstFood=firstFoodSequence(map);
+    const next=nextRequestableSequence(map);
+    const ready=[0,1,2,3].filter(s=>map.get(s)?.length && seqState(map.get(s))==="READY");
+    const states=[0,1,2,3].filter(s=>map.get(s)?.length).map(s=>`${seqNames[s]}: ${seqState(map.get(s))}`).join(" • ");
+
+    panel.innerHTML=`
+      <div class="seq-head">
+        <span>🧾 SERVICE PAR SÉQUENCES</span>
+        <span>${total.toFixed(2)} €</span>
+      </div>
+      <div class="seq-summary">${esc(routeSummary(currentTicket))}<br>${esc(states||"Commande en préparation")}</div>
+      <div class="seq-actions">
+        <button onclick="showClientOrderSummary()">👤 RÉSUMÉ CLIENT + PRIX</button>
+        <button class="primary" onclick="sendFirstService()">🚀 ENVOYER BOISSONS + 1er SERVICE</button>
+        <button class="warn" onclick="requestNextSequence()" ${next ? "" : "disabled"}>🔥 RÉCLAMER LA SUITE${next ? " ("+seqNames[next]+")" : ""}</button>
+        <button class="ready" onclick="markSequenceServed()" ${ready.length ? "" : "disabled"}>✅ MARQUER PRÊT COMME SERVI</button>
+      </div>`;
+  };
+
+  // Remplace l'envoi global historique par l'envoi intelligent premier service.
+  window.processOrderDispatch = function(){
+    return sendFirstService();
+  };
+
+  // Etend le rendu existant pour afficher destination + séquence + statut.
+  const previousRenderTicket = window.renderTicket;
+  window.renderTicket = function(){
+    if(typeof previousRenderTicket==="function") previousRenderTicket();
+    const list=document.getElementById("ticket-list");
+    if(list){
+      const rows=[...list.querySelectorAll(".ticket-item-row")];
+      rows.forEach((row,idx)=>{
+        const i=currentTicket[idx];
+        if(!i) return;
+        normalizeServiceItem(i);
+        const main=row.querySelector(".ticket-row-main > div:first-child");
+        if(!main) return;
+        let extra=row.querySelector(".ichef-service-meta");
+        if(!extra){
+          extra=document.createElement("div");
+          extra.className="ichef-service-meta";
+          main.appendChild(extra);
+        }
+        const state = i.served ? "SERVED" : (i.done ? "READY" : (i.isSent ? "PRODUCTION" : "DRAFT"));
+        extra.innerHTML=
+          `<span class="item-route">${esc(i.destination)}</span>`+
+          `<span class="item-seq">${esc(seqNames[i.sequence]||("SÉQ "+i.sequence))}</span>`+
+          (state==="READY" ? `<span class="item-ready">✅ PRÊT</span>` : "");
+      });
+    }
+    refreshSequencePanel();
+  };
+
+  // Réception temps réel : cuisine/bar/pâtisserie annoncent que c'est prêt.
+  window.addEventListener("ichef:order.ready", function(ev){
+    const d=ev?.detail?.payload || ev?.detail || {};
+    if(d.tableId && currentTableId && String(d.tableId)!==String(currentTableId)) return;
+    const ids=new Set((d.itemIds||[]).map(String));
+    (currentTicket||[]).forEach(i=>{
+      normalizeServiceItem(i);
+      if(!ids.size || ids.has(String(i.id)) || ids.has(String(i.itemId))){
+        if(i.isSent && !i.served){
+          i.done=true;i.sequenceStatus="READY";i.readyAt=Date.now();
+        }
+      }
+    });
+    renderTicket();
+  });
+
+  window.addEventListener("ichef:kdsOrderReceived", function(){
+    if(typeof refreshSequencePanel==="function") refreshSequencePanel();
+  });
+
+  // Commandes venant du menu-qr : le serveur reste la source de vérité.
+  ["ichef:qr.order.created","ichef:qr.order.updated","ichef:order.created"].forEach(evt=>{
+    window.addEventListener(evt,function(ev){
+      const d=ev?.detail?.payload || ev?.detail || {};
+      if(window.ICHEF_BUS?.refresh) window.ICHEF_BUS.refresh();
+      if(d.tableId && currentTableId && String(d.tableId)===String(currentTableId)){
+        setTimeout(()=>{ if(typeof syncData==="function") syncData(); },150);
+      }
+    });
+  });
+
+  document.addEventListener("DOMContentLoaded",()=>{
+    ensurePanel();
+    setTimeout(()=>{ if(typeof renderTicket==="function" && currentTableId) renderTicket(); },500);
+  });
+})();
+</script>
+
 </body>
 </html>
