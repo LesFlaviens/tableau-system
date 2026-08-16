@@ -2215,5 +2215,161 @@
 })();
 </script>
 
+
+<style id="ichef-menu-selection-touch-fix-style">
+#dynamic-categories-container > button{
+  pointer-events:auto !important;
+  touch-action:manipulation !important;
+  user-select:none !important;
+  -webkit-user-select:none !important;
+  position:relative !important;
+  z-index:5 !important;
+}
+#dynamic-categories-container > button.ichef-cat-active{
+  background:#000 !important;
+  color:#fff !important;
+}
+</style>
+
+<script id="ichef-menu-selection-touch-fix">
+(function(){
+  "use strict";
+
+  function categoryId(c){
+    if(!c) return "";
+    return String(c.id ?? c.key ?? c.code ?? c.value ?? c.label ?? c.name ?? "");
+  }
+
+  function categoryLabel(c){
+    if(!c) return "CATÉGORIE";
+    return String(c.label ?? c.name ?? c.title ?? c.id ?? "CATÉGORIE");
+  }
+
+  function rebuildCategoryButtons(){
+    const bar = document.getElementById("dynamic-categories-container");
+    if(!bar || !Array.isArray(window.unifiedCategories || unifiedCategories)) return;
+
+    const cats = window.unifiedCategories || unifiedCategories;
+    if(!cats.length) return;
+
+    const previousScroll = bar.scrollLeft;
+    bar.innerHTML = "";
+
+    cats.forEach((c, index)=>{
+      const id = categoryId(c);
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "pay-btn";
+      btn.style.cssText = "width:auto;margin:0;font-size:35px;flex:0 0 auto;";
+      btn.textContent = categoryLabel(c);
+      btn.dataset.categoryId = id;
+
+      const activate = function(ev){
+        if(ev){
+          ev.preventDefault();
+          ev.stopPropagation();
+        }
+
+        bar.querySelectorAll("button").forEach(b=>b.classList.remove("ichef-cat-active"));
+        btn.classList.add("ichef-cat-active");
+
+        if(typeof window.renderMenu === "function"){
+          window.renderMenu(id);
+        }else if(typeof renderMenu === "function"){
+          renderMenu(id);
+        }
+      };
+
+      btn.addEventListener("click", activate, false);
+
+      // Fallback tactile : un vrai tap ouvre la catégorie.
+      let sx=0, sy=0, moved=false;
+      btn.addEventListener("pointerdown", e=>{
+        sx=e.clientX; sy=e.clientY; moved=false;
+      }, {passive:true});
+      btn.addEventListener("pointermove", e=>{
+        if(Math.abs(e.clientX-sx)>14 || Math.abs(e.clientY-sy)>14) moved=true;
+      }, {passive:true});
+      btn.addEventListener("pointerup", e=>{
+        if(!moved && e.pointerType !== "mouse"){
+          activate(e);
+        }
+      }, {passive:false});
+
+      bar.appendChild(btn);
+      if(index===0) btn.classList.add("ichef-cat-active");
+    });
+
+    bar.scrollLeft = previousScroll;
+  }
+
+  // On remplace openOrder uniquement pour reconstruire proprement les boutons
+  // après l'ouverture, sans modifier le reste de la logique.
+  const oldOpenOrder = window.openOrder;
+  if(typeof oldOpenOrder === "function" && !oldOpenOrder.__menuSelectionFixed){
+    const wrapped = function(...args){
+      const result = oldOpenOrder.apply(this,args);
+      setTimeout(rebuildCategoryButtons, 0);
+      return result;
+    };
+    wrapped.__menuSelectionFixed = true;
+    window.openOrder = wrapped;
+  }
+
+  // Corrige le gestionnaire de drag précédent : un petit mouvement de doigt
+  // ne doit plus neutraliser le clic.
+  function installSaferDrag(){
+    const bar=document.getElementById("dynamic-categories-container");
+    if(!bar || bar.dataset.saferDragInstalled==="1") return;
+    bar.dataset.saferDragInstalled="1";
+
+    let down=false, startX=0, startScroll=0, dragged=false;
+
+    bar.addEventListener("pointerdown", e=>{
+      if(e.target.closest("button")) return; // le bouton gère son propre tap
+      down=true;
+      dragged=false;
+      startX=e.clientX;
+      startScroll=bar.scrollLeft;
+    }, {passive:true});
+
+    bar.addEventListener("pointermove", e=>{
+      if(!down) return;
+      const dx=e.clientX-startX;
+      if(Math.abs(dx)>14){
+        dragged=true;
+        bar.scrollLeft=startScroll-dx;
+        e.preventDefault();
+      }
+    }, {passive:false});
+
+    const stop=()=>{down=false;};
+    bar.addEventListener("pointerup",stop,{passive:true});
+    bar.addEventListener("pointercancel",stop,{passive:true});
+  }
+
+  function init(){
+    rebuildCategoryButtons();
+    installSaferDrag();
+  }
+
+  if(document.readyState==="loading"){
+    document.addEventListener("DOMContentLoaded",init);
+  }else{
+    init();
+  }
+
+  // Les catégories peuvent être recréées après une synchronisation serveur.
+  const obs=new MutationObserver(()=>{
+    const bar=document.getElementById("dynamic-categories-container");
+    if(!bar) return;
+    if(bar.children.length && [...bar.children].some(el=>!el.dataset.categoryId)){
+      rebuildCategoryButtons();
+    }
+  });
+  obs.observe(document.documentElement,{childList:true,subtree:true});
+})();
+</script>
+
 </body>
 </html>
