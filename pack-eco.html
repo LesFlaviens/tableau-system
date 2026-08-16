@@ -6328,290 +6328,214 @@ function toggleOutils
     setInterval(lockGridMode, 500); // Maintien actif 2x par seconde
 })();
 <!-- =========================================================
-     MOTEUR DE NAVIGATION EN ENTONNOIR (DRILL-DOWN) + CHRONO SYNCHRO
+     MOTEUR NAVIGATION ENTONNOIR (OVERLAY SÉCURISÉ)
      Restaurant -> Salle -> Zone -> Table
      ========================================================= -->
-<style id="ichef-entonnoir-navigation">
-    /* 1. On cache les anciens onglets du haut en mode Service */
-    body:not(.edit-mode) #room-tabs-container {
-        display: none !important;
-    }
+<style id="ichef-drilldown-css">
+    /* 1. On cache le vieux système de plan uniquement en mode service */
+    body:not(.edit-mode) #floor-plan { display: none !important; }
+    body:not(.edit-mode) #room-tabs-container { display: none !important; }
+    #btn-rush-toggle { display: none !important; } /* On cache l'ancien bouton rush */
 
-    /* 2. Le conteneur principal devient une grille propre */
-    html body .drilldown-mode {
-        display: flex !important;
-        flex-direction: column !important;
-        padding: 40px !important;
-        background: #FFFFFF !important;
-        height: 100% !important;
-        min-height: 100vh !important;
+    /* 2. L'Overlay qui couvre tout l'espace de la salle avec un fond blanc absolu */
+    #dd-overlay {
+        position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+        background: #FFFFFF; z-index: 45; 
+        display: flex; flex-direction: column;
+        padding: 40px; box-sizing: border-box; overflow-y: auto;
     }
+    body.edit-mode #dd-overlay { display: none !important; }
 
-    /* 3. L'en-tête de navigation (Fil d'Ariane) */
-    .dd-header {
-        display: flex !important;
-        align-items: center !important;
-        gap: 30px !important;
-        border-bottom: 8px solid #000 !important;
-        padding-bottom: 30px !important;
-        margin-bottom: 40px !important;
-    }
+    /* 3. Styles des éléments de l'entonnoir */
+    .dd-header { display: flex; align-items: center; gap: 30px; border-bottom: 8px solid #000; padding-bottom: 30px; margin-bottom: 40px; flex-shrink: 0; }
+    .dd-title { font-size: 60px; font-weight: 900; color: #000; letter-spacing: 2px; }
+    .dd-back-btn { background: #000; color: #FFF; font-size: 50px; font-weight: 900; padding: 20px 40px; border-radius: 16px; border: none; cursor: pointer; text-transform: uppercase; }
+    .dd-back-btn:active { transform: scale(0.95); }
 
-    .dd-title {
-        font-size: 60px !important;
-        font-weight: 900 !important;
-        text-transform: uppercase !important;
-        color: #000 !important;
-        letter-spacing: 2px !important;
-    }
-
-    .dd-back-btn {
-        background: #000 !important;
-        color: #FFF !important;
-        font-size: 50px !important;
-        font-weight: 900 !important;
-        padding: 20px 50px !important;
-        border-radius: 16px !important;
-        border: none !important;
-        cursor: pointer !important;
-        text-transform: uppercase !important;
-    }
-    .dd-back-btn:active { transform: scale(0.95) !important; background: #333 !important; }
-
-    /* 4. La grille des boutons de sélection */
-    .dd-grid {
-        display: grid !important;
-        grid-template-columns: repeat(auto-fill, minmax(360px, 1fr)) !important;
-        gap: 40px !important;
-        align-content: start !important;
-    }
-
-    /* 5. Les boutons géants */
+    .dd-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(360px, 1fr)); gap: 40px; align-content: start; }
+    
     .dd-btn {
-        display: flex !important;
-        flex-direction: column !important;
-        align-items: center !important;
-        justify-content: center !important;
-        min-height: 300px !important;
-        border: 8px solid #000 !important;
-        border-radius: 24px !important;
-        background: #F4F4F6 !important;
-        color: #000 !important;
-        font-size: 60px !important;
-        font-weight: 900 !important;
-        text-transform: uppercase !important;
-        cursor: pointer !important;
-        padding: 20px !important;
-        text-align: center !important;
+        display: flex; flex-direction: column; align-items: center; justify-content: center;
+        min-height: 300px; border: 8px solid #000; border-radius: 24px;
+        background: #F4F4F6; color: #000; font-size: 60px; font-weight: 900;
+        text-transform: uppercase; cursor: pointer; padding: 20px; text-align: center;
     }
-    .dd-btn:active { background: #E0E0E0 !important; transform: scale(0.96) !important; }
+    .dd-btn:active { transform: scale(0.96); background: #E0E0E0; }
 
-    /* Sous-textes (Statuts des tables et Chrono) */
-    .dd-sub {
-        font-size: 40px !important;
-        margin-top: 15px !important;
-        color: #555 !important;
-        line-height: 1.3 !important;
-    }
-
-    /* Couleurs de statut synchronisées */
-    .dd-active { border-color: #3498db !important; }
-    .dd-active .dd-sub-title { color: #3498db !important; }
-    .dd-reserved { border-color: #ff69b4 !important; }
-    .dd-reserved .dd-sub-title { color: #ff69b4 !important; }
-    .dd-alert { border-color: #D9534F !important; background: rgba(217,83,79,0.1) !important; }
-
-    /* Cacher le bouton VUE RUSH (devenu obsolète) */
-    #btn-rush-toggle { display: none !important; }
+    .dd-sub { font-size: 40px; margin-top: 15px; color: #555; line-height: 1.3; }
+    
+    /* Statuts & Chrono */
+    .dd-active { border-color: #3498db; }
+    .dd-active .dd-sub-title { color: #3498db; }
+    .dd-reserved { border-color: #ff69b4; }
+    .dd-alert { border-color: #D9534F; background: rgba(217,83,79,0.1); }
 </style>
 
-<script id="ichef-entonnoir-moteur">
+<script id="ichef-drilldown-js">
 (function() {
-    // 1. Sauvegarde du vieux moteur pour le mode Architecture
-    if (!window.originalRenderFloor) {
-        window.originalRenderFloor = window.renderFloor;
-    }
+    // 1. État de la navigation (On commence à la racine : le RESTAURANT)
+    window.ddState = { level: 'RESTO', room: null, zone: null };
 
-    // 2. Variables d'état de l'entonnoir
-    window.ichefNavLevel = 'ROOMS'; 
-    window.ichefActiveRoom = null;
-    window.ichefActiveZone = null;
+    // 2. Fonction pour monter/descendre dans l'entonnoir
+    window.ddGo = function(level, param) {
+        window.ddState.level = level;
+        if (level === 'SALLES') { window.ddState.room = null; window.ddState.zone = null; }
+        if (level === 'ZONES') { window.ddState.room = param; window.ddState.zone = null; currentRoom = param; }
+        if (level === 'TABLES') { window.ddState.zone = param; }
+        renderFloor(); // Force l'actualisation
+    };
 
-    // 3. Remplacement massif du moteur de rendu
-    window.renderFloor = function() {
-        const floor = document.getElementById('floor-plan');
-        if (!floor) return;
+    // 3. Moteur de rendu de l'entonnoir synchronisé
+    window.renderDrillDown = function() {
+        let wrapper = document.querySelector('.floor-plan-wrapper');
+        if(!wrapper) return;
 
-        // Si on est en mode édition, on laisse le vieux système faire son travail (X/Y)
-        if (isArchiMode || isDraggingTable) {
-            document.getElementById('room-tabs-container').style.display = 'flex';
-            floor.classList.remove('drilldown-mode');
-            window.originalRenderFloor();
+        let overlay = document.getElementById('dd-overlay');
+        if(!overlay) {
+            overlay = document.createElement('div');
+            overlay.id = 'dd-overlay';
+            wrapper.appendChild(overlay);
+        }
+
+        // Si on est en édition, on désactive l'entonnoir
+        if (typeof isArchiMode !== 'undefined' && isArchiMode) {
+            overlay.style.display = 'none';
             return;
         }
 
-        // --- MODE SERVICE : ENTONNOIR SYNCHRONISÉ ---
-        floor.innerHTML = '';
-        floor.className = 'floor-plan drilldown-mode';
+        overlay.style.display = 'flex';
+        let content = '';
 
-        // Sécurisation des données
         let safeRooms = (typeof rooms !== 'undefined' && Array.isArray(rooms)) ? rooms : ['Salle Principale'];
         let safeZones = (typeof zones !== 'undefined' && Array.isArray(zones)) ? zones : [];
         let safeTables = (typeof tables !== 'undefined' && Array.isArray(tables)) ? tables : [];
 
-        let header = document.createElement('div');
-        header.className = 'dd-header';
-        let grid = document.createElement('div');
-        grid.className = 'dd-grid';
-
-        // NIVEAU 1 : CHOIX DE LA SALLE
-        if (window.ichefNavLevel === 'ROOMS') {
-            header.innerHTML = `<div class="dd-title">🏢 RESTAURANT (CHOIX SALLE)</div>`;
-            
-            safeRooms.forEach(r => {
-                let btn = document.createElement('button');
-                btn.className = 'dd-btn';
-                btn.innerHTML = `🚪 ${r}`;
-                btn.onclick = () => { 
-                    window.ichefActiveRoom = r; 
-                    currentRoom = r; 
-                    window.ichefNavLevel = 'ZONES'; 
-                    renderFloor(); 
-                };
-                grid.appendChild(btn);
-            });
+        // ÉCRAN 1 : LE RESTAURANT
+        if (window.ddState.level === 'RESTO') {
+            content = `
+                <div class="dd-header"><div class="dd-title">🏢 RESTAURANT</div></div>
+                <div class="dd-grid">
+                    <button class="dd-btn" onclick="ddGo('SALLES')">
+                        ENTRER DANS LE RESTAURANT
+                    </button>
+                </div>
+            `;
         } 
-        
-        // NIVEAU 2 : CHOIX DE LA ZONE
-        else if (window.ichefNavLevel === 'ZONES') {
-            header.innerHTML = `
-                <button class="dd-back-btn" onclick="window.ichefNavLevel='ROOMS'; renderFloor();">🔙 RETOUR</button>
-                <div class="dd-title">🚪 ${window.ichefActiveRoom} > ZONES</div>
+        // ÉCRAN 2 : LES SALLES
+        else if (window.ddState.level === 'SALLES') {
+            content = `
+                <div class="dd-header">
+                    <button class="dd-back-btn" onclick="ddGo('RESTO')">🔙 RETOUR</button>
+                    <div class="dd-title">🚪 CHOIX DE LA SALLE</div>
+                </div>
+                <div class="dd-grid">
+                    ${safeRooms.map(r => `<button class="dd-btn" onclick="ddGo('ZONES', '${r}')">${r}</button>`).join('')}
+                </div>
             `;
-
-            let roomZones = safeZones.filter(z => z.room === window.ichefActiveRoom);
-            
-            roomZones.forEach(z => {
-                let btn = document.createElement('button');
-                btn.className = 'dd-btn';
-                btn.style.borderColor = z.color || '#000';
-                btn.innerHTML = `<span style="color:${z.color || '#000'}">🔲 ${z.label}</span>`;
-                btn.onclick = () => { 
-                    window.ichefActiveZone = z; 
-                    window.ichefNavLevel = 'TABLES'; 
-                    renderFloor(); 
-                };
-                grid.appendChild(btn);
-            });
-
-            // Bouton "Hors Zone" généré automatiquement
-            let btnHorsZone = document.createElement('button');
-            btnHorsZone.className = 'dd-btn';
-            btnHorsZone.style.borderColor = '#888';
-            btnHorsZone.innerHTML = `🍽️ TABLES HORS ZONE`;
-            btnHorsZone.onclick = () => { 
-                window.ichefActiveZone = { id: 'HORS_ZONE', label: 'AUTRES TABLES' }; 
-                window.ichefNavLevel = 'TABLES'; 
-                renderFloor(); 
-            };
-            grid.appendChild(btnHorsZone);
         }
-        
-        // NIVEAU 3 : CHOIX DE LA TABLE (AVEC MOTEUR ANALYTIQUE)
-        else if (window.ichefNavLevel === 'TABLES') {
-            header.innerHTML = `
-                <button class="dd-back-btn" onclick="window.ichefNavLevel='ZONES'; renderFloor();">🔙 RETOUR</button>
-                <div class="dd-title">🔲 ${window.ichefActiveZone.label} > TABLES</div>
+        // ÉCRAN 3 : LES ZONES DE LA SALLE CHOISIE
+        else if (window.ddState.level === 'ZONES') {
+            let rZones = safeZones.filter(z => z.room === window.ddState.room);
+            content = `
+                <div class="dd-header">
+                    <button class="dd-back-btn" onclick="ddGo('SALLES')">🔙 RETOUR</button>
+                    <div class="dd-title">🔲 ZONES : ${window.ddState.room}</div>
+                </div>
+                <div class="dd-grid">
+                    ${rZones.map(z => `<button class="dd-btn" style="border-color:${z.color||'#000'};" onclick="ddGo('TABLES', '${z.id}')"><span style="color:${z.color||'#000'}">${z.label}</span></button>`).join('')}
+                    <button class="dd-btn" style="border-color:#888;" onclick="ddGo('TABLES', 'HORS_ZONE')"><span style="color:#888;">🍽️ AUTRES TABLES</span></button>
+                </div>
             `;
+        }
+        // ÉCRAN 4 : LES TABLES (AVEC SYNCHRO SERVEUR ET CHRONO)
+        else if (window.ddState.level === 'TABLES') {
+            let targetZone = safeZones.find(z => z.id === window.ddState.zone);
+            let zName = targetZone ? targetZone.label : 'AUTRES TABLES';
 
-            let roomZones = safeZones.filter(z => z.room === window.ichefActiveRoom);
-            
+            // Filtrage géométrique pour lier les tables à la zone
             let targetTables = safeTables.filter(t => {
-                if (t.room !== window.ichefActiveRoom) return false;
+                if(t.room !== window.ddState.room) return false;
+                let cY = (t.t || 0) + ((t.h || 120)/2);
+                let cX = (t.l || 0) + ((t.w || 80)/2);
+                let inZ = safeZones.find(z => z.room === window.ddState.room && cX >= (z.l||0) && cX <= (z.l||0)+(z.w||400) && cY >= (z.t||0) && cY <= (z.t||0)+(z.h||300));
                 
-                let tableCenterY = (t.t || 0) + ((t.h || 120) / 2);
-                let tableCenterX = (t.l || 0) + ((t.w || 80) / 2);
-                
-                let inZone = roomZones.find(z => 
-                    tableCenterX >= (z.l || 0) && tableCenterX <= ((z.l || 0) + (z.w || 400)) &&
-                    tableCenterY >= (z.t || 0) && tableCenterY <= ((z.t || 0) + (z.h || 300))
-                );
-
-                if (window.ichefActiveZone.id === 'HORS_ZONE') return !inZone;
-                return inZone && inZone.id === window.ichefActiveZone.id;
+                if (window.ddState.zone === 'HORS_ZONE') return !inZ;
+                return inZ && inZ.id === window.ddState.zone;
             });
 
-            // Création des boutons Table synchronisés
-            targetTables.forEach(t => {
+            // Rendu des tables avec statut dynamique
+            let tableHtml = targetTables.map(t => {
                 let orderKey = Object.keys(activeOrders).find(k => k.toLowerCase() === t.label.toLowerCase());
                 let orderData = orderKey ? activeOrders[orderKey] : null;
 
-                // --- MOTEUR DE CHRONOMÉTRAGE EXACTEMENT COMME SUR L'ANCIEN PLAN ---
-                let isReady = false;
-                let maxDelayMin = 0;
+                let statusClass = '';
+                let subText = 'LIBRE';
+                let chronoHtml = '';
 
-                if (orderData && orderData.status === 'PRÊT') isReady = true;
-                if (orderData && orderData.items && orderData.items.length > 0) {
-                    let allDone = orderData.items.every(i => i.done);
-                    if (allDone) isReady = true;
-
+                // Analyse des statuts
+                if (orderData && orderData.alerteRouge) {
+                    statusClass = 'dd-alert'; subText = '<span style="color:#D9534F;">⚠️ ALERTE</span>';
+                } 
+                else if (orderData && orderData.items && orderData.items.length > 0) {
+                    statusClass = 'dd-active'; subText = '<span class="dd-sub-title">OCCUPÉE</span>';
+                    
+                    let maxDelayMin = 0;
+                    let isReady = orderData.status === 'PRÊT' || orderData.items.every(i => i.done);
+                    
                     orderData.items.forEach(i => {
                         if (i.isSent && !i.served && i.itemId) {
                             let delay = (Date.now() - parseInt(i.itemId)) / 60000;
                             if (delay > maxDelayMin) maxDelayMin = delay;
                         }
                     });
-                }
 
-                let btn = document.createElement('button');
-                btn.className = 'dd-btn';
-                let content = `<span>TABLE ${t.label}</span>`;
-                
-                // ANALYSE DU STATUT
-                if (orderData && orderData.alerteRouge) {
-                    btn.classList.add('dd-alert');
-                    content += `<div class="dd-sub"><span style="color:#D9534F; font-weight:900;">⚠️ ALERTE</span></div>`;
-                } 
-                else if (orderData && orderData.items && orderData.items.length > 0) {
-                    btn.classList.add('dd-active');
-                    let subContent = `<span class="dd-sub-title">OCCUPÉE</span>`;
-                    
-                    // Ajout du Chrono Dynamique
-                    if (!isReady && maxDelayMin >= 1) {
-                        let chronoColor = (maxDelayMin >= 25) ? '#e056fd' : (maxDelayMin >= 15 ? '#9b59b6' : '#3498db');
-                        subContent += `<br><span style="color:${chronoColor}; font-size:50px; font-weight:900;">⏱ ${Math.floor(maxDelayMin)} min</span>`;
-                    } else if (isReady) {
-                        subContent += `<br><span style="color:#10b981; font-size:50px; font-weight:900;">✅ PRÊT</span>`;
+                    if (isReady) {
+                        chronoHtml = `<br><span style="color:#10b981; font-size:50px;">✅ PRÊT</span>`;
+                    } else if (maxDelayMin >= 1) {
+                        let cCol = maxDelayMin >= 25 ? '#e056fd' : (maxDelayMin >= 15 ? '#9b59b6' : '#3498db');
+                        chronoHtml = `<br><span style="color:${cCol}; font-size:50px; font-weight:900;">⏱ ${Math.floor(maxDelayMin)} min</span>`;
                     }
-                    content += `<div class="dd-sub">${subContent}</div>`;
                 } 
                 else if (orderData && orderData.status === 'reserved') {
-                    btn.classList.add('dd-reserved');
-                    let clientStr = orderData.clientName ? orderData.clientName.substring(0,10) : '';
-                    content += `<div class="dd-sub"><span class="dd-sub-title">RÉSERVÉE</span><br><span style="font-size:35px; color:#555;">${orderData.time || ''} ${clientStr}</span></div>`;
-                } 
-                else {
-                    content += `<div class="dd-sub">LIBRE</div>`;
+                    statusClass = 'dd-reserved'; 
+                    let cName = orderData.clientName ? orderData.clientName.substring(0,10) : '';
+                    subText = `<span class="dd-sub-title">RÉSERVÉE</span><br><span style="font-size:35px;color:#555;">${orderData.time||''} ${cName}</span>`;
                 }
 
-                btn.innerHTML = content;
-                btn.onclick = () => { 
-                    handleTableOrderTap(orderKey || t.label, t.label); 
-                };
-                grid.appendChild(btn);
-            });
-            
-            if(targetTables.length === 0) {
-                grid.innerHTML = `<div style="font-size:40px; color:#888;">Aucune table dans cette zone.</div>`;
-            }
+                return `
+                    <button class="dd-btn ${statusClass}" onclick="handleTableOrderTap('${orderKey||t.label}', '${t.label}')">
+                        <span>TABLE ${t.label}</span>
+                        <div class="dd-sub">${subText}${chronoHtml}</div>
+                    </button>
+                `;
+            }).join('');
+
+            if(!tableHtml) tableHtml = `<div style="font-size:50px; color:#888; grid-column: 1/-1;">Aucune table configurée dans cette zone.</div>`;
+
+            content = `
+                <div class="dd-header">
+                    <button class="dd-back-btn" onclick="ddGo('ZONES', '${window.ddState.room}')">🔙 RETOUR</button>
+                    <div class="dd-title">🍽️ ${zName}</div>
+                </div>
+                <div class="dd-grid">
+                    ${tableHtml}
+                </div>
+            `;
         }
 
-        floor.appendChild(header);
-        floor.appendChild(grid);
+        overlay.innerHTML = content;
     };
 
-    // 4. Maintien de l'entonnoir au premier plan et lors des synchronisations du serveur
-    setTimeout(window.renderFloor, 500);
+    // 4. L'interception silencieuse et propre (Monkey Patching)
+    if (!window.ichefDrillDownPatched) {
+        const originalRenderFloor = renderFloor;
+        renderFloor = function() {
+            originalRenderFloor(); // Ton système continue de vivre et de sync sa logique en arrière-plan sans planter
+            window.renderDrillDown(); // L'interface par-dessus est actualisée en direct !
+        };
+        window.ichefDrillDownPatched = true;
+    }
+
 })();
 </script>
 </body>
