@@ -399,26 +399,58 @@
         function appendPin(n) { if (currentPin.length < 12) { currentPin += n; document.getElementById('pin-display').innerText = '•'.repeat(currentPin.length); } }
         function clearPin() { currentPin = ''; document.getElementById('pin-display').innerText = ''; document.getElementById('error-msg').style.display = 'none'; }
         
-        async function submitPin() {
+      async function submitPin() {
             if (loginInProgress || !currentPin) return;
             loginInProgress = true;
+            
+            const msgBox = document.getElementById('error-msg');
+            msgBox.style.display = 'none';
+            msgBox.style.color = '#D9534F';
+
             try {
                 const response = await fetch(`${APP_SERVER_URL}/api/verify-pin`, {
-                    method: 'POST', headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ tenantID: appTenantID, pin: currentPin })
+                    method: 'POST', 
+                    headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+                    body: JSON.stringify({ 
+                        tenantID: appTenantID, 
+                        pin: currentPin,
+                        deviceId: window.ICHEF_SECURITY ? window.ICHEF_SECURITY.deviceId : null
+                    })
                 });
+                
                 const data = await response.json();
-                if (data.success) {
+                
+                if (response.ok && data.success) {
+                    // 1. Création du profil utilisateur
+                    const serverRole = String(data.role || 'STAFF').trim().toLowerCase();
+                    let displayName = serverRole === 'master' ? 'Directeur' : 'Serveur';
+                    let userRole = (serverRole === 'master' || serverRole === 'admin' || serverRole === 'manager') ? 'Manager' : 'Serveur';
+                    
+                    currentUser = { name: displayName, role: userRole, serverRole };
+                    
+                    // 2. Mise à jour de l'interface
+                    document.getElementById('user-badge').innerText = `Badge: ${currentUser.name}`;
                     document.getElementById('login-screen').style.display = 'none';
-                    syncData(); setInterval(syncData, 3000);
+                    
+                    document.querySelectorAll('.admin').forEach(e => {
+                        e.style.display = currentUser.role === 'Manager' ? 'flex' : 'none';
+                    });
+                    
+                    // 3. Démarrage du moteur
+                    syncData(); 
+                    if (!window.syncIntervalSet) {
+                        setInterval(syncData, 3000);
+                        window.syncIntervalSet = true;
+                    }
                 } else {
-                    document.getElementById('error-msg').innerText = '❌ Code PIN incorrect';
-                    document.getElementById('error-msg').style.display = 'block';
+                    msgBox.innerText = `❌ ${data.error || 'Code PIN incorrect'}`;
+                    msgBox.style.display = 'block';
                     clearPin();
                 }
             } catch (e) { 
-                document.getElementById('error-msg').innerText = '❌ Connexion Serveur Impossible';
-                document.getElementById('error-msg').style.display = 'block';
+                console.error(e);
+                msgBox.innerText = '❌ Connexion Serveur Impossible';
+                msgBox.style.display = 'block';
                 clearPin();
             }
             loginInProgress = false;
