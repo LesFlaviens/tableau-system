@@ -6327,6 +6327,257 @@ function toggleOutils
     lockGridMode();
     setInterval(lockGridMode, 500); // Maintien actif 2x par seconde
 })();
+<!-- =========================================================
+     MOTEUR DE NAVIGATION EN ENTONNOIR (DRILL-DOWN)
+     Restaurant -> Salle -> Zone -> Table
+     ========================================================= -->
+<style id="ichef-entonnoir-navigation">
+    /* 1. On cache les anciens onglets du haut en mode Service */
+    body:not(.edit-mode) #room-tabs-container {
+        display: none !important;
+    }
+
+    /* 2. Le conteneur principal devient une grille propre */
+    html body .drilldown-mode {
+        display: flex !important;
+        flex-direction: column !important;
+        padding: 40px !important;
+        background: #FFFFFF !important;
+        height: 100% !important;
+        min-height: 100vh !important;
+    }
+
+    /* 3. L'en-tête de navigation (Fil d'Ariane) */
+    .dd-header {
+        display: flex !important;
+        align-items: center !important;
+        gap: 30px !important;
+        border-bottom: 8px solid #000 !important;
+        padding-bottom: 30px !important;
+        margin-bottom: 40px !important;
+    }
+
+    .dd-title {
+        font-size: 60px !important;
+        font-weight: 900 !important;
+        text-transform: uppercase !important;
+        color: #000 !important;
+        letter-spacing: 2px !important;
+    }
+
+    .dd-back-btn {
+        background: #000 !important;
+        color: #FFF !important;
+        font-size: 50px !important;
+        font-weight: 900 !important;
+        padding: 20px 50px !important;
+        border-radius: 16px !important;
+        border: none !important;
+        cursor: pointer !important;
+        text-transform: uppercase !important;
+    }
+    .dd-back-btn:active { transform: scale(0.95) !important; background: #333 !important; }
+
+    /* 4. La grille des boutons de sélection */
+    .dd-grid {
+        display: grid !important;
+        grid-template-columns: repeat(auto-fill, minmax(360px, 1fr)) !important;
+        gap: 40px !important;
+        align-content: start !important;
+    }
+
+    /* 5. Les boutons géants */
+    .dd-btn {
+        display: flex !important;
+        flex-direction: column !important;
+        align-items: center !important;
+        justify-content: center !important;
+        min-height: 300px !important;
+        border: 8px solid #000 !important;
+        border-radius: 24px !important;
+        background: #F4F4F6 !important;
+        color: #000 !important;
+        font-size: 60px !important;
+        font-weight: 900 !important;
+        text-transform: uppercase !important;
+        cursor: pointer !important;
+        padding: 20px !important;
+        text-align: center !important;
+    }
+    .dd-btn:active { background: #E0E0E0 !important; transform: scale(0.96) !important; }
+
+    /* Sous-textes (Statuts des tables) */
+    .dd-sub {
+        font-size: 40px !important;
+        margin-top: 20px !important;
+        color: #555 !important;
+    }
+
+    /* Couleurs de statut */
+    .dd-active { border-color: #3498db !important; }
+    .dd-active .dd-sub { color: #3498db !important; }
+    .dd-reserved { border-color: #ff69b4 !important; }
+    .dd-reserved .dd-sub { color: #ff69b4 !important; }
+
+    /* Cacher le bouton VUE RUSH (devenu obsolète) */
+    #btn-rush-toggle { display: none !important; }
+</style>
+
+<script id="ichef-entonnoir-moteur">
+(function() {
+    // 1. Sauvegarde du vieux moteur pour le mode Architecture
+    if (!window.originalRenderFloor) {
+        window.originalRenderFloor = window.renderFloor;
+    }
+
+    // 2. Variables d'état de l'entonnoir
+    window.ichefNavLevel = 'ROOMS'; // Niveaux : ROOMS -> ZONES -> TABLES
+    window.ichefActiveRoom = null;
+    window.ichefActiveZone = null;
+
+    // 3. Remplacement massif du moteur de rendu
+    window.renderFloor = function() {
+        const floor = document.getElementById('floor-plan');
+        if (!floor) return;
+
+        // Si on est en mode édition, on laisse le vieux système faire son travail
+        if (isArchiMode || isDraggingTable) {
+            document.getElementById('room-tabs-container').style.display = 'flex';
+            floor.classList.remove('drilldown-mode');
+            window.originalRenderFloor();
+            return;
+        }
+
+        // --- MODE SERVICE : ENTONNOIR ---
+        floor.innerHTML = '';
+        floor.className = 'floor-plan drilldown-mode';
+
+        // Sécurisation des données
+        let safeRooms = (typeof rooms !== 'undefined' && Array.isArray(rooms)) ? rooms : ['Salle Principale'];
+        let safeZones = (typeof zones !== 'undefined' && Array.isArray(zones)) ? zones : [];
+        let safeTables = (typeof tables !== 'undefined' && Array.isArray(tables)) ? tables : [];
+
+        let header = document.createElement('div');
+        header.className = 'dd-header';
+        let grid = document.createElement('div');
+        grid.className = 'dd-grid';
+
+        // NIVEAU 1 : CHOIX DE LA SALLE
+        if (window.ichefNavLevel === 'ROOMS') {
+            header.innerHTML = `<div class="dd-title">🏢 RESTAURANT (CHOIX SALLE)</div>`;
+            
+            safeRooms.forEach(r => {
+                let btn = document.createElement('button');
+                btn.className = 'dd-btn';
+                btn.innerHTML = `🚪 ${r}`;
+                btn.onclick = () => { 
+                    window.ichefActiveRoom = r; 
+                    currentRoom = r; // Sync avec l'ancien système
+                    window.ichefNavLevel = 'ZONES'; 
+                    renderFloor(); 
+                };
+                grid.appendChild(btn);
+            });
+        } 
+        
+        // NIVEAU 2 : CHOIX DE LA ZONE
+        else if (window.ichefNavLevel === 'ZONES') {
+            header.innerHTML = `
+                <button class="dd-back-btn" onclick="window.ichefNavLevel='ROOMS'; renderFloor();">🔙 RETOUR</button>
+                <div class="dd-title">🚪 ${window.ichefActiveRoom} > ZONES</div>
+            `;
+
+            let roomZones = safeZones.filter(z => z.room === window.ichefActiveRoom);
+            
+            roomZones.forEach(z => {
+                let btn = document.createElement('button');
+                btn.className = 'dd-btn';
+                btn.style.borderColor = z.color || '#000';
+                btn.innerHTML = `<span style="color:${z.color || '#000'}">🔲 ${z.label}</span>`;
+                btn.onclick = () => { 
+                    window.ichefActiveZone = z; 
+                    window.ichefNavLevel = 'TABLES'; 
+                    renderFloor(); 
+                };
+                grid.appendChild(btn);
+            });
+
+            // Bouton "Hors Zone" généré automatiquement pour ne perdre aucune table
+            let btnHorsZone = document.createElement('button');
+            btnHorsZone.className = 'dd-btn';
+            btnHorsZone.style.borderColor = '#888';
+            btnHorsZone.innerHTML = `🍽️ TABLES HORS ZONE`;
+            btnHorsZone.onclick = () => { 
+                window.ichefActiveZone = { id: 'HORS_ZONE', label: 'AUTRES TABLES' }; 
+                window.ichefNavLevel = 'TABLES'; 
+                renderFloor(); 
+            };
+            grid.appendChild(btnHorsZone);
+        }
+        
+        // NIVEAU 3 : CHOIX DE LA TABLE
+        else if (window.ichefNavLevel === 'TABLES') {
+            header.innerHTML = `
+                <button class="dd-back-btn" onclick="window.ichefNavLevel='ZONES'; renderFloor();">🔙 RETOUR</button>
+                <div class="dd-title">🔲 ${window.ichefActiveZone.label} > TABLES</div>
+            `;
+
+            let roomZones = safeZones.filter(z => z.room === window.ichefActiveRoom);
+            
+            // Logique mathématique pour trouver les tables appartenant à la zone active
+            let targetTables = safeTables.filter(t => {
+                if (t.room !== window.ichefActiveRoom) return false;
+                
+                let tableCenterY = (t.t || 0) + ((t.h || 120) / 2);
+                let tableCenterX = (t.l || 0) + ((t.w || 80) / 2);
+                
+                let inZone = roomZones.find(z => 
+                    tableCenterX >= (z.l || 0) && tableCenterX <= ((z.l || 0) + (z.w || 400)) &&
+                    tableCenterY >= (z.t || 0) && tableCenterY <= ((z.t || 0) + (z.h || 300))
+                );
+
+                if (window.ichefActiveZone.id === 'HORS_ZONE') return !inZone;
+                return inZone && inZone.id === window.ichefActiveZone.id;
+            });
+
+            // Création des boutons Table avec vérification d'état (Libre/Occupée/Réservée)
+            targetTables.forEach(t => {
+                let orderKey = Object.keys(activeOrders).find(k => k.toLowerCase() === t.label.toLowerCase());
+                let orderData = orderKey ? activeOrders[orderKey] : null;
+
+                let btn = document.createElement('button');
+                btn.className = 'dd-btn';
+                let content = `<span>TABLE ${t.label}</span>`;
+                
+                if (orderData && orderData.items && orderData.items.length > 0) {
+                    btn.classList.add('dd-active');
+                    content += `<div class="dd-sub">OCCUPÉE</div>`;
+                } else if (orderData && orderData.status === 'reserved') {
+                    btn.classList.add('dd-reserved');
+                    content += `<div class="dd-sub">RÉSERVÉE</div>`;
+                } else {
+                    content += `<div class="dd-sub">LIBRE</div>`;
+                }
+
+                btn.innerHTML = content;
+                btn.onclick = () => { 
+                    handleTableOrderTap(orderKey || t.label, t.label); 
+                };
+                grid.appendChild(btn);
+            });
+            
+            if(targetTables.length === 0) {
+                grid.innerHTML = `<div style="font-size:40px; color:#888;">Aucune table dans cette zone.</div>`;
+            }
+        }
+
+        floor.appendChild(header);
+        floor.appendChild(grid);
+    };
+
+    // 4. Force le premier rendu au chargement pour afficher le bon écran
+    setTimeout(window.renderFloor, 500);
+})();
 </script>
 </body>
 </html>
