@@ -403,7 +403,7 @@
         function appendPin(n) { if (currentPin.length < 12) { currentPin += n; document.getElementById('pin-display').innerText = '•'.repeat(currentPin.length); } }
         function clearPin() { currentPin = ''; document.getElementById('pin-display').innerText = ''; document.getElementById('error-msg').style.display = 'none'; }
         
-        async function submitPin() {
+async function submitPin() {
             if (loginInProgress || !currentPin) return;
             loginInProgress = true;
             
@@ -421,9 +421,78 @@
                     })
                 });
                 
+                // BLINDAGE : Si le serveur refuse (401, 403, 500...), on arrête tout proprement
+                if (!response.ok) {
+                    msgBox.innerText = `❌ Code refusé (Erreur serveur)`;
+                    msgBox.style.display = 'block';
+                    clearPin();
+                    loginInProgress = false;
+                    return;
+                }
+                
                 const data = await response.json();
                 
-                if (response.ok && data.success) {
+                if (data.success) {
+                    const serverRole = String(data.role || 'STAFF').trim().toLowerCase();
+                    let displayName = serverRole === 'master' ? 'Directeur' : 'Serveur';
+                    let userRole = (serverRole === 'master' || serverRole === 'admin' || serverRole === 'manager') ? 'Manager' : 'Serveur';
+                    
+                    window.currentUser = { name: displayName, role: userRole, serverRole };
+                    
+                    document.getElementById('user-badge').innerText = `Badge: ${window.currentUser.name}`;
+                    document.getElementById('login-screen').style.display = 'none';
+                    
+                    document.querySelectorAll('.admin').forEach(e => {
+                        e.style.display = window.currentUser.role === 'Manager' ? 'flex' : 'none';
+                    });
+                    
+                    syncData(); 
+                    if (!window.syncIntervalSet) {
+                        setInterval(syncData, 3000);
+                        window.syncIntervalSet = true;
+                    }
+                } else {
+                    msgBox.innerText = `❌ ${data.error || 'Code PIN incorrect'}`;
+                    msgBox.style.display = 'block';
+                    clearPin();
+                }
+            } catch (e) { 
+                console.error(e);
+                msgBox.innerText = '❌ Connexion Serveur Impossible';
+                msgBox.style.display = 'block';
+                clearPin();
+            }
+            loginInProgress = false;
+        }async function submitPin() {
+            if (loginInProgress || !currentPin) return;
+            loginInProgress = true;
+            
+            const msgBox = document.getElementById('error-msg');
+            msgBox.style.display = 'none';
+
+            try {
+                const response = await fetch(`${APP_SERVER_URL}/api/verify-pin`, {
+                    method: 'POST', 
+                    headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+                    body: JSON.stringify({ 
+                        tenantID: appTenantID, 
+                        pin: currentPin,
+                        deviceId: window.ICHEF_SECURITY ? window.ICHEF_SECURITY.deviceId : null
+                    })
+                });
+                
+                // BLINDAGE : Si le serveur refuse (401, 403, 500...), on arrête tout proprement
+                if (!response.ok) {
+                    msgBox.innerText = `❌ Code refusé (Erreur serveur)`;
+                    msgBox.style.display = 'block';
+                    clearPin();
+                    loginInProgress = false;
+                    return;
+                }
+                
+                const data = await response.json();
+                
+                if (data.success) {
                     const serverRole = String(data.role || 'STAFF').trim().toLowerCase();
                     let displayName = serverRole === 'master' ? 'Directeur' : 'Serveur';
                     let userRole = (serverRole === 'master' || serverRole === 'admin' || serverRole === 'manager') ? 'Manager' : 'Serveur';
