@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="fr">
+<html lang="fr" data-ichef-module="padServer">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
@@ -1243,6 +1243,571 @@
   new MutationObserver(installCategoryScroll).observe(document.documentElement, {
     childList:true, subtree:true
   });
+})();
+</script>
+
+
+<style id="ichef-ticket-qte-cuisson-allergenes-style">
+/* Ajout fonctionnel uniquement — mise en page générale conservée */
+.ticket-row-actions{
+  flex-wrap:wrap !important;
+  align-items:center !important;
+}
+.qty-control{
+  display:inline-flex;
+  align-items:center;
+  gap:8px;
+  border:4px solid #000;
+  border-radius:12px;
+  padding:4px 8px;
+  background:#fff;
+}
+.qty-control button{
+  min-width:48px;
+  min-height:48px;
+  border:0;
+  background:#e5e5e5;
+  color:#000;
+  font-size:30px;
+  font-weight:900;
+  border-radius:8px;
+  cursor:pointer;
+}
+.qty-control .qty-number{
+  min-width:48px;
+  text-align:center;
+  font-size:30px;
+  font-weight:900;
+}
+.ticket-meta-badge{
+  display:inline-block;
+  margin:7px 8px 0 0;
+  padding:6px 10px;
+  border-radius:10px;
+  border:3px solid #000;
+  font-size:24px;
+  font-weight:900;
+  background:#fff;
+}
+.ticket-meta-badge.cooking{ border-color:#C5A059; color:#8a681e; }
+.ticket-meta-badge.allergy{ border-color:#D9534F; color:#D9534F; }
+@media (max-width:900px){
+  .qty-control button{min-width:42px;min-height:42px;font-size:25px}
+  .qty-control .qty-number{font-size:24px;min-width:38px}
+  .ticket-meta-badge{font-size:18px;border-width:2px}
+}
+</style>
+
+<script id="ichef-ticket-qte-cuisson-allergenes-engine">
+(function(){
+  const COOKINGS = [
+    'BLEU','BLEU / SAIGNANT','SAIGNANT','SAIG. / À POINT','À POINT',
+    'À PT / BIEN CUIT','BIEN CUIT','BIEN CUIT / ULTRA','ULTRA BIEN CUIT'
+  ];
+
+  function esc(s){
+    return String(s == null ? '' : s)
+      .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+      .replace(/"/g,'&quot;').replace(/'/g,'&#039;');
+  }
+
+  function normalizeItem(i){
+    if(!i) return i;
+    i.qty = Math.max(1, parseInt(i.qty || 1, 10) || 1);
+
+    /* Compatibilité avec les anciennes commandes où la cuisson était dans le nom */
+    if(!i.cooking && i.n){
+      for(const c of COOKINGS){
+        const suffix = ' (' + c + ')';
+        if(String(i.n).endsWith(suffix)){
+          i.cooking = c;
+          i.n = String(i.n).slice(0, -suffix.length);
+          break;
+        }
+      }
+    }
+
+    if(i.addition == null) i.addition = '';
+    if(i.removal == null) i.removal = '';
+    if(i.allergy == null) {
+      const old = String(i.obs || '');
+      const m = old.match(/(?:🚨|ALLERGIE)\s*([^|]+)/i);
+      i.allergy = m ? m[1].trim() : '';
+    }
+    return i;
+  }
+
+  window.changeItemQty = function(idx, delta){
+    const i = currentTicket[idx];
+    if(!i || i.isSent) return;
+    normalizeItem(i);
+    const next = (parseInt(i.qty || 1,10) || 1) + delta;
+    if(next <= 0){
+      currentTicket.splice(idx,1);
+    } else {
+      i.qty = Math.min(99,next);
+    }
+    renderTicket();
+  };
+
+  window.pendingCuissonIndex = null;
+
+  window.editItemCooking = function(idx){
+    const i = currentTicket[idx];
+    if(!i || i.isSent) return;
+    normalizeItem(i);
+    window.pendingCuissonIndex = idx;
+    pendingCuissonItem = null;
+    const title = document.getElementById('cuisson-item-name');
+    if(title) title.innerText = i.n + (i.cooking ? ' — ' + i.cooking : '');
+    document.getElementById('cuisson-modal')?.classList.add('open');
+  };
+
+  window.confirmCuisson = function(niv){
+    if(window.pendingCuissonIndex !== null && window.pendingCuissonIndex !== undefined){
+      const i = currentTicket[window.pendingCuissonIndex];
+      if(i && !i.isSent){
+        normalizeItem(i);
+        i.cooking = niv;
+      }
+      window.pendingCuissonIndex = null;
+      pendingCuissonItem = null;
+      document.getElementById('cuisson-modal')?.classList.remove('open');
+      renderTicket();
+      return;
+    }
+
+    if(!pendingCuissonItem) return;
+    const baseName = pendingCuissonItem.n;
+    const price = pendingCuissonItem.p;
+
+    let existing = currentTicket.find(x => {
+      normalizeItem(x);
+      return !x.isSent && x.n === baseName && x.cooking === niv &&
+             !x.allergy && !x.addition && !x.removal;
+    });
+
+    if(existing){
+      existing.qty = (existing.qty || 1) + 1;
+    }else{
+      currentTicket.push({
+        id:Date.now()+Math.random(),
+        itemId:Date.now(),
+        n:baseName, p:price, qty:1,
+        cooking:niv, allergy:'', addition:'', removal:'',
+        isSent:false, done:false, served:false, obs:''
+      });
+    }
+
+    pendingCuissonItem = null;
+    document.getElementById('cuisson-modal')?.classList.remove('open');
+    renderTicket();
+  };
+
+  window.cancelCuisson = function(){
+    pendingCuissonItem = null;
+    window.pendingCuissonIndex = null;
+    document.getElementById('cuisson-modal')?.classList.remove('open');
+  };
+
+  /* Ajout normal : regroupe uniquement les plats avec les mêmes réglages */
+  window.executeAddToCart = function(name, price){
+    let existing = currentTicket.find(i => {
+      normalizeItem(i);
+      return i.n === name && !i.isSent && !i.obs && !i.cooking &&
+             !i.allergy && !i.addition && !i.removal;
+    });
+    if(existing) existing.qty = (existing.qty || 1) + 1;
+    else currentTicket.push({
+      id:Date.now()+Math.random(), itemId:Date.now(),
+      n:name,p:price,qty:1,isSent:false,done:false,served:false,
+      cooking:'',allergy:'',addition:'',removal:'',obs:''
+    });
+    renderTicket();
+  };
+
+  window.openItemModifierModal = function(idx){
+    const i = currentTicket[idx];
+    if(!i || i.isSent) return;
+    normalizeItem(i);
+    pendingModifierIndex = idx;
+    document.getElementById('modifier-item-name').innerText = i.n;
+    document.getElementById('modifier-add-input').value = i.addition || '';
+    document.getElementById('modifier-remove-input').value = i.removal || '';
+    document.getElementById('modifier-allergy-input').value = i.allergy || '';
+    document.getElementById('item-modifier-modal').classList.add('open');
+  };
+
+  window.saveItemModifiers = function(){
+    if(pendingModifierIndex === null) return;
+    const i = currentTicket[pendingModifierIndex];
+    if(!i || i.isSent) return;
+    normalizeItem(i);
+
+    i.addition = document.getElementById('modifier-add-input').value.trim();
+    i.removal = document.getElementById('modifier-remove-input').value.trim();
+    i.allergy = document.getElementById('modifier-allergy-input').value.trim();
+
+    const obsArray = [];
+    if(i.addition) obsArray.push('➕ ' + i.addition);
+    if(i.removal) obsArray.push('➖ ' + i.removal);
+    if(i.allergy) obsArray.push('🚨 ' + i.allergy.toUpperCase());
+    i.obs = obsArray.join(' | ');
+
+    closeItemModifierModal();
+    renderTicket();
+  };
+
+  window.renderTicket = function(){
+    let total = 0;
+    const html = currentTicket.map((raw, idx) => {
+      const i = normalizeItem(raw);
+      const qty = i.qty || 1;
+      const lineTotal = (Number(i.p)||0) * qty;
+      total += lineTotal;
+
+      const status = !i.isSent
+        ? '<span style="color:#3498db;">NOUVEAU</span>'
+        : (i.done
+          ? '<span style="color:#10b981;">PRÊT</span>'
+          : '<span style="color:#e056fd;">ATTENTE</span>');
+
+      const cooking = i.cooking
+        ? `<span class="ticket-meta-badge cooking">🔥 ${esc(i.cooking)}</span>`
+        : '';
+
+      const allergy = i.allergy
+        ? `<span class="ticket-meta-badge allergy">⚠️ ALLERGIE : ${esc(i.allergy.toUpperCase())}</span>`
+        : '';
+
+      const otherObs = [
+        i.addition ? '➕ ' + esc(i.addition) : '',
+        i.removal ? '➖ ' + esc(i.removal) : ''
+      ].filter(Boolean).join(' &nbsp; ');
+
+      let actionsHtml = '';
+      if(!i.isSent){
+        actionsHtml = `
+          <div class="qty-control" aria-label="Quantité">
+            <button type="button" onclick="changeItemQty(${idx},-1)">−</button>
+            <span class="qty-number">${qty}</span>
+            <button type="button" onclick="changeItemQty(${idx},1)">+</button>
+          </div>
+          <button class="item-action-btn" onclick="editItemCooking(${idx})">🔥 CUISSON</button>
+          <button class="item-action-btn" onclick="openItemModifierModal(${idx})">⚠️ ALLERGÈNES / MODIF</button>
+          <button class="item-action-btn danger" onclick="removeTicketItem(${idx})">✕</button>
+        `;
+      } else if(!i.served){
+        actionsHtml = `<button class="item-action-btn danger" onclick="openErrorModal(${idx})">⚠️ REFAIRE</button>`;
+      }
+
+      return `
+        <div class="ticket-item-row">
+          <div class="ticket-row-main">
+            <div style="min-width:0; flex:1;">
+              <div style="font-size:45px; font-weight:900;">${qty}x ${esc(i.n)}</div>
+              <div>${cooking}${allergy}</div>
+              ${otherObs ? `<div style="color:#555;font-size:26px;font-weight:800;margin-top:8px;">${otherObs}</div>` : ''}
+              <div style="font-size:35px; margin-top:10px;">${status}</div>
+            </div>
+            <div style="font-size:50px; font-weight:900; margin-left:15px;">${lineTotal.toFixed(2)} €</div>
+          </div>
+          <div class="ticket-row-actions">${actionsHtml}</div>
+        </div>`;
+    }).join('');
+
+    document.getElementById('ticket-list').innerHTML = html;
+    document.getElementById('ticket-total-price').innerText = total.toFixed(2) + ' €';
+    currentTableTotal = total;
+    const send = document.getElementById('btn-send-kds');
+    if(send) send.style.display = currentTicket.some(i => !i.isSent) ? 'block' : 'none';
+  };
+
+  /* Normalise les commandes déjà chargées depuis le serveur */
+  const oldOpenOrder = window.openOrder;
+  if(typeof oldOpenOrder === 'function'){
+    window.openOrder = function(tableLabel){
+      oldOpenOrder(tableLabel);
+      currentTicket.forEach(normalizeItem);
+      renderTicket();
+    };
+  }
+})();
+</script>
+
+
+<script id="ichef-pad-symbiose-live">
+(function(){
+  "use strict";
+
+  const tenantID =
+    (typeof appTenantID !== "undefined" && appTenantID) ||
+    new URLSearchParams(location.search).get("tenantID") ||
+    localStorage.getItem("ichef_tenant_id");
+
+  const SERVER_URL =
+    (typeof APP_SERVER_URL !== "undefined" && APP_SERVER_URL) ||
+    ((location.hostname === "localhost" || location.hostname === "127.0.0.1" || location.protocol === "file:")
+      ? "http://localhost:10000"
+      : "https://tableau-system.onrender.com");
+
+  const MODULE = "padServer";
+  const deviceId =
+    (window.ICHEF_SECURITY && window.ICHEF_SECURITY.deviceId) ||
+    localStorage.getItem("ichef_device_id") ||
+    ("device_" + Date.now() + "_" + Math.random().toString(36).slice(2));
+
+  if(!tenantID){
+    console.warn("[iCHEF SYMBIOSE] tenantID manquant");
+    return;
+  }
+  localStorage.setItem("ichef_tenant_id", tenantID);
+  localStorage.setItem("ichef_device_id", deviceId);
+
+  if(typeof window.io !== "function"){
+    console.warn("[iCHEF SYMBIOSE] Socket.IO indisponible");
+    return;
+  }
+
+  const socket = io(SERVER_URL, {
+    transports:["websocket","polling"],
+    reconnection:true,
+    reconnectionAttempts:Infinity,
+    reconnectionDelay:700,
+    timeout:10000,
+    withCredentials:true
+  });
+
+  let lastState = null;
+  let refreshTimer = null;
+
+  function isEditing(){
+    const el = document.activeElement;
+    return !!el && ["INPUT","TEXTAREA","SELECT"].includes(el.tagName);
+  }
+
+  function applyState(state){
+    if(!state) return;
+    lastState = state;
+    window.ICHEF_LIVE_STATE = state;
+
+    const orders = state.activeOrders || state.data?.activeOrders;
+    if(orders){
+      activeOrders = orders;
+
+      if(orders.ARCHITECTURE){
+        const archi = orders.ARCHITECTURE.data || orders.ARCHITECTURE;
+        if(Array.isArray(archi.rooms)) rooms = archi.rooms;
+        if(Array.isArray(archi.tables)) tables = archi.tables;
+        if(Array.isArray(archi.zones)) zones = archi.zones;
+      }
+
+      if(orders.SETTINGS_MASTER?.data){
+        const s = orders.SETTINGS_MASTER.data;
+        currentRushLevel = s.rushLevel || 0;
+        isKitchenInRush = currentRushLevel >= 4;
+        const rush = document.getElementById("rush-level-display");
+        if(rush) rush.innerText = currentRushLevel;
+      }
+
+      unifiedCategories = [
+        ...(orders.CATEGORIES_CUISINE?.data || []),
+        ...(orders.CATEGORIES_BAR?.data || [])
+      ];
+      unifiedMenu = {
+        ...(orders.MENU_MASTER?.data || {}),
+        ...(orders.MENU_MASTER_BAR?.data || {})
+      };
+    }
+
+    clearTimeout(refreshTimer);
+    refreshTimer = setTimeout(function(){
+      if(isEditing()) return;
+      try{
+        if(typeof renderDrillDown === "function") renderDrillDown();
+        if(currentTableId && document.getElementById("order-drawer")?.classList.contains("open")){
+          const live = activeOrders[currentTableId];
+          if(live?.items && !currentTicket.some(i => !i.isSent)){
+            currentTicket = JSON.parse(JSON.stringify(live.items));
+            if(typeof renderTicket === "function") renderTicket();
+          }
+        }
+      }catch(e){
+        console.warn("[iCHEF SYMBIOSE] refresh", e);
+      }
+    }, 120);
+  }
+
+  function publish(type, payload={}, target="all"){
+    return new Promise(resolve => {
+      if(!socket.connected){
+        resolve({success:false,error:"SOCKET_OFFLINE"});
+        return;
+      }
+      socket.emit("ichefBusEvent", {
+        tenantID,
+        source:MODULE,
+        target,
+        type,
+        payload,
+        deviceId,
+        sentAt:new Date().toISOString()
+      }, ack => resolve(ack || {success:true}));
+    });
+  }
+
+  function register(){
+    socket.emit("joinTenant", {tenantID});
+    socket.emit("registerModule", {
+      tenantID,
+      module:MODULE,
+      deviceId
+    });
+    socket.emit("requestMenuState", {tenantID});
+  }
+
+  socket.on("connect", function(){
+    register();
+    window.dispatchEvent(new CustomEvent("ichef:connected", {
+      detail:{tenantID,module:MODULE,socketId:socket.id}
+    }));
+  });
+
+  socket.on("updateState", function(state){
+    applyState(state);
+    window.dispatchEvent(new CustomEvent("ichef:updateState",{detail:state}));
+  });
+
+  socket.on("modulePresenceUpdated", function(payload){
+    window.ICHEF_MODULE_PRESENCE = payload?.modules || {};
+    window.dispatchEvent(new CustomEvent("ichef:modulePresenceUpdated",{detail:payload}));
+  });
+
+  socket.on("modulesStatusUpdated", function(payload){
+    window.dispatchEvent(new CustomEvent("ichef:modulesStatusUpdated",{detail:payload}));
+  });
+
+  socket.on("kdsOrderReceived", function(payload){
+    window.dispatchEvent(new CustomEvent("ichef:kdsOrderReceived",{detail:payload}));
+  });
+
+  socket.on("ichefBusBroadcast", function(message){
+    if(!message) return;
+    const target = message.target || "all";
+    if(target !== "all" && target !== MODULE) return;
+
+    window.dispatchEvent(new CustomEvent("ichef:"+message.type,{detail:message}));
+    window.dispatchEvent(new CustomEvent("ichef:bus",{detail:message}));
+
+    if([
+      "order.updated","order.dispatched","order.ready",
+      "payment.completed","table.released",
+      "staffing.updated","rush.updated","menu.updated",
+      "stock.updated","settings.updated"
+    ].includes(message.type)){
+      socket.emit("requestMenuState",{tenantID});
+    }
+  });
+
+  socket.on("disconnect", function(){
+    window.dispatchEvent(new CustomEvent("ichef:disconnected",{
+      detail:{tenantID,module:MODULE}
+    }));
+  });
+
+  const heartbeat = setInterval(function(){
+    if(socket.connected){
+      socket.emit("moduleHeartbeat",{tenantID,module:MODULE,deviceId});
+    }
+  },15000);
+
+  window.addEventListener("beforeunload",()=>clearInterval(heartbeat));
+
+  window.ICHEF_BUS = {
+    socket,
+    tenantID,
+    module:MODULE,
+    serverURL:SERVER_URL,
+    get state(){ return lastState; },
+    publish,
+    refresh(){
+      socket.emit("requestMenuState",{tenantID});
+    }
+  };
+
+  // -------- Adaptateurs du Pad vers le bus métier --------
+  function wrapAfter(name, eventType, payloadBuilder, target="all"){
+    const original = window[name];
+    if(typeof original !== "function" || original.__symbioseWrapped) return;
+
+    const wrapped = function(...args){
+      const beforeTable = currentTableId;
+      const result = original.apply(this,args);
+
+      return Promise.resolve(result).then(async value=>{
+        try{
+          const payload = typeof payloadBuilder === "function"
+            ? payloadBuilder(args,beforeTable,value)
+            : {tableId:beforeTable};
+
+          await publish(eventType,payload,target);
+          socket.emit("requestMenuState",{tenantID});
+        }catch(e){
+          console.warn("[iCHEF SYMBIOSE] publish "+eventType,e);
+        }
+        return value;
+      });
+    };
+
+    wrapped.__symbioseWrapped = true;
+    window[name] = wrapped;
+  }
+
+  wrapAfter("executeSaveTableState","order.updated",
+    (args,tableId)=>({
+      tableId,
+      items:JSON.parse(JSON.stringify(currentTicket || [])),
+      waiter:window.currentUser?.name || null,
+      updatedAt:new Date().toISOString()
+    })
+  );
+
+  wrapAfter("processOrderDispatch","order.dispatched",
+    (args,tableId)=>({
+      tableId,
+      items:JSON.parse(JSON.stringify(currentTicket || [])),
+      waiter:window.currentUser?.name || null,
+      dispatchedAt:new Date().toISOString()
+    }),
+    "all"
+  );
+
+  wrapAfter("finalizeTablePayment","payment.completed",
+    (args,tableId)=>({
+      tableId,
+      total:Number(currentTableTotal || 0),
+      waiter:window.currentUser?.name || null,
+      completedAt:new Date().toISOString()
+    })
+  );
+
+  // Lorsqu'une table est libérée après paiement.
+  window.addEventListener("ichef:paymentCompleted", function(ev){
+    const tableId = ev?.detail?.tableId || currentTableId;
+    if(tableId){
+      publish("table.released",{tableId,releasedAt:new Date().toISOString()});
+    }
+  });
+
+  // Si une commande devient prête depuis le KDS, actualiser immédiatement la table.
+  window.addEventListener("ichef:order.ready", function(){
+    socket.emit("requestMenuState",{tenantID});
+  });
+
+  // Première synchronisation HTTP + Socket.
+  if(typeof syncData === "function"){
+    try{ syncData(); }catch(_){}
+  }
 })();
 </script>
 
