@@ -1043,6 +1043,31 @@ header{
 @media(max-width:650px){.sequence-card{grid-template-columns:auto 1fr}.sequence-action{grid-column:1/-1;width:100%}}
 
 </style>
+
+<style id="ichef-cuisson-click-final">
+#cuisson-modal{
+    z-index:2147483000 !important;
+    pointer-events:auto !important;
+}
+#cuisson-modal .ichef-choice-modal-card{
+    pointer-events:auto !important;
+    position:relative !important;
+    z-index:2 !important;
+}
+#cuisson-modal .ichef-cooking-btn{
+    pointer-events:auto !important;
+    touch-action:manipulation !important;
+    user-select:none !important;
+    -webkit-user-select:none !important;
+    cursor:pointer !important;
+}
+#cuisson-modal .ichef-cooking-btn:active{
+    transform:scale(.97) !important;
+    border-color:var(--gold) !important;
+    background:var(--gold-dim) !important;
+}
+</style>
+
 </head>
 <body oncontextmenu="return false;" ondragstart="return false;" ondrop="return false;">
 
@@ -3679,7 +3704,7 @@ function renderMenu(categoryId) {
                         ${ICHEF_COOKING_LEVELS.map(level => `
                             <button type="button"
                                     class="ichef-cooking-btn"
-                                    onclick="confirmCuisson(${JSON.stringify(level)})">
+                                    data-cooking-level="${level.replace(/&/g, '&amp;').replace(/"/g, '&quot;')}">
                                 ${level}
                             </button>
                         `).join('')}
@@ -3695,6 +3720,32 @@ function renderMenu(categoryId) {
             `;
 
             document.body.appendChild(modal);
+
+            // Liaison fiable souris + tactile : ne dépend plus du onclick inline.
+            modal.querySelectorAll('.ichef-cooking-btn').forEach(btn => {
+                btn.style.pointerEvents = 'auto';
+                btn.style.touchAction = 'manipulation';
+
+                const chooseCooking = (event) => {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    const level = btn.dataset.cookingLevel;
+                    if (!level) return;
+                    confirmCuisson(level);
+                };
+
+                btn.addEventListener('click', chooseCooking, { passive: false });
+
+                // Fallback tactile pour certains navigateurs/PWA Android.
+                btn.addEventListener('touchend', (event) => {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    const level = btn.dataset.cookingLevel;
+                    if (!level) return;
+                    confirmCuisson(level);
+                }, { passive: false });
+            });
+
             return modal;
         }
 
@@ -3949,29 +4000,49 @@ function renderMenu(categoryId) {
         }
 
         let pendingCuissonItem = null;
-        function confirmCuisson(niv) {
-            if (!pendingCuissonItem) return;
+        async function confirmCuisson(niv) {
+            if (!pendingCuissonItem) {
+                console.warn('[iCHEF] Cuisson ignorée : aucun plat en attente.');
+                return;
+            }
 
-            const beforeLength = currentTicket.length;
+            // Copie avant de fermer le modal, afin de ne jamais perdre la référence.
+            const pending = { ...pendingCuissonItem };
 
             executeAddToCart(
-                `${pendingCuissonItem.n} (${niv})`,
-                pendingCuissonItem.p,
-                pendingCuissonItem.dest,
+                `${pending.n} (${niv})`,
+                pending.p,
+                pending.dest,
                 currentCourseDefault,
-                pendingCuissonItem.n,
-                pendingCuissonItem.tvaRate
+                pending.n,
+                pending.tvaRate
             );
 
-            // Retrouve la ligne ajoutée / incrémentée et garde la cuisson
-            // dans un champ dédié pour les écrans cuisine futurs.
-            const targetName = `${pendingCuissonItem.n} (${niv})`;
+            const targetName = `${pending.n} (${niv})`;
             const item = [...currentTicket].reverse().find(i => i.n === targetName);
-            if (item) item.cooking = niv;
+
+            if (item) {
+                item.cooking = niv;
+                item.originalName = pending.n;
+            }
 
             cancelCuisson();
             renderTicket();
+
+            // Sauvegarde immédiate pour que la cuisine reçoive bien la cuisson.
+            try {
+                await executeSaveTableState(false, true);
+            } catch (error) {
+                console.warn('[iCHEF] Sauvegarde cuisson différée :', error);
+            }
+
+            try {
+                updateOrderMiniBar();
+            } catch (_) {}
         }
+
+        // Exposition explicite pour compatibilité avec anciens boutons / PWA.
+        window.confirmCuisson = confirmCuisson;
         function cancelCuisson() { pendingCuissonItem = null; document.getElementById('cuisson-modal').classList.remove('open'); }
 
         function executeAddToCart(n, p, dest, courseOverride, originalName, tvaRate = 10) { 
