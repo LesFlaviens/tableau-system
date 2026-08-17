@@ -5741,7 +5741,322 @@ if(document.readyState==="loading"){
     }
 })();
     <style id="ichef-pro-tabs-style">
+<style id="ichef-fast-recap-style">
+/* =========================================================
+   POPUP RÉCAPITULATIF IMMÉDIAT (PRO POS FLOW)
+   S'ouvre au clic sur le plat, avant l'ajout au ticket
+   ========================================================= */
 
+#ichef-fast-add-modal {
+    z-index: 2147483647 !important; /* Au-dessus de tout */
+    font-family: Arial, sans-serif !important;
+}
+
+#ichef-fast-add-modal .modal-card {
+    width: 95% !important;
+    max-width: 700px !important;
+    padding: 20px !important;
+    border-radius: 20px !important;
+    background: #F4F4F6 !important;
+    border: 6px solid #000 !important;
+    display: flex;
+    flex-direction: column;
+    gap: 20px;
+    max-height: 90vh;
+    overflow-y: auto;
+}
+
+.fast-recap-header {
+    text-align: center;
+    border-bottom: 4px solid #CCC;
+    padding-bottom: 15px;
+}
+
+.fast-recap-title {
+    font-size: clamp(35px, 5vw, 50px);
+    font-weight: 900;
+    color: #000;
+    line-height: 1.1;
+    margin-bottom: 10px;
+}
+
+.fast-recap-price {
+    font-size: clamp(30px, 4vw, 40px);
+    font-weight: 900;
+    color: var(--gold);
+}
+
+/* Contrôle Quantité Géant */
+.fast-qty-row {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 30px;
+    background: #FFF;
+    border-radius: 16px;
+    padding: 15px;
+    border: 4px solid #000;
+}
+
+.fast-qty-btn {
+    width: 80px;
+    height: 80px;
+    font-size: 50px;
+    font-weight: 900;
+    background: #E5E5E5;
+    border: none;
+    border-radius: 12px;
+    cursor: pointer;
+    color: #000;
+}
+.fast-qty-btn:active { transform: scale(0.9); }
+
+.fast-qty-display {
+    font-size: 60px;
+    font-weight: 900;
+    width: 80px;
+    text-align: center;
+}
+
+/* Section Options (Cuisson, Allergies) */
+.fast-section-title {
+    font-size: 26px;
+    font-weight: 900;
+    color: #555;
+    margin-bottom: 10px;
+    text-transform: uppercase;
+}
+
+.fast-grid-options {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+    gap: 10px;
+}
+
+.fast-opt-btn {
+    min-height: 70px;
+    font-size: 22px;
+    font-weight: 900;
+    font-family: Arial, sans-serif;
+    border: 3px solid #000;
+    border-radius: 12px;
+    background: #FFF;
+    color: #000;
+    cursor: pointer;
+    transition: all 0.1s;
+}
+.fast-opt-btn.active {
+    background: #000;
+    color: #FFF;
+    border-color: #000;
+}
+.fast-opt-btn.danger {
+    color: #D9534F;
+    border-color: #D9534F;
+}
+.fast-opt-btn.danger.active {
+    background: #D9534F;
+    color: #FFF;
+}
+
+#fast-obs-display {
+    font-size: 24px;
+    font-weight: 900;
+    color: var(--gold);
+    min-height: 30px;
+    text-align: center;
+}
+
+/* Boutons de validation */
+.fast-actions {
+    display: flex;
+    gap: 15px;
+    margin-top: 10px;
+}
+.fast-actions button {
+    flex: 1;
+    min-height: 90px;
+    font-size: 30px;
+    font-weight: 900;
+    border-radius: 16px;
+    border: 4px solid #000;
+    cursor: pointer;
+}
+.fast-btn-cancel {
+    background: #FFF;
+    color: #000;
+}
+.fast-btn-valid {
+    background: #10b981; /* Vert de validation */
+    color: #000;
+    border-color: #10b981;
+}
+
+@media (max-width: 900px) {
+    .fast-opt-btn { font-size: 28px !important; min-height: 90px !important; }
+    .fast-section-title { font-size: 32px !important; }
+    #fast-obs-display { font-size: 30px !important; }
+    .fast-actions button { font-size: 40px !important; min-height: 110px !important;}
+}
+</style>
+
+<script id="ichef-fast-recap-engine">
+(function(){
+    "use strict";
+
+    // 1. Création et injection du Modal dans le HTML
+    function buildFastAddModal() {
+        if(document.getElementById('ichef-fast-add-modal')) return;
+
+        const modal = document.createElement('div');
+        modal.id = 'ichef-fast-add-modal';
+        modal.className = 'modal';
+        
+        modal.innerHTML = `
+            <div class="modal-card">
+                <div class="fast-recap-header">
+                    <div class="fast-recap-title" id="fast-add-name">Nom du plat</div>
+                    <div class="fast-recap-price" id="fast-add-price">0.00 €</div>
+                </div>
+
+                <div class="fast-qty-row">
+                    <button class="fast-qty-btn" onclick="fastAddChangeQty(-1)">−</button>
+                    <div class="fast-qty-display" id="fast-add-qty">1</div>
+                    <button class="fast-qty-btn" onclick="fastAddChangeQty(1)">+</button>
+                </div>
+
+                <div id="fast-cuisson-container" style="display:none;">
+                    <div class="fast-section-title">🔥 CUISSON</div>
+                    <div class="fast-grid-options" id="fast-cuisson-grid">
+                        <button class="fast-opt-btn" onclick="fastAddSetCuisson(this, 'BLEU')">Bleu</button>
+                        <button class="fast-opt-btn" onclick="fastAddSetCuisson(this, 'SAIGNANT')">Saignant</button>
+                        <button class="fast-opt-btn" onclick="fastAddSetCuisson(this, 'À POINT')">À Point</button>
+                        <button class="fast-opt-btn" onclick="fastAddSetCuisson(this, 'BIEN CUIT')">Bien Cuit</button>
+                    </div>
+                </div>
+
+                <div>
+                    <div class="fast-section-title">✏️ AJOUTS / RETRAITS RAPIDES</div>
+                    <div class="fast-grid-options">
+                        <button class="fast-opt-btn" onclick="fastAddToggleMod(this, 'Sans Oignon')">Sans Oignon</button>
+                        <button class="fast-opt-btn" onclick="fastAddToggleMod(this, 'Sans Sauce')">Sans Sauce</button>
+                        <button class="fast-opt-btn" onclick="fastAddToggleMod(this, 'Sauce à part')">Sauce à part</button>
+                        <button class="fast-opt-btn danger" onclick="fastAddToggleMod(this, '🚨 ALLERGIE')">⚠️ ALLERGIE</button>
+                    </div>
+                </div>
+
+                <div id="fast-obs-display"></div>
+
+                <div class="fast-actions">
+                    <button class="fast-btn-cancel" onclick="closeFastAdd()">ANNULER</button>
+                    <button class="fast-btn-valid" onclick="confirmFastAdd()">✅ AJOUTER</button>
+                </div>
+            </div>
+        `;
+        document.body.appendChild(modal);
+    }
+
+    // 2. État du modal
+    window.fastState = { n: '', p: 0, qty: 1, cooking: '', obs: [] };
+
+    // 3. Remplacement de l'ancienne fonction addToTicket par la nouvelle !
+    window.addToTicket = function(name, price) {
+        if(!document.getElementById('ichef-fast-add-modal')) buildFastAddModal();
+
+        // Réinitialisation de l'état pour ce nouveau plat
+        window.fastState = { n: name, p: parseFloat(price)||0, qty: 1, cooking: '', obs: [] };
+        
+        // Mise à jour de l'UI
+        document.getElementById('fast-add-name').innerText = name;
+        document.getElementById('fast-add-price').innerText = window.fastState.p.toFixed(2) + ' €';
+        document.getElementById('fast-add-qty').innerText = window.fastState.qty;
+        document.getElementById('fast-obs-display').innerText = "";
+
+        // Nettoyage des boutons actifs
+        document.querySelectorAll('.fast-opt-btn').forEach(b => b.classList.remove('active'));
+
+        // Afficher la zone cuisson UNIQUEMENT si c'est une viande
+        const upper = name.toUpperCase();
+        const needsCooking = ['BŒUF', 'VIANDE', 'ENTRECÔTE', 'STEAK', 'ONGLET', 'BAVETTE', 'BURGER'].some(m => upper.includes(m));
+        document.getElementById('fast-cuisson-container').style.display = needsCooking ? 'block' : 'none';
+
+        // Ouvre le modal
+        document.getElementById('ichef-fast-add-modal').classList.add('open');
+    };
+
+    // 4. Fonctions de contrôle du modal
+    window.fastAddChangeQty = function(delta) {
+        let newQty = window.fastState.qty + delta;
+        if (newQty < 1) newQty = 1;
+        if (newQty > 99) newQty = 99;
+        window.fastState.qty = newQty;
+        document.getElementById('fast-add-qty').innerText = newQty;
+        document.getElementById('fast-add-price').innerText = (window.fastState.p * newQty).toFixed(2) + ' €';
+    };
+
+    window.fastAddSetCuisson = function(btn, cuisson) {
+        document.querySelectorAll('#fast-cuisson-grid .fast-opt-btn').forEach(b => b.classList.remove('active'));
+        if (window.fastState.cooking === cuisson) {
+            window.fastState.cooking = ''; // Désélectionner
+        } else {
+            window.fastState.cooking = cuisson;
+            btn.classList.add('active');
+        }
+    };
+
+    window.fastAddToggleMod = function(btn, mod) {
+        const index = window.fastState.obs.indexOf(mod);
+        if (index > -1) {
+            window.fastState.obs.splice(index, 1);
+            btn.classList.remove('active');
+        } else {
+            window.fastState.obs.push(mod);
+            btn.classList.add('active');
+        }
+        document.getElementById('fast-obs-display').innerText = window.fastState.obs.join(' | ');
+    };
+
+    window.closeFastAdd = function() {
+        document.getElementById('ichef-fast-add-modal').classList.remove('open');
+    };
+
+    window.confirmFastAdd = function() {
+        // Préparation de l'observation finale
+        let finalObs = window.fastState.obs.join(' | ');
+
+        // Création de l'objet Item selon le standard iCHEF
+        let newItem = {
+            id: Date.now() + Math.random(),
+            itemId: Date.now(),
+            n: window.fastState.n,
+            p: window.fastState.p,
+            qty: window.fastState.qty,
+            cooking: window.fastState.cooking,
+            allergy: window.fastState.obs.find(o => o.includes('ALLERGIE')) ? 'OUI' : '',
+            obs: finalObs,
+            isSent: false,
+            done: false,
+            served: false
+        };
+
+        // Ajout au ticket global
+        if(typeof currentTicket !== 'undefined') {
+            currentTicket.push(newItem);
+        }
+
+        // Fermer et Rafraichir le visuel
+        closeFastAdd();
+        if(typeof renderTicket === 'function') renderTicket();
+    };
+
+    // Initialisation silencieuse
+    if(document.readyState === "loading") {
+        document.addEventListener("DOMContentLoaded", buildFastAddModal);
+    } else {
+        buildFastAddModal();
+    }
+})();
+</script>
 </script>
 </style>
 </body>
