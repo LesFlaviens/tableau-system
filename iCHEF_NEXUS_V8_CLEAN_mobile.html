@@ -6168,5 +6168,86 @@ window.cookingProfileForItem = cookingProfileForItem;
 })();
 </script>
 
+
+<script id="ichef-cuisson-choix-utiles-seulement">
+(function(){
+"use strict";
+
+/*
+ Pas de sélection inutile :
+ - volaille : aucune fenêtre
+ - porc : aucune fenêtre
+ - ragoût/mijoté : aucune fenêtre
+ La cuisson standard est implicite.
+ Le sélecteur reste pour les produits où le client peut réellement choisir.
+*/
+const oldProfile = window.cookingProfileForItem;
+
+window.cookingProfileForItem = function(item){
+  const text = String(
+    (item?.originalName || item?.n || item?.name || "") + " " +
+    (item?.category || item?.cat || "") + " " +
+    (item?.type || "")
+  ).toLowerCase();
+
+  if(/rago[uû]t|daube|bourguignon|blanquette|mijot[eé]|pot.?au.?feu|civet/.test(text))
+    return [];
+
+  if(/poulet|volaille|dinde|pintade/.test(text))
+    return [];
+
+  if(/porc|cochon|c[oô]te de porc|filet mignon/.test(text))
+    return [];
+
+  return typeof oldProfile === "function" ? oldProfile(item) : [];
+};
+
+/* Empêche aussi d'afficher le bouton CUISSON sur les plats sans choix réel. */
+function hideUselessCookingButtons(){
+  if(typeof currentTicket === "undefined" || !Array.isArray(currentTicket)) return;
+
+  document.querySelectorAll(".ichef-pro-line, .ticket-item-row").forEach((row)=>{
+    const idx = Number(row.dataset.index);
+    if(!Number.isFinite(idx) || !currentTicket[idx]) return;
+
+    const choices = window.cookingProfileForItem(currentTicket[idx]);
+    if(choices.length === 0){
+      row.querySelectorAll("button").forEach(btn=>{
+        if((btn.textContent || "").includes("CUISSON")){
+          btn.style.display = "none";
+        }
+      });
+    }
+  });
+}
+
+const oldRenderTicket = window.renderTicket;
+if(typeof oldRenderTicket === "function" && !oldRenderTicket.__usefulCookingOnly){
+  const wrapped = function(...args){
+    const r = oldRenderTicket.apply(this,args);
+    setTimeout(hideUselessCookingButtons,0);
+    return r;
+  };
+  wrapped.__usefulCookingOnly = true;
+  window.renderTicket = wrapped;
+}
+
+const oldOpenTicketCuisson2 = window.openTicketCuisson;
+window.openTicketCuisson = function(idx){
+  const item = (typeof currentTicket !== "undefined" && Array.isArray(currentTicket))
+    ? currentTicket[idx] : null;
+  if(!item || item.isSent) return;
+
+  const choices = window.cookingProfileForItem(item);
+  if(!choices.length){
+    return; // aucune fenêtre inutile
+  }
+  return oldOpenTicketCuisson2?.(idx);
+};
+
+setTimeout(hideUselessCookingButtons,100);
+})();
+</script>
+
 </body>
 </html>
