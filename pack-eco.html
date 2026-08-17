@@ -3737,5 +3737,207 @@ html, body{
 }
 </style>
 
+
+<style id="ichef-mobile-draggable-splitter-style">
+/* =========================================================
+   TÉLÉPHONE / TABLETTE : séparateur central glissant
+   Carte/Menu à gauche — Ticket à droite
+   ========================================================= */
+@media (max-width:900px){
+  #order-drawer .drawer-body{
+    --ichef-left-pane:68%;
+    position:relative !important;
+    display:grid !important;
+    grid-template-columns:
+      minmax(0, var(--ichef-left-pane))
+      12px
+      minmax(0, calc(100% - var(--ichef-left-pane) - 12px)) !important;
+    width:100% !important;
+    height:100% !important;
+    overflow:hidden !important;
+  }
+
+  #order-drawer .drawer-left{
+    grid-column:1 !important;
+    position:relative !important;
+    width:auto !important;
+    min-width:0 !important;
+    max-width:none !important;
+    height:100% !important;
+    border-right:none !important;
+    overflow:hidden !important;
+  }
+
+  #ichef-mobile-splitter{
+    grid-column:2 !important;
+    display:flex !important;
+    align-items:center !important;
+    justify-content:center !important;
+    width:12px !important;
+    height:100% !important;
+    background:#000 !important;
+    cursor:col-resize !important;
+    touch-action:none !important;
+    z-index:27000 !important;
+    user-select:none !important;
+    -webkit-user-select:none !important;
+  }
+
+  #ichef-mobile-splitter::after{
+    content:"";
+    width:4px;
+    height:70px;
+    border-radius:999px;
+    background:#fff;
+    opacity:.9;
+  }
+
+  #order-drawer .drawer-right{
+    grid-column:3 !important;
+    position:relative !important;
+    inset:auto !important;
+    transform:none !important;
+    transition:none !important;
+    width:auto !important;
+    max-width:none !important;
+    min-width:0 !important;
+    height:100% !important;
+    display:flex !important;
+    box-shadow:none !important;
+    z-index:auto !important;
+    overflow:hidden !important;
+  }
+
+  /* le bouton ticket coulissant n'est plus nécessaire */
+  #ichef-ticket-toggle{
+    display:none !important;
+  }
+
+  #order-drawer.ichef-ticket-open-mobile .drawer-right,
+  #order-drawer.ichef-ticket-hidden .drawer-right{
+    display:flex !important;
+    transform:none !important;
+  }
+
+  #menu-grid{
+    min-width:0 !important;
+  }
+
+  #ticket-list{
+    min-width:0 !important;
+  }
+}
+
+/* Sur très petit téléphone, on autorise toujours le déplacement,
+   avec une largeur minimale raisonnable pour chaque côté. */
+@media (max-width:430px){
+  #order-drawer .drawer-body{
+    --ichef-left-pane:72%;
+  }
+
+  #order-drawer .drawer-right{
+    padding:8px !important;
+  }
+}
+</style>
+
+<script id="ichef-mobile-draggable-splitter-engine">
+(function(){
+  "use strict";
+
+  const STORAGE_KEY = "ichef_mobile_split_percent";
+
+  function ensureSplitter(){
+    const body = document.querySelector("#order-drawer .drawer-body");
+    const left = document.querySelector("#order-drawer .drawer-left");
+    const right = document.querySelector("#order-drawer .drawer-right");
+    if(!body || !left || !right) return;
+
+    let splitter = document.getElementById("ichef-mobile-splitter");
+    if(!splitter){
+      splitter = document.createElement("div");
+      splitter.id = "ichef-mobile-splitter";
+      splitter.setAttribute("role","separator");
+      splitter.setAttribute("aria-orientation","vertical");
+      splitter.setAttribute("aria-label","Redimensionner Carte et Ticket");
+      body.insertBefore(splitter, right);
+    }
+
+    const saved = Number(localStorage.getItem(STORAGE_KEY));
+    if(Number.isFinite(saved) && saved >= 45 && saved <= 85){
+      body.style.setProperty("--ichef-left-pane", saved + "%");
+    }
+
+    if(splitter.dataset.bound === "1") return;
+    splitter.dataset.bound = "1";
+
+    let dragging = false;
+    let pointerId = null;
+
+    function setFromX(clientX){
+      const rect = body.getBoundingClientRect();
+      if(!rect.width) return;
+
+      let pct = ((clientX - rect.left) / rect.width) * 100;
+      pct = Math.max(45, Math.min(85, pct));
+
+      body.style.setProperty("--ichef-left-pane", pct + "%");
+      localStorage.setItem(STORAGE_KEY, pct.toFixed(2));
+    }
+
+    splitter.addEventListener("pointerdown", e=>{
+      dragging = true;
+      pointerId = e.pointerId;
+      try{ splitter.setPointerCapture(e.pointerId); }catch(_){}
+      e.preventDefault();
+    }, {passive:false});
+
+    splitter.addEventListener("pointermove", e=>{
+      if(!dragging || (pointerId !== null && e.pointerId !== pointerId)) return;
+      setFromX(e.clientX);
+      e.preventDefault();
+    }, {passive:false});
+
+    function stop(e){
+      dragging = false;
+      try{
+        if(pointerId !== null) splitter.releasePointerCapture(pointerId);
+      }catch(_){}
+      pointerId = null;
+    }
+
+    splitter.addEventListener("pointerup", stop, {passive:true});
+    splitter.addEventListener("pointercancel", stop, {passive:true});
+
+    /* Double tap/clic = revenir à 68/32 */
+    splitter.addEventListener("dblclick", ()=>{
+      body.style.setProperty("--ichef-left-pane","68%");
+      localStorage.setItem(STORAGE_KEY,"68");
+    });
+  }
+
+  function apply(){
+    ensureSplitter();
+    const splitter = document.getElementById("ichef-mobile-splitter");
+    if(splitter){
+      splitter.style.display = window.innerWidth <= 900 ? "flex" : "none";
+    }
+  }
+
+  if(document.readyState === "loading"){
+    document.addEventListener("DOMContentLoaded", apply);
+  }else{
+    apply();
+  }
+
+  window.addEventListener("resize", apply);
+  window.addEventListener("orientationchange", ()=>setTimeout(apply,120));
+
+  new MutationObserver(apply).observe(document.documentElement,{
+    childList:true, subtree:true
+  });
+})();
+</script>
+
 </body>
 </html>
