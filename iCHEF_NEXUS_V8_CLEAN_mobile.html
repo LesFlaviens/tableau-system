@@ -1043,24 +1043,6 @@ header{
 @media(max-width:650px){.sequence-card{grid-template-columns:auto 1fr}.sequence-action{grid-column:1/-1;width:100%}}
 
 </style>
-
-<style id="ichef-cuisson-touch-fix">
-#cuisson-modal{pointer-events:auto !important;}
-#cuisson-modal .ichef-choice-modal-card{pointer-events:auto !important;}
-#cuisson-modal .ichef-cooking-btn{
-    pointer-events:auto !important;
-    touch-action:manipulation !important;
-    position:relative !important;
-    z-index:2 !important;
-}
-@media(max-width:650px){
-    #cuisson-modal .ichef-cooking-btn{
-        min-height:64px !important;
-        font-size:.82rem !important;
-    }
-}
-</style>
-
 </head>
 <body oncontextmenu="return false;" ondragstart="return false;" ondrop="return false;">
 
@@ -3687,7 +3669,7 @@ function renderMenu(categoryId) {
 
             modal.innerHTML = `
                 <div class="ichef-choice-modal-card">
-                    <h2 class="ichef-choice-title">🥩 CUISSON DE LA VIANDE</h2>
+                    <h2 class="ichef-choice-title">🥩 CUISSON</h2>
                     <div class="ichef-choice-subtitle">
                         <strong id="cuisson-item-name" style="color:#fff"></strong><br>
                         Choisissez précisément la cuisson demandée par le client.
@@ -3884,6 +3866,60 @@ function renderMenu(categoryId) {
             ensureModifierModal();
         });
 
+
+        function ichefNeedsMeatCookingChoice(name, dest = 'cuisine') {
+            if (String(dest || '').toLowerCase() !== 'cuisine') return false;
+
+            const text = String(name || '')
+                .toLowerCase()
+                .normalize('NFD')
+                .replace(/[\u0300-\u036f]/g, '');
+
+            // --- AUCUNE FENÊTRE CUISSON ---
+            // Poissons / produits de la mer
+            if (/\b(perche|perches|poisson|saumon|thon|cabillaud|dorade|bar de mer|loup|truite|lotte|sole|turbot|merlu|colin|sandre|crevette|gambas|homard|langoustine|moules|calamar|poulpe)\b/.test(text)) {
+                return false;
+            }
+
+            // Volaille : cuisson sanitaire standard, pas de choix client.
+            if (/\b(poulet|volaille|dinde|pintade|coquelet|chapon)\b/.test(text)) {
+                return false;
+            }
+
+            // Porc : pas de popup dans le flux de service iCHEF.
+            if (/\b(porc|cochon|jambon|travers|echine|filet mignon)\b/.test(text)) {
+                return false;
+            }
+
+            // Plats mijotés / préparations dont la cuisson est définie en cuisine.
+            if (/\b(ragout|daube|bourguignon|blanquette|mijote|mijotee|pot au feu|civet|braise|braisee)\b/.test(text)) {
+                return false;
+            }
+
+            // Tartare / carpaccio : cru par définition, aucun choix de cuisson.
+            if (/\b(tartare|carpaccio)\b/.test(text)) {
+                return false;
+            }
+
+            // --- VRAI CHOIX DE CUISSON CLIENT ---
+            // Bœuf
+            if (/\b(entrecote|steak|rumsteck|faux filet|filet de boeuf|filet de bœuf|onglet|bavette|cote de boeuf|côte de bœuf|boeuf|bœuf)\b/.test(text)) {
+                return true;
+            }
+
+            // Burger : le steak peut avoir une cuisson demandée.
+            if (/\bburger\b/.test(text)) {
+                return true;
+            }
+
+            // Canard / agneau
+            if (/\b(magret|canard|agneau|gigot|carre d agneau|carré d agneau)\b/.test(text)) {
+                return true;
+            }
+
+            return false;
+        }
+
         function addToTicket(n, p, dest, tvaRate = 10) { 
             let realName = n.replace(/\[BR\]/g, ' ');
             // ... (la suite de ta fonction addToTicket existante)
@@ -3896,89 +3932,47 @@ function renderMenu(categoryId) {
                 }
             }
 
-            if(['entrecôte', 'entrecote', 'bœuf', 'boeuf', 'steak', 'burger', 'filet', 'canard', 'agneau', 'viande', 'tartare', 'onglet', 'bavette', 'côte', 'cote'].some(m => realName.toLowerCase().includes(m))) {
+            // Cuisson demandée UNIQUEMENT lorsqu'il existe un vrai choix client.
+            // Important : ne jamais utiliser le mot générique "filet", car il attrape
+            // aussi "filets de perches", "filet de poisson", etc.
+            if (ichefNeedsMeatCookingChoice(realName, dest)) {
                 pendingCuissonItem = { n: realName, p, dest, tvaRate };
                 ensureCuissonModal();
                 document.getElementById('cuisson-item-name').innerText = realName;
                 document.getElementById('cuisson-modal').classList.add('open');
                 return;
             }
+
+            // Poisson, volaille, porc, ragoût/mijoté et tous les plats sans choix
+            // de cuisson sont ajoutés immédiatement à la commande.
             executeAddToCart(realName, p, dest, currentCourseDefault, n, tvaRate);
         }
 
         let pendingCuissonItem = null;
-
-        // Édition de la cuisson directement depuis une ligne du ticket.
-        let pendingCuissonEditIndex = null;
-
-        function openTicketCuisson(idx) {
-            const item = currentTicket[idx];
-            if (!item || item.isSent) return;
-            pendingCuissonEditIndex = idx;
-            pendingCuissonItem = null;
-            ensureCuissonModal();
-            const title = document.getElementById('cuisson-item-name');
-            if (title) title.innerText = (item.originalName || item.n || 'Plat').replace(/\n/g, ' ');
-            document.getElementById('cuisson-modal').classList.add('open');
-        }
-
-        async function confirmCuisson(niv) {
-            if (pendingCuissonEditIndex !== null) {
-                const idx = pendingCuissonEditIndex;
-                const item = currentTicket[idx];
-                if (!item) return cancelCuisson();
-
-                const baseName = String(item.originalName || item.n || '')
-                    .replace(/\s*\([^()]*\)\s*$/, '')
-                    .trim();
-
-                item.originalName = baseName || item.originalName || item.n;
-                item.cooking = niv;
-                item.n = `${baseName || item.n} (${niv})`;
-
-                pendingCuissonEditIndex = null;
-                cancelCuisson();
-                renderTicket();
-
-                try { await executeSaveTableState(false, true); }
-                catch (e) { console.warn('Sauvegarde cuisson différée :', e); }
-
-                if (typeof showToast === 'function') showToast(`🥩 Cuisson : ${niv}`);
-                return;
-            }
-
+        function confirmCuisson(niv) {
             if (!pendingCuissonItem) return;
-            const pending = pendingCuissonItem;
+
+            const beforeLength = currentTicket.length;
 
             executeAddToCart(
-                `${pending.n} (${niv})`,
-                pending.p,
-                pending.dest,
+                `${pendingCuissonItem.n} (${niv})`,
+                pendingCuissonItem.p,
+                pendingCuissonItem.dest,
                 currentCourseDefault,
-                pending.n,
-                pending.tvaRate
+                pendingCuissonItem.n,
+                pendingCuissonItem.tvaRate
             );
 
-            const targetName = `${pending.n} (${niv})`;
+            // Retrouve la ligne ajoutée / incrémentée et garde la cuisson
+            // dans un champ dédié pour les écrans cuisine futurs.
+            const targetName = `${pendingCuissonItem.n} (${niv})`;
             const item = [...currentTicket].reverse().find(i => i.n === targetName);
-            if (item) {
-                item.cooking = niv;
-                item.originalName = pending.n;
-            }
+            if (item) item.cooking = niv;
 
             cancelCuisson();
             renderTicket();
-
-            try { await executeSaveTableState(false, true); }
-            catch (e) { console.warn('Sauvegarde cuisson différée :', e); }
         }
-
-        function cancelCuisson() {
-            pendingCuissonItem = null;
-            pendingCuissonEditIndex = null;
-            const modal = document.getElementById('cuisson-modal');
-            if (modal) modal.classList.remove('open');
-        }
+        function cancelCuisson() { pendingCuissonItem = null; document.getElementById('cuisson-modal').classList.remove('open'); }
 
         function executeAddToCart(n, p, dest, courseOverride, originalName, tvaRate = 10) { 
             let cId = courseOverride !== undefined ? courseOverride : currentCourseDefault;
@@ -4128,15 +4122,6 @@ function renderMenu(categoryId) {
                 let seatBadge = (i.seat && i.seat > 0) ? `<span style="color:var(--text-muted); font-size:0.75rem; margin-right:8px; font-weight:500;">👤 ${i.seat}</span>` : `<span style="color:var(--text-muted); font-size:0.7rem; margin-right:8px; font-weight:400;">🍽️ CTR</span>`;
                 let priceHtml = i.isOffered ? `<span style="margin-right:10px; font-weight:500; color:var(--gold); font-size: 0.8rem; letter-spacing: 1px;">🎁 OFFERT</span>` : `<span style="margin-right:10px; font-weight:500; font-size: 0.95rem; font-family: 'Playfair Display', serif;">${formatMoneyPad(ligneTTC)}</span>`;
                 let obsDisplay = i.obs ? `<span style="font-size:0.7rem; color:var(--gold); margin-left: 5px; font-weight: 500;">⚠️ ${i.obs}</span>` : `<span style="font-size:0.65rem; color:var(--border-strong); font-weight: 300; margin-left: 5px;">+ Obs</span>`;
-                let cookingDisplay = i.cooking
-                    ? `<span style="font-size:0.68rem;color:#fff;border:1px solid var(--gold);padding:3px 6px;border-radius:4px;font-weight:900;">🥩 ${i.cooking}</span>`
-                    : '';
-                let cookingBtnHtml = !i.isSent
-                    ? `<button class="item-modifier-btn"
-                               style="min-width:76px;border-color:#ef4444;color:#ef4444;"
-                               onclick="openTicketCuisson(${idx});event.stopPropagation();"
-                               title="Choisir ou modifier la cuisson">🥩 CUISSON</button>`
-                    : '';
 
                 // 🔥 BOUTON D'ERREUR POUR LES PLATS DÉJÀ ENVOYÉS 🔥
                 let errorBtnHtml = i.isSent && !i.served ? `<button class="item-error-btn" onclick="openErrorModal(${idx}); event.stopPropagation();">REFAIRE</button>` : `<button class="item-delete-btn" onclick="removeTicketItem(${idx}); event.stopPropagation();">✕</button>`;
@@ -4145,7 +4130,7 @@ function renderMenu(categoryId) {
                 <div class="ticket-item-row" style="${opacityStyle}">
                     <div style="flex:1; cursor:pointer;" onclick="openEditItem(${idx})">
                         <div style="font-weight:400; font-size:0.95rem; color: var(--text-main);">${seatBadge}${q>1?`<span style="color:var(--gold); font-weight:600;">${q}x</span> `:""}${cleanName||'?'}${seqPill}</div>
-                        <div style="display:flex; align-items:center; gap:8px; margin-top:6px; flex-wrap:wrap;">${statusHtml}${obsDisplay}${cookingDisplay}</div>
+                        <div style="display:flex; align-items:center; gap:8px; margin-top:6px;">${statusHtml}${obsDisplay}</div>
                         ${
                             (Array.isArray(i.modifiers?.add) && i.modifiers.add.length) ||
                             (Array.isArray(i.modifiers?.remove) && i.modifiers.remove.length)
@@ -4158,7 +4143,6 @@ function renderMenu(categoryId) {
                     </div>
                     <div style="display: flex; align-items: center; gap: 7px;">
                         ${priceHtml}
-                        ${cookingBtnHtml}
                         <button class="item-modifier-btn"
                                 onclick="openItemModifierModal(${idx});event.stopPropagation();"
                                 title="Ajouter ou enlever un élément">
@@ -6031,318 +6015,6 @@ function toggleOutilsMenuFinal(event, button) {
     if (!panel) return;
     panel.classList.toggle('open');
 }
-</script>
-
-
-<script id="ichef-cuisson-profils-par-plat">
-(function(){
-"use strict";
-
-/* Profils de cuisson selon le type de plat */
-const ICHEF_COOKING_PROFILES = {
-  BEEF: ["BLEU","SAIGNANT","À POINT","BIEN CUIT"],
-  DUCK: ["ROSÉ","À POINT","BIEN CUIT"],
-  LAMB: ["ROSÉ","À POINT","BIEN CUIT"],
-  PORK: ["À POINT","BIEN CUIT"],
-  POULTRY: ["BIEN CUIT"],
-  FISH: ["NACRÉ","À POINT","BIEN CUIT"],
-  STEW: ["MIJOTÉ","BIEN MIJOTÉ"],
-  DEFAULT: []
-};
-
-function cookingProfileForItem(item){
-  const text = String(
-    (item?.originalName || item?.n || item?.name || "") + " " +
-    (item?.category || item?.cat || "") + " " +
-    (item?.type || "")
-  ).toLowerCase();
-
-  if(/entrec[oô]te|steak|filet de boeuf|filet de bœuf|rumsteck|faux.?filet|bavette|boeuf|bœuf/.test(text))
-    return ICHEF_COOKING_PROFILES.BEEF;
-
-  if(/magret|canard/.test(text))
-    return ICHEF_COOKING_PROFILES.DUCK;
-
-  if(/agneau|carr[eé] d.?agneau|gigot/.test(text))
-    return ICHEF_COOKING_PROFILES.LAMB;
-
-  if(/porc|cochon|c[oô]te de porc|filet mignon/.test(text))
-    return ICHEF_COOKING_PROFILES.PORK;
-
-  if(/poulet|volaille|dinde|pintade/.test(text))
-    return ICHEF_COOKING_PROFILES.POULTRY;
-
-  if(/saumon|thon|cabillaud|dorade|bar\b|lotte|truite|poisson/.test(text))
-    return ICHEF_COOKING_PROFILES.FISH;
-
-  if(/rago[uû]t|daube|bourguignon|blanquette|mijot[eé]|pot.?au.?feu|civet/.test(text))
-    return ICHEF_COOKING_PROFILES.STEW;
-
-  return ICHEF_COOKING_PROFILES.DEFAULT;
-}
-
-function renderCookingChoicesForItem(item){
-  const modal = document.getElementById("cuisson-modal");
-  if(!modal) return false;
-
-  const grid =
-    modal.querySelector(".ichef-cooking-grid") ||
-    modal.querySelector("[data-cooking-grid]");
-
-  if(!grid) return false;
-
-  const choices = cookingProfileForItem(item);
-
-  if(!choices.length){
-    grid.innerHTML = `
-      <div style="
-        grid-column:1/-1;
-        padding:18px;
-        border:1px solid var(--border-strong);
-        border-radius:8px;
-        text-align:center;
-        font-weight:800;
-        color:var(--text-muted);">
-        AUCUNE CUISSON SPÉCIALE REQUISE POUR CE PLAT
-      </div>`;
-    return true;
-  }
-
-  grid.innerHTML = choices.map(choice => `
-    <button type="button"
-            class="ichef-cooking-btn"
-            onclick="confirmCuisson('${choice.replace(/'/g,"\\'")}')">
-      ${choice}
-    </button>
-  `).join("");
-
-  return true;
-}
-
-/* Remplace uniquement l'ouverture du sélecteur depuis le ticket */
-const oldOpenTicketCuisson = window.openTicketCuisson;
-window.openTicketCuisson = function(idx){
-  const item = (typeof currentTicket !== "undefined" && Array.isArray(currentTicket))
-    ? currentTicket[idx]
-    : null;
-
-  if(!item || item.isSent) return;
-
-  pendingCuissonEditIndex = idx;
-  pendingCuissonItem = null;
-
-  if(typeof ensureCuissonModal === "function") ensureCuissonModal();
-
-  const title = document.getElementById("cuisson-item-name");
-  if(title) title.innerText = (item.originalName || item.n || "Plat").replace(/\n/g," ");
-
-  renderCookingChoicesForItem(item);
-
-  const modal = document.getElementById("cuisson-modal");
-  if(modal) modal.classList.add("open");
-};
-
-/* Intercepte l'ouverture lors de l'ajout d'un nouveau plat */
-const oldEnsure = window.ensureCuissonModal;
-if(typeof oldEnsure === "function" && !oldEnsure.__profileWrapped){
-  const wrapped = function(...args){
-    const r = oldEnsure.apply(this,args);
-
-    setTimeout(()=>{
-      if(typeof pendingCuissonItem !== "undefined" && pendingCuissonItem){
-        renderCookingChoicesForItem(pendingCuissonItem);
-      }else if(typeof pendingCuissonEditIndex !== "undefined" && pendingCuissonEditIndex !== null){
-        const item = currentTicket?.[pendingCuissonEditIndex];
-        if(item) renderCookingChoicesForItem(item);
-      }
-    },0);
-
-    return r;
-  };
-  wrapped.__profileWrapped = true;
-  window.ensureCuissonModal = wrapped;
-}
-
-window.ICHEF_COOKING_PROFILES = ICHEF_COOKING_PROFILES;
-window.cookingProfileForItem = cookingProfileForItem;
-})();
-</script>
-
-
-<script id="ichef-cuisson-choix-utiles-seulement">
-(function(){
-"use strict";
-
-/*
- Pas de sélection inutile :
- - volaille : aucune fenêtre
- - porc : aucune fenêtre
- - ragoût/mijoté : aucune fenêtre
- La cuisson standard est implicite.
- Le sélecteur reste pour les produits où le client peut réellement choisir.
-*/
-const oldProfile = window.cookingProfileForItem;
-
-window.cookingProfileForItem = function(item){
-  const text = String(
-    (item?.originalName || item?.n || item?.name || "") + " " +
-    (item?.category || item?.cat || "") + " " +
-    (item?.type || "")
-  ).toLowerCase();
-
-  if(/rago[uû]t|daube|bourguignon|blanquette|mijot[eé]|pot.?au.?feu|civet/.test(text))
-    return [];
-
-  if(/poulet|volaille|dinde|pintade/.test(text))
-    return [];
-
-  if(/porc|cochon|c[oô]te de porc|filet mignon/.test(text))
-    return [];
-
-  return typeof oldProfile === "function" ? oldProfile(item) : [];
-};
-
-/* Empêche aussi d'afficher le bouton CUISSON sur les plats sans choix réel. */
-function hideUselessCookingButtons(){
-  if(typeof currentTicket === "undefined" || !Array.isArray(currentTicket)) return;
-
-  document.querySelectorAll(".ichef-pro-line, .ticket-item-row").forEach((row)=>{
-    const idx = Number(row.dataset.index);
-    if(!Number.isFinite(idx) || !currentTicket[idx]) return;
-
-    const choices = window.cookingProfileForItem(currentTicket[idx]);
-    if(choices.length === 0){
-      row.querySelectorAll("button").forEach(btn=>{
-        if((btn.textContent || "").includes("CUISSON")){
-          btn.style.display = "none";
-        }
-      });
-    }
-  });
-}
-
-const oldRenderTicket = window.renderTicket;
-if(typeof oldRenderTicket === "function" && !oldRenderTicket.__usefulCookingOnly){
-  const wrapped = function(...args){
-    const r = oldRenderTicket.apply(this,args);
-    setTimeout(hideUselessCookingButtons,0);
-    return r;
-  };
-  wrapped.__usefulCookingOnly = true;
-  window.renderTicket = wrapped;
-}
-
-const oldOpenTicketCuisson2 = window.openTicketCuisson;
-window.openTicketCuisson = function(idx){
-  const item = (typeof currentTicket !== "undefined" && Array.isArray(currentTicket))
-    ? currentTicket[idx] : null;
-  if(!item || item.isSent) return;
-
-  const choices = window.cookingProfileForItem(item);
-  if(!choices.length){
-    return; // aucune fenêtre inutile
-  }
-  return oldOpenTicketCuisson2?.(idx);
-};
-
-setTimeout(hideUselessCookingButtons,100);
-})();
-</script>
-
-
-<script id="ichef-cuisson-auto-sans-popup">
-(function(){
-"use strict";
-
-/* Plats qui doivent être ajoutés directement, sans fenêtre cuisson. */
-function ichefNeedsCookingChoice(item){
-  const text = String(
-    (item?.originalName || item?.n || item?.name || "") + " " +
-    (item?.category || item?.cat || "") + " " +
-    (item?.type || "")
-  ).toLowerCase();
-
-  /* Aucun choix client : ajout direct */
-  if(/rago[uû]t|daube|bourguignon|blanquette|mijot[eé]|pot.?au.?feu|civet/.test(text)) return false;
-  if(/poulet|volaille|dinde|pintade/.test(text)) return false;
-  if(/porc|cochon|c[oô]te de porc|filet mignon/.test(text)) return false;
-
-  /* Poissons : pas de popup par défaut.
-     Un restaurant pourra ultérieurement activer un choix spécifique si nécessaire. */
-  if(/perche|filets? de perche|saumon|thon|cabillaud|dorade|lotte|truite|poisson/.test(text)) return false;
-
-  /* Choix utile pour viandes réellement commandées selon cuisson */
-  if(/entrec[oô]te|steak|filet de boeuf|filet de bœuf|rumsteck|faux.?filet|bavette|boeuf|bœuf/.test(text)) return true;
-  if(/magret|canard/.test(text)) return true;
-  if(/agneau|carr[eé] d.?agneau|gigot/.test(text)) return true;
-
-  return false;
-}
-
-/*
- Intercepte addToCart :
- - si le plat exige réellement une cuisson, on laisse le moteur existant ouvrir le choix.
- - sinon on ajoute directement à la commande, sans afficher
-   "AUCUNE CUISSON SPÉCIALE REQUISE".
-*/
-const oldAddToCart = window.addToCart;
-if(typeof oldAddToCart === "function" && !oldAddToCart.__autoCookingBypass){
-  const wrapped = function(n,p,dest,tvaRate,...rest){
-    const candidate = {n, name:n, dest, tvaRate};
-
-    if(!ichefNeedsCookingChoice(candidate)){
-      /* Appel direct du moteur panier, sans passer par le popup cuisson. */
-      if(typeof window.executeAddToCart === "function"){
-        const course = (typeof currentCourseDefault !== "undefined" ? currentCourseDefault : 1);
-        const result = window.executeAddToCart(n,p,dest,course,n,tvaRate);
-
-        try{
-          if(typeof window.renderTicket === "function") window.renderTicket();
-          if(typeof window.executeSaveTableState === "function")
-            Promise.resolve(window.executeSaveTableState(false,true)).catch(()=>{});
-        }catch(_){}
-
-        return result;
-      }
-    }
-
-    return oldAddToCart.call(this,n,p,dest,tvaRate,...rest);
-  };
-  wrapped.__autoCookingBypass = true;
-  window.addToCart = wrapped;
-}
-
-/* Sécurité : si une ancienne logique essaie malgré tout d'ouvrir le popup
-   pour un plat sans choix, on ferme et ajoute directement. */
-const oldEnsureCuisson = window.ensureCuissonModal;
-if(typeof oldEnsureCuisson === "function" && !oldEnsureCuisson.__autoBypass){
-  const wrappedEnsure = function(...args){
-    if(typeof pendingCuissonItem !== "undefined" && pendingCuissonItem &&
-       !ichefNeedsCookingChoice(pendingCuissonItem)){
-      const x = pendingCuissonItem;
-      pendingCuissonItem = null;
-
-      if(typeof window.executeAddToCart === "function"){
-        const course = (typeof currentCourseDefault !== "undefined" ? currentCourseDefault : 1);
-        window.executeAddToCart(x.n,x.p,x.dest,course,x.n,x.tvaRate);
-        try{
-          window.renderTicket?.();
-          Promise.resolve(window.executeSaveTableState?.(false,true)).catch(()=>{});
-        }catch(_){}
-      }
-
-      const modal=document.getElementById("cuisson-modal");
-      if(modal) modal.classList.remove("open");
-      return;
-    }
-    return oldEnsureCuisson.apply(this,args);
-  };
-  wrappedEnsure.__autoBypass=true;
-  window.ensureCuissonModal=wrappedEnsure;
-}
-
-window.ichefNeedsCookingChoice = ichefNeedsCookingChoice;
-})();
 </script>
 
 </body>
