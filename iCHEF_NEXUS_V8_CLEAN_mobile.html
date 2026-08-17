@@ -1043,6 +1043,24 @@ header{
 @media(max-width:650px){.sequence-card{grid-template-columns:auto 1fr}.sequence-action{grid-column:1/-1;width:100%}}
 
 </style>
+
+<style id="ichef-cuisson-touch-fix">
+#cuisson-modal{pointer-events:auto !important;}
+#cuisson-modal .ichef-choice-modal-card{pointer-events:auto !important;}
+#cuisson-modal .ichef-cooking-btn{
+    pointer-events:auto !important;
+    touch-action:manipulation !important;
+    position:relative !important;
+    z-index:2 !important;
+}
+@media(max-width:650px){
+    #cuisson-modal .ichef-cooking-btn{
+        min-height:64px !important;
+        font-size:.82rem !important;
+    }
+}
+</style>
+
 </head>
 <body oncontextmenu="return false;" ondragstart="return false;" ondrop="return false;">
 
@@ -3889,30 +3907,78 @@ function renderMenu(categoryId) {
         }
 
         let pendingCuissonItem = null;
-        function confirmCuisson(niv) {
-            if (!pendingCuissonItem) return;
 
-            const beforeLength = currentTicket.length;
+        // Édition de la cuisson directement depuis une ligne du ticket.
+        let pendingCuissonEditIndex = null;
+
+        function openTicketCuisson(idx) {
+            const item = currentTicket[idx];
+            if (!item || item.isSent) return;
+            pendingCuissonEditIndex = idx;
+            pendingCuissonItem = null;
+            ensureCuissonModal();
+            const title = document.getElementById('cuisson-item-name');
+            if (title) title.innerText = (item.originalName || item.n || 'Plat').replace(/\n/g, ' ');
+            document.getElementById('cuisson-modal').classList.add('open');
+        }
+
+        async function confirmCuisson(niv) {
+            if (pendingCuissonEditIndex !== null) {
+                const idx = pendingCuissonEditIndex;
+                const item = currentTicket[idx];
+                if (!item) return cancelCuisson();
+
+                const baseName = String(item.originalName || item.n || '')
+                    .replace(/\s*\([^()]*\)\s*$/, '')
+                    .trim();
+
+                item.originalName = baseName || item.originalName || item.n;
+                item.cooking = niv;
+                item.n = `${baseName || item.n} (${niv})`;
+
+                pendingCuissonEditIndex = null;
+                cancelCuisson();
+                renderTicket();
+
+                try { await executeSaveTableState(false, true); }
+                catch (e) { console.warn('Sauvegarde cuisson différée :', e); }
+
+                if (typeof showToast === 'function') showToast(`🥩 Cuisson : ${niv}`);
+                return;
+            }
+
+            if (!pendingCuissonItem) return;
+            const pending = pendingCuissonItem;
 
             executeAddToCart(
-                `${pendingCuissonItem.n} (${niv})`,
-                pendingCuissonItem.p,
-                pendingCuissonItem.dest,
+                `${pending.n} (${niv})`,
+                pending.p,
+                pending.dest,
                 currentCourseDefault,
-                pendingCuissonItem.n,
-                pendingCuissonItem.tvaRate
+                pending.n,
+                pending.tvaRate
             );
 
-            // Retrouve la ligne ajoutée / incrémentée et garde la cuisson
-            // dans un champ dédié pour les écrans cuisine futurs.
-            const targetName = `${pendingCuissonItem.n} (${niv})`;
+            const targetName = `${pending.n} (${niv})`;
             const item = [...currentTicket].reverse().find(i => i.n === targetName);
-            if (item) item.cooking = niv;
+            if (item) {
+                item.cooking = niv;
+                item.originalName = pending.n;
+            }
 
             cancelCuisson();
             renderTicket();
+
+            try { await executeSaveTableState(false, true); }
+            catch (e) { console.warn('Sauvegarde cuisson différée :', e); }
         }
-        function cancelCuisson() { pendingCuissonItem = null; document.getElementById('cuisson-modal').classList.remove('open'); }
+
+        function cancelCuisson() {
+            pendingCuissonItem = null;
+            pendingCuissonEditIndex = null;
+            const modal = document.getElementById('cuisson-modal');
+            if (modal) modal.classList.remove('open');
+        }
 
         function executeAddToCart(n, p, dest, courseOverride, originalName, tvaRate = 10) { 
             let cId = courseOverride !== undefined ? courseOverride : currentCourseDefault;
@@ -4062,6 +4128,15 @@ function renderMenu(categoryId) {
                 let seatBadge = (i.seat && i.seat > 0) ? `<span style="color:var(--text-muted); font-size:0.75rem; margin-right:8px; font-weight:500;">👤 ${i.seat}</span>` : `<span style="color:var(--text-muted); font-size:0.7rem; margin-right:8px; font-weight:400;">🍽️ CTR</span>`;
                 let priceHtml = i.isOffered ? `<span style="margin-right:10px; font-weight:500; color:var(--gold); font-size: 0.8rem; letter-spacing: 1px;">🎁 OFFERT</span>` : `<span style="margin-right:10px; font-weight:500; font-size: 0.95rem; font-family: 'Playfair Display', serif;">${formatMoneyPad(ligneTTC)}</span>`;
                 let obsDisplay = i.obs ? `<span style="font-size:0.7rem; color:var(--gold); margin-left: 5px; font-weight: 500;">⚠️ ${i.obs}</span>` : `<span style="font-size:0.65rem; color:var(--border-strong); font-weight: 300; margin-left: 5px;">+ Obs</span>`;
+                let cookingDisplay = i.cooking
+                    ? `<span style="font-size:0.68rem;color:#fff;border:1px solid var(--gold);padding:3px 6px;border-radius:4px;font-weight:900;">🥩 ${i.cooking}</span>`
+                    : '';
+                let cookingBtnHtml = !i.isSent
+                    ? `<button class="item-modifier-btn"
+                               style="min-width:76px;border-color:#ef4444;color:#ef4444;"
+                               onclick="openTicketCuisson(${idx});event.stopPropagation();"
+                               title="Choisir ou modifier la cuisson">🥩 CUISSON</button>`
+                    : '';
 
                 // 🔥 BOUTON D'ERREUR POUR LES PLATS DÉJÀ ENVOYÉS 🔥
                 let errorBtnHtml = i.isSent && !i.served ? `<button class="item-error-btn" onclick="openErrorModal(${idx}); event.stopPropagation();">REFAIRE</button>` : `<button class="item-delete-btn" onclick="removeTicketItem(${idx}); event.stopPropagation();">✕</button>`;
@@ -4070,7 +4145,7 @@ function renderMenu(categoryId) {
                 <div class="ticket-item-row" style="${opacityStyle}">
                     <div style="flex:1; cursor:pointer;" onclick="openEditItem(${idx})">
                         <div style="font-weight:400; font-size:0.95rem; color: var(--text-main);">${seatBadge}${q>1?`<span style="color:var(--gold); font-weight:600;">${q}x</span> `:""}${cleanName||'?'}${seqPill}</div>
-                        <div style="display:flex; align-items:center; gap:8px; margin-top:6px;">${statusHtml}${obsDisplay}</div>
+                        <div style="display:flex; align-items:center; gap:8px; margin-top:6px; flex-wrap:wrap;">${statusHtml}${obsDisplay}${cookingDisplay}</div>
                         ${
                             (Array.isArray(i.modifiers?.add) && i.modifiers.add.length) ||
                             (Array.isArray(i.modifiers?.remove) && i.modifiers.remove.length)
@@ -4083,6 +4158,7 @@ function renderMenu(categoryId) {
                     </div>
                     <div style="display: flex; align-items: center; gap: 7px;">
                         ${priceHtml}
+                        ${cookingBtnHtml}
                         <button class="item-modifier-btn"
                                 onclick="openItemModifierModal(${idx});event.stopPropagation();"
                                 title="Ajouter ou enlever un élément">
