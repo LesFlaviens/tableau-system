@@ -6249,5 +6249,101 @@ setTimeout(hideUselessCookingButtons,100);
 })();
 </script>
 
+
+<script id="ichef-cuisson-auto-sans-popup">
+(function(){
+"use strict";
+
+/* Plats qui doivent être ajoutés directement, sans fenêtre cuisson. */
+function ichefNeedsCookingChoice(item){
+  const text = String(
+    (item?.originalName || item?.n || item?.name || "") + " " +
+    (item?.category || item?.cat || "") + " " +
+    (item?.type || "")
+  ).toLowerCase();
+
+  /* Aucun choix client : ajout direct */
+  if(/rago[uû]t|daube|bourguignon|blanquette|mijot[eé]|pot.?au.?feu|civet/.test(text)) return false;
+  if(/poulet|volaille|dinde|pintade/.test(text)) return false;
+  if(/porc|cochon|c[oô]te de porc|filet mignon/.test(text)) return false;
+
+  /* Poissons : pas de popup par défaut.
+     Un restaurant pourra ultérieurement activer un choix spécifique si nécessaire. */
+  if(/perche|filets? de perche|saumon|thon|cabillaud|dorade|lotte|truite|poisson/.test(text)) return false;
+
+  /* Choix utile pour viandes réellement commandées selon cuisson */
+  if(/entrec[oô]te|steak|filet de boeuf|filet de bœuf|rumsteck|faux.?filet|bavette|boeuf|bœuf/.test(text)) return true;
+  if(/magret|canard/.test(text)) return true;
+  if(/agneau|carr[eé] d.?agneau|gigot/.test(text)) return true;
+
+  return false;
+}
+
+/*
+ Intercepte addToCart :
+ - si le plat exige réellement une cuisson, on laisse le moteur existant ouvrir le choix.
+ - sinon on ajoute directement à la commande, sans afficher
+   "AUCUNE CUISSON SPÉCIALE REQUISE".
+*/
+const oldAddToCart = window.addToCart;
+if(typeof oldAddToCart === "function" && !oldAddToCart.__autoCookingBypass){
+  const wrapped = function(n,p,dest,tvaRate,...rest){
+    const candidate = {n, name:n, dest, tvaRate};
+
+    if(!ichefNeedsCookingChoice(candidate)){
+      /* Appel direct du moteur panier, sans passer par le popup cuisson. */
+      if(typeof window.executeAddToCart === "function"){
+        const course = (typeof currentCourseDefault !== "undefined" ? currentCourseDefault : 1);
+        const result = window.executeAddToCart(n,p,dest,course,n,tvaRate);
+
+        try{
+          if(typeof window.renderTicket === "function") window.renderTicket();
+          if(typeof window.executeSaveTableState === "function")
+            Promise.resolve(window.executeSaveTableState(false,true)).catch(()=>{});
+        }catch(_){}
+
+        return result;
+      }
+    }
+
+    return oldAddToCart.call(this,n,p,dest,tvaRate,...rest);
+  };
+  wrapped.__autoCookingBypass = true;
+  window.addToCart = wrapped;
+}
+
+/* Sécurité : si une ancienne logique essaie malgré tout d'ouvrir le popup
+   pour un plat sans choix, on ferme et ajoute directement. */
+const oldEnsureCuisson = window.ensureCuissonModal;
+if(typeof oldEnsureCuisson === "function" && !oldEnsureCuisson.__autoBypass){
+  const wrappedEnsure = function(...args){
+    if(typeof pendingCuissonItem !== "undefined" && pendingCuissonItem &&
+       !ichefNeedsCookingChoice(pendingCuissonItem)){
+      const x = pendingCuissonItem;
+      pendingCuissonItem = null;
+
+      if(typeof window.executeAddToCart === "function"){
+        const course = (typeof currentCourseDefault !== "undefined" ? currentCourseDefault : 1);
+        window.executeAddToCart(x.n,x.p,x.dest,course,x.n,x.tvaRate);
+        try{
+          window.renderTicket?.();
+          Promise.resolve(window.executeSaveTableState?.(false,true)).catch(()=>{});
+        }catch(_){}
+      }
+
+      const modal=document.getElementById("cuisson-modal");
+      if(modal) modal.classList.remove("open");
+      return;
+    }
+    return oldEnsureCuisson.apply(this,args);
+  };
+  wrappedEnsure.__autoBypass=true;
+  window.ensureCuissonModal=wrappedEnsure;
+}
+
+window.ichefNeedsCookingChoice = ichefNeedsCookingChoice;
+})();
+</script>
+
 </body>
 </html>
