@@ -2853,5 +2853,243 @@
 })();
 </script>
 
+
+<style id="ichef-final-scroll-send-fix-style">
+/* --- PETITE ZONE CARTE / MENU : scroll tactile robuste --- */
+.drawer-left{
+  min-height:0 !important;
+  overflow:hidden !important;
+}
+.drawer-left > div[style*="flex: 1"]{
+  min-height:0 !important;
+  overflow:hidden !important;
+}
+#menu-grid{
+  position:absolute !important;
+  inset:0 !important;
+  overflow-y:auto !important;
+  overflow-x:hidden !important;
+  min-height:0 !important;
+  height:auto !important;
+  max-height:none !important;
+  -webkit-overflow-scrolling:touch !important;
+  overscroll-behavior-y:contain !important;
+  touch-action:pan-y !important;
+  pointer-events:auto !important;
+  z-index:3 !important;
+  padding-bottom:180px !important;
+}
+#menu-grid .btn-item{
+  pointer-events:auto !important;
+  touch-action:manipulation !important;
+}
+
+/* Bouton d'envoi toujours tactile */
+#btn-send-kds{
+  pointer-events:auto !important;
+  position:relative !important;
+  z-index:10 !important;
+}
+</style>
+
+<script id="ichef-final-scroll-send-fix">
+(function(){
+  "use strict";
+
+  /* =========================
+     1) SCROLL PETITE ZONE
+     ========================= */
+  function installMenuScroll(){
+    const grid=document.getElementById('menu-grid');
+    if(!grid || grid.dataset.finalScrollFix==='1') return;
+    grid.dataset.finalScrollFix='1';
+
+    let active=false;
+    let startY=0;
+    let startScroll=0;
+    let moved=false;
+    let pointerId=null;
+
+    grid.addEventListener('pointerdown',e=>{
+      if(e.pointerType==='mouse' && e.button!==0) return;
+      active=true;
+      moved=false;
+      pointerId=e.pointerId;
+      startY=e.clientY;
+      startScroll=grid.scrollTop;
+      try{grid.setPointerCapture(e.pointerId);}catch(_){}
+    },{passive:true});
+
+    grid.addEventListener('pointermove',e=>{
+      if(!active || (pointerId!==null && e.pointerId!==pointerId)) return;
+      const dy=e.clientY-startY;
+      if(Math.abs(dy)>6){
+        moved=true;
+        grid.scrollTop=startScroll-dy;
+        e.preventDefault();
+      }
+    },{passive:false});
+
+    function stop(e){
+      active=false;
+      try{if(pointerId!==null)grid.releasePointerCapture(pointerId);}catch(_){}
+      pointerId=null;
+    }
+    grid.addEventListener('pointerup',stop,{passive:true});
+    grid.addEventListener('pointercancel',stop,{passive:true});
+
+    grid.addEventListener('wheel',e=>{
+      if(grid.scrollHeight>grid.clientHeight){
+        grid.scrollTop += e.deltaY;
+        e.preventDefault();
+      }
+    },{passive:false});
+  }
+
+  /* =========================
+     2) ENVOI PRODUCTION
+     ========================= */
+  function getRoute(item){
+    const raw=String(
+      item?.destination || item?.dest || item?.department || item?.station || item?.route || ''
+    ).toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'');
+    if(raw.includes('bar') || raw.includes('boisson')) return 'BAR';
+    if(raw.includes('patis') || raw.includes('dessert')) return 'PATISSERIE';
+    return 'CUISINE';
+  }
+
+  async function saveCurrentOrder(){
+    if(!currentTableId) throw new Error('Aucune table sélectionnée');
+    const payload={
+      tableId:currentTableId,
+      order:{
+        ...(activeOrders?.[currentTableId] || {}),
+        items:currentTicket,
+        status:'pending',
+        source:'PAD_SERVEUR',
+        waiter:window.currentUser?.name || null,
+        updatedAt:new Date().toISOString()
+      }
+    };
+    const res=await secureFetch(`${APP_SERVER_URL}/update-order?tenantID=${appTenantID}`,{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify(payload)
+    });
+    if(!res.ok) throw new Error('Sauvegarde serveur refusée');
+    try{return await res.json();}catch(_){return {success:true};}
+  }
+
+  async function emitZones(items){
+    const by={BAR:[],CUISINE:[],PATISSERIE:[]};
+    items.forEach(i=>by[getRoute(i)].push(i));
+
+    if(window.ICHEF_BUS?.publish){
+      if(by.BAR.length){
+        await window.ICHEF_BUS.publish('order.zone.dispatched',{
+          tableId:currentTableId,route:'BAR',items:by.BAR
+        },'passBar');
+      }
+      if(by.CUISINE.length){
+        await window.ICHEF_BUS.publish('order.zone.dispatched',{
+          tableId:currentTableId,route:'CUISINE',items:by.CUISINE
+        },'passProduction');
+      }
+      if(by.PATISSERIE.length){
+        await window.ICHEF_BUS.publish('order.zone.dispatched',{
+          tableId:currentTableId,route:'PATISSERIE',items:by.PATISSERIE
+        },'patisserieLab');
+      }
+      await window.ICHEF_BUS.publish('order.dispatched',{
+        tableId:currentTableId,
+        items,
+        dispatchedAt:new Date().toISOString()
+      },'all');
+    }
+
+    if(window.ICHEF_BUS?.socket?.connected){
+      await new Promise(resolve=>{
+        window.ICHEF_BUS.socket.emit('orderDispatched',{
+          tenantID:appTenantID,
+          tableId:currentTableId
+        },()=>resolve());
+      });
+    }
+  }
+
+  window.__ichefDoDispatch = async function(){
+    if(!currentTableId) return alert('Aucune table sélectionnée.');
+    if(!Array.isArray(currentTicket) || !currentTicket.length) return alert('Table vide.');
+
+    const toSend=currentTicket.filter(i=>!i.isSent);
+    if(!toSend.length) return alert('Tous les articles ont déjà été envoyés.');
+
+    const ok=confirm(
+      `Envoyer ${toSend.length} ligne(s) vers les zones concernées ?\n\n`+
+      `Cuisine / Bar / Pâtisserie`
+    );
+    if(!ok) return;
+
+    try{
+      const now=Date.now();
+      toSend.forEach(i=>{
+        i.isSent=true;
+        i.done=false;
+        i.served=false;
+        i.sequenceStatus='PRODUCTION';
+        i.itemId=i.itemId || now + Math.floor(Math.random()*1000);
+        i.sentAt=new Date().toISOString();
+        i.destination=getRoute(i);
+      });
+
+      await saveCurrentOrder();
+      await emitZones(toSend);
+
+      if(typeof renderTicket==='function') renderTicket();
+      alert('✅ Commande envoyée aux zones concernées.');
+    }catch(err){
+      console.error('[iCHEF ENVOI]',err);
+      // remise en état si l'envoi échoue
+      toSend.forEach(i=>{ i.isSent=false; i.sequenceStatus='DRAFT'; });
+      if(typeof renderTicket==='function') renderTicket();
+      alert('❌ Envoi impossible : '+(err?.message || 'erreur serveur'));
+    }
+  };
+
+  function rebindSendButton(){
+    const btn=document.getElementById('btn-send-kds');
+    if(!btn) return;
+    btn.onclick=null;
+    btn.addEventListener('click',window.__ichefDoDispatch);
+    btn.addEventListener('pointerup',e=>{
+      if(e.pointerType!=='mouse'){
+        e.preventDefault();
+        window.__ichefDoDispatch();
+      }
+    },{passive:false});
+  }
+
+  /* Remplace les wrappers précédents pour éviter boucle sendFirstService/processOrderDispatch */
+  window.processOrderDispatch = window.__ichefDoDispatch;
+  window.sendFirstService = window.__ichefDoDispatch;
+
+  function init(){
+    installMenuScroll();
+    rebindSendButton();
+  }
+
+  if(document.readyState==='loading'){
+    document.addEventListener('DOMContentLoaded',init);
+  }else{
+    init();
+  }
+
+  new MutationObserver(()=>{
+    installMenuScroll();
+    rebindSendButton();
+  }).observe(document.documentElement,{childList:true,subtree:true});
+})();
+</script>
+
 </body>
 </html>
