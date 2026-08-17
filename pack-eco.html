@@ -2630,5 +2630,194 @@
 })();
 </script>
 
+
+<style id="ichef-human-error-style">
+#ichef-human-check-panel{
+  flex-shrink:0;
+  margin-top:10px;
+  padding:12px;
+  border:4px solid #000;
+  border-radius:14px;
+  background:#fff;
+}
+#ichef-human-check-panel .hc-title{
+  font-size:22px;
+  font-weight:900;
+  margin-bottom:8px;
+}
+#ichef-human-check-panel .hc-line{
+  font-size:18px;
+  font-weight:800;
+  margin:4px 0;
+}
+#ichef-human-check-panel .hc-ok{color:#087f5b}
+#ichef-human-check-panel .hc-warn{color:#D9534F}
+#ichef-human-check-panel .hc-actions{
+  display:grid;
+  grid-template-columns:1fr 1fr;
+  gap:8px;
+  margin-top:10px;
+}
+#ichef-human-check-panel button{
+  min-height:50px;
+  border:4px solid #000;
+  border-radius:10px;
+  background:#fff;
+  font-size:16px;
+  font-weight:900;
+  cursor:pointer;
+}
+#ichef-human-check-panel button.primary{
+  background:#000;color:#fff;
+}
+@media(max-width:900px){
+  #ichef-human-check-panel .hc-actions{grid-template-columns:1fr}
+}
+</style>
+
+<script id="ichef-human-error-engine">
+(function(){
+  "use strict";
+
+  function n(i){ return String(i?.n ?? i?.name ?? "ARTICLE"); }
+  function q(i){ return Math.max(1,parseInt(i?.qty||1,10)||1); }
+  function p(i){ return Number(i?.p ?? i?.price ?? 0)||0; }
+
+  function needsCooking(i){
+    const s=n(i).toUpperCase();
+    return ['BŒUF','BOEUF','VIANDE','ENTRECÔTE','ENTRECOTE','STEAK','ONGLET','BAVETTE','BURGER']
+      .some(x=>s.includes(x));
+  }
+
+  function validationIssues(){
+    const issues=[];
+    (currentTicket||[]).forEach((i,idx)=>{
+      if(q(i)<=0) issues.push(`Ligne ${idx+1}: quantité invalide`);
+      if(!Number.isFinite(p(i))) issues.push(`Ligne ${idx+1}: prix invalide`);
+      if(needsCooking(i) && !i.cooking){
+        issues.push(`${n(i)}: cuisson non renseignée`);
+      }
+      if(String(i.allergy||"").trim() && !String(i.obs||"").toUpperCase().includes("ALLERG")){
+        // on tolère la valeur dédiée, mais on signale pour visibilité
+        issues.push(`${n(i)}: allergène à vérifier`);
+      }
+    });
+    return issues;
+  }
+
+  function ticketTotal(){
+    return (currentTicket||[]).reduce((s,i)=>s+q(i)*p(i),0);
+  }
+
+  function ensurePanel(){
+    if(document.getElementById("ichef-human-check-panel")) return;
+    const send=document.getElementById("btn-send-kds");
+    if(!send?.parentElement) return;
+    const panel=document.createElement("div");
+    panel.id="ichef-human-check-panel";
+    send.parentElement.insertBefore(panel,send);
+  }
+
+  window.refreshHumanCheckPanel=function(){
+    ensurePanel();
+    const panel=document.getElementById("ichef-human-check-panel");
+    if(!panel) return;
+
+    const issues=validationIssues();
+    const unsent=(currentTicket||[]).filter(i=>!i.isSent).length;
+    const total=ticketTotal();
+
+    panel.innerHTML=`
+      <div class="hc-title">🛡️ CONTRÔLE AVANT ENVOI</div>
+      <div class="hc-line">Articles non envoyés : ${unsent}</div>
+      <div class="hc-line">Total commande : ${total.toFixed(2)} €</div>
+      <div class="hc-line ${issues.length?'hc-warn':'hc-ok'}">
+        ${issues.length ? '⚠️ '+issues.length+' point(s) à vérifier' : '✅ Commande prête à être envoyée'}
+      </div>
+      ${issues.length ? `<div style="font-size:15px;margin-top:6px;">${issues.map(x=>'• '+x).join('<br>')}</div>` : ''}
+      <div class="hc-actions">
+        <button onclick="showHumanErrorReview()">👀 VÉRIFIER COMMANDE</button>
+        <button class="primary" onclick="confirmHumanCheckedDispatch()">👨‍🍳 CONFIRMER & ENVOYER</button>
+      </div>
+    `;
+  };
+
+  window.showHumanErrorReview=function(){
+    const lines=(currentTicket||[]).map((i,idx)=>{
+      const meta=[
+        i.cooking ? 'Cuisson: '+i.cooking : '',
+        i.allergy ? 'Allergie: '+i.allergy : '',
+        i.obs ? i.obs : ''
+      ].filter(Boolean).join(' • ');
+      return `${idx+1}. ${q(i)} × ${n(i)} — ${(q(i)*p(i)).toFixed(2)} €${meta?'\n   '+meta:''}`;
+    }).join('\n');
+    const issues=validationIssues();
+    alert(
+      `VÉRIFICATION COMMANDE — TABLE ${currentTableId||''}\n\n${lines}\n\nTOTAL: ${ticketTotal().toFixed(2)} €`+
+      (issues.length?`\n\nÀ VÉRIFIER:\n${issues.map(x=>'• '+x).join('\n')}`:'\n\n✅ Aucun problème détecté.')
+    );
+  };
+
+  window.confirmHumanCheckedDispatch=async function(){
+    if(!currentTicket?.length) return alert("Table vide.");
+
+    const issues=validationIssues();
+    if(issues.length){
+      const ok=confirm(
+        "⚠️ Des points doivent être vérifiés avant l'envoi:\n\n"+
+        issues.map(x=>"• "+x).join("\n")+
+        "\n\nEnvoyer quand même ?"
+      );
+      if(!ok) return;
+    }
+
+    const ok2=confirm(
+      `Confirmer l'envoi en cuisine/bar/pâtisserie ?\n\n`+
+      `Table ${currentTableId||''}\n`+
+      `Total: ${ticketTotal().toFixed(2)} €`
+    );
+    if(!ok2) return;
+
+    if(typeof sendFirstService==="function"){
+      await sendFirstService();
+    }else if(typeof processOrderDispatch==="function"){
+      await processOrderDispatch();
+    }
+    refreshHumanCheckPanel();
+  };
+
+  // Paiement : contrôle supplémentaire pour éviter d'encaisser une table non sauvegardée ou vide
+  if(typeof window.openPaymentModal==="function"){
+    const oldPay=window.openPaymentModal;
+    if(!oldPay.__humanCheckWrapped){
+      const wrapped=function(...args){
+        if(!currentTicket?.length) return alert("Table vide.");
+        const unsent=(currentTicket||[]).some(i=>!i.isSent);
+        if(unsent){
+          const ok=confirm(
+            "⚠️ Il reste des articles non envoyés en production.\n\n"+
+            "Voulez-vous quand même ouvrir le paiement ?"
+          );
+          if(!ok) return;
+        }
+        return oldPay.apply(this,args);
+      };
+      wrapped.__humanCheckWrapped=true;
+      window.openPaymentModal=wrapped;
+    }
+  }
+
+  const oldRender=window.renderTicket;
+  window.renderTicket=function(){
+    if(typeof oldRender==="function") oldRender();
+    refreshHumanCheckPanel();
+  };
+
+  document.addEventListener("DOMContentLoaded",()=>{
+    setTimeout(refreshHumanCheckPanel,400);
+  });
+})();
+</script>
+
 </body>
 </html>
