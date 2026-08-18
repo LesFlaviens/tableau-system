@@ -9034,5 +9034,189 @@ document.addEventListener('touchstart', function(e){
 })();
 </script>
 
+
+<style id="ichef-sun-contrast-system">
+/* Contraste de base renforcé entre le plan et les tables */
+.floor-plan-wrapper,
+#floor-plan,
+.floor-plan{
+    background-color:#050505 !important;
+}
+.table-item,
+.restaurant-table,
+.floor-table{
+    border-width:2px !important;
+    filter:drop-shadow(0 3px 5px rgba(0,0,0,.72));
+}
+
+/* MODE ANTI-SOLEIL : contraste maximal, sans modifier les états métier */
+html.ichef-sun-mode body{
+    --bg-main:#000;
+    --panel:#050505;
+    --text-main:#fff;
+    --text-muted:#e6e6e6;
+    --border:#777;
+    --border-strong:#fff;
+}
+html.ichef-sun-mode .floor-plan-wrapper,
+html.ichef-sun-mode #floor-plan,
+html.ichef-sun-mode .floor-plan{
+    background:#000 !important;
+}
+html.ichef-sun-mode .table-item,
+html.ichef-sun-mode .restaurant-table,
+html.ichef-sun-mode .floor-table{
+    border-width:3px !important;
+    border-color:#f2f2f2;
+    color:#fff !important;
+    text-shadow:0 1px 2px #000;
+    filter:drop-shadow(0 0 3px rgba(255,255,255,.22));
+}
+html.ichef-sun-mode button,
+html.ichef-sun-mode .dock-btn,
+html.ichef-sun-mode .folder-btn{
+    text-shadow:none !important;
+}
+html.ichef-sun-mode *{
+    backdrop-filter:none !important;
+    -webkit-backdrop-filter:none !important;
+}
+
+/* Petit contrôleur toujours accessible, sans gêner le service */
+#ichef-sun-control{
+    position:fixed;
+    right:10px;
+    bottom:10px;
+    z-index:1000002;
+    display:flex;
+    align-items:center;
+    gap:5px;
+    padding:5px;
+    border:1px solid var(--border-strong);
+    border-radius:8px;
+    background:rgba(5,5,5,.96);
+    box-shadow:0 5px 20px rgba(0,0,0,.55);
+}
+#ichef-sun-control button{
+    min-width:44px;
+    height:36px;
+    padding:4px 8px;
+    border:1px solid var(--border);
+    border-radius:5px;
+    background:#111;
+    color:#fff;
+    font:700 .68rem inherit;
+    cursor:pointer;
+    touch-action:manipulation;
+}
+#ichef-sun-control button.active{
+    border-color:var(--gold);
+    color:var(--gold);
+    box-shadow:0 0 0 1px var(--gold) inset;
+}
+#ichef-sun-status{
+    min-width:58px;
+    color:var(--text-muted);
+    font-size:.58rem;
+    text-align:center;
+}
+@media(min-width:901px){
+    #ichef-sun-control{right:14px;bottom:14px}
+}
+</style>
+
+<div id="ichef-sun-control" aria-label="Contraste écran">
+  <button id="sun-auto-btn" type="button" onclick="iChefSetSunPreference('auto')" title="Adaptation automatique">⚡ AUTO</button>
+  <button id="sun-manual-btn" type="button" onclick="iChefToggleManualSun()" title="Forcer / enlever le mode anti-soleil">☀️</button>
+  <span id="ichef-sun-status">NORMAL</span>
+</div>
+
+<script id="ichef-sun-contrast-system-script">
+(function(){
+    "use strict";
+    const KEY='ichef_display_contrast_mode_v1';
+    let preference='auto';
+    let sensor=null;
+    let lux=null;
+
+    function safeGet(){
+        try{return localStorage.getItem(KEY)||'auto';}catch(e){return 'auto';}
+    }
+    function safeSet(v){
+        try{localStorage.setItem(KEY,v);}catch(e){}
+    }
+    function hourSuggestsSun(){
+        const h=new Date().getHours();
+        return h>=8 && h<19;
+    }
+    function systemSuggestsHighContrast(){
+        try{return !!window.matchMedia && (
+            window.matchMedia('(prefers-contrast: more)').matches ||
+            window.matchMedia('(forced-colors: active)').matches
+        );}catch(e){return false;}
+    }
+    function autoWantsSun(){
+        // Si un capteur compatible est disponible, il est prioritaire.
+        if(typeof lux==='number') return lux >= 12000;
+        // Fallback prudent : ne force le mode fort que si le système demande
+        // davantage de contraste. L'heure seule ne suffit pas à décider.
+        return systemSuggestsHighContrast();
+    }
+    function apply(on, reason){
+        document.documentElement.classList.toggle('ichef-sun-mode', !!on);
+        const auto=document.getElementById('sun-auto-btn');
+        const man=document.getElementById('sun-manual-btn');
+        const status=document.getElementById('ichef-sun-status');
+        if(auto) auto.classList.toggle('active', preference==='auto');
+        if(man) man.classList.toggle('active', preference==='sun');
+        if(status){
+            status.textContent = on ? 'SOLEIL' : 'NORMAL';
+            status.title = reason || '';
+        }
+    }
+    function refresh(){
+        if(preference==='sun') return apply(true,'Mode manuel anti-soleil');
+        if(preference==='normal') return apply(false,'Mode manuel normal');
+        apply(autoWantsSun(), typeof lux==='number' ? Math.round(lux)+' lux' : 'AUTO système');
+    }
+
+    window.iChefSetSunPreference=function(v){
+        if(!['auto','sun','normal'].includes(v)) v='auto';
+        preference=v; safeSet(v); refresh();
+    };
+    window.iChefToggleManualSun=function(){
+        // ☀️ alterne anti-soleil forcé / normal forcé.
+        preference = document.documentElement.classList.contains('ichef-sun-mode') ? 'normal' : 'sun';
+        safeSet(preference); refresh();
+    };
+
+    function tryAmbientSensor(){
+        // AmbientLightSensor n'est pas disponible sur tous les navigateurs/appareils.
+        try{
+            if(!('AmbientLightSensor' in window)) return;
+            sensor=new AmbientLightSensor({frequency:1});
+            sensor.addEventListener('reading',()=>{
+                lux=sensor.illuminance;
+                if(preference==='auto') refresh();
+            });
+            sensor.addEventListener('error',()=>{lux=null; if(preference==='auto') refresh();});
+            sensor.start();
+        }catch(e){lux=null;}
+    }
+
+    preference=safeGet();
+    refresh();
+    tryAmbientSensor();
+
+    if(window.matchMedia){
+        try{
+            const mq=window.matchMedia('(prefers-contrast: more)');
+            mq.addEventListener?.('change',()=>{if(preference==='auto')refresh();});
+        }catch(e){}
+    }
+    setInterval(()=>{if(preference==='auto' && lux===null)refresh();},60000);
+})();
+</script>
+
 </body>
 </html>
