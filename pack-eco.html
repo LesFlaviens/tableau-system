@@ -5082,7 +5082,7 @@ function renderMenu(categoryId) {
             } catch (_) {}
         }
 
-       // Mémoire globale pour retenir l'état d'ouverture/fermeture des blocs
+// Mémoire globale pour retenir l'état d'ouverture/fermeture des blocs
         window.collapsedCourses = window.collapsedCourses || {};
         
         window.toggleCoursePanel = function(c, event) {
@@ -5196,8 +5196,7 @@ function renderMenu(categoryId) {
             updateOrderMiniBar();
             updateSequenceServicePanel();
         }
-        } // <--- C'est cette accolade qui manquait pour fermer la fonction renderTicket() !
-                            
+
         // 🔥 LOGIQUE ANTI-RUSH : VÉRIFICATION AVANT ENVOI 🔥
         function processOrderDispatch() {
             if (isKitchenInRush && rushV3Settings.timeShift && rushV3Settings.timeShift.active) {
@@ -5210,22 +5209,133 @@ function renderMenu(categoryId) {
                 }
             }
             sendOrderToKDS(false);
-        }
+        }// Mémoire globale pour retenir l'état d'ouverture/fermeture des blocs
+        window.collapsedCourses = window.collapsedCourses || {};
+        
+        window.toggleCoursePanel = function(c, event) {
+            if(event) event.stopPropagation();
+            window.collapsedCourses[c] = !window.collapsedCourses[c];
+            renderTicket(); // On redessine le ticket immédiatement
+        };
 
-        function acceptTimeShiftServer() {
-            document.getElementById('ts-offer-modal').classList.remove('open');
-            let multiplier = 1 - (rushV3Settings.timeShift.discount / 100);
-            
-            currentTicket.forEach(i => {
-                if (!i.isSent) {
-                    i.p = i.p * multiplier; 
-                    i.timeShifted = true; 
-                    i.obs = (i.obs ? i.obs + " | " : "") + `⏱️ DÉCALÉ (+${rushV3Settings.timeShift.delay}m)`;
+        function renderTicket() {
+            let list = document.getElementById('ticket-list');
+            let total = 0; let totalHT = 0; let tvaTotals = { '5.5': 0, '10': 0, '20': 0, '0': 0 };
+            let htmlByCourse = { 0: '', 1: '', 2: '', 3: '' };
+            let courseNames = { 0: '🍸 BOISSONS', 1: '🥗 ENTRÉES', 2: '🔥 PLATS', 3: '🍰 DESSERTS' };
+
+            currentTicket.forEach((i, idx) => {
+                if(!i) return; let q = i.qty || 1; 
+                let ligneTTC = (parseFloat(i.p)||0) * q;
+                total += ligneTTC;
+
+                let rate = parseFloat(i.tva) || 10;
+                let ligneHT = ligneTTC / (1 + (rate / 100));
+                let ligneTVA = ligneTTC - ligneHT;
+                totalHT += ligneHT;
+                if(tvaTotals[rate] !== undefined) tvaTotals[rate] += ligneTVA; else tvaTotals[rate] = ligneTVA;
+
+                let cleanName = i.n.replace(/\n/g, ' + ');
+                let c = i.course !== undefined ? i.course : 2;
+                let seq = getItemSequence(i);
+                let seqState = String(i.sequenceStatus || '').toUpperCase();
+                let seqPill = seq > 0
+                    ? `<span class="sequence-pill ${seqState === 'PRODUCTION' ? 'production' : (i.done ? 'ready' : '')}">S${seq}</span>`
+                    : '';
+                let statusHtml = ''; let opacityStyle = "";
+                
+                if (!i.isSent) statusHtml = `<button class="btn-mini" style="border-color: var(--text-main); color: var(--text-main); padding: 4px 8px; font-size: 0.6rem;">NOUVEAU</button>`;
+                else if (i.served) { statusHtml = `<button class="btn-mini" style="border-color: var(--text-muted); color: var(--text-muted); padding: 4px 8px; font-size: 0.6rem;">SERVI</button>`; opacityStyle = "opacity: 0.4;"; }
+                else if (i.done) statusHtml = `<button class="btn-mini" style="background: #10b981; color: #000; border-color: #10b981; padding: 4px 8px; font-size: 0.7rem; font-weight: 800; cursor: pointer; box-shadow: 0 0 10px rgba(16,185,129,0.5);" onclick="markAsServed(${idx}); event.stopPropagation();">✋ RÉCUPÉRER</button>`;
+                else statusHtml = `<button class="btn-mini" style="border-color: var(--gold); color: var(--gold); padding: 4px 8px; font-size: 0.6rem;">ATTENTE</button>`;
+                
+                let seatBadge = (i.seat && i.seat > 0) ? `<span style="color:var(--text-muted); font-size:0.75rem; margin-right:8px; font-weight:500;">👤 ${i.seat}</span>` : `<span style="color:var(--text-muted); font-size:0.7rem; margin-right:8px; font-weight:400;">🍽️ CTR</span>`;
+                let priceHtml = i.isOffered ? `<span style="margin-right:10px; font-weight:500; color:var(--gold); font-size: 0.8rem; letter-spacing: 1px;">🎁 OFFERT</span>` : `<span style="margin-right:10px; font-weight:500; font-size: 0.95rem; font-family: 'Playfair Display', serif;">${formatMoneyPad(ligneTTC)}</span>`;
+                let obsDisplay = i.obs ? `<span style="font-size:0.7rem; color:var(--gold); margin-left: 5px; font-weight: 500;">⚠️ ${i.obs}</span>` : `<span style="font-size:0.65rem; color:var(--border-strong); font-weight: 300; margin-left: 5px;">+ Obs</span>`;
+
+                let errorBtnHtml = i.isSent && !i.served ? `<button class="item-error-btn" onclick="openErrorModal(${idx}); event.stopPropagation();">REFAIRE</button>` : `<button class="item-delete-btn" onclick="removeTicketItem(${idx}); event.stopPropagation();">✕</button>`;
+
+                let itemHtml = `
+                <div class="ticket-item-row" style="${opacityStyle}">
+                    <div style="flex:1; cursor:pointer;" onclick="openEditItem(${idx})">
+                        <div style="font-weight:400; font-size:0.95rem; color: var(--text-main);">${seatBadge}${q>1?`<span style="color:var(--gold); font-weight:600;">${q}x</span> `:""}${cleanName||'?'}${seqPill}</div>
+                        <div style="display:flex; align-items:center; gap:8px; margin-top:6px;">${statusHtml}${obsDisplay}</div>
+                        ${
+                            (Array.isArray(i.modifiers?.add) && i.modifiers.add.length) ||
+                            (Array.isArray(i.modifiers?.remove) && i.modifiers.remove.length)
+                            ? `<div class="ticket-modifiers">
+                                ${(i.modifiers?.add || []).map(m => `<span class="ticket-modifier-add">➕ ${m}</span>`).join('')}
+                                ${(i.modifiers?.remove || []).map(m => `<span class="ticket-modifier-remove">➖ ${m}</span>`).join('')}
+                               </div>`
+                            : ''
+                        }
+                    </div>
+                    <div style="display: flex; align-items: center; gap: 7px;">
+                        ${priceHtml}
+                        <button class="item-modifier-btn"
+                                onclick="openItemModifierModal(${idx});event.stopPropagation();"
+                                title="Ajouter ou enlever un élément">
+                            ±
+                        </button>
+                        ${errorBtnHtml}
+                    </div>
+                </div>`;
+                htmlByCourse[c] += itemHtml;
+            }); 
+
+            let finalHtml = '';
+            [0, 1, 2, 3].forEach(c => { 
+                if(htmlByCourse[c] !== '') {
+                    // Vérifie si la catégorie est repliée dans la mémoire
+                    let collapsedClass = window.collapsedCourses[c] ? 'collapsed' : '';
+                    
+                    finalHtml += `
+                    <div class="course-card ${collapsedClass}">
+                        <div class="course-card-header" onclick="window.toggleCoursePanel(${c}, event)">
+                            <span class="course-title">${courseNames[c]}</span>
+                            <span class="toggle-icon">▼</span>
+                        </div>
+                        <div class="course-body">
+                            ${htmlByCourse[c]}
+                        </div>
+                    </div>`; 
                 }
             });
             
-            sendOrderToKDS(true);
-            showToast(`✅ Le client a accepté l'offre ! Envoi différé.`);
+            if(finalHtml === '') finalHtml = `<div style="text-align:center; color:var(--text-muted); font-weight: 300; padding:40px 0; border: 1px dashed var(--border-strong); border-radius: 4px;">En attente de saisie...</div>`;
+            
+            list.innerHTML = finalHtml;
+            document.getElementById('ticket-total-price').innerText = `${formatMoneyPad(total)}`;
+            currentTableTotal = total;
+
+            let tvaStr = Object.entries(tvaTotals).filter(([k,v]) => v>0).map(([k,v]) => `TVA ${k}%: ${formatMoneyPad(v)}`).join(' | ');
+            if(!tvaStr) tvaStr = "Aucune TVA";
+            document.getElementById('ticket-tva').innerText = tvaStr + ` (HT: ${formatMoneyPad(totalHT)})`;
+
+            let hasUnsent = currentTicket.some(i => !i.isSent);
+            let btnSend = document.getElementById('btn-send-kds');
+            if (hasUnsent) {
+                btnSend.style.display = 'block';
+            } else {
+                btnSend.style.display = 'none';
+            }
+
+            updateOrderMiniBar();
+            updateSequenceServicePanel();
+        }
+
+        // 🔥 LOGIQUE ANTI-RUSH : VÉRIFICATION AVANT ENVOI 🔥
+        function processOrderDispatch() {
+            if (isKitchenInRush && rushV3Settings.timeShift && rushV3Settings.timeShift.active) {
+                let hasHotDishes = currentTicket.some(i => !i.isSent && i.dest === 'cuisine');
+                if (hasHotDishes) {
+                    document.getElementById('server-ts-discount').innerText = `-${rushV3Settings.timeShift.discount}%`;
+                    document.getElementById('server-ts-delay').innerText = `${rushV3Settings.timeShift.delay} min`;
+                    document.getElementById('ts-offer-modal').classList.add('open');
+                    return; 
+                }
+            }
+            sendOrderToKDS(false);
         }
 
         function refuseTimeShiftServer() {
