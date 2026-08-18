@@ -2068,7 +2068,7 @@ header{
 .sequence-pill.production{color:#f59e0b;border-color:rgba(245,158,11,.4)}.sequence-pill.ready{color:#10b981;border-color:rgba(16,185,129,.4)}
 @media(max-width:650px){.sequence-card{grid-template-columns:auto 1fr}.sequence-action{grid-column:1/-1;width:100%}}
     
-/* --- EFFET ACCORDÉON DU TICKET --- */
+/* --- CORRECTION : ACCORDÉON ET MODE COMPACT TICKET --- */
 .course-card.collapsed .course-body {
     display: none !important;
 }
@@ -2076,20 +2076,23 @@ header{
     transform: rotate(-90deg);
 }
 .course-card-header {
-    cursor: pointer; 
-    user-select: none; 
-    transition: background-color 0.2s;
-}
-.course-card-header:active { 
-    background-color: rgba(250, 240, 230, 0.05); 
+    cursor: pointer; user-select: none; transition: background-color 0.2s;
 }
 .toggle-icon {
-    font-size: 0.8rem; 
-    color: var(--text-muted); 
-    transition: transform 0.2s ease; 
-    display: inline-block;
+    font-size: 0.8rem; color: var(--text-muted); transition: transform 0.2s ease; display: inline-block;
 }
-/* ----------------------------------- */
+
+/* Mode ultra-compact appliqué globalement via le body */
+body.ultra-compact-ticket .ticket-item-row { padding: 4px 6px !important; min-height: auto !important; margin-bottom: 2px !important; }
+body.ultra-compact-ticket .ticket-item-row > div:first-child > div:first-child { font-size: 0.75rem !important; }
+body.ultra-compact-ticket .btn-mini { padding: 2px 6px !important; font-size: 0.55rem !important; }
+body.ultra-compact-ticket .course-body { padding: 4px !important; gap: 2px !important; }
+body.ultra-compact-ticket .price { font-size: 0.85rem !important; }
+body.ultra-compact-ticket .item-modifier-btn,
+body.ultra-compact-ticket .item-delete-btn,
+body.ultra-compact-ticket .item-error-btn { padding: 3px 6px !important; font-size: 0.65rem !important; }
+/* ----------------------------------------------- */>
+
 <style id="ichef-cuisson-click-final">
 #cuisson-modal{
     z-index:2147483000 !important;
@@ -2502,9 +2505,9 @@ header{
 
             <div class="ticket-view">
                <div style="display:flex; justify-content:space-between; align-items:center; border-bottom: 1px solid var(--border); padding-bottom: 15px; margin-bottom: 15px;">
-    <h2 style="color:var(--gold); font-size: 1.4rem; margin: 0; letter-spacing: 2px;" id="ticket-table-name">TABLE --</h2>
-    <button class="btn-mini" onclick="closeOrder()">FERMER ✕</button>
-</div>
+                    <h2 style="color:var(--gold); font-size: 1.4rem; margin: 0; letter-spacing: 2px;" id="ticket-table-name">TABLE --</h2>
+                    <button class="btn-mini" onclick="closeOrder()">FERMER ✕</button>
+                </div>
                 
                 <div id="drawer-zone-alert" style="display:none; background: rgba(239, 68, 68, 0.1); border: 1px solid var(--alert); color: var(--alert); padding: 12px; border-radius: 6px; text-align: center; font-size: 0.8rem; font-weight: 700; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 15px; box-shadow: inset 0 0 10px rgba(239, 68, 68, 0.1);">
                 </div>
@@ -5087,23 +5090,123 @@ function renderMenu(categoryId) {
             } catch (_) {}
         }
 
-// Mémoire globale pour retenir l'état d'ouverture/fermeture des blocs
-        window.collapsedCourses = window.collapsedCourses || {};
-        
-        window.toggleCoursePanel = function(c, event) {
-            if(event) event.stopPropagation();
-            window.collapsedCourses[c] = !window.collapsedCourses[c];
-            renderTicket(); // On redessine le ticket immédiatement
-        };
+        // Exposition explicite pour compatibilité avec anciens boutons / PWA.
+        window.confirmCuisson = confirmCuisson;
+        function cancelCuisson() { pendingCuissonItem = null; document.getElementById('cuisson-modal').classList.remove('open'); }
 
-        // Mémoire globale pour retenir l'état d'ouverture/fermeture des blocs
-        window.collapsedCourses = window.collapsedCourses || {};
+        function executeAddToCart(n, p, dest, courseOverride, originalName, tvaRate = 10) { 
+            let cId = courseOverride !== undefined ? courseOverride : currentCourseDefault;
+            let seatId = currentSeat; 
+            let e = currentTicket.find(i => i.n === n && !i.done && !i.served && !i.isSent && i.course === cId && !i.obs && !i.isOffered && (i.seat || 0) === seatId && i.tva === tvaRate); 
+            if(e) e.qty = (e.qty||1)+1; 
+            else currentTicket.push({ id: Date.now()+Math.random(), itemId: Date.now(), n: n.replace(/\[BR\]/g, ' '), originalName: (originalName || n).replace(/\[BR\]/g, '\n'), p, tva: tvaRate, qty: 1, done: false, served: false, dest, savedToDB: false, isOffered: false, course: cId, obs: "", modifiers: { add: [], remove: [] }, cooking: null, seat: seatId, isSent: false }); 
+            renderTicket();
+            flashAddedItem(n, 1);
+            updateOrderMiniBar();
+        }
+
+        function addMenuToTicket(n, p, dest, tvaRate = 10) {
+            const cleanMenuName = String(n || '').replace('🌟 ', '').trim();
+            const parts = String(n || '').split('[BR]').map(x => x.replace('🌟 ','').trim()).filter(Boolean);
+            const menuId = `MENU_${Date.now()}_${Math.random().toString(36).slice(2,7)}`;
+
+            const sequenceParts = parts.length > 1 ? parts : [
+                `🥗 Entrée (${cleanMenuName})`,
+                `🔥 Plat (${cleanMenuName})`,
+                `🍰 Dessert (${cleanMenuName})`
+            ];
+
+            sequenceParts.forEach((part,index) => {
+                const seq = index + 1;
+                const lower = part.toLowerCase();
+                let course = lower.includes('dessert') || part.includes('🍰') ? 3
+                           : lower.includes('entrée') || lower.includes('entree') || part.includes('🥗') ? 1
+                           : 2;
+
+                executeAddToCart(part, index===0 ? p : 0, dest, course, n, tvaRate);
+
+                const added = [...currentTicket].reverse().find(item =>
+                    !item.isSent && item.n === part && item.course === course
+                );
+
+                if (added) {
+                    added.menuId = menuId;
+                    added.menuName = cleanMenuName;
+                    added.sequence = seq;
+                    added.sequenceStatus = 'DRAFT';
+                }
+            });
+
+            renderTicket();
+        }
+
         
-        window.toggleCoursePanel = function(c, event) {
-            if(event) event.stopPropagation();
-            window.collapsedCourses[c] = !window.collapsedCourses[c];
-            renderTicket(); // On redessine le ticket immédiatement
-        };
+        // =========================================================
+        // 🍽️ SERVICE PAR SÉQUENCES / RÉCLAME
+        // =========================================================
+        function getItemSequence(item) {
+            if (Number(item?.sequence) > 0) return Number(item.sequence);
+            const c=Number(item?.course);
+            if(c===1)return 1;if(c===2)return 2;if(c===3)return 3;
+            return 0;
+        }
+        function getSequenceMap() {
+            const map=new Map();
+            currentTicket.forEach((item,idx)=>{
+                const s=getItemSequence(item);
+                if(s<=0)return;
+                if(!map.has(s))map.set(s,[]);
+                map.get(s).push({item,idx});
+            });
+            return new Map([...map.entries()].sort((a,b)=>a[0]-b[0]));
+        }
+        function getSequenceState(entries) {
+            const items=(entries||[]).map(e=>e.item||e);
+            if(items.length&&items.every(i=>i.served))return 'SERVED';
+            if(items.length&&items.every(i=>i.done))return 'READY';
+            if(items.some(i=>i.sequenceStatus==='PRODUCTION'))return 'PRODUCTION';
+            if(items.some(i=>i.isSent))return 'WAITING';
+            return 'DRAFT';
+        }
+        function canRequestSequence(seq,map=getSequenceMap()) {
+            const keys=[...map.keys()];
+            const pos=keys.indexOf(Number(seq));
+            if(pos<=0)return true;
+            return getSequenceState(map.get(keys[pos-1]))==='SERVED';
+        }
+        async function requestSequence(seq) {
+            const map=getSequenceMap(), entries=map.get(Number(seq));
+            if(!entries?.length)return;
+            if(!canRequestSequence(Number(seq),map)){
+                alert('⏸️ Servez la séquence précédente avant de réclamer la suite.');
+                return;
+            }
+            entries.forEach(({item})=>{
+                item.isSent=true;item.done=false;item.served=false;
+                item.sequenceStatus='PRODUCTION';item.requestedAt=Date.now();
+            });
+            renderTicket();
+            try{
+                await executeSaveTableState(false,true);
+                if(typeof showToast==='function')showToast(`🔥 Séquence ${seq} réclamée`);
+            }catch(e){console.error(e);}
+        }
+        function updateSequenceServicePanel() {
+            const panel=document.getElementById('sequence-service-panel');
+            if(!panel)return;
+            const map=getSequenceMap();
+            if(!map.size){panel.style.display='none';panel.innerHTML='';return;}
+            panel.style.display='block';
+            let html='<div style="padding:10px;color:var(--gold);font-weight:900">🍽️ SERVICE DU MENU</div>';
+            for(const [seq,entries] of map){
+                const state=getSequenceState(entries), allowed=canRequestSequence(seq,map);
+                let label=state==='PRODUCTION'?'🔥 EN PRODUCTION':state==='READY'?'🔔 PRÊT':state==='SERVED'?'✅ SERVI':'⏸ EN ATTENTE';
+                let btn=(state==='WAITING'||state==='DRAFT')
+                    ? `<button onclick="requestSequence(${seq})" ${allowed?'':'disabled'} style="padding:7px 10px">▶ RÉCLAMER</button>`:'';
+                html+=`<div style="display:flex;justify-content:space-between;align-items:center;padding:9px;border-top:1px solid #333"><span><b>S${seq}</b> ${label}</span>${btn}</div>`;
+            }
+            panel.innerHTML=html;
+        }
 
         function renderTicket() {
             let list = document.getElementById('ticket-list');
@@ -5133,13 +5236,14 @@ function renderMenu(categoryId) {
                 
                 if (!i.isSent) statusHtml = `<button class="btn-mini" style="border-color: var(--text-main); color: var(--text-main); padding: 4px 8px; font-size: 0.6rem;">NOUVEAU</button>`;
                 else if (i.served) { statusHtml = `<button class="btn-mini" style="border-color: var(--text-muted); color: var(--text-muted); padding: 4px 8px; font-size: 0.6rem;">SERVI</button>`; opacityStyle = "opacity: 0.4;"; }
-                else if (i.done) statusHtml = `<button class="btn-mini" style="background: #10b981; color: #000; border-color: #10b981; padding: 4px 8px; font-size: 0.7rem; font-weight: 800; cursor: pointer; box-shadow: 0 0 10px rgba(16,185,129,0.5);" onclick="markAsServed(${idx}); event.stopPropagation();">✋ RÉCUPÉRER</button>`;
+              else if (i.done) statusHtml = `<button class="btn-mini" style="background: #10b981; color: #000; border-color: #10b981; padding: 4px 8px; font-size: 0.7rem; font-weight: 800; cursor: pointer; box-shadow: 0 0 10px rgba(16,185,129,0.5);" onclick="markAsServed(${idx}); event.stopPropagation();">✋ RÉCUPÉRER</button>`;
                 else statusHtml = `<button class="btn-mini" style="border-color: var(--gold); color: var(--gold); padding: 4px 8px; font-size: 0.6rem;">ATTENTE</button>`;
                 
                 let seatBadge = (i.seat && i.seat > 0) ? `<span style="color:var(--text-muted); font-size:0.75rem; margin-right:8px; font-weight:500;">👤 ${i.seat}</span>` : `<span style="color:var(--text-muted); font-size:0.7rem; margin-right:8px; font-weight:400;">🍽️ CTR</span>`;
                 let priceHtml = i.isOffered ? `<span style="margin-right:10px; font-weight:500; color:var(--gold); font-size: 0.8rem; letter-spacing: 1px;">🎁 OFFERT</span>` : `<span style="margin-right:10px; font-weight:500; font-size: 0.95rem; font-family: 'Playfair Display', serif;">${formatMoneyPad(ligneTTC)}</span>`;
                 let obsDisplay = i.obs ? `<span style="font-size:0.7rem; color:var(--gold); margin-left: 5px; font-weight: 500;">⚠️ ${i.obs}</span>` : `<span style="font-size:0.65rem; color:var(--border-strong); font-weight: 300; margin-left: 5px;">+ Obs</span>`;
 
+                // 🔥 BOUTON D'ERREUR POUR LES PLATS DÉJÀ ENVOYÉS 🔥
                 let errorBtnHtml = i.isSent && !i.served ? `<button class="item-error-btn" onclick="openErrorModal(${idx}); event.stopPropagation();">REFAIRE</button>` : `<button class="item-delete-btn" onclick="removeTicketItem(${idx}); event.stopPropagation();">✕</button>`;
 
                 let itemHtml = `
@@ -5170,15 +5274,12 @@ function renderMenu(categoryId) {
                 htmlByCourse[c] += itemHtml;
             }); 
 
-            let finalHtml = '';
+          let finalHtml = '';
             [0, 1, 2, 3].forEach(c => { 
                 if(htmlByCourse[c] !== '') {
-                    // Vérifie si la catégorie est repliée dans la mémoire
-                    let collapsedClass = window.collapsedCourses[c] ? 'collapsed' : '';
-                    
                     finalHtml += `
-                    <div class="course-card ${collapsedClass}">
-                        <div class="course-card-header" onclick="window.toggleCoursePanel(${c}, event)">
+                    <div class="course-card">
+                        <div class="course-card-header" onclick="event.stopPropagation(); this.classList.toggle('collapsed'); this.nextElementSibling.classList.toggle('collapsed');">
                             <span class="course-title">${courseNames[c]}</span>
                             <span class="toggle-icon">▼</span>
                         </div>
@@ -5207,10 +5308,10 @@ function renderMenu(categoryId) {
                 btnSend.style.display = 'none';
             }
 
-            updateOrderMiniBar();
+           updateOrderMiniBar();
             updateSequenceServicePanel();
-        }
-
+        } // <--- C'est cette accolade qui manquait pour fermer la fonction renderTicket() !
+                            
         // 🔥 LOGIQUE ANTI-RUSH : VÉRIFICATION AVANT ENVOI 🔥
         function processOrderDispatch() {
             if (isKitchenInRush && rushV3Settings.timeShift && rushV3Settings.timeShift.active) {
@@ -5223,133 +5324,22 @@ function renderMenu(categoryId) {
                 }
             }
             sendOrderToKDS(false);
-        }// Mémoire globale pour retenir l'état d'ouverture/fermeture des blocs
-        window.collapsedCourses = window.collapsedCourses || {};
-        
-        window.toggleCoursePanel = function(c, event) {
-            if(event) event.stopPropagation();
-            window.collapsedCourses[c] = !window.collapsedCourses[c];
-            renderTicket(); // On redessine le ticket immédiatement
-        };
+        }
 
-        function renderTicket() {
-            let list = document.getElementById('ticket-list');
-            let total = 0; let totalHT = 0; let tvaTotals = { '5.5': 0, '10': 0, '20': 0, '0': 0 };
-            let htmlByCourse = { 0: '', 1: '', 2: '', 3: '' };
-            let courseNames = { 0: '🍸 BOISSONS', 1: '🥗 ENTRÉES', 2: '🔥 PLATS', 3: '🍰 DESSERTS' };
-
-            currentTicket.forEach((i, idx) => {
-                if(!i) return; let q = i.qty || 1; 
-                let ligneTTC = (parseFloat(i.p)||0) * q;
-                total += ligneTTC;
-
-                let rate = parseFloat(i.tva) || 10;
-                let ligneHT = ligneTTC / (1 + (rate / 100));
-                let ligneTVA = ligneTTC - ligneHT;
-                totalHT += ligneHT;
-                if(tvaTotals[rate] !== undefined) tvaTotals[rate] += ligneTVA; else tvaTotals[rate] = ligneTVA;
-
-                let cleanName = i.n.replace(/\n/g, ' + ');
-                let c = i.course !== undefined ? i.course : 2;
-                let seq = getItemSequence(i);
-                let seqState = String(i.sequenceStatus || '').toUpperCase();
-                let seqPill = seq > 0
-                    ? `<span class="sequence-pill ${seqState === 'PRODUCTION' ? 'production' : (i.done ? 'ready' : '')}">S${seq}</span>`
-                    : '';
-                let statusHtml = ''; let opacityStyle = "";
-                
-                if (!i.isSent) statusHtml = `<button class="btn-mini" style="border-color: var(--text-main); color: var(--text-main); padding: 4px 8px; font-size: 0.6rem;">NOUVEAU</button>`;
-                else if (i.served) { statusHtml = `<button class="btn-mini" style="border-color: var(--text-muted); color: var(--text-muted); padding: 4px 8px; font-size: 0.6rem;">SERVI</button>`; opacityStyle = "opacity: 0.4;"; }
-                else if (i.done) statusHtml = `<button class="btn-mini" style="background: #10b981; color: #000; border-color: #10b981; padding: 4px 8px; font-size: 0.7rem; font-weight: 800; cursor: pointer; box-shadow: 0 0 10px rgba(16,185,129,0.5);" onclick="markAsServed(${idx}); event.stopPropagation();">✋ RÉCUPÉRER</button>`;
-                else statusHtml = `<button class="btn-mini" style="border-color: var(--gold); color: var(--gold); padding: 4px 8px; font-size: 0.6rem;">ATTENTE</button>`;
-                
-                let seatBadge = (i.seat && i.seat > 0) ? `<span style="color:var(--text-muted); font-size:0.75rem; margin-right:8px; font-weight:500;">👤 ${i.seat}</span>` : `<span style="color:var(--text-muted); font-size:0.7rem; margin-right:8px; font-weight:400;">🍽️ CTR</span>`;
-                let priceHtml = i.isOffered ? `<span style="margin-right:10px; font-weight:500; color:var(--gold); font-size: 0.8rem; letter-spacing: 1px;">🎁 OFFERT</span>` : `<span style="margin-right:10px; font-weight:500; font-size: 0.95rem; font-family: 'Playfair Display', serif;">${formatMoneyPad(ligneTTC)}</span>`;
-                let obsDisplay = i.obs ? `<span style="font-size:0.7rem; color:var(--gold); margin-left: 5px; font-weight: 500;">⚠️ ${i.obs}</span>` : `<span style="font-size:0.65rem; color:var(--border-strong); font-weight: 300; margin-left: 5px;">+ Obs</span>`;
-
-                let errorBtnHtml = i.isSent && !i.served ? `<button class="item-error-btn" onclick="openErrorModal(${idx}); event.stopPropagation();">REFAIRE</button>` : `<button class="item-delete-btn" onclick="removeTicketItem(${idx}); event.stopPropagation();">✕</button>`;
-
-                let itemHtml = `
-                <div class="ticket-item-row" style="${opacityStyle}">
-                    <div style="flex:1; cursor:pointer;" onclick="openEditItem(${idx})">
-                        <div style="font-weight:400; font-size:0.95rem; color: var(--text-main);">${seatBadge}${q>1?`<span style="color:var(--gold); font-weight:600;">${q}x</span> `:""}${cleanName||'?'}${seqPill}</div>
-                        <div style="display:flex; align-items:center; gap:8px; margin-top:6px;">${statusHtml}${obsDisplay}</div>
-                        ${
-                            (Array.isArray(i.modifiers?.add) && i.modifiers.add.length) ||
-                            (Array.isArray(i.modifiers?.remove) && i.modifiers.remove.length)
-                            ? `<div class="ticket-modifiers">
-                                ${(i.modifiers?.add || []).map(m => `<span class="ticket-modifier-add">➕ ${m}</span>`).join('')}
-                                ${(i.modifiers?.remove || []).map(m => `<span class="ticket-modifier-remove">➖ ${m}</span>`).join('')}
-                               </div>`
-                            : ''
-                        }
-                    </div>
-                    <div style="display: flex; align-items: center; gap: 7px;">
-                        ${priceHtml}
-                        <button class="item-modifier-btn"
-                                onclick="openItemModifierModal(${idx});event.stopPropagation();"
-                                title="Ajouter ou enlever un élément">
-                            ±
-                        </button>
-                        ${errorBtnHtml}
-                    </div>
-                </div>`;
-                htmlByCourse[c] += itemHtml;
-            }); 
-
-            let finalHtml = '';
-            [0, 1, 2, 3].forEach(c => { 
-                if(htmlByCourse[c] !== '') {
-                    // Vérifie si la catégorie est repliée dans la mémoire
-                    let collapsedClass = window.collapsedCourses[c] ? 'collapsed' : '';
-                    
-                    finalHtml += `
-                    <div class="course-card ${collapsedClass}">
-                        <div class="course-card-header" onclick="window.toggleCoursePanel(${c}, event)">
-                            <span class="course-title">${courseNames[c]}</span>
-                            <span class="toggle-icon">▼</span>
-                        </div>
-                        <div class="course-body">
-                            ${htmlByCourse[c]}
-                        </div>
-                    </div>`; 
+        function acceptTimeShiftServer() {
+            document.getElementById('ts-offer-modal').classList.remove('open');
+            let multiplier = 1 - (rushV3Settings.timeShift.discount / 100);
+            
+            currentTicket.forEach(i => {
+                if (!i.isSent) {
+                    i.p = i.p * multiplier; 
+                    i.timeShifted = true; 
+                    i.obs = (i.obs ? i.obs + " | " : "") + `⏱️ DÉCALÉ (+${rushV3Settings.timeShift.delay}m)`;
                 }
             });
             
-            if(finalHtml === '') finalHtml = `<div style="text-align:center; color:var(--text-muted); font-weight: 300; padding:40px 0; border: 1px dashed var(--border-strong); border-radius: 4px;">En attente de saisie...</div>`;
-            
-            list.innerHTML = finalHtml;
-            document.getElementById('ticket-total-price').innerText = `${formatMoneyPad(total)}`;
-            currentTableTotal = total;
-
-            let tvaStr = Object.entries(tvaTotals).filter(([k,v]) => v>0).map(([k,v]) => `TVA ${k}%: ${formatMoneyPad(v)}`).join(' | ');
-            if(!tvaStr) tvaStr = "Aucune TVA";
-            document.getElementById('ticket-tva').innerText = tvaStr + ` (HT: ${formatMoneyPad(totalHT)})`;
-
-            let hasUnsent = currentTicket.some(i => !i.isSent);
-            let btnSend = document.getElementById('btn-send-kds');
-            if (hasUnsent) {
-                btnSend.style.display = 'block';
-            } else {
-                btnSend.style.display = 'none';
-            }
-
-            updateOrderMiniBar();
-            updateSequenceServicePanel();
-        }
-
-        // 🔥 LOGIQUE ANTI-RUSH : VÉRIFICATION AVANT ENVOI 🔥
-        function processOrderDispatch() {
-            if (isKitchenInRush && rushV3Settings.timeShift && rushV3Settings.timeShift.active) {
-                let hasHotDishes = currentTicket.some(i => !i.isSent && i.dest === 'cuisine');
-                if (hasHotDishes) {
-                    document.getElementById('server-ts-discount').innerText = `-${rushV3Settings.timeShift.discount}%`;
-                    document.getElementById('server-ts-delay').innerText = `${rushV3Settings.timeShift.delay} min`;
-                    document.getElementById('ts-offer-modal').classList.add('open');
-                    return; 
-                }
-            }
-            sendOrderToKDS(false);
+            sendOrderToKDS(true);
+            showToast(`✅ Le client a accepté l'offre ! Envoi différé.`);
         }
 
         function refuseTimeShiftServer() {
