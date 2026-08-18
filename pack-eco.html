@@ -1590,6 +1590,9 @@ button, .btn-mini, .dock-btn, .folder-btn, .room-tab, .btn-item {
 
         <div id="folder-outils" class="quick-folder-panel">
             <div class="quick-folder-title">OUTILS COMPLETS iCHEF</div>
+            <div class="quick-folder-section-title">FISCALITÉ & CONFORMITÉ</div>
+            <button onclick="openFiscalComplianceModal();closeQuickFolders()">🧾 Fiscalité & conformité</button>
+            <button onclick="openControlMode();closeQuickFolders()">🛡️ Mode contrôle FR / CH</button>
             <div class="quick-folder-section-title">SERVICE</div>
             <button onclick="toggleKioskMode();closeQuickFolders()">⛶ Kiosque / plein écran</button>
             <button onclick="openHistoryDrawer();closeQuickFolders()">📜 Historique</button>
@@ -1665,6 +1668,47 @@ button, .btn-mini, .dock-btn, .folder-btn, .room-tab, .btn-item {
         </div>
     </div>
 
+
+    
+    <div id="control-mode-modal" class="modal">
+      <div style="background:var(--panel);padding:24px;border-radius:8px;width:900px;max-width:95%;max-height:92vh;overflow:auto;border:1px solid var(--gold);">
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;border-bottom:1px solid var(--border);padding-bottom:12px;margin-bottom:16px;">
+          <div>
+            <h2 style="color:var(--gold);margin:0;font-size:1.35rem;">🛡️ MODE CONTRÔLE</h2>
+            <div id="control-profile-label" style="color:var(--text-muted);font-size:.75rem;margin-top:5px;">Profil fiscal</div>
+          </div>
+          <button class="btn-mini" onclick="closeControlMode()">✕ FERMER</button>
+        </div>
+
+        <div style="padding:11px 12px;border:1px solid var(--border);background:rgba(197,160,89,.04);font-size:.76rem;line-height:1.45;margin-bottom:14px;">
+          🔒 <strong>Lecture seule.</strong> Ce mode rassemble les informations disponibles dans iCHEF pour aider l’établissement lors d’un contrôle. Il ne permet ni modification ni suppression des écritures.
+        </div>
+
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:14px;">
+          <label style="font-size:.72rem;color:var(--text-muted)">DU
+            <input id="control-date-from" type="date" class="att-input">
+          </label>
+          <label style="font-size:.72rem;color:var(--text-muted)">AU
+            <input id="control-date-to" type="date" class="att-input">
+          </label>
+        </div>
+
+        <div id="control-summary" style="border:1px solid var(--border);border-radius:6px;padding:14px;font-size:.78rem;line-height:1.5;">
+          Chargement…
+        </div>
+
+        <div style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;margin-top:14px;">
+          <button class="pay-btn" style="width:100%;margin:0;" onclick="openControlProfileDocument()">📄 DOCUMENT PROFIL</button>
+          <button class="pay-btn" style="width:100%;margin:0;" onclick="refreshControlMode()">↻ ACTUALISER</button>
+          <button class="pay-btn" style="width:100%;margin:0;" onclick="exportControlSnapshot()">⬇ EXPORT JSON</button>
+          <button class="pay-btn" style="width:100%;margin:0;" onclick="printControlSummary()">🖨️ IMPRIMER / PDF</button>
+        </div>
+
+        <div style="margin-top:14px;color:var(--text-muted);font-size:.68rem;line-height:1.45;">
+          Le contenu présenté dépend des données réellement enregistrées par le serveur iCHEF. Ce module ne fabrique pas de justificatifs absents et ne transforme pas un profil « configuré » en certification.
+        </div>
+      </div>
+    </div>
 
     <div id="fiscal-compliance-modal" class="modal">
       <div style="background:var(--panel);padding:24px;border-radius:8px;width:720px;max-width:94%;max-height:88vh;overflow:auto;border:1px solid var(--gold);">
@@ -8567,5 +8611,155 @@ header .header-left > div:first-of-type{
   window.addEventListener('resize', function(){ if(!isMobile()) dragging=false; });
 })();
 </script>
+
+<style id="ichef-control-mode-final">
+#control-mode-modal .att-input{
+    display:block;width:100%;box-sizing:border-box;margin-top:5px;padding:10px;
+    background:#080808;color:#fff;border:1px solid var(--border-strong);border-radius:5px;font:inherit;
+}
+.control-kv{display:flex;justify-content:space-between;gap:14px;padding:7px 0;border-bottom:1px solid rgba(255,255,255,.06)}
+.control-kv:last-child{border-bottom:0}
+.control-kv span{color:var(--text-muted)}
+.control-kv strong{text-align:right;color:#fff}
+@media(max-width:650px){
+  #control-mode-modal>div{padding:15px!important}
+  #control-mode-modal div[style*="grid-template-columns:1fr 1fr"],
+  #control-mode-modal div[style*="grid-template-columns:repeat(2"]{grid-template-columns:1fr!important}
+}
+</style>
+
+<script id="ichef-control-mode-final-script">
+(function(){
+  "use strict";
+  let controlSnapshot = null;
+
+  function controlManagerAllowed(){
+    return !!currentUser && currentUser.role === 'Manager';
+  }
+
+  function controlIsoDate(d){
+    const x = new Date(d);
+    return Number.isNaN(x.getTime()) ? null : x.toISOString();
+  }
+
+  function controlMoneySymbol(){
+    const p = normalizedFiscalProfile();
+    return p.country === 'CH' ? 'CHF' : '€';
+  }
+
+  window.openControlMode = async function(){
+    if(!controlManagerAllowed()){
+      try{ if(typeof auditEvent === 'function') await auditEvent('CONTROL_MODE_DENIED',{reason:'MANAGER_REQUIRED'},false); }catch(e){}
+      return alert('⛔ Accès Manager requis');
+    }
+    const p = normalizedFiscalProfile();
+    if(!p.country) return alert('ℹ️ Configurez d’abord le profil fiscal France ou Suisse.');
+    const modal = document.getElementById('control-mode-modal');
+    if(!modal) return;
+    modal.classList.add('open');
+
+    const now = new Date();
+    const first = new Date(now.getFullYear(),0,1);
+    const from = document.getElementById('control-date-from');
+    const to = document.getElementById('control-date-to');
+    if(from && !from.value) from.value = first.toISOString().slice(0,10);
+    if(to && !to.value) to.value = now.toISOString().slice(0,10);
+
+    await refreshControlMode();
+    try{ if(typeof auditEvent === 'function') await auditEvent('CONTROL_MODE_OPENED',{country:p.country},false); }catch(e){}
+  };
+
+  window.closeControlMode = function(){
+    document.getElementById('control-mode-modal')?.classList.remove('open');
+  };
+
+  window.refreshControlMode = async function(){
+    if(!controlManagerAllowed()) return alert('⛔ Accès Manager requis');
+    const box = document.getElementById('control-summary');
+    const label = document.getElementById('control-profile-label');
+    const p = normalizedFiscalProfile();
+    if(label) label.textContent = p.country === 'CH' ? '🇨🇭 SUISSE · CHF · dossier technique' : '🇫🇷 FRANCE · EUR € · attestation / données caisse';
+    if(box) box.innerHTML = 'Chargement sécurisé des données serveur…';
+
+    try{
+      const state = await API.getState();
+      const orders = state?.activeOrders || {};
+      const settings = orders.SETTINGS_MASTER?.data || window.systemSettings || {};
+      const keys = Object.keys(orders);
+      const orderKeys = keys.filter(k => /^(order_|W|T|WEB_)/.test(k));
+      const fiscalKeys = keys.filter(k => /fiscal|ticket|closure|cloture|archive|audit|payment|caisse/i.test(k));
+
+      const from = document.getElementById('control-date-from')?.value || '';
+      const to = document.getElementById('control-date-to')?.value || '';
+
+      controlSnapshot = {
+        generatedAt:new Date().toISOString(),
+        tenantID:typeof appTenantID !== 'undefined' ? appTenantID : null,
+        user:currentUser?.name || null,
+        profile:{
+          country:p.country,
+          currency:p.currency,
+          legalStatus:settings?.compliance?.legalStatus || 'NON_RENSEIGNE',
+          profileVersion:settings?.compliance?.profileVersion || null
+        },
+        period:{from,to},
+        serverInventory:{
+          totalKeys:keys.length,
+          orderLikeRecords:orderKeys.length,
+          fiscalRelatedRecords:fiscalKeys.length,
+          fiscalRelatedKeys:fiscalKeys.slice(0,100)
+        }
+      };
+
+      if(box){
+        box.innerHTML = `
+          <div class="control-kv"><span>Établissement / tenant</span><strong>${controlSnapshot.tenantID || 'Non renseigné'}</strong></div>
+          <div class="control-kv"><span>Profil actif</span><strong>${p.country === 'CH' ? '🇨🇭 SUISSE · CHF' : '🇫🇷 FRANCE · EUR €'}</strong></div>
+          <div class="control-kv"><span>Statut déclaré</span><strong>${controlSnapshot.profile.legalStatus}</strong></div>
+          <div class="control-kv"><span>Période demandée</span><strong>${from || '—'} → ${to || '—'}</strong></div>
+          <div class="control-kv"><span>Enregistrements commande/table détectés</span><strong>${orderKeys.length}</strong></div>
+          <div class="control-kv"><span>Enregistrements à libellé fiscal/caisse détectés</span><strong>${fiscalKeys.length}</strong></div>
+          <div style="margin-top:10px;color:var(--text-muted);font-size:.7rem">
+            Inventaire de contrôle uniquement : les éléments ci-dessus indiquent ce que le serveur expose actuellement. Les exports fiscaux réglementaires doivent provenir des écritures réellement enregistrées par le moteur fiscal.
+          </div>`;
+      }
+    }catch(err){
+      console.error('[iCHEF] Mode contrôle',err);
+      if(box) box.innerHTML = '<strong style="color:var(--alert)">Impossible de lire les données serveur.</strong><br>Le mode contrôle ne génère aucune donnée de remplacement.';
+    }
+  };
+
+  window.openControlProfileDocument = function(){
+    const p = normalizedFiscalProfile();
+    if(p.country === 'CH'){
+      if(typeof openSwissCompliance === 'function') return openSwissCompliance();
+    }else{
+      if(typeof openFranceAttestation === 'function') return openFranceAttestation();
+    }
+    alert('Document de profil indisponible.');
+  };
+
+  window.exportControlSnapshot = async function(){
+    if(!controlManagerAllowed()) return alert('⛔ Accès Manager requis');
+    if(!controlSnapshot) await refreshControlMode();
+    if(!controlSnapshot) return;
+    const blob = new Blob([JSON.stringify(controlSnapshot,null,2)],{type:'application/json'});
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `iCHEF_controle_${controlSnapshot.profile.country}_${new Date().toISOString().slice(0,10)}.json`;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(()=>URL.revokeObjectURL(a.href),1000);
+    try{ if(typeof auditEvent === 'function') await auditEvent('CONTROL_SNAPSHOT_EXPORTED',{country:controlSnapshot.profile.country,period:controlSnapshot.period},false); }catch(e){}
+  };
+
+  window.printControlSummary = async function(){
+    if(!controlManagerAllowed()) return alert('⛔ Accès Manager requis');
+    if(!controlSnapshot) await refreshControlMode();
+    try{ if(typeof auditEvent === 'function') await auditEvent('CONTROL_SUMMARY_PRINTED',{country:controlSnapshot?.profile?.country || null},false); }catch(e){}
+    window.print();
+  };
+})();
+</script>
+
 </body>
 </html>
