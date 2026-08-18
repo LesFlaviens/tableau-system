@@ -8075,5 +8075,81 @@ header .header-left > div:first-of-type{
 })();
 </script>
 
+
+<style id="ichef-mobile-snap-scroll-style">
+@media (max-width: 600px) {
+  html, body { overscroll-behavior-x: none; }
+  #order-drawer .drawer-body {
+    scroll-behavior: smooth;
+  }
+}
+</style>
+<script id="ichef-mobile-snap-scroll-js">
+(function(){
+  const MAX_W = 600;
+  const THRESHOLD = 52;
+  const VELOCITY_THRESHOLD = 0.35;
+  let startX = 0, startY = 0, lastX = 0, lastT = 0, vx = 0, dragging = false;
+
+  function isMobile(){ return window.innerWidth <= MAX_W; }
+  function getDrawer(){ return document.getElementById('order-drawer'); }
+  function getState(){
+    const d = getDrawer();
+    if(!d || !d.classList.contains('open')) return 0; // salle
+    return d.classList.contains('order-ticket-focus') ? 2 : 1; // commande / ticket
+  }
+  function go(state){
+    const d = getDrawer();
+    if(state <= 0){
+      if(d){ d.classList.remove('order-ticket-focus'); d.classList.remove('open'); }
+      try { if(typeof closeOrder === 'function') closeOrder(); } catch(e){}
+      return;
+    }
+    if(!d) return;
+    d.classList.add('open');
+    if(state === 2){
+      d.classList.add('order-ticket-focus');
+    } else {
+      d.classList.remove('order-ticket-focus');
+    }
+  }
+  function targetFromElement(el){
+    if(!el) return null;
+    if(el.closest('input, textarea, select, button, .ticket-resize-handle, .mobile-plan-overlay, .floor-plan-wrapper')) return null;
+    return el;
+  }
+  document.addEventListener('touchstart', function(e){
+    if(!isMobile() || e.touches.length!==1) return;
+    if(!targetFromElement(e.target)) return;
+    const t=e.touches[0]; startX=lastX=t.clientX; startY=t.clientY; lastT=performance.now(); vx=0; dragging=true;
+  }, {passive:true});
+
+  document.addEventListener('touchmove', function(e){
+    if(!dragging || !isMobile() || e.touches.length!==1) return;
+    const t=e.touches[0];
+    const dx=t.clientX-startX, dy=t.clientY-startY;
+    if(Math.abs(dy) > Math.abs(dx)*1.15){ dragging=false; return; } // laisser le scroll vertical
+    const now=performance.now(), dt=Math.max(1, now-lastT);
+    vx=(t.clientX-lastX)/dt; lastX=t.clientX; lastT=now;
+    // empêche le rebond horizontal du navigateur, sans bloquer le vertical
+    if(Math.abs(dx) > 10 && e.cancelable) e.preventDefault();
+  }, {passive:false});
+
+  document.addEventListener('touchend', function(e){
+    if(!dragging || !isMobile()) { dragging=false; return; }
+    dragging=false;
+    const endX=(e.changedTouches&&e.changedTouches[0])?e.changedTouches[0].clientX:lastX;
+    const dx=endX-startX;
+    if(Math.abs(dx) < THRESHOLD && Math.abs(vx) < VELOCITY_THRESHOLD) return;
+    let s=getState();
+    if(dx < 0 || vx < -VELOCITY_THRESHOLD) s=Math.min(2, s+1); // gauche => avance
+    else if(dx > 0 || vx > VELOCITY_THRESHOLD) s=Math.max(0, s-1); // droite => retour
+    go(s);
+  }, {passive:true});
+
+  // sécurité anti-débordement aux extrêmes
+  window.addEventListener('resize', function(){ if(!isMobile()) dragging=false; });
+})();
+</script>
 </body>
 </html>
