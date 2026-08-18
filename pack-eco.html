@@ -1479,7 +1479,7 @@ header{
 <div id="sequence-service-panel"></div>
 <div id="ticket-list" class="ticket-items-container"></div>
                 
-                <div style="margin-top: auto;">
+                <div id="ichef-ticket-bottom-fixed" style="margin-top: auto;">
                     <div id="ticket-total-price" class="ticket-total">0.00€</div>
                     <div id="ticket-tva" style="text-align: right; color: var(--text-muted); font-size: 0.75rem; margin-top: 5px; margin-bottom: 15px; letter-spacing: 1px;">TVA : 0.00€</div>
 
@@ -6434,6 +6434,324 @@ if(document.readyState==="loading")document.addEventListener("DOMContentLoaded",
 const mo=new MutationObserver(()=>{if(!document.getElementById("ichef-v3-rail"))install()});
 mo.observe(document.documentElement,{childList:true,subtree:true});
 window.addEventListener("resize",()=>setTimeout(install,20));
+})();
+</script>
+
+
+<style id="ichef-horizontal-ticket-resizer-style">
+/* =========================================================
+   COLONNE DROITE :
+   barre JAUNE HORIZONTALE au-dessus du prix
+   ========================================================= */
+
+/* Désactive définitivement les anciennes barres jaunes verticales */
+#ichef-v3-rail,
+#ichef-scroll-rail{
+    display:none !important;
+    visibility:hidden !important;
+    pointer-events:none !important;
+}
+
+/* Zone SERVICE MENU + PLATS */
+#ichef-ticket-scroll-area{
+    display:block !important;
+    flex:0 0 var(--ichef-ticket-zone-height, 48%) !important;
+    min-height:120px !important;
+    max-height:72% !important;
+    overflow-y:auto !important;
+    overflow-x:hidden !important;
+    padding-right:5px !important;
+    touch-action:pan-y !important;
+    -webkit-overflow-scrolling:touch !important;
+    scrollbar-width:thin !important;
+    scrollbar-color:#555 transparent !important;
+}
+
+#ichef-ticket-scroll-area::-webkit-scrollbar{
+    width:6px !important;
+    display:block !important;
+}
+#ichef-ticket-scroll-area::-webkit-scrollbar-thumb{
+    background:#555 !important;
+    border-radius:10px !important;
+}
+#ichef-ticket-scroll-area::-webkit-scrollbar-track{
+    background:transparent !important;
+}
+
+/* Le contenu interne ne crée pas un deuxième scroll */
+#ichef-ticket-scroll-area #ticket-list{
+    display:block !important;
+    flex:none !important;
+    height:auto !important;
+    min-height:0 !important;
+    overflow:visible !important;
+    padding-right:0 !important;
+}
+
+/* Barre horizontale demandée */
+#ichef-ticket-horizontal-resizer{
+    flex:0 0 24px !important;
+    width:100% !important;
+    height:24px !important;
+    min-height:24px !important;
+    display:flex !important;
+    align-items:center !important;
+    justify-content:center !important;
+    box-sizing:border-box !important;
+    cursor:ns-resize !important;
+    touch-action:none !important;
+    user-select:none !important;
+    -webkit-user-select:none !important;
+    position:relative !important;
+    z-index:2147482000 !important;
+    background:transparent !important;
+    margin:3px 0 5px !important;
+}
+
+#ichef-ticket-horizontal-resizer::before{
+    content:"";
+    width:100% !important;
+    height:8px !important;
+    background:#C5A059 !important;
+    border-radius:999px !important;
+    box-shadow:0 0 0 1px rgba(197,160,89,.35),
+               0 2px 8px rgba(0,0,0,.5) !important;
+}
+
+#ichef-ticket-horizontal-resizer::after{
+    content:"↕" !important;
+    position:absolute !important;
+    left:50% !important;
+    top:50% !important;
+    transform:translate(-50%,-50%) !important;
+    width:42px !important;
+    height:24px !important;
+    display:flex !important;
+    align-items:center !important;
+    justify-content:center !important;
+    border:2px solid #C5A059 !important;
+    border-radius:999px !important;
+    background:#090909 !important;
+    color:#C5A059 !important;
+    font-size:18px !important;
+    font-weight:900 !important;
+}
+
+/* Prix + boutons restent fixes sous la barre */
+#ichef-ticket-bottom-fixed{
+    flex:0 0 auto !important;
+    margin-top:0 !important;
+    min-height:0 !important;
+    background:var(--panel) !important;
+}
+
+.ticket-view{
+    overflow:hidden !important;
+}
+</style>
+
+<script id="ichef-horizontal-ticket-resizer-engine">
+(function(){
+"use strict";
+
+const STORAGE_KEY = "ichef_ticket_horizontal_height_pct";
+
+function installHorizontalResizer(){
+    const ticketView = document.querySelector("#order-drawer .ticket-view");
+    const bottom = document.getElementById("ichef-ticket-bottom-fixed");
+    if(!ticketView || !bottom) return;
+
+    /* Retire physiquement les anciennes barres verticales */
+    document.getElementById("ichef-v3-rail")?.remove();
+    document.getElementById("ichef-scroll-rail")?.remove();
+
+    let handle = document.getElementById("ichef-ticket-horizontal-resizer");
+    if(!handle){
+        handle = document.createElement("div");
+        handle.id = "ichef-ticket-horizontal-resizer";
+        handle.setAttribute("role","separator");
+        handle.setAttribute("aria-orientation","horizontal");
+        handle.setAttribute("aria-label","Agrandir ou réduire la zone des commandes");
+        ticketView.insertBefore(handle, bottom);
+    }
+
+    function getScrollArea(){
+        return document.getElementById("ichef-ticket-scroll-area");
+    }
+
+    function setPct(pct){
+        pct = Math.max(20, Math.min(72, pct));
+        ticketView.style.setProperty("--ichef-ticket-zone-height", pct + "%", "important");
+        try{ localStorage.setItem(STORAGE_KEY, pct.toFixed(1)); }catch(_){}
+    }
+
+    try{
+        const saved = parseFloat(localStorage.getItem(STORAGE_KEY));
+        if(Number.isFinite(saved)) setPct(saved);
+        else setPct(48);
+    }catch(_){
+        setPct(48);
+    }
+
+    if(handle.dataset.bound === "1") return;
+    handle.dataset.bound = "1";
+
+    let dragging = false;
+    let pointerId = null;
+
+    function move(clientY){
+        const rect = ticketView.getBoundingClientRect();
+        if(!rect.height) return;
+
+        /* Position verticale de la barre dans la colonne droite.
+           Plus on descend la barre, plus la zone des blocs est grande. */
+        const y = clientY - rect.top;
+        const pct = (y / rect.height) * 100;
+        setPct(pct);
+    }
+
+    handle.addEventListener("pointerdown", function(e){
+        dragging = true;
+        pointerId = e.pointerId;
+        try{ handle.setPointerCapture(pointerId); }catch(_){}
+        e.preventDefault();
+        e.stopPropagation();
+    }, {passive:false});
+
+    handle.addEventListener("pointermove", function(e){
+        if(!dragging || e.pointerId !== pointerId) return;
+        move(e.clientY);
+        e.preventDefault();
+        e.stopPropagation();
+    }, {passive:false});
+
+    function stop(){
+        dragging = false;
+        pointerId = null;
+    }
+
+    handle.addEventListener("pointerup", stop);
+    handle.addEventListener("pointercancel", stop);
+
+    /* Double clic = position équilibrée */
+    handle.addEventListener("dblclick", function(){
+        setPct(48);
+    });
+}
+
+function ensure(){
+    /* Le wrapper scroll est créé par le moteur précédent.
+       On attend qu'il existe puis on installe la barre. */
+    installHorizontalResizer();
+}
+
+if(document.readyState === "loading"){
+    document.addEventListener("DOMContentLoaded", ()=>setTimeout(ensure,100));
+}else{
+    setTimeout(ensure,100);
+}
+
+const observer = new MutationObserver(()=>{
+    if(!document.getElementById("ichef-ticket-horizontal-resizer")){
+        ensure();
+    }
+    document.getElementById("ichef-v3-rail")?.remove();
+    document.getElementById("ichef-scroll-rail")?.remove();
+});
+observer.observe(document.documentElement,{childList:true,subtree:true});
+
+window.addEventListener("resize", ()=>setTimeout(ensure,30));
+})();
+</script>
+
+
+<style id="ichef-close-button-fix-style">
+#order-drawer button[onclick*="closeOrder"],
+#order-drawer .close-order-btn,
+#order-drawer #close-order-btn{
+    pointer-events:auto !important;
+    touch-action:manipulation !important;
+    position:relative !important;
+    z-index:2147483001 !important;
+}
+</style>
+
+<script id="ichef-close-button-fix-engine">
+(function(){
+"use strict";
+
+function hardCloseOrder(){
+    try{
+        if(typeof window.closeOrder === "function"){
+            window.closeOrder();
+            return;
+        }
+    }catch(_){}
+
+    const drawer=document.getElementById("order-drawer");
+    if(drawer){
+        drawer.classList.remove("open");
+        drawer.classList.remove("order-ticket-focus");
+        drawer.classList.remove("ichef-mobile-ticket-open");
+        drawer.style.display="none";
+    }
+
+    try{
+        if(typeof currentTableId !== "undefined") currentTableId=null;
+        if(typeof currentLoyaltyPhone !== "undefined") currentLoyaltyPhone=null;
+    }catch(_){}
+
+    try{ window.updateOrderMiniBar?.(); }catch(_){}
+}
+
+function bindClose(){
+    const drawer=document.getElementById("order-drawer");
+    if(!drawer) return;
+
+    let btn =
+        drawer.querySelector('button[onclick*="closeOrder"]') ||
+        drawer.querySelector('.close-order-btn') ||
+        drawer.querySelector('#close-order-btn');
+
+    if(!btn) return;
+
+    btn.style.setProperty("pointer-events","auto","important");
+    btn.style.setProperty("touch-action","manipulation","important");
+    btn.style.setProperty("z-index","2147483001","important");
+
+    if(btn.dataset.closeFixed==="1") return;
+    btn.dataset.closeFixed="1";
+
+    // Neutralise les conflits avec d'anciens handlers qui bloquent le clic.
+    btn.addEventListener("click", function(e){
+        e.preventDefault();
+        e.stopPropagation();
+        hardCloseOrder();
+    }, true);
+
+    btn.addEventListener("touchend", function(e){
+        e.preventDefault();
+        e.stopPropagation();
+        hardCloseOrder();
+    }, {passive:false, capture:true});
+
+    btn.addEventListener("pointerup", function(e){
+        if(e.pointerType==="mouse") return; // le click gère déjà la souris
+        e.preventDefault();
+        e.stopPropagation();
+        hardCloseOrder();
+    }, true);
+}
+
+if(document.readyState==="loading"){
+    document.addEventListener("DOMContentLoaded",()=>setTimeout(bindClose,50));
+}else{
+    setTimeout(bindClose,50);
+}
+
+const observer=new MutationObserver(bindClose);
+observer.observe(document.documentElement,{childList:true,subtree:true});
 })();
 </script>
 
