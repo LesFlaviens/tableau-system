@@ -1677,7 +1677,7 @@ button, .btn-mini, .dock-btn, .folder-btn, .room-tab, .btn-item {
             <h2 style="color:var(--gold);margin:0;font-size:1.35rem;">🛡️ MODE CONTRÔLE</h2>
             <div id="control-profile-label" style="color:var(--text-muted);font-size:.75rem;margin-top:5px;">Profil fiscal</div>
           </div>
-          <button id="control-close-btn" type="button" class="btn-mini" onclick="closeControlMode(); return false;">✕ FERMER</button>
+          <button id="control-close-btn" type="button" class="btn-mini" onclick="return ichefHardCloseControl(event);">✕ FERMER</button>
         </div>
 
         <div style="padding:11px 12px;border:1px solid var(--border);background:rgba(197,160,89,.04);font-size:.76rem;line-height:1.45;margin-bottom:14px;">
@@ -8656,8 +8656,8 @@ header .header-left > div:first-of-type{
     if(!p.country) return alert('ℹ️ Configurez d’abord le profil fiscal France ou Suisse.');
     const modal = document.getElementById('control-mode-modal');
     if(!modal) return;
-    modal.style.removeProperty('display');
-    modal.removeAttribute('aria-hidden');
+    if(typeof window.ichefHardOpenControlReset === 'function') window.ichefHardOpenControlReset();
+    else { modal.hidden=false; modal.style.removeProperty('display'); modal.removeAttribute('aria-hidden'); }
     modal.classList.add('open');
 
     const now = new Date();
@@ -8818,6 +8818,129 @@ header .header-left > div:first-of-type{
     try{ if(typeof auditEvent === 'function') await auditEvent('CONTROL_SUMMARY_PRINTED',{country:controlSnapshot?.profile?.country || null},false); }catch(e){}
     window.print();
   };
+})();
+</script>
+
+
+<script id="ichef-hard-close-control-v3">
+window.ichefHardCloseControl = function(ev){
+  try{
+    if(ev){
+      ev.preventDefault();
+      ev.stopPropagation();
+      if(ev.stopImmediatePropagation) ev.stopImmediatePropagation();
+    }
+    var m = document.getElementById('control-mode-modal');
+    if(!m) return false;
+    m.classList.remove('open');
+    m.hidden = true;
+    m.setAttribute('aria-hidden','true');
+    m.style.cssText += ';display:none !important;visibility:hidden !important;opacity:0 !important;pointer-events:none !important;';
+  }catch(e){ console.error('[iCHEF hard close]',e); }
+  return false;
+};
+
+window.ichefHardOpenControlReset = function(){
+  var m=document.getElementById('control-mode-modal');
+  if(!m) return;
+  m.hidden=false;
+  m.removeAttribute('aria-hidden');
+  m.style.removeProperty('display');
+  m.style.removeProperty('visibility');
+  m.style.removeProperty('opacity');
+  m.style.removeProperty('pointer-events');
+};
+
+// Capture at document level BEFORE normal bubbling handlers.
+document.addEventListener('pointerdown', function(e){
+  var b=e.target && e.target.closest ? e.target.closest('#control-close-btn') : null;
+  if(b) window.ichefHardCloseControl(e);
+}, true);
+document.addEventListener('touchstart', function(e){
+  var b=e.target && e.target.closest ? e.target.closest('#control-close-btn') : null;
+  if(b) window.ichefHardCloseControl(e);
+}, {capture:true,passive:false});
+</script>
+
+
+<script id="ichef-order-close-touch-fix">
+(function(){
+  "use strict";
+
+  function hardCloseOrderUI(ev){
+    if(ev){
+      ev.preventDefault();
+      ev.stopPropagation();
+    }
+
+    // First use the application's real business/navigation function.
+    try{
+      if(typeof window.closeOrder === 'function'){
+        window.closeOrder();
+      }else if(typeof closeOrder === 'function'){
+        closeOrder();
+      }
+    }catch(err){
+      console.warn('[iCHEF] closeOrder fallback', err);
+    }
+
+    // Mobile NEXUS order/ticket panels: remove only their open/active visual state.
+    const selectors = [
+      '#order-drawer',
+      '.order-drawer',
+      '#mobile-order-screen',
+      '#nexus-order-screen',
+      '.nexus-order-screen',
+      '#mobile-ticket-screen',
+      '.mobile-ticket-screen'
+    ];
+    selectors.forEach(sel=>{
+      document.querySelectorAll(sel).forEach(el=>{
+        el.classList.remove('open','active','show','visible');
+      });
+    });
+
+    // If the mobile 3-panel interface exposes a first/salle page, return to it
+    // through its existing navigation helpers when present.
+    const helpers = ['mobileGoToSalle','goToSalle','showServiceScreen','showMobileService','mobileShowService'];
+    for(const name of helpers){
+      try{
+        if(typeof window[name] === 'function'){
+          window[name]();
+          break;
+        }
+      }catch(_){}
+    }
+    return false;
+  }
+
+  function isOrderCloseButton(el){
+    if(!el || !el.closest) return false;
+    const btn = el.closest('button');
+    if(!btn) return false;
+    if(btn.id === 'control-close-btn') return false;
+    const txt = (btn.textContent || '').replace(/\s+/g,' ').trim().toUpperCase();
+    if(!txt.includes('FERMER')) return false;
+
+    // Match the TABLE T4 / ticket close area, not unrelated settings modals.
+    return !!btn.closest('#order-drawer, .order-drawer, #mobile-order-screen, #nexus-order-screen, .nexus-order-screen, #mobile-ticket-screen, .mobile-ticket-screen, .mobile-ticket, .order-panel, .ticket-panel');
+  }
+
+  // Capture phase: receives the touch before swipe/drag layers can swallow it.
+  document.addEventListener('pointerdown', function(e){
+    if(isOrderCloseButton(e.target)) hardCloseOrderUI(e);
+  }, true);
+
+  document.addEventListener('touchstart', function(e){
+    if(isOrderCloseButton(e.target)) hardCloseOrderUI(e);
+  }, {capture:true, passive:false});
+
+  // Fallback for desktop mouse.
+  document.addEventListener('click', function(e){
+    if(isOrderCloseButton(e.target)) hardCloseOrderUI(e);
+  }, true);
+
+  window.ichefHardCloseOrderUI = hardCloseOrderUI;
 })();
 </script>
 
