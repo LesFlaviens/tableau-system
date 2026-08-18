@@ -1068,6 +1068,15 @@ header{
 }
 </style>
 
+
+<style id="ichef-pin-stable-click">
+#login-screen{pointer-events:auto !important;}
+#login-screen .pin-btn{
+  pointer-events:auto !important;
+  touch-action:manipulation !important;
+}
+</style>
+
 </head>
 <body oncontextmenu="return false;" ondragstart="return false;" ondrop="return false;">
 
@@ -1781,199 +1790,95 @@ let unifiedCategories = [];
         async function submitPin() {
     if (loginInProgress) return;
 
-    const msgBox = document.getElementById('error-msg');
+    const msg = document.getElementById('error-msg');
+    const display = document.getElementById('pin-display');
     const pin = String(currentPin || '').trim();
 
     if (!pin) {
-        if (msgBox) {
-            msgBox.style.display = 'block';
-            msgBox.style.color = 'var(--alert)';
-            msgBox.innerText = '❌ Entrez votre code PIN.';
+        if (msg) {
+            msg.style.display = 'block';
+            msg.style.color = 'var(--alert)';
+            msg.innerText = '❌ Entrez votre code PIN.';
         }
-        return;
-    }
-
-    if (!/^\d{4,12}$/.test(pin)) {
-        if (msgBox) {
-            msgBox.style.display = 'block';
-            msgBox.style.color = 'var(--alert)';
-            msgBox.innerText = '❌ Code PIN invalide.';
-        }
-        currentPin = '';
-        const display = document.getElementById('pin-display');
-        if (display) display.innerText = '';
         return;
     }
 
     loginInProgress = true;
-
-    const enterBtn = [...document.querySelectorAll('.pin-btn')].find(b =>
-        /entrer|ok|valider/i.test((b.textContent || '').trim()) ||
-        String(b.getAttribute('onclick') || '').includes('submitPin')
-    );
-
-    if (enterBtn) {
-        enterBtn.disabled = true;
-        enterBtn.style.opacity = '0.55';
+    if (msg) {
+        msg.style.display = 'block';
+        msg.style.color = 'var(--gold)';
+        msg.innerText = '⏳ Vérification...';
     }
 
-    if (msgBox) {
-        msgBox.style.display = 'block';
-        msgBox.style.color = 'var(--gold)';
-        msgBox.innerText = '⏳ Vérification...';
-    }
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 7000);
 
     try {
-        // Le login ne doit jamais rester bloqué indéfiniment.
-        const pinController = new AbortController();
-        const pinTimeout = setTimeout(() => pinController.abort(), 8000);
-
-        let response;
-        try {
-            response = await fetch(`${APP_SERVER_URL}/api/verify-pin`, {
-                method: 'POST',
-                credentials: 'include',
-                cache: 'no-store',
-                signal: pinController.signal,
-                headers: {
-                    'Content-Type': 'application/json',
-                    'Accept': 'application/json',
-                    'X-Requested-With': 'iCHEF-PWA',
-                    'X-iCHEF-Device': window.ICHEF_SECURITY?.deviceId || ''
-                },
-                body: JSON.stringify({
-                    tenantID: appTenantID,
-                    pin: pin,
-                    deviceId: window.ICHEF_SECURITY?.deviceId || null
-                })
-            });
-        } finally {
-            clearTimeout(pinTimeout);
-        }
+        const response = await fetch(`${APP_SERVER_URL}/api/verify-pin`, {
+            method: 'POST',
+            credentials: 'include',
+            cache: 'no-store',
+            signal: controller.signal,
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                tenantID: appTenantID,
+                pin: pin,
+                deviceId: (window.ICHEF_SECURITY && window.ICHEF_SECURITY.deviceId) || null
+            })
+        });
 
         const data = await response.json().catch(() => ({}));
 
-        if (!response.ok || data.success === false) {
-            localLoginFailures += 1;
-            if (localLoginFailures >= 5) {
-                localLoginBlockedUntil = Date.now() + 30000;
-                localLoginFailures = 0;
-            }
-
-            if (msgBox) {
-                msgBox.style.display = 'block';
-                msgBox.style.color = 'var(--alert)';
-                msgBox.innerText = `❌ ${data.error || data.message || 'Code PIN incorrect.'}`;
-            }
-
-            currentPin = '';
-            const display = document.getElementById('pin-display');
-            if (display) display.innerText = '';
-            return;
+        if (!response.ok || data.success === false || data.ok === false) {
+            throw new Error(data.error || data.message || 'Code PIN refusé');
         }
 
-        localLoginFailures = 0;
-
-        // Récupère les éléments de session si le backend les renvoie.
+        // Conserve les informations de sécurité réellement renvoyées par le serveur.
         window.ICHEF_SECURITY = window.ICHEF_SECURITY || {};
-        window.ICHEF_SECURITY.sessionToken =
-            data.sessionToken || data.token || window.ICHEF_SECURITY.sessionToken || null;
-        window.ICHEF_SECURITY.csrfToken =
-            data.csrfToken || window.ICHEF_SECURITY.csrfToken || null;
-
-        const serverRole = String(data.role || data.user?.role || 'STAFF').trim().toLowerCase();
-        const userRole =
-            ['master','admin','manager'].includes(serverRole) ? 'Manager' : 'Serveur';
-
-        const displayName =
-            data.name ||
-            data.user?.name ||
-            (serverRole === 'master' ? 'Directeur' : 'Utilisateur');
-
-        currentUser = {
-            name: displayName,
-            role: userRole,
-            serverRole,
-            id: data.userId || data.user?.id || null
-        };
-
-        window.ICHEF_SECURITY.user = currentUser;
-        window.ICHEF_SECURITY.authenticatedAt = Date.now();
-
+        if (data.sessionToken || data.token) {
+            window.ICHEF_SECURITY.sessionToken = data.sessionToken || data.token;
+        }
+        if (data.csrfToken) window.ICHEF_SECURITY.csrfToken = data.csrfToken;
         if (Array.isArray(data.permissions)) {
             window.ICHEF_SECURITY.permissions = new Set(data.permissions);
-        } else {
-            window.ICHEF_SECURITY.permissions = new Set(
-                userRole === 'Manager'
-                    ? ['ADMIN_ACCESS','FLOORPLAN_DELETE','ORDER_ITEM_CANCEL','ORDER_VOID','TERMINAL_MAINTENANCE']
-                    : []
-            );
         }
+
+        const rawRole = String(data.role || (data.user && data.user.role) || 'staff').toLowerCase();
+        currentUser = {
+            name: data.name || (data.user && data.user.name) || 'Utilisateur',
+            role: ['master','admin','manager'].includes(rawRole) ? 'Manager' : 'Serveur',
+            serverRole: rawRole,
+            id: data.userId || (data.user && data.user.id) || null
+        };
 
         currentPin = '';
-        const display = document.getElementById('pin-display');
         if (display) display.innerText = '';
 
-        if (msgBox) {
-            msgBox.innerText = '✅ Connexion réussie';
-            msgBox.style.color = '#10b981';
-        }
-
-        // Déverrouillage du Pad.
-        // Ferme l'écran PIN immédiatement dès validation serveur.
-        const login = document.getElementById('login-screen');
-        if (login) {
-            login.style.setProperty('display', 'none', 'important');
-            login.setAttribute('aria-hidden', 'true');
-        }
-
-        // Les rendus secondaires ne doivent pas empêcher la connexion.
+        // IMPORTANT : on utilise le déverrouillage natif du Pad et on ne lance
+        // aucune deuxième synchronisation ici.
         if (typeof unlockPadWithUser === 'function') {
-            try { unlockPadWithUser(currentUser); }
-            catch (unlockError) {
-                console.warn('[iCHEF] Connexion validée, rendu secondaire différé :', unlockError);
-            }
+            unlockPadWithUser(currentUser);
+        } else {
+            const login = document.getElementById('login-screen');
+            if (login) login.style.display = 'none';
         }
 
-        try { resetInactivityTimer(); } catch (_) {}
+        if (msg) msg.style.display = 'none';
 
-        // IMPORTANT : ne jamais bloquer l'ouverture du Pad sur la synchronisation.
-        // unlockPadWithUser() lance déjà connectEmpireH24(); la synchro continue en arrière-plan.
-        setTimeout(() => {
-            try {
-                if (typeof syncData === 'function') {
-                    Promise.resolve(syncData()).catch(err =>
-                        console.warn('[iCHEF] Synchronisation après PIN différée :', err)
-                    );
-                }
-            } catch (_) {}
-        }, 50);
-
-        setTimeout(() => {
-            if (msgBox) msgBox.style.display = 'none';
-        }, 500);
-
-    } catch (e) {
-        console.error('Erreur réseau PIN', e);
-
-        if (msgBox) {
-            msgBox.style.display = 'block';
-            msgBox.style.color = 'var(--alert)';
-            msgBox.innerText = (e && e.name === 'AbortError')
-                ? '❌ Le serveur PIN ne répond pas. Réessayez.'
-                : '❌ Impossible de joindre le serveur.';
-        }
-
+    } catch (err) {
+        console.error('[iCHEF PIN]', err);
         currentPin = '';
-        const display = document.getElementById('pin-display');
         if (display) display.innerText = '';
-
-    } finally {
-        loginInProgress = false;
-        if (enterBtn) {
-            enterBtn.disabled = false;
-            enterBtn.style.opacity = '1';
+        if (msg) {
+            msg.style.display = 'block';
+            msg.style.color = 'var(--alert)';
+            msg.innerText = err && err.name === 'AbortError'
+                ? '❌ Serveur indisponible : délai dépassé.'
+                : `❌ ${err && err.message ? err.message : 'Connexion impossible.'}`;
         }
+    } finally {
+        clearTimeout(timeout);
+        loginInProgress = false;
     }
 }
 
@@ -6845,41 +6750,6 @@ observer.observe(document.documentElement,{childList:true,subtree:true});
 })();
 </script>
 
-
-<style id="ichef-pin-final-touch-css">
-#login-screen,
-#login-screen .pin-pad,
-#login-screen .pin-btn{
-    pointer-events:auto !important;
-}
-#login-screen .pin-btn{
-    touch-action:manipulation !important;
-    position:relative !important;
-    z-index:99999999 !important;
-}
-</style>
-
-<script id="ichef-pin-final-touch-engine">
-(function(){
-  function fixPinButtons(){
-    const login = document.getElementById('login-screen');
-    if(!login) return;
-
-    login.style.setProperty('pointer-events','auto','important');
-
-    login.querySelectorAll('.pin-btn').forEach(btn=>{
-      btn.style.setProperty('pointer-events','auto','important');
-      btn.style.setProperty('touch-action','manipulation','important');
-    });
-  }
-
-  if(document.readyState === 'loading'){
-    document.addEventListener('DOMContentLoaded', fixPinButtons);
-  }else{
-    fixPinButtons();
-  }
-})();
-</script>
 
 </body>
 </html>
