@@ -6801,7 +6801,241 @@ function toggleOutilsMenuFinal(event, button) {
             installTactileScrollbar();
         }
     }).observe(document.documentElement, { childList: true, subtree: true });
+<!-- iCHEF FIX ULTIME : SCROLLBAR TACTILE GÉANTE (S'AJUSTE AU PIXEL PRÈS SANS S'ÉCRASER) -->
+<style id="ichef-tactile-scrollbar-css">
+/* 1. ANNIHILATION DES BARRES NATIVES */
+.ticket-view *::-webkit-scrollbar { display: none !important; width: 0 !important; height: 0 !important; }
+.ticket-view * { scrollbar-width: none !important; -ms-overflow-style: none !important; }
 
+/* 2. LE WRAPPER MAGIQUE (Force l'étirement maximum) */
+.ichef-list-wrapper {
+    position: relative !important;
+    flex: 1 1 0px !important; /* Le secret est ici : force le wrapper à utiliser TOUT l'espace libre */
+    display: flex !important;
+    flex-direction: column !important;
+    min-height: 0 !important;
+    width: 100% !important;
+    margin-bottom: 15px !important;
+}
+
+/* 3. LA LISTE DES PLATS */
+#ticket-list {
+    flex: 1 1 100% !important;
+    min-height: 0 !important;
+    width: 100% !important;
+    overflow-y: auto !important;
+    overflow-x: hidden !important;
+    padding-right: 65px !important; /* Évite que les prix des plats passent sous la barre */
+    box-sizing: border-box !important;
+    -webkit-overflow-scrolling: touch !important;
+}
+
+/* 4. LA GROSSE BARRE TACTILE */
+#ichef-tactile-rail {
+    position: absolute !important;
+    right: 0 !important;
+    top: 0 !important;
+    bottom: 0 !important; /* S'étire de haut en bas du wrapper, pile au-dessus du prix */
+    width: 50px !important;
+    background: #111 !important;
+    border: 2px solid #333 !important;
+    border-radius: 12px !important;
+    z-index: 2147483000 !important;
+    display: flex !important;
+    flex-direction: column !important;
+    pointer-events: auto !important;
+    touch-action: none !important;
+    user-select: none !important;
+    -webkit-user-select: none !important;
+    box-shadow: -4px 0 12px rgba(0,0,0,0.4) !important;
+}
+
+#ichef-tactile-up, #ichef-tactile-down {
+    width: 100% !important;
+    height: 60px !important;
+    flex: 0 0 60px !important;
+    background: #111 !important;
+    color: var(--gold, #C5A059) !important;
+    font-size: 28px !important;
+    font-weight: 900 !important;
+    border: none !important;
+    border-radius: 10px !important;
+    cursor: pointer !important;
+    display: flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+}
+#ichef-tactile-up:active, #ichef-tactile-down:active { background: #222 !important; }
+
+#ichef-tactile-track {
+    position: relative !important;
+    flex: 1 1 auto !important;
+    width: 100% !important;
+    background: rgba(255, 255, 255, 0.02) !important;
+    cursor: pointer !important;
+    touch-action: none !important;
+}
+
+#ichef-tactile-thumb {
+    position: absolute !important;
+    left: 6px !important;
+    right: 6px !important;
+    min-height: 60px !important;
+    background: var(--gold, #C5A059) !important;
+    border-radius: 6px !important;
+    cursor: grab !important;
+    touch-action: none !important;
+    transition: opacity 0.2s;
+}
+#ichef-tactile-thumb:active { background: #e1bd6f !important; cursor: grabbing !important; }
+</style>
+
+<script id="ichef-tactile-scrollbar-js">
+(function(){
+    "use strict";
+
+    function installTactileScrollbar() {
+        let list = document.getElementById('ticket-list');
+        if (!list) return;
+
+        // 1. NETTOYAGE RADICAL DES ANCIENNES BARRES ET WRAPPERS
+        document.querySelectorAll('#ichef-ticket-right-scrollbar, #ichef-ticket-right-scrollbar-engine, #ichef-scroll-rail, #ichef-v3-rail, #custom-yellow-rail, #ichef-tactile-rail').forEach(el => el.remove());
+        const oldWrapper = document.getElementById('ichef-list-wrapper');
+        if (oldWrapper && oldWrapper.parentNode) {
+            while (oldWrapper.firstChild) oldWrapper.parentNode.insertBefore(oldWrapper.firstChild, oldWrapper);
+            oldWrapper.remove();
+        }
+
+        // 2. COUPER LE COMPORTEMENT PAR DÉFAUT DU FOOTER (Pour que la liste puisse prendre la place)
+        const footer = document.getElementById('ticket-total-price');
+        if (footer && footer.parentNode) {
+            footer.parentNode.style.setProperty('margin-top', '15px', 'important');
+        }
+
+        // 3. CRÉER LE NOUVEAU WRAPPER
+        let wrapper = document.createElement('div');
+        wrapper.id = 'ichef-list-wrapper';
+        wrapper.className = 'ichef-list-wrapper';
+        list.parentNode.insertBefore(wrapper, list);
+        wrapper.appendChild(list);
+
+        // 4. CRÉER LA BARRE GÉANTE
+        const rail = document.createElement('div');
+        rail.id = 'ichef-tactile-rail';
+        rail.innerHTML = `
+            <button id="ichef-tactile-up">▲</button>
+            <div id="ichef-tactile-track">
+                <div id="ichef-tactile-thumb"></div>
+            </div>
+            <button id="ichef-tactile-down">▼</button>
+        `;
+        wrapper.appendChild(rail);
+
+        const track = document.getElementById('ichef-tactile-track');
+        const thumb = document.getElementById('ichef-tactile-thumb');
+        const upBtn = document.getElementById('ichef-tactile-up');
+        const downBtn = document.getElementById('ichef-tactile-down');
+
+        // MOTEUR
+        function syncThumb() {
+            const maxScroll = Math.max(0, list.scrollHeight - list.clientHeight);
+            const trackHeight = track.clientHeight;
+            
+            let thumbHeight = trackHeight * (list.clientHeight / (list.scrollHeight || 1));
+            thumbHeight = Math.max(60, Math.min(trackHeight, thumbHeight)); 
+
+            const travel = Math.max(0, trackHeight - thumbHeight);
+            
+            thumb.style.height = thumbHeight + 'px';
+            if (maxScroll > 0) {
+                thumb.style.top = (list.scrollTop / maxScroll) * travel + 'px';
+                thumb.style.opacity = '1';
+            } else {
+                thumb.style.top = '0px';
+                thumb.style.opacity = '0.2'; // Grise le bouton si la liste est vide (pas besoin de scroller)
+            }
+        }
+
+        function scrollToY(clientY) {
+            const maxScroll = Math.max(0, list.scrollHeight - list.clientHeight);
+            if (maxScroll <= 0) return;
+            
+            const trackRect = track.getBoundingClientRect();
+            const thumbHeight = thumb.clientHeight;
+            const travel = Math.max(0, track.clientHeight - thumbHeight);
+
+            let pos = clientY - trackRect.top - (thumbHeight / 2);
+            pos = Math.max(0, Math.min(travel, pos));
+
+            list.scrollTop = (pos / travel) * maxScroll;
+            syncThumb();
+        }
+
+        // TACTILE (Piste et curseur)
+        upBtn.onclick = (e) => { e.preventDefault(); list.scrollBy({ top: -150, behavior: 'smooth' }); };
+        downBtn.onclick = (e) => { e.preventDefault(); list.scrollBy({ top: 150, behavior: 'smooth' }); };
+
+        let isDraggingTrack = false;
+        track.onpointerdown = (e) => {
+            if (e.target === thumb) return;
+            isDraggingTrack = true;
+            try { track.setPointerCapture(e.pointerId); } catch(err){}
+            scrollToY(e.clientY);
+            e.preventDefault();
+        };
+        track.onpointermove = (e) => {
+            if (!isDraggingTrack) return;
+            scrollToY(e.clientY);
+            e.preventDefault();
+        };
+        track.onpointerup = track.onpointercancel = () => isDraggingTrack = false;
+
+        let thumbDrag = false, startY = 0, startTop = 0;
+        thumb.onpointerdown = (e) => {
+            thumbDrag = true;
+            startY = e.clientY;
+            startTop = parseFloat(thumb.style.top) || 0;
+            try { thumb.setPointerCapture(e.pointerId); } catch(err){}
+            e.preventDefault();
+            e.stopPropagation();
+        };
+        thumb.onpointermove = (e) => {
+            if (!thumbDrag) return;
+            const maxScroll = Math.max(0, list.scrollHeight - list.clientHeight);
+            const travel = Math.max(0, track.clientHeight - thumb.clientHeight);
+            if (travel <= 0) return;
+
+            let pos = startTop + (e.clientY - startY);
+            pos = Math.max(0, Math.min(travel, pos));
+
+            list.scrollTop = (pos / travel) * maxScroll;
+            syncThumb();
+            e.preventDefault();
+            e.stopPropagation();
+        };
+        thumb.onpointerup = thumb.onpointercancel = () => thumbDrag = false;
+
+        list.addEventListener('scroll', syncThumb, { passive: true });
+        new ResizeObserver(syncThumb).observe(list);
+        new MutationObserver(() => setTimeout(syncThumb, 50)).observe(list, { childList: true, subtree: true });
+
+        setTimeout(syncThumb, 100);
+    }
+
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', () => setTimeout(installTactileScrollbar, 200));
+    } else {
+        setTimeout(installTactileScrollbar, 200);
+    }
+    
+    new MutationObserver(() => {
+        if (document.getElementById('ticket-list') && !document.getElementById('ichef-tactile-rail')) {
+            installTactileScrollbar();
+        }
+    }).observe(document.documentElement, { childList: true, subtree: true });
+
+})();
+</script>
 })();
 </script>
     
