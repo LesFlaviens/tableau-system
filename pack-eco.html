@@ -1824,22 +1824,32 @@ let unifiedCategories = [];
     }
 
     try {
-        const response = await fetch(`${APP_SERVER_URL}/api/verify-pin`, {
-            method: 'POST',
-            credentials: 'include',
-            cache: 'no-store',
-            headers: {
-                'Content-Type': 'application/json',
-                'Accept': 'application/json',
-                'X-Requested-With': 'iCHEF-PWA',
-                'X-iCHEF-Device': window.ICHEF_SECURITY?.deviceId || ''
-            },
-            body: JSON.stringify({
-                tenantID: appTenantID,
-                pin: pin,
-                deviceId: window.ICHEF_SECURITY?.deviceId || null
-            })
-        });
+        // Le login ne doit jamais rester bloqué indéfiniment.
+        const pinController = new AbortController();
+        const pinTimeout = setTimeout(() => pinController.abort(), 8000);
+
+        let response;
+        try {
+            response = await fetch(`${APP_SERVER_URL}/api/verify-pin`, {
+                method: 'POST',
+                credentials: 'include',
+                cache: 'no-store',
+                signal: pinController.signal,
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Accept': 'application/json',
+                    'X-Requested-With': 'iCHEF-PWA',
+                    'X-iCHEF-Device': window.ICHEF_SECURITY?.deviceId || ''
+                },
+                body: JSON.stringify({
+                    tenantID: appTenantID,
+                    pin: pin,
+                    deviceId: window.ICHEF_SECURITY?.deviceId || null
+                })
+            });
+        } finally {
+            clearTimeout(pinTimeout);
+        }
 
         const data = await response.json().catch(() => ({}));
 
@@ -1910,19 +1920,38 @@ let unifiedCategories = [];
         }
 
         // Déverrouillage du Pad.
+        // Ferme l'écran PIN immédiatement dès validation serveur.
+        const login = document.getElementById('login-screen');
+        if (login) {
+            login.style.setProperty('display', 'none', 'important');
+            login.setAttribute('aria-hidden', 'true');
+        }
+
+        // Les rendus secondaires ne doivent pas empêcher la connexion.
         if (typeof unlockPadWithUser === 'function') {
-            unlockPadWithUser(currentUser);
-        } else {
-            const login = document.getElementById('login-screen');
-            if (login) login.style.setProperty('display', 'none', 'important');
+            try { unlockPadWithUser(currentUser); }
+            catch (unlockError) {
+                console.warn('[iCHEF] Connexion validée, rendu secondaire différé :', unlockError);
+            }
         }
 
         try { resetInactivityTimer(); } catch (_) {}
-        try { await syncData(); } catch (_) {}
+
+        // IMPORTANT : ne jamais bloquer l'ouverture du Pad sur la synchronisation.
+        // unlockPadWithUser() lance déjà connectEmpireH24(); la synchro continue en arrière-plan.
+        setTimeout(() => {
+            try {
+                if (typeof syncData === 'function') {
+                    Promise.resolve(syncData()).catch(err =>
+                        console.warn('[iCHEF] Synchronisation après PIN différée :', err)
+                    );
+                }
+            } catch (_) {}
+        }, 50);
 
         setTimeout(() => {
             if (msgBox) msgBox.style.display = 'none';
-        }, 800);
+        }, 500);
 
     } catch (e) {
         console.error('Erreur réseau PIN', e);
@@ -1930,7 +1959,9 @@ let unifiedCategories = [];
         if (msgBox) {
             msgBox.style.display = 'block';
             msgBox.style.color = 'var(--alert)';
-            msgBox.innerText = '❌ Impossible de joindre le serveur.';
+            msgBox.innerText = (e && e.name === 'AbortError')
+                ? '❌ Le serveur PIN ne répond pas. Réessayez.'
+                : '❌ Impossible de joindre le serveur.';
         }
 
         currentPin = '';
