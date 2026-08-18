@@ -7913,5 +7913,164 @@ header .header-left > div:first-of-type{
 })();
 </script>
 
+
+
+<!-- ========================================================= -->
+<!-- iCHEF MOBILE — APPUI LONG SALLE => PLAN INTERACTIF RÉEL  -->
+<!-- Téléphone uniquement <= 600px. Tablette / PC inchangés. -->
+<!-- ========================================================= -->
+<style id="ichef-mobile-live-plan-overlay-style">
+@media (max-width:600px){
+  #mobile-live-plan-overlay{
+    position:fixed;inset:0;z-index:59000;display:none;flex-direction:column;
+    background:#020607;color:#fff;font-family:Inter,sans-serif;
+  }
+  #mobile-live-plan-overlay.open{display:flex!important;}
+  #mobile-live-plan-head{
+    flex:0 0 auto;min-height:62px;display:flex;align-items:center;gap:8px;
+    padding:8px 10px;background:#0a0d0e;border-bottom:1px solid rgba(229,182,64,.45);
+    box-sizing:border-box;box-shadow:0 7px 18px rgba(0,0,0,.35);z-index:3;
+  }
+  #mobile-live-plan-title{font-size:15px;font-weight:950;color:#efc55b;white-space:nowrap;}
+  #mobile-live-plan-rooms{
+    flex:1;min-width:0;display:flex;gap:6px;overflow-x:auto;scrollbar-width:none;
+    -webkit-overflow-scrolling:touch;
+  }
+  #mobile-live-plan-rooms::-webkit-scrollbar{display:none}
+  #mobile-live-plan-rooms button{
+    flex:0 0 auto;min-height:40px;padding:0 11px;border-radius:8px;
+    border:1px solid #343a3d;background:#111516;color:#ddd;font-size:11px;font-weight:850;
+  }
+  #mobile-live-plan-rooms button.active{border-color:#e5b640;color:#e5b640;background:rgba(229,182,64,.10)}
+  #mobile-live-plan-close{
+    flex:0 0 46px;width:46px;height:46px;border-radius:10px;border:1px solid #e24a4a;
+    background:#111516;color:#ff6969;font-size:25px;font-weight:900;line-height:1;cursor:pointer;
+  }
+  #mobile-live-plan-stage{
+    flex:1;min-height:0;position:relative;overflow:hidden;background:#020607;
+  }
+  /* Le vrai plan est déplacé ici, donc on annule uniquement le display:none mobile précédent. */
+  #mobile-live-plan-stage>.floor-plan-wrapper{
+    display:block!important;position:absolute!important;inset:0!important;width:100%!important;height:100%!important;
+    overflow:auto!important;touch-action:pan-x pan-y!important;-webkit-overflow-scrolling:touch!important;
+    background:radial-gradient(circle at 50% 0%,#0b0f10 0%,#020506 65%)!important;
+  }
+  #mobile-live-plan-stage .floor-plan{transform-origin:0 0;}
+  #mobile-live-plan-help{
+    position:absolute;left:50%;bottom:14px;transform:translateX(-50%);z-index:4;
+    max-width:88vw;padding:8px 12px;border:1px solid rgba(229,182,64,.45);border-radius:999px;
+    background:rgba(5,8,9,.90);color:#d6c08c;font-size:10px;font-weight:800;text-align:center;
+    pointer-events:none;box-shadow:0 7px 22px rgba(0,0,0,.45);
+  }
+  #mobile-live-plan-overlay .table-wrapper,#mobile-live-plan-overlay .table-obj{touch-action:manipulation!important;}
+  #mobile-live-plan-overlay .table-resizer,#mobile-live-plan-overlay .zone-resizer{display:none!important;}
+}
+</style>
+<script id="ichef-mobile-live-plan-overlay-script">
+(function(){
+  'use strict';
+  const isPhone=()=>window.matchMedia('(max-width:600px)').matches;
+  const $=(s,r=document)=>r.querySelector(s);
+  let originalParent=null,originalNext=null,longTimer=null,startX=0,startY=0,longOpenedAt=0;
+
+  function roomsList(){
+    try{return Array.isArray(rooms)&&rooms.length?rooms.filter(Boolean):['Salle Principale'];}
+    catch(_){return ['Salle Principale'];}
+  }
+
+  function ensureOverlay(){
+    let ov=$('#mobile-live-plan-overlay');
+    if(ov) return ov;
+    ov=document.createElement('div');
+    ov.id='mobile-live-plan-overlay';
+    ov.innerHTML='<div id="mobile-live-plan-head"><div id="mobile-live-plan-title">🗺 PLAN</div><div id="mobile-live-plan-rooms"></div><button id="mobile-live-plan-close" type="button" aria-label="Fermer le plan">×</button></div><div id="mobile-live-plan-stage"><div id="mobile-live-plan-help">Glissez pour vous déplacer · Touchez une table pour l’ouvrir</div></div>';
+    document.body.appendChild(ov);
+    $('#mobile-live-plan-close',ov).addEventListener('click',closePlan);
+    ov.addEventListener('click',function(e){
+      const table=e.target.closest('.table-wrapper,.table-obj');
+      if(!table) return;
+      /* Le clic natif du plan ouvre déjà la table. On ferme juste l’overlay après. */
+      setTimeout(()=>{ if($('#order-drawer')?.classList.contains('open')) closePlan(false); },40);
+    },true);
+    return ov;
+  }
+
+  function renderRoomButtons(){
+    const box=$('#mobile-live-plan-rooms'); if(!box) return;
+    const rs=roomsList(); let cur=''; try{cur=currentRoom||rs[0];}catch(_){cur=rs[0];}
+    box.innerHTML='';
+    rs.forEach(name=>{
+      const b=document.createElement('button'); b.type='button'; b.textContent=name;
+      if(String(name)===String(cur)) b.classList.add('active');
+      b.addEventListener('click',()=>{
+        try{currentRoom=name;if(typeof renderRooms==='function')renderRooms();if(typeof renderFloor==='function')renderFloor();}catch(e){console.error(e);}
+        renderRoomButtons();
+        const wrap=$('#mobile-live-plan-stage>.floor-plan-wrapper'); if(wrap){wrap.scrollLeft=0;wrap.scrollTop=0;}
+      });
+      box.appendChild(b);
+    });
+  }
+
+  function openPlan(){
+    if(!isPhone()) return;
+    const service=$('#mobile-exact-service');
+    const wrap=$('.floor-plan-wrapper');
+    if(!service||!wrap) return;
+    const ov=ensureOverlay(),stage=$('#mobile-live-plan-stage',ov);
+    if(!originalParent){originalParent=wrap.parentNode;originalNext=wrap.nextSibling;}
+    try{if(typeof renderFloor==='function')renderFloor();}catch(_){ }
+    stage.insertBefore(wrap,$('#mobile-live-plan-help',stage));
+    renderRoomButtons();
+    ov.classList.add('open');
+    longOpenedAt=Date.now();
+    document.body.style.setProperty('overscroll-behavior','none');
+    try{if(navigator.vibrate)navigator.vibrate(25);}catch(_){ }
+  }
+
+  function closePlan(restore=true){
+    const ov=$('#mobile-live-plan-overlay'); if(ov) ov.classList.remove('open');
+    const wrap=$('#mobile-live-plan-stage>.floor-plan-wrapper');
+    if(wrap&&originalParent){
+      try{
+        if(originalNext&&originalNext.parentNode===originalParent) originalParent.insertBefore(wrap,originalNext);
+        else originalParent.appendChild(wrap);
+      }catch(_){ }
+    }
+    document.body.style.removeProperty('overscroll-behavior');
+    if(restore){try{if(typeof renderService==='function')renderService();}catch(_){ }}
+  }
+
+  function cancelLong(){clearTimeout(longTimer);longTimer=null;}
+
+  function installLongPress(){
+    const service=$('#mobile-exact-service'); if(!service||service.dataset.planLong==='1') return;
+    service.dataset.planLong='1';
+    service.addEventListener('pointerdown',e=>{
+      if(!isPhone()||e.button>0) return;
+      /* Le bouton du nom de salle conserve son clic court normal. */
+      startX=e.clientX;startY=e.clientY;cancelLong();
+      longTimer=setTimeout(()=>{longTimer=null;openPlan();},900);
+    },{passive:true});
+    service.addEventListener('pointermove',e=>{
+      if(!longTimer) return;
+      if(Math.abs(e.clientX-startX)>14||Math.abs(e.clientY-startY)>14) cancelLong();
+    },{passive:true});
+    ['pointerup','pointercancel','pointerleave'].forEach(type=>service.addEventListener(type,cancelLong,{passive:true}));
+    /* Empêche le clic court de partir juste après l’ouverture par appui long. */
+    service.addEventListener('click',e=>{
+      if(Date.now()-longOpenedAt<650){e.preventDefault();e.stopPropagation();if(e.stopImmediatePropagation)e.stopImmediatePropagation();}
+    },true);
+  }
+
+  function init(){
+    if(!isPhone()) return;
+    ensureOverlay();installLongPress();
+    const obs=new MutationObserver(installLongPress);obs.observe(document.body,{childList:true,subtree:true});
+    window.addEventListener('resize',()=>{if(!isPhone())closePlan(false);},{passive:true});
+  }
+  if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',init,{once:true});else init();
+})();
+</script>
+
 </body>
 </html>
