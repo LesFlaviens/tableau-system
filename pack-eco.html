@@ -1782,111 +1782,170 @@ let unifiedCategories = [];
     if (loginInProgress) return;
 
     const msgBox = document.getElementById('error-msg');
-    msgBox.style.display = 'none';
+    const pin = String(currentPin || '').trim();
 
-    if (Date.now() < localLoginBlockedUntil) {
-        msgBox.style.display = 'block';
-        msgBox.style.color = 'var(--alert)';
-        msgBox.innerText = '⏳ Trop de tentatives. Veuillez patienter.';
+    if (!pin) {
+        if (msgBox) {
+            msgBox.style.display = 'block';
+            msgBox.style.color = 'var(--alert)';
+            msgBox.innerText = '❌ Entrez votre code PIN.';
+        }
         return;
     }
 
-    const pin = String(currentPin || '').trim();
-    if (!pin) return;
-
     if (!/^\d{4,12}$/.test(pin)) {
-        msgBox.style.display = 'block';
-        msgBox.style.color = 'var(--alert)';
-        msgBox.innerText = '❌ Code PIN invalide (4 chiffres minimum).';
-        clearPin();
+        if (msgBox) {
+            msgBox.style.display = 'block';
+            msgBox.style.color = 'var(--alert)';
+            msgBox.innerText = '❌ Code PIN invalide.';
+        }
+        currentPin = '';
+        const display = document.getElementById('pin-display');
+        if (display) display.innerText = '';
         return;
     }
 
     loginInProgress = true;
-    msgBox.style.display = 'block';
-    msgBox.style.color = 'var(--gold)';
-    msgBox.innerText = '⏳ Vérification...';
+
+    const enterBtn = [...document.querySelectorAll('.pin-btn')].find(b =>
+        /entrer|ok|valider/i.test((b.textContent || '').trim()) ||
+        String(b.getAttribute('onclick') || '').includes('submitPin')
+    );
+
+    if (enterBtn) {
+        enterBtn.disabled = true;
+        enterBtn.style.opacity = '0.55';
+    }
+
+    if (msgBox) {
+        msgBox.style.display = 'block';
+        msgBox.style.color = 'var(--gold)';
+        msgBox.innerText = '⏳ Vérification...';
+    }
 
     try {
-        // Vérification centralisée côté serveur : PIN principal + PIN du personnel.
         const response = await fetch(`${APP_SERVER_URL}/api/verify-pin`, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+            credentials: 'include',
             cache: 'no-store',
+            headers: {
+                'Content-Type': 'application/json',
+                'Accept': 'application/json',
+                'X-Requested-With': 'iCHEF-PWA',
+                'X-iCHEF-Device': window.ICHEF_SECURITY?.deviceId || ''
+            },
             body: JSON.stringify({
                 tenantID: appTenantID,
-                pin,
+                pin: pin,
                 deviceId: window.ICHEF_SECURITY?.deviceId || null
             })
         });
 
         const data = await response.json().catch(() => ({}));
 
-        if (!response.ok || !data.success) {
+        if (!response.ok || data.success === false) {
             localLoginFailures += 1;
             if (localLoginFailures >= 5) {
                 localLoginBlockedUntil = Date.now() + 30000;
                 localLoginFailures = 0;
             }
 
-            msgBox.style.display = 'block';
-            msgBox.style.color = 'var(--alert)';
-            msgBox.innerText = `❌ ${data.error || 'Code PIN incorrect.'}`;
-            clearPin();
+            if (msgBox) {
+                msgBox.style.display = 'block';
+                msgBox.style.color = 'var(--alert)';
+                msgBox.innerText = `❌ ${data.error || data.message || 'Code PIN incorrect.'}`;
+            }
+
+            currentPin = '';
+            const display = document.getElementById('pin-display');
+            if (display) display.innerText = '';
             return;
         }
 
         localLoginFailures = 0;
 
-        // Le serveur renvoie le rôle réel associé au PIN.
-        const serverRole = String(data.role || 'STAFF').trim().toLowerCase();
-        let displayName = serverRole === 'master' ? 'Directeur' : 'Utilisateur';
-        let userRole = (serverRole === 'master' || serverRole === 'admin' || serverRole === 'manager')
-            ? 'Manager'
-            : 'Serveur';
+        // Récupère les éléments de session si le backend les renvoie.
+        window.ICHEF_SECURITY = window.ICHEF_SECURITY || {};
+        window.ICHEF_SECURITY.sessionToken =
+            data.sessionToken || data.token || window.ICHEF_SECURITY.sessionToken || null;
+        window.ICHEF_SECURITY.csrfToken =
+            data.csrfToken || window.ICHEF_SECURITY.csrfToken || null;
 
-        // Pour un PIN staff, récupérer le nom affiché sans refaire l'authentification localement.
-        if (serverRole !== 'master') {
-            try {
-                const stateResponse = await fetch(
-                    `${APP_SERVER_URL}/get-current-state?tenantID=${encodeURIComponent(appTenantID)}&_t=${Date.now()}`,
-                    { cache: 'no-store' }
-                );
-                if (stateResponse.ok) {
-                    const stateData = await stateResponse.json();
-                    const staffList = stateData?.activeOrders?.STAFF_ACCESS?.data || [];
-                    const staffUser = Array.isArray(staffList)
-                        ? staffList.find(s => String(s?.pin ?? '').trim() === pin)
-                        : null;
-                    if (staffUser?.name) displayName = staffUser.name;
-                }
-            } catch (_) {
-                // Le nom est secondaire : l'accès reste validé par /api/verify-pin.
-            }
-        }
+        const serverRole = String(data.role || data.user?.role || 'STAFF').trim().toLowerCase();
+        const userRole =
+            ['master','admin','manager'].includes(serverRole) ? 'Manager' : 'Serveur';
 
-        currentUser = { name: displayName, role: userRole, serverRole };
+        const displayName =
+            data.name ||
+            data.user?.name ||
+            (serverRole === 'master' ? 'Directeur' : 'Utilisateur');
+
+        currentUser = {
+            name: displayName,
+            role: userRole,
+            serverRole,
+            id: data.userId || data.user?.id || null
+        };
 
         window.ICHEF_SECURITY.user = currentUser;
         window.ICHEF_SECURITY.authenticatedAt = Date.now();
-        window.ICHEF_SECURITY.permissions = new Set(
-            userRole === 'Manager'
-                ? ['ADMIN_ACCESS','FLOORPLAN_DELETE','ORDER_ITEM_CANCEL','ORDER_VOID','TERMINAL_MAINTENANCE']
-                : []
-        );
 
-        clearPin();
-        unlockPadWithUser(currentUser);
+        if (Array.isArray(data.permissions)) {
+            window.ICHEF_SECURITY.permissions = new Set(data.permissions);
+        } else {
+            window.ICHEF_SECURITY.permissions = new Set(
+                userRole === 'Manager'
+                    ? ['ADMIN_ACCESS','FLOORPLAN_DELETE','ORDER_ITEM_CANCEL','ORDER_VOID','TERMINAL_MAINTENANCE']
+                    : []
+            );
+        }
+
+        currentPin = '';
+        const display = document.getElementById('pin-display');
+        if (display) display.innerText = '';
+
+        if (msgBox) {
+            msgBox.innerText = '✅ Connexion réussie';
+            msgBox.style.color = '#10b981';
+        }
+
+        // Déverrouillage du Pad.
+        if (typeof unlockPadWithUser === 'function') {
+            unlockPadWithUser(currentUser);
+        } else {
+            const login = document.getElementById('login-screen');
+            if (login) login.style.setProperty('display', 'none', 'important');
+        }
+
+        try { resetInactivityTimer(); } catch (_) {}
+        try { await syncData(); } catch (_) {}
+
+        setTimeout(() => {
+            if (msgBox) msgBox.style.display = 'none';
+        }, 800);
+
     } catch (e) {
         console.error('Erreur réseau PIN', e);
-        msgBox.style.display = 'block';
-        msgBox.style.color = 'var(--alert)';
-        msgBox.innerText = '❌ Impossible de joindre le serveur.';
-        clearPin();
+
+        if (msgBox) {
+            msgBox.style.display = 'block';
+            msgBox.style.color = 'var(--alert)';
+            msgBox.innerText = '❌ Impossible de joindre le serveur.';
+        }
+
+        currentPin = '';
+        const display = document.getElementById('pin-display');
+        if (display) display.innerText = '';
+
     } finally {
         loginInProgress = false;
+        if (enterBtn) {
+            enterBtn.disabled = false;
+            enterBtn.style.opacity = '1';
+        }
     }
 }
+
 
 async function requestMaintenanceOverride() {
             if (!(await requirePermission('TERMINAL_MAINTENANCE'))) return;
@@ -6752,6 +6811,42 @@ if(document.readyState==="loading"){
 
 const observer=new MutationObserver(bindClose);
 observer.observe(document.documentElement,{childList:true,subtree:true});
+})();
+</script>
+
+
+<style id="ichef-pin-final-touch-css">
+#login-screen,
+#login-screen .pin-pad,
+#login-screen .pin-btn{
+    pointer-events:auto !important;
+}
+#login-screen .pin-btn{
+    touch-action:manipulation !important;
+    position:relative !important;
+    z-index:99999999 !important;
+}
+</style>
+
+<script id="ichef-pin-final-touch-engine">
+(function(){
+  function fixPinButtons(){
+    const login = document.getElementById('login-screen');
+    if(!login) return;
+
+    login.style.setProperty('pointer-events','auto','important');
+
+    login.querySelectorAll('.pin-btn').forEach(btn=>{
+      btn.style.setProperty('pointer-events','auto','important');
+      btn.style.setProperty('touch-action','manipulation','important');
+    });
+  }
+
+  if(document.readyState === 'loading'){
+    document.addEventListener('DOMContentLoaded', fixPinButtons);
+  }else{
+    fixPinButtons();
+  }
 })();
 </script>
 
