@@ -5082,123 +5082,14 @@ function renderMenu(categoryId) {
             } catch (_) {}
         }
 
-        // Exposition explicite pour compatibilité avec anciens boutons / PWA.
-        window.confirmCuisson = confirmCuisson;
-        function cancelCuisson() { pendingCuissonItem = null; document.getElementById('cuisson-modal').classList.remove('open'); }
-
-        function executeAddToCart(n, p, dest, courseOverride, originalName, tvaRate = 10) { 
-            let cId = courseOverride !== undefined ? courseOverride : currentCourseDefault;
-            let seatId = currentSeat; 
-            let e = currentTicket.find(i => i.n === n && !i.done && !i.served && !i.isSent && i.course === cId && !i.obs && !i.isOffered && (i.seat || 0) === seatId && i.tva === tvaRate); 
-            if(e) e.qty = (e.qty||1)+1; 
-            else currentTicket.push({ id: Date.now()+Math.random(), itemId: Date.now(), n: n.replace(/\[BR\]/g, ' '), originalName: (originalName || n).replace(/\[BR\]/g, '\n'), p, tva: tvaRate, qty: 1, done: false, served: false, dest, savedToDB: false, isOffered: false, course: cId, obs: "", modifiers: { add: [], remove: [] }, cooking: null, seat: seatId, isSent: false }); 
-            renderTicket();
-            flashAddedItem(n, 1);
-            updateOrderMiniBar();
-        }
-
-        function addMenuToTicket(n, p, dest, tvaRate = 10) {
-            const cleanMenuName = String(n || '').replace('🌟 ', '').trim();
-            const parts = String(n || '').split('[BR]').map(x => x.replace('🌟 ','').trim()).filter(Boolean);
-            const menuId = `MENU_${Date.now()}_${Math.random().toString(36).slice(2,7)}`;
-
-            const sequenceParts = parts.length > 1 ? parts : [
-                `🥗 Entrée (${cleanMenuName})`,
-                `🔥 Plat (${cleanMenuName})`,
-                `🍰 Dessert (${cleanMenuName})`
-            ];
-
-            sequenceParts.forEach((part,index) => {
-                const seq = index + 1;
-                const lower = part.toLowerCase();
-                let course = lower.includes('dessert') || part.includes('🍰') ? 3
-                           : lower.includes('entrée') || lower.includes('entree') || part.includes('🥗') ? 1
-                           : 2;
-
-                executeAddToCart(part, index===0 ? p : 0, dest, course, n, tvaRate);
-
-                const added = [...currentTicket].reverse().find(item =>
-                    !item.isSent && item.n === part && item.course === course
-                );
-
-                if (added) {
-                    added.menuId = menuId;
-                    added.menuName = cleanMenuName;
-                    added.sequence = seq;
-                    added.sequenceStatus = 'DRAFT';
-                }
-            });
-
-            renderTicket();
-        }
-
+       // Mémoire globale pour retenir l'état d'ouverture/fermeture des blocs
+        window.collapsedCourses = window.collapsedCourses || {};
         
-        // =========================================================
-        // 🍽️ SERVICE PAR SÉQUENCES / RÉCLAME
-        // =========================================================
-        function getItemSequence(item) {
-            if (Number(item?.sequence) > 0) return Number(item.sequence);
-            const c=Number(item?.course);
-            if(c===1)return 1;if(c===2)return 2;if(c===3)return 3;
-            return 0;
-        }
-        function getSequenceMap() {
-            const map=new Map();
-            currentTicket.forEach((item,idx)=>{
-                const s=getItemSequence(item);
-                if(s<=0)return;
-                if(!map.has(s))map.set(s,[]);
-                map.get(s).push({item,idx});
-            });
-            return new Map([...map.entries()].sort((a,b)=>a[0]-b[0]));
-        }
-        function getSequenceState(entries) {
-            const items=(entries||[]).map(e=>e.item||e);
-            if(items.length&&items.every(i=>i.served))return 'SERVED';
-            if(items.length&&items.every(i=>i.done))return 'READY';
-            if(items.some(i=>i.sequenceStatus==='PRODUCTION'))return 'PRODUCTION';
-            if(items.some(i=>i.isSent))return 'WAITING';
-            return 'DRAFT';
-        }
-        function canRequestSequence(seq,map=getSequenceMap()) {
-            const keys=[...map.keys()];
-            const pos=keys.indexOf(Number(seq));
-            if(pos<=0)return true;
-            return getSequenceState(map.get(keys[pos-1]))==='SERVED';
-        }
-        async function requestSequence(seq) {
-            const map=getSequenceMap(), entries=map.get(Number(seq));
-            if(!entries?.length)return;
-            if(!canRequestSequence(Number(seq),map)){
-                alert('⏸️ Servez la séquence précédente avant de réclamer la suite.');
-                return;
-            }
-            entries.forEach(({item})=>{
-                item.isSent=true;item.done=false;item.served=false;
-                item.sequenceStatus='PRODUCTION';item.requestedAt=Date.now();
-            });
-            renderTicket();
-            try{
-                await executeSaveTableState(false,true);
-                if(typeof showToast==='function')showToast(`🔥 Séquence ${seq} réclamée`);
-            }catch(e){console.error(e);}
-        }
-        function updateSequenceServicePanel() {
-            const panel=document.getElementById('sequence-service-panel');
-            if(!panel)return;
-            const map=getSequenceMap();
-            if(!map.size){panel.style.display='none';panel.innerHTML='';return;}
-            panel.style.display='block';
-            let html='<div style="padding:10px;color:var(--gold);font-weight:900">🍽️ SERVICE DU MENU</div>';
-            for(const [seq,entries] of map){
-                const state=getSequenceState(entries), allowed=canRequestSequence(seq,map);
-                let label=state==='PRODUCTION'?'🔥 EN PRODUCTION':state==='READY'?'🔔 PRÊT':state==='SERVED'?'✅ SERVI':'⏸ EN ATTENTE';
-                let btn=(state==='WAITING'||state==='DRAFT')
-                    ? `<button onclick="requestSequence(${seq})" ${allowed?'':'disabled'} style="padding:7px 10px">▶ RÉCLAMER</button>`:'';
-                html+=`<div style="display:flex;justify-content:space-between;align-items:center;padding:9px;border-top:1px solid #333"><span><b>S${seq}</b> ${label}</span>${btn}</div>`;
-            }
-            panel.innerHTML=html;
-        }
+        window.toggleCoursePanel = function(c, event) {
+            if(event) event.stopPropagation();
+            window.collapsedCourses[c] = !window.collapsedCourses[c];
+            renderTicket(); // On redessine le ticket immédiatement
+        };
 
         function renderTicket() {
             let list = document.getElementById('ticket-list');
@@ -5228,14 +5119,13 @@ function renderMenu(categoryId) {
                 
                 if (!i.isSent) statusHtml = `<button class="btn-mini" style="border-color: var(--text-main); color: var(--text-main); padding: 4px 8px; font-size: 0.6rem;">NOUVEAU</button>`;
                 else if (i.served) { statusHtml = `<button class="btn-mini" style="border-color: var(--text-muted); color: var(--text-muted); padding: 4px 8px; font-size: 0.6rem;">SERVI</button>`; opacityStyle = "opacity: 0.4;"; }
-              else if (i.done) statusHtml = `<button class="btn-mini" style="background: #10b981; color: #000; border-color: #10b981; padding: 4px 8px; font-size: 0.7rem; font-weight: 800; cursor: pointer; box-shadow: 0 0 10px rgba(16,185,129,0.5);" onclick="markAsServed(${idx}); event.stopPropagation();">✋ RÉCUPÉRER</button>`;
+                else if (i.done) statusHtml = `<button class="btn-mini" style="background: #10b981; color: #000; border-color: #10b981; padding: 4px 8px; font-size: 0.7rem; font-weight: 800; cursor: pointer; box-shadow: 0 0 10px rgba(16,185,129,0.5);" onclick="markAsServed(${idx}); event.stopPropagation();">✋ RÉCUPÉRER</button>`;
                 else statusHtml = `<button class="btn-mini" style="border-color: var(--gold); color: var(--gold); padding: 4px 8px; font-size: 0.6rem;">ATTENTE</button>`;
                 
                 let seatBadge = (i.seat && i.seat > 0) ? `<span style="color:var(--text-muted); font-size:0.75rem; margin-right:8px; font-weight:500;">👤 ${i.seat}</span>` : `<span style="color:var(--text-muted); font-size:0.7rem; margin-right:8px; font-weight:400;">🍽️ CTR</span>`;
                 let priceHtml = i.isOffered ? `<span style="margin-right:10px; font-weight:500; color:var(--gold); font-size: 0.8rem; letter-spacing: 1px;">🎁 OFFERT</span>` : `<span style="margin-right:10px; font-weight:500; font-size: 0.95rem; font-family: 'Playfair Display', serif;">${formatMoneyPad(ligneTTC)}</span>`;
                 let obsDisplay = i.obs ? `<span style="font-size:0.7rem; color:var(--gold); margin-left: 5px; font-weight: 500;">⚠️ ${i.obs}</span>` : `<span style="font-size:0.65rem; color:var(--border-strong); font-weight: 300; margin-left: 5px;">+ Obs</span>`;
 
-                // 🔥 BOUTON D'ERREUR POUR LES PLATS DÉJÀ ENVOYÉS 🔥
                 let errorBtnHtml = i.isSent && !i.served ? `<button class="item-error-btn" onclick="openErrorModal(${idx}); event.stopPropagation();">REFAIRE</button>` : `<button class="item-delete-btn" onclick="removeTicketItem(${idx}); event.stopPropagation();">✕</button>`;
 
                 let itemHtml = `
@@ -5266,12 +5156,15 @@ function renderMenu(categoryId) {
                 htmlByCourse[c] += itemHtml;
             }); 
 
-          let finalHtml = '';
+            let finalHtml = '';
             [0, 1, 2, 3].forEach(c => { 
                 if(htmlByCourse[c] !== '') {
+                    // Vérifie si la catégorie est repliée dans la mémoire
+                    let collapsedClass = window.collapsedCourses[c] ? 'collapsed' : '';
+                    
                     finalHtml += `
-                    <div class="course-card">
-                        <div class="course-card-header" onclick="event.stopPropagation(); this.classList.toggle('collapsed'); this.nextElementSibling.classList.toggle('collapsed');">
+                    <div class="course-card ${collapsedClass}">
+                        <div class="course-card-header" onclick="window.toggleCoursePanel(${c}, event)">
                             <span class="course-title">${courseNames[c]}</span>
                             <span class="toggle-icon">▼</span>
                         </div>
@@ -5300,8 +5193,9 @@ function renderMenu(categoryId) {
                 btnSend.style.display = 'none';
             }
 
-           updateOrderMiniBar();
+            updateOrderMiniBar();
             updateSequenceServicePanel();
+        }
         } // <--- C'est cette accolade qui manquait pour fermer la fonction renderTicket() !
                             
         // 🔥 LOGIQUE ANTI-RUSH : VÉRIFICATION AVANT ENVOI 🔥
