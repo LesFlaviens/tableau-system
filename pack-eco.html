@@ -20,13 +20,7 @@
     <script>
     "use strict";
 
-    // Frontaux iCHEF officiellement autorisés.
-    const ICHEF_ALLOWED_HOSTS = new Set([
-        "os.ichef.ch",
-        "tableau-system.onrender.com",
-        "localhost",
-        "127.0.0.1"
-    ]);
+    const ICHEF_ALLOWED_HOSTS = new Set(["os.ichef.ch", "localhost", "127.0.0.1"]);
     if (!ICHEF_ALLOWED_HOSTS.has(window.location.hostname)) {
         document.documentElement.innerHTML = "<h1 style='color:red;text-align:center;margin-top:20%;font-family:sans-serif'>🛑 ACCÈS NON AUTORISÉ</h1>";
         throw new Error("Hôte non autorisé");
@@ -1073,6 +1067,7 @@ header{
     background:var(--gold-dim) !important;
 }
 </style>
+
 </head>
 <body oncontextmenu="return false;" ondragstart="return false;" ondrop="return false;">
 
@@ -1484,7 +1479,7 @@ header{
 <div id="sequence-service-panel"></div>
 <div id="ticket-list" class="ticket-items-container"></div>
                 
-                <div id="ichef-ticket-bottom-fixed" style="margin-top: auto;">
+                <div style="margin-top: auto;">
                     <div id="ticket-total-price" class="ticket-total">0.00€</div>
                     <div id="ticket-tva" style="text-align: right; color: var(--text-muted); font-size: 0.75rem; margin-top: 5px; margin-bottom: 15px; letter-spacing: 1px;">TVA : 0.00€</div>
 
@@ -1786,98 +1781,112 @@ let unifiedCategories = [];
         async function submitPin() {
     if (loginInProgress) return;
 
-    const msg = document.getElementById('error-msg');
-    const display = document.getElementById('pin-display');
-    const pin = String(currentPin || '').trim();
+    const msgBox = document.getElementById('error-msg');
+    msgBox.style.display = 'none';
 
-    if (!pin) {
-        if (msg) {
-            msg.style.display = 'block';
-            msg.style.color = 'var(--alert)';
-            msg.innerText = '❌ Entrez votre code PIN.';
-        }
+    if (Date.now() < localLoginBlockedUntil) {
+        msgBox.style.display = 'block';
+        msgBox.style.color = 'var(--alert)';
+        msgBox.innerText = '⏳ Trop de tentatives. Veuillez patienter.';
+        return;
+    }
+
+    const pin = String(currentPin || '').trim();
+    if (!pin) return;
+
+    if (!/^\d{4,12}$/.test(pin)) {
+        msgBox.style.display = 'block';
+        msgBox.style.color = 'var(--alert)';
+        msgBox.innerText = '❌ Code PIN invalide (4 chiffres minimum).';
+        clearPin();
         return;
     }
 
     loginInProgress = true;
-    if (msg) {
-        msg.style.display = 'block';
-        msg.style.color = 'var(--gold)';
-        msg.innerText = '⏳ Vérification...';
-    }
-
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 7000);
+    msgBox.style.display = 'block';
+    msgBox.style.color = 'var(--gold)';
+    msgBox.innerText = '⏳ Vérification...';
 
     try {
+        // Vérification centralisée côté serveur : PIN principal + PIN du personnel.
         const response = await fetch(`${APP_SERVER_URL}/api/verify-pin`, {
             method: 'POST',
-            credentials: 'include',
+            headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
             cache: 'no-store',
-            signal: controller.signal,
-            headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
                 tenantID: appTenantID,
-                pin: pin,
-                deviceId: (window.ICHEF_SECURITY && window.ICHEF_SECURITY.deviceId) || null
+                pin,
+                deviceId: window.ICHEF_SECURITY?.deviceId || null
             })
         });
 
         const data = await response.json().catch(() => ({}));
 
-        if (!response.ok || data.success === false || data.ok === false) {
-            throw new Error(data.error || data.message || 'Code PIN refusé');
+        if (!response.ok || !data.success) {
+            localLoginFailures += 1;
+            if (localLoginFailures >= 5) {
+                localLoginBlockedUntil = Date.now() + 30000;
+                localLoginFailures = 0;
+            }
+
+            msgBox.style.display = 'block';
+            msgBox.style.color = 'var(--alert)';
+            msgBox.innerText = `❌ ${data.error || 'Code PIN incorrect.'}`;
+            clearPin();
+            return;
         }
 
-        // Conserve les informations de sécurité réellement renvoyées par le serveur.
-        window.ICHEF_SECURITY = window.ICHEF_SECURITY || {};
-        if (data.sessionToken || data.token) {
-            window.ICHEF_SECURITY.sessionToken = data.sessionToken || data.token;
+        localLoginFailures = 0;
+
+        // Le serveur renvoie le rôle réel associé au PIN.
+        const serverRole = String(data.role || 'STAFF').trim().toLowerCase();
+        let displayName = serverRole === 'master' ? 'Directeur' : 'Utilisateur';
+        let userRole = (serverRole === 'master' || serverRole === 'admin' || serverRole === 'manager')
+            ? 'Manager'
+            : 'Serveur';
+
+        // Pour un PIN staff, récupérer le nom affiché sans refaire l'authentification localement.
+        if (serverRole !== 'master') {
+            try {
+                const stateResponse = await fetch(
+                    `${APP_SERVER_URL}/get-current-state?tenantID=${encodeURIComponent(appTenantID)}&_t=${Date.now()}`,
+                    { cache: 'no-store' }
+                );
+                if (stateResponse.ok) {
+                    const stateData = await stateResponse.json();
+                    const staffList = stateData?.activeOrders?.STAFF_ACCESS?.data || [];
+                    const staffUser = Array.isArray(staffList)
+                        ? staffList.find(s => String(s?.pin ?? '').trim() === pin)
+                        : null;
+                    if (staffUser?.name) displayName = staffUser.name;
+                }
+            } catch (_) {
+                // Le nom est secondaire : l'accès reste validé par /api/verify-pin.
+            }
         }
-        if (data.csrfToken) window.ICHEF_SECURITY.csrfToken = data.csrfToken;
-        if (Array.isArray(data.permissions)) {
-            window.ICHEF_SECURITY.permissions = new Set(data.permissions);
-        }
 
-        const rawRole = String(data.role || (data.user && data.user.role) || 'staff').toLowerCase();
-        currentUser = {
-            name: data.name || (data.user && data.user.name) || 'Utilisateur',
-            role: ['master','admin','manager'].includes(rawRole) ? 'Manager' : 'Serveur',
-            serverRole: rawRole,
-            id: data.userId || (data.user && data.user.id) || null
-        };
+        currentUser = { name: displayName, role: userRole, serverRole };
 
-        currentPin = '';
-        if (display) display.innerText = '';
+        window.ICHEF_SECURITY.user = currentUser;
+        window.ICHEF_SECURITY.authenticatedAt = Date.now();
+        window.ICHEF_SECURITY.permissions = new Set(
+            userRole === 'Manager'
+                ? ['ADMIN_ACCESS','FLOORPLAN_DELETE','ORDER_ITEM_CANCEL','ORDER_VOID','TERMINAL_MAINTENANCE']
+                : []
+        );
 
-        // IMPORTANT : on utilise le déverrouillage natif du Pad et on ne lance
-        // aucune deuxième synchronisation ici.
-        if (typeof unlockPadWithUser === 'function') {
-            unlockPadWithUser(currentUser);
-        } else {
-            const login = document.getElementById('login-screen');
-            if (login) login.style.display = 'none';
-        }
-
-        if (msg) msg.style.display = 'none';
-
-    } catch (err) {
-        console.error('[iCHEF PIN]', err);
-        currentPin = '';
-        if (display) display.innerText = '';
-        if (msg) {
-            msg.style.display = 'block';
-            msg.style.color = 'var(--alert)';
-            msg.innerText = err && err.name === 'AbortError'
-                ? '❌ Serveur indisponible : délai dépassé.'
-                : `❌ ${err && err.message ? err.message : 'Connexion impossible.'}`;
-        }
+        clearPin();
+        unlockPadWithUser(currentUser);
+    } catch (e) {
+        console.error('Erreur réseau PIN', e);
+        msgBox.style.display = 'block';
+        msgBox.style.color = 'var(--alert)';
+        msgBox.innerText = '❌ Impossible de joindre le serveur.';
+        clearPin();
     } finally {
-        clearTimeout(timeout);
         loginInProgress = false;
     }
 }
-
 
 async function requestMaintenanceOverride() {
             if (!(await requirePermission('TERMINAL_MAINTENANCE'))) return;
@@ -4189,7 +4198,7 @@ function renderMenu(categoryId) {
                 let errorBtnHtml = i.isSent && !i.served ? `<button class="item-error-btn" onclick="openErrorModal(${idx}); event.stopPropagation();">REFAIRE</button>` : `<button class="item-delete-btn" onclick="removeTicketItem(${idx}); event.stopPropagation();">✕</button>`;
 
                 let itemHtml = `
-                <div class="ticket-item-row ichef-ticket-expandable" id="ichef-ticket-item-${idx}" data-ticket-index="${idx}" style="${opacityStyle}">
+                <div class="ticket-item-row" style="${opacityStyle}">
                     <div style="flex:1; cursor:pointer;" onclick="openEditItem(${idx})">
                         <div style="font-weight:400; font-size:0.95rem; color: var(--text-main);">${seatBadge}${q>1?`<span style="color:var(--gold); font-weight:600;">${q}x</span> `:""}${cleanName||'?'}${seqPill}</div>
                         <div style="display:flex; align-items:center; gap:8px; margin-top:6px;">${statusHtml}${obsDisplay}</div>
@@ -4205,13 +4214,6 @@ function renderMenu(categoryId) {
                     </div>
                     <div style="display: flex; align-items: center; gap: 7px;">
                         ${priceHtml}
-                        <button type="button"
-                                class="item-expand-btn"
-                                onclick="toggleTicketItemExpand(${idx});event.stopPropagation();"
-                                title="Agrandir pour vérifier la commande"
-                                aria-label="Agrandir ce plat">
-                            ⤢
-                        </button>
                         <button class="item-modifier-btn"
                                 onclick="openItemModifierModal(${idx});event.stopPropagation();"
                                 title="Ajouter ou enlever un élément">
@@ -6086,870 +6088,6 @@ function toggleOutilsMenuFinal(event, button) {
 }
 </script>
 
-
-<style id="ichef-ticket-right-scrollbar">
-/* Zone scrollable de la colonne droite : SERVICE DU MENU + PLATS */
-#ichef-ticket-scroll-area{
-    flex:1 1 auto !important;
-    min-height:0 !important;
-    overflow-y:scroll !important;
-    overflow-x:hidden !important;
-    padding-right:8px !important;
-    -webkit-overflow-scrolling:touch !important;
-    touch-action:pan-y !important;
-    scrollbar-width:auto !important;
-    scrollbar-color:#C5A059 #151515 !important;
-}
-
-/* Barre verticale bien visible */
-#ichef-ticket-scroll-area::-webkit-scrollbar{
-    width:12px !important;
-    display:block !important;
-}
-#ichef-ticket-scroll-area::-webkit-scrollbar-track{
-    background:#151515 !important;
-    border-left:1px solid rgba(255,255,255,.12) !important;
-}
-#ichef-ticket-scroll-area::-webkit-scrollbar-thumb{
-    background:#C5A059 !important;
-    border-radius:999px !important;
-    border:2px solid #151515 !important;
-}
-#ichef-ticket-scroll-area::-webkit-scrollbar-thumb:active{
-    background:#e1bd6f !important;
-}
-
-/* Le ticket-list ne crée plus son propre scroll interne */
-#ichef-ticket-scroll-area #ticket-list{
-    flex:none !important;
-    min-height:auto !important;
-    overflow:visible !important;
-    padding-right:0 !important;
-}
-
-/* Le bloc séquences fait partie du même défilement */
-#ichef-ticket-scroll-area #sequence-service-panel{
-    flex:none !important;
-}
-
-/* Prix + commandes restent en bas et ne scrollent pas */
-.ticket-view > #ticket-totals,
-.ticket-view > #ticket-action-buttons,
-.ticket-view > .ticket-total,
-.ticket-view > #ticket-total-price{
-    flex:0 0 auto !important;
-}
-
-@media(max-width:900px){
-    #ichef-ticket-scroll-area::-webkit-scrollbar{
-        width:14px !important;
-    }
-}
-</style>
-
-<script id="ichef-ticket-right-scrollbar-engine">
-(function(){
-"use strict";
-
-function installTicketScrollArea(){
-    const sequence = document.getElementById('sequence-service-panel');
-    const list = document.getElementById('ticket-list');
-
-    if(!sequence || !list) return;
-    if(document.getElementById('ichef-ticket-scroll-area')) return;
-
-    const parent = sequence.parentNode;
-    if(!parent || parent !== list.parentNode) return;
-
-    const wrap = document.createElement('div');
-    wrap.id = 'ichef-ticket-scroll-area';
-    wrap.setAttribute('aria-label','Défilement du service et des plats');
-
-    parent.insertBefore(wrap, sequence);
-    wrap.appendChild(sequence);
-    wrap.appendChild(list);
-}
-
-if(document.readyState === 'loading'){
-    document.addEventListener('DOMContentLoaded', installTicketScrollArea);
-}else{
-    installTicketScrollArea();
-}
-
-/* Au cas où le ticket est reconstruit dynamiquement */
-const observer = new MutationObserver(()=>{
-    if(!document.getElementById('ichef-ticket-scroll-area')){
-        installTicketScrollArea();
-    }
-});
-observer.observe(document.documentElement,{childList:true,subtree:true});
-})();
-</script>
-
-
-<style id="ichef-scroll-rail-v2">
-/* Vraie barre verticale permanente à droite du bloc des commandes */
-#ichef-ticket-scroll-area{
-    position:relative !important;
-    overflow-y:auto !important;
-    overflow-x:hidden !important;
-    scrollbar-width:none !important;
-    padding-right:34px !important;
-}
-#ichef-ticket-scroll-area::-webkit-scrollbar{display:none !important;}
-
-#ichef-scroll-rail{
-    position:absolute !important;
-    top:0 !important;
-    right:4px !important;
-    bottom:0 !important;
-    width:26px !important;
-    z-index:2147482000 !important;
-    display:flex !important;
-    flex-direction:column !important;
-    align-items:center !important;
-    background:#111 !important;
-    border-left:1px solid #333 !important;
-    pointer-events:auto !important;
-}
-#ichef-scroll-up,#ichef-scroll-down{
-    flex:0 0 34px !important;
-    width:26px !important;
-    min-height:34px !important;
-    padding:0 !important;
-    border:0 !important;
-    background:#111 !important;
-    color:#d1aa55 !important;
-    font-size:24px !important;
-    font-weight:900 !important;
-    line-height:34px !important;
-}
-#ichef-scroll-track{
-    position:relative !important;
-    flex:1 1 auto !important;
-    width:12px !important;
-    margin:3px 0 !important;
-    border-radius:10px !important;
-    background:#2a2a2a !important;
-    touch-action:none !important;
-}
-#ichef-scroll-thumb{
-    position:absolute !important;
-    left:0 !important;
-    top:0;
-    width:12px !important;
-    min-height:44px !important;
-    border-radius:10px !important;
-    background:#d1aa55 !important;
-    touch-action:none !important;
-    cursor:grab !important;
-}
-</style>
-
-<script id="ichef-scroll-rail-v2-engine">
-(function(){
-"use strict";
-
-function installRail(){
-    const area=document.getElementById("ichef-ticket-scroll-area");
-    if(!area || document.getElementById("ichef-scroll-rail")) return;
-
-    const rail=document.createElement("div");
-    rail.id="ichef-scroll-rail";
-    rail.innerHTML=`
-      <button type="button" id="ichef-scroll-up" aria-label="Monter">▲</button>
-      <div id="ichef-scroll-track"><div id="ichef-scroll-thumb"></div></div>
-      <button type="button" id="ichef-scroll-down" aria-label="Descendre">▼</button>`;
-    area.appendChild(rail);
-
-    const track=rail.querySelector("#ichef-scroll-track");
-    const thumb=rail.querySelector("#ichef-scroll-thumb");
-    const up=rail.querySelector("#ichef-scroll-up");
-    const down=rail.querySelector("#ichef-scroll-down");
-
-    function metrics(){
-        const max=Math.max(0,area.scrollHeight-area.clientHeight);
-        const th=track.clientHeight;
-        const ratio=area.scrollHeight ? area.clientHeight/area.scrollHeight : 1;
-        const hh=Math.max(44,Math.min(th,th*ratio));
-        const travel=Math.max(0,th-hh);
-        return {max,th,hh,travel};
-    }
-    function sync(){
-        const m=metrics();
-        thumb.style.height=m.hh+"px";
-        thumb.style.top=(m.max ? (area.scrollTop/m.max)*m.travel : 0)+"px";
-        thumb.style.opacity=m.max>1?"1":".45";
-    }
-
-    up.addEventListener("click",()=>area.scrollBy({top:-Math.max(120,area.clientHeight*.55),behavior:"smooth"}));
-    down.addEventListener("click",()=>area.scrollBy({top:Math.max(120,area.clientHeight*.55),behavior:"smooth"}));
-
-    let dragging=false,startY=0,startTop=0;
-    thumb.addEventListener("pointerdown",e=>{
-        dragging=true; startY=e.clientY; startTop=parseFloat(thumb.style.top)||0;
-        try{thumb.setPointerCapture(e.pointerId)}catch(_){}
-        e.preventDefault(); e.stopPropagation();
-    },{passive:false});
-    thumb.addEventListener("pointermove",e=>{
-        if(!dragging)return;
-        const m=metrics();
-        let pos=Math.max(0,Math.min(m.travel,startTop+(e.clientY-startY)));
-        area.scrollTop=m.travel ? (pos/m.travel)*m.max : 0;
-        e.preventDefault(); e.stopPropagation();
-    },{passive:false});
-    thumb.addEventListener("pointerup",()=>dragging=false);
-    thumb.addEventListener("pointercancel",()=>dragging=false);
-
-    track.addEventListener("pointerdown",e=>{
-        if(e.target===thumb)return;
-        const r=track.getBoundingClientRect(),m=metrics();
-        const pos=Math.max(0,Math.min(m.travel,e.clientY-r.top-m.hh/2));
-        area.scrollTop=m.travel ? (pos/m.travel)*m.max : 0;
-        e.preventDefault();
-    },{passive:false});
-
-    area.addEventListener("scroll",sync,{passive:true});
-    new ResizeObserver(sync).observe(area);
-    new MutationObserver(sync).observe(area,{childList:true,subtree:true,characterData:true});
-    setTimeout(sync,50);
-}
-
-if(document.readyState==="loading") document.addEventListener("DOMContentLoaded",()=>setTimeout(installRail,50));
-else setTimeout(installRail,50);
-
-new MutationObserver(()=>installRail()).observe(document.documentElement,{childList:true,subtree:true});
-})();
-</script>
-
-
-<style id="ichef-scroll-v3-css">
-.ticket-view{position:relative !important;}
-/* on remet le vrai ticket comme zone de défilement */
-.ticket-view #ticket-list{
-  flex:1 1 auto !important;
-  min-height:0 !important;
-  overflow-y:auto !important;
-  overflow-x:hidden !important;
-  padding-right:38px !important;
-  scrollbar-width:none !important;
-  touch-action:pan-y !important;
-  -webkit-overflow-scrolling:touch !important;
-}
-.ticket-view #ticket-list::-webkit-scrollbar{display:none !important;}
-#ichef-ticket-scroll-area{display:contents !important;}
-
-#ichef-v3-rail{
-  position:absolute !important;
-  right:7px !important;
-  width:28px !important;
-  z-index:2147483000 !important;
-  display:flex !important;
-  flex-direction:column !important;
-  align-items:center !important;
-  background:#111 !important;
-  border:1px solid #333 !important;
-  border-radius:7px !important;
-  overflow:hidden !important;
-  pointer-events:auto !important;
-}
-#ichef-v3-up,#ichef-v3-down{
-  width:28px !important;height:38px !important;min-height:38px !important;
-  padding:0 !important;border:0 !important;border-radius:0 !important;
-  background:#111 !important;color:#d1aa55 !important;
-  font-size:22px !important;font-weight:900 !important;line-height:38px !important;
-  pointer-events:auto !important;touch-action:manipulation !important;
-}
-#ichef-v3-track{
-  position:relative !important;flex:1 1 auto !important;width:14px !important;
-  min-height:50px !important;margin:3px 0 !important;background:#333 !important;
-  border-radius:10px !important;touch-action:none !important;pointer-events:auto !important;
-}
-#ichef-v3-thumb{
-  position:absolute !important;left:0 !important;top:0;width:14px !important;
-  min-height:46px !important;background:#d1aa55 !important;border-radius:10px !important;
-  touch-action:none !important;pointer-events:auto !important;cursor:grab !important;
-}
-</style>
-<script id="ichef-scroll-v3-engine">
-(function(){
-"use strict";
-function install(){
- const view=document.querySelector("#order-drawer .ticket-view");
- const list=document.getElementById("ticket-list");
- if(!view||!list)return;
-
- /* annule l'ancien rail qui était attaché au mauvais conteneur */
- document.getElementById("ichef-scroll-rail")?.remove();
-
- let rail=document.getElementById("ichef-v3-rail");
- if(!rail){
-   rail=document.createElement("div");
-   rail.id="ichef-v3-rail";
-   rail.innerHTML='<button type="button" id="ichef-v3-up">▲</button><div id="ichef-v3-track"><div id="ichef-v3-thumb"></div></div><button type="button" id="ichef-v3-down">▼</button>';
-   view.appendChild(rail);
- }
- const up=rail.querySelector("#ichef-v3-up"),down=rail.querySelector("#ichef-v3-down");
- const track=rail.querySelector("#ichef-v3-track"),thumb=rail.querySelector("#ichef-v3-thumb");
-
- function place(){
-   const vr=view.getBoundingClientRect(), lr=list.getBoundingClientRect();
-   rail.style.top=Math.max(0,lr.top-vr.top)+"px";
-   rail.style.height=Math.max(110,lr.height)+"px";
-   sync();
- }
- function met(){
-   const max=Math.max(0,list.scrollHeight-list.clientHeight);
-   const h=track.clientHeight;
-   const hh=Math.max(46,Math.min(h,h*(list.clientHeight/Math.max(list.scrollHeight,1))));
-   return {max,h,hh,travel:Math.max(0,h-hh)};
- }
- function sync(){
-   const m=met();
-   thumb.style.height=m.hh+"px";
-   thumb.style.top=(m.max?list.scrollTop/m.max*m.travel:0)+"px";
-   thumb.style.opacity=m.max>1?"1":".45";
- }
- function step(dir){
-   list.scrollTop += dir*Math.max(100,list.clientHeight*.55);
-   sync();
- }
- up.onclick=e=>{e.preventDefault();e.stopPropagation();step(-1)};
- down.onclick=e=>{e.preventDefault();e.stopPropagation();step(1)};
-
- let drag=false,sy=0,st=0;
- thumb.onpointerdown=e=>{drag=true;sy=e.clientY;st=parseFloat(thumb.style.top)||0;try{thumb.setPointerCapture(e.pointerId)}catch(_){};e.preventDefault();e.stopPropagation()};
- thumb.onpointermove=e=>{if(!drag)return;const m=met();const p=Math.max(0,Math.min(m.travel,st+e.clientY-sy));list.scrollTop=m.travel?p/m.travel*m.max:0;sync();e.preventDefault();e.stopPropagation()};
- thumb.onpointerup=thumb.onpointercancel=()=>drag=false;
- track.onpointerdown=e=>{if(e.target===thumb)return;const r=track.getBoundingClientRect(),m=met();const p=Math.max(0,Math.min(m.travel,e.clientY-r.top-m.hh/2));list.scrollTop=m.travel?p/m.travel*m.max:0;sync();e.preventDefault();e.stopPropagation()};
-
- list.addEventListener("scroll",sync,{passive:true});
- new ResizeObserver(place).observe(list);
- new MutationObserver(()=>setTimeout(place,0)).observe(list,{childList:true,subtree:true});
- place();
-}
-if(document.readyState==="loading")document.addEventListener("DOMContentLoaded",()=>setTimeout(install,80));else setTimeout(install,80);
-const mo=new MutationObserver(()=>{if(!document.getElementById("ichef-v3-rail"))install()});
-mo.observe(document.documentElement,{childList:true,subtree:true});
-window.addEventListener("resize",()=>setTimeout(install,20));
-})();
-</script>
-
-
-<style id="ichef-horizontal-ticket-resizer-style">
-/* =========================================================
-   COLONNE DROITE :
-   barre JAUNE HORIZONTALE au-dessus du prix
-   ========================================================= */
-
-/* Désactive définitivement les anciennes barres jaunes verticales */
-#ichef-v3-rail,
-#ichef-scroll-rail{
-    display:none !important;
-    visibility:hidden !important;
-    pointer-events:none !important;
-}
-
-/* Zone SERVICE MENU + PLATS */
-#ichef-ticket-scroll-area{
-    display:block !important;
-    flex:0 0 var(--ichef-ticket-zone-height, 48%) !important;
-    min-height:120px !important;
-    max-height:72% !important;
-    overflow-y:auto !important;
-    overflow-x:hidden !important;
-    padding-right:5px !important;
-    touch-action:pan-y !important;
-    -webkit-overflow-scrolling:touch !important;
-    scrollbar-width:thin !important;
-    scrollbar-color:#555 transparent !important;
-}
-
-#ichef-ticket-scroll-area::-webkit-scrollbar{
-    width:6px !important;
-    display:block !important;
-}
-#ichef-ticket-scroll-area::-webkit-scrollbar-thumb{
-    background:#555 !important;
-    border-radius:10px !important;
-}
-#ichef-ticket-scroll-area::-webkit-scrollbar-track{
-    background:transparent !important;
-}
-
-/* Le contenu interne ne crée pas un deuxième scroll */
-#ichef-ticket-scroll-area #ticket-list{
-    display:block !important;
-    flex:none !important;
-    height:auto !important;
-    min-height:0 !important;
-    overflow:visible !important;
-    padding-right:0 !important;
-}
-
-/* Barre horizontale demandée */
-#ichef-ticket-horizontal-resizer{
-    flex:0 0 24px !important;
-    width:100% !important;
-    height:24px !important;
-    min-height:24px !important;
-    display:flex !important;
-    align-items:center !important;
-    justify-content:center !important;
-    box-sizing:border-box !important;
-    cursor:ns-resize !important;
-    touch-action:none !important;
-    user-select:none !important;
-    -webkit-user-select:none !important;
-    position:relative !important;
-    z-index:2147482000 !important;
-    background:transparent !important;
-    margin:3px 0 5px !important;
-}
-
-#ichef-ticket-horizontal-resizer::before{
-    content:"";
-    width:100% !important;
-    height:8px !important;
-    background:#C5A059 !important;
-    border-radius:999px !important;
-    box-shadow:0 0 0 1px rgba(197,160,89,.35),
-               0 2px 8px rgba(0,0,0,.5) !important;
-}
-
-#ichef-ticket-horizontal-resizer::after{
-    content:"↕" !important;
-    position:absolute !important;
-    left:50% !important;
-    top:50% !important;
-    transform:translate(-50%,-50%) !important;
-    width:42px !important;
-    height:24px !important;
-    display:flex !important;
-    align-items:center !important;
-    justify-content:center !important;
-    border:2px solid #C5A059 !important;
-    border-radius:999px !important;
-    background:#090909 !important;
-    color:#C5A059 !important;
-    font-size:18px !important;
-    font-weight:900 !important;
-}
-
-/* Prix + boutons restent fixes sous la barre */
-#ichef-ticket-bottom-fixed{
-    flex:0 0 auto !important;
-    margin-top:0 !important;
-    min-height:0 !important;
-    background:var(--panel) !important;
-}
-
-.ticket-view{
-    overflow:hidden !important;
-}
-</style>
-
-<script id="ichef-horizontal-ticket-resizer-engine">
-(function(){
-"use strict";
-
-const STORAGE_KEY = "ichef_ticket_horizontal_height_pct";
-
-function installHorizontalResizer(){
-    const ticketView = document.querySelector("#order-drawer .ticket-view");
-    const bottom = document.getElementById("ichef-ticket-bottom-fixed");
-    if(!ticketView || !bottom) return;
-
-    /* Retire physiquement les anciennes barres verticales */
-    document.getElementById("ichef-v3-rail")?.remove();
-    document.getElementById("ichef-scroll-rail")?.remove();
-
-    let handle = document.getElementById("ichef-ticket-horizontal-resizer");
-    if(!handle){
-        handle = document.createElement("div");
-        handle.id = "ichef-ticket-horizontal-resizer";
-        handle.setAttribute("role","separator");
-        handle.setAttribute("aria-orientation","horizontal");
-        handle.setAttribute("aria-label","Agrandir ou réduire la zone des commandes");
-        ticketView.insertBefore(handle, bottom);
-    }
-
-    function getScrollArea(){
-        return document.getElementById("ichef-ticket-scroll-area");
-    }
-
-    function setPct(pct){
-        pct = Math.max(20, Math.min(72, pct));
-        ticketView.style.setProperty("--ichef-ticket-zone-height", pct + "%", "important");
-        try{ localStorage.setItem(STORAGE_KEY, pct.toFixed(1)); }catch(_){}
-    }
-
-    try{
-        const saved = parseFloat(localStorage.getItem(STORAGE_KEY));
-        if(Number.isFinite(saved)) setPct(saved);
-        else setPct(48);
-    }catch(_){
-        setPct(48);
-    }
-
-    if(handle.dataset.bound === "1") return;
-    handle.dataset.bound = "1";
-
-    let dragging = false;
-    let pointerId = null;
-
-    function move(clientY){
-        const rect = ticketView.getBoundingClientRect();
-        if(!rect.height) return;
-
-        /* Position verticale de la barre dans la colonne droite.
-           Plus on descend la barre, plus la zone des blocs est grande. */
-        const y = clientY - rect.top;
-        const pct = (y / rect.height) * 100;
-        setPct(pct);
-    }
-
-    handle.addEventListener("pointerdown", function(e){
-        dragging = true;
-        pointerId = e.pointerId;
-        try{ handle.setPointerCapture(pointerId); }catch(_){}
-        e.preventDefault();
-        e.stopPropagation();
-    }, {passive:false});
-
-    handle.addEventListener("pointermove", function(e){
-        if(!dragging || e.pointerId !== pointerId) return;
-        move(e.clientY);
-        e.preventDefault();
-        e.stopPropagation();
-    }, {passive:false});
-
-    function stop(){
-        dragging = false;
-        pointerId = null;
-    }
-
-    handle.addEventListener("pointerup", stop);
-    handle.addEventListener("pointercancel", stop);
-
-    /* Double clic = position équilibrée */
-    handle.addEventListener("dblclick", function(){
-        setPct(48);
-    });
-}
-
-function ensure(){
-    /* Le wrapper scroll est créé par le moteur précédent.
-       On attend qu'il existe puis on installe la barre. */
-    installHorizontalResizer();
-}
-
-if(document.readyState === "loading"){
-    document.addEventListener("DOMContentLoaded", ()=>setTimeout(ensure,100));
-}else{
-    setTimeout(ensure,100);
-}
-
-const observer = new MutationObserver(()=>{
-    if(!document.getElementById("ichef-ticket-horizontal-resizer")){
-        ensure();
-    }
-    document.getElementById("ichef-v3-rail")?.remove();
-    document.getElementById("ichef-scroll-rail")?.remove();
-});
-observer.observe(document.documentElement,{childList:true,subtree:true});
-
-window.addEventListener("resize", ()=>setTimeout(ensure,30));
-})();
-</script>
-
-
-<style id="ichef-close-button-fix-style">
-#order-drawer button[onclick*="closeOrder"],
-#order-drawer .close-order-btn,
-#order-drawer #close-order-btn{
-    pointer-events:auto !important;
-    touch-action:manipulation !important;
-    position:relative !important;
-    z-index:2147483001 !important;
-}
-</style>
-
-<script id="ichef-close-button-fix-engine">
-(function(){
-"use strict";
-
-function hardCloseOrder(){
-    try{
-        if(typeof window.closeOrder === "function"){
-            window.closeOrder();
-            return;
-        }
-    }catch(_){}
-
-    const drawer=document.getElementById("order-drawer");
-    if(drawer){
-        drawer.classList.remove("open");
-        drawer.classList.remove("order-ticket-focus");
-        drawer.classList.remove("ichef-mobile-ticket-open");
-        drawer.style.display="none";
-    }
-
-    try{
-        if(typeof currentTableId !== "undefined") currentTableId=null;
-        if(typeof currentLoyaltyPhone !== "undefined") currentLoyaltyPhone=null;
-    }catch(_){}
-
-    try{ window.updateOrderMiniBar?.(); }catch(_){}
-}
-
-function bindClose(){
-    const drawer=document.getElementById("order-drawer");
-    if(!drawer) return;
-
-    let btn =
-        drawer.querySelector('button[onclick*="closeOrder"]') ||
-        drawer.querySelector('.close-order-btn') ||
-        drawer.querySelector('#close-order-btn');
-
-    if(!btn) return;
-
-    btn.style.setProperty("pointer-events","auto","important");
-    btn.style.setProperty("touch-action","manipulation","important");
-    btn.style.setProperty("z-index","2147483001","important");
-
-    if(btn.dataset.closeFixed==="1") return;
-    btn.dataset.closeFixed="1";
-
-    // Neutralise les conflits avec d'anciens handlers qui bloquent le clic.
-    btn.addEventListener("click", function(e){
-        e.preventDefault();
-        e.stopPropagation();
-        hardCloseOrder();
-    }, true);
-
-    btn.addEventListener("touchend", function(e){
-        e.preventDefault();
-        e.stopPropagation();
-        hardCloseOrder();
-    }, {passive:false, capture:true});
-
-    btn.addEventListener("pointerup", function(e){
-        if(e.pointerType==="mouse") return; // le click gère déjà la souris
-        e.preventDefault();
-        e.stopPropagation();
-        hardCloseOrder();
-    }, true);
-}
-
-if(document.readyState==="loading"){
-    document.addEventListener("DOMContentLoaded",()=>setTimeout(bindClose,50));
-}else{
-    setTimeout(bindClose,50);
-}
-
-const observer=new MutationObserver(bindClose);
-observer.observe(document.documentElement,{childList:true,subtree:true});
-})();
-</script>
-
-<script id="ichef-pin-native-boot-safeguard">
-(function(){
-  function restoreNativeLogin(){
-    const login=document.getElementById('login-screen');
-    if(!login) return;
-    let logged=false;
-    try{ logged=!!currentUser; }catch(_){}
-    if(!logged){
-      login.style.display='flex';
-      login.style.pointerEvents='auto';
-    }
-  }
-  if(document.readyState==='loading'){
-    document.addEventListener('DOMContentLoaded',restoreNativeLogin,{once:true});
-  }else{
-    restoreNativeLogin();
-  }
-  window.addEventListener('pageshow',restoreNativeLogin);
-})();
-</script>
-
-
-<style id="ichef-ticket-expandable-style">
-/* =========================================================
-   iCHEF — PLAT AGRANDISSABLE POUR CHECK COMMANDE
-   ========================================================= */
-.ichef-ticket-expandable{
-    position:relative !important;
-    transition:
-        background .18s ease,
-        border-color .18s ease,
-        padding .18s ease,
-        min-height .18s ease !important;
-}
-
-.item-expand-btn{
-    width:42px !important;
-    height:42px !important;
-    min-width:42px !important;
-    border:1px solid rgba(197,160,89,.6) !important;
-    background:rgba(197,160,89,.06) !important;
-    color:var(--gold) !important;
-    border-radius:6px !important;
-    font-size:1.25rem !important;
-    font-weight:900 !important;
-    cursor:pointer !important;
-    touch-action:manipulation !important;
-    display:flex !important;
-    align-items:center !important;
-    justify-content:center !important;
-}
-
-.item-expand-btn:active{
-    transform:scale(.96);
-    background:rgba(197,160,89,.14) !important;
-}
-
-/* Mode agrandi */
-.ichef-ticket-expandable.ichef-expanded{
-    display:grid !important;
-    grid-template-columns:minmax(0,1fr) !important;
-    gap:14px !important;
-    min-height:210px !important;
-    padding:20px !important;
-    border:2px solid var(--gold) !important;
-    background:#0d0d0d !important;
-    box-shadow:0 12px 30px rgba(0,0,0,.45) !important;
-    opacity:1 !important;
-}
-
-.ichef-ticket-expandable.ichef-expanded > div:first-child{
-    width:100% !important;
-    min-width:0 !important;
-}
-
-.ichef-ticket-expandable.ichef-expanded > div:first-child > div:first-child{
-    font-size:1.3rem !important;
-    line-height:1.3 !important;
-    font-weight:600 !important;
-    letter-spacing:.2px !important;
-}
-
-.ichef-ticket-expandable.ichef-expanded .ticket-modifiers{
-    margin-top:12px !important;
-    gap:7px !important;
-}
-
-.ichef-ticket-expandable.ichef-expanded .ticket-modifier-add,
-.ichef-ticket-expandable.ichef-expanded .ticket-modifier-remove{
-    font-size:.78rem !important;
-    padding:5px 8px !important;
-}
-
-/* Prix et commandes passent sur une vraie ligne de contrôle */
-.ichef-ticket-expandable.ichef-expanded > div:last-child{
-    width:100% !important;
-    display:flex !important;
-    justify-content:flex-end !important;
-    align-items:center !important;
-    flex-wrap:wrap !important;
-    gap:10px !important;
-    padding-top:12px !important;
-    border-top:1px solid var(--border) !important;
-}
-
-.ichef-ticket-expandable.ichef-expanded > div:last-child > span:first-child{
-    margin-right:auto !important;
-    font-size:1.45rem !important;
-    color:var(--gold) !important;
-    font-weight:700 !important;
-}
-
-/* Le bouton ⤢ devient replier */
-.ichef-ticket-expandable.ichef-expanded .item-expand-btn{
-    background:var(--gold) !important;
-    color:#000 !important;
-}
-
-/* Le conteneur du ticket doit laisser le plat prendre sa hauteur */
-#ticket-list,
-#ichef-ticket-scroll-area{
-    scroll-behavior:smooth;
-}
-
-@media(max-width:650px){
-    .ichef-ticket-expandable.ichef-expanded{
-        min-height:240px !important;
-        padding:16px !important;
-    }
-
-    .ichef-ticket-expandable.ichef-expanded > div:first-child > div:first-child{
-        font-size:1.18rem !important;
-    }
-
-    .ichef-ticket-expandable.ichef-expanded > div:last-child{
-        justify-content:flex-start !important;
-    }
-
-    .ichef-ticket-expandable.ichef-expanded > div:last-child > span:first-child{
-        width:100% !important;
-        margin:0 0 4px !important;
-        font-size:1.5rem !important;
-        text-align:right !important;
-    }
-
-    .item-expand-btn{
-        width:46px !important;
-        height:46px !important;
-        min-width:46px !important;
-    }
-}
-</style>
-
-<script id="ichef-ticket-expandable-engine">
-(function(){
-"use strict";
-
-window.toggleTicketItemExpand = function(index){
-    const row = document.getElementById("ichef-ticket-item-" + index);
-    if(!row) return;
-
-    const willOpen = !row.classList.contains("ichef-expanded");
-
-    // Un seul plat agrandi à la fois.
-    document.querySelectorAll(".ichef-ticket-expandable.ichef-expanded").forEach(el=>{
-        if(el !== row){
-            el.classList.remove("ichef-expanded");
-            const b = el.querySelector(".item-expand-btn");
-            if(b){
-                b.textContent = "⤢";
-                b.setAttribute("aria-label","Agrandir ce plat");
-                b.title = "Agrandir pour vérifier la commande";
-            }
-        }
-    });
-
-    row.classList.toggle("ichef-expanded", willOpen);
-
-    const btn = row.querySelector(".item-expand-btn");
-    if(btn){
-        btn.textContent = willOpen ? "↙" : "⤢";
-        btn.setAttribute("aria-label", willOpen ? "Replier ce plat" : "Agrandir ce plat");
-        btn.title = willOpen ? "Replier" : "Agrandir pour vérifier la commande";
-    }
-
-    if(willOpen){
-        requestAnimationFrame(()=>{
-            try{
-                row.scrollIntoView({behavior:"smooth", block:"center"});
-            }catch(_){
-                row.scrollIntoView();
-            }
-        });
-    }
-};
-})();
-</script>
 
 </body>
 </html>
