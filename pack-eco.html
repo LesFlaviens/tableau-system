@@ -12,7 +12,7 @@
 <title>iCHEF OS - Pad Serveur sécurisé</title>
     <!-- Sécurité : authentification et autorisations exclusivement côté serveur. -->
 
-    <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
+    <script defer src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
 
     <!-- ============================================================== -->
     <!-- 🛡️ SCRIPT 1 : SÉCURITÉ & RÉSEAU -->
@@ -80,27 +80,43 @@
             ? 'http://localhost:10000'
             : 'https://tableau-system.onrender.com';
 
+        // Le bootstrap sécurité ne doit JAMAIS bloquer l'écran PIN.
+        const bootstrapController = new AbortController();
+        const bootstrapTimeout = setTimeout(() => bootstrapController.abort(), 5000);
+
         try {
             const response = await fetch(`${SERVER_URL}/api/security/bootstrap`, {
                 method: 'POST',
                 credentials: 'include',
                 cache: 'no-store',
+                signal: bootstrapController.signal,
                 headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'iCHEF-PWA' },
-                body: JSON.stringify({ tenantID, deviceId: window.ICHEF_SECURITY.deviceId, page: location.pathname.split('/').pop() || 'index.html' })
+                body: JSON.stringify({
+                    tenantID,
+                    deviceId: window.ICHEF_SECURITY.deviceId,
+                    page: location.pathname.split('/').pop() || 'index.html'
+                })
             });
+
             const data = await response.json().catch(() => ({}));
+
             if (!response.ok || !data.success) {
-                alert(data.error || 'Terminal non autorisé.');
-                window.location.replace('connexionpartenaire.html');
-                return;
+                console.warn('[iCHEF] Bootstrap refusé :', data.error || response.status);
+                window.ICHEF_SECURITY.bootstrapOk = false;
+                window.ICHEF_SECURITY.bootstrapError = data.error || 'Terminal non autorisé.';
+            } else {
+                window.ICHEF_SECURITY.bootstrapOk = true;
+                window.ICHEF_SECURITY.csrfToken = data.csrfToken || null;
             }
-            window.ICHEF_SECURITY.csrfToken = data.csrfToken || null;
         } catch (error) {
-            console.error('Initialisation sécurité impossible', error);
-            document.addEventListener('DOMContentLoaded', () => {
-                const tag = document.getElementById('stock-tag');
-                if (tag) tag.textContent = '● SÉCURITÉ INDISPONIBLE';
-            });
+            console.warn('[iCHEF] Bootstrap sécurité différé :', error);
+            window.ICHEF_SECURITY.bootstrapOk = false;
+            window.ICHEF_SECURITY.bootstrapError =
+                error && error.name === 'AbortError'
+                    ? 'Serveur sécurité trop lent'
+                    : 'Sécurité momentanément indisponible';
+        } finally {
+            clearTimeout(bootstrapTimeout);
         }
     })();
     </script>
@@ -1111,12 +1127,12 @@ header{
         <div id="pin-display" class="pin-display"></div>
         <div id="error-msg" style="display:none;min-height:24px;margin:-5px 0 10px;color:var(--alert);font-size:.82rem;text-align:center;"></div>
         <div class="pin-pad">
-            <button class="pin-btn" onclick="appendPin(1)">1</button><button class="pin-btn" onclick="appendPin(2)">2</button><button class="pin-btn" onclick="appendPin(3)">3</button>
-            <button class="pin-btn" onclick="appendPin(4)">4</button><button class="pin-btn" onclick="appendPin(5)">5</button><button class="pin-btn" onclick="appendPin(6)">6</button>
-            <button class="pin-btn" onclick="appendPin(7)">7</button><button class="pin-btn" onclick="appendPin(8)">8</button><button class="pin-btn" onclick="appendPin(9)">9</button>
-            <button class="pin-btn" onclick="clearPin()" style="color:var(--text-muted); border-color:var(--border);">C</button>
-            <button class="pin-btn" onclick="appendPin(0)">0</button>
-            <button class="pin-btn" onclick="submitPin().catch(err => {
+            <button type="button" class="pin-btn" onclick="appendPin(1)">1</button><button type="button" class="pin-btn" onclick="appendPin(2)">2</button><button type="button" class="pin-btn" onclick="appendPin(3)">3</button>
+            <button type="button" class="pin-btn" onclick="appendPin(4)">4</button><button type="button" class="pin-btn" onclick="appendPin(5)">5</button><button type="button" class="pin-btn" onclick="appendPin(6)">6</button>
+            <button type="button" class="pin-btn" onclick="appendPin(7)">7</button><button type="button" class="pin-btn" onclick="appendPin(8)">8</button><button type="button" class="pin-btn" onclick="appendPin(9)">9</button>
+            <button type="button" class="pin-btn" onclick="clearPin()" style="color:var(--text-muted); border-color:var(--border);">C</button>
+            <button type="button" class="pin-btn" onclick="appendPin(0)">0</button>
+            <button type="button" class="pin-btn" onclick="submitPin().catch(err => {
                 console.error('Erreur submitPin:', err);
                 const box = document.getElementById('error-msg');
                 if (box) {
@@ -1817,7 +1833,7 @@ let unifiedCategories = [];
     }
 
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 7000);
+    const timeout = setTimeout(() => controller.abort(), 6000);
 
     try {
         const response = await fetch(`${APP_SERVER_URL}/api/verify-pin`, {
@@ -6756,6 +6772,76 @@ observer.observe(document.documentElement,{childList:true,subtree:true});
 })();
 </script>
 
+
+
+<style id="ichef-pin-priority-final">
+#login-screen{
+    pointer-events:auto !important;
+    z-index:2147483000 !important;
+}
+#login-screen .pin-pad{
+    pointer-events:auto !important;
+    position:relative !important;
+    z-index:2147483001 !important;
+}
+#login-screen .pin-btn{
+    pointer-events:auto !important;
+    touch-action:manipulation !important;
+    -webkit-tap-highlight-color:rgba(197,160,89,.15) !important;
+    position:relative !important;
+    z-index:2147483002 !important;
+}
+#mobile-overlay,
+#pwa-strict-lock{
+    pointer-events:none;
+}
+#pwa-strict-lock[style*="display: flex"]{
+    pointer-events:auto;
+}
+</style>
+
+<script id="ichef-pin-immediate-engine">
+(function(){
+"use strict";
+
+function makePinImmediatelyUsable(){
+    const login = document.getElementById('login-screen');
+    if(!login) return;
+
+    login.style.setProperty('pointer-events','auto','important');
+
+    const buttons = login.querySelectorAll('.pin-btn');
+    buttons.forEach(btn => {
+        btn.disabled = false;
+        btn.style.setProperty('pointer-events','auto','important');
+        btn.style.setProperty('touch-action','manipulation','important');
+    });
+
+    // Si une ancienne tentative est restée bloquée, on la libère.
+    try {
+        if (typeof loginInProgress !== 'undefined') loginInProgress = false;
+    } catch (_) {}
+
+    const msg = document.getElementById('error-msg');
+    if(msg && /vérification/i.test(msg.textContent || '')){
+        msg.style.display = 'none';
+        msg.textContent = '';
+    }
+}
+
+if(document.readyState === 'loading'){
+    document.addEventListener('DOMContentLoaded', makePinImmediatelyUsable, {once:true});
+}else{
+    makePinImmediatelyUsable();
+}
+
+// Réactive aussi après retour d'onglet / cache navigateur.
+window.addEventListener('pageshow', makePinImmediatelyUsable);
+document.addEventListener('visibilitychange', () => {
+    if(!document.hidden) makePinImmediatelyUsable();
+});
+})();
+</script>
 
 </body>
 </html>
