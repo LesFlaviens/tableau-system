@@ -7150,96 +7150,135 @@ function toggleOutilsMenuFinal(event, button) {
 }
 </script>
 <!-- ========================================================= -->
-<!-- 📱 PATCH : TICKET COULISSANT 50% ÉCRAN (BOTTOM SHEET)     -->
+<!-- 📱 PATCH : TICKET COULISSANT 55% ÉCRAN (BOTTOM SHEET)     -->
 <!-- ========================================================= -->
-<style id="ichef-sliding-bottom-sheet">
-/* S'applique uniquement sur mobile/tablette */
+<style id="ichef-mobile-bottom-sheet-fix">
 @media (max-width: 900px) {
-    /* Le ticket n'écrase plus le menu, il coulisse par-dessus */
+    /* 1. Le menu principal reste visible en arrière-plan mais est grisé */
     #order-drawer.order-ticket-focus .drawer-body > div:first-child {
         display: flex !important;
+        opacity: 0.3 !important;
+        pointer-events: none !important; /* Empêche les clics accidentels sur le menu derrière */
     }
 
-    /* État normal (réduit) : le ticket est caché en bas, seule la mini-barre est visible */
-    .ticket-view {
+    /* 2. Le ticket devient un Bottom Sheet (tiroir du bas à 55%) */
+    #order-drawer .ticket-view {
         position: fixed !important;
         bottom: 0 !important;
         left: 0 !important;
         width: 100vw !important;
         height: 55vh !important; /* Moitié de l'écran */
-        z-index: 31000 !important;
-        transform: translateY(110%) !important; /* Caché vers le bas */
-        transition: transform 0.35s cubic-bezier(0.16, 1, 0.3, 1) !important;
-        border-radius: 20px 20px 0 0 !important; /* Bords arrondis style mobile */
+        z-index: 35000 !important;
+        background: #0a0a0a !important;
         border-top: 2px solid var(--gold) !important;
-        background: var(--panel) !important;
-        box-shadow: 0 -15px 40px rgba(0,0,0,0.85) !important;
-        padding-bottom: 15px !important;
+        border-radius: 20px 20px 0 0 !important; /* Arrondis en haut */
+        box-shadow: 0 -15px 40px rgba(0,0,0,0.95) !important;
+        transform: translateY(120%) !important; /* Caché en bas par défaut */
+        transition: transform 0.35s cubic-bezier(0.2, 0.8, 0.2, 1) !important;
+        display: flex !important;
         border-left: 0 !important;
+        padding-top: 20px !important;
+        padding-bottom: 20px !important;
     }
 
-    /* État agrandi (focus) : le ticket remonte à l'écran */
+    /* 3. Ouverture du tiroir */
     #order-drawer.order-ticket-focus .ticket-view {
         transform: translateY(0) !important;
     }
 
-    /* Animation fluide : la mini-barre disparaît doucement quand le ticket monte */
-    #order-mini-bar {
+    /* 4. Cache la mini-barre quand le tiroir est ouvert */
+    #order-drawer.order-ticket-focus #order-mini-bar {
+        opacity: 0 !important;
+        transform: translateY(30px) !important;
+        pointer-events: none !important;
         transition: transform 0.3s ease, opacity 0.3s ease;
     }
-    #order-drawer.order-ticket-focus #order-mini-bar {
-        transform: translateY(100px);
-        opacity: 0;
-        pointer-events: none;
+
+    /* 5. Bouton rond (croix) pour réduire le tiroir */
+    .btn-reduce-sheet {
+        background: rgba(197, 160, 89, 0.1);
+        border: 1px solid var(--gold);
+        color: var(--gold);
+        width: 34px;
+        height: 34px;
+        border-radius: 50%;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 1.1rem;
+        cursor: pointer;
+        margin-right: 12px;
+        box-shadow: 0 4px 10px rgba(0,0,0,0.5);
+        flex-shrink: 0;
+    }
+    .btn-reduce-sheet:active {
+        transform: scale(0.9);
+        background: var(--gold);
+        color: #000;
     }
 }
 
-/* Masquer les nouveaux boutons spécifiques au mode mobile lorsqu'on est sur grand écran */
+/* Masquer les éléments mobiles sur Desktop (grand écran) */
 @media (min-width: 901px) {
-    .btn-mobile-minimize { display: none !important; }
+    .btn-reduce-sheet { display: none !important; }
     .btn-mobile-close-table { display: none !important; }
 }
 </style>
 
-<script id="ichef-sliding-bottom-sheet-script">
+<script id="ichef-mobile-bottom-sheet-js">
 document.addEventListener('DOMContentLoaded', () => {
-    // 1. Ajouter le bouton "✕ RÉDUIRE" dans l'en-tête du ticket agrandi
+    // --- 1. GESTION DU HEADER DU TICKET (Croix pour réduire + Bouton Quitter) ---
     const ticketHeader = document.querySelector('.ticket-view > div:first-child');
-    if (ticketHeader) {
-        const oldCloseBtn = ticketHeader.querySelector('button');
-
-        const minBtn = document.createElement('button');
-        minBtn.className = 'btn-mini btn-mobile-minimize';
-        minBtn.innerHTML = '✕ RÉDUIRE';
-        minBtn.style.cssText = 'border-color: var(--gold); color: var(--gold); margin-right: 8px; font-weight: bold;';
+    
+    if (ticketHeader && !document.querySelector('.btn-reduce-sheet')) {
+        // Création de la croix "Réduire"
+        const reduceBtn = document.createElement('button');
+        reduceBtn.className = 'btn-reduce-sheet';
+        reduceBtn.innerHTML = '✕';
         
-        // Clic sur réduire -> remet la taille normale (mini-barre)
-        minBtn.onclick = function(e) {
+        // Action : réduire le tiroir (le ramène à la taille de la mini-barre)
+        reduceBtn.onclick = function(e) {
             e.preventDefault();
             e.stopPropagation();
-            toggleMobileOrderTicket(); 
+            toggleMobileOrderTicket();
         };
 
-        const wrapper = document.createElement('div');
-        wrapper.style.display = 'flex';
-        wrapper.style.gap = '8px';
-        wrapper.appendChild(minBtn);
-        if (oldCloseBtn) {
-            wrapper.appendChild(oldCloseBtn); // On garde aussi le bouton Fermer définitif
+        // Récupération de l'ancien bouton "FERMER" natif
+        const closeBtn = ticketHeader.querySelector('button');
+        
+        // Regroupement des boutons dans une div pour l'alignement
+        const btnGroup = document.createElement('div');
+        btnGroup.style.display = 'flex';
+        btnGroup.style.alignItems = 'center';
+        
+        // Ajout de la croix en premier
+        btnGroup.appendChild(reduceBtn);
+        
+        // Modification du bouton natif pour qu'il soit explicite ("QUITTER LA TABLE")
+        if (closeBtn) {
+            closeBtn.innerHTML = "QUITTER LA TABLE";
+            closeBtn.style.borderColor = "var(--alert)";
+            closeBtn.style.color = "var(--alert)";
+            closeBtn.style.background = "rgba(217, 83, 79, 0.05)";
+            closeBtn.style.fontSize = "0.65rem";
+            closeBtn.style.padding = "8px 12px";
+            btnGroup.appendChild(closeBtn);
         }
-        ticketHeader.appendChild(wrapper);
+        
+        // Injection dans le header du ticket
+        ticketHeader.appendChild(btnGroup);
     }
 
-    // 2. Ajouter un bouton "Fermer" dans la barre des catégories du menu 
-    // (pour pouvoir fermer la commande sans devoir agrandir le ticket)
+    // --- 2. GESTION DU BOUTON "FERMER TABLE" DANS LE MENU DES PLATS ---
+    // (Permet de fermer la table sans avoir besoin d'ouvrir le tiroir)
     const catContainer = document.getElementById('dynamic-categories-container');
-    if (catContainer && catContainer.parentElement) {
+    if (catContainer && catContainer.parentElement && !document.querySelector('.btn-mobile-close-table')) {
         const closeMenuBtn = document.createElement('button');
         closeMenuBtn.className = 'btn-mini btn-mobile-close-table';
         closeMenuBtn.innerHTML = '✕ FERMER TABLE';
-        closeMenuBtn.style.cssText = 'margin-left: 10px; border-color: var(--alert); color: var(--alert); flex-shrink: 0;';
+        closeMenuBtn.style.cssText = 'margin-left: 10px; border-color: var(--alert); color: var(--alert); flex-shrink: 0; background: rgba(217, 83, 79, 0.05); font-weight: bold;';
         
-        // Clic ferme la commande complète et retourne au plan de salle
+        // Action : ferme la table complètement
         closeMenuBtn.onclick = function() {
             closeOrder();
         };
