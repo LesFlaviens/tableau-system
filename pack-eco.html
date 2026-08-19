@@ -13231,18 +13231,72 @@ button[class*="annuler" i] svg{
         const record=fiscalRecord(reason,comment);
         await persistAudit(record);
 
+        /* Conserver les arguments AVANT de fermer la fenêtre. */
+        const argsToCancel = Array.isArray(pendingArgs) ? [...pendingArgs] : [];
+        const tableToRelease = String(record.tableId || window.currentTableId || '');
+
         close();
 
-        /* Exécute ensuite la vraie fonction d'annulation existante.
-           Aucun remplacement de la logique métier originale. */
+        /* Exécute d'abord la vraie annulation existante. */
+        let cancelResult = true;
         if(typeof originalCancel==="function"){
             bypass=true;
             try{
-                return await originalCancel.apply(window,pendingArgs);
+                cancelResult = await originalCancel.apply(window,argsToCancel);
             }finally{
                 bypass=false;
             }
         }
+
+        /* Après validation de l'annulation complète :
+           - la trace d'audit reste conservée,
+           - la commande active disparaît,
+           - la table redevient libre,
+           - server.js et Socket.IO propagent l'état aux autres services. */
+        try{
+            if(tableToRelease){
+                if(window.activeOrders && activeOrders[tableToRelease]){
+                    delete activeOrders[tableToRelease];
+                }
+
+                if(String(window.currentTableId || '') === tableToRelease){
+                    window.currentTableId = null;
+                    try{ currentTicket = []; }catch(_){}
+                }
+
+                if(typeof saveOrderToServer === 'function'){
+                    await saveOrderToServer(tableToRelease, null);
+                }else{
+                    const base = String(window.APP_SERVER_URL || '').replace(/\/$/,'');
+                    const tenant = String(window.appTenantID || '');
+                    if(base && tenant){
+                        await fetch(`${base}/update-order?tenantID=${encodeURIComponent(tenant)}`,{
+                            method:'POST',
+                            credentials:'include',
+                            headers: typeof securityHeaders==='function'
+                                ? securityHeaders()
+                                : {'Content-Type':'application/json'},
+                            body:JSON.stringify({
+                                tableId:tableToRelease,
+                                order:null,
+                                deviceId:window.ICHEF_SECURITY?.deviceId || null,
+                                waiter:window.currentUser?.name || null
+                            })
+                        });
+                    }
+                }
+
+                try{ if(typeof renderFloor==='function') renderFloor(); }catch(_){}
+                try{ if(typeof renderProTables==='function') renderProTables(); }catch(_){}
+                try{ if(typeof renderService==='function') renderService(); }catch(_){}
+                try{ if(typeof renderOrder==='function') renderOrder(); }catch(_){}
+            }
+        }catch(err){
+            console.error('[iCHEF] Annulation validée mais libération table à resynchroniser :',err);
+            try{ if(typeof forceServerSync==='function') forceServerSync('cancel-release-table'); }catch(_){}
+        }
+
+        return cancelResult;
     }
 
     function installCancelGuard(){
