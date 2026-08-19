@@ -11106,173 +11106,191 @@ html.ichef-night-mode .chair{
 
 
 
+
+
+
+
 <!-- =========================================================
-     iCHEF — APPUI LONG 0,9 s : BLOC GAUCHE PLEIN ÉCRAN
-     Un second appui long restaure la taille normale.
-     Aucun changement métier : clics et scroll restent normaux.
+     iCHEF — FIX RÉEL : APPUI LONG 0,9 s SUR LE BLOC SALLE/TABLES
+     Le panneau #pro-table-panel occupe tout l'écran de commande.
+     Un second appui long restaure la disposition normale.
      ========================================================= -->
-<style id="ichef-left-pane-longpress-fullscreen-style">
-  #order-drawer .drawer-body,
-  #ichef-order-left-pane,
-  #order-drawer .ticket-view {
-    transition: opacity .16s ease, flex-basis .18s ease, width .18s ease, transform .18s ease !important;
+<style id="ichef-room-pane-longpress-fullscreen-v2-style">
+@media (min-width:900px){
+  #pro-table-panel{
+    transition:width .18s ease, opacity .16s ease, transform .18s ease !important;
   }
 
-  /* Le tiroir de commande est déjà plein écran : on donne simplement
-     toute sa surface utile au bloc gauche. */
-  #order-drawer.ichef-left-pane-fullscreen .drawer-body {
-    display:flex !important;
-    flex-direction:row !important;
+  /* Le vrai bloc de gauche devient l'unique colonne. */
+  #order-drawer.ichef-room-pane-fullscreen .drawer-body.ichef-split-ready{
+    display:grid !important;
+    grid-template-columns:minmax(0,1fr) !important;
+    grid-template-rows:minmax(0,1fr) !important;
+    gap:0 !important;
+    padding:8px 8px 8px !important;
     width:100% !important;
     height:100% !important;
     overflow:hidden !important;
   }
 
-  #order-drawer.ichef-left-pane-fullscreen #ichef-order-left-pane {
+  #order-drawer.ichef-room-pane-fullscreen .drawer-body.ichef-split-ready > #pro-table-panel{
     display:flex !important;
-    flex:1 1 100% !important;
+    grid-column:1 !important;
+    grid-row:1 !important;
     width:100% !important;
     max-width:none !important;
-    height:100% !important;
-    min-height:0 !important;
     min-width:0 !important;
+    height:100% !important;
+    max-height:none !important;
+    min-height:0 !important;
+    margin:0 !important;
     opacity:1 !important;
+    border-radius:12px !important;
+    overflow:hidden !important;
   }
 
-  #order-drawer.ichef-left-pane-fullscreen .ticket-view,
-  #order-drawer.ichef-left-pane-fullscreen #ichef-ticket-splitter-v2 {
+  /* Cache uniquement les deux autres blocs et leurs séparateurs. */
+  #order-drawer.ichef-room-pane-fullscreen .drawer-body.ichef-split-ready > .ichef-split-handle,
+  #order-drawer.ichef-room-pane-fullscreen .drawer-body.ichef-split-ready > .ichef-split-center,
+  #order-drawer.ichef-room-pane-fullscreen .drawer-body.ichef-split-ready > .ticket-view{
     display:none !important;
   }
 
-  /* En plein écran, la grille utilise réellement toute la largeur. */
-  #order-drawer.ichef-left-pane-fullscreen #menu-grid {
+  /* Plein écran propre : plus de barre d'état par-dessus le bas. */
+  #order-drawer.ichef-room-pane-fullscreen #pro-status-bar{
+    display:none !important;
+  }
+
+  /* Les tables profitent de toute la largeur sans être énormes. */
+  #order-drawer.ichef-room-pane-fullscreen #pro-table-grid{
     flex:1 1 auto !important;
-    width:100% !important;
-    min-width:0 !important;
     min-height:0 !important;
+    width:100% !important;
+    box-sizing:border-box !important;
+    grid-template-columns:repeat(auto-fill,minmax(150px,1fr)) !important;
+    gap:12px !important;
+    padding:14px !important;
     overflow-y:auto !important;
+    overscroll-behavior:contain !important;
     -webkit-overflow-scrolling:touch !important;
   }
 
-  /* Évite les sélections de texte pendant l'appui long sans bloquer le scroll. */
-  #ichef-order-left-pane.ichef-longpress-armed {
+  #order-drawer.ichef-room-pane-fullscreen .pro-table-card{
+    min-height:120px !important;
+  }
+
+  #pro-table-panel.ichef-room-longpress-armed{
     -webkit-user-select:none !important;
     user-select:none !important;
   }
+}
 </style>
 
-<script id="ichef-left-pane-longpress-fullscreen-script">
+<script id="ichef-room-pane-longpress-fullscreen-v2-script">
 (function(){
-  "use strict";
+  'use strict';
 
   const HOLD_MS = 900;
-  const MOVE_LIMIT = 14;
-  let holdTimer = null;
+  const MOVE_LIMIT = 24;
+  let timer = 0;
+  let pointerId = null;
   let startX = 0;
   let startY = 0;
-  let activePointerId = null;
-  let fired = false;
-  let suppressClickOnce = false;
+  let longPressDone = false;
+  let suppressNextClick = false;
 
-  function clearHold(){
-    if(holdTimer){
-      clearTimeout(holdTimer);
-      holdTimer = null;
-    }
-    const pane = document.getElementById('ichef-order-left-pane');
-    if(pane) pane.classList.remove('ichef-longpress-armed');
-    activePointerId = null;
+  function pane(){ return document.getElementById('pro-table-panel'); }
+  function drawer(){ return document.getElementById('order-drawer'); }
+
+  function cancelHold(){
+    if(timer){ clearTimeout(timer); timer = 0; }
+    const p=pane();
+    if(p) p.classList.remove('ichef-room-longpress-armed');
+    pointerId=null;
   }
 
-  function toggleLeftFullscreen(){
-    const drawer = document.getElementById('order-drawer');
-    if(!drawer) return;
-
-    drawer.classList.toggle('ichef-left-pane-fullscreen');
-    drawer.classList.remove('order-ticket-focus');
-
-    /* Recalcule proprement la grille après le changement de largeur. */
+  function toggle(){
+    const d=drawer();
+    if(!d) return;
+    d.classList.toggle('ichef-room-pane-fullscreen');
+    d.classList.remove('order-ticket-focus');
     requestAnimationFrame(function(){
       window.dispatchEvent(new Event('resize'));
     });
+    try{ if(navigator.vibrate) navigator.vibrate(25); }catch(_e){}
+  }
 
-    try{
-      if(navigator.vibrate) navigator.vibrate(22);
-    }catch(_){ }
+  function onDown(e){
+    if(window.innerWidth < 900) return;
+    if(e.pointerType === 'mouse' && e.button !== 0) return;
+    const p=pane();
+    if(!p || !p.contains(e.target)) return;
+
+    cancelHold();
+    longPressDone=false;
+    startX=e.clientX;
+    startY=e.clientY;
+    pointerId=e.pointerId;
+    p.classList.add('ichef-room-longpress-armed');
+
+    timer=window.setTimeout(function(){
+      timer=0;
+      longPressDone=true;
+      suppressNextClick=true;
+      p.classList.remove('ichef-room-longpress-armed');
+      toggle();
+    },HOLD_MS);
+  }
+
+  function onMove(e){
+    if(pointerId===null || e.pointerId!==pointerId || !timer) return;
+    const dx=Math.abs(e.clientX-startX);
+    const dy=Math.abs(e.clientY-startY);
+    if(dx>MOVE_LIMIT || dy>MOVE_LIMIT) cancelHold();
+  }
+
+  function onUp(e){
+    if(pointerId!==null && e.pointerId===pointerId) cancelHold();
   }
 
   function install(){
-    const pane = document.getElementById('ichef-order-left-pane');
-    if(!pane || pane.dataset.ichefLongpressFullscreen === '1') return;
+    const p=pane();
+    if(!p || p.dataset.ichefRoomLongpressV2==='1') return;
+    p.dataset.ichefRoomLongpressV2='1';
 
-    pane.dataset.ichefLongpressFullscreen = '1';
+    /* Capture : fonctionne même si l'appui commence directement sur une table. */
+    p.addEventListener('pointerdown',onDown,true);
+    window.addEventListener('pointermove',onMove,true);
+    window.addEventListener('pointerup',onUp,true);
+    window.addEventListener('pointercancel',onUp,true);
 
-    pane.addEventListener('pointerdown', function(e){
-      /* Bouton principal uniquement pour la souris ; tactile/stylet passent naturellement. */
-      if(e.pointerType === 'mouse' && e.button !== 0) return;
-
-      clearHold();
-      fired = false;
-      startX = e.clientX;
-      startY = e.clientY;
-      activePointerId = e.pointerId;
-      pane.classList.add('ichef-longpress-armed');
-
-      holdTimer = setTimeout(function(){
-        holdTimer = null;
-        fired = true;
-        suppressClickOnce = true;
-        pane.classList.remove('ichef-longpress-armed');
-        toggleLeftFullscreen();
-      }, HOLD_MS);
-    }, {passive:true});
-
-    pane.addEventListener('pointermove', function(e){
-      if(activePointerId !== e.pointerId || !holdTimer) return;
-      if(Math.abs(e.clientX - startX) > MOVE_LIMIT || Math.abs(e.clientY - startY) > MOVE_LIMIT){
-        clearHold();
-      }
-    }, {passive:true});
-
-    pane.addEventListener('pointerup', function(e){
-      if(activePointerId === e.pointerId) clearHold();
-    }, {passive:true});
-
-    pane.addEventListener('pointercancel', clearHold, {passive:true});
-
-    /* Après un appui long, neutralise UNIQUEMENT le clic synthétique qui suit,
-       pour éviter d'ajouter un plat ou d'ouvrir un bouton par accident. */
-    pane.addEventListener('click', function(e){
-      if(!suppressClickOnce) return;
-      suppressClickOnce = false;
+    p.addEventListener('click',function(e){
+      if(!suppressNextClick) return;
+      suppressNextClick=false;
       e.preventDefault();
       e.stopPropagation();
-      if(typeof e.stopImmediatePropagation === 'function') e.stopImmediatePropagation();
-    }, true);
+      if(e.stopImmediatePropagation) e.stopImmediatePropagation();
+    },true);
 
-    pane.addEventListener('contextmenu', function(e){
-      if(fired) e.preventDefault();
-    });
+    p.addEventListener('contextmenu',function(e){
+      if(longPressDone || timer) e.preventDefault();
+    },true);
   }
 
   function boot(){
     install();
     setTimeout(install,250);
-    setTimeout(install,800);
-
-    const drawer = document.getElementById('order-drawer');
-    if(drawer){
+    setTimeout(install,900);
+    const d=drawer();
+    if(d){
       new MutationObserver(function(){
-        if(drawer.classList.contains('open')) requestAnimationFrame(install);
-      }).observe(drawer,{attributes:true,attributeFilter:['class']});
+        if(d.classList.contains('open')) requestAnimationFrame(install);
+      }).observe(d,{attributes:true,attributeFilter:['class'],childList:true,subtree:true});
     }
   }
 
-  if(document.readyState === 'loading'){
-    document.addEventListener('DOMContentLoaded',boot,{once:true});
-  }else{
-    boot();
-  }
+  if(document.readyState==='loading') document.addEventListener('DOMContentLoaded',boot,{once:true});
+  else boot();
 })();
 </script>
 
