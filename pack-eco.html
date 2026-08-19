@@ -8302,7 +8302,7 @@ header .header-left > div:first-of-type{
 <script id="ichef-mobile-readable-cards-longpress-script">
 (function(){
   'use strict';
-  const isPhone=()=>window.matchMedia('(max-width:600px)').matches;
+  const isPhone=()=>false; /* remplacé par le système titre uniquement */
   let pressTimer=null;
   let hideTimer=null;
   let pressedButton=null;
@@ -10827,6 +10827,196 @@ html.ichef-night-mode .chair{
   document.addEventListener('DOMContentLoaded', removeTicketParasites);
   setTimeout(removeTicketParasites,300);
   setTimeout(removeTicketParasites,1000);
+})();
+</script>
+
+
+<style id="ichef-dish-title-longpress-only-style">
+/* Aucun changement de dimension ou de mise en page des cartes. */
+#menu-grid .btn-item > span:not(.price){
+    cursor:default;
+    -webkit-user-select:none;
+    user-select:none;
+    touch-action:manipulation;
+}
+
+/* Bulle du nom complet : discrète et très lisible */
+#ichef-dish-title-fullname{
+    position:fixed;
+    z-index:10000020;
+    left:50%;
+    top:50%;
+    transform:translate(-50%,-50%) scale(.97);
+    width:min(520px,calc(100vw - 28px));
+    max-height:45vh;
+    overflow:auto;
+    box-sizing:border-box;
+    padding:17px 18px;
+    border:2px solid #e5b640;
+    border-radius:12px;
+    background:rgba(5,7,8,.985);
+    color:#fff;
+    box-shadow:0 18px 55px rgba(0,0,0,.82);
+    opacity:0;
+    visibility:hidden;
+    pointer-events:none;
+    transition:opacity .14s ease,transform .14s ease,visibility .14s;
+}
+#ichef-dish-title-fullname.show{
+    opacity:1;
+    visibility:visible;
+    transform:translate(-50%,-50%) scale(1);
+}
+#ichef-dish-title-fullname .full-title-label{
+    color:#e5b640;
+    font-size:11px;
+    font-weight:900;
+    letter-spacing:1px;
+    margin-bottom:8px;
+}
+#ichef-dish-title-fullname .full-title-name{
+    color:#fff;
+    font-size:clamp(18px,2vw,24px);
+    font-weight:900;
+    line-height:1.28;
+    overflow-wrap:anywhere;
+}
+</style>
+
+<script id="ichef-dish-title-longpress-only-script">
+(function(){
+    "use strict";
+
+    const HOLD_MS = 850;
+    const SHOW_MS = 3000;
+    let holdTimer = null;
+    let hideTimer = null;
+    let activeBtn = null;
+    let startX = 0;
+    let startY = 0;
+
+    function bubble(){
+        let b = document.getElementById('ichef-dish-title-fullname');
+        if(b) return b;
+        b = document.createElement('div');
+        b.id = 'ichef-dish-title-fullname';
+        b.setAttribute('role','status');
+        b.setAttribute('aria-live','polite');
+        b.innerHTML =
+            '<div class="full-title-label">NOM COMPLET DU PLAT · 3 S</div>' +
+            '<div class="full-title-name"></div>';
+        document.body.appendChild(b);
+        return b;
+    }
+
+    function titleElementFromEvent(target){
+        if(!target || !target.closest) return null;
+        const span = target.closest('#menu-grid .btn-item > span:not(.price)');
+        if(!span) return null;
+        if(span.classList.contains('stock-badge')) return null;
+        return span;
+    }
+
+    function fullTitle(btn, span){
+        /* On prend exclusivement le texte du titre, jamais le prix. */
+        const txt = (span?.innerText || span?.textContent || '').trim();
+        return txt.replace(/\n{3,}/g,'\n\n');
+    }
+
+    function show(btn, span){
+        const text = fullTitle(btn,span);
+        if(!text) return;
+
+        const b = bubble();
+        b.querySelector('.full-title-name').textContent = text;
+        b.classList.add('show');
+
+        /* Le relâchement ne doit pas ajouter le plat après l'appui long. */
+        btn.dataset.ichefSuppressDishClick = '1';
+
+        try{
+            if(navigator.vibrate) navigator.vibrate(22);
+        }catch(_){}
+
+        clearTimeout(hideTimer);
+        hideTimer = setTimeout(()=>{
+            b.classList.remove('show');
+        }, SHOW_MS);
+    }
+
+    function cancelHold(){
+        clearTimeout(holdTimer);
+        holdTimer = null;
+        activeBtn = null;
+    }
+
+    function install(){
+        const grid = document.getElementById('menu-grid');
+        if(!grid || grid.dataset.titleLongpressOnly === '1') return;
+        grid.dataset.titleLongpressOnly = '1';
+
+        grid.addEventListener('pointerdown', function(e){
+            const span = titleElementFromEvent(e.target);
+            if(!span) return;
+
+            const btn = span.closest('.btn-item');
+            if(!btn || btn.classList.contains('sold-out')) return;
+
+            cancelHold();
+            activeBtn = btn;
+            startX = e.clientX;
+            startY = e.clientY;
+
+            holdTimer = setTimeout(()=>{
+                if(activeBtn === btn) show(btn,span);
+                holdTimer = null;
+            }, HOLD_MS);
+        }, {passive:true});
+
+        grid.addEventListener('pointermove', function(e){
+            if(!activeBtn || !holdTimer) return;
+            /* Un déplacement volontaire = scroll, donc pas d'ouverture. */
+            if(Math.abs(e.clientX-startX) > 12 || Math.abs(e.clientY-startY) > 12){
+                cancelHold();
+            }
+        }, {passive:true});
+
+        ['pointerup','pointercancel','pointerleave'].forEach(type=>{
+            grid.addEventListener(type,cancelHold,{passive:true});
+        });
+
+        /* Neutralise uniquement le clic généré après un véritable appui long. */
+        grid.addEventListener('click', function(e){
+            const btn = e.target.closest('.btn-item');
+            if(!btn || btn.dataset.ichefSuppressDishClick !== '1') return;
+
+            delete btn.dataset.ichefSuppressDishClick;
+            e.preventDefault();
+            e.stopPropagation();
+            if(typeof e.stopImmediatePropagation === 'function'){
+                e.stopImmediatePropagation();
+            }
+        }, true);
+
+        /* Pas de menu contextuel sur le titre pendant l'appui long. */
+        grid.addEventListener('contextmenu', function(e){
+            if(titleElementFromEvent(e.target)) e.preventDefault();
+        });
+    }
+
+    function init(){
+        bubble();
+        install();
+    }
+
+    if(document.readyState === 'loading'){
+        document.addEventListener('DOMContentLoaded',init,{once:true});
+    }else{
+        init();
+    }
+
+    setTimeout(install,300);
+    setTimeout(install,1000);
 })();
 </script>
 
