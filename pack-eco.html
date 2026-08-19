@@ -10537,14 +10537,15 @@ html.ichef-night-mode .chair{
 
 
 
-<style id="ichef-ticket-horizontal-resizer-v2">
+<style id="ichef-ticket-horizontal-resizer-v3">
 /* =========================================================
-   TABLETTE / ORDINATEUR — BARRE HORIZONTALE TACTILE TICKET
-   Partie haute blanche <-> partie basse actions
+   TABLETTE / ORDINATEUR — BARRE HORIZONTALE STABLE
+   Bloc blanc ticket <-> zone actions
    ========================================================= */
 @media (min-width:900px){
     #order-drawer .ticket-view{
         overflow:hidden !important;
+        min-height:0 !important;
     }
 
     #ichef-ticket-splitter-v2{
@@ -10552,7 +10553,7 @@ html.ichef-night-mode .chair{
         height:16px !important;
         min-height:16px !important;
         position:relative !important;
-        z-index:500 !important;
+        z-index:700 !important;
         cursor:row-resize !important;
         touch-action:none !important;
         user-select:none !important;
@@ -10571,6 +10572,7 @@ html.ichef-night-mode .chair{
         border-radius:999px;
         background:rgba(255,255,255,.78);
         box-shadow:0 0 3px rgba(255,255,255,.18);
+        pointer-events:none;
     }
 
     #ichef-ticket-splitter-v2::after{
@@ -10591,6 +10593,7 @@ html.ichef-night-mode .chair{
         font-size:16px;
         font-weight:950;
         line-height:1;
+        pointer-events:none;
     }
 
     #ichef-ticket-splitter-v2.dragging::before{
@@ -10598,223 +10601,193 @@ html.ichef-night-mode .chair{
         box-shadow:0 0 9px rgba(255,209,92,.72);
     }
 
-  /* Le footer doit occuper tout l'espace restant sous la barre */
     #ichef-ticket-splitter-v2 + .ichef-ticket-footer-v2{
         margin-top:0 !important;
-        flex:1 1 auto !important;
-        min-height:10px !important; /* <-- Modifié ici */
+        flex:1 1 0 !important;
+        min-height:80px !important;
         overflow:auto !important;
         box-sizing:border-box !important;
     }
 
-  /* La liste blanche reçoit une hauteur contrôlée par la barre */
     #ticket-list.ichef-ticket-list-resizable{
         flex:0 0 var(--ichef-ticket-white-h, 42%) !important;
         height:var(--ichef-ticket-white-h, 42%) !important;
-        min-height:10px !important; /* <-- Modifié ici */
+        min-height:90px !important;
         max-height:none !important;
         overflow-y:auto !important;
         box-sizing:border-box !important;
     }
 
-@media (max-width:899px){
-    #ichef-ticket-splitter-v2{
-        display:none !important;
+    body.ichef-ticket-horizontal-dragging{
+        cursor:row-resize !important;
+        user-select:none !important;
+        -webkit-user-select:none !important;
     }
+}
+
+@media (max-width:899px){
+    #ichef-ticket-splitter-v2{display:none !important;}
 }
 </style>
 
-<script id="ichef-ticket-horizontal-resizer-v2-script">
+<script id="ichef-ticket-horizontal-resizer-v3-script">
 (function(){
     "use strict";
 
-    const MIN_WHITE = 10;
-    const MIN_FOOTER = 10;
-    const STORAGE_KEY = "ichef_ticket_horizontal_split_v2";
+    const MIN_WHITE = 90;
+    const MIN_FOOTER = 80;
+    const SPLITTER_H = 16;
+    const STORAGE_KEY = "ichef_ticket_horizontal_split_v3";
 
     let drag = null;
+    let raf = 0;
+    let pendingY = null;
 
     function parts(){
         const drawer = document.getElementById("order-drawer");
         if(!drawer || !drawer.classList.contains("open")) return null;
-
         const ticket = drawer.querySelector(".ticket-view");
         const list = document.getElementById("ticket-list");
         if(!ticket || !list || !ticket.contains(list)) return null;
-
-        const footer = list.nextElementSibling;
+        const footer = list.nextElementSibling && list.nextElementSibling.id !== "ichef-ticket-splitter-v2"
+            ? list.nextElementSibling
+            : document.getElementById("ichef-ticket-splitter-v2")?.nextElementSibling;
         if(!footer) return null;
-
         return {drawer,ticket,list,footer};
+    }
+
+    function limits(ticket,list){
+        const tr = ticket.getBoundingClientRect();
+        const lr = list.getBoundingClientRect();
+        const available = Math.max(MIN_WHITE + MIN_FOOTER, tr.bottom - lr.top - SPLITTER_H);
+        return {
+            listTop: lr.top,
+            min: MIN_WHITE,
+            max: Math.max(MIN_WHITE, available - MIN_FOOTER)
+        };
+    }
+
+    function applyHeight(list,h){
+        list.style.setProperty("--ichef-ticket-white-h", Math.round(h) + "px");
     }
 
     function restore(list,ticket){
         try{
             const saved = Number(localStorage.getItem(STORAGE_KEY));
             if(!Number.isFinite(saved) || saved <= 0) return;
-
-            const ticketRect = ticket.getBoundingClientRect();
-            const listTop = list.getBoundingClientRect().top;
-            const available = Math.max(1, ticketRect.bottom - listTop - 16);
-            const maxWhite = Math.max(MIN_WHITE, available - MIN_FOOTER);
-
-            const h = Math.max(MIN_WHITE, Math.min(saved, maxWhite));
-            list.style.setProperty("--ichef-ticket-white-h", Math.round(h)+"px");
+            const lim = limits(ticket,list);
+            applyHeight(list, Math.max(lim.min, Math.min(saved,lim.max)));
         }catch(_){}
+    }
+
+    function frame(){
+        raf = 0;
+        if(!drag || pendingY == null) return;
+        let h = pendingY - drag.listTop;
+        h = Math.max(drag.min, Math.min(h,drag.max));
+        applyHeight(drag.list,h);
+    }
+
+    function onMove(e){
+        if(!drag || e.pointerId !== drag.pointerId) return;
+        e.preventDefault();
+        pendingY = e.clientY;
+        if(!raf) raf = requestAnimationFrame(frame);
+    }
+
+    function stop(e){
+        if(!drag) return;
+        if(e && e.pointerId != null && e.pointerId !== drag.pointerId) return;
+        if(raf){ cancelAnimationFrame(raf); raf=0; }
+        if(pendingY != null) frame();
+        try{
+            localStorage.setItem(STORAGE_KEY, String(Math.round(drag.list.getBoundingClientRect().height)));
+        }catch(_){}
+        drag.splitter.classList.remove("dragging");
+        document.body.classList.remove("ichef-ticket-horizontal-dragging");
+        try{ drag.splitter.releasePointerCapture(drag.pointerId); }catch(_){}
+        window.removeEventListener("pointermove",onMove);
+        window.removeEventListener("pointerup",stop);
+        window.removeEventListener("pointercancel",stop);
+        drag=null;
+        pendingY=null;
     }
 
     function install(){
         if(window.innerWidth < 900) return;
-
-        const p = parts();
+        const p=parts();
         if(!p) return;
 
         p.list.classList.add("ichef-ticket-list-resizable");
         p.footer.classList.add("ichef-ticket-footer-v2");
 
-        let splitter = document.getElementById("ichef-ticket-splitter-v2");
-
+        let splitter=document.getElementById("ichef-ticket-splitter-v2");
         if(!splitter){
-            splitter = document.createElement("div");
-            splitter.id = "ichef-ticket-splitter-v2";
+            splitter=document.createElement("div");
+            splitter.id="ichef-ticket-splitter-v2";
             splitter.setAttribute("role","separator");
             splitter.setAttribute("aria-orientation","horizontal");
             splitter.setAttribute("aria-label","Redimensionner ticket et zone d'actions");
         }
-
-        /* Exactement entre #ticket-list et son footer réel */
-        if(splitter.parentElement !== p.ticket || splitter.nextElementSibling !== p.footer){
+        if(splitter.parentElement!==p.ticket || splitter.nextElementSibling!==p.footer){
             p.ticket.insertBefore(splitter,p.footer);
         }
 
         restore(p.list,p.ticket);
+        if(splitter.dataset.stableReady==="1") return;
+        splitter.dataset.stableReady="1";
 
-        if(splitter.dataset.ready === "1") return;
-        splitter.dataset.ready = "1";
-
-        splitter.addEventListener("pointerdown", function(e){
-            if(window.innerWidth < 900) return;
-
-            const q = parts();
+        splitter.addEventListener("pointerdown",function(e){
+            if(window.innerWidth<900 || e.button>0) return;
+            const q=parts();
             if(!q) return;
-
             e.preventDefault();
             e.stopPropagation();
-
-            const ticketRect = q.ticket.getBoundingClientRect();
-            const listRect = q.list.getBoundingClientRect();
-
-            drag = {
+            const lim=limits(q.ticket,q.list);
+            drag={
                 splitter,
-                ticket:q.ticket,
                 list:q.list,
-                listTop:listRect.top,
-                ticketBottom:ticketRect.bottom,
-                pointerId:e.pointerId
+                pointerId:e.pointerId,
+                listTop:lim.listTop,
+                min:lim.min,
+                max:lim.max
             };
-
+            pendingY=e.clientY;
             splitter.classList.add("dragging");
+            document.body.classList.add("ichef-ticket-horizontal-dragging");
+            try{ splitter.setPointerCapture(e.pointerId); }catch(_){}
+            window.addEventListener("pointermove",onMove,{passive:false});
+            window.addEventListener("pointerup",stop,{passive:false});
+            window.addEventListener("pointercancel",stop,{passive:false});
+        },{passive:false});
 
-            try{
-                splitter.setPointerCapture(e.pointerId);
-            }catch(_){}
-        }, {passive:false});
-
-        let resizeFrame = 0;
-        let pendingClientY = null;
-
-        splitter.addEventListener("pointermove", function(e){
-            if(!drag) return;
-
+        splitter.addEventListener("dblclick",function(e){
             e.preventDefault();
-            e.stopPropagation();
-            pendingClientY = e.clientY;
-
-            /* Une seule mise à jour par image écran : drag nettement plus fluide. */
-            if(resizeFrame) return;
-            resizeFrame = requestAnimationFrame(function(){
-                resizeFrame = 0;
-                if(!drag || pendingClientY == null) return;
-
-                const available = Math.max(1, drag.ticketBottom - drag.listTop - 16);
-                const maxWhite = Math.max(MIN_WHITE, available - MIN_FOOTER);
-                let whiteH = pendingClientY - drag.listTop;
-                whiteH = Math.max(MIN_WHITE, Math.min(whiteH, maxWhite));
-
-                drag.list.style.setProperty(
-                    "--ichef-ticket-white-h",
-                    whiteH.toFixed(1) + "px"
-                );
-            });
-        }, {passive:false});
-
-        function stop(e){
-            if(!drag) return;
-            if(resizeFrame){ cancelAnimationFrame(resizeFrame); resizeFrame = 0; }
-            pendingClientY = null;
-
-            try{
-                const h = drag.list.getBoundingClientRect().height;
-                localStorage.setItem(STORAGE_KEY, String(Math.round(h)));
-            }catch(_){}
-
-            drag.splitter.classList.remove("dragging");
-
-            try{
-                if(e && drag.pointerId != null){
-                    drag.splitter.releasePointerCapture(drag.pointerId);
-                }
-            }catch(_){}
-
-            drag = null;
-        }
-
-        splitter.addEventListener("pointerup",stop);
-        splitter.addEventListener("pointercancel",stop);
-
-        /* Double clic / double tap : retour à la proportion d'origine */
-        splitter.addEventListener("dblclick", function(e){
-            e.preventDefault();
-            try{localStorage.removeItem(STORAGE_KEY)}catch(_){}
+            try{ localStorage.removeItem(STORAGE_KEY); }catch(_){}
             p.list.style.removeProperty("--ichef-ticket-white-h");
         });
     }
 
     function boot(){
         install();
-
-        const drawer = document.getElementById("order-drawer");
+        const drawer=document.getElementById("order-drawer");
         if(drawer){
             new MutationObserver(function(){
-                if(drawer.classList.contains("open")){
-                    requestAnimationFrame(install);
-                }
-            }).observe(drawer,{
-                attributes:true,
-                attributeFilter:["class"],
-                childList:true,
-                subtree:true
-            });
+                if(drawer.classList.contains("open")) requestAnimationFrame(install);
+            }).observe(drawer,{attributes:true,attributeFilter:["class"],childList:true,subtree:true});
         }
-
         window.addEventListener("resize",function(){
-            if(window.innerWidth >= 900){
-                install();
-            }
-        });
-
+            if(window.innerWidth>=900) requestAnimationFrame(install);
+            else stop();
+        },{passive:true});
         setTimeout(install,250);
         setTimeout(install,800);
     }
 
-    if(document.readyState === "loading"){
-        document.addEventListener("DOMContentLoaded",boot,{once:true});
-    }else{
-        boot();
-    }
+    if(document.readyState==="loading") document.addEventListener("DOMContentLoaded",boot,{once:true});
+    else boot();
 })();
 </script>
-
 
 <style id="ichef-ticket-white-longpress-v1">
 /* =========================================================
