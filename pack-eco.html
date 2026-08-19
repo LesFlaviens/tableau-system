@@ -13352,5 +13352,128 @@ button[class*="annuler" i] svg{
 })();
 </script>
 
+
+<!-- =========================================================
+     iCHEF — NETTOYAGE COMMANDES FANTÔMES
+     Ne supprime JAMAIS une vraie commande, réservation ou audit.
+     ========================================================= -->
+<script id="ichef-ghost-orders-cleaner-final">
+(function(){
+    "use strict";
+
+    function hasRealItem(order){
+        const items = Array.isArray(order?.items) ? order.items : [];
+        return items.some(i=>{
+            if(!i || typeof i!=="object") return false;
+            const name=String(i.n ?? i.name ?? i.label ?? i.title ?? "").trim();
+            const qty=Number(i.qty ?? i.quantity ?? 1);
+            return !!name && Number.isFinite(qty) && qty>0;
+        });
+    }
+
+    function isReservation(order){
+        const s=String(order?.status||"").toLowerCase();
+        return s==="reserved" || !!order?.reservation || !!order?.reservationId ||
+               !!order?.clientName || !!order?.bookingId;
+    }
+
+    function hasAudit(order){
+        return (Array.isArray(order?.cancelAudit) && order.cancelAudit.length>0) ||
+               !!order?.lastCancellation ||
+               (Array.isArray(order?.audit) && order.audit.length>0);
+    }
+
+    function isGhost(order){
+        if(!order || typeof order!=="object") return true;
+        if(hasRealItem(order)) return false;
+        if(isReservation(order)) return false;
+        if(hasAudit(order)) return false;
+
+        const obs=String(order.observations||"").trim();
+        if(obs) return false;
+
+        /* Commande sans article, sans réservation, sans observation,
+           sans audit = état fantôme pouvant être supprimé. */
+        return true;
+    }
+
+    async function deleteGhostOnServer(tableId){
+        try{
+            const base=String(window.APP_SERVER_URL||"").replace(/\/$/,"");
+            const tenant=String(window.appTenantID||"");
+            if(!base || !tenant || !tableId) return false;
+
+            const res=await fetch(`${base}/update-order?tenantID=${encodeURIComponent(tenant)}`,{
+                method:"POST",
+                credentials:"include",
+                cache:"no-store",
+                headers:typeof securityHeaders==="function"
+                    ? securityHeaders()
+                    : {"Content-Type":"application/json"},
+                body:JSON.stringify({
+                    tableId:String(tableId),
+                    order:null,
+                    deviceId:window.ICHEF_SECURITY?.deviceId||null,
+                    waiter:window.currentUser?.name||null,
+                    cleanupReason:"GHOST_EMPTY_ORDER"
+                })
+            });
+            return res.ok;
+        }catch(_){
+            return false;
+        }
+    }
+
+    async function cleanAllGhostOrders(){
+        try{
+            if(typeof activeOrders==="undefined" || !activeOrders) return 0;
+
+            const ghosts=Object.entries(activeOrders)
+                .filter(([,order])=>isGhost(order))
+                .map(([tableId])=>tableId);
+
+            if(!ghosts.length) return 0;
+
+            /* Supprime localement immédiatement pour stabiliser le plan. */
+            ghosts.forEach(tableId=>delete activeOrders[tableId]);
+
+            try{if(typeof renderFloor==="function")renderFloor()}catch(_){}
+            try{if(typeof renderProTables==="function")renderProTables()}catch(_){}
+            try{if(typeof renderService==="function")renderService()}catch(_){}
+
+            /* Puis nettoie le même état dans server.js / MongoDB. */
+            await Promise.allSettled(ghosts.map(deleteGhostOnServer));
+
+            try{
+                if(typeof forceServerSync==="function"){
+                    setTimeout(()=>forceServerSync("ghost-cleanup"),250);
+                }
+            }catch(_){}
+
+            console.info(`[iCHEF] ${ghosts.length} commande(s) fantôme(s) nettoyée(s).`);
+            return ghosts.length;
+        }catch(err){
+            console.warn("[iCHEF] Nettoyage fantômes :",err);
+            return 0;
+        }
+    }
+
+    window.cleanAllGhostOrders=cleanAllGhostOrders;
+
+    /* Nettoyage après chargement/synchronisation initiale.
+       Pas de boucle permanente : on évite de toucher inutilement au serveur. */
+    function boot(){
+        setTimeout(cleanAllGhostOrders,1200);
+        setTimeout(cleanAllGhostOrders,3500);
+    }
+
+    if(document.readyState==="loading"){
+        document.addEventListener("DOMContentLoaded",boot,{once:true});
+    }else{
+        boot();
+    }
+})();
+</script>
+
 </body>
 </html>
