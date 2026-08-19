@@ -10331,5 +10331,323 @@ html.ichef-night-mode .chair{
 })();
 </script>
 
+
+<style id="ichef-split-panes-touch-v1">
+/* =========================================================
+   TABLETTE / PC — 3 BLOCS AVEC BARRES VERTICALES TACTILES
+   ========================================================= */
+@media(min-width:900px){
+  #order-drawer .drawer-body.ichef-split-ready{
+    display:grid !important;
+    grid-template-columns:
+      minmax(220px,var(--ichef-left,30%))
+      10px
+      minmax(320px,var(--ichef-center,40%))
+      10px
+      minmax(260px,var(--ichef-right,30%)) !important;
+    gap:0 !important;
+    align-items:stretch !important;
+  }
+
+  #order-drawer .drawer-body.ichef-split-ready > #pro-table-panel{
+    grid-column:1 !important;
+    min-width:0 !important;
+    width:auto !important;
+  }
+
+  #order-drawer .drawer-body.ichef-split-ready > .ichef-split-handle[data-split="left"]{
+    grid-column:2 !important;
+  }
+
+  #order-drawer .drawer-body.ichef-split-ready > .ichef-split-center{
+    grid-column:3 !important;
+    min-width:0 !important;
+    width:auto !important;
+  }
+
+  #order-drawer .drawer-body.ichef-split-ready > .ichef-split-handle[data-split="right"]{
+    grid-column:4 !important;
+  }
+
+  #order-drawer .drawer-body.ichef-split-ready > .ticket-view{
+    grid-column:5 !important;
+    min-width:0 !important;
+    width:auto !important;
+    max-width:none !important;
+    flex:none !important;
+  }
+
+  .ichef-split-handle{
+    position:relative !important;
+    width:10px !important;
+    min-width:10px !important;
+    height:100% !important;
+    background:transparent !important;
+    cursor:col-resize !important;
+    touch-action:none !important;
+    z-index:120 !important;
+  }
+
+  .ichef-split-handle::before{
+    content:"";
+    position:absolute;
+    left:3px;
+    top:8px;
+    bottom:8px;
+    width:4px;
+    border-radius:999px;
+    background:rgba(197,160,89,.55);
+    box-shadow:0 0 8px rgba(197,160,89,.18);
+  }
+
+  .ichef-split-handle:hover::before,
+  .ichef-split-handle.dragging::before{
+    background:#e8bd58;
+    box-shadow:0 0 10px rgba(232,189,88,.45);
+  }
+
+  .ichef-split-handle::after{
+    content:"⋮";
+    position:absolute;
+    top:50%;
+    left:50%;
+    transform:translate(-50%,-50%);
+    color:#e8bd58;
+    font-size:20px;
+    line-height:1;
+    background:#080808;
+    border:1px solid rgba(197,160,89,.65);
+    border-radius:7px;
+    padding:7px 1px;
+    pointer-events:none;
+  }
+
+  body.ichef-split-dragging{
+    user-select:none !important;
+    cursor:col-resize !important;
+  }
+
+  body.ichef-split-dragging iframe,
+  body.ichef-split-dragging *{
+    pointer-events:none;
+  }
+  body.ichef-split-dragging .ichef-split-handle{
+    pointer-events:auto !important;
+  }
+
+  /* Les anciens boutons d'agrandissement ne servent plus */
+  .ichef-expand-panel-btn,
+  .pro-panel-expand-btn{
+    display:none !important;
+  }
+}
+
+@media(max-width:899px){
+  .ichef-split-handle{display:none !important;}
+}
+</style>
+
+<script id="ichef-split-panes-touch-v1-script">
+(function(){
+  "use strict";
+
+  const MIN_LEFT = 220;
+  const MIN_CENTER = 320;
+  const MIN_RIGHT = 260;
+  const HANDLE = 10;
+  let active = null;
+  let lastTap = 0;
+
+  function getDrawerBody(){
+    return document.querySelector('#order-drawer.open .drawer-body');
+  }
+
+  function identifyPanels(body){
+    if(!body) return null;
+    const left = document.getElementById('pro-table-panel');
+    const right = body.querySelector(':scope > .ticket-view');
+    if(!left || !right) return null;
+
+    const center = Array.from(body.children).find(el =>
+      el !== left &&
+      el !== right &&
+      !el.classList.contains('ichef-split-handle') &&
+      el.tagName === 'DIV'
+    );
+    if(!center) return null;
+    return {left,center,right};
+  }
+
+  function makeHandle(side){
+    const h=document.createElement('div');
+    h.className='ichef-split-handle';
+    h.dataset.split=side;
+    h.setAttribute('role','separator');
+    h.setAttribute('aria-orientation','vertical');
+    h.setAttribute('aria-label',side==='left'?'Redimensionner Salle / Commande':'Redimensionner Commande / Ticket');
+    return h;
+  }
+
+  function reset(body){
+    body.style.setProperty('--ichef-left','30%');
+    body.style.setProperty('--ichef-center','40%');
+    body.style.setProperty('--ichef-right','30%');
+    try{
+      localStorage.removeItem('ichef_split_layout_v1');
+    }catch(e){}
+  }
+
+  function save(body){
+    try{
+      const cs=getComputedStyle(body);
+      localStorage.setItem('ichef_split_layout_v1', JSON.stringify({
+        left:body.style.getPropertyValue('--ichef-left'),
+        center:body.style.getPropertyValue('--ichef-center'),
+        right:body.style.getPropertyValue('--ichef-right')
+      }));
+    }catch(e){}
+  }
+
+  function restore(body){
+    try{
+      const raw=localStorage.getItem('ichef_split_layout_v1');
+      if(!raw) return;
+      const v=JSON.parse(raw);
+      if(v.left) body.style.setProperty('--ichef-left',v.left);
+      if(v.center) body.style.setProperty('--ichef-center',v.center);
+      if(v.right) body.style.setProperty('--ichef-right',v.right);
+    }catch(e){}
+  }
+
+  function install(){
+    if(innerWidth < 900) return;
+    const body=getDrawerBody();
+    if(!body || body.dataset.splitInstalled==='1') return;
+
+    const p=identifyPanels(body);
+    if(!p) return;
+
+    p.center.classList.add('ichef-split-center');
+
+    const h1=makeHandle('left');
+    const h2=makeHandle('right');
+
+    body.insertBefore(h1,p.center);
+    body.insertBefore(h2,p.right);
+
+    body.classList.add('ichef-split-ready');
+    body.dataset.splitInstalled='1';
+    restore(body);
+
+    [h1,h2].forEach(h=>{
+      h.addEventListener('pointerdown',startDrag,{passive:false});
+      h.addEventListener('dblclick',function(e){
+        e.preventDefault();
+        reset(body);
+      });
+      h.addEventListener('pointerup',function(){
+        const now=Date.now();
+        if(now-lastTap<320) reset(body);
+        lastTap=now;
+      });
+    });
+  }
+
+  function startDrag(e){
+    if(innerWidth<900) return;
+    e.preventDefault();
+    e.stopPropagation();
+
+    const body=getDrawerBody();
+    if(!body) return;
+    const p=identifyPanels(body);
+    if(!p) return;
+
+    const rect=body.getBoundingClientRect();
+    const leftRect=p.left.getBoundingClientRect();
+    const centerRect=p.center.getBoundingClientRect();
+    const rightRect=p.right.getBoundingClientRect();
+
+    active={
+      handle:e.currentTarget,
+      side:e.currentTarget.dataset.split,
+      body, p, rect,
+      startX:e.clientX,
+      leftW:leftRect.width,
+      centerW:centerRect.width,
+      rightW:rightRect.width
+    };
+
+    active.handle.classList.add('dragging');
+    document.body.classList.add('ichef-split-dragging');
+    active.handle.setPointerCapture?.(e.pointerId);
+
+    window.addEventListener('pointermove',moveDrag,{passive:false});
+    window.addEventListener('pointerup',endDrag,{once:true});
+    window.addEventListener('pointercancel',endDrag,{once:true});
+  }
+
+  function moveDrag(e){
+    if(!active) return;
+    e.preventDefault();
+
+    const dx=e.clientX-active.startX;
+    let left=active.leftW;
+    let center=active.centerW;
+    let right=active.rightW;
+
+    if(active.side==='left'){
+      left = Math.max(MIN_LEFT, active.leftW + dx);
+      center = Math.max(MIN_CENTER, active.centerW - (left-active.leftW));
+
+      if(center===MIN_CENTER){
+        left = active.leftW + (active.centerW-MIN_CENTER);
+      }
+    }else{
+      center = Math.max(MIN_CENTER, active.centerW + dx);
+      right = Math.max(MIN_RIGHT, active.rightW - (center-active.centerW));
+
+      if(right===MIN_RIGHT){
+        center = active.centerW + (active.rightW-MIN_RIGHT);
+      }
+    }
+
+    const usable=Math.max(1, active.rect.width - HANDLE*2);
+    const lp=(left/usable*100).toFixed(3)+'%';
+    const cp=(center/usable*100).toFixed(3)+'%';
+    const rp=(right/usable*100).toFixed(3)+'%';
+
+    active.body.style.setProperty('--ichef-left',lp);
+    active.body.style.setProperty('--ichef-center',cp);
+    active.body.style.setProperty('--ichef-right',rp);
+  }
+
+  function endDrag(){
+    if(!active) return;
+    save(active.body);
+    active.handle.classList.remove('dragging');
+    document.body.classList.remove('ichef-split-dragging');
+    window.removeEventListener('pointermove',moveDrag);
+    active=null;
+  }
+
+  document.addEventListener('click',function(){
+    const drawer=document.getElementById('order-drawer');
+    if(drawer?.classList.contains('open')) setTimeout(install,20);
+  },{passive:true});
+
+  window.addEventListener('resize',function(){
+    const body=document.querySelector('#order-drawer .drawer-body');
+    if(innerWidth<900 && body){
+      body.classList.remove('ichef-split-ready');
+    }else if(document.getElementById('order-drawer')?.classList.contains('open')){
+      setTimeout(install,20);
+    }
+  });
+
+  /* PIN totalement hors de ce système */
+})();
+</script>
+
 </body>
 </html>
