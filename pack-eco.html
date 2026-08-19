@@ -9990,5 +9990,237 @@ html.ichef-night-mode .chair{
 })();
 </script>
 
+
+<!-- =========================================================
+     iCHEF — CAPACITÉ / RÉSERVATIONS / PLACES LIBRES
+     Restaurant entier + détail de chaque zone
+     ========================================================= -->
+<style id="ichef-capacity-live-style">
+#ichef-capacity-live{
+  position:fixed;
+  left:8px; right:8px; bottom:7px;
+  min-height:46px;
+  z-index:10030;
+  display:flex;
+  align-items:stretch;
+  gap:6px;
+  padding:5px;
+  box-sizing:border-box;
+  overflow-x:auto;
+  overflow-y:hidden;
+  scrollbar-width:none;
+  -webkit-overflow-scrolling:touch;
+  background:#0b0e0f;
+  border:1px solid rgba(227,182,80,.30);
+  border-radius:9px;
+  color:#ddd;
+  font-family:Inter,sans-serif;
+}
+#ichef-capacity-live::-webkit-scrollbar{display:none}
+.ichef-cap-card{
+  flex:0 0 auto;
+  min-width:245px;
+  min-height:34px;
+  display:grid;
+  grid-template-columns:auto repeat(3,auto);
+  align-items:center;
+  gap:9px;
+  padding:5px 10px;
+  border:1px solid rgba(255,255,255,.09);
+  border-radius:7px;
+  background:#0e1213;
+  white-space:nowrap;
+}
+.ichef-cap-card.restaurant{
+  border-color:rgba(227,182,80,.45);
+  background:rgba(197,160,89,.07);
+}
+.ichef-cap-name{
+  color:#e3b650;
+  font-size:.66rem;
+  font-weight:950;
+  letter-spacing:.5px;
+  text-transform:uppercase;
+}
+.ichef-cap-stat{
+  display:flex;
+  align-items:baseline;
+  gap:4px;
+  color:#999;
+  font-size:.56rem;
+  font-weight:800;
+  text-transform:uppercase;
+}
+.ichef-cap-stat strong{
+  color:#fff;
+  font-size:.78rem;
+  font-weight:950;
+}
+.ichef-cap-stat.reserved strong{color:#ffcf5a}
+.ichef-cap-stat.free strong{color:#57e565}
+@media(max-width:999px){
+  #ichef-capacity-live{display:none!important}
+}
+</style>
+
+<script id="ichef-capacity-live-script">
+(function(){
+  'use strict';
+
+  function num(v){
+    v = Number(v);
+    return Number.isFinite(v) && v > 0 ? v : 0;
+  }
+
+  function todayLocal(){
+    const d=new Date();
+    const y=d.getFullYear();
+    const m=String(d.getMonth()+1).padStart(2,'0');
+    const day=String(d.getDate()).padStart(2,'0');
+    return `${y}-${m}-${day}`;
+  }
+
+  function tableZone(t){
+    try{
+      if(!t || !Array.isArray(zones)) return null;
+      const cx=num(t.l)+(num(t.w)||80)/2;
+      const cy=num(t.t)+(num(t.h)||120)/2;
+      return zones.find(z =>
+        z && z.room===t.room &&
+        cx>=num(z.l) && cx<=num(z.l)+(num(z.w)||400) &&
+        cy>=num(z.t) && cy<=num(z.t)+(num(z.h)||300)
+      ) || null;
+    }catch(_){ return null; }
+  }
+
+  function reservationPax(r){
+    return num(r?.couverts || r?.pax || r?.personnes || r?.guests || 0);
+  }
+
+  function validTodayReservations(){
+    const today=todayLocal();
+    try{
+      return (Array.isArray(reservationsData)?reservationsData:[]).filter(r =>
+        r && r.date===today &&
+        !['rejected','cancelled','canceled','annulee','annulée'].includes(String(r.status||'').toLowerCase())
+      );
+    }catch(_){ return []; }
+  }
+
+  function compute(){
+    const allTables=(Array.isArray(tables)?tables:[]).filter(t=>t && !t.isExtra);
+    const allZones=(Array.isArray(zones)?zones:[]);
+    const resas=validTodayReservations();
+
+    const totalCapacity=allTables.reduce((a,t)=>a+num(t.pax),0);
+    const totalReserved=resas.reduce((a,r)=>a+reservationPax(r),0);
+    const restaurant={
+      capacity:totalCapacity,
+      reserved:totalReserved,
+      free:Math.max(0,totalCapacity-totalReserved)
+    };
+
+    const zoneStats=allZones.map(z=>{
+      const zTables=allTables.filter(t=>tableZone(t)?.id===z.id);
+      const capacity=zTables.reduce((a,t)=>a+num(t.pax),0);
+      const labels=new Set(zTables.map(t=>String(t.label)));
+
+      // Une réservation est attribuable à une zone seulement si elle possède une table assignée.
+      const reserved=resas.reduce((a,r)=>{
+        const assigned=String(r.assignedTable||r.table||'');
+        return labels.has(assigned) ? a+reservationPax(r) : a;
+      },0);
+
+      return {
+        id:z.id,
+        label:z.label||z.name||'Zone',
+        room:z.room||'',
+        capacity,
+        reserved,
+        free:Math.max(0,capacity-reserved)
+      };
+    });
+
+    return {restaurant,zoneStats};
+  }
+
+  function card(name,st,restaurant){
+    return `<div class="ichef-cap-card${restaurant?' restaurant':''}">
+      <span class="ichef-cap-name">${escapeText(name)}</span>
+      <span class="ichef-cap-stat">TOTAL <strong>${st.capacity}</strong></span>
+      <span class="ichef-cap-stat reserved">RÉSERVÉS <strong>${st.reserved}</strong></span>
+      <span class="ichef-cap-stat free">LIBRES <strong>${st.free}</strong></span>
+    </div>`;
+  }
+
+  function escapeText(v){
+    return String(v??'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+  }
+
+  function ensure(){
+    const drawer=document.getElementById('order-drawer');
+    if(!drawer) return null;
+    let bar=document.getElementById('ichef-capacity-live');
+    if(!bar){
+      bar=document.createElement('div');
+      bar.id='ichef-capacity-live';
+      drawer.appendChild(bar);
+    }
+    // L'ancienne barre du bas est remplacée visuellement, sans supprimer sa logique.
+    const old=document.getElementById('pro-status-bar');
+    if(old) old.style.display='none';
+    return bar;
+  }
+
+  function render(){
+    const bar=ensure();
+    if(!bar) return;
+    const data=compute();
+    let html=card('🍽 RESTAURANT',data.restaurant,true);
+
+    // Afficher chaque zone, avec le nom de salle si nécessaire.
+    data.zoneStats.forEach(z=>{
+      const name=(z.room ? z.room+' · ' : '')+z.label;
+      html+=card(name,z,false);
+    });
+
+    bar.innerHTML=html;
+  }
+
+  window.updateIChefCapacityLive=render;
+
+  function init(){
+    render();
+    setInterval(()=>{
+      const drawer=document.getElementById('order-drawer');
+      if(drawer && drawer.classList.contains('open')) render();
+    },1000);
+
+    const drawer=document.getElementById('order-drawer');
+    if(drawer){
+      new MutationObserver(()=>render()).observe(drawer,{attributes:true,attributeFilter:['class']});
+    }
+  }
+
+  if(document.readyState==='loading') document.addEventListener('DOMContentLoaded',init,{once:true});
+  else init();
+
+  // Rafraîchissement après les rendus métier existants.
+  const hookNames=['renderFloor','renderPlanning','renderRooms'];
+  hookNames.forEach(name=>{
+    const original=window[name];
+    if(typeof original==='function' && !original.__ichefCapacityHook){
+      const wrapped=function(){
+        const result=original.apply(this,arguments);
+        setTimeout(render,0);
+        return result;
+      };
+      wrapped.__ichefCapacityHook=true;
+      window[name]=wrapped;
+    }
+  });
+})();
+</script>
+
 </body>
 </html>
