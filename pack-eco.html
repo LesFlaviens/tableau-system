@@ -2163,7 +2163,7 @@ button, .btn-mini, .dock-btn, .folder-btn, .room-tab, .btn-item {
                         <button class="pay-btn" style="width: 100%; margin: 0; font-size: 1.1rem;" onclick="openPaymentModal()">🧾 VERS CAISSE SERVEUR</button>
                         <div style="display:flex; gap:10px;">
                             <button class="btn-mini gold" style="flex:1; padding:15px; font-size:0.85rem;" onclick="executeSaveTableState(false, false)">💾 ATTENTE</button>
-                            <button class="btn-mini sync" style="flex:1; padding:15px; font-size:0.85rem;" onclick="confirmClearTicket()">🗑️ ANNULER</button>
+                            <button class="btn-mini sync" style="flex:1; padding:15px; font-size:0.85rem;" onclick="ichefOpenCancelQcm()">🗑️ ANNULER</button>
                         </div>
                     </div>
                 </div>
@@ -13202,225 +13202,307 @@ button[class*="annuler" i] svg{
   </div>
 </div>
 
-<script id="ichef-cancel-qcm-v1-js">
+<script id="ichef-cancel-qcm-v2-final">
 (function(){
     "use strict";
 
-    const reasonsSensitive = new Set(["GESTE_COMMERCIAL","REFUS_PAYER","DEPART_SANS_PAYER"]);
-    let originalCancel = null;
-    let pendingArgs = [];
-    let bypass = false;
+    const SENSITIVE = new Set([
+        "GESTE_COMMERCIAL",
+        "REFUS_PAYER",
+        "DEPART_SANS_PAYER"
+    ]);
 
-    function q(id){return document.getElementById(id)}
-    function modal(){return q("ichef-cancel-qcm")}
-    function selected(){return document.querySelector('input[name="ichef-cancel-reason"]:checked')?.value || ""}
+    function el(id){ return document.getElementById(id); }
 
-    function reset(){
-        document.querySelectorAll('input[name="ichef-cancel-reason"]').forEach(x=>x.checked=false);
-        q("ichef-cancel-other").value="";
-        q("ichef-cancel-other").classList.remove("show");
-        q("ichef-cancel-error").textContent="";
-        q("ichef-cancel-confirm").disabled=true;
+    function selectedReason(){
+        return document.querySelector(
+            'input[name="ichef-cancel-reason"]:checked'
+        )?.value || "";
     }
 
-    function validate(){
-        const r=selected(), other=q("ichef-cancel-other");
-        const isOther=r==="AUTRE";
-        other.classList.toggle("show",isOther);
-        const ok=!!r && (!isOther || other.value.trim().length>=5);
-        q("ichef-cancel-confirm").disabled=!ok;
-        if(isOther && other.value.trim().length>0 && other.value.trim().length<5){
-            q("ichef-cancel-error").textContent="Le motif « Autre » doit contenir au moins 5 caractères.";
-        }else q("ichef-cancel-error").textContent="";
+    function resetQcm(){
+        document.querySelectorAll(
+            'input[name="ichef-cancel-reason"]'
+        ).forEach(r => r.checked = false);
+
+        const other = el("ichef-cancel-other");
+        const error = el("ichef-cancel-error");
+        const confirm = el("ichef-cancel-confirm");
+
+        if(other){
+            other.value = "";
+            other.classList.remove("show");
+        }
+        if(error) error.textContent = "";
+        if(confirm) confirm.disabled = true;
     }
 
-    function open(args){
-        pendingArgs=args||[];
-        reset();
-        modal().classList.add("show");
-        modal().setAttribute("aria-hidden","false");
-    }
-    function close(){
-        modal().classList.remove("show");
-        modal().setAttribute("aria-hidden","true");
-        pendingArgs=[];
+    function validateQcm(){
+        const reason = selectedReason();
+        const other = el("ichef-cancel-other");
+        const error = el("ichef-cancel-error");
+        const confirm = el("ichef-cancel-confirm");
+
+        if(!other || !confirm) return;
+
+        const needsText = reason === "AUTRE";
+        other.classList.toggle("show", needsText);
+
+        const text = other.value.trim();
+        const valid = !!reason && (!needsText || text.length >= 5);
+
+        confirm.disabled = !valid;
+
+        if(error){
+            error.textContent =
+                needsText && text.length > 0 && text.length < 5
+                    ? "Le motif « Autre » doit contenir au moins 5 caractères."
+                    : "";
+        }
     }
 
-    function fiscalRecord(reason,comment){
-        const tableId=String(window.currentTableId||"");
-        const order=(window.activeOrders&&activeOrders[tableId]) || {};
-        const ticket=Array.isArray(window.currentTicket)?currentTicket:[];
+    window.ichefOpenCancelQcm = function(){
+        const modal = el("ichef-cancel-qcm");
+        if(!modal) return;
+
+        resetQcm();
+        modal.classList.add("show");
+        modal.setAttribute("aria-hidden","false");
+    };
+
+    function closeQcm(){
+        const modal = el("ichef-cancel-qcm");
+        if(!modal) return;
+        modal.classList.remove("show");
+        modal.setAttribute("aria-hidden","true");
+    }
+
+    function makeAuditRecord(reason, comment, tableId, order, ticket){
         return {
-            id:"CANCEL-"+Date.now()+"-"+Math.random().toString(36).slice(2,8),
-            type:"ANNULATION",
-            tenantID:String(window.appTenantID||""),
-            tableId,
-            waiter:window.currentUser?.name || null,
-            waiterId:window.currentUser?.id || null,
-            deviceId:window.ICHEF_SECURITY?.deviceId || null,
+            id: "CANCEL-" + Date.now() + "-" +
+                Math.random().toString(36).slice(2,8),
+
+            type: "ANNULATION_COMMANDE",
+            tenantID:
+                typeof appTenantID !== "undefined"
+                    ? String(appTenantID || "")
+                    : "",
+
+            tableId: String(tableId || ""),
+            waiter:
+                typeof currentUser !== "undefined"
+                    ? currentUser?.name || null
+                    : null,
+
+            waiterId:
+                typeof currentUser !== "undefined"
+                    ? currentUser?.id || null
+                    : null,
+
+            deviceId: window.ICHEF_SECURITY?.deviceId || null,
+
             reason,
-            comment:comment||null,
-            sensitive:reasonsSensitive.has(reason),
-            createdAt:new Date().toISOString(),
-            items:ticket.map(i=>({
-                name:String(i?.n ?? i?.name ?? ""),
-                qty:Number(i?.qty ?? 1),
-                price:Number(i?.p ?? i?.price ?? 0),
-                tva:Number(i?.tva ?? i?.vat ?? 0),
-                sent:!!i?.isSent
+            comment: comment || null,
+            sensitive: SENSITIVE.has(reason),
+
+            createdAt: new Date().toISOString(),
+
+            items: ticket.map(i => ({
+                name: String(i?.n ?? i?.name ?? ""),
+                qty: Number(i?.qty ?? 1),
+                price: Number(i?.p ?? i?.price ?? 0),
+                tva: Number(i?.tva ?? i?.vat ?? 0),
+                sent: !!i?.isSent
             })),
-            orderMeta:order?.orderMeta || null
+
+            orderMeta: order?.orderMeta || null
         };
     }
 
-    async function persistAudit(record){
-        /* Audit local immédiat + inclusion dans la commande serveur.
-           server.js garde ainsi la trace dans le même état tenant. */
+    async function saveFiscalAudit(record){
+        /* Copie locale de secours */
         try{
-            const key="ICHEF_FISCAL_CANCEL_AUDIT";
-            const arr=JSON.parse(localStorage.getItem(key)||"[]");
+            const key = "ICHEF_FISCAL_CANCEL_AUDIT";
+            const arr = JSON.parse(localStorage.getItem(key) || "[]");
             arr.push(record);
-            if(arr.length>1000) arr.splice(0,arr.length-1000);
-            localStorage.setItem(key,JSON.stringify(arr));
+            if(arr.length > 3000){
+                arr.splice(0, arr.length - 3000);
+            }
+            localStorage.setItem(key, JSON.stringify(arr));
         }catch(_){}
 
-        try{
-            const tableId=record.tableId;
-            if(tableId && window.activeOrders?.[tableId]){
-                const o=activeOrders[tableId];
-                o.cancelAudit=Array.isArray(o.cancelAudit)?o.cancelAudit:[];
-                o.cancelAudit.push(record);
-                o.lastCancellation=record;
-            }
-        }catch(_){}
+        /* Copie serveur persistante séparée de la table.
+           FINANCIAL_ est volontairement conservé par le filtre central. */
+        if(typeof API !== "undefined" && API?.update){
+            const auditKey = "FINANCIAL_CANCEL_" + record.id;
+            await API.update(
+                auditKey,
+                record,
+                false,
+                { reason: "Annulation commande" }
+            );
+        }
     }
 
-    async function confirm(){
-        const reason=selected();
-        const comment=q("ichef-cancel-other").value.trim();
-        if(!reason || (reason==="AUTRE" && comment.length<5)){validate();return}
+    async function executeValidatedCancellation(){
+        const reason = selectedReason();
+        const comment = (el("ichef-cancel-other")?.value || "").trim();
 
-        const record=fiscalRecord(reason,comment);
-        await persistAudit(record);
+        if(!reason){
+            validateQcm();
+            return;
+        }
 
-        /* Conserver les arguments AVANT de fermer la fenêtre. */
-        const argsToCancel = Array.isArray(pendingArgs) ? [...pendingArgs] : [];
-        const tableToRelease = String(record.tableId || window.currentTableId || '');
+        if(reason === "AUTRE" && comment.length < 5){
+            validateQcm();
+            return;
+        }
 
-        close();
+        const tableId =
+            typeof currentTableId !== "undefined"
+                ? String(currentTableId || "")
+                : "";
 
-        /* Exécute d'abord la vraie annulation existante. */
-        let cancelResult = true;
-        if(typeof originalCancel==="function"){
-            bypass=true;
+        if(!tableId){
+            const error = el("ichef-cancel-error");
+            if(error) error.textContent = "Aucune table active à annuler.";
+            return;
+        }
+
+        const order =
+            typeof activeOrders !== "undefined"
+                ? activeOrders?.[tableId] || {}
+                : {};
+
+        const ticket =
+            typeof currentTicket !== "undefined" &&
+            Array.isArray(currentTicket)
+                ? JSON.parse(JSON.stringify(currentTicket))
+                : [];
+
+        const record = makeAuditRecord(
+            reason,
+            comment,
+            tableId,
+            order,
+            ticket
+        );
+
+        const confirm = el("ichef-cancel-confirm");
+        if(confirm){
+            confirm.disabled = true;
+            confirm.textContent = "ANNULATION…";
+        }
+
+        try{
+            /* 1. Audit fiscal AVANT suppression */
+            await saveFiscalAudit(record);
+
+            /* 2. Suppression réelle de la commande côté serveur */
+            if(typeof API !== "undefined" && API?.update){
+                await API.update(tableId, null, true, {
+                    reason,
+                    comment,
+                    auditId: record.id
+                });
+            }
+
+            /* 3. Libération immédiate locale */
+            if(typeof activeOrders !== "undefined" && activeOrders){
+                delete activeOrders[tableId];
+            }
+
+            if(typeof currentTicket !== "undefined"){
+                currentTicket = [];
+            }
+
+            if(typeof currentTableId !== "undefined"){
+                currentTableId = null;
+            }
+
+            closeQcm();
+
             try{
-                cancelResult = await originalCancel.apply(window,argsToCancel);
-            }finally{
-                bypass=false;
-            }
-        }
+                if(typeof closeOrder === "function") closeOrder();
+            }catch(_){}
 
-        /* Après validation de l'annulation complète :
-           - la trace d'audit reste conservée,
-           - la commande active disparaît,
-           - la table redevient libre,
-           - server.js et Socket.IO propagent l'état aux autres services. */
-        try{
-            if(tableToRelease){
-                if(window.activeOrders && activeOrders[tableToRelease]){
-                    delete activeOrders[tableToRelease];
+            try{
+                if(typeof renderFloor === "function") renderFloor();
+            }catch(_){}
+
+            try{
+                if(typeof renderProTables === "function") renderProTables();
+            }catch(_){}
+
+            try{
+                if(typeof renderService === "function") renderService();
+            }catch(_){}
+
+            try{
+                if(typeof forceServerSync === "function"){
+                    setTimeout(
+                        () => forceServerSync("cancel-order-final"),
+                        250
+                    );
                 }
+            }catch(_){}
 
-                if(String(window.currentTableId || '') === tableToRelease){
-                    window.currentTableId = null;
-                    try{ currentTicket = []; }catch(_){}
+            try{
+                if(typeof showToast === "function"){
+                    showToast("🗑️ Commande annulée — table libérée");
                 }
+            }catch(_){}
 
-                if(typeof saveOrderToServer === 'function'){
-                    await saveOrderToServer(tableToRelease, null);
-                }else{
-                    const base = String(window.APP_SERVER_URL || '').replace(/\/$/,'');
-                    const tenant = String(window.appTenantID || '');
-                    if(base && tenant){
-                        await fetch(`${base}/update-order?tenantID=${encodeURIComponent(tenant)}`,{
-                            method:'POST',
-                            credentials:'include',
-                            headers: typeof securityHeaders==='function'
-                                ? securityHeaders()
-                                : {'Content-Type':'application/json'},
-                            body:JSON.stringify({
-                                tableId:tableToRelease,
-                                order:null,
-                                deviceId:window.ICHEF_SECURITY?.deviceId || null,
-                                waiter:window.currentUser?.name || null
-                            })
-                        });
-                    }
-                }
-
-                try{ if(typeof renderFloor==='function') renderFloor(); }catch(_){}
-                try{ if(typeof renderProTables==='function') renderProTables(); }catch(_){}
-                try{ if(typeof renderService==='function') renderService(); }catch(_){}
-                try{ if(typeof renderOrder==='function') renderOrder(); }catch(_){}
-            }
         }catch(err){
-            console.error('[iCHEF] Annulation validée mais libération table à resynchroniser :',err);
-            try{ if(typeof forceServerSync==='function') forceServerSync('cancel-release-table'); }catch(_){}
+            console.error("[iCHEF] Annulation impossible :", err);
+
+            const error = el("ichef-cancel-error");
+            if(error){
+                error.textContent =
+                    "Impossible d'enregistrer l'annulation. Réessayez.";
+            }
+
+        }finally{
+            if(confirm){
+                confirm.textContent = "VALIDER L'ANNULATION";
+                validateQcm();
+            }
         }
-
-        return cancelResult;
     }
-
-    function installCancelGuard(){
-        /* On enveloppe les noms d'annulation existants sans les supprimer. */
-        ["cancelOrder","annulerCommande","cancelCurrentOrder"].forEach(name=>{
-            if(typeof window[name]!=="function") return;
-            if(window[name].__ichefQcmWrapped) return;
-
-            const fn=window[name];
-            if(!originalCancel) originalCancel=fn;
-
-            const wrapped=function(...args){
-                if(bypass) return fn.apply(this,args);
-                open(args);
-                return false;
-            };
-            wrapped.__ichefQcmWrapped=true;
-            window[name]=wrapped;
-        });
-
-        /* Si le bouton utilise un autre handler, le texte ANNULER reste couvert. */
-        document.querySelectorAll("button").forEach(btn=>{
-            if(!String(btn.textContent||"").toUpperCase().includes("ANNULER")) return;
-            if(btn.dataset.ichefCancelQcm==="1") return;
-            btn.dataset.ichefCancelQcm="1";
-            btn.addEventListener("click",function(e){
-                if(bypass) return;
-                const inline=String(btn.getAttribute("onclick")||"");
-                if(/cancelOrder|annulerCommande|cancelCurrentOrder/i.test(inline)) return;
-                e.preventDefault(); e.stopImmediatePropagation();
-                open([]);
-            },true);
-        });
-    }
-
-    /* ATTENTE reste volontairement intact :
-       aucun QCM, aucun audit d'annulation, aucune suppression. */
-
-    document.addEventListener("change",e=>{
-        if(e.target?.name==="ichef-cancel-reason") validate();
-    });
-    q("ichef-cancel-other")?.addEventListener("input",validate);
-    q("ichef-cancel-close")?.addEventListener("click",close);
-    q("ichef-cancel-confirm")?.addEventListener("click",confirm);
 
     function boot(){
-        installCancelGuard();
-        new MutationObserver(()=>installCancelGuard())
-            .observe(document.body,{childList:true,subtree:true});
+        const close = el("ichef-cancel-close");
+        const confirm = el("ichef-cancel-confirm");
+        const other = el("ichef-cancel-other");
+
+        if(close){
+            close.onclick = closeQcm;
+        }
+
+        if(confirm){
+            confirm.onclick = executeValidatedCancellation;
+        }
+
+        if(other){
+            other.oninput = validateQcm;
+        }
+
+        document.querySelectorAll(
+            'input[name="ichef-cancel-reason"]'
+        ).forEach(r => {
+            r.onchange = validateQcm;
+        });
     }
-    if(document.readyState==="loading") document.addEventListener("DOMContentLoaded",boot,{once:true});
-    else boot();
+
+    if(document.readyState === "loading"){
+        document.addEventListener(
+            "DOMContentLoaded",
+            boot,
+            { once:true }
+        );
+    }else{
+        boot();
+    }
 })();
 </script>
 
