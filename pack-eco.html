@@ -12309,5 +12309,164 @@ button[class*="annuler" i] *{
 })();
 </script>
 
+
+<!-- =========================================================
+     iCHEF — TABLES : VRAI CLIC / VRAI TOUCHER UNIQUEMENT
+     Bloque tout clic fantôme, hover, focus ou clic synthétique.
+     ========================================================= -->
+<script id="ichef-real-table-tap-guard-v1">
+(function(){
+    "use strict";
+
+    const MOVE_LIMIT = 14;
+    const MAX_PRESS_MS = 1200;
+    const VALID_CLICK_MS = 700;
+
+    let press = null;
+
+    function tableTarget(node){
+        if(!node || !node.closest) return null;
+        return node.closest(
+            ".pro-table-card, .mobile-exact-table, .table-obj, .table-wrapper"
+        );
+    }
+
+    function canonicalTarget(node){
+        const t = tableTarget(node);
+        if(!t) return null;
+
+        /* Sur le plan, on préfère .table-obj pour que down/up
+           soient comparés sur le même contrôle. */
+        if(t.classList.contains("table-wrapper")){
+            return t.querySelector(".table-obj") || t;
+        }
+        return t;
+    }
+
+    document.addEventListener("pointerdown", function(e){
+        const target = canonicalTarget(e.target);
+        if(!target) return;
+
+        /* bouton principal uniquement */
+        if(e.pointerType === "mouse" && e.button !== 0) return;
+
+        press = {
+            pointerId: e.pointerId,
+            target,
+            x: e.clientX,
+            y: e.clientY,
+            time: performance.now(),
+            moved: false
+        };
+    }, true);
+
+    document.addEventListener("pointermove", function(e){
+        if(!press || e.pointerId !== press.pointerId) return;
+
+        if(
+            Math.abs(e.clientX - press.x) > MOVE_LIMIT ||
+            Math.abs(e.clientY - press.y) > MOVE_LIMIT
+        ){
+            press.moved = true;
+        }
+    }, true);
+
+    document.addEventListener("pointerup", function(e){
+        if(!press || e.pointerId !== press.pointerId) return;
+
+        const endTarget = canonicalTarget(e.target);
+        const elapsed = performance.now() - press.time;
+
+        const valid =
+            !press.moved &&
+            elapsed <= MAX_PRESS_MS &&
+            endTarget === press.target;
+
+        if(valid){
+            press.target.dataset.ichefRealTapUntil =
+                String(Date.now() + VALID_CLICK_MS);
+
+            /* Si le clic part d'un enfant du wrapper, autorise aussi
+               le wrapper correspondant. */
+            const wrapper = press.target.closest(".table-wrapper");
+            if(wrapper){
+                wrapper.dataset.ichefRealTapUntil =
+                    String(Date.now() + VALID_CLICK_MS);
+            }
+        }
+
+        press = null;
+    }, true);
+
+    document.addEventListener("pointercancel", function(){
+        press = null;
+    }, true);
+
+    /*
+     * FILTRE FINAL :
+     * aucun click sur une table n'est accepté s'il n'est pas précédé
+     * d'un pointerdown + pointerup réel et valide.
+     */
+    document.addEventListener("click", function(e){
+        const target = canonicalTarget(e.target);
+        if(!target) return;
+
+        /* L'édition architecture garde son fonctionnement normal. */
+        try{
+            if(typeof isArchiMode !== "undefined" && isArchiMode) return;
+        }catch(_){}
+
+        const wrapper = target.closest(".table-wrapper");
+        const until = Math.max(
+            Number(target.dataset.ichefRealTapUntil || 0),
+            Number(wrapper?.dataset?.ichefRealTapUntil || 0)
+        );
+
+        if(Date.now() > until){
+            e.preventDefault();
+            e.stopPropagation();
+            if(typeof e.stopImmediatePropagation === "function"){
+                e.stopImmediatePropagation();
+            }
+            console.debug("[iCHEF] Clic table fantôme bloqué.");
+            return;
+        }
+
+        delete target.dataset.ichefRealTapUntil;
+        if(wrapper) delete wrapper.dataset.ichefRealTapUntil;
+    }, true);
+
+    /*
+     * L'ancien ontouchend du plan peut déclencher une ouverture avant
+     * le click normal. On le neutralise en mode service et Pointer Events
+     * devient l'unique chemin tactile.
+     */
+    function cleanLegacyTouchHandlers(){
+        document.querySelectorAll(".table-obj").forEach(el=>{
+            if(el.ontouchend){
+                el.ontouchend = null;
+            }
+        });
+    }
+
+    function boot(){
+        cleanLegacyTouchHandlers();
+
+        const floor = document.getElementById("floor-plan");
+        if(floor){
+            new MutationObserver(()=>{
+                requestAnimationFrame(cleanLegacyTouchHandlers);
+            }).observe(floor,{childList:true,subtree:true});
+        }
+    }
+
+    if(document.readyState === "loading"){
+        document.addEventListener("DOMContentLoaded",boot,{once:true});
+    }else{
+        boot();
+    }
+})();
+</script>
+
 </body>
 </html>
