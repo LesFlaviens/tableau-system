@@ -10548,19 +10548,17 @@ html.ichef-night-mode .chair{
     }
 
     #ichef-ticket-splitter-v2{
-        flex:0 0 44px !important;
-        height:44px !important;
-        min-height:44px !important;
+        flex:0 0 16px !important;
+        height:16px !important;
+        min-height:16px !important;
         position:relative !important;
         z-index:500 !important;
         cursor:row-resize !important;
         touch-action:none !important;
         user-select:none !important;
         -webkit-user-select:none !important;
-        background:transparent !important;
+        background:#080c0d !important;
         box-sizing:border-box !important;
-        margin-top:-14px !important;
-        margin-bottom:-14px !important;
     }
 
     #ichef-ticket-splitter-v2::before{
@@ -10568,8 +10566,8 @@ html.ichef-night-mode .chair{
         position:absolute;
         left:10px;
         right:10px;
-        top:21px;
-        height:3px;
+        top:7px;
+        height:2px;
         border-radius:999px;
         background:rgba(255,255,255,.78);
         box-shadow:0 0 3px rgba(255,255,255,.18);
@@ -10717,22 +10715,23 @@ html.ichef-night-mode .chair{
             };
 
             splitter.classList.add("dragging");
-            document.body.classList.add("ichef-ticket-resizing");
 
-            try{ splitter.setPointerCapture(e.pointerId); }catch(_){}
+            try{
+                splitter.setPointerCapture(e.pointerId);
+            }catch(_){}
         }, {passive:false});
 
-        function moveOnDocument(e){
-            if(!drag || e.pointerId !== drag.pointerId) return;
+        splitter.addEventListener("pointermove", function(e){
+            if(!drag) return;
 
             e.preventDefault();
+            e.stopPropagation();
 
             /*
-             * Déplacement suivi au niveau DOCUMENT :
-             * même si le doigt sort de la ligne, la barre continue de suivre.
+             * La hauteur blanche dépend DIRECTEMENT de la position verticale
+             * du doigt/souris : vers le haut = moins blanc, vers le bas = plus blanc.
              */
-            const splitterH = 44;
-            const available = Math.max(1, drag.ticketBottom - drag.listTop - splitterH);
+            const available = Math.max(1, drag.ticketBottom - drag.listTop - 16);
             const maxWhite = Math.max(MIN_WHITE, available - MIN_FOOTER);
 
             let whiteH = e.clientY - drag.listTop;
@@ -10742,11 +10741,10 @@ html.ichef-night-mode .chair{
                 "--ichef-ticket-white-h",
                 Math.round(whiteH) + "px"
             );
-        }
+        }, {passive:false});
 
         function stop(e){
             if(!drag) return;
-            if(e && e.pointerId != null && e.pointerId !== drag.pointerId) return;
 
             try{
                 const h = drag.list.getBoundingClientRect().height;
@@ -10754,7 +10752,6 @@ html.ichef-night-mode .chair{
             }catch(_){}
 
             drag.splitter.classList.remove("dragging");
-            document.body.classList.remove("ichef-ticket-resizing");
 
             try{
                 if(e && drag.pointerId != null){
@@ -10765,9 +10762,8 @@ html.ichef-night-mode .chair{
             drag = null;
         }
 
-        document.addEventListener("pointermove", moveOnDocument, {passive:false});
-        document.addEventListener("pointerup", stop, true);
-        document.addEventListener("pointercancel", stop, true);
+        splitter.addEventListener("pointerup",stop);
+        splitter.addEventListener("pointercancel",stop);
 
         /* Double clic / double tap : retour à la proportion d'origine */
         splitter.addEventListener("dblclick", function(e){
@@ -11040,22 +11036,162 @@ html.ichef-night-mode .chair{
 
 
 
-
-<style id="ichef-ticket-splitter-grab-final">
+<style id="ichef-ticket-splitter-hitbox-only">
 @media(min-width:900px){
-  body.ichef-ticket-resizing{
-    cursor:row-resize !important;
-    user-select:none !important;
-    -webkit-user-select:none !important;
+  /* La barre reste à sa taille d'origine : aucun impact sur la mise en page */
+  #ichef-ticket-splitter-v2{
+    position:relative !important;
+    overflow:visible !important;
+    z-index:700 !important;
+    touch-action:none !important;
   }
-  body.ichef-ticket-resizing *{
-    cursor:row-resize !important;
-  }
-  #ichef-ticket-splitter-v2::after{
+
+  /*
+   * Grande zone INVISIBLE à attraper :
+   * 44 px de hauteur, centrée autour de la vraie barre.
+   * Elle n'agrandit pas le bloc et ne pousse rien.
+   */
+  #ichef-ticket-splitter-v2 .ichef-split-hitbox{
+    position:absolute !important;
+    left:0 !important;
+    right:0 !important;
     top:50% !important;
+    height:44px !important;
+    transform:translateY(-50%) !important;
+    background:transparent !important;
+    cursor:row-resize !important;
+    touch-action:none !important;
+    pointer-events:auto !important;
+    z-index:2 !important;
+  }
+
+  /* Le dessin de la barre reste au-dessus */
+  #ichef-ticket-splitter-v2::before,
+  #ichef-ticket-splitter-v2::after{
+    z-index:3 !important;
+    pointer-events:none !important;
   }
 }
 </style>
+
+<script id="ichef-ticket-splitter-hitbox-only-script">
+(function(){
+  "use strict";
+
+  function installHitbox(){
+    const bar = document.getElementById("ichef-ticket-splitter-v2");
+    if(!bar || window.innerWidth < 900) return;
+
+    let hit = bar.querySelector(":scope > .ichef-split-hitbox");
+    if(hit) return;
+
+    hit = document.createElement("div");
+    hit.className = "ichef-split-hitbox";
+    hit.setAttribute("aria-hidden","true");
+
+    /*
+     * On l'insère DANS la barre existante.
+     * Les événements remontent naturellement vers la barre,
+     * donc on garde exactement le moteur de drag qui fonctionnait.
+     */
+    bar.appendChild(hit);
+  }
+
+  function boot(){
+    installHitbox();
+    setTimeout(installHitbox,250);
+    setTimeout(installHitbox,800);
+
+    const drawer = document.getElementById("order-drawer");
+    if(drawer){
+      new MutationObserver(function(){
+        if(drawer.classList.contains("open")){
+          requestAnimationFrame(installHitbox);
+        }
+      }).observe(drawer,{attributes:true,attributeFilter:["class"],childList:true,subtree:true});
+    }
+
+    window.addEventListener("resize",function(){
+      if(window.innerWidth >= 900) installHitbox();
+    });
+  }
+
+  if(document.readyState === "loading"){
+    document.addEventListener("DOMContentLoaded",boot,{once:true});
+  }else{
+    boot();
+  }
+})();
+</script>
+
+
+<style id="ichef-hide-nouveau-ticket-final">
+/* Ticket / bloc blanc : suppression visuelle du bouton NOUVEAU uniquement */
+#ticket-list .ticket-item-row button:has(span),
+#ticket-list .ticket-item-row [class*="new"]{
+}
+
+/* Ciblage de secours via classe ajoutée par JS */
+#ticket-list .ichef-ticket-nouveau-hidden{
+    display:none !important;
+}
+</style>
+
+<script id="ichef-hide-nouveau-ticket-final-script">
+(function(){
+  "use strict";
+
+  function hideNouveau(){
+    const list = document.getElementById("ticket-list");
+    if(!list) return;
+
+    list.querySelectorAll("button, div, span").forEach(function(el){
+      if(el.children.length > 2) return;
+
+      const txt = (el.textContent || "").replace(/\s+/g," ").trim().toUpperCase();
+      if(txt !== "NOUVEAU") return;
+
+      /* Remonter jusqu'au petit contrôle cliquable, sans masquer la ligne du plat */
+      let target = el;
+      while(
+        target.parentElement &&
+        target.parentElement !== list &&
+        !target.matches("button") &&
+        target.getBoundingClientRect().width < 190 &&
+        target.getBoundingClientRect().height < 90
+      ){
+        const p = target.parentElement;
+        if(p.classList.contains("ticket-item-row")) break;
+        if(p.getBoundingClientRect().width > 190 || p.getBoundingClientRect().height > 90) break;
+        target = p;
+      }
+
+      if(target.classList.contains("ticket-item-row")) target = el;
+      target.classList.add("ichef-ticket-nouveau-hidden");
+    });
+  }
+
+  function boot(){
+    hideNouveau();
+
+    const list = document.getElementById("ticket-list");
+    if(list){
+      new MutationObserver(function(){
+        requestAnimationFrame(hideNouveau);
+      }).observe(list,{childList:true,subtree:true});
+    }
+
+    setTimeout(hideNouveau,250);
+    setTimeout(hideNouveau,800);
+  }
+
+  if(document.readyState === "loading"){
+    document.addEventListener("DOMContentLoaded",boot,{once:true});
+  }else{
+    boot();
+  }
+})();
+</script>
 
 </body>
 </html>
