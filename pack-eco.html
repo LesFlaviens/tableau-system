@@ -1951,7 +1951,7 @@ button, .btn-mini, .dock-btn, .folder-btn, .room-tab, .btn-item {
             </div>
             <div style="display: flex; gap: 15px; margin-bottom: 25px;">
                 <div style="flex: 1; background: transparent; padding: 25px; border-radius: 4px; text-align: center; border: 1px solid var(--border-strong);">
-                    <div style="color: var(--text-muted); font-size: 0.85rem; letter-spacing: 1px; text-transform: uppercase; margin-bottom: 10px;">Chiffre d'Affaires (CA) Global</div>
+                    <div style="color: var(--text-muted); font-size: 0.85rem; letter-spacing: 1px; text-transform: uppercase; margin-bottom: 10px;">Chiffre d'Affaires Aujourd'hui</div>
                     <div id="dash-ca" style="color: var(--gold); font-size: 2.5rem; font-family: 'Playfair Display', serif;">0.00 €</div>
                 </div>
                 <div style="flex: 1; background: transparent; padding: 25px; border-radius: 4px; text-align: center; border: 1px solid var(--border-strong);">
@@ -3496,49 +3496,12 @@ function updateAntiRushServerPanel() {
 
         
         async function openDashboard() {
-            if (!currentUser || currentUser.role !== 'Manager') return alert("⛔ Accès Direction requis");
+            if (!currentUser || currentUser.role !== 'Manager') {
+                return alert("⛔ Accès Direction requis");
+            }
+
             document.getElementById('dashboard-modal').classList.add('open');
-            const container = document.getElementById('dashboard-content');
-            container.innerHTML = '<div style="color:var(--text-muted); text-align:center;">Chargement...</div>';
-            
-            const state = await API.getState();
-            let archiveCuisine = (state && state.activeOrders && state.activeOrders['FINANCIAL_HISTORY']) ? state.activeOrders['FINANCIAL_HISTORY'].data || [] : [];
-            
-            let allClosed = [...archiveCuisine];
-            allClosed.sort((a, b) => new Date(b.date || b.time) - new Date(a.date || a.time)); 
-            
-            let totalCA = 0;
-            let todayStr = new Date().toISOString().split('T')[0];
-            let todayClosed = allClosed.filter(x => (x.date || x.time) && (x.date || x.time).startsWith(todayStr));
-            let uniqueTables = new Set(todayClosed.map(t => t.table || t.source));
-
-            let html = '';
-            allClosed.forEach(t => {
-                totalCA += parseFloat(t.totalTTC || t.total) || 0;
-                let dateObj = new Date(t.date || t.time);
-                let timeStr = dateObj.toLocaleDateString('fr-FR') + ' ' + dateObj.toLocaleTimeString('fr-FR', {hour: '2-digit', minute:'2-digit'});
-                let itemsHtml = t.items ? t.items.map(i => `<div style="display:flex; justify-content:space-between; font-size: 0.85rem; color: var(--text-muted);"><span>${i.qty||1}x ${i.name || i.n}</span><span>${((i.price || i.p) * (i.qty||1)).toFixed(2)}€</span></div>`).join('') : '';
-                let isWeb = (t.source && t.source.includes('Menu QR')) || (t.table && String(t.table).startsWith('WEB'));
-                let tableTitle = isWeb ? `>📱 QR CODE` : `TABLE ${t.table || t.source}`;
-
-                html += `
-                <div style="background:transparent; border:1px solid var(--border-strong); padding:15px; border-radius:4px; margin-bottom: 10px;">
-                    <div style="display:flex; justify-content:space-between; border-bottom:1px solid var(--border); padding-bottom:10px; margin-bottom:10px;">
-                        <div style="color:var(--text-main); font-weight:600; font-size:1.1rem; letter-spacing: 1px;">${tableTitle}</div>
-                        <div style="color:var(--text-muted); font-size:0.8rem;">${timeStr}</div>
-                    </div>
-                    <div style="margin-bottom:10px; line-height:1.6;">${itemsHtml}</div>
-                    <div style="display:flex; justify-content:space-between; color:var(--gold); font-weight:600; border-top:1px dashed var(--border); padding-top:10px;">
-                        <span style="font-size: 0.8rem; letter-spacing: 1px;">TOTAL</span><span>${parseFloat(t.totalTTC || t.total).toFixed(2)}€</span>
-                    </div>
-                    <div style="font-size:0.7rem; color:var(--text-muted); text-align:right; margin-top:5px; text-transform: uppercase;">Paiement: ${t.method || t.typePaiement || 'Inconnu'}</div>
-                </div>`;
-            });
-
-            if (allClosed.length === 0) html = '<div style="color:var(--text-muted); text-align:center; padding: 20px;">Aucun historique disponible.</div>';
-            document.getElementById('dash-ca').innerText = totalCA.toFixed(2) + ' €';
-            document.getElementById('dash-tables-count').innerText = uniqueTables.size;
-            container.innerHTML = html;
+            await refreshDashboardDirection(true);
         }
 
         function closeDashboard() { document.getElementById('dashboard-modal').classList.remove('open'); }
@@ -6254,6 +6217,7 @@ ${count} ligne(s) · ${sequenceCount} séquence(s).
                 let historyNode = state.activeOrders['FINANCIAL_HISTORY'] || { data: [] };
                 historyNode.data.push(transaction);
                 await API.update('FINANCIAL_HISTORY', historyNode.data);
+                document.dispatchEvent(new CustomEvent('ichef:financial-history-updated'));
 
                 await API.update(currentTableId, null, true, { reason: 'Clôture de table après encaissement validé', operationType: 'TABLE_CLOSED' });
                 window.print();
@@ -14787,6 +14751,249 @@ body:not(.edit-mode) .table-obj:active{
         const drawer=document.getElementById("order-drawer");
         if(drawer?.classList.contains("open"))refresh();
     },1500);
+})();
+</script>
+
+
+<!-- =========================================================
+     iCHEF — DASHBOARD DIRECTION CONNECTÉ TEMPS RÉEL
+     FINANCIAL_HISTORY = source unique des tables réellement clôturées/payées.
+     ========================================================= -->
+<script id="ichef-dashboard-live-v1">
+(function(){
+    "use strict";
+
+    let dashboardTimer = null;
+    let dashboardRefreshing = false;
+
+    function localDayKey(value){
+        const d = value instanceof Date ? value : new Date(value);
+        if(!Number.isFinite(d.getTime())) return "";
+        const y=d.getFullYear();
+        const m=String(d.getMonth()+1).padStart(2,"0");
+        const day=String(d.getDate()).padStart(2,"0");
+        return `${y}-${m}-${day}`;
+    }
+
+    function moneyValue(v){
+        const n=Number(v);
+        return Number.isFinite(n) ? n : 0;
+    }
+
+    function transactionDate(t){
+        const candidates=[
+            t?.date,
+            t?.time,
+            t?.createdAt,
+            t?.closedAt,
+            t?.paidAt,
+            t?.fiscalTicket?.createdAt
+        ].filter(Boolean);
+
+        for(const value of candidates){
+            const d=new Date(value);
+            if(Number.isFinite(d.getTime())) return d;
+        }
+        return null;
+    }
+
+    function transactionTableKey(t){
+        const direct=String(
+            t?.table ??
+            t?.tableId ??
+            t?.tableLabel ??
+            ""
+        ).trim();
+
+        if(direct) return direct;
+
+        const source=String(t?.source||"").trim();
+
+        /* Pad Serveur (T3) -> T3 */
+        const m=source.match(/\(([^()]+)\)\s*$/);
+        if(m?.[1]) return m[1].trim();
+
+        /* QR/web : chaque transaction doit rester distincte */
+        if(/QR|WEB/i.test(source)){
+            return String(t?.id || source);
+        }
+
+        return source || String(t?.id || "");
+    }
+
+    function getFinancialHistory(state){
+        const node=state?.activeOrders?.FINANCIAL_HISTORY;
+
+        if(Array.isArray(node)) return node.filter(Boolean);
+        if(Array.isArray(node?.data)) return node.data.filter(Boolean);
+        if(Array.isArray(node?.items)) return node.items.filter(Boolean);
+
+        return [];
+    }
+
+    function escapeHtml(v){
+        return String(v ?? "")
+            .replace(/&/g,"&amp;")
+            .replace(/</g,"&lt;")
+            .replace(/>/g,"&gt;")
+            .replace(/"/g,"&quot;");
+    }
+
+    function renderDashboardTransaction(t){
+        const dateObj=transactionDate(t);
+        const timeStr=dateObj
+            ? dateObj.toLocaleDateString('fr-FR')+' '+
+              dateObj.toLocaleTimeString('fr-FR',{hour:'2-digit',minute:'2-digit'})
+            : "Date inconnue";
+
+        const items=Array.isArray(t?.items)?t.items:[];
+
+        const itemsHtml=items.map(i=>{
+            const qty=Number(i?.qty||1)||1;
+            const price=moneyValue(i?.price ?? i?.p);
+            const name=escapeHtml(i?.name ?? i?.n ?? "Article");
+            const seat=Number(i?.seat||0)>0 ? ` · 👤 ${Number(i.seat)}` : "";
+            return `<div style="display:flex;justify-content:space-between;font-size:.85rem;color:var(--text-muted);gap:12px;">
+                <span>${qty}x ${name}${seat}</span>
+                <span>${(price*qty).toFixed(2)}€</span>
+            </div>`;
+        }).join("");
+
+        const tableKey=transactionTableKey(t);
+        const source=String(t?.source||"");
+        const isWeb=/QR|WEB/i.test(source) || /^WEB_|^QR_/i.test(tableKey);
+        const title=isWeb
+            ? `📱 QR CODE ${tableKey && !/^WEB_|^QR_/i.test(tableKey) ? '· '+escapeHtml(tableKey) : ''}`
+            : `TABLE ${escapeHtml(tableKey || source || "—")}`;
+
+        const total=moneyValue(t?.totalTTC ?? t?.total);
+        const method=escapeHtml(t?.method || t?.typePaiement || t?.paymentMethod || "Inconnu");
+
+        return `
+        <div style="background:transparent;border:1px solid var(--border-strong);padding:15px;border-radius:4px;margin-bottom:10px;">
+            <div style="display:flex;justify-content:space-between;border-bottom:1px solid var(--border);padding-bottom:10px;margin-bottom:10px;gap:12px;">
+                <div style="color:var(--text-main);font-weight:600;font-size:1.1rem;letter-spacing:1px;">${title}</div>
+                <div style="color:var(--text-muted);font-size:.8rem;white-space:nowrap;">${timeStr}</div>
+            </div>
+            <div style="margin-bottom:10px;line-height:1.6;">
+                ${itemsHtml || '<div style="color:var(--text-muted);font-size:.8rem;">Détail articles indisponible</div>'}
+            </div>
+            <div style="display:flex;justify-content:space-between;color:var(--gold);font-weight:600;border-top:1px dashed var(--border);padding-top:10px;">
+                <span style="font-size:.8rem;letter-spacing:1px;">TOTAL</span>
+                <span>${total.toFixed(2)}€</span>
+            </div>
+            <div style="font-size:.7rem;color:var(--text-muted);text-align:right;margin-top:5px;text-transform:uppercase;">
+                Paiement: ${method}
+            </div>
+        </div>`;
+    }
+
+    window.refreshDashboardDirection=async function(showLoading=false){
+        const modal=document.getElementById("dashboard-modal");
+        if(!modal?.classList.contains("open") || dashboardRefreshing) return;
+
+        dashboardRefreshing=true;
+
+        const container=document.getElementById("dashboard-content");
+        if(showLoading && container){
+            container.innerHTML='<div style="color:var(--text-muted);text-align:center;">Connexion au serveur…</div>';
+        }
+
+        try{
+            const state=await API.getState();
+            const history=getFinancialHistory(state);
+
+            history.sort((a,b)=>{
+                const da=transactionDate(a)?.getTime()||0;
+                const db=transactionDate(b)?.getTime()||0;
+                return db-da;
+            });
+
+            const today=localDayKey(new Date());
+            const todayClosed=history.filter(t=>{
+                const d=transactionDate(t);
+                return d && localDayKey(d)===today;
+            });
+
+            /* CA du jour = uniquement transactions clôturées/payées aujourd'hui */
+            const todayCA=todayClosed.reduce(
+                (sum,t)=>sum+moneyValue(t?.totalTTC ?? t?.total),
+                0
+            );
+
+            /* Une table physique n'est comptée qu'une fois.
+               Chaque retrait QR est une commande servie distincte. */
+            const servedKeys=new Set(
+                todayClosed
+                    .map(transactionTableKey)
+                    .filter(Boolean)
+            );
+
+            const ca=document.getElementById("dash-ca");
+            const count=document.getElementById("dash-tables-count");
+
+            if(ca) ca.textContent=todayCA.toFixed(2)+" €";
+            if(count) count.textContent=String(servedKeys.size);
+
+            if(container){
+                container.innerHTML=history.length
+                    ? history.slice(0,250).map(renderDashboardTransaction).join("")
+                    : '<div style="color:var(--text-muted);text-align:center;padding:20px;">Aucune commande clôturée disponible.</div>';
+            }
+
+            window.ICHEF_DASHBOARD_LAST_SYNC={
+                at:new Date().toISOString(),
+                todayCA,
+                tablesServedToday:servedKeys.size,
+                historyCount:history.length
+            };
+
+        }catch(err){
+            console.error("[iCHEF] Dashboard Direction :",err);
+            if(container){
+                container.innerHTML=
+                    '<div style="color:#ef4444;text-align:center;padding:20px;">⚠️ Impossible de charger les données du serveur.</div>';
+            }
+        }finally{
+            dashboardRefreshing=false;
+        }
+    };
+
+    function startDashboardLive(){
+        clearInterval(dashboardTimer);
+        dashboardTimer=setInterval(()=>{
+            const modal=document.getElementById("dashboard-modal");
+            if(modal?.classList.contains("open")){
+                window.refreshDashboardDirection(false);
+            }
+        },5000);
+    }
+
+    document.addEventListener("DOMContentLoaded",startDashboardLive,{once:true});
+
+    /* Dès qu'une clôture/commande arrive par Socket.IO, le Dashboard se recalcule. */
+    document.addEventListener("ichef:financial-history-updated",()=>{
+        window.refreshDashboardDirection(false);
+    });
+
+    /* Intercepte les événements socket déjà connectés sans créer une 2e socket. */
+    const hookTimer=setInterval(()=>{
+        try{
+            if(typeof socket!=="undefined" && socket && !socket.__ichefDashboardHooked){
+                socket.__ichefDashboardHooked=true;
+                ["updateState","orderLifecycle"].forEach(evt=>{
+                    socket.on(evt,()=>{
+                        const modal=document.getElementById("dashboard-modal");
+                        if(modal?.classList.contains("open")){
+                            setTimeout(()=>window.refreshDashboardDirection(false),120);
+                        }
+                    });
+                });
+                clearInterval(hookTimer);
+            }
+        }catch(_){}
+    },500);
+
 })();
 </script>
 
