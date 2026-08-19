@@ -6250,6 +6250,9 @@ ${count} ligne(s) · ${sequenceCount} séquence(s).
             document.getElementById('history-drawer').classList.add('open');
             API.getState().then(s => {
                 let hData = s.activeOrders['FINANCIAL_HISTORY'] ? s.activeOrders['FINANCIAL_HISTORY'].data : [];
+                if(typeof window.ichefFilterGhostT3History==="function"){
+                    hData=window.ichefFilterGhostT3History(hData);
+                }
                 let container = document.getElementById('history-content');
                 if(hData.length === 0) { container.innerHTML = '<div style="color:var(--text-muted); text-align:center;">Aucun historique</div>'; return; }
                 
@@ -14944,7 +14947,11 @@ body:not(.edit-mode) .table-obj:active{
 
         try{
             const state=await API.getState();
-            const history=getFinancialHistory(state);
+            let history=getFinancialHistory(state);
+
+            if(typeof window.ichefFilterGhostT3History==="function"){
+                history=window.ichefFilterGhostT3History(history);
+            }
 
             history.sort((a,b)=>{
                 const da=transactionDate(a)?.getTime()||0;
@@ -15049,6 +15056,144 @@ body:not(.edit-mode) .table-obj:active{
 
 
 
+
+
+<!-- =========================================================
+     iCHEF — PURGE SERVEUR FORCÉE DU FANTÔME T3
+     Signature indépendante du fuseau horaire.
+     ========================================================= -->
+<script id="ichef-force-purge-t3-server">
+(function(){
+    "use strict";
+
+    function norm(v){
+        return String(v ?? "")
+            .normalize("NFD")
+            .replace(/[\u0300-\u036f]/g,"")
+            .trim()
+            .toLowerCase();
+    }
+
+    function txTable(t){
+        const direct=String(t?.table ?? t?.tableId ?? t?.tableLabel ?? "").trim();
+        if(direct) return direct.toUpperCase();
+
+        const source=String(t?.source||"").trim();
+        const m=source.match(/\(([^()]+)\)\s*$/);
+        return String(m?.[1] || source).trim().toUpperCase();
+    }
+
+    function txTotal(t){
+        const n=Number(t?.totalTTC ?? t?.total ?? 0);
+        return Number.isFinite(n) ? n : 0;
+    }
+
+    function itemSig(i){
+        return {
+            name:norm(i?.name ?? i?.n),
+            qty:Number(i?.qty ?? 1),
+            price:Number(i?.price ?? i?.p ?? 0)
+        };
+    }
+
+    function isGhostT3(t){
+        if(txTable(t)!=="T3") return false;
+        if(Math.abs(txTotal(t)-17.5)>0.001) return false;
+
+        const items=Array.isArray(t?.items) ? t.items.map(itemSig) : [];
+        if(items.length!==2) return false;
+
+        const hmjn=items.some(i =>
+            i.name==="hmjn" &&
+            i.qty===1 &&
+            Math.abs(i.price-15)<0.001
+        );
+
+        const cafe=items.some(i =>
+            (i.name==="cafee" || i.name==="cafe") &&
+            i.qty===1 &&
+            Math.abs(i.price-2.5)<0.001
+        );
+
+        return hmjn && cafe;
+    }
+
+    function getHistory(state){
+        const node=state?.activeOrders?.FINANCIAL_HISTORY;
+        if(Array.isArray(node)) return [...node];
+        if(Array.isArray(node?.data)) return [...node.data];
+        return [];
+    }
+
+    /* Filtre visuel de sécurité : même si le serveur tarde,
+       cette ligne n'est plus rendue dans le Dashboard. */
+    window.ichefFilterGhostT3History=function(history){
+        return (Array.isArray(history)?history:[]).filter(t=>!isGhostT3(t));
+    };
+
+    async function purge(){
+        try{
+            const before=await API.getState();
+            const history=getHistory(before);
+            const cleaned=history.filter(t=>!isGhostT3(t));
+
+            if(cleaned.length===history.length){
+                console.info("[iCHEF] Fantôme T3 déjà absent du serveur.");
+                return true;
+            }
+
+            console.warn(
+                `[iCHEF] Suppression T3 fantôme : ${history.length-cleaned.length} ligne(s).`
+            );
+
+            await API.update(
+                "FINANCIAL_HISTORY",
+                cleaned,
+                false,
+                {
+                    reason:"PURGE_GHOST_T3",
+                    operationType:"HISTORY_CORRECTION"
+                }
+            );
+
+            /* Vérification réelle côté serveur après écriture */
+            await new Promise(r=>setTimeout(r,350));
+            const after=await API.getState();
+            const remaining=getHistory(after).filter(isGhostT3);
+
+            if(remaining.length){
+                throw new Error("T3_GHOST_STILL_ON_SERVER");
+            }
+
+            try{
+                if(typeof refreshDashboardDirection==="function"){
+                    await refreshDashboardDirection(false);
+                }
+            }catch(_){}
+
+            console.info("[iCHEF] Fantôme T3 confirmé supprimé du serveur.");
+            return true;
+
+        }catch(err){
+            console.error("[iCHEF] Purge T3 serveur :",err);
+            return false;
+        }
+    }
+
+    window.purgeGhostT3Server=purge;
+
+    function boot(){
+        setTimeout(purge,700);
+        setTimeout(purge,2500);
+    }
+
+    if(document.readyState==="loading"){
+        document.addEventListener("DOMContentLoaded",boot,{once:true});
+    }else{
+        boot();
+    }
+})();
+</script>
 
 </body>
 </html>
