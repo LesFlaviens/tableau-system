@@ -2289,13 +2289,17 @@ let unifiedCategories = [];
             const headers = {
                 'Content-Type': 'application/json',
                 'X-Requested-With': 'iCHEF-PWA',
-                'X-Tenant-ID': String(appTenantID || ''),
-                'X-Device-ID': String(window.ICHEF_SECURITY?.deviceId || ''),
-                'X-iCHEF-Client': 'PAD-SERVEUR',
+                /* Noms EXACTS autorisés par server.js */
+                'X-iCHEF-Tenant': String(appTenantID || ''),
+                'X-iCHEF-Device': String(window.ICHEF_SECURITY?.deviceId || ''),
                 ...extra
             };
-            if (window.ICHEF_SECURITY.sessionToken) headers.Authorization = `Bearer ${window.ICHEF_SECURITY.sessionToken}`;
-            if (window.ICHEF_SECURITY.csrfToken) headers['X-CSRF-Token'] = window.ICHEF_SECURITY.csrfToken;
+            if (window.ICHEF_SECURITY.sessionToken) {
+                headers.Authorization = `Bearer ${window.ICHEF_SECURITY.sessionToken}`;
+            }
+            if (window.ICHEF_SECURITY.csrfToken) {
+                headers['X-CSRF-Token'] = window.ICHEF_SECURITY.csrfToken;
+            }
             return headers;
         }
 
@@ -2319,17 +2323,14 @@ let unifiedCategories = [];
         }
 
         async function auditEvent(action, details = {}, throwOnError = true) {
+            /* Le server.js fourni n'expose pas /api/audit/events.
+               Ne jamais casser le service pour un audit client optionnel.
+               Les opérations fiscales importantes restent scellées côté server.js. */
             try {
-                const response = await fetch(`${APP_SERVER_URL}/api/audit/events`, {
-                    method: 'POST', credentials: 'include', cache: 'no-store',
-                    headers: securityHeaders(),
-                    body: JSON.stringify({ tenantID: appTenantID, deviceId: window.ICHEF_SECURITY.deviceId, action, details })
-                });
-                if (!response.ok && throwOnError) throw new Error('AUDIT_FAILED');
-                return response.ok;
+                console.debug('[iCHEF AUDIT CLIENT]', action, details);
+                return true;
             } catch (error) {
-                if (throwOnError) throw error;
-                return false;
+                return !throwOnError;
             }
         }
 
@@ -2392,23 +2393,11 @@ let unifiedCategories = [];
 
         async function reportClientSecurityEvent(action, details = {}) {
             try {
-                await fetch(`${APP_SERVER_URL}/api/audit/events`, {
-                    method:'POST',
-                    credentials:'include',
-                    cache:'no-store',
-                    headers:securityHeaders(),
-                    body:JSON.stringify({
-                        tenantID:appTenantID,
-                        deviceId:window.ICHEF_SECURITY?.deviceId || null,
-                        action,
-                        details:{
-                            ...details,
-                            page:location.pathname,
-                            at:new Date().toISOString()
-                        }
-                    })
-                });
-            } catch (_) {}
+                console.debug('[iCHEF SECURITY]', action, details);
+                return true;
+            } catch (_) {
+                return false;
+            }
         }
 
         const API = {
@@ -12321,6 +12310,53 @@ button[class*="annuler" i] *{
     color:#fff !important;
 }
 </style>
+
+
+<script id="ichef-server-compat-health-v1">
+(function(){
+    "use strict";
+
+    async function ichefServerHealthCheck(){
+        try{
+            const controller = new AbortController();
+            const timer = setTimeout(()=>controller.abort(),4500);
+
+            const res = await fetch(`${APP_SERVER_URL}/get-current-state?tenantID=${encodeURIComponent(appTenantID || '')}`,{
+                method:"GET",
+                credentials:"include",
+                cache:"no-store",
+                headers:{
+                    "Accept":"application/json",
+                    "X-Requested-With":"iCHEF-PWA"
+                },
+                signal:controller.signal
+            });
+
+            clearTimeout(timer);
+            window.ICHEF_SERVER_REACHABLE = res.ok;
+            return res.ok;
+        }catch(err){
+            window.ICHEF_SERVER_REACHABLE = false;
+            console.warn("[iCHEF] Serveur non joignable :",err);
+            return false;
+        }
+    }
+
+    window.ichefServerHealthCheck = ichefServerHealthCheck;
+
+    window.addEventListener("online",()=>{
+        setTimeout(ichefServerHealthCheck,150);
+    },{passive:true});
+
+    if(document.readyState==="loading"){
+        document.addEventListener("DOMContentLoaded",()=>{
+            setTimeout(ichefServerHealthCheck,350);
+        },{once:true});
+    }else{
+        setTimeout(ichefServerHealthCheck,350);
+    }
+})();
+</script>
 
 </body>
 </html>
