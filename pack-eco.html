@@ -10535,5 +10535,191 @@ html.ichef-night-mode .chair{
 }
 </style>
 
+
+<style id="ichef-ticket-horizontal-resizer-v1">
+@media (min-width:900px){
+  #ichef-ticket-horizontal-resizer{
+    height:16px;
+    flex:0 0 16px;
+    position:relative;
+    cursor:row-resize;
+    touch-action:none;
+    user-select:none;
+    -webkit-user-select:none;
+    z-index:80;
+    background:#090d0e;
+  }
+  #ichef-ticket-horizontal-resizer::before{
+    content:"";
+    position:absolute;
+    left:16px; right:16px;
+    top:7px;
+    height:2px;
+    border-radius:3px;
+    background:rgba(255,255,255,.72);
+  }
+  #ichef-ticket-horizontal-resizer::after{
+    content:"⋮";
+    position:absolute;
+    left:50%;
+    top:50%;
+    transform:translate(-50%,-50%) rotate(90deg);
+    color:#e3b650;
+    background:#0b0e0f;
+    border:1px solid rgba(227,182,80,.65);
+    border-radius:8px;
+    padding:0 7px;
+    line-height:15px;
+    font-size:15px;
+    font-weight:900;
+  }
+  #ichef-ticket-horizontal-resizer.ichef-dragging::before{
+    background:#ffd15c;
+    box-shadow:0 0 8px rgba(255,209,92,.7);
+  }
+}
+@media (max-width:899px){
+  #ichef-ticket-horizontal-resizer{display:none!important}
+}
+</style>
+
+<script id="ichef-ticket-horizontal-resizer-v1-script">
+(function(){
+  "use strict";
+
+  const MIN_WHITE=150;
+  const MIN_BLACK=230;
+  let active=null;
+
+  function findParts(){
+    const drawer=document.getElementById('order-drawer');
+    if(!drawer) return null;
+
+    /* Cherche la zone blanche principale et la zone sombre contenant total/boutons */
+    const candidates=[...drawer.querySelectorAll('*')];
+
+    let white=null, black=null;
+
+    for(const el of candidates){
+      const r=el.getBoundingClientRect();
+      if(r.width<250 || r.height<100) continue;
+      const cs=getComputedStyle(el);
+      const bg=cs.backgroundColor || "";
+      const txt=(el.textContent||"");
+
+      if(!white && /rgb\(24[0-9],|rgb\(25[0-5],/.test(bg) && 
+         (txt.includes("SERVICE DU MENU") || txt.includes("Ajouter une observation"))){
+        white=el;
+      }
+    }
+
+    /* Le bloc sombre est le parent/voisin qui contient CAISSE */
+    const caisse=[...drawer.querySelectorAll('button,div')].find(el=>
+      (el.textContent||"").trim().includes("CAISSE")
+    );
+    if(caisse){
+      let p=caisse.parentElement;
+      while(p && p!==drawer){
+        const cs=getComputedStyle(p);
+        const r=p.getBoundingClientRect();
+        if(r.width>300 && r.height>180 && 
+           (cs.backgroundColor.includes("0, 0, 0") || cs.backgroundColor.includes("9, 13, 14") ||
+            cs.backgroundColor.includes("10, 14, 15") || cs.backgroundColor.includes("11, 14, 15"))){
+          black=p; break;
+        }
+        p=p.parentElement;
+      }
+    }
+
+    return {drawer,white,black};
+  }
+
+  function install(){
+    const parts=findParts();
+    if(!parts || !parts.white || !parts.black) return;
+
+    let bar=document.getElementById('ichef-ticket-horizontal-resizer');
+    if(!bar){
+      bar=document.createElement('div');
+      bar.id='ichef-ticket-horizontal-resizer';
+    }
+
+    /* La barre se place exactement entre blanc et noir */
+    if(bar.parentElement!==parts.black.parentElement || bar.nextSibling!==parts.black){
+      parts.black.parentElement.insertBefore(bar,parts.black);
+    }
+
+    if(bar.dataset.ready==='1') return;
+    bar.dataset.ready='1';
+
+    bar.addEventListener('pointerdown',e=>{
+      if(window.innerWidth<900) return;
+      e.preventDefault();
+
+      const p=findParts();
+      if(!p || !p.white || !p.black) return;
+
+      const wr=p.white.getBoundingClientRect();
+      const br=p.black.getBoundingClientRect();
+
+      active={
+        white:p.white,
+        black:p.black,
+        startY:e.clientY,
+        whiteH:wr.height,
+        blackH:br.height,
+        total:wr.height+br.height
+      };
+
+      bar.classList.add('ichef-dragging');
+      try{bar.setPointerCapture(e.pointerId)}catch(_){}
+    });
+
+    bar.addEventListener('pointermove',e=>{
+      if(!active) return;
+      e.preventDefault();
+
+      const dy=e.clientY-active.startY;
+      let whiteH=active.whiteH+dy;
+      whiteH=Math.max(MIN_WHITE,Math.min(whiteH,active.total-MIN_BLACK));
+      const blackH=active.total-whiteH;
+
+      active.white.style.setProperty('height',Math.round(whiteH)+'px','important');
+      active.white.style.setProperty('min-height','0','important');
+      active.white.style.setProperty('max-height','none','important');
+      active.white.style.setProperty('flex','0 0 '+Math.round(whiteH)+'px','important');
+
+      active.black.style.setProperty('height',Math.round(blackH)+'px','important');
+      active.black.style.setProperty('min-height',MIN_BLACK+'px','important');
+      active.black.style.setProperty('max-height','none','important');
+      active.black.style.setProperty('flex','1 1 '+Math.round(blackH)+'px','important');
+    },{passive:false});
+
+    function stop(){
+      active=null;
+      bar.classList.remove('ichef-dragging');
+    }
+    bar.addEventListener('pointerup',stop);
+    bar.addEventListener('pointercancel',stop);
+  }
+
+  function boot(){
+    install();
+    setTimeout(install,300);
+    setTimeout(install,1000);
+
+    const drawer=document.getElementById('order-drawer');
+    if(drawer){
+      new MutationObserver(()=>requestAnimationFrame(install))
+        .observe(drawer,{childList:true,subtree:true,attributes:true,attributeFilter:['class']});
+    }
+  }
+
+  if(document.readyState==='loading'){
+    document.addEventListener('DOMContentLoaded',boot,{once:true});
+  }else boot();
+})();
+</script>
+
 </body>
 </html>
