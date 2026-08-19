@@ -2042,7 +2042,7 @@ button, .btn-mini, .dock-btn, .folder-btn, .room-tab, .btn-item {
     <!-- LE GRAND TIROIR DE COMMANDE -->
     <div id="order-drawer" class="drawer">
         <div class="drawer-body">
-            <div style="flex:1; display:flex; flex-direction:column; background:var(--bg); min-height: 0; min-width: 0;">
+            <div id="ichef-order-left-pane" style="flex:1; display:flex; flex-direction:column; background:var(--bg); min-height: 0; min-width: 0;">
                 
                <!-- NOUVEAU CONTENEUR DYNAMIQUE SYNCHRONISÉ AVEC L'ADMIN -->
 <div class="swipe-row" style="padding: 15px; border-bottom: 1px solid var(--border); background: var(--panel); align-items: center;">
@@ -11098,6 +11098,178 @@ html.ichef-night-mode .chair{
 
   if(document.readyState === "loading"){
     document.addEventListener("DOMContentLoaded",boot,{once:true});
+  }else{
+    boot();
+  }
+})();
+</script>
+
+
+
+<!-- =========================================================
+     iCHEF — APPUI LONG 0,9 s : BLOC GAUCHE PLEIN ÉCRAN
+     Un second appui long restaure la taille normale.
+     Aucun changement métier : clics et scroll restent normaux.
+     ========================================================= -->
+<style id="ichef-left-pane-longpress-fullscreen-style">
+  #order-drawer .drawer-body,
+  #ichef-order-left-pane,
+  #order-drawer .ticket-view {
+    transition: opacity .16s ease, flex-basis .18s ease, width .18s ease, transform .18s ease !important;
+  }
+
+  /* Le tiroir de commande est déjà plein écran : on donne simplement
+     toute sa surface utile au bloc gauche. */
+  #order-drawer.ichef-left-pane-fullscreen .drawer-body {
+    display:flex !important;
+    flex-direction:row !important;
+    width:100% !important;
+    height:100% !important;
+    overflow:hidden !important;
+  }
+
+  #order-drawer.ichef-left-pane-fullscreen #ichef-order-left-pane {
+    display:flex !important;
+    flex:1 1 100% !important;
+    width:100% !important;
+    max-width:none !important;
+    height:100% !important;
+    min-height:0 !important;
+    min-width:0 !important;
+    opacity:1 !important;
+  }
+
+  #order-drawer.ichef-left-pane-fullscreen .ticket-view,
+  #order-drawer.ichef-left-pane-fullscreen #ichef-ticket-splitter-v2 {
+    display:none !important;
+  }
+
+  /* En plein écran, la grille utilise réellement toute la largeur. */
+  #order-drawer.ichef-left-pane-fullscreen #menu-grid {
+    flex:1 1 auto !important;
+    width:100% !important;
+    min-width:0 !important;
+    min-height:0 !important;
+    overflow-y:auto !important;
+    -webkit-overflow-scrolling:touch !important;
+  }
+
+  /* Évite les sélections de texte pendant l'appui long sans bloquer le scroll. */
+  #ichef-order-left-pane.ichef-longpress-armed {
+    -webkit-user-select:none !important;
+    user-select:none !important;
+  }
+</style>
+
+<script id="ichef-left-pane-longpress-fullscreen-script">
+(function(){
+  "use strict";
+
+  const HOLD_MS = 900;
+  const MOVE_LIMIT = 14;
+  let holdTimer = null;
+  let startX = 0;
+  let startY = 0;
+  let activePointerId = null;
+  let fired = false;
+  let suppressClickOnce = false;
+
+  function clearHold(){
+    if(holdTimer){
+      clearTimeout(holdTimer);
+      holdTimer = null;
+    }
+    const pane = document.getElementById('ichef-order-left-pane');
+    if(pane) pane.classList.remove('ichef-longpress-armed');
+    activePointerId = null;
+  }
+
+  function toggleLeftFullscreen(){
+    const drawer = document.getElementById('order-drawer');
+    if(!drawer) return;
+
+    drawer.classList.toggle('ichef-left-pane-fullscreen');
+    drawer.classList.remove('order-ticket-focus');
+
+    /* Recalcule proprement la grille après le changement de largeur. */
+    requestAnimationFrame(function(){
+      window.dispatchEvent(new Event('resize'));
+    });
+
+    try{
+      if(navigator.vibrate) navigator.vibrate(22);
+    }catch(_){ }
+  }
+
+  function install(){
+    const pane = document.getElementById('ichef-order-left-pane');
+    if(!pane || pane.dataset.ichefLongpressFullscreen === '1') return;
+
+    pane.dataset.ichefLongpressFullscreen = '1';
+
+    pane.addEventListener('pointerdown', function(e){
+      /* Bouton principal uniquement pour la souris ; tactile/stylet passent naturellement. */
+      if(e.pointerType === 'mouse' && e.button !== 0) return;
+
+      clearHold();
+      fired = false;
+      startX = e.clientX;
+      startY = e.clientY;
+      activePointerId = e.pointerId;
+      pane.classList.add('ichef-longpress-armed');
+
+      holdTimer = setTimeout(function(){
+        holdTimer = null;
+        fired = true;
+        suppressClickOnce = true;
+        pane.classList.remove('ichef-longpress-armed');
+        toggleLeftFullscreen();
+      }, HOLD_MS);
+    }, {passive:true});
+
+    pane.addEventListener('pointermove', function(e){
+      if(activePointerId !== e.pointerId || !holdTimer) return;
+      if(Math.abs(e.clientX - startX) > MOVE_LIMIT || Math.abs(e.clientY - startY) > MOVE_LIMIT){
+        clearHold();
+      }
+    }, {passive:true});
+
+    pane.addEventListener('pointerup', function(e){
+      if(activePointerId === e.pointerId) clearHold();
+    }, {passive:true});
+
+    pane.addEventListener('pointercancel', clearHold, {passive:true});
+
+    /* Après un appui long, neutralise UNIQUEMENT le clic synthétique qui suit,
+       pour éviter d'ajouter un plat ou d'ouvrir un bouton par accident. */
+    pane.addEventListener('click', function(e){
+      if(!suppressClickOnce) return;
+      suppressClickOnce = false;
+      e.preventDefault();
+      e.stopPropagation();
+      if(typeof e.stopImmediatePropagation === 'function') e.stopImmediatePropagation();
+    }, true);
+
+    pane.addEventListener('contextmenu', function(e){
+      if(fired) e.preventDefault();
+    });
+  }
+
+  function boot(){
+    install();
+    setTimeout(install,250);
+    setTimeout(install,800);
+
+    const drawer = document.getElementById('order-drawer');
+    if(drawer){
+      new MutationObserver(function(){
+        if(drawer.classList.contains('open')) requestAnimationFrame(install);
+      }).observe(drawer,{attributes:true,attributeFilter:['class']});
+    }
+  }
+
+  if(document.readyState === 'loading'){
+    document.addEventListener('DOMContentLoaded',boot,{once:true});
   }else{
     boot();
   }
