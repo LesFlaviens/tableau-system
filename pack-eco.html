@@ -7655,21 +7655,42 @@ header .header-left > div:first-of-type{
     const grid=q('#pro-table-grid'); if(!grid) return;
     let list=[];
     try{list=(Array.isArray(tables)?tables:[]).filter(t=>t && (!currentRoom || t.room===currentRoom));}catch(_){list=[];}
-    grid.innerHTML=list.map(t=>{
-      const start=orderStart(t.label), elapsed=start?Date.now()-start:0;
-      const cls=elapsed>60*60*1000?'late':elapsed>20*60*1000?'warn':'';
-      return `<button type="button" class="pro-table-card ${String(currentTableId)===String(t.label)?'current':''} ${isReserved(t.label)?'reserved':''}" data-table="${String(t.label).replace(/&/g,'&amp;').replace(/"/g,'&quot;')}">
-        <span class="pro-table-num">${String(t.label).replace(/</g,'&lt;')}</span>
-        <span class="pro-table-meta">👥 ${tablePax(t)}</span>
-        <span class="pro-table-time ${cls}">${start?fmtElapsed(start):'00:00'}</span>
-      </button>`;
-    }).join('') || '<div style="color:#888;padding:20px;grid-column:1/-1;text-align:center">Aucune table</div>';
-    grid.querySelectorAll('.pro-table-card').forEach(btn=>btn.addEventListener('click',()=>{
-      const label=btn.dataset.table; if(!label) return;
-      if(typeof handleTableOrderTap==='function') handleTableOrderTap(label,label);
-      else if(typeof openOrder==='function') openOrder(label);
-      setTimeout(renderProTables,20);
-    }));
+
+    /* Signature STRUCTURELLE uniquement.
+       Les chronos ne font pas partie de la signature : ils sont mis à jour
+       séparément sans jamais reconstruire les cartes. */
+    const signature = JSON.stringify(list.map(t=>[
+      String(t.label||''),
+      Number(tablePax(t)||0),
+      String(t.room||''),
+      String(currentTableId)===String(t.label)?1:0,
+      isReserved(t.label)?1:0
+    ]));
+
+    if(grid.dataset.ichefRenderSignature !== signature){
+      grid.dataset.ichefRenderSignature = signature;
+
+      grid.innerHTML=list.map(t=>{
+        const start=orderStart(t.label), elapsed=start?Date.now()-start:0;
+        const cls=elapsed>60*60*1000?'late':elapsed>20*60*1000?'warn':'';
+        return `<button type="button" class="pro-table-card ${String(currentTableId)===String(t.label)?'current':''} ${isReserved(t.label)?'reserved':''}" data-table="${String(t.label).replace(/&/g,'&amp;').replace(/"/g,'&quot;')}">
+          <span class="pro-table-num">${String(t.label).replace(/</g,'&lt;')}</span>
+          <span class="pro-table-meta">👥 ${tablePax(t)}</span>
+          <span class="pro-table-time ${cls}">${start?fmtElapsed(start):'00:00'}</span>
+        </button>`;
+      }).join('') || '<div style="color:#888;padding:20px;grid-column:1/-1;text-align:center">Aucune table</div>';
+
+      grid.querySelectorAll('.pro-table-card').forEach(btn=>btn.addEventListener('click',()=>{
+        const label=btn.dataset.table; if(!label) return;
+        if(typeof handleTableOrderTap==='function') handleTableOrderTap(label,label);
+        else if(typeof openOrder==='function') openOrder(label);
+        setTimeout(renderProTables,20);
+      }));
+    }
+
+    /* Même lorsqu'un autre moteur appelle renderProTables(), aucune
+       reconstruction si rien n'a changé : seulement les chronos. */
+    if(typeof updateProTableTimes==='function') updateProTableTimes();
   }
   function renderProRooms(){
     const tabs=q('#pro-room-tabs'); if(!tabs) return;
@@ -8124,15 +8145,30 @@ header .header-left > div:first-of-type{
     const rb=$('#mobile-exact-room');if(rb)rb.textContent=room;
     const g=$('#mobile-exact-grid');if(!g)return;
     const list=safeTables().filter(t=>!room||!t.room||t.room===room);
-    g.innerHTML=list.map(t=>{
-      const st=startOf(t.label),ms=st?Date.now()-st:0,cl=ms>3600000?'late':ms>1200000?'warn':'';
-      return '<button class="mobile-exact-table '+(String(t.label)===String(window.currentTableId||'')?'current':'')+'" data-table="'+esc(t.label)+'"><span class="num">'+esc(t.label)+'</span><span class="pax">👥 '+paxOf(t)+'</span><span class="time '+cl+'">'+elapsed(st)+'</span></button>';
-    }).join('')||'<div style="grid-column:1/-1;color:#8e8e8e;text-align:center;padding:35px 10px">Aucune table</div>';
-    g.querySelectorAll('.mobile-exact-table').forEach(b=>b.addEventListener('click',()=>{
-      const lab=b.dataset.table;if(!lab)return;
-      try{if(typeof handleTableOrderTap==='function')handleTableOrderTap(lab,lab);else if(typeof openOrder==='function')openOrder(lab);}catch(e){console.error(e)}
-      setTimeout(()=>{const d=$('#order-drawer');if(d)d.classList.remove('order-ticket-focus');},20);
-    }));
+
+    const signature = JSON.stringify(list.map(t=>[
+      String(t.label||''),
+      Number(paxOf(t)||0),
+      String(t.room||''),
+      String(t.label)===String(window.currentTableId||'')?1:0
+    ]));
+
+    if(g.dataset.ichefRenderSignature !== signature){
+      g.dataset.ichefRenderSignature = signature;
+
+      g.innerHTML=list.map(t=>{
+        const st=startOf(t.label),ms=st?Date.now()-st:0,cl=ms>3600000?'late':ms>1200000?'warn':'';
+        return '<button class="mobile-exact-table '+(String(t.label)===String(window.currentTableId||'')?'current':'')+'" data-table="'+esc(t.label)+'"><span class="num">'+esc(t.label)+'</span><span class="pax">👥 '+paxOf(t)+'</span><span class="time '+cl+'">'+elapsed(st)+'</span></button>';
+      }).join('')||'<div style="grid-column:1/-1;color:#8e8e8e;text-align:center;padding:35px 10px">Aucune table</div>';
+
+      g.querySelectorAll('.mobile-exact-table').forEach(b=>b.addEventListener('click',()=>{
+        const lab=b.dataset.table;if(!lab)return;
+        try{if(typeof handleTableOrderTap==='function')handleTableOrderTap(lab,lab);else if(typeof openOrder==='function')openOrder(lab);}catch(e){console.error(e)}
+        setTimeout(()=>{const d=$('#order-drawer');if(d)d.classList.remove('order-ticket-focus');},20);
+      }));
+    }
+
+    if(typeof updateMobileTableTimes==='function') updateMobileTableTimes();
   }
 
   function installSwipe(){
@@ -12626,6 +12662,20 @@ button[class*="annuler" i] *{
     }
 })();
 </script>
+
+
+<!-- iCHEF — TABLES IMMOBILES : aucune animation parasite -->
+<style id="ichef-table-render-stability-final">
+.pro-table-card,
+.mobile-exact-table{
+    animation:none !important;
+    transition:none !important;
+}
+.pro-table-card.current,
+.mobile-exact-table.current{
+    animation:none !important;
+}
+</style>
 
 </body>
 </html>
