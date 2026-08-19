@@ -1949,17 +1949,26 @@ button, .btn-mini, .dock-btn, .folder-btn, .room-tab, .btn-item {
                 <h2 style="color:var(--gold); font-size: 1.8rem; margin: 0; text-transform: uppercase;">👁️ DASHBOARD DIRECTION</h2>
                 <button class="btn-mini" onclick="closeDashboard()">✕ FERMER</button>
             </div>
-            <div style="display: flex; gap: 15px; margin-bottom: 25px;">
-                <div style="flex: 1; background: transparent; padding: 25px; border-radius: 4px; text-align: center; border: 1px solid var(--border-strong);">
-                    <div style="color: var(--text-muted); font-size: 0.85rem; letter-spacing: 1px; text-transform: uppercase; margin-bottom: 10px;">Chiffre d'Affaires Aujourd'hui</div>
-                    <div id="dash-ca" style="color: var(--gold); font-size: 2.5rem; font-family: 'Playfair Display', serif;">0.00 €</div>
+            <div style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:15px;margin-bottom:25px;">
+                <div style="background:transparent;padding:25px;border-radius:4px;text-align:center;border:1px solid var(--border-strong);">
+                    <div style="color:var(--text-muted);font-size:.85rem;letter-spacing:1px;text-transform:uppercase;margin-bottom:10px;">Chiffre d'Affaires Aujourd'hui</div>
+                    <div id="dash-ca" style="color:var(--gold);font-size:2.5rem;font-family:'Playfair Display',serif;">0.00 €</div>
                 </div>
-                <div style="flex: 1; background: transparent; padding: 25px; border-radius: 4px; text-align: center; border: 1px solid var(--border-strong);">
-                    <div style="color: var(--text-muted); font-size: 0.85rem; letter-spacing: 1px; text-transform: uppercase; margin-bottom: 10px;">Tables Servies Aujourd'hui</div>
-                    <div id="dash-tables-count" style="color: var(--text-main); font-size: 2.5rem; font-family: 'Playfair Display', serif;">0</div>
+                <div style="background:transparent;padding:25px;border-radius:4px;text-align:center;border:1px solid var(--border-strong);">
+                    <div style="color:var(--text-muted);font-size:.85rem;letter-spacing:1px;text-transform:uppercase;margin-bottom:10px;">Tables clôturées Aujourd'hui</div>
+                    <div id="dash-tables-count" style="color:var(--text-main);font-size:2.5rem;font-family:'Playfair Display',serif;">0</div>
+                </div>
+                <div style="background:transparent;padding:25px;border-radius:4px;text-align:center;border:1px solid var(--border-strong);">
+                    <div style="color:var(--text-muted);font-size:.85rem;letter-spacing:1px;text-transform:uppercase;margin-bottom:10px;">Tables en service maintenant</div>
+                    <div id="dash-live-tables" style="color:#10b981;font-size:2.5rem;font-family:'Playfair Display',serif;">0</div>
+                </div>
+                <div style="background:transparent;padding:25px;border-radius:4px;text-align:center;border:1px solid var(--border-strong);">
+                    <div style="color:var(--text-muted);font-size:.85rem;letter-spacing:1px;text-transform:uppercase;margin-bottom:10px;">Commandes clôturées historique</div>
+                    <div id="dash-history-count" style="color:var(--gold);font-size:2.5rem;font-family:'Playfair Display',serif;">0</div>
                 </div>
             </div>
-            <h3 style="color:var(--text-muted); margin-bottom: 15px; font-size: 0.9rem; letter-spacing: 1px; text-transform: uppercase; border-bottom: 1px solid var(--border); padding-bottom: 10px;">HISTORIQUE DES COMMANDES</h3>
+            <h3 style="color:var(--text-muted); margin-bottom: 6px; font-size: 0.9rem; letter-spacing: 1px; text-transform: uppercase; border-bottom: 1px solid var(--border); padding-bottom: 10px;">HISTORIQUE DES COMMANDES</h3>
+            <div style="color:var(--text-muted);font-size:.72rem;margin-bottom:14px;">Les indicateurs « aujourd'hui » utilisent uniquement les clôtures/payments datés du jour. Les tables actives apparaissent séparément dans « Tables en service maintenant ».</div>
             <div id="dashboard-content" style="flex:1; overflow-y:auto; display:flex; flex-direction:column; gap:10px; padding-right:10px;"></div>
         </div>
     </div>
@@ -14821,6 +14830,40 @@ body:not(.edit-mode) .table-obj:active{
         return source || String(t?.id || "");
     }
 
+    function isDashboardSystemKey(key){
+        const k=String(key||"").toUpperCase();
+        return (
+            k==="FINANCIAL_HISTORY" ||
+            k==="ARCHITECTURE" ||
+            k.includes("_MASTER") ||
+            k.startsWith("MENU_") ||
+            k.startsWith("SETTINGS_") ||
+            k.startsWith("FINANCIAL_") ||
+            k.startsWith("RESERVATIONS_") ||
+            k.startsWith("ALERTS_")
+        );
+    }
+
+    function hasDashboardRealItems(order){
+        const items=Array.isArray(order?.items)?order.items:[];
+        return items.some(i=>{
+            if(!i || typeof i!=="object") return false;
+            const name=String(i.n ?? i.name ?? i.productName ?? i.title ?? "").trim();
+            const qty=Number(i.qty ?? i.quantity ?? 1);
+            return !!name && Number.isFinite(qty) && qty>0;
+        });
+    }
+
+    function getLiveServiceOrders(state){
+        const orders=state?.activeOrders || {};
+        return Object.entries(orders)
+            .filter(([key,order])=>{
+                if(isDashboardSystemKey(key)) return false;
+                if(!order || typeof order!=="object") return false;
+                return hasDashboardRealItems(order);
+            });
+    }
+
     function getFinancialHistory(state){
         const node=state?.activeOrders?.FINANCIAL_HISTORY;
 
@@ -14929,11 +14972,17 @@ body:not(.edit-mode) .table-obj:active{
                     .filter(Boolean)
             );
 
+            const liveOrders=getLiveServiceOrders(state);
+
             const ca=document.getElementById("dash-ca");
             const count=document.getElementById("dash-tables-count");
+            const live=document.getElementById("dash-live-tables");
+            const histCount=document.getElementById("dash-history-count");
 
             if(ca) ca.textContent=todayCA.toFixed(2)+" €";
             if(count) count.textContent=String(servedKeys.size);
+            if(live) live.textContent=String(liveOrders.length);
+            if(histCount) histCount.textContent=String(history.length);
 
             if(container){
                 container.innerHTML=history.length
@@ -14945,7 +14994,8 @@ body:not(.edit-mode) .table-obj:active{
                 at:new Date().toISOString(),
                 todayCA,
                 tablesServedToday:servedKeys.size,
-                historyCount:history.length
+                historyCount:history.length,
+                liveTables:liveOrders.length
             };
 
         }catch(err){
