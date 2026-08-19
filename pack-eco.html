@@ -1,6 +1,7 @@
 <!DOCTYPE html>
 <html lang="fr">
 <head>
+<!-- iCHEF FIX FANTÔMES À LA SOURCE — syncData + Socket filtrés -->
 <!-- iCHEF HAUT DÉBIT : profil front-end optimisé pour service intensif / 1000 couverts jour -->
 
 <!-- iCHEF VERSION À JOUR — 2026-08-19
@@ -2894,6 +2895,107 @@ async function logout(reason = 'MANUAL') {
             if (typeof syncData === 'function') { syncData(); syncInterval = setInterval(syncData, 3000); }
         }
 
+
+        // =========================================================
+        // iCHEF — FILTRE CENTRAL DES VRAIES COMMANDES
+        // =========================================================
+        function isIchefSystemStateKey(key) {
+            const k = String(key || '').toUpperCase();
+            return (
+                k === 'ARCHITECTURE' ||
+                k.includes('_MASTER') ||
+                k.startsWith('MENU_') ||
+                k.startsWith('CATEGORIES_') ||
+                k.startsWith('SETTINGS_') ||
+                k.startsWith('FINANCIAL_') ||
+                k.startsWith('TRAFFIC_') ||
+                k.startsWith('LOYALTY_') ||
+                k.startsWith('TIMESHEETS_') ||
+                k.startsWith('STAFF_') ||
+                k.startsWith('RESERVATIONS_') ||
+                k.startsWith('ALERTS_')
+            );
+        }
+
+        function hasRealOrderItem(order) {
+            const items = Array.isArray(order?.items) ? order.items : [];
+            return items.some(item => {
+                if (!item || typeof item !== 'object') return false;
+                const name = String(
+                    item.n ?? item.name ?? item.productName ?? item.title ?? item.label ?? ''
+                ).trim();
+                const qty = Number(item.qty ?? item.quantity ?? 1);
+                return name.length > 0 && Number.isFinite(qty) && qty > 0;
+            });
+        }
+
+        function hasRealActiveReservation(order) {
+            if (!order || typeof order !== 'object') return false;
+
+            const reservationId =
+                order.reservationId || order.bookingId ||
+                order.reservation?.id ||
+                order.reservation?.reservationId ||
+                order.reservation?.bookingId;
+
+            if (!reservationId) return false;
+
+            const status = String(
+                order.reservationStatus ||
+                order.reservation?.status ||
+                order.status ||
+                ''
+            ).normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase();
+
+            return [
+                'reserved','reserve','confirmed','confirmee',
+                'arrived','arrive','seated','installed','installe'
+            ].includes(status);
+        }
+
+        function isRealServiceOrder(key, order) {
+            if (isIchefSystemStateKey(key)) return true;
+            if (!order || typeof order !== 'object') return false;
+            return hasRealOrderItem(order) || hasRealActiveReservation(order);
+        }
+
+        function sanitizeServerOrders(rawOrders) {
+            const src = rawOrders && typeof rawOrders === 'object' ? rawOrders : {};
+            const clean = {};
+            const ghosts = [];
+
+            for (const [key, value] of Object.entries(src)) {
+                if (isIchefSystemStateKey(key)) {
+                    clean[key] = value;
+                } else if (isRealServiceOrder(key, value)) {
+                    clean[key] = value;
+                } else {
+                    ghosts.push(key);
+                }
+            }
+
+            if (!window.__ichefGhostDeleteSent) {
+                window.__ichefGhostDeleteSent = new Set();
+            }
+
+            ghosts.forEach(key => {
+                if (window.__ichefGhostDeleteSent.has(key)) return;
+                window.__ichefGhostDeleteSent.add(key);
+
+                Promise.resolve().then(async () => {
+                    try {
+                        if (typeof API !== 'undefined' && API?.update && currentUser) {
+                            await API.update(key, null, true);
+                        }
+                    } catch (err) {
+                        window.__ichefGhostDeleteSent.delete(key);
+                    }
+                });
+            });
+
+            return clean;
+        }
+
         async function syncData() {
             if (isArchiMode) return; 
             try {
@@ -2941,22 +3043,36 @@ async function logout(reason = 'MANUAL') {
                         globalTimesheets = nO['TIMESHEETS_MASTER'].data;
                     }
 
-                    for (let key in nO) { 
-                        if (key.startsWith('order_') || key.startsWith('W') || key.startsWith('T') || key.startsWith('WEB_')) { 
-                            if (nO[key] && nO[key].data !== undefined && !Array.isArray(nO[key].data)) nO[key] = nO[key].data; 
-                            
-                            if (nO[key]) {
-                                if (!Array.isArray(nO[key].items)) nO[key].items = [];
-                                nO[key].items.forEach(i => {
-                                    if (i.name && !i.n) i.n = i.name;
-                                    if (i.price && !i.p) i.p = i.price;
-                                    if (i.category && !i.dest) i.dest = i.category;
-                                    if (!i.n) i.n = "Plat QR";
-                                    if (!i.dest) i.dest = "cuisine";
-                                });
-                            }
-                        } 
+                    /* Normalisation uniquement des vraies commandes.
+                       Une ligne vide n'est plus transformée en faux "Plat QR". */
+                    for (let key in nO) {
+                        if (isIchefSystemStateKey(key)) continue;
+
+                        if (
+                            nO[key] &&
+                            nO[key].data !== undefined &&
+                            !Array.isArray(nO[key].data)
+                        ) {
+                            nO[key] = nO[key].data;
+                        }
+
+                        if (nO[key] && Array.isArray(nO[key].items)) {
+                            nO[key].items = nO[key].items.filter(
+                                i => i && typeof i === 'object'
+                            );
+
+                            nO[key].items.forEach(i => {
+                                if (i.name && !i.n) i.n = i.name;
+                                if (i.productName && !i.n) i.n = i.productName;
+                                if (i.title && !i.n) i.n = i.title;
+                                if (i.price !== undefined && i.p === undefined) i.p = i.price;
+                                if (i.category && !i.dest) i.dest = i.category;
+                                if (i.n && !i.dest) i.dest = 'cuisine';
+                            });
+                        }
                     }
+
+                    nO = sanitizeServerOrders(nO);
                     
 // RECUPERATION DES CATEGORIES
 categoriesCuisine = nO['CATEGORIES_CUISINE']?.data || [];
@@ -3051,7 +3167,7 @@ renderDynamicCategories();
                         }
                     });
 
-                    activeOrders = nO;
+                    activeOrders = sanitizeServerOrders(nO);
                     checkGlobalAlerts();
                     if(!isDraggingTable) renderFloor();
                 }
@@ -8081,7 +8197,14 @@ header .header-left > div:first-of-type{
           if(evt.deleted){
             delete activeOrders[tableId];
           }else if(evt.order){
-            activeOrders[tableId]=evt.order;
+            if(
+                typeof isRealServiceOrder === 'function' &&
+                !isRealServiceOrder(tableId, evt.order)
+            ){
+                delete activeOrders[tableId];
+            }else{
+                activeOrders[tableId]=evt.order;
+            }
           }
 
           if(typeof renderFloor==='function') renderFloor();
@@ -8099,7 +8222,9 @@ header .header-left > div:first-of-type{
       socket.on('updateState', function(state){
         try{
           if(state && state.activeOrders){
-            activeOrders=state.activeOrders;
+            activeOrders = (typeof sanitizeServerOrders === 'function')
+                ? sanitizeServerOrders(state.activeOrders)
+                : state.activeOrders;
             if(typeof renderFloor==='function') renderFloor();
             if(typeof renderProTables==='function') renderProTables();
             if(typeof renderService==='function') renderService();
@@ -12622,59 +12747,6 @@ button[class*="annuler" i] *{
 
 
 <!-- iCHEF FIX — COMMANDES FANTÔMES / CHRONO TABLE -->
-<script id="ichef-empty-table-ghost-cleanup-v1">
-(function(){
-    "use strict";
-
-    function isGhostEmptyOrder(order){
-        if(!order || typeof order!=="object") return false;
-        const items=Array.isArray(order.items)?order.items:[];
-        const obs=String(order.observations||"").trim();
-        const reserved=String(order.status||"").toLowerCase()==="reserved";
-        const web=!!order.isWeb;
-
-        return (
-            items.length===0 &&
-            !obs &&
-            !reserved &&
-            !web &&
-            String(order.status||"").toLowerCase()==="open"
-        );
-    }
-
-    function cleanupLocalGhostOrders(){
-        try{
-            if(typeof activeOrders==="undefined" || !activeOrders) return;
-            let changed=false;
-
-            Object.keys(activeOrders).forEach(key=>{
-                if(isGhostEmptyOrder(activeOrders[key])){
-                    delete activeOrders[key];
-                    changed=true;
-                }
-            });
-
-            if(changed){
-                try{ if(typeof renderFloor==="function") renderFloor(); }catch(_){}
-                try{
-                    const fn=window.renderProTables;
-                    if(typeof fn==="function") fn();
-                }catch(_){}
-            }
-        }catch(_){}
-    }
-
-    if(document.readyState==="loading"){
-        document.addEventListener("DOMContentLoaded",()=>setTimeout(cleanupLocalGhostOrders,500),{once:true});
-    }else{
-        setTimeout(cleanupLocalGhostOrders,500);
-    }
-
-    window.addEventListener("focus",()=>setTimeout(cleanupLocalGhostOrders,100),{passive:true});
-})();
-</script>
-
-
 <!-- iCHEF — SUPPRESSION DÉFINITIVE DU PLEIN ÉCRAN FANTÔME DU BLOC GAUCHE -->
 <script id="ichef-remove-left-pane-ghost-fullscreen">
 (function(){
@@ -13357,125 +13429,6 @@ button[class*="annuler" i] svg{
      iCHEF — NETTOYAGE COMMANDES FANTÔMES
      Ne supprime JAMAIS une vraie commande, réservation ou audit.
      ========================================================= -->
-<script id="ichef-ghost-orders-cleaner-final">
-(function(){
-    "use strict";
-
-    function hasRealItem(order){
-        const items = Array.isArray(order?.items) ? order.items : [];
-        return items.some(i=>{
-            if(!i || typeof i!=="object") return false;
-            const name=String(i.n ?? i.name ?? i.label ?? i.title ?? "").trim();
-            const qty=Number(i.qty ?? i.quantity ?? 1);
-            return !!name && Number.isFinite(qty) && qty>0;
-        });
-    }
-
-    function isReservation(order){
-        const s=String(order?.status||"").toLowerCase();
-        return s==="reserved" || !!order?.reservation || !!order?.reservationId ||
-               !!order?.clientName || !!order?.bookingId;
-    }
-
-    function hasAudit(order){
-        return (Array.isArray(order?.cancelAudit) && order.cancelAudit.length>0) ||
-               !!order?.lastCancellation ||
-               (Array.isArray(order?.audit) && order.audit.length>0);
-    }
-
-    function isGhost(order){
-        if(!order || typeof order!=="object") return true;
-        if(hasRealItem(order)) return false;
-        if(isReservation(order)) return false;
-        if(hasAudit(order)) return false;
-
-        const obs=String(order.observations||"").trim();
-        if(obs) return false;
-
-        /* Commande sans article, sans réservation, sans observation,
-           sans audit = état fantôme pouvant être supprimé. */
-        return true;
-    }
-
-    async function deleteGhostOnServer(tableId){
-        try{
-            const base=String(window.APP_SERVER_URL||"").replace(/\/$/,"");
-            const tenant=String(window.appTenantID||"");
-            if(!base || !tenant || !tableId) return false;
-
-            const res=await fetch(`${base}/update-order?tenantID=${encodeURIComponent(tenant)}`,{
-                method:"POST",
-                credentials:"include",
-                cache:"no-store",
-                headers:typeof securityHeaders==="function"
-                    ? securityHeaders()
-                    : {"Content-Type":"application/json"},
-                body:JSON.stringify({
-                    tableId:String(tableId),
-                    order:null,
-                    deviceId:window.ICHEF_SECURITY?.deviceId||null,
-                    waiter:window.currentUser?.name||null,
-                    cleanupReason:"GHOST_EMPTY_ORDER"
-                })
-            });
-            return res.ok;
-        }catch(_){
-            return false;
-        }
-    }
-
-    async function cleanAllGhostOrders(){
-        try{
-            if(typeof activeOrders==="undefined" || !activeOrders) return 0;
-
-            const ghosts=Object.entries(activeOrders)
-                .filter(([,order])=>isGhost(order))
-                .map(([tableId])=>tableId);
-
-            if(!ghosts.length) return 0;
-
-            /* Supprime localement immédiatement pour stabiliser le plan. */
-            ghosts.forEach(tableId=>delete activeOrders[tableId]);
-
-            try{if(typeof renderFloor==="function")renderFloor()}catch(_){}
-            try{if(typeof renderProTables==="function")renderProTables()}catch(_){}
-            try{if(typeof renderService==="function")renderService()}catch(_){}
-
-            /* Puis nettoie le même état dans server.js / MongoDB. */
-            await Promise.allSettled(ghosts.map(deleteGhostOnServer));
-
-            try{
-                if(typeof forceServerSync==="function"){
-                    setTimeout(()=>forceServerSync("ghost-cleanup"),250);
-                }
-            }catch(_){}
-
-            console.info(`[iCHEF] ${ghosts.length} commande(s) fantôme(s) nettoyée(s).`);
-            return ghosts.length;
-        }catch(err){
-            console.warn("[iCHEF] Nettoyage fantômes :",err);
-            return 0;
-        }
-    }
-
-    window.cleanAllGhostOrders=cleanAllGhostOrders;
-
-    /* Nettoyage après chargement/synchronisation initiale.
-       Pas de boucle permanente : on évite de toucher inutilement au serveur. */
-    function boot(){
-        setTimeout(cleanAllGhostOrders,1200);
-        setTimeout(cleanAllGhostOrders,3500);
-    }
-
-    if(document.readyState==="loading"){
-        document.addEventListener("DOMContentLoaded",boot,{once:true});
-    }else{
-        boot();
-    }
-})();
-</script>
-
-
 <!-- =========================================================
      iCHEF — NETTOYAGE FANTÔMES STRICT FINAL
      RÈGLE :
@@ -13483,443 +13436,9 @@ button[class*="annuler" i] svg{
      - vraie réservation active => conserver
      - tout le reste => FANTÔME, même avec orderMeta/status/createdAt
      ========================================================= -->
-<script id="ichef-ghost-orders-strict-final">
-(function(){
-    "use strict";
-
-    function hasRealItem(order){
-        const items = Array.isArray(order?.items) ? order.items : [];
-        return items.some(i=>{
-            if(!i || typeof i!=="object") return false;
-
-            const name = String(
-                i.n ?? i.name ?? i.label ?? i.title ?? i.productName ?? ""
-            ).trim();
-
-            const qty = Number(i.qty ?? i.quantity ?? 1);
-
-            return (
-                name.length > 0 &&
-                Number.isFinite(qty) &&
-                qty > 0
-            );
-        });
-    }
-
-    function hasRealActiveReservation(order){
-        if(!order || typeof order!=="object") return false;
-
-        const status = String(order.status || "").trim().toLowerCase();
-        const reservationStatus = String(
-            order.reservationStatus ||
-            order.reservation?.status ||
-            ""
-        ).trim().toLowerCase();
-
-        const activeStatuses = new Set([
-            "reserved",
-            "reserve",
-            "réservé",
-            "confirmed",
-            "confirmee",
-            "confirmée",
-            "arrived",
-            "arrive",
-            "arrivé",
-            "seated",
-            "installed",
-            "installe",
-            "installé"
-        ]);
-
-        const hasReservationIdentity = !!(
-            order.reservationId ||
-            order.bookingId ||
-            order.reservation?.id ||
-            order.reservation?.reservationId ||
-            order.reservation?.bookingId
-        );
-
-        return (
-            hasReservationIdentity &&
-            (
-                activeStatuses.has(status) ||
-                activeStatuses.has(reservationStatus)
-            )
-        );
-    }
-
-    function preserveCancelAuditBeforeDelete(tableId, order){
-        try{
-            const records = [];
-
-            if(Array.isArray(order?.cancelAudit)){
-                records.push(...order.cancelAudit);
-            }
-            if(order?.lastCancellation){
-                records.push(order.lastCancellation);
-            }
-
-            if(!records.length) return;
-
-            const key = "ICHEF_FISCAL_CANCEL_AUDIT";
-            const existing = JSON.parse(localStorage.getItem(key) || "[]");
-
-            const known = new Set(existing.map(x=>String(x?.id || "")));
-
-            for(const rec of records){
-                const id = String(rec?.id || "");
-                if(id && known.has(id)) continue;
-                existing.push(rec);
-                if(id) known.add(id);
-            }
-
-            if(existing.length > 3000){
-                existing.splice(0, existing.length - 3000);
-            }
-
-            localStorage.setItem(key, JSON.stringify(existing));
-        }catch(_){}
-    }
-
-    function isStrictGhost(order){
-        /* Métadonnées seules ne comptent jamais comme commande réelle. */
-        if(!order || typeof order !== "object") return true;
-
-        if(hasRealItem(order)) return false;
-        if(hasRealActiveReservation(order)) return false;
-
-        return true;
-    }
-
-    async function deleteGhostServer(tableId){
-        try{
-            const base = String(window.APP_SERVER_URL || "").replace(/\/$/,"");
-            const tenant = String(window.appTenantID || "");
-
-            if(!base || !tenant || !tableId) return false;
-
-            const response = await fetch(
-                `${base}/update-order?tenantID=${encodeURIComponent(tenant)}`,
-                {
-                    method:"POST",
-                    credentials:"include",
-                    cache:"no-store",
-                    headers: typeof securityHeaders==="function"
-                        ? securityHeaders()
-                        : {"Content-Type":"application/json"},
-                    body:JSON.stringify({
-                        tableId:String(tableId),
-                        order:null,
-                        deviceId:window.ICHEF_SECURITY?.deviceId || null,
-                        waiter:window.currentUser?.name || null,
-                        cleanupReason:"STRICT_GHOST_NO_REAL_ITEMS"
-                    })
-                }
-            );
-
-            return response.ok;
-        }catch(err){
-            console.warn("[iCHEF] Suppression fantôme serveur :", tableId, err);
-            return false;
-        }
-    }
-
-    async function cleanStrictGhostOrders(){
-        try{
-            if(typeof activeOrders==="undefined" || !activeOrders) return 0;
-
-            const ghosts = [];
-
-            for(const [tableId, order] of Object.entries(activeOrders)){
-                if(!isStrictGhost(order)) continue;
-
-                preserveCancelAuditBeforeDelete(tableId, order);
-
-                ghosts.push(tableId);
-            }
-
-            if(!ghosts.length) return 0;
-
-            /* 1. disparition immédiate du plan */
-            for(const tableId of ghosts){
-                delete activeOrders[tableId];
-            }
-
-            try{ if(typeof renderFloor==="function") renderFloor(); }catch(_){}
-            try{ if(typeof renderProTables==="function") renderProTables(); }catch(_){}
-            try{ if(typeof renderService==="function") renderService(); }catch(_){}
-
-            /* 2. suppression réelle côté server.js / MongoDB */
-            const results = await Promise.allSettled(
-                ghosts.map(deleteGhostServer)
-            );
-
-            const okCount = results.filter(
-                r => r.status==="fulfilled" && r.value===true
-            ).length;
-
-            console.info(
-                `[iCHEF] Nettoyage strict : ${ghosts.length} fantôme(s), ` +
-                `${okCount} confirmé(s) serveur.`
-            );
-
-            /* 3. une synchro propre après suppression */
-            try{
-                if(typeof forceServerSync==="function"){
-                    setTimeout(
-                        ()=>forceServerSync("strict-ghost-cleanup"),
-                        350
-                    );
-                }
-            }catch(_){}
-
-            return ghosts.length;
-
-        }catch(err){
-            console.warn("[iCHEF] Nettoyage strict fantômes :", err);
-            return 0;
-        }
-    }
-
-    window.cleanStrictGhostOrders = cleanStrictGhostOrders;
-
-    function boot(){
-        /* plusieurs passages courts pour nettoyer aussi les vieux états
-           arrivant juste après bootstrap/socket */
-        setTimeout(cleanStrictGhostOrders, 700);
-        setTimeout(cleanStrictGhostOrders, 1800);
-        setTimeout(cleanStrictGhostOrders, 4200);
-    }
-
-    if(document.readyState==="loading"){
-        document.addEventListener(
-            "DOMContentLoaded",
-            boot,
-            {once:true}
-        );
-    }else{
-        boot();
-    }
-
-    /* Après reconnexion, refaire un seul nettoyage. */
-    window.addEventListener(
-        "online",
-        ()=>setTimeout(cleanStrictGhostOrders, 500),
-        {passive:true}
-    );
-})();
-</script>
-
-
 <!-- =========================================================
      iCHEF — PURGE FANTÔMES 24H + FIX CONNEXION SERVER
      Corrige l'accès à APP_SERVER_URL / appTenantID globaux.
      ========================================================= -->
-<script id="ichef-ghost-purge-24h-server-fix">
-(function(){
-    "use strict";
-
-    const MAX_GHOST_AGE = 24 * 60 * 60 * 1000; // 24 h
-
-    function serverBase(){
-        try{
-            if(typeof APP_SERVER_URL !== "undefined" && APP_SERVER_URL){
-                return String(APP_SERVER_URL).replace(/\/$/,"");
-            }
-        }catch(_){}
-        return location.hostname==="localhost" || location.hostname==="127.0.0.1"
-            ? "http://localhost:10000"
-            : "https://tableau-system.onrender.com";
-    }
-
-    function tenantId(){
-        try{
-            if(typeof appTenantID !== "undefined" && appTenantID){
-                return String(appTenantID);
-            }
-        }catch(_){}
-        try{
-            return (
-                new URLSearchParams(location.search).get("tenantID") ||
-                localStorage.getItem("ichef_tenant_id") ||
-                ""
-            );
-        }catch(_){return ""}
-    }
-
-    function hasActiveReservation(order){
-        if(!order || typeof order!=="object") return false;
-
-        const id = (
-            order.reservationId ||
-            order.bookingId ||
-            order.reservation?.id ||
-            order.reservation?.reservationId ||
-            order.reservation?.bookingId
-        );
-
-        if(!id) return false;
-
-        const status = String(
-            order.reservationStatus ||
-            order.reservation?.status ||
-            order.status ||
-            ""
-        ).toLowerCase();
-
-        return [
-            "reserved","reserve","réservé",
-            "confirmed","confirmee","confirmée",
-            "arrived","arrive","arrivé",
-            "seated","installed","installe","installé"
-        ].includes(status);
-    }
-
-    function oldestTimestamp(order){
-        if(!order || typeof order!=="object") return 0;
-
-        const candidates = [
-            Number(order.createdAt),
-            Number(order.timestamp),
-            Number(order.startedAt),
-            Date.parse(order.createdAt || ""),
-            Date.parse(order.timestamp || ""),
-            Date.parse(order.orderMeta?.updatedAt || "")
-        ].filter(v=>Number.isFinite(v) && v>0);
-
-        const items = Array.isArray(order.items) ? order.items : [];
-        for(const item of items){
-            const vals = [
-                Number(item?.itemId),
-                Number(item?.createdAt),
-                Number(item?.addedAt),
-                Date.parse(item?.createdAt || ""),
-                Date.parse(item?.addedAt || "")
-            ].filter(v=>Number.isFinite(v) && v>0);
-            candidates.push(...vals);
-        }
-
-        if(!candidates.length) return 0;
-        return Math.min(...candidates);
-    }
-
-    function isStale(order){
-        if(hasActiveReservation(order)) return false;
-
-        const ts = oldestTimestamp(order);
-        if(!ts) return false;
-
-        return (Date.now() - ts) > MAX_GHOST_AGE;
-    }
-
-    async function deleteServer(tableId){
-        const base = serverBase();
-        const tenant = tenantId();
-
-        if(!base || !tenant || !tableId){
-            console.warn("[iCHEF] Purge impossible, serveur/tenant/table manquant",{
-                base,tenant,tableId
-            });
-            return false;
-        }
-
-        try{
-            const response = await fetch(
-                `${base}/update-order?tenantID=${encodeURIComponent(tenant)}`,
-                {
-                    method:"POST",
-                    credentials:"include",
-                    cache:"no-store",
-                    headers:
-                        (typeof securityHeaders==="function")
-                            ? securityHeaders()
-                            : {"Content-Type":"application/json"},
-                    body:JSON.stringify({
-                        tableId:String(tableId),
-                        order:null,
-                        cleanupReason:"STALE_GHOST_OVER_24H",
-                        deviceId:
-                            (typeof ICHEF_SECURITY!=="undefined"
-                                ? ICHEF_SECURITY?.deviceId
-                                : null),
-                        waiter:
-                            (typeof currentUser!=="undefined"
-                                ? currentUser?.name
-                                : null)
-                    })
-                }
-            );
-
-            if(!response.ok){
-                console.warn("[iCHEF] Purge serveur refusée",tableId,response.status);
-            }
-            return response.ok;
-        }catch(err){
-            console.warn("[iCHEF] Purge serveur erreur",tableId,err);
-            return false;
-        }
-    }
-
-    async function purgeStaleGhosts(){
-        try{
-            if(typeof activeOrders==="undefined" || !activeOrders) return 0;
-
-            const stale = Object.entries(activeOrders)
-                .filter(([,order])=>isStale(order))
-                .map(([tableId])=>tableId);
-
-            if(!stale.length){
-                console.info("[iCHEF] Aucun fantôme >24h détecté.");
-                return 0;
-            }
-
-            console.info("[iCHEF] Fantômes >24h détectés :", stale);
-
-            /* Effacement immédiat à l'écran */
-            stale.forEach(id=>delete activeOrders[id]);
-
-            try{if(typeof renderFloor==="function")renderFloor()}catch(_){}
-            try{if(typeof renderProTables==="function")renderProTables()}catch(_){}
-            try{if(typeof renderService==="function")renderService()}catch(_){}
-
-            /* Effacement réel MongoDB via server.js */
-            const results = await Promise.allSettled(stale.map(deleteServer));
-            const ok = results.filter(
-                r=>r.status==="fulfilled" && r.value===true
-            ).length;
-
-            console.info(`[iCHEF] Purge fantômes >24h : ${ok}/${stale.length} supprimés serveur.`);
-
-            /* Recharge ensuite l'état réel du serveur */
-            try{
-                if(typeof forceServerSync==="function"){
-                    setTimeout(()=>forceServerSync("purge-stale-24h"),500);
-                }
-            }catch(_){}
-
-            return stale.length;
-        }catch(err){
-            console.warn("[iCHEF] purgeStaleGhosts :",err);
-            return 0;
-        }
-    }
-
-    window.purgeStaleGhosts = purgeStaleGhosts;
-
-    function boot(){
-        setTimeout(purgeStaleGhosts, 1000);
-        setTimeout(purgeStaleGhosts, 3500);
-        setTimeout(purgeStaleGhosts, 8000);
-    }
-
-    if(document.readyState==="loading"){
-        document.addEventListener("DOMContentLoaded",boot,{once:true});
-    }else{
-        boot();
-    }
-})();
-</script>
-
 </body>
 </html>
