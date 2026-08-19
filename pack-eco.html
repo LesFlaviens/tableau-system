@@ -13711,5 +13711,215 @@ button[class*="annuler" i] svg{
 })();
 </script>
 
+
+<!-- =========================================================
+     iCHEF — PURGE FANTÔMES 24H + FIX CONNEXION SERVER
+     Corrige l'accès à APP_SERVER_URL / appTenantID globaux.
+     ========================================================= -->
+<script id="ichef-ghost-purge-24h-server-fix">
+(function(){
+    "use strict";
+
+    const MAX_GHOST_AGE = 24 * 60 * 60 * 1000; // 24 h
+
+    function serverBase(){
+        try{
+            if(typeof APP_SERVER_URL !== "undefined" && APP_SERVER_URL){
+                return String(APP_SERVER_URL).replace(/\/$/,"");
+            }
+        }catch(_){}
+        return location.hostname==="localhost" || location.hostname==="127.0.0.1"
+            ? "http://localhost:10000"
+            : "https://tableau-system.onrender.com";
+    }
+
+    function tenantId(){
+        try{
+            if(typeof appTenantID !== "undefined" && appTenantID){
+                return String(appTenantID);
+            }
+        }catch(_){}
+        try{
+            return (
+                new URLSearchParams(location.search).get("tenantID") ||
+                localStorage.getItem("ichef_tenant_id") ||
+                ""
+            );
+        }catch(_){return ""}
+    }
+
+    function hasActiveReservation(order){
+        if(!order || typeof order!=="object") return false;
+
+        const id = (
+            order.reservationId ||
+            order.bookingId ||
+            order.reservation?.id ||
+            order.reservation?.reservationId ||
+            order.reservation?.bookingId
+        );
+
+        if(!id) return false;
+
+        const status = String(
+            order.reservationStatus ||
+            order.reservation?.status ||
+            order.status ||
+            ""
+        ).toLowerCase();
+
+        return [
+            "reserved","reserve","réservé",
+            "confirmed","confirmee","confirmée",
+            "arrived","arrive","arrivé",
+            "seated","installed","installe","installé"
+        ].includes(status);
+    }
+
+    function oldestTimestamp(order){
+        if(!order || typeof order!=="object") return 0;
+
+        const candidates = [
+            Number(order.createdAt),
+            Number(order.timestamp),
+            Number(order.startedAt),
+            Date.parse(order.createdAt || ""),
+            Date.parse(order.timestamp || ""),
+            Date.parse(order.orderMeta?.updatedAt || "")
+        ].filter(v=>Number.isFinite(v) && v>0);
+
+        const items = Array.isArray(order.items) ? order.items : [];
+        for(const item of items){
+            const vals = [
+                Number(item?.itemId),
+                Number(item?.createdAt),
+                Number(item?.addedAt),
+                Date.parse(item?.createdAt || ""),
+                Date.parse(item?.addedAt || "")
+            ].filter(v=>Number.isFinite(v) && v>0);
+            candidates.push(...vals);
+        }
+
+        if(!candidates.length) return 0;
+        return Math.min(...candidates);
+    }
+
+    function isStale(order){
+        if(hasActiveReservation(order)) return false;
+
+        const ts = oldestTimestamp(order);
+        if(!ts) return false;
+
+        return (Date.now() - ts) > MAX_GHOST_AGE;
+    }
+
+    async function deleteServer(tableId){
+        const base = serverBase();
+        const tenant = tenantId();
+
+        if(!base || !tenant || !tableId){
+            console.warn("[iCHEF] Purge impossible, serveur/tenant/table manquant",{
+                base,tenant,tableId
+            });
+            return false;
+        }
+
+        try{
+            const response = await fetch(
+                `${base}/update-order?tenantID=${encodeURIComponent(tenant)}`,
+                {
+                    method:"POST",
+                    credentials:"include",
+                    cache:"no-store",
+                    headers:
+                        (typeof securityHeaders==="function")
+                            ? securityHeaders()
+                            : {"Content-Type":"application/json"},
+                    body:JSON.stringify({
+                        tableId:String(tableId),
+                        order:null,
+                        cleanupReason:"STALE_GHOST_OVER_24H",
+                        deviceId:
+                            (typeof ICHEF_SECURITY!=="undefined"
+                                ? ICHEF_SECURITY?.deviceId
+                                : null),
+                        waiter:
+                            (typeof currentUser!=="undefined"
+                                ? currentUser?.name
+                                : null)
+                    })
+                }
+            );
+
+            if(!response.ok){
+                console.warn("[iCHEF] Purge serveur refusée",tableId,response.status);
+            }
+            return response.ok;
+        }catch(err){
+            console.warn("[iCHEF] Purge serveur erreur",tableId,err);
+            return false;
+        }
+    }
+
+    async function purgeStaleGhosts(){
+        try{
+            if(typeof activeOrders==="undefined" || !activeOrders) return 0;
+
+            const stale = Object.entries(activeOrders)
+                .filter(([,order])=>isStale(order))
+                .map(([tableId])=>tableId);
+
+            if(!stale.length){
+                console.info("[iCHEF] Aucun fantôme >24h détecté.");
+                return 0;
+            }
+
+            console.info("[iCHEF] Fantômes >24h détectés :", stale);
+
+            /* Effacement immédiat à l'écran */
+            stale.forEach(id=>delete activeOrders[id]);
+
+            try{if(typeof renderFloor==="function")renderFloor()}catch(_){}
+            try{if(typeof renderProTables==="function")renderProTables()}catch(_){}
+            try{if(typeof renderService==="function")renderService()}catch(_){}
+
+            /* Effacement réel MongoDB via server.js */
+            const results = await Promise.allSettled(stale.map(deleteServer));
+            const ok = results.filter(
+                r=>r.status==="fulfilled" && r.value===true
+            ).length;
+
+            console.info(`[iCHEF] Purge fantômes >24h : ${ok}/${stale.length} supprimés serveur.`);
+
+            /* Recharge ensuite l'état réel du serveur */
+            try{
+                if(typeof forceServerSync==="function"){
+                    setTimeout(()=>forceServerSync("purge-stale-24h"),500);
+                }
+            }catch(_){}
+
+            return stale.length;
+        }catch(err){
+            console.warn("[iCHEF] purgeStaleGhosts :",err);
+            return 0;
+        }
+    }
+
+    window.purgeStaleGhosts = purgeStaleGhosts;
+
+    function boot(){
+        setTimeout(purgeStaleGhosts, 1000);
+        setTimeout(purgeStaleGhosts, 3500);
+        setTimeout(purgeStaleGhosts, 8000);
+    }
+
+    if(document.readyState==="loading"){
+        document.addEventListener("DOMContentLoaded",boot,{once:true});
+    }else{
+        boot();
+    }
+})();
+</script>
+
 </body>
 </html>
