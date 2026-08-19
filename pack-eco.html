@@ -10670,6 +10670,99 @@ html.ichef-night-mode .chair{
         if(!p) return;
 
         p.list.classList.add("ichef-ticket-list-resizable");
+<script id="ichef-ticket-horizontal-resizer-v2-script">
+(function(){
+    "use strict";
+
+    const MIN_WHITE = 10;
+    const MIN_FOOTER = 10;
+    const STORAGE_KEY = "ichef_ticket_horizontal_split_v2";
+
+    let drag = null;
+
+    function parts(){
+        const drawer = document.getElementById("order-drawer");
+        if(!drawer || !drawer.classList.contains("open")) return null;
+
+        const ticket = drawer.querySelector(".ticket-view");
+        const list = document.getElementById("ticket-list");
+        if(!ticket || !list || !ticket.contains(list)) return null;
+
+        const footer = list.nextElementSibling;
+        if(!footer) return null;
+
+        return {drawer,ticket,list,footer};
+    }
+
+    function restore(list,ticket){
+        try{
+            const saved = Number(localStorage.getItem(STORAGE_KEY));
+            if(!Number.isFinite(saved) || saved <= 0) return;
+
+            const ticketRect = ticket.getBoundingClientRect();
+            const listTop = list.getBoundingClientRect().top;
+            const available = Math.max(1, ticketRect.bottom - listTop - 16);
+            const maxWhite = Math.max(MIN_WHITE, available - MIN_FOOTER);
+
+            const h = Math.max(MIN_WHITE, Math.min(saved, maxWhite));
+            list.style.setProperty("--ichef-ticket-white-h", Math.round(h)+"px");
+        }catch(_){}
+    }
+
+    /* --- NOUVEAU : Fonction de mouvement rattachée à la fenêtre --- */
+    function moveDrag(e){
+        if(!drag) return;
+
+        e.preventDefault();
+        e.stopPropagation();
+
+        const available = Math.max(1, drag.ticketBottom - drag.listTop - 16);
+        const maxWhite = Math.max(MIN_WHITE, available - MIN_FOOTER);
+
+        let whiteH = e.clientY - drag.listTop;
+        whiteH = Math.max(MIN_WHITE, Math.min(whiteH, maxWhite));
+
+        drag.list.style.setProperty(
+            "--ichef-ticket-white-h",
+            Math.round(whiteH) + "px"
+        );
+    }
+
+    /* --- NOUVEAU : Fonction d'arrêt rattachée à la fenêtre --- */
+    function stopDrag(e){
+        if(!drag) return;
+
+        try{
+            const h = drag.list.getBoundingClientRect().height;
+            localStorage.setItem(STORAGE_KEY, String(Math.round(h)));
+        }catch(_){}
+
+        drag.splitter.classList.remove("dragging");
+        // On libère le verrouillage global de l'écran
+        document.body.style.removeProperty('touch-action');
+        document.body.style.removeProperty('user-select');
+
+        try{
+            if(e && drag.pointerId != null){
+                drag.splitter.releasePointerCapture(drag.pointerId);
+            }
+        }catch(_){}
+
+        // Nettoyage des écouteurs globaux
+        window.removeEventListener("pointermove", moveDrag);
+        window.removeEventListener("pointerup", stopDrag);
+        window.removeEventListener("pointercancel", stopDrag);
+
+        drag = null;
+    }
+
+    function install(){
+        if(window.innerWidth < 900) return;
+
+        const p = parts();
+        if(!p) return;
+
+        p.list.classList.add("ichef-ticket-list-resizable");
         p.footer.classList.add("ichef-ticket-footer-v2");
 
         let splitter = document.getElementById("ichef-ticket-splitter-v2");
@@ -10682,7 +10775,6 @@ html.ichef-night-mode .chair{
             splitter.setAttribute("aria-label","Redimensionner ticket et zone d'actions");
         }
 
-        /* Exactement entre #ticket-list et son footer réel */
         if(splitter.parentElement !== p.ticket || splitter.nextElementSibling !== p.footer){
             p.ticket.insertBefore(splitter,p.footer);
         }
@@ -10692,6 +10784,7 @@ html.ichef-night-mode .chair{
         if(splitter.dataset.ready === "1") return;
         splitter.dataset.ready = "1";
 
+        /* --- NOUVEAU : Clic/Toucher initial --- */
         splitter.addEventListener("pointerdown", function(e){
             if(window.innerWidth < 900) return;
 
@@ -10714,55 +10807,21 @@ html.ichef-night-mode .chair{
             };
 
             splitter.classList.add("dragging");
+            
+            // Verrouillage total de l'écran pendant qu'on glisse la barre (empêche les saccades/rebonds)
+            document.body.style.setProperty('touch-action', 'none', 'important');
+            document.body.style.setProperty('user-select', 'none', 'important');
 
             try{
                 splitter.setPointerCapture(e.pointerId);
             }catch(_){}
+
+            // On écoute le mouvement sur toute la fenêtre, même si le doigt sort de la barre
+            window.addEventListener("pointermove", moveDrag, {passive:false});
+            window.addEventListener("pointerup", stopDrag);
+            window.addEventListener("pointercancel", stopDrag);
+
         }, {passive:false});
-
-        splitter.addEventListener("pointermove", function(e){
-            if(!drag) return;
-
-            e.preventDefault();
-            e.stopPropagation();
-
-            /*
-             * La hauteur blanche dépend DIRECTEMENT de la position verticale
-             * du doigt/souris : vers le haut = moins blanc, vers le bas = plus blanc.
-             */
-            const available = Math.max(1, drag.ticketBottom - drag.listTop - 16);
-            const maxWhite = Math.max(MIN_WHITE, available - MIN_FOOTER);
-
-            let whiteH = e.clientY - drag.listTop;
-            whiteH = Math.max(MIN_WHITE, Math.min(whiteH, maxWhite));
-
-            drag.list.style.setProperty(
-                "--ichef-ticket-white-h",
-                Math.round(whiteH) + "px"
-            );
-        }, {passive:false});
-
-        function stop(e){
-            if(!drag) return;
-
-            try{
-                const h = drag.list.getBoundingClientRect().height;
-                localStorage.setItem(STORAGE_KEY, String(Math.round(h)));
-            }catch(_){}
-
-            drag.splitter.classList.remove("dragging");
-
-            try{
-                if(e && drag.pointerId != null){
-                    drag.splitter.releasePointerCapture(drag.pointerId);
-                }
-            }catch(_){}
-
-            drag = null;
-        }
-
-        splitter.addEventListener("pointerup",stop);
-        splitter.addEventListener("pointercancel",stop);
 
         /* Double clic / double tap : retour à la proportion d'origine */
         splitter.addEventListener("dblclick", function(e){
