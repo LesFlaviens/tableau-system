@@ -1471,6 +1471,14 @@ button, .btn-mini, .dock-btn, .folder-btn, .room-tab, .btn-item {
      - retour cuisine READY => affichage PRÊT
      ========================================================= -->
 
+
+<!-- iCHEF FIX FINAL CHRONO FANTÔME
+     Deux moteurs synchronisés :
+     - vue PRO/tablette
+     - vue mobile exacte
+     Règle : aucun article réel = aucun chrono.
+-->
+
 </head>
 <body oncontextmenu="return false;" ondragstart="return false;" ondrop="return false;">
 
@@ -3641,18 +3649,12 @@ function updateAntiRushServerPanel() {
 
                 if (typeof checkZoneAccess === 'function' && !checkZoneAccess(label)) return;
 
-                // Une table physique vide doit être ouvrable immédiatement.
-                if (!activeOrders[label]) {
-                    activeOrders[label] = {
-                        items: [],
-                        status: 'open',
-                        observations: '',
-                        clientName: '',
-                        createdAt: Date.now()
-                    };
-                }
-
+                /* IMPORTANT :
+                   Ouvrir une table vide ne doit JAMAIS créer une commande.
+                   La vraie commande sera créée uniquement lorsqu'il existe
+                   réellement des articles / une sauvegarde de commande. */
                 openOrder(label);
+
             } catch (err) {
                 console.error('Erreur clic table / ouverture commande :', err);
             }
@@ -7614,9 +7616,28 @@ header .header-left > div:first-of-type{
     try{
       const o=(typeof activeOrders!=='undefined'&&activeOrders)?activeOrders[label]:null;
       if(!o) return null;
-      if(Number.isFinite(o.createdAt)) return o.createdAt;
-      const ids=(o.items||[]).map(i=>Number(i.itemId)).filter(Number.isFinite);
-      return ids.length?Math.min(...ids):null;
+
+      /* Un "vrai article" doit avoir au minimum un nom/libellé.
+         Les objets vides, placeholders, métadonnées ou anciennes commandes
+         fantômes ne doivent jamais lancer le chrono. */
+      const items=(Array.isArray(o.items)?o.items:[]).filter(i=>{
+        if(!i || typeof i!=='object') return false;
+        const name=String(i.n ?? i.name ?? i.label ?? i.title ?? '').trim();
+        const qty=Number(i.qty ?? i.quantity ?? 1);
+        return !!name && Number.isFinite(qty) && qty>0;
+      });
+
+      if(items.length===0) return null;
+
+      if(Number.isFinite(Number(o.createdAt)) && Number(o.createdAt)>0){
+        return Number(o.createdAt);
+      }
+
+      const ids=items
+        .map(i=>Number(i.itemId || i.createdAt || i.addedAt || 0))
+        .filter(v=>Number.isFinite(v) && v>0);
+
+      return ids.length?Math.min(...ids):Date.now();
     }catch(_){return null;}
   }
   function tablePax(t){
@@ -7995,9 +8016,29 @@ header .header-left > div:first-of-type{
     const m=String(orderOf(t?.label)?.observations||'').match(/🍽️\s*(\d+)/);return m?Number(m[1]):2;
   }
   function startOf(label){
-    const o=orderOf(label);if(!o)return null;
-    if(Number.isFinite(Number(o.createdAt)))return Number(o.createdAt);
-    const vals=(o.items||[]).map(i=>Number(i?.itemId)).filter(Number.isFinite);return vals.length?Math.min(...vals):null;
+    const o=orderOf(label);
+    if(!o) return null;
+
+    const items=(Array.isArray(o.items)?o.items:[]).filter(i=>{
+      if(!i || typeof i!=='object') return false;
+      const name=String(i.n ?? i.name ?? i.label ?? i.title ?? '').trim();
+      const qty=Number(i.qty ?? i.quantity ?? 1);
+      return !!name && Number.isFinite(qty) && qty>0;
+    });
+
+    /* Même règle que la vue ordinateur :
+       aucune ligne de commande réelle = chrono impérativement à 00:00. */
+    if(items.length===0) return null;
+
+    if(Number.isFinite(Number(o.createdAt)) && Number(o.createdAt)>0){
+      return Number(o.createdAt);
+    }
+
+    const vals=items
+      .map(i=>Number(i?.itemId || i?.createdAt || i?.addedAt || 0))
+      .filter(v=>Number.isFinite(v)&&v>0);
+
+    return vals.length?Math.min(...vals):Date.now();
   }
   function elapsed(start){
     if(!start)return '00:00';const s=Math.max(0,Math.floor((Date.now()-start)/1000));
@@ -10688,186 +10729,6 @@ html.ichef-night-mode .chair{
      Le panneau #pro-table-panel occupe tout l'écran de commande.
      Un second appui long restaure la disposition normale.
      ========================================================= -->
-<style id="ichef-room-pane-longpress-fullscreen-v2-style">
-@media (min-width:900px){
-  #pro-table-panel{
-    transition:width .18s ease, opacity .16s ease, transform .18s ease !important;
-  }
-
-  /* Le vrai bloc de gauche devient l'unique colonne. */
-  #order-drawer.ichef-room-pane-fullscreen .drawer-body.ichef-split-ready{
-    display:grid !important;
-    grid-template-columns:minmax(0,1fr) !important;
-    grid-template-rows:minmax(0,1fr) !important;
-    gap:0 !important;
-    padding:8px 8px 8px !important;
-    width:100% !important;
-    height:100% !important;
-    overflow:hidden !important;
-  }
-
-  #order-drawer.ichef-room-pane-fullscreen .drawer-body.ichef-split-ready > #pro-table-panel{
-    display:flex !important;
-    grid-column:1 !important;
-    grid-row:1 !important;
-    width:100% !important;
-    max-width:none !important;
-    min-width:0 !important;
-    height:100% !important;
-    max-height:none !important;
-    min-height:0 !important;
-    margin:0 !important;
-    opacity:1 !important;
-    border-radius:12px !important;
-    overflow:hidden !important;
-  }
-
-  /* Cache uniquement les deux autres blocs et leurs séparateurs. */
-  #order-drawer.ichef-room-pane-fullscreen .drawer-body.ichef-split-ready > .ichef-split-handle,
-  #order-drawer.ichef-room-pane-fullscreen .drawer-body.ichef-split-ready > .ichef-split-center,
-  #order-drawer.ichef-room-pane-fullscreen .drawer-body.ichef-split-ready > .ticket-view{
-    display:none !important;
-  }
-
-  /* Plein écran propre : plus de barre d'état par-dessus le bas. */
-  #order-drawer.ichef-room-pane-fullscreen #pro-status-bar{
-    display:none !important;
-  }
-
-  /* Les tables profitent de toute la largeur sans être énormes. */
-  #order-drawer.ichef-room-pane-fullscreen #pro-table-grid{
-    flex:1 1 auto !important;
-    min-height:0 !important;
-    width:100% !important;
-    box-sizing:border-box !important;
-    grid-template-columns:repeat(auto-fill,minmax(150px,1fr)) !important;
-    gap:12px !important;
-    padding:14px !important;
-    overflow-y:auto !important;
-    overscroll-behavior:contain !important;
-    -webkit-overflow-scrolling:touch !important;
-  }
-
-  #order-drawer.ichef-room-pane-fullscreen .pro-table-card{
-    min-height:120px !important;
-  }
-
-  #pro-table-panel.ichef-room-longpress-armed{
-    -webkit-user-select:none !important;
-    user-select:none !important;
-  }
-}
-</style>
-
-<script id="ichef-room-pane-longpress-fullscreen-v2-script">
-(function(){
-  'use strict';
-
-  const HOLD_MS = 900;
-  const MOVE_LIMIT = 24;
-  let timer = 0;
-  let pointerId = null;
-  let startX = 0;
-  let startY = 0;
-  let longPressDone = false;
-  let suppressNextClick = false;
-
-  function pane(){ return document.getElementById('pro-table-panel'); }
-  function drawer(){ return document.getElementById('order-drawer'); }
-
-  function cancelHold(){
-    if(timer){ clearTimeout(timer); timer = 0; }
-    const p=pane();
-    if(p) p.classList.remove('ichef-room-longpress-armed');
-    pointerId=null;
-  }
-
-  function toggle(){
-    const d=drawer();
-    if(!d) return;
-    d.classList.toggle('ichef-room-pane-fullscreen');
-    d.classList.remove('order-ticket-focus');
-    requestAnimationFrame(function(){
-      window.dispatchEvent(new Event('resize'));
-    });
-    try{ if(navigator.vibrate) navigator.vibrate(25); }catch(_e){}
-  }
-
-  function onDown(e){
-    if(window.innerWidth < 900) return;
-    if(e.pointerType === 'mouse' && e.button !== 0) return;
-    const p=pane();
-    if(!p || !p.contains(e.target)) return;
-
-    cancelHold();
-    longPressDone=false;
-    startX=e.clientX;
-    startY=e.clientY;
-    pointerId=e.pointerId;
-    p.classList.add('ichef-room-longpress-armed');
-
-    timer=window.setTimeout(function(){
-      timer=0;
-      longPressDone=true;
-      suppressNextClick=true;
-      p.classList.remove('ichef-room-longpress-armed');
-      toggle();
-    },HOLD_MS);
-  }
-
-  function onMove(e){
-    if(pointerId===null || e.pointerId!==pointerId || !timer) return;
-    const dx=Math.abs(e.clientX-startX);
-    const dy=Math.abs(e.clientY-startY);
-    if(dx>MOVE_LIMIT || dy>MOVE_LIMIT) cancelHold();
-  }
-
-  function onUp(e){
-    if(pointerId!==null && e.pointerId===pointerId) cancelHold();
-  }
-
-  function install(){
-    const p=pane();
-    if(!p || p.dataset.ichefRoomLongpressV2==='1') return;
-    p.dataset.ichefRoomLongpressV2='1';
-
-    /* Capture : fonctionne même si l'appui commence directement sur une table. */
-    p.addEventListener('pointerdown',onDown,true);
-    window.addEventListener('pointermove',onMove,true);
-    window.addEventListener('pointerup',onUp,true);
-    window.addEventListener('pointercancel',onUp,true);
-
-    p.addEventListener('click',function(e){
-      if(!suppressNextClick) return;
-      suppressNextClick=false;
-      e.preventDefault();
-      e.stopPropagation();
-      if(e.stopImmediatePropagation) e.stopImmediatePropagation();
-    },true);
-
-    p.addEventListener('contextmenu',function(e){
-      if(longPressDone || timer) e.preventDefault();
-    },true);
-  }
-
-  function boot(){
-    install();
-    setTimeout(install,250);
-    setTimeout(install,900);
-    const d=drawer();
-    if(d){
-      new MutationObserver(function(){
-        if(d.classList.contains('open')) requestAnimationFrame(install);
-      }).observe(d,{attributes:true,attributeFilter:['class'],childList:true,subtree:true});
-    }
-  }
-
-  if(document.readyState==='loading') document.addEventListener('DOMContentLoaded',boot,{once:true});
-  else boot();
-})();
-</script>
-
-
 <style id="ichef-ticket-white-fullscreen-longpress-v2-style">
 /* =========================================================
    iCHEF — BLOC BLANC COMPLET EN PLEIN ÉCRAN
@@ -12354,6 +12215,96 @@ button[class*="annuler" i] *{
         },{once:true});
     }else{
         setTimeout(ichefServerHealthCheck,350);
+    }
+})();
+</script>
+
+
+<!-- iCHEF FIX — COMMANDES FANTÔMES / CHRONO TABLE -->
+<script id="ichef-empty-table-ghost-cleanup-v1">
+(function(){
+    "use strict";
+
+    function isGhostEmptyOrder(order){
+        if(!order || typeof order!=="object") return false;
+        const items=Array.isArray(order.items)?order.items:[];
+        const obs=String(order.observations||"").trim();
+        const reserved=String(order.status||"").toLowerCase()==="reserved";
+        const web=!!order.isWeb;
+
+        return (
+            items.length===0 &&
+            !obs &&
+            !reserved &&
+            !web &&
+            String(order.status||"").toLowerCase()==="open"
+        );
+    }
+
+    function cleanupLocalGhostOrders(){
+        try{
+            if(typeof activeOrders==="undefined" || !activeOrders) return;
+            let changed=false;
+
+            Object.keys(activeOrders).forEach(key=>{
+                if(isGhostEmptyOrder(activeOrders[key])){
+                    delete activeOrders[key];
+                    changed=true;
+                }
+            });
+
+            if(changed){
+                try{ if(typeof renderFloor==="function") renderFloor(); }catch(_){}
+                try{
+                    const fn=window.renderProTables;
+                    if(typeof fn==="function") fn();
+                }catch(_){}
+            }
+        }catch(_){}
+    }
+
+    if(document.readyState==="loading"){
+        document.addEventListener("DOMContentLoaded",()=>setTimeout(cleanupLocalGhostOrders,500),{once:true});
+    }else{
+        setTimeout(cleanupLocalGhostOrders,500);
+    }
+
+    window.addEventListener("focus",()=>setTimeout(cleanupLocalGhostOrders,100),{passive:true});
+})();
+</script>
+
+
+<!-- iCHEF — SUPPRESSION DÉFINITIVE DU PLEIN ÉCRAN FANTÔME DU BLOC GAUCHE -->
+<script id="ichef-remove-left-pane-ghost-fullscreen">
+(function(){
+    "use strict";
+
+    function cleanup(){
+        const d = document.getElementById("order-drawer");
+        const p = document.getElementById("pro-table-panel");
+
+        if(d){
+            d.classList.remove("ichef-room-pane-fullscreen");
+        }
+        if(p){
+            p.classList.remove("ichef-room-longpress-armed");
+            delete p.dataset.ichefRoomLongpressV2;
+        }
+    }
+
+    if(document.readyState === "loading"){
+        document.addEventListener("DOMContentLoaded", cleanup, {once:true});
+    }else{
+        cleanup();
+    }
+
+    const d = document.getElementById("order-drawer");
+    if(d){
+        new MutationObserver(function(){
+            if(d.classList.contains("ichef-room-pane-fullscreen")){
+                d.classList.remove("ichef-room-pane-fullscreen");
+            }
+        }).observe(d,{attributes:true,attributeFilter:["class"]});
     }
 })();
 </script>
