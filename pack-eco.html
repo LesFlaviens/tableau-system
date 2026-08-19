@@ -1,6 +1,7 @@
 <!DOCTYPE html>
 <html lang="fr">
 <head>
+<!-- iCHEF QUI MANGE QUOI — sièges/convives QR + KDS -->
 <!-- iCHEF FIX FANTÔMES À LA SOURCE — syncData + Socket filtrés -->
 <!-- iCHEF HAUT DÉBIT : profil front-end optimisé pour service intensif / 1000 couverts jour -->
 
@@ -3068,6 +3069,11 @@ async function logout(reason = 'MANUAL') {
                                 if (i.price !== undefined && i.p === undefined) i.p = i.price;
                                 if (i.category && !i.dest) i.dest = i.category;
                                 if (i.n && !i.dest) i.dest = 'cuisine';
+
+                                /* Qui mange quoi ? — compatibilité QR/API */
+                                if (typeof window.ichefNormalizeQrGuestFields === 'function') {
+                                    window.ichefNormalizeQrGuestFields({items:[i]});
+                                }
                             });
                         }
                     }
@@ -5076,7 +5082,7 @@ function renderMenu(categoryId) {
             let seatId = currentSeat; 
             let e = currentTicket.find(i => i.n === n && !i.done && !i.served && !i.isSent && i.course === cId && !i.obs && !i.isOffered && (i.seat || 0) === seatId && i.tva === tvaRate); 
             if(e) e.qty = (e.qty||1)+1; 
-            else currentTicket.push({ id: Date.now()+Math.random(), itemId: Date.now(), n: n.replace(/\[BR\]/g, ' '), originalName: (originalName || n).replace(/\[BR\]/g, '\n'), p, tva: tvaRate, qty: 1, done: false, served: false, dest, savedToDB: false, isOffered: false, course: cId, obs: "", modifiers: { add: [], remove: [] }, cooking: null, seat: seatId, isSent: false }); 
+            else currentTicket.push({ id: Date.now()+Math.random(), itemId: Date.now(), n: n.replace(/\[BR\]/g, ' '), originalName: (originalName || n).replace(/\[BR\]/g, '\n'), p, tva: tvaRate, qty: 1, done: false, served: false, dest, savedToDB: false, isOffered: false, course: cId, obs: "", modifiers: { add: [], remove: [] }, cooking: null, seat: seatId, guestSeat: seatId, seatNumber: seatId, guestName: "", isSent: false }); 
             renderTicket();
             flashAddedItem(n, 1);
             updateOrderMiniBar();
@@ -5216,7 +5222,9 @@ function renderMenu(categoryId) {
               else if (i.done) statusHtml = `<button class="btn-mini" style="background: #10b981; color: #000; border-color: #10b981; padding: 4px 8px; font-size: 0.7rem; font-weight: 800; cursor: pointer; box-shadow: 0 0 10px rgba(16,185,129,0.5);" onclick="markAsServed(${idx}); event.stopPropagation();">✋ RÉCUPÉRER</button>`;
                 else statusHtml = `<button class="btn-mini" style="border-color: var(--gold); color: var(--gold); padding: 4px 8px; font-size: 0.6rem;">ATTENTE</button>`;
                 
-                let seatBadge = (i.seat && i.seat > 0) ? `<span style="color:var(--text-muted); font-size:0.75rem; margin-right:8px; font-weight:500;">👤 ${i.seat}</span>` : `<span style="color:var(--text-muted); font-size:0.7rem; margin-right:8px; font-weight:400;">🍽️ CTR</span>`;
+                let seatBadge = (i.seat && i.seat > 0)
+                    ? `<span style="color:var(--text-muted); font-size:0.75rem; margin-right:8px; font-weight:500;">👤 ${i.seat}${i.guestName ? ` <span class="ichef-guest-name">${String(i.guestName).replace(/</g,'&lt;')}</span>` : ''}</span>`
+                    : `<span style="color:var(--text-muted); font-size:0.7rem; margin-right:8px; font-weight:400;">🍽️ CTR</span>`;
                 let priceHtml = i.isOffered ? `<span style="margin-right:10px; font-weight:500; color:var(--gold); font-size: 0.8rem; letter-spacing: 1px;">🎁 OFFERT</span>` : `<span style="margin-right:10px; font-weight:500; font-size: 0.95rem; font-family: 'Playfair Display', serif;">${formatMoneyPad(ligneTTC)}</span>`;
                let obsDisplay = i.obs ? `<span style="font-size:0.7rem; color:var(--gold); margin-left: 5px; font-weight: 500;">⚠️ ${i.obs}</span>` : ``;
 
@@ -5326,6 +5334,18 @@ function renderMenu(categoryId) {
 
         async function sendOrderToKDS(isTimeShifted = false) {
             normalizeSequenceMetadata();
+
+            /* La cuisine reçoit toujours le convive/siège. */
+            currentTicket.forEach(i => {
+                if(!i) return;
+                const seat = Number(i.seat || i.guestSeat || i.seatNumber || 0) || 0;
+                i.seat = seat;
+                i.guestSeat = seat;
+                i.seatNumber = seat;
+                if(!i.guestName) {
+                    i.guestName = String(i.conviveName || i.personName || '').trim();
+                }
+            });
             const unsent = currentTicket.filter(i => !i.isSent);
             if (!unsent.length) return;
 
@@ -14418,6 +14438,355 @@ body:not(.edit-mode) .table-obj:active{
     }else{
         boot();
     }
+})();
+</script>
+
+
+<!-- =========================================================
+     iCHEF — QUI MANGE QUOI ? / CONVIVES / QR
+     Utilise le système de sièges existant, sans le dupliquer.
+     ========================================================= -->
+<style id="ichef-guest-seat-system-v1-css">
+#ichef-guest-assign-modal{
+    position:fixed;inset:0;z-index:2147483300;
+    display:none;align-items:center;justify-content:center;
+    background:rgba(0,0,0,.82);backdrop-filter:blur(8px);
+    padding:16px;
+}
+#ichef-guest-assign-modal.show{display:flex}
+#ichef-guest-assign-modal .box{
+    width:min(720px,96vw);max-height:90vh;overflow:auto;
+    background:#090c0d;border:1px solid var(--gold);
+    border-radius:16px;padding:16px;color:#fff;
+    box-shadow:0 22px 60px rgba(0,0,0,.72);
+}
+#ichef-guest-assign-modal h3{margin:0;color:var(--gold);font-size:18px}
+#ichef-guest-assign-modal .sub{font-size:11px;color:#aaa;margin:6px 0 14px}
+.ichef-guest-item{
+    padding:10px 0;border-bottom:1px solid rgba(255,255,255,.07);
+}
+.ichef-guest-item:last-child{border-bottom:0}
+.ichef-guest-item-name{font-size:13px;font-weight:900;margin-bottom:7px}
+.ichef-guest-seat-buttons{
+    display:flex;gap:5px;flex-wrap:wrap;
+}
+.ichef-guest-seat-btn{
+    min-height:34px;padding:5px 9px;border-radius:7px;
+    border:1px solid #444;background:#111;color:#ddd;
+    font-size:10px;font-weight:900;cursor:pointer;
+}
+.ichef-guest-seat-btn.active{
+    border-color:var(--gold);background:var(--gold-dim);color:var(--gold);
+}
+#ichef-guest-assign-actions{
+    display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:14px;
+}
+#ichef-guest-assign-actions button{
+    min-height:44px;border-radius:8px;font-weight:950;cursor:pointer;
+}
+#ichef-guest-assign-close{background:#111;color:#fff;border:1px solid #555}
+#ichef-guest-assign-save{background:var(--gold);color:#000;border:1px solid var(--gold)}
+#ichef-who-eats-btn{
+    display:none;width:100%;min-height:39px;margin:0 0 8px;
+    border:1px solid #a855f7;border-radius:7px;
+    background:rgba(168,85,247,.08);color:#d8b4fe;
+    font-weight:950;font-size:11px;cursor:pointer;
+}
+#ichef-who-eats-btn.show{display:block}
+.ichef-guest-name{
+    display:inline-flex;margin-left:4px;
+    color:#d8b4fe;font-size:.68rem;font-weight:800;
+}
+</style>
+
+<div id="ichef-guest-assign-modal" aria-hidden="true">
+  <div class="box">
+    <h3>👥 QUI MANGE QUOI ?</h3>
+    <div class="sub">
+      Associez chaque plat au bon convive. Cette information suivra la commande jusqu'en cuisine et au service.
+    </div>
+    <div id="ichef-guest-assign-list"></div>
+    <div id="ichef-guest-assign-actions">
+      <button type="button" id="ichef-guest-assign-close">FERMER</button>
+      <button type="button" id="ichef-guest-assign-save">VALIDER LA RÉPARTITION</button>
+    </div>
+  </div>
+</div>
+
+<script id="ichef-guest-seat-system-v1-js">
+(function(){
+    "use strict";
+
+    function safeInt(v){
+        const n=Number(v);
+        return Number.isFinite(n) && n>=0 ? Math.floor(n) : 0;
+    }
+
+    function normalizeQrGuestFields(item){
+        if(!item || typeof item!=="object") return item;
+
+        /* Compatibilité avec différentes formes QR / API */
+        if(!safeInt(item.seat)){
+            item.seat=safeInt(
+                item.guestSeat ??
+                item.seatNumber ??
+                item.convive ??
+                item.person ??
+                item.personIndex ??
+                item.guestIndex ??
+                0
+            );
+        }
+
+        if(!item.guestName){
+            item.guestName=String(
+                item.conviveName ??
+                item.personName ??
+                item.guestName ??
+                item.customerName ??
+                ""
+            ).trim();
+        }
+
+        item.guestSeat=safeInt(item.seat);
+        item.seatNumber=safeInt(item.seat);
+
+        return item;
+    }
+
+    window.ichefNormalizeQrGuestFields=function(order){
+        if(!order || typeof order!=="object") return order;
+        if(!Array.isArray(order.items)) return order;
+
+        order.items.forEach(normalizeQrGuestFields);
+        return order;
+    };
+
+    function isQrOrder(order,key){
+        return !!(
+            order?.isWeb ||
+            order?.isQR ||
+            String(order?.origin || order?.orderMeta?.origin || "").toUpperCase()==="QR" ||
+            /^WEB_|^QR_/i.test(String(key||""))
+        );
+    }
+
+    function currentOrder(){
+        try{
+            return activeOrders?.[currentTableId] || null;
+        }catch(_){return null}
+    }
+
+    function currentPax(){
+        let pax=0;
+
+        try{
+            const t=(Array.isArray(tables)?tables:[])
+                .find(x=>x && String(x.label)===String(currentTableId));
+            pax=Number(t?.pax||t?.seats||t?.capacity||0);
+        }catch(_){}
+
+        if(!pax){
+            try{
+                const o=currentOrder();
+                pax=Number(
+                    o?.pax || o?.covers || o?.guests ||
+                    o?.people || o?.reservation?.pax || 0
+                );
+            }catch(_){}
+        }
+
+        if(!pax){
+            try{
+                const obs=document.getElementById("order-obs")?.value||"";
+                const m=obs.match(/🍽️\s*(\d+)\s*Couvert/i);
+                if(m)pax=Number(m[1]);
+            }catch(_){}
+        }
+
+        return Math.max(1,Math.min(50,Math.floor(pax||1)));
+    }
+
+    function hasUnassignedItems(){
+        const items=Array.isArray(currentTicket)?currentTicket:[];
+        return items.some(i=>
+            i &&
+            String(i.n ?? i.name ?? "").trim() &&
+            safeInt(i.seat)===0
+        );
+    }
+
+    function needsQrAssignment(){
+        const o=currentOrder();
+        return !!(
+            o &&
+            isQrOrder(o,currentTableId) &&
+            currentPax()>1 &&
+            hasUnassignedItems()
+        );
+    }
+
+    function ensureWhoEatsButton(){
+        const ticket=document.querySelector("#order-drawer .ticket-view");
+        if(!ticket)return null;
+
+        let btn=document.getElementById("ichef-who-eats-btn");
+        if(!btn){
+            btn=document.createElement("button");
+            btn.type="button";
+            btn.id="ichef-who-eats-btn";
+            btn.textContent="👥 QUI MANGE QUOI ?";
+            btn.onclick=()=>window.ichefOpenGuestAssignment();
+            ticket.insertBefore(btn,ticket.firstChild);
+        }
+
+        btn.classList.toggle(
+            "show",
+            needsQrAssignment() || (
+                Array.isArray(currentTicket) &&
+                currentTicket.length>0 &&
+                currentPax()>1
+            )
+        );
+
+        return btn;
+    }
+
+    function guestLabel(item,seat){
+        const n=String(item?.guestName||"").trim();
+        if(n && safeInt(item?.seat)===seat){
+            return `👤 ${seat} · ${n}`;
+        }
+        return `👤 ${seat}`;
+    }
+
+    function renderAssignment(){
+        const list=document.getElementById("ichef-guest-assign-list");
+        if(!list)return;
+
+        const pax=currentPax();
+        list.replaceChildren();
+
+        (Array.isArray(currentTicket)?currentTicket:[]).forEach((item,idx)=>{
+            if(!item)return;
+            normalizeQrGuestFields(item);
+
+            const row=document.createElement("div");
+            row.className="ichef-guest-item";
+
+            const name=document.createElement("div");
+            name.className="ichef-guest-item-name";
+            name.textContent=`${Number(item.qty||1)>1?Number(item.qty||1)+"× ":""}${String(item.n||item.name||"Plat")}`;
+            row.appendChild(name);
+
+            const buttons=document.createElement("div");
+            buttons.className="ichef-guest-seat-buttons";
+
+            const centre=document.createElement("button");
+            centre.type="button";
+            centre.className="ichef-guest-seat-btn"+(safeInt(item.seat)===0?" active":"");
+            centre.textContent="🍽️ CENTRE";
+            centre.onclick=()=>{
+                item.seat=0;
+                item.guestSeat=0;
+                item.seatNumber=0;
+                renderAssignment();
+            };
+            buttons.appendChild(centre);
+
+            for(let s=1;s<=pax;s++){
+                const b=document.createElement("button");
+                b.type="button";
+                b.className="ichef-guest-seat-btn"+(safeInt(item.seat)===s?" active":"");
+                b.textContent=guestLabel(item,s);
+                b.onclick=()=>{
+                    item.seat=s;
+                    item.guestSeat=s;
+                    item.seatNumber=s;
+                    renderAssignment();
+                };
+                buttons.appendChild(b);
+            }
+
+            row.appendChild(buttons);
+            list.appendChild(row);
+        });
+    }
+
+    window.ichefOpenGuestAssignment=function(){
+        if(!Array.isArray(currentTicket) || !currentTicket.length)return;
+
+        renderAssignment();
+
+        const modal=document.getElementById("ichef-guest-assign-modal");
+        if(modal){
+            modal.classList.add("show");
+            modal.setAttribute("aria-hidden","false");
+        }
+    };
+
+    function closeAssignment(){
+        const modal=document.getElementById("ichef-guest-assign-modal");
+        if(modal){
+            modal.classList.remove("show");
+            modal.setAttribute("aria-hidden","true");
+        }
+    }
+
+    async function saveAssignment(){
+        (Array.isArray(currentTicket)?currentTicket:[])
+            .forEach(normalizeQrGuestFields);
+
+        try{
+            if(typeof renderTicket==="function")renderTicket();
+            ensureWhoEatsButton();
+
+            /* Sauvegarde immédiate : Cuisine/KDS reçoit qui mange quoi. */
+            if(typeof executeSaveTableState==="function"){
+                await executeSaveTableState(false,true);
+            }
+
+            if(typeof showToast==="function"){
+                showToast("👥 Répartition des convives enregistrée");
+            }
+
+            closeAssignment();
+        }catch(err){
+            console.warn("[iCHEF] Répartition convives :",err);
+        }
+    }
+
+    document.getElementById("ichef-guest-assign-close")
+        ?.addEventListener("click",closeAssignment);
+
+    document.getElementById("ichef-guest-assign-save")
+        ?.addEventListener("click",saveAssignment);
+
+    /* Expose pour les autres écrans/KDS. */
+    window.ichefSeatLabel=function(item){
+        const seat=safeInt(item?.seat);
+        const name=String(item?.guestName||"").trim();
+
+        if(seat>0){
+            return name ? `Convive ${seat} · ${name}` : `Convive ${seat}`;
+        }
+        return "Centre table";
+    };
+
+    function refresh(){
+        try{
+            if(Array.isArray(currentTicket)){
+                currentTicket.forEach(normalizeQrGuestFields);
+            }
+            ensureWhoEatsButton();
+        }catch(_){}
+    }
+
+    document.addEventListener("DOMContentLoaded",refresh,{once:true});
+    setInterval(()=>{
+        const drawer=document.getElementById("order-drawer");
+        if(drawer?.classList.contains("open"))refresh();
+    },1500);
 })();
 </script>
 
