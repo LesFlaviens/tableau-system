@@ -10808,5 +10808,231 @@ html.ichef-night-mode .chair{
 })();
 </script>
 
+
+<style id="ichef-ticket-white-longpress-v1">
+/* =========================================================
+   BLOC BLANC / TICKET — APPUI LONG 0,9 S
+   Compact -> texte complet -> 1 clic retour
+   ========================================================= */
+
+/* État normal : ligne compacte et propre */
+#ticket-list .ticket-item-row{
+    position:relative !important;
+    overflow:hidden !important;
+    min-height:68px !important;
+    max-height:86px !important;
+    height:auto !important;
+    align-items:center !important;
+    transition:max-height .18s ease, min-height .18s ease, box-shadow .18s ease !important;
+    touch-action:pan-y !important;
+}
+
+/* Ligne principale : 2 lignes max au repos */
+#ticket-list .ticket-item-row > div:first-child > div:first-child{
+    color:#111 !important;
+    -webkit-text-fill-color:#111 !important;
+    opacity:1 !important;
+    display:-webkit-box !important;
+    -webkit-box-orient:vertical !important;
+    -webkit-line-clamp:2 !important;
+    line-clamp:2 !important;
+    overflow:hidden !important;
+    white-space:normal !important;
+    text-overflow:ellipsis !important;
+    line-height:1.25 !important;
+}
+
+/* Appui long : la ligne s'ouvre et montre TOUT le texte */
+#ticket-list .ticket-item-row.ichef-ticket-row-expanded{
+    max-height:none !important;
+    min-height:86px !important;
+    overflow:visible !important;
+    align-items:flex-start !important;
+    z-index:40 !important;
+    border-color:#d7aa46 !important;
+    box-shadow:0 0 0 2px rgba(215,170,70,.32), 0 8px 22px rgba(0,0,0,.12) !important;
+}
+
+/* Texte complet visible et noir */
+#ticket-list .ticket-item-row.ichef-ticket-row-expanded > div:first-child > div:first-child{
+    display:block !important;
+    -webkit-line-clamp:unset !important;
+    line-clamp:unset !important;
+    max-height:none !important;
+    overflow:visible !important;
+    white-space:normal !important;
+    text-overflow:clip !important;
+    color:#000 !important;
+    -webkit-text-fill-color:#000 !important;
+    opacity:1 !important;
+    line-height:1.28 !important;
+}
+
+/* Les observations/modificateurs restent visibles dans l'état ouvert */
+#ticket-list .ticket-item-row.ichef-ticket-row-expanded > div:first-child{
+    overflow:visible !important;
+}
+
+/* Petit repère discret */
+#ticket-list .ticket-item-row.ichef-ticket-row-expanded::after{
+    content:"texte complet";
+    position:absolute;
+    left:12px;
+    bottom:5px;
+    color:#b38627;
+    font-size:9px;
+    font-weight:900;
+    letter-spacing:.5px;
+    pointer-events:none;
+}
+
+/* Laisser un peu de place au repère dans la ligne ouverte */
+#ticket-list .ticket-item-row.ichef-ticket-row-expanded{
+    padding-bottom:24px !important;
+}
+</style>
+
+<script id="ichef-ticket-white-longpress-v1-script">
+(function(){
+    "use strict";
+
+    const HOLD_MS = 900;
+    const MOVE_LIMIT = 12;
+
+    let holdTimer = null;
+    let activeRow = null;
+    let startX = 0;
+    let startY = 0;
+
+    function cancelHold(){
+        clearTimeout(holdTimer);
+        holdTimer = null;
+        activeRow = null;
+    }
+
+    function expandRow(row){
+        if(!row) return;
+
+        /* Une seule ligne ouverte à la fois */
+        document.querySelectorAll('#ticket-list .ticket-item-row.ichef-ticket-row-expanded')
+          .forEach(r => {
+              if(r !== row) r.classList.remove('ichef-ticket-row-expanded');
+          });
+
+        row.classList.add('ichef-ticket-row-expanded');
+
+        /* Neutralise le clic généré juste après le long press */
+        row.dataset.ichefSuppressNextClick = '1';
+
+        try{
+            if(navigator.vibrate) navigator.vibrate(20);
+        }catch(_){}
+    }
+
+    function collapseRow(row){
+        if(!row) return;
+        row.classList.remove('ichef-ticket-row-expanded');
+    }
+
+    function install(){
+        const list = document.getElementById('ticket-list');
+        if(!list || list.dataset.ichefWhiteLongpress === '1') return;
+
+        list.dataset.ichefWhiteLongpress = '1';
+
+        list.addEventListener('pointerdown', function(e){
+            const row = e.target.closest('.ticket-item-row');
+            if(!row || !list.contains(row)) return;
+
+            /* Ne pas déclencher sur les boutons d'action */
+            if(e.target.closest('button')) return;
+
+            /* Une ligne déjà ouverte se fermera au simple clic */
+            if(row.classList.contains('ichef-ticket-row-expanded')) return;
+
+            cancelHold();
+            activeRow = row;
+            startX = e.clientX;
+            startY = e.clientY;
+
+            holdTimer = setTimeout(function(){
+                if(activeRow === row){
+                    expandRow(row);
+                }
+                holdTimer = null;
+            }, HOLD_MS);
+        }, {passive:true});
+
+        list.addEventListener('pointermove', function(e){
+            if(!activeRow || !holdTimer) return;
+
+            if(
+                Math.abs(e.clientX - startX) > MOVE_LIMIT ||
+                Math.abs(e.clientY - startY) > MOVE_LIMIT
+            ){
+                cancelHold();
+            }
+        }, {passive:true});
+
+        ['pointerup','pointercancel','pointerleave'].forEach(type=>{
+            list.addEventListener(type,cancelHold,{passive:true});
+        });
+
+        /*
+         * Clic :
+         * 1) ligne ouverte -> retour immédiat à la forme d'origine
+         * 2) clic généré par le long press -> neutralisé
+         * 3) sinon : comportement métier existant (édition) conservé
+         */
+        list.addEventListener('click', function(e){
+            const row = e.target.closest('.ticket-item-row');
+            if(!row || !list.contains(row)) return;
+
+            if(e.target.closest('button')) return;
+
+            if(row.classList.contains('ichef-ticket-row-expanded')){
+                collapseRow(row);
+                delete row.dataset.ichefSuppressNextClick;
+
+                e.preventDefault();
+                e.stopPropagation();
+                if(typeof e.stopImmediatePropagation === 'function'){
+                    e.stopImmediatePropagation();
+                }
+                return;
+            }
+
+            if(row.dataset.ichefSuppressNextClick === '1'){
+                delete row.dataset.ichefSuppressNextClick;
+
+                e.preventDefault();
+                e.stopPropagation();
+                if(typeof e.stopImmediatePropagation === 'function'){
+                    e.stopImmediatePropagation();
+                }
+            }
+        }, true);
+
+        list.addEventListener('contextmenu', function(e){
+            if(e.target.closest('.ticket-item-row') && !e.target.closest('button')){
+                e.preventDefault();
+            }
+        });
+    }
+
+    function boot(){
+        install();
+        setTimeout(install,250);
+        setTimeout(install,800);
+    }
+
+    if(document.readyState === 'loading'){
+        document.addEventListener('DOMContentLoaded',boot,{once:true});
+    }else{
+        boot();
+    }
+})();
+</script>
+
 </body>
 </html>
