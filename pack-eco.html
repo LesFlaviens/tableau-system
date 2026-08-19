@@ -13475,5 +13475,241 @@ button[class*="annuler" i] svg{
 })();
 </script>
 
+
+<!-- =========================================================
+     iCHEF — NETTOYAGE FANTÔMES STRICT FINAL
+     RÈGLE :
+     - vrai article => vraie commande
+     - vraie réservation active => conserver
+     - tout le reste => FANTÔME, même avec orderMeta/status/createdAt
+     ========================================================= -->
+<script id="ichef-ghost-orders-strict-final">
+(function(){
+    "use strict";
+
+    function hasRealItem(order){
+        const items = Array.isArray(order?.items) ? order.items : [];
+        return items.some(i=>{
+            if(!i || typeof i!=="object") return false;
+
+            const name = String(
+                i.n ?? i.name ?? i.label ?? i.title ?? i.productName ?? ""
+            ).trim();
+
+            const qty = Number(i.qty ?? i.quantity ?? 1);
+
+            return (
+                name.length > 0 &&
+                Number.isFinite(qty) &&
+                qty > 0
+            );
+        });
+    }
+
+    function hasRealActiveReservation(order){
+        if(!order || typeof order!=="object") return false;
+
+        const status = String(order.status || "").trim().toLowerCase();
+        const reservationStatus = String(
+            order.reservationStatus ||
+            order.reservation?.status ||
+            ""
+        ).trim().toLowerCase();
+
+        const activeStatuses = new Set([
+            "reserved",
+            "reserve",
+            "réservé",
+            "confirmed",
+            "confirmee",
+            "confirmée",
+            "arrived",
+            "arrive",
+            "arrivé",
+            "seated",
+            "installed",
+            "installe",
+            "installé"
+        ]);
+
+        const hasReservationIdentity = !!(
+            order.reservationId ||
+            order.bookingId ||
+            order.reservation?.id ||
+            order.reservation?.reservationId ||
+            order.reservation?.bookingId
+        );
+
+        return (
+            hasReservationIdentity &&
+            (
+                activeStatuses.has(status) ||
+                activeStatuses.has(reservationStatus)
+            )
+        );
+    }
+
+    function preserveCancelAuditBeforeDelete(tableId, order){
+        try{
+            const records = [];
+
+            if(Array.isArray(order?.cancelAudit)){
+                records.push(...order.cancelAudit);
+            }
+            if(order?.lastCancellation){
+                records.push(order.lastCancellation);
+            }
+
+            if(!records.length) return;
+
+            const key = "ICHEF_FISCAL_CANCEL_AUDIT";
+            const existing = JSON.parse(localStorage.getItem(key) || "[]");
+
+            const known = new Set(existing.map(x=>String(x?.id || "")));
+
+            for(const rec of records){
+                const id = String(rec?.id || "");
+                if(id && known.has(id)) continue;
+                existing.push(rec);
+                if(id) known.add(id);
+            }
+
+            if(existing.length > 3000){
+                existing.splice(0, existing.length - 3000);
+            }
+
+            localStorage.setItem(key, JSON.stringify(existing));
+        }catch(_){}
+    }
+
+    function isStrictGhost(order){
+        /* Métadonnées seules ne comptent jamais comme commande réelle. */
+        if(!order || typeof order !== "object") return true;
+
+        if(hasRealItem(order)) return false;
+        if(hasRealActiveReservation(order)) return false;
+
+        return true;
+    }
+
+    async function deleteGhostServer(tableId){
+        try{
+            const base = String(window.APP_SERVER_URL || "").replace(/\/$/,"");
+            const tenant = String(window.appTenantID || "");
+
+            if(!base || !tenant || !tableId) return false;
+
+            const response = await fetch(
+                `${base}/update-order?tenantID=${encodeURIComponent(tenant)}`,
+                {
+                    method:"POST",
+                    credentials:"include",
+                    cache:"no-store",
+                    headers: typeof securityHeaders==="function"
+                        ? securityHeaders()
+                        : {"Content-Type":"application/json"},
+                    body:JSON.stringify({
+                        tableId:String(tableId),
+                        order:null,
+                        deviceId:window.ICHEF_SECURITY?.deviceId || null,
+                        waiter:window.currentUser?.name || null,
+                        cleanupReason:"STRICT_GHOST_NO_REAL_ITEMS"
+                    })
+                }
+            );
+
+            return response.ok;
+        }catch(err){
+            console.warn("[iCHEF] Suppression fantôme serveur :", tableId, err);
+            return false;
+        }
+    }
+
+    async function cleanStrictGhostOrders(){
+        try{
+            if(typeof activeOrders==="undefined" || !activeOrders) return 0;
+
+            const ghosts = [];
+
+            for(const [tableId, order] of Object.entries(activeOrders)){
+                if(!isStrictGhost(order)) continue;
+
+                preserveCancelAuditBeforeDelete(tableId, order);
+
+                ghosts.push(tableId);
+            }
+
+            if(!ghosts.length) return 0;
+
+            /* 1. disparition immédiate du plan */
+            for(const tableId of ghosts){
+                delete activeOrders[tableId];
+            }
+
+            try{ if(typeof renderFloor==="function") renderFloor(); }catch(_){}
+            try{ if(typeof renderProTables==="function") renderProTables(); }catch(_){}
+            try{ if(typeof renderService==="function") renderService(); }catch(_){}
+
+            /* 2. suppression réelle côté server.js / MongoDB */
+            const results = await Promise.allSettled(
+                ghosts.map(deleteGhostServer)
+            );
+
+            const okCount = results.filter(
+                r => r.status==="fulfilled" && r.value===true
+            ).length;
+
+            console.info(
+                `[iCHEF] Nettoyage strict : ${ghosts.length} fantôme(s), ` +
+                `${okCount} confirmé(s) serveur.`
+            );
+
+            /* 3. une synchro propre après suppression */
+            try{
+                if(typeof forceServerSync==="function"){
+                    setTimeout(
+                        ()=>forceServerSync("strict-ghost-cleanup"),
+                        350
+                    );
+                }
+            }catch(_){}
+
+            return ghosts.length;
+
+        }catch(err){
+            console.warn("[iCHEF] Nettoyage strict fantômes :", err);
+            return 0;
+        }
+    }
+
+    window.cleanStrictGhostOrders = cleanStrictGhostOrders;
+
+    function boot(){
+        /* plusieurs passages courts pour nettoyer aussi les vieux états
+           arrivant juste après bootstrap/socket */
+        setTimeout(cleanStrictGhostOrders, 700);
+        setTimeout(cleanStrictGhostOrders, 1800);
+        setTimeout(cleanStrictGhostOrders, 4200);
+    }
+
+    if(document.readyState==="loading"){
+        document.addEventListener(
+            "DOMContentLoaded",
+            boot,
+            {once:true}
+        );
+    }else{
+        boot();
+    }
+
+    /* Après reconnexion, refaire un seul nettoyage. */
+    window.addEventListener(
+        "online",
+        ()=>setTimeout(cleanStrictGhostOrders, 500),
+        {passive:true}
+    );
+})();
+</script>
+
 </body>
 </html>
