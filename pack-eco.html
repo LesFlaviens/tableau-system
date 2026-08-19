@@ -2286,7 +2286,14 @@ let unifiedCategories = [];
         let syncInterval = null; let clockInterval = null;
 
         function securityHeaders(extra = {}) {
-            const headers = { 'Content-Type': 'application/json', 'X-Requested-With': 'iCHEF-PWA', ...extra };
+            const headers = {
+                'Content-Type': 'application/json',
+                'X-Requested-With': 'iCHEF-PWA',
+                'X-Tenant-ID': String(appTenantID || ''),
+                'X-Device-ID': String(window.ICHEF_SECURITY?.deviceId || ''),
+                'X-iCHEF-Client': 'PAD-SERVEUR',
+                ...extra
+            };
             if (window.ICHEF_SECURITY.sessionToken) headers.Authorization = `Bearer ${window.ICHEF_SECURITY.sessionToken}`;
             if (window.ICHEF_SECURITY.csrfToken) headers['X-CSRF-Token'] = window.ICHEF_SECURITY.csrfToken;
             return headers;
@@ -2339,6 +2346,71 @@ let unifiedCategories = [];
             return true;
         }
 
+
+        function validateOrderPayloadForFraud(data) {
+            if (data === null || data === undefined) return { ok: true };
+
+            const items = Array.isArray(data?.items)
+                ? data.items
+                : (Array.isArray(data) ? data : null);
+
+            if (!items) return { ok: true };
+
+            if (items.length > 500) {
+                return { ok:false, reason:'TOO_MANY_ITEMS' };
+            }
+
+            let computed = 0;
+
+            for (const item of items) {
+                if (!item || typeof item !== 'object') {
+                    return { ok:false, reason:'INVALID_ITEM' };
+                }
+
+                const name = String(item.n ?? item.name ?? '').trim();
+                const qty = Number(item.qty ?? 1);
+                const price = Number(item.p ?? item.price ?? 0);
+
+                if (!name || name.length > 240) {
+                    return { ok:false, reason:'INVALID_ITEM_NAME' };
+                }
+                if (!Number.isFinite(qty) || qty <= 0 || qty > 100) {
+                    return { ok:false, reason:'INVALID_QTY' };
+                }
+                if (!Number.isFinite(price) || price < 0 || price > 100000) {
+                    return { ok:false, reason:'INVALID_PRICE' };
+                }
+
+                computed += qty * price;
+                if (!Number.isFinite(computed) || computed > 500000) {
+                    return { ok:false, reason:'ABNORMAL_ORDER_TOTAL' };
+                }
+            }
+
+            return { ok:true, computedTotal:Math.round(computed * 100) / 100 };
+        }
+
+        async function reportClientSecurityEvent(action, details = {}) {
+            try {
+                await fetch(`${APP_SERVER_URL}/api/audit/events`, {
+                    method:'POST',
+                    credentials:'include',
+                    cache:'no-store',
+                    headers:securityHeaders(),
+                    body:JSON.stringify({
+                        tenantID:appTenantID,
+                        deviceId:window.ICHEF_SECURITY?.deviceId || null,
+                        action,
+                        details:{
+                            ...details,
+                            page:location.pathname,
+                            at:new Date().toISOString()
+                        }
+                    })
+                });
+            } catch (_) {}
+        }
+
         const API = {
             getState: async () => {
                 const response = await secureFetch(
@@ -2351,6 +2423,17 @@ let unifiedCategories = [];
 
             update: async (key, data, isOrder = false, audit = {}) => {
                 if (!currentUser) throw new Error('AUTH_REQUIRED');
+
+                if (isOrder) {
+                    const fraudCheck = validateOrderPayloadForFraud(data);
+                    if (!fraudCheck.ok) {
+                        reportClientSecurityEvent('CLIENT_ORDER_BLOCKED', {
+                            reason: fraudCheck.reason,
+                            key: String(key || '').slice(0,120)
+                        });
+                        throw new Error(`ORDER_SECURITY_${fraudCheck.reason}`);
+                    }
+                }
 
                 const normalizedKey = String(key || '').trim();
                 if (!normalizedKey || normalizedKey.length > 120) {
@@ -11966,6 +12049,247 @@ button[class*="back" i]{
         setTimeout(function(){
             if(document.getElementById("order-drawer")?.classList.contains("open")) install();
         },250);
+    }
+
+    if(document.readyState==="loading"){
+        document.addEventListener("DOMContentLoaded",boot,{once:true});
+    }else{
+        boot();
+    }
+})();
+</script>
+
+
+<!-- =========================================================
+     iCHEF — SECURITY SHIELD V1
+     PWA + TENANT + ANTI-F12 + ANTI-CAPTURE DISSUASION
+     + ANTI-FRAUDE CLIENT + ANTI-PIRATAGE
+     IMPORTANT : l'autorité finale reste server.js.
+     ========================================================= -->
+<style id="ichef-security-shield-v1-css">
+#ichef-security-watermark{
+    position:fixed;
+    right:10px;
+    bottom:7px;
+    z-index:2147482000;
+    pointer-events:none;
+    user-select:none;
+    -webkit-user-select:none;
+    font-family:Inter,Arial,sans-serif;
+    font-size:9px;
+    font-weight:800;
+    letter-spacing:.55px;
+    color:rgba(255,255,255,.18);
+    text-align:right;
+    line-height:1.3;
+    mix-blend-mode:screen;
+}
+#ichef-security-curtain{
+    position:fixed;
+    inset:0;
+    z-index:2147483646;
+    display:none;
+    align-items:center;
+    justify-content:center;
+    flex-direction:column;
+    gap:10px;
+    background:#000;
+    color:#C5A059;
+    font-family:Inter,Arial,sans-serif;
+    text-align:center;
+    padding:30px;
+}
+#ichef-security-curtain.show{display:flex !important;}
+#ichef-security-curtain strong{
+    font-size:18px;
+    letter-spacing:1.5px;
+}
+#ichef-security-curtain span{
+    color:#8A857D;
+    font-size:11px;
+}
+html.ichef-security-locked body > *:not(#ichef-security-curtain){
+    visibility:hidden !important;
+}
+html.ichef-security-locked #ichef-security-curtain{
+    visibility:visible !important;
+}
+</style>
+
+<script id="ichef-security-shield-v1-js">
+(function(){
+    "use strict";
+
+    const TENANT_RE=/^[A-Za-z0-9_-]{2,80}$/;
+    let curtainTimer=0;
+    let lastViolationAt=0;
+
+    function currentTenant(){
+        try{
+            const urlTenant=new URLSearchParams(location.search).get("tenantID");
+            const stored=localStorage.getItem("ichef_tenant_id");
+            return urlTenant || stored || "";
+        }catch(_){ return ""; }
+    }
+
+    function tenantValid(){
+        const tenant=currentTenant();
+        return !!tenant && TENANT_RE.test(tenant);
+    }
+
+    function shortDevice(){
+        const d=String(window.ICHEF_SECURITY?.deviceId || "");
+        return d ? d.slice(-10) : "NO-DEVICE";
+    }
+
+    function addWatermark(){
+        if(document.getElementById("ichef-security-watermark")) return;
+        const wm=document.createElement("div");
+        wm.id="ichef-security-watermark";
+        wm.textContent=`iCHEF • ${currentTenant()} • ${shortDevice()}`;
+        document.body.appendChild(wm);
+    }
+
+    function ensureCurtain(){
+        let c=document.getElementById("ichef-security-curtain");
+        if(c) return c;
+
+        c=document.createElement("div");
+        c.id="ichef-security-curtain";
+        c.innerHTML=`
+            <strong>🔒 iCHEF — ÉCRAN PROTÉGÉ</strong>
+            <span id="ichef-security-curtain-ref"></span>
+        `;
+        document.body.appendChild(c);
+        return c;
+    }
+
+    function showCurtain(ms=1100, label="PROTECTION CONFIDENTIALITÉ"){
+        const c=ensureCurtain();
+        const ref=c.querySelector("#ichef-security-curtain-ref");
+        if(ref) ref.textContent=`${label} • TENANT ${currentTenant()} • ${shortDevice()}`;
+
+        c.classList.add("show");
+        clearTimeout(curtainTimer);
+        curtainTimer=setTimeout(()=>c.classList.remove("show"),ms);
+    }
+
+    async function audit(action,details={}){
+        try{
+            if(typeof reportClientSecurityEvent==="function"){
+                return reportClientSecurityEvent(action,details);
+            }
+        }catch(_){}
+    }
+
+    function securityViolation(type, extra={}){
+        const now=Date.now();
+        if(now-lastViolationAt>800){
+            lastViolationAt=now;
+            audit("CLIENT_SECURITY_VIOLATION",{type,...extra});
+        }
+        showCurtain(900,"ACCÈS BLOQUÉ");
+    }
+
+    /* Vérifie que le tenant URL et le tenant local ne divergent pas. */
+    function enforceTenantBinding(){
+        let urlTenant="",stored="";
+        try{
+            const p=new URLSearchParams(location.search);
+            urlTenant=p.get("tenantID") || "";
+            stored=localStorage.getItem("ichef_tenant_id") || "";
+        }catch(_){}
+
+        if(urlTenant && !TENANT_RE.test(urlTenant)){
+            document.documentElement.classList.add("ichef-security-locked");
+            const c=ensureCurtain();
+            c.classList.add("show");
+            c.innerHTML="<strong>⛔ TENANT INVALIDE</strong><span>Accès refusé.</span>";
+            audit("INVALID_TENANT_FORMAT",{tenant:String(urlTenant).slice(0,100)});
+            return false;
+        }
+
+        if(urlTenant && stored && urlTenant!==stored){
+            /* Le bootstrap existant remettra le tenant en cohérence.
+               Ici on efface seulement les données locales potentiellement croisées. */
+            try{
+                localStorage.removeItem("EMPIRE_GLOBAL_SYNC");
+                sessionStorage.clear();
+            }catch(_){}
+            audit("TENANT_CONTEXT_CHANGED",{from:stored,to:urlTenant});
+        }
+
+        return tenantValid();
+    }
+
+    /* Dissuasion DevTools : ne remplace pas la sécurité serveur. */
+    function blockDevShortcut(e){
+        const key=String(e.key || "").toLowerCase();
+        const blocked =
+            key==="f12" ||
+            ((e.ctrlKey || e.metaKey) && e.shiftKey && ["i","j","c","k"].includes(key)) ||
+            ((e.ctrlKey || e.metaKey) && ["u","s"].includes(key));
+
+        if(!blocked) return;
+
+        e.preventDefault();
+        e.stopPropagation();
+        e.stopImmediatePropagation();
+        securityViolation("DEVTOOLS_SHORTCUT",{key});
+    }
+
+    document.addEventListener("keydown",blockDevShortcut,true);
+    document.addEventListener("contextmenu",function(e){
+        e.preventDefault();
+    },true);
+
+    /* PrintScreen : le Web ne peut pas garantir le blocage OS.
+       On masque immédiatement l'interface et journalise la tentative. */
+    document.addEventListener("keyup",function(e){
+        if(String(e.key || "").toLowerCase()==="printscreen"){
+            showCurtain(1600,"CAPTURE D'ÉCRAN DISSUADÉE");
+            audit("PRINTSCREEN_KEY",{});
+        }
+    },true);
+
+    /* Quand l'app perd la visibilité, aucun contenu sensible ne reste affiché. */
+    document.addEventListener("visibilitychange",function(){
+        if(document.hidden){
+            ensureCurtain().classList.add("show");
+        }else{
+            setTimeout(()=>ensureCurtain().classList.remove("show"),180);
+        }
+    },{passive:true});
+
+    window.addEventListener("blur",function(){
+        showCurtain(650,"CONFIDENTIALITÉ");
+    },{passive:true});
+
+    /* Détecte un tenant modifié à chaud dans l'URL. */
+    let tenantSnapshot=currentTenant();
+    setInterval(function(){
+        const nowTenant=currentTenant();
+        if(nowTenant!==tenantSnapshot){
+            audit("TENANT_RUNTIME_CHANGE",{from:tenantSnapshot,to:nowTenant});
+            tenantSnapshot=nowTenant;
+            enforceTenantBinding();
+            addWatermark();
+        }
+    },3000);
+
+    function boot(){
+        enforceTenantBinding();
+        addWatermark();
+        ensureCurtain();
+
+        /* Enregistrement PWA. Le SW ne cache jamais API/commandes. */
+        if("serviceWorker" in navigator &&
+           (location.protocol==="https:" ||
+            location.hostname==="localhost" ||
+            location.hostname==="127.0.0.1")){
+            navigator.serviceWorker.register("/sw.js",{scope:"/"})
+                .catch(err=>console.warn("[iCHEF] Service Worker:",err));
+        }
     }
 
     if(document.readyState==="loading"){
