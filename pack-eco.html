@@ -1,6 +1,7 @@
 <!DOCTYPE html>
 <html lang="fr">
 <head>
+<!-- iCHEF HAUT DÉBIT : profil front-end optimisé pour service intensif / 1000 couverts jour -->
 
 <!-- iCHEF VERSION À JOUR — 2026-08-19
      Base consolidée :
@@ -4993,19 +4994,70 @@ ${count} ligne(s) · ${sequenceCount} séquence(s).
             }
         }
 
-        function executeSaveTableState(fireAllNew = false, keepOpen = false) {
-            if(currentTicket.length === 0 && !keepOpen) return;
-            let itemsToSave = JSON.parse(JSON.stringify(currentTicket));
-            let obsToSave = document.getElementById('order-obs').value.trim();
-            let targetTable = currentTableId;
-            
-            if(!keepOpen) { closeOrder(); renderFloor(); }
+        const ICHEF_TABLE_WRITE_QUEUES = new Map();
 
-            setTimeout(async () => {
-                try {
-                    await API.update(targetTable, { items: itemsToSave, time: new Date().toLocaleTimeString('fr-FR', {hour:'2-digit', minute:'2-digit'}), status: 'pending', observations: obsToSave }, true);
-                } catch(e) {}
-            }, 10);
+        async function executeSaveTableState(fireAllNew = false, keepOpen = false) {
+            if (currentTicket.length === 0 && !keepOpen) return true;
+
+            const itemsToSave = JSON.parse(JSON.stringify(currentTicket));
+            const obsNode = document.getElementById('order-obs');
+            const obsToSave = obsNode ? obsNode.value.trim() : '';
+            const targetTable = currentTableId;
+
+            if (!targetTable) return false;
+
+            if (!keepOpen) {
+                closeOrder();
+                renderFloor();
+            }
+
+            const payload = {
+                items: itemsToSave,
+                time: new Date().toLocaleTimeString('fr-FR', {hour:'2-digit', minute:'2-digit'}),
+                status: 'pending',
+                observations: obsToSave
+            };
+
+            /* Une seule écriture à la fois par table.
+               Ainsi, même pendant un gros rush, un ancien état ne peut pas
+               écraser une commande plus récente. */
+            const previous = ICHEF_TABLE_WRITE_QUEUES.get(targetTable) || Promise.resolve();
+
+            const task = previous
+                .catch(() => {})
+                .then(async () => {
+                    let lastError = null;
+
+                    /* Deux nouvelles tentatives seulement sur erreur réseau.
+                       L'ordre est conservé et aucune écriture concurrente n'est lancée. */
+                    for (let attempt = 0; attempt < 3; attempt++) {
+                        try {
+                            await API.update(targetTable, payload, true);
+                            return true;
+                        } catch (err) {
+                            lastError = err;
+                            const message = String(err?.message || '');
+                            if (/AUTH_REQUIRED|INVALID_KEY|PERMISSION|403|401/i.test(message)) break;
+                            if (attempt < 2) {
+                                await new Promise(resolve => setTimeout(resolve, 250 * (attempt + 1)));
+                            }
+                        }
+                    }
+
+                    console.error('[iCHEF] Sauvegarde table impossible', targetTable, lastError);
+                    if (typeof showToast === 'function') {
+                        showToast('⚠️ Synchronisation en attente — connexion à vérifier');
+                    }
+                    return false;
+                })
+                .finally(() => {
+                    if (ICHEF_TABLE_WRITE_QUEUES.get(targetTable) === task) {
+                        ICHEF_TABLE_WRITE_QUEUES.delete(targetTable);
+                    }
+                });
+
+            ICHEF_TABLE_WRITE_QUEUES.set(targetTable, task);
+            return task;
         }
 
         // ==========================================
@@ -5818,7 +5870,8 @@ ${count} ligne(s) · ${sequenceCount} séquence(s).
                 if(hData.length === 0) { container.innerHTML = '<div style="color:var(--text-muted); text-align:center;">Aucun historique</div>'; return; }
                 
                 hData.sort((a,b) => new Date(b.date) - new Date(a.date));
-                let html = hData.map(t => {
+                const visibleHistory = hData.slice(0, 250);
+                let html = visibleHistory.map(t => {
                     let d = new Date(t.date);
                     return `<div style="background:var(--panel); border:1px solid var(--border-strong); padding:15px; border-radius:4px;">
                         <div style="display:flex; justify-content:space-between; border-bottom:1px solid var(--border); padding-bottom:10px; margin-bottom:10px;">
@@ -5832,6 +5885,11 @@ ${count} ligne(s) · ${sequenceCount} séquence(s).
                         <div style="font-size:0.7rem; color:var(--text-muted); text-align:right; margin-top:5px;">${t.method}</div>
                     </div>`;
                 }).join('');
+                if (hData.length > visibleHistory.length) {
+                    html += `<div style="text-align:center;color:var(--text-muted);padding:12px;font-size:.72rem;">
+                        Affichage des 250 opérations les plus récentes sur ${hData.length}. L'historique complet reste conservé.
+                    </div>`;
+                }
                 container.innerHTML = html;
             });
         }
@@ -11866,6 +11924,72 @@ button[class*="back" i]{
     overflow-x:hidden !important;
 }
 </style>
+
+
+<!-- =========================================================
+     iCHEF — PROFIL HAUT DÉBIT / 1000 COUVERTS PAR JOUR
+     Optimisations front-end sans changer la logique métier.
+     ========================================================= -->
+<script id="ichef-high-throughput-1000">
+(function(){
+    'use strict';
+
+    /* Empêche les GET complets de se chevaucher lorsque le réseau ralentit. */
+    if (typeof syncData === 'function' && !window.__ichefHighLoadSyncInstalled) {
+        window.__ichefHighLoadSyncInstalled = true;
+
+        const originalSyncData = syncData;
+        let syncInFlight = null;
+        let lastSyncStartedAt = 0;
+
+        syncData = async function(){
+            if (document.hidden || !navigator.onLine) return false;
+
+            if (syncInFlight) return syncInFlight;
+
+            lastSyncStartedAt = Date.now();
+            syncInFlight = Promise.resolve()
+                .then(() => originalSyncData())
+                .catch(err => {
+                    console.warn('[iCHEF] Sync haute charge:', err);
+                    return false;
+                })
+                .finally(() => {
+                    syncInFlight = null;
+                });
+
+            return syncInFlight;
+        };
+
+        window.ICHEF_HIGH_LOAD_STATUS = {
+            profile: '1000_COVERS_DAY',
+            get syncBusy(){ return !!syncInFlight; },
+            get lastSyncStartedAt(){ return lastSyncStartedAt; },
+            get pendingTableWrites(){
+                try { return ICHEF_TABLE_WRITE_QUEUES.size; }
+                catch(_) { return 0; }
+            }
+        };
+    }
+
+    /* Dès que le pad revient au premier plan, une seule synchro immédiate. */
+    let resumeTimer = 0;
+    function resumeSync(){
+        clearTimeout(resumeTimer);
+        resumeTimer = setTimeout(() => {
+            if (!document.hidden && navigator.onLine && typeof syncData === 'function') {
+                syncData();
+            }
+        }, 80);
+    }
+
+    document.addEventListener('visibilitychange', function(){
+        if (!document.hidden) resumeSync();
+    }, {passive:true});
+
+    window.addEventListener('online', resumeSync, {passive:true});
+})();
+</script>
 
 </body>
 </html>
