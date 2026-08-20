@@ -3704,10 +3704,18 @@ let rIndex = reservationsData.findIndex(r =>
                 reservationsData[rIndex].tableId = tableLabel;
                 reservationsData[rIndex].table = tableLabel;
 
-                await API.update('RESERVATIONS_MASTER', reservationsData);
+                await API.update('RESERVATIONS_MASTER', reservationsData, false, {
+                    reason:'Affectation réservation table',
+                    operationType:'RESERVATION_ASSIGNMENT'
+                });
             }
-            pendingAssignResa = null; document.body.classList.remove('assign-mode'); document.getElementById('assign-overlay').style.display = 'none';
-            renderFloor();
+            pendingAssignResa = null;
+            document.body.classList.remove('assign-mode');
+            document.getElementById('assign-overlay').style.display = 'none';
+            if (typeof renderFloor === 'function') renderFloor();
+            if (typeof window.ichefReservationSyncNow === 'function') {
+                await window.ichefReservationSyncNow(true);
+            }
         }
 
         function escapeHtml(value) {
@@ -4293,6 +4301,11 @@ let rIndex = reservationsData.findIndex(r =>
                         d.ontouchend = (e) => {
                             if (!isArchiMode) {
                                 e.preventDefault();
+                                e.stopPropagation();
+                                if (pendingAssignResa) {
+                                    assignTableToResa(t.label);
+                                    return;
+                                }
                                 handleTableOrderTap(orderKey || t.label, t.label);
                             }
                         };
@@ -16062,6 +16075,159 @@ if(document.readyState==='loading'){
 }else{
     boot();
 }
+})();
+</script>
+
+
+<style id="ichef-reservation-central-sync-style">
+/* Le violet est strictement visuel : aucune géométrie du plan n'est modifiée. */
+.table-wrapper.ichef-reserved-master .table-obj{
+    border-color:#a855f7 !important;
+    color:#f3e8ff !important;
+    box-shadow:inset 0 0 12px rgba(168,85,247,.13),0 0 9px rgba(168,85,247,.38) !important;
+}
+.table-wrapper.ichef-reserved-master .chair{
+    border-color:#a855f7 !important;
+    color:#d8b4fe !important;
+}
+</style>
+<script id="ichef-reservation-central-sync-engine">
+(function(){
+'use strict';
+let syncing=false;
+let lastState=null;
+
+function norm(v){return String(v||'').trim().toLowerCase()}
+function tableOf(r){return String(r?.assignedTable||r?.tableId||r?.table||'').trim()}
+function activeReservation(r){
+    if(!r)return false;
+    const s=norm(r.status||r.reservationStatus||'confirmed');
+    return !['rejected','cancelled','canceled','annule','annulee','completed','done','noshow','no show'].includes(s);
+}
+function realOrder(o){
+    if(!o)return false;
+    const items=Array.isArray(o.items)?o.items:[];
+    return items.some(i=>{
+        const name=String(i?.n??i?.name??i?.productName??i?.title??'').trim();
+        const q=Number(i?.qty??i?.quantity??1);
+        return !!name && Number.isFinite(q) && q>0;
+    });
+}
+function allTablesFromState(state){
+    const a=state?.activeOrders?.ARCHITECTURE?.data?.tables;
+    if(Array.isArray(a))return a;
+    try{return Array.isArray(tables)?tables:[]}catch(_){return[]}
+}
+function reservationsFromState(state){
+    const a=state?.activeOrders?.RESERVATIONS_MASTER?.data;
+    if(Array.isArray(a))return a;
+    try{return Array.isArray(reservationsData)?reservationsData:[]}catch(_){return[]}
+}
+function todaysReservations(state){
+    const today=new Date().toISOString().split('T')[0];
+    return reservationsFromState(state).filter(r=>r&&r.date===today&&activeReservation(r));
+}
+function updateCounters(state){
+    const all=allTablesFromState(state).filter(t=>t&&!t.isExtra);
+    const orders=state?.activeOrders||{};
+    const today=todaysReservations(state);
+    const tableLabels=new Set(all.map(t=>String(t.label)));
+    const reservedLabels=new Set(today.map(tableOf).filter(x=>x&&tableLabels.has(x)));
+    const occupiedLabels=new Set();
+    all.forEach(t=>{if(realOrder(orders[String(t.label)]))occupiedLabels.add(String(t.label))});
+
+    // An occupied table takes precedence over reserved for counters.
+    occupiedLabels.forEach(x=>reservedLabels.delete(x));
+    const free=Math.max(0,all.length-reservedLabels.size-occupiedLabels.size);
+
+    const f=document.getElementById('ichef-free-count');
+    const r=document.getElementById('ichef-reserved-count');
+    const o=document.getElementById('ichef-occupied-count');
+    if(f)f.textContent=String(free);
+    if(r)r.textContent=String(reservedLabels.size);
+    if(o)o.textContent=String(occupiedLabels.size);
+
+    return {free,reserved:reservedLabels.size,occupied:occupiedLabels.size,reservedLabels,today,tableLabels};
+}
+function paintPlan(state){
+    const all=allTablesFromState(state);
+    const labels=new Set(all.map(t=>String(t.label)));
+    const reserved=new Set(todaysReservations(state).map(tableOf).filter(x=>x&&labels.has(x)));
+    const orders=state?.activeOrders||{};
+
+    document.querySelectorAll('.table-wrapper').forEach(w=>{
+        w.classList.remove('ichef-reserved-master');
+        const id=String(w.getAttribute('data-id')||w.dataset?.id||'').trim();
+        if(!id)return;
+        if(reserved.has(id) && !realOrder(orders[id])) w.classList.add('ichef-reserved-master');
+    });
+}
+function flagInvalidAssignments(state){
+    const labels=new Set(allTablesFromState(state).map(t=>String(t.label)));
+    const bad=new Set(todaysReservations(state).map(tableOf).filter(x=>x&&!labels.has(x)));
+    if(!bad.size)return;
+
+    document.querySelectorAll('#planning-content [style*="TABLE"]').forEach(()=>{});
+    // Add a small warning directly to reservation cards through matching text.
+    document.querySelectorAll('#planning-content > div').forEach(card=>{
+        const txt=card.textContent||'';
+        for(const label of bad){
+            if(txt.includes('TABLE '+label) && !card.querySelector('.ichef-invalid-table')){
+                const warn=document.createElement('div');
+                warn.className='ichef-invalid-table';
+                warn.style.cssText='color:#f59e0b;font-size:.66rem;font-weight:900;margin-top:4px;text-align:right';
+                warn.textContent='⚠ TABLE INTROUVABLE DANS LE PLAN';
+                card.appendChild(warn);
+            }
+        }
+    });
+}
+
+window.ichefReservationSyncNow=async function(forceRender){
+    if(syncing)return;
+    syncing=true;
+    try{
+        let state;
+        if(typeof API!=='undefined'&&API?.getState) state=await API.getState();
+        else return;
+        lastState=state;
+
+        const serverRes=reservationsFromState(state);
+        try{reservationsData=serverRes}catch(_){ }
+        try{activeOrders=state.activeOrders||activeOrders}catch(_){ }
+
+        if(forceRender && typeof renderFloor==='function')renderFloor();
+        requestAnimationFrame(()=>{
+            updateCounters(state);
+            paintPlan(state);
+            flagInvalidAssignments(state);
+            if(typeof window.ichefRefreshPadReservationDots==='function')window.ichefRefreshPadReservationDots();
+        });
+    }catch(err){
+        console.warn('[iCHEF] sync réservation',err);
+    }finally{syncing=false}
+};
+
+// Legacy name used by renderPlanning now points to the central synchronizer.
+window.ichefRefreshReservationTableColors=function(){
+    if(lastState){updateCounters(lastState);paintPlan(lastState)}
+    window.ichefReservationSyncNow(false);
+};
+
+const nativeRenderFloor=window.renderFloor;
+if(typeof nativeRenderFloor==='function'){
+    window.renderFloor=function(){
+        const result=nativeRenderFloor.apply(this,arguments);
+        requestAnimationFrame(()=>{if(lastState)paintPlan(lastState)});
+        return result;
+    };
+}
+
+function boot(){
+    window.ichefReservationSyncNow(false);
+    setInterval(()=>window.ichefReservationSyncNow(false),3000);
+}
+if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',boot,{once:true});else boot();
 })();
 </script>
 
