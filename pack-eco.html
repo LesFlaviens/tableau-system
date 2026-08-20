@@ -19883,357 +19883,9 @@ if(document.readyState==="loading"){
      iCHEF — BARRE HORIZONTALE TACTILE SOUS OBSERVATION
      Synchronisée avec le splitter inférieur du ticket.
      ========================================================= -->
-<style id="ichef-ticket-top-splitter-v5-css">
-@media (min-width:900px){
-    #ichef-ticket-top-splitter-v5{
-        flex:0 0 18px !important;
-        width:100% !important;
-        height:18px !important;
-        min-height:18px !important;
-        position:relative !important;
-        z-index:1250 !important;
-        margin:0 !important;
-        padding:0 !important;
-        box-sizing:border-box !important;
-        background:#080c0d !important;
-        cursor:row-resize !important;
-        touch-action:none !important;
-        user-select:none !important;
-        -webkit-user-select:none !important;
-        overflow:visible !important;
-    }
 
-    /* Grande zone tactile sans épaissir visuellement la barre */
-    #ichef-ticket-top-splitter-v5::before{
-        content:"";
-        position:absolute;
-        left:0;
-        right:0;
-        top:50%;
-        height:46px;
-        transform:translateY(-50%);
-        background:transparent;
-        pointer-events:auto;
-        cursor:row-resize;
-        touch-action:none;
-    }
 
-    #ichef-ticket-top-splitter-v5 .ichef-top-split-line{
-        position:absolute;
-        left:10px;
-        right:10px;
-        top:8px;
-        height:2px;
-        border-radius:999px;
-        background:rgba(255,255,255,.78);
-        box-shadow:0 0 3px rgba(255,255,255,.18);
-        pointer-events:none;
-    }
 
-    #ichef-ticket-top-splitter-v5 .ichef-top-split-handle{
-        position:absolute;
-        left:50%;
-        top:50%;
-        transform:translate(-50%,-50%);
-        width:18px;
-        height:34px;
-        display:flex;
-        align-items:center;
-        justify-content:center;
-        border:1px solid rgba(227,182,80,.82);
-        border-radius:8px;
-        background:#090d0e;
-        color:#e3b650;
-        font-size:19px;
-        font-weight:1000;
-        line-height:1;
-        box-shadow:0 0 7px rgba(227,182,80,.14);
-        pointer-events:none;
-    }
-
-    #ichef-ticket-top-splitter-v5.dragging .ichef-top-split-line{
-        background:#ffd15c;
-        box-shadow:0 0 10px rgba(255,209,92,.68);
-    }
-
-    #ichef-ticket-top-splitter-v5.dragging .ichef-top-split-handle{
-        color:#ffd15c;
-        border-color:#ffd15c;
-        box-shadow:0 0 13px rgba(255,209,92,.36);
-    }
-
-    body.ichef-ticket-top-v5-dragging{
-        cursor:row-resize !important;
-        user-select:none !important;
-        -webkit-user-select:none !important;
-    }
-}
-
-@media (max-width:899px){
-    #ichef-ticket-top-splitter-v5{
-        display:none !important;
-    }
-}
-</style>
-
-<script id="ichef-ticket-top-splitter-v5-js">
-(function(){
-"use strict";
-
-const STORAGE_KEY="ichef_ticket_split_v4";
-const MIN_LIST=36;
-const MIN_FOOTER=42;
-const LOWER_SPLITTER_H=16;
-
-let drag=null;
-let raf=0;
-let pendingHeight=null;
-
-function parts(){
-    const drawer=document.getElementById("order-drawer");
-    if(!drawer || !drawer.classList.contains("open")) return null;
-
-    const ticket=drawer.querySelector(".ticket-view");
-    const obs=document.getElementById("order-obs");
-    const list=document.getElementById("ticket-list");
-
-    if(!ticket || !obs || !list || !ticket.contains(obs) || !ticket.contains(list)){
-        return null;
-    }
-
-    const lower=document.getElementById("ichef-ticket-splitter-v4");
-    let footer=null;
-
-    if(lower && lower.parentElement===ticket){
-        footer=lower.nextElementSibling;
-    }else{
-        footer=list.nextElementSibling;
-    }
-
-    return {drawer,ticket,obs,list,lower,footer};
-}
-
-function limits(p){
-    const tr=p.ticket.getBoundingClientRect();
-    const lr=p.list.getBoundingClientRect();
-
-    /*
-      COURSE MAXIMALE :
-      on ne réserve plus la hauteur ACTUELLE du footer, seulement
-      une petite zone de sécurité. Le footer est déjà scrollable.
-      La barre peut donc descendre presque jusqu'aux actions.
-    */
-    const bottomReserve=
-        MIN_FOOTER +
-        (p.lower ? p.lower.getBoundingClientRect().height : LOWER_SPLITTER_H);
-
-    return {
-        min:MIN_LIST,
-        max:Math.max(MIN_LIST,tr.bottom-lr.top-bottomReserve)
-    };
-}
-
-function clamp(p,h){
-    const l=limits(p);
-    return Math.max(l.min,Math.min(Number(h)||l.min,l.max));
-}
-
-function setListHeight(list,h){
-    list.classList.add("ichef-ticket-list-resizable");
-    list.style.setProperty("--ichef-ticket-white-h",Math.round(h)+"px");
-}
-
-function applyFrame(){
-    raf=0;
-    if(!drag || pendingHeight==null) return;
-    setListHeight(drag.list,clamp(drag,pendingHeight));
-}
-
-function move(e){
-    if(!drag || e.pointerId!==drag.pointerId) return;
-    if(e.cancelable) e.preventDefault();
-
-    /*
-      Barre placée AU-DESSUS de la liste :
-      - monter le doigt => agrandir la zone des plats
-      - descendre => réduire la zone des plats
-    */
-    const delta=drag.startY-e.clientY;
-    pendingHeight=drag.startHeight+delta;
-
-    if(!raf) raf=requestAnimationFrame(applyFrame);
-}
-
-function finish(e){
-    if(!drag) return;
-    if(e && e.pointerId!=null && e.pointerId!==drag.pointerId) return;
-
-    if(raf){
-        cancelAnimationFrame(raf);
-        raf=0;
-        applyFrame();
-    }
-
-    const finalHeight=drag.list.getBoundingClientRect().height;
-    try{
-        localStorage.setItem(STORAGE_KEY,String(Math.round(finalHeight)));
-    }catch(_){}
-
-    drag.handle.classList.remove("dragging");
-    document.body.classList.remove("ichef-ticket-top-v5-dragging");
-
-    try{drag.handle.releasePointerCapture(drag.pointerId)}catch(_){}
-
-    window.removeEventListener("pointermove",move,true);
-    window.removeEventListener("pointerup",finish,true);
-    window.removeEventListener("pointercancel",finish,true);
-
-    drag=null;
-    pendingHeight=null;
-}
-
-function start(e){
-    if(window.innerWidth<900) return;
-    if(e.pointerType==="mouse" && e.button!==0) return;
-
-    const p=parts();
-    const handle=document.getElementById("ichef-ticket-top-splitter-v5");
-    if(!p || !handle) return;
-
-    if(e.cancelable) e.preventDefault();
-    e.stopPropagation();
-
-    drag={
-        ...p,
-        handle,
-        pointerId:e.pointerId,
-        startY:e.clientY,
-        startHeight:p.list.getBoundingClientRect().height
-    };
-
-    pendingHeight=drag.startHeight;
-    handle.classList.add("dragging");
-    document.body.classList.add("ichef-ticket-top-v5-dragging");
-
-    try{handle.setPointerCapture(e.pointerId)}catch(_){}
-
-    window.addEventListener("pointermove",move,{capture:true,passive:false});
-    window.addEventListener("pointerup",finish,{capture:true,passive:false});
-    window.addEventListener("pointercancel",finish,{capture:true,passive:false});
-}
-
-function reset(){
-    const p=parts();
-    if(!p) return;
-
-    try{localStorage.removeItem(STORAGE_KEY)}catch(_){}
-    p.list.style.removeProperty("--ichef-ticket-white-h");
-
-    /* Même valeur par défaut que le splitter inférieur V4 */
-    requestAnimationFrame(()=>{
-        const h=Math.max(
-            MIN_LIST,
-            Math.min(
-                p.list.getBoundingClientRect().height,
-                limits(p).max
-            )
-        );
-        setListHeight(p.list,h);
-    });
-}
-
-function install(){
-    if(window.innerWidth<900) return;
-
-    const p=parts();
-    if(!p) return;
-
-    let splitter=document.getElementById("ichef-ticket-top-splitter-v5");
-
-    if(!splitter){
-        splitter=document.createElement("div");
-        splitter.id="ichef-ticket-top-splitter-v5";
-        splitter.setAttribute("role","separator");
-        splitter.setAttribute("aria-orientation","horizontal");
-        splitter.setAttribute(
-            "aria-label",
-            "Barre tactile pour agrandir ou réduire la zone des plats"
-        );
-
-        const line=document.createElement("span");
-        line.className="ichef-top-split-line";
-
-        const handle=document.createElement("span");
-        handle.className="ichef-top-split-handle";
-        handle.textContent="⋮";
-
-        splitter.append(line,handle);
-
-        splitter.addEventListener("pointerdown",start,{passive:false});
-        splitter.addEventListener("dblclick",function(e){
-            e.preventDefault();
-            reset();
-        });
-    }
-
-    /* Toujours exactement SOUS l'observation. */
-    if(splitter.parentElement!==p.ticket || splitter.previousElementSibling!==p.obs){
-        p.obs.insertAdjacentElement("afterend",splitter);
-    }
-
-    /*
-      Synchronisation avec le moteur inférieur :
-      si celui-ci a déjà restauré une hauteur, on ne la remplace surtout pas.
-    */
-    p.list.classList.add("ichef-ticket-list-resizable");
-}
-
-function drawerState(){
-    const drawer=document.getElementById("order-drawer");
-    if(!drawer) return;
-
-    if(drawer.classList.contains("open")){
-        requestAnimationFrame(install);
-    }else{
-        finish();
-    }
-}
-
-function boot(){
-    const drawer=document.getElementById("order-drawer");
-
-    if(drawer){
-        new MutationObserver(drawerState)
-            .observe(drawer,{attributes:true,attributeFilter:["class"]});
-    }
-
-    if(drawer?.classList.contains("open")){
-        install();
-    }
-
-    window.addEventListener("resize",function(){
-        if(window.innerWidth>=900){
-            requestAnimationFrame(install);
-        }else{
-            finish();
-        }
-    },{passive:true});
-
-    setTimeout(function(){
-        if(document.getElementById("order-drawer")?.classList.contains("open")){
-            install();
-        }
-    },250);
-}
-
-if(document.readyState==="loading"){
-    document.addEventListener("DOMContentLoaded",boot,{once:true});
-}else{
-    boot();
-}
-
-})();
-</script>
 
 
 <style id="ichef-ticket-max-travel-v6-css">
@@ -20267,481 +19919,9 @@ if(document.readyState==="loading"){
      Correction : la barre se DÉPLACE réellement à l'écran.
      Elle n'est plus attachée au flux sous Observation.
      ========================================================= -->
-<style id="ichef-ticket-free-topbar-v7-css">
-@media (min-width:900px){
 
-    #order-drawer .ticket-view{
-        position:relative !important;
-    }
 
-    /* Désactive uniquement l'ancienne poignée supérieure V5.
-       Son code reste intact mais son contrôle visuel n'est plus utilisé. */
-    #ichef-ticket-top-splitter-v5{
-        display:none !important;
-    }
 
-    #ichef-ticket-free-topbar-v7{
-        position:absolute !important;
-        left:8px !important;
-        right:8px !important;
-        top:var(--ichef-free-topbar-y,220px);
-        height:18px !important;
-        min-height:18px !important;
-        margin:0 !important;
-        padding:0 !important;
-        z-index:2147481200 !important;
-        box-sizing:border-box !important;
-        background:#080c0d !important;
-        border-radius:4px !important;
-        cursor:row-resize !important;
-        touch-action:none !important;
-        pointer-events:auto !important;
-        user-select:none !important;
-        -webkit-user-select:none !important;
-        box-shadow:0 2px 8px rgba(0,0,0,.35);
-    }
-
-    /* Zone tactile beaucoup plus grande que la ligne visible. */
-    #ichef-ticket-free-topbar-v7::before{
-        content:"";
-        position:absolute;
-        left:0;
-        right:0;
-        top:50%;
-        height:54px;
-        transform:translateY(-50%);
-        background:transparent;
-        pointer-events:auto;
-        cursor:row-resize;
-        touch-action:none;
-    }
-
-    #ichef-ticket-free-topbar-v7 .ichef-free-topbar-line{
-        position:absolute;
-        left:10px;
-        right:10px;
-        top:8px;
-        height:2px;
-        border-radius:999px;
-        background:rgba(255,255,255,.88);
-        box-shadow:0 0 4px rgba(255,255,255,.22);
-        pointer-events:none;
-    }
-
-    #ichef-ticket-free-topbar-v7 .ichef-free-topbar-handle{
-        position:absolute;
-        left:50%;
-        top:50%;
-        transform:translate(-50%,-50%);
-        width:19px;
-        height:36px;
-        display:flex;
-        align-items:center;
-        justify-content:center;
-        border:1px solid rgba(227,182,80,.92);
-        border-radius:8px;
-        background:#080c0d;
-        color:#e3b650;
-        font-size:20px;
-        font-weight:1000;
-        line-height:1;
-        box-shadow:0 0 8px rgba(227,182,80,.18);
-        pointer-events:none;
-    }
-
-    #ichef-ticket-free-topbar-v7.dragging .ichef-free-topbar-line{
-        background:#ffd15c;
-        box-shadow:0 0 12px rgba(255,209,92,.78);
-    }
-
-    #ichef-ticket-free-topbar-v7.dragging .ichef-free-topbar-handle{
-        border-color:#ffd15c;
-        color:#ffd15c;
-        box-shadow:0 0 15px rgba(255,209,92,.42);
-    }
-
-    body.ichef-free-topbar-v7-dragging{
-        cursor:row-resize !important;
-        user-select:none !important;
-        -webkit-user-select:none !important;
-    }
-}
-
-@media(max-width:899px){
-    #ichef-ticket-free-topbar-v7{
-        display:none !important;
-    }
-}
-</style>
-
-<script id="ichef-ticket-free-topbar-v7-js">
-(function(){
-"use strict";
-
-const POS_KEY="ichef_ticket_free_topbar_v7_ratio";
-const HEIGHT_KEY="ichef_ticket_split_v4";
-
-const MIN_Y=8;
-const BOTTOM_SAFE=54;
-const MIN_LIST=36;
-const MIN_FOOTER=42;
-
-let drag=null;
-let raf=0;
-let pendingY=null;
-
-function parts(){
-    const drawer=document.getElementById("order-drawer");
-    if(!drawer || !drawer.classList.contains("open")) return null;
-
-    const ticket=drawer.querySelector(".ticket-view");
-    const obs=document.getElementById("order-obs");
-    const list=document.getElementById("ticket-list");
-    const lower=document.getElementById("ichef-ticket-splitter-v4");
-
-    if(!ticket || !obs || !list) return null;
-
-    return {drawer,ticket,obs,list,lower};
-}
-
-function bounds(p){
-    const height=Math.max(120,p.ticket.clientHeight||p.ticket.getBoundingClientRect().height);
-
-    return {
-        min:MIN_Y,
-        max:Math.max(MIN_Y,height-BOTTOM_SAFE)
-    };
-}
-
-function clampY(p,y){
-    const b=bounds(p);
-    return Math.max(b.min,Math.min(Number(y)||b.min,b.max));
-}
-
-function listLimits(p){
-    const tr=p.ticket.getBoundingClientRect();
-    const lr=p.list.getBoundingClientRect();
-    const lowerH=p.lower ? Math.max(12,p.lower.getBoundingClientRect().height) : 16;
-
-    return {
-        min:MIN_LIST,
-        max:Math.max(
-            MIN_LIST,
-            tr.bottom-lr.top-MIN_FOOTER-lowerH
-        )
-    };
-}
-
-function ratioFromY(p,y){
-    const b=bounds(p);
-    const span=Math.max(1,b.max-b.min);
-    return Math.max(0,Math.min(1,(y-b.min)/span));
-}
-
-function yFromRatio(p,ratio){
-    const b=bounds(p);
-    const r=Math.max(0,Math.min(1,Number(ratio)||0));
-    return b.min+(b.max-b.min)*r;
-}
-
-function heightFromRatio(p,ratio){
-    const l=listLimits(p);
-    const r=Math.max(0,Math.min(1,Number(ratio)||0));
-    return l.min+(l.max-l.min)*r;
-}
-
-function ratioFromHeight(p,h){
-    const l=listLimits(p);
-    const span=Math.max(1,l.max-l.min);
-    return Math.max(0,Math.min(1,(h-l.min)/span));
-}
-
-function setBarY(bar,y){
-    bar.style.setProperty("--ichef-free-topbar-y",Math.round(y)+"px");
-}
-
-function setListHeight(p,h){
-    const lim=listLimits(p);
-    const value=Math.max(lim.min,Math.min(Number(h)||lim.min,lim.max));
-
-    p.list.classList.add("ichef-ticket-list-resizable");
-    p.list.style.setProperty("--ichef-ticket-white-h",Math.round(value)+"px");
-}
-
-function apply(){
-    raf=0;
-    if(!drag || pendingY==null) return;
-
-    const y=clampY(drag,pendingY);
-    const ratio=ratioFromY(drag,y);
-
-    setBarY(drag.bar,y);
-    setListHeight(drag,heightFromRatio(drag,ratio));
-}
-
-function move(e){
-    if(!drag || e.pointerId!==drag.pointerId) return;
-
-    if(e.cancelable) e.preventDefault();
-    e.stopPropagation();
-
-    const ticketRect=drag.ticket.getBoundingClientRect();
-
-    /* Position réelle du doigt dans le bloc ticket. */
-    pendingY=e.clientY-ticketRect.top-9;
-
-    if(!raf){
-        raf=requestAnimationFrame(apply);
-    }
-}
-
-function finish(e){
-    if(!drag) return;
-    if(e && e.pointerId!=null && e.pointerId!==drag.pointerId) return;
-
-    if(raf){
-        cancelAnimationFrame(raf);
-        raf=0;
-        apply();
-    }
-
-    const y=clampY(
-        drag,
-        parseFloat(
-            getComputedStyle(drag.bar)
-                .getPropertyValue("--ichef-free-topbar-y")
-        ) || pendingY || MIN_Y
-    );
-
-    const ratio=ratioFromY(drag,y);
-
-    try{
-        localStorage.setItem(POS_KEY,String(ratio));
-        localStorage.setItem(
-            HEIGHT_KEY,
-            String(Math.round(drag.list.getBoundingClientRect().height))
-        );
-    }catch(_){}
-
-    drag.bar.classList.remove("dragging");
-    document.body.classList.remove("ichef-free-topbar-v7-dragging");
-
-    try{
-        drag.bar.releasePointerCapture(drag.pointerId);
-    }catch(_){}
-
-    window.removeEventListener("pointermove",move,true);
-    window.removeEventListener("pointerup",finish,true);
-    window.removeEventListener("pointercancel",finish,true);
-
-    drag=null;
-    pendingY=null;
-}
-
-function start(e){
-    if(window.innerWidth<900) return;
-    if(e.pointerType==="mouse" && e.button!==0) return;
-
-    const p=parts();
-    const bar=document.getElementById("ichef-ticket-free-topbar-v7");
-    if(!p || !bar) return;
-
-    if(e.cancelable) e.preventDefault();
-    e.stopPropagation();
-    if(typeof e.stopImmediatePropagation==="function"){
-        e.stopImmediatePropagation();
-    }
-
-    drag={
-        ...p,
-        bar,
-        pointerId:e.pointerId
-    };
-
-    const ticketRect=p.ticket.getBoundingClientRect();
-    pendingY=e.clientY-ticketRect.top-9;
-
-    bar.classList.add("dragging");
-    document.body.classList.add("ichef-free-topbar-v7-dragging");
-
-    try{
-        bar.setPointerCapture(e.pointerId);
-    }catch(_){}
-
-    /* capture=true garantit le suivi même si le doigt quitte la barre */
-    window.addEventListener("pointermove",move,{capture:true,passive:false});
-    window.addEventListener("pointerup",finish,{capture:true,passive:false});
-    window.addEventListener("pointercancel",finish,{capture:true,passive:false});
-
-    apply();
-}
-
-function syncFromLower(){
-    const p=parts();
-    const bar=document.getElementById("ichef-ticket-free-topbar-v7");
-    if(!p || !bar || drag) return;
-
-    const h=p.list.getBoundingClientRect().height;
-    const ratio=ratioFromHeight(p,h);
-    setBarY(bar,yFromRatio(p,ratio));
-
-    try{
-        localStorage.setItem(POS_KEY,String(ratio));
-    }catch(_){}
-}
-
-function initialRatio(p){
-    try{
-        const saved=parseFloat(localStorage.getItem(POS_KEY));
-        if(Number.isFinite(saved)){
-            return Math.max(0,Math.min(1,saved));
-        }
-    }catch(_){}
-
-    /*
-      Première ouverture : la barre apparaît juste sous Observation,
-      comme demandé, mais elle est ensuite totalement libre.
-    */
-    const tr=p.ticket.getBoundingClientRect();
-    const or=p.obs.getBoundingClientRect();
-    const initialY=clampY(p,or.bottom-tr.top+2);
-
-    return ratioFromY(p,initialY);
-}
-
-function install(){
-    if(window.innerWidth<900) return;
-
-    const p=parts();
-    if(!p) return;
-
-    let bar=document.getElementById("ichef-ticket-free-topbar-v7");
-
-    if(!bar){
-        bar=document.createElement("div");
-        bar.id="ichef-ticket-free-topbar-v7";
-        bar.setAttribute("role","separator");
-        bar.setAttribute("aria-orientation","horizontal");
-        bar.setAttribute(
-            "aria-label",
-            "Barre tactile libre : monter ou descendre le ticket"
-        );
-
-        const line=document.createElement("span");
-        line.className="ichef-free-topbar-line";
-
-        const handle=document.createElement("span");
-        handle.className="ichef-free-topbar-handle";
-        handle.textContent="⋮";
-
-        bar.append(line,handle);
-        bar.addEventListener("pointerdown",start,{passive:false});
-
-        bar.addEventListener("dblclick",function(e){
-            e.preventDefault();
-
-            try{
-                localStorage.removeItem(POS_KEY);
-                localStorage.removeItem(HEIGHT_KEY);
-            }catch(_){}
-
-            const pp=parts();
-            if(!pp) return;
-
-            const tr=pp.ticket.getBoundingClientRect();
-            const or=pp.obs.getBoundingClientRect();
-            const y=clampY(pp,or.bottom-tr.top+2);
-            const ratio=ratioFromY(pp,y);
-
-            setBarY(bar,y);
-            setListHeight(pp,heightFromRatio(pp,ratio));
-        });
-    }
-
-    if(bar.parentElement!==p.ticket){
-        p.ticket.appendChild(bar);
-    }
-
-    const ratio=initialRatio(p);
-    setBarY(bar,yFromRatio(p,ratio));
-
-    /*
-      Ne force pas la hauteur lors de chaque render.
-      On la fixe uniquement si aucune hauteur V4 n'a déjà été restaurée.
-    */
-    if(!p.list.style.getPropertyValue("--ichef-ticket-white-h")){
-        setListHeight(p,heightFromRatio(p,ratio));
-    }
-}
-
-function drawerState(){
-    const drawer=document.getElementById("order-drawer");
-    if(!drawer) return;
-
-    if(drawer.classList.contains("open")){
-        requestAnimationFrame(install);
-    }else{
-        finish();
-    }
-}
-
-function boot(){
-    const drawer=document.getElementById("order-drawer");
-
-    if(drawer){
-        new MutationObserver(drawerState)
-            .observe(drawer,{
-                attributes:true,
-                attributeFilter:["class"]
-            });
-    }
-
-    if(drawer?.classList.contains("open")){
-        install();
-    }
-
-    /*
-      Si l'ancienne barre inférieure est utilisée, on recale la barre libre
-      au relâchement. Pas de polling.
-    */
-    document.addEventListener("pointerup",function(e){
-        if(e.target?.closest?.("#ichef-ticket-splitter-v4")){
-            requestAnimationFrame(syncFromLower);
-        }
-    },true);
-
-    document.addEventListener("dblclick",function(e){
-        if(e.target?.closest?.("#ichef-ticket-splitter-v4")){
-            setTimeout(syncFromLower,0);
-        }
-    },true);
-
-    window.addEventListener("resize",function(){
-        if(window.innerWidth>=900){
-            requestAnimationFrame(function(){
-                install();
-                syncFromLower();
-            });
-        }else{
-            finish();
-        }
-    },{passive:true});
-
-    setTimeout(function(){
-        if(document.getElementById("order-drawer")?.classList.contains("open")){
-            install();
-        }
-    },250);
-}
-
-if(document.readyState==="loading"){
-    document.addEventListener("DOMContentLoaded",boot,{once:true});
-}else{
-    boot();
-}
-
-})();
-</script>
 
 
 <!-- =========================================================
@@ -20752,35 +19932,68 @@ if(document.readyState==="loading"){
      - remonte jusqu'à Observation
      - ne traverse jamais TABLE / ZONE / OBSERVATION
      ========================================================= -->
-<style id="ichef-ticket-topbar-v8-css">
+
+
+
+
+
+
+
+
+<!-- =========================================================
+     iCHEF — BARRE TACTILE V10 HAUT TOTAL
+     - monte jusqu'au haut utile du panneau droit
+     - reste sous l'en-tête TABLE / FERMER
+     - recouvre proprement Zone / Observation quand on monte
+     - aucun passage au-dessus du titre
+     ========================================================= -->
+
+
+
+
+
+<!-- =========================================================
+     iCHEF — BARRE TACTILE V11 : BLOC SUPÉRIEUR RÉTRACTABLE
+     La barre peut réellement monter jusqu'au dessous de TABLE/FERMER.
+     ========================================================= -->
+<style id="ichef-ticket-topbar-v11-css">
 @media (min-width:900px){
 
-    /* Désactive les deux anciennes barres supérieures */
-    #ichef-ticket-top-splitter-v5,
-    #ichef-ticket-free-topbar-v7{
-        display:none !important;
-        pointer-events:none !important;
+    #order-drawer .ticket-view{
+        display:flex !important;
+        flex-direction:column !important;
+        overflow:hidden !important;
+        min-height:0 !important;
     }
 
-    #ichef-ticket-topbar-v8{
+    /*
+      Tout ce qui est entre l'en-tête TABLE/FERMER et la barre
+      est maintenant contenu dans CE bloc.
+      Sa hauteur peut descendre réellement jusqu'à 0.
+    */
+    #ichef-ticket-top-region-v11{
+        flex:0 0 var(--ichef-top-region-v11-h,auto) !important;
+        height:var(--ichef-top-region-v11-h,auto) !important;
+        min-height:0 !important;
+        max-height:none !important;
+        overflow:hidden !important;
+        position:relative !important;
+        box-sizing:border-box !important;
+        margin:0 !important;
+        padding:0 !important;
+    }
+
+    #ichef-ticket-topbar-v11{
         flex:0 0 18px !important;
         width:100% !important;
         height:18px !important;
         min-height:18px !important;
         position:relative !important;
-
-        /*
-          La barre reste dans le flux.
-          Son déplacement est obtenu par margin-top :
-          tout ce qui est dessous suit réellement.
-        */
-        margin-top:var(--ichef-topbar-v8-gap,0px) !important;
-        margin-bottom:0 !important;
-
+        margin:0 !important;
         padding:0 !important;
-        z-index:1300 !important;
-        box-sizing:border-box !important;
+        z-index:1400 !important;
         background:#080c0d !important;
+        box-sizing:border-box !important;
         cursor:row-resize !important;
         touch-action:none !important;
         user-select:none !important;
@@ -20788,14 +20001,14 @@ if(document.readyState==="loading"){
         overflow:visible !important;
     }
 
-    /* Grande zone tactile */
-    #ichef-ticket-topbar-v8::before{
+    /* Très grande zone tactile */
+    #ichef-ticket-topbar-v11::before{
         content:"";
         position:absolute;
         left:0;
         right:0;
         top:50%;
-        height:50px;
+        height:58px;
         transform:translateY(-50%);
         background:transparent;
         pointer-events:auto;
@@ -20803,51 +20016,60 @@ if(document.readyState==="loading"){
         touch-action:none;
     }
 
-    #ichef-ticket-topbar-v8 .ichef-v8-line{
+    #ichef-ticket-topbar-v11 .ichef-v11-line{
         position:absolute;
         left:10px;
         right:10px;
         top:8px;
         height:2px;
         border-radius:999px;
-        background:rgba(255,255,255,.86);
-        box-shadow:0 0 4px rgba(255,255,255,.2);
+        background:rgba(255,255,255,.90);
+        box-shadow:0 0 4px rgba(255,255,255,.22);
         pointer-events:none;
     }
 
-    #ichef-ticket-topbar-v8 .ichef-v8-handle{
+    #ichef-ticket-topbar-v11 .ichef-v11-handle{
         position:absolute;
         left:50%;
         top:50%;
         transform:translate(-50%,-50%);
-        width:18px;
-        height:34px;
+        width:20px;
+        height:38px;
         display:flex;
         align-items:center;
         justify-content:center;
-        border:1px solid rgba(227,182,80,.9);
+        border:1px solid rgba(227,182,80,.95);
         border-radius:8px;
         background:#080c0d;
         color:#e3b650;
-        font-size:19px;
+        font-size:21px;
         font-weight:1000;
         line-height:1;
-        box-shadow:0 0 8px rgba(227,182,80,.16);
+        box-shadow:0 0 9px rgba(227,182,80,.20);
         pointer-events:none;
     }
 
-    #ichef-ticket-topbar-v8.dragging .ichef-v8-line{
+    #ichef-ticket-topbar-v11.dragging .ichef-v11-line{
         background:#ffd15c;
-        box-shadow:0 0 11px rgba(255,209,92,.72);
+        box-shadow:0 0 13px rgba(255,209,92,.82);
     }
 
-    #ichef-ticket-topbar-v8.dragging .ichef-v8-handle{
-        border-color:#ffd15c;
+    #ichef-ticket-topbar-v11.dragging .ichef-v11-handle{
         color:#ffd15c;
-        box-shadow:0 0 14px rgba(255,209,92,.38);
+        border-color:#ffd15c;
+        box-shadow:0 0 16px rgba(255,209,92,.45);
     }
 
-    body.ichef-topbar-v8-dragging{
+    /*
+      Le ticket-list récupère tout l'espace libéré.
+      On conserve la compatibilité avec le splitter inférieur V4.
+    */
+    #ticket-list.ichef-ticket-list-resizable:not(.ichef-white-fullscreen){
+        min-height:30px !important;
+        max-height:none !important;
+    }
+
+    body.ichef-topbar-v11-dragging{
         cursor:row-resize !important;
         user-select:none !important;
         -webkit-user-select:none !important;
@@ -20855,55 +20077,51 @@ if(document.readyState==="loading"){
 }
 
 @media(max-width:899px){
-    #ichef-ticket-topbar-v8{
+    #ichef-ticket-topbar-v11{
         display:none !important;
+    }
+
+    #ichef-ticket-top-region-v11{
+        height:auto !important;
+        max-height:none !important;
+        overflow:visible !important;
     }
 }
 </style>
 
-<script id="ichef-ticket-topbar-v8-js">
+<script id="ichef-ticket-topbar-v11-js">
 (function(){
 "use strict";
 
-const GAP_KEY="ichef_ticket_topbar_v9_gap";
-const HEIGHT_KEY="ichef_ticket_split_v4";
-
+const REGION_KEY="ichef_ticket_top_region_v11";
+const LIST_KEY="ichef_ticket_split_v4";
+const MIN_REGION=0;
 const MIN_LIST=30;
-const MIN_GAP=0;
 
 let drag=null;
 let raf=0;
-let pendingGap=0;
-let pendingListHeight=0;
+let pendingRegionH=0;
 
-function parts(){
+function getParts(){
     const drawer=document.getElementById("order-drawer");
     if(!drawer || !drawer.classList.contains("open")) return null;
 
     const ticket=drawer.querySelector(".ticket-view");
-    const obs=document.getElementById("order-obs");
     const list=document.getElementById("ticket-list");
-    const lower=document.getElementById("ichef-ticket-splitter-v4");
 
-    if(!ticket || !obs || !list || !ticket.contains(obs) || !ticket.contains(list)){
-        return null;
-    }
+    if(!ticket || !list) return null;
 
-    return {drawer,ticket,obs,list,lower};
+    const region=document.getElementById("ichef-ticket-top-region-v11");
+    const bar=document.getElementById("ichef-ticket-topbar-v11");
+
+    return {drawer,ticket,list,region,bar};
 }
 
-function currentGap(bar){
-    const raw=getComputedStyle(bar)
-        .getPropertyValue("--ichef-topbar-v8-gap");
-
-    const n=parseFloat(raw);
-    return Number.isFinite(n)?Math.max(0,n):0;
-}
-
-function setGap(bar,gap){
-    bar.style.setProperty(
-        "--ichef-topbar-v8-gap",
-        Math.max(0,Math.round(gap))+"px"
+function setRegionHeight(region,h){
+    const value=Math.max(MIN_REGION,Math.round(Number(h)||0));
+    region.style.setProperty(
+        "--ichef-top-region-v11-h",
+        value+"px"
     );
 }
 
@@ -20911,20 +20129,23 @@ function setListHeight(list,h){
     const value=Math.max(MIN_LIST,Math.round(Number(h)||MIN_LIST));
 
     list.classList.add("ichef-ticket-list-resizable");
-    list.style.setProperty("--ichef-ticket-white-h",value+"px");
+    list.style.setProperty(
+        "--ichef-ticket-white-h",
+        value+"px"
+    );
 }
 
-function maxGapFromStart(){
-    if(!drag) return 0;
-
-    /*
-      Quand la barre descend de X px, on réduit la zone ticket-list
-      de X px. Ainsi la barre inférieure / Caisse restent en place.
-      La limite basse est atteinte lorsque ticket-list arrive à MIN_LIST.
-    */
+function regionHeight(region){
     return Math.max(
-        drag.startGap,
-        drag.startGap + Math.max(0,drag.startListHeight-MIN_LIST)
+        0,
+        region.getBoundingClientRect().height
+    );
+}
+
+function listHeight(list){
+    return Math.max(
+        MIN_LIST,
+        list.getBoundingClientRect().height
     );
 }
 
@@ -20932,28 +20153,32 @@ function applyFrame(){
     raf=0;
     if(!drag) return;
 
-    const maxGap=maxGapFromStart();
-    const gap=Math.max(
-        MIN_GAP,
-        Math.min(pendingGap,maxGap)
-    );
-
     /*
-      La somme GAP + hauteur de ticket-list reste constante.
-      Donc le contenu sous la barre suit son déplacement,
-      sans faire sauter le footer.
+      Somme constante :
+      région supérieure + zone des plats.
+      La barre se déplace réellement parce que la région
+      change réellement de hauteur.
     */
-    const moved=gap-drag.startGap;
-    const listHeight=Math.max(
-        MIN_LIST,
-        drag.startListHeight-moved
+    const maxRegion=Math.max(
+        MIN_REGION,
+        drag.totalFlexible-MIN_LIST
     );
 
-    setGap(drag.bar,gap);
-    setListHeight(drag.list,listHeight);
+    const newRegion=Math.max(
+        MIN_REGION,
+        Math.min(pendingRegionH,maxRegion)
+    );
+
+    const newList=Math.max(
+        MIN_LIST,
+        drag.totalFlexible-newRegion
+    );
+
+    setRegionHeight(drag.region,newRegion);
+    setListHeight(drag.list,newList);
 }
 
-function move(e){
+function onMove(e){
     if(!drag || e.pointerId!==drag.pointerId) return;
 
     if(e.cancelable) e.preventDefault();
@@ -20961,8 +20186,11 @@ function move(e){
 
     const delta=e.clientY-drag.startY;
 
-    pendingGap=drag.startGap+delta;
-    pendingListHeight=drag.startListHeight-delta;
+    /*
+      Monter = delta négatif = région se rétracte.
+      Descendre = delta positif = région s'agrandit.
+    */
+    pendingRegionH=drag.startRegionH+delta;
 
     if(!raf){
         raf=requestAnimationFrame(applyFrame);
@@ -20979,22 +20207,28 @@ function finish(e){
         applyFrame();
     }
 
-    const gap=currentGap(drag.bar);
-    const listHeight=drag.list.getBoundingClientRect().height;
+    const finalRegion=regionHeight(drag.region);
+    const finalList=listHeight(drag.list);
 
     try{
-        localStorage.setItem(GAP_KEY,String(Math.round(gap)));
-        localStorage.setItem(HEIGHT_KEY,String(Math.round(listHeight)));
+        localStorage.setItem(
+            REGION_KEY,
+            String(Math.round(finalRegion))
+        );
+        localStorage.setItem(
+            LIST_KEY,
+            String(Math.round(finalList))
+        );
     }catch(_){}
 
     drag.bar.classList.remove("dragging");
-    document.body.classList.remove("ichef-topbar-v8-dragging");
+    document.body.classList.remove("ichef-topbar-v11-dragging");
 
     try{
         drag.bar.releasePointerCapture(drag.pointerId);
     }catch(_){}
 
-    window.removeEventListener("pointermove",move,true);
+    window.removeEventListener("pointermove",onMove,true);
     window.removeEventListener("pointerup",finish,true);
     window.removeEventListener("pointercancel",finish,true);
 
@@ -21005,38 +20239,36 @@ function start(e){
     if(window.innerWidth<900) return;
     if(e.pointerType==="mouse" && e.button!==0) return;
 
-    const p=parts();
-    const bar=document.getElementById("ichef-ticket-topbar-v8");
-
-    if(!p || !bar) return;
+    const p=getParts();
+    if(!p?.region || !p?.bar) return;
 
     if(e.cancelable) e.preventDefault();
     e.stopPropagation();
 
-    const h=p.list.getBoundingClientRect().height;
+    const rh=regionHeight(p.region);
+    const lh=listHeight(p.list);
 
     drag={
         ...p,
-        bar,
         pointerId:e.pointerId,
         startY:e.clientY,
-        startGap:currentGap(bar),
-        startListHeight:Math.max(MIN_LIST,h)
+        startRegionH:rh,
+        startListH:lh,
+        totalFlexible:rh+lh
     };
 
-    pendingGap=drag.startGap;
-    pendingListHeight=drag.startListHeight;
+    pendingRegionH=rh;
 
-    bar.classList.add("dragging");
-    document.body.classList.add("ichef-topbar-v8-dragging");
+    p.bar.classList.add("dragging");
+    document.body.classList.add("ichef-topbar-v11-dragging");
 
     try{
-        bar.setPointerCapture(e.pointerId);
+        p.bar.setPointerCapture(e.pointerId);
     }catch(_){}
 
     window.addEventListener(
         "pointermove",
-        move,
+        onMove,
         {capture:true,passive:false}
     );
     window.addEventListener(
@@ -21051,88 +20283,141 @@ function start(e){
     );
 }
 
-function reset(){
-    const p=parts();
-    const bar=document.getElementById("ichef-ticket-topbar-v8");
-
-    if(!p || !bar) return;
-
-    const gap=currentGap(bar);
-    const h=p.list.getBoundingClientRect().height;
+function resetToNormal(){
+    const p=getParts();
+    if(!p?.region) return;
 
     /*
-      Remonter à zéro sans perdre la place :
-      on rend à ticket-list la hauteur occupée par le gap.
+      Mesure de la hauteur naturelle complète du bloc supérieur.
     */
-    setGap(bar,0);
-    setListHeight(p.list,h+gap);
+    const old=p.region.style.getPropertyValue(
+        "--ichef-top-region-v11-h"
+    );
+
+    p.region.style.removeProperty(
+        "--ichef-top-region-v11-h"
+    );
+
+    requestAnimationFrame(function(){
+        const natural=Math.max(
+            0,
+            p.region.scrollHeight
+        );
+
+        const currentList=listHeight(p.list);
+        const currentRegion=regionHeight(p.region);
+
+        /*
+          On garde une hauteur globale cohérente.
+        */
+        const total=Math.max(
+            natural+MIN_LIST,
+            currentList+currentRegion
+        );
+
+        const targetRegion=Math.min(
+            natural,
+            total-MIN_LIST
+        );
+
+        const targetList=Math.max(
+            MIN_LIST,
+            total-targetRegion
+        );
+
+        setRegionHeight(p.region,targetRegion);
+        setListHeight(p.list,targetList);
+
+        try{
+            localStorage.setItem(
+                REGION_KEY,
+                String(Math.round(targetRegion))
+            );
+            localStorage.setItem(
+                LIST_KEY,
+                String(Math.round(targetList))
+            );
+        }catch(_){}
+    });
+}
+
+function jumpTop(){
+    const p=getParts();
+    if(!p?.region) return;
+
+    const total=regionHeight(p.region)+listHeight(p.list);
+
+    setRegionHeight(p.region,0);
+    setListHeight(p.list,total);
 
     try{
-        localStorage.setItem(GAP_KEY,"0");
+        localStorage.setItem(REGION_KEY,"0");
         localStorage.setItem(
-            HEIGHT_KEY,
-            String(Math.round(h+gap))
+            LIST_KEY,
+            String(Math.round(total))
         );
     }catch(_){}
 }
 
-function restore(bar,p){
-    let gap=0;
+function createRegion(ticket){
+    let region=document.getElementById(
+        "ichef-ticket-top-region-v11"
+    );
 
-    try{
-        const raw=localStorage.getItem(GAP_KEY);
-        if(raw!==null){
-            const saved=parseFloat(raw);
-            if(Number.isFinite(saved) && saved>=0){
-                gap=saved;
-            }
-        }else{
-            /* Nouvelle V9 : première ouverture = position la plus haute. */
-            gap=0;
-            localStorage.setItem(GAP_KEY,"0");
-        }
-    }catch(_){}
+    if(region) return region;
+
+    region=document.createElement("div");
+    region.id="ichef-ticket-top-region-v11";
 
     /*
-      Vérification de sécurité au chargement :
-      le gap ne peut pas être supérieur à ce que la zone liste permet.
+      On prend exactement les éléments situés après l'en-tête
+      TABLE/FERMER et jusqu'à Observation inclus.
     */
-    const currentH=Math.max(
-        MIN_LIST,
-        p.list.getBoundingClientRect().height
-    );
+    const header=ticket.firstElementChild;
+    const obs=document.getElementById("order-obs");
 
-    gap=Math.min(
-        gap,
-        Math.max(0,currentH-MIN_LIST)
-    );
+    if(!header || !obs) return null;
 
-    setGap(bar,gap);
+    header.insertAdjacentElement("afterend",region);
+
+    let node=region.nextSibling;
+
+    while(node){
+        const next=node.nextSibling;
+
+        /*
+          Ne déplacer que les éléments jusqu'à Observation inclus.
+        */
+        region.appendChild(node);
+
+        if(node===obs) break;
+
+        node=next;
+    }
+
+    return region;
 }
 
-function install(){
-    if(window.innerWidth<900) return;
-
-    const p=parts();
-    if(!p) return;
-
-    let bar=document.getElementById("ichef-ticket-topbar-v8");
+function createBar(region){
+    let bar=document.getElementById(
+        "ichef-ticket-topbar-v11"
+    );
 
     if(!bar){
         bar=document.createElement("div");
-        bar.id="ichef-ticket-topbar-v8";
+        bar.id="ichef-ticket-topbar-v11";
         bar.setAttribute("role","separator");
         bar.setAttribute("aria-orientation","horizontal");
         bar.setAttribute(
             "aria-label",
-            "Déplacer la séparation sous Observation"
+            "Agrandir au maximum la zone des plats"
         );
 
         const line=document.createElement("span");
-        line.className="ichef-v8-line";
+        line.className="ichef-v11-line";
 
         const handle=document.createElement("span");
-        handle.className="ichef-v8-handle";
+        handle.className="ichef-v11-handle";
         handle.textContent="⋮";
 
         bar.append(line,handle);
@@ -21143,31 +20428,142 @@ function install(){
             {passive:false}
         );
 
+        /*
+          Double-clic / double-tap souris :
+          bascule directement entre normal et HAUT MAXIMUM.
+        */
         bar.addEventListener("dblclick",function(e){
             e.preventDefault();
-            reset();
+
+            const p=getParts();
+            if(!p?.region) return;
+
+            if(regionHeight(p.region)>8){
+                jumpTop();
+            }else{
+                resetToNormal();
+            }
         });
     }
 
     /*
-      Emplacement obligatoire :
-      JUSTE APRÈS Observation.
-      C'est ce qui empêche définitivement la barre
-      de traverser le titre ou la zone comptoir.
+      La barre est physiquement APRÈS le bloc rétractable.
+      Donc si le bloc vaut 0 px, elle est vraiment juste
+      sous TABLE / FERMER.
     */
     if(
-        bar.parentElement!==p.ticket ||
-        bar.previousElementSibling!==p.obs
+        bar.parentElement!==region.parentElement ||
+        bar.previousElementSibling!==region
     ){
-        p.obs.insertAdjacentElement("afterend",bar);
+        region.insertAdjacentElement("afterend",bar);
     }
 
-    p.list.classList.add("ichef-ticket-list-resizable");
+    return bar;
+}
 
-    if(bar.dataset.v8Restored!=="1"){
-        bar.dataset.v8Restored="1";
-        requestAnimationFrame(function(){
-            restore(bar,p);
+function restore(p){
+    if(!p?.region) return;
+
+    /*
+      D'abord mesurer la hauteur naturelle du bloc supérieur.
+    */
+    p.region.style.removeProperty(
+        "--ichef-top-region-v11-h"
+    );
+
+    requestAnimationFrame(function(){
+        const natural=Math.max(
+            0,
+            p.region.scrollHeight
+        );
+
+        let savedRegion=null;
+
+        try{
+            const raw=localStorage.getItem(REGION_KEY);
+            if(raw!==null){
+                const n=parseFloat(raw);
+                if(Number.isFinite(n)){
+                    savedRegion=Math.max(0,n);
+                }
+            }
+        }catch(_){}
+
+        /*
+          Première ouverture V11 = disposition normale complète.
+        */
+        const desired=
+            savedRegion===null
+                ? natural
+                : savedRegion;
+
+        const currentList=listHeight(p.list);
+        const total=Math.max(
+            desired+MIN_LIST,
+            natural+currentList
+        );
+
+        const maxRegion=Math.max(
+            0,
+            total-MIN_LIST
+        );
+
+        const regionH=Math.min(
+            desired,
+            maxRegion
+        );
+
+        setRegionHeight(p.region,regionH);
+
+        /*
+          On n'écrase pas inutilement le réglage V4 de la liste
+          s'il existe déjà.
+        */
+        if(
+            !p.list.style.getPropertyValue(
+                "--ichef-ticket-white-h"
+            )
+        ){
+            setListHeight(
+                p.list,
+                Math.max(
+                    MIN_LIST,
+                    total-regionH
+                )
+            );
+        }
+    });
+}
+
+function install(){
+    if(window.innerWidth<900) return;
+
+    const drawer=document.getElementById("order-drawer");
+    if(!drawer || !drawer.classList.contains("open")) return;
+
+    const ticket=drawer.querySelector(".ticket-view");
+    const list=document.getElementById("ticket-list");
+
+    if(!ticket || !list) return;
+
+    const region=createRegion(ticket);
+    if(!region) return;
+
+    const bar=createBar(region);
+    if(!bar) return;
+
+    list.classList.add(
+        "ichef-ticket-list-resizable"
+    );
+
+    if(bar.dataset.v11Ready!=="1"){
+        bar.dataset.v11Ready="1";
+        restore({
+            drawer,
+            ticket,
+            list,
+            region,
+            bar
         });
     }
 }
@@ -21177,8 +20573,14 @@ function drawerState(){
     if(!drawer) return;
 
     if(drawer.classList.contains("open")){
-        const bar=document.getElementById("ichef-ticket-topbar-v8");
-        if(bar) delete bar.dataset.v8Restored;
+        const bar=document.getElementById(
+            "ichef-ticket-topbar-v11"
+        );
+
+        if(bar){
+            delete bar.dataset.v11Ready;
+        }
+
         requestAnimationFrame(install);
     }else{
         finish();
@@ -21238,23 +20640,6 @@ if(document.readyState==="loading"){
 
 })();
 </script>
-
-
-<style id="ichef-ticket-topbar-v9-max-top-css">
-@media (min-width:900px){
-    /*
-      HAUTEUR MAXIMALE :
-      aucune marge entre Observation et la barre.
-    */
-    #order-drawer #order-obs{
-        margin-bottom:0 !important;
-    }
-
-    #ichef-ticket-topbar-v8{
-        margin-top:var(--ichef-topbar-v8-gap,0px) !important;
-    }
-}
-</style>
 
 </body>
 </html>
