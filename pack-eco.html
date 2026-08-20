@@ -21804,6 +21804,146 @@ if(document.readyState==="loading"){
 #ichef-anti-rush-drawer-btn.ichef-ar-live-hot { background: #ea580c !important; border-color: #f97316 !important; color: #fff !important; }
 #ichef-anti-rush-drawer-btn.ichef-ar-live-critical { background: #dc2626 !important; border-color: #ef4444 !important; color: #fff !important; }
 </style>
+<!-- =========================================================
+     iCHEF — MOTEUR DE CHRONOMÉTRAGE ABSOLU (TIMELINE SYMBIOSE)
+     Trace l'intégralité du cycle de vie de la table (Ouverture -> Caisse)
+     ========================================================= -->
+<script id="ichef-timeline-symbiosis-engine">
+(function(){
+    "use strict";
 
+    // 1. File d'attente des événements mémoire
+    window.ichefTimelineQueue = window.ichefTimelineQueue || [];
+
+    window.ichefLogEvent = function(action, details = {}) {
+        window.ichefTimelineQueue.push({
+            action: action,
+            timestamp: Date.now(),
+            user: window.ICHEF_SECURITY?.user?.name || 'Serveur',
+            ...details
+        });
+    };
+
+    // 2. Interception du moteur de sauvegarde (API.update)
+    // C'est le point de passage obligatoire, ce qui garantit qu'aucun événement n'est perdu.
+    if(typeof API !== 'undefined' && API.update && !API.__timelineHooked) {
+        const originalUpdate = API.update;
+        
+        API.update = async function(key, data, isOrder = false, audit = {}) {
+            
+            // A. Cas d'une table en cours de service
+            if(isOrder && data && typeof data === 'object' && !key.includes('MASTER') && !key.includes('HISTORY')) {
+                
+                let currentTimeline = [];
+                if(typeof activeOrders !== 'undefined' && activeOrders[key] && activeOrders[key].timeline) {
+                    currentTimeline = activeOrders[key].timeline;
+                }
+
+                // Création du point zéro (Ouverture de table)
+                if(!currentTimeline.some(e => e.action === 'OPEN')) {
+                    currentTimeline.unshift({
+                        action: 'OPEN',
+                        timestamp: Date.now(),
+                        user: window.ICHEF_SECURITY?.user?.name || 'Système',
+                        pax: data.pax || 2
+                    });
+                }
+
+                // Dépilage des événements récents
+                if(window.ichefTimelineQueue.length > 0) {
+                    currentTimeline = currentTimeline.concat(window.ichefTimelineQueue);
+                    window.ichefTimelineQueue = []; 
+                }
+
+                data.timeline = currentTimeline;
+            }
+            
+            // B. Cas de la clôture financière (Injection de la timeline dans l'archive)
+            if(key === 'FINANCIAL_HISTORY' && Array.isArray(data) && data.length > 0) {
+                let lastTx = data[data.length - 1]; // La transaction qui vient d'être payée
+                
+                // Si la timeline n'est pas encore attachée, on la récupère de la table active
+                if(!lastTx.timeline && lastTx.source) {
+                    let m = lastTx.source.match(/\(([^()]+)\)\s*$/);
+                    let tId = m ? m[1].trim() : null;
+                    
+                    if(tId && typeof activeOrders !== 'undefined' && activeOrders[tId]) {
+                        // On attache la timeline complète à la facture finale
+                        lastTx.timeline = activeOrders[tId].timeline || [];
+                    }
+                }
+            }
+
+            return await originalUpdate.call(this, key, data, isOrder, audit);
+        };
+        API.__timelineHooked = true;
+    }
+
+    // 3. Pose des capteurs sur les actions métier (Symbiose)
+    
+    // Capteur 1 : Envoi en cuisine
+    if(typeof window.sendOrderToKDS === 'function' && !window.sendOrderToKDS.__timelineHooked) {
+        const origSend = window.sendOrderToKDS;
+        window.sendOrderToKDS = async function(isTimeShifted) {
+            window.ichefLogEvent('SENT_TO_KITCHEN', { timeShifted: !!isTimeShifted });
+            return await origSend.apply(this, arguments);
+        };
+        window.sendOrderToKDS.__timelineHooked = true;
+    }
+
+    // Capteur 2 : Réclame de la suite (Séquence)
+    if(typeof window.requestSequence === 'function' && !window.requestSequence.__timelineHooked) {
+        const origReq = window.requestSequence;
+        window.requestSequence = async function(seq) {
+            window.ichefLogEvent('SEQUENCE_REQUESTED', { sequence: seq });
+            return await origReq.apply(this, arguments);
+        };
+        window.requestSequence.__timelineHooked = true;
+    }
+
+    // Capteur 3 : Assiette servie au client
+    if(typeof window.markAsServed === 'function' && !window.markAsServed.__timelineHooked) {
+        const origServe = window.markAsServed;
+        window.markAsServed = async function(idx) {
+            let itemName = "Article inconnu";
+            try { itemName = currentTicket[idx].n; } catch(e){}
+            window.ichefLogEvent('ITEM_SERVED', { item: itemName });
+            return await origServe.apply(this, arguments);
+        };
+        window.markAsServed.__timelineHooked = true;
+    }
+
+    // Capteur 4 : Erreur ou plat à refaire
+    if(typeof window.executeErrorItem === 'function' && !window.executeErrorItem.__timelineHooked) {
+        const origError = window.executeErrorItem;
+        window.executeErrorItem = async function(motif) {
+            window.ichefLogEvent('ITEM_ERROR_REDO', { reason: motif });
+            return await origError.apply(this, arguments);
+        };
+        window.executeErrorItem.__timelineHooked = true;
+    }
+
+    // Capteur 5 : Encaissement de la table
+    if(typeof window.finalizeTablePayment === 'function' && !window.finalizeTablePayment.__timelineHooked) {
+        const origPay = window.finalizeTablePayment;
+        window.finalizeTablePayment = async function() {
+            window.ichefLogEvent('PAYMENT_CLOSED', { 
+                total: typeof currentTableTotal !== 'undefined' ? currentTableTotal : 0 
+            });
+            
+            // Force la vidange de la file d'attente juste avant la suppression de la table
+            if(typeof activeOrders !== 'undefined' && typeof currentTableId !== 'undefined' && activeOrders[currentTableId]) {
+                if(!activeOrders[currentTableId].timeline) activeOrders[currentTableId].timeline = [];
+                activeOrders[currentTableId].timeline = activeOrders[currentTableId].timeline.concat(window.ichefTimelineQueue);
+                window.ichefTimelineQueue = [];
+            }
+
+            return await origPay.apply(this, arguments);
+        };
+        window.finalizeTablePayment.__timelineHooked = true;
+    }
+
+})();
+</script>
 </body>
 </html>
