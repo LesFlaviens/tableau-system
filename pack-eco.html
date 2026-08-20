@@ -20743,5 +20743,494 @@ if(document.readyState==="loading"){
 })();
 </script>
 
+
+<!-- =========================================================
+     iCHEF — BARRE TACTILE V8 STABLE
+     - remplace la barre flottante V7
+     - reste TOUJOURS sous Observation
+     - descend en poussant le contenu
+     - remonte jusqu'à Observation
+     - ne traverse jamais TABLE / ZONE / OBSERVATION
+     ========================================================= -->
+<style id="ichef-ticket-topbar-v8-css">
+@media (min-width:900px){
+
+    /* Désactive les deux anciennes barres supérieures */
+    #ichef-ticket-top-splitter-v5,
+    #ichef-ticket-free-topbar-v7{
+        display:none !important;
+        pointer-events:none !important;
+    }
+
+    #ichef-ticket-topbar-v8{
+        flex:0 0 18px !important;
+        width:100% !important;
+        height:18px !important;
+        min-height:18px !important;
+        position:relative !important;
+
+        /*
+          La barre reste dans le flux.
+          Son déplacement est obtenu par margin-top :
+          tout ce qui est dessous suit réellement.
+        */
+        margin-top:var(--ichef-topbar-v8-gap,0px) !important;
+        margin-bottom:0 !important;
+
+        padding:0 !important;
+        z-index:1300 !important;
+        box-sizing:border-box !important;
+        background:#080c0d !important;
+        cursor:row-resize !important;
+        touch-action:none !important;
+        user-select:none !important;
+        -webkit-user-select:none !important;
+        overflow:visible !important;
+    }
+
+    /* Grande zone tactile */
+    #ichef-ticket-topbar-v8::before{
+        content:"";
+        position:absolute;
+        left:0;
+        right:0;
+        top:50%;
+        height:50px;
+        transform:translateY(-50%);
+        background:transparent;
+        pointer-events:auto;
+        cursor:row-resize;
+        touch-action:none;
+    }
+
+    #ichef-ticket-topbar-v8 .ichef-v8-line{
+        position:absolute;
+        left:10px;
+        right:10px;
+        top:8px;
+        height:2px;
+        border-radius:999px;
+        background:rgba(255,255,255,.86);
+        box-shadow:0 0 4px rgba(255,255,255,.2);
+        pointer-events:none;
+    }
+
+    #ichef-ticket-topbar-v8 .ichef-v8-handle{
+        position:absolute;
+        left:50%;
+        top:50%;
+        transform:translate(-50%,-50%);
+        width:18px;
+        height:34px;
+        display:flex;
+        align-items:center;
+        justify-content:center;
+        border:1px solid rgba(227,182,80,.9);
+        border-radius:8px;
+        background:#080c0d;
+        color:#e3b650;
+        font-size:19px;
+        font-weight:1000;
+        line-height:1;
+        box-shadow:0 0 8px rgba(227,182,80,.16);
+        pointer-events:none;
+    }
+
+    #ichef-ticket-topbar-v8.dragging .ichef-v8-line{
+        background:#ffd15c;
+        box-shadow:0 0 11px rgba(255,209,92,.72);
+    }
+
+    #ichef-ticket-topbar-v8.dragging .ichef-v8-handle{
+        border-color:#ffd15c;
+        color:#ffd15c;
+        box-shadow:0 0 14px rgba(255,209,92,.38);
+    }
+
+    body.ichef-topbar-v8-dragging{
+        cursor:row-resize !important;
+        user-select:none !important;
+        -webkit-user-select:none !important;
+    }
+}
+
+@media(max-width:899px){
+    #ichef-ticket-topbar-v8{
+        display:none !important;
+    }
+}
+</style>
+
+<script id="ichef-ticket-topbar-v8-js">
+(function(){
+"use strict";
+
+const GAP_KEY="ichef_ticket_topbar_v8_gap";
+const HEIGHT_KEY="ichef_ticket_split_v4";
+
+const MIN_LIST=30;
+const MIN_GAP=0;
+
+let drag=null;
+let raf=0;
+let pendingGap=0;
+let pendingListHeight=0;
+
+function parts(){
+    const drawer=document.getElementById("order-drawer");
+    if(!drawer || !drawer.classList.contains("open")) return null;
+
+    const ticket=drawer.querySelector(".ticket-view");
+    const obs=document.getElementById("order-obs");
+    const list=document.getElementById("ticket-list");
+    const lower=document.getElementById("ichef-ticket-splitter-v4");
+
+    if(!ticket || !obs || !list || !ticket.contains(obs) || !ticket.contains(list)){
+        return null;
+    }
+
+    return {drawer,ticket,obs,list,lower};
+}
+
+function currentGap(bar){
+    const raw=getComputedStyle(bar)
+        .getPropertyValue("--ichef-topbar-v8-gap");
+
+    const n=parseFloat(raw);
+    return Number.isFinite(n)?Math.max(0,n):0;
+}
+
+function setGap(bar,gap){
+    bar.style.setProperty(
+        "--ichef-topbar-v8-gap",
+        Math.max(0,Math.round(gap))+"px"
+    );
+}
+
+function setListHeight(list,h){
+    const value=Math.max(MIN_LIST,Math.round(Number(h)||MIN_LIST));
+
+    list.classList.add("ichef-ticket-list-resizable");
+    list.style.setProperty("--ichef-ticket-white-h",value+"px");
+}
+
+function maxGapFromStart(){
+    if(!drag) return 0;
+
+    /*
+      Quand la barre descend de X px, on réduit la zone ticket-list
+      de X px. Ainsi la barre inférieure / Caisse restent en place.
+      La limite basse est atteinte lorsque ticket-list arrive à MIN_LIST.
+    */
+    return Math.max(
+        drag.startGap,
+        drag.startGap + Math.max(0,drag.startListHeight-MIN_LIST)
+    );
+}
+
+function applyFrame(){
+    raf=0;
+    if(!drag) return;
+
+    const maxGap=maxGapFromStart();
+    const gap=Math.max(
+        MIN_GAP,
+        Math.min(pendingGap,maxGap)
+    );
+
+    /*
+      La somme GAP + hauteur de ticket-list reste constante.
+      Donc le contenu sous la barre suit son déplacement,
+      sans faire sauter le footer.
+    */
+    const moved=gap-drag.startGap;
+    const listHeight=Math.max(
+        MIN_LIST,
+        drag.startListHeight-moved
+    );
+
+    setGap(drag.bar,gap);
+    setListHeight(drag.list,listHeight);
+}
+
+function move(e){
+    if(!drag || e.pointerId!==drag.pointerId) return;
+
+    if(e.cancelable) e.preventDefault();
+    e.stopPropagation();
+
+    const delta=e.clientY-drag.startY;
+
+    pendingGap=drag.startGap+delta;
+    pendingListHeight=drag.startListHeight-delta;
+
+    if(!raf){
+        raf=requestAnimationFrame(applyFrame);
+    }
+}
+
+function finish(e){
+    if(!drag) return;
+    if(e && e.pointerId!=null && e.pointerId!==drag.pointerId) return;
+
+    if(raf){
+        cancelAnimationFrame(raf);
+        raf=0;
+        applyFrame();
+    }
+
+    const gap=currentGap(drag.bar);
+    const listHeight=drag.list.getBoundingClientRect().height;
+
+    try{
+        localStorage.setItem(GAP_KEY,String(Math.round(gap)));
+        localStorage.setItem(HEIGHT_KEY,String(Math.round(listHeight)));
+    }catch(_){}
+
+    drag.bar.classList.remove("dragging");
+    document.body.classList.remove("ichef-topbar-v8-dragging");
+
+    try{
+        drag.bar.releasePointerCapture(drag.pointerId);
+    }catch(_){}
+
+    window.removeEventListener("pointermove",move,true);
+    window.removeEventListener("pointerup",finish,true);
+    window.removeEventListener("pointercancel",finish,true);
+
+    drag=null;
+}
+
+function start(e){
+    if(window.innerWidth<900) return;
+    if(e.pointerType==="mouse" && e.button!==0) return;
+
+    const p=parts();
+    const bar=document.getElementById("ichef-ticket-topbar-v8");
+
+    if(!p || !bar) return;
+
+    if(e.cancelable) e.preventDefault();
+    e.stopPropagation();
+
+    const h=p.list.getBoundingClientRect().height;
+
+    drag={
+        ...p,
+        bar,
+        pointerId:e.pointerId,
+        startY:e.clientY,
+        startGap:currentGap(bar),
+        startListHeight:Math.max(MIN_LIST,h)
+    };
+
+    pendingGap=drag.startGap;
+    pendingListHeight=drag.startListHeight;
+
+    bar.classList.add("dragging");
+    document.body.classList.add("ichef-topbar-v8-dragging");
+
+    try{
+        bar.setPointerCapture(e.pointerId);
+    }catch(_){}
+
+    window.addEventListener(
+        "pointermove",
+        move,
+        {capture:true,passive:false}
+    );
+    window.addEventListener(
+        "pointerup",
+        finish,
+        {capture:true,passive:false}
+    );
+    window.addEventListener(
+        "pointercancel",
+        finish,
+        {capture:true,passive:false}
+    );
+}
+
+function reset(){
+    const p=parts();
+    const bar=document.getElementById("ichef-ticket-topbar-v8");
+
+    if(!p || !bar) return;
+
+    const gap=currentGap(bar);
+    const h=p.list.getBoundingClientRect().height;
+
+    /*
+      Remonter à zéro sans perdre la place :
+      on rend à ticket-list la hauteur occupée par le gap.
+    */
+    setGap(bar,0);
+    setListHeight(p.list,h+gap);
+
+    try{
+        localStorage.setItem(GAP_KEY,"0");
+        localStorage.setItem(
+            HEIGHT_KEY,
+            String(Math.round(h+gap))
+        );
+    }catch(_){}
+}
+
+function restore(bar,p){
+    let gap=0;
+
+    try{
+        const saved=parseFloat(localStorage.getItem(GAP_KEY));
+        if(Number.isFinite(saved) && saved>=0){
+            gap=saved;
+        }
+    }catch(_){}
+
+    /*
+      Vérification de sécurité au chargement :
+      le gap ne peut pas être supérieur à ce que la zone liste permet.
+    */
+    const currentH=Math.max(
+        MIN_LIST,
+        p.list.getBoundingClientRect().height
+    );
+
+    gap=Math.min(
+        gap,
+        Math.max(0,currentH-MIN_LIST)
+    );
+
+    setGap(bar,gap);
+}
+
+function install(){
+    if(window.innerWidth<900) return;
+
+    const p=parts();
+    if(!p) return;
+
+    let bar=document.getElementById("ichef-ticket-topbar-v8");
+
+    if(!bar){
+        bar=document.createElement("div");
+        bar.id="ichef-ticket-topbar-v8";
+        bar.setAttribute("role","separator");
+        bar.setAttribute("aria-orientation","horizontal");
+        bar.setAttribute(
+            "aria-label",
+            "Déplacer la séparation sous Observation"
+        );
+
+        const line=document.createElement("span");
+        line.className="ichef-v8-line";
+
+        const handle=document.createElement("span");
+        handle.className="ichef-v8-handle";
+        handle.textContent="⋮";
+
+        bar.append(line,handle);
+
+        bar.addEventListener(
+            "pointerdown",
+            start,
+            {passive:false}
+        );
+
+        bar.addEventListener("dblclick",function(e){
+            e.preventDefault();
+            reset();
+        });
+    }
+
+    /*
+      Emplacement obligatoire :
+      JUSTE APRÈS Observation.
+      C'est ce qui empêche définitivement la barre
+      de traverser le titre ou la zone comptoir.
+    */
+    if(
+        bar.parentElement!==p.ticket ||
+        bar.previousElementSibling!==p.obs
+    ){
+        p.obs.insertAdjacentElement("afterend",bar);
+    }
+
+    p.list.classList.add("ichef-ticket-list-resizable");
+
+    if(bar.dataset.v8Restored!=="1"){
+        bar.dataset.v8Restored="1";
+        requestAnimationFrame(function(){
+            restore(bar,p);
+        });
+    }
+}
+
+function drawerState(){
+    const drawer=document.getElementById("order-drawer");
+    if(!drawer) return;
+
+    if(drawer.classList.contains("open")){
+        const bar=document.getElementById("ichef-ticket-topbar-v8");
+        if(bar) delete bar.dataset.v8Restored;
+        requestAnimationFrame(install);
+    }else{
+        finish();
+    }
+}
+
+function boot(){
+    const drawer=document.getElementById("order-drawer");
+
+    if(drawer){
+        new MutationObserver(drawerState)
+            .observe(
+                drawer,
+                {
+                    attributes:true,
+                    attributeFilter:["class"]
+                }
+            );
+    }
+
+    if(drawer?.classList.contains("open")){
+        install();
+    }
+
+    window.addEventListener(
+        "resize",
+        function(){
+            if(window.innerWidth>=900){
+                requestAnimationFrame(install);
+            }else{
+                finish();
+            }
+        },
+        {passive:true}
+    );
+
+    setTimeout(function(){
+        if(
+            document
+                .getElementById("order-drawer")
+                ?.classList.contains("open")
+        ){
+            install();
+        }
+    },250);
+}
+
+if(document.readyState==="loading"){
+    document.addEventListener(
+        "DOMContentLoaded",
+        boot,
+        {once:true}
+    );
+}else{
+    boot();
+}
+
+})();
+</script>
+
 </body>
 </html>
