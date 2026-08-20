@@ -16771,23 +16771,12 @@ window.ICHEF_RESERVATION_CAPACITY_OPTIMIZER=Object.freeze({
    ========================================================= */
 
 /* 1. On donne de l'air à la carte pour que tout rentre sans être coupé */
-/* 2. Le badge de Zone : Contraste dur, lisibilité absolue et repère couleur */
-#pro-table-panel .pro-table-zone-badge {
-    background: #000000 !important;
-    border: 1px solid rgba(255, 255, 255, 0.15) !important;
-    border-left: 4px solid var(--ichef-zone-color) !important;
-    color: #FFFFFF !important;
-    border-radius: 4px !important;
-    font-family: 'Inter', sans-serif !important;
-    font-size: 0.72rem !important;
-    font-weight: 900 !important;
-    letter-spacing: 0.5px !important;
-    text-transform: uppercase !important;
-    padding: 5px 10px !important;
-    margin-top: 8px !important;
-    margin-bottom: auto !important;
-    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.8) !important;
+#pro-table-grid .pro-table-card {
+    min-height: 120px !important; /* On augmente la hauteur minimale */
+    padding-bottom: 8px !important; /* Marge de sécurité en bas */
+    justify-content: flex-start !important;
 }
+
 /* 2. Le badge de Zone : Contraste dur et fond opaque */
 #pro-table-panel .pro-table-zone-badge {
     background: #000000 !important; /* Fond noir absolu pour détacher le texte */
@@ -21859,5 +21848,419 @@ if(document.readyState==="loading"){
 
 })();
 </script>
+
+
+<!-- =========================================================
+     iCHEF — PLATS VISIBLES DANS LES TABLES + PLAN INTERACTIF
+     2026-08-21
+     - Colonne gauche : 3 lignes + compteur
+     - Plan interactif : 2 lignes + compteur
+     - Liaison robuste avec activeOrders lexical/global
+     - Ne crée/modifie aucune commande
+     ========================================================= -->
+<style id="ichef-dishes-tables-plan-v3-css">
+/* Évite le doublon de l'ancien aperçu dont la source utilisait window.activeOrders. */
+#pro-table-grid .ichef-card-order-preview{
+    display:none !important;
+}
+
+/* ---------- CARTES TABLES — COLONNE GAUCHE ---------- */
+#pro-table-grid .pro-table-card.ichef-has-dishes-v3{
+    justify-content:flex-start !important;
+    min-height:122px !important;
+    padding:6px 6px 5px !important;
+    gap:2px !important;
+    overflow:hidden !important;
+}
+
+.ichef-dishes-left-v3{
+    width:100%;
+    min-width:0;
+    display:flex;
+    flex-direction:column;
+    gap:2px;
+    margin-top:2px;
+    padding:4px 5px;
+    box-sizing:border-box;
+    border-top:1px solid rgba(255,255,255,.10);
+    border-bottom:1px solid rgba(255,255,255,.07);
+    color:#fff;
+    text-align:left;
+    font-size:.54rem;
+    line-height:1.12;
+    font-weight:800;
+    pointer-events:none;
+}
+
+.ichef-dish-line-left-v3{
+    width:100%;
+    min-width:0;
+    white-space:nowrap;
+    overflow:hidden;
+    text-overflow:ellipsis;
+}
+
+.ichef-dish-line-left-v3.ready{
+    color:#8ff58f;
+}
+
+.ichef-dish-line-left-v3.served{
+    color:rgba(255,255,255,.55);
+    text-decoration:line-through;
+    text-decoration-thickness:1px;
+}
+
+.ichef-dishes-more-v3{
+    color:rgba(255,255,255,.68);
+    font-size:.49rem;
+    font-weight:900;
+}
+
+/* ---------- PLAN INTERACTIF ---------- */
+.floor-plan .table-wrapper.ichef-plan-has-dishes-v3 .table-content{
+    justify-content:center !important;
+    gap:1px !important;
+    overflow:hidden !important;
+}
+
+.ichef-plan-dishes-v3{
+    width:calc(100% - 8px);
+    max-width:100%;
+    min-width:0;
+    margin-top:3px;
+    padding-top:2px;
+    border-top:1px solid rgba(255,255,255,.14);
+    display:flex;
+    flex-direction:column;
+    gap:1px;
+    box-sizing:border-box;
+    color:#fff;
+    font-size:clamp(6px,.47rem,8px);
+    line-height:1.08;
+    font-weight:800;
+    text-align:left;
+    pointer-events:none;
+    overflow:hidden;
+}
+
+.ichef-plan-dish-line-v3{
+    width:100%;
+    min-width:0;
+    white-space:nowrap;
+    overflow:hidden;
+    text-overflow:ellipsis;
+}
+
+.ichef-plan-dish-line-v3.ready{
+    color:#8ff58f;
+}
+
+.ichef-plan-dish-line-v3.served{
+    color:rgba(255,255,255,.52);
+}
+
+.ichef-plan-dishes-more-v3{
+    color:rgba(255,255,255,.62);
+    font-size:clamp(6px,.42rem,7px);
+    font-weight:900;
+}
+
+/* En architecture, on ne parasite pas l'édition du plan. */
+.edit-mode .ichef-plan-dishes-v3{
+    display:none !important;
+}
+
+/* En mode rush les tables sont plus grandes : aperçu légèrement renforcé. */
+.rush-mode .ichef-plan-dishes-v3{
+    font-size:.56rem;
+    width:calc(100% - 12px);
+}
+
+@media(max-width:999px){
+    /* La colonne PRO est déjà masquée par le code existant ; aucune surcharge mobile. */
+    #pro-table-grid .pro-table-card.ichef-has-dishes-v3{
+        min-height:112px !important;
+    }
+}
+</style>
+
+<script id="ichef-dishes-tables-plan-v3-js">
+(function(){
+    'use strict';
+
+    const META_KEY_RE=/MASTER|ARCHIVE|SETTINGS|RESERVATIONS|ALERTS|ARCHITECTURE|FINANCIAL|STAFF|HISTORY/i;
+
+    function clean(v){
+        return String(v == null ? '' : v).trim();
+    }
+
+    function norm(v){
+        return clean(v)
+            .normalize('NFD')
+            .replace(/[\u0300-\u036f]/g,'')
+            .toUpperCase()
+            .replace(/[^A-Z0-9]/g,'');
+    }
+
+    function getOrders(){
+        try{
+            /* activeOrders est déclaré avec "let" dans le moteur principal :
+               il est accessible entre scripts classiques mais pas forcément via window. */
+            if(typeof activeOrders !== 'undefined' && activeOrders && typeof activeOrders === 'object'){
+                return activeOrders;
+            }
+        }catch(_){ }
+
+        try{
+            if(window.activeOrders && typeof window.activeOrders === 'object'){
+                return window.activeOrders;
+            }
+        }catch(_){ }
+
+        return {};
+    }
+
+    function findOrder(label){
+        const wanted=norm(label);
+        if(!wanted) return null;
+        const orders=getOrders();
+
+        try{
+            if(orders[label] && !META_KEY_RE.test(String(label))){
+                return orders[label];
+            }
+        }catch(_){ }
+
+        for(const key of Object.keys(orders)){
+            if(META_KEY_RE.test(key)) continue;
+            const nk=norm(key);
+            if(!nk) continue;
+            if(nk===wanted || ('T'+nk)===wanted || nk===('T'+wanted)){
+                return orders[key];
+            }
+        }
+        return null;
+    }
+
+    function itemName(item){
+        return clean(item?.n ?? item?.name ?? item?.productName ?? item?.label ?? item?.title ?? '');
+    }
+
+    function itemQty(item){
+        const q=Number(item?.qty ?? item?.quantity ?? 1);
+        return Number.isFinite(q) && q>0 ? q : 0;
+    }
+
+    function seatOf(item){
+        const n=Number(item?.seat ?? item?.guestSeat ?? item?.seatNumber ?? 0);
+        return Number.isFinite(n) && n>0 ? Math.floor(n) : 0;
+    }
+
+    function itemState(item){
+        const raw=clean(item?.sequenceStatus ?? item?.status).toUpperCase()
+            .normalize('NFD').replace(/[\u0300-\u036f]/g,'');
+
+        if(item?.served===true || raw==='SERVED' || raw==='SERVI') return 'served';
+        if(item?.done===true || ['READY','PRET','PRET_AU_PASS','PRET AU PASS','READY_AT_PASS'].includes(raw)) return 'ready';
+        return 'normal';
+    }
+
+    function itemVisible(item){
+        if(!item || typeof item!=='object') return false;
+        const name=itemName(item);
+        if(!name || itemQty(item)<=0) return false;
+
+        const status=clean(item.status ?? item.sequenceStatus).toUpperCase()
+            .normalize('NFD').replace(/[\u0300-\u036f]/g,'');
+
+        if(item.cancelled===true || item.canceled===true || item.deleted===true || item.voided===true || item.removed===true) return false;
+        if(/CANCEL|ANNULE|VOID|SUPPRIM|REMOVED|DELETED/.test(status)) return false;
+        return true;
+    }
+
+    function isRealOrder(label,order){
+        if(!order || typeof order!=='object') return false;
+        try{
+            if(typeof isRealServiceOrder==='function' && !isRealServiceOrder(label,order)){
+                return false;
+            }
+        }catch(_){ }
+        return Array.isArray(order.items) && order.items.some(itemVisible);
+    }
+
+    function orderLines(label,maxLines){
+        const order=findOrder(label);
+        if(!isRealOrder(label,order)) return {shown:[],hidden:0};
+
+        const groups=[];
+        const byKey=new Map();
+
+        order.items.filter(itemVisible).forEach(item=>{
+            const name=itemName(item);
+            const seat=seatOf(item);
+            const state=itemState(item);
+            const key=[seat,norm(name),state].join('|');
+            const qty=itemQty(item);
+
+            if(byKey.has(key)){
+                byKey.get(key).qty += qty;
+            }else{
+                const row={name,seat,state,qty};
+                byKey.set(key,row);
+                groups.push(row);
+            }
+        });
+
+        const rows=groups.map(row=>{
+            const seatText=row.seat>0 ? `👤${row.seat} ` : '';
+            const qtyText=row.qty>1 ? `${row.qty}× ` : '';
+            return {
+                text:`${seatText}${qtyText}${row.name}`,
+                state:row.state
+            };
+        });
+
+        return {
+            shown:rows.slice(0,maxLines),
+            hidden:Math.max(0,rows.length-maxLines)
+        };
+    }
+
+    function signature(lines){
+        return lines.shown.map(x=>`${x.state}:${x.text}`).join('|')+'#'+lines.hidden;
+    }
+
+    function fillPreview(box,lines,lineClass){
+        const sig=signature(lines);
+        if(box.dataset.signature===sig) return;
+        box.dataset.signature=sig;
+        box.replaceChildren();
+
+        lines.shown.forEach(row=>{
+            const line=document.createElement('div');
+            line.className=lineClass+(row.state!=='normal' ? ' '+row.state : '');
+            line.textContent=(row.state==='ready' ? '✓ ' : '• ')+row.text;
+            box.appendChild(line);
+        });
+
+        if(lines.hidden>0){
+            const more=document.createElement('div');
+            more.className=lineClass.includes('plan') ? 'ichef-plan-dishes-more-v3' : 'ichef-dishes-more-v3';
+            more.textContent=`+${lines.hidden} autre${lines.hidden>1?'s':''}`;
+            box.appendChild(more);
+        }
+    }
+
+    function syncLeftCards(){
+        document.querySelectorAll('#pro-table-grid .pro-table-card[data-table]').forEach(card=>{
+            const label=clean(card.dataset.table);
+            if(!label) return;
+
+            const lines=orderLines(label,3);
+            let box=card.querySelector('.ichef-dishes-left-v3');
+
+            if(!lines.shown.length){
+                card.classList.remove('ichef-has-dishes-v3');
+                if(box) box.remove();
+                return;
+            }
+
+            card.classList.add('ichef-has-dishes-v3');
+            if(!box){
+                box=document.createElement('div');
+                box.className='ichef-dishes-left-v3';
+
+                const badges=card.querySelector('.ichef-order-badges');
+                const state=card.querySelector('.ichef-card-live-state');
+                if(badges) card.insertBefore(box,badges);
+                else if(state) card.insertBefore(box,state);
+                else card.appendChild(box);
+            }
+
+            fillPreview(box,lines,'ichef-dish-line-left-v3');
+        });
+    }
+
+    function planLabel(wrapper){
+        return clean(
+            wrapper?.dataset?.id ??
+            wrapper?.dataset?.table ??
+            wrapper?.dataset?.tableId ??
+            wrapper?.dataset?.label ??
+            ''
+        );
+    }
+
+    function syncPlanTables(){
+        document.querySelectorAll('#floor-plan .table-wrapper').forEach(wrapper=>{
+            const label=planLabel(wrapper);
+            if(!label) return;
+
+            const content=wrapper.querySelector('.table-content');
+            if(!content) return;
+
+            const lines=orderLines(label,2);
+            let box=content.querySelector(':scope > .ichef-plan-dishes-v3');
+
+            if(!lines.shown.length){
+                wrapper.classList.remove('ichef-plan-has-dishes-v3');
+                if(box) box.remove();
+                return;
+            }
+
+            wrapper.classList.add('ichef-plan-has-dishes-v3');
+            if(!box){
+                box=document.createElement('div');
+                box.className='ichef-plan-dishes-v3';
+                content.appendChild(box);
+            }
+
+            fillPreview(box,lines,'ichef-plan-dish-line-v3');
+        });
+    }
+
+    let scheduled=false;
+    function sync(){
+        if(scheduled) return;
+        scheduled=true;
+        requestAnimationFrame(()=>{
+            scheduled=false;
+            try{syncLeftCards();}catch(err){console.warn('iCHEF plats colonne gauche',err);}
+            try{syncPlanTables();}catch(err){console.warn('iCHEF plats plan interactif',err);}
+        });
+    }
+
+    window.ichefRefreshTableDishPreviews=sync;
+
+    /* Le plan est recréé par renderFloor : on resynchronise juste après. */
+    try{
+        if(typeof window.renderFloor==='function' && !window.renderFloor.__ichefDishPreviewV3){
+            const previousRenderFloor=window.renderFloor;
+            const wrapped=function(){
+                const result=previousRenderFloor.apply(this,arguments);
+                sync();
+                return result;
+            };
+            wrapped.__ichefDishPreviewV3=true;
+            window.renderFloor=wrapped;
+        }
+    }catch(_){ }
+
+    /* Mise à jour légère : utile aussi pendant la saisie d'une commande avant le prochain rendu complet. */
+    const timer=setInterval(()=>{
+        if(!document.hidden) sync();
+    },900);
+
+    window.addEventListener('focus',sync,{passive:true});
+    document.addEventListener('visibilitychange',()=>{ if(!document.hidden) sync(); });
+
+    if(document.readyState==='loading'){
+        document.addEventListener('DOMContentLoaded',()=>setTimeout(sync,120),{once:true});
+    }else{
+        setTimeout(sync,120);
+    }
+})();
+</script>
+
 </body>
 </html>
