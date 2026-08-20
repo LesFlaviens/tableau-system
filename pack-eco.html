@@ -2254,7 +2254,7 @@ button, .btn-mini, .dock-btn, .folder-btn, .room-tab, .btn-item {
         // Variables d'état Anti-Rush 3.0
         let isKitchenInRush = false;
         let rushV3Settings = { cameleon: false, timeShift: { active: false, discount: 5, delay: 15 }, paceMaker: { active: false, max: 10 } };
-        let currentRushLevel = 1;
+        let currentRushLevel = 0;
 
         window.addEventListener('load', () => {
             if (typeof isDemoMode !== 'undefined' && isDemoMode) {
@@ -3189,6 +3189,9 @@ renderDynamicCategories();
                     });
 
                     activeOrders = sanitizeServerOrders(nO);
+                    if(typeof window.ichefUpdateAntiRushSignal==="function"){
+                        window.ichefUpdateAntiRushSignal();
+                    }
                     checkGlobalAlerts();
                     if(!isDraggingTable) renderFloor();
                 }
@@ -3364,7 +3367,7 @@ function updateAntiRushServerPanel() {
     try {
 
         const orders =
-            Object.values(currentActiveTables || {})
+            Object.values(activeOrders || {})
                 .filter(order =>
                     order &&
                     typeof order === 'object' &&
@@ -8363,6 +8366,9 @@ header .header-left > div:first-of-type{
           if(typeof window.ichefRefreshReadyNeon==='function'){
             window.ichefRefreshReadyNeon();
           }
+          if(typeof window.ichefUpdateAntiRushSignal==='function'){
+            window.ichefUpdateAntiRushSignal();
+          }
         }catch(err){
           console.warn('[iCHEF] orderLifecycle:',err);
         }
@@ -8378,6 +8384,9 @@ header .header-left > div:first-of-type{
             if(typeof renderFloor==='function') renderFloor();
             if(typeof renderProTables==='function') renderProTables();
             if(typeof renderService==='function') renderService();
+            if(typeof window.ichefUpdateAntiRushSignal==='function'){
+                window.ichefUpdateAntiRushSignal();
+            }
           }
         }catch(err){
           console.warn('[iCHEF] updateState:',err);
@@ -19165,15 +19174,32 @@ function arLastEvolution(order,items,start){
 }
 
 function arRushLevel(){
+    let serverLevel=0;
+
     try{
         if(typeof currentRushLevel!=="undefined"){
-            return Math.max(0,Math.min(5,Number(currentRushLevel)||0));
+            serverLevel=Math.max(0,Math.min(5,Number(currentRushLevel)||0));
         }
     }catch(_){}
 
     try{
-        return Math.max(0,Math.min(5,Number(window.systemSettings?.rushLevel)||0));
-    }catch(_){return 0}
+        serverLevel=Math.max(
+            serverLevel,
+            Math.max(0,Math.min(5,Number(window.systemSettings?.rushLevel)||0))
+        );
+    }catch(_){}
+
+    /*
+      Le bouton Anti-Rush calcule aussi un niveau LIVE local.
+      Il sert d'alerte immédiate sans attendre l'ouverture d'anti-rush.html.
+      Le serveur reste l'autorité pour les actions métier critiques.
+    */
+    const liveLevel=Math.max(
+        0,
+        Math.min(5,Number(window.__ichefAntiRushLiveLevel)||0)
+    );
+
+    return Math.max(serverLevel,liveLevel);
 }
 
 function arThresholds(){
@@ -20854,5 +20880,692 @@ if(document.readyState==="loading"){
     setTimeout(patchTopbarForMaxUp, 1000);
 })();
 </script>
+
+<!-- =========================================================
+     iCHEF — ANTI-RUSH SIGNAL LIVE V1
+     Le bouton devient un voyant opérationnel permanent.
+     Aucune ouverture de fenêtre nécessaire pour être averti.
+     ========================================================= -->
+<style id="ichef-anti-rush-live-signal-css">
+
+#btn-anti-rush-panel{
+    position:relative !important;
+    display:flex !important;
+    align-items:center !important;
+    gap:7px !important;
+    min-width:150px !important;
+    transition:
+        border-color .18s ease,
+        background-color .18s ease,
+        box-shadow .18s ease !important;
+}
+
+#anti-rush-toggle-label{
+    display:flex !important;
+    flex-direction:column !important;
+    align-items:flex-start !important;
+    justify-content:center !important;
+    min-width:0 !important;
+    line-height:1.02 !important;
+}
+
+#anti-rush-toggle-label .ichef-ar-live-main{
+    display:block;
+    font-size:.64rem;
+    font-weight:1000;
+    letter-spacing:.45px;
+    white-space:nowrap;
+}
+
+#anti-rush-toggle-label .ichef-ar-live-sector{
+    display:block;
+    margin-top:3px;
+    max-width:190px;
+    overflow:hidden;
+    text-overflow:ellipsis;
+    white-space:nowrap;
+    font-size:.49rem;
+    font-weight:900;
+    letter-spacing:.25px;
+    opacity:.92;
+}
+
+/* Mini jauge, même logique visuelle que la capture fournie. */
+.ichef-ar-button-meter{
+    flex:0 0 auto;
+    display:flex;
+    align-items:center;
+    gap:2px;
+    margin-left:2px;
+}
+
+.ichef-ar-button-meter i{
+    display:block;
+    width:7px;
+    height:18px;
+    border-radius:2px;
+    background:#343a3c;
+}
+
+.ichef-ar-button-meter i.on:nth-child(1),
+.ichef-ar-button-meter i.on:nth-child(2){
+    background:#22c55e;
+}
+.ichef-ar-button-meter i.on:nth-child(3){
+    background:#facc15;
+}
+.ichef-ar-button-meter i.on:nth-child(4){
+    background:#f59e0b;
+}
+.ichef-ar-button-meter i.on:nth-child(5){
+    background:#f97316;
+}
+.ichef-ar-button-meter i.on:nth-child(6){
+    background:#ef4444;
+}
+
+/* États du bouton */
+#btn-anti-rush-panel.ichef-ar-live-calm{
+    border-color:rgba(34,197,94,.46) !important;
+    color:#b8f6c7 !important;
+    background:rgba(34,197,94,.055) !important;
+    box-shadow:none !important;
+}
+
+#btn-anti-rush-panel.ichef-ar-live-watch{
+    border-color:#e5c72d !important;
+    color:#ffe75f !important;
+    background:rgba(229,199,45,.10) !important;
+    box-shadow:0 0 12px rgba(229,199,45,.15) !important;
+}
+
+#btn-anti-rush-panel.ichef-ar-live-hot{
+    border-color:#f59e0b !important;
+    color:#ffc04f !important;
+    background:rgba(245,158,11,.12) !important;
+    box-shadow:0 0 15px rgba(245,158,11,.20) !important;
+}
+
+#btn-anti-rush-panel.ichef-ar-live-critical{
+    border-color:#ef4444 !important;
+    color:#ff7373 !important;
+    background:rgba(239,68,68,.13) !important;
+    box-shadow:0 0 17px rgba(239,68,68,.25) !important;
+}
+
+/* Le bouton dans la barre de commande reçoit le même état. */
+#ichef-anti-rush-drawer-btn.ichef-ar-live-calm{
+    border-color:rgba(34,197,94,.46) !important;
+    color:#b8f6c7 !important;
+}
+#ichef-anti-rush-drawer-btn.ichef-ar-live-watch{
+    border-color:#e5c72d !important;
+    color:#ffe75f !important;
+    background:rgba(229,199,45,.10) !important;
+}
+#ichef-anti-rush-drawer-btn.ichef-ar-live-hot{
+    border-color:#f59e0b !important;
+    color:#ffc04f !important;
+    background:rgba(245,158,11,.12) !important;
+}
+#ichef-anti-rush-drawer-btn.ichef-ar-live-critical{
+    border-color:#ef4444 !important;
+    color:#ff7373 !important;
+    background:rgba(239,68,68,.13) !important;
+}
+
+/* Petit point d'alerte : fixe, pas de clignotement. */
+.ichef-ar-live-dot{
+    width:7px;
+    height:7px;
+    border-radius:50%;
+    flex:0 0 7px;
+    background:#22c55e;
+}
+.ichef-ar-live-watch .ichef-ar-live-dot{background:#facc15}
+.ichef-ar-live-hot .ichef-ar-live-dot{background:#f59e0b}
+.ichef-ar-live-critical .ichef-ar-live-dot{background:#ef4444}
+
+@media(max-width:1100px){
+    #btn-anti-rush-panel{
+        min-width:132px !important;
+    }
+    #anti-rush-toggle-label .ichef-ar-live-sector{
+        max-width:135px;
+    }
+    .ichef-ar-button-meter i{
+        width:5px;
+        height:15px;
+    }
+}
+
+</style>
+
+<script id="ichef-anti-rush-live-signal-js">
+(function(){
+"use strict";
+
+const SYSTEM_KEYS=/MASTER|ARCHIVE|SETTINGS|RESERVATIONS|ALERTS|CATEGORIES|STAFF_ACCESS|LOYALTY/i;
+const START_RUSH_AT=35;
+
+let lastSignature="";
+let fallbackTimer=null;
+
+function st(v){
+    return String(v==null?"":v)
+        .normalize("NFD")
+        .replace(/[\u0300-\u036f]/g,"")
+        .trim()
+        .toUpperCase();
+}
+
+function ts(v){
+    if(v==null || v==="") return null;
+
+    if(typeof v==="number" && Number.isFinite(v)){
+        return v>0 && v<1e11 ? v*1000 : v;
+    }
+
+    const n=Number(v);
+    if(String(v).trim()!=="" && Number.isFinite(n)){
+        return n>0 && n<1e11 ? n*1000 : n;
+    }
+
+    const p=Date.parse(v);
+    return Number.isFinite(p)?p:null;
+}
+
+function cancelled(item){
+    const s=st(item?.status);
+    const q=st(item?.sequenceStatus);
+
+    return item?.cancelled===true ||
+        item?.canceled===true ||
+        s.includes("ANNU") ||
+        s.includes("CANCEL") ||
+        q.includes("ANNU") ||
+        q.includes("CANCEL");
+}
+
+function served(item){
+    const s=st(item?.status);
+    const q=st(item?.sequenceStatus);
+
+    return item?.served===true ||
+        s==="SERVI" ||
+        s==="SERVED" ||
+        q==="SERVED";
+}
+
+function taken(item){
+    const s=st(item?.status);
+
+    return item?.pickedByServer===true ||
+        s==="PRIS_PAR_SERVEUR" ||
+        s==="PRIS PAR SERVEUR" ||
+        s==="TAKEN_BY_WAITER" ||
+        s==="RUNNER_TAKEN";
+}
+
+function ready(item){
+    if(!item || cancelled(item) || served(item) || taken(item)) return false;
+
+    const s=st(item.status);
+    const q=st(item.sequenceStatus);
+
+    return item.done===true ||
+        ["READY","PRET_AU_PASS","PRET AU PASS","READY_AT_PASS"].includes(s) ||
+        ["READY","PRET_AU_PASS","PRET AU PASS","READY_AT_PASS"].includes(q);
+}
+
+function sent(item){
+    if(!item || cancelled(item) || served(item)) return false;
+
+    const s=st(item.status);
+    const q=st(item.sequenceStatus);
+
+    if(item.isSent===true) return true;
+
+    return [
+        "PRODUCTION",
+        "READY",
+        "PRET_AU_PASS",
+        "PRET AU PASS"
+    ].includes(q) || [
+        "EN_PREPARATION",
+        "EN PREPARATION",
+        "READY",
+        "PRET_AU_PASS",
+        "PRET AU PASS"
+    ].includes(s);
+}
+
+function qty(item){
+    return Math.max(
+        1,
+        Number(item?.qty ?? item?.quantity ?? 1) || 1
+    );
+}
+
+function destination(item){
+    const raw=st(
+        item?.dest ??
+        item?.destination ??
+        item?.category ??
+        item?.cat ??
+        ""
+    );
+
+    if(
+        raw.includes("BAR") ||
+        raw.includes("BOISSON") ||
+        raw.includes("DRINK") ||
+        raw.includes("COCKTAIL") ||
+        raw.includes("APERITIF") ||
+        raw.includes("APERO")
+    ){
+        return "BAR";
+    }
+
+    return "CUISINE";
+}
+
+function itemSentAt(item,now){
+    return (
+        ts(item?.sentAt) ||
+        ts(item?.productionStartedAt) ||
+        ts(item?.startedAt) ||
+        ts(item?.updatedAt) ||
+        now
+    );
+}
+
+function itemReadyAt(item,now){
+    return (
+        ts(item?.readyAt) ||
+        ts(item?.productionReadyAt) ||
+        ts(item?.updatedAt) ||
+        now
+    );
+}
+
+function getOrders(){
+    try{
+        if(typeof activeOrders!=="undefined" && activeOrders){
+            return activeOrders;
+        }
+    }catch(_){}
+
+    return {};
+}
+
+function snapshot(){
+    const all=getOrders();
+    const now=Date.now();
+
+    let cuisineQty=0;
+    let barQty=0;
+    let passQty=0;
+
+    let cuisineAgeBonus=0;
+    let barAgeBonus=0;
+    let passAgeBonus=0;
+
+    let activeTables=0;
+
+    for(const [tableId,order] of Object.entries(all||{})){
+        if(!tableId || SYSTEM_KEYS.test(tableId)) continue;
+        if(!order || typeof order!=="object") continue;
+
+        try{
+            if(
+                typeof isRealServiceOrder==="function" &&
+                !isRealServiceOrder(tableId,order)
+            ){
+                continue;
+            }
+        }catch(_){}
+
+        const items=Array.isArray(order.items)
+            ? order.items.filter(Boolean)
+            : [];
+
+        if(!items.length) continue;
+
+        let tableActive=false;
+
+        for(const item of items){
+            if(cancelled(item) || served(item)) continue;
+
+            const q=qty(item);
+
+            if(ready(item)){
+                tableActive=true;
+                passQty+=q;
+
+                const waitMin=Math.max(
+                    0,
+                    (now-itemReadyAt(item,now))/60000
+                );
+
+                /*
+                  Le Pass devient sensible très vite :
+                  dès 2 minutes d'attente, la charge monte.
+                */
+                passAgeBonus+=Math.max(
+                    0,
+                    Math.min(30,(waitMin-2)*3*q)
+                );
+
+                continue;
+            }
+
+            if(!sent(item)) continue;
+
+            tableActive=true;
+
+            const dest=destination(item);
+            const ageMin=Math.max(
+                0,
+                (now-itemSentAt(item,now))/60000
+            );
+
+            if(dest==="BAR"){
+                barQty+=q;
+                barAgeBonus+=Math.max(
+                    0,
+                    Math.min(24,(ageMin-4)*2*q)
+                );
+            }else{
+                cuisineQty+=q;
+                cuisineAgeBonus+=Math.max(
+                    0,
+                    Math.min(24,(ageMin-8)*1.5*q)
+                );
+            }
+        }
+
+        if(tableActive) activeTables++;
+    }
+
+    /*
+      On conserve les coefficients historiques du PAD
+      (Cuisine 8 / Bar 10), mais on ne compte plus les articles servis,
+      annulés ou non envoyés. Le Pass repose sur les plats réellement prêts.
+    */
+    const cuisine=Math.min(
+        100,
+        Math.round(cuisineQty*8+cuisineAgeBonus)
+    );
+
+    const bar=Math.min(
+        100,
+        Math.round(barQty*10+barAgeBonus)
+    );
+
+    const pass=Math.min(
+        100,
+        Math.round(passQty*12+passAgeBonus)
+    );
+
+    const maxLoad=Math.max(cuisine,bar,pass);
+
+    let level=0;
+    let state="CALME";
+
+    if(maxLoad>=80){
+        level=5;
+        state="CRITIQUE";
+    }else if(maxLoad>=70){
+        level=4;
+        state="ÉLEVÉ";
+    }else if(maxLoad>=60){
+        level=3;
+        state="TENDU";
+    }else if(maxLoad>=45){
+        level=2;
+        state="ACTIF";
+    }else if(maxLoad>=START_RUSH_AT){
+        level=1;
+        state="VIGILANCE";
+    }
+
+    const sectors=[
+        ["CUISINE",cuisine],
+        ["BAR",bar],
+        ["PASS",pass]
+    ]
+    .filter(([,load])=>load>=START_RUSH_AT)
+    .sort((a,b)=>b[1]-a[1]);
+
+    return {
+        cuisine,
+        bar,
+        pass,
+        maxLoad,
+        level,
+        state,
+        sectors,
+        activeTables
+    };
+}
+
+function sectorText(snap){
+    if(!snap.sectors.length){
+        return "CALME";
+    }
+
+    return snap.sectors
+        .map(([name,load])=>`${name} ${load}%`)
+        .join(" · ");
+}
+
+function visualClass(level){
+    if(level>=5) return "ichef-ar-live-critical";
+    if(level>=3) return "ichef-ar-live-hot";
+    if(level>=1) return "ichef-ar-live-watch";
+    return "ichef-ar-live-calm";
+}
+
+function ensureMeter(btn){
+    if(!btn) return null;
+
+    let meter=btn.querySelector(".ichef-ar-button-meter");
+
+    if(!meter){
+        meter=document.createElement("span");
+        meter.className="ichef-ar-button-meter";
+        meter.setAttribute("aria-hidden","true");
+
+        for(let i=0;i<6;i++){
+            meter.appendChild(document.createElement("i"));
+        }
+
+        btn.appendChild(meter);
+    }
+
+    return meter;
+}
+
+function paintMeter(meter,level){
+    if(!meter) return;
+
+    /*
+      6 positions = états 0 à 5.
+      Comme sur la capture : au niveau 0, le premier segment vert
+      représente l'état CALME actuel.
+    */
+    meter.querySelectorAll("i").forEach((el,idx)=>{
+        el.classList.toggle("on",idx<=level);
+    });
+}
+
+function clearClasses(btn){
+    if(!btn) return;
+
+    btn.classList.remove(
+        "ichef-ar-live-calm",
+        "ichef-ar-live-watch",
+        "ichef-ar-live-hot",
+        "ichef-ar-live-critical"
+    );
+}
+
+function updateMainButton(snap){
+    const btn=document.getElementById("btn-anti-rush-panel");
+    const label=document.getElementById("anti-rush-toggle-label");
+
+    if(!btn || !label) return;
+
+    const panel=document.getElementById("anti-rush-server-panel");
+    const open=!!panel?.classList.contains("open");
+
+    clearClasses(btn);
+    btn.classList.add(visualClass(snap.level));
+
+    const prefix=
+        snap.level===0
+            ? "ANTI-RUSH"
+            : snap.level>=4
+                ? "🔥 ANTI-RUSH"
+                : "⚠ ANTI-RUSH";
+
+    label.innerHTML=
+        `<span class="ichef-ar-live-main">${
+            open ? "✕ FERMER" : `${prefix} · N${snap.level}`
+        }</span>`+
+        `<span class="ichef-ar-live-sector">${
+            sectorText(snap)
+        }</span>`;
+
+    const meter=ensureMeter(btn);
+    paintMeter(meter,snap.level);
+
+    btn.title=
+        snap.level===0
+            ? "Anti-Rush : service calme"
+            : `Anti-Rush ${snap.state} — ${sectorText(snap)}`;
+}
+
+function updateDrawerButton(snap){
+    const btn=document.getElementById("ichef-anti-rush-drawer-btn");
+    if(!btn) return;
+
+    const panel=document.getElementById("anti-rush-server-panel");
+    const open=!!panel?.classList.contains("open");
+
+    clearClasses(btn);
+    btn.classList.add(visualClass(snap.level));
+
+    btn.innerHTML=
+        open
+            ? `✕ FERMER · N${snap.level}`
+            : snap.level===0
+                ? "⚡ ANTI-RUSH · CALME"
+                : `${snap.level>=4?"🔥":"⚠"} ${sectorText(snap)}`;
+
+    btn.title=
+        snap.level===0
+            ? "Anti-Rush : service calme"
+            : `Niveau ${snap.level} ${snap.state} — ${sectorText(snap)}`;
+}
+
+function updateWindowHeader(snap){
+    /*
+      Si la fenêtre est déjà ouverte, son en-tête reflète immédiatement
+      le niveau local sans attendre le prochain cycle.
+    */
+    const levelEl=document.getElementById("ichef-ar-level");
+
+    if(levelEl){
+        levelEl.textContent=`NIVEAU ${snap.level} · ${snap.state}`;
+    }
+
+    document.querySelectorAll("#ichef-ar-meter i").forEach((el,idx)=>{
+        el.classList.toggle("on",idx<=snap.level);
+    });
+}
+
+function update(force=false){
+    const snap=snapshot();
+
+    /*
+      Rend le niveau local disponible au moteur de la fenêtre Anti-Rush.
+    */
+    window.__ichefAntiRushLiveLevel=snap.level;
+    window.__ichefAntiRushLiveSnapshot=snap;
+
+    const signature=JSON.stringify([
+        snap.cuisine,
+        snap.bar,
+        snap.pass,
+        snap.level,
+        snap.state,
+        snap.sectors
+    ]);
+
+    if(!force && signature===lastSignature){
+        return snap;
+    }
+
+    lastSignature=signature;
+
+    updateMainButton(snap);
+    updateDrawerButton(snap);
+    updateWindowHeader(snap);
+
+    return snap;
+}
+
+window.ichefUpdateAntiRushSignal=function(){
+    return update(false);
+};
+
+window.ichefGetAntiRushLiveSnapshot=function(){
+    return window.__ichefAntiRushLiveSnapshot || update(true);
+};
+
+function boot(){
+    update(true);
+
+    /*
+      Très léger fallback chrono :
+      même si aucune commande ne change, une attente peut progressivement
+      devenir un rush. 5 secondes suffit et ne réordonne aucun DOM.
+    */
+    if(fallbackTimer) clearInterval(fallbackTimer);
+
+    fallbackTimer=setInterval(()=>{
+        if(document.hidden) return;
+        update(false);
+    },5000);
+
+    document.addEventListener("visibilitychange",()=>{
+        if(!document.hidden) update(true);
+    });
+
+    /*
+      Après clic ouverture/fermeture, remettre immédiatement le libellé LIVE.
+    */
+    document.addEventListener("click",e=>{
+        if(
+            e.target?.closest?.(
+                "#btn-anti-rush-panel,#ichef-anti-rush-drawer-btn,#ichef-ar-close"
+            )
+        ){
+            setTimeout(()=>update(true),60);
+        }
+    },true);
+}
+
+if(document.readyState==="loading"){
+    document.addEventListener("DOMContentLoaded",boot,{once:true});
+}else{
+    boot();
+}
+
+})();
+</script>
+
 </body>
 </html>
