@@ -8357,6 +8357,12 @@ header .header-left > div:first-of-type{
           if(typeof updateSequenceServicePanel==='function' && String(currentTableId)===tableId){
             updateSequenceServicePanel();
           }
+          if(typeof window.ichefRefreshCompactOrderCards==='function'){
+            window.ichefRefreshCompactOrderCards();
+          }
+          if(typeof window.ichefSyncReadyBlink==='function'){
+            window.ichefSyncReadyBlink();
+          }
         }catch(err){
           console.warn('[iCHEF] orderLifecycle:',err);
         }
@@ -17906,38 +17912,48 @@ function realOrder(label){
 }
 
 function freshProductionStatus(order){
-    if(!order) return "NONE";
+  if(!order)return "NONE";
 
-    /* IMPORTANT :
-       on recalcule depuis les articles, car le KDS peut avoir passé
-       done/READY avant que l'ancien orderMeta soit rafraîchi. */
-    try{
-        if(typeof window.inferOrderProductionStatus==="function"){
-            return String(window.inferOrderProductionStatus(order)||"WAITING").toUpperCase();
-        }
-    }catch(_){}
+  const norm=v=>String(v||"").trim().toUpperCase()
+    .normalize("NFD").replace(/[\\u0300-\\u036f]/g,"");
 
-    const items=(Array.isArray(order.items)?order.items:[]).filter(Boolean);
-    if(!items.length)return "WAITING";
+  const items=(Array.isArray(order.items)?order.items:[]).filter(Boolean);
+  if(!items.length){
+    const meta=norm(order.productionStatus || order.orderMeta?.productionStatus || order.status);
+    return ["READY","PRET_AU_PASS","PRET AU PASS"].includes(meta) ? "READY" :
+           ["SERVED","SERVI"].includes(meta) ? "SERVED" :
+           meta==="PRODUCTION" ? "PRODUCTION" : "WAITING";
+  }
 
-    if(items.every(i =>
-        i.served===true ||
-        String(i.sequenceStatus||"").toUpperCase()==="SERVED"
-    )){
-        return "SERVED";
-    }
+  const served=i =>
+    i.served===true ||
+    ["SERVED","SERVI"].includes(norm(i.sequenceStatus)) ||
+    ["SERVED","SERVI"].includes(norm(i.status));
 
-    const sent=items.filter(i=>i.isSent===true);
-    if(!sent.length)return "WAITING";
+  const ready=i =>
+    !served(i) && (
+      i.done===true ||
+      ["READY","PRET_AU_PASS","PRET AU PASS","READY_AT_PASS"].includes(norm(i.sequenceStatus)) ||
+      ["READY","PRET_AU_PASS","PRET AU PASS","READY_AT_PASS"].includes(norm(i.status))
+    );
 
-    if(sent.every(i =>
-        i.done===true ||
-        String(i.sequenceStatus||"").toUpperCase()==="READY"
-    )){
-        return "READY";
-    }
+  if(items.every(served)) return "SERVED";
 
-    return "PRODUCTION";
+  /* Une seule assiette/boisson prête suffit pour prévenir le serveur. */
+  if(items.some(ready)) return "READY";
+
+  if(items.some(i=>
+    !served(i) &&
+    i.isSent===true &&
+    !["WAITING","DRAFT"].includes(norm(i.sequenceStatus))
+  )) return "PRODUCTION";
+
+  const meta=norm(order.productionStatus || order.orderMeta?.productionStatus || order.status);
+  if(["READY","PRET_AU_PASS","PRET AU PASS"].includes(meta)) return "READY";
+  if(["SERVED","SERVI"].includes(meta)) return "SERVED";
+  if(meta==="PRODUCTION") return "PRODUCTION";
+
+  return "WAITING";
 }
 
 function paymentFinished(order){
@@ -18304,23 +18320,47 @@ function realOrder(label){
 
 function status(order){
   if(!order)return "NONE";
+
+  const norm=v=>String(v||"").trim().toUpperCase()
+    .normalize("NFD").replace(/[\\u0300-\\u036f]/g,"");
+
   const items=(Array.isArray(order.items)?order.items:[]).filter(Boolean);
-  if(!items.length)return "WAITING";
+  if(!items.length){
+    const meta=norm(order.productionStatus || order.orderMeta?.productionStatus || order.status);
+    return ["READY","PRET_AU_PASS","PRET AU PASS"].includes(meta) ? "READY" :
+           ["SERVED","SERVI"].includes(meta) ? "SERVED" :
+           meta==="PRODUCTION" ? "PRODUCTION" : "WAITING";
+  }
 
-  if(items.every(i =>
+  const served=i =>
     i.served===true ||
-    String(i.sequenceStatus||"").toUpperCase()==="SERVED"
-  )) return "SERVED";
+    ["SERVED","SERVI"].includes(norm(i.sequenceStatus)) ||
+    ["SERVED","SERVI"].includes(norm(i.status));
 
-  const sent=items.filter(i=>i.isSent===true);
-  if(!sent.length)return "WAITING";
+  const ready=i =>
+    !served(i) && (
+      i.done===true ||
+      ["READY","PRET_AU_PASS","PRET AU PASS","READY_AT_PASS"].includes(norm(i.sequenceStatus)) ||
+      ["READY","PRET_AU_PASS","PRET AU PASS","READY_AT_PASS"].includes(norm(i.status))
+    );
 
-  if(sent.every(i =>
-    i.done===true ||
-    String(i.sequenceStatus||"").toUpperCase()==="READY"
-  )) return "READY";
+  if(items.every(served)) return "SERVED";
 
-  return "PRODUCTION";
+  /* Une seule assiette/boisson prête suffit pour prévenir le serveur. */
+  if(items.some(ready)) return "READY";
+
+  if(items.some(i=>
+    !served(i) &&
+    i.isSent===true &&
+    !["WAITING","DRAFT"].includes(norm(i.sequenceStatus))
+  )) return "PRODUCTION";
+
+  const meta=norm(order.productionStatus || order.orderMeta?.productionStatus || order.status);
+  if(["READY","PRET_AU_PASS","PRET AU PASS"].includes(meta)) return "READY";
+  if(["SERVED","SERVI"].includes(meta)) return "SERVED";
+  if(meta==="PRODUCTION") return "PRODUCTION";
+
+  return "WAITING";
 }
 
 function syncCards(){
