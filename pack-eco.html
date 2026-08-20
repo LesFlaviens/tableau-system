@@ -22966,5 +22966,133 @@ window.ichefCloseTableDetails=closeDetails;
 })();
 </script>
 
+
+
+<!-- =========================================================
+     iCHEF — CAPTURE 1 : APPUI 0,5 s = DÉTAIL TABLE
+     Tap court inchangé = ouverture commande
+     ========================================================= -->
+<style id="ichef-capture1-longpress-details-v1-css">
+#pro-table-grid .pro-table-card{
+    touch-action:manipulation;
+    user-select:none;
+    -webkit-user-select:none;
+    -webkit-touch-callout:none;
+}
+#pro-table-grid .pro-table-card.ichef-c1-longpress-arming{
+    border-color:#c5a059 !important;
+    box-shadow:0 0 0 2px rgba(197,160,89,.22),0 8px 20px rgba(0,0,0,.22) !important;
+    transform:scale(.975);
+    transition:transform .12s ease,border-color .12s ease,box-shadow .12s ease;
+}
+#pro-table-grid .pro-table-card.ichef-c1-longpress-opened{
+    border-color:#c5a059 !important;
+    box-shadow:0 0 0 2px rgba(197,160,89,.25),0 0 18px rgba(197,160,89,.18) !important;
+}
+</style>
+<script id="ichef-capture1-longpress-details-v1-js">
+(function(){
+'use strict';
+if(window.__ICHEF_CAPTURE1_LONGPRESS_DETAILS_V1__) return;
+window.__ICHEF_CAPTURE1_LONGPRESS_DETAILS_V1__=true;
+
+const HOLD_MS=500;
+const MOVE_CANCEL_PX=14;
+let press=null;
+let suppressUntil=0;
+let suppressLabel='';
+
+function cardFromTarget(target){
+    return target?.closest?.('#pro-table-grid .pro-table-card') || null;
+}
+function labelOfCard(card){
+    return String(card?.dataset?.table ?? '').trim();
+}
+function cancelPress(){
+    if(!press) return;
+    clearTimeout(press.timer);
+    press.card?.classList.remove('ichef-c1-longpress-arming');
+    press=null;
+}
+function openDetails(label,card){
+    if(!label) return;
+    if(typeof window.ichefOpenTableDetails!=='function') return;
+    window.ichefOpenTableDetails(label,card);
+    card.classList.add('ichef-c1-longpress-opened');
+    setTimeout(()=>card.classList.remove('ichef-c1-longpress-opened'),240);
+    suppressLabel=label;
+    suppressUntil=Date.now()+1000;
+}
+
+/* Appui long sur les cartes de Capture 1. */
+document.addEventListener('pointerdown',function(e){
+    const card=cardFromTarget(e.target);
+    if(!card) return;
+    if(document.body.classList.contains('edit-mode')) return;
+    try{ if(typeof pendingAssignResa!=='undefined' && pendingAssignResa) return; }catch(_){ }
+
+    cancelPress();
+    const label=labelOfCard(card);
+    if(!label) return;
+
+    press={
+        card,
+        label,
+        pointerId:e.pointerId,
+        startX:e.clientX,
+        startY:e.clientY,
+        opened:false,
+        timer:null
+    };
+
+    card.classList.add('ichef-c1-longpress-arming');
+    press.timer=setTimeout(function(){
+        if(!press || press.label!==label || press.card!==card) return;
+        press.opened=true;
+        card.classList.remove('ichef-c1-longpress-arming');
+        openDetails(label,card);
+    },HOLD_MS);
+},true);
+
+document.addEventListener('pointermove',function(e){
+    if(!press || e.pointerId!==press.pointerId || press.opened) return;
+    const dx=e.clientX-press.startX;
+    const dy=e.clientY-press.startY;
+    if(Math.hypot(dx,dy)>MOVE_CANCEL_PX) cancelPress();
+},true);
+
+document.addEventListener('pointercancel',cancelPress,true);
+
+document.addEventListener('pointerup',function(e){
+    if(!press || e.pointerId!==press.pointerId) return;
+    const opened=press.opened;
+    const label=press.label;
+    cancelPress();
+    if(opened){
+        suppressLabel=label;
+        suppressUntil=Date.now()+1000;
+        e.preventDefault();
+        e.stopImmediatePropagation();
+    }
+},true);
+
+/* Empêche uniquement le clic synthétique qui suit l'appui long.
+   Un tap court continue donc d'utiliser le listener actuel de .pro-table-card. */
+function suppressLongPressClick(e){
+    if(Date.now()>suppressUntil) return;
+    const card=cardFromTarget(e.target);
+    if(!card) return;
+    if(suppressLabel && labelOfCard(card)!==suppressLabel) return;
+    e.preventDefault();
+    e.stopImmediatePropagation();
+}
+document.addEventListener('click',suppressLongPressClick,true);
+document.addEventListener('touchend',suppressLongPressClick,{capture:true,passive:false});
+
+/* Si la fenêtre perd le focus pendant l'appui, on annule proprement. */
+window.addEventListener('blur',cancelPress);
+})();
+</script>
+
 </body>
 </html>
