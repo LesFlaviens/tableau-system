@@ -20640,6 +20640,219 @@ if(document.readyState==="loading"){
 
 })();
 </script>
+<!-- =========================================================
+     iCHEF PATCH — BARRE TACTILE HAUTE SANS LIMITE
+     Permet de monter la barre jusqu'à l'en-tête du ticket
+     ========================================================= -->
+<style id="ichef-ticket-topbar-max-up-style">
+@media (min-width: 900px) {
+    /* Placement relatif nécessaire pour que les z-index se superposent bien */
+    #order-drawer .ticket-view > * {
+        position: relative;
+    }
+    
+    /* On place la barre tactile et la liste des plats au premier plan */
+    #ichef-ticket-topbar-v8 {
+        z-index: 2000 !important;
+    }
+    
+    #ticket-list {
+        position: relative !important;
+        z-index: 1999 !important;
+        /* Garantit que le fond est bien opaque pour masquer le contenu en dessous */
+        background: #f7f4ee !important; 
+        box-shadow: 0 -10px 25px rgba(0,0,0,0.05); /* Légère ombre pour marquer la séparation */
+    }
+}
+</style>
 
+<script id="ichef-ticket-topbar-max-up-script">
+(function(){
+    "use strict";
+
+    function patchTopbarForMaxUp() {
+        if (window.innerWidth < 900) return;
+
+        const originalBar = document.getElementById("ichef-ticket-topbar-v8");
+        // S'il n'y a pas de barre ou si elle est déjà corrigée, on ignore
+        if (!originalBar || originalBar.dataset.patchedMaxUp === "1") return;
+
+        // Cloner la barre pour tuer les anciens EventListeners qui bloquaient la marge à zéro
+        const newBar = originalBar.cloneNode(true);
+        newBar.dataset.patchedMaxUp = "1";
+        originalBar.parentNode.replaceChild(newBar, originalBar);
+
+        const GAP_KEY = "ichef_ticket_topbar_v9_gap";
+        const HEIGHT_KEY = "ichef_ticket_split_v4";
+        const MIN_LIST = 36;
+
+        let drag = null;
+        let raf = 0;
+        let pendingGap = 0;
+        let pendingListHeight = 0;
+
+        function parts(){
+            const drawer = document.getElementById("order-drawer");
+            if(!drawer || !drawer.classList.contains("open")) return null;
+            const ticket = drawer.querySelector(".ticket-view");
+            const list = document.getElementById("ticket-list");
+            if(!ticket || !list) return null;
+            return {drawer, ticket, list};
+        }
+
+        // Renvoie la marge actuelle (accepte désormais les nombres négatifs)
+        function currentGap(bar){
+            const raw = getComputedStyle(bar).getPropertyValue("--ichef-topbar-v8-gap");
+            const n = parseFloat(raw);
+            return Number.isFinite(n) ? n : 0; 
+        }
+
+        function setGap(bar, gap){
+            bar.style.setProperty("--ichef-topbar-v8-gap", Math.round(gap) + "px", "important");
+        }
+
+        function setListHeight(list, h){
+            const value = Math.max(MIN_LIST, Math.round(Number(h) || MIN_LIST));
+            list.classList.add("ichef-ticket-list-resizable");
+            list.style.setProperty("--ichef-ticket-white-h", value + "px", "important");
+        }
+
+        function applyFrame(){
+            raf = 0;
+            if(!drag) return;
+
+            const maxGap = Math.max(drag.startGap, drag.startGap + Math.max(0, drag.startListHeight - MIN_LIST));
+
+            // CALCUL DE LA NOUVELLE LIMITE HAUTE :
+            // On peut monter jusqu'à l'en-tête du ticket (là où il y a écrit "TABLE XX")
+            const header = drag.ticket.firstElementChild; 
+            const headerBottom = header ? header.getBoundingClientRect().bottom : drag.ticket.getBoundingClientRect().top;
+            const barTop = drag.bar.getBoundingClientRect().top;
+
+            // Calcul de la marge négative maximale tolérée (-5px de padding par sécurité)
+            const distanceToHeader = barTop - headerBottom;
+            const minGap = drag.startGap - distanceToHeader + 5; 
+
+            // Clamp avec la nouvelle limite (minGap peut être largement < 0)
+            const gap = Math.max(minGap, Math.min(pendingGap, maxGap));
+            const moved = gap - drag.startGap;
+            const listHeight = Math.max(MIN_LIST, drag.startListHeight - moved);
+
+            setGap(drag.bar, gap);
+            setListHeight(drag.list, listHeight);
+        }
+
+        function move(e){
+            if(!drag || e.pointerId !== drag.pointerId) return;
+            if(e.cancelable) e.preventDefault();
+            e.stopPropagation();
+
+            const delta = e.clientY - drag.startY;
+            pendingGap = drag.startGap + delta;
+            pendingListHeight = drag.startListHeight - delta;
+
+            if(!raf) raf = requestAnimationFrame(applyFrame);
+        }
+
+        function finish(e){
+            if(!drag) return;
+            if(e && e.pointerId != null && e.pointerId !== drag.pointerId) return;
+
+            if(raf){
+                cancelAnimationFrame(raf);
+                raf = 0;
+                applyFrame();
+            }
+
+            const gap = currentGap(drag.bar);
+            const listHeight = drag.list.getBoundingClientRect().height;
+
+            try{
+                localStorage.setItem(GAP_KEY, String(Math.round(gap)));
+                localStorage.setItem(HEIGHT_KEY, String(Math.round(listHeight)));
+            }catch(_){}
+
+            drag.bar.classList.remove("dragging");
+            document.body.classList.remove("ichef-topbar-v8-dragging");
+
+            try{ drag.bar.releasePointerCapture(drag.pointerId); }catch(_){}
+
+            window.removeEventListener("pointermove", move, true);
+            window.removeEventListener("pointerup", finish, true);
+            window.removeEventListener("pointercancel", finish, true);
+            drag = null;
+        }
+
+        function start(e){
+            if(window.innerWidth < 900) return;
+            if(e.pointerType === "mouse" && e.button !== 0) return;
+
+            const p = parts();
+            if(!p) return;
+
+            if(e.cancelable) e.preventDefault();
+            e.stopPropagation();
+            if(typeof e.stopImmediatePropagation === "function") e.stopImmediatePropagation();
+
+            const h = p.list.getBoundingClientRect().height;
+
+            drag = {
+                ...p,
+                bar: newBar,
+                pointerId: e.pointerId,
+                startY: e.clientY,
+                startGap: currentGap(newBar),
+                startListHeight: Math.max(MIN_LIST, h)
+            };
+
+            pendingGap = drag.startGap;
+            pendingListHeight = drag.startListHeight;
+
+            newBar.classList.add("dragging");
+            document.body.classList.add("ichef-topbar-v8-dragging");
+
+            try{ newBar.setPointerCapture(e.pointerId); }catch(_){}
+
+            window.addEventListener("pointermove", move, {capture:true, passive:false});
+            window.addEventListener("pointerup", finish, {capture:true, passive:false});
+            window.addEventListener("pointercancel", finish, {capture:true, passive:false});
+        }
+
+        function reset(){
+            const p = parts();
+            if(!p) return;
+            setGap(newBar, 0); // Retour à la position normale sous l'observation
+            const h = p.list.getBoundingClientRect().height;
+            setListHeight(p.list, h);
+            try{
+                localStorage.setItem(GAP_KEY, "0");
+                localStorage.setItem(HEIGHT_KEY, String(Math.round(h)));
+            }catch(_){}
+        }
+
+        newBar.addEventListener("pointerdown", start, {passive:false});
+        newBar.addEventListener("dblclick", function(e){
+            e.preventDefault();
+            reset();
+        });
+
+        // Restaure la dernière position si elle a été sauvegardée
+        try {
+            const savedGap = parseFloat(localStorage.getItem(GAP_KEY));
+            if(Number.isFinite(savedGap)) {
+                setGap(newBar, savedGap);
+            }
+        } catch(e) {}
+    }
+
+    // Le script observe l'apparition de la barre pour lui injecter le correctif immédiatement
+    const observer = new MutationObserver(() => requestAnimationFrame(patchTopbarForMaxUp));
+    observer.observe(document.documentElement, { childList: true, subtree: true });
+
+    document.addEventListener("DOMContentLoaded", patchTopbarForMaxUp);
+    setTimeout(patchTopbarForMaxUp, 300);
+    setTimeout(patchTopbarForMaxUp, 1000);
+})();
+</script>
 </body>
 </html>
