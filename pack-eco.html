@@ -15447,5 +15447,245 @@ setTimeout(build,250);
 })();
 </script>
 
+
+<style id="ichef-plan-zoom-controls-style">
+#ichef-plan-zoom-controls{
+    position:fixed;
+    right:18px;
+    bottom:78px;
+    z-index:2147482000;
+    display:flex;
+    flex-direction:column;
+    gap:8px;
+}
+#ichef-plan-zoom-controls button{
+    width:52px;
+    height:52px;
+    border-radius:12px;
+    border:1px solid rgba(212,175,55,.5);
+    background:#07100c;
+    color:#fff;
+    font-size:1.35rem;
+    font-weight:900;
+    cursor:pointer;
+    box-shadow:0 8px 24px rgba(0,0,0,.35);
+}
+#ichef-plan-zoom-controls button:active{
+    transform:scale(.97);
+}
+#ichef-plan-zoom-value{
+    min-width:52px;
+    text-align:center;
+    color:#d4af37;
+    font-size:.72rem;
+    font-weight:900;
+}
+@media(max-width:700px){
+    #ichef-plan-zoom-controls{
+        right:10px;
+        bottom:64px;
+    }
+    #ichef-plan-zoom-controls button{
+        width:46px;
+        height:46px;
+        font-size:1.15rem;
+    }
+}
+</style>
+
+<div id="ichef-plan-zoom-controls" aria-label="Zoom du plan">
+    <button type="button" id="ichef-plan-zoom-in" title="Zoomer">＋</button>
+    <div id="ichef-plan-zoom-value">100%</div>
+    <button type="button" id="ichef-plan-zoom-out" title="Dézoomer">−</button>
+    <button type="button" id="ichef-plan-zoom-fit" title="Ajuster le plan">⤢</button>
+    <button type="button" id="ichef-plan-zoom-reset" title="Zoom 100%">1:1</button>
+</div>
+
+<script id="ichef-plan-zoom-engine">
+(function(){
+"use strict";
+
+const MIN_ZOOM = 0.35;
+const MAX_ZOOM = 2.0;
+const STEP = 0.10;
+
+let zoom = Number(localStorage.getItem("ichef_plan_zoom") || 1);
+if(!Number.isFinite(zoom)) zoom=1;
+zoom=Math.max(MIN_ZOOM,Math.min(MAX_ZOOM,zoom));
+
+function findPlan(){
+    const candidates = [
+        document.getElementById("floor-plan"),
+        document.querySelector(".floor-plan"),
+        document.querySelector("#plan-editor"),
+        document.querySelector(".plan-editor"),
+        document.querySelector("[data-floor-plan]")
+    ].filter(Boolean);
+
+    return candidates[0] || null;
+}
+
+function findViewport(plan){
+    if(!plan) return null;
+    let p=plan.parentElement;
+    while(p && p!==document.body){
+        const cs=getComputedStyle(p);
+        if(
+            ["auto","scroll"].includes(cs.overflowX) ||
+            ["auto","scroll"].includes(cs.overflowY)
+        ){
+            return p;
+        }
+        p=p.parentElement;
+    }
+    return plan.parentElement;
+}
+
+function applyZoom(value, keepCenter=true){
+    const plan=findPlan();
+    if(!plan) return;
+
+    const viewport=findViewport(plan);
+
+    let centerX=0.5, centerY=0.5;
+    if(keepCenter && viewport){
+        const maxX=Math.max(1,viewport.scrollWidth-viewport.clientWidth);
+        const maxY=Math.max(1,viewport.scrollHeight-viewport.clientHeight);
+        centerX=(viewport.scrollLeft+viewport.clientWidth/2)/maxX;
+        centerY=(viewport.scrollTop+viewport.clientHeight/2)/maxY;
+    }
+
+    zoom=Math.max(MIN_ZOOM,Math.min(MAX_ZOOM,value));
+    localStorage.setItem("ichef_plan_zoom",String(zoom));
+
+    /* Important :
+       transform appliqué uniquement au conteneur du plan.
+       Les x/y enregistrés des tables ne changent jamais. */
+    plan.style.transformOrigin="top left";
+    plan.style.transform=`scale(${zoom})`;
+
+    /* Compensation de surface pour conserver le scroll sur tout le plan. */
+    const baseW=Number(plan.dataset.ichefBaseWidth || plan.scrollWidth || plan.offsetWidth || 1);
+    const baseH=Number(plan.dataset.ichefBaseHeight || plan.scrollHeight || plan.offsetHeight || 1);
+
+    if(!plan.dataset.ichefBaseWidth){
+        plan.dataset.ichefBaseWidth=String(baseW);
+        plan.dataset.ichefBaseHeight=String(baseH);
+    }
+
+    let spacer=plan.parentElement?.querySelector(":scope > .ichef-plan-zoom-spacer");
+    if(!spacer && plan.parentElement){
+        spacer=document.createElement("div");
+        spacer.className="ichef-plan-zoom-spacer";
+        spacer.style.position="absolute";
+        spacer.style.pointerEvents="none";
+        spacer.style.left="0";
+        spacer.style.top="0";
+        spacer.style.zIndex="-1";
+        plan.parentElement.appendChild(spacer);
+    }
+    if(spacer){
+        spacer.style.width=(baseW*zoom)+"px";
+        spacer.style.height=(baseH*zoom)+"px";
+    }
+
+    const label=document.getElementById("ichef-plan-zoom-value");
+    if(label) label.textContent=Math.round(zoom*100)+"%";
+
+    if(keepCenter && viewport){
+        requestAnimationFrame(()=>{
+            const maxX=Math.max(0,viewport.scrollWidth-viewport.clientWidth);
+            const maxY=Math.max(0,viewport.scrollHeight-viewport.clientHeight);
+            viewport.scrollLeft=Math.max(0,centerX*maxX-viewport.clientWidth/2);
+            viewport.scrollTop=Math.max(0,centerY*maxY-viewport.clientHeight/2);
+        });
+    }
+}
+
+function fitPlan(){
+    const plan=findPlan();
+    if(!plan) return;
+    const viewport=findViewport(plan);
+    if(!viewport) return;
+
+    /* Mesure sans le scale courant */
+    const previous=plan.style.transform;
+    plan.style.transform="none";
+
+    const w=Math.max(plan.scrollWidth,plan.offsetWidth,1);
+    const h=Math.max(plan.scrollHeight,plan.offsetHeight,1);
+    const vw=Math.max(viewport.clientWidth-20,1);
+    const vh=Math.max(viewport.clientHeight-20,1);
+
+    plan.style.transform=previous;
+
+    const fit=Math.min(vw/w,vh/h,1);
+    applyZoom(Math.max(MIN_ZOOM,fit),false);
+
+    requestAnimationFrame(()=>{
+        viewport.scrollLeft=0;
+        viewport.scrollTop=0;
+    });
+}
+
+document.getElementById("ichef-plan-zoom-in")?.addEventListener("click",()=>applyZoom(zoom+STEP));
+document.getElementById("ichef-plan-zoom-out")?.addEventListener("click",()=>applyZoom(zoom-STEP));
+document.getElementById("ichef-plan-zoom-fit")?.addEventListener("click",fitPlan);
+document.getElementById("ichef-plan-zoom-reset")?.addEventListener("click",()=>applyZoom(1));
+
+/* Ctrl + molette sur ordinateur */
+window.addEventListener("wheel",e=>{
+    const plan=findPlan();
+    if(!plan || !e.ctrlKey) return;
+    if(!plan.contains(e.target)) return;
+
+    e.preventDefault();
+    applyZoom(zoom + (e.deltaY<0 ? STEP : -STEP));
+},{passive:false});
+
+/* Pincement tactile sur le plan */
+let pinchStartDist=0;
+let pinchStartZoom=1;
+
+function distance(t1,t2){
+    const dx=t1.clientX-t2.clientX;
+    const dy=t1.clientY-t2.clientY;
+    return Math.sqrt(dx*dx+dy*dy);
+}
+window.addEventListener("touchstart",e=>{
+    const plan=findPlan();
+    if(!plan || !plan.contains(e.target)) return;
+    if(e.touches.length===2){
+        pinchStartDist=distance(e.touches[0],e.touches[1]);
+        pinchStartZoom=zoom;
+    }
+},{passive:true});
+
+window.addEventListener("touchmove",e=>{
+    const plan=findPlan();
+    if(!plan || !plan.contains(e.target)) return;
+    if(e.touches.length===2 && pinchStartDist>0){
+        e.preventDefault();
+        const d=distance(e.touches[0],e.touches[1]);
+        applyZoom(pinchStartZoom*(d/pinchStartDist));
+    }
+},{passive:false});
+
+window.addEventListener("touchend",e=>{
+    if(e.touches.length<2) pinchStartDist=0;
+},{passive:true});
+
+function boot(){
+    setTimeout(()=>applyZoom(zoom,false),300);
+}
+
+if(document.readyState==="loading"){
+    document.addEventListener("DOMContentLoaded",boot,{once:true});
+}else{
+    boot();
+}
+})();
+</script>
+
 </body>
 </html>
