@@ -1,4 +1,4 @@
-Vérification supplémentaire <!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="fr">
 <head>
 <!-- iCHEF PAD : réservations en overlay uniquement, géométrie du plan intacte -->
@@ -18315,6 +18315,7 @@ if(document.readyState==="loading"){
 </style>
 
 <script id="ichef-ready-neon-fixed-js">
+/* PRIORITÉ SERVICE : tables PRÊTES toujours en tête de grille. */
 (function(){
 "use strict";
 
@@ -18390,6 +18391,82 @@ function orderReady(order){
     }
 
     return false;
+}
+
+function readySince(order){
+    if(!order || !Array.isArray(order.items)) return Number.MAX_SAFE_INTEGER;
+
+    const times=order.items
+        .filter(ready)
+        .map(item=>{
+            const raw =
+                item.readyAt ??
+                item.updatedAt ??
+                item.productionReadyAt ??
+                null;
+
+            if(raw==null) return null;
+
+            if(typeof raw==="number" && Number.isFinite(raw)) return raw;
+
+            const parsed=Date.parse(raw);
+            return Number.isFinite(parsed) ? parsed : null;
+        })
+        .filter(v=>Number.isFinite(v));
+
+    return times.length ? Math.min(...times) : Number.MAX_SAFE_INTEGER;
+}
+
+function baseTableIndex(label){
+    try{
+        const wanted=normTable(label);
+        const room=(typeof currentRoom!=="undefined") ? currentRoom : null;
+        const list=(typeof tables!=="undefined" && Array.isArray(tables))
+            ? tables.filter(t=>t && (!room || t.room===room))
+            : [];
+
+        const idx=list.findIndex(t=>normTable(t?.label)===wanted);
+        return idx>=0 ? idx : 999999;
+    }catch(_){
+        return 999999;
+    }
+}
+
+function sortReadyTablesFirst(){
+    const grid=document.querySelector("#pro-table-grid");
+    if(!grid) return;
+
+    const cards=Array.from(grid.querySelectorAll(":scope > .pro-table-card[data-table]"));
+    if(cards.length<2) return;
+
+    const decorated=cards.map(card=>{
+        const label=card.dataset.table || "";
+        const order=findOrder(label);
+        const isReady=orderReady(order);
+
+        return {
+            card,
+            label,
+            isReady,
+            since:isReady ? readySince(order) : Number.MAX_SAFE_INTEGER,
+            base:baseTableIndex(label)
+        };
+    });
+
+    decorated.sort((a,b)=>{
+        if(a.isReady!==b.isReady) return a.isReady ? -1 : 1;
+
+        /* Parmi les PRÊTES : celle qui attend depuis le plus longtemps d'abord. */
+        if(a.isReady && b.isReady && a.since!==b.since){
+            return a.since-b.since;
+        }
+
+        /* Sinon : ordre normal de la salle. */
+        return a.base-b.base;
+    });
+
+    /* appendChild déplace les noeuds existants : aucune recréation des cartes. */
+    decorated.forEach(x=>grid.appendChild(x.card));
 }
 
 function orders(){
@@ -18483,6 +18560,7 @@ function syncFloor(){
 function sync(){
     syncCards();
     syncFloor();
+    sortReadyTablesFirst();
 }
 
 window.ichefRefreshReadyNeon=sync;
