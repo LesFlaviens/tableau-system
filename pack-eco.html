@@ -3554,7 +3554,7 @@ function updateAntiRushServerPanel() {
                             <div style="display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end;">
                                 <button class="btn-mini gold"
                                     style="padding:9px;border-radius:2px;"
-                                    onclick="startAssignResa(${JSON.stringify(r.id)})">
+                                    onclick="ichefOpenReservationTableChooser(${JSON.stringify(r.id)})">
                                     📍 CHOISIR TABLE
                                 </button>
                                 <button class="btn-mini"
@@ -3574,7 +3574,7 @@ function updateAntiRushServerPanel() {
                             </div>
                             <button class="btn-mini"
                                 style="padding:6px 8px;font-size:.65rem;"
-                                onclick="startAssignResa(${JSON.stringify(r.id)})">
+                                onclick="ichefOpenReservationTableChooser(${JSON.stringify(r.id)})">
                                 CHANGER
                             </button>
                         </div>`;
@@ -16809,6 +16809,393 @@ window.ICHEF_RESERVATION_CAPACITY_OPTIMIZER=Object.freeze({
     neverUnderCapacity:true,
     fullRestaurantStop:true
 });
+})();
+</script>
+
+
+<div id="ichef-table-change-modal" class="modal">
+  <div style="background:var(--panel);padding:26px;border-radius:10px;width:min(760px,95vw);max-height:90vh;display:flex;flex-direction:column;border:1px solid var(--border-strong);">
+    <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;border-bottom:1px solid var(--border);padding-bottom:12px;margin-bottom:14px;">
+      <div>
+        <h2 style="margin:0;color:var(--gold);font-size:1.45rem;">📍 CHOISIR UNE TABLE</h2>
+        <div id="ichef-table-change-subtitle" style="margin-top:4px;color:var(--text-muted);font-size:.72rem;"></div>
+      </div>
+      <button class="btn-mini" type="button" onclick="ichefCloseReservationTableChooser()">✕ FERMER</button>
+    </div>
+
+    <div id="ichef-table-change-info"
+         style="display:none;margin-bottom:12px;padding:10px 12px;border:1px solid var(--border);border-radius:7px;font-size:.72rem;line-height:1.4;">
+    </div>
+
+    <div id="ichef-table-change-list"
+         style="flex:1;min-height:0;overflow-y:auto;display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:9px;padding-right:4px;">
+    </div>
+
+    <div style="display:flex;gap:8px;margin-top:14px;padding-top:12px;border-top:1px solid var(--border);">
+      <button class="btn-mini" type="button" style="flex:1;" onclick="ichefCloseReservationTableChooser()">ANNULER</button>
+      <button class="btn-mini gold" type="button" style="flex:1;" onclick="ichefUsePlanForReservationChoice()">🗺️ CHOISIR SUR LE PLAN</button>
+    </div>
+  </div>
+</div>
+
+
+<style id="ichef-table-change-style">
+.ichef-table-choice-card{
+    min-height:92px;
+    border:1px solid var(--border-strong);
+    background:#090909;
+    color:#fff;
+    border-radius:8px;
+    padding:12px;
+    text-align:left;
+    cursor:pointer;
+    display:flex;
+    flex-direction:column;
+    justify-content:space-between;
+    gap:7px;
+}
+.ichef-table-choice-card:hover,
+.ichef-table-choice-card:active{
+    border-color:var(--gold);
+    background:var(--gold-dim);
+}
+.ichef-table-choice-card.best{
+    border-color:#10b981;
+    box-shadow:inset 0 0 0 1px rgba(16,185,129,.15);
+}
+.ichef-table-choice-card.exact{
+    border-color:#a855f7;
+}
+.ichef-table-choice-head{
+    display:flex;
+    justify-content:space-between;
+    align-items:center;
+    gap:8px;
+}
+.ichef-table-choice-name{
+    font-family:'Playfair Display',serif;
+    font-size:1.25rem;
+    font-weight:800;
+}
+.ichef-table-choice-cap{
+    color:var(--text-muted);
+    font-size:.7rem;
+    font-weight:800;
+}
+.ichef-table-choice-score{
+    display:flex;
+    align-items:center;
+    justify-content:space-between;
+    gap:8px;
+    font-size:.66rem;
+}
+.ichef-table-choice-tag{
+    border:1px solid var(--border);
+    border-radius:999px;
+    padding:3px 6px;
+    font-weight:900;
+}
+.ichef-table-choice-tag.exact{color:#d8b4fe;border-color:#a855f7}
+.ichef-table-choice-tag.good{color:#6ee7b7;border-color:#10b981}
+.ichef-table-choice-tag.ok{color:#fbbf24;border-color:#f59e0b}
+</style>
+
+<script id="ichef-table-change-engine">
+(function(){
+"use strict";
+
+let currentChooserReservation = null;
+
+function tcNorm(v){ return String(v == null ? "" : v).trim(); }
+function tcId(r){ return String(r?.id || r?.reservationId || r?.bookingId || ""); }
+function tcPax(r){ return parseInt(r?.couverts || r?.pax || r?.personnes || r?.guests || 0) || 1; }
+function tcCap(t){ return parseInt(t?.pax || t?.capacity || t?.seats || 0) || 0; }
+
+function tcActiveReservation(r){
+    const s=tcNorm(r?.status || r?.reservationStatus).toLowerCase();
+    return !["rejected","cancelled","canceled","annule","annulee","completed","done","noshow","no show"].includes(s);
+}
+
+function tcHasRealOrder(order){
+    const items=Array.isArray(order?.items) ? order.items : [];
+    return items.some(i=>{
+        const name=tcNorm(i?.n ?? i?.name ?? i?.productName ?? i?.title);
+        const qty=Number(i?.qty ?? i?.quantity ?? 1);
+        return !!name && qty>0;
+    });
+}
+
+function tcGetReservation(id){
+    return (Array.isArray(reservationsData) ? reservationsData : [])
+        .find(r=>tcId(r)===String(id)) || null;
+}
+
+async function tcGetState(){
+    if(window.API && typeof API.getState==="function"){
+        return await API.getState();
+    }
+    const r=await fetch(`${window.SERVER_URL}/get-current-state?tenantID=${getTenantParam()}`,{cache:"no-store"});
+    if(!r.ok) throw new Error("STATE_"+r.status);
+    return r.json();
+}
+
+function tcTables(state){
+    const fromState=state?.activeOrders?.ARCHITECTURE?.data?.tables;
+    if(Array.isArray(fromState)) return fromState;
+    return Array.isArray(window.tables) ? window.tables : [];
+}
+
+function tcReservedByOther(resas,label,target){
+    return (resas||[]).some(r=>{
+        if(!r || r===target || !tcActiveReservation(r)) return false;
+        return tcNorm(r.assignedTable || r.tableId || r.table)===label;
+    });
+}
+
+function tcRankTables(state,target){
+    const resas=state?.activeOrders?.RESERVATIONS_MASTER?.data || reservationsData || [];
+    const pax=tcPax(target);
+    const current=tcNorm(target?.assignedTable || target?.tableId || target?.table);
+
+    const all=tcTables(state);
+
+    const empty=all.filter(t=>{
+        if(!t || t.isExtra) return false;
+        const label=tcNorm(t.label);
+        if(!label) return false;
+
+        // Current table is excluded from alternatives when changing.
+        if(current && label===current) return false;
+
+        // Real open order = occupied.
+        if(tcHasRealOrder(state?.activeOrders?.[label])) return false;
+
+        // Another active reservation = unavailable.
+        if(tcReservedByOther(resas,label,target)) return false;
+
+        return true;
+    });
+
+    const compatible=empty
+        .filter(t=>tcCap(t)>=pax)
+        .map(t=>{
+            const capacity=tcCap(t);
+            const waste=capacity-pax;
+
+            // Lower score is better. Exact fit = 0.
+            let score=waste*100;
+
+            // Prefer same room currently displayed only as a tie-breaker.
+            if(window.currentRoom && t.room && t.room!==window.currentRoom) score+=1;
+
+            return {
+                table:t,
+                capacity,
+                waste,
+                score,
+                exact:waste===0
+            };
+        })
+        .sort((a,b)=>{
+            if(a.score!==b.score) return a.score-b.score;
+            return String(a.table.label).localeCompare(String(b.table.label),"fr",{numeric:true});
+        });
+
+    const tooSmall=empty
+        .filter(t=>tcCap(t)<pax)
+        .sort((a,b)=>tcCap(b)-tcCap(a));
+
+    return {pax,current,empty,compatible,tooSmall};
+}
+
+function tcEscape(v){
+    return String(v??"").replace(/[&<>"']/g,c=>({
+        "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#039;"
+    }[c]));
+}
+
+window.ichefOpenReservationTableChooser=async function(resaId){
+    if(!window.currentUser || currentUser.role!=="Manager"){
+        return alert("⛔ Accès Manager requis.");
+    }
+
+    const reservation=tcGetReservation(resaId);
+    if(!reservation) return alert("Réservation introuvable.");
+
+    currentChooserReservation=reservation;
+
+    const modal=document.getElementById("ichef-table-change-modal");
+    const list=document.getElementById("ichef-table-change-list");
+    const subtitle=document.getElementById("ichef-table-change-subtitle");
+    const info=document.getElementById("ichef-table-change-info");
+
+    modal?.classList.add("open");
+    if(list) list.innerHTML='<div style="color:var(--text-muted);padding:18px;">Recherche des tables libres…</div>';
+
+    try{
+        const state=await tcGetState();
+        const ranked=tcRankTables(state,reservation);
+
+        if(subtitle){
+            subtitle.textContent=
+                `${reservation.name || "Client"} · ${ranked.pax} couvert(s)`
+                + (ranked.current ? ` · actuellement table ${ranked.current}` : "");
+        }
+
+        if(!ranked.empty.length){
+            if(info){
+                info.style.display="block";
+                info.style.borderColor="#ef4444";
+                info.style.color="#fca5a5";
+                info.innerHTML="🛑 <strong>AUCUNE TABLE VIDE</strong> — le restaurant est actuellement complet.";
+            }
+            if(list) list.innerHTML='';
+            return;
+        }
+
+        if(!ranked.compatible.length){
+            const largest=ranked.tooSmall[0];
+            const largestCap=largest ? tcCap(largest) : 0;
+            const missing=Math.max(1,ranked.pax-largestCap);
+
+            if(info){
+                info.style.display="block";
+                info.style.borderColor="#f59e0b";
+                info.style.color="#fbbf24";
+                info.innerHTML=
+                    `⚠️ <strong>CAPACITÉ INSUFFISANTE</strong> — `
+                    + `plus grande table vide : ${largestCap} place(s). `
+                    + `Il manque ${missing} place${missing>1?"s":""}.`;
+            }
+            if(list) list.innerHTML='';
+            return;
+        }
+
+        if(info){
+            info.style.display="block";
+            info.style.borderColor="#10b981";
+            info.style.color="#6ee7b7";
+            info.innerHTML=
+                `✅ ${ranked.compatible.length} table(s) compatible(s), `
+                + `classées de la <strong>plus adaptée</strong> à la moins optimale.`;
+        }
+
+        if(list){
+            list.innerHTML=ranked.compatible.map((entry,index)=>{
+                const t=entry.table;
+                const room=tcEscape(t.room || "");
+                const zone=tcEscape(t.zone || "");
+                const where=[room,zone].filter(Boolean).join(" · ");
+
+                let tagClass="ok";
+                let tagText=`+${entry.waste} place${entry.waste>1?"s":""}`;
+                if(entry.exact){
+                    tagClass="exact";
+                    tagText="CAPACITÉ EXACTE";
+                }else if(entry.waste<=1){
+                    tagClass="good";
+                }
+
+                return `
+                <button type="button"
+                        class="ichef-table-choice-card ${index===0?"best":""} ${entry.exact?"exact":""}"
+                        onclick="ichefChooseReservationTable('${tcEscape(String(t.label))}')">
+                    <div class="ichef-table-choice-head">
+                        <div class="ichef-table-choice-name">TABLE ${tcEscape(t.label)}</div>
+                        <div class="ichef-table-choice-cap">${entry.capacity} places</div>
+                    </div>
+                    <div class="ichef-table-choice-score">
+                        <span>${where || "Plan de salle"}</span>
+                        <span class="ichef-table-choice-tag ${tagClass}">${index===0?"⭐ ":""}${tagText}</span>
+                    </div>
+                </button>`;
+            }).join("");
+        }
+    }catch(err){
+        console.error("[iCHEF TABLE CHOOSER]",err);
+        if(info){
+            info.style.display="block";
+            info.style.borderColor="#ef4444";
+            info.style.color="#fca5a5";
+            info.textContent="Impossible de charger les tables du plan.";
+        }
+    }
+};
+
+window.ichefCloseReservationTableChooser=function(){
+    document.getElementById("ichef-table-change-modal")?.classList.remove("open");
+    currentChooserReservation=null;
+};
+
+window.ichefChooseReservationTable=async function(label){
+    if(!currentChooserReservation) return;
+
+    const reservation=currentChooserReservation;
+
+    try{
+        const state=await tcGetState();
+        const ranked=tcRankTables(state,reservation);
+        const selected=ranked.compatible.find(x=>tcNorm(x.table.label)===tcNorm(label));
+
+        // Revalidation at click time: protects against another server taking the table.
+        if(!selected){
+            alert("⚠️ Cette table n'est plus disponible. La liste va être actualisée.");
+            return window.ichefOpenReservationTableChooser(tcId(reservation));
+        }
+
+        const rid=tcId(reservation);
+        const idx=(Array.isArray(reservationsData)?reservationsData:[])
+            .findIndex(r=>tcId(r)===rid);
+
+        if(idx<0) return alert("Réservation introuvable.");
+
+        reservationsData[idx].assignedTable=selected.table.label;
+        reservationsData[idx].tableId=selected.table.label;
+        reservationsData[idx].table=selected.table.label;
+        reservationsData[idx].assignmentMode="MANAGER_CAPACITY";
+        reservationsData[idx].assignedAt=new Date().toISOString();
+
+        if(window.API && typeof API.update==="function"){
+            await API.update("RESERVATIONS_MASTER",reservationsData,false,{
+                reason:"Changement table réservation",
+                operationType:"RESERVATION_ASSIGNMENT"
+            });
+        }else{
+            const r=await fetch(`${window.SERVER_URL}/update-order?tenantID=${getTenantParam()}`,{
+                method:"POST",
+                headers:{"Content-Type":"application/json"},
+                body:JSON.stringify({tableId:"RESERVATIONS_MASTER",order:{data:reservationsData}})
+            });
+            if(!r.ok) throw new Error("SAVE_FAILED");
+        }
+
+        window.ichefCloseReservationTableChooser();
+
+        if(typeof window.ichefReservationSyncNow==="function")
+            await window.ichefReservationSyncNow(true);
+
+        if(typeof renderPlanning==="function") renderPlanning("today");
+        if(typeof renderFloor==="function") renderFloor();
+        if(typeof window.ichefRefreshTableStatusSummary==="function")
+            await window.ichefRefreshTableStatusSummary();
+        if(typeof window.ichefRefreshReservationTableColors==="function")
+            await window.ichefRefreshReservationTableColors();
+
+    }catch(err){
+        console.error("[iCHEF CHANGER TABLE]",err);
+        alert("❌ Impossible de changer la table.");
+    }
+};
+
+window.ichefUsePlanForReservationChoice=function(){
+    if(!currentChooserReservation) return;
+    const id=tcId(currentChooserReservation);
+    window.ichefCloseReservationTableChooser();
+
+    // Preserve the existing manual floor-plan selection as an optional fallback.
+    if(typeof startAssignResa==="function") startAssignResa(id);
+};
+
 })();
 </script>
 
