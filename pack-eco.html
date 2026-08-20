@@ -17265,5 +17265,413 @@ window.ichefUsePlanForReservationChoice=function(){
 }
 </style>
 
+
+<style id="ichef-all-views-table-colors-sync-style">
+/* =========================================================
+   iCHEF — MÊME CODE COULEUR DANS TOUTES LES VUES
+   Libre     : blanc
+   Réservée  : violet
+   Occupée   : bleu clair
+   ========================================================= */
+
+/* GRANDES CARTES ORDINATEUR */
+.pro-table-card.ichef-reserved-live{
+    border-color:#d946ef !important;
+    color:#fff !important;
+    box-shadow:
+        0 0 0 1px rgba(217,70,239,.92),
+        0 0 16px rgba(217,70,239,.55) !important;
+}
+.pro-table-card.ichef-occupied-live{
+    border-color:#38bdf8 !important;
+    color:#fff !important;
+    box-shadow:
+        0 0 0 1px rgba(56,189,248,.95),
+        0 0 16px rgba(56,189,248,.58) !important;
+}
+
+/* La couleur métier passe avant le simple état "table sélectionnée". */
+.pro-table-card.current.ichef-reserved-live{
+    border-color:#d946ef !important;
+}
+.pro-table-card.current.ichef-occupied-live{
+    border-color:#38bdf8 !important;
+}
+
+/* Les anciennes classes service ne doivent plus rendre une table occupée dorée. */
+.pro-table-card.ichef-occupied-live.service-server,
+.pro-table-card.ichef-occupied-live.service-counter{
+    border-color:#38bdf8 !important;
+    box-shadow:
+        0 0 0 1px rgba(56,189,248,.95),
+        0 0 16px rgba(56,189,248,.58) !important;
+}
+
+/* MOBILE */
+.mobile-exact-table.ichef-reserved-live{
+    border-color:#d946ef !important;
+    color:#fff !important;
+    box-shadow:0 0 14px rgba(217,70,239,.52) !important;
+}
+.mobile-exact-table.ichef-occupied-live{
+    border-color:#38bdf8 !important;
+    color:#fff !important;
+    box-shadow:0 0 14px rgba(56,189,248,.55) !important;
+}
+.mobile-exact-table.current.ichef-reserved-live{
+    border-color:#d946ef !important;
+}
+.mobile-exact-table.current.ichef-occupied-live{
+    border-color:#38bdf8 !important;
+}
+.mobile-exact-table.ichef-occupied-live.service-server,
+.mobile-exact-table.ichef-occupied-live.service-counter{
+    border-color:#38bdf8 !important;
+}
+
+/* PLAN INTERACTIF — priorité occupée > réservée */
+.floor-plan .table-wrapper.ichef-live-occupied .table-obj{
+    border:4px solid #38bdf8 !important;
+    outline:2px solid rgba(56,189,248,.28) !important;
+    outline-offset:2px !important;
+    box-shadow:
+        0 0 0 1px rgba(56,189,248,.95),
+        0 0 18px rgba(56,189,248,.68),
+        inset 0 0 10px rgba(56,189,248,.08) !important;
+}
+.floor-plan .table-wrapper.ichef-live-reserved:not(.ichef-live-occupied) .table-obj{
+    border:4px solid #d946ef !important;
+    outline:2px solid rgba(217,70,239,.28) !important;
+    outline-offset:2px !important;
+    box-shadow:
+        0 0 0 1px rgba(217,70,239,.92),
+        0 0 18px rgba(217,70,239,.64),
+        inset 0 0 10px rgba(217,70,239,.08) !important;
+}
+
+/* Sièges toujours blancs */
+.floor-plan .table-wrapper.ichef-live-occupied .chair,
+.floor-plan .table-wrapper.ichef-live-reserved .chair{
+    border-color:#fff !important;
+    color:#fff !important;
+    background:#0a0a0a !important;
+}
+</style>
+
+<script id="ichef-all-views-table-colors-sync-engine">
+(function(){
+"use strict";
+
+function norm(v){ return String(v == null ? "" : v).trim(); }
+
+function todayKey(){
+    const d=new Date();
+    return d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0")+"-"+String(d.getDate()).padStart(2,"0");
+}
+
+function reservationList(){
+    try{
+        if(Array.isArray(window.reservationsData)) return window.reservationsData;
+    }catch(_){}
+    try{
+        const r=window.activeOrders?.RESERVATIONS_MASTER;
+        if(Array.isArray(r?.data)) return r.data;
+    }catch(_){}
+    return [];
+}
+
+function reservationIsActive(r){
+    const s=norm(r?.status || r?.reservationStatus).toLowerCase();
+    return ![
+        "rejected","cancelled","canceled","annule","annulee",
+        "completed","done","noshow","no show"
+    ].includes(s);
+}
+
+function reservedLabels(){
+    const day=todayKey();
+    const set=new Set();
+
+    reservationList().forEach(r=>{
+        if(!r || !reservationIsActive(r)) return;
+
+        /* Les réservations sans date restent tolérées pour compatibilité,
+           mais une date différente d'aujourd'hui ne colore pas le service actuel. */
+        if(r.date && String(r.date)!==day) return;
+
+        const label=norm(r.assignedTable || r.tableId || r.table);
+        if(label) set.add(label);
+    });
+
+    return set;
+}
+
+function hasRealItems(order){
+    const items=Array.isArray(order?.items) ? order.items : [];
+    return items.some(i=>{
+        if(!i || typeof i!=="object") return false;
+        const name=norm(i.n ?? i.name ?? i.label ?? i.title ?? i.productName);
+        const qty=Number(i.qty ?? i.quantity ?? 1);
+        return !!name && Number.isFinite(qty) && qty>0;
+    });
+}
+
+function isOccupied(label){
+    let order=null;
+    try{ order=window.activeOrders?.[label] || null; }catch(_){}
+
+    if(!order) return false;
+
+    /* Utilise d'abord le filtre anti-fantôme déjà présent dans iCHEF. */
+    try{
+        if(typeof window.isRealServiceOrder==="function"){
+            return !!window.isRealServiceOrder(label,order);
+        }
+    }catch(_){}
+
+    return hasRealItems(order);
+}
+
+function setCardState(el,label,reserved){
+    const occupied=isOccupied(label);
+
+    el.classList.toggle("ichef-occupied-live",occupied);
+    el.classList.toggle("ichef-reserved-live",reserved && !occupied);
+
+    /* On neutralise l'ancienne classe reserved basée sur une fausse commande. */
+    if(!reserved) el.classList.remove("reserved");
+}
+
+function syncCards(){
+    const reserved=reservedLabels();
+
+    document.querySelectorAll(".pro-table-card[data-table]").forEach(card=>{
+        const label=norm(card.dataset.table);
+        if(label) setCardState(card,label,reserved.has(label));
+    });
+
+    document.querySelectorAll(".mobile-exact-table[data-table]").forEach(card=>{
+        const label=norm(card.dataset.table);
+        if(label) setCardState(card,label,reserved.has(label));
+    });
+}
+
+function syncFloor(){
+    const reserved=reservedLabels();
+
+    document.querySelectorAll(".floor-plan .table-wrapper").forEach(w=>{
+        const label=norm(
+            w.dataset.id ||
+            w.dataset.table ||
+            w.dataset.tableId ||
+            w.dataset.label
+        );
+
+        if(!label) return;
+
+        const occupied=isOccupied(label);
+
+        w.classList.toggle("ichef-live-occupied",occupied);
+        w.classList.toggle("ichef-live-reserved",reserved.has(label) && !occupied);
+    });
+}
+
+window.ichefSyncAllTableColors=function(){
+    syncCards();
+    syncFloor();
+};
+
+/* État serveur/socket ou DOM : actualisation rapide sans recréer les cartes. */
+setInterval(window.ichefSyncAllTableColors,750);
+
+window.addEventListener("focus",window.ichefSyncAllTableColors);
+document.addEventListener("visibilitychange",()=>{
+    if(!document.hidden) window.ichefSyncAllTableColors();
+});
+
+if(document.readyState==="loading"){
+    document.addEventListener("DOMContentLoaded",()=>{
+        setTimeout(window.ichefSyncAllTableColors,400);
+    },{once:true});
+}else{
+    setTimeout(window.ichefSyncAllTableColors,400);
+}
+
+/* Les vues sont créées dynamiquement : dès qu'une carte/table apparaît,
+   on lui applique immédiatement la bonne couleur. */
+new MutationObserver(()=>{
+    requestAnimationFrame(window.ichefSyncAllTableColors);
+}).observe(document.documentElement,{
+    childList:true,
+    subtree:true
+});
+
+})();
+</script>
+
+
+<style id="ichef-pro-zone-color-style">
+/* =========================================================
+   iCHEF — COULEUR DE ZONE SUR LES CARTES TABLES (BLOC GAUCHE)
+   Le ticket / bloc de droite n'est pas modifié.
+   ========================================================= */
+@media (min-width:601px){
+  #pro-table-panel .pro-table-card{
+      position:relative !important;
+      overflow:hidden !important;
+      --ichef-zone-color: transparent;
+      --ichef-zone-soft: transparent;
+  }
+
+  /* Repère permanent de la zone : bande supérieure */
+  #pro-table-panel .pro-table-card::before{
+      content:"";
+      position:absolute;
+      top:0;
+      left:0;
+      right:0;
+      height:7px;
+      background:var(--ichef-zone-color) !important;
+      opacity:.95;
+      pointer-events:none;
+      z-index:2;
+  }
+
+  /* Léger fond de zone sans gêner la lecture */
+  #pro-table-panel .pro-table-card{
+      background:
+        linear-gradient(180deg,var(--ichef-zone-soft),rgba(10,14,15,.22) 38%,rgba(10,14,15,.08)) !important;
+  }
+
+  /* Petit libellé de zone */
+  #pro-table-panel .pro-table-zone-badge{
+      display:inline-flex;
+      align-items:center;
+      justify-content:center;
+      max-width:90%;
+      margin-top:3px;
+      padding:2px 6px;
+      border:1px solid var(--ichef-zone-color);
+      border-radius:999px;
+      color:var(--ichef-zone-color);
+      background:rgba(0,0,0,.38);
+      font-size:8px;
+      line-height:1.1;
+      font-weight:900;
+      letter-spacing:.35px;
+      white-space:nowrap;
+      overflow:hidden;
+      text-overflow:ellipsis;
+  }
+
+  /* Les états métier restent prioritaires sur le contour */
+  #pro-table-panel .pro-table-card.ichef-reserved-live{
+      border-color:#d946ef !important;
+  }
+  #pro-table-panel .pro-table-card.ichef-occupied-live{
+      border-color:#38bdf8 !important;
+  }
+}
+</style>
+
+<script id="ichef-pro-zone-color-engine">
+(function(){
+"use strict";
+
+function zcNorm(v){ return String(v==null?"":v).trim(); }
+
+function zcHexToRgba(hex,alpha){
+    let h=zcNorm(hex).replace('#','');
+    if(!/^[0-9a-fA-F]{6}$/.test(h)) return 'rgba(255,255,255,0.025)';
+    const r=parseInt(h.slice(0,2),16);
+    const g=parseInt(h.slice(2,4),16);
+    const b=parseInt(h.slice(4,6),16);
+    return `rgba(${r},${g},${b},${alpha})`;
+}
+
+function zcTable(label){
+    try{
+        return (Array.isArray(tables)?tables:[]).find(t=>t && zcNorm(t.label)===zcNorm(label)) || null;
+    }catch(_){ return null; }
+}
+
+function zcZoneForTable(table){
+    if(!table) return null;
+    try{
+        const list=Array.isArray(zones)?zones:[];
+        const cx=(Number(table.l)||0)+(Number(table.w)||80)/2;
+        const cy=(Number(table.t)||0)+(Number(table.h)||120)/2;
+        const room=zcNorm(table.room || currentRoom);
+
+        return list.find(z=>{
+            if(!z) return false;
+            if(zcNorm(z.room)!==room) return false;
+            const l=Number(z.l)||0;
+            const top=Number(z.t)||0;
+            const w=Number(z.w)||400;
+            const h=Number(z.h)||300;
+            return cx>=l && cx<=l+w && cy>=top && cy<=top+h;
+        }) || null;
+    }catch(_){ return null; }
+}
+
+function zcEnsureBadge(card){
+    let badge=card.querySelector(':scope > .pro-table-zone-badge');
+    if(!badge){
+        badge=document.createElement('span');
+        badge.className='pro-table-zone-badge';
+        const badges=card.querySelector('.ichef-order-badges');
+        if(badges) card.insertBefore(badge,badges);
+        else card.appendChild(badge);
+    }
+    return badge;
+}
+
+function zcApplyCard(card){
+    const label=zcNorm(card?.dataset?.table);
+    if(!label) return;
+
+    const table=zcTable(label);
+    const zone=zcZoneForTable(table);
+    const color=zcNorm(zone?.color) || '#64748b';
+    const zoneLabel=zcNorm(zone?.label || zone?.name) || 'HORS ZONE';
+
+    card.style.setProperty('--ichef-zone-color',color);
+    card.style.setProperty('--ichef-zone-soft',zcHexToRgba(color,.12));
+    card.dataset.zoneId=zcNorm(zone?.id);
+    card.dataset.zoneLabel=zoneLabel;
+
+    const badge=zcEnsureBadge(card);
+    if(badge.textContent!==zoneLabel) badge.textContent=zoneLabel;
+    badge.style.display=zone ? 'inline-flex' : 'none';
+}
+
+function zcRefresh(){
+    /* STRICTEMENT bloc gauche */
+    document.querySelectorAll('#pro-table-panel .pro-table-card[data-table]').forEach(zcApplyCard);
+}
+
+window.ichefRefreshProZoneColors=zcRefresh;
+
+/* Mise à jour automatique : déplacement de table, changement de couleur,
+   changement de salle ou synchronisation serveur. */
+setInterval(zcRefresh,800);
+window.addEventListener('focus',zcRefresh);
+document.addEventListener('visibilitychange',()=>{ if(!document.hidden) zcRefresh(); });
+
+new MutationObserver(()=>requestAnimationFrame(zcRefresh)).observe(document.documentElement,{
+    childList:true,
+    subtree:true
+});
+
+if(document.readyState==='loading'){
+    document.addEventListener('DOMContentLoaded',()=>setTimeout(zcRefresh,400),{once:true});
+}else{
+    setTimeout(zcRefresh,400);
+}
+
+})();
+</script>
+
 </body>
 </html>
