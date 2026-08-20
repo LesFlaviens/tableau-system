@@ -8360,8 +8360,8 @@ header .header-left > div:first-of-type{
           if(typeof window.ichefRefreshCompactOrderCards==='function'){
             window.ichefRefreshCompactOrderCards();
           }
-          if(typeof window.ichefSyncReadyBlink==='function'){
-            window.ichefSyncReadyBlink();
+          if(typeof window.ichefRefreshReadyNeon==='function'){
+            window.ichefRefreshReadyNeon();
           }
         }catch(err){
           console.warn('[iCHEF] orderLifecycle:',err);
@@ -18233,316 +18233,155 @@ if(document.readyState==="loading"){
 </script>
 
 
-<style id="ichef-ready-table-blink-style">
-@keyframes ichefReadyTablePulse{
-  0%{
-    background:linear-gradient(180deg,rgba(21,128,61,.42),rgba(6,46,24,.92));
-    box-shadow:0 0 0 1px rgba(56,189,248,.95),0 0 8px rgba(34,197,94,.28),inset 0 0 8px rgba(34,197,94,.10);
-    filter:brightness(1);
-  }
-  100%{
-    background:linear-gradient(180deg,rgba(34,197,94,.82),rgba(6,78,35,.98));
-    box-shadow:0 0 0 1px rgba(56,189,248,.95),0 0 26px rgba(74,222,128,.95),inset 0 0 18px rgba(134,239,172,.30);
-    filter:brightness(1.18);
-  }
-}
-@keyframes ichefReadyLabelPulse{
-  from{opacity:.62;transform:scale(.98)}
-  to{opacity:1;transform:scale(1.04)}
-}
-@keyframes ichefReadyFloorPulse{
-  from{
-    box-shadow:0 0 0 1px rgba(56,189,248,.95),0 0 8px rgba(34,197,94,.30),inset 0 0 8px rgba(34,197,94,.08);
-    filter:brightness(1);
-  }
-  to{
-    box-shadow:0 0 0 1px rgba(56,189,248,.95),0 0 28px rgba(74,222,128,.98),inset 0 0 20px rgba(74,222,128,.22);
-    filter:brightness(1.22);
-  }
-}
 
-.pro-table-card.ichef-order-ready{
-  animation:ichefReadyTablePulse .82s ease-in-out infinite alternate !important;
-}
-.pro-table-card.ichef-order-ready .ichef-card-live-state{
-  animation:ichefReadyLabelPulse .82s ease-in-out infinite alternate !important;
-  color:#86efac !important;
-  font-weight:1000 !important;
-}
-.mobile-exact-table.ichef-order-ready{
-  animation:ichefReadyTablePulse .82s ease-in-out infinite alternate !important;
-}
-.floor-plan .table-wrapper.ichef-ready-live .table-obj{
-  border-color:#38bdf8 !important;
-  animation:ichefReadyFloorPulse .82s ease-in-out infinite alternate !important;
-}
 
-@media (prefers-reduced-motion: reduce){
-  .pro-table-card.ichef-order-ready,
-  .mobile-exact-table.ichef-order-ready,
-  .floor-plan .table-wrapper.ichef-ready-live .table-obj,
-  .pro-table-card.ichef-order-ready .ichef-card-live-state{
-    animation:none !important;
-  }
-  .pro-table-card.ichef-order-ready,
-  .mobile-exact-table.ichef-order-ready{
-    box-shadow:0 0 0 1px rgba(56,189,248,.95),0 0 24px rgba(74,222,128,.95),inset 0 0 16px rgba(74,222,128,.24) !important;
-  }
-}
-</style>
 
-<script id="ichef-ready-table-blink-engine">
-(function(){
-"use strict";
-
-function clean(v){ return String(v == null ? "" : v).trim(); }
-
-function realOrder(label){
-  let o=null;
-  try{o=window.activeOrders?.[label] || null;}catch(_){}
-  if(!o) return null;
-
-  try{
-    if(typeof window.isRealServiceOrder==="function" &&
-       !window.isRealServiceOrder(label,o)) return null;
-  }catch(_){}
-
-  const items=Array.isArray(o.items)?o.items:[];
-  const hasReal=items.some(i=>{
-    if(!i)return false;
-    const name=clean(i.n ?? i.name ?? i.productName ?? i.title);
-    const qty=Number(i.qty ?? i.quantity ?? 1);
-    return !!name && Number.isFinite(qty) && qty>0;
-  });
-
-  return hasReal ? o : null;
-}
-
-function status(order){
-  if(!order)return "NONE";
-
-  const norm=v=>String(v||"").trim().toUpperCase()
-    .normalize("NFD").replace(/[\\u0300-\\u036f]/g,"");
-
-  const items=(Array.isArray(order.items)?order.items:[]).filter(Boolean);
-  if(!items.length){
-    const meta=norm(order.productionStatus || order.orderMeta?.productionStatus || order.status);
-    return ["READY","PRET_AU_PASS","PRET AU PASS"].includes(meta) ? "READY" :
-           ["SERVED","SERVI"].includes(meta) ? "SERVED" :
-           meta==="PRODUCTION" ? "PRODUCTION" : "WAITING";
-  }
-
-  const served=i =>
-    i.served===true ||
-    ["SERVED","SERVI"].includes(norm(i.sequenceStatus)) ||
-    ["SERVED","SERVI"].includes(norm(i.status));
-
-  const ready=i =>
-    !served(i) && (
-      i.done===true ||
-      ["READY","PRET_AU_PASS","PRET AU PASS","READY_AT_PASS"].includes(norm(i.sequenceStatus)) ||
-      ["READY","PRET_AU_PASS","PRET AU PASS","READY_AT_PASS"].includes(norm(i.status))
-    );
-
-  if(items.every(served)) return "SERVED";
-
-  /* Une seule assiette/boisson prête suffit pour prévenir le serveur. */
-  if(items.some(ready)) return "READY";
-
-  if(items.some(i=>
-    !served(i) &&
-    i.isSent===true &&
-    !["WAITING","DRAFT"].includes(norm(i.sequenceStatus))
-  )) return "PRODUCTION";
-
-  const meta=norm(order.productionStatus || order.orderMeta?.productionStatus || order.status);
-  if(["READY","PRET_AU_PASS","PRET AU PASS"].includes(meta)) return "READY";
-  if(["SERVED","SERVI"].includes(meta)) return "SERVED";
-  if(meta==="PRODUCTION") return "PRODUCTION";
-
-  return "WAITING";
-}
-
-function syncCards(){
-  document.querySelectorAll(".pro-table-card[data-table]").forEach(card=>{
-    const label=clean(card.dataset.table);
-    if(!label)return;
-    const ready=status(realOrder(label))==="READY";
-
-    if(ready){
-      card.classList.add("ichef-order-ready","ichef-live-order-card");
-      const state=card.querySelector(".ichef-card-live-state");
-      if(state) state.textContent="🔔 PRÊT";
-    }else{
-      card.classList.remove("ichef-order-ready");
-    }
-  });
-}
-
-function syncFloor(){
-  document.querySelectorAll(".floor-plan .table-wrapper").forEach(w=>{
-    const label=clean(w.dataset.id || w.dataset.table || w.dataset.tableId || w.dataset.label);
-    if(!label)return;
-    w.classList.toggle("ichef-ready-live",status(realOrder(label))==="READY");
-  });
-}
-
-window.ichefSyncReadyBlink=function(){
-  syncCards();
-  syncFloor();
-};
-
-setInterval(window.ichefSyncReadyBlink,450);
-window.addEventListener("focus",window.ichefSyncReadyBlink,{passive:true});
-document.addEventListener("visibilitychange",()=>{
-  if(!document.hidden)window.ichefSyncReadyBlink();
-});
-
-if(document.readyState==="loading"){
-  document.addEventListener("DOMContentLoaded",()=>{
-    setTimeout(window.ichefSyncReadyBlink,300);
-  },{once:true});
-}else{
-  setTimeout(window.ichefSyncReadyBlink,300);
-}
-})();
-</script>
 
 
 <!-- =========================================================
-     iCHEF — READY BLINK PROPRE
-     IMPORTANT :
-     - ne modifie PAS .table-wrapper / .table-obj en continu
-     - ne combat PAS le moteur "zéro clignotement"
-     - anime uniquement une couche enfant indépendante
+     iCHEF — TABLE PRÊTE : VERT FLUO FIXE
+     Aucun clignotement / aucune animation.
+     READY reste visible jusqu'à PRIS EN CHARGE / SERVI.
      ========================================================= -->
-<style id="ichef-ready-overlay-clean-css">
+<style id="ichef-ready-neon-fixed-css">
 
-/* La couche ajoutée n'est PAS ciblée par le moteur zéro-clignotement. */
-.ichef-ready-overlay-clean{
-    position:absolute;
-    inset:0;
-    border-radius:inherit;
-    pointer-events:none;
-    z-index:20;
-    background:rgba(34,197,94,.12);
-    border:2px solid rgba(134,239,172,.95);
+/* Carte ordinateur */
+.pro-table-card.ichef-order-ready,
+.pro-table-card.ichef-ready-neon-fixed{
+    background:#39ff14 !important;
+    background-image:none !important;
+    color:#071007 !important;
+    border-color:#38bdf8 !important; /* occupation reste identifiable */
     box-shadow:
-        0 0 7px rgba(34,197,94,.45),
-        inset 0 0 8px rgba(34,197,94,.18);
-    animation:ichefReadyOverlayCleanPulse .72s ease-in-out infinite alternate !important;
+        0 0 0 2px rgba(56,189,248,.95),
+        0 0 18px rgba(57,255,20,.58),
+        inset 0 0 0 1px rgba(255,255,255,.28) !important;
+    filter:none !important;
+    animation:none !important;
+    transition:none !important;
 }
 
-@keyframes ichefReadyOverlayCleanPulse{
-    0%{
-        opacity:.18;
-        background:rgba(34,197,94,.08);
-        box-shadow:
-            0 0 5px rgba(34,197,94,.25),
-            inset 0 0 6px rgba(34,197,94,.10);
-    }
-    100%{
-        opacity:.82;
-        background:rgba(34,197,94,.48);
-        box-shadow:
-            0 0 26px rgba(74,222,128,.98),
-            inset 0 0 18px rgba(134,239,172,.30);
-    }
+.pro-table-card.ichef-order-ready *,
+.pro-table-card.ichef-ready-neon-fixed *{
+    color:#071007 !important;
+    text-shadow:none !important;
 }
 
-/* Le petit texte PRÊT reste fixe : seule la lumière clignote. */
-.ichef-ready-overlay-clean::after{
-    content:"🔔 PRÊT";
-    position:absolute;
-    left:50%;
-    bottom:4px;
-    transform:translateX(-50%);
-    padding:2px 5px;
-    border-radius:999px;
-    background:rgba(3,22,10,.90);
-    color:#86efac;
-    border:1px solid rgba(134,239,172,.80);
-    font:900 .46rem/1.1 Inter,Arial,sans-serif;
-    letter-spacing:.3px;
-    white-space:nowrap;
+.pro-table-card.ichef-order-ready .ichef-card-live-state,
+.pro-table-card.ichef-ready-neon-fixed .ichef-card-live-state{
+    background:rgba(0,0,0,.82) !important;
+    color:#8cff70 !important;
+    border:1px solid rgba(0,0,0,.88) !important;
+    font-weight:1000 !important;
+    letter-spacing:.4px !important;
 }
 
-/* FLOOR : la couche reste exactement dans la forme de la table. */
-.floor-plan .table-obj{
-    isolation:isolate;
+/* Plan interactif */
+.floor-plan .table-wrapper.ichef-ready-neon-fixed .table-obj{
+    background:#39ff14 !important;
+    background-image:none !important;
+    color:#071007 !important;
+    border-color:#38bdf8 !important;
+    box-shadow:
+        0 0 0 2px rgba(56,189,248,.95),
+        0 0 18px rgba(57,255,20,.55) !important;
+    filter:none !important;
+    animation:none !important;
+    transition:none !important;
 }
 
-/* CARTES bloc gauche */
-.pro-table-card[data-table],
-.mobile-exact-table[data-table]{
-    position:relative !important;
-    isolation:isolate;
+.floor-plan .table-wrapper.ichef-ready-neon-fixed .table-obj *{
+    color:#071007 !important;
+    text-shadow:none !important;
+}
+
+/* Mobile */
+.mobile-exact-table.ichef-ready-neon-fixed{
+    background:#39ff14 !important;
+    background-image:none !important;
+    color:#071007 !important;
+    border-color:#38bdf8 !important;
+    box-shadow:
+        0 0 0 2px rgba(56,189,248,.95),
+        0 0 16px rgba(57,255,20,.52) !important;
+    animation:none !important;
+    transition:none !important;
+}
+
+.mobile-exact-table.ichef-ready-neon-fixed *{
+    color:#071007 !important;
 }
 
 </style>
 
-<script id="ichef-ready-overlay-clean-js">
+<script id="ichef-ready-neon-fixed-js">
 (function(){
 "use strict";
 
-const READY_OVERLAY_CLASS="ichef-ready-overlay-clean";
-
-function norm(v){
-    return String(v==null?"":v)
-        .normalize("NFD")
-        .replace(/[\u0300-\u036f]/g,"")
-        .toUpperCase()
-        .replace(/[^A-Z0-9]/g,"");
-}
-
-function state(v){
-    return String(v==null?"":v)
+function normState(v){
+    return String(v == null ? "" : v)
         .normalize("NFD")
         .replace(/[\u0300-\u036f]/g,"")
         .trim()
         .toUpperCase();
 }
 
-function itemIsServed(i){
-    if(!i)return false;
-    const st=state(i.status);
-    const seq=state(i.sequenceStatus);
-    return i.served===true ||
+function normTable(v){
+    return String(v == null ? "" : v)
+        .normalize("NFD")
+        .replace(/[\u0300-\u036f]/g,"")
+        .toUpperCase()
+        .replace(/[^A-Z0-9]/g,"");
+}
+
+function served(item){
+    if(!item) return false;
+    const st=normState(item.status);
+    const seq=normState(item.sequenceStatus);
+    return item.served===true ||
            st==="SERVI" ||
            st==="SERVED" ||
            seq==="SERVED";
 }
 
-function itemIsTaken(i){
-    if(!i)return false;
-    const st=state(i.status);
-    return i.pickedByServer===true ||
+function taken(item){
+    if(!item) return false;
+    const st=normState(item.status);
+    return item.pickedByServer===true ||
            st==="PRIS_PAR_SERVEUR" ||
            st==="PRIS PAR SERVEUR";
 }
 
-function itemIsReady(i){
-    if(!i || itemIsServed(i) || itemIsTaken(i)) return false;
+function ready(item){
+    if(!item || served(item) || taken(item)) return false;
 
-    const st=state(i.status);
-    const seq=state(i.sequenceStatus);
+    const st=normState(item.status);
+    const seq=normState(item.sequenceStatus);
 
-    return i.done===true ||
+    return item.done===true ||
         ["READY","PRET_AU_PASS","PRET AU PASS","READY_AT_PASS"].includes(seq) ||
         ["READY","PRET_AU_PASS","PRET AU PASS","READY_AT_PASS"].includes(st);
 }
 
-function orderIsReady(order){
-    if(!order || typeof order!=="object") return false;
+function readyCount(order){
+    if(!order || !Array.isArray(order.items)) return 0;
 
-    const items=Array.isArray(order.items) ? order.items.filter(Boolean) : [];
+    return order.items.reduce((sum,item)=>{
+        if(!ready(item)) return sum;
+        const q=Math.max(1,Number(item.qty ?? item.quantity ?? 1) || 1);
+        return sum + q;
+    },0);
+}
 
-    /* Source de vérité = articles prêts et pas encore pris/servis. */
-    if(items.some(itemIsReady)) return true;
+function orderReady(order){
+    if(!order) return false;
 
-    /* Fallback uniquement si les anciens écrans n'ont pas encore le détail article. */
-    if(!items.length){
-        const s=state(
+    const count=readyCount(order);
+    if(count>0) return true;
+
+    /* secours pour anciens tickets sans détail article */
+    if(!Array.isArray(order.items) || !order.items.length){
+        const s=normState(
             order.productionStatus ||
             order.orderMeta?.productionStatus ||
             order.status
@@ -18553,55 +18392,81 @@ function orderIsReady(order){
     return false;
 }
 
-function getOrders(){
+function orders(){
     try{
-        if(typeof activeOrders!=="undefined" && activeOrders && typeof activeOrders==="object"){
+        if(typeof activeOrders!=="undefined" && activeOrders){
             return activeOrders;
         }
     }catch(_){}
     return {};
 }
 
-function findOrder(label,orders){
-    const wanted=norm(label);
+function findOrder(label){
+    const all=orders();
+    const wanted=normTable(label);
     if(!wanted) return null;
 
-    let direct=null;
-    try{ direct=orders[label]; }catch(_){}
-    if(direct) return direct;
+    try{
+        if(all[label]) return all[label];
+    }catch(_){}
 
-    for(const key of Object.keys(orders||{})){
+    for(const key of Object.keys(all)){
         if(/MASTER|ARCHIVE|SETTINGS|RESERVATIONS|ALERTS/i.test(key)) continue;
 
-        const nk=norm(key);
-        if(
-            nk===wanted ||
-            ("T"+nk)===wanted ||
-            nk===("T"+wanted)
-        ){
-            return orders[key];
+        const nk=normTable(key);
+        if(nk===wanted || ("T"+nk)===wanted || nk===("T"+wanted)){
+            return all[key];
         }
     }
     return null;
 }
 
-function ensureOverlay(host,ready){
-    if(!host) return;
+function ensureBadge(card,count){
+    let badge=card.querySelector(".ichef-card-live-state");
 
-    let overlay=host.querySelector(":scope > ."+READY_OVERLAY_CLASS);
+    if(!badge){
+        badge=document.createElement("div");
+        badge.className="ichef-card-live-state";
+        card.appendChild(badge);
+    }
 
-    if(ready){
-        if(!overlay){
-            overlay=document.createElement("div");
-            overlay.className=READY_OVERLAY_CLASS;
-            host.appendChild(overlay);
-        }
-    }else if(overlay){
-        overlay.remove();
+    badge.textContent = count>1 ? `✅ ${count} PRÊTS` : "✅ PRÊT";
+}
+
+function clearReadyBadge(card){
+    const badge=card.querySelector(".ichef-card-live-state");
+    if(
+        badge &&
+        /PRÊT|PRET/i.test(badge.textContent||"") &&
+        !card.classList.contains("ichef-order-production") &&
+        !card.classList.contains("ichef-order-input")
+    ){
+        badge.remove();
     }
 }
 
-function syncFloor(orders){
+function syncCards(){
+    document.querySelectorAll(".pro-table-card[data-table]").forEach(card=>{
+        const order=findOrder(card.dataset.table);
+        const isReady=orderReady(order);
+        const count=readyCount(order);
+
+        card.classList.toggle("ichef-ready-neon-fixed",isReady);
+
+        if(isReady){
+            ensureBadge(card,count || 1);
+        }else{
+            clearReadyBadge(card);
+        }
+    });
+
+    document.querySelectorAll(".mobile-exact-table[data-table]").forEach(card=>{
+        const order=findOrder(card.dataset.table);
+        card.classList.toggle("ichef-ready-neon-fixed",orderReady(order));
+    });
+}
+
+function syncFloor(){
     document.querySelectorAll(".floor-plan .table-wrapper").forEach(wrapper=>{
         const label=
             wrapper.dataset.id ||
@@ -18610,47 +18475,20 @@ function syncFloor(orders){
             wrapper.dataset.label ||
             "";
 
-        const order=findOrder(label,orders);
-        const host=wrapper.querySelector(".table-obj");
-
-        ensureOverlay(host,orderIsReady(order));
-    });
-}
-
-function syncCards(orders){
-    document.querySelectorAll(".pro-table-card[data-table]").forEach(card=>{
-        const order=findOrder(card.dataset.table,orders);
-        ensureOverlay(card,orderIsReady(order));
-    });
-
-    document.querySelectorAll(".mobile-exact-table[data-table]").forEach(card=>{
-        const order=findOrder(card.dataset.table,orders);
-        ensureOverlay(card,orderIsReady(order));
+        const order=findOrder(label);
+        wrapper.classList.toggle("ichef-ready-neon-fixed",orderReady(order));
     });
 }
 
 function sync(){
-    const orders=getOrders();
-    syncFloor(orders);
-    syncCards(orders);
+    syncCards();
+    syncFloor();
 }
 
-window.__ichefReadyOverlaySync=sync;
+window.ichefRefreshReadyNeon=sync;
 
-/*
- * Le code historique appelle notifyReadySequences(), mais certaines versions
- * du PAD ne contiennent plus sa définition. On fournit un pont sûr pour que
- * la synchronisation complète ne soit jamais interrompue.
- */
-if(typeof window.notifyReadySequences!=="function"){
-    window.notifyReadySequences=function(){
-        try{ sync(); }catch(_){}
-    };
-}
-
-/* Aucun style existant n'est modifié.
-   On vérifie seulement si une couche doit être ajoutée ou supprimée. */
-setInterval(sync,300);
+/* Mise à jour légère, sans animation et sans modifier la géométrie */
+setInterval(sync,500);
 
 window.addEventListener("focus",sync,{passive:true});
 document.addEventListener("visibilitychange",()=>{
@@ -18659,10 +18497,10 @@ document.addEventListener("visibilitychange",()=>{
 
 if(document.readyState==="loading"){
     document.addEventListener("DOMContentLoaded",()=>{
-        setTimeout(sync,150);
+        setTimeout(sync,200);
     },{once:true});
 }else{
-    setTimeout(sync,150);
+    setTimeout(sync,200);
 }
 
 })();
