@@ -15584,5 +15584,187 @@ body:not(.edit-mode) .table-obj:active{
 })();
 </script>
 
+
+<style id="ichef-reservation-dot-triple-click-css">
+/* Réservation discrète : petit point seulement, sans recolorer toute la table */
+.table-wrapper .ichef-reservation-dot{
+    position:absolute;
+    top:8px;
+    right:8px;
+    width:11px;
+    height:11px;
+    border-radius:50%;
+    z-index:8;
+    pointer-events:none;
+    box-shadow:0 0 0 2px #0b0d0e,0 0 8px currentColor;
+}
+.table-wrapper{position:relative}
+.table-wrapper .ichef-reservation-dot.confirmed{background:#d946ef;color:#d946ef}
+.table-wrapper .ichef-reservation-dot.soon{background:#8b5cf6;color:#8b5cf6}
+.table-wrapper .ichef-reservation-dot.late{background:#f97316;color:#f97316}
+.table-wrapper .ichef-reservation-dot.arrived{background:#10b981;color:#10b981}
+
+/* Neutralise la coloration complète de réservation ajoutée précédemment. */
+.table-wrapper.ichef-reservation-confirmed .table-obj,
+.table-wrapper.ichef-reservation-soon .table-obj,
+.table-wrapper.ichef-reservation-late .table-obj,
+.table-wrapper.ichef-reservation-arrived .table-obj{
+    border-color:var(--border-strong) !important;
+    color:inherit !important;
+    box-shadow:none !important;
+}
+
+#ichef-reservation-detail-modal{
+    position:fixed;inset:0;z-index:2147483400;
+    display:none;align-items:center;justify-content:center;
+    background:rgba(0,0,0,.84);backdrop-filter:blur(7px);padding:16px;
+}
+#ichef-reservation-detail-modal.show{display:flex}
+#ichef-reservation-detail-modal .box{
+    width:min(620px,96vw);background:#090b0c;color:#fff;
+    border:1px solid var(--gold);border-radius:14px;padding:18px;
+    box-shadow:0 20px 60px rgba(0,0,0,.75);
+}
+#ichef-reservation-detail-modal h3{margin:0 0 14px;color:var(--gold)}
+#ichef-reservation-detail-content{
+    border:1px solid var(--border);border-radius:8px;padding:14px;
+    line-height:1.8;margin-bottom:14px;
+}
+.ichef-reservation-detail-actions{
+    display:grid;grid-template-columns:1fr 1fr;gap:8px;
+}
+.ichef-reservation-detail-actions button{
+    min-height:45px;border-radius:7px;font-weight:950;cursor:pointer;
+}
+</style>
+
+<div id="ichef-reservation-detail-modal" aria-hidden="true">
+  <div class="box">
+    <h3>📅 DÉTAIL DE LA RÉSERVATION</h3>
+    <div id="ichef-reservation-detail-content"></div>
+    <div class="ichef-reservation-detail-actions">
+      <button type="button" onclick="ichefCloseReservationDetail()"
+        style="background:#111;color:#fff;border:1px solid #555;">FERMER</button>
+      <button type="button" id="ichef-change-reservation-table"
+        style="background:var(--gold);color:#000;border:1px solid var(--gold);">
+        📍 CHANGER DE TABLE
+      </button>
+    </div>
+  </div>
+</div>
+
+<script id="ichef-reservation-dot-triple-click-js">
+(function(){
+"use strict";
+
+let openedReservation=null;
+const clickState=new WeakMap();
+
+function esc(v){
+    return String(v??"").replace(/&/g,"&amp;").replace(/</g,"&lt;")
+        .replace(/>/g,"&gt;").replace(/"/g,"&quot;");
+}
+function norm(v){
+    return String(v||"").normalize("NFD").replace(/[\u0300-\u036f]/g,"")
+        .trim().toLowerCase();
+}
+function wrapperLabel(w){
+    const obj=w?.querySelector(".table-obj");
+    return String(w?.dataset?.label||w?.dataset?.table||
+        obj?.dataset?.label||obj?.dataset?.table||obj?.textContent||"").trim();
+}
+function reservationFor(label){
+    const list=Array.isArray(window.reservationsData)?window.reservationsData:
+        (typeof reservationsData!=="undefined" && Array.isArray(reservationsData)?reservationsData:[]);
+    const now=Date.now();
+    return list.filter(r=>{
+        if(!r)return false;
+        const table=String(r.assignedTable||r.tableId||r.table||"").trim();
+        if(table!==label)return false;
+        const s=norm(r.status||r.reservationStatus);
+        return !["cancelled","canceled","annule","annulee","completed","done","noshow","no show"].includes(s);
+    }).sort((a,b)=>{
+        const da=Date.parse(`${a.date||""}T${a.time||"00:00"}`)||0;
+        const db=Date.parse(`${b.date||""}T${b.time||"00:00"}`)||0;
+        return Math.abs(da-now)-Math.abs(db-now);
+    })[0]||null;
+}
+function dotClass(r){
+    const s=norm(r?.status||r?.reservationStatus);
+    if(["arrived","arrive","seated","installed","installe"].includes(s))return"arrived";
+    const ts=Date.parse(`${r?.date||""}T${r?.time||"00:00"}`);
+    if(Number.isFinite(ts)){
+        const d=ts-Date.now();
+        if(d < -15*60*1000)return"late";
+        if(d <= 30*60*1000 && d >= -15*60*1000)return"soon";
+    }
+    return"confirmed";
+}
+function refreshDots(){
+    document.querySelectorAll(".table-wrapper").forEach(w=>{
+        w.querySelectorAll(".ichef-reservation-dot").forEach(x=>x.remove());
+        const label=wrapperLabel(w);
+        const r=reservationFor(label);
+        if(!r)return;
+        const dot=document.createElement("span");
+        dot.className=`ichef-reservation-dot ${dotClass(r)}`;
+        dot.title="Table réservée";
+        w.appendChild(dot);
+    });
+}
+function openDetail(r,label){
+    openedReservation=r;
+    const pax=parseInt(r.couverts||r.pax||r.personnes)||1;
+    const content=document.getElementById("ichef-reservation-detail-content");
+    content.innerHTML=`
+      <div><strong style="color:var(--gold)">TABLE :</strong> ${esc(label)}</div>
+      <div><strong>CLIENT :</strong> ${esc(r.name||r.clientName||"—")}</div>
+      <div><strong>TÉLÉPHONE :</strong> ${esc(r.phone||r.telephone||"—")}</div>
+      <div><strong>HEURE :</strong> ${esc(r.time||"—")}</div>
+      <div><strong>COUVERTS :</strong> ${pax}</div>
+      ${r.obs?`<div><strong>OBSERVATIONS :</strong> ${esc(r.obs)}</div>`:""}
+    `;
+    const modal=document.getElementById("ichef-reservation-detail-modal");
+    modal.classList.add("show"); modal.setAttribute("aria-hidden","false");
+}
+window.ichefCloseReservationDetail=function(){
+    document.getElementById("ichef-reservation-detail-modal")?.classList.remove("show");
+    openedReservation=null;
+};
+document.getElementById("ichef-change-reservation-table")?.addEventListener("click",()=>{
+    if(!openedReservation)return;
+    const id=openedReservation.id||openedReservation.reservationId||openedReservation.bookingId;
+    window.ichefCloseReservationDetail();
+    if(typeof startAssignResa==="function")startAssignResa(id);
+});
+
+/* 3 clics rapides : détail réservation.
+   Le clic simple reste disponible pour le service normal. */
+document.addEventListener("click",function(e){
+    const w=e.target.closest?.(".table-wrapper");
+    if(!w)return;
+    const label=wrapperLabel(w);
+    const r=reservationFor(label);
+    if(!r)return;
+
+    const now=Date.now();
+    let st=clickState.get(w)||{count:0,last:0};
+    st.count=(now-st.last<=650)?st.count+1:1;
+    st.last=now;
+    clickState.set(w,st);
+
+    if(st.count>=3){
+        st.count=0; clickState.set(w,st);
+        e.preventDefault(); e.stopPropagation();
+        openDetail(r,label);
+    }
+},true);
+
+setInterval(refreshDots,2500);
+document.addEventListener("DOMContentLoaded",refreshDots,{once:true});
+window.ichefRefreshReservationDots=refreshDots;
+})();
+</script>
+
 </body>
 </html>
