@@ -18465,8 +18465,19 @@ function sortReadyTablesFirst(){
         return a.base-b.base;
     });
 
-    /* appendChild déplace les noeuds existants : aucune recréation des cartes. */
-    decorated.forEach(x=>grid.appendChild(x.card));
+    /*
+      PERFORMANCE :
+      Ne déplacer les cartes QUE si l'ordre visuel doit réellement changer.
+      Cela évite de déclencher en boucle tous les MutationObserver du PAD.
+    */
+    const currentOrder=cards.map(card=>card.dataset.table||"").join("|");
+    const targetOrder=decorated.map(x=>x.label).join("|");
+
+    if(currentOrder===targetOrder) return;
+
+    const frag=document.createDocumentFragment();
+    decorated.forEach(x=>frag.appendChild(x.card));
+    grid.appendChild(frag);
 }
 
 function orders(){
@@ -18566,7 +18577,11 @@ function sync(){
 window.ichefRefreshReadyNeon=sync;
 
 /* Mise à jour légère, sans animation et sans modifier la géométrie */
-setInterval(sync,500);
+/* Fallback seulement. Les changements serveur déclenchent déjà le refresh immédiat. */
+let __ichefReadyFallbackTimer=setInterval(()=>{
+    if(document.hidden) return;
+    sync();
+},1500);
 
 window.addEventListener("focus",sync,{passive:true});
 document.addEventListener("visibilitychange",()=>{
@@ -19464,10 +19479,21 @@ function arListHtml(rows,max=6){
     }).join("");
 }
 
+let __ichefArRefreshBusy=false;
+let __ichefArRefreshQueued=false;
+
 function arRefresh(){
+    if(__ichefArRefreshBusy){
+        __ichefArRefreshQueued=true;
+        return;
+    }
+
     const panel=document.getElementById("anti-rush-server-panel");
     if(!panel?.classList.contains("open")) return;
 
+    __ichefArRefreshBusy=true;
+
+    try{
     const rows=arOrders();
     const level=arRushLevel();
 
@@ -19577,6 +19603,14 @@ function arRefresh(){
 
     const a=document.getElementById("ichef-ar-alert-list");
     if(a) a.innerHTML=arListHtml(alerts,6);
+
+    }finally{
+        __ichefArRefreshBusy=false;
+        if(__ichefArRefreshQueued){
+            __ichefArRefreshQueued=false;
+            requestAnimationFrame(arRefresh);
+        }
+    }
 }
 
 function arOpenTable(tableId){
@@ -19658,7 +19692,11 @@ function arToggle(force){
         arRefresh();
 
         if(arTimer) clearInterval(arTimer);
-        arTimer=setInterval(arRefresh,1000);
+        arTimer=setInterval(()=>{
+            if(document.hidden) return;
+            const p=document.getElementById("anti-rush-server-panel");
+            if(p?.classList.contains("open")) arRefresh();
+        },2000);
     }else{
         if(arTimer){
             clearInterval(arTimer);
@@ -19739,6 +19777,7 @@ if(document.readyState==="loading"){
 }
 </style>
 
+<!-- iCHEF PERF FIX: tri READY conditionnel, Anti-Rush throttlé, polling bouton supprimé -->
 <script id="ichef-anti-rush-drawer-button-js">
 (function(){
 "use strict";
@@ -19804,22 +19843,28 @@ function ensureDrawerAntiRushButton(){
 
 window.ichefEnsureDrawerAntiRushButton=ensureDrawerAntiRushButton;
 
-/* Garde le bouton en place même si les catégories sont rerendues. */
-setInterval(()=>{
-    const drawer=document.getElementById("order-drawer");
-    if(drawer?.classList.contains("open")){
-        ensureDrawerAntiRushButton();
-        syncButtonState();
-    }
-},700);
-
+/* Aucun polling permanent : le MutationObserver ci-dessous suffit. */
 const drawer=document.getElementById("order-drawer");
 if(drawer){
-    new MutationObserver(()=>{
-        if(drawer.classList.contains("open")){
-            requestAnimationFrame(ensureDrawerAntiRushButton);
-        }
-    }).observe(drawer,{attributes:true,childList:true,subtree:true});
+    let __ichefBtnRaf=0;
+    new MutationObserver((mutations)=>{
+        if(!drawer.classList.contains("open")) return;
+
+        /*
+          On n'agit que si le bouton a réellement disparu ou si le drawer
+          vient de s'ouvrir. Un seul RAF maximum, même si beaucoup de DOM change.
+        */
+        const missing=!document.getElementById("ichef-anti-rush-drawer-btn");
+        const classChanged=mutations.some(m=>m.type==="attributes" && m.attributeName==="class");
+
+        if(!missing && !classChanged) return;
+        if(__ichefBtnRaf) return;
+
+        __ichefBtnRaf=requestAnimationFrame(()=>{
+            __ichefBtnRaf=0;
+            ensureDrawerAntiRushButton();
+        });
+    }).observe(drawer,{attributes:true,attributeFilter:["class"],childList:true,subtree:true});
 }
 
 if(document.readyState==="loading"){
