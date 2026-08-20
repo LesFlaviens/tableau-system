@@ -15001,5 +15001,168 @@ window.ichefRefreshPadReservationDots=refreshDots;
 .ichef-pad-res-dot.arrived{background:#10b981 !important;box-shadow:0 0 7px #10b981 !important}
 </style>
 
+
+<style id="ichef-config-table-keypad-style">
+/* Pavé CONFIG. TABLE uniquement — aucune règle sur le plan / table-wrapper */
+#ichef-config-keypad{
+    display:grid;
+    grid-template-columns:repeat(3,minmax(72px,1fr));
+    gap:10px;
+    width:min(430px,100%);
+    margin:18px auto 8px;
+}
+#ichef-config-keypad button{
+    min-height:64px;
+    border:1px solid rgba(255,255,255,.18);
+    border-radius:10px;
+    background:#07100c;
+    color:#fff;
+    font-size:1.35rem;
+    font-weight:800;
+    cursor:pointer;
+    touch-action:manipulation;
+}
+#ichef-config-keypad button:active{
+    border-color:#d4af37;
+    transform:scale(.98);
+}
+#ichef-config-keypad .clear{color:#ef4444;border-color:rgba(239,68,68,.55)}
+#ichef-config-keypad .backspace{color:#fbbf24;border-color:rgba(251,191,36,.55)}
+#ichef-config-shortcuts{
+    display:grid;
+    grid-template-columns:repeat(5,1fr);
+    gap:8px;
+    width:min(560px,100%);
+    margin:10px auto 0;
+}
+#ichef-config-shortcuts button{
+    min-height:48px;
+    border:1px solid rgba(212,175,55,.35);
+    border-radius:9px;
+    background:#07100c;
+    color:#fff;
+    font-weight:800;
+    cursor:pointer;
+}
+</style>
+
+<script id="ichef-config-table-keypad-engine">
+(function(){
+"use strict";
+
+function visible(el){
+    if(!el) return false;
+    const s=getComputedStyle(el);
+    return s.display!=="none" && s.visibility!=="hidden" && el.getClientRects().length>0;
+}
+
+function findConfigPanel(){
+    const candidates=[...document.querySelectorAll('div,section,dialog')];
+    return candidates.find(el=>{
+        if(!visible(el)) return false;
+        const t=(el.innerText||"").toUpperCase();
+        return t.includes("CONFIG. TABLE") && t.includes("EFFACER");
+    }) || null;
+}
+
+function findNameTarget(panel){
+    if(!panel) return null;
+    const inputs=[...panel.querySelectorAll('input,textarea')];
+    if(inputs.length) return inputs[0];
+
+    // Fallback: prominent current table-name element, excluding buttons/headings.
+    return [...panel.querySelectorAll('div,span,p')].find(el=>{
+        if(el.closest('button')) return false;
+        const t=(el.textContent||"").trim();
+        if(!t || t.length>20) return false;
+        const r=el.getBoundingClientRect();
+        return r.width>180 && r.height>35;
+    }) || null;
+}
+
+function getValue(target){
+    return target && ('value' in target) ? String(target.value||"") : String(target?.textContent||"").trim();
+}
+function setValue(target,value){
+    if(!target) return;
+    value=String(value||"").toUpperCase().replace(/[^A-Z0-9]/g,"").slice(0,12);
+    if('value' in target){
+        target.value=value;
+        target.dispatchEvent(new Event('input',{bubbles:true}));
+        target.dispatchEvent(new Event('change',{bubbles:true}));
+    }else{
+        target.textContent=value || "—";
+        target.dispatchEvent(new Event('input',{bubbles:true}));
+    }
+}
+function appendValue(target,value){
+    const current=getValue(target)==="—" ? "" : getValue(target);
+    setValue(target,current+value);
+}
+
+function build(panel){
+    if(!panel || panel.querySelector('#ichef-config-keypad')) return;
+    const target=findNameTarget(panel);
+    if(!target) return;
+
+    const keypad=document.createElement('div');
+    keypad.id='ichef-config-keypad';
+    keypad.innerHTML=`
+      <button type="button" data-k="1">1</button>
+      <button type="button" data-k="2">2</button>
+      <button type="button" data-k="3">3</button>
+      <button type="button" data-k="4">4</button>
+      <button type="button" data-k="5">5</button>
+      <button type="button" data-k="6">6</button>
+      <button type="button" data-k="7">7</button>
+      <button type="button" data-k="8">8</button>
+      <button type="button" data-k="9">9</button>
+      <button type="button" class="clear" data-action="clear">C</button>
+      <button type="button" data-k="0">0</button>
+      <button type="button" class="backspace" data-action="back">⌫</button>`;
+
+    const shortcuts=document.createElement('div');
+    shortcuts.id='ichef-config-shortcuts';
+    shortcuts.innerHTML=`
+      <button type="button" data-k="A">A</button>
+      <button type="button" data-k="B">B</button>
+      <button type="button" data-k="C">C</button>
+      <button type="button" data-k="T">T</button>
+      <button type="button" data-k="EXT">EXT</button>`;
+
+    keypad.addEventListener('click',e=>{
+        const b=e.target.closest('button'); if(!b)return;
+        e.preventDefault(); e.stopPropagation();
+        if(b.dataset.action==="clear") return setValue(target,"");
+        if(b.dataset.action==="back"){
+            const v=getValue(target)==="—"?"":getValue(target);
+            return setValue(target,v.slice(0,-1));
+        }
+        appendValue(target,b.dataset.k||"");
+    });
+    shortcuts.addEventListener('click',e=>{
+        const b=e.target.closest('button'); if(!b)return;
+        e.preventDefault(); e.stopPropagation();
+        appendValue(target,b.dataset.k||"");
+    });
+
+    // Put keypad near the existing naming controls, but only inside config modal.
+    const erase=[...panel.querySelectorAll('button')].find(b=>(b.innerText||"").trim().toUpperCase()==="EFFACER");
+    const anchor=erase?.parentElement || target.parentElement || panel;
+    anchor.insertAdjacentElement('afterend',keypad);
+    keypad.insertAdjacentElement('afterend',shortcuts);
+}
+
+function refresh(){
+    const panel=findConfigPanel();
+    if(panel) build(panel);
+}
+
+document.addEventListener('click',()=>setTimeout(refresh,30),true);
+new MutationObserver(()=>refresh()).observe(document.documentElement,{childList:true,subtree:true,attributes:true,attributeFilter:['style','class']});
+setTimeout(refresh,300);
+})();
+</script>
+
 </body>
 </html>
