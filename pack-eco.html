@@ -16368,5 +16368,449 @@ window.ICHEF_RESERVATION_PLAN_STRICT = Object.freeze({
 }
 </style>
 
+
+<style id="ichef-capacity-optimizer-style">
+#ichef-capacity-alert{
+    display:none;
+    margin:12px 0;
+    padding:12px 14px;
+    border-radius:9px;
+    border:1px solid #f59e0b;
+    background:rgba(245,158,11,.08);
+    color:#fff;
+    font-size:.74rem;
+    font-weight:800;
+    line-height:1.45;
+}
+#ichef-capacity-alert.show{display:block}
+#ichef-capacity-alert.full{
+    border-color:#ef4444;
+    background:rgba(239,68,68,.09);
+}
+#ichef-capacity-alert.ok{
+    border-color:#10b981;
+    background:rgba(16,185,129,.08);
+}
+</style>
+
+<script id="ichef-capacity-optimizer-engine">
+(function(){
+"use strict";
+
+function capNorm(v){ return String(v==null?"":v).trim(); }
+function capPax(r){ return parseInt(r?.couverts || r?.pax || r?.personnes || r?.guests || 0) || 1; }
+
+async function capState(){
+    const r=await fetch(`${window.SERVER_URL}/get-current-state?tenantID=${getTenantParam()}`,{cache:"no-store"});
+    if(!r.ok) throw new Error("STATE_"+r.status);
+    return r.json();
+}
+
+function capTables(state){
+    const list=state?.activeOrders?.ARCHITECTURE?.data?.tables;
+    return Array.isArray(list) ? list.filter(t=>capNorm(t?.label)) : [];
+}
+
+function capActiveReservation(r){
+    const s=capNorm(r?.status || r?.reservationStatus).toLowerCase();
+    return !["rejected","cancelled","canceled","annule","annulee","completed","done","noshow","no show"].includes(s);
+}
+
+function capHasRealOrder(order){
+    const items=Array.isArray(order?.items) ? order.items : [];
+    return items.some(i=>{
+        const name=capNorm(i?.n ?? i?.name ?? i?.productName ?? i?.title);
+        const qty=Number(i?.qty ?? i?.quantity ?? 1);
+        return !!name && qty>0;
+    });
+}
+
+function capReservationTable(r){
+    return capNorm(r?.assignedTable || r?.tableId || r?.table);
+}
+
+function capacityOf(t){
+    return parseInt(t?.pax || t?.capacity || t?.seats || 0) || 0;
+}
+
+function tableIsReservedByOther(resas,label,target){
+    return (resas||[]).some(r=>{
+        if(!r || r===target || !capActiveReservation(r)) return false;
+        return capReservationTable(r)===label;
+    });
+}
+
+function freeTablesForReservation(state,resas,target,held=new Set()){
+    return capTables(state).filter(t=>{
+        const label=capNorm(t.label);
+        if(!label || held.has(label) || t.isExtra) return false;
+
+        if(capHasRealOrder(state?.activeOrders?.[label])) return false;
+        if(tableIsReservedByOther(resas,label,target)) return false;
+
+        return true;
+    });
+}
+
+/* Optimisation centrale :
+   1) capacité exacte
+   2) sinon plus petite capacité supérieure
+   3) jamais une table trop petite
+*/
+function chooseBestTable(freeTables,pax){
+    const fitting=freeTables
+        .filter(t=>capacityOf(t)>=pax)
+        .sort((a,b)=>{
+            const ca=capacityOf(a), cb=capacityOf(b);
+            if(ca!==cb) return ca-cb; // moins de places perdues
+            return String(a.label).localeCompare(String(b.label),'fr',{numeric:true});
+        });
+
+    if(fitting.length){
+        const t=fitting[0];
+        return {
+            ok:true,
+            table:t,
+            exact:capacityOf(t)===pax,
+            waste:capacityOf(t)-pax
+        };
+    }
+
+    const largest=freeTables
+        .slice()
+        .sort((a,b)=>capacityOf(b)-capacityOf(a))[0] || null;
+
+    return {
+        ok:false,
+        reason:freeTables.length ? "INSUFFICIENT_CAPACITY" : "FULL",
+        largest,
+        missing:largest ? Math.max(1,pax-capacityOf(largest)) : pax
+    };
+}
+
+function ensureCapacityAlert(){
+    const modal=document.getElementById("planning-modal") || document.getElementById("b2b-panel");
+    if(!modal) return null;
+
+    let box=document.getElementById("ichef-capacity-alert");
+    if(box) return box;
+
+    box=document.createElement("div");
+    box.id="ichef-capacity-alert";
+
+    const aiBtn=[...modal.querySelectorAll("button")].find(b=>
+        (b.textContent||"").toUpperCase().includes("AIDE INTELLIGENTE")
+    );
+
+    if(aiBtn) aiBtn.insertAdjacentElement("afterend",box);
+    else modal.prepend(box);
+
+    return box;
+}
+
+function showCapacityAlert(message,type="warning"){
+    const box=ensureCapacityAlert();
+    if(!box) return;
+
+    box.className="show";
+    if(type==="full") box.classList.add("full");
+    if(type==="ok") box.classList.add("ok");
+    box.innerHTML=message;
+}
+
+window.ichefCapacityPlacementStatus=async function(reservation){
+    const state=await capState();
+    const resas=state?.activeOrders?.RESERVATIONS_MASTER?.data || [];
+    const pax=capPax(reservation);
+    const free=freeTablesForReservation(state,resas,reservation);
+    const best=chooseBestTable(free,pax);
+
+    return {
+        ...best,
+        pax,
+        freeCount:free.length,
+        totalTables:capTables(state).length
+    };
+};
+
+/* Placement manuel sécurisé :
+   interdit de placer 7 personnes sur une table 6.
+*/
+document.addEventListener("click",async e=>{
+    if(!document.body.classList.contains("assign-mode")) return;
+
+    const wrap=e.target.closest?.(".table-wrapper");
+    if(!wrap) return;
+
+    const pending=window.pendingReservationAssignment || window.assignmentReservation || null;
+    if(!pending) return;
+
+    const label=capNorm(wrap.dataset.id || wrap.dataset.tableId || wrap.dataset.label);
+    if(!label) return;
+
+    try{
+        const state=await capState();
+        const t=capTables(state).find(x=>capNorm(x.label)===label);
+        if(!t) return;
+
+        const pax=capPax(pending);
+        const cap=capacityOf(t);
+
+        if(cap<pax){
+            e.preventDefault();
+            e.stopImmediatePropagation();
+
+            const missing=pax-cap;
+            showCapacityAlert(
+                `⚠️ <strong>TABLE TROP PETITE</strong><br>`+
+                `${pax} couvert(s) demandés, table ${label} = ${cap} place(s). `+
+                `<strong>Il manque ${missing} place${missing>1?"s":""}.</strong>`,
+                "warning"
+            );
+            alert(`⚠️ Il manque ${missing} place${missing>1?"s":""} sur la table ${label}.`);
+        }
+    }catch(_){}
+},true);
+
+/* Nouveau moteur global pour IA.
+   On place d'abord les groupes les plus grands pour éviter
+   qu'un petit groupe monopolise une grande table nécessaire ensuite.
+*/
+window.ichefBuildOptimizedReservationPlan=async function(){
+    const state=await capState();
+    const resas=state?.activeOrders?.RESERVATIONS_MASTER?.data || [];
+    const today=new Date().toISOString().split("T")[0];
+
+    const pending=resas
+        .filter(r=>{
+            if(!r || !capActiveReservation(r)) return false;
+            if(r.date && r.date!==today) return false;
+
+            const label=capReservationTable(r);
+            const exists=label && capTables(state).some(t=>capNorm(t.label)===label);
+            return !exists;
+        })
+        .sort((a,b)=>capPax(b)-capPax(a)); // grands groupes d'abord
+
+    const held=new Set();
+    const assignments=[];
+    const alerts=[];
+
+    for(const r of pending){
+        const pax=capPax(r);
+        const free=freeTablesForReservation(state,resas,r,held);
+        const best=chooseBestTable(free,pax);
+
+        if(best.ok){
+            held.add(capNorm(best.table.label));
+            assignments.push({
+                reservation:r,
+                table:best.table,
+                pax,
+                exact:best.exact,
+                waste:best.waste
+            });
+        }else if(best.reason==="FULL"){
+            alerts.push({
+                reservation:r,
+                pax,
+                type:"FULL",
+                message:`Restaurant complet : aucune table libre pour ${pax} couvert(s).`
+            });
+        }else{
+            alerts.push({
+                reservation:r,
+                pax,
+                type:"INSUFFICIENT_CAPACITY",
+                missing:best.missing,
+                largest:best.largest,
+                message:
+                    `Capacité insuffisante pour ${pax} couvert(s). `+
+                    `Plus grande table libre : ${best.largest ? capacityOf(best.largest) : 0} place(s). `+
+                    `Il manque ${best.missing} place${best.missing>1?"s":""}.`
+            });
+        }
+    }
+
+    return {state,resas,pending,assignments,alerts};
+};
+
+/* Remplace le comportement du bouton IA par le plan optimisé. */
+window.smartPlacementAssistant=async function(){
+    if(!window.currentUser || currentUser.role!=="Manager"){
+        return alert("⛔ Accès Manager requis pour le placement IA.");
+    }
+
+    const plan=await window.ichefBuildOptimizedReservationPlan();
+
+    if(!plan.pending.length){
+        showCapacityAlert("✅ Toutes les réservations sont déjà placées sur des tables valides.","ok");
+        return alert("✅ Aucune réservation en attente de placement.");
+    }
+
+    const full=plan.alerts.filter(a=>a.type==="FULL");
+    const insuff=plan.alerts.filter(a=>a.type==="INSUFFICIENT_CAPACITY");
+
+    if(full.length && !plan.assignments.length){
+        showCapacityAlert(
+            `🛑 <strong>RESTAURANT COMPLET</strong><br>`+
+            `Aucune table libre pour ${full.length} réservation(s). `+
+            `Le placement automatique est arrêté.`,
+            "full"
+        );
+        return alert("🛑 RESTAURANT COMPLET\nAucune table libre. Le placement automatique est arrêté.");
+    }
+
+    if(insuff.length){
+        const detail=insuff.map(a=>
+            `${a.reservation.name||"Client"} — ${a.pax} pers. : il manque ${a.missing} place${a.missing>1?"s":""}`
+        ).join("<br>");
+
+        showCapacityAlert(
+            `⚠️ <strong>CAPACITÉ INSUFFISANTE</strong><br>${detail}`,
+            "warning"
+        );
+    }
+
+    const preview=plan.assignments.map(a=>{
+        const cap=capacityOf(a.table);
+        return `${a.reservation.name||"Client"} · ${a.pax} pers. → ${a.table.label} (${cap} places)`
+             + (a.exact ? " ✓ capacité exacte" : ` · ${a.waste} place(s) libre(s)`);
+    }).join("\n");
+
+    if(!plan.assignments.length) return;
+
+    const auto=localStorage.getItem("ichef_reservation_ai_auto")==="1";
+
+    if(!auto){
+        if(!confirm(
+            `🧠 PLAN DE PLACEMENT OPTIMISÉ\n\n${preview}\n\n`
+            + (plan.alerts.length ? `⚠️ ${plan.alerts.length} réservation(s) non plaçable(s).\n\n` : "")
+            + `Valider ces affectations ?`
+        )) return;
+    }
+
+    for(const a of plan.assignments){
+        const r=a.reservation;
+        const label=capNorm(a.table.label);
+        r.assignedTable=label;
+        r.tableId=label;
+        r.table=label;
+        r.assignmentMode="AI_OPTIMIZED";
+        r.assignedAt=new Date().toISOString();
+    }
+
+    const save=await fetch(`${window.SERVER_URL}/update-order?tenantID=${getTenantParam()}`,{
+        method:"POST",
+        headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({
+            tableId:"RESERVATIONS_MASTER",
+            order:{data:plan.resas}
+        })
+    });
+
+    if(!save.ok) throw new Error("RESERVATION_SAVE_FAILED");
+
+    if(typeof window.ichefRefreshTableStatusSummary==="function")
+        await window.ichefRefreshTableStatusSummary();
+
+    if(typeof window.ichefRefreshReservationTableColors==="function")
+        await window.ichefRefreshReservationTableColors();
+
+    if(typeof renderFloor==="function") renderFloor();
+    if(typeof renderPlanning==="function") renderPlanning("today");
+
+    if(plan.alerts.length){
+        alert(
+            `✅ ${plan.assignments.length} réservation(s) placée(s).\n`+
+            `⚠️ ${plan.alerts.length} réservation(s) restent à traiter faute de capacité.`
+        );
+    }else{
+        showCapacityAlert(
+            `✅ <strong>PLACEMENT OPTIMISÉ</strong> — ${plan.assignments.length} réservation(s) affectée(s) avec le minimum de places perdues.`,
+            "ok"
+        );
+        alert(`✅ ${plan.assignments.length} réservation(s) placée(s) de façon optimisée.`);
+    }
+};
+
+/* Si IA AUTO est ON, elle utilise le même moteur optimisé. */
+let optimizerBusy=false;
+async function autoOptimize(){
+    if(optimizerBusy) return;
+    if(localStorage.getItem("ichef_reservation_ai_auto")!=="1") return;
+    if(!window.currentUser || currentUser.role!=="Manager") return;
+
+    optimizerBusy=true;
+    try{
+        const plan=await window.ichefBuildOptimizedReservationPlan();
+
+        if(!plan.pending.length) return;
+
+        if(!plan.assignments.length){
+            if(plan.alerts.some(a=>a.type==="FULL")){
+                showCapacityAlert(
+                    "🛑 <strong>RESTAURANT COMPLET</strong> — aucune table libre. Placement automatique arrêté.",
+                    "full"
+                );
+            }else if(plan.alerts.length){
+                const first=plan.alerts[0];
+                showCapacityAlert(
+                    `⚠️ <strong>CAPACITÉ INSUFFISANTE</strong> — ${first.message}`,
+                    "warning"
+                );
+            }
+            return;
+        }
+
+        for(const a of plan.assignments){
+            const label=capNorm(a.table.label);
+            a.reservation.assignedTable=label;
+            a.reservation.tableId=label;
+            a.reservation.table=label;
+            a.reservation.assignmentMode="AI_OPTIMIZED";
+            a.reservation.assignedAt=new Date().toISOString();
+        }
+
+        await fetch(`${window.SERVER_URL}/update-order?tenantID=${getTenantParam()}`,{
+            method:"POST",
+            headers:{"Content-Type":"application/json"},
+            body:JSON.stringify({
+                tableId:"RESERVATIONS_MASTER",
+                order:{data:plan.resas}
+            })
+        });
+
+        if(typeof renderFloor==="function") renderFloor();
+        if(typeof renderPlanning==="function"){
+            const m=document.getElementById("planning-modal");
+            if(m?.classList.contains("open")) renderPlanning("today");
+        }
+        if(typeof window.ichefRefreshTableStatusSummary==="function")
+            await window.ichefRefreshTableStatusSummary();
+
+        if(plan.alerts.length){
+            const a=plan.alerts[0];
+            showCapacityAlert(`⚠️ ${a.message}`,"warning");
+        }
+    }catch(e){
+        console.warn("[iCHEF OPTIMIZER]",e);
+    }finally{
+        optimizerBusy=false;
+    }
+}
+
+setInterval(autoOptimize,5000);
+
+window.ICHEF_RESERVATION_CAPACITY_OPTIMIZER=Object.freeze({
+    exactFirst:true,
+    smallestSufficientTable:true,
+    largestGroupsFirst:true,
+    neverUnderCapacity:true,
+    fullRestaurantStop:true
+});
+})();
+</script>
+
 </body>
 </html>
