@@ -1,6 +1,16 @@
 <!DOCTYPE html>
 <html lang="fr">
 <head>
+<!-- iCHEF FIX RESERVATION IA : table réellement réservée + reservationId -->
+
+<!-- iCHEF ADMIN MENU NETTOYÉ
+     Supprimé de l'interface :
+     - FERMER
+     - QUITTER ARCHITECTURE
+     - RETOUR ADMINISTRATION
+     Les fonctions internes restent intactes.
+-->
+
 <!-- iCHEF QUI MANGE QUOI — sièges/convives QR + KDS -->
 <!-- iCHEF FIX FANTÔMES À LA SOURCE — syncData + Socket filtrés -->
 <!-- iCHEF HAUT DÉBIT : profil front-end optimisé pour service intensif / 1000 couverts jour -->
@@ -1640,7 +1650,8 @@ button, .btn-mini, .dock-btn, .folder-btn, .room-tab, .btn-item {
          <button id="btn-rush-toggle" class="dock-btn rush" onclick="toggleRushMode()" title="Basculer la vue Rush">
     <span class="dock-icon">⚡</span><span>VUE RUSH</span>
 </button>
-            
+            <button  id="btn-anti-rush-panel" class="dock-btn" onclick="toggleAntiRushPanel()"title="Afficher l'état Anti-Rush"><span class="dock-icon">🤖</span><span id="anti-rush-toggle-label">ANTI-RUSH</span></button>
+
             <button id="btn-reservations-quick" class="dock-btn reservation-quick"
                     onclick="openPlanningModal()" title="Voir et placer les réservations">
                 <span class="dock-icon">📅</span>
@@ -1669,9 +1680,10 @@ button, .btn-mini, .dock-btn, .folder-btn, .room-tab, .btn-item {
             <button onclick="openHistoryDrawer();closeQuickFolders()">📜 Historique</button>
             <button onclick="openDashboard();closeQuickFolders()">👁️ Dashboard</button>
             <button onclick="unlockArchiMode();closeQuickFolders()">🏗️ Architecture</button>
+            
             <button onclick="toggleCompactFiscal();closeQuickFolders()">▦ Modules fical </button>
             <button style="color:var(--alert)" onclick="logout();closeQuickFolders()">🔒 Quitter</button>
-            <button onclick="window.location.href='administration.html?tenantID=' + appTenantID">🔙 Retour administration</button>
+            
         </div>
 
 </div>
@@ -1734,7 +1746,7 @@ button, .btn-mini, .dock-btn, .folder-btn, .room-tab, .btn-item {
                 <button class="pay-btn" style="width: 100%; margin: 0; font-size: 0.85rem; padding: 15px 10px;" onclick="window.open('administration.html?tenantID=' + appTenantID, '_blank')">✏️ PARAMETRE</button>   
             </div>
             
-            <button class="pay-btn cancel" style="width: 100%;" onclick="closeAdminCatalog()">❌ FERMER</button>
+            
         </div>
     </div>
 
@@ -3537,10 +3549,19 @@ function updateAntiRushServerPanel() {
                 let phoneHtml = r.phone ? `<div style="color:var(--text-muted); font-size:0.75rem; letter-spacing: 1px;">📞 ${r.phone}</div>` : '';
                 
                 let assignBtn = '';
-                if(r.date === new Date().toISOString().split('T')[0] && !r.assignedTable) {
-                    if (currentUser && currentUser.role === 'Manager') assignBtn = `<button class="btn-mini gold" style="padding:10px; border-radius: 2px;" onclick="startAssignResa(${r.id})">📍 RÉSERVER / PLACER</button>`;
-                    else assignBtn = `<div style="color:var(--text-muted); font-size:0.7rem; font-weight:500; border: 1px solid var(--border); padding: 4px 8px; border-radius: 2px;">🔒 MANAGER</div>`;
-                } else if (r.assignedTable) assignBtn = `<div style="color:var(--text-main); font-weight:600; font-size:0.85rem; letter-spacing: 1px;">📍 TABLE ${r.assignedTable}</div>`;
+                const assignedTable = String(
+                    r.assignedTable || r.tableId || r.table || ''
+                ).trim();
+
+                if(r.date === new Date().toISOString().split('T')[0] && !assignedTable) {
+                    if (currentUser && currentUser.role === 'Manager') {
+                        assignBtn = `<button class="btn-mini gold" style="padding:10px; border-radius:2px;" onclick="startAssignResa(${JSON.stringify(r.id)})">📍 RÉSERVER / PLACER</button>`;
+                    } else {
+                        assignBtn = `<div style="color:var(--text-muted);font-size:.7rem;font-weight:500;border:1px solid var(--border);padding:4px 8px;border-radius:2px;">🔒 MANAGER</div>`;
+                    }
+                } else if (assignedTable) {
+                    assignBtn = `<div style="color:var(--text-main);font-weight:600;font-size:.85rem;letter-spacing:1px;">📍 TABLE ${assignedTable}</div>`;
+                }
 
                 let statusIcon = r.status === 'confirmed' ? '🟢' : '⏳';
 
@@ -3580,11 +3601,59 @@ function updateAntiRushServerPanel() {
                 if (availableTables.length > 0) {
                     availableTables.sort((a, b) => a.pax - b.pax);
                     let bestTable = availableTables[0];
-                    let tableData = { status: 'reserved', time: resa.time, clientName: resa.name, observations: `🍽️ ${resa.couverts} Couvert(s)` + (resa.obs ? ` | ⚠️ ${resa.obs}` : ''), items: [] };
+                    const reservationId = String(
+                        resa.id || resa.reservationId || resa.bookingId ||
+                        `RESA_${Date.now()}_${Math.random().toString(36).slice(2,7)}`
+                    );
 
-                    currentOrders[bestTable.label] = { data: tableData }; 
+                    /* IMPORTANT :
+                       une réservation de table est un vrai état métier,
+                       pas une commande vide. Elle reçoit donc une identité
+                       complète pour ne jamais être filtrée comme fantôme. */
+                    let tableData = {
+                        status: 'reserved',
+                        reservationStatus: 'confirmed',
+                        reservationId,
+                        bookingId: reservationId,
+
+                        time: resa.time,
+                        date: resa.date,
+
+                        clientName: resa.name || resa.clientName || 'Client',
+                        phone: resa.phone || resa.telephone || '',
+                        pax: parseInt(resa.couverts || resa.pax || resa.personnes) || 1,
+
+                        observations:
+                            `🍽️ ${parseInt(resa.couverts || resa.pax || resa.personnes) || 1} Couvert(s)` +
+                            (resa.obs ? ` | ⚠️ ${resa.obs}` : ''),
+
+                        reservation: {
+                            id: reservationId,
+                            reservationId,
+                            status: 'confirmed',
+                            name: resa.name || resa.clientName || 'Client',
+                            phone: resa.phone || resa.telephone || '',
+                            time: resa.time || '',
+                            date: resa.date || '',
+                            pax: parseInt(resa.couverts || resa.pax || resa.personnes) || 1,
+                            observations: resa.obs || '',
+                            assignedTable: bestTable.label
+                        },
+
+                        items: []
+                    };
+
+                    /* Conserve le même format local que le serveur renverra. */
+                    currentOrders[bestTable.label] = tableData;
                     await API.update(bestTable.label, tableData, true);
+
+                    resa.id = resa.id || reservationId;
+                    resa.reservationId = reservationId;
+                    resa.bookingId = resa.bookingId || reservationId;
                     resa.assignedTable = bestTable.label;
+                    resa.tableId = bestTable.label;
+                    resa.table = bestTable.label;
+                    resa.status = resa.status || 'confirmed';
                     updatesCount++;
                 }
             }
@@ -3611,11 +3680,75 @@ function updateAntiRushServerPanel() {
             if(activeOrders[tableLabel] && activeOrders[tableLabel].status !== 'ready' && activeOrders[tableLabel].items && activeOrders[tableLabel].items.length > 0) {
                 if(!confirm(`La table ${tableLabel} semble occupée. Voulez-vous écraser ?`)) return;
             }
-            let tableData = { status: 'reserved', time: pendingAssignResa.time, clientName: pendingAssignResa.name, observations: `🍽️ ${pendingAssignResa.couverts || pendingAssignResa.pax} Couvert(s)` + (pendingAssignResa.obs ? ` | ⚠️ ${pendingAssignResa.obs}` : ''), items: [] };
+            const reservationId = String(
+                pendingAssignResa.id ||
+                pendingAssignResa.reservationId ||
+                pendingAssignResa.bookingId ||
+                `RESA_${Date.now()}_${Math.random().toString(36).slice(2,7)}`
+            );
+
+            let tableData = {
+                status:'reserved',
+                reservationStatus:'confirmed',
+                reservationId,
+                bookingId:reservationId,
+
+                time:pendingAssignResa.time,
+                date:pendingAssignResa.date,
+
+                clientName:pendingAssignResa.name || pendingAssignResa.clientName || 'Client',
+                phone:pendingAssignResa.phone || pendingAssignResa.telephone || '',
+                pax:parseInt(
+                    pendingAssignResa.couverts ||
+                    pendingAssignResa.pax ||
+                    pendingAssignResa.personnes
+                ) || 1,
+
+                observations:
+                    `🍽️ ${parseInt(
+                        pendingAssignResa.couverts ||
+                        pendingAssignResa.pax ||
+                        pendingAssignResa.personnes
+                    ) || 1} Couvert(s)` +
+                    (pendingAssignResa.obs ? ` | ⚠️ ${pendingAssignResa.obs}` : ''),
+
+                reservation:{
+                    id:reservationId,
+                    reservationId,
+                    status:'confirmed',
+                    name:pendingAssignResa.name || pendingAssignResa.clientName || 'Client',
+                    phone:pendingAssignResa.phone || pendingAssignResa.telephone || '',
+                    time:pendingAssignResa.time || '',
+                    date:pendingAssignResa.date || '',
+                    pax:parseInt(
+                        pendingAssignResa.couverts ||
+                        pendingAssignResa.pax ||
+                        pendingAssignResa.personnes
+                    ) || 1,
+                    observations:pendingAssignResa.obs || '',
+                    assignedTable:tableLabel
+                },
+
+                items:[]
+            };
+
             await API.update(tableLabel, tableData, true);
-            let rIndex = reservationsData.findIndex(r => r.id === pendingAssignResa.id);
+
+            let rIndex = reservationsData.findIndex(r =>
+                String(r.id || r.reservationId || r.bookingId) ===
+                String(pendingAssignResa.id || pendingAssignResa.reservationId || pendingAssignResa.bookingId)
+            );
+
             if(rIndex > -1) {
+                reservationsData[rIndex].id =
+                    reservationsData[rIndex].id || reservationId;
+                reservationsData[rIndex].reservationId = reservationId;
+                reservationsData[rIndex].bookingId =
+                    reservationsData[rIndex].bookingId || reservationId;
                 reservationsData[rIndex].assignedTable = tableLabel;
+                reservationsData[rIndex].tableId = tableLabel;
+                reservationsData[rIndex].table = tableLabel;
+
                 await API.update('RESERVATIONS_MASTER', reservationsData);
             }
             pendingAssignResa = null; document.body.classList.remove('assign-mode'); document.getElementById('assign-overlay').style.display = 'none';
