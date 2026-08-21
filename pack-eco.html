@@ -4280,6 +4280,13 @@ let rIndex = reservationsData.findIndex(r =>
                         let pax = parseInt(t.pax) || 4;
                         if (orderData && orderData.observations) { let match = orderData.observations.match(/🍽️ (\d+) Couvert\(s\)/); if (match) pax = parseInt(match[1]); }
 
+                        /* iCHEF FIX ARCHITECTURE COUVERTS : la table DOM transporte
+                           toujours le même nombre de couverts que la source métier.
+                           Le moteur des chaises lit ce data-pax, donc Capture 1 et
+                           plan interactif ne peuvent plus diverger (ex. 56C = 7). */
+                        wrapper.dataset.pax = String(Math.max(1, pax));
+                        wrapper.dataset.shape = String(t.shape || 'rect');
+
                         let extraPax = parseInt(t.extraPax) || 0;
 
                        
@@ -10157,82 +10164,113 @@ html.ichef-sun-mode .chair[data-seat="1"] {
 }
 </style>
 
-<script id="ichef-seat-healing-runtime-v3">
+<script id="ichef-seat-healing-runtime-v4-pax-sync">
 (function(){
     "use strict";
 
-    function healAndNumberSeats(){
-        // Ne pas s'exécuter si on est en mode Rush (le plan est affiché différemment)
+    function expectedPax(table){
+        let pax = parseInt(table?.dataset?.pax, 10);
+
+        /* Secours : retrouver la table métier par son data-id si nécessaire. */
+        if(!(pax > 0)){
+            try{
+                const id = String(table?.dataset?.id || '').trim();
+                const source = Array.isArray(tables)
+                    ? tables.find(t => t && String(t.label) === id)
+                    : null;
+                pax = parseInt(source?.pax, 10);
+            }catch(_){ }
+        }
+
+        return Math.max(1, Math.min(50, Number.isFinite(pax) ? pax : 1));
+    }
+
+    function createChair(table, index, pax){
+        const w = parseFloat(table.style.width) || table.offsetWidth || 80;
+        const h = parseFloat(table.style.height) || table.offsetHeight || 120;
+        const angle = (index / pax) * 2 * Math.PI - (Math.PI / 2);
+
+        const c = document.createElement('div');
+        c.className = 'chair';
+        c.dataset.seat = String(index + 1);
+        c.setAttribute('aria-label', 'Place ' + (index + 1));
+
+        /* Position elliptique générique. Les moteurs de formes spécifiques
+           (triangle, etc.) peuvent ensuite ajuster ces positions. */
+        const rx = w / 2 + 16;
+        const ry = h / 2 + 16;
+        const cx = w / 2 + rx * Math.cos(angle) - 14;
+        const cy = h / 2 + ry * Math.sin(angle) - 14;
+        c.style.left = cx + 'px';
+        c.style.top = cy + 'px';
+
+        table.appendChild(c);
+        return c;
+    }
+
+    function syncTableSeats(table){
+        if(!table || table.closest('.rush-mode')) return;
+
+        const pax = expectedPax(table);
+        let chairs = Array.from(table.querySelectorAll(':scope > .chair'));
+
+        /* Le bug venait d'ici : l'ancien moteur ne reconstruisait les chaises
+           que lorsqu'il n'y en avait AUCUNE. Une table déjà créée avec 2 places
+           restait donc à 2 même si son pax passait à 4 ou 7. */
+        if(chairs.length !== pax){
+            chairs.forEach(c => c.remove());
+            chairs = [];
+            for(let i=0; i<pax; i++){
+                chairs.push(createChair(table, i, pax));
+            }
+        }
+
+        chairs.forEach(function(chair, index){
+            const num = String(index + 1);
+            chair.dataset.seat = num;
+            chair.textContent = '';
+            chair.setAttribute('aria-label', 'Place ' + num + ' sur ' + pax);
+        });
+
+        table.dataset.renderedPax = String(pax);
+    }
+
+    function syncAllSeats(){
         if(document.body.classList.contains('rush-mode')) return;
+        document.querySelectorAll('#floor-plan .table-wrapper').forEach(syncTableSeats);
+    }
 
-        document.querySelectorAll('.table-wrapper').forEach(function(table){
-            
-            // 1. Trouver le nombre de couverts de la table (Pax)
-            let pax = 2; // Défaut
-            const obj = table.querySelector('.table-obj');
-            if(obj) {
-                // Tente de lire le petit texte contenant le nombre de couverts (ex: "👥 4")
-                const paxEl = obj.querySelector('.pro-table-meta, .pax, [class*="pax"], small');
-                if(paxEl && paxEl.textContent.match(/\d+/)) {
-                    pax = parseInt(paxEl.textContent.match(/\d+/)[0]);
-                }
-            }
-            // Secours via le dataset de la table
-            if(table.dataset.pax) pax = parseInt(table.dataset.pax);
+    let raf = 0;
+    function schedule(){
+        cancelAnimationFrame(raf);
+        raf = requestAnimationFrame(syncAllSeats);
+    }
 
-            // 2. Vérifier si les chaises existent, sinon les RECRÉER (Self-Healing)
-            let chairs = Array.from(table.querySelectorAll('.chair'));
-            
-            if(chairs.length === 0) {
-                // Récupérer les dimensions de la table pour calculer le rayon
-                const w = parseInt(table.style.width) || 80;
-                const h = parseInt(table.style.height) || 120;
-                
-                for(let i = 0; i < pax; i++) {
-                    let angle = (i / pax) * 2 * Math.PI - (Math.PI / 2); 
-                    let c = document.createElement('div'); 
-                    c.className = 'chair';
-                    
-                    let rx = w / 2 + 16; 
-                    let ry = h / 2 + 16;
-                    let cx = w / 2 + rx * Math.cos(angle) - 14; // -14 car la chaise fait 28px
-                    let cy = h / 2 + ry * Math.sin(angle) - 14;
-                    
-                    c.style.left = cx + 'px'; 
-                    c.style.top = cy + 'px';
-                    
-                    table.appendChild(c);
-                    chairs.push(c);
-                }
-            }
-
-            // 3. Forcer la numérotation stricte sur les chaises (existantes ou recréées)
-            chairs.forEach(function(chair, index){
-                const num = String(index + 1);
-                
-                if (chair.getAttribute('data-seat') !== num) {
-                    chair.setAttribute('data-seat', num);
-                }
-                
-                chair.textContent = ''; // Vider le contenu pour laisser le CSS::after agir
-                chair.setAttribute('aria-label', 'Place ' + num);
-            });
+    const floor = document.getElementById('floor-plan') || document.querySelector('.floor-plan');
+    if(floor){
+        const observer = new MutationObserver(schedule);
+        observer.observe(floor, {
+            childList: true,
+            subtree: true,
+            attributes: true,
+            attributeFilter: ['data-pax']
         });
     }
 
-    // On utilise un MutationObserver pour réagir à chaque fois que le plan se redessine
-    const observer = new MutationObserver(() => {
-        requestAnimationFrame(healAndNumberSeats);
-    });
-    
-    const floor = document.getElementById('floor-plan') || document.querySelector('.floor-plan');
-    if(floor) {
-        observer.observe(floor, { childList: true, subtree: true });
+    /* Hook après chaque renderFloor pour synchroniser immédiatement les places. */
+    const previousRenderFloor = window.renderFloor;
+    if(typeof previousRenderFloor === 'function'){
+        window.renderFloor = function(){
+            const result = previousRenderFloor.apply(this, arguments);
+            schedule();
+            return result;
+        };
     }
 
-    document.addEventListener('DOMContentLoaded', healAndNumberSeats);
-    setTimeout(healAndNumberSeats, 300);
-    setTimeout(healAndNumberSeats, 1000);
+    document.addEventListener('DOMContentLoaded', schedule);
+    setTimeout(schedule, 120);
+    setTimeout(schedule, 500);
+    setTimeout(schedule, 1200);
 })();
 </script>
 
