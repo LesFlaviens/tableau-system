@@ -30,14 +30,81 @@
     // Les protections d'interface ne remplacent jamais la sécurité serveur.
     document.addEventListener('contextmenu', event => event.preventDefault());
 
+    // iCHEF PRIVATE MOBILE — stockage résilient.
+    // Safari/iOS et certains WebView peuvent limiter localStorage en navigation privée.
+    // On garde alors une copie mémoire pour l'onglet courant, sans contourner la sécurité serveur.
+    const ICHEF_STORAGE = (() => {
+        const memory = new Map();
+        let nativeAvailable = true;
+
+        function nativeStorage() {
+            try { return window.localStorage; }
+            catch (_) { nativeAvailable = false; return null; }
+        }
+
+        function getItem(key) {
+            const k = String(key);
+            if (nativeAvailable) {
+                try {
+                    const store = nativeStorage();
+                    if (store) {
+                        const value = store.getItem(k);
+                        if (value !== null) { memory.set(k, value); return value; }
+                    }
+                } catch (_) { nativeAvailable = false; }
+            }
+            return memory.has(k) ? memory.get(k) : null;
+        }
+
+        function setItem(key, value) {
+            const k = String(key), v = String(value);
+            memory.set(k, v);
+            if (nativeAvailable) {
+                try {
+                    const store = nativeStorage();
+                    if (store) store.setItem(k, v);
+                } catch (_) { nativeAvailable = false; }
+            }
+        }
+
+        function removeItem(key) {
+            const k = String(key);
+            memory.delete(k);
+            if (nativeAvailable) {
+                try {
+                    const store = nativeStorage();
+                    if (store) store.removeItem(k);
+                } catch (_) { nativeAvailable = false; }
+            }
+        }
+
+        function clear() {
+            memory.clear();
+            if (nativeAvailable) {
+                try {
+                    const store = nativeStorage();
+                    if (store) store.clear();
+                } catch (_) { nativeAvailable = false; }
+            }
+        }
+
+        function available() { return nativeAvailable; }
+        return { getItem, setItem, removeItem, clear, available };
+    })();
+    window.ICHEF_STORAGE = ICHEF_STORAGE;
+
     function getOrCreateDeviceId() {
         const key = 'ichef_device_id';
-        let deviceId = localStorage.getItem(key);
+        let deviceId = ICHEF_STORAGE.getItem(key);
         if (!deviceId) {
-            const bytes = new Uint8Array(24);
-            crypto.getRandomValues(bytes);
-            deviceId = 'dev_' + Array.from(bytes, b => b.toString(16).padStart(2, '0')).join('');
-            localStorage.setItem(key, deviceId);
+            try {
+                const bytes = new Uint8Array(24);
+                crypto.getRandomValues(bytes);
+                deviceId = 'dev_' + Array.from(bytes, b => b.toString(16).padStart(2, '0')).join('');
+            } catch (_) {
+                deviceId = 'dev_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2);
+            }
+            ICHEF_STORAGE.setItem(key, deviceId);
         }
         return deviceId;
     }
@@ -55,14 +122,14 @@
     (async function enforceSecurity() {
         const params = new URLSearchParams(window.location.search);
         const urlTenantID = params.get('tenantID');
-        const storedTenantID = localStorage.getItem('ichef_tenant_id');
+        const storedTenantID = ICHEF_STORAGE.getItem('ichef_tenant_id');
 
         if (urlTenantID && !/^[A-Za-z0-9_-]{2,80}$/.test(urlTenantID)) {
             throw new Error('tenantID invalide');
         }
         if (urlTenantID && urlTenantID !== storedTenantID) {
-            localStorage.removeItem('EMPIRE_GLOBAL_SYNC');
-            localStorage.setItem('ichef_tenant_id', urlTenantID);
+            ICHEF_STORAGE.removeItem('EMPIRE_GLOBAL_SYNC');
+            ICHEF_STORAGE.setItem('ichef_tenant_id', urlTenantID);
         }
 
         const tenantID = urlTenantID || storedTenantID;
@@ -90,7 +157,11 @@
                 return;
             }
             window.ICHEF_SECURITY.csrfToken = data.csrfToken || null;
+            if (data.sessionToken) window.ICHEF_SECURITY.sessionToken = data.sessionToken;
+            window.ICHEF_SECURITY.bootstrapOk = true;
         } catch (error) {
+            window.ICHEF_SECURITY.bootstrapOk = false;
+            window.ICHEF_SECURITY.bootstrapError = String(error?.message || error || 'bootstrap');
             console.error('Initialisation sécurité impossible', error);
             document.addEventListener('DOMContentLoaded', () => {
                 const tag = document.getElementById('stock-tag');
@@ -2404,7 +2475,12 @@ body.edit-mode .table-wrapper,body.edit-mode .table-obj,body.edit-mode .zone-obj
         // -------------------------------------------------------------
 
         const appUrlParams = new URLSearchParams(window.location.search);
-        let appTenantID = appUrlParams.get('tenantID') || localStorage.getItem('ichef_tenant_id');
+        let referrerTenantID = '';
+        try {
+            if (document.referrer) referrerTenantID = new URL(document.referrer).searchParams.get('tenantID') || '';
+        } catch (_) {}
+        let appTenantID = appUrlParams.get('tenantID') || ICHEF_STORAGE.getItem('ichef_tenant_id') || referrerTenantID;
+        if (appTenantID) ICHEF_STORAGE.setItem('ichef_tenant_id', appTenantID);
         if (!appTenantID) window.location.replace('connexionpartenaire.html');
         // iCHEF FIX PIN : un fichier HTML ouvert directement doit utiliser le serveur en ligne.
         // localhost n'est utilisé QUE lorsque la page est réellement servie depuis localhost/127.0.0.1.
@@ -2609,7 +2685,7 @@ let unifiedCategories = [];
         }
 
         function safeArray(key, fallback) {
-            try { let v = localStorage.getItem(key); if (v && v !== 'undefined' && v !== 'null') { let p = JSON.parse(v); if (Array.isArray(p)) return p.filter(i => i !== null && i !== undefined); } } catch(e) {} return fallback;
+            try { let v = ICHEF_STORAGE.getItem(key); if (v && v !== 'undefined' && v !== 'null') { let p = JSON.parse(v); if (Array.isArray(p)) return p.filter(i => i !== null && i !== undefined); } } catch(e) {} return fallback;
         }
 
         let rooms = safeArray('empire_rooms', ['Salle Principale']);
@@ -2918,7 +2994,10 @@ let unifiedCategories = [];
         console.error('Erreur réseau PIN', e);
         msgBox.style.display = 'block';
         msgBox.style.color = 'var(--alert)';
-        msgBox.innerText = '❌ Impossible de joindre le serveur.';
+        const privateStorage = (window.ICHEF_STORAGE && !window.ICHEF_STORAGE.available());
+        msgBox.innerText = privateStorage
+            ? '❌ Connexion privée mobile : session non disponible. Rechargez la page avec le lien iCHEF complet.'
+            : '❌ Impossible de joindre le serveur.';
         clearPin();
     } finally {
         loginInProgress = false;
@@ -3290,9 +3369,9 @@ renderDynamicCategories();
                                     currentRoom = rooms[0] || 'Salle Principale';
                                 }
 
-                                localStorage.setItem('empire_architecture', JSON.stringify(tables));
-                                localStorage.setItem('empire_rooms', JSON.stringify(rooms));
-                                localStorage.setItem('empire_zones', JSON.stringify(zones));
+                                ICHEF_STORAGE.setItem('empire_architecture', JSON.stringify(tables));
+                                ICHEF_STORAGE.setItem('empire_rooms', JSON.stringify(rooms));
+                                ICHEF_STORAGE.setItem('empire_zones', JSON.stringify(zones));
 
                                 renderRooms();
                                 renderFloor();
@@ -3972,9 +4051,9 @@ let rIndex = reservationsData.findIndex(r =>
 
             try {
                 await API.update('ARCHITECTURE', architecture);
-                localStorage.setItem('empire_architecture', JSON.stringify(architecture.tables));
-                localStorage.setItem('empire_rooms', JSON.stringify(architecture.rooms));
-                localStorage.setItem('empire_zones', JSON.stringify(architecture.zones));
+                ICHEF_STORAGE.setItem('empire_architecture', JSON.stringify(architecture.tables));
+                ICHEF_STORAGE.setItem('empire_rooms', JSON.stringify(architecture.rooms));
+                ICHEF_STORAGE.setItem('empire_zones', JSON.stringify(architecture.zones));
                 return true;
             } catch (error) {
                 console.error('Erreur de sauvegarde de l’architecture :', error);
@@ -9789,10 +9868,10 @@ html.ichef-sun-mode *{
     let lux=null;
 
     function safeGet(){
-        try{return localStorage.getItem(KEY)||'auto';}catch(e){return 'auto';}
+        try{return ICHEF_STORAGE.getItem(KEY)||'auto';}catch(e){return 'auto';}
     }
     function safeSet(v){
-        try{localStorage.setItem(KEY,v);}catch(e){}
+        try{ICHEF_STORAGE.setItem(KEY,v);}catch(e){}
     }
     function hourSuggestsSun(){
         const h=new Date().getHours();
@@ -10628,7 +10707,7 @@ html.ichef-sun-mode .chair[data-seat="1"] {
 
   function currentMode(){
     let saved='auto';
-    try{saved=localStorage.getItem('ichef_display_contrast_mode_v1')||'auto';}catch(e){}
+    try{saved=ICHEF_STORAGE.getItem('ichef_display_contrast_mode_v1')||'auto';}catch(e){}
     return saved;
   }
 
@@ -10662,7 +10741,7 @@ html.ichef-sun-mode .chair[data-seat="1"] {
     if(typeof window.iChefSetSunPreference==='function'){
       window.iChefSetSunPreference(mode);
     }
-    try{localStorage.setItem('ichef_display_contrast_mode_v1',mode);}catch(err){}
+    try{ICHEF_STORAGE.setItem('ichef_display_contrast_mode_v1',mode);}catch(err){}
     render();
     setTimeout(closeMenu,120);
   });
@@ -10840,14 +10919,14 @@ html.ichef-sun-mode .chair[data-seat="1"] {
     body.style.setProperty('--ichef-center','40%');
     body.style.setProperty('--ichef-right','30%');
     try{
-      localStorage.removeItem('ichef_split_layout_v1');
+      ICHEF_STORAGE.removeItem('ichef_split_layout_v1');
     }catch(e){}
   }
 
   function save(body){
     try{
       const cs=getComputedStyle(body);
-      localStorage.setItem('ichef_split_layout_v1', JSON.stringify({
+      ICHEF_STORAGE.setItem('ichef_split_layout_v1', JSON.stringify({
         left:body.style.getPropertyValue('--ichef-left'),
         center:body.style.getPropertyValue('--ichef-center'),
         right:body.style.getPropertyValue('--ichef-right')
@@ -10857,7 +10936,7 @@ html.ichef-sun-mode .chair[data-seat="1"] {
 
   function restore(body){
     try{
-      const raw=localStorage.getItem('ichef_split_layout_v1');
+      const raw=ICHEF_STORAGE.getItem('ichef_split_layout_v1');
       if(!raw) return;
       const v=JSON.parse(raw);
       if(v.left) body.style.setProperty('--ichef-left',v.left);
@@ -12487,7 +12566,7 @@ button[class*="back" i]{
         p.list.dataset.splitV4Restored="1";
 
         try{
-            const saved=parseFloat(localStorage.getItem(STORAGE_KEY));
+            const saved=parseFloat(ICHEF_STORAGE.getItem(STORAGE_KEY));
             if(Number.isFinite(saved) && saved>0){
                 setHeight(p.list,clampHeight(p.ticket,p.list,saved));
             }
@@ -12529,7 +12608,7 @@ button[class*="back" i]{
 
         const finalHeight=drag.list.getBoundingClientRect().height;
         try{
-            localStorage.setItem(STORAGE_KEY,String(Math.round(finalHeight)));
+            ICHEF_STORAGE.setItem(STORAGE_KEY,String(Math.round(finalHeight)));
         }catch(_){}
 
         drag.splitter.classList.remove("dragging");
@@ -12624,7 +12703,7 @@ button[class*="back" i]{
 
         splitter.addEventListener("dblclick",function(e){
             e.preventDefault();
-            try{ localStorage.removeItem(STORAGE_KEY); }catch(_){}
+            try{ ICHEF_STORAGE.removeItem(STORAGE_KEY); }catch(_){}
             p.list.style.removeProperty("--ichef-ticket-white-h");
         });
     }
@@ -12751,7 +12830,7 @@ html.ichef-security-locked #ichef-security-curtain{
     function currentTenant(){
         try{
             const urlTenant=new URLSearchParams(location.search).get("tenantID");
-            const stored=localStorage.getItem("ichef_tenant_id");
+            const stored=ICHEF_STORAGE.getItem("ichef_tenant_id");
             return urlTenant || stored || "";
         }catch(_){ return ""; }
     }
@@ -12821,7 +12900,7 @@ html.ichef-security-locked #ichef-security-curtain{
         try{
             const p=new URLSearchParams(location.search);
             urlTenant=p.get("tenantID") || "";
-            stored=localStorage.getItem("ichef_tenant_id") || "";
+            stored=ICHEF_STORAGE.getItem("ichef_tenant_id") || "";
         }catch(_){}
 
         if(urlTenant && !TENANT_RE.test(urlTenant)){
@@ -12837,8 +12916,8 @@ html.ichef-security-locked #ichef-security-curtain{
             /* Le bootstrap existant remettra le tenant en cohérence.
                Ici on efface seulement les données locales potentiellement croisées. */
             try{
-                localStorage.removeItem("EMPIRE_GLOBAL_SYNC");
-                sessionStorage.clear();
+                ICHEF_STORAGE.removeItem("EMPIRE_GLOBAL_SYNC");
+                try { window.sessionStorage && window.sessionStorage.clear(); } catch(_) {}
             }catch(_){}
             audit("TENANT_CONTEXT_CHANGED",{from:stored,to:urlTenant});
         }
@@ -13550,12 +13629,12 @@ button[class*="annuler" i] svg{
         /* Copie locale de secours */
         try{
             const key = "ICHEF_FISCAL_CANCEL_AUDIT";
-            const arr = JSON.parse(localStorage.getItem(key) || "[]");
+            const arr = JSON.parse(ICHEF_STORAGE.getItem(key) || "[]");
             arr.push(record);
             if(arr.length > 3000){
                 arr.splice(0, arr.length - 3000);
             }
-            localStorage.setItem(key, JSON.stringify(arr));
+            ICHEF_STORAGE.setItem(key, JSON.stringify(arr));
         }catch(_){}
 
         /* Copie serveur persistante séparée de la table.
@@ -15416,7 +15495,7 @@ const MIN_ZOOM = 0.35;
 const MAX_ZOOM = 2.0;
 const STEP = 0.10;
 
-let zoom = Number(localStorage.getItem("ichef_plan_zoom") || 1);
+let zoom = Number(ICHEF_STORAGE.getItem("ichef_plan_zoom") || 1);
 if(!Number.isFinite(zoom)) zoom=1;
 zoom=Math.max(MIN_ZOOM,Math.min(MAX_ZOOM,zoom));
 
@@ -15463,7 +15542,7 @@ function applyZoom(value, keepCenter=true){
     }
 
     zoom=Math.max(MIN_ZOOM,Math.min(MAX_ZOOM,value));
-    localStorage.setItem("ichef_plan_zoom",String(zoom));
+    ICHEF_STORAGE.setItem("ichef_plan_zoom",String(zoom));
 
     /* Important :
        transform appliqué uniquement au conteneur du plan.
@@ -15814,7 +15893,7 @@ const STORAGE_KEY='ichef_reservation_ai_auto';
 let autoBusy=false;
 
 function aiAutoEnabled(){
-    return localStorage.getItem(STORAGE_KEY)==='1';
+    return ICHEF_STORAGE.getItem(STORAGE_KEY)==='1';
 }
 
 function updateToggle(){
@@ -16053,7 +16132,7 @@ window.ichefSuggestOneReservation=async function(reservationId){
 document.addEventListener('click',e=>{
     if(e.target?.id==='ichef-ai-auto-toggle'){
         const next=!aiAutoEnabled();
-        localStorage.setItem(STORAGE_KEY,next?'1':'0');
+        ICHEF_STORAGE.setItem(STORAGE_KEY,next?'1':'0');
         updateToggle();
         if(next)setTimeout(runAutoIfNeeded,100);
     }
@@ -16783,7 +16862,7 @@ window.smartPlacementAssistant=async function(){
 
     if(!plan.assignments.length) return;
 
-    const auto=localStorage.getItem("ichef_reservation_ai_auto")==="1";
+    const auto=ICHEF_STORAGE.getItem("ichef_reservation_ai_auto")==="1";
 
     if(!auto){
         if(!confirm(
@@ -16841,7 +16920,7 @@ window.smartPlacementAssistant=async function(){
 let optimizerBusy=false;
 async function autoOptimize(){
     if(optimizerBusy) return;
-    if(localStorage.getItem("ichef_reservation_ai_auto")!=="1") return;
+    if(ICHEF_STORAGE.getItem("ichef_reservation_ai_auto")!=="1") return;
     if(!window.currentUser || currentUser.role!=="Manager") return;
 
     optimizerBusy=true;
@@ -19730,7 +19809,7 @@ function arOpenFull(){
             tenant=String(
                 (typeof appTenantID!=="undefined" && appTenantID) ||
                 window.appTenantID ||
-                localStorage.getItem("ichef_tenant_id") ||
+                ICHEF_STORAGE.getItem("ichef_tenant_id") ||
                 ""
             );
         }catch(_){}
@@ -20297,11 +20376,11 @@ function finish(e){
     const finalList=listHeight(drag.list);
 
     try{
-        localStorage.setItem(
+        ICHEF_STORAGE.setItem(
             REGION_KEY,
             String(Math.round(finalRegion))
         );
-        localStorage.setItem(
+        ICHEF_STORAGE.setItem(
             LIST_KEY,
             String(Math.round(finalList))
         );
@@ -20415,11 +20494,11 @@ function resetToNormal(){
         setListHeight(p.list,targetList);
 
         try{
-            localStorage.setItem(
+            ICHEF_STORAGE.setItem(
                 REGION_KEY,
                 String(Math.round(targetRegion))
             );
-            localStorage.setItem(
+            ICHEF_STORAGE.setItem(
                 LIST_KEY,
                 String(Math.round(targetList))
             );
@@ -20437,8 +20516,8 @@ function jumpTop(){
     setListHeight(p.list,total);
 
     try{
-        localStorage.setItem(REGION_KEY,"0");
-        localStorage.setItem(
+        ICHEF_STORAGE.setItem(REGION_KEY,"0");
+        ICHEF_STORAGE.setItem(
             LIST_KEY,
             String(Math.round(total))
         );
@@ -20566,7 +20645,7 @@ function restore(p){
         let savedRegion=null;
 
         try{
-            const raw=localStorage.getItem(REGION_KEY);
+            const raw=ICHEF_STORAGE.getItem(REGION_KEY);
             if(raw!==null){
                 const n=parseFloat(raw);
                 if(Number.isFinite(n)){
@@ -20851,8 +20930,8 @@ if(document.readyState==="loading"){
             const listHeight = drag.list.getBoundingClientRect().height;
 
             try{
-                localStorage.setItem(GAP_KEY, String(Math.round(gap)));
-                localStorage.setItem(HEIGHT_KEY, String(Math.round(listHeight)));
+                ICHEF_STORAGE.setItem(GAP_KEY, String(Math.round(gap)));
+                ICHEF_STORAGE.setItem(HEIGHT_KEY, String(Math.round(listHeight)));
             }catch(_){}
 
             drag.bar.classList.remove("dragging");
@@ -20908,8 +20987,8 @@ if(document.readyState==="loading"){
             const h = p.list.getBoundingClientRect().height;
             setListHeight(p.list, h);
             try{
-                localStorage.setItem(GAP_KEY, "0");
-                localStorage.setItem(HEIGHT_KEY, String(Math.round(h)));
+                ICHEF_STORAGE.setItem(GAP_KEY, "0");
+                ICHEF_STORAGE.setItem(HEIGHT_KEY, String(Math.round(h)));
             }catch(_){}
         }
 
@@ -20921,7 +21000,7 @@ if(document.readyState==="loading"){
 
         // Restaure la dernière position si elle a été sauvegardée
         try {
-            const savedGap = parseFloat(localStorage.getItem(GAP_KEY));
+            const savedGap = parseFloat(ICHEF_STORAGE.getItem(GAP_KEY));
             if(Number.isFinite(savedGap)) {
                 setGap(newBar, savedGap);
             }
@@ -23119,7 +23198,7 @@ function syncTimerToAntiRushUI(cfg){
       frame.contentWindow.postMessage({
         type:'ICHEF_DISH_TIMER_SYNC',
         source:'pad',
-        tenantID:String(window.appTenantID||localStorage.getItem('ichef_tenant_id')||''),
+        tenantID:String(window.appTenantID||ICHEF_STORAGE.getItem('ichef_tenant_id')||''),
         timer:cfg,
         alerts:latestAlerts.map(a=>({table:a.label,name:a.name,minutes:Math.floor(a.minutes),level:a.level}))
       },window.location.origin);
@@ -24228,7 +24307,7 @@ function planScale(plan){
     const rect=plan.getBoundingClientRect();
     let s=rect.width/ow;
     if(!Number.isFinite(s) || s<=0){
-        s=num(localStorage.getItem('ichef_plan_zoom'),1);
+        s=num(ICHEF_STORAGE.getItem('ichef_plan_zoom'),1);
     }
     return clamp(s,.1,4);
 }
@@ -25725,5 +25804,17 @@ body.ichef-ar-cockpit-fullscreen-open{
 })();
 </script>
 
+
+<script id="ichef-private-mobile-compat-20260821">
+(function(){
+  "use strict";
+  try {
+    const coarse = !!(window.matchMedia && window.matchMedia('(pointer: coarse)').matches);
+    const mobile = coarse || /Android|iPhone|iPad|iPod/i.test(navigator.userAgent || '');
+    document.documentElement.dataset.ichefMobile = mobile ? '1' : '0';
+    document.documentElement.dataset.ichefStorage = (window.ICHEF_STORAGE && window.ICHEF_STORAGE.available()) ? 'native' : 'memory';
+  } catch(_) {}
+})();
+</script>
 </body>
 </html>
