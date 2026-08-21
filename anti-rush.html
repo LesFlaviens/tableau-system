@@ -4197,26 +4197,6 @@ let rIndex = reservationsData.findIndex(r =>
                         wrapper.setAttribute('data-id', t.label);
                         if(tStatus) wrapper.classList.add('status-' + tStatus);
                         if(t.isExtra) wrapper.classList.add('extra');
-
-                        /* iCHEF FIX DÉFINITIF : l'indicateur réservation fait partie du rendu
-                           SYNCHRONE de la table. Il n'est plus dépendant d'un span ajouté après
-                           coup par MutationObserver, donc aucun flash lors d'un renderFloor(). */
-                        if(tableReservation){
-                            let reservationDotState = 'reserved';
-                            const reservationStatus = String(tableReservation.status || tableReservation.reservationStatus || '')
-                                .normalize('NFD').replace(/[\u0300-\u036f]/g,'').trim().toLowerCase();
-                            if(['arrived','arrive','seated','installed','installe'].includes(reservationStatus)){
-                                reservationDotState = 'arrived';
-                            }else{
-                                const reservationTs = Date.parse(`${tableReservation.date || todayKey}T${tableReservation.time || '00:00'}`);
-                                if(Number.isFinite(reservationTs)){
-                                    const reservationDelta = reservationTs - Date.now();
-                                    if(reservationDelta < -15 * 60000) reservationDotState = 'late';
-                                    else if(reservationDelta <= 30 * 60000 && reservationDelta >= -15 * 60000) reservationDotState = 'soon';
-                                }
-                            }
-                            wrapper.classList.add('ichef-reservation-dot-' + reservationDotState);
-                        }
                         
                         wrapper.style.left=(t.l||0)+'px'; wrapper.style.top=(t.t||0)+'px'; wrapper.style.width=(t.w||80)+'px'; wrapper.style.height=(t.h||120)+'px';
 
@@ -8072,7 +8052,7 @@ header .header-left > div:first-of-type{
         btn.innerHTML=
           '<span class="pro-table-num"></span>'+
           '<span class="pro-table-meta"></span>'+
-          '<span class="pro-table-time"></span>'+
+          '<span class="pro-table-time">00:00</span>'+
           '<span class="ichef-order-badges"></span>';
 
         btn.addEventListener('click',()=>{
@@ -8120,7 +8100,7 @@ header .header-left > div:first-of-type{
 
       const start=orderStart(label);
       const elapsedMs=start?Date.now()-start:0;
-      const timeText=start?fmtElapsed(start):'';
+      const timeText=start?fmtElapsed(start):'00:00';
       if(time && time.textContent!==timeText) time.textContent=timeText;
       if(time){
         time.classList.toggle('late',elapsedMs>60*60*1000);
@@ -8220,7 +8200,7 @@ header .header-left > div:first-of-type{
       if(!time) return;
 
       const elapsed=start?Date.now()-start:0;
-      time.textContent=start?fmtElapsed(start):'';
+      time.textContent=start?fmtElapsed(start):'00:00';
       time.classList.toggle('late', elapsed>60*60*1000);
       time.classList.toggle('warn', elapsed>20*60*1000 && elapsed<=60*60*1000);
     });
@@ -8728,7 +8708,7 @@ header .header-left > div:first-of-type{
         btn.innerHTML=
           '<span class="num"></span>'+
           '<span class="pax"></span>'+
-          '<span class="time"></span>'+
+          '<span class="time">00:00</span>'+
           '<span class="ichef-order-badges"></span>';
 
         btn.addEventListener('click',()=>{
@@ -8783,7 +8763,7 @@ header .header-left > div:first-of-type{
 
       const st=startOf(label);
       const ms=st?Date.now()-st:0;
-     const timeText=st?elapsed(st):'';
+      const timeText=elapsed(st);
       if(time && time.textContent!==timeText) time.textContent=timeText;
       if(time){
         time.classList.toggle('late',ms>3600000);
@@ -8865,7 +8845,7 @@ header .header-left > div:first-of-type{
       if(!time) return;
 
       const ms=st?Date.now()-st:0;
-      time.textContent=st?elapsed(st):'';
+      time.textContent=elapsed(st);
       time.classList.toggle('late', ms>3600000);
       time.classList.toggle('warn', ms>1200000 && ms<=3600000);
     });
@@ -14662,20 +14642,7 @@ function isActive(r){
 function tableOf(r){return String(r?.assignedTable||r?.tableId||r?.table||'').trim()}
 function wrapperLabel(w){
   const o=w?.querySelector('.table-obj');
-  /* Le plan crée les tables avec data-id=t.label.
-     Utiliser data-id en priorité évite qu'un aperçu de plat modifie textContent
-     et fasse perdre temporairement la réservation / le point d'état. */
-  return String(
-    w?.dataset?.id ||
-    w?.getAttribute?.('data-id') ||
-    w?.dataset?.label ||
-    w?.dataset?.table ||
-    o?.dataset?.id ||
-    o?.dataset?.label ||
-    o?.dataset?.table ||
-    (o?.querySelector?.('.table-content > span')?.textContent || '') ||
-    ''
-  ).trim();
+  return String(w?.dataset?.label||w?.dataset?.table||o?.dataset?.label||o?.dataset?.table||o?.textContent||'').trim();
 }
 function reservationFor(label){
   const now=Date.now();
@@ -14703,28 +14670,20 @@ function refreshDots(){
     const tableObj=w.querySelector('.table-obj');
     if(!tableObj)return;
 
+    tableObj.querySelectorAll(':scope > .ichef-pad-res-dot').forEach(x=>x.remove());
+
     const r=reservationFor(wrapperLabel(w));
-    const dots=[...tableObj.querySelectorAll(':scope > .ichef-pad-res-dot')];
+    if(!r)return;
 
-    if(!r){
-      /* On retire le point uniquement si la table n'a réellement plus de réservation. */
-      dots.forEach(x=>x.remove());
-      return;
-    }
-
-    /* Réutilise le même nœud au lieu de le supprimer/recréer à chaque refresh.
-       Cela supprime le flash visuel qui ressemblait à un clignotement. */
-    let dot=dots.shift() || document.createElement('span');
-    dots.forEach(x=>x.remove());
-
-    const wanted='ichef-pad-res-dot '+stateClass(r);
-    if(dot.className!==wanted) dot.className=wanted;
+    const dot=document.createElement('span');
+    dot.className='ichef-pad-res-dot '+stateClass(r);
     dot.setAttribute('aria-hidden','true');
     dot.title='Réservation';
 
-    if(dot.parentNode!==tableObj){
-      tableObj.appendChild(dot);
-    }
+    /* IMPORTANT :
+       le point est ajouté DANS .table-obj, jamais sur .table-wrapper.
+       Les coordonnées x/y/width/height de l'architecture restent intactes. */
+    tableObj.appendChild(dot);
   });
 }
 function setText(id,v){const e=document.getElementById(id);if(e)e.textContent=(v===undefined||v===null||v==='')?'—':String(v)}
@@ -14784,23 +14743,7 @@ document.addEventListener('click',e=>{
   }
 },true);
 
-function boot(){
-  refreshDots();
-  setInterval(refreshDots,5000);
-
-  /* Quand le plan est reconstruit, réinjecte immédiatement les points sans attendre 5 s.
-     L'observer ne surveille que les changements de nœuds, pas les classes : pas de boucle. */
-  const floor=document.getElementById('floor-plan');
-  if(floor && !floor.__ichefReservationDotObserver){
-    let raf=0;
-    const observer=new MutationObserver(()=>{
-      if(raf) cancelAnimationFrame(raf);
-      raf=requestAnimationFrame(()=>{ raf=0; refreshDots(); });
-    });
-    observer.observe(floor,{childList:true,subtree:true});
-    floor.__ichefReservationDotObserver=observer;
-  }
-}
+function boot(){refreshDots();setInterval(refreshDots,5000)}
 if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',boot,{once:true});else boot();
 window.ichefRefreshPadReservationDots=refreshDots;
 })();
@@ -14827,9 +14770,6 @@ window.ichefRefreshPadReservationDots=refreshDots;
     z-index:99 !important;
     transform:none !important;
     flex:none !important;
-    opacity:1 !important;
-    animation:none !important;
-    transition:none !important;
 }
 .ichef-pad-res-dot.reserved{background:#d946ef !important;box-shadow:0 0 7px #d946ef !important}
 .ichef-pad-res-dot.soon{background:#8b5cf6 !important;box-shadow:0 0 7px #8b5cf6 !important}
@@ -16837,23 +16777,20 @@ window.ICHEF_RESERVATION_CAPACITY_OPTIMIZER=Object.freeze({
     justify-content: flex-start !important;
 }
 
-/* 2. Le badge de Zone : Contraste maximal et repère couleur */
+/* 2. Le badge de Zone : Contraste dur et fond opaque */
 #pro-table-panel .pro-table-zone-badge {
-    background: #111111 !important;
-    border: 1px solid rgba(255, 255, 255, 0.2) !important;
-    border-left: 6px solid var(--ichef-zone-color) !important;
-    color: #ffffff !important;
-    border-radius: 6px !important;
+    background: #000000 !important; /* Fond noir absolu pour détacher le texte */
+    border: 1px solid var(--ichef-zone-color) !important;
+    color: var(--ichef-zone-color) !important;
+    border-radius: 4px !important;
     font-family: 'Inter', sans-serif !important;
-    font-size: 0.75rem !important;
-    font-weight: 950 !important;
-    letter-spacing: 0.8px !important;
-    text-transform: uppercase !important;
-    padding: 6px 10px !important;
-    margin-top: 8px !important;
-    margin-bottom: auto !important;
+    font-size: 0.65rem !important;
+    font-weight: 900 !important;
+    padding: 4px 8px !important;
+    margin-top: 6px !important;
+    margin-bottom: auto !important; /* Agit comme un ressort pour pousser les badges en bas */
     text-shadow: none !important;
-    box-shadow: 0 6px 15px rgba(0,0,0,0.8) !important;
+    box-shadow: 0 4px 8px rgba(0,0,0,0.9) !important;
 }
 
 /* 3. Le conteneur des statuts (PAD, SERVEUR, À PAYER) */
@@ -23154,623 +23091,6 @@ document.addEventListener('touchend',suppressLongPressClick,{capture:true,passiv
 
 /* Si la fenêtre perd le focus pendant l'appui, on annule proprement. */
 window.addEventListener('blur',cancelPress);
-})();
-</script>
-
-
-
-<!-- iCHEF FIX 2026-08-21 : POINT RÉSERVATION STABLE — data-id + réutilisation DOM + zéro animation -->
-
-<!-- iCHEF PATCH 2026-08-21 : ALERTE VISUELLE
-     ORANGE = FIXE / ROUGE CRITIQUE = CLIGNOTANT UNIQUEMENT -->
-
-<!-- =========================================================
-     iCHEF — ALERTE AUTOMATIQUE RETARD PLATS
-     Timer relié à Anti-Rush : seuils dynamiques selon niveau N0→N5
-     Capture 1 + plan interactif + fiche détail
-     ========================================================= -->
-<style id="ichef-dish-delay-alert-v1-css">
-@keyframes ichefDishLatePulse{
-  0%,100%{box-shadow:0 0 0 1px rgba(239,68,68,.9),0 0 10px rgba(239,68,68,.22)}
-  50%{box-shadow:0 0 0 2px rgba(239,68,68,1),0 0 24px rgba(239,68,68,.58)}
-}
-@keyframes ichefDishWarnPulse{
-  0%,100%{box-shadow:0 0 0 1px rgba(245,158,11,.75)}
-  50%{box-shadow:0 0 0 2px rgba(245,158,11,.95),0 0 14px rgba(245,158,11,.26)}
-}
-.pro-table-card.ichef-dish-delay-warning,
-#floor-plan .table-obj.ichef-dish-delay-warning{
-  border-color:#f59e0b !important;
-  /* ATTENTION : orange fixe, sans clignotement. */
-  animation:none !important;
-  box-shadow:0 0 0 1px rgba(245,158,11,.82),0 0 10px rgba(245,158,11,.18) !important;
-}
-.pro-table-card.ichef-dish-delay-critical,
-#floor-plan .table-obj.ichef-dish-delay-critical{
-  border-color:#ef4444 !important;
-  /* CRITIQUE : seul le rouge clignote. */
-  animation:ichefDishLatePulse 1.15s ease-in-out infinite !important;
-}
-.pro-table-card,
-#floor-plan .table-obj{position:relative}
-.ichef-dish-delay-badge{
-  position:absolute;
-  top:6px;
-  right:6px;
-  z-index:40;
-  max-width:calc(100% - 12px);
-  padding:4px 7px;
-  border-radius:999px;
-  border:1px solid currentColor;
-  background:rgba(3,7,8,.94);
-  font-size:.58rem;
-  line-height:1.15;
-  font-weight:950;
-  letter-spacing:.35px;
-  white-space:nowrap;
-  overflow:hidden;
-  text-overflow:ellipsis;
-  pointer-events:none;
-}
-.ichef-dish-delay-badge.warning{color:#f59e0b}
-.ichef-dish-delay-badge.critical{color:#ef4444}
-#ichef-dish-delay-global{
-  position:fixed;
-  left:50%;
-  bottom:18px;
-  transform:translateX(-50%) translateY(18px);
-  z-index:2147483300;
-  display:none;
-  align-items:center;
-  gap:10px;
-  width:min(720px,calc(100vw - 20px));
-  box-sizing:border-box;
-  padding:10px 12px;
-  border-radius:11px;
-  border:1px solid #f59e0b;
-  background:rgba(13,10,4,.97);
-  color:#fff;
-  box-shadow:0 14px 40px rgba(0,0,0,.68);
-  cursor:pointer;
-  opacity:0;
-  transition:opacity .16s ease,transform .16s ease,border-color .16s ease;
-}
-#ichef-dish-delay-global.show{
-  display:flex;
-  opacity:1;
-  transform:translateX(-50%) translateY(0);
-}
-#ichef-dish-delay-global.critical{
-  border-color:#ef4444;
-  background:rgba(34,7,7,.98);
-  animation:ichefDishLatePulse 1.15s ease-in-out infinite;
-}
-#ichef-dish-delay-icon{font-size:1.3rem;flex:0 0 auto}
-#ichef-dish-delay-text{min-width:0;flex:1}
-#ichef-dish-delay-title{font-size:.73rem;font-weight:950;letter-spacing:.65px;text-transform:uppercase}
-#ichef-dish-delay-sub{margin-top:2px;font-size:.65rem;color:#d1d5db;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-#ichef-dish-delay-count{
-  flex:0 0 auto;
-  min-width:31px;
-  height:31px;
-  padding:0 7px;
-  box-sizing:border-box;
-  display:flex;
-  align-items:center;
-  justify-content:center;
-  border-radius:999px;
-  border:1px solid rgba(255,255,255,.24);
-  font-size:.65rem;
-  font-weight:950;
-}
-.ichef-td-item.ichef-detail-delay-warning{background:rgba(245,158,11,.055)}
-.ichef-td-item.ichef-detail-delay-critical{background:rgba(239,68,68,.07)}
-.ichef-td-delay{
-  display:inline-flex;
-  margin-top:4px;
-  padding:2px 6px;
-  border-radius:999px;
-  border:1px solid currentColor;
-  font-size:.56rem;
-  font-weight:950;
-}
-.ichef-td-delay.warning{color:#f59e0b}
-.ichef-td-delay.critical{color:#ef4444}
-@media(max-width:650px){
-  #ichef-dish-delay-global{bottom:8px;padding:9px 10px}
-  #ichef-dish-delay-title{font-size:.66rem}
-  #ichef-dish-delay-sub{font-size:.59rem}
-  .ichef-dish-delay-badge{top:4px;right:4px;font-size:.52rem;padding:3px 5px}
-}
-</style>
-
-<div id="ichef-dish-delay-global" role="button" aria-live="polite" aria-label="Alerte retard cuisine">
-  <div id="ichef-dish-delay-icon">⚠️</div>
-  <div id="ichef-dish-delay-text">
-    <div id="ichef-dish-delay-title">RETARD CUISINE</div>
-    <div id="ichef-dish-delay-sub"></div>
-  </div>
-  <div id="ichef-dish-delay-count">1</div>
-</div>
-
-<script id="ichef-dish-delay-alert-v1-js">
-(function(){
-'use strict';
-if(window.__ICHEF_DISH_DELAY_ALERT_V1__) return;
-window.__ICHEF_DISH_DELAY_ALERT_V1__=true;
-
-const BASE_WARNING_MIN=15;
-const BASE_CRITICAL_MIN=25;
-const REFRESH_MS=5000;
-let latestAlerts=[];
-let lastCriticalSignature='';
-let latestTimerConfig=null;
-
-/* =========================================================
-   TIMER PLATS ↔ ANTI-RUSH
-   Le niveau Anti-Rush devient la référence du chrono.
-   N0 : 15/25 min · N1 : 15/25 · N2 : 18/28
-   N3 : 20/30 · N4 : 25/35 · N5 : 30/40
-   ========================================================= */
-function getAntiRushTimerConfig(){
-  let snap=null;
-  try{
-    if(typeof window.ichefGetAntiRushLiveSnapshot==='function'){
-      snap=window.ichefGetAntiRushLiveSnapshot();
-    }else{
-      snap=window.__ichefAntiRushLiveSnapshot||null;
-    }
-  }catch(_){ snap=window.__ichefAntiRushLiveSnapshot||null; }
-
-  let level=Number(snap?.level)||0;
-  try{ level=Math.max(level,Number(window.__ichefAntiRushLiveLevel)||0); }catch(_){}
-  try{ level=Math.max(level,Number(window.systemSettings?.rushLevel)||0); }catch(_){}
-  try{ if(typeof currentRushLevel!=='undefined') level=Math.max(level,Number(currentRushLevel)||0); }catch(_){}
-  level=Math.max(0,Math.min(5,Math.round(level)));
-
-  const warningByLevel=[15,15,18,20,25,30];
-  const criticalByLevel=[25,25,28,30,35,40];
-  const stateByLevel=['CALME','VIGILANCE','ACTIF','TENDU','ÉLEVÉ','CRITIQUE'];
-
-  const cfg={
-    level,
-    state:String(snap?.state||stateByLevel[level]||'CALME'),
-    warningMin:warningByLevel[level] ?? BASE_WARNING_MIN,
-    criticalMin:criticalByLevel[level] ?? BASE_CRITICAL_MIN,
-    cuisine:Number(snap?.cuisine)||0,
-    bar:Number(snap?.bar)||0,
-    pass:Number(snap?.pass)||0,
-    maxLoad:Number(snap?.maxLoad)||0,
-    activeTables:Number(snap?.activeTables)||0,
-    updatedAt:Date.now()
-  };
-  latestTimerConfig=cfg;
-  return cfg;
-}
-
-function syncTimerToAntiRushUI(cfg){
-  if(!cfg) return;
-  let chip=document.getElementById('ichef-ar-dish-timer-chip');
-  const panel=document.getElementById('anti-rush-server-panel');
-  if(panel && !chip){
-    chip=document.createElement('div');
-    chip.id='ichef-ar-dish-timer-chip';
-    chip.style.cssText='margin:8px 12px;padding:7px 10px;border:1px solid rgba(197,160,89,.42);border-radius:7px;background:rgba(197,160,89,.07);color:#fff;font-size:.66rem;font-weight:850;letter-spacing:.35px;text-align:center;';
-    const target=panel.querySelector('.ichef-ar-head,.ichef-ar-framebar,.anti-rush-server-content')||panel.firstElementChild||panel;
-    try{ target.appendChild(chip); }catch(_){}
-  }
-  if(chip){
-    chip.textContent=`⏱ TIMER PLATS · ANTI-RUSH N${cfg.level} ${cfg.state} · ALERTE ${cfg.warningMin} min · CRITIQUE ${cfg.criticalMin} min`;
-    chip.style.borderColor=cfg.level>=4?'rgba(239,68,68,.7)':cfg.level>=2?'rgba(245,158,11,.65)':'rgba(16,185,129,.55)';
-  }
-
-  /* Prépare aussi la synchronisation vers anti-rush.html lorsqu'il est ouvert en iframe. */
-  try{
-    const frame=document.getElementById('ichef-ar-iframe');
-    if(frame?.contentWindow){
-      frame.contentWindow.postMessage({
-        type:'ICHEF_DISH_TIMER_SYNC',
-        source:'pad',
-        tenantID:String(window.appTenantID||localStorage.getItem('ichef_tenant_id')||''),
-        timer:cfg,
-        alerts:latestAlerts.map(a=>({table:a.label,name:a.name,minutes:Math.floor(a.minutes),level:a.level}))
-      },window.location.origin);
-    }
-  }catch(_){}
-}
-
-const banner=document.getElementById('ichef-dish-delay-global');
-const bannerTitle=document.getElementById('ichef-dish-delay-title');
-const bannerSub=document.getElementById('ichef-dish-delay-sub');
-const bannerCount=document.getElementById('ichef-dish-delay-count');
-
-function norm(v){return String(v??'').trim().toLowerCase().replace(/[^a-z0-9]/g,'');}
-function esc(v){return String(v??'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#039;');}
-function itemName(i){return String(i?.originalName??i?.n??i?.name??i?.label??i?.title??'Article').replace(/\[BR\]/g,' ').trim();}
-function qty(i){const q=Number(i?.qty??i?.quantity??1);return Number.isFinite(q)&&q>0?q:1;}
-function isCancelled(i){
-  if(!i) return true;
-  if(i.cancelled===true||i.canceled===true||i.deleted===true||i.voided===true||i.removed===true) return true;
-  const s=String(i.status??i.sequenceStatus??'').toUpperCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'');
-  return /CANCEL|ANNULE|VOID|SUPPRIM|REMOVED|DELETED/.test(s);
-}
-function isReadyOrServed(i){
-  if(i?.served===true||i?.done===true) return true;
-  const s=String(i?.status??i?.sequenceStatus??'').toUpperCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'');
-  return /READY|PRET|SERVI|SERVED/.test(s);
-}
-function isInKitchen(i){
-  if(!i||isCancelled(i)||isReadyOrServed(i)) return false;
-  const s=String(i.status??i.sequenceStatus??'').toUpperCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'');
-  if(/WAITING|DRAFT|NON ENVOYE|NON_ENVOYE/.test(s) && i.isSent!==true) return false;
-  return i.isSent===true || /PRODUCTION|CUISINE|SENT|ENVOYE/.test(s);
-}
-function toMs(v){
-  if(v==null||v==='') return 0;
-  if(typeof v==='number' && Number.isFinite(v)){
-    if(v>1e12) return v;
-    if(v>1e9) return v*1000;
-    return 0;
-  }
-  const s=String(v).trim();
-  if(/^\d{13,}$/.test(s)) return Number(s.slice(0,13));
-  if(/^\d{10}$/.test(s)) return Number(s)*1000;
-  const d=Date.parse(s);
-  return Number.isFinite(d)?d:0;
-}
-function sentAt(i){
-  return toMs(i?.kitchenSentAt)||toMs(i?.sentToKitchenAt)||toMs(i?.sentAt)||toMs(i?.requestedAt)||toMs(i?.productionStartedAt)||toMs(i?.itemId);
-}
-function orderEntries(){
-  try{
-    if(typeof activeOrders==='undefined'||!activeOrders) return [];
-    return Object.entries(activeOrders);
-  }catch(_){return [];}
-}
-function labelFor(key,order){
-  return String(order?.tableLabel??order?.tableId??order?.table??order?.tableNumber??key??'').replace(/^table\s*/i,'').trim();
-}
-function collectAlerts(){
-  const now=Date.now();
-  try{ if(typeof window.ichefUpdateAntiRushSignal==='function') window.ichefUpdateAntiRushSignal(); }catch(_){}
-  const timerCfg=getAntiRushTimerConfig();
-  const out=[];
-  orderEntries().forEach(([key,order])=>{
-    if(!order||!Array.isArray(order.items)) return;
-    const label=labelFor(key,order);
-    order.items.forEach((item,index)=>{
-      if(!isInKitchen(item)) return;
-      const start=sentAt(item);
-      if(!start||start>now) return;
-      const minutes=(now-start)/60000;
-      if(minutes<timerCfg.warningMin) return;
-      out.push({
-        key,label,item,index,minutes,
-        level:minutes>=timerCfg.criticalMin?'critical':'warning',
-        name:itemName(item),qty:qty(item),
-        warningMin:timerCfg.warningMin,
-        criticalMin:timerCfg.criticalMin,
-        rushLevel:timerCfg.level,
-        rushState:timerCfg.state,
-        rushMaxLoad:timerCfg.maxLoad
-      });
-    });
-  });
-  out.sort((a,b)=>b.minutes-a.minutes);
-  return out;
-}
-function findTableAlert(label){
-  const n=norm(label);
-  return latestAlerts.find(a=>norm(a.label)===n)||null;
-}
-function clearTableMarks(){
-  document.querySelectorAll('.pro-table-card.ichef-dish-delay-warning,.pro-table-card.ichef-dish-delay-critical,#floor-plan .table-obj.ichef-dish-delay-warning,#floor-plan .table-obj.ichef-dish-delay-critical').forEach(el=>{
-    el.classList.remove('ichef-dish-delay-warning','ichef-dish-delay-critical');
-  });
-  // FIX : On masque le point au lieu de le détruire brutalement du DOM
-  document.querySelectorAll('.ichef-dish-delay-badge').forEach(el => {
-      el.style.display = 'none';
-  });
-}
-
-function badgeFor(alert){
-  const b=document.createElement('div');
-  b.className=`ichef-dish-delay-badge ${alert.level}`;
-  b.textContent=alert.level==='critical'?`⚠ ${Math.floor(alert.minutes)} min`:`⏱ ${Math.floor(alert.minutes)} min`;
-  return b;
-}
-
-function markElement(el,alert){
-  if(!el||!alert) return;
-  el.classList.add(alert.level==='critical'?'ichef-dish-delay-critical':'ichef-dish-delay-warning');
-  
-  // FIX : On réutilise le point s'il existe déjà sur la table pour éviter le clignotement
-  let badge = el.querySelector(':scope > .ichef-dish-delay-badge');
-  if (!badge) {
-      badge = document.createElement('div');
-      el.appendChild(badge);
-  }
-  
-  // Mise à jour propre des données sans flash visuel
-  badge.className = `ichef-dish-delay-badge ${alert.level}`;
-  badge.textContent = alert.level==='critical' ? `⚠ ${Math.floor(alert.minutes)} min` : `⏱ ${Math.floor(alert.minutes)} min`;
-  badge.style.display = 'block';
-}
-}
-function markTables(){
-  clearTableMarks();
-  const byTable=new Map();
-  latestAlerts.forEach(a=>{
-    const n=norm(a.label);
-    const old=byTable.get(n);
-    if(!old||a.minutes>old.minutes) byTable.set(n,a);
-  });
-  document.querySelectorAll('#pro-table-grid .pro-table-card[data-table]').forEach(card=>{
-    const a=byTable.get(norm(card.dataset.table));
-    if(a) markElement(card,a);
-  });
-  document.querySelectorAll('#floor-plan .table-wrapper').forEach(w=>{
-    const label=w.dataset.id??w.dataset.table??w.dataset.label??'';
-    const a=byTable.get(norm(label));
-    const obj=w.querySelector('.table-obj');
-    if(a&&obj) markElement(obj,a);
-  });
-}
-function updateBanner(){
-  if(!banner) return;
-  if(!latestAlerts.length){
-    banner.classList.remove('show','critical');
-    banner.removeAttribute('data-table');
-    return;
-  }
-  const worst=latestAlerts[0];
-  const criticalCount=latestAlerts.filter(a=>a.level==='critical').length;
-  banner.classList.toggle('critical',worst.level==='critical');
-  banner.dataset.table=worst.label;
-  bannerTitle.textContent=worst.level==='critical'?'⚠️ RETARD CRITIQUE CUISINE':'⏱ ATTENTION CUISINE';
-  bannerSub.textContent=`Table ${worst.label} · ${worst.qty>1?worst.qty+'× ':''}${worst.name} · ${Math.floor(worst.minutes)} min · Anti-Rush N${worst.rushLevel} ${worst.rushState}${latestAlerts.length>1?' · +'+(latestAlerts.length-1)+' autre(s)':''}`;
-  bannerCount.textContent=String(latestAlerts.length);
-  banner.classList.add('show');
-
-  /* Une seule vibration lors du passage à un nouvel état critique. */
-  if(criticalCount>0){
-    const sig=latestAlerts.filter(a=>a.level==='critical').map(a=>`${norm(a.label)}:${a.index}`).sort().join('|');
-    if(sig && sig!==lastCriticalSignature){
-      lastCriticalSignature=sig;
-      try{navigator.vibrate?.([70,55,70]);}catch(_){ }
-    }
-  }else lastCriticalSignature='';
-}
-function decorateDetailModal(){
-  const overlay=document.getElementById('ichef-table-detail-overlay');
-  if(!overlay?.classList.contains('open')) return;
-  const title=document.getElementById('ichef-td-title')?.textContent||'';
-  const label=title.replace(/^TABLE\s*/i,'').trim();
-  if(!label) return;
-  const tableAlerts=latestAlerts.filter(a=>norm(a.label)===norm(label));
-  if(!tableAlerts.length) return;
-  const rows=Array.from(document.querySelectorAll('#ichef-td-body .ichef-td-item'));
-  rows.forEach(row=>{
-    row.classList.remove('ichef-detail-delay-warning','ichef-detail-delay-critical');
-    row.querySelectorAll('.ichef-td-delay').forEach(x=>x.remove());
-    const nameEl=row.querySelector('.ichef-td-item-name');
-    if(!nameEl) return;
-    const rowName=norm(nameEl.textContent.replace(/^\d+×\s*/,''));
-    const match=tableAlerts.find(a=>norm(a.name)===rowName);
-    if(!match) return;
-    row.classList.add(match.level==='critical'?'ichef-detail-delay-critical':'ichef-detail-delay-warning');
-    const d=document.createElement('span');
-    d.className=`ichef-td-delay ${match.level}`;
-    d.textContent=match.level==='critical'?`⚠ RETARD ${Math.floor(match.minutes)} min`:`⏱ ${Math.floor(match.minutes)} min`;
-    nameEl.parentElement?.appendChild(d);
-  });
-}
-function refresh(){
-  latestAlerts=collectAlerts();
-  markTables();
-  updateBanner();
-  decorateDetailModal();
-  syncTimerToAntiRushUI(latestTimerConfig||getAntiRushTimerConfig());
-}
-
-banner?.addEventListener('click',()=>{
-  const label=banner.dataset.table||'';
-  if(!label) return;
-  try{
-    if(typeof window.ichefOpenTableDetails==='function') window.ichefOpenTableDetails(label,null);
-    else if(typeof handleTableOrderTap==='function') handleTableOrderTap(label,label);
-  }catch(err){console.error('iCHEF alerte retard ouverture table',err);}
-});
-
-/* Si la fiche est ouverte après l'appui long, ajoute le retard immédiatement. */
-document.addEventListener('click',()=>setTimeout(decorateDetailModal,50),true);
-document.addEventListener('pointerup',()=>setTimeout(decorateDetailModal,80),true);
-
-window.ichefDishDelayAlert={
-  refresh,
-  getAlerts:()=>latestAlerts.slice(),
-  getTimerConfig:()=>({...getAntiRushTimerConfig()}),
-  get warningMinutes(){ return getAntiRushTimerConfig().warningMin; },
-  get criticalMinutes(){ return getAntiRushTimerConfig().criticalMin; }
-};
-
-/* Si anti-rush.html renvoie un niveau par postMessage, le chrono se recalcule immédiatement. */
-window.addEventListener('message',(event)=>{
-  if(event.origin!==window.location.origin) return;
-  const data=event.data||{};
-  if(!['ICHEF_ANTI_RUSH_STATE','ICHEF_ANTI_RUSH_UPDATE','ANTI_RUSH_UPDATE'].includes(String(data.type||''))) return;
-  const lvl=Number(data.level??data.rushLevel??data.snapshot?.level);
-  if(Number.isFinite(lvl)){
-    window.__ichefAntiRushLiveLevel=Math.max(0,Math.min(5,lvl));
-    if(data.snapshot&&typeof data.snapshot==='object') window.__ichefAntiRushLiveSnapshot=data.snapshot;
-    setTimeout(refresh,20);
-  }
-});
-
-setTimeout(refresh,600);
-setInterval(refresh,REFRESH_MS);
-})();
-</script>
-
-
-
-<!-- =========================================================
-     iCHEF FIX DÉFINITIF 2026-08-21
-     POINT RÉSERVATION SANS CLIGNOTEMENT
-     - point rendu via pseudo-élément CSS, jamais supprimé/recréé
-     - état mis sur .table-wrapper
-     - ancien span .ichef-pad-res-dot neutralisé
-     - orange fixe; seul retard plat CRITIQUE peut clignoter
-     ========================================================= -->
-<style id="ichef-reservation-dot-no-flicker-final-css">
-/* L'ancien point DOM est totalement neutralisé : il pouvait être recréé après le rendu. */
-#floor-plan .ichef-pad-res-dot{
-    display:none !important;
-    visibility:hidden !important;
-    opacity:0 !important;
-    animation:none !important;
-    transition:none !important;
-}
-
-/* Le nouveau point est un pseudo-élément de la table elle-même : zéro churn DOM. */
-#floor-plan .table-wrapper.ichef-reservation-dot-reserved .table-obj::after,
-#floor-plan .table-wrapper.ichef-reservation-dot-soon .table-obj::after,
-#floor-plan .table-wrapper.ichef-reservation-dot-late .table-obj::after,
-#floor-plan .table-wrapper.ichef-reservation-dot-arrived .table-obj::after{
-    content:"" !important;
-    position:absolute !important;
-    top:5px !important;
-    right:5px !important;
-    width:10px !important;
-    height:10px !important;
-    border-radius:50% !important;
-    z-index:9999 !important;
-    pointer-events:none !important;
-    opacity:1 !important;
-    transform:none !important;
-    transition:none !important;
-    animation:none !important;
-    box-sizing:border-box !important;
-}
-#floor-plan .table-wrapper.ichef-reservation-dot-reserved .table-obj::after{
-    background:#d946ef !important;
-    box-shadow:0 0 7px #d946ef !important;
-}
-#floor-plan .table-wrapper.ichef-reservation-dot-soon .table-obj::after{
-    background:#8b5cf6 !important;
-    box-shadow:0 0 7px #8b5cf6 !important;
-}
-#floor-plan .table-wrapper.ichef-reservation-dot-late .table-obj::after{
-    background:#f97316 !important;
-    box-shadow:0 0 7px #f97316 !important;
-}
-#floor-plan .table-wrapper.ichef-reservation-dot-arrived .table-obj::after{
-    background:#10b981 !important;
-    box-shadow:0 0 7px #10b981 !important;
-}
-
-/* Anciennes alertes warning/late du plan : aucune animation parasite. */
-#floor-plan .table-wrapper.status-warning .table-obj,
-#floor-plan .table-wrapper.status-late .table-obj:not(.ichef-dish-delay-critical){
-    animation:none !important;
-}
-
-/* Règle métier finale : seul le retard plat CRITIQUE clignote. */
-#floor-plan .table-obj.ichef-dish-delay-warning{
-    animation:none !important;
-}
-#floor-plan .table-obj.ichef-dish-delay-critical{
-    animation:ichefDishLatePulse 1.15s ease-in-out infinite !important;
-}
-</style>
-
-<script id="ichef-reservation-dot-no-flicker-final-js">
-(function(){
-'use strict';
-
-const STATE_CLASSES=[
-  'ichef-reservation-dot-reserved',
-  'ichef-reservation-dot-soon',
-  'ichef-reservation-dot-late',
-  'ichef-reservation-dot-arrived'
-];
-
-function norm(v){
-  return String(v==null?'':v).normalize('NFD').replace(/[\u0300-\u036f]/g,'').trim().toLowerCase();
-}
-function localToday(){
-  const d=new Date();
-  return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
-}
-function reservations(){
-  try{ if(typeof reservationsData!=='undefined' && Array.isArray(reservationsData)) return reservationsData; }catch(_){}
-  try{ if(Array.isArray(window.reservationsData)) return window.reservationsData; }catch(_){}
-  return [];
-}
-function active(r){
-  return !['rejected','cancelled','canceled','annule','annulee','completed','done','noshow','no show'].includes(norm(r?.status||r?.reservationStatus));
-}
-function tableOf(r){ return String(r?.assignedTable||r?.tableId||r?.table||'').trim(); }
-function stateOf(r){
-  const s=norm(r?.status||r?.reservationStatus);
-  if(['arrived','arrive','seated','installed','installe'].includes(s)) return 'arrived';
-  const ts=Date.parse(`${r?.date||localToday()}T${r?.time||'00:00'}`);
-  if(Number.isFinite(ts)){
-    const delta=ts-Date.now();
-    if(delta < -15*60000) return 'late';
-    if(delta <= 30*60000 && delta >= -15*60000) return 'soon';
-  }
-  return 'reserved';
-}
-function reservationFor(label){
-  const day=localToday();
-  const now=Date.now();
-  return reservations()
-    .filter(r=>{
-      if(!r || !active(r) || tableOf(r)!==String(label)) return false;
-      if(r.date && String(r.date)!==day) return false;
-      return true;
-    })
-    .sort((a,b)=>{
-      const ta=Date.parse(`${a.date||day}T${a.time||'00:00'}`)||0;
-      const tb=Date.parse(`${b.date||day}T${b.time||'00:00'}`)||0;
-      return Math.abs(ta-now)-Math.abs(tb-now);
-    })[0]||null;
-}
-function labelOf(w){
-  return String(w?.dataset?.id||w?.dataset?.table||w?.dataset?.tableId||w?.dataset?.label||'').trim();
-}
-function apply(w){
-  const label=labelOf(w);
-  if(!label) return;
-  const r=reservationFor(label);
-  const wanted=r ? 'ichef-reservation-dot-'+stateOf(r) : '';
-  STATE_CLASSES.forEach(c=>w.classList.toggle(c,c===wanted));
-}
-function refresh(){
-  document.querySelectorAll('#floor-plan .table-wrapper').forEach(apply);
-}
-
-/* Classes uniquement : aucun append/remove de point. */
-window.ichefRefreshStableReservationDots=refresh;
-setInterval(()=>{ if(!document.hidden) refresh(); },1000);
-window.addEventListener('focus',refresh,{passive:true});
-document.addEventListener('visibilitychange',()=>{ if(!document.hidden) refresh(); });
-
-/* Si renderFloor reconstruit les tables, la classe est déjà posée dans le rendu principal.
-   Ce MutationObserver ne fait qu'un filet de sécurité pour des tables créées ailleurs. */
-const floor=document.getElementById('floor-plan');
-if(floor && !floor.__ichefStableReservationClassObserver){
-  let raf=0;
-  const obs=new MutationObserver(()=>{
-    if(raf) return;
-    raf=requestAnimationFrame(()=>{ raf=0; refresh(); });
-  });
-  obs.observe(floor,{childList:true,subtree:false});
-  floor.__ichefStableReservationClassObserver=obs;
-}
-
-setTimeout(refresh,50);
 })();
 </script>
 
