@@ -25627,5 +25627,143 @@ setTimeout(init,250);
 
 })();
 </script>
+     <!-- =========================================================
+     iCHEF — SAISIE ÉCLAIR & SUPPORT CLAVIER MATÉRIEL (V2)
+     ========================================================= -->
+<style id="ichef-fast-edit-mode">
+/* Effet visuel "Texte sélectionné" type caisse enregistreuse */
+#config-table-name-display.overwrite-ready {
+    background: rgba(197, 160, 89, 0.25) !important;
+    color: var(--gold) !important;
+    box-shadow: inset 0 0 0 2px var(--gold) !important;
+    border-color: transparent !important;
+}
+</style>
+
+<script id="ichef-fast-edit-engine">
+(function(){
+    "use strict";
+
+    let overwriteMode = false;
+
+    // 1. Détecter l'ouverture de la modale pour armer le mode "Écrasement"
+    const originalOpen = window.openTableConfigModal;
+    if(typeof originalOpen === 'function') {
+        window.openTableConfigModal = function() {
+            const res = originalOpen.apply(this, arguments);
+            const display = document.getElementById('config-table-name-display');
+            if(display) {
+                overwriteMode = true;
+                display.classList.add('overwrite-ready');
+            }
+            return res;
+        };
+    }
+
+    // 2. Moteur centralisé de mise à jour du texte
+    function updateName(newVal) {
+        const display = document.getElementById('config-table-name-display');
+        if(!display) return;
+        
+        // Formatage strict : majuscules, max 20 caractères
+        newVal = String(newVal || '').toUpperCase().slice(0, 20);
+        
+        window.currentTactileName = newVal;
+        display.textContent = newVal || '—';
+        
+        // Désactivation du mode écrasement après la première frappe
+        if(overwriteMode) {
+            overwriteMode = false;
+            display.classList.remove('overwrite-ready');
+        }
+    }
+
+    // 3. Interception du clavier PHYSIQUE (Mac/PC/Bluetooth)
+    document.addEventListener('keydown', function(e) {
+        const modal = document.getElementById('table-config-modal');
+        if(!modal || !modal.classList.contains('open')) return;
+        
+        // Ignorer les commandes système (Ctrl+R, Cmd+C...)
+        if(e.ctrlKey || e.altKey || e.metaKey) return;
+
+        const display = document.getElementById('config-table-name-display');
+        if(!display) return;
+        
+        // Verrouillage du clavier natif de l'OS
+        if(document.activeElement === display) display.blur();
+
+        let currentVal = String(window.currentTactileName || '').replace(/^—$/, '').trim();
+
+        if(e.key === 'Backspace') {
+            e.preventDefault();
+            updateName(overwriteMode ? '' : currentVal.slice(0, -1));
+        }
+        else if(e.key === 'Enter') {
+            e.preventDefault();
+            if(typeof window.saveTableConfig === 'function') window.saveTableConfig();
+        }
+        else if(e.key === 'Escape') {
+            e.preventDefault();
+            if(typeof window.closeTableConfigModal === 'function') window.closeTableConfigModal();
+        }
+        else if(e.key.length === 1 && /^[a-zA-Z0-9 \-]$/.test(e.key)) {
+            e.preventDefault();
+            updateName(overwriteMode ? e.key : currentVal + e.key);
+        }
+    }, true);
+
+    // 4. Interception prioritaire du clavier TACTILE iCHEF
+    document.addEventListener('click', function(e) {
+        const modal = document.getElementById('table-config-modal');
+        if(!modal || !modal.classList.contains('open')) return;
+
+        const btn = e.target.closest('#ichef-config-table-azerty-v2 button');
+        
+        // Clic en dehors du clavier (ex: sur le titre) : annule l'écrasement
+        if(!btn) {
+            if(overwriteMode && e.target.id === 'config-table-name-display') {
+                overwriteMode = false;
+                document.getElementById('config-table-name-display').classList.remove('overwrite-ready');
+            }
+            return;
+        }
+
+        // On bloque l'ancien script pour prendre le relais
+        e.stopImmediatePropagation();
+
+        let currentVal = String(window.currentTactileName || '').replace(/^—$/, '').trim();
+        const action = btn.dataset.action;
+        const key = btn.dataset.key || btn.dataset.short;
+
+        if(action === 'clear') {
+            updateName('');
+        }
+        else if(action === 'back') {
+            updateName(overwriteMode ? '' : currentVal.slice(0, -1));
+        }
+        else if(action === 'done') {
+            if(typeof window.saveTableConfig === 'function') window.saveTableConfig();
+        }
+        else if(key) {
+            updateName(overwriteMode ? key : currentVal + key);
+        }
+    }, true); // Phase de capture : priorité absolue
+
+    // 5. Verrouillage du champ éditable natif
+    function disableNativeKeyboard() {
+        const display = document.getElementById('config-table-name-display');
+        if(display && display.getAttribute('contenteditable') === 'true') {
+            display.setAttribute('contenteditable', 'false');
+            display.style.userSelect = 'none';
+            display.style.webkitUserSelect = 'none';
+        }
+    }
+
+    const observer = new MutationObserver(disableNativeKeyboard);
+    observer.observe(document.documentElement, { childList: true, subtree: true });
+    document.addEventListener('DOMContentLoaded', disableNativeKeyboard);
+
+})();
+</script>
 </body>
 </html>
