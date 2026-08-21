@@ -4197,6 +4197,26 @@ let rIndex = reservationsData.findIndex(r =>
                         wrapper.setAttribute('data-id', t.label);
                         if(tStatus) wrapper.classList.add('status-' + tStatus);
                         if(t.isExtra) wrapper.classList.add('extra');
+
+                        /* iCHEF FIX DÉFINITIF : l'indicateur réservation fait partie du rendu
+                           SYNCHRONE de la table. Il n'est plus dépendant d'un span ajouté après
+                           coup par MutationObserver, donc aucun flash lors d'un renderFloor(). */
+                        if(tableReservation){
+                            let reservationDotState = 'reserved';
+                            const reservationStatus = String(tableReservation.status || tableReservation.reservationStatus || '')
+                                .normalize('NFD').replace(/[\u0300-\u036f]/g,'').trim().toLowerCase();
+                            if(['arrived','arrive','seated','installed','installe'].includes(reservationStatus)){
+                                reservationDotState = 'arrived';
+                            }else{
+                                const reservationTs = Date.parse(`${tableReservation.date || todayKey}T${tableReservation.time || '00:00'}`);
+                                if(Number.isFinite(reservationTs)){
+                                    const reservationDelta = reservationTs - Date.now();
+                                    if(reservationDelta < -15 * 60000) reservationDotState = 'late';
+                                    else if(reservationDelta <= 30 * 60000 && reservationDelta >= -15 * 60000) reservationDotState = 'soon';
+                                }
+                            }
+                            wrapper.classList.add('ichef-reservation-dot-' + reservationDotState);
+                        }
                         
                         wrapper.style.left=(t.l||0)+'px'; wrapper.style.top=(t.t||0)+'px'; wrapper.style.width=(t.w||80)+'px'; wrapper.style.height=(t.h||120)+'px';
 
@@ -23569,6 +23589,168 @@ window.addEventListener('message',(event)=>{
 
 setTimeout(refresh,600);
 setInterval(refresh,REFRESH_MS);
+})();
+</script>
+
+
+
+<!-- =========================================================
+     iCHEF FIX DÉFINITIF 2026-08-21
+     POINT RÉSERVATION SANS CLIGNOTEMENT
+     - point rendu via pseudo-élément CSS, jamais supprimé/recréé
+     - état mis sur .table-wrapper
+     - ancien span .ichef-pad-res-dot neutralisé
+     - orange fixe; seul retard plat CRITIQUE peut clignoter
+     ========================================================= -->
+<style id="ichef-reservation-dot-no-flicker-final-css">
+/* L'ancien point DOM est totalement neutralisé : il pouvait être recréé après le rendu. */
+#floor-plan .ichef-pad-res-dot{
+    display:none !important;
+    visibility:hidden !important;
+    opacity:0 !important;
+    animation:none !important;
+    transition:none !important;
+}
+
+/* Le nouveau point est un pseudo-élément de la table elle-même : zéro churn DOM. */
+#floor-plan .table-wrapper.ichef-reservation-dot-reserved .table-obj::after,
+#floor-plan .table-wrapper.ichef-reservation-dot-soon .table-obj::after,
+#floor-plan .table-wrapper.ichef-reservation-dot-late .table-obj::after,
+#floor-plan .table-wrapper.ichef-reservation-dot-arrived .table-obj::after{
+    content:"" !important;
+    position:absolute !important;
+    top:5px !important;
+    right:5px !important;
+    width:10px !important;
+    height:10px !important;
+    border-radius:50% !important;
+    z-index:9999 !important;
+    pointer-events:none !important;
+    opacity:1 !important;
+    transform:none !important;
+    transition:none !important;
+    animation:none !important;
+    box-sizing:border-box !important;
+}
+#floor-plan .table-wrapper.ichef-reservation-dot-reserved .table-obj::after{
+    background:#d946ef !important;
+    box-shadow:0 0 7px #d946ef !important;
+}
+#floor-plan .table-wrapper.ichef-reservation-dot-soon .table-obj::after{
+    background:#8b5cf6 !important;
+    box-shadow:0 0 7px #8b5cf6 !important;
+}
+#floor-plan .table-wrapper.ichef-reservation-dot-late .table-obj::after{
+    background:#f97316 !important;
+    box-shadow:0 0 7px #f97316 !important;
+}
+#floor-plan .table-wrapper.ichef-reservation-dot-arrived .table-obj::after{
+    background:#10b981 !important;
+    box-shadow:0 0 7px #10b981 !important;
+}
+
+/* Anciennes alertes warning/late du plan : aucune animation parasite. */
+#floor-plan .table-wrapper.status-warning .table-obj,
+#floor-plan .table-wrapper.status-late .table-obj:not(.ichef-dish-delay-critical){
+    animation:none !important;
+}
+
+/* Règle métier finale : seul le retard plat CRITIQUE clignote. */
+#floor-plan .table-obj.ichef-dish-delay-warning{
+    animation:none !important;
+}
+#floor-plan .table-obj.ichef-dish-delay-critical{
+    animation:ichefDishLatePulse 1.15s ease-in-out infinite !important;
+}
+</style>
+
+<script id="ichef-reservation-dot-no-flicker-final-js">
+(function(){
+'use strict';
+
+const STATE_CLASSES=[
+  'ichef-reservation-dot-reserved',
+  'ichef-reservation-dot-soon',
+  'ichef-reservation-dot-late',
+  'ichef-reservation-dot-arrived'
+];
+
+function norm(v){
+  return String(v==null?'':v).normalize('NFD').replace(/[\u0300-\u036f]/g,'').trim().toLowerCase();
+}
+function localToday(){
+  const d=new Date();
+  return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
+}
+function reservations(){
+  try{ if(typeof reservationsData!=='undefined' && Array.isArray(reservationsData)) return reservationsData; }catch(_){}
+  try{ if(Array.isArray(window.reservationsData)) return window.reservationsData; }catch(_){}
+  return [];
+}
+function active(r){
+  return !['rejected','cancelled','canceled','annule','annulee','completed','done','noshow','no show'].includes(norm(r?.status||r?.reservationStatus));
+}
+function tableOf(r){ return String(r?.assignedTable||r?.tableId||r?.table||'').trim(); }
+function stateOf(r){
+  const s=norm(r?.status||r?.reservationStatus);
+  if(['arrived','arrive','seated','installed','installe'].includes(s)) return 'arrived';
+  const ts=Date.parse(`${r?.date||localToday()}T${r?.time||'00:00'}`);
+  if(Number.isFinite(ts)){
+    const delta=ts-Date.now();
+    if(delta < -15*60000) return 'late';
+    if(delta <= 30*60000 && delta >= -15*60000) return 'soon';
+  }
+  return 'reserved';
+}
+function reservationFor(label){
+  const day=localToday();
+  const now=Date.now();
+  return reservations()
+    .filter(r=>{
+      if(!r || !active(r) || tableOf(r)!==String(label)) return false;
+      if(r.date && String(r.date)!==day) return false;
+      return true;
+    })
+    .sort((a,b)=>{
+      const ta=Date.parse(`${a.date||day}T${a.time||'00:00'}`)||0;
+      const tb=Date.parse(`${b.date||day}T${b.time||'00:00'}`)||0;
+      return Math.abs(ta-now)-Math.abs(tb-now);
+    })[0]||null;
+}
+function labelOf(w){
+  return String(w?.dataset?.id||w?.dataset?.table||w?.dataset?.tableId||w?.dataset?.label||'').trim();
+}
+function apply(w){
+  const label=labelOf(w);
+  if(!label) return;
+  const r=reservationFor(label);
+  const wanted=r ? 'ichef-reservation-dot-'+stateOf(r) : '';
+  STATE_CLASSES.forEach(c=>w.classList.toggle(c,c===wanted));
+}
+function refresh(){
+  document.querySelectorAll('#floor-plan .table-wrapper').forEach(apply);
+}
+
+/* Classes uniquement : aucun append/remove de point. */
+window.ichefRefreshStableReservationDots=refresh;
+setInterval(()=>{ if(!document.hidden) refresh(); },1000);
+window.addEventListener('focus',refresh,{passive:true});
+document.addEventListener('visibilitychange',()=>{ if(!document.hidden) refresh(); });
+
+/* Si renderFloor reconstruit les tables, la classe est déjà posée dans le rendu principal.
+   Ce MutationObserver ne fait qu'un filet de sécurité pour des tables créées ailleurs. */
+const floor=document.getElementById('floor-plan');
+if(floor && !floor.__ichefStableReservationClassObserver){
+  let raf=0;
+  const obs=new MutationObserver(()=>{
+    if(raf) return;
+    raf=requestAnimationFrame(()=>{ raf=0; refresh(); });
+  });
+  obs.observe(floor,{childList:true,subtree:false});
+  floor.__ichefStableReservationClassObserver=obs;
+}
+
+setTimeout(refresh,50);
 })();
 </script>
 
