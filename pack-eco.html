@@ -24314,6 +24314,7 @@ html, body,
 
 <!-- =========================================================
      iCHEF — ARCHITECTURE FIX V2 : ZOOM + DRAG STABLE
+     + FIX CLIC/TAP COURT = PARAMÈTRES DIRECTS
      2026-08-21
      - déplacement/redimensionnement corrigés quel que soit le zoom
      - clic simple Architecture conservé pour ouvrir la configuration
@@ -24512,7 +24513,9 @@ try{
         function finish(e){
             if(!state) return;
             if(e && e.pointerId!=null && e.pointerId!==state.pointerId) return;
+
             const moved=state.moved;
+            const mode=state.mode;
             const pid=state.pointerId;
             state=null;
             archiV2PointerActive=false;
@@ -24520,13 +24523,33 @@ try{
             try{elmnt.releasePointerCapture(pid);}catch(_){ }
 
             if(moved){
+                /* Un vrai déplacement/redimensionnement ne doit jamais ouvrir les paramètres. */
                 elmnt.dataset.ichefArchiSuppressClickUntil=String(Date.now()+900);
                 isDraggingTable=true;
                 setTimeout(()=>{
                     if(!archiV2PointerActive) isDraggingTable=false;
                 },930);
-            }else{
-                isDraggingTable=false;
+                return;
+            }
+
+            isDraggingTable=false;
+
+            /* FIX ARCHITECTURE CLIC PARAMÈTRES :
+               Sur tactile/Chromium le click synthétique peut être absorbé après le
+               pointerup. On ouvre donc la configuration directement ici lorsqu'il
+               s'agit d'un tap/clic court (aucun déplacement), puis on neutralise le
+               click synthétique qui peut suivre pour éviter une double ouverture. */
+            if(mode==='drag' && (isArchiMode || document.body.classList.contains('edit-mode'))){
+                elmnt.dataset.ichefArchiSuppressClickUntil=String(Date.now()+450);
+                try{
+                    if(obj && obj.id && typeof obj.id==='string' && String(obj.id).startsWith('Z')){
+                        if(typeof openZoneConfigModal==='function') openZoneConfigModal(obj.id);
+                    }else if(obj && obj.label){
+                        if(typeof openTableConfigModal==='function') openTableConfigModal(obj.label);
+                    }
+                }catch(err){
+                    console.error('[iCHEF] ouverture paramètres Architecture',err);
+                }
             }
         }
 
@@ -24616,5 +24639,211 @@ try{
 })();
 </script>
 
+
+
+<!-- =========================================================
+     iCHEF — ARCHITECTURE TAP PARAMÈTRES : FIX DÉFINITIF
+     Détection document/capture indépendante du moteur drag
+     ========================================================= -->
+<style id="ichef-architecture-config-tap-final-css">
+body.edit-mode #table-config-modal.ichef-force-open,
+body.edit-mode #zone-config-modal.ichef-force-open{
+    display:flex !important;
+    visibility:visible !important;
+    opacity:1 !important;
+    pointer-events:auto !important;
+    z-index:2147483000 !important;
+}
+body.edit-mode #floor-plan .table-wrapper.ichef-archi-tap-feedback .table-obj,
+body.edit-mode #floor-plan .zone-wrapper.ichef-archi-tap-feedback .zone-obj{
+    border-color:var(--gold) !important;
+    box-shadow:0 0 0 3px rgba(197,160,89,.28) !important;
+}
+</style>
+<script id="ichef-architecture-config-tap-final-js">
+(function(){
+'use strict';
+if(window.__ICHEF_ARCHI_CONFIG_TAP_FINAL__) return;
+window.__ICHEF_ARCHI_CONFIG_TAP_FINAL__=true;
+
+const MOVE_LIMIT=8;
+let tap=null;
+
+function norm(v){
+    return String(v??'').trim().toLowerCase().replace(/[^a-z0-9]/g,'');
+}
+function inEdit(){
+    try{return !!isArchiMode || document.body.classList.contains('edit-mode');}
+    catch(_){return document.body.classList.contains('edit-mode');}
+}
+function tableLabelFromWrapper(w){
+    if(!w) return '';
+    const ds=w.dataset||{};
+    let label=String(ds.id||ds.table||ds.tableId||ds.label||'').trim();
+    if(label) return label;
+    const obj=w.querySelector('.table-obj .table-content span, .table-obj .table-content, .table-obj');
+    return String(obj?.textContent||'').trim().split(/\s+/)[0]||'';
+}
+function findTableRobust(label){
+    try{
+        if(!Array.isArray(tables)) return null;
+        const wanted=norm(label);
+        let list=tables.filter(t=>t && norm(t.label)===wanted);
+        if(typeof currentRoom!=='undefined'){
+            const same=list.find(t=>String(t.room??'')===String(currentRoom??''));
+            if(same) return same;
+        }
+        return list[0]||null;
+    }catch(_){return null;}
+}
+function forceOpenTable(label){
+    const t=findTableRobust(label);
+    if(!t){
+        console.warn('[iCHEF] Architecture: table introuvable pour paramètres',label);
+        return false;
+    }
+    try{configTableId=t.label;}catch(_){ }
+    try{currentTactileName=t.label;}catch(_){ }
+
+    const modal=document.getElementById('table-config-modal');
+    if(!modal) return false;
+    const name=document.getElementById('config-table-name-display');
+    const pax=document.getElementById('config-table-pax');
+    const shape=document.getElementById('config-table-shape');
+    if(name) name.textContent=String(t.label||'');
+    if(pax) pax.value=String(Math.max(1,parseInt(t.pax,10)||4));
+    if(shape) shape.value=String(t.shape||'rect');
+
+    try{
+        if(typeof setShape==='function') setShape(t.shape||'rect');
+    }catch(err){console.warn('[iCHEF] setShape Architecture',err);}
+
+    modal.classList.add('open','ichef-force-open');
+    modal.setAttribute('aria-hidden','false');
+    modal.style.setProperty('display','flex','important');
+    modal.style.setProperty('visibility','visible','important');
+    modal.style.setProperty('opacity','1','important');
+    modal.style.setProperty('pointer-events','auto','important');
+    modal.style.setProperty('z-index','2147483000','important');
+    return true;
+}
+function findZoneRobust(id){
+    try{
+        if(!Array.isArray(zones)) return null;
+        let z=zones.find(x=>x && String(x.id)===String(id));
+        if(!z && typeof currentRoom!=='undefined') z=zones.find(x=>x && String(x.label)===String(id) && String(x.room??'')===String(currentRoom??''));
+        return z||null;
+    }catch(_){return null;}
+}
+function forceOpenZone(id){
+    const z=findZoneRobust(id);
+    if(!z) return false;
+    try{configZoneId=z.id;}catch(_){ }
+    const name=document.getElementById('config-zone-name');
+    const mode=document.getElementById('config-zone-mode');
+    const color=document.getElementById('config-zone-color');
+    if(name) name.value=String(z.label||'');
+    if(mode) mode.value=String(z.payMode||'standard');
+    if(color) color.value=String(z.color||'#3498db');
+    const modal=document.getElementById('zone-config-modal');
+    if(!modal) return false;
+    modal.classList.add('open','ichef-force-open');
+    modal.style.setProperty('display','flex','important');
+    modal.style.setProperty('visibility','visible','important');
+    modal.style.setProperty('opacity','1','important');
+    modal.style.setProperty('pointer-events','auto','important');
+    modal.style.setProperty('z-index','2147483000','important');
+    return true;
+}
+
+/* Fermer proprement retire également la classe forcée. */
+try{
+    const oldCloseTable=closeTableConfigModal;
+    closeTableConfigModal=function(){
+        const m=document.getElementById('table-config-modal');
+        if(m){m.classList.remove('open','ichef-force-open');m.style.removeProperty('visibility');m.style.removeProperty('opacity');m.style.removeProperty('pointer-events');m.style.removeProperty('z-index');}
+        return oldCloseTable.apply(this,arguments);
+    };
+}catch(_){ }
+try{
+    const oldCloseZone=closeZoneConfigModal;
+    closeZoneConfigModal=function(){
+        const m=document.getElementById('zone-config-modal');
+        if(m){m.classList.remove('open','ichef-force-open');m.style.removeProperty('visibility');m.style.removeProperty('opacity');m.style.removeProperty('pointer-events');m.style.removeProperty('z-index');}
+        return oldCloseZone.apply(this,arguments);
+    };
+}catch(_){ }
+
+document.addEventListener('pointerdown',function(e){
+    if(!inEdit()) return;
+    if(e.pointerType==='mouse' && e.button!==0) return;
+    const wrapper=e.target?.closest?.('#floor-plan .table-wrapper, #floor-plan .zone-wrapper');
+    if(!wrapper) return;
+    if(e.target?.closest?.('.table-resizer,.zone-resizer')) return;
+    tap={
+        pointerId:e.pointerId,
+        wrapper,
+        x:e.clientX,
+        y:e.clientY,
+        moved:false,
+        type:wrapper.classList.contains('zone-wrapper')?'zone':'table'
+    };
+},true);
+
+document.addEventListener('pointermove',function(e){
+    if(!tap || e.pointerId!==tap.pointerId) return;
+    if(Math.hypot(e.clientX-tap.x,e.clientY-tap.y)>MOVE_LIMIT) tap.moved=true;
+},true);
+
+document.addEventListener('pointercancel',function(e){
+    if(tap && (e.pointerId==null || e.pointerId===tap.pointerId)) tap=null;
+},true);
+
+document.addEventListener('pointerup',function(e){
+    if(!tap || e.pointerId!==tap.pointerId) return;
+    const t=tap;
+    tap=null;
+    if(!inEdit() || t.moved) return;
+
+    const endWrapper=e.target?.closest?.('#floor-plan .table-wrapper, #floor-plan .zone-wrapper');
+    /* Pointer capture peut faire varier e.target; on autorise le wrapper initial
+       tant que le geste n'a pas bougé. */
+    const wrapper=t.wrapper;
+    if(!wrapper || !wrapper.isConnected) return;
+
+    wrapper.dataset.ichefArchiSuppressClickUntil=String(Date.now()+800);
+    wrapper.classList.add('ichef-archi-tap-feedback');
+    setTimeout(()=>wrapper.classList.remove('ichef-archi-tap-feedback'),220);
+
+    /* On attend la fin complète du pointerup afin que le moteur drag nettoie
+       son état, puis on ouvre le modal hors de tout conflit d'événement. */
+    setTimeout(function(){
+        if(!inEdit()) return;
+        if(t.type==='zone'){
+            const id=String(wrapper.dataset.id||wrapper.dataset.zoneId||'').trim();
+            if(id) forceOpenZone(id);
+        }else{
+            const label=tableLabelFromWrapper(wrapper);
+            if(label) forceOpenTable(label);
+        }
+    },0);
+},true);
+
+/* Empêche seulement le click synthétique qui suit ce tap Architecture. */
+document.addEventListener('click',function(e){
+    if(!inEdit()) return;
+    const wrapper=e.target?.closest?.('#floor-plan .table-wrapper, #floor-plan .zone-wrapper');
+    if(!wrapper) return;
+    const until=Number(wrapper.dataset.ichefArchiSuppressClickUntil||0);
+    if(until>Date.now()){
+        e.preventDefault();
+        e.stopImmediatePropagation();
+    }
+},true);
+
+/* Expose un test manuel depuis la console si nécessaire. */
+window.ichefForceOpenTableConfig=forceOpenTable;
+})();
+</script>
 </body>
 </html>
