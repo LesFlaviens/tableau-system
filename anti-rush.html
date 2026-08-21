@@ -14642,7 +14642,20 @@ function isActive(r){
 function tableOf(r){return String(r?.assignedTable||r?.tableId||r?.table||'').trim()}
 function wrapperLabel(w){
   const o=w?.querySelector('.table-obj');
-  return String(w?.dataset?.label||w?.dataset?.table||o?.dataset?.label||o?.dataset?.table||o?.textContent||'').trim();
+  /* Le plan crée les tables avec data-id=t.label.
+     Utiliser data-id en priorité évite qu'un aperçu de plat modifie textContent
+     et fasse perdre temporairement la réservation / le point d'état. */
+  return String(
+    w?.dataset?.id ||
+    w?.getAttribute?.('data-id') ||
+    w?.dataset?.label ||
+    w?.dataset?.table ||
+    o?.dataset?.id ||
+    o?.dataset?.label ||
+    o?.dataset?.table ||
+    (o?.querySelector?.('.table-content > span')?.textContent || '') ||
+    ''
+  ).trim();
 }
 function reservationFor(label){
   const now=Date.now();
@@ -14670,20 +14683,28 @@ function refreshDots(){
     const tableObj=w.querySelector('.table-obj');
     if(!tableObj)return;
 
-    tableObj.querySelectorAll(':scope > .ichef-pad-res-dot').forEach(x=>x.remove());
-
     const r=reservationFor(wrapperLabel(w));
-    if(!r)return;
+    const dots=[...tableObj.querySelectorAll(':scope > .ichef-pad-res-dot')];
 
-    const dot=document.createElement('span');
-    dot.className='ichef-pad-res-dot '+stateClass(r);
+    if(!r){
+      /* On retire le point uniquement si la table n'a réellement plus de réservation. */
+      dots.forEach(x=>x.remove());
+      return;
+    }
+
+    /* Réutilise le même nœud au lieu de le supprimer/recréer à chaque refresh.
+       Cela supprime le flash visuel qui ressemblait à un clignotement. */
+    let dot=dots.shift() || document.createElement('span');
+    dots.forEach(x=>x.remove());
+
+    const wanted='ichef-pad-res-dot '+stateClass(r);
+    if(dot.className!==wanted) dot.className=wanted;
     dot.setAttribute('aria-hidden','true');
     dot.title='Réservation';
 
-    /* IMPORTANT :
-       le point est ajouté DANS .table-obj, jamais sur .table-wrapper.
-       Les coordonnées x/y/width/height de l'architecture restent intactes. */
-    tableObj.appendChild(dot);
+    if(dot.parentNode!==tableObj){
+      tableObj.appendChild(dot);
+    }
   });
 }
 function setText(id,v){const e=document.getElementById(id);if(e)e.textContent=(v===undefined||v===null||v==='')?'—':String(v)}
@@ -14743,7 +14764,23 @@ document.addEventListener('click',e=>{
   }
 },true);
 
-function boot(){refreshDots();setInterval(refreshDots,5000)}
+function boot(){
+  refreshDots();
+  setInterval(refreshDots,5000);
+
+  /* Quand le plan est reconstruit, réinjecte immédiatement les points sans attendre 5 s.
+     L'observer ne surveille que les changements de nœuds, pas les classes : pas de boucle. */
+  const floor=document.getElementById('floor-plan');
+  if(floor && !floor.__ichefReservationDotObserver){
+    let raf=0;
+    const observer=new MutationObserver(()=>{
+      if(raf) cancelAnimationFrame(raf);
+      raf=requestAnimationFrame(()=>{ raf=0; refreshDots(); });
+    });
+    observer.observe(floor,{childList:true,subtree:true});
+    floor.__ichefReservationDotObserver=observer;
+  }
+}
 if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',boot,{once:true});else boot();
 window.ichefRefreshPadReservationDots=refreshDots;
 })();
@@ -14770,6 +14807,9 @@ window.ichefRefreshPadReservationDots=refreshDots;
     z-index:99 !important;
     transform:none !important;
     flex:none !important;
+    opacity:1 !important;
+    animation:none !important;
+    transition:none !important;
 }
 .ichef-pad-res-dot.reserved{background:#d946ef !important;box-shadow:0 0 7px #d946ef !important}
 .ichef-pad-res-dot.soon{background:#8b5cf6 !important;box-shadow:0 0 7px #8b5cf6 !important}
@@ -23095,6 +23135,8 @@ window.addEventListener('blur',cancelPress);
 </script>
 
 
+
+<!-- iCHEF FIX 2026-08-21 : POINT RÉSERVATION STABLE — data-id + réutilisation DOM + zéro animation -->
 
 <!-- iCHEF PATCH 2026-08-21 : ALERTE VISUELLE
      ORANGE = FIXE / ROUGE CRITIQUE = CLIGNOTANT UNIQUEMENT -->
