@@ -24272,5 +24272,311 @@ html, body,
 #seat-bar-container .seat-btn[data-ichef-seat].gold,#ichef-guest-assign-modal .ichef-guest-seat-btn[data-ichef-seat].active{box-shadow:0 0 0 3px #fff,0 0 0 5px rgba(197,160,89,.7)!important;transform:translateY(-1px)!important}
 </style>
 
+
+
+<!-- =========================================================
+     iCHEF — ARCHITECTURE FIX V2 : ZOOM + DRAG STABLE
+     2026-08-21
+     - déplacement/redimensionnement corrigés quel que soit le zoom
+     - clic simple Architecture conservé pour ouvrir la configuration
+     - aucun clic parasite après un drag
+     - nouvelle table/zone ajoutée dans la zone visible du plan
+     - états service/réservation neutralisés pendant l'édition
+     ========================================================= -->
+<style id="ichef-architecture-fix-v2-css">
+body.edit-mode #floor-plan .table-wrapper,
+body.edit-mode #floor-plan .zone-wrapper{
+    transition:none !important;
+    animation:none !important;
+}
+body.edit-mode #floor-plan .table-obj,
+body.edit-mode #floor-plan .zone-obj{
+    animation:none !important;
+    transition:none !important;
+    box-shadow:none !important;
+}
+body.edit-mode #floor-plan .table-wrapper[class*="status-"] .table-obj{
+    border-color:var(--text-muted) !important;
+    color:var(--text-muted) !important;
+    background:transparent !important;
+    box-shadow:none !important;
+    animation:none !important;
+}
+body.edit-mode #floor-plan .table-wrapper[class*="ichef-reservation-dot-"] .table-obj::after{
+    display:none !important;
+    content:none !important;
+}
+body.edit-mode #floor-plan .ichef-plan-dishes-v3{
+    display:none !important;
+}
+body.edit-mode #floor-plan .table-resizer,
+body.edit-mode #floor-plan .zone-resizer{
+    width:26px !important;
+    height:26px !important;
+    right:-13px !important;
+    bottom:-13px !important;
+    border-radius:50% !important;
+    background:var(--gold) !important;
+    border:3px solid #080808 !important;
+    box-shadow:0 0 0 1px rgba(197,160,89,.55) !important;
+    touch-action:none !important;
+}
+body.edit-mode #floor-plan .table-wrapper.ichef-archi-v2-moving .table-obj,
+body.edit-mode #floor-plan .zone-wrapper.ichef-archi-v2-moving .zone-obj,
+body.edit-mode #floor-plan .table-wrapper.ichef-archi-v2-resizing .table-obj,
+body.edit-mode #floor-plan .zone-wrapper.ichef-archi-v2-resizing .zone-obj{
+    border-color:var(--gold) !important;
+    box-shadow:0 0 0 2px rgba(197,160,89,.28) !important;
+}
+</style>
+<script id="ichef-architecture-fix-v2-js">
+(function(){
+'use strict';
+if(window.__ICHEF_ARCHITECTURE_FIX_V2__) return;
+window.__ICHEF_ARCHITECTURE_FIX_V2__=true;
+
+let archiV2PointerActive=false;
+
+function num(v,fallback=0){
+    const n=Number(v);
+    return Number.isFinite(n)?n:fallback;
+}
+function clamp(v,min,max){
+    return Math.max(min,Math.min(max,v));
+}
+function floorNode(){
+    return document.getElementById('floor-plan') || document.querySelector('.floor-plan');
+}
+function viewportNode(plan){
+    if(!plan) return null;
+    const direct=plan.closest('.floor-plan-wrapper');
+    if(direct) return direct;
+    let p=plan.parentElement;
+    while(p && p!==document.body){
+        const cs=getComputedStyle(p);
+        if(['auto','scroll'].includes(cs.overflowX) || ['auto','scroll'].includes(cs.overflowY)) return p;
+        p=p.parentElement;
+    }
+    return plan.parentElement;
+}
+function planScale(plan){
+    if(!plan) return 1;
+    const ow=Math.max(1,plan.offsetWidth||0);
+    const rect=plan.getBoundingClientRect();
+    let s=rect.width/ow;
+    if(!Number.isFinite(s) || s<=0){
+        s=num(localStorage.getItem('ichef_plan_zoom'),1);
+    }
+    return clamp(s,.1,4);
+}
+function visibleCenter(sizeW,sizeH){
+    const plan=floorNode();
+    const viewport=viewportNode(plan);
+    const scale=planScale(plan);
+    const pw=Math.max(1,plan?.offsetWidth||2000);
+    const ph=Math.max(1,plan?.offsetHeight||1500);
+    let cx=pw/2, cy=ph/2;
+    if(viewport){
+        cx=(viewport.scrollLeft + viewport.clientWidth/2)/scale;
+        cy=(viewport.scrollTop + viewport.clientHeight/2)/scale;
+    }
+    return {
+        l:Math.round(clamp(cx-sizeW/2,0,Math.max(0,pw-sizeW))),
+        t:Math.round(clamp(cy-sizeH/2,0,Math.max(0,ph-sizeH)))
+    };
+}
+
+/* Moteur Architecture unique. Le delta écran est converti en coordonnées
+   du plan afin de rester exact à 35%, 50%, 100%, 150%, etc. */
+try{
+    makeInteractive=function(elmnt,obj,resizer){
+        if(!elmnt || !obj || !resizer) return;
+        let state=null;
+        const MOVE_THRESHOLD=5;
+
+        function begin(e,mode){
+            if(!isArchiMode && !document.body.classList.contains('edit-mode')) return;
+            if(e.pointerType==='mouse' && e.button!==0) return;
+            if(state) return;
+
+            const plan=floorNode();
+            const scale=planScale(plan);
+            const floorW=Math.max(1,plan?.offsetWidth||2000);
+            const floorH=Math.max(1,plan?.offsetHeight||1500);
+
+            state={
+                mode,
+                pointerId:e.pointerId,
+                pointerType:e.pointerType,
+                startClientX:e.clientX,
+                startClientY:e.clientY,
+                startL:num(obj.l,elmnt.offsetLeft||0),
+                startT:num(obj.t,elmnt.offsetTop||0),
+                startW:num(obj.w,elmnt.offsetWidth||80),
+                startH:num(obj.h,elmnt.offsetHeight||80),
+                scale,
+                floorW,
+                floorH,
+                moved:false
+            };
+            archiV2PointerActive=true;
+            isDraggingTable=false;
+            elmnt.classList.add(mode==='resize'?'ichef-archi-v2-resizing':'ichef-archi-v2-moving');
+            try{elmnt.setPointerCapture(e.pointerId);}catch(_){ }
+
+            /* Le resize n'a jamais vocation à produire un clic. Pour le drag,
+               on laisse le simple tap générer le clic de configuration. */
+            if(mode==='resize'){
+                e.preventDefault();
+                e.stopPropagation();
+            }
+        }
+
+        function move(e){
+            if(!state || e.pointerId!==state.pointerId) return;
+            if(!isArchiMode && !document.body.classList.contains('edit-mode')) return;
+
+            const screenDX=e.clientX-state.startClientX;
+            const screenDY=e.clientY-state.startClientY;
+            if(!state.moved && Math.hypot(screenDX,screenDY)>=MOVE_THRESHOLD){
+                state.moved=true;
+                isDraggingTable=true;
+            }
+            if(!state.moved) return;
+
+            e.preventDefault();
+            e.stopPropagation();
+            const dx=screenDX/state.scale;
+            const dy=screenDY/state.scale;
+
+            if(state.mode==='resize'){
+                const minW=40,minH=40;
+                const maxW=Math.max(minW,state.floorW-state.startL);
+                const maxH=Math.max(minH,state.floorH-state.startT);
+                const w=clamp(state.startW+dx,minW,maxW);
+                const h=clamp(state.startH+dy,minH,maxH);
+                elmnt.style.width=w+'px';
+                elmnt.style.height=h+'px';
+                obj.w=Math.round(w);
+                obj.h=Math.round(h);
+            }else{
+                const maxL=Math.max(0,state.floorW-elmnt.offsetWidth);
+                const maxT=Math.max(0,state.floorH-elmnt.offsetHeight);
+                const l=clamp(state.startL+dx,0,maxL);
+                const t=clamp(state.startT+dy,0,maxT);
+                elmnt.style.left=l+'px';
+                elmnt.style.top=t+'px';
+                obj.l=Math.round(l);
+                obj.t=Math.round(t);
+            }
+        }
+
+        function finish(e){
+            if(!state) return;
+            if(e && e.pointerId!=null && e.pointerId!==state.pointerId) return;
+            const moved=state.moved;
+            const pid=state.pointerId;
+            state=null;
+            archiV2PointerActive=false;
+            elmnt.classList.remove('ichef-archi-v2-moving','ichef-archi-v2-resizing');
+            try{elmnt.releasePointerCapture(pid);}catch(_){ }
+
+            if(moved){
+                elmnt.dataset.ichefArchiSuppressClickUntil=String(Date.now()+900);
+                isDraggingTable=true;
+                setTimeout(()=>{
+                    if(!archiV2PointerActive) isDraggingTable=false;
+                },930);
+            }else{
+                isDraggingTable=false;
+            }
+        }
+
+        elmnt.addEventListener('pointerdown',e=>{
+            if(e.target===resizer || resizer.contains(e.target)) return;
+            begin(e,'drag');
+        },{passive:false});
+        resizer.addEventListener('pointerdown',e=>begin(e,'resize'),{passive:false});
+        elmnt.addEventListener('pointermove',move,{passive:false});
+        elmnt.addEventListener('pointerup',finish,{passive:false});
+        elmnt.addEventListener('pointercancel',finish,{passive:false});
+        elmnt.addEventListener('lostpointercapture',()=>{
+            if(state) finish({pointerId:state.pointerId});
+        });
+    };
+}catch(err){console.error('[iCHEF] Architecture V2 makeInteractive',err);}
+
+/* Bloque le clic synthétique qui suit un vrai déplacement. */
+document.addEventListener('click',function(e){
+    if(!document.body.classList.contains('edit-mode')) return;
+    const wrapper=e.target?.closest?.('#floor-plan .table-wrapper, #floor-plan .zone-wrapper');
+    if(!wrapper) return;
+    if(num(wrapper.dataset.ichefArchiSuppressClickUntil,0)>Date.now()){
+        e.preventDefault();
+        e.stopImmediatePropagation();
+    }
+},true);
+
+/* Ajout dans la zone actuellement visible au lieu d'utiliser window.innerWidth. */
+try{
+    addNewTable=function(){
+        let nextNum=1;
+        tables.filter(t=>t && t.room===currentRoom).forEach(t=>{
+            const m=String(t.label||'').match(/\d+/);
+            if(m && parseInt(m[0],10)>=nextNum) nextNum=parseInt(m[0],10)+1;
+        });
+        const p=visibleCenter(80,120);
+        tables.push({label:'T'+nextNum,l:p.l,t:p.t,w:80,h:120,shape:'rect',pax:4,room:currentRoom});
+        renderFloor();
+    };
+}catch(err){console.error('[iCHEF] Architecture V2 add table',err);}
+
+try{
+    addNewZone=function(){
+        const id='Z'+(zones.length+1)+'_'+Date.now();
+        const p=visibleCenter(400,300);
+        zones.push({id,label:'Nouvelle Zone',l:p.l,t:p.t,w:400,h:300,room:currentRoom,color:'#3498db',payMode:'standard'});
+        renderFloor();
+    };
+}catch(err){console.error('[iCHEF] Architecture V2 add zone',err);}
+
+/* Entrée/sortie propre : jamais de Rush en même temps que l'éditeur. */
+try{
+    unlockArchiMode=function(){
+        if(!currentUser || currentUser.role!=='Manager') return alert('⛔ Accès Manager requis');
+        isRushMode=false;
+        document.body.classList.remove('rush-mode');
+        try{window.ichefCloseTableDetails?.();}catch(_){ }
+        isArchiMode=true;
+        isDraggingTable=false;
+        document.body.classList.add('edit-mode');
+        renderRooms();
+        renderFloor();
+    };
+}catch(err){console.error('[iCHEF] Architecture V2 ouverture',err);}
+
+try{
+    closeArchiMode=async function(){
+        archiV2PointerActive=false;
+        isDraggingTable=false;
+        isArchiMode=false;
+        isRushMode=false;
+        document.body.classList.remove('edit-mode','rush-mode');
+        renderRooms();
+        renderFloor();
+    };
+}catch(err){console.error('[iCHEF] Architecture V2 fermeture',err);}
+
+try{
+    const prevToggleRush=toggleRushMode;
+    toggleRushMode=function(){
+        if(isArchiMode || document.body.classList.contains('edit-mode')) return;
+        return prevToggleRush.apply(this,arguments);
+    };
+}catch(_){ }
+
+})();
+</script>
+
 </body>
 </html>
