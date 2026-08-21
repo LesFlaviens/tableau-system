@@ -2,7 +2,7 @@
 <html lang="fr">
 <head>
 <!-- =========================================================
-     iCHEF — VERSION CANONIQUE MISE À JOUR — 2026-08-22 00:35
+     iCHEF — VERSION CANONIQUE MISE À JOUR — 2026-08-22 01:02
      Fichier stable : iCHEF.html
      PWA : manifest.json + sw.js
      ========================================================= -->
@@ -14,7 +14,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
     
-    <link rel="manifest" href="manifest.json?v=20260822-0035">
+    <link rel="manifest" href="manifest.json?v=20260822-0102">
     <link rel="apple-touch-icon" href="icon-192.png">
     <meta name="mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-capable" content="yes">
@@ -1841,6 +1841,57 @@ body.edit-mode .table-wrapper,body.edit-mode .table-obj,body.edit-mode .zone-obj
   }
 </style>
      
+<style id="ichef-symbiose-mobile-actions-css">
+@media (max-width:600px){
+
+  /* La vue téléphone doit recevoir les touchers. */
+  #mobile-exact-service,
+  #mobile-exact-grid,
+  #mobile-exact-room,
+  .mobile-exact-table,
+  .mobile-exact-table *,
+  #order-drawer,
+  #order-drawer button,
+  #order-drawer [role="button"],
+  #order-drawer .btn-item,
+  #order-drawer .menu-tab,
+  #order-drawer input,
+  #order-drawer select,
+  #order-drawer textarea,
+  .modal.open,
+  .modal.open button,
+  .modal.open [role="button"],
+  .pin-pad,
+  .pin-btn {
+      pointer-events:auto !important;
+  }
+
+  #mobile-exact-service,
+  #mobile-exact-grid,
+  #order-drawer {
+      touch-action:pan-y !important;
+  }
+
+  #mobile-exact-room,
+  .mobile-exact-table,
+  #order-drawer button,
+  #order-drawer [role="button"],
+  #order-drawer .btn-item,
+  #order-drawer .menu-tab,
+  .modal.open button,
+  .pin-btn {
+      touch-action:manipulation !important;
+      -webkit-tap-highlight-color:transparent !important;
+  }
+
+  /* Une couche cachée ne doit jamais bloquer les boutons situés dessous. */
+  .mobile-overlay:not(.show),
+  .modal:not(.open),
+  #anti-rush-server-panel:not(.open) {
+      pointer-events:none !important;
+  }
+}
+</style>
 </head>
      
 <body oncontextmenu="return false;" ondragstart="return false;" ondrop="return false;">
@@ -3118,9 +3169,25 @@ let unifiedCategories = [];
                 if (!response.ok) {
                     throw new Error(result.error || `UPDATE_FAILED_${response.status}`);
                 }
+                /* Toute écriture réussie devient un événement de symbiose.
+                   Le serveur reste la source de vérité. */
+                try {
+                    document.dispatchEvent(new CustomEvent('ichef:server-write-ok', {
+                        detail: {
+                            key: normalizedKey,
+                            isOrder: !!isOrder,
+                            at: Date.now()
+                        }
+                    }));
+                } catch (_) {}
+
                 return result;
             }
         };
+
+        /* Pont contrôlé pour les modules d'interface.
+           Les écritures continuent obligatoirement à passer par le serveur. */
+        window.ICHEF_API = API;
 
         // --- AUTHENTIFICATION EXCLUSIVEMENT SERVEUR ---
         function resetInactivityTimer() {
@@ -13289,7 +13356,7 @@ html.ichef-security-locked #ichef-security-curtain{
            (location.protocol==="https:" ||
             location.hostname==="localhost" ||
             location.hostname==="127.0.0.1")){
-            navigator.serviceWorker.register("/sw.js?v=20260822-0035",{scope:"/",updateViaCache:"none"})
+            navigator.serviceWorker.register("/sw.js?v=20260822-0102",{scope:"/",updateViaCache:"none"})
                 .then(async reg=>{
                     try {
                         await reg.update();
@@ -26344,5 +26411,208 @@ textarea::placeholder{
 })();
 </script>
 
+<script id="ichef-global-action-bridge">
+(function(){
+  "use strict";
+
+  function expose(){
+    try{
+      if(typeof handleTableOrderTap === "function" && typeof window.handleTableOrderTap !== "function"){
+        window.handleTableOrderTap = handleTableOrderTap;
+      }
+    }catch(_){}
+
+    try{
+      if(typeof openOrder === "function" && typeof window.openOrder !== "function"){
+        window.openOrder = openOrder;
+      }
+    }catch(_){}
+
+    try{
+      if(typeof syncData === "function" && typeof window.syncData !== "function"){
+        window.syncData = syncData;
+      }
+    }catch(_){}
+
+    try{
+      if(typeof renderService === "function" && typeof window.renderService !== "function"){
+        window.renderService = renderService;
+      }
+    }catch(_){}
+  }
+
+  if(document.readyState === "loading"){
+    document.addEventListener("DOMContentLoaded", expose, {once:true});
+  }else{
+    expose();
+  }
+
+  setTimeout(expose,300);
+  setTimeout(expose,1200);
+})();
+</script>
+<script id="ichef-symbiose-multiappareils-actions">
+(function(){
+  "use strict";
+
+  const isPhone = () => window.matchMedia("(max-width:600px)").matches;
+
+  let lastTableTapAt = 0;
+  let lastTableLabel = "";
+  let reconcileTimer = 0;
+
+  function callTableAction(label){
+      label = String(label || "").trim();
+      if(!label) return false;
+
+      const now = Date.now();
+      if(label === lastTableLabel && now - lastTableTapAt < 420) return true;
+      lastTableLabel = label;
+      lastTableTapAt = now;
+
+      try{
+          if(typeof window.handleTableOrderTap === "function"){
+              window.handleTableOrderTap(label,label);
+              return true;
+          }
+      }catch(err){
+          console.error("[iCHEF SYMBIOSE] handleTableOrderTap",err);
+      }
+
+      try{
+          if(typeof window.openOrder === "function"){
+              window.openOrder(label);
+              return true;
+          }
+      }catch(err){
+          console.error("[iCHEF SYMBIOSE] openOrder",err);
+      }
+
+      /* Certains anciens scripts déclarent ces fonctions globalement sans window. */
+      try{
+          if(typeof handleTableOrderTap === "function"){
+              handleTableOrderTap(label,label);
+              return true;
+          }
+      }catch(_){}
+
+      try{
+          if(typeof openOrder === "function"){
+              openOrder(label);
+              return true;
+          }
+      }catch(_){}
+
+      return false;
+  }
+
+  /* Délégation : reste active même si renderService reconstruit les cartes. */
+  function delegatedMobileTap(event){
+      if(!isPhone()) return;
+
+      const card = event.target && event.target.closest
+          ? event.target.closest(".mobile-exact-table")
+          : null;
+
+      if(!card) return;
+
+      const label = card.dataset.table;
+      if(!label) return;
+
+      /* L'événement click natif peut continuer à exister.
+         Le garde anti-double empêche deux ouvertures. */
+      if(event.type === "touchend"){
+          event.preventDefault();
+      }
+      event.stopPropagation();
+
+      callTableAction(label);
+
+      setTimeout(function(){
+          const drawer = document.getElementById("order-drawer");
+          if(drawer) drawer.classList.remove("order-ticket-focus");
+      },20);
+  }
+
+  document.addEventListener("touchend", delegatedMobileTap, {
+      passive:false,
+      capture:true
+  });
+
+  document.addEventListener("click", delegatedMobileTap, true);
+
+  function refreshEveryVisibleUI(){
+      try{
+          if(typeof window.ICHEF_MOBILE_REFRESH === "function"){
+              window.ICHEF_MOBILE_REFRESH();
+          }
+      }catch(_){}
+
+      try{
+          if(typeof window.renderFloor === "function"){
+              window.renderFloor();
+          }
+      }catch(_){}
+
+      try{
+          if(typeof window.renderProTables === "function"){
+              window.renderProTables();
+          }
+      }catch(_){}
+
+      try{
+          if(typeof window.renderService === "function"){
+              window.renderService();
+          }
+      }catch(_){}
+
+      try{
+          if(typeof window.ichefUpdateAntiRushSignal === "function"){
+              window.ichefUpdateAntiRushSignal();
+          }
+      }catch(_){}
+  }
+
+  function reconcile(reason){
+      clearTimeout(reconcileTimer);
+      reconcileTimer = setTimeout(async function(){
+          try{
+              if(typeof window.ICHEF_FORCE_SERVER_SYNC === "function"){
+                  await window.ICHEF_FORCE_SERVER_SYNC(reason || "symbiose");
+              }else if(typeof window.syncData === "function"){
+                  await window.syncData();
+              }
+          }catch(_){}
+
+          refreshEveryVisibleUI();
+      },80);
+  }
+
+  /* Après toute écriture serveur réussie, le client relit la vérité serveur. */
+  document.addEventListener("ichef:server-write-ok", function(){
+      reconcile("server-write-ok");
+  });
+
+  /* Les événements serveur restent prioritaires. */
+  document.addEventListener("ichef:authenticated", function(){
+      reconcile("authenticated");
+  });
+
+  window.addEventListener("online", function(){
+      reconcile("online");
+  });
+
+  window.addEventListener("focus", function(){
+      reconcile("focus");
+  });
+
+  document.addEventListener("visibilitychange", function(){
+      if(!document.hidden) reconcile("visible");
+  });
+
+  window.ICHEF_SYMBIOSE_RECONCILE = reconcile;
+  window.ICHEF_SYMBIOSE_OPEN_TABLE = callTableAction;
+})();
+</script>
 </body>
 </html>
