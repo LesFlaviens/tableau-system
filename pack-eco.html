@@ -4387,7 +4387,10 @@ let rIndex = reservationsData.findIndex(r =>
                         wrapper.style.left=(t.l||0)+'px'; wrapper.style.top=(t.t||0)+'px'; wrapper.style.width=(t.w||80)+'px'; wrapper.style.height=(t.h||120)+'px';
 
                         let pax = parseInt(t.pax) || 4;
-                        if (orderData && orderData.observations) { let match = orderData.observations.match(/🍽️ (\d+) Couvert\(s\)/); if (match) pax = parseInt(match[1]); }
+                        /* En mode Architecture, on affiche TOUJOURS la capacité configurée
+                           de la table. Une commande active ne doit pas écraser visuellement
+                           le nombre de places défini par le Manager. */
+                        if (!isArchiMode && orderData && orderData.observations) { let match = orderData.observations.match(/🍽️ (\d+) Couvert\(s\)/); if (match) pax = parseInt(match[1]); }
 
                         /* iCHEF FIX ARCHITECTURE COUVERTS : la table DOM transporte
                            toujours le même nombre de couverts que la source métier.
@@ -25191,6 +25194,362 @@ window.ichefForceOpenTableConfig=forceOpenTable;
     // Synchronise le bouton lorsque le badge utilisateur change après un login normal.
     const badge = document.getElementById("user-badge");
     if(badge) new MutationObserver(updateButton).observe(badge,{childList:true,subtree:true,characterData:true});
+})();
+</script>
+
+
+
+<!-- =========================================================
+     iCHEF — ARCHITECTURE CONFIG TABLE + ZONE : MOTEUR UNIQUE
+     2026-08-21
+     - Sauvegarde réelle nom / capacité / forme
+     - Sauvegarde réelle nom / mode / couleur zone
+     - Priorité à la capacité métier en Architecture
+     - Un seul chemin de validation pour neutraliser les vieux patches
+     ========================================================= -->
+<style id="ichef-architecture-config-unified-css">
+#table-config-modal .ichef-config-save-state,
+#zone-config-modal .ichef-config-save-state{
+    min-height:20px;
+    margin:0 0 8px;
+    text-align:center;
+    font-size:.72rem;
+    font-weight:800;
+    letter-spacing:.6px;
+    color:var(--text-muted);
+}
+#table-config-modal .ichef-config-save-state.ok,
+#zone-config-modal .ichef-config-save-state.ok{color:#22c55e}
+#table-config-modal .ichef-config-save-state.err,
+#zone-config-modal .ichef-config-save-state.err{color:var(--alert)}
+#table-config-modal .ichef-config-save-state.wait,
+#zone-config-modal .ichef-config-save-state.wait{color:var(--gold)}
+#config-table-name-display[contenteditable="true"]{
+    cursor:text!important;
+    outline:none!important;
+    user-select:text!important;
+    -webkit-user-select:text!important;
+}
+#config-table-name-display[contenteditable="true"]:focus{
+    box-shadow:0 0 0 2px rgba(197,160,89,.22)!important;
+}
+</style>
+<script id="ichef-architecture-config-unified-js">
+(function(){
+'use strict';
+if(window.__ICHEF_ARCH_CONFIG_UNIFIED__) return;
+window.__ICHEF_ARCH_CONFIG_UNIFIED__=true;
+
+const TABLE_SHAPES=new Set(['oval','rect','losange','triangle']);
+const ZONE_MODES=new Set(['standard','qr_nfc','bar']);
+let savingTable=false;
+let savingZone=false;
+
+function norm(v){
+    return String(v??'').trim().toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/[^a-z0-9]/g,'');
+}
+function tableModal(){return document.getElementById('table-config-modal')}
+function zoneModal(){return document.getElementById('zone-config-modal')}
+function tableNameDisplay(){return document.getElementById('config-table-name-display')}
+function statusNode(modal,type){
+    if(!modal) return null;
+    let n=modal.querySelector('.ichef-config-save-state[data-type="'+type+'"]');
+    if(!n){
+        n=document.createElement('div');
+        n.className='ichef-config-save-state';
+        n.dataset.type=type;
+        const save=[...modal.querySelectorAll('button')].find(b=>(b.textContent||'').toUpperCase().includes('SAUVEGARDER'));
+        if(save) save.parentNode.insertBefore(n,save);
+        else modal.appendChild(n);
+    }
+    return n;
+}
+function setStatus(modal,type,msg,tone=''){
+    const n=statusNode(modal,type); if(!n) return;
+    n.textContent=msg||'';
+    n.className='ichef-config-save-state'+(tone?' '+tone:'');
+}
+function currentRoomValue(){
+    try{return String(currentRoom||'Salle Principale')}catch(_){return 'Salle Principale'}
+}
+function allTables(){try{return Array.isArray(tables)?tables:[]}catch(_){return []}}
+function allZones(){try{return Array.isArray(zones)?zones:[]}catch(_){return []}}
+function getTableByConfig(){
+    let id='';
+    try{id=String(configTableId||'')}catch(_){ }
+    let list=allTables();
+    const room=currentRoomValue();
+    let t=list.find(x=>x && String(x.label)===id && String(x.room||room)===room);
+    if(!t) t=list.find(x=>x && String(x.label)===id);
+    if(!t){
+        const shown=String(tableNameDisplay()?.textContent||'').trim();
+        t=list.find(x=>x && norm(x.label)===norm(shown) && String(x.room||room)===room) || null;
+    }
+    return t||null;
+}
+function getZoneByConfig(){
+    let id='';
+    try{id=String(configZoneId||'')}catch(_){ }
+    const room=currentRoomValue();
+    let z=allZones().find(x=>x && String(x.id)===id && String(x.room||room)===room);
+    if(!z) z=allZones().find(x=>x && String(x.id)===id);
+    return z||null;
+}
+function persistLocal(){
+    try{localStorage.setItem('empire_architecture',JSON.stringify(allTables()))}catch(_){ }
+    try{localStorage.setItem('empire_rooms',JSON.stringify(Array.isArray(rooms)?rooms:[]))}catch(_){ }
+    try{localStorage.setItem('empire_zones',JSON.stringify(allZones()))}catch(_){ }
+}
+function redraw(){
+    try{if(typeof renderRooms==='function') renderRooms()}catch(_){ }
+    try{if(typeof renderFloor==='function') renderFloor()}catch(_){ }
+    try{window.dispatchEvent(new CustomEvent('ichef:architecture-changed'))}catch(_){ }
+}
+function openModalHard(modal){
+    if(!modal) return;
+    modal.classList.add('open','ichef-force-open');
+    modal.setAttribute('aria-hidden','false');
+    modal.style.setProperty('display','flex','important');
+    modal.style.setProperty('visibility','visible','important');
+    modal.style.setProperty('opacity','1','important');
+    modal.style.setProperty('pointer-events','auto','important');
+    modal.style.setProperty('z-index','2147483000','important');
+}
+function closeModalHard(modal){
+    if(!modal) return;
+    modal.classList.remove('open','ichef-force-open');
+    modal.setAttribute('aria-hidden','true');
+    modal.style.setProperty('display','none','important');
+    modal.style.removeProperty('visibility');
+    modal.style.removeProperty('opacity');
+    modal.style.removeProperty('pointer-events');
+    modal.style.removeProperty('z-index');
+}
+function safeTableName(){
+    const d=tableNameDisplay();
+    let v=String(d?.textContent||'').replace(/^—$/,'').trim().toUpperCase();
+    if(!v){
+        try{v=String(currentTactileName||'').trim().toUpperCase()}catch(_){ }
+    }
+    return v.slice(0,30);
+}
+function safePax(){
+    const n=parseInt(document.getElementById('config-table-pax')?.value,10);
+    return Math.max(1,Math.min(50,Number.isFinite(n)?n:1));
+}
+function safeShape(){
+    const s=String(document.getElementById('config-table-shape')?.value||'rect').toLowerCase();
+    return TABLE_SHAPES.has(s)?s:'rect';
+}
+
+/* Ouverture Table : remplit TOUJOURS depuis la source tables[]. */
+window.openTableConfigModal=function(id){
+    const room=currentRoomValue();
+    const wanted=norm(id);
+    const t=allTables().find(x=>x && norm(x.label)===wanted && String(x.room||room)===room)
+        || allTables().find(x=>x && norm(x.label)===wanted);
+    if(!t){console.warn('[iCHEF] table introuvable',id);return false;}
+    try{configTableId=t.label}catch(_){ }
+    try{currentTactileName=String(t.label||'')}catch(_){ }
+    const d=tableNameDisplay();
+    if(d){d.textContent=String(t.label||'');d.dataset.originalLabel=String(t.label||'')}
+    const p=document.getElementById('config-table-pax'); if(p)p.value=String(Math.max(1,parseInt(t.pax,10)||1));
+    const s=document.getElementById('config-table-shape'); if(s)s.value=TABLE_SHAPES.has(String(t.shape))?String(t.shape):'rect';
+    try{window.setShape?.(s?.value||'rect')}catch(_){ }
+    setStatus(tableModal(),'table','');
+    openModalHard(tableModal());
+    return true;
+};
+
+window.closeTableConfigModal=function(){
+    try{configTableId=null}catch(_){ }
+    closeModalHard(tableModal());
+};
+
+window.changeConfigPax=function(delta){
+    const input=document.getElementById('config-table-pax'); if(!input)return;
+    let v=parseInt(input.value,10); if(!Number.isFinite(v))v=1;
+    input.value=String(Math.max(1,Math.min(50,v+Number(delta||0))));
+};
+
+const previousSetShape=window.setShape;
+window.setShape=function(shape){
+    const s=TABLE_SHAPES.has(String(shape))?String(shape):'rect';
+    const input=document.getElementById('config-table-shape'); if(input)input.value=s;
+    try{if(typeof previousSetShape==='function') previousSetShape.call(this,s)}catch(_){ }
+    document.querySelectorAll('#table-config-modal .shape-btn').forEach(btn=>{
+        const txt=(btn.getAttribute('onclick')||'')+' '+(btn.textContent||'');
+        const hit=(s==='oval'&&/oval|rond/i.test(txt))||(s==='rect'&&/rect|carr/i.test(txt))||(s==='losange'&&/losange/i.test(txt))||(s==='triangle'&&/triangle/i.test(txt));
+        btn.classList.toggle('shape-selected',hit);
+        btn.setAttribute('aria-pressed',hit?'true':'false');
+    });
+    return s;
+};
+
+window.saveTableConfig=async function(){
+    if(savingTable)return false;
+    const modal=tableModal();
+    const t=getTableByConfig();
+    if(!t){setStatus(modal,'table','❌ Table introuvable.','err');return false;}
+    const oldLabel=String(t.label||'');
+    const newLabel=safeTableName()||oldLabel;
+    const room=String(t.room||currentRoomValue());
+    const duplicate=allTables().some(x=>x && x!==t && String(x.room||room)===room && norm(x.label)===norm(newLabel));
+    if(duplicate){setStatus(modal,'table','❌ Ce nom de table existe déjà dans cette salle.','err');return false;}
+
+    savingTable=true;
+    setStatus(modal,'table','⏳ Sauvegarde de la table…','wait');
+    const oldSnapshot={label:t.label,pax:t.pax,shape:t.shape};
+    let movedOrderKey=null,movedOrder=null;
+    try{
+        t.label=newLabel;
+        t.pax=safePax();
+        t.shape=safeShape();
+
+        /* Migration locale de la commande si la table est renommée. */
+        if(norm(oldLabel)!==norm(newLabel)){
+            try{
+                movedOrderKey=Object.keys(activeOrders||{}).find(k=>norm(k)===norm(oldLabel))||null;
+                if(movedOrderKey){
+                    movedOrder=activeOrders[movedOrderKey];
+                    activeOrders[newLabel]=movedOrder;
+                    if(movedOrderKey!==newLabel) delete activeOrders[movedOrderKey];
+                }
+            }catch(_){ }
+            try{configTableId=newLabel}catch(_){ }
+            try{currentTactileName=newLabel}catch(_){ }
+        }
+
+        persistLocal();
+        redraw();
+
+        let ok=true;
+        if(typeof pushArchitecture==='function'){
+            const result=await pushArchitecture();
+            if(result===false) ok=false;
+        }
+        if(!ok) throw new Error('ARCHITECTURE_SAVE_FAILED');
+
+        /* Si une commande active accompagne une table renommée, on garde aussi
+           la clé serveur cohérente avec le nouveau nom. */
+        if(movedOrder && movedOrderKey && movedOrderKey!==newLabel && typeof API!=='undefined' && API?.update){
+            try{
+                await API.update(newLabel,movedOrder,true);
+                await API.update(movedOrderKey,null,true);
+            }catch(err){
+                console.warn('[iCHEF] renommage commande serveur non migré',err);
+            }
+        }
+
+        setStatus(modal,'table','✅ Table sauvegardée.','ok');
+        setTimeout(()=>window.closeTableConfigModal(),180);
+        return true;
+    }catch(err){
+        console.error('[iCHEF] saveTableConfig',err);
+        t.label=oldSnapshot.label;t.pax=oldSnapshot.pax;t.shape=oldSnapshot.shape;
+        if(movedOrder && movedOrderKey){
+            try{delete activeOrders[newLabel];activeOrders[movedOrderKey]=movedOrder}catch(_){ }
+        }
+        persistLocal();redraw();
+        setStatus(modal,'table','❌ Échec de sauvegarde. Vérifiez la connexion.','err');
+        return false;
+    }finally{savingTable=false;}
+};
+
+/* Ouverture Zone : remplit TOUJOURS depuis zones[]. */
+window.openZoneConfigModal=function(id){
+    const room=currentRoomValue();
+    const z=allZones().find(x=>x && String(x.id)===String(id) && String(x.room||room)===room)
+        || allZones().find(x=>x && String(x.id)===String(id));
+    if(!z){console.warn('[iCHEF] zone introuvable',id);return false;}
+    try{configZoneId=z.id}catch(_){ }
+    const idInput=document.getElementById('config-zone-id');if(idInput)idInput.value=String(z.id||'');
+    const name=document.getElementById('config-zone-name');if(name)name.value=String(z.label||'');
+    const mode=document.getElementById('config-zone-mode');if(mode)mode.value=ZONE_MODES.has(String(z.payMode||z.mode))?String(z.payMode||z.mode):'standard';
+    const color=document.getElementById('config-zone-color');if(color)color.value=/^#[0-9a-f]{6}$/i.test(String(z.color||''))?String(z.color):'#3498db';
+    setStatus(zoneModal(),'zone','');
+    openModalHard(zoneModal());
+    return true;
+};
+
+window.closeZoneConfigModal=function(){
+    try{configZoneId=null}catch(_){ }
+    closeModalHard(zoneModal());
+};
+
+window.saveZoneConfig=async function(){
+    if(savingZone)return false;
+    const modal=zoneModal();
+    const z=getZoneByConfig();
+    if(!z){setStatus(modal,'zone','❌ Zone introuvable.','err');return false;}
+    const name=String(document.getElementById('config-zone-name')?.value||'').trim().slice(0,40)||'Zone';
+    const modeRaw=String(document.getElementById('config-zone-mode')?.value||'standard');
+    const mode=ZONE_MODES.has(modeRaw)?modeRaw:'standard';
+    const colorRaw=String(document.getElementById('config-zone-color')?.value||'#3498db');
+    const color=/^#[0-9a-f]{6}$/i.test(colorRaw)?colorRaw:'#3498db';
+    const oldSnapshot={label:z.label,payMode:z.payMode,color:z.color};
+
+    savingZone=true;
+    setStatus(modal,'zone','⏳ Sauvegarde de la zone…','wait');
+    try{
+        z.label=name;
+        z.payMode=mode;
+        z.mode=mode; /* compatibilité anciens lecteurs */
+        z.color=color;
+        persistLocal();
+        redraw();
+        let ok=true;
+        if(typeof pushArchitecture==='function'){
+            const result=await pushArchitecture();
+            if(result===false) ok=false;
+        }
+        if(!ok) throw new Error('ZONE_SAVE_FAILED');
+        setStatus(modal,'zone','✅ Zone sauvegardée.','ok');
+        setTimeout(()=>window.closeZoneConfigModal(),180);
+        return true;
+    }catch(err){
+        console.error('[iCHEF] saveZoneConfig',err);
+        z.label=oldSnapshot.label;z.payMode=oldSnapshot.payMode;z.mode=oldSnapshot.payMode;z.color=oldSnapshot.color;
+        persistLocal();redraw();
+        setStatus(modal,'zone','❌ Échec de sauvegarde. Vérifiez la connexion.','err');
+        return false;
+    }finally{savingZone=false;}
+};
+
+/* Le nom de table peut aussi être saisi au clavier physique/virtuel directement. */
+function enhanceTableName(){
+    const d=tableNameDisplay();if(!d||d.dataset.ichefEditableName==='1')return;
+    d.dataset.ichefEditableName='1';
+    d.setAttribute('contenteditable','true');
+    d.setAttribute('role','textbox');
+    d.setAttribute('aria-label','Nom de la table');
+    d.setAttribute('spellcheck','false');
+    d.addEventListener('input',()=>{
+        let v=String(d.textContent||'').replace(/\n/g,'').toUpperCase().slice(0,30);
+        if(d.textContent!==v)d.textContent=v;
+        try{currentTactileName=v}catch(_){ }
+    });
+    d.addEventListener('keydown',e=>{
+        if(e.key==='Enter'){e.preventDefault();d.blur();}
+    });
+}
+
+/* Capture les validations pour empêcher l'ancien onclick d'exécuter une deuxième
+   sauvegarde avec un ancien état après notre moteur. */
+document.addEventListener('click',function(e){
+    const b=e.target?.closest?.('button');if(!b)return;
+    const text=String(b.textContent||'').toUpperCase();
+    if(b.closest('#table-config-modal') && text.includes('SAUVEGARDER LA TABLE')){
+        e.preventDefault();e.stopImmediatePropagation();window.saveTableConfig();return;
+    }
+    if(b.closest('#zone-config-modal') && text.includes('SAUVEGARDER LA ZONE')){
+        e.preventDefault();e.stopImmediatePropagation();window.saveZoneConfig();return;
+    }
+},true);
+
+function init(){enhanceTableName();statusNode(tableModal(),'table');statusNode(zoneModal(),'zone')}
+if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',init,{once:true});else init();
+setTimeout(init,250);
 })();
 </script>
 
