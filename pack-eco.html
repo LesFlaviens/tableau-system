@@ -1,6 +1,10 @@
 <!DOCTYPE html>
 <html lang="fr">
 <head>
+<!-- iCHEF PERFORMANCE MOBILE V2 — 2026-08-21
+     Réduction des scans DOM/observers sur téléphone <=600px.
+     Synchro serveur, Socket.IO, sécurité, commandes et Anti-Rush inchangés. -->
+
 <!-- iCHEF PAD : réservations en overlay uniquement, géométrie du plan intacte -->
 <!-- iCHEF FIX RESERVATION IA : table réellement réservée + reservationId -->
 
@@ -8411,6 +8415,8 @@ header .header-left > div:first-of-type{
        ce qui provoquait le clignotement visuel.
        Désormais seul le texte des chronos est actualisé. */
     setInterval(()=>{
+      /* Téléphone : le moteur mobile dédié gère déjà ces chronos. */
+      if(window.innerWidth<=600) return;
       if(q('#order-drawer.open')){
         updateProTableTimes();
         updateStatus();
@@ -9055,11 +9061,10 @@ header .header-left > div:first-of-type{
     /* Même correction sur mobile :
        ne jamais reconstruire toutes les cartes pour un simple chrono. */
     setInterval(()=>{
-      if(mq()){
-        updateStatus();
-        updateMobileTableTimes();
-      }
-    },1000);
+      if(document.hidden || !mq()) return;
+      updateStatus();
+      updateMobileTableTimes();
+    },2000);
 
     window.addEventListener('online',updateStatus);
     window.addEventListener('offline',updateStatus);
@@ -9228,7 +9233,35 @@ header .header-left > div:first-of-type{
   }
   function init(){
     ensureChrome();install();bindPlanTableClose();
-    new MutationObserver(()=>{install();bindPlanTableClose();}).observe(document.body,{childList:true,subtree:true});
+    /*
+      PERFORMANCE MOBILE :
+      avant, TOUT le body + tous ses descendants étaient observés.
+      Chaque badge/chrono/alerte réveillait donc le moteur du plan.
+      On ne surveille plus que les deux zones réellement utiles.
+    */
+    const floor=$('#floor-plan');
+    if(floor && !floor.__ichefMobilePlanObserver){
+      let planRaf=0;
+      const obs=new MutationObserver(()=>{
+        if(planRaf) return;
+        planRaf=requestAnimationFrame(()=>{
+          planRaf=0;
+          if(isPhone()) install();
+        });
+      });
+      obs.observe(floor,{childList:true,subtree:false});
+      floor.__ichefMobilePlanObserver=obs;
+    }
+
+    const drawer=$('#order-drawer');
+    if(drawer && !drawer.__ichefMobilePlanDrawerObserver){
+      const obs=new MutationObserver(()=>{
+        if(isPhone()) requestAnimationFrame(install);
+      });
+      obs.observe(drawer,{attributes:true,attributeFilter:['class']});
+      drawer.__ichefMobilePlanDrawerObserver=obs;
+    }
+
     window.addEventListener('resize',()=>{if(!isPhone())closePlan(false);},{passive:true});
   }
   if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',init,{once:true});else init();
@@ -17689,11 +17722,21 @@ function syncFloor(){
 
 window.ichefSyncAllTableColors=function(){
     syncCards();
-    syncFloor();
+
+    /* Le plan de 2000×1500 n'est parcouru sur téléphone que lorsqu'il est réellement ouvert. */
+    if(
+        window.innerWidth>600 ||
+        document.body.classList.contains('mobile-live-plan-open')
+    ){
+        syncFloor();
+    }
 };
 
 /* État serveur/socket ou DOM : actualisation rapide sans recréer les cartes. */
-setInterval(()=>{if(!document.hidden && !document.body.classList.contains('edit-mode')) window.ichefSyncAllTableColors();},2200);
+setInterval(()=>{
+    if(document.hidden || document.body.classList.contains('edit-mode')) return;
+    window.ichefSyncAllTableColors();
+}, window.innerWidth<=600 ? 5000 : 2200);
 
 window.addEventListener("focus",window.ichefSyncAllTableColors);
 document.addEventListener("visibilitychange",()=>{
@@ -17867,13 +17910,20 @@ window.ichefRefreshProZoneColors=zcRefresh;
 
 /* Mise à jour automatique : déplacement de table, changement de couleur,
    changement de salle ou synchronisation serveur. */
-setInterval(()=>{if(!document.hidden && !document.body.classList.contains('edit-mode')) zcRefresh();},2500);
+setInterval(()=>{
+    if(window.innerWidth<=600) return;
+    if(!document.hidden && !document.body.classList.contains('edit-mode')) zcRefresh();
+},2500);
 window.addEventListener('focus',zcRefresh);
 document.addEventListener('visibilitychange',()=>{ if(!document.hidden) zcRefresh(); });
 
 {
   const __ichefZoneRoot=document.getElementById('pro-table-panel');
-  if(__ichefZoneRoot){let raf=0;new MutationObserver(()=>{if(raf)return;raf=requestAnimationFrame(()=>{raf=0;zcRefresh();});}).observe(__ichefZoneRoot,{childList:true,subtree:true});}
+  if(__ichefZoneRoot){let raf=0;new MutationObserver(()=>{
+      if(window.innerWidth<=600) return;
+      if(raf)return;
+      raf=requestAnimationFrame(()=>{raf=0;zcRefresh();});
+  }).observe(__ichefZoneRoot,{childList:true,subtree:true});}
 }
 
 if(document.readyState==='loading'){
@@ -18408,12 +18458,16 @@ function updateReadyDrawer(){
 }
 
 window.ichefRefreshCompactOrderCards=function(){
-    updateAllCards();
+    if(window.innerWidth>600){
+        updateAllCards();
+    }
     updateReadyDrawer();
 };
 
 /* Les données KDS/QR/PAD peuvent changer sans reconstruire la grille. */
-setInterval(()=>{if(!document.hidden) window.ichefRefreshCompactOrderCards();},1400);
+setInterval(()=>{
+    if(!document.hidden) window.ichefRefreshCompactOrderCards();
+}, window.innerWidth<=600 ? 4000 : 1400);
 
 window.addEventListener("focus",window.ichefRefreshCompactOrderCards,{passive:true});
 document.addEventListener("visibilitychange",()=>{
@@ -18423,7 +18477,11 @@ document.addEventListener("visibilitychange",()=>{
 {
   let __ichefCompactRaf=0;
   const __ichefCompactSchedule=()=>{if(__ichefCompactRaf)return;__ichefCompactRaf=requestAnimationFrame(()=>{__ichefCompactRaf=0;window.ichefRefreshCompactOrderCards();});};
-  [document.getElementById('pro-table-panel'),document.getElementById('order-drawer')].filter(Boolean).forEach(root=>{
+  const __ichefCompactRoots = window.innerWidth<=600
+    ? [document.getElementById('order-drawer')]
+    : [document.getElementById('pro-table-panel'),document.getElementById('order-drawer')];
+
+  __ichefCompactRoots.filter(Boolean).forEach(root=>{
     new MutationObserver(__ichefCompactSchedule).observe(root,{childList:true,subtree:true});
   });
 }
@@ -18741,19 +18799,21 @@ function clearReadyBadge(card){
 }
 
 function syncCards(){
-    document.querySelectorAll(".pro-table-card[data-table]").forEach(card=>{
-        const order=findOrder(card.dataset.table);
-        const isReady=orderReady(order);
-        const count=readyCount(order);
+    if(window.innerWidth>600){
+        document.querySelectorAll(".pro-table-card[data-table]").forEach(card=>{
+            const order=findOrder(card.dataset.table);
+            const isReady=orderReady(order);
+            const count=readyCount(order);
 
-        card.classList.toggle("ichef-ready-neon-fixed",isReady);
+            card.classList.toggle("ichef-ready-neon-fixed",isReady);
 
-        if(isReady){
-            ensureBadge(card,count || 1);
-        }else{
-            clearReadyBadge(card);
-        }
-    });
+            if(isReady){
+                ensureBadge(card,count || 1);
+            }else{
+                clearReadyBadge(card);
+            }
+        });
+    }
 
     document.querySelectorAll(".mobile-exact-table[data-table]").forEach(card=>{
         const order=findOrder(card.dataset.table);
@@ -18777,8 +18837,17 @@ function syncFloor(){
 
 function sync(){
     syncCards();
-    syncFloor();
-    sortReadyTablesFirst();
+
+    if(window.innerWidth>600){
+        syncFloor();
+        sortReadyTablesFirst();
+        return;
+    }
+
+    /* Téléphone : le plan n'est traité que s'il est réellement visible. */
+    if(document.body.classList.contains('mobile-live-plan-open')){
+        syncFloor();
+    }
 }
 
 window.ichefRefreshReadyNeon=sync;
@@ -18788,7 +18857,7 @@ window.ichefRefreshReadyNeon=sync;
 let __ichefReadyFallbackTimer=setInterval(()=>{
     if(document.hidden) return;
     sync();
-},1500);
+}, window.innerWidth<=600 ? 4000 : 1500);
 
 window.addEventListener("focus",sync,{passive:true});
 document.addEventListener("visibilitychange",()=>{
@@ -22464,6 +22533,16 @@ if(document.readyState==="loading"){
         scheduled=true;
         requestAnimationFrame(()=>{
             scheduled=false;
+
+            if(window.innerWidth<=600){
+                /* Les cartes PRO sont cachées sur téléphone.
+                   Le plan n'est parcouru que pendant son affichage interactif. */
+                if(document.body.classList.contains('mobile-live-plan-open')){
+                    try{syncPlanTables();}catch(err){console.warn('iCHEF plats plan interactif',err);}
+                }
+                return;
+            }
+
             try{syncLeftCards();}catch(err){console.warn('iCHEF plats colonne gauche',err);}
             try{syncPlanTables();}catch(err){console.warn('iCHEF plats plan interactif',err);}
         });
@@ -22488,7 +22567,7 @@ if(document.readyState==="loading"){
     /* Mise à jour légère : utile aussi pendant la saisie d'une commande avant le prochain rendu complet. */
     const timer=setInterval(()=>{
         if(!document.hidden) sync();
-    },900);
+    }, window.innerWidth<=600 ? 5000 : 900);
 
     window.addEventListener('focus',sync,{passive:true});
     document.addEventListener('visibilitychange',()=>{ if(!document.hidden) sync(); });
@@ -23722,6 +23801,11 @@ function apply(w){
   STATE_CLASSES.forEach(c=>w.classList.toggle(c,c===wanted));
 }
 function refresh(){
+  if(
+    window.innerWidth<=600 &&
+    !document.body.classList.contains('mobile-live-plan-open')
+  ) return;
+
   document.querySelectorAll('#floor-plan .table-wrapper').forEach(apply);
 }
 
@@ -25332,7 +25416,10 @@ window.ichefForceOpenTableConfig=forceOpenTable;
     }
 
     const observer = new MutationObserver(disableNativeKeyboard);
-    observer.observe(document.documentElement, { childList: true, subtree: true });
+    const configModalRoot=document.getElementById('table-config-modal');
+    if(configModalRoot){
+        observer.observe(configModalRoot,{childList:true,subtree:true});
+    }
     document.addEventListener('DOMContentLoaded', disableNativeKeyboard);
 
 })();
@@ -25830,7 +25917,11 @@ new MutationObserver(()=>{
         moRaf=0;
         if(drawerOpen() || panelOpen()) syncNow();
     });
-}).observe(root,{childList:true,subtree:true,attributes:true,attributeFilter:['class']});
+}).observe(root,{
+    childList:true,
+    subtree:true
+    /* Ne plus observer toutes les classes : chronos/badges en changeaient en permanence. */
+});
 
 /* 5) Filet de sécurité léger uniquement lorsque l'interface concernée est visible.
       Cela évite qu'un ancien N5 reste affiché si une mise à jour serveur ne déclenche
@@ -25838,7 +25929,7 @@ new MutationObserver(()=>{
 setInterval(()=>{
     if(document.hidden) return;
     if(drawerOpen() || panelOpen()) syncNow();
-},1200);
+}, window.innerWidth<=600 ? 4000 : 1200);
 
 document.addEventListener('visibilitychange',()=>{ if(!document.hidden) queueSync(); });
 window.addEventListener('focus',queueSync,{passive:true});
@@ -25937,6 +26028,78 @@ body.ichef-ar-cockpit-fullscreen-open{
     }
     #anti-rush-server-panel.ichef-ar-cockpit-fullscreen #ichef-ar-iframe{
         height:calc(100% - 52px) !important;
+    }
+}
+</style>
+
+
+<!-- =========================================================
+     iCHEF — MOBILE PERFORMANCE V2
+     Téléphone <= 600 px uniquement.
+     Aucun changement réseau / serveur / sécurité.
+     ========================================================= -->
+<style id="ichef-mobile-performance-v2-css">
+@media (max-width:600px){
+
+    /*
+      Les blur/backdrop-filter sont coûteux sur GPU mobile,
+      surtout pendant les scrolls et panneaux fixes.
+    */
+    header,
+    .mobile-overlay,
+    .modal,
+    #order-mini-bar,
+    .quick-folder-panel,
+    #folder-outils.quick-folder-panel,
+    #ichef-table-detail-overlay,
+    #anti-rush-server-panel{
+        backdrop-filter:none !important;
+        -webkit-backdrop-filter:none !important;
+    }
+
+    /* Les scrolls tactiles suivent le doigt sans animation de rattrapage. */
+    #order-drawer .drawer-body,
+    #service-tools-bar,
+    .swipe-row,
+    #mobile-exact-grid,
+    .floor-plan-wrapper{
+        scroll-behavior:auto !important;
+    }
+
+    /*
+      Transitions décoratives supprimées sur les éléments répétés.
+      Les actions tactiles et couleurs métier restent intactes.
+    */
+    .mobile-exact-table,
+    .mobile-exact-table *,
+    .table-obj,
+    .chair,
+    .btn-item,
+    .btn-mini,
+    .dock-btn,
+    .folder-btn,
+    .course-card-header,
+    .toggle-icon{
+        transition:none !important;
+    }
+
+    /* Pas de pulsations GPU permanentes sur téléphone. */
+    .global-rush-alert,
+    .assign-mode .floor-plan,
+    .table-wrapper.status-late .table-obj{
+        animation:none !important;
+    }
+
+    /*
+      Le navigateur peut isoler les cartes mobiles pour limiter les repaint.
+      "contain" ne change pas leur disposition dans la grille.
+    */
+    .mobile-exact-table{
+        contain:layout paint style;
+    }
+
+    #mobile-exact-grid{
+        contain:layout style;
     }
 }
 </style>
