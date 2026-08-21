@@ -19524,6 +19524,10 @@ function arOrders(){
     return result.sort((a,b)=>b.priority-a.priority || a.start-b.start);
 }
 
+/* Source opérationnelle partagée : le bouton LIVE, le cockpit et le timer
+   peuvent désormais partir exactement des mêmes tables retenues. */
+window.ichefGetAntiRushOperationalRows=arOrders;
+
 function arLevelText(level){
     return ["CALME","NORMAL","ACTIF","TENDU","ÉLEVÉ","CRITIQUE"][level] || "CALME";
 }
@@ -20122,126 +20126,7 @@ if(document.readyState === "loading"){
 
 })();
 </script><!-- iCHEF PERF FIX: tri READY conditionnel, Anti-Rush throttlé, polling bouton supprimé -->
-<script id="ichef-anti-rush-drawer-button-js">
-(function(){
-"use strict";
 
-function syncButtonState(){
-    const btn = document.getElementById("ichef-anti-rush-drawer-btn");
-    const panel = document.getElementById("anti-rush-server-panel");
-    if(!btn) return;
-
-    const open = !!panel?.classList.contains("open");
-    btn.classList.toggle("active", open);
-
-    /*
-      Le bouton LIVE garde toujours son texte/calcul dynamique.
-      syncButtonState ne gère désormais QUE l'état ouvert/fermé.
-    */
-    if(typeof window.ichefUpdateAntiRushSignal === "function"){
-        window.ichefUpdateAntiRushSignal(true);
-    }
-}
-
-function ensureDrawerAntiRushButton(){
-    const drawer = document.getElementById("order-drawer");
-    if(!drawer) return;
-
-    let btn = document.getElementById("ichef-anti-rush-drawer-btn");
-    if(btn){
-        syncButtonState();
-        return;
-    }
-
-    /*
-      Priorité : barre des catégories centrale.
-      Garde le bouton visible entre les tables à gauche et le ticket à droite.
-    */
-    const cats = 
-        document.getElementById("dynamic-categories-container") || 
-        drawer.querySelector(".swipe-row") || 
-        drawer.querySelector(".menu-tabs");
-
-    if(!cats) return;
-
-    btn = document.createElement("button");
-    btn.type = "button";
-    btn.id = "ichef-anti-rush-drawer-btn";
-    btn.title = "Ouvrir / fermer le moniteur Anti-Rush";
-    
-    // Pré-structure visuelle pour accueillir les données du signal LIVE
-    btn.innerHTML = `
-        <span class="ichef-ar-live-dot"></span>
-        <span class="ichef-ar-drawer-copy">
-            <span class="ichef-ar-drawer-main">⚡ ANTI-RUSH</span>
-            <span class="ichef-ar-drawer-sector">Initialisation...</span>
-        </span>
-    `;
-
-    // Le clic est attaché à la racine du bouton, il ne cassera pas lors 
-    // du remplacement de l'innerHTML par le script du signal LIVE.
-    btn.addEventListener("click", function(e){
-        e.preventDefault();
-        e.stopPropagation();
-
-        try {
-            if(typeof window.toggleAntiRushPanel === "function"){
-                window.toggleAntiRushPanel();
-            } else if(typeof toggleAntiRushPanel === "function"){
-                toggleAntiRushPanel();
-            }
-        } catch(err) {
-            console.warn("[iCHEF] Erreur ouverture Anti-Rush:", err);
-        }
-
-        setTimeout(() => {
-            syncButtonState();
-            if(typeof window.ichefUpdateAntiRushSignal === "function"){
-                window.ichefUpdateAntiRushSignal(true);
-            }
-        }, 30);
-    });
-
-    cats.insertBefore(btn, cats.firstChild);
-    syncButtonState();
-}
-
-window.ichefEnsureDrawerAntiRushButton = ensureDrawerAntiRushButton;
-
-/* Aucun polling permanent : le MutationObserver ci-dessous suffit. */
-const drawer = document.getElementById("order-drawer");
-if(drawer){
-    let __ichefBtnRaf = 0;
-    new MutationObserver((mutations) => {
-        if(!drawer.classList.contains("open")) return;
-
-        /*
-          On n'agit que si le bouton a réellement disparu ou si le drawer
-          vient de s'ouvrir. Un seul RAF maximum, même si beaucoup de DOM change.
-        */
-        const missing = !document.getElementById("ichef-anti-rush-drawer-btn");
-        const classChanged = mutations.some(m => m.type === "attributes" && m.attributeName === "class");
-
-        if(!missing && !classChanged) return;
-        if(__ichefBtnRaf) return;
-
-        __ichefBtnRaf = requestAnimationFrame(() => {
-            __ichefBtnRaf = 0;
-            ensureDrawerAntiRushButton();
-        });
-    }).observe(drawer, {attributes: true, attributeFilter: ["class"], childList: true, subtree: true});
-}
-
-if(document.readyState === "loading"){
-    document.addEventListener("DOMContentLoaded", () => {
-        setTimeout(ensureDrawerAntiRushButton, 250);
-    }, {once: true});
-} else {
-    setTimeout(ensureDrawerAntiRushButton, 250);
-}
-
-})();
-</script>
      
 
 
@@ -21403,7 +21288,7 @@ if(document.readyState==="loading"){
 (function(){
 "use strict";
 
-const SYSTEM_KEYS=/MASTER|ARCHIVE|SETTINGS|RESERVATIONS|ALERTS|CATEGORIES|STAFF_ACCESS|LOYALTY/i;
+const SYSTEM_KEYS=/MASTER|ARCHIVE|SETTINGS|RESERVATIONS|ALERTS|CATEGORIES|STAFF_ACCESS|LOYALTY|FINANCIAL|AUDIT|CANCEL|PAYMENT_HISTORY|TECHNICAL|HISTORY/i;
 const START_RUSH_AT=35;
 
 let lastSignature="";
@@ -21561,6 +21446,22 @@ function snapshot(){
     const all=getOrders();
     const now=Date.now();
 
+    /* Symbiose réelle : si la fenêtre Anti-Rush expose sa liste opérationnelle,
+       le signal LIVE utilise exactement les mêmes tables comme périmètre. */
+    let operationalTableIds=null;
+    try{
+        if(typeof window.ichefGetAntiRushOperationalRows==="function"){
+            const rows=window.ichefGetAntiRushOperationalRows();
+            if(Array.isArray(rows)){
+                operationalTableIds=new Set(
+                    rows.map(r=>String(r?.tableId??"")).filter(Boolean)
+                );
+            }
+        }
+    }catch(_){
+        operationalTableIds=null;
+    }
+
     let cuisineQty=0;
     let barQty=0;
     let passQty=0;
@@ -21572,7 +21473,13 @@ function snapshot(){
     let activeTables=0;
 
     for(const [tableId,order] of Object.entries(all||{})){
-        if(!tableId || SYSTEM_KEYS.test(tableId)) continue;
+        const tableKey=st(tableId);
+        if(!tableId || SYSTEM_KEYS.test(tableKey)) continue;
+        if(operationalTableIds && !operationalTableIds.has(String(tableId))) continue;
+
+        /* Même filtre que le cockpit : jamais d'audit financier/annulation
+           dans la charge opérationnelle Anti-Rush. */
+        if(/^(FINANCIAL|AUDIT|CANCEL|TECHNICAL|PAYMENT|HISTORY)[_:-]/.test(tableKey)) continue;
         if(!order || typeof order!=="object") continue;
 
         try{
@@ -21584,11 +21491,21 @@ function snapshot(){
             }
         }catch(_){}
 
+        /* Même définition d'un article réel que la fenêtre Anti-Rush :
+           nom présent + quantité positive. Les objets techniques ne comptent plus. */
         const items=Array.isArray(order.items)
-            ? order.items.filter(Boolean)
+            ? order.items.filter(item=>{
+                if(!item || typeof item!=="object") return false;
+                const name=String(
+                    item.n ?? item.name ?? item.productName ?? item.title ?? ""
+                ).trim();
+                const q=Number(item.qty ?? item.quantity ?? 1);
+                return !!name && Number.isFinite(q) && q>0;
+            })
             : [];
 
         if(!items.length) continue;
+        if(items.every(served)) continue;
 
         let tableActive=false;
 
@@ -21644,6 +21561,10 @@ function snapshot(){
         }
 
         if(tableActive) activeTables++;
+    }
+
+    if(operationalTableIds){
+        activeTables=operationalTableIds.size;
     }
 
     /*
@@ -25648,6 +25569,82 @@ window.ichefForceOpenTableConfig=forceOpenTable;
      Corrige N5/CRITIQUE avec 0 table et 0 % : le snapshot LIVE réel
      devient la source d’affichage et de timer; fallback serveur seulement
      avant initialisation du LIVE. -->
+
+
+<!-- =========================================================
+     iCHEF — ANTI-RUSH SYMBIOSE FIX RÉEL 2026-08-21
+     - bouton Anti-Rush du drawer connecté même si la barre catégories est recréée
+     - clic capturé avant les gestionnaires de catégories
+     - resynchronisation immédiate bouton + fenêtre + timer
+     ========================================================= -->
+<script id="ichef-anti-rush-symbiose-click-final">
+(function(){
+"use strict";
+if(window.__ICHEF_AR_SYMBIOSE_CLICK_FINAL__) return;
+window.__ICHEF_AR_SYMBIOSE_CLICK_FINAL__=true;
+
+let lastToggleAt=0;
+
+function resyncAll(){
+    try{ window.ichefUpdateAntiRushSignal?.(true); }catch(_){}
+    try{ window.ichefRefreshAntiRushWindow?.(); }catch(_){}
+    try{
+        const cfg=window.ichefGetAntiRushLiveSnapshot?.();
+        if(cfg){
+            window.__ichefAntiRushLiveSnapshot=cfg;
+            window.__ichefAntiRushLiveLevel=Number(cfg.level)||0;
+        }
+    }catch(_){}
+}
+
+window.addEventListener("click",function(e){
+    const btn=e.target?.closest?.("#ichef-anti-rush-drawer-btn");
+    if(!btn) return;
+
+    /* Le drawer possède plusieurs couches tactiles/catégories.
+       On prend le clic au niveau window/capture pour garantir la connexion. */
+    e.preventDefault();
+    e.stopImmediatePropagation();
+
+    const now=Date.now();
+    if(now-lastToggleAt<250) return;
+    lastToggleAt=now;
+
+    try{
+        if(typeof window.toggleAntiRushPanel==="function"){
+            window.toggleAntiRushPanel();
+        }else{
+            const panel=document.getElementById("anti-rush-server-panel");
+            panel?.classList.toggle("open");
+        }
+    }catch(err){
+        console.error("[iCHEF] Anti-Rush drawer connexion",err);
+    }
+
+    requestAnimationFrame(resyncAll);
+    setTimeout(resyncAll,80);
+},true);
+
+/* Quand le drawer est reconstruit, le bouton doit retrouver immédiatement
+   le même état que le cockpit et non une ancienne valeur visuelle. */
+const root=document.getElementById("order-drawer") || document.body;
+let raf=0;
+new MutationObserver(()=>{
+    if(raf) return;
+    raf=requestAnimationFrame(()=>{
+        raf=0;
+        try{ window.ichefEnsureDrawerAntiRushButton?.(); }catch(_){}
+        resyncAll();
+    });
+}).observe(root,{childList:true,subtree:true});
+
+if(document.readyState==="loading"){
+    document.addEventListener("DOMContentLoaded",()=>setTimeout(resyncAll,120),{once:true});
+}else{
+    setTimeout(resyncAll,120);
+}
+})();
+</script>
 
 </body>
 </html>
