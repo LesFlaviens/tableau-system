@@ -143,13 +143,37 @@
             : 'https://tableau-system.onrender.com';
 
         try {
-            const response = await fetch(`${SERVER_URL}/api/security/bootstrap`, {
+            const bootstrapOptions = {
                 method: 'POST',
-                credentials: 'include',
                 cache: 'no-store',
-                headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'iCHEF-PWA' },
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Accept': 'application/json',
+                    'X-Requested-With': 'iCHEF-PWA',
+                    'X-iCHEF-Tenant': String(tenantID || ''),
+                    'X-iCHEF-Device': String(window.ICHEF_SECURITY.deviceId || '')
+                },
                 body: JSON.stringify({ tenantID, deviceId: window.ICHEF_SECURITY.deviceId, page: location.pathname.split('/').pop() || 'index.html' })
-            });
+            };
+
+            // Navigation privée mobile (notamment Safari/iOS) peut bloquer les cookies tiers.
+            // On demande d'abord un bootstrap sans cookie ; si le serveur ancien l'exige,
+            // on retente avec credentials:include. Aucun jeton n'est stocké durablement.
+            let response;
+            try {
+                response = await fetch(`${SERVER_URL}/api/security/bootstrap`, {
+                    ...bootstrapOptions,
+                    credentials: 'omit'
+                });
+            } catch (_) {
+                response = null;
+            }
+            if (!response || response.status === 401 || response.status === 403) {
+                response = await fetch(`${SERVER_URL}/api/security/bootstrap`, {
+                    ...bootstrapOptions,
+                    credentials: 'include'
+                });
+            }
             const data = await response.json().catch(() => ({}));
             if (!response.ok || !data.success) {
                 alert(data.error || 'Terminal non autorisé.');
@@ -2724,14 +2748,27 @@ let unifiedCategories = [];
         }
 
         async function secureFetch(path, options = {}) {
-            // Mode compatibilité avec l'authentification /api/verify-pin.
-            // Une fonction optionnelle non disponible ne doit JAMAIS fermer la session locale du Pad.
-            const response = await fetch(`${APP_SERVER_URL}${path}`, {
-                credentials: 'include',
+            // Session prioritaire par Bearer en mémoire : elle ne dépend pas d'un cookie tiers.
+            // C'est le chemin fiable en navigation privée mobile.
+            const hasBearer = !!window.ICHEF_SECURITY?.sessionToken;
+            const requestBase = {
                 cache: 'no-store',
                 ...options,
                 headers: securityHeaders(options.headers || {})
+            };
+
+            let response = await fetch(`${APP_SERVER_URL}${path}`, {
+                ...requestBase,
+                credentials: hasBearer ? 'omit' : 'include'
             });
+
+            // Compatibilité avec un backend plus ancien encore fondé sur le cookie.
+            if (hasBearer && (response.status === 401 || response.status === 403)) {
+                response = await fetch(`${APP_SERVER_URL}${path}`, {
+                    ...requestBase,
+                    credentials: 'include'
+                });
+            }
 
             if (response.status === 401 || response.status === 403) {
                 console.warn(
@@ -2739,6 +2776,55 @@ let unifiedCategories = [];
                 );
             }
 
+            return response;
+        }
+
+        async function verifyPinServer(pin) {
+            const body = JSON.stringify({
+                tenantID: appTenantID,
+                pin,
+                deviceId: window.ICHEF_SECURITY?.deviceId || null
+            });
+
+            const headers = {
+                'Content-Type': 'application/json',
+                'Accept': 'application/json',
+                'X-Requested-With': 'iCHEF-PWA',
+                'X-iCHEF-Tenant': String(appTenantID || ''),
+                'X-iCHEF-Device': String(window.ICHEF_SECURITY?.deviceId || '')
+            };
+            if (window.ICHEF_SECURITY?.csrfToken) {
+                headers['X-CSRF-Token'] = window.ICHEF_SECURITY.csrfToken;
+            }
+            if (window.ICHEF_SECURITY?.sessionToken) {
+                headers.Authorization = `Bearer ${window.ICHEF_SECURITY.sessionToken}`;
+            }
+
+            // Le endpoint de vérification PIN doit pouvoir établir la session sans
+            // dépendre d'un cookie tiers. On essaie donc d'abord le chemin stateless.
+            let response;
+            try {
+                response = await fetch(`${APP_SERVER_URL}/api/verify-pin`, {
+                    method: 'POST',
+                    credentials: 'omit',
+                    cache: 'no-store',
+                    headers,
+                    body
+                });
+            } catch (_) {
+                response = null;
+            }
+
+            // Fallback compatible ordinateur / ancien serveur.
+            if (!response || response.status === 401 || response.status === 403) {
+                response = await fetch(`${APP_SERVER_URL}/api/verify-pin`, {
+                    method: 'POST',
+                    credentials: 'include',
+                    cache: 'no-store',
+                    headers,
+                    body
+                });
+            }
             return response;
         }
 
@@ -2919,15 +3005,7 @@ let unifiedCategories = [];
 
     try {
         // Vérification centralisée côté serveur : PIN principal + PIN du personnel.
-        const response = await secureFetch('/api/verify-pin', {
-            method: 'POST',
-            headers: { 'Accept': 'application/json' },
-            body: JSON.stringify({
-                tenantID: appTenantID,
-                pin,
-                deviceId: window.ICHEF_SECURITY?.deviceId || null
-            })
-        });
+        const response = await verifyPinServer(pin);
 
         const data = await response.json().catch(() => ({}));
 
@@ -2996,8 +3074,8 @@ let unifiedCategories = [];
         msgBox.style.color = 'var(--alert)';
         const privateStorage = (window.ICHEF_STORAGE && !window.ICHEF_STORAGE.available());
         msgBox.innerText = privateStorage
-            ? '❌ Connexion privée mobile : session non disponible. Rechargez la page avec le lien iCHEF complet.'
-            : '❌ Impossible de joindre le serveur.';
+            ? '❌ Navigation privée mobile : impossible de joindre la session sécurisée. Vérifiez le lien iCHEF complet et la connexion réseau.'
+            : '❌ Impossible de joindre le serveur sécurisé.';
         clearPin();
     } finally {
         loginInProgress = false;
