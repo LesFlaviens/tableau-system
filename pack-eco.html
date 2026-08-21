@@ -25646,5 +25646,194 @@ if(document.readyState==="loading"){
 })();
 </script>
 
+
+
+<!-- =========================================================
+     iCHEF — ANTI-RUSH BOUTON ↔ COCKPIT : CONNEXION DÉFINITIVE
+     2026-08-21
+     - le bouton du drawer relit le même snapshot que le cockpit
+     - resynchronisation après sync serveur et API.update
+     - pointer/tactile capturé même dans la barre catégories swipe
+     - aucune valeur N5/PASS 100 % conservée visuellement après retour à 0
+     ========================================================= -->
+<style id="ichef-ar-drawer-connected-final-css">
+#ichef-anti-rush-drawer-btn{
+    pointer-events:auto !important;
+    touch-action:manipulation !important;
+    user-select:none !important;
+    -webkit-user-select:none !important;
+    position:relative !important;
+    z-index:80 !important;
+}
+#ichef-anti-rush-drawer-btn[data-ichef-ar-connected="1"]::after{
+    content:"";
+    position:absolute;
+    right:6px;
+    top:6px;
+    width:5px;
+    height:5px;
+    border-radius:50%;
+    background:#22c55e;
+    box-shadow:0 0 7px rgba(34,197,94,.9);
+    pointer-events:none;
+}
+</style>
+<script id="ichef-ar-drawer-connected-final-js">
+(function(){
+'use strict';
+if(window.__ICHEF_AR_DRAWER_CONNECTED_FINAL__) return;
+window.__ICHEF_AR_DRAWER_CONNECTED_FINAL__=true;
+
+let lastActionAt=0;
+let syncQueued=false;
+
+function panelOpen(){
+    return !!document.getElementById('anti-rush-server-panel')?.classList.contains('open');
+}
+function drawerOpen(){
+    return !!document.getElementById('order-drawer')?.classList.contains('open');
+}
+
+function forceCalmDrawerIfNoOperationalRows(){
+    let rows=null;
+    try{
+        rows=window.ichefGetAntiRushOperationalRows?.();
+    }catch(_){ rows=null; }
+    if(!Array.isArray(rows) || rows.length!==0) return;
+
+    /* Garde-fou visuel : si le cockpit n'a aucune table opérationnelle,
+       le bouton ne peut jamais rester rouge/N5 à cause d'un ancien rendu. */
+    const btn=document.getElementById('ichef-anti-rush-drawer-btn');
+    if(!btn) return;
+    const snap=window.__ichefAntiRushLiveSnapshot;
+    if(snap && (Number(snap.activeTables)||0)===0 && (Number(snap.maxLoad)||0)===0){
+        btn.classList.remove('ichef-ar-live-watch','ichef-ar-live-hot','ichef-ar-live-critical');
+        btn.classList.add('ichef-ar-live-calm');
+    }
+}
+
+function syncNow(){
+    syncQueued=false;
+    try{ window.ichefEnsureDrawerAntiRushButton?.(); }catch(_){ }
+
+    const btn=document.getElementById('ichef-anti-rush-drawer-btn');
+    if(btn){
+        btn.dataset.ichefArConnected='1';
+        btn.title='Anti-Rush connecté au cockpit et aux commandes en temps réel';
+    }
+
+    /* SOURCE UNIQUE : le moteur LIVE déjà utilisé par le cockpit. */
+    try{ window.ichefUpdateAntiRushSignal?.(true); }catch(err){
+        console.warn('[iCHEF] synchro bouton Anti-Rush',err);
+    }
+    try{
+        if(panelOpen()) window.ichefRefreshAntiRushWindow?.();
+    }catch(_){ }
+    try{ window.ichefUpdateDishTimerPanel?.(); }catch(_){ }
+    forceCalmDrawerIfNoOperationalRows();
+}
+
+function queueSync(){
+    if(syncQueued) return;
+    syncQueued=true;
+    requestAnimationFrame(syncNow);
+}
+window.ichefSyncAntiRushEverywhere=queueSync;
+
+/* 1) Toute écriture métier vers le serveur resynchronise Anti-Rush à la fin. */
+try{
+    if(window.API && typeof API.update==='function' && !API.update.__ichefArUnifiedHook){
+        const originalUpdate=API.update;
+        const wrapped=async function(){
+            try{
+                return await originalUpdate.apply(this,arguments);
+            }finally{
+                queueSync();
+                setTimeout(queueSync,80);
+            }
+        };
+        wrapped.__ichefArUnifiedHook=true;
+        API.update=wrapped;
+    }
+}catch(_){ }
+
+/* 2) Chaque synchronisation serveur reçue met à jour le bouton immédiatement. */
+try{
+    if(typeof syncData==='function' && !syncData.__ichefArUnifiedHook){
+        const originalSync=syncData;
+        syncData=async function(){
+            try{
+                return await originalSync.apply(this,arguments);
+            }finally{
+                queueSync();
+            }
+        };
+        syncData.__ichefArUnifiedHook=true;
+        try{ window.syncData=syncData; }catch(_){ }
+    }
+}catch(_){ }
+
+/* 3) Bouton dans une swipe-row : pointerup capture est plus fiable qu'un click
+      sur certains écrans tactiles. Le debounce empêche un double toggle. */
+function activate(e){
+    const btn=e.target?.closest?.('#ichef-anti-rush-drawer-btn');
+    if(!btn) return;
+    if(e.type==='pointerup' && e.pointerType==='mouse' && e.button!==0) return;
+
+    e.preventDefault();
+    e.stopImmediatePropagation();
+
+    const now=Date.now();
+    if(now-lastActionAt<320) return;
+    lastActionAt=now;
+
+    syncNow();
+    try{
+        if(typeof window.toggleAntiRushPanel==='function'){
+            window.toggleAntiRushPanel();
+        }else{
+            const p=document.getElementById('anti-rush-server-panel');
+            if(p) p.classList.toggle('open');
+        }
+    }catch(err){
+        console.error('[iCHEF] ouverture Anti-Rush depuis commande',err);
+    }
+    requestAnimationFrame(syncNow);
+    setTimeout(syncNow,60);
+}
+window.addEventListener('pointerup',activate,true);
+window.addEventListener('click',activate,true);
+
+/* 4) Si le drawer/catégories est reconstruit, le bouton recréé reprend
+      immédiatement l'état réel du cockpit. */
+const root=document.getElementById('order-drawer') || document.body;
+let moRaf=0;
+new MutationObserver(()=>{
+    if(moRaf) return;
+    moRaf=requestAnimationFrame(()=>{
+        moRaf=0;
+        if(drawerOpen() || panelOpen()) syncNow();
+    });
+}).observe(root,{childList:true,subtree:true,attributes:true,attributeFilter:['class']});
+
+/* 5) Filet de sécurité léger uniquement lorsque l'interface concernée est visible.
+      Cela évite qu'un ancien N5 reste affiché si une mise à jour serveur ne déclenche
+      aucun événement DOM. */
+setInterval(()=>{
+    if(document.hidden) return;
+    if(drawerOpen() || panelOpen()) syncNow();
+},1200);
+
+document.addEventListener('visibilitychange',()=>{ if(!document.hidden) queueSync(); });
+window.addEventListener('focus',queueSync,{passive:true});
+
+if(document.readyState==='loading'){
+    document.addEventListener('DOMContentLoaded',()=>setTimeout(syncNow,180),{once:true});
+}else{
+    setTimeout(syncNow,180);
+}
+})();
+</script>
+
 </body>
 </html>
