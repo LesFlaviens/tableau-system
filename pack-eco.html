@@ -19372,32 +19372,34 @@ function arLastEvolution(order,items,start){
 }
 
 function arRushLevel(){
-    let serverLevel=0;
+    /*
+      SOURCE DE VÉRITÉ POUR L'AFFICHAGE : le snapshot LIVE calculé
+      à partir des vraies commandes actives du PAD.
 
+      Ancien bug : Math.max(serverLevel, liveLevel) conservait un ancien
+      rushLevel serveur à 5 même avec 0 table active, d'où N5 + 0 %.
+    */
     try{
-        if(typeof currentRushLevel!=="undefined"){
-            serverLevel=Math.max(0,Math.min(5,Number(currentRushLevel)||0));
+        const snap=window.__ichefAntiRushLiveSnapshot;
+        if(snap && Number.isFinite(Number(snap.level))){
+            const active=Math.max(0,Number(snap.activeTables)||0);
+            const load=Math.max(0,Number(snap.maxLoad)||0);
+            if(active===0 && load===0) return 0;
+            return Math.max(0,Math.min(5,Math.round(Number(snap.level)||0)));
         }
     }catch(_){}
 
+    /* Fallback uniquement tant que le snapshot LIVE n'existe pas encore. */
+    let fallback=0;
     try{
-        serverLevel=Math.max(
-            serverLevel,
-            Math.max(0,Math.min(5,Number(window.systemSettings?.rushLevel)||0))
-        );
+        if(typeof currentRushLevel!=="undefined"){
+            fallback=Math.max(0,Math.min(5,Number(currentRushLevel)||0));
+        }
     }catch(_){}
-
-    /*
-      Le bouton Anti-Rush calcule aussi un niveau LIVE local.
-      Il sert d'alerte immédiate sans attendre l'ouverture d'anti-rush.html.
-      Le serveur reste l'autorité pour les actions métier critiques.
-    */
-    const liveLevel=Math.max(
-        0,
-        Math.min(5,Number(window.__ichefAntiRushLiveLevel)||0)
-    );
-
-    return Math.max(serverLevel,liveLevel);
+    try{
+        fallback=Math.max(fallback,Math.max(0,Math.min(5,Number(window.systemSettings?.rushLevel)||0)));
+    }catch(_){}
+    return fallback;
 }
 
 function arThresholds(){
@@ -21862,6 +21864,18 @@ function update(force=false){
     window.__ichefAntiRushLiveLevel=snap.level;
     window.__ichefAntiRushLiveSnapshot=snap;
 
+    /*
+      SYMBIOSE iCHEF : le niveau opérationnel global suit le niveau LIVE réel.
+      Cela évite qu'un ancien niveau serveur continue à bloquer/alerter le PAD
+      alors qu'il n'y a plus aucune charge cuisine/bar/pass.
+    */
+    try{
+        if(typeof currentRushLevel!=="undefined") currentRushLevel=snap.level;
+        if(typeof isKitchenInRush!=="undefined") isKitchenInRush=(snap.level>=4);
+        const globalRushAlert=document.getElementById("global-rush-alert");
+        if(globalRushAlert) globalRushAlert.style.display=(snap.level>=4?"block":"none");
+    }catch(_){}
+
     const signature=JSON.stringify([
         snap.cuisine,
         snap.bar,
@@ -23335,11 +23349,25 @@ function getAntiRushTimerConfig(){
     }
   }catch(_){ snap=window.__ichefAntiRushLiveSnapshot||null; }
 
-  let level=Number(snap?.level)||0;
-  try{ level=Math.max(level,Number(window.__ichefAntiRushLiveLevel)||0); }catch(_){}
-  try{ level=Math.max(level,Number(window.systemSettings?.rushLevel)||0); }catch(_){}
-  try{ if(typeof currentRushLevel!=='undefined') level=Math.max(level,Number(currentRushLevel)||0); }catch(_){}
-  level=Math.max(0,Math.min(5,Math.round(level)));
+  /*
+     Le timer suit exactement le même niveau LIVE que le cockpit.
+     On ne fait plus Math.max avec l'ancien rushLevel serveur, qui pouvait
+     rester bloqué à N5 alors que toutes les charges étaient à 0 %.
+  */
+  let level=Number(snap?.level);
+  if(!Number.isFinite(level)){
+    try{ level=Number(window.__ichefAntiRushLiveLevel); }catch(_){ level=NaN; }
+  }
+  if(!Number.isFinite(level)){
+    try{ level=typeof currentRushLevel!=='undefined' ? Number(currentRushLevel) : NaN; }catch(_){ level=NaN; }
+  }
+  if(!Number.isFinite(level)){
+    try{ level=Number(window.systemSettings?.rushLevel); }catch(_){ level=0; }
+  }
+  level=Math.max(0,Math.min(5,Math.round(Number(level)||0)));
+  if(snap && Math.max(0,Number(snap.activeTables)||0)===0 && Math.max(0,Number(snap.maxLoad)||0)===0){
+    level=0;
+  }
 
   const warningByLevel=[15,15,18,20,25,30];
   const criticalByLevel=[25,25,28,30,35,40];
@@ -23597,8 +23625,21 @@ window.addEventListener('message',(event)=>{
   if(!['ICHEF_ANTI_RUSH_STATE','ICHEF_ANTI_RUSH_UPDATE','ANTI_RUSH_UPDATE'].includes(String(data.type||''))) return;
   const lvl=Number(data.level??data.rushLevel??data.snapshot?.level);
   if(Number.isFinite(lvl)){
-    window.__ichefAntiRushLiveLevel=Math.max(0,Math.min(5,lvl));
-    if(data.snapshot&&typeof data.snapshot==='object') window.__ichefAntiRushLiveSnapshot=data.snapshot;
+    const remoteSnap=(data.snapshot&&typeof data.snapshot==='object')?data.snapshot:null;
+    const remoteActive=Math.max(0,Number(remoteSnap?.activeTables)||0);
+    const remoteLoad=Math.max(0,Number(remoteSnap?.maxLoad)||0);
+
+    /* Un état distant N>0 sans aucune table/charge est considéré comme périmé. */
+    if(remoteSnap && remoteActive===0 && remoteLoad===0){
+      window.__ichefAntiRushLiveLevel=0;
+      window.__ichefAntiRushLiveSnapshot={...remoteSnap,level:0,state:'CALME',maxLoad:0,activeTables:0};
+    }else{
+      window.__ichefAntiRushLiveLevel=Math.max(0,Math.min(5,lvl));
+      if(remoteSnap) window.__ichefAntiRushLiveSnapshot=remoteSnap;
+    }
+
+    /* Le PAD recalcule immédiatement depuis ses vraies commandes. */
+    try{ if(typeof window.ichefUpdateAntiRushSignal==='function') window.ichefUpdateAntiRushSignal(true); }catch(_){}
     setTimeout(refresh,20);
   }
 });
@@ -25602,5 +25643,11 @@ window.ichefForceOpenTableConfig=forceOpenTable;
   #anti-rush-server-panel .ichef-ar-actions{grid-template-columns:repeat(3,1fr) !important;grid-template-rows:1fr !important}
 }
 </style>
+
+<!-- iCHEF FIX 2026-08-21 — ANTI-RUSH NIVEAU RÉEL SYNCHRONISÉ
+     Corrige N5/CRITIQUE avec 0 table et 0 % : le snapshot LIVE réel
+     devient la source d’affichage et de timer; fallback serveur seulement
+     avant initialisation du LIVE. -->
+
 </body>
 </html>
