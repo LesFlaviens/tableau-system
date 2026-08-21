@@ -8610,7 +8610,7 @@ header .header-left > div:first-of-type{
 })();
 </script>
 
-<script id="ichef-server-symbiosis" type="text/javascript">
+<script id="ichef-server-symbiosis" type="text/ichef-lazy">
 (function(){
   'use strict';
   let socket = null;
@@ -8632,7 +8632,6 @@ header .header-left > div:first-of-type{
       lastServerSyncAt = Date.now();
       setLinkStatus(socket && socket.connected ? 'TEMPS RÉEL' : 'SYNCHRO OK', true);
     }catch(err){
-      console.warn('[iCHEF] Synchronisation serveur impossible', reason, err);
       setLinkStatus('HORS LIGNE', false);
     }finally{
       syncBusy = false;
@@ -8671,18 +8670,14 @@ header .header-left > div:first-of-type{
 
       socket.on('connect', function(){
         setLinkStatus('TEMPS RÉEL', true);
-
-        /* Rejoint explicitement le réseau temps réel du restaurant. */
         socket.emit('joinTenant', {
           tenantID: appTenantID,
           deviceId: window.ICHEF_SECURITY?.deviceId || null,
           page: 'PAD_SERVEUR'
         });
-
         forceServerSync('socket-connect');
       });
 
-      /* Mise à jour légère et instantanée d'une seule commande. */
       socket.on('orderLifecycle', function(evt){
         try{
           if(!evt || String(evt.tenantID||'').toLowerCase() !== String(appTenantID||'').toLowerCase()) return;
@@ -8692,10 +8687,7 @@ header .header-left > div:first-of-type{
           if(evt.deleted){
             delete activeOrders[tableId];
           }else if(evt.order){
-            if(
-                typeof isRealServiceOrder === 'function' &&
-                !isRealServiceOrder(tableId, evt.order)
-            ){
+            if(typeof isRealServiceOrder === 'function' && !isRealServiceOrder(tableId, evt.order)){
                 delete activeOrders[tableId];
             }else{
                 activeOrders[tableId]=evt.order;
@@ -8708,21 +8700,12 @@ header .header-left > div:first-of-type{
           if(typeof updateSequenceServicePanel==='function' && String(currentTableId)===tableId){
             updateSequenceServicePanel();
           }
-          if(typeof window.ichefRefreshCompactOrderCards==='function'){
-            window.ichefRefreshCompactOrderCards();
-          }
-          if(typeof window.ichefRefreshReadyNeon==='function'){
-            window.ichefRefreshReadyNeon();
-          }
-          if(typeof window.ichefUpdateAntiRushSignal==='function'){
-            window.ichefUpdateAntiRushSignal();
-          }
-        }catch(err){
-          console.warn('[iCHEF] orderLifecycle:',err);
-        }
+          if(typeof window.ichefRefreshCompactOrderCards==='function') window.ichefRefreshCompactOrderCards();
+          if(typeof window.ichefRefreshReadyNeon==='function') window.ichefRefreshReadyNeon();
+          if(typeof window.ichefUpdateAntiRushSignal==='function') window.ichefUpdateAntiRushSignal();
+        }catch(err){ }
       });
 
-      /* Compatibilité avec les écrans existants qui reçoivent l'état complet. */
       socket.on('updateState', function(state){
         try{
           if(state && state.activeOrders){
@@ -8732,51 +8715,44 @@ header .header-left > div:first-of-type{
             if(typeof renderFloor==='function') renderFloor();
             if(typeof renderProTables==='function') renderProTables();
             if(typeof renderService==='function') renderService();
-            if(typeof window.ichefUpdateAntiRushSignal==='function'){
-                window.ichefUpdateAntiRushSignal();
-            }
+            if(typeof window.ichefUpdateAntiRushSignal==='function') window.ichefUpdateAntiRushSignal();
           }
-        }catch(err){
-          console.warn('[iCHEF] updateState:',err);
-        }
+        }catch(err){ }
       });
-      socket.on('disconnect', function(){
-        setLinkStatus('SYNCHRO 3s', true);
-      });
-      socket.on('connect_error', function(){
-        setLinkStatus('SYNCHRO 3s', true);
-      });
+      
+      socket.on('disconnect', function(){ setLinkStatus('SYNCHRO 3s', true); });
+      socket.on('connect_error', function(){ setLinkStatus('SYNCHRO 3s', true); });
     }catch(err){
-      console.warn('[iCHEF] Socket facultatif indisponible, polling conservé', err);
       setLinkStatus('SYNCHRO 3s', true);
     }
   }
 
-  // Reprise immédiate après retour réseau / retour sur l'application.
   window.addEventListener('online', function(){ forceServerSync('online'); });
   window.addEventListener('offline', function(){ setLinkStatus('HORS LIGNE', false); });
-  document.addEventListener('visibilitychange', function(){
-    if(!document.hidden) forceServerSync('visible');
-  });
+  document.addEventListener('visibilitychange', function(){ if(!document.hidden) forceServerSync('visible'); });
   window.addEventListener('focus', function(){ forceServerSync('focus'); });
 
-  // Garde-fou : si le polling principal a été interrompu, relance une lecture ponctuelle.
   setInterval(function(){
     if(document.hidden || !navigator.onLine) return;
     if(!lastServerSyncAt || Date.now() - lastServerSyncAt > 7000) forceServerSync('watchdog');
   }, window.innerWidth<=600 ? 8000 : 5000);
 
-  function init(){
-    setLinkStatus(navigator.onLine ? 'CONNEXION…' : 'HORS LIGNE', navigator.onLine);
-    connectRealtime();
-    forceServerSync('initial');
+  /* OPTIMISATION: Allumage réseau retardé pour libérer la barre de chargement du navigateur mobile */
+  function bootNetwork(){
+      setTimeout(() => {
+          setLinkStatus(navigator.onLine ? 'CONNEXION…' : 'HORS LIGNE', navigator.onLine);
+          connectRealtime();
+          forceServerSync('initial');
+      }, 600);
   }
 
-  if(document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init, {once:true});
-  else init();
+  if(document.readyState === 'complete') {
+      bootNetwork();
+  } else {
+      window.addEventListener('load', bootNetwork, {once:true});
+  }
 })();
 </script>
-
 <style id="ichef-mobile-exact-captures">
 @media (max-width:600px){
   :root{--m-gold:#e5b640;--m-bg:#020607;--m-card:#161a1c;--m-line:#343a3d;--m-green:#42ff5b;}
