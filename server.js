@@ -2091,8 +2091,12 @@ app.post('/update-order', async (req, res) => {
             { upsert: true, new: true }
         );
         
-        // Diffuse le changement en temps réel au Pad, à la Cuisine et à la Caisse !
+        // 1. Diffuse le changement en temps réel (format classique pour KDS/Cuisine)
         io.to(tenantID).emit("updateState", newState);
+
+        // 2. ⚡ NOUVEAU : Signal de symbiose pour rafraîchir instantanément les autres Pad Serveur
+        io.to(tenantID).emit("server-state-changed", { tableId: tableId, source: "update-order" });
+
         res.json({ success: true });
     } catch(e) { 
         console.error("Erreur /update-order:", e);
