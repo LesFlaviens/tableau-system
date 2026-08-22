@@ -3412,50 +3412,584 @@ async function requestMaintenanceOverride() {
             } catch(e) { console.error("Erreur Kiosque:", e); }
         }
 
-        function unlockPadWithUser(user) {
-    clearPin();
-    const badge = document.getElementById('user-badge');
-    if (badge) badge.innerText = `Badge: ${user.name}`;
-    const login = document.getElementById('login-screen');
-    if (login) login.style.display = 'none';
-    document.querySelectorAll('.admin').forEach(e => e.style.display = user.role === 'Manager' ? 'block' : 'none');
+function unlockPadWithUser(user) {
 
-    // Priorité téléphone : afficher immédiatement la salle avec le cœur déjà chargé.
-    renderRooms();
-    renderFloor();
-    connectEmpireH24();
+    clearPin();
+
+    const badge =
+        document.getElementById('user-badge');
+
+    if (badge) {
+        badge.innerText =
+            `Badge: ${user.name}`;
+    }
+
+    const login =
+        document.getElementById('login-screen');
+
+    if (login) {
+        login.style.display = 'none';
+    }
+
+    document
+        .querySelectorAll('.admin')
+        .forEach(e => {
+
+            e.style.display =
+                user.role === 'Manager'
+                    ? 'block'
+                    : 'none';
+
+        });
+
+
+    /* =====================================================
+       AFFICHAGE IMMÉDIAT
+       ===================================================== */
+
+    try {
+        renderRooms();
+    } catch (_) {}
+
+    try {
+        renderFloor();
+    } catch (_) {}
+
+    try {
+        connectEmpireH24();
+    } catch (_) {}
+
     resetInactivityTimer();
 
-    // Les modules secondaires ne commencent qu'après le premier affichage utile.
+
+    /* =====================================================
+       ÉTAT AUTHENTIFIÉ
+       ===================================================== */
+
     requestAnimationFrame(() => {
+
         requestAnimationFrame(() => {
-            document.documentElement.classList.add('ichef-authenticated');
-            window.dispatchEvent(new CustomEvent('ichef:authenticated', { detail: { role: user.role } }));
+
+            document.documentElement
+                .classList
+                .add('ichef-authenticated');
+
+
+            window.dispatchEvent(
+
+                new CustomEvent(
+                    'ichef:authenticated',
+                    {
+                        detail: {
+                            role: user.role,
+                            restored: false
+                        }
+                    }
+                )
+
+            );
+
         });
+
     });
+
 }
 
-async function logout(reason = 'MANUAL') {
-            forceLocalLogout();
+
+/* =========================================================
+   iCHEF — RESTAURATION AUTOMATIQUE APRÈS RAFRAÎCHISSEMENT
+   ========================================================= */
+
+(function () {
+
+    "use strict";
+
+    let restaurationEnCours = false;
+
+
+    function restaurerSessionIchef() {
+
+        if (restaurationEnCours) {
+            return;
         }
 
-        function forceLocalLogout(message = '') {
-            currentUser = null;
-            currentPin = '';
-            window.ICHEF_SECURITY.sessionToken = null;
-            window.ICHEF_SECURITY.user = null;
-            window.ICHEF_SECURITY.permissions = new Set();
-            document.getElementById('login-screen').style.display = 'flex';
+
+        if (
+            !window.ICHEF_SECURITY ||
+            !window.ICHEF_SECURITY.bootstrapOk
+        ) {
+            return;
+        }
+
+
+        const user =
+            window.ICHEF_SECURITY.bootstrapUser;
+
+
+        /*
+         * Le serveur ne reconnaît pas
+         * une session utilisateur active.
+         *
+         * On laisse alors le PIN affiché.
+         */
+        if (!user) {
+            return;
+        }
+
+
+        restaurationEnCours = true;
+
+
+        try {
+
+            const rawRole =
+                String(
+                    user.serverRole ||
+                    user.role ||
+                    'staff'
+                ).toLowerCase();
+
+
+            const manager =
+                [
+                    'master',
+                    'admin',
+                    'manager'
+                ].includes(rawRole);
+
+
+            currentUser = {
+
+                name:
+                    String(
+                        user.name ||
+                        user.displayName ||
+                        'Utilisateur'
+                    ),
+
+                role:
+                    manager
+                        ? 'Manager'
+                        : 'Serveur',
+
+                serverRole:
+                    rawRole
+
+            };
+
+
+            window.ICHEF_SECURITY.user =
+                currentUser;
+
+
+            window.ICHEF_SECURITY.authenticatedAt =
+                Date.now();
+
+
+            window.ICHEF_SECURITY.permissions =
+                new Set(
+
+                    manager
+
+                        ? [
+                            'ADMIN_ACCESS',
+                            'FLOORPLAN_DELETE',
+                            'ORDER_ITEM_CANCEL',
+                            'ORDER_VOID',
+                            'TERMINAL_MAINTENANCE'
+                        ]
+
+                        : []
+
+                );
+
+
+            /* =============================================
+               DÉBLOQUE L'INTERFACE
+               ============================================= */
+
             clearPin();
-            closeOrder(); closeArchiMode(); closeAdminCatalog(); closePlanningModal(); closeDrawer('history-drawer');
-            clearTimeout(inactivityTimer);
-            if (syncInterval) clearInterval(syncInterval);
-            if (clockInterval) clearInterval(clockInterval);
-            if (document.fullscreenElement && document.exitFullscreen) document.exitFullscreen().catch(() => {});
-            if (message) alert(message);
+
+
+            const badge =
+                document.getElementById(
+                    'user-badge'
+                );
+
+            if (badge) {
+
+                badge.innerText =
+                    `Badge: ${currentUser.name}`;
+
+            }
+
+
+            const login =
+                document.getElementById(
+                    'login-screen'
+                );
+
+            if (login) {
+
+                login.style.display =
+                    'none';
+
+            }
+
+
+            document
+                .querySelectorAll(
+                    '.admin'
+                )
+                .forEach(el => {
+
+                    el.style.display =
+                        manager
+                            ? 'block'
+                            : 'none';
+
+                });
+
+
+            document.documentElement
+                .classList
+                .add(
+                    'ichef-authenticated'
+                );
+
+
+            /* =============================================
+               RÉACTIVE LE CŒUR MÉTIER
+               ============================================= */
+
+            try {
+
+                renderRooms();
+
+            } catch (_) {}
+
+
+            try {
+
+                renderFloor();
+
+            } catch (_) {}
+
+
+            try {
+
+                connectEmpireH24();
+
+            } catch (_) {}
+
+
+            try {
+
+                resetInactivityTimer();
+
+            } catch (_) {}
+
+
+            /* =============================================
+               SYNCHRO SERVEUR IMMÉDIATE
+               ============================================= */
+
+            setTimeout(
+                function () {
+
+                    try {
+
+                        if (
+                            typeof window
+                                .ICHEF_FORCE_SERVER_SYNC
+                            === 'function'
+                        ) {
+
+                            window
+                                .ICHEF_FORCE_SERVER_SYNC(
+                                    'refresh-session'
+                                );
+
+                        }
+
+                    } catch (_) {}
+
+                },
+                100
+            );
+
+
+            /* =============================================
+               RAFRAÎCHIT LA VUE TÉLÉPHONE
+               ============================================= */
+
+            setTimeout(
+                function () {
+
+                    try {
+
+                        if (
+                            typeof window
+                                .ICHEF_MOBILE_REFRESH
+                            === 'function'
+                        ) {
+
+                            window
+                                .ICHEF_MOBILE_REFRESH();
+
+                        }
+
+                    } catch (_) {}
+
+                },
+                250
+            );
+
+
+            /* =============================================
+               PRÉVIENT LES AUTRES MODULES
+               ============================================= */
+
+            window.dispatchEvent(
+
+                new CustomEvent(
+                    'ichef:authenticated',
+                    {
+                        detail: {
+
+                            role:
+                                currentUser.role,
+
+                            restored:
+                                true
+
+                        }
+                    }
+                )
+
+            );
+
+
+        } catch (err) {
+
+            console.error(
+                '[iCHEF] restauration session',
+                err
+            );
+
+
+            /*
+             * En cas d'erreur :
+             * on remet le PIN au lieu
+             * de laisser une interface bloquée.
+             */
+
+            try {
+
+                const login =
+                    document.getElementById(
+                        'login-screen'
+                    );
+
+                if (login) {
+
+                    login.style.display =
+                        'flex';
+
+                }
+
+            } catch (_) {}
+
+
+        } finally {
+
+            restaurationEnCours = false;
+
         }
 
-        function connectEmpireH24() { 
+    }
+
+
+    /* Bootstrap déjà terminé */
+
+    if (
+        window.ICHEF_SECURITY &&
+        window.ICHEF_SECURITY.bootstrapOk
+    ) {
+
+        setTimeout(
+            restaurerSessionIchef,
+            50
+        );
+
+    }
+
+
+    /* Bootstrap terminé après le DOM */
+
+    document.addEventListener(
+        'ichef:bootstrap-ready',
+        restaurerSessionIchef
+    );
+
+
+    /*
+     * Sécurité téléphone / PWA :
+     * deuxième tentative.
+     */
+
+    setTimeout(
+        restaurerSessionIchef,
+        500
+    );
+
+
+    /*
+     * Quand la page revient au premier plan.
+     */
+
+    document.addEventListener(
+        'visibilitychange',
+        function () {
+
+            if (!document.hidden) {
+
+                restaurerSessionIchef();
+
+            }
+
+        }
+    );
+
+
+    /*
+     * Retour dans l'application.
+     */
+
+    window.addEventListener(
+        'focus',
+        restaurerSessionIchef
+    );
+
+})();
+
+
+async function logout(reason = 'MANUAL') {
+
+    forceLocalLogout();
+
+}
+
+
+function forceLocalLogout(message = '') {
+
+    currentUser = null;
+
+    currentPin = '';
+
+
+    window.ICHEF_SECURITY.sessionToken =
+        null;
+
+    window.ICHEF_SECURITY.user =
+        null;
+
+    window.ICHEF_SECURITY.permissions =
+        new Set();
+
+
+    const login =
+        document.getElementById(
+            'login-screen'
+        );
+
+    if (login) {
+
+        login.style.display =
+            'flex';
+
+    }
+
+
+    document.documentElement
+        .classList
+        .remove(
+            'ichef-authenticated'
+        );
+
+
+    clearPin();
+
+
+    try {
+        closeOrder();
+    } catch (_) {}
+
+    try {
+        closeArchiMode();
+    } catch (_) {}
+
+    try {
+        closeAdminCatalog();
+    } catch (_) {}
+
+    try {
+        closePlanningModal();
+    } catch (_) {}
+
+    try {
+        closeDrawer(
+            'history-drawer'
+        );
+    } catch (_) {}
+
+
+    clearTimeout(
+        inactivityTimer
+    );
+
+
+    if (syncInterval) {
+
+        clearInterval(
+            syncInterval
+        );
+
+        syncInterval = null;
+
+    }
+
+
+    if (clockInterval) {
+
+        clearInterval(
+            clockInterval
+        );
+
+        clockInterval = null;
+
+    }
+
+
+    if (
+        document.fullscreenElement &&
+        document.exitFullscreen
+    ) {
+
+        document
+            .exitFullscreen()
+            .catch(() => {});
+
+    }
+
+
+    if (message) {
+
+        alert(message);
+
+    }
+
+}
             let currentGlobalScheduledMode = 'standard'; 
             window.systemSettings = null;
 
