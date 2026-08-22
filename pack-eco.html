@@ -2,8 +2,8 @@
 <html lang="fr">
 <head>
 <!-- =========================================================
-     iCHEF — PAD + ORDINATEUR — SERVER.JS + ARCHITECTURE LIVE — 2026-08-22 15:34
-     Fichier : iCHEF_PAD_ORDINATEUR_COMPLET.html
+     iCHEF — VERSION CANONIQUE MISE À JOUR — 2026-08-22 01:02
+     Fichier stable : iCHEF.html
      PWA : manifest.json + sw.js
      ========================================================= -->
 
@@ -14,23 +14,14 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
     
-    <link rel="manifest" href="manifest.json?v=20260822-1501">
+    <link rel="manifest" href="manifest.json?v=20260822-0102">
     <link rel="apple-touch-icon" href="icon-192.png">
     <meta name="mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
     <meta name="theme-color" content="#000000">
     
-<title>iCHEF OS - PAD + Ordinateur sécurisé</title>
-<script id="ichef-pad-desktop-mode-marker">
-(function(){
-  "use strict";
-  document.documentElement.classList.add("ichef-pad-desktop-mode");
-  window.ICHEF_INTERFACE_MODE = "PAD_DESKTOP";
-  window.ICHEF_TERMINAL_FAMILY = "PAD_ORDINATEUR";
-})();
-</script>
-
+<title>iCHEF OS - Pad Serveur sécurisé</title>
 
     <script id="ichef-socket-lazy-loader">
 (function(){
@@ -53,18 +44,8 @@
 })();
 </script>
 
-<script>
+    <script>
     "use strict";
-
-    // ==========================================
-    // 🚑 FIX GLOBAL : Variables fondamentales manquantes
-    // ==========================================
-    const appTenantID = new URLSearchParams(window.location.search).get('tenantID') || window.localStorage.getItem('ichef_tenant_id') || '';
-    const APP_SERVER_URL = (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1") ? "http://localhost:10000" : "https://tableau-system.onrender.com";
-
-    window.getTenantParam = function() {
-        return appTenantID;
-    };
 
     const ICHEF_ALLOWED_HOSTS = new Set(["os.ichef.ch", "localhost", "127.0.0.1"]);
     if (!ICHEF_ALLOWED_HOSTS.has(window.location.hostname)) {
@@ -172,62 +153,116 @@
         if (urlTenantID && !/^[A-Za-z0-9_-]{2,80}$/.test(urlTenantID)) {
             throw new Error('tenantID invalide');
         }
-
         if (urlTenantID && urlTenantID !== storedTenantID) {
             ICHEF_STORAGE.removeItem('EMPIRE_GLOBAL_SYNC');
             ICHEF_STORAGE.setItem('ichef_tenant_id', urlTenantID);
         }
 
         const tenantID = urlTenantID || storedTenantID;
-
         if (!tenantID) {
             window.location.replace('connexionpartenaire.html');
             return;
         }
 
-        /*
-         * COMPATIBILITÉ server.js :
-         * le serveur actuel ne possède pas /api/security/bootstrap.
-         * La vraie authentification est faite par /api/verify-pin au moment
-         * où l'utilisateur valide son PIN.
-         */
-        window.ICHEF_SECURITY.bootstrapOk = true;
-        window.ICHEF_SECURITY.bootstrapUser = null;
+        const SERVER_URL = (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1')
+            ? 'http://localhost:10000'
+            : 'https://tableau-system.onrender.com';
 
         try {
-            document.dispatchEvent(
-                new CustomEvent("ichef:bootstrap-ready", {
-                    detail: { tenantID, mode: "SERVER_JS_COMPAT" }
-                })
-            );
-        } catch (_) {}
+            const bootstrapOptions = {
+                method: 'POST',
+                cache: 'no-store',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Accept': 'application/json',
+                    'X-Requested-With': 'iCHEF-PWA',
+                    'X-iCHEF-Tenant': String(tenantID || ''),
+                    'X-iCHEF-Device': String(window.ICHEF_SECURITY.deviceId || '')
+                },
+                body: JSON.stringify({ tenantID, deviceId: window.ICHEF_SECURITY.deviceId, page: location.pathname.split('/').pop() || 'index.html' })
+            };
 
-        /*
-         * Test non bloquant du serveur.
-         * /api/check-license existe dans server.js.
-         */
-        try {
-            const response = await fetch(
-                `${APP_SERVER_URL}/api/check-license?tenantID=${encodeURIComponent(tenantID)}&_t=${Date.now()}`,
-                {
-                    method: 'GET',
-                    cache: 'no-store',
-                    credentials: 'omit',
-                    headers: { 'Accept': 'application/json' }
-                }
-            );
-
-            const data = await response.json().catch(() => ({}));
-
-            window.ICHEF_SECURITY.serverReachable = response.ok;
-            window.ICHEF_SECURITY.license = data || null;
-
-            if (response.status === 404) {
-                console.warn('[iCHEF] Restaurant inconnu côté server.js');
+            // Navigation privée mobile (notamment Safari/iOS) peut bloquer les cookies tiers.
+            // On demande d'abord un bootstrap sans cookie ; si le serveur ancien l'exige,
+            // on retente avec credentials:include. Aucun jeton n'est stocké durablement.
+            let response;
+            try {
+                response = await fetch(`${SERVER_URL}/api/security/bootstrap`, {
+                    ...bootstrapOptions,
+                    credentials: 'omit'
+                });
+            } catch (_) {
+                response = null;
             }
+            if (!response || response.status === 401 || response.status === 403) {
+                response = await fetch(`${SERVER_URL}/api/security/bootstrap`, {
+                    ...bootstrapOptions,
+                    credentials: 'include'
+                });
+            }
+            const data = await response.json().catch(() => ({}));
+            if (!response.ok || !data.success) {
+                alert(data.error || 'Terminal non autorisé.');
+                window.location.replace('connexionpartenaire.html');
+                return;
+            }
+window.ICHEF_SECURITY.csrfToken =
+    data.csrfToken || null;
+
+if (data.sessionToken) {
+    window.ICHEF_SECURITY.sessionToken =
+        data.sessionToken;
+}
+
+/* =====================================================
+   iCHEF — RESTAURATION SESSION APRÈS REFRESH
+   ===================================================== */
+
+window.ICHEF_SECURITY.bootstrapUser =
+    data.user ||
+    data.currentUser ||
+    (
+        data.role
+            ? {
+                name:
+                    data.name ||
+                    data.displayName ||
+                    "Utilisateur",
+
+                role:
+                    ["master","admin","manager"]
+                        .includes(
+                            String(data.role)
+                                .toLowerCase()
+                        )
+                        ? "Manager"
+                        : "Serveur",
+
+                serverRole:
+                    String(data.role)
+                        .toLowerCase()
+            }
+            : null
+    );
+
+window.ICHEF_SECURITY.bootstrapOk = true;
+
+
+/* Informe le reste de iCHEF
+   que le bootstrap est terminé */
+document.dispatchEvent(
+    new CustomEvent(
+        "ichef:bootstrap-ready"
+    )
+);
         } catch (error) {
-            window.ICHEF_SECURITY.serverReachable = false;
-            console.warn('[iCHEF] server.js momentanément indisponible', error);
+            window.ICHEF_SECURITY.bootstrapOk = false;
+            window.ICHEF_SECURITY.bootstrapError = String(error?.message || error || 'bootstrap');
+            console.error('Initialisation sécurité impossible', error);
+            document.addEventListener('DOMContentLoaded', () => {
+                const tag = document.getElementById('stock-tag');
+                if (tag) tag.textContent = '● SÉCURITÉ INDISPONIBLE';
+            });
         }
     })();
     </script>
@@ -1903,45 +1938,6 @@ body.edit-mode .table-wrapper,body.edit-mode .table-obj,body.edit-mode .zone-obj
   }
 }
 </style>
-
-<style id="ichef-mobile-command-touch-final">
-@media (max-width:600px){
-  #mobile-exact-service,
-  #mobile-exact-grid,
-  .mobile-exact-table{
-    pointer-events:auto !important;
-  }
-
-  .mobile-exact-table{
-    touch-action:manipulation !important;
-    cursor:pointer !important;
-    -webkit-tap-highlight-color:transparent !important;
-    -webkit-user-select:none !important;
-    user-select:none !important;
-  }
-
-  /* Les spans ne capturent jamais le geste : il arrive au bouton. */
-  .mobile-exact-table > *{
-    pointer-events:none !important;
-  }
-
-  #order-drawer.open{
-    display:flex !important;
-    pointer-events:auto !important;
-  }
-
-  #order-drawer.open button,
-  #order-drawer.open .btn-item,
-  #order-drawer.open .menu-tab,
-  #order-drawer.open input,
-  #order-drawer.open select,
-  #order-drawer.open textarea{
-    pointer-events:auto !important;
-    touch-action:manipulation !important;
-  }
-}
-</style>
-
 </head>
      
 <body oncontextmenu="return false;" ondragstart="return false;" ondrop="return false;">
@@ -2054,7 +2050,7 @@ body.edit-mode .table-wrapper,body.edit-mode .table-obj,body.edit-mode .zone-obj
         </div>
     </header>
 
-    <section id="pad-fiscal-banner" class="pad-fiscal-banner compact-hidden" aria-label="Fiscalité PAD / Ordinateur iCHEF OS">
+    <section id="pad-fiscal-banner" class="pad-fiscal-banner compact-hidden" aria-label="Séparation fiscale Pad Serveur iCHEF OS">
         <div class="pad-fiscal-title">
             Pad serveur non fiscal autonome
             <span>Le Pad sert à prendre, modifier, envoyer et valider la commande. L’encaissement doit passer par la caisse fiscale serveur.</span>
@@ -2707,22 +2703,140 @@ body.edit-mode .table-wrapper,body.edit-mode .table-obj,body.edit-mode .zone-obj
         </div>
     </div>
 
-  <script>
-    "use strict";
+    <script>
+        /* iCHEF PERFORMANCE V3 — ordonnanceur unique des rafraîchissements visuels.
+           Les sync réseau, la sécurité et les timers métier restent indépendants. */
+        window.ICHEF_VISUAL_TICKER = window.ICHEF_VISUAL_TICKER || (function(){
+            const jobs = new Map();
+            let timer = null;
 
-    // ==========================================
-    // 🚑 FIX URGENCE : Fonction manquante (Réservations)
-    // ==========================================
-    window.getTenantParam = function() {
-        const params = new URLSearchParams(window.location.search);
-        return params.get('tenantID') || (typeof appTenantID !== 'undefined' ? appTenantID : '');
-    };
+            function tick(){
+                if(document.hidden) return;
+                const now = Date.now();
+                jobs.forEach((job,name)=>{
+                    if(now < job.next) return;
+                    job.next = now + job.ms;
+                    try{ job.fn(); }
+                    catch(err){ console.warn('[iCHEF visual] '+name, err); }
+                });
+            }
 
-    const ICHEF_ALLOWED_HOSTS_MAIN = new Set(["os.ichef.ch", "localhost", "127.0.0.1"]);
-    if (!ICHEF_ALLOWED_HOSTS_MAIN.has(window.location.hostname)) {
-        document.documentElement.innerHTML = "<h1 style='color:red;text-align:center;margin-top:20%;font-family:sans-serif'>🛑 ACCÈS NON AUTORISÉ</h1>";
-        throw new Error("Hôte non autorisé");
-    }
+            function ensure(){
+                if(timer===null) timer=setInterval(tick, window.innerWidth<=600 ? 1000 : 500);
+            }
+
+            return Object.freeze({
+                add(name,fn,ms){
+                    const delay=Math.max(500,Number(ms)||1000);
+                    jobs.set(String(name),{fn,ms:delay,next:Date.now()+delay});
+                    ensure();
+                    return function(){ jobs.delete(String(name)); };
+                },
+                remove(name){ jobs.delete(String(name)); },
+                run(name){
+                    const job=jobs.get(String(name));
+                    if(!job) return;
+                    job.next=Date.now()+job.ms;
+                    try{ job.fn(); }catch(err){ console.warn('[iCHEF visual] '+name,err); }
+                },
+                get size(){ return jobs.size; }
+            });
+        })();
+
+        // Variables d'état Anti-Rush 3.0
+        let isKitchenInRush = false;
+        let rushV3Settings = { cameleon: false, timeShift: { active: false, discount: 5, delay: 15 }, paceMaker: { active: false, max: 10 } };
+        let currentRushLevel = 0;
+
+        window.addEventListener('load', () => {
+            if (typeof isDemoMode !== 'undefined' && isDemoMode) {
+                let badge = document.createElement('div');
+                badge.innerHTML = "MODE DÉMO - LECTURE SEULE";
+                badge.style.cssText = "position:fixed; top:10px; right:10px; background:var(--alert); color:white; padding:5px 10px; border-radius:5px; font-weight:bold; z-index:99999; font-size:12px; pointer-events:none;";
+                document.body.appendChild(badge);
+            }
+        });
+
+        // -------------------------------------------------------------
+        // FONCTIONS D'INTERFACE DE BASE
+        // -------------------------------------------------------------
+
+        const appUrlParams = new URLSearchParams(window.location.search);
+        let referrerTenantID = '';
+        try {
+            if (document.referrer) referrerTenantID = new URL(document.referrer).searchParams.get('tenantID') || '';
+        } catch (_) {}
+        let appTenantID = appUrlParams.get('tenantID') || ICHEF_STORAGE.getItem('ichef_tenant_id') || referrerTenantID;
+        if (appTenantID) ICHEF_STORAGE.setItem('ichef_tenant_id', appTenantID);
+        if (!appTenantID) window.location.replace('connexionpartenaire.html');
+        // iCHEF FIX PIN : un fichier HTML ouvert directement doit utiliser le serveur en ligne.
+        // localhost n'est utilisé QUE lorsque la page est réellement servie depuis localhost/127.0.0.1.
+        const APP_SERVER_URL = (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1")
+        ? "http://localhost:10000" : "https://tableau-system.onrender.com";
+        
+        let activeOrders = {}; 
+        let currentTableId = null; 
+        let currentTicket = []; 
+        let isArchiMode = false;
+        let isDraggingTable = false; 
+        let configTableId = null;
+        let isRushMode = false;
+        let isServiceAuBarActive = false;
+        
+        let currentSeat = 0; 
+        let currentCategory = 'MenuJour'; 
+        let currentCourseDefault = 2;
+        let stockAlerts = { green: 10, yellow: 7, orange: 5, red: 2 }; 
+
+        let menuCuisine = { MenuJour: [], Suggestions: [], Entrées: [], Plats: [], Desserts: [] };
+
+        let menuBar = { Vins: [], Cocktails: [], Bières: [], Softs: [], Spiritueux: [], "Boissons Chaudes": [] };
+        let reservationsData = []; 
+        let staffAccessData = []; 
+        let localSasConfig = { active: false, maxTables: 5, delay: 60 }; 
+        let unifiedMenu = {};
+        let globalTimesheets = {};
+
+        // --- NOUVELLES VARIABLES DE SYMBIOSE ---
+let categoriesCuisine = [];
+let categoriesBar = [];
+let categoriesPatisserie = [];
+let unifiedCategories = [];
+
+// ---------------------------------------
+
+        let isLoyaltyActive = false;
+        let loyaltyPercent = 5;
+        let globalLoyaltyData = {};
+        let currentLoyaltyPhone = null;
+
+        // =========================================================
+        // ✅ COMPATIBILITÉ UI — évite les boutons morts
+        // =========================================================
+        function toggleMobileMenu() {
+            const sidebar = document.getElementById('sidebar');
+            const overlay = document.getElementById('mobile-overlay');
+            if (!sidebar) return;
+            sidebar.classList.toggle('open');
+            if (overlay) overlay.classList.toggle('show', sidebar.classList.contains('open'));
+        }
+
+        function closeCriticalStockAlert() {
+            const modal = document.getElementById('stock-critical-modal');
+            if (modal) modal.classList.remove('open');
+        }
+
+        async function markAsServed(idx) {
+            const item = currentTicket[idx];
+            if (!item) return;
+            item.served = true;
+            item.done = true;
+            item.sequenceStatus = 'SERVED';
+            renderTicket();
+            try { await executeSaveTableState(false, true); }
+            catch(e) { console.warn('Sauvegarde service impossible', e); }
+            updateSequenceServicePanel();
+        }
 
         // =========================================================
         // 🔗 iCHEF — SYMBIOSE TOTALE DES COMMANDES
@@ -3113,16 +3227,6 @@ body.edit-mode .table-wrapper,body.edit-mode .table-obj,body.edit-mode .zone-obj
                     }));
                 } catch (_) {}
 
-                /* Après chaque écriture, relire rapidement la vérité serveur
-                   sur cet appareil. */
-                try {
-                    setTimeout(function(){
-                        if (typeof window.ICHEF_FORCE_SERVER_SYNC === 'function') {
-                            window.ICHEF_FORCE_SERVER_SYNC('after-write:' + normalizedKey);
-                        }
-                    }, 80);
-                } catch (_) {}
-
                 return result;
             }
         };
@@ -3264,13 +3368,6 @@ body.edit-mode .table-wrapper,body.edit-mode .table-obj,body.edit-mode .zone-obj
         loginInProgress = false;
     }
 }
-
-/* iCHEF — PIN BRIDGE STABLE 2026-08-22
-   Rend explicitement le moteur PIN accessible aux gestionnaires tactiles
-   ajoutés plus bas dans le fichier. */
-window.appendPin = appendPin;
-window.clearPin = clearPin;
-window.submitPin = submitPin;
 
 async function requestMaintenanceOverride() {
             if (!(await requirePermission('TERMINAL_MAINTENANCE'))) return;
@@ -4041,82 +4138,45 @@ function forceLocalLogout(message = '') {
             return clean;
         }
 
-// ==========================================
-// ⚡ SYNCHRONISATION INSTANTANÉE (FORCE SYNC)
-// ==========================================
-window.ICHEF_FORCE_SERVER_SYNC = function(reason) {
-    console.log("⚡ Synchro forcée suite à :", reason);
-    if (typeof syncData === 'function') {
-        syncData(); // Force la mise à jour immédiate de toute l'interface
-    }
-};
+        async function syncData() {
+            if (isArchiMode) return; 
+            try {
+                const state = await API.getState();
+                if (state && state.activeOrders) {
+                    let nO = state.activeOrders;
 
-// ==========================================
-// 🌐 WEBSOCKET : PONT VERS LE MOTEUR UNIQUE
-// ==========================================
-async function initSymbioseWebSocket() {
-    window.__ichefRealtimeWanted = true;
+                    if (nO['SETTINGS_MASTER'] && nO['SETTINGS_MASTER'].data) {
+                        window.systemSettings = nO['SETTINGS_MASTER'].data;
+                        try { refreshFiscalProfileUI(); } catch(e) {}
+                        isServiceAuBarActive = window.systemSettings.serviceAuBar === true;
+                        
+                        if (window.systemSettings.loyalty) {
+                            isLoyaltyActive = window.systemSettings.loyalty.active === true;
+                            loyaltyPercent = window.systemSettings.loyalty.percent || 5;
+                        }
 
-    if (typeof window.ICHEF_CONNECT_REALTIME === "function") {
-        return window.ICHEF_CONNECT_REALTIME();
-    }
-}
+                        let badgeBar = document.getElementById('badge-service-bar');
+                        if (badgeBar) {
+                            badgeBar.style.display = isServiceAuBarActive ? 'flex' : 'none';
+                        }
 
-document.addEventListener(
-    'ichef:authenticated',
-    initSymbioseWebSocket
-);
+                        updateCashRegisterBadge();
 
-setTimeout(() => {
-    if (
-        document.documentElement.classList.contains('ichef-authenticated') ||
-        (window.ICHEF_SECURITY && window.ICHEF_SECURITY.user)
-    ) {
-        initSymbioseWebSocket();
-    }
-}, 1000);
-
-// ==========================================
-// 🔄 RÉCUPÉRATION DES DONNÉES SERVEUR
-// ==========================================
-async function syncData() {
-    if (isArchiMode) return; 
-    try {
-        const state = await API.getState();
-        if (state && state.activeOrders) {
-            let nO = state.activeOrders;
-
-            if (nO['SETTINGS_MASTER'] && nO['SETTINGS_MASTER'].data) {
-                window.systemSettings = nO['SETTINGS_MASTER'].data;
-                try { refreshFiscalProfileUI(); } catch(e) {}
-                isServiceAuBarActive = window.systemSettings.serviceAuBar === true;
-                
-                if (window.systemSettings.loyalty) {
-                    isLoyaltyActive = window.systemSettings.loyalty.active === true;
-                    loyaltyPercent = window.systemSettings.loyalty.percent || 5;
-                }
-
-                let badgeBar = document.getElementById('badge-service-bar');
-                if (badgeBar) {
-                    badgeBar.style.display = isServiceAuBarActive ? 'flex' : 'none';
-                }
-
-                updateCashRegisterBadge();
-
-                // 🔥 SYNCHRO ANTI-RUSH & TIME-SHIFTING 🔥
-                currentRushLevel = window.systemSettings.rushLevel || 0;
-                rushV3Settings = window.systemSettings.rushV3 || { cameleon: false, timeShift: { active: false, discount: 5, delay: 15 }, paceMaker: { active: false, max: 10 } };
-                isKitchenInRush = (currentRushLevel >= 4); // Alerte critique sur la caisse uniquement si niveau 4 ou 5
-                
-                let globalRushAlert = document.getElementById('global-rush-alert');
-                if(globalRushAlert) {
-                    if (isKitchenInRush) {
-                        globalRushAlert.style.display = 'block';
-                    } else {
-                        globalRushAlert.style.display = 'none';
+                        // 🔥 SYNCHRO ANTI-RUSH & TIME-SHIFTING 🔥
+                        currentRushLevel = window.systemSettings.rushLevel || 0;
+                        rushV3Settings = window.systemSettings.rushV3 || { cameleon: false, timeShift: { active: false, discount: 5, delay: 15 }, paceMaker: { active: false, max: 10 } };
+                        isKitchenInRush = (currentRushLevel >= 4); // Alerte critique sur la caisse uniquement si niveau 4 ou 5
+                        
+                        let globalRushAlert = document.getElementById('global-rush-alert');
+                        if(globalRushAlert) {
+                            if (isKitchenInRush) {
+                                globalRushAlert.style.display = 'block';
+                            } else {
+                                globalRushAlert.style.display = 'none';
+                            }
+                        }
                     }
-                }
-            }
+
                     if(nO['LOYALTY_MASTER'] && nO['LOYALTY_MASTER'].data) {
                         globalLoyaltyData = nO['LOYALTY_MASTER'].data;
                     }
@@ -4226,21 +4286,6 @@ renderDynamicCategories();
 
                                 renderRooms();
                                 renderFloor();
-
-                                /* Téléphone : le plan serveur remplace immédiatement
-                                   le plan local de secours (ex. T1 / 4 couverts). */
-                                try {
-                                    if (typeof window.ICHEF_MOBILE_REFRESH === 'function') {
-                                        window.ICHEF_MOBILE_REFRESH();
-                                    } else {
-                                        if (typeof window.ICHEF_MOBILE_RENDER_SERVICE === 'function') {
-                                            window.ICHEF_MOBILE_RENDER_SERVICE();
-                                        }
-                                        if (typeof window.ICHEF_MOBILE_UPDATE_STATUS === 'function') {
-                                            window.ICHEF_MOBILE_UPDATE_STATUS();
-                                        }
-                                    }
-                                } catch (_) {}
                             }
                         }
                     }
@@ -4257,17 +4302,6 @@ renderDynamicCategories();
             currentTicket = JSON.parse(serverHash);
             renderTicket();
         }
-
-        try {
-            const paymentModal = document.getElementById('payment-modal');
-            if (
-                paymentModal &&
-                paymentModal.classList.contains('open') &&
-                typeof applyPaymentDraftFromOrder === 'function'
-            ) {
-                applyPaymentDraftFromOrder(serverOrder, true);
-            }
-        } catch (_) {}
     }
 }
 
@@ -4921,138 +4955,29 @@ let rIndex = reservationsData.findIndex(r =>
             await pushArchitecture();
         }
 
-        async function unlockArchiMode() {
-            if (!currentUser || currentUser.role !== 'Manager') {
-                return alert("⛔ Accès Manager requis");
-            }
-
-            /*
-             * Avant d'éditer : recharge le dernier plan enregistré
-             * dans server.js pour éviter de repartir d'une copie locale ancienne.
-             */
-            try{
-                if(typeof API !== "undefined" && API?.getState){
-                    const state = await API.getState();
-                    const raw = state?.activeOrders?.ARCHITECTURE;
-                    const arch = raw?.data !== undefined ? raw.data : raw;
-
-                    if(arch && Array.isArray(arch.tables)){
-                        rooms = Array.isArray(arch.rooms) && arch.rooms.length
-                            ? arch.rooms
-                            : ["Salle Principale"];
-                        tables = arch.tables;
-                        zones = Array.isArray(arch.zones) ? arch.zones : [];
-
-                        if(!rooms.includes(currentRoom)){
-                            currentRoom = rooms[0] || "Salle Principale";
-                        }
-                    }
-                }
-            }catch(err){
-                console.warn("[iCHEF] Architecture : lecture serveur avant édition",err);
-            }
-
-            isArchiMode = true;
-            document.body.classList.add('edit-mode');
-            renderRooms();
-            renderFloor();
-
-            try{
-                const tag=document.getElementById("stock-tag");
-                if(tag){
-                    tag.textContent="● ARCHITECTURE CONNECTÉE";
-                    tag.style.color="#57e565";
-                    tag.style.borderColor="#57e565";
-                }
-            }catch(_){}
-        }
-
-        async function closeArchiMode() {
-            isArchiMode = false;
-            document.body.classList.remove('edit-mode');
-            renderRooms();
-            renderFloor();
-
-            /* Maintenant que l'édition est terminée, la relecture serveur
-               peut appliquer ARCHITECTURE sans risquer d'écraser un drag. */
-            try{
-                if(typeof window.ICHEF_FORCE_SERVER_SYNC === "function"){
-                    setTimeout(
-                        ()=>window.ICHEF_FORCE_SERVER_SYNC("architecture-close"),
-                        100
-                    );
-                }
-            }catch(_){}
-        }
-
+        function unlockArchiMode() { if (!currentUser || currentUser.role !== 'Manager') return alert("⛔ Accès Manager requis"); isArchiMode = true; document.body.classList.add('edit-mode'); renderRooms(); renderFloor(); }
+        async function closeArchiMode() { isArchiMode = false; document.body.classList.remove('edit-mode'); renderRooms(); renderFloor(); }
         async function saveArchitecture() {
             const saved = await pushArchitecture();
-            if (saved) {
-                await closeArchiMode();
-            }
+            if (saved) await closeArchiMode();
         }
         
         async function pushArchitecture() {
             const architecture = {
                 rooms: Array.isArray(rooms) ? rooms : [],
                 tables: Array.isArray(tables) ? tables : [],
-                zones: Array.isArray(zones) ? zones : [],
-                updatedAt: new Date().toISOString(),
-                updatedBy: currentUser?.name || "Utilisateur",
-                terminalFamily: "PAD_ORDINATEUR",
-                deviceId: window.ICHEF_SECURITY?.deviceId || null
+                zones: Array.isArray(zones) ? zones : []
             };
 
             try {
-                /*
-                 * API.update écrit ARCHITECTURE dans activeOrders.ARCHITECTURE
-                 * via /update-order. server.js émet ensuite updateState
-                 * à tous les écrans du même tenant.
-                 */
                 await API.update('ARCHITECTURE', architecture);
-
-                ICHEF_STORAGE.setItem(
-                    'empire_architecture',
-                    JSON.stringify(architecture.tables)
-                );
-                ICHEF_STORAGE.setItem(
-                    'empire_rooms',
-                    JSON.stringify(architecture.rooms)
-                );
-                ICHEF_STORAGE.setItem(
-                    'empire_zones',
-                    JSON.stringify(architecture.zones)
-                );
-
-                try{
-                    const tag=document.getElementById("stock-tag");
-                    if(tag){
-                        tag.textContent="● ARCHITECTURE SERVEUR OK";
-                        tag.style.color="#57e565";
-                        tag.style.borderColor="#57e565";
-                    }
-                }catch(_){}
-
-                /*
-                 * Pendant l'édition syncData ignore volontairement le serveur
-                 * pour ne pas écraser le geste en cours. La vraie relecture
-                 * est donc effectuée après la sortie du mode Architecture.
-                 */
+                ICHEF_STORAGE.setItem('empire_architecture', JSON.stringify(architecture.tables));
+                ICHEF_STORAGE.setItem('empire_rooms', JSON.stringify(architecture.rooms));
+                ICHEF_STORAGE.setItem('empire_zones', JSON.stringify(architecture.zones));
                 return true;
-
             } catch (error) {
                 console.error('Erreur de sauvegarde de l’architecture :', error);
-
-                try{
-                    const tag=document.getElementById("stock-tag");
-                    if(tag){
-                        tag.textContent="● ARCHITECTURE NON SAUVEGARDÉE";
-                        tag.style.color="#ef4444";
-                        tag.style.borderColor="#ef4444";
-                    }
-                }catch(_){}
-
-                alert('La sauvegarde du plan a échoué. Vérifiez la connexion au server.js.');
+                alert('La sauvegarde du plan a échoué. Vérifiez la connexion au serveur.');
                 return false;
             }
         }
@@ -6659,7 +6584,7 @@ ${count} ligne(s) · ${sequenceCount} séquence(s).
 
         const ICHEF_TABLE_WRITE_QUEUES = new Map();
 
-        async function executeSaveTableState(fireAllNew = false, keepOpen = false, paymentDraftOverride = undefined) {
+        async function executeSaveTableState(fireAllNew = false, keepOpen = false) {
             if (currentTicket.length === 0 && !keepOpen) return true;
 
             const itemsToSave = JSON.parse(JSON.stringify(currentTicket));
@@ -6685,36 +6610,13 @@ ${count} ligne(s) · ${sequenceCount} séquence(s).
                 observations: obsToSave
             };
 
-            /* État d'encaissement en cours partagé entre tous les appareils. */
-            const inheritedPaymentDraft =
-                previousOrder && previousOrder.paymentDraft && typeof previousOrder.paymentDraft === 'object'
-                    ? previousOrder.paymentDraft
-                    : null;
-
-            const paymentDraft =
-                paymentDraftOverride !== undefined
-                    ? paymentDraftOverride
-                    : inheritedPaymentDraft;
-
-            if (paymentDraft && typeof paymentDraft === 'object') {
-                payload.paymentDraft = JSON.parse(JSON.stringify(paymentDraft));
-            }
-
-            const hasPaymentDraft =
-                !!(
-                    payload.paymentDraft &&
-                    Array.isArray(payload.paymentDraft.payments) &&
-                    payload.paymentDraft.payments.length
-                );
-
             /* Origine/service/paiement/production sont toujours transportés
                avec la commande. Si elle vient du QR, on conserve son origine. */
             payload.orderMeta = getUnifiedOrderMeta(
                 {...previousOrder, ...payload},
                 targetTable,
                 {
-                    productionStatus: inferOrderProductionStatus(payload),
-                    paymentStatus: hasPaymentDraft ? 'PARTIEL' : undefined
+                    productionStatus: inferOrderProductionStatus(payload)
                 }
             );
 
@@ -6915,80 +6817,6 @@ ${count} ligne(s) · ${sequenceCount} séquence(s).
         let currentPayRemaining = 0;
         let fidelityDiscountUsed = 0; 
         let loyaltyClientName = null;
-
-        /* =========================================================
-           iCHEF — PAIEMENT PARTAGÉ MULTI-APPAREILS
-           ========================================================= */
-
-        function buildPaymentDraft() {
-            return {
-                version: 1,
-                payments: JSON.parse(JSON.stringify(Array.isArray(paymentsDone) ? paymentsDone : [])),
-                total: Number(currentTableTotal || 0),
-                remaining: Math.max(0, Number(currentPayRemaining || 0)),
-                fidelityDiscountUsed: Number(fidelityDiscountUsed || 0),
-                status: (Array.isArray(paymentsDone) && paymentsDone.length) ? 'PARTIEL' : 'A_PAYER',
-                updatedAt: new Date().toISOString(),
-                updatedBy: currentUser?.name || null,
-                deviceId: window.ICHEF_SECURITY?.deviceId || null
-            };
-        }
-
-        function applyPaymentDraftFromOrder(order, refreshUI = true) {
-            const draft = order && order.paymentDraft && typeof order.paymentDraft === 'object'
-                ? order.paymentDraft
-                : null;
-            if (!draft) return false;
-
-            paymentsDone = Array.isArray(draft.payments)
-                ? JSON.parse(JSON.stringify(draft.payments))
-                : [];
-
-            if (Number.isFinite(Number(draft.total)) && Number(draft.total) >= 0) {
-                currentTableTotal = Number(draft.total);
-            }
-
-            currentPayRemaining = Number.isFinite(Number(draft.remaining))
-                ? Math.max(0, Number(draft.remaining))
-                : Math.max(0, currentTableTotal - paymentsDone.reduce((s,p)=>s + Number(p?.amount || 0), 0));
-
-            fidelityDiscountUsed = Number.isFinite(Number(draft.fidelityDiscountUsed))
-                ? Number(draft.fidelityDiscountUsed)
-                : 0;
-
-            if (refreshUI && typeof updatePaymentUI === 'function') {
-                try { updatePaymentUI(); } catch (_) {}
-            }
-            return true;
-        }
-
-        async function syncPaymentDraftState(reason = 'payment-draft') {
-            if (!currentTableId || !Array.isArray(currentTicket) || !currentTicket.length) return false;
-            try {
-                const draft = buildPaymentDraft();
-                const ok = await executeSaveTableState(false, true, draft);
-
-                if (ok && activeOrders && activeOrders[currentTableId]) {
-                    activeOrders[currentTableId].paymentDraft = JSON.parse(JSON.stringify(draft));
-                    activeOrders[currentTableId].paymentStatus = draft.status;
-                    activeOrders[currentTableId].orderMeta = getUnifiedOrderMeta(
-                        activeOrders[currentTableId],
-                        currentTableId,
-                        { paymentStatus: draft.status }
-                    );
-                }
-
-                if (typeof window.ICHEF_FORCE_SERVER_SYNC === 'function') {
-                    setTimeout(()=>window.ICHEF_FORCE_SERVER_SYNC(reason), 60);
-                }
-                return !!ok;
-            } catch (err) {
-                console.warn('[iCHEF] Synchronisation paiement différée :', err);
-                return false;
-            }
-        }
-
-        window.ICHEF_SYNC_PAYMENT_DRAFT = syncPaymentDraftState;
 
         // ==========================================
         // 🌍 PROFIL FISCAL / CONFORMITÉ FRANCE - SUISSE
@@ -7273,12 +7101,12 @@ ${count} ligne(s) · ${sequenceCount} séquence(s).
                 currency: getCurrencyCodeForPad(),
                 displayCurrency: getDisplayCurrencyForPad(),
                 taxConfig: window.systemSettings?.taxConfig || null,
-                source: "PAD_ORDINATEUR_CONTEXT"
+                source: "PAD_SERVEUR_CONTEXT"
             };
         }
 
         function openCaisseTactileFromPad() {
-            if (typeof openPaymentModal === "function") return openPaymentModal();
+            window.location.href = `caissetactile.html?tenantID=${appTenantID}`;
         }
 
         function normalizeFiscalPaymentMethod(methods) {
@@ -7331,10 +7159,10 @@ ${count} ligne(s) · ${sequenceCount} séquence(s).
                 tenantID: appTenantID,
                 tableId: currentTableId,
                 deviceId: getDeviceFingerprint(),
-                source: "PAD_ORDINATEUR_PAYMENT_REQUEST",
+                source: "PAD_SERVEUR_PAYMENT_REQUEST",
                 fiscalContext: getFiscalContextForPad(),
                 fiscalRequirements: {
-                    frontendNotice: "L'interface PAD/ordinateur transmet la demande d'encaissement ; la preuve fiscale doit être créée, signée et conservée côté serveur.",
+                    frontendNotice: "Le Pad Serveur transmet la demande d'encaissement ; la preuve fiscale doit être créée, signée et conservée côté serveur.",
                     expectedBackendControls: ["ticket_number", "hash_chain", "digital_signature", "audit_log", "daily_closure", "archive_export"]
                 },
                 payment: {
@@ -7391,7 +7219,7 @@ ${count} ligne(s) · ${sequenceCount} séquence(s).
                     "📲 Cette table est en zone QR/NFC.\n\n" +
                     "QR/NFC = prise de commande client.\n" +
                     "Caisse = encaissement séparé.\n\n" +
-                    "Continuer vers l'encaissement depuis PAD/ordinateur ?"
+                    "Continuer vers l'encaissement depuis le Pad Serveur ?"
                 );
                 if (!ok) return;
             }
@@ -7399,8 +7227,8 @@ ${count} ligne(s) · ${sequenceCount} séquence(s).
             if (!isFiscalCashRegisterReady()) {
                 alert(
                     "Encaissement bloqué.\n\n" +
-                    "L’interface PAD/ordinateur utilise la caisse fiscale serveur.\n" +
-                    "Activez la caisse fiscale serveur dans l'administration.\n\n" +
+                    "Le Pad Serveur n'est pas une caisse fiscale autonome.\n" +
+                    "Activez la caisse fiscale serveur dans l'administration ou ouvrez caissetactile.html.\n\n" +
                     "Aucun règlement client ne doit être clôturé en historique interne depuis le Pad."
                 );
                 return;
@@ -7409,19 +7237,9 @@ ${count} ligne(s) · ${sequenceCount} séquence(s).
             document.getElementById('pay-modal-title').innerText = "TABLE " + currentTableId;
             document.getElementById('pay-modal-total').innerText = formatMoneyPad(currentTableTotal);
 
-            const serverPaymentOrder = activeOrders && activeOrders[currentTableId]
-                ? activeOrders[currentTableId]
-                : null;
-
-            if (!applyPaymentDraftFromOrder(serverPaymentOrder, false)) {
-                paymentsDone = [];
-                fidelityDiscountUsed = 0;
-                currentPayRemaining = currentTableTotal;
-            } else if (Number(currentTableTotal || 0) > 0) {
-                const alreadyPaid = paymentsDone.reduce((s,p)=>s + Number(p?.amount || 0), 0);
-                currentPayRemaining = Math.max(0, currentTableTotal - alreadyPaid);
-            }
-
+            paymentsDone = [];
+            fidelityDiscountUsed = 0;
+            currentPayRemaining = currentTableTotal;
             updatePaymentUI();
 
             let lZone = document.getElementById('loyalty-zone');
@@ -7474,7 +7292,7 @@ ${count} ligne(s) · ${sequenceCount} séquence(s).
             }
         }
 
-        async function useLoyaltyPoints() {
+        function useLoyaltyPoints() {
             if(!currentLoyaltyPhone || !globalLoyaltyData[currentLoyaltyPhone]) return;
             let solde = globalLoyaltyData[currentLoyaltyPhone].points || 0;
             
@@ -7495,14 +7313,13 @@ ${count} ligne(s) · ${sequenceCount} séquence(s).
             
             updateLoyaltyUI();
             updatePaymentUI();
-            await syncPaymentDraftState('loyalty-payment');
         }
 
         function setRemainderAmount() {
             document.getElementById('pay-amount-input').value = currentPayRemaining.toFixed(2);
         }
 
-        async function processPartialPayment(method) {
+        function processPartialPayment(method) {
             let amtInput = document.getElementById('pay-amount-input').value;
             let amt = parseFloat(amtInput.replace(',', '.'));
             if(isNaN(amt) || amt <= 0) return alert("⚠️ Saisissez un montant valide.");
@@ -7524,7 +7341,6 @@ ${count} ligne(s) · ${sequenceCount} séquence(s).
             currentPayRemaining -= amt;
             if(currentPayRemaining < 0) currentPayRemaining = 0;
             updatePaymentUI();
-            await syncPaymentDraftState('partial-payment');
         }
 
         function updatePaymentUI() {
@@ -7592,7 +7408,7 @@ ${count} ligne(s) · ${sequenceCount} séquence(s).
                     alert(
                         "Encaissement refusé.\n\n" +
                         "La caisse fiscale serveur n'est pas active.\n" +
-                        "L’interface PAD/ordinateur peut gérer la commande et le service, mais ne doit pas clôturer un règlement client sans ticket fiscal serveur."
+                        "Le Pad Serveur peut gérer la commande et le service, mais il ne doit pas clôturer un règlement client sans ticket fiscal serveur."
                     );
                     return;
                 }
@@ -7616,7 +7432,7 @@ ${count} ligne(s) · ${sequenceCount} séquence(s).
                     totalTTC: parseFloat(currentTableTotal.toFixed(2)),
                     totalHT: parseFloat(totalHT.toFixed(2)),
                     tva: tvaTotals,
-                    source: 'PAD/Ordinateur (' + currentTableId + ')',
+                    source: 'Pad Serveur (' + currentTableId + ')',
                     zone: getCurrentZoneLabelForPad(),
                     mode: currentTableId_PayMode || "standard",
                     fiscalStatus: fiscalStatus,
@@ -7634,19 +7450,6 @@ ${count} ligne(s) · ${sequenceCount} séquence(s).
                 document.dispatchEvent(new CustomEvent('ichef:financial-history-updated'));
 
                 await API.update(currentTableId, null, true, { reason: 'Clôture de table après encaissement validé', operationType: 'TABLE_CLOSED' });
-
-                try {
-                    if (activeOrders && currentTableId) delete activeOrders[currentTableId];
-                    if (typeof window.ICHEF_FORCE_SERVER_SYNC === 'function') {
-                        await window.ICHEF_FORCE_SERVER_SYNC('payment-finalized');
-                    }
-                    if (typeof window.ICHEF_MOBILE_REFRESH === 'function') {
-                        window.ICHEF_MOBILE_REFRESH();
-                    }
-                    if (typeof renderFloor === 'function') renderFloor();
-                    if (typeof renderProTables === 'function') renderProTables();
-                } catch (_) {}
-
                 window.print();
 
                 if (fiscalStatus === "FISCALIZED") {
@@ -7659,7 +7462,7 @@ ${count} ligne(s) · ${sequenceCount} séquence(s).
                 renderFloor();
 
             } catch (e) {
-                console.error("Erreur clôture PAD/ordinateur :", e);
+                console.error("Erreur clôture Pad Serveur :", e);
                 alert("❌ Encaissement refusé : " + (e.message || "erreur inconnue"));
             }
         }
@@ -9598,52 +9401,29 @@ header .header-left > div:first-of-type{
 })();
 </script>
 
-<script id="ichef-server-symbiosis">
+<script id="ichef-server-symbiosis" type="text/ichef-lazy">
 (function(){
-  "use strict";
-
+  'use strict';
   let socket = null;
-  let socketLoading = false;
   let lastServerSyncAt = 0;
   let syncBusy = false;
-  let networkBooted = false;
 
   function setLinkStatus(label, ok){
-    const el = document.getElementById("pro-link");
-    if(el){
-      el.textContent = label;
-      el.style.color = ok ? "#57e565" : "#f0b84f";
-    }
-
-    const tag = document.getElementById("stock-tag");
-    if(tag){
-      const live = label === "TEMPS RÉEL";
-      const offline = label === "HORS LIGNE";
-
-      tag.textContent =
-        live ? "● SERVER.JS LIVE" :
-        offline ? "● SERVER.JS HORS LIGNE" :
-        "● SERVER.JS · " + label;
-
-      tag.style.color = live ? "#57e565" : (offline ? "#ef4444" : "#f0b84f");
-      tag.style.borderColor = live ? "#57e565" : (offline ? "#ef4444" : "#f0b84f");
-    }
+    const el = document.getElementById('pro-link');
+    if(!el) return;
+    el.textContent = label;
+    el.style.color = ok ? '#57e565' : '#f0b84f';
   }
 
   async function forceServerSync(reason){
-    if(syncBusy || typeof syncData !== "function") return;
-
+    if(syncBusy || typeof syncData !== 'function' || document.hidden) return;
     syncBusy = true;
     try{
       await syncData();
       lastServerSyncAt = Date.now();
-      setLinkStatus(
-        socket && socket.connected ? "TEMPS RÉEL" : "SYNCHRO OK",
-        true
-      );
+      setLinkStatus(socket && socket.connected ? 'TEMPS RÉEL' : 'SYNCHRO OK', true);
     }catch(err){
-      console.error("[iCHEF] Synchronisation serveur:", reason, err);
-      setLinkStatus("HORS LIGNE", false);
+      setLinkStatus('HORS LIGNE', false);
     }finally{
       syncBusy = false;
     }
@@ -9651,78 +9431,25 @@ header .header-left > div:first-of-type{
 
   window.ICHEF_FORCE_SERVER_SYNC = forceServerSync;
 
-  function refreshAllViews(){
-    try{ if(typeof renderFloor === "function") renderFloor(); }catch(_){}
-    try{ if(typeof renderProTables === "function") renderProTables(); }catch(_){}
-    try{ if(typeof renderService === "function") renderService(); }catch(_){}
-    try{
-      if(typeof updateSequenceServicePanel === "function" &&
-         typeof currentTableId !== "undefined" &&
-         currentTableId){
-        updateSequenceServicePanel();
-      }
-    }catch(_){}
-    try{
-      if(typeof window.ichefRefreshCompactOrderCards === "function")
-        window.ichefRefreshCompactOrderCards();
-    }catch(_){}
-    try{
-      if(typeof window.ichefRefreshReadyNeon === "function")
-        window.ichefRefreshReadyNeon();
-    }catch(_){}
-    try{
-      if(typeof window.ichefUpdateAntiRushSignal === "function")
-        window.ichefUpdateAntiRushSignal();
-    }catch(_){}
-  }
-
   function connectRealtime(){
-    const urlServeur =
-      (typeof APP_SERVER_URL !== "undefined" && APP_SERVER_URL)
-        ? APP_SERVER_URL
-        : (
-            window.location.hostname === "localhost" ||
-            window.location.hostname === "127.0.0.1"
-          )
-          ? "http://localhost:10000"
-          : "https://tableau-system.onrender.com";
-
-    if(!appTenantID){
-      setLinkStatus("SYNCHRO", true);
+    if(!APP_SERVER_URL || !appTenantID) {
+      setLinkStatus('SYNCHRO', true);
       return;
     }
-
-    if(socket && (socket.connected || socket.active)){
-      return;
-    }
-
-    if(typeof window.io !== "function"){
-      if(socketLoading) return;
-
-      setLinkStatus("CONNEXION…", true);
-
-      if(typeof window.ICHEF_LOAD_SOCKET_IO === "function"){
-        socketLoading = true;
+    if(typeof io !== 'function') {
+      setLinkStatus('SYNCHRO', true);
+      if(!connectRealtime.__ichefSocketLoading && typeof window.ICHEF_LOAD_SOCKET_IO==='function'){
+        connectRealtime.__ichefSocketLoading=true;
         window.ICHEF_LOAD_SOCKET_IO()
-          .then(function(){
-            socketLoading = false;
-            connectRealtime();
-          })
-          .catch(function(err){
-            socketLoading = false;
-            console.error("[iCHEF] Socket.IO indisponible:", err);
-            setLinkStatus("SYNCHRO 3s", true);
-          });
-      }else{
-        setLinkStatus("SYNCHRO 3s", true);
+          .then(()=>{ connectRealtime.__ichefSocketLoading=false; connectRealtime(); })
+          .catch(()=>{ connectRealtime.__ichefSocketLoading=false; setLinkStatus('SYNCHRO', true); });
       }
       return;
     }
-
     try{
-      socket = window.io(urlServeur, {
+      socket = io(APP_SERVER_URL, {
         withCredentials: true,
-        transports: ["websocket","polling"],
+        transports: ['websocket','polling'],
         reconnection: true,
         reconnectionAttempts: Infinity,
         reconnectionDelay: 1000,
@@ -9734,186 +9461,109 @@ header .header-left > div:first-of-type{
         }
       });
 
-      socket.on("connect", function(){
-        setLinkStatus("TEMPS RÉEL", true);
-
-        socket.emit("joinTenant", String(appTenantID));
-
-        forceServerSync("socket-connect");
+      socket.on('connect', function(){
+        setLinkStatus('TEMPS RÉEL', true);
+        socket.emit('joinTenant', {
+          tenantID: appTenantID,
+          deviceId: window.ICHEF_SECURITY?.deviceId || null,
+          page: 'PAD_SERVEUR'
+        });
+        forceServerSync('socket-connect');
       });
 
-      socket.on("updateState", function(state){
+      socket.on('orderLifecycle', function(evt){
+        try{
+          if(!evt || String(evt.tenantID||'').toLowerCase() !== String(appTenantID||'').toLowerCase()) return;
+          const tableId=String(evt.tableId||'');
+          if(!tableId) return;
+
+          if(evt.deleted){
+            delete activeOrders[tableId];
+          }else if(evt.order){
+            if(typeof isRealServiceOrder === 'function' && !isRealServiceOrder(tableId, evt.order)){
+                delete activeOrders[tableId];
+            }else{
+                activeOrders[tableId]=evt.order;
+            }
+          }
+
+          if(typeof renderFloor==='function') renderFloor();
+          if(typeof renderProTables==='function') renderProTables();
+          if(typeof renderService==='function') renderService();
+          if(typeof window.ICHEF_MOBILE_RENDER_SERVICE==='function') window.ICHEF_MOBILE_RENDER_SERVICE();
+          if(typeof window.ICHEF_MOBILE_UPDATE_STATUS==='function') window.ICHEF_MOBILE_UPDATE_STATUS();
+          if(typeof updateSequenceServicePanel==='function' && String(currentTableId)===tableId){
+            updateSequenceServicePanel();
+          }
+          if(typeof window.ichefRefreshCompactOrderCards==='function') window.ichefRefreshCompactOrderCards();
+          if(typeof window.ichefRefreshReadyNeon==='function') window.ichefRefreshReadyNeon();
+          if(typeof window.ichefUpdateAntiRushSignal==='function') window.ichefUpdateAntiRushSignal();
+        }catch(err){ }
+      });
+
+      socket.on('updateState', function(state){
         try{
           if(state && state.activeOrders){
-            activeOrders =
-              (typeof sanitizeServerOrders === "function")
+            activeOrders = (typeof sanitizeServerOrders === 'function')
                 ? sanitizeServerOrders(state.activeOrders)
                 : state.activeOrders;
-
-            /*
-             * SYMBIOSE ARCHITECTURE :
-             * server.js vient d'émettre updateState après /update-order.
-             * Sur les autres PAD/ordinateurs, on applique le plan immédiatement.
-             * Sur l'écran qui est actuellement en édition, on attend sa sortie
-             * pour ne jamais écraser un geste local.
-             */
-            try{
-              const editingArchitecture =
-                (typeof isArchiMode !== "undefined" && isArchiMode) ||
-                document.body.classList.contains("edit-mode");
-
-              const rawArchitecture = activeOrders?.ARCHITECTURE;
-              const architecture =
-                rawArchitecture?.data !== undefined
-                  ? rawArchitecture.data
-                  : rawArchitecture;
-
-              if(
-                !editingArchitecture &&
-                architecture &&
-                Array.isArray(architecture.tables)
-              ){
-                rooms =
-                  Array.isArray(architecture.rooms) &&
-                  architecture.rooms.length
-                    ? architecture.rooms
-                    : ["Salle Principale"];
-
-                tables = architecture.tables;
-                zones = Array.isArray(architecture.zones)
-                  ? architecture.zones
-                  : [];
-
-                if(!rooms.includes(currentRoom)){
-                  currentRoom = rooms[0] || "Salle Principale";
-                }
-
-                ICHEF_STORAGE.setItem(
-                  "empire_architecture",
-                  JSON.stringify(tables)
-                );
-                ICHEF_STORAGE.setItem(
-                  "empire_rooms",
-                  JSON.stringify(rooms)
-                );
-                ICHEF_STORAGE.setItem(
-                  "empire_zones",
-                  JSON.stringify(zones)
-                );
-
-                try{ renderRooms(); }catch(_){}
-                try{ renderFloor(); }catch(_){}
-              }
-            }catch(err){
-              console.error("[iCHEF] réception Architecture WebSocket",err);
-            }
-
-            refreshAllViews();
-            lastServerSyncAt = Date.now();
-          }else{
-            forceServerSync("websocket-updateState");
+            if(typeof renderFloor==='function') renderFloor();
+            if(typeof renderProTables==='function') renderProTables();
+            if(typeof renderService==='function') renderService();
+            if(typeof window.ICHEF_MOBILE_RENDER_SERVICE==='function') window.ICHEF_MOBILE_RENDER_SERVICE();
+            if(typeof window.ICHEF_MOBILE_UPDATE_STATUS==='function') window.ICHEF_MOBILE_UPDATE_STATUS();
+            if(typeof window.ichefUpdateAntiRushSignal==='function') window.ichefUpdateAntiRushSignal();
           }
-        }catch(err){
-          console.error("[iCHEF] updateState:", err);
-          forceServerSync("websocket-updateState-fallback");
-        }
+        }catch(err){ }
       });
-
-      socket.on("disconnect", function(){
-        setLinkStatus("SYNCHRO 3s", true);
-      });
-
-      socket.on("connect_error", function(){
-        setLinkStatus("SYNCHRO 3s", true);
-      });
-
+      
+      socket.on('disconnect', function(){ setLinkStatus('SYNCHRO 3s', true); });
+      socket.on('connect_error', function(){ setLinkStatus('SYNCHRO 3s', true); });
     }catch(err){
-      console.error("[iCHEF] WebSocket:", err);
-      setLinkStatus("SYNCHRO 3s", true);
+      setLinkStatus('SYNCHRO 3s', true);
     }
   }
 
-  window.ICHEF_CONNECT_REALTIME = connectRealtime;
-
-  if(window.__ichefRealtimeWanted){
-    setTimeout(connectRealtime, 0);
-  }
-
-  function bootNetwork(){
-    if(networkBooted) return;
-    networkBooted = true;
-
-    setLinkStatus(
-      navigator.onLine ? "CONNEXION…" : "HORS LIGNE",
-      navigator.onLine
-    );
-
-    forceServerSync("initial-dom");
-
-    setTimeout(function(){
-      connectRealtime();
-      forceServerSync("initial-realtime");
-    }, 150);
-  }
-
-  document.addEventListener("ichef:authenticated", function(){
-    connectRealtime();
-    forceServerSync("authenticated");
-  });
-
-  window.addEventListener("online", function(){
-    connectRealtime();
-    forceServerSync("online");
-  });
-
-  window.addEventListener("offline", function(){
-    setLinkStatus("HORS LIGNE", false);
-  });
-
-  document.addEventListener("visibilitychange", function(){
-    if(!document.hidden){
-      connectRealtime();
-      forceServerSync("visible");
-    }
-  });
-
-  window.addEventListener("focus", function(){
-    connectRealtime();
-    forceServerSync("focus");
-  });
+  window.addEventListener('online', function(){ forceServerSync('online'); });
+  window.addEventListener('offline', function(){ setLinkStatus('HORS LIGNE', false); });
+  document.addEventListener('visibilitychange', function(){ if(!document.hidden) forceServerSync('visible'); });
+  window.addEventListener('focus', function(){ forceServerSync('focus'); });
 
   setInterval(function(){
     if(document.hidden || !navigator.onLine) return;
+    if(!lastServerSyncAt || Date.now() - lastServerSyncAt > 7000) forceServerSync('watchdog');
+  }, window.innerWidth<=600 ? 8000 : 5000);
 
-    if(!socket || !socket.connected){
-      forceServerSync("poll-server-js");
-      return;
-    }
+  /* iCHEF PHONE SYNC FIX:
+     la synchro ne doit jamais attendre window.load sur un gros fichier mobile. */
+  let networkBooted = false;
 
-    if(!lastServerSyncAt || Date.now() - lastServerSyncAt > 7000){
-      forceServerSync("watchdog");
-    }
-  }, 3000);
+  function bootNetwork(){
+      if(networkBooted) return;
+      networkBooted = true;
 
-  if(document.readyState === "loading"){
-    document.addEventListener("DOMContentLoaded", bootNetwork, {once:true});
-  }else{
-    bootNetwork();
+      setLinkStatus(navigator.onLine ? 'CONNEXION…' : 'HORS LIGNE', navigator.onLine);
+
+      /* Première récupération serveur immédiate. */
+      forceServerSync('initial-dom');
+
+      /* Socket ensuite, sans bloquer le premier affichage. */
+      setTimeout(function(){
+          connectRealtime();
+          forceServerSync('initial-realtime');
+      }, 150);
   }
 
-  setTimeout(function(){
-    if(
-      document.documentElement.classList.contains("ichef-authenticated") ||
-      (window.ICHEF_SECURITY && window.ICHEF_SECURITY.user)
-    ){
-      connectRealtime();
-      forceServerSync("restored-session");
-    }
-  }, 1200);
+  if(document.readyState === 'loading'){
+      document.addEventListener('DOMContentLoaded', bootNetwork, {once:true});
+  }else{
+      bootNetwork();
+  }
 
+  /* Filet de sécurité si un WebView mobile a un cycle DOM atypique. */
+  setTimeout(bootNetwork, 1200);
 })();
 </script>
-
 <style id="ichef-mobile-exact-captures">
 @media (max-width:600px){
   :root{--m-gold:#e5b640;--m-bg:#020607;--m-card:#161a1c;--m-line:#343a3d;--m-green:#42ff5b;}
@@ -10223,55 +9873,21 @@ header .header-left > div:first-of-type{
           '<span class="time">00:00</span>'+
           '<span class="ichef-order-badges"></span>';
 
-        /* =====================================================
-           TÉLÉPHONE — OUVERTURE DE TABLE FIABLE
-           Aucun listener global/capture : la carte gère son propre geste.
-           ===================================================== */
-        let mobileTapLock=0;
-
-        const openMobileTable=()=>{
-          const now=Date.now();
-          if(now-mobileTapLock<450) return;
-          mobileTapLock=now;
-
-          const lab=String(btn.dataset.table||'').trim();
+        btn.addEventListener('click',()=>{
+          const lab=btn.dataset.table;
           if(!lab) return;
-
           try{
-            /* Ferme seulement un éventuel mode plan mobile resté actif. */
-            document.body.classList.remove('mobile-live-plan-open');
-
             if(typeof handleTableOrderTap==='function'){
               handleTableOrderTap(lab,lab);
             }else if(typeof openOrder==='function'){
               openOrder(lab);
-            }else if(typeof window.openOrder==='function'){
-              window.openOrder(lab);
             }
-          }catch(e){
-            console.error('[iCHEF MOBILE] ouverture table',e);
-          }
-
+          }catch(e){console.error(e)}
           setTimeout(()=>{
             const d=$('#order-drawer');
-            if(d){
-              d.classList.remove('order-ticket-focus');
-              d.classList.add('open');
-              d.style.display='flex';
-            }
+            if(d)d.classList.remove('order-ticket-focus');
           },20);
-        };
-
-        /* Click natif : chemin principal Android / iPhone / navigateur. */
-        btn.addEventListener('click',openMobileTable);
-
-        /* Fallback WebView tactile sans click fiable.
-           Pas de preventDefault/stopPropagation global. */
-        btn.addEventListener('touchend',(e)=>{
-          if(e.changedTouches && e.changedTouches.length===1){
-            openMobileTable();
-          }
-        },{passive:true});
+        });
 
         g.appendChild(btn);
       }
@@ -14322,7 +13938,7 @@ html.ichef-security-locked #ichef-security-curtain{
            (location.protocol==="https:" ||
             location.hostname==="localhost" ||
             location.hostname==="127.0.0.1")){
-            navigator.serviceWorker.register("/sw.js?v=20260822-0948",{scope:"/",updateViaCache:"none"})
+            navigator.serviceWorker.register("/sw.js?v=20260822-0102",{scope:"/",updateViaCache:"none"})
                 .then(async reg=>{
                     try {
                         await reg.update();
@@ -14460,13 +14076,8 @@ button[class*="annuler" i] *{
             return null;
         }
 
-        /* IMPORTANT :
-           les cartes du mode téléphone (.mobile-exact-table) ont leur propre
-           gestion tactile native et ne doivent jamais passer par ce garde.
-           Certains WebView mobiles ne produisent pas la séquence Pointer Events
-           complète et leur click serait sinon bloqué. */
         return node.closest(
-            ".pro-table-card, .table-obj, .table-wrapper"
+            ".pro-table-card, .mobile-exact-table, .table-obj, .table-wrapper"
         );
     }
 
@@ -17103,53 +16714,32 @@ setTimeout(build,200);
 })();
 </script>
 
-<script id="ichef-pin-click-fix-20260822">
+<script id="ichef-pin-click-fix-20260820">
 (function(){
   "use strict";
+  let lastButton=null;
+  let lastAt=0;
+  const DUPLICATE_MS=520;
 
-  let lastPhysicalButton=null;
-  let lastPhysicalAt=0;
-  const SYNTHETIC_CLICK_MS=800;
-
-  function pinButton(node){
-    return node?.closest?.("#ichef-pin-pad-final .pin-btn") || null;
-  }
-
-  function showPinError(message){
-    const box=document.getElementById("error-msg");
-    if(!box) return;
-    box.style.display="block";
-    box.style.color="var(--alert)";
-    box.innerText="❌ "+message;
-  }
-
+  function pinButton(node){ return node?.closest?.("#ichef-pin-pad-final .pin-btn") || null; }
   function appendDigit(value){
-    if(typeof window.appendPin !== "function") {
-      showPinError("Moteur PIN indisponible.");
-      return;
-    }
-    window.appendPin(Number(value));
+    if(typeof window.appendPin === "function") return window.appendPin(Number(value));
+    if(typeof appendPin === "function") return appendPin(Number(value));
   }
-
   function clearCode(){
-    if(typeof window.clearPin !== "function") {
-      showPinError("Moteur PIN indisponible.");
-      return;
-    }
-    window.clearPin();
+    if(typeof window.clearPin === "function") return window.clearPin();
+    if(typeof clearPin === "function") return clearPin();
   }
-
   function submitCode(){
-    if(typeof window.submitPin !== "function") {
-      showPinError("Moteur PIN indisponible.");
-      return;
-    }
-    Promise.resolve(window.submitPin()).catch(function(err){
+    let result;
+    if(typeof window.submitPin === "function") result=window.submitPin();
+    else if(typeof submitPin === "function") result=submitPin();
+    return Promise.resolve(result).catch(function(err){
       console.error("Erreur submitPin:",err);
-      showPinError(err?.message || "Erreur de connexion");
+      const box=document.getElementById("error-msg");
+      if(box){ box.style.display="block"; box.style.color="var(--alert)"; box.innerText="❌ "+(err?.message||"Erreur de connexion"); }
     });
   }
-
   function run(btn){
     if(!btn) return;
     const digit=btn.getAttribute("data-pin");
@@ -17158,53 +16748,36 @@ setTimeout(build,200);
     if(action==="clear"){ clearCode(); return; }
     if(action==="submit"){ submitCode(); }
   }
-
-  function physicalActivate(e){
+  function activate(e){
     const btn=pinButton(e.target);
     if(!btn) return;
     if(e.type==="pointerup" && e.pointerType==="mouse" && e.button!==0) return;
-
-    /* Chaque vrai pointerup/touchend est une nouvelle pression, même si
-       l'utilisateur tape deux fois rapidement le même chiffre. */
-    lastPhysicalButton=btn;
-    lastPhysicalAt=performance.now();
-
+    const now=performance.now();
+    if(btn===lastButton && now-lastAt<DUPLICATE_MS){
+      if(e.cancelable) e.preventDefault();
+      e.stopImmediatePropagation?.();
+      return;
+    }
+    lastButton=btn; lastAt=now;
     if(e.cancelable) e.preventDefault();
     e.stopImmediatePropagation?.();
     run(btn);
   }
-
-  function clickFallback(e){
-    const btn=pinButton(e.target);
-    if(!btn) return;
-
-    const syntheticFromPhysical =
-      btn===lastPhysicalButton &&
-      performance.now()-lastPhysicalAt < SYNTHETIC_CLICK_MS;
-
-    /* Le click synthétique qui suit pointerup/touchend ne doit pas ajouter
-       le chiffre une deuxième fois. Un vrai click clavier/souris reste actif. */
-    if(e.cancelable) e.preventDefault();
-    e.stopImmediatePropagation?.();
-    if(syntheticFromPhysical) return;
-    run(btn);
-  }
-
-  document.addEventListener("pointerup",physicalActivate,true);
-  if(!window.PointerEvent){
-    document.addEventListener("touchend",physicalActivate,{capture:true,passive:false});
-  }
-  document.addEventListener("click",clickFallback,true);
-
+  document.addEventListener("pointerup",activate,true);
+  if(!window.PointerEvent){ document.addEventListener("touchend",activate,{capture:true,passive:false}); }
+  document.addEventListener("click",activate,true);
   document.addEventListener("keydown",function(e){
     const login=document.getElementById("login-screen");
     if(!login || getComputedStyle(login).display==="none") return;
     if(/^\d$/.test(e.key)){ e.preventDefault(); appendDigit(e.key); }
     else if(e.key==="Enter"){ e.preventDefault(); submitCode(); }
-    else if(e.key==="Backspace" || e.key==="Escape" || e.key==="Delete"){
-      e.preventDefault(); clearCode();
-    }
+    else if(e.key==="Backspace" || e.key==="Escape" || e.key==="Delete"){ e.preventDefault(); clearCode(); }
   },true);
+  try{
+    if(typeof appendPin === "function") window.appendPin=appendPin;
+    if(typeof clearPin === "function") window.clearPin=clearPin;
+    if(typeof submitPin === "function") window.submitPin=submitPin;
+  }catch(_){ }
 })();
 </script>
 
@@ -25809,38 +25382,6 @@ try{
                 /* Un vrai déplacement/redimensionnement ne doit jamais ouvrir les paramètres. */
                 elmnt.dataset.ichefArchiSuppressClickUntil=String(Date.now()+900);
                 isDraggingTable=true;
-
-                /*
-                 * ARCHITECTURE CONNECTÉE :
-                 * la position/taille vient d'être modifiée dans tables/zones.
-                 * On l'enregistre immédiatement dans ARCHITECTURE côté server.js.
-                 */
-                try{
-                    if(typeof pushArchitecture === "function"){
-                        Promise.resolve(pushArchitecture())
-                            .then(function(ok){
-                                if(ok){
-                                    try{
-                                        document.dispatchEvent(
-                                            new CustomEvent("ichef:architecture-server-saved", {
-                                                detail:{
-                                                    at:Date.now(),
-                                                    mode:mode,
-                                                    label:obj?.label || obj?.id || null
-                                                }
-                                            })
-                                        );
-                                    }catch(_){}
-                                }
-                            })
-                            .catch(function(err){
-                                console.error("[iCHEF] sauvegarde déplacement Architecture", err);
-                            });
-                    }
-                }catch(err){
-                    console.error("[iCHEF] pushArchitecture déplacement", err);
-                }
-
                 setTimeout(()=>{
                     if(!archiV2PointerActive) isDraggingTable=false;
                 },930);
@@ -27088,6 +26629,121 @@ body.ichef-ar-cockpit-fullscreen-open{
 </style>
 
 
+
+<!-- iCHEF MOBILE TAP FIX — 2026-08-21 (Optimisé)
+     Autorise les vrais touchers sur les cartes de table lorsque le WebView
+     mobile ne fournit pas toute la séquence Pointer Events. -->
+<style id="ichef-mobile-real-touch-fix-css">
+@media (max-width: 600px) {
+  .mobile-exact-table {
+    touch-action: manipulation !important;
+    pointer-events: auto !important;
+    -webkit-user-select: none !important;
+    user-select: none !important;
+    -webkit-tap-highlight-color: transparent !important; /* Supprime le flash de clic natif iOS/Android */
+  }
+  /* Note : Assure-toi que la carte ne contient pas de boutons nécessitant leur propre événement de clic */
+  .mobile-exact-table * { 
+    pointer-events: none; 
+  }
+}
+</style>
+
+<!-- =========================================================
+     iCHEF MOBILE TAP FIX — 2026-08-21 (Optimisé)
+     Autorise les vrais touchers sur les cartes de table.
+     ========================================================= -->
+<style id="ichef-mobile-real-touch-fix-css">
+@media (max-width: 600px) {
+  .mobile-exact-table {
+    touch-action: manipulation !important;
+    pointer-events: auto !important;
+    -webkit-user-select: none !important;
+    user-select: none !important;
+    -webkit-tap-highlight-color: transparent !important;
+  }
+  .mobile-exact-table * { 
+    pointer-events: none; 
+  }
+}
+</style>
+
+<!-- =========================================================
+     iCHEF MOBILE TAP FIX — 2026-08-21 (Optimisé)
+     Autorise les vrais touchers sur les cartes de table.
+     ========================================================= -->
+<style id="ichef-mobile-real-touch-fix-css">
+@media (max-width: 600px) {
+  .mobile-exact-table {
+    touch-action: manipulation !important;
+    pointer-events: auto !important;
+    -webkit-user-select: none !important;
+    user-select: none !important;
+    -webkit-tap-highlight-color: transparent !important;
+  }
+  .mobile-exact-table * { 
+    pointer-events: none; 
+  }
+}
+</style>
+
+<script id="ichef-mobile-real-touch-fix-js" type="text/ichef-lazy">
+(function() {
+  "use strict";
+  
+  const MAX_MOVE = 18;
+  const MAX_TOUCH_MS = 1400;
+  const ALLOW_MS = 1200;
+  
+  let touch = null;
+
+  const getCard = (node) => (node && node.closest) ? node.closest('.mobile-exact-table') : null;
+
+  document.addEventListener('touchstart', (e) => {
+    if (window.innerWidth > 600 || e.touches.length !== 1) return;
+    
+    const card = getCard(e.target);
+    if (!card) return;
+    
+    const t = e.touches[0];
+    touch = { 
+      card, 
+      x: t.clientX, 
+      y: t.clientY, 
+      at: performance.now(), 
+      moved: false 
+    };
+  }, { capture: true, passive: true });
+
+  document.addEventListener('touchmove', (e) => {
+    if (!touch || e.touches.length !== 1) return;
+    
+    const t = e.touches[0];
+    if (Math.hypot(t.clientX - touch.x, t.clientY - touch.y) > MAX_MOVE) {
+      touch.moved = true;
+    }
+  }, { capture: true, passive: true });
+
+  document.addEventListener('touchend', (e) => {
+    if (!touch) return;
+    
+    const info = touch;
+    touch = null;
+    
+    const t = e.changedTouches && e.changedTouches[0];
+    if (!t || info.moved || (performance.now() - info.at) > MAX_TOUCH_MS) return;
+    
+    if (Math.hypot(t.clientX - info.x, t.clientY - info.y) > MAX_MOVE) return;
+    if (getCard(e.target) !== info.card) return;
+
+    info.card.dataset.ichefRealTapUntil = String(Date.now() + ALLOW_MS);
+  }, { capture: true, passive: true });
+
+  document.addEventListener('touchcancel', () => { touch = null; }, { capture: true, passive: true });
+  document.addEventListener('contextmenu', () => { touch = null; }, { capture: true, passive: true });
+})();
+</script>
+
 <script id="ichef-private-mobile-compat-20260821">
 (function(){
   "use strict";
@@ -27184,6 +26840,13 @@ else boot();
   const done=()=>document.documentElement.classList.add('ichef-mobile-ready');
   if(window.innerWidth>600){ done(); return; }
   if(document.readyState==='loading') document.addEventListener('DOMContentLoaded',()=>setTimeout(done,60),{once:true});
+  else setTimeout(done,60);
+})();
+</script>
+
+
+<!-- iCHEF FINAL — TEXTE BLANC / LISIBILITÉ MOBILE + PWA -->
+if(document.readyState==='loading') document.addEventListener('DOMContentLoaded',()=>setTimeout(done,60),{once:true});
   else setTimeout(done,60);
 })();
 </script>
@@ -27330,270 +26993,208 @@ textarea::placeholder{
 })();
 </script>
 
-
-
-<!-- =========================================================
-     iCHEF — MOBILE TOUCH DÉBLOQUÉ FINAL
-     N'agit que sur smartphone après authentification.
-     ========================================================= -->
-<style id="ichef-mobile-touch-unlock-final">
-@media (max-width:600px){
-
-  /* L'écran PIN ne doit plus jamais capter un geste après connexion. */
-  html.ichef-authenticated #login-screen{
-    display:none !important;
-    visibility:hidden !important;
-    opacity:0 !important;
-    pointer-events:none !important;
-  }
-
-  /* Toute couche fermée est réellement non interactive. */
-  .modal:not(.open),
-  .drawer:not(.open),
-  .mobile-overlay:not(.show),
-  .quick-folder-panel:not(.open):not(.ichef-outils-visible),
-  #ichef-cancel-qcm:not(.show),
-  #ichef-guest-assign-modal:not(.show),
-  #mobile-live-plan-chrome,
-  #mobile-live-plan-help{
-    pointer-events:none !important;
-  }
-
-  body:not(.mobile-live-plan-open) #mobile-live-plan-chrome,
-  body:not(.mobile-live-plan-open) #mobile-live-plan-help{
-    display:none !important;
-    pointer-events:none !important;
-  }
-
-  /* Surface principale téléphone : toujours tactile. */
-  html.ichef-authenticated #mobile-exact-service,
-  html.ichef-authenticated #mobile-exact-room,
-  html.ichef-authenticated #mobile-exact-grid,
-  html.ichef-authenticated .mobile-exact-table{
-    pointer-events:auto !important;
-    touch-action:manipulation !important;
-  }
-
-  html.ichef-authenticated .mobile-exact-table > *{
-    pointer-events:none !important;
-  }
-
-  /* Le tiroir et ses commandes restent tactiles seulement lorsqu'il est ouvert. */
-  html.ichef-authenticated #order-drawer.open,
-  html.ichef-authenticated #order-drawer.open .drawer-body,
-  html.ichef-authenticated #order-drawer.open #menu-grid,
-  html.ichef-authenticated #order-drawer.open button,
-  html.ichef-authenticated #order-drawer.open .btn-item,
-  html.ichef-authenticated #order-drawer.open .menu-tab,
-  html.ichef-authenticated #order-drawer.open input,
-  html.ichef-authenticated #order-drawer.open textarea,
-  html.ichef-authenticated #order-drawer.open select{
-    pointer-events:auto !important;
-    touch-action:manipulation !important;
-  }
-
-  /* Les modales réellement ouvertes doivent naturellement rester utilisables. */
-  html.ichef-authenticated .modal.open,
-  html.ichef-authenticated .modal.open *,
-  html.ichef-authenticated #ichef-cancel-qcm.show,
-  html.ichef-authenticated #ichef-cancel-qcm.show *,
-  html.ichef-authenticated #ichef-guest-assign-modal.show,
-  html.ichef-authenticated #ichef-guest-assign-modal.show *{
-    pointer-events:auto !important;
-  }
-}
-</style>
-
-<script id="ichef-mobile-touch-unlock-final-js" type="text/javascript">
-(function(){
-  'use strict';
-
-  const isPhone=()=>window.matchMedia('(max-width:600px)').matches;
-
-  function isAuthenticated(){
-    return document.documentElement.classList.contains('ichef-authenticated');
-  }
-
-  function unlockMobileTouch(){
-    if(!isPhone() || !isAuthenticated()) return;
-
-    /* 1. PIN : aucune couche résiduelle après authentification. */
-    const login=document.getElementById('login-screen');
-    if(login){
-      login.style.setProperty('display','none','important');
-      login.style.setProperty('visibility','hidden','important');
-      login.style.setProperty('opacity','0','important');
-      login.style.setProperty('pointer-events','none','important');
-    }
-
-    /* 2. Les overlays réellement fermés ne captent aucun geste. */
-    document.querySelectorAll(
-      '.modal:not(.open),'+
-      '.drawer:not(.open),'+
-      '.mobile-overlay:not(.show),'+
-      '.quick-folder-panel:not(.open):not(.ichef-outils-visible),'+
-      '#ichef-cancel-qcm:not(.show),'+
-      '#ichef-guest-assign-modal:not(.show)'
-    ).forEach(el=>{
-      el.style.setProperty('pointer-events','none','important');
-    });
-
-    /* 3. Surface téléphone active. */
-    [
-      document.getElementById('mobile-exact-service'),
-      document.getElementById('mobile-exact-room'),
-      document.getElementById('mobile-exact-grid')
-    ].filter(Boolean).forEach(el=>{
-      el.style.setProperty('pointer-events','auto','important');
-    });
-
-    document.querySelectorAll('.mobile-exact-table').forEach(btn=>{
-      btn.style.setProperty('pointer-events','auto','important');
-      btn.style.setProperty('touch-action','manipulation','important');
-    });
-
-    /* 4. Si le tiroir est ouvert, ses commandes sont prioritaires. */
-    const drawer=document.getElementById('order-drawer');
-    if(drawer && drawer.classList.contains('open')){
-      drawer.style.setProperty('pointer-events','auto','important');
-      drawer.querySelectorAll(
-        'button,.btn-item,.menu-tab,input,textarea,select'
-      ).forEach(el=>{
-        el.style.setProperty('pointer-events','auto','important');
-        el.style.setProperty('touch-action','manipulation','important');
-      });
-    }
-  }
-
-  window.ICHEF_UNLOCK_MOBILE_TOUCH=unlockMobileTouch;
-
-  /* Après PIN */
-  window.addEventListener('ichef:authenticated',()=>{
-    requestAnimationFrame(()=>{
-      unlockMobileTouch();
-      setTimeout(unlockMobileTouch,80);
-      setTimeout(unlockMobileTouch,350);
-    });
-  });
-
-  /* Le code actuel émet parfois l'événement sur document et parfois sur window. */
-  document.addEventListener('ichef:authenticated',()=>{
-    requestAnimationFrame(unlockMobileTouch);
-  });
-
-  /* Après chaque rendu de la vue téléphone. */
-  document.addEventListener('DOMContentLoaded',()=>{
-    if(isAuthenticated()) setTimeout(unlockMobileTouch,50);
-
-    const root=document.body;
-    if(!root) return;
-
-    let raf=0;
-    new MutationObserver(()=>{
-      if(!isPhone() || !isAuthenticated() || raf) return;
-      raf=requestAnimationFrame(()=>{
-        raf=0;
-        unlockMobileTouch();
-      });
-    }).observe(root,{
-      childList:true,
-      subtree:true,
-      attributes:true,
-      attributeFilter:['class','style','aria-hidden']
-    });
-  },{once:true});
-
-  /* Retour dans la PWA / navigateur. */
-  window.addEventListener('focus',()=>setTimeout(unlockMobileTouch,20),{passive:true});
-  document.addEventListener('visibilitychange',()=>{
-    if(!document.hidden) setTimeout(unlockMobileTouch,20);
-  });
-
-  /* Filet de sécurité très léger. */
-  setInterval(()=>{
-    if(!document.hidden) unlockMobileTouch();
-  },2500);
-})();
-</script>
-
-
-
-<!-- =========================================================
-     iCHEF — VERROU D’AFFICHAGE PAD / ORDINATEUR
-     Le moteur téléphone reste dans le code pour compatibilité,
-     mais il n’est jamais utilisé dans cette version.
-     ========================================================= -->
-<style id="ichef-pad-desktop-final-mode">
-html.ichef-pad-desktop-mode #mobile-exact-status,
-html.ichef-pad-desktop-mode #mobile-exact-service{
-  display:none !important;
-  pointer-events:none !important;
-}
-
-/* Réactive la structure principale si une tablette compacte tombe
-   dans une ancienne media-query téléphone. */
-@media (max-width:600px){
-  html.ichef-pad-desktop-mode,
-  html.ichef-pad-desktop-mode body{
-    overflow:hidden !important;
-    width:100% !important;
-    height:100% !important;
-  }
-  html.ichef-pad-desktop-mode body>header{display:flex !important;}
-  html.ichef-pad-desktop-mode #pad-fiscal-banner{display:grid !important;}
-  html.ichef-pad-desktop-mode #service-tools-bar{display:flex !important;}
-  html.ichef-pad-desktop-mode #archi-btn-bar{display:none !important;}
-  html.ichef-pad-desktop-mode body.edit-mode #archi-btn-bar{display:flex !important;}
-  html.ichef-pad-desktop-mode #room-tabs-container{display:flex !important;}
-  html.ichef-pad-desktop-mode .floor-plan-wrapper{display:block !important;}
-  html.ichef-pad-desktop-mode #global-rush-alert{display:none;}
-
-  /* Ticket/commande : revenir à la disposition tablette, pas à la capture téléphone. */
-  html.ichef-pad-desktop-mode #order-drawer{
-    top:0 !important;
-    height:100% !important;
-  }
-  html.ichef-pad-desktop-mode #order-drawer .drawer-body{
-    display:flex !important;
-    flex-direction:column !important;
-    position:static !important;
-    padding:0 !important;
-  }
-  html.ichef-pad-desktop-mode #order-drawer .drawer-body>div:first-of-type{
-    position:static !important;
-    inset:auto !important;
-    width:auto !important;
-    height:auto !important;
-    flex:1 1 auto !important;
-  }
-  html.ichef-pad-desktop-mode #order-drawer .ticket-view{
-    position:static !important;
-    display:flex !important;
-    width:100% !important;
-    height:50vh !important;
-    border-radius:0 !important;
-    background:var(--panel) !important;
-    color:var(--text-main) !important;
-  }
-}
-</style>
-<script id="ichef-pad-desktop-final-mode-js">
+<script id="ichef-global-action-bridge">
 (function(){
   "use strict";
-  function enforcePadDesktopMode(){
-    document.documentElement.classList.add("ichef-pad-desktop-mode");
-    document.body?.classList.add("ichef-pad-desktop-interface");
-    const mobileStatus=document.getElementById("mobile-exact-status");
-    const mobileService=document.getElementById("mobile-exact-service");
-    if(mobileStatus) mobileStatus.style.display="none";
-    if(mobileService) mobileService.style.display="none";
+
+  function expose(){
+    try{
+      if(typeof handleTableOrderTap === "function" && typeof window.handleTableOrderTap !== "function"){
+        window.handleTableOrderTap = handleTableOrderTap;
+      }
+    }catch(_){}
+
+    try{
+      if(typeof openOrder === "function" && typeof window.openOrder !== "function"){
+        window.openOrder = openOrder;
+      }
+    }catch(_){}
+
+    try{
+      if(typeof syncData === "function" && typeof window.syncData !== "function"){
+        window.syncData = syncData;
+      }
+    }catch(_){}
+
+    try{
+      if(typeof renderService === "function" && typeof window.renderService !== "function"){
+        window.renderService = renderService;
+      }
+    }catch(_){}
   }
-  if(document.readyState==="loading") document.addEventListener("DOMContentLoaded",enforcePadDesktopMode,{once:true});
-  else enforcePadDesktopMode();
-  window.addEventListener("resize",enforcePadDesktopMode,{passive:true});
-  window.ICHEF_IS_PAD_DESKTOP = true;
+
+  if(document.readyState === "loading"){
+    document.addEventListener("DOMContentLoaded", expose, {once:true});
+  }else{
+    expose();
+  }
+
+  setTimeout(expose,300);
+  setTimeout(expose,1200);
 })();
 </script>
+<script id="ichef-symbiose-multiappareils-actions">
+(function(){
+  "use strict";
 
+  const isPhone = () => window.matchMedia("(max-width:600px)").matches;
+
+  let lastTableTapAt = 0;
+  let lastTableLabel = "";
+  let reconcileTimer = 0;
+
+  function callTableAction(label){
+      label = String(label || "").trim();
+      if(!label) return false;
+
+      const now = Date.now();
+      if(label === lastTableLabel && now - lastTableTapAt < 420) return true;
+      lastTableLabel = label;
+      lastTableTapAt = now;
+
+      try{
+          if(typeof window.handleTableOrderTap === "function"){
+              window.handleTableOrderTap(label,label);
+              return true;
+          }
+      }catch(err){
+          console.error("[iCHEF SYMBIOSE] handleTableOrderTap",err);
+      }
+
+      try{
+          if(typeof window.openOrder === "function"){
+              window.openOrder(label);
+              return true;
+          }
+      }catch(err){
+          console.error("[iCHEF SYMBIOSE] openOrder",err);
+      }
+
+      /* Certains anciens scripts déclarent ces fonctions globalement sans window. */
+      try{
+          if(typeof handleTableOrderTap === "function"){
+              handleTableOrderTap(label,label);
+              return true;
+          }
+      }catch(_){}
+
+      try{
+          if(typeof openOrder === "function"){
+              openOrder(label);
+              return true;
+          }
+      }catch(_){}
+
+      return false;
+  }
+
+  /* Délégation : reste active même si renderService reconstruit les cartes. */
+  function delegatedMobileTap(event){
+      if(!isPhone()) return;
+
+      const card = event.target && event.target.closest
+          ? event.target.closest(".mobile-exact-table")
+          : null;
+
+      if(!card) return;
+
+      const label = card.dataset.table;
+      if(!label) return;
+
+      /* L'événement click natif peut continuer à exister.
+         Le garde anti-double empêche deux ouvertures. */
+      if(event.type === "touchend"){
+          event.preventDefault();
+      }
+      event.stopPropagation();
+
+      callTableAction(label);
+
+      setTimeout(function(){
+          const drawer = document.getElementById("order-drawer");
+          if(drawer) drawer.classList.remove("order-ticket-focus");
+      },20);
+  }
+
+  document.addEventListener("touchend", delegatedMobileTap, {
+      passive:false,
+      capture:true
+  });
+
+  document.addEventListener("click", delegatedMobileTap, true);
+
+  function refreshEveryVisibleUI(){
+      try{
+          if(typeof window.ICHEF_MOBILE_REFRESH === "function"){
+              window.ICHEF_MOBILE_REFRESH();
+          }
+      }catch(_){}
+
+      try{
+          if(typeof window.renderFloor === "function"){
+              window.renderFloor();
+          }
+      }catch(_){}
+
+      try{
+          if(typeof window.renderProTables === "function"){
+              window.renderProTables();
+          }
+      }catch(_){}
+
+      try{
+          if(typeof window.renderService === "function"){
+              window.renderService();
+          }
+      }catch(_){}
+
+      try{
+          if(typeof window.ichefUpdateAntiRushSignal === "function"){
+              window.ichefUpdateAntiRushSignal();
+          }
+      }catch(_){}
+  }
+
+  function reconcile(reason){
+      clearTimeout(reconcileTimer);
+      reconcileTimer = setTimeout(async function(){
+          try{
+              if(typeof window.ICHEF_FORCE_SERVER_SYNC === "function"){
+                  await window.ICHEF_FORCE_SERVER_SYNC(reason || "symbiose");
+              }else if(typeof window.syncData === "function"){
+                  await window.syncData();
+              }
+          }catch(_){}
+
+          refreshEveryVisibleUI();
+      },80);
+  }
+
+  /* Après toute écriture serveur réussie, le client relit la vérité serveur. */
+  document.addEventListener("ichef:server-write-ok", function(){
+      reconcile("server-write-ok");
+  });
+
+  /* Les événements serveur restent prioritaires. */
+  document.addEventListener("ichef:authenticated", function(){
+      reconcile("authenticated");
+  });
+
+  window.addEventListener("online", function(){
+      reconcile("online");
+  });
+
+  window.addEventListener("focus", function(){
+      reconcile("focus");
+  });
+
+  document.addEventListener("visibilitychange", function(){
+      if(!document.hidden) reconcile("visible");
+  });
+
+  window.ICHEF_SYMBIOSE_RECONCILE = reconcile;
+  window.ICHEF_SYMBIOSE_OPEN_TABLE = callTableAction;
+})();
+</script>
 </body>
 </html>
