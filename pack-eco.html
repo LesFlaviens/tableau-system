@@ -2,7 +2,7 @@
 <html lang="fr">
 <head>
 <!-- =========================================================
-     iCHEF — MOBILE TOUCH DÉBLOQUÉ FINAL — 2026-08-22 09:48
+     iCHEF — PIN CORRIGÉ + MOBILE TOUCH — 2026-08-22 15:01
      Fichier stable : iCHEF.html
      PWA : manifest.json + sw.js
      ========================================================= -->
@@ -14,7 +14,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
     
-    <link rel="manifest" href="manifest.json?v=20260822-0948">
+    <link rel="manifest" href="manifest.json?v=20260822-1501">
     <link rel="apple-touch-icon" href="icon-192.png">
     <meta name="mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-capable" content="yes">
@@ -2763,8 +2763,8 @@ body.edit-mode .table-wrapper,body.edit-mode .table-obj,body.edit-mode .zone-obj
         return params.get('tenantID') || (typeof appTenantID !== 'undefined' ? appTenantID : '');
     };
 
-    const ICHEF_ALLOWED_HOSTS = new Set(["os.ichef.ch", "localhost", "127.0.0.1"]);
-    if (!ICHEF_ALLOWED_HOSTS.has(window.location.hostname)) {
+    const ICHEF_ALLOWED_HOSTS_MAIN = new Set(["os.ichef.ch", "localhost", "127.0.0.1"]);
+    if (!ICHEF_ALLOWED_HOSTS_MAIN.has(window.location.hostname)) {
         document.documentElement.innerHTML = "<h1 style='color:red;text-align:center;margin-top:20%;font-family:sans-serif'>🛑 ACCÈS NON AUTORISÉ</h1>";
         throw new Error("Hôte non autorisé");
     }
@@ -3309,6 +3309,13 @@ body.edit-mode .table-wrapper,body.edit-mode .table-obj,body.edit-mode .zone-obj
         loginInProgress = false;
     }
 }
+
+/* iCHEF — PIN BRIDGE STABLE 2026-08-22
+   Rend explicitement le moteur PIN accessible aux gestionnaires tactiles
+   ajoutés plus bas dans le fichier. */
+window.appendPin = appendPin;
+window.clearPin = clearPin;
+window.submitPin = submitPin;
 
 async function requestMaintenanceOverride() {
             if (!(await requirePermission('TERMINAL_MAINTENANCE'))) return;
@@ -16980,32 +16987,53 @@ setTimeout(build,200);
 })();
 </script>
 
-<script id="ichef-pin-click-fix-20260820">
+<script id="ichef-pin-click-fix-20260822">
 (function(){
   "use strict";
-  let lastButton=null;
-  let lastAt=0;
-  const DUPLICATE_MS=520;
 
-  function pinButton(node){ return node?.closest?.("#ichef-pin-pad-final .pin-btn") || null; }
+  let lastPhysicalButton=null;
+  let lastPhysicalAt=0;
+  const SYNTHETIC_CLICK_MS=800;
+
+  function pinButton(node){
+    return node?.closest?.("#ichef-pin-pad-final .pin-btn") || null;
+  }
+
+  function showPinError(message){
+    const box=document.getElementById("error-msg");
+    if(!box) return;
+    box.style.display="block";
+    box.style.color="var(--alert)";
+    box.innerText="❌ "+message;
+  }
+
   function appendDigit(value){
-    if(typeof window.appendPin === "function") return window.appendPin(Number(value));
-    if(typeof appendPin === "function") return appendPin(Number(value));
+    if(typeof window.appendPin !== "function") {
+      showPinError("Moteur PIN indisponible.");
+      return;
+    }
+    window.appendPin(Number(value));
   }
+
   function clearCode(){
-    if(typeof window.clearPin === "function") return window.clearPin();
-    if(typeof clearPin === "function") return clearPin();
+    if(typeof window.clearPin !== "function") {
+      showPinError("Moteur PIN indisponible.");
+      return;
+    }
+    window.clearPin();
   }
+
   function submitCode(){
-    let result;
-    if(typeof window.submitPin === "function") result=window.submitPin();
-    else if(typeof submitPin === "function") result=submitPin();
-    return Promise.resolve(result).catch(function(err){
+    if(typeof window.submitPin !== "function") {
+      showPinError("Moteur PIN indisponible.");
+      return;
+    }
+    Promise.resolve(window.submitPin()).catch(function(err){
       console.error("Erreur submitPin:",err);
-      const box=document.getElementById("error-msg");
-      if(box){ box.style.display="block"; box.style.color="var(--alert)"; box.innerText="❌ "+(err?.message||"Erreur de connexion"); }
+      showPinError(err?.message || "Erreur de connexion");
     });
   }
+
   function run(btn){
     if(!btn) return;
     const digit=btn.getAttribute("data-pin");
@@ -17014,36 +17042,53 @@ setTimeout(build,200);
     if(action==="clear"){ clearCode(); return; }
     if(action==="submit"){ submitCode(); }
   }
-  function activate(e){
+
+  function physicalActivate(e){
     const btn=pinButton(e.target);
     if(!btn) return;
     if(e.type==="pointerup" && e.pointerType==="mouse" && e.button!==0) return;
-    const now=performance.now();
-    if(btn===lastButton && now-lastAt<DUPLICATE_MS){
-      if(e.cancelable) e.preventDefault();
-      e.stopImmediatePropagation?.();
-      return;
-    }
-    lastButton=btn; lastAt=now;
+
+    /* Chaque vrai pointerup/touchend est une nouvelle pression, même si
+       l'utilisateur tape deux fois rapidement le même chiffre. */
+    lastPhysicalButton=btn;
+    lastPhysicalAt=performance.now();
+
     if(e.cancelable) e.preventDefault();
     e.stopImmediatePropagation?.();
     run(btn);
   }
-  document.addEventListener("pointerup",activate,true);
-  if(!window.PointerEvent){ document.addEventListener("touchend",activate,{capture:true,passive:false}); }
-  document.addEventListener("click",activate,true);
+
+  function clickFallback(e){
+    const btn=pinButton(e.target);
+    if(!btn) return;
+
+    const syntheticFromPhysical =
+      btn===lastPhysicalButton &&
+      performance.now()-lastPhysicalAt < SYNTHETIC_CLICK_MS;
+
+    /* Le click synthétique qui suit pointerup/touchend ne doit pas ajouter
+       le chiffre une deuxième fois. Un vrai click clavier/souris reste actif. */
+    if(e.cancelable) e.preventDefault();
+    e.stopImmediatePropagation?.();
+    if(syntheticFromPhysical) return;
+    run(btn);
+  }
+
+  document.addEventListener("pointerup",physicalActivate,true);
+  if(!window.PointerEvent){
+    document.addEventListener("touchend",physicalActivate,{capture:true,passive:false});
+  }
+  document.addEventListener("click",clickFallback,true);
+
   document.addEventListener("keydown",function(e){
     const login=document.getElementById("login-screen");
     if(!login || getComputedStyle(login).display==="none") return;
     if(/^\d$/.test(e.key)){ e.preventDefault(); appendDigit(e.key); }
     else if(e.key==="Enter"){ e.preventDefault(); submitCode(); }
-    else if(e.key==="Backspace" || e.key==="Escape" || e.key==="Delete"){ e.preventDefault(); clearCode(); }
+    else if(e.key==="Backspace" || e.key==="Escape" || e.key==="Delete"){
+      e.preventDefault(); clearCode();
+    }
   },true);
-  try{
-    if(typeof appendPin === "function") window.appendPin=appendPin;
-    if(typeof clearPin === "function") window.clearPin=clearPin;
-    if(typeof submitPin === "function") window.submitPin=submitPin;
-  }catch(_){ }
 })();
 </script>
 
