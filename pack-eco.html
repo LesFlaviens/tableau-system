@@ -2,7 +2,7 @@
 <html lang="fr">
 <head>
 <!-- =========================================================
-     iCHEF — VERSION MULTI-APPAREILS COMMANDES + PAIEMENTS — 2026-08-22 03:19
+     iCHEF — MOBILE COMMANDES FIX FINAL — 2026-08-22 09:34
      Fichier stable : iCHEF.html
      PWA : manifest.json + sw.js
      ========================================================= -->
@@ -14,7 +14,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
     
-    <link rel="manifest" href="manifest.json?v=20260822-0319">
+    <link rel="manifest" href="manifest.json?v=20260822-0934">
     <link rel="apple-touch-icon" href="icon-192.png">
     <meta name="mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-capable" content="yes">
@@ -1938,6 +1938,45 @@ body.edit-mode .table-wrapper,body.edit-mode .table-obj,body.edit-mode .zone-obj
   }
 }
 </style>
+
+<style id="ichef-mobile-command-touch-final">
+@media (max-width:600px){
+  #mobile-exact-service,
+  #mobile-exact-grid,
+  .mobile-exact-table{
+    pointer-events:auto !important;
+  }
+
+  .mobile-exact-table{
+    touch-action:manipulation !important;
+    cursor:pointer !important;
+    -webkit-tap-highlight-color:transparent !important;
+    -webkit-user-select:none !important;
+    user-select:none !important;
+  }
+
+  /* Les spans ne capturent jamais le geste : il arrive au bouton. */
+  .mobile-exact-table > *{
+    pointer-events:none !important;
+  }
+
+  #order-drawer.open{
+    display:flex !important;
+    pointer-events:auto !important;
+  }
+
+  #order-drawer.open button,
+  #order-drawer.open .btn-item,
+  #order-drawer.open .menu-tab,
+  #order-drawer.open input,
+  #order-drawer.open select,
+  #order-drawer.open textarea{
+    pointer-events:auto !important;
+    touch-action:manipulation !important;
+  }
+}
+</style>
+
 </head>
      
 <body oncontextmenu="return false;" ondragstart="return false;" ondrop="return false;">
@@ -10036,21 +10075,55 @@ header .header-left > div:first-of-type{
           '<span class="time">00:00</span>'+
           '<span class="ichef-order-badges"></span>';
 
-        btn.addEventListener('click',()=>{
-          const lab=btn.dataset.table;
+        /* =====================================================
+           TÉLÉPHONE — OUVERTURE DE TABLE FIABLE
+           Aucun listener global/capture : la carte gère son propre geste.
+           ===================================================== */
+        let mobileTapLock=0;
+
+        const openMobileTable=()=>{
+          const now=Date.now();
+          if(now-mobileTapLock<450) return;
+          mobileTapLock=now;
+
+          const lab=String(btn.dataset.table||'').trim();
           if(!lab) return;
+
           try{
+            /* Ferme seulement un éventuel mode plan mobile resté actif. */
+            document.body.classList.remove('mobile-live-plan-open');
+
             if(typeof handleTableOrderTap==='function'){
               handleTableOrderTap(lab,lab);
             }else if(typeof openOrder==='function'){
               openOrder(lab);
+            }else if(typeof window.openOrder==='function'){
+              window.openOrder(lab);
             }
-          }catch(e){console.error(e)}
+          }catch(e){
+            console.error('[iCHEF MOBILE] ouverture table',e);
+          }
+
           setTimeout(()=>{
             const d=$('#order-drawer');
-            if(d)d.classList.remove('order-ticket-focus');
+            if(d){
+              d.classList.remove('order-ticket-focus');
+              d.classList.add('open');
+              d.style.display='flex';
+            }
           },20);
-        });
+        };
+
+        /* Click natif : chemin principal Android / iPhone / navigateur. */
+        btn.addEventListener('click',openMobileTable);
+
+        /* Fallback WebView tactile sans click fiable.
+           Pas de preventDefault/stopPropagation global. */
+        btn.addEventListener('touchend',(e)=>{
+          if(e.changedTouches && e.changedTouches.length===1){
+            openMobileTable();
+          }
+        },{passive:true});
 
         g.appendChild(btn);
       }
@@ -14101,7 +14174,7 @@ html.ichef-security-locked #ichef-security-curtain{
            (location.protocol==="https:" ||
             location.hostname==="localhost" ||
             location.hostname==="127.0.0.1")){
-            navigator.serviceWorker.register("/sw.js?v=20260822-0319",{scope:"/",updateViaCache:"none"})
+            navigator.serviceWorker.register("/sw.js?v=20260822-0934",{scope:"/",updateViaCache:"none"})
                 .then(async reg=>{
                     try {
                         await reg.update();
@@ -14239,8 +14312,13 @@ button[class*="annuler" i] *{
             return null;
         }
 
+        /* IMPORTANT :
+           les cartes du mode téléphone (.mobile-exact-table) ont leur propre
+           gestion tactile native et ne doivent jamais passer par ce garde.
+           Certains WebView mobiles ne produisent pas la séquence Pointer Events
+           complète et leur click serait sinon bloqué. */
         return node.closest(
-            ".pro-table-card, .mobile-exact-table, .table-obj, .table-wrapper"
+            ".pro-table-card, .table-obj, .table-wrapper"
         );
     }
 
@@ -26791,121 +26869,6 @@ body.ichef-ar-cockpit-fullscreen-open{
 }
 </style>
 
-
-
-<!-- iCHEF MOBILE TAP FIX — 2026-08-21 (Optimisé)
-     Autorise les vrais touchers sur les cartes de table lorsque le WebView
-     mobile ne fournit pas toute la séquence Pointer Events. -->
-<style id="ichef-mobile-real-touch-fix-css">
-@media (max-width: 600px) {
-  .mobile-exact-table {
-    touch-action: manipulation !important;
-    pointer-events: auto !important;
-    -webkit-user-select: none !important;
-    user-select: none !important;
-    -webkit-tap-highlight-color: transparent !important; /* Supprime le flash de clic natif iOS/Android */
-  }
-  /* Note : Assure-toi que la carte ne contient pas de boutons nécessitant leur propre événement de clic */
-  .mobile-exact-table * { 
-    pointer-events: none; 
-  }
-}
-</style>
-
-<!-- =========================================================
-     iCHEF MOBILE TAP FIX — 2026-08-21 (Optimisé)
-     Autorise les vrais touchers sur les cartes de table.
-     ========================================================= -->
-<style id="ichef-mobile-real-touch-fix-css">
-@media (max-width: 600px) {
-  .mobile-exact-table {
-    touch-action: manipulation !important;
-    pointer-events: auto !important;
-    -webkit-user-select: none !important;
-    user-select: none !important;
-    -webkit-tap-highlight-color: transparent !important;
-  }
-  .mobile-exact-table * { 
-    pointer-events: none; 
-  }
-}
-</style>
-
-<!-- =========================================================
-     iCHEF MOBILE TAP FIX — 2026-08-21 (Optimisé)
-     Autorise les vrais touchers sur les cartes de table.
-     ========================================================= -->
-<style id="ichef-mobile-real-touch-fix-css">
-@media (max-width: 600px) {
-  .mobile-exact-table {
-    touch-action: manipulation !important;
-    pointer-events: auto !important;
-    -webkit-user-select: none !important;
-    user-select: none !important;
-    -webkit-tap-highlight-color: transparent !important;
-  }
-  .mobile-exact-table * { 
-    pointer-events: none; 
-  }
-}
-</style>
-
-<script id="ichef-mobile-real-touch-fix-js" type="text/ichef-lazy">
-(function() {
-  "use strict";
-  
-  const MAX_MOVE = 18;
-  const MAX_TOUCH_MS = 1400;
-  const ALLOW_MS = 1200;
-  
-  let touch = null;
-
-  const getCard = (node) => (node && node.closest) ? node.closest('.mobile-exact-table') : null;
-
-  document.addEventListener('touchstart', (e) => {
-    if (window.innerWidth > 600 || e.touches.length !== 1) return;
-    
-    const card = getCard(e.target);
-    if (!card) return;
-    
-    const t = e.touches[0];
-    touch = { 
-      card, 
-      x: t.clientX, 
-      y: t.clientY, 
-      at: performance.now(), 
-      moved: false 
-    };
-  }, { capture: true, passive: true });
-
-  document.addEventListener('touchmove', (e) => {
-    if (!touch || e.touches.length !== 1) return;
-    
-    const t = e.touches[0];
-    if (Math.hypot(t.clientX - touch.x, t.clientY - touch.y) > MAX_MOVE) {
-      touch.moved = true;
-    }
-  }, { capture: true, passive: true });
-
-  document.addEventListener('touchend', (e) => {
-    if (!touch) return;
-    
-    const info = touch;
-    touch = null;
-    
-    const t = e.changedTouches && e.changedTouches[0];
-    if (!t || info.moved || (performance.now() - info.at) > MAX_TOUCH_MS) return;
-    
-    if (Math.hypot(t.clientX - info.x, t.clientY - info.y) > MAX_MOVE) return;
-    if (getCard(e.target) !== info.card) return;
-
-    info.card.dataset.ichefRealTapUntil = String(Date.now() + ALLOW_MS);
-  }, { capture: true, passive: true });
-
-  document.addEventListener('touchcancel', () => { touch = null; }, { capture: true, passive: true });
-  document.addEventListener('contextmenu', () => { touch = null; }, { capture: true, passive: true });
-})();
-</script>
 
 <script id="ichef-private-mobile-compat-20260821">
 (function(){
