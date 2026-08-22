@@ -213,7 +213,8 @@ body.sun .product .pname{color:#000}
       <button data-pin="7">7</button><button data-pin="8">8</button><button data-pin="9">9</button>
       <button class="secondary" data-act="clear">EFFACER</button><button data-pin="0">0</button><button class="secondary" data-act="back">⌫</button>
     </div>
-    <button id="previewBtn" type="button">👁️ APERÇU DES 3 ÉCRANS<small>Aucune écriture serveur en mode aperçu</small></button><div id="loginMsg" class="login-msg"></div>
+    <button id="pinValidate" type="button" style="width:100%;height:48px;margin-top:10px;border:1px solid #e2b84e;border-radius:12px;background:rgba(226,184,78,.08);color:#e2b84e;font-size:12px;font-weight:950;letter-spacing:.6px">✓ VALIDER LE PIN</button>
+<button id="previewBtn" type="button">👁️ APERÇU DES 3 ÉCRANS<small>Aucune écriture serveur en mode aperçu</small></button><div id="loginMsg" class="login-msg"></div>
   </div>
 </div>
 
@@ -346,6 +347,93 @@ function duration(ts){
   if(!ts)return"00:00";const d=Math.max(0,now()-Number(ts));const m=Math.floor(d/60000),s=Math.floor((d%60000)/1000);return String(m).padStart(2,"0")+":"+String(s).padStart(2,"0");
 }
 
+
+/* ---------------- COMPATIBILITÉ PAD / KDS ---------------- */
+function itemName(item){
+  return text(item?.name ?? item?.n ?? item?.productName ?? item?.title ?? item?.label ?? "Article");
+}
+function itemPrice(item){
+  return num(item?.price ?? item?.p ?? item?.prix ?? 0);
+}
+function itemQty(item){
+  return Math.max(1,num(item?.qty ?? item?.quantity ?? 1));
+}
+function itemVat(item){
+  const v=item?.vatRate ?? item?.tva ?? item?.taxRate ?? item?.tauxTVA;
+  return v===null||v===undefined||v===""?null:Number(v);
+}
+function guestSeatFromLabel(value){
+  const m=String(value||"").match(/(\d+)/);
+  return m?Math.max(0,Number(m[1])||0):0;
+}
+function normalizeCompatItem(input){
+  const i=input&&typeof input==="object"?{...input}:{};
+  const name=itemName(i);
+  const price=itemPrice(i);
+
+  i.name=name;
+  i.n=name;
+  i.price=price;
+  i.p=price;
+
+  if(i.vatRate===undefined && i.tva!==undefined)i.vatRate=i.tva;
+  if(i.tva===undefined && i.vatRate!==undefined)i.tva=i.vatRate;
+
+  if(!i.category && i.dest)i.category=i.dest;
+  if(!i.dest && i.category)i.dest=i.category;
+  if(!i.dest)i.dest="cuisine";
+
+  if(i.isSent===undefined)i.isSent=!!(i.fired||i.sent||i.sentAt);
+  if(i.fired===undefined)i.fired=!!i.isSent;
+
+  const seat=Number(i.seat||i.guestSeat||i.seatNumber||0)||guestSeatFromLabel(i.guest||i.guestName);
+  i.seat=seat;
+  i.guestSeat=seat;
+  i.seatNumber=seat;
+
+  if(!i.guestName && (i.conviveName||i.personName))i.guestName=text(i.conviveName||i.personName);
+  if(!i.guest && i.guestName)i.guest=i.guestName;
+  if(!i.guestName && i.guest)i.guestName=i.guest;
+  if(i.cooking===undefined && i.cuisson!==undefined)i.cooking=i.cuisson;
+  if(i.cuisson===undefined && i.cooking!==undefined)i.cuisson=i.cooking;
+
+  if(!i.modifiers||typeof i.modifiers!=="object")i.modifiers={add:[],remove:[]};
+  if(!Array.isArray(i.modifiers.add))i.modifiers.add=[];
+  if(!Array.isArray(i.modifiers.remove))i.modifiers.remove=[];
+
+  if(i.obs===undefined)i.obs="";
+  if(i.done===undefined)i.done=false;
+  if(i.served===undefined)i.served=false;
+
+  return i;
+}
+function normalizeCompatOrder(order){
+  if(!order||typeof order!=="object")return order;
+  const o={...order};
+  if(Array.isArray(o.items))o.items=o.items.filter(Boolean).map(normalizeCompatItem);
+  return o;
+}
+function isArchivedOrder(order){
+  if(!order||typeof order!=="object")return false;
+  const status=text(order.status).normalize("NFD").replace(/[\u0300-\u036f]/g,"").toUpperCase();
+  return order.isArchived===true ||
+    status==="ANNULE_OU_SUPPRIME" ||
+    status==="ANNULÉ_OU_SUPPRIMÉ" ||
+    status==="ARCHIVED";
+}
+function normalizeServerOrdersMap(activeOrders){
+  const source=activeOrders&&typeof activeOrders==="object"?activeOrders:{};
+  const out={};
+  Object.entries(source).forEach(([key,value])=>{
+    if(value&&typeof value==="object"&&Array.isArray(value.items)){
+      out[key]=normalizeCompatOrder(value);
+    }else{
+      out[key]=value;
+    }
+  });
+  return out;
+}
+
 /* ---------------- AUTH ---------------- */
 function renderPin(){
   const box=$("pinDots");box.innerHTML="";for(let i=0;i<6;i++){const d=document.createElement("i");if(i<STATE.loginPin.length)d.className="on";box.appendChild(d)}
@@ -358,18 +446,25 @@ async function verifyPin(){
   try{
     const r=await fetch(APP_SERVER_URL+"/api/verify-pin",{method:"POST",cache:"no-store",credentials:"omit",headers:{"Content-Type":"application/json"},body:JSON.stringify({tenantID:STATE.tenantID,pin:STATE.loginPin,deviceId:STATE.deviceId})});
     const j=await r.json().catch(()=>({}));
-    if(!r.ok||!j.success)throw new Error(j.message||"Code refusé");
-    STATE.pin=STATE.loginPin;STATE.role=j.role||"";STATE.plan=j.plan||"";STATE.specialite=j.specialite||"";STATE.authenticated=true;
+    if(!r.ok||!j.success)throw new Error(j.error||j.message||"Code refusé");
+    STATE.pin=STATE.loginPin;
+    if(j.safeTenantID){STATE.tenantID=text(j.safeTenantID);STORAGE.set("ichef_tenant_id",STATE.tenantID)}
+    STATE.role=j.role||"";STATE.plan=j.plan||"";STATE.specialite=j.specialite||"";STATE.authenticated=true;
     $("login").classList.add("hidden");$("app").classList.remove("hidden");$("tools").classList.remove("hidden");
     loginMessage("");await bootApp();
   }catch(e){STATE.loginPin="";renderPin();loginMessage(e.message||"Connexion impossible")}
 }
 $("pinPad").addEventListener("click",e=>{
   const b=e.target.closest("button");if(!b)return;
-  if(b.dataset.pin!==undefined){if(STATE.loginPin.length<6)STATE.loginPin+=b.dataset.pin;renderPin();if(STATE.loginPin.length>=4)clearTimeout(verifyPin.t);verifyPin.t=setTimeout(()=>{if(STATE.loginPin.length>=4)verifyPin()},260)}
+  if(b.dataset.pin!==undefined){
+    if(STATE.loginPin.length<6)STATE.loginPin+=b.dataset.pin;
+    renderPin();
+    loginMessage("");
+  }
   if(b.dataset.act==="clear"){STATE.loginPin="";renderPin();loginMessage("")}
   if(b.dataset.act==="back"){STATE.loginPin=STATE.loginPin.slice(0,-1);renderPin();loginMessage("")}
 });
+$("pinValidate").addEventListener("click",verifyPin);
 if(!STATE.tenantID)$("tenantBox").classList.add("show");renderPin();
 
 /* ---------------- SERVER API ---------------- */
@@ -401,7 +496,17 @@ function loadSocket(){
 }
 async function connectSocket(){
   try{await loadSocket();if(STATE.socket)return;
-    const socket=window.io(APP_SERVER_URL,{transports:["websocket","polling"],upgrade:true,reconnection:true,reconnectionAttempts:Infinity,reconnectionDelay:350,reconnectionDelayMax:2500,timeout:4500});STATE.socket=socket;
+    const socket=window.io(APP_SERVER_URL,{
+      withCredentials:true,
+      transports:["websocket","polling"],
+      upgrade:true,
+      reconnection:true,
+      reconnectionAttempts:Infinity,
+      reconnectionDelay:350,
+      reconnectionDelayMax:2500,
+      timeout:4500,
+      auth:{tenantID:STATE.tenantID,deviceId:STATE.deviceId,terminal:"TELEPHONE"}
+    });STATE.socket=socket;
     socket.on("connect",()=>{STATE.connected=true;setConnection("TEMPS RÉEL","good");socket.emit("joinTenant",String(STATE.tenantID));if(!STATE.lastServerAt||now()-STATE.lastServerAt>5000)syncFull("reconnect")});
     socket.on("updateState",s=>{STATE.connected=true;STATE.lastServerAt=now();setConnection("TEMPS RÉEL","good");applyServerState(s,"socket")});
     socket.on("disconnect",()=>{STATE.connected=false;setConnection(navigator.onLine?"RECONNEXION":"HORS LIGNE",navigator.onLine?"warn":"bad")});
@@ -413,7 +518,35 @@ async function syncFull(reason="manual"){
   try{const s=await getState();STATE.lastServerAt=now();applyServerState(s,reason);if(!STATE.connected)setConnection("SYNCHRO","good")}catch(e){setConnection("HORS LIGNE","bad");toast("Serveur inaccessible",true)}finally{STATE.syncing=false}
 }
 function applyServerState(serverState,source){
-  if(!serverState||typeof serverState!=="object")return;STATE.activeOrders=serverState.activeOrders&&typeof serverState.activeOrders==="object"?serverState.activeOrders:{};if(serverState.sasConfig)STATE.sasConfig=serverState.sasConfig;applyDerived();scheduleRender();checkGlobalAlert();
+  if(!serverState||typeof serverState!=="object")return;
+
+  const incoming=normalizeServerOrdersMap(
+    serverState.activeOrders&&typeof serverState.activeOrders==="object"
+      ?serverState.activeOrders
+      :{}
+  );
+
+  const openedTable=STATE.currentTable;
+  const incomingOpened=openedTable?incoming[openedTable]:null;
+
+  STATE.activeOrders=incoming;
+  if(serverState.sasConfig)STATE.sasConfig=serverState.sasConfig;
+
+  applyDerived();
+
+  if(
+    openedTable &&
+    incomingOpened &&
+    isArchivedOrder(incomingOpened)
+  ){
+    STATE.currentTable=null;
+    STATE.currentOrder=null;
+    document.body.classList.remove("summary-open","order-open");
+    toast("Table fermée sur un autre écran");
+  }
+
+  scheduleRender();
+  checkGlobalAlert();
 }
 window.addEventListener("online",()=>{setConnection("RECONNEXION","warn");connectSocket();syncFull("online")},{passive:true});
 window.addEventListener("offline",()=>{STATE.connected=false;setConnection("HORS LIGNE","bad")},{passive:true});
@@ -424,12 +557,24 @@ function normalizeArchitecture(){
   const raw=unwrap(STATE.activeOrders.ARCHITECTURE)||{};const rooms=Array.isArray(raw.rooms)&&raw.rooms.length?raw.rooms.map(text).filter(Boolean):["Salle Principale"];const tables=Array.isArray(raw.tables)?raw.tables.filter(Boolean).map(t=>({...t,label:text(t.label||t.name||t.id),room:text(t.room||rooms[0])})).filter(t=>t.label):[];const zones=Array.isArray(raw.zones)?raw.zones.filter(Boolean).map(z=>({...z,label:text(z.label||z.name||z.id),room:text(z.room||rooms[0])})):[];STATE.architecture={rooms,tables,zones};STATE.rooms=rooms;STATE.tables=tables;STATE.zones=zones;if(!STATE.rooms.includes(STATE.room))STATE.room=STATE.rooms[0];
 }
 function productFrom(p,cat="Menu",key=""){
-  if(p==null)return null;if(typeof p==="string")return{id:key||p,name:p,price:0,category:cat,available:true};
-  const name=text(p.name||p.nom||p.label||p.title||key);if(!name)return null;const price=num(p.price??p.prix??p.priceTTC??p.prixTTC??p.tarif??p.ttc);const category=text(p.category||p.categorie||p.cat||cat)||"Menu";const available=!(p.available===false||p.disponible===false||p.soldOut===true||p.epuise===true||p.stock===0);return{id:text(p.id||p.productId||p.code||key||name),name,price,category,available,course:text(p.course||p.sequence||p.service||"PLATS"),raw:p};
+  if(p==null)return null;
+  if(typeof p==="string")return{id:key||p,name:p,price:0,category:cat,available:true,course:"PLATS",raw:{n:p,p:0}};
+  const name=text(p.name||p.n||p.nom||p.label||p.title||key);if(!name)return null;
+  const price=num(p.price??p.p??p.prix??p.priceTTC??p.prixTTC??p.tarif??p.ttc);
+  const category=text(p.category||p.categorie||p.cat||cat||p.dest)||"Menu";
+  const available=!(p.available===false||p.disponible===false||p.soldOut===true||p.epuise===true||p.stock===0);
+  return {
+    id:text(p.id||p.productId||p.code||key||name),
+    name,price,category,available,
+    course:text(p.course||p.sequence||p.service||"PLATS"),
+    dest:text(p.dest||p.destination||p.station||category||"cuisine"),
+    vatRate:p.vatRate??p.tva??p.taxRate??null,
+    raw:p
+  };
 }
 function flattenMenu(raw,label){
   raw=unwrap(raw);const out=[];if(!raw)return out;if(Array.isArray(raw)){raw.forEach((p,i)=>{const x=productFrom(p,label,String(i));if(x)out.push(x)});return out}
-  if(typeof raw==="object"){Object.entries(raw).forEach(([k,v])=>{if(Array.isArray(v))v.forEach((p,i)=>{const x=productFrom(p,k,k+"_"+i);if(x)out.push(x)});else if(v&&typeof v==="object"&&!Array.isArray(v)){if(v.name||v.nom||v.label||v.price!==undefined||v.prix!==undefined){const x=productFrom(v,label,k);if(x)out.push(x)}else Object.entries(v).forEach(([k2,p])=>{const x=productFrom(p,k,k2);if(x)out.push(x)})}})}return out;
+  if(typeof raw==="object"){Object.entries(raw).forEach(([k,v])=>{if(Array.isArray(v))v.forEach((p,i)=>{const x=productFrom(p,k,k+"_"+i);if(x)out.push(x)});else if(v&&typeof v==="object"&&!Array.isArray(v)){if(v.name||v.n||v.nom||v.label||v.price!==undefined||v.p!==undefined||v.prix!==undefined){const x=productFrom(v,label,k);if(x)out.push(x)}else Object.entries(v).forEach(([k2,p])=>{const x=productFrom(p,k,k2);if(x)out.push(x)})}})}return out;
 }
 function normalizeMenu(){
   const all=[...flattenMenu(STATE.activeOrders.MENU_MASTER,"Cuisine"),...flattenMenu(STATE.activeOrders.MENU_MASTER_BAR,"Bar"),...flattenMenu(STATE.activeOrders.MENU_MASTER_PATISSERIE,"Pâtisserie")];const map=new Map();all.forEach(p=>map.set(p.id+"|"+p.name,p));STATE.menu=[...map.values()];STATE.categories=["TOUT",...new Set(STATE.menu.map(p=>p.category).filter(Boolean))];if(!STATE.categories.includes(STATE.category))STATE.category="TOUT";
@@ -439,37 +584,160 @@ function applyDerived(){STATE.settings=unwrap(STATE.activeOrders.SETTINGS_MASTER
 
 /* ---------------- ORDERS ---------------- */
 const SYSTEM_KEYS=new Set(["ARCHITECTURE","SETTINGS_MASTER","RESERVATIONS_MASTER","MENU_MASTER","MENU_MASTER_BAR","MENU_MASTER_PATISSERIE","STAFF_ACCESS","LOYALTY_MASTER","TIMESHEETS_MASTER","ALERTS_MASTER","FINANCIAL_HISTORY","AUDIT_MASTER"]);
-function isRealOrder(k,o){return!SYSTEM_KEYS.has(k)&&!String(k).startsWith("FISCAL_")&&!String(k).startsWith("FINANCIAL_CANCEL_")&&o&&typeof o==="object"&&Array.isArray(o.items)}
+function isRealOrder(k,o){
+  return !SYSTEM_KEYS.has(k) &&
+    !String(k).startsWith("FISCAL_") &&
+    !String(k).startsWith("FINANCIAL_CANCEL_") &&
+    o && typeof o==="object" &&
+    !isArchivedOrder(o) &&
+    Array.isArray(o.items);
+}
 function getOrder(table){const o=STATE.activeOrders[table];return isRealOrder(table,o)?o:null}
 function orderCreated(o){if(!o)return 0;let t=Number(o.createdAt||o.openedAt||o.date||0);if(!t&&Array.isArray(o.items)&&o.items.length)t=Math.min(...o.items.map(i=>Number(i.itemId||i.createdAt||i.sentAt||Date.now())).filter(Number.isFinite));return t||0}
-function lineReady(i){return !!(i&&(i.done===true||i.ready===true||i.isReady===true||i.readyAt||String(i.status||i.productionStatus||"").toLowerCase()==="ready"))}
-function lineServed(i){return !!(i&&(i.served===true||i.isServed===true||i.servedAt||String(i.status||"").toLowerCase()==="served"))}
-function lineFired(i){return !!(i&&(i.fired===true||i.sent===true||i.sentAt))}
+function lineReady(i){return !!(i&&(i.done===true||i.ready===true||i.isReady===true||i.readyAt||String(i.sequenceStatus||"").toUpperCase()==="READY"||String(i.status||i.productionStatus||"").toLowerCase()==="ready"))}
+function lineServed(i){return !!(i&&(i.served===true||i.isServed===true||i.servedAt||String(i.sequenceStatus||"").toUpperCase()==="SERVED"||String(i.status||"").toLowerCase()==="served"))}
+function lineFired(i){return !!(i&&(i.isSent===true||i.fired===true||i.sent===true||i.sentAt))}
 function tableStats(table){
   const o=getOrder(table);const res=findReservation(table);if(!o){return{status:res?"reserved":"empty",pax:num(res?.pax||res?.covers||0),ready:0,age:0,total:0}}
   const items=o.items||[];const ready=items.filter(i=>lineReady(i)&&!lineServed(i)).reduce((s,i)=>s+Math.max(1,num(i.qty||i.quantity||1)),0);const waiting=items.some(i=>lineFired(i)&&!lineReady(i));const age=orderCreated(o);let status="active";if(o.alerteRouge||o.alert)status="alert";else if(String(o.status||"").toLowerCase().includes("payment"))status="payment";else if(ready)status="ready";else if(waiting&&age&&now()-age>25*60000)status="late";else if(waiting)status="wait";return{status,pax:num(o.pax||o.covers||0),ready,age,total:orderTotal(o)}
 }
-function orderTotal(o){return(o?.items||[]).reduce((s,i)=>s+num(i.price??i.prix)*Math.max(1,num(i.qty||i.quantity||1)),0)}
+function orderTotal(o){return(o?.items||[]).reduce((s,i)=>s+itemPrice(i)*itemQty(i),0)}
 function ensureOrder(table){let o=getOrder(table);if(o)return clone(o);const t=STATE.tables.find(x=>x.label===table);return{tableId:table,status:"open",pax:num(t?.pax||2)||2,createdAt:Date.now(),updatedAt:Date.now(),items:[],source:"TELEPHONE"}}
 function lineKey(i){return text(i.lineId||i.uuid||i.itemId||i.id||i.name)}
 async function saveCurrent(order,reason){order.updatedAt=Date.now();STATE.currentOrder=clone(order);return optimisticWrite(STATE.currentTable,order,reason)}
 
 function addProduct(product){
   if(!STATE.currentTable)return;
-  const o=ensureOrder(STATE.currentTable),raw=product.raw||{};
-  const same=o.items.find(i=>!lineFired(i)&&text(i.productId||i.id)===product.id&&text(i.guest||"")===""&&!text(i.cooking));
-  if(same)same.qty=Math.max(1,num(same.qty||1))+1;
-  else o.items.push({
-    lineId:uid(),itemId:Date.now(),productId:product.id,name:product.name,price:product.price,qty:1,
-    category:product.category,course:product.course||"PLATS",fired:false,done:false,served:false,
-    guest:null,cooking:"",vatRate:raw.vatRate??raw.tva??raw.taxRate??null,taxCode:raw.taxCode??raw.tvaCode??null,
-    source:"TELEPHONE"
-  });
+
+  const o=ensureOrder(STATE.currentTable);
+  const raw=product.raw||{};
+  const same=o.items.find(i=>
+    !lineFired(i) &&
+    text(i.productId||i.id)===product.id &&
+    !text(i.guest||i.guestName) &&
+    !text(i.cooking)
+  );
+
+  if(same){
+    same.qty=itemQty(same)+1;
+  }else{
+    const name=product.name;
+    const price=product.price;
+    const tva=product.vatRate??raw.vatRate??raw.tva??raw.taxRate??10;
+    const dest=text(product.dest||raw.dest||raw.destination||product.category||"cuisine");
+
+    o.items.push(normalizeCompatItem({
+      id:Date.now()+Math.random(),
+      lineId:uid(),
+      itemId:Date.now(),
+
+      productId:product.id,
+
+      n:name,
+      name:name,
+
+      p:price,
+      price:price,
+
+      tva:tva,
+      vatRate:tva,
+
+      qty:1,
+
+      dest:dest,
+      category:product.category,
+      course:product.course||"PLATS",
+
+      done:false,
+      served:false,
+
+      isSent:false,
+      fired:false,
+
+      savedToDB:false,
+      isOffered:false,
+
+      obs:"",
+      modifiers:{add:[],remove:[]},
+      cooking:null,
+
+      seat:0,
+      guestSeat:0,
+      seatNumber:0,
+      guestName:"",
+      guest:null,
+
+      sequenceStatus:"DRAFT",
+      source:"TELEPHONE"
+    }));
+  }
+
   saveCurrent(o,"Ajout article téléphone");
 }
 function mutateLine(key,action){const o=ensureOrder(STATE.currentTable),i=o.items.find(x=>lineKey(x)===key);if(!i)return;if(action==="plus")i.qty=Math.max(1,num(i.qty||1))+1;if(action==="minus"){i.qty=Math.max(0,num(i.qty||1)-1);if(i.qty<=0)o.items=o.items.filter(x=>x!==i)}if(action==="delete")o.items=o.items.filter(x=>x!==i);saveCurrent(o,"Modification article téléphone")}
 async function sendKitchen(){
-  if(!STATE.currentTable)return;const o=ensureOrder(STATE.currentTable);let changed=0;o.items.forEach(i=>{if(!lineFired(i)){i.fired=true;i.sentAt=Date.now();i.status="sent";changed++}});if(!changed){toast("Rien de nouveau à envoyer");return}o.status="sent";await saveCurrent(o,"Envoi commande cuisine");toast("👨‍🍳 Commande envoyée")
+  if(!STATE.currentTable)return;
+
+  const o=ensureOrder(STATE.currentTable);
+  let changed=0;
+  const stamp=Date.now();
+
+  o.items=o.items.map((raw,index)=>{
+    const i=normalizeCompatItem(raw);
+
+    if(!i.isSent){
+      i.isSent=true;
+      i.fired=true;
+      i.sent=true;
+      i.sentAt=stamp;
+      i.itemId=stamp+index;
+
+      i.menuKnownByKitchen=true;
+      i.sequenceStatus="PRODUCTION";
+      i.requestedAt=stamp;
+
+      const seat=Number(i.seat||i.guestSeat||i.seatNumber||0)||0;
+      i.seat=seat;
+      i.guestSeat=seat;
+      i.seatNumber=seat;
+      if(!i.guestName && i.guest)i.guestName=i.guest;
+
+      changed++;
+    }
+
+    return i;
+  });
+
+  if(!changed){
+    toast("Rien de nouveau à envoyer");
+    return;
+  }
+
+  o.time=new Date().toLocaleTimeString("fr-FR",{hour:"2-digit",minute:"2-digit"});
+  o.status="pending";
+  o.productionStatus="PRODUCTION";
+  o.paymentStatus=o.paymentStatus||"A_PAYER";
+  o.origin=o.origin||"PAD";
+  o.serviceMode=o.serviceMode||"SERVEUR";
+  o.source="TELEPHONE";
+
+  o.orderMeta={
+    ...(o.orderMeta&&typeof o.orderMeta==="object"?o.orderMeta:{}),
+    version:1,
+    origin:"PAD",
+    serviceMode:o.serviceMode,
+    paymentStatus:o.paymentStatus,
+    productionStatus:"PRODUCTION",
+    destinations:[...new Set(o.items.map(i=>text(i.dest||i.category||"CUISINE").toUpperCase()).filter(Boolean))],
+    tableId:STATE.currentTable,
+    updatedAt:new Date().toISOString(),
+    updatedBy:STATE.role||"SERVEUR",
+    deviceId:STATE.deviceId,
+    terminal:"TELEPHONE"
+  };
+
+  const ok=await saveCurrent(o,"Envoi commande cuisine");
+  if(ok)toast("👨‍🍳 Commande synchronisée avec la cuisine");
 }
 function setPax(delta){if(!STATE.currentTable)return;const o=ensureOrder(STATE.currentTable);o.pax=Math.max(1,num(o.pax||2)+delta);saveCurrent(o,"Modification couverts")}
 
@@ -515,7 +783,7 @@ function renderTicket(){
     const state=lineReady(i)?'<span class="line-state ready">PRÊT</span>':lineFired(i)?'<span class="line-state sent">ENVOYÉ</span>':'';
     const cooking=text(i.cooking)?`<span class="cooking-tag">🌡️ ${esc(i.cooking)}</span>`:"";
     const guest=i.guest?`<span class="guest-tag">👤 ${esc(i.guest)}</span>`:"";
-    return `<div class="ticket-row"><div class="ticket-left"><div class="ticket-name">${esc(i.name||i.nom||"Article")} ${guest} ${cooking} ${state}</div><div class="ticket-meta">${esc(i.category||i.course||"")} · x${q}</div></div><div class="ticket-right"><div class="ticket-price">${money(num(i.price??i.prix)*q)}</div><div class="qtybar"><button data-line="${esc(key)}" data-act="minus">−</button><button data-line="${esc(key)}" data-act="plus">+</button><button data-line="${esc(key)}" data-act="delete">×</button></div></div></div>`;
+    return `<div class="ticket-row"><div class="ticket-left"><div class="ticket-name">${esc(itemName(i))} ${guest} ${cooking} ${state}</div><div class="ticket-meta">${esc(i.category||i.course||"")} · x${q}</div></div><div class="ticket-right"><div class="ticket-price">${money(itemPrice(i)*q)}</div><div class="qtybar"><button data-line="${esc(key)}" data-act="minus">−</button><button data-line="${esc(key)}" data-act="plus">+</button><button data-line="${esc(key)}" data-act="delete">×</button></div></div></div>`;
   }).join(""):'<div class="empty-state">Touchez un gros bouton produit pour commencer la commande.</div>';
 }
 
@@ -544,7 +812,17 @@ $("sheetClose").onclick=closeSheet;$("sheet").addEventListener("click",e=>{if(e.
 function openRush(){const r=rushSnapshot();const color=r.level<=1?"var(--green)":r.level<=3?"var(--gold)":r.level===4?"var(--orange)":"var(--red)";openSheet("🔥 ANTI-RUSH",`<div class="big-state" style="border-color:${color}"><div class="big" style="color:${color}">N${r.level} · ${r.label}</div><div class="small">${r.active} table(s) · ${r.waiting} en attente · ${r.ready} prêt(s) · plus ancienne ${r.ageMin} min</div></div><div class="action-grid"><button class="action-btn green">🍳 CUISINE<br>${r.kitchen}%</button><button class="action-btn gold">🍸 BAR<br>${r.bar}%</button></div>`)}
 
 function openWho(){
-  if(!STATE.currentTable){toast("Ouvrez d’abord une table",true);return}const o=STATE.currentOrder||ensureOrder(STATE.currentTable);const pax=Math.max(1,num(o.pax||2));if(!o.items.length){toast("Ajoutez d’abord des articles",true);return}openSheet("👥 QUI MANGE QUOI ?",`<div class="list">${o.items.map(i=>`<div class="list-row"><div class="grow"><div class="title">${esc(i.name||"Article")}</div><div class="sub">${i.guest?"Attribué à "+esc(i.guest):"Non attribué"}</div></div><select class="field" style="width:132px;min-height:36px" data-guest-line="${esc(lineKey(i))}"><option value="">—</option>${Array.from({length:pax},(_,n)=>`<option value="Convive ${n+1}" ${i.guest===`Convive ${n+1}`?"selected":""}>Convive ${n+1}</option>`).join("")}</select></div>`).join("")}</div>`);$("sheetBody").querySelectorAll("[data-guest-line]").forEach(sel=>sel.addEventListener("change",()=>{const oo=ensureOrder(STATE.currentTable),it=oo.items.find(x=>lineKey(x)===sel.dataset.guestLine);if(it){it.guest=sel.value||null;saveCurrent(oo,"Attribution convive");renderTicket()}}))
+  if(!STATE.currentTable){toast("Ouvrez d’abord une table",true);return}const o=STATE.currentOrder||ensureOrder(STATE.currentTable);const pax=Math.max(1,num(o.pax||2));if(!o.items.length){toast("Ajoutez d’abord des articles",true);return}openSheet("👥 QUI MANGE QUOI ?",`<div class="list">${o.items.map(i=>`<div class="list-row"><div class="grow"><div class="title">${esc(itemName(i))}</div><div class="sub">${i.guest?"Attribué à "+esc(i.guest):"Non attribué"}</div></div><select class="field" style="width:132px;min-height:36px" data-guest-line="${esc(lineKey(i))}"><option value="">—</option>${Array.from({length:pax},(_,n)=>`<option value="Convive ${n+1}" ${i.guest===`Convive ${n+1}`?"selected":""}>Convive ${n+1}</option>`).join("")}</select></div>`).join("")}</div>`);$("sheetBody").querySelectorAll("[data-guest-line]").forEach(sel=>sel.addEventListener("change",()=>{const oo=ensureOrder(STATE.currentTable),it=oo.items.find(x=>lineKey(x)===sel.dataset.guestLine);if(it){
+  const guest=sel.value||null;
+  const seat=guestSeatFromLabel(guest);
+  it.guest=guest;
+  it.guestName=guest||"";
+  it.seat=seat;
+  it.guestSeat=seat;
+  it.seatNumber=seat;
+  saveCurrent(oo,"Attribution convive");
+  renderTicket();
+}}))
 }
 
 function openDisplay(){openSheet("☀️ AFFICHAGE",`<div class="action-grid"><button class="action-btn gold" data-display="auto">⚡ AUTO<br><small>Adaptatif</small></button><button class="action-btn gold" data-display="sun">☀️ ANTI-SOLEIL<br><small>Contraste fort</small></button><button class="action-btn" data-display="normal">◐ NORMAL<br><small>Standard</small></button><button class="action-btn purple" data-display="night">🌙 NUIT<br><small>Noir profond</small></button></div>`);$("sheetBody").querySelectorAll("[data-display]").forEach(b=>b.onclick=()=>{applyDisplay(b.dataset.display);autoDisplay();closeSheet()})}
@@ -596,7 +874,7 @@ async function deleteOrder(){if(!STATE.currentTable)return;const reason=prompt("
 
 /* ---------------- CUISSONS ---------------- */
 function cookingOptions(item){
-  const hay=(text(item.name)+" "+text(item.category)+" "+text(item.course)).toLowerCase();
+  const hay=(itemName(item)+" "+text(item.category||item.dest)+" "+text(item.course)).toLowerCase();
   if(/boeuf|bœuf|steak|entrec|filet|canard|agneau|burger|viande/.test(hay))return ["","BLEU","SAIGNANT","À POINT","BIEN CUIT"];
   if(/poisson|perche|saumon|thon|cabillaud|dorade|bar\b/.test(hay))return ["","NACRÉ","À POINT","BIEN CUIT"];
   if(/oeuf|œuf/.test(hay))return ["","COULANT","MOLLET","BIEN CUIT"];
@@ -608,7 +886,7 @@ function openCooking(){
   if(!o.items.length){toast("Ajoutez d’abord des articles",true);return}
   openSheet("🌡️ CUISSONS",`<div class="list">${o.items.map(i=>`
     <div class="list-row">
-      <div class="grow"><div class="title">${esc(i.name||"Article")}</div><div class="sub">${i.cooking?`Cuisson : ${esc(i.cooking)}`:"Aucune cuisson définie"}</div></div>
+      <div class="grow"><div class="title">${esc(itemName(i))}</div><div class="sub">${i.cooking?`Cuisson : ${esc(i.cooking)}`:"Aucune cuisson définie"}</div></div>
       <select class="field" style="width:145px" data-cooking-line="${esc(lineKey(i))}">
         ${cookingOptions(i).map(opt=>`<option value="${esc(opt)}" ${text(i.cooking)===opt?"selected":""}>${opt||"AUCUNE"}</option>`).join("")}
       </select>
@@ -631,9 +909,9 @@ function fiscalProfile(){
 }
 function normalizeTaxRate(value){let rate=Number(value);if(!Number.isFinite(rate))return null;if(rate>0&&rate<1)rate*=100;return Math.round(rate*100)/100}
 function itemVatRate(item){
-  const explicit=normalizeTaxRate(item.vatRate??item.tva??item.taxRate??item.tauxTVA);
+  const explicit=normalizeTaxRate(itemVat(item)??item.taxRate??item.tauxTVA);
   if(explicit!==null)return explicit;
-  const profile=fiscalProfile(),label=(text(item.name)+" "+text(item.category)+" "+text(item.course)).toLowerCase();
+  const profile=fiscalProfile(),label=(itemName(item)+" "+text(item.category||item.dest)+" "+text(item.course)).toLowerCase();
   if(profile.country==="FR"){if(/alcool|vin\b|bi[eè]re|champagne|cocktail|spiritueux/.test(label))return 20;return 10}
   if(profile.country==="CH")return 8.1;
   return 0;
@@ -641,7 +919,7 @@ function itemVatRate(item){
 function fiscalBreakdown(order){
   const groups=new Map();let grossTotal=0;
   (order?.items||[]).forEach(item=>{
-    const qty=Math.max(1,num(item.qty||item.quantity||1)),gross=num(item.price??item.prix)*qty,rate=itemVatRate(item);
+    const qty=itemQty(item),gross=itemPrice(item)*qty,rate=itemVatRate(item);
     const net=rate>0?gross/(1+rate/100):gross,tax=gross-net;grossTotal+=gross;
     const key=String(rate),row=groups.get(key)||{rate,gross:0,net:0,tax:0};
     row.gross+=gross;row.net+=net;row.tax+=tax;groups.set(key,row);
@@ -671,7 +949,7 @@ function renderSummary(){
   $("summaryContent").innerHTML=groups.length?groups.map(([guest,items])=>`
     <section class="summary-group"><div class="summary-group-title">👤 ${esc(guest)}</div>
       ${items.map(item=>{const qty=Math.max(1,num(item.qty||item.quantity||1));const meta=[`x${qty}`,text(item.cooking)?`Cuisson : ${text(item.cooking)}`:"",lineReady(item)?"PRÊT":lineFired(item)?"EN CUISINE":"À ENVOYER"].filter(Boolean).join(" · ");return `
-        <div class="summary-item"><div><div class="summary-item-name">${esc(item.name||"Article")}</div><div class="summary-item-meta">${esc(meta)}</div></div><div class="summary-item-price">${money(num(item.price??item.prix)*qty)}</div></div>`}).join("")}
+        <div class="summary-item"><div><div class="summary-item-name">${esc(itemName(item))}</div><div class="summary-item-meta">${esc(meta)}</div></div><div class="summary-item-price">${money(itemPrice(item)*qty)}</div></div>`}).join("")}
     </section>`).join(""):'<div class="empty-state">En attente de saisie…</div>';
 
   const p=fiscal.profile;
@@ -682,11 +960,64 @@ function renderSummary(){
 }
 async function recordPayment(method){
   if(!STATE.currentTable)return false;
-  const o=ensureOrder(STATE.currentTable),fiscal=fiscalBreakdown(o),total=orderTotal(o);
-  o.status="payment";
-  o.paymentDraft={total,method,status:method?"recorded":"pending",at:Date.now(),source:"TELEPHONE",fiscalCountry:fiscal.profile.country,fiscalRows:fiscal.rows.map(r=>({rate:r.rate,gross:r.gross,net:r.net,tax:r.tax}))};
-  const ok=await saveCurrent(o,method?"Paiement téléphone enregistré":"Paiement en attente");
-  if(ok){await fiscalEvent("PAYMENT",{method:method||null,total,fiscalCountry:fiscal.profile.country,rows:o.paymentDraft.fiscalRows});toast(method?`Paiement ${method} enregistré`:"Paiement en attente")}
+
+  const o=ensureOrder(STATE.currentTable);
+  const fiscal=fiscalBreakdown(o);
+  const total=orderTotal(o);
+  const paymentMethod=method||null;
+
+  const payments=paymentMethod
+    ? [{method:paymentMethod,amount:total,createdAt:new Date().toISOString(),source:"TELEPHONE"}]
+    : [];
+
+  const remaining=paymentMethod?0:total;
+
+  o.paymentDraft={
+    version:1,
+    payments,
+    total,
+    remaining,
+    fidelityDiscountUsed:0,
+    status:paymentMethod?"PAYE":"A_PAYER",
+    updatedAt:new Date().toISOString(),
+    updatedBy:STATE.role||"SERVEUR",
+    deviceId:STATE.deviceId,
+    fiscalCountry:fiscal.profile.country,
+    fiscalRows:fiscal.rows.map(r=>({rate:r.rate,gross:r.gross,net:r.net,tax:r.tax}))
+  };
+
+  o.paymentStatus=paymentMethod?"PAYE":"A_PAYER";
+  o.status=paymentMethod?"payment":"pending";
+  o.orderMeta={
+    ...(o.orderMeta&&typeof o.orderMeta==="object"?o.orderMeta:{}),
+    version:1,
+    origin:o.orderMeta?.origin||"PAD",
+    serviceMode:o.orderMeta?.serviceMode||"SERVEUR",
+    paymentStatus:o.paymentStatus,
+    productionStatus:o.orderMeta?.productionStatus||o.productionStatus||"WAITING",
+    tableId:STATE.currentTable,
+    updatedAt:new Date().toISOString(),
+    updatedBy:STATE.role||"SERVEUR",
+    deviceId:STATE.deviceId,
+    terminal:"TELEPHONE"
+  };
+
+  const ok=await saveCurrent(
+    o,
+    paymentMethod?"Paiement téléphone enregistré":"Paiement en attente"
+  );
+
+  if(ok){
+    await fiscalEvent("PAYMENT",{
+      method:paymentMethod,
+      total,
+      remaining,
+      fiscalCountry:fiscal.profile.country,
+      rows:o.paymentDraft.fiscalRows
+    });
+    toast(paymentMethod?`Paiement ${paymentMethod} synchronisé`:"Paiement en attente");
+  }
+
   return ok;
 }
 
@@ -784,6 +1115,7 @@ function buildDemoState(){
     }
   };
 
+  STATE.activeOrders=normalizeServerOrdersMap(STATE.activeOrders);
   applyDerived();
   STATE.room="Salle Principale";
 }
