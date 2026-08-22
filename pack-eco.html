@@ -9693,25 +9693,34 @@ header .header-left > div:first-of-type{
     }
   }
 
-  window.ICHEF_FORCE_SERVER_SYNC = forceServerSync;
+ window.ICHEF_FORCE_SERVER_SYNC = forceServerSync;
 
   function connectRealtime(){
-    if(!APP_SERVER_URL || !appTenantID) {
-      setLinkStatus('SYNCHRO', true);
+    // 🛡️ DÉFINITION LOCALE SÉCURISÉE (Évite le crash ReferenceError si APP_SERVER_URL n'est pas défini plus haut)
+    const urlServeur = (typeof APP_SERVER_URL !== 'undefined' && APP_SERVER_URL)
+        ? APP_SERVER_URL
+        : ((window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1")
+            ? "http://localhost:10000" 
+            : "https://tableau-system.onrender.com");
+
+    if(!appTenantID) {
+      if(typeof setLinkStatus === 'function') setLinkStatus('SYNCHRO', true);
       return;
     }
+
     if(typeof io !== 'function') {
-      setLinkStatus('SYNCHRO', true);
+      if(typeof setLinkStatus === 'function') setLinkStatus('SYNCHRO', true);
       if(!connectRealtime.__ichefSocketLoading && typeof window.ICHEF_LOAD_SOCKET_IO==='function'){
         connectRealtime.__ichefSocketLoading=true;
         window.ICHEF_LOAD_SOCKET_IO()
           .then(()=>{ connectRealtime.__ichefSocketLoading=false; connectRealtime(); })
-          .catch(()=>{ connectRealtime.__ichefSocketLoading=false; setLinkStatus('SYNCHRO', true); });
+          .catch(()=>{ connectRealtime.__ichefSocketLoading=false; if(typeof setLinkStatus === 'function') setLinkStatus('SYNCHRO', true); });
       }
       return;
     }
+
     try{
-      socket = io(APP_SERVER_URL, {
+      socket = io(urlServeur, { // 👈 On utilise l'URL sécurisée ici
         withCredentials: true,
         transports: ['websocket','polling'],
         reconnection: true,
@@ -9726,13 +9735,24 @@ header .header-left > div:first-of-type{
       });
 
       socket.on('connect', function(){
-        setLinkStatus('TEMPS RÉEL', true);
+        if(typeof setLinkStatus === 'function') setLinkStatus('TEMPS RÉEL', true);
         socket.emit('joinTenant', {
           tenantID: appTenantID,
           deviceId: window.ICHEF_SECURITY?.deviceId || null,
           page: 'PAD_SERVEUR'
         });
         forceServerSync('socket-connect');
+      });
+
+      // ⚡ NOUVEAUX SIGNAUX DE SYMBIOSE INTÉGRÉS ⚡
+      socket.on('server-state-changed', function(data) {
+          console.log("🔄 Signal WebSocket (server-state-changed) :", data);
+          forceServerSync('websocket-state-changed');
+      });
+
+      socket.on('updateState', function(data) {
+          console.log("🔄 Signal WebSocket (updateState) reçu.");
+          forceServerSync('websocket-updateState');
       });
 
       socket.on('orderLifecycle', function(evt){
@@ -9764,6 +9784,10 @@ header .header-left > div:first-of-type{
           if(typeof window.ichefUpdateAntiRushSignal==='function') window.ichefUpdateAntiRushSignal();
         }catch(err){ }
       });
+    } catch(err) {
+      console.error("Erreur WebSockets:", err);
+    }
+  }
 
       socket.on('updateState', function(state){
         try{
