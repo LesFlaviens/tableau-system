@@ -2085,16 +2085,16 @@ app.post('/update-order', async (req, res) => {
             updateQuery = { $set: { [`activeOrders.${tableId}`]: order } };
         }
 
-        const newState = await AppState.findOneAndUpdate(
+     const newState = await AppState.findOneAndUpdate(
             { tenantID }, 
             updateQuery, 
             { upsert: true, new: true }
         );
         
-        // 1. Diffuse le changement en temps réel (format classique pour KDS/Cuisine)
+        // 1. Mise à jour classique
         io.to(tenantID).emit("updateState", newState);
 
-        // 2. ⚡ NOUVEAU : Signal de symbiose pour rafraîchir instantanément les autres Pad Serveur
+        // 2. LE SIGNAL DE SYMBIOSE POUR TES PADS
         io.to(tenantID).emit("server-state-changed", { tableId: tableId, source: "update-order" });
 
         res.json({ success: true });
