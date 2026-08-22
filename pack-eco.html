@@ -2,7 +2,7 @@
 <html lang="fr">
 <head>
 <!-- =========================================================
-     iCHEF — VERSION CANONIQUE MISE À JOUR — 2026-08-22 01:02
+     iCHEF — VERSION MULTI-APPAREILS COMMANDES + PAIEMENTS — 2026-08-22 03:19
      Fichier stable : iCHEF.html
      PWA : manifest.json + sw.js
      ========================================================= -->
@@ -14,7 +14,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
     
-    <link rel="manifest" href="manifest.json?v=20260822-0102">
+    <link rel="manifest" href="manifest.json?v=20260822-0319">
     <link rel="apple-touch-icon" href="icon-192.png">
     <meta name="mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-capable" content="yes">
@@ -3227,6 +3227,16 @@ let unifiedCategories = [];
                     }));
                 } catch (_) {}
 
+                /* Après chaque écriture, relire rapidement la vérité serveur
+                   sur cet appareil. */
+                try {
+                    setTimeout(function(){
+                        if (typeof window.ICHEF_FORCE_SERVER_SYNC === 'function') {
+                            window.ICHEF_FORCE_SERVER_SYNC('after-write:' + normalizedKey);
+                        }
+                    }, 80);
+                } catch (_) {}
+
                 return result;
             }
         };
@@ -4286,6 +4296,21 @@ renderDynamicCategories();
 
                                 renderRooms();
                                 renderFloor();
+
+                                /* Téléphone : le plan serveur remplace immédiatement
+                                   le plan local de secours (ex. T1 / 4 couverts). */
+                                try {
+                                    if (typeof window.ICHEF_MOBILE_REFRESH === 'function') {
+                                        window.ICHEF_MOBILE_REFRESH();
+                                    } else {
+                                        if (typeof window.ICHEF_MOBILE_RENDER_SERVICE === 'function') {
+                                            window.ICHEF_MOBILE_RENDER_SERVICE();
+                                        }
+                                        if (typeof window.ICHEF_MOBILE_UPDATE_STATUS === 'function') {
+                                            window.ICHEF_MOBILE_UPDATE_STATUS();
+                                        }
+                                    }
+                                } catch (_) {}
                             }
                         }
                     }
@@ -4302,6 +4327,17 @@ renderDynamicCategories();
             currentTicket = JSON.parse(serverHash);
             renderTicket();
         }
+
+        try {
+            const paymentModal = document.getElementById('payment-modal');
+            if (
+                paymentModal &&
+                paymentModal.classList.contains('open') &&
+                typeof applyPaymentDraftFromOrder === 'function'
+            ) {
+                applyPaymentDraftFromOrder(serverOrder, true);
+            }
+        } catch (_) {}
     }
 }
 
@@ -4971,6 +5007,11 @@ let rIndex = reservationsData.findIndex(r =>
 
             try {
                 await API.update('ARCHITECTURE', architecture);
+                try {
+                    if (typeof window.ICHEF_FORCE_SERVER_SYNC === 'function') {
+                        setTimeout(()=>window.ICHEF_FORCE_SERVER_SYNC('architecture-saved'), 80);
+                    }
+                } catch (_) {}
                 ICHEF_STORAGE.setItem('empire_architecture', JSON.stringify(architecture.tables));
                 ICHEF_STORAGE.setItem('empire_rooms', JSON.stringify(architecture.rooms));
                 ICHEF_STORAGE.setItem('empire_zones', JSON.stringify(architecture.zones));
@@ -6584,7 +6625,7 @@ ${count} ligne(s) · ${sequenceCount} séquence(s).
 
         const ICHEF_TABLE_WRITE_QUEUES = new Map();
 
-        async function executeSaveTableState(fireAllNew = false, keepOpen = false) {
+        async function executeSaveTableState(fireAllNew = false, keepOpen = false, paymentDraftOverride = undefined) {
             if (currentTicket.length === 0 && !keepOpen) return true;
 
             const itemsToSave = JSON.parse(JSON.stringify(currentTicket));
@@ -6610,13 +6651,36 @@ ${count} ligne(s) · ${sequenceCount} séquence(s).
                 observations: obsToSave
             };
 
+            /* État d'encaissement en cours partagé entre tous les appareils. */
+            const inheritedPaymentDraft =
+                previousOrder && previousOrder.paymentDraft && typeof previousOrder.paymentDraft === 'object'
+                    ? previousOrder.paymentDraft
+                    : null;
+
+            const paymentDraft =
+                paymentDraftOverride !== undefined
+                    ? paymentDraftOverride
+                    : inheritedPaymentDraft;
+
+            if (paymentDraft && typeof paymentDraft === 'object') {
+                payload.paymentDraft = JSON.parse(JSON.stringify(paymentDraft));
+            }
+
+            const hasPaymentDraft =
+                !!(
+                    payload.paymentDraft &&
+                    Array.isArray(payload.paymentDraft.payments) &&
+                    payload.paymentDraft.payments.length
+                );
+
             /* Origine/service/paiement/production sont toujours transportés
                avec la commande. Si elle vient du QR, on conserve son origine. */
             payload.orderMeta = getUnifiedOrderMeta(
                 {...previousOrder, ...payload},
                 targetTable,
                 {
-                    productionStatus: inferOrderProductionStatus(payload)
+                    productionStatus: inferOrderProductionStatus(payload),
+                    paymentStatus: hasPaymentDraft ? 'PARTIEL' : undefined
                 }
             );
 
@@ -6817,6 +6881,80 @@ ${count} ligne(s) · ${sequenceCount} séquence(s).
         let currentPayRemaining = 0;
         let fidelityDiscountUsed = 0; 
         let loyaltyClientName = null;
+
+        /* =========================================================
+           iCHEF — PAIEMENT PARTAGÉ MULTI-APPAREILS
+           ========================================================= */
+
+        function buildPaymentDraft() {
+            return {
+                version: 1,
+                payments: JSON.parse(JSON.stringify(Array.isArray(paymentsDone) ? paymentsDone : [])),
+                total: Number(currentTableTotal || 0),
+                remaining: Math.max(0, Number(currentPayRemaining || 0)),
+                fidelityDiscountUsed: Number(fidelityDiscountUsed || 0),
+                status: (Array.isArray(paymentsDone) && paymentsDone.length) ? 'PARTIEL' : 'A_PAYER',
+                updatedAt: new Date().toISOString(),
+                updatedBy: currentUser?.name || null,
+                deviceId: window.ICHEF_SECURITY?.deviceId || null
+            };
+        }
+
+        function applyPaymentDraftFromOrder(order, refreshUI = true) {
+            const draft = order && order.paymentDraft && typeof order.paymentDraft === 'object'
+                ? order.paymentDraft
+                : null;
+            if (!draft) return false;
+
+            paymentsDone = Array.isArray(draft.payments)
+                ? JSON.parse(JSON.stringify(draft.payments))
+                : [];
+
+            if (Number.isFinite(Number(draft.total)) && Number(draft.total) >= 0) {
+                currentTableTotal = Number(draft.total);
+            }
+
+            currentPayRemaining = Number.isFinite(Number(draft.remaining))
+                ? Math.max(0, Number(draft.remaining))
+                : Math.max(0, currentTableTotal - paymentsDone.reduce((s,p)=>s + Number(p?.amount || 0), 0));
+
+            fidelityDiscountUsed = Number.isFinite(Number(draft.fidelityDiscountUsed))
+                ? Number(draft.fidelityDiscountUsed)
+                : 0;
+
+            if (refreshUI && typeof updatePaymentUI === 'function') {
+                try { updatePaymentUI(); } catch (_) {}
+            }
+            return true;
+        }
+
+        async function syncPaymentDraftState(reason = 'payment-draft') {
+            if (!currentTableId || !Array.isArray(currentTicket) || !currentTicket.length) return false;
+            try {
+                const draft = buildPaymentDraft();
+                const ok = await executeSaveTableState(false, true, draft);
+
+                if (ok && activeOrders && activeOrders[currentTableId]) {
+                    activeOrders[currentTableId].paymentDraft = JSON.parse(JSON.stringify(draft));
+                    activeOrders[currentTableId].paymentStatus = draft.status;
+                    activeOrders[currentTableId].orderMeta = getUnifiedOrderMeta(
+                        activeOrders[currentTableId],
+                        currentTableId,
+                        { paymentStatus: draft.status }
+                    );
+                }
+
+                if (typeof window.ICHEF_FORCE_SERVER_SYNC === 'function') {
+                    setTimeout(()=>window.ICHEF_FORCE_SERVER_SYNC(reason), 60);
+                }
+                return !!ok;
+            } catch (err) {
+                console.warn('[iCHEF] Synchronisation paiement différée :', err);
+                return false;
+            }
+        }
+
+        window.ICHEF_SYNC_PAYMENT_DRAFT = syncPaymentDraftState;
 
         // ==========================================
         // 🌍 PROFIL FISCAL / CONFORMITÉ FRANCE - SUISSE
@@ -7237,9 +7375,19 @@ ${count} ligne(s) · ${sequenceCount} séquence(s).
             document.getElementById('pay-modal-title').innerText = "TABLE " + currentTableId;
             document.getElementById('pay-modal-total').innerText = formatMoneyPad(currentTableTotal);
 
-            paymentsDone = [];
-            fidelityDiscountUsed = 0;
-            currentPayRemaining = currentTableTotal;
+            const serverPaymentOrder = activeOrders && activeOrders[currentTableId]
+                ? activeOrders[currentTableId]
+                : null;
+
+            if (!applyPaymentDraftFromOrder(serverPaymentOrder, false)) {
+                paymentsDone = [];
+                fidelityDiscountUsed = 0;
+                currentPayRemaining = currentTableTotal;
+            } else if (Number(currentTableTotal || 0) > 0) {
+                const alreadyPaid = paymentsDone.reduce((s,p)=>s + Number(p?.amount || 0), 0);
+                currentPayRemaining = Math.max(0, currentTableTotal - alreadyPaid);
+            }
+
             updatePaymentUI();
 
             let lZone = document.getElementById('loyalty-zone');
@@ -7292,7 +7440,7 @@ ${count} ligne(s) · ${sequenceCount} séquence(s).
             }
         }
 
-        function useLoyaltyPoints() {
+        async function useLoyaltyPoints() {
             if(!currentLoyaltyPhone || !globalLoyaltyData[currentLoyaltyPhone]) return;
             let solde = globalLoyaltyData[currentLoyaltyPhone].points || 0;
             
@@ -7313,13 +7461,14 @@ ${count} ligne(s) · ${sequenceCount} séquence(s).
             
             updateLoyaltyUI();
             updatePaymentUI();
+            await syncPaymentDraftState('loyalty-payment');
         }
 
         function setRemainderAmount() {
             document.getElementById('pay-amount-input').value = currentPayRemaining.toFixed(2);
         }
 
-        function processPartialPayment(method) {
+        async function processPartialPayment(method) {
             let amtInput = document.getElementById('pay-amount-input').value;
             let amt = parseFloat(amtInput.replace(',', '.'));
             if(isNaN(amt) || amt <= 0) return alert("⚠️ Saisissez un montant valide.");
@@ -7341,6 +7490,7 @@ ${count} ligne(s) · ${sequenceCount} séquence(s).
             currentPayRemaining -= amt;
             if(currentPayRemaining < 0) currentPayRemaining = 0;
             updatePaymentUI();
+            await syncPaymentDraftState('partial-payment');
         }
 
         function updatePaymentUI() {
@@ -7450,6 +7600,19 @@ ${count} ligne(s) · ${sequenceCount} séquence(s).
                 document.dispatchEvent(new CustomEvent('ichef:financial-history-updated'));
 
                 await API.update(currentTableId, null, true, { reason: 'Clôture de table après encaissement validé', operationType: 'TABLE_CLOSED' });
+
+                try {
+                    if (activeOrders && currentTableId) delete activeOrders[currentTableId];
+                    if (typeof window.ICHEF_FORCE_SERVER_SYNC === 'function') {
+                        await window.ICHEF_FORCE_SERVER_SYNC('payment-finalized');
+                    }
+                    if (typeof window.ICHEF_MOBILE_REFRESH === 'function') {
+                        window.ICHEF_MOBILE_REFRESH();
+                    }
+                    if (typeof renderFloor === 'function') renderFloor();
+                    if (typeof renderProTables === 'function') renderProTables();
+                } catch (_) {}
+
                 window.print();
 
                 if (fiscalStatus === "FISCALIZED") {
@@ -9409,35 +9572,11 @@ header .header-left > div:first-of-type{
   let syncBusy = false;
 
   function setLinkStatus(label, ok){
-
-    /* Ordinateur / tablette : comportement existant */
-    const el =
-        document.getElementById('pro-link');
-
-    if(el){
-        el.textContent = label;
-        el.style.color =
-            ok ? '#57e565' : '#f0b84f';
-    }
-
-
-    /* Téléphone : vrai état serveur */
-    const mobile =
-        document.getElementById('mx-link');
-
-    if(mobile){
-        mobile.textContent = label;
-        mobile.style.color =
-            ok ? '#45ee5b' : '#ffb13b';
-    }
-
-
-    window.ICHEF_LINK_STATUS = {
-        label: label,
-        ok: !!ok,
-        at: Date.now()
-    };
-}
+    const el = document.getElementById('pro-link');
+    if(!el) return;
+    el.textContent = label;
+    el.style.color = ok ? '#57e565' : '#f0b84f';
+  }
 
   async function forceServerSync(reason){
     if(syncBusy || typeof syncData !== 'function' || document.hidden) return;
@@ -9455,1038 +9594,138 @@ header .header-left > div:first-of-type{
 
   window.ICHEF_FORCE_SERVER_SYNC = forceServerSync;
 
-/* =========================================================
-   iCHEF — CONNEXION TEMPS RÉEL MULTI-APPAREILS
-   Téléphone / Tablette / Ordinateur
-   ========================================================= */
-
-function connectRealtime(){
-
-    if(!APP_SERVER_URL || !appTenantID){
-
-        setLinkStatus(
-            'SYNCHRO',
-            true
-        );
-
-        return;
+  function connectRealtime(){
+    if(!APP_SERVER_URL || !appTenantID) {
+      setLinkStatus('SYNCHRO', true);
+      return;
     }
-
-
-    /* =====================================================
-       Évite d'ouvrir plusieurs sockets en même temps
-       ===================================================== */
-
-    if(
-        socket &&
-        (
-            socket.connected ||
-            socket.active
-        )
-    ){
-
-        if(socket.connected){
-
-            setLinkStatus(
-                'TEMPS RÉEL',
-                true
-            );
-
-        }
-
-        return;
+    if(typeof io !== 'function') {
+      setLinkStatus('SYNCHRO', true);
+      if(!connectRealtime.__ichefSocketLoading && typeof window.ICHEF_LOAD_SOCKET_IO==='function'){
+        connectRealtime.__ichefSocketLoading=true;
+        window.ICHEF_LOAD_SOCKET_IO()
+          .then(()=>{ connectRealtime.__ichefSocketLoading=false; connectRealtime(); })
+          .catch(()=>{ connectRealtime.__ichefSocketLoading=false; setLinkStatus('SYNCHRO', true); });
+      }
+      return;
     }
-
-
-    /* =====================================================
-       Chargement Socket.IO si nécessaire
-       ===================================================== */
-
-    if(typeof io !== 'function'){
-
-        setLinkStatus(
-            'CONNEXION…',
-            true
-        );
-
-
-        if(
-            !connectRealtime.__ichefSocketLoading &&
-            typeof window.ICHEF_LOAD_SOCKET_IO ===
-                'function'
-        ){
-
-            connectRealtime.__ichefSocketLoading =
-                true;
-
-
-            window.ICHEF_LOAD_SOCKET_IO()
-
-                .then(()=>{
-
-                    connectRealtime
-                        .__ichefSocketLoading =
-                        false;
-
-                    connectRealtime();
-
-                })
-
-                .catch((err)=>{
-
-                    connectRealtime
-                        .__ichefSocketLoading =
-                        false;
-
-                    console.warn(
-                        '[iCHEF] Socket.IO indisponible',
-                        err
-                    );
-
-                    setLinkStatus(
-                        'SYNCHRO',
-                        true
-                    );
-
-                });
-
-        }
-
-        return;
-    }
-
-
     try{
+      socket = io(APP_SERVER_URL, {
+        withCredentials: true,
+        transports: ['websocket','polling'],
+        reconnection: true,
+        reconnectionAttempts: Infinity,
+        reconnectionDelay: 1000,
+        reconnectionDelayMax: 5000,
+        timeout: 5000,
+        auth: {
+          tenantID: appTenantID,
+          deviceId: window.ICHEF_SECURITY?.deviceId || null
+        }
+      });
 
-        /* =================================================
-           Création connexion Socket.IO
-           ================================================= */
+      socket.on('connect', function(){
+        setLinkStatus('TEMPS RÉEL', true);
+        socket.emit('joinTenant', {
+          tenantID: appTenantID,
+          deviceId: window.ICHEF_SECURITY?.deviceId || null,
+          page: 'PAD_SERVEUR'
+        });
+        forceServerSync('socket-connect');
+      });
 
-        socket = io(
-            APP_SERVER_URL,
-            {
+      socket.on('orderLifecycle', function(evt){
+        try{
+          if(!evt || String(evt.tenantID||'').toLowerCase() !== String(appTenantID||'').toLowerCase()) return;
+          const tableId=String(evt.tableId||'');
+          if(!tableId) return;
 
-                withCredentials: true,
-
-                transports: [
-                    'websocket',
-                    'polling'
-                ],
-
-                reconnection: true,
-
-                reconnectionAttempts:
-                    Infinity,
-
-                reconnectionDelay:
-                    1000,
-
-                reconnectionDelayMax:
-                    5000,
-
-                timeout:
-                    8000,
-
-                forceNew:
-                    false,
-
-                auth: {
-
-                    tenantID:
-                        appTenantID,
-
-                    deviceId:
-                        window.ICHEF_SECURITY
-                            ?.deviceId ||
-                        null,
-
-                    sessionToken:
-                        window.ICHEF_SECURITY
-                            ?.sessionToken ||
-                        null
-
-                }
-
+          if(evt.deleted){
+            delete activeOrders[tableId];
+          }else if(evt.order){
+            if(typeof isRealServiceOrder === 'function' && !isRealServiceOrder(tableId, evt.order)){
+                delete activeOrders[tableId];
+            }else{
+                activeOrders[tableId]=evt.order;
             }
-        );
-
-
-        /* =================================================
-           CONNECTÉ
-           ================================================= */
-
-        socket.on(
-            'connect',
-            function(){
-
-                setLinkStatus(
-                    'TEMPS RÉEL',
-                    true
-                );
-
-
-                socket.emit(
-                    'joinTenant',
-                    {
-
-                        tenantID:
-                            appTenantID,
-
-                        deviceId:
-                            window.ICHEF_SECURITY
-                                ?.deviceId ||
-                            null,
-
-                        page:
-                            'PAD_SERVEUR',
-
-                        deviceType:
-                            window.innerWidth <= 600
-                                ? 'PHONE'
-                                : window.innerWidth <= 1100
-                                    ? 'TABLET'
-                                    : 'DESKTOP'
-
-                    }
-                );
-
-
-                forceServerSync(
-                    'socket-connect'
-                );
-
-
-                /* Téléphone :
-                   rafraîchit immédiatement
-                   la vue après connexion */
-
-                if(
-                    window.innerWidth <= 600
-                ){
-
-                    setTimeout(
-                        function(){
-
-                            try{
-
-                                if(
-                                    typeof window
-                                        .ICHEF_MOBILE_REFRESH
-                                    === 'function'
-                                ){
-
-                                    window
-                                        .ICHEF_MOBILE_REFRESH();
-
-                                }
-
-                            }catch(_){}
-
-                        },
-                        100
-                    );
-
-                }
-
-            }
-        );
-
-
-        /* =================================================
-           COMMANDE MODIFIÉE SUR UN AUTRE APPAREIL
-           ================================================= */
-
-        socket.on(
-            'orderLifecycle',
-            function(evt){
-
-                try{
-
-                    if(
-                        !evt ||
-                        String(
-                            evt.tenantID || ''
-                        ).toLowerCase() !==
-                        String(
-                            appTenantID || ''
-                        ).toLowerCase()
-                    ){
-
-                        return;
-
-                    }
-
-
-                    const tableId =
-                        String(
-                            evt.tableId || ''
-                        );
-
-
-                    if(!tableId){
-                        return;
-                    }
-
-
-                    if(evt.deleted){
-
-                        delete activeOrders[
-                            tableId
-                        ];
-
-                    }else if(evt.order){
-
-                        if(
-                            typeof isRealServiceOrder
-                                === 'function' &&
-                            !isRealServiceOrder(
-                                tableId,
-                                evt.order
-                            )
-                        ){
-
-                            delete activeOrders[
-                                tableId
-                            ];
-
-                        }else{
-
-                            activeOrders[
-                                tableId
-                            ] =
-                                evt.order;
-
-                        }
-
-                    }
-
-
-                    /* =============================
-                       ORDINATEUR / TABLETTE
-                       ============================= */
-
-                    if(
-                        typeof renderFloor ===
-                            'function'
-                    ){
-                        renderFloor();
-                    }
-
-
-                    if(
-                        typeof renderProTables ===
-                            'function'
-                    ){
-                        renderProTables();
-                    }
-
-
-                    if(
-                        typeof renderService ===
-                            'function'
-                    ){
-                        renderService();
-                    }
-
-
-                    /* =============================
-                       TÉLÉPHONE
-                       ============================= */
-
-                    if(
-                        typeof window
-                            .ICHEF_MOBILE_REFRESH
-                        === 'function'
-                    ){
-
-                        window
-                            .ICHEF_MOBILE_REFRESH();
-
-                    }else{
-
-                        if(
-                            typeof window
-                                .ICHEF_MOBILE_RENDER_SERVICE
-                            === 'function'
-                        ){
-
-                            window
-                                .ICHEF_MOBILE_RENDER_SERVICE();
-
-                        }
-
-
-                        if(
-                            typeof window
-                                .ICHEF_MOBILE_UPDATE_STATUS
-                            === 'function'
-                        ){
-
-                            window
-                                .ICHEF_MOBILE_UPDATE_STATUS();
-
-                        }
-
-                    }
-
-
-                    if(
-                        typeof updateSequenceServicePanel
-                            === 'function' &&
-                        String(currentTableId) ===
-                            tableId
-                    ){
-
-                        updateSequenceServicePanel();
-
-                    }
-
-
-                    if(
-                        typeof window
-                            .ichefRefreshCompactOrderCards
-                        === 'function'
-                    ){
-
-                        window
-                            .ichefRefreshCompactOrderCards();
-
-                    }
-
-
-                    if(
-                        typeof window
-                            .ichefRefreshReadyNeon
-                        === 'function'
-                    ){
-
-                        window
-                            .ichefRefreshReadyNeon();
-
-                    }
-
-
-                    if(
-                        typeof window
-                            .ichefUpdateAntiRushSignal
-                        === 'function'
-                    ){
-
-                        window
-                            .ichefUpdateAntiRushSignal();
-
-                    }
-
-                }catch(err){
-
-                    console.error(
-                        '[iCHEF] orderLifecycle',
-                        err
-                    );
-
-                }
-
-            }
-        );
-
-
-        /* =================================================
-           ÉTAT COMPLET REÇU DU SERVEUR
-           ================================================= */
-
-        socket.on(
-            'updateState',
-            function(state){
-
-                try{
-
-                    if(
-                        !state ||
-                        !state.activeOrders
-                    ){
-
-                        return;
-
-                    }
-
-
-                    activeOrders =
-                        (
-                            typeof sanitizeServerOrders
-                            === 'function'
-                        )
-
-                        ? sanitizeServerOrders(
-                            state.activeOrders
-                        )
-
-                        : state.activeOrders;
-
-
-                    if(
-                        typeof renderFloor ===
-                            'function'
-                    ){
-                        renderFloor();
-                    }
-
-
-                    if(
-                        typeof renderProTables ===
-                            'function'
-                    ){
-                        renderProTables();
-                    }
-
-
-                    if(
-                        typeof renderService ===
-                            'function'
-                    ){
-                        renderService();
-                    }
-
-
-                    if(
-                        typeof window
-                            .ICHEF_MOBILE_REFRESH
-                        === 'function'
-                    ){
-
-                        window
-                            .ICHEF_MOBILE_REFRESH();
-
-                    }else{
-
-                        if(
-                            typeof window
-                                .ICHEF_MOBILE_RENDER_SERVICE
-                            === 'function'
-                        ){
-
-                            window
-                                .ICHEF_MOBILE_RENDER_SERVICE();
-
-                        }
-
-
-                        if(
-                            typeof window
-                                .ICHEF_MOBILE_UPDATE_STATUS
-                            === 'function'
-                        ){
-
-                            window
-                                .ICHEF_MOBILE_UPDATE_STATUS();
-
-                        }
-
-                    }
-
-
-                    if(
-                        typeof window
-                            .ichefUpdateAntiRushSignal
-                        === 'function'
-                    ){
-
-                        window
-                            .ichefUpdateAntiRushSignal();
-
-                    }
-
-
-                    setLinkStatus(
-                        socket &&
-                        socket.connected
-
-                            ? 'TEMPS RÉEL'
-                            : 'SYNCHRO OK',
-
-                        true
-                    );
-
-                }catch(err){
-
-                    console.error(
-                        '[iCHEF] updateState',
-                        err
-                    );
-
-                }
-
-            }
-        );
-
-
-        /* =================================================
-           DÉCONNEXION
-           ================================================= */
-
-        socket.on(
-            'disconnect',
-            function(reason){
-
-                console.warn(
-                    '[iCHEF] Socket déconnecté',
-                    reason
-                );
-
-
-                if(
-                    navigator.onLine
-                ){
-
-                    setLinkStatus(
-                        'RECONNEXION…',
-                        true
-                    );
-
-                }else{
-
-                    setLinkStatus(
-                        'HORS LIGNE',
-                        false
-                    );
-
-                }
-
-            }
-        );
-
-
-        /* =================================================
-           ERREUR CONNEXION
-           ================================================= */
-
-        socket.on(
-            'connect_error',
-            function(err){
-
-                console.warn(
-                    '[iCHEF] erreur socket',
-                    err
-                );
-
-
-                if(
-                    navigator.onLine
-                ){
-
-                    setLinkStatus(
-                        'SYNCHRO',
-                        true
-                    );
-
-                }else{
-
-                    setLinkStatus(
-                        'HORS LIGNE',
-                        false
-                    );
-
-                }
-
-            }
-        );
-
-
+          }
+
+          if(typeof renderFloor==='function') renderFloor();
+          if(typeof renderProTables==='function') renderProTables();
+          if(typeof renderService==='function') renderService();
+          if(typeof window.ICHEF_MOBILE_RENDER_SERVICE==='function') window.ICHEF_MOBILE_RENDER_SERVICE();
+          if(typeof window.ICHEF_MOBILE_UPDATE_STATUS==='function') window.ICHEF_MOBILE_UPDATE_STATUS();
+          if(typeof updateSequenceServicePanel==='function' && String(currentTableId)===tableId){
+            updateSequenceServicePanel();
+          }
+          if(typeof window.ichefRefreshCompactOrderCards==='function') window.ichefRefreshCompactOrderCards();
+          if(typeof window.ichefRefreshReadyNeon==='function') window.ichefRefreshReadyNeon();
+          if(typeof window.ichefUpdateAntiRushSignal==='function') window.ichefUpdateAntiRushSignal();
+        }catch(err){ }
+      });
+
+      socket.on('updateState', function(state){
+        try{
+          if(state && state.activeOrders){
+            activeOrders = (typeof sanitizeServerOrders === 'function')
+                ? sanitizeServerOrders(state.activeOrders)
+                : state.activeOrders;
+            if(typeof renderFloor==='function') renderFloor();
+            if(typeof renderProTables==='function') renderProTables();
+            if(typeof renderService==='function') renderService();
+            if(typeof window.ICHEF_MOBILE_RENDER_SERVICE==='function') window.ICHEF_MOBILE_RENDER_SERVICE();
+            if(typeof window.ICHEF_MOBILE_UPDATE_STATUS==='function') window.ICHEF_MOBILE_UPDATE_STATUS();
+            if(typeof window.ichefUpdateAntiRushSignal==='function') window.ichefUpdateAntiRushSignal();
+          }
+        }catch(err){ }
+      });
+      
+      socket.on('disconnect', function(){ setLinkStatus('SYNCHRO 3s', true); });
+      socket.on('connect_error', function(){ setLinkStatus('SYNCHRO 3s', true); });
     }catch(err){
-
-        console.error(
-            '[iCHEF] connectRealtime',
-            err
-        );
-
-
-        setLinkStatus(
-            navigator.onLine
-                ? 'SYNCHRO'
-                : 'HORS LIGNE',
-
-            navigator.onLine
-        );
-
+      setLinkStatus('SYNCHRO 3s', true);
     }
-
-}
-
-
-/* =========================================================
-   EXPOSITION POUR LE MODE TÉLÉPHONE
-   ========================================================= */
-
-window.ICHEF_CONNECT_REALTIME =
-    connectRealtime;
-
-
-/* =========================================================
-   RAFRAÎCHISSEMENT MANUEL SANS RELOAD
-   ========================================================= */
-
-window.ICHEF_MOBILE_SYNC_NOW =
-async function(){
-
-    if(
-        !navigator.onLine
-    ){
-
-        setLinkStatus(
-            'HORS LIGNE',
-            false
-        );
-
-        return false;
-    }
-
-
-    setLinkStatus(
-        'SYNCHRO…',
-        true
-    );
-
-
-    try{
-
-        connectRealtime();
-
-
-        if(
-            typeof window
-                .ICHEF_FORCE_SERVER_SYNC
-            === 'function'
-        ){
-
-            await window
-                .ICHEF_FORCE_SERVER_SYNC(
-                    'mobile-manual'
-                );
-
-        }else{
-
-            await forceServerSync(
-                'mobile-manual'
-            );
-
-        }
-
-
-        if(
-            typeof window
-                .ICHEF_MOBILE_REFRESH
-            === 'function'
-        ){
-
-            window
-                .ICHEF_MOBILE_REFRESH();
-
-        }
-
-
-        setLinkStatus(
-            socket &&
-            socket.connected
-
-                ? 'TEMPS RÉEL'
-                : 'SYNCHRO OK',
-
-            true
-        );
-
-
-        return true;
-
-
-    }catch(err){
-
-        console.error(
-            '[iCHEF MOBILE] synchronisation',
-            err
-        );
-
-
-        setLinkStatus(
-            'ERREUR SYNCHRO',
-            false
-        );
-
-
-        return false;
-
-    }
-
-};
-
-
-/* =========================================================
-   RÉSEAU REVIENT
-   ========================================================= */
-
-window.addEventListener(
-    'online',
-    function(){
-
-        setLinkStatus(
-            'RECONNEXION…',
-            true
-        );
-
-
-        connectRealtime();
-
-
-        forceServerSync(
-            'online'
-        );
-
-    }
-);
-
-
-/* =========================================================
-   RÉSEAU PERDU
-   ========================================================= */
-
-window.addEventListener(
-    'offline',
-    function(){
-
-        setLinkStatus(
-            'HORS LIGNE',
-            false
-        );
-
-    }
-);
-
-
-/* =========================================================
-   RETOUR DANS L'APPLICATION
-   ========================================================= */
-
-document.addEventListener(
-    'visibilitychange',
-    function(){
-
-        if(
-            !document.hidden
-        ){
-
-            connectRealtime();
-
-            forceServerSync(
-                'visible'
-            );
-
-        }
-
-    }
-);
-
-
-window.addEventListener(
-    'focus',
-    function(){
-
-        connectRealtime();
-
-        forceServerSync(
-            'focus'
-        );
-
-    }
-);
-
-
-/* =========================================================
-   WATCHDOG
-   ========================================================= */
-
-setInterval(
-    function(){
-
-        if(
-            document.hidden ||
-            !navigator.onLine
-        ){
-
-            return;
-
-        }
-
-
-        if(
-            !socket ||
-            !socket.connected
-        ){
-
-            connectRealtime();
-
-        }
-
-
-        if(
-            !lastServerSyncAt ||
-            Date.now() -
-            lastServerSyncAt >
-            7000
-        ){
-
-            forceServerSync(
-                'watchdog'
-            );
-
-        }
-
-    },
-
-    window.innerWidth <= 600
-        ? 6000
-        : 5000
-);
-
-
-/* =========================================================
-   DÉMARRAGE RÉSEAU
-   ========================================================= */
-
-let networkBooted =
-    false;
-
-
-function bootNetwork(){
-
-    if(
-        networkBooted
-    ){
-
-        return;
-
-    }
-
-
-    networkBooted =
-        true;
-
-
-    setLinkStatus(
-
-        navigator.onLine
-
-            ? 'CONNEXION…'
-            : 'HORS LIGNE',
-
-        navigator.onLine
-
-    );
-
-
-    /* Première lecture serveur */
-
-    forceServerSync(
-        'initial-dom'
-    );
-
-
-    /* Socket ensuite */
-
-    setTimeout(
-        function(){
-
-            connectRealtime();
-
-
-            forceServerSync(
-                'initial-realtime'
-            );
-
-        },
-        150
-    );
-
-}
-
-
-/* =========================================================
-   DÉMARRAGE DOM
-   ========================================================= */
-
-if(
-    document.readyState ===
-    'loading'
-){
-
-    document.addEventListener(
-        'DOMContentLoaded',
-        bootNetwork,
-        {
-            once:true
-        }
-    );
-
-}else{
-
-    bootNetwork();
-
-}
-
-
-/* =========================================================
-   FILET DE SÉCURITÉ WEBVIEW / PWA
-   ========================================================= */
-
-setTimeout(
-    bootNetwork,
-    1200
-);
-
-
-/* =========================================================
-   APRÈS AUTHENTIFICATION PIN
-   TÉLÉPHONE UNIQUEMENT
-   ========================================================= */
-
-window.addEventListener(
-    'ichef:authenticated',
-    function(){
-
-        if(
-            window.innerWidth > 600
-        ){
-
-            return;
-
-        }
-
-
-        setTimeout(
-            function(){
-
-                connectRealtime();
-
-
-                forceServerSync(
-                    'mobile-after-pin'
-                );
-
-
-                if(
-                    typeof window
-                        .ICHEF_MOBILE_REFRESH
-                    === 'function'
-                ){
-
-                    window
-                        .ICHEF_MOBILE_REFRESH();
-
-                }
-
-            },
-            120
-        );
-
-    }
-);
+  }
+
+  window.addEventListener('online', function(){ forceServerSync('online'); });
+  window.addEventListener('offline', function(){ setLinkStatus('HORS LIGNE', false); });
+  document.addEventListener('visibilitychange', function(){ if(!document.hidden) forceServerSync('visible'); });
+  window.addEventListener('focus', function(){ forceServerSync('focus'); });
+
+  setInterval(function(){
+    if(document.hidden || !navigator.onLine) return;
+    if(!lastServerSyncAt || Date.now() - lastServerSyncAt > 7000) forceServerSync('watchdog');
+  }, window.innerWidth<=600 ? 8000 : 5000);
+
+  /* iCHEF PHONE SYNC FIX:
+     la synchro ne doit jamais attendre window.load sur un gros fichier mobile. */
+  let networkBooted = false;
+
+  function bootNetwork(){
+      if(networkBooted) return;
+      networkBooted = true;
+
+      setLinkStatus(navigator.onLine ? 'CONNEXION…' : 'HORS LIGNE', navigator.onLine);
+
+      /* Première récupération serveur immédiate. */
+      forceServerSync('initial-dom');
+
+      /* Socket ensuite, sans bloquer le premier affichage. */
+      setTimeout(function(){
+          connectRealtime();
+          forceServerSync('initial-realtime');
+      }, 150);
+  }
+
+  if(document.readyState === 'loading'){
+      document.addEventListener('DOMContentLoaded', bootNetwork, {once:true});
+  }else{
+      bootNetwork();
+  }
+
+  /* Filet de sécurité si un WebView mobile a un cycle DOM atypique. */
+  setTimeout(bootNetwork, 1200);
+})();
 </script>
 <style id="ichef-mobile-exact-captures">
 @media (max-width:600px){
@@ -14862,7 +14101,7 @@ html.ichef-security-locked #ichef-security-curtain{
            (location.protocol==="https:" ||
             location.hostname==="localhost" ||
             location.hostname==="127.0.0.1")){
-            navigator.serviceWorker.register("/sw.js?v=20260822-0102",{scope:"/",updateViaCache:"none"})
+            navigator.serviceWorker.register("/sw.js?v=20260822-0319",{scope:"/",updateViaCache:"none"})
                 .then(async reg=>{
                     try {
                         await reg.update();
