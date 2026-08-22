@@ -9455,138 +9455,1038 @@ header .header-left > div:first-of-type{
 
   window.ICHEF_FORCE_SERVER_SYNC = forceServerSync;
 
-  function connectRealtime(){
-    if(!APP_SERVER_URL || !appTenantID) {
-      setLinkStatus('SYNCHRO', true);
-      return;
+/* =========================================================
+   iCHEF — CONNEXION TEMPS RÉEL MULTI-APPAREILS
+   Téléphone / Tablette / Ordinateur
+   ========================================================= */
+
+function connectRealtime(){
+
+    if(!APP_SERVER_URL || !appTenantID){
+
+        setLinkStatus(
+            'SYNCHRO',
+            true
+        );
+
+        return;
     }
-    if(typeof io !== 'function') {
-      setLinkStatus('SYNCHRO', true);
-      if(!connectRealtime.__ichefSocketLoading && typeof window.ICHEF_LOAD_SOCKET_IO==='function'){
-        connectRealtime.__ichefSocketLoading=true;
-        window.ICHEF_LOAD_SOCKET_IO()
-          .then(()=>{ connectRealtime.__ichefSocketLoading=false; connectRealtime(); })
-          .catch(()=>{ connectRealtime.__ichefSocketLoading=false; setLinkStatus('SYNCHRO', true); });
-      }
-      return;
-    }
-    try{
-      socket = io(APP_SERVER_URL, {
-        withCredentials: true,
-        transports: ['websocket','polling'],
-        reconnection: true,
-        reconnectionAttempts: Infinity,
-        reconnectionDelay: 1000,
-        reconnectionDelayMax: 5000,
-        timeout: 5000,
-        auth: {
-          tenantID: appTenantID,
-          deviceId: window.ICHEF_SECURITY?.deviceId || null
+
+
+    /* =====================================================
+       Évite d'ouvrir plusieurs sockets en même temps
+       ===================================================== */
+
+    if(
+        socket &&
+        (
+            socket.connected ||
+            socket.active
+        )
+    ){
+
+        if(socket.connected){
+
+            setLinkStatus(
+                'TEMPS RÉEL',
+                true
+            );
+
         }
-      });
 
-      socket.on('connect', function(){
-        setLinkStatus('TEMPS RÉEL', true);
-        socket.emit('joinTenant', {
-          tenantID: appTenantID,
-          deviceId: window.ICHEF_SECURITY?.deviceId || null,
-          page: 'PAD_SERVEUR'
-        });
-        forceServerSync('socket-connect');
-      });
-
-      socket.on('orderLifecycle', function(evt){
-        try{
-          if(!evt || String(evt.tenantID||'').toLowerCase() !== String(appTenantID||'').toLowerCase()) return;
-          const tableId=String(evt.tableId||'');
-          if(!tableId) return;
-
-          if(evt.deleted){
-            delete activeOrders[tableId];
-          }else if(evt.order){
-            if(typeof isRealServiceOrder === 'function' && !isRealServiceOrder(tableId, evt.order)){
-                delete activeOrders[tableId];
-            }else{
-                activeOrders[tableId]=evt.order;
-            }
-          }
-
-          if(typeof renderFloor==='function') renderFloor();
-          if(typeof renderProTables==='function') renderProTables();
-          if(typeof renderService==='function') renderService();
-          if(typeof window.ICHEF_MOBILE_RENDER_SERVICE==='function') window.ICHEF_MOBILE_RENDER_SERVICE();
-          if(typeof window.ICHEF_MOBILE_UPDATE_STATUS==='function') window.ICHEF_MOBILE_UPDATE_STATUS();
-          if(typeof updateSequenceServicePanel==='function' && String(currentTableId)===tableId){
-            updateSequenceServicePanel();
-          }
-          if(typeof window.ichefRefreshCompactOrderCards==='function') window.ichefRefreshCompactOrderCards();
-          if(typeof window.ichefRefreshReadyNeon==='function') window.ichefRefreshReadyNeon();
-          if(typeof window.ichefUpdateAntiRushSignal==='function') window.ichefUpdateAntiRushSignal();
-        }catch(err){ }
-      });
-
-      socket.on('updateState', function(state){
-        try{
-          if(state && state.activeOrders){
-            activeOrders = (typeof sanitizeServerOrders === 'function')
-                ? sanitizeServerOrders(state.activeOrders)
-                : state.activeOrders;
-            if(typeof renderFloor==='function') renderFloor();
-            if(typeof renderProTables==='function') renderProTables();
-            if(typeof renderService==='function') renderService();
-            if(typeof window.ICHEF_MOBILE_RENDER_SERVICE==='function') window.ICHEF_MOBILE_RENDER_SERVICE();
-            if(typeof window.ICHEF_MOBILE_UPDATE_STATUS==='function') window.ICHEF_MOBILE_UPDATE_STATUS();
-            if(typeof window.ichefUpdateAntiRushSignal==='function') window.ichefUpdateAntiRushSignal();
-          }
-        }catch(err){ }
-      });
-      
-      socket.on('disconnect', function(){ setLinkStatus('SYNCHRO 3s', true); });
-      socket.on('connect_error', function(){ setLinkStatus('SYNCHRO 3s', true); });
-    }catch(err){
-      setLinkStatus('SYNCHRO 3s', true);
+        return;
     }
-  }
 
-  window.addEventListener('online', function(){ forceServerSync('online'); });
-  window.addEventListener('offline', function(){ setLinkStatus('HORS LIGNE', false); });
-  document.addEventListener('visibilitychange', function(){ if(!document.hidden) forceServerSync('visible'); });
-  window.addEventListener('focus', function(){ forceServerSync('focus'); });
 
-  setInterval(function(){
-    if(document.hidden || !navigator.onLine) return;
-    if(!lastServerSyncAt || Date.now() - lastServerSyncAt > 7000) forceServerSync('watchdog');
-  }, window.innerWidth<=600 ? 8000 : 5000);
+    /* =====================================================
+       Chargement Socket.IO si nécessaire
+       ===================================================== */
 
-  /* iCHEF PHONE SYNC FIX:
-     la synchro ne doit jamais attendre window.load sur un gros fichier mobile. */
-  let networkBooted = false;
+    if(typeof io !== 'function'){
 
-  function bootNetwork(){
-      if(networkBooted) return;
-      networkBooted = true;
+        setLinkStatus(
+            'CONNEXION…',
+            true
+        );
 
-      setLinkStatus(navigator.onLine ? 'CONNEXION…' : 'HORS LIGNE', navigator.onLine);
 
-      /* Première récupération serveur immédiate. */
-      forceServerSync('initial-dom');
+        if(
+            !connectRealtime.__ichefSocketLoading &&
+            typeof window.ICHEF_LOAD_SOCKET_IO ===
+                'function'
+        ){
 
-      /* Socket ensuite, sans bloquer le premier affichage. */
-      setTimeout(function(){
-          connectRealtime();
-          forceServerSync('initial-realtime');
-      }, 150);
-  }
+            connectRealtime.__ichefSocketLoading =
+                true;
 
-  if(document.readyState === 'loading'){
-      document.addEventListener('DOMContentLoaded', bootNetwork, {once:true});
-  }else{
-      bootNetwork();
-  }
 
-  /* Filet de sécurité si un WebView mobile a un cycle DOM atypique. */
-  setTimeout(bootNetwork, 1200);
-})();
+            window.ICHEF_LOAD_SOCKET_IO()
+
+                .then(()=>{
+
+                    connectRealtime
+                        .__ichefSocketLoading =
+                        false;
+
+                    connectRealtime();
+
+                })
+
+                .catch((err)=>{
+
+                    connectRealtime
+                        .__ichefSocketLoading =
+                        false;
+
+                    console.warn(
+                        '[iCHEF] Socket.IO indisponible',
+                        err
+                    );
+
+                    setLinkStatus(
+                        'SYNCHRO',
+                        true
+                    );
+
+                });
+
+        }
+
+        return;
+    }
+
+
+    try{
+
+        /* =================================================
+           Création connexion Socket.IO
+           ================================================= */
+
+        socket = io(
+            APP_SERVER_URL,
+            {
+
+                withCredentials: true,
+
+                transports: [
+                    'websocket',
+                    'polling'
+                ],
+
+                reconnection: true,
+
+                reconnectionAttempts:
+                    Infinity,
+
+                reconnectionDelay:
+                    1000,
+
+                reconnectionDelayMax:
+                    5000,
+
+                timeout:
+                    8000,
+
+                forceNew:
+                    false,
+
+                auth: {
+
+                    tenantID:
+                        appTenantID,
+
+                    deviceId:
+                        window.ICHEF_SECURITY
+                            ?.deviceId ||
+                        null,
+
+                    sessionToken:
+                        window.ICHEF_SECURITY
+                            ?.sessionToken ||
+                        null
+
+                }
+
+            }
+        );
+
+
+        /* =================================================
+           CONNECTÉ
+           ================================================= */
+
+        socket.on(
+            'connect',
+            function(){
+
+                setLinkStatus(
+                    'TEMPS RÉEL',
+                    true
+                );
+
+
+                socket.emit(
+                    'joinTenant',
+                    {
+
+                        tenantID:
+                            appTenantID,
+
+                        deviceId:
+                            window.ICHEF_SECURITY
+                                ?.deviceId ||
+                            null,
+
+                        page:
+                            'PAD_SERVEUR',
+
+                        deviceType:
+                            window.innerWidth <= 600
+                                ? 'PHONE'
+                                : window.innerWidth <= 1100
+                                    ? 'TABLET'
+                                    : 'DESKTOP'
+
+                    }
+                );
+
+
+                forceServerSync(
+                    'socket-connect'
+                );
+
+
+                /* Téléphone :
+                   rafraîchit immédiatement
+                   la vue après connexion */
+
+                if(
+                    window.innerWidth <= 600
+                ){
+
+                    setTimeout(
+                        function(){
+
+                            try{
+
+                                if(
+                                    typeof window
+                                        .ICHEF_MOBILE_REFRESH
+                                    === 'function'
+                                ){
+
+                                    window
+                                        .ICHEF_MOBILE_REFRESH();
+
+                                }
+
+                            }catch(_){}
+
+                        },
+                        100
+                    );
+
+                }
+
+            }
+        );
+
+
+        /* =================================================
+           COMMANDE MODIFIÉE SUR UN AUTRE APPAREIL
+           ================================================= */
+
+        socket.on(
+            'orderLifecycle',
+            function(evt){
+
+                try{
+
+                    if(
+                        !evt ||
+                        String(
+                            evt.tenantID || ''
+                        ).toLowerCase() !==
+                        String(
+                            appTenantID || ''
+                        ).toLowerCase()
+                    ){
+
+                        return;
+
+                    }
+
+
+                    const tableId =
+                        String(
+                            evt.tableId || ''
+                        );
+
+
+                    if(!tableId){
+                        return;
+                    }
+
+
+                    if(evt.deleted){
+
+                        delete activeOrders[
+                            tableId
+                        ];
+
+                    }else if(evt.order){
+
+                        if(
+                            typeof isRealServiceOrder
+                                === 'function' &&
+                            !isRealServiceOrder(
+                                tableId,
+                                evt.order
+                            )
+                        ){
+
+                            delete activeOrders[
+                                tableId
+                            ];
+
+                        }else{
+
+                            activeOrders[
+                                tableId
+                            ] =
+                                evt.order;
+
+                        }
+
+                    }
+
+
+                    /* =============================
+                       ORDINATEUR / TABLETTE
+                       ============================= */
+
+                    if(
+                        typeof renderFloor ===
+                            'function'
+                    ){
+                        renderFloor();
+                    }
+
+
+                    if(
+                        typeof renderProTables ===
+                            'function'
+                    ){
+                        renderProTables();
+                    }
+
+
+                    if(
+                        typeof renderService ===
+                            'function'
+                    ){
+                        renderService();
+                    }
+
+
+                    /* =============================
+                       TÉLÉPHONE
+                       ============================= */
+
+                    if(
+                        typeof window
+                            .ICHEF_MOBILE_REFRESH
+                        === 'function'
+                    ){
+
+                        window
+                            .ICHEF_MOBILE_REFRESH();
+
+                    }else{
+
+                        if(
+                            typeof window
+                                .ICHEF_MOBILE_RENDER_SERVICE
+                            === 'function'
+                        ){
+
+                            window
+                                .ICHEF_MOBILE_RENDER_SERVICE();
+
+                        }
+
+
+                        if(
+                            typeof window
+                                .ICHEF_MOBILE_UPDATE_STATUS
+                            === 'function'
+                        ){
+
+                            window
+                                .ICHEF_MOBILE_UPDATE_STATUS();
+
+                        }
+
+                    }
+
+
+                    if(
+                        typeof updateSequenceServicePanel
+                            === 'function' &&
+                        String(currentTableId) ===
+                            tableId
+                    ){
+
+                        updateSequenceServicePanel();
+
+                    }
+
+
+                    if(
+                        typeof window
+                            .ichefRefreshCompactOrderCards
+                        === 'function'
+                    ){
+
+                        window
+                            .ichefRefreshCompactOrderCards();
+
+                    }
+
+
+                    if(
+                        typeof window
+                            .ichefRefreshReadyNeon
+                        === 'function'
+                    ){
+
+                        window
+                            .ichefRefreshReadyNeon();
+
+                    }
+
+
+                    if(
+                        typeof window
+                            .ichefUpdateAntiRushSignal
+                        === 'function'
+                    ){
+
+                        window
+                            .ichefUpdateAntiRushSignal();
+
+                    }
+
+                }catch(err){
+
+                    console.error(
+                        '[iCHEF] orderLifecycle',
+                        err
+                    );
+
+                }
+
+            }
+        );
+
+
+        /* =================================================
+           ÉTAT COMPLET REÇU DU SERVEUR
+           ================================================= */
+
+        socket.on(
+            'updateState',
+            function(state){
+
+                try{
+
+                    if(
+                        !state ||
+                        !state.activeOrders
+                    ){
+
+                        return;
+
+                    }
+
+
+                    activeOrders =
+                        (
+                            typeof sanitizeServerOrders
+                            === 'function'
+                        )
+
+                        ? sanitizeServerOrders(
+                            state.activeOrders
+                        )
+
+                        : state.activeOrders;
+
+
+                    if(
+                        typeof renderFloor ===
+                            'function'
+                    ){
+                        renderFloor();
+                    }
+
+
+                    if(
+                        typeof renderProTables ===
+                            'function'
+                    ){
+                        renderProTables();
+                    }
+
+
+                    if(
+                        typeof renderService ===
+                            'function'
+                    ){
+                        renderService();
+                    }
+
+
+                    if(
+                        typeof window
+                            .ICHEF_MOBILE_REFRESH
+                        === 'function'
+                    ){
+
+                        window
+                            .ICHEF_MOBILE_REFRESH();
+
+                    }else{
+
+                        if(
+                            typeof window
+                                .ICHEF_MOBILE_RENDER_SERVICE
+                            === 'function'
+                        ){
+
+                            window
+                                .ICHEF_MOBILE_RENDER_SERVICE();
+
+                        }
+
+
+                        if(
+                            typeof window
+                                .ICHEF_MOBILE_UPDATE_STATUS
+                            === 'function'
+                        ){
+
+                            window
+                                .ICHEF_MOBILE_UPDATE_STATUS();
+
+                        }
+
+                    }
+
+
+                    if(
+                        typeof window
+                            .ichefUpdateAntiRushSignal
+                        === 'function'
+                    ){
+
+                        window
+                            .ichefUpdateAntiRushSignal();
+
+                    }
+
+
+                    setLinkStatus(
+                        socket &&
+                        socket.connected
+
+                            ? 'TEMPS RÉEL'
+                            : 'SYNCHRO OK',
+
+                        true
+                    );
+
+                }catch(err){
+
+                    console.error(
+                        '[iCHEF] updateState',
+                        err
+                    );
+
+                }
+
+            }
+        );
+
+
+        /* =================================================
+           DÉCONNEXION
+           ================================================= */
+
+        socket.on(
+            'disconnect',
+            function(reason){
+
+                console.warn(
+                    '[iCHEF] Socket déconnecté',
+                    reason
+                );
+
+
+                if(
+                    navigator.onLine
+                ){
+
+                    setLinkStatus(
+                        'RECONNEXION…',
+                        true
+                    );
+
+                }else{
+
+                    setLinkStatus(
+                        'HORS LIGNE',
+                        false
+                    );
+
+                }
+
+            }
+        );
+
+
+        /* =================================================
+           ERREUR CONNEXION
+           ================================================= */
+
+        socket.on(
+            'connect_error',
+            function(err){
+
+                console.warn(
+                    '[iCHEF] erreur socket',
+                    err
+                );
+
+
+                if(
+                    navigator.onLine
+                ){
+
+                    setLinkStatus(
+                        'SYNCHRO',
+                        true
+                    );
+
+                }else{
+
+                    setLinkStatus(
+                        'HORS LIGNE',
+                        false
+                    );
+
+                }
+
+            }
+        );
+
+
+    }catch(err){
+
+        console.error(
+            '[iCHEF] connectRealtime',
+            err
+        );
+
+
+        setLinkStatus(
+            navigator.onLine
+                ? 'SYNCHRO'
+                : 'HORS LIGNE',
+
+            navigator.onLine
+        );
+
+    }
+
+}
+
+
+/* =========================================================
+   EXPOSITION POUR LE MODE TÉLÉPHONE
+   ========================================================= */
+
+window.ICHEF_CONNECT_REALTIME =
+    connectRealtime;
+
+
+/* =========================================================
+   RAFRAÎCHISSEMENT MANUEL SANS RELOAD
+   ========================================================= */
+
+window.ICHEF_MOBILE_SYNC_NOW =
+async function(){
+
+    if(
+        !navigator.onLine
+    ){
+
+        setLinkStatus(
+            'HORS LIGNE',
+            false
+        );
+
+        return false;
+    }
+
+
+    setLinkStatus(
+        'SYNCHRO…',
+        true
+    );
+
+
+    try{
+
+        connectRealtime();
+
+
+        if(
+            typeof window
+                .ICHEF_FORCE_SERVER_SYNC
+            === 'function'
+        ){
+
+            await window
+                .ICHEF_FORCE_SERVER_SYNC(
+                    'mobile-manual'
+                );
+
+        }else{
+
+            await forceServerSync(
+                'mobile-manual'
+            );
+
+        }
+
+
+        if(
+            typeof window
+                .ICHEF_MOBILE_REFRESH
+            === 'function'
+        ){
+
+            window
+                .ICHEF_MOBILE_REFRESH();
+
+        }
+
+
+        setLinkStatus(
+            socket &&
+            socket.connected
+
+                ? 'TEMPS RÉEL'
+                : 'SYNCHRO OK',
+
+            true
+        );
+
+
+        return true;
+
+
+    }catch(err){
+
+        console.error(
+            '[iCHEF MOBILE] synchronisation',
+            err
+        );
+
+
+        setLinkStatus(
+            'ERREUR SYNCHRO',
+            false
+        );
+
+
+        return false;
+
+    }
+
+};
+
+
+/* =========================================================
+   RÉSEAU REVIENT
+   ========================================================= */
+
+window.addEventListener(
+    'online',
+    function(){
+
+        setLinkStatus(
+            'RECONNEXION…',
+            true
+        );
+
+
+        connectRealtime();
+
+
+        forceServerSync(
+            'online'
+        );
+
+    }
+);
+
+
+/* =========================================================
+   RÉSEAU PERDU
+   ========================================================= */
+
+window.addEventListener(
+    'offline',
+    function(){
+
+        setLinkStatus(
+            'HORS LIGNE',
+            false
+        );
+
+    }
+);
+
+
+/* =========================================================
+   RETOUR DANS L'APPLICATION
+   ========================================================= */
+
+document.addEventListener(
+    'visibilitychange',
+    function(){
+
+        if(
+            !document.hidden
+        ){
+
+            connectRealtime();
+
+            forceServerSync(
+                'visible'
+            );
+
+        }
+
+    }
+);
+
+
+window.addEventListener(
+    'focus',
+    function(){
+
+        connectRealtime();
+
+        forceServerSync(
+            'focus'
+        );
+
+    }
+);
+
+
+/* =========================================================
+   WATCHDOG
+   ========================================================= */
+
+setInterval(
+    function(){
+
+        if(
+            document.hidden ||
+            !navigator.onLine
+        ){
+
+            return;
+
+        }
+
+
+        if(
+            !socket ||
+            !socket.connected
+        ){
+
+            connectRealtime();
+
+        }
+
+
+        if(
+            !lastServerSyncAt ||
+            Date.now() -
+            lastServerSyncAt >
+            7000
+        ){
+
+            forceServerSync(
+                'watchdog'
+            );
+
+        }
+
+    },
+
+    window.innerWidth <= 600
+        ? 6000
+        : 5000
+);
+
+
+/* =========================================================
+   DÉMARRAGE RÉSEAU
+   ========================================================= */
+
+let networkBooted =
+    false;
+
+
+function bootNetwork(){
+
+    if(
+        networkBooted
+    ){
+
+        return;
+
+    }
+
+
+    networkBooted =
+        true;
+
+
+    setLinkStatus(
+
+        navigator.onLine
+
+            ? 'CONNEXION…'
+            : 'HORS LIGNE',
+
+        navigator.onLine
+
+    );
+
+
+    /* Première lecture serveur */
+
+    forceServerSync(
+        'initial-dom'
+    );
+
+
+    /* Socket ensuite */
+
+    setTimeout(
+        function(){
+
+            connectRealtime();
+
+
+            forceServerSync(
+                'initial-realtime'
+            );
+
+        },
+        150
+    );
+
+}
+
+
+/* =========================================================
+   DÉMARRAGE DOM
+   ========================================================= */
+
+if(
+    document.readyState ===
+    'loading'
+){
+
+    document.addEventListener(
+        'DOMContentLoaded',
+        bootNetwork,
+        {
+            once:true
+        }
+    );
+
+}else{
+
+    bootNetwork();
+
+}
+
+
+/* =========================================================
+   FILET DE SÉCURITÉ WEBVIEW / PWA
+   ========================================================= */
+
+setTimeout(
+    bootNetwork,
+    1200
+);
+
+
+/* =========================================================
+   APRÈS AUTHENTIFICATION PIN
+   TÉLÉPHONE UNIQUEMENT
+   ========================================================= */
+
+window.addEventListener(
+    'ichef:authenticated',
+    function(){
+
+        if(
+            window.innerWidth > 600
+        ){
+
+            return;
+
+        }
+
+
+        setTimeout(
+            function(){
+
+                connectRealtime();
+
+
+                forceServerSync(
+                    'mobile-after-pin'
+                );
+
+
+                if(
+                    typeof window
+                        .ICHEF_MOBILE_REFRESH
+                    === 'function'
+                ){
+
+                    window
+                        .ICHEF_MOBILE_REFRESH();
+
+                }
+
+            },
+            120
+        );
+
+    }
+);
 </script>
 <style id="ichef-mobile-exact-captures">
 @media (max-width:600px){
