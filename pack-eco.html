@@ -4197,13 +4197,22 @@ window.ICHEF_FORCE_SERVER_SYNC = function(reason) {
     }
 };
 
-/ ==========================================
+// ==========================================
 // 🌐 WEBSOCKET : SYMBIOSE MULTI-ÉCRANS
 // ==========================================
 async function initSymbioseWebSocket() {
     try {
         const io = await window.ICHEF_LOAD_SOCKET_IO();
-        const socket = io(APP_SERVER_URL, { transports: ['websocket', 'polling'] });
+        
+        // 🛡️ DÉFINITION LOCALE SÉCURISÉE (Évite le crash ReferenceError)
+        const urlServeur = (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1")
+            ? "http://localhost:10000" 
+            : "https://tableau-system.onrender.com";
+        
+        const socket = io(urlServeur, {
+            query: { tenantID: appTenantID }, // Indispensable pour rejoindre le bon salon
+            transports: ['websocket', 'polling'] 
+        });
 
         socket.on('connect', () => {
             console.log("🟢 WebSocket connecté ! Demande d'accès au salon...");
@@ -4216,11 +4225,27 @@ async function initSymbioseWebSocket() {
                 window.ICHEF_FORCE_SERVER_SYNC('websocket-state-changed');
             }
         });
+
+        socket.on('updateState', (data) => {
+            console.log("🔄 Signal WebSocket (updateState) reçu.");
+            if (typeof window.ICHEF_FORCE_SERVER_SYNC === 'function') {
+                window.ICHEF_FORCE_SERVER_SYNC('websocket-updateState');
+            }
+        });
+
     } catch (e) {
         console.error("Erreur d'initialisation de la symbiose", e);
     }
 }
+
 document.addEventListener('ichef:authenticated', initSymbioseWebSocket);
+
+// 🛡️ SÉCURITÉ : Lancement de secours si la page a été rafraîchie et qu'on est déjà connecté
+setTimeout(() => {
+    if (document.documentElement.classList.contains('ichef-authenticated') || (window.ICHEF_SECURITY && window.ICHEF_SECURITY.user)) {
+        initSymbioseWebSocket();
+    }
+}, 1500);
 
 // ==========================================
 // 🔄 RÉCUPÉRATION DES DONNÉES SERVEUR
