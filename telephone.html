@@ -2551,7 +2551,10 @@ body.order-open #order, .order-main, .menu-side, .ticket-side, #bottomObservatio
    - server.js = source de vérité
    ========================================================= */
 
-const APP_SERVER_URL=(location.hostname==="localhost"||location.hostname==="127.0.0.1")?"http://localhost:10000":"https://tableau-system.onrender.com";
+/* Détection intelligente : PC ou Téléphone sur le même WiFi */
+const isLocal = location.hostname === "localhost" || location.hostname === "127.0.0.1" || location.hostname.startsWith("192.168.") || location.hostname.startsWith("10.");
+const APP_SERVER_URL = isLocal ? `http://${location.hostname}:10000` : "https://tableau-system.onrender.com";
+
 const $=id=>document.getElementById(id);
 const clone=v=>{try{return structuredClone(v)}catch(_){return JSON.parse(JSON.stringify(v))}};
 const unwrap=v=>v&&Object.prototype.hasOwnProperty.call(v,"data")?v.data:v;
@@ -2773,6 +2776,187 @@ function needsMeatCookingChoice(name,dest="cuisine"){
   return cookingProfileFor(name).required===true;
 }
 
+function cloneOrderForUndo(order){
+  return clone(order||ensureOrder(STATE.currentTable));
+}
+
+function pushUndo(label,beforeOrder){
+  if(!STATE.currentTable||!beforeOrder)return;
+  STATE.undoStack.push({
+    table:STATE.currentTable,
+    label:text(label)||"Action",
+    order:clone(beforeOrder),
+    expiresAt:Date.now()+10000
+  });
+  if(STATE.undoStack.length>8)STATE.undoStack.shift();
+  updateUndoButton();
+}
+
+function clearUndo(){
+  STATE.undoStack=[];
+  updateUndoButton();
+}
+
+function updateUndoButton(){
+  const b=$("btnUndoFast");
+  if(!b)return;
+  while(STATE.undoStack.length && STATE.undoStack[STATE.undoStack.length-1].expiresAt<Date.now()){
+    STATE.undoStack.pop();
+  }
+  const last=STATE.undoStack[STATE.undoStack.length-1];
+  b.disabled=!last||last.table!==STATE.currentTable;
+  b.title=last?`Annuler : ${last.label}`:"Aucune action à annuler";
+}
+
+async function undoLastAction(){
+  updateUndoButton();
+  const last=STATE.undoStack.pop();
+  if(!last||last.table!==STATE.currentTable){
+    updateUndoButton();
+    return;
+  }
+
+  /* Une action cuisine déjà envoyée n'est jamais effacée silencieusement. */
+  const current=ensureOrder(STATE.currentTable);
+  const sentNow=(current.items||[]).some(lineFired);
+  const sentBefore=(last.order.items||[]).some(lineFired);
+  if(sentNow!==sentBefore){
+    toast("Envoi cuisine protégé : utilisez MODIFIER / ANNULER",true);
+    updateUndoButton();
+    return;
+  }
+
+  STATE.currentOrder=clone(last.order);
+  await saveCurrent(last.order,"Annulation rapide : "+last.label,{immediate:true,noUndo:true});
+  toast("↶ "+last.label+" annulé");
+  updateUndoButton();
+}
+
+function stageLocalValue(key,data,reason){
+  const version=++ICHEF_WRITE_VERSION;
+  const snapshot=data===null?null:clone(data);
+
+  if(snapshot===null)delete STATE.activeOrders[key];
+  else STATE.activeOrders[key]=clone(snapshot);
+
+  ICHEF_LOCAL_PENDING.set(key,{version,data:snapshot,reason:text(reason)||"Mise à jour"});
+  STATE.lastWriteAt=Date.now();
+  applyDerived();
+  scheduleRender();
+  setOrderSyncState("● SYNCHRONISATION…","pending");
+  return {version,data:snapshot,reason:text(reason)||"Mise à jour"};
+}
+
+async function enqueueVersionedWrite(key,pending){
+  const previous=ICHEF_TABLE_WRITE_QUEUES.get(key)||Promise.resolve(true);
+
+  const task=previous
+    .catch(()=>true)
+    .then(async()=>{
+      let lastError=null;
+
+      for(let attempt=0;attempt<3;attempt++){
+        try{
+          await updateServer(key,pending.data,pending.reason);
+
+          const latest=ICHEF_LOCAL_PENDING.get(key);
+          if(latest && latest.version===pending.version){
+            ICHEF_LOCAL_PENDING.delete(key);
+            ICHEF_FAILED_WRITES.delete(key);
+          }
+
+          setOrderSyncState("✓ SERVEUR À JOUR","good");
+          return true;
+        }catch(err){
+          lastError=err;
+          const msg=String(err?.message||"");
+          if(/401|403|AUTH|PIN|PERMISSION/i.test(msg))break;
+          if(attempt<2)await new Promise(r=>setTimeout(r,220*(attempt+1)));
+        }
+      }
+
+      const latest=ICHEF_LOCAL_PENDING.get(key);
+      if(latest && latest.version===pending.version){
+        ICHEF_FAILED_WRITES.set(key,clone(latest));
+      }
+
+      setOrderSyncState("⚠ À SYNCHRONISER","bad");
+      setConnection(navigator.onLine?"À SYNCHRO":"HORS LIGNE",navigator.onLine?"warn":"bad");
+      console.error("[iCHEF téléphone] écriture en attente",key,lastError);
+      return false;
+    });
+
+  ICHEF_TABLE_WRITE_QUEUES.set(key,task);
+
+  task.finally(()=>{
+    if(ICHEF_TABLE_WRITE_QUEUES.get(key)===task){
+      ICHEF_TABLE_WRITE_QUEUES.delete(key);
+      setTimeout(()=>{
+        if(!ICHEF_LOCAL_PENDING.has(key)&&!ICHEF_TABLE_WRITE_QUEUES.has(key)&&STATE.authenticated&&!STATE.demo){
+          syncFull("write-settle");
+        }
+      },260);
+    }
+  });
+
+  return task;
+}
+
+function scheduleVersionedWrite(key,pending,delay=130){
+  const old=ICHEF_TABLE_WRITE_TIMERS.get(key);
+  if(old)clearTimeout(old);
+
+  const timer=setTimeout(()=>{
+    ICHEF_TABLE_WRITE_TIMERS.delete(key);
+    const latest=ICHEF_LOCAL_PENDING.get(key);
+    if(!latest)return;
+    enqueueVersionedWrite(key,clone(latest));
+  },delay);
+
+  ICHEF_TABLE_WRITE_TIMERS.set(key,timer);
+}
+
+async function flushVersionedWrite(key){
+  const timer=ICHEF_TABLE_WRITE_TIMERS.get(key);
+  if(timer){
+    clearTimeout(timer);
+    ICHEF_TABLE_WRITE_TIMERS.delete(key);
+  }
+
+  const latest=ICHEF_LOCAL_PENDING.get(key);
+  if(!latest)return true;
+  return enqueueVersionedWrite(key,clone(latest));
+}
+
+async function retryFailedWrites(){
+  const entries=[...ICHEF_FAILED_WRITES.entries()];
+  for(const [key,pending] of entries){
+    const latest=ICHEF_LOCAL_PENDING.get(key)||pending;
+    if(latest)await enqueueVersionedWrite(key,clone(latest));
+  }
+}
+
+function preservePendingOverServer(incoming){
+  const merged={...incoming};
+  ICHEF_LOCAL_PENDING.forEach((pending,key)=>{
+    if(pending.data===null)delete merged[key];
+    else merged[key]=clone(pending.data);
+  });
+  return merged;
+}
+
+function toast(message,bad=false){
+  const el=$("toast");el.textContent=message;el.style.borderColor=bad?"var(--red)":"var(--line2)";document.body.classList.add("toast-show");clearTimeout(toast.t);toast.t=setTimeout(()=>document.body.classList.remove("toast-show"),1800);
+}
+
+function money(v){
+  const cur=text(STATE.settings.currency||STATE.settings.devise||"EUR").toUpperCase();
+  try{return new Intl.NumberFormat("fr-FR",{style:"currency",currency:cur==="CHF"?"CHF":"EUR"}).format(num(v))}catch(_){return num(v).toFixed(2)+(cur==="CHF"?" CHF":" €")}
+}
+
+function duration(ts){
+  if(!ts)return"00:00";const d=Math.max(0,now()-Number(ts));const m=Math.floor(d/60000),s=Math.floor((d%60000)/1000);return String(m).padStart(2,"0")+":"+String(s).padStart(2,"0");
+}
 
 /* ---------------- COMPATIBILITÉ PAD / KDS ---------------- */
 function itemName(item){
@@ -2860,135 +3044,35 @@ function normalizeServerOrdersMap(activeOrders){
   return out;
 }
 
-/* ---------------- AUTH / CONNEXION SERVER.JS ---------------- */
-/*
-   IMPORTANT : ce bloc suit exactement les en-têtes autorisés par server.js.
-   Ne pas ajouter X-iCHEF-Terminal : il n'est pas dans allowedHeaders CORS
-   et ferait bloquer les requêtes par le navigateur avant Express.
-*/
-function serverSecurityHeaders(extra={}){
-  return {
-    "Content-Type":"application/json",
-    "Accept":"application/json",
-    "X-Requested-With":"iCHEF-PWA",
-    "X-iCHEF-Device":STATE.deviceId,
-    ...extra
-  };
-}
-
-async function serverFetch(path,options={}){
-  const cfg={
-    cache:"no-store",
-    credentials:"omit",
-    ...options
-  };
-  cfg.headers=serverSecurityHeaders(options.headers||{});
-  return fetch(APP_SERVER_URL+path,cfg);
-}
-
-/* ---------------- AUTH ---------------- */
-function renderPin(){
-  const box=$("pinDots");box.innerHTML="";for(let i=0;i<6;i++){const d=document.createElement("i");if(i<STATE.loginPin.length)d.className="on";box.appendChild(d)}
-}
-function loginMessage(m=""){ $("loginMsg").textContent=m }
-function syncTenantLoginField(forceShow=false){
-  const input=$("tenantInput"),box=$("tenantBox");
-  if(input&&!input.value&&STATE.tenantID)input.value=STATE.tenantID;
-  if(box&&(forceShow||!STATE.tenantID))box.classList.add("show");
-}
-async function verifyPin(){
-  const typedTenant=text($("tenantInput")?.value);
-  if(typedTenant&&typedTenant!==STATE.tenantID){
-    STATE.tenantID=typedTenant;
-    STORAGE.set("ichef_tenant_id",STATE.tenantID);
-  }
-  if(!STATE.tenantID){STATE.tenantID=typedTenant;if(!STATE.tenantID){loginMessage("Identifiant établissement requis");syncTenantLoginField(true);return}STORAGE.set("ichef_tenant_id",STATE.tenantID)}
-  if(STATE.loginPin.length<4){loginMessage("Code incomplet");return}
-  loginMessage("Connexion…");
-  try{
-    const r=await serverFetch("/api/verify-pin",{
-      method:"POST",
-      body:JSON.stringify({tenantID:STATE.tenantID,pin:STATE.loginPin,deviceId:STATE.deviceId})
-    });
-    const j=await r.json().catch(()=>({}));
-    if(!r.ok||!j.success)throw new Error(j.error||j.message||"Code refusé");
-    STATE.pin=STATE.loginPin;
-    if(j.safeTenantID){STATE.tenantID=text(j.safeTenantID);STORAGE.set("ichef_tenant_id",STATE.tenantID)}
-    STATE.role=j.role||"";STATE.plan=j.plan||"";STATE.specialite=j.specialite||"";STATE.authenticated=true;
-    $("login").classList.add("hidden");$("app").classList.remove("hidden");$("tools").classList.remove("hidden");
-    loginMessage("");await bootApp();
-  }catch(e){
-    STATE.loginPin="";
-    renderPin();
-    syncTenantLoginField(true);
-    loginMessage(e.message||"Connexion impossible");
-  }
-}
-$("pinPad").addEventListener("click",e=>{
-  const b=e.target.closest("button");if(!b)return;
-  if(b.dataset.pin!==undefined){
-    if(STATE.loginPin.length<6)STATE.loginPin+=b.dataset.pin;
-    renderPin();
-    loginMessage("");
-  }
-  if(b.dataset.act==="clear"){STATE.loginPin="";renderPin();loginMessage("")}
-  if(b.dataset.act==="back"){STATE.loginPin=STATE.loginPin.slice(0,-1);renderPin();loginMessage("")}
-});
-$("pinValidate").addEventListener("click",verifyPin);
-syncTenantLoginField(false);
-renderPin();
-
-/* ---------------- SERVER API ---------------- */
-async function getState(){
-  const r=await serverFetch("/get-current-state?tenantID="+encodeURIComponent(STATE.tenantID)+"&_t="+Date.now(),{method:"GET"});
-  if(!r.ok){
-    const j=await r.json().catch(()=>({}));
-    throw new Error(j.error||j.message||("Lecture serveur "+r.status));
-  }
-  return r.json();
-}
-async function updateServer(key,data,auditReason="Mise à jour téléphone"){
-  if(STATE.demo)return {success:true,demo:true};
-  if(!STATE.authenticated)throw new Error("Session non authentifiée");
-  const body={
-    tableId:key,
-    order:data,
-    pin:STATE.pin,
-    deviceId:STATE.deviceId,
-    terminal:"TELEPHONE",
-    auditReason
-  };
-  const r=await serverFetch("/update-order?tenantID="+encodeURIComponent(STATE.tenantID),{
-    method:"POST",
-    body:JSON.stringify(body)
-  });
-  const j=await r.json().catch(()=>({}));
-  if(!r.ok)throw new Error(j.error||j.message||("Écriture serveur "+r.status));
-  return j;
-}
-async function optimisticWrite(key,data,reason){
-  const pending=stageLocalValue(key,data,reason);
-  return enqueueVersionedWrite(key,pending);
-}
-
-/* ---------------- REALTIME ---------------- */
-
 /* ---------------- REALTIME ---------------- */
 function setConnection(label,kind="warn"){
   $("stLink").textContent=label;$("stLink").className="status-value "+(kind==="good"?"good":kind==="bad"?"bad":"warn");
 }
+
 function loadSocket(){
-  if(window.io)return Promise.resolve(window.io);if(STATE.socketLoading)return STATE.socketLoading;
+  if(window.io)return Promise.resolve(window.io);
+  if(STATE.socketLoading)return STATE.socketLoading;
+
   STATE.socketLoading=new Promise((resolve,reject)=>{
     const s=document.createElement("script");
-    s.src="https://cdn.socket.io/4.7.2/socket.io.min.js";
+    /* On force le téléchargement depuis VOTRE server.js local en priorité */
+    s.src=APP_SERVER_URL+"/socket.io/socket.io.js";
     s.async=true;
     s.onload=()=>resolve(window.io);
-    s.onerror=()=>{STATE.socketLoading=null;reject(new Error("Socket.IO indisponible"))};
+    s.onerror=()=>{
+      /* Si échec, on utilise Internet en plan B */
+      const s2=document.createElement("script");
+      s2.src="https://cdn.socket.io/4.7.2/socket.io.min.js";
+      s2.async=true;
+      s2.onload=()=>resolve(window.io);
+      s2.onerror=()=>{STATE.socketLoading=null;reject(new Error("Socket.IO indisponible"))};
+      document.head.appendChild(s2);
+    };
     document.head.appendChild(s);
   });
   return STATE.socketLoading;
 }
+
 async function connectSocket(){
   try{await loadSocket();if(STATE.socket)return;
     const socket=window.io(APP_SERVER_URL,{
@@ -3021,6 +3105,7 @@ async function connectSocket(){
     console.warn("[iCHEF TELEPHONE] Socket.IO non chargé, synchronisation HTTP conservée",err?.message||err);
   }
 }
+
 async function syncFull(reason="manual"){
   if(STATE.syncing||!navigator.onLine)return false;
   STATE.syncing=true;
@@ -3037,6 +3122,7 @@ async function syncFull(reason="manual"){
     return false;
   }finally{STATE.syncing=false}
 }
+
 function applyServerState(serverState,source){
   if(!serverState||typeof serverState!=="object")return;
 
@@ -3045,6 +3131,33 @@ function applyServerState(serverState,source){
       ?serverState.activeOrders
       :{}
   );
+
+  const openedTable=STATE.currentTable;
+  const rawOpened=openedTable?serverIncoming[openedTable]:null;
+  const hasLocalPending=openedTable?ICHEF_LOCAL_PENDING.has(openedTable):false;
+
+  STATE.activeOrders=preservePendingOverServer(serverIncoming);
+  if(serverState.sasConfig)STATE.sasConfig=serverState.sasConfig;
+
+  applyDerived();
+
+  if(
+    openedTable &&
+    rawOpened &&
+    isArchivedOrder(rawOpened) &&
+    !hasLocalPending
+  ){
+    STATE.currentTable=null;
+    STATE.currentOrder=null;
+    STATE.pendingCookingLine="";
+    hideQuickCooking();
+    document.body.classList.remove("summary-open","order-open");
+    toast("Table fermée sur un autre écran");
+  }
+
+  scheduleRender();
+  checkGlobalAlert();
+}
 
   const openedTable=STATE.currentTable;
   const rawOpened=openedTable?serverIncoming[openedTable]:null;
