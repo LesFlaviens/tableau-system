@@ -2628,28 +2628,33 @@ function detectDishFamily(productOrItem){
   );
   const hay=name+" "+category;
 
-  /* Priorité aux plats mijotés pour éviter une fausse demande bleu/saignant */
+  /* 1. Plats mijotés = aucune question de cuisson */
   if(/\b(ragout|rago[uû]t|bourguignon|daube|civet|blanquette|mijote|mijotee|braise|braisee|pot au feu|navarin|carbonnade|goulash)\b/.test(hay)){
     return "MIJOTE";
   }
 
-  if(/\b(tartare|carpaccio)\b/.test(hay))return "CRU";
+  /* 2. Viande crue = aucune demande de cuisson */
+  if(/\b(tartare|carpaccio)\b/.test(hay)) return "CRU";
 
+  /* 3. Poisson = Nacré / Bien cuit (Popup Auto) */
   if(/\b(poisson|perche|saumon|thon|cabillaud|dorade|truite|sole|turbot|lotte|merlu|colin|sandre|maquereau|espadon|rouget|bar de mer|loup de mer)\b/.test(hay)){
     return "POISSON";
   }
 
-  if(/\b(poulet|volaille|dinde|pintade|coquelet|chapon)\b/.test(hay))return "VOLAILLE";
-  if(/\b(porc|cochon|jambon|travers|echine|filet mignon)\b/.test(hay))return "PORC";
+  /* 4. Volaille et Porc = cuisson définie par la recette, pas de demande */
+  if(/\b(poulet|volaille|dinde|pintade|coquelet|chapon)\b/.test(hay)) return "VOLAILLE";
+  if(/\b(porc|cochon|jambon|travers|echine|filet mignon)\b/.test(hay)) return "PORC";
 
+  /* 5. Pâtes = optionnel (pas de popup automatique) */
   if(/\b(pates|pate|pasta|tagliatelle|spaghetti|linguine|penne|rigatoni|fusilli|ravioli|gnocchi)\b/.test(hay)){
     return "PATES";
   }
 
-  if(/\b(oeuf|oeufs|omelette)\b/.test(hay))return "OEUF";
+  /* 6. Œufs = optionnel (pas de popup automatique) */
+  if(/\b(oeuf|oeufs|omelette)\b/.test(hay)) return "OEUF";
 
-  /* Viandes rouges + canard inclus */
-  if(/\b(entrecote|steak|rumsteck|faux filet|filet de boeuf|filet boeuf|onglet|bavette|cote de boeuf|boeuf|burger|hamburger|magret|canard|aiguillette de canard|agneau|gigot|carre d agneau|selle d agneau)\b/.test(hay)){
+  /* 7. Viandes rouges, burgers, canard, agneau = demande AUTOMATIQUE */
+  if(/\b(entrecote|steak|rumsteck|faux filet|filet de boeuf|filet boeuf|onglet|bavette|cote de boeuf|boeuf|burger|hamburger|viande|magret|canard|aiguillette|agneau|gigot|carre d agneau|selle d agneau)\b/.test(hay)){
     return "VIANDE_ROUGE";
   }
 
@@ -2661,7 +2666,9 @@ function cookingProfileFor(productOrItem){
 
   if(family==="VIANDE_ROUGE"){
     return {
-      family,required:true,label:"🥩 CUISSON VIANDE / CANARD",
+      family,
+      required:true, /* OUVRE LA FENÊTRE AUTOMATIQUEMENT */
+      label:"🥩 CUISSON VIANDE / CANARD",
       levels:[
         "BLEU",
         "ENTRE BLEU ET SAIGNANT",
@@ -2678,217 +2685,38 @@ function cookingProfileFor(productOrItem){
 
   if(family==="POISSON"){
     return {
-      family,required:true,label:"🐟 CUISSON POISSON",
+      family,
+      required:true, /* OUVRE LA FENÊTRE AUTOMATIQUEMENT */
+      label:"🐟 CUISSON POISSON",
       levels:["NACRÉ","BIEN CUIT"]
     };
   }
 
   if(family==="PATES"){
     return {
-      family,required:false,label:"🍝 CUISSON PÂTES",
+      family,
+      required:false, /* NE S'OUVRE PAS PAR DÉFAUT */
+      label:"🍝 CUISSON PÂTES",
       levels:["AL DENTE","BIEN CUITES"]
     };
   }
 
   if(family==="OEUF"){
     return {
-      family,required:false,label:"🍳 CUISSON ŒUF",
+      family,
+      required:false, /* NE S'OUVRE PAS PAR DÉFAUT */
+      label:"🍳 CUISSON ŒUF",
       levels:["COULANT","MOLLET","BIEN CUIT"]
     };
   }
 
+  /* Pour MIJOTE, CRU, VOLAILLE, PORC et AUTRE -> aucune cuisson nécessaire */
   return {family,required:false,label:"",levels:[]};
 }
 
 function needsMeatCookingChoice(name,dest="cuisine"){
   if(normalizeDestination(dest)!=="cuisine")return false;
   return cookingProfileFor(name).required===true;
-}
-
-function cloneOrderForUndo(order){
-  return clone(order||ensureOrder(STATE.currentTable));
-}
-
-function pushUndo(label,beforeOrder){
-  if(!STATE.currentTable||!beforeOrder)return;
-  STATE.undoStack.push({
-    table:STATE.currentTable,
-    label:text(label)||"Action",
-    order:clone(beforeOrder),
-    expiresAt:Date.now()+10000
-  });
-  if(STATE.undoStack.length>8)STATE.undoStack.shift();
-  updateUndoButton();
-}
-
-function clearUndo(){
-  STATE.undoStack=[];
-  updateUndoButton();
-}
-
-function updateUndoButton(){
-  const b=$("btnUndoFast");
-  if(!b)return;
-  while(STATE.undoStack.length && STATE.undoStack[STATE.undoStack.length-1].expiresAt<Date.now()){
-    STATE.undoStack.pop();
-  }
-  const last=STATE.undoStack[STATE.undoStack.length-1];
-  b.disabled=!last||last.table!==STATE.currentTable;
-  b.title=last?`Annuler : ${last.label}`:"Aucune action à annuler";
-}
-
-async function undoLastAction(){
-  updateUndoButton();
-  const last=STATE.undoStack.pop();
-  if(!last||last.table!==STATE.currentTable){
-    updateUndoButton();
-    return;
-  }
-
-  /* Une action cuisine déjà envoyée n'est jamais effacée silencieusement. */
-  const current=ensureOrder(STATE.currentTable);
-  const sentNow=(current.items||[]).some(lineFired);
-  const sentBefore=(last.order.items||[]).some(lineFired);
-  if(sentNow!==sentBefore){
-    toast("Envoi cuisine protégé : utilisez MODIFIER / ANNULER",true);
-    updateUndoButton();
-    return;
-  }
-
-  STATE.currentOrder=clone(last.order);
-  await saveCurrent(last.order,"Annulation rapide : "+last.label,{immediate:true,noUndo:true});
-  toast("↶ "+last.label+" annulé");
-  updateUndoButton();
-}
-
-function stageLocalValue(key,data,reason){
-  const version=++ICHEF_WRITE_VERSION;
-  const snapshot=data===null?null:clone(data);
-
-  if(snapshot===null)delete STATE.activeOrders[key];
-  else STATE.activeOrders[key]=clone(snapshot);
-
-  ICHEF_LOCAL_PENDING.set(key,{version,data:snapshot,reason:text(reason)||"Mise à jour"});
-  STATE.lastWriteAt=Date.now();
-  applyDerived();
-  scheduleRender();
-  setOrderSyncState("● SYNCHRONISATION…","pending");
-  return {version,data:snapshot,reason:text(reason)||"Mise à jour"};
-}
-
-async function enqueueVersionedWrite(key,pending){
-  const previous=ICHEF_TABLE_WRITE_QUEUES.get(key)||Promise.resolve(true);
-
-  const task=previous
-    .catch(()=>true)
-    .then(async()=>{
-      let lastError=null;
-
-      for(let attempt=0;attempt<3;attempt++){
-        try{
-          await updateServer(key,pending.data,pending.reason);
-
-          const latest=ICHEF_LOCAL_PENDING.get(key);
-          if(latest && latest.version===pending.version){
-            ICHEF_LOCAL_PENDING.delete(key);
-            ICHEF_FAILED_WRITES.delete(key);
-          }
-
-          setOrderSyncState("✓ SERVEUR À JOUR","good");
-          return true;
-        }catch(err){
-          lastError=err;
-          const msg=String(err?.message||"");
-          if(/401|403|AUTH|PIN|PERMISSION/i.test(msg))break;
-          if(attempt<2)await new Promise(r=>setTimeout(r,220*(attempt+1)));
-        }
-      }
-
-      const latest=ICHEF_LOCAL_PENDING.get(key);
-      if(latest && latest.version===pending.version){
-        ICHEF_FAILED_WRITES.set(key,clone(latest));
-      }
-
-      setOrderSyncState("⚠ À SYNCHRONISER","bad");
-      setConnection(navigator.onLine?"À SYNCHRO":"HORS LIGNE",navigator.onLine?"warn":"bad");
-      console.error("[iCHEF téléphone] écriture en attente",key,lastError);
-      return false;
-    });
-
-  ICHEF_TABLE_WRITE_QUEUES.set(key,task);
-
-  task.finally(()=>{
-    if(ICHEF_TABLE_WRITE_QUEUES.get(key)===task){
-      ICHEF_TABLE_WRITE_QUEUES.delete(key);
-      setTimeout(()=>{
-        if(!ICHEF_LOCAL_PENDING.has(key)&&!ICHEF_TABLE_WRITE_QUEUES.has(key)&&STATE.authenticated&&!STATE.demo){
-          syncFull("write-settle");
-        }
-      },260);
-    }
-  });
-
-  return task;
-}
-
-function scheduleVersionedWrite(key,pending,delay=130){
-  const old=ICHEF_TABLE_WRITE_TIMERS.get(key);
-  if(old)clearTimeout(old);
-
-  const timer=setTimeout(()=>{
-    ICHEF_TABLE_WRITE_TIMERS.delete(key);
-    const latest=ICHEF_LOCAL_PENDING.get(key);
-    if(!latest)return;
-    enqueueVersionedWrite(key,clone(latest));
-  },delay);
-
-  ICHEF_TABLE_WRITE_TIMERS.set(key,timer);
-}
-
-async function flushVersionedWrite(key){
-  const timer=ICHEF_TABLE_WRITE_TIMERS.get(key);
-  if(timer){
-    clearTimeout(timer);
-    ICHEF_TABLE_WRITE_TIMERS.delete(key);
-  }
-
-  const latest=ICHEF_LOCAL_PENDING.get(key);
-  if(!latest)return true;
-  return enqueueVersionedWrite(key,clone(latest));
-}
-
-async function retryFailedWrites(){
-  const entries=[...ICHEF_FAILED_WRITES.entries()];
-  for(const [key,pending] of entries){
-    const latest=ICHEF_LOCAL_PENDING.get(key)||pending;
-    if(latest)await enqueueVersionedWrite(key,clone(latest));
-  }
-}
-
-function preservePendingOverServer(incoming){
-  const merged={...incoming};
-  ICHEF_LOCAL_PENDING.forEach((pending,key)=>{
-    if(pending.data===null)delete merged[key];
-    else merged[key]=clone(pending.data);
-  });
-  return merged;
-}
-
-function cryptoId(){
-  try{const b=new Uint8Array(12);crypto.getRandomValues(b);return Array.from(b,x=>x.toString(16).padStart(2,"0")).join("")}catch(_){return Date.now().toString(36)+Math.random().toString(36).slice(2)}
-}
-
-function toast(message,bad=false){
-  const el=$("toast");el.textContent=message;el.style.borderColor=bad?"var(--red)":"var(--line2)";document.body.classList.add("toast-show");clearTimeout(toast.t);toast.t=setTimeout(()=>document.body.classList.remove("toast-show"),1800);
-}
-
-function money(v){
-  const cur=text(STATE.settings.currency||STATE.settings.devise||"EUR").toUpperCase();
-  try{return new Intl.NumberFormat("fr-FR",{style:"currency",currency:cur==="CHF"?"CHF":"EUR"}).format(num(v))}catch(_){return num(v).toFixed(2)+(cur==="CHF"?" CHF":" €")}
-}
-
-function duration(ts){
-  if(!ts)return"00:00";const d=Math.max(0,now()-Number(ts));const m=Math.floor(d/60000),s=Math.floor((d%60000)/1000);return String(m).padStart(2,"0")+":"+String(s).padStart(2,"0");
 }
 
 
