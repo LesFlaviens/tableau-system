@@ -2561,6 +2561,21 @@ const now=()=>Date.now();
 const esc=v=>String(v??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#039;"}[c]));
 const uid=()=>"m_"+Date.now().toString(36)+"_"+Math.random().toString(36).slice(2,8);
 
+/* CORRECTION PIN — identifiant appareil disponible dès le premier lancement */
+function cryptoId(){
+  try{
+    if(globalThis.crypto&&typeof globalThis.crypto.randomUUID==="function"){
+      return globalThis.crypto.randomUUID().replace(/-/g,"");
+    }
+    if(globalThis.crypto&&typeof globalThis.crypto.getRandomValues==="function"){
+      const a=new Uint32Array(4);
+      globalThis.crypto.getRandomValues(a);
+      return Array.from(a,n=>n.toString(16).padStart(8,"0")).join("");
+    }
+  }catch(_){}
+  return Date.now().toString(36)+Math.random().toString(36).slice(2,12);
+}
+
 const STORAGE={
   get(k,d=null){try{const v=localStorage.getItem(k);return v===null?d:v}catch(_){return d}},
   set(k,v){try{localStorage.setItem(k,String(v))}catch(_){}}
@@ -2849,8 +2864,18 @@ function renderPin(){
   const box=$("pinDots");box.innerHTML="";for(let i=0;i<6;i++){const d=document.createElement("i");if(i<STATE.loginPin.length)d.className="on";box.appendChild(d)}
 }
 function loginMessage(m=""){ $("loginMsg").textContent=m }
+function syncTenantLoginField(forceShow=false){
+  const input=$("tenantInput"),box=$("tenantBox");
+  if(input&&!input.value&&STATE.tenantID)input.value=STATE.tenantID;
+  if(box&&(forceShow||!STATE.tenantID))box.classList.add("show");
+}
 async function verifyPin(){
-  if(!STATE.tenantID){STATE.tenantID=text($("tenantInput").value);if(!STATE.tenantID){loginMessage("Identifiant établissement requis");return}STORAGE.set("ichef_tenant_id",STATE.tenantID)}
+  const typedTenant=text($("tenantInput")?.value);
+  if(typedTenant&&typedTenant!==STATE.tenantID){
+    STATE.tenantID=typedTenant;
+    STORAGE.set("ichef_tenant_id",STATE.tenantID);
+  }
+  if(!STATE.tenantID){STATE.tenantID=typedTenant;if(!STATE.tenantID){loginMessage("Identifiant établissement requis");syncTenantLoginField(true);return}STORAGE.set("ichef_tenant_id",STATE.tenantID)}
   if(STATE.loginPin.length<4){loginMessage("Code incomplet");return}
   loginMessage("Connexion…");
   try{
@@ -2862,7 +2887,12 @@ async function verifyPin(){
     STATE.role=j.role||"";STATE.plan=j.plan||"";STATE.specialite=j.specialite||"";STATE.authenticated=true;
     $("login").classList.add("hidden");$("app").classList.remove("hidden");$("tools").classList.remove("hidden");
     loginMessage("");await bootApp();
-  }catch(e){STATE.loginPin="";renderPin();loginMessage(e.message||"Connexion impossible")}
+  }catch(e){
+    STATE.loginPin="";
+    renderPin();
+    syncTenantLoginField(true);
+    loginMessage(e.message||"Connexion impossible");
+  }
 }
 $("pinPad").addEventListener("click",e=>{
   const b=e.target.closest("button");if(!b)return;
@@ -2875,7 +2905,8 @@ $("pinPad").addEventListener("click",e=>{
   if(b.dataset.act==="back"){STATE.loginPin=STATE.loginPin.slice(0,-1);renderPin();loginMessage("")}
 });
 $("pinValidate").addEventListener("click",verifyPin);
-if(!STATE.tenantID)$("tenantBox").classList.add("show");renderPin();
+syncTenantLoginField(false);
+renderPin();
 
 /* ---------------- SERVER API ---------------- */
 async function getState(){
@@ -4718,4 +4749,217 @@ function setOrderSplit(value,persist=true){
     divider.setAttribute("aria-valuemin",String(ORDER_SPLIT_MIN));
     divider.setAttribute("aria-valuemax",String(ORDER_SPLIT_MAX));
     divider.setAttribute("aria-valuenow",String(Math.round(pct)));
-    divider.titleSorry, something went wrong. Please try your request again.
+    divider.title=`Menu ${Math.round(pct)} % · Ticket ${Math.round(100-pct)} %`;
+  }
+  if(persist){
+    try{STORAGE.set(ORDER_SPLIT_STORAGE_KEY,String(pct))}catch(_){}
+  }
+}
+
+function orderSplitFromPointer(clientY){
+  const main=document.querySelector(".order-main");
+  if(!main)return 52;
+  const rect=main.getBoundingClientRect();
+  if(rect.height<=0)return 52;
+  return ((clientY-rect.top)/rect.height)*100;
+}
+
+function stopOrderDividerDrag(){
+  if(!orderDividerDragging)return;
+  orderDividerDragging=false;
+  const divider=$("orderDivider");
+  if(divider)divider.classList.remove("dragging");
+}
+
+(function initOrderDivider(){
+  const divider=$("orderDivider");
+  if(!divider)return;
+
+  let saved=52;
+  try{
+    saved=Number(STORAGE.get(ORDER_SPLIT_STORAGE_KEY,"52"))||52;
+  }catch(_){}
+  setOrderSplit(saved,false);
+
+  divider.addEventListener("pointerdown",e=>{
+    orderDividerDragging=true;
+    divider.classList.add("dragging");
+    try{divider.setPointerCapture(e.pointerId)}catch(_){}
+    setOrderSplit(orderSplitFromPointer(e.clientY),false);
+    e.preventDefault();
+  });
+
+  divider.addEventListener("pointermove",e=>{
+    if(!orderDividerDragging)return;
+    setOrderSplit(orderSplitFromPointer(e.clientY),false);
+    e.preventDefault();
+  });
+
+  divider.addEventListener("pointerup",e=>{
+    if(!orderDividerDragging)return;
+    setOrderSplit(orderSplitFromPointer(e.clientY),true);
+    stopOrderDividerDrag();
+    try{divider.releasePointerCapture(e.pointerId)}catch(_){}
+    e.preventDefault();
+  });
+
+  divider.addEventListener("pointercancel",stopOrderDividerDrag);
+
+  /* Double tap/clic = retour 50/50 */
+  divider.addEventListener("dblclick",()=>{
+    setOrderSplit(52,true);
+    toast("Menu / ticket réinitialisé");
+  });
+
+  /* PAD avec clavier */
+  divider.addEventListener("keydown",e=>{
+    const current=parseFloat(
+      getComputedStyle(document.documentElement)
+        .getPropertyValue("--order-menu-split")
+    )||52;
+
+    if(e.key==="ArrowUp"){
+      setOrderSplit(current-4,true);
+      e.preventDefault();
+    }
+    if(e.key==="ArrowDown"){
+      setOrderSplit(current+4,true);
+      e.preventDefault();
+    }
+    if(e.key==="Home"){
+      setOrderSplit(ORDER_SPLIT_MIN,true);
+      e.preventDefault();
+    }
+    if(e.key==="End"){
+      setOrderSplit(ORDER_SPLIT_MAX,true);
+      e.preventDefault();
+    }
+  });
+})();
+
+/* ---------------- APERÇU V3 : aucune écriture serveur ---------------- */
+
+/* ---------------- APERÇU V3 : aucune écriture serveur ---------------- */
+function buildDemoState(){
+  STATE.demo=true;
+  STATE.authenticated=true;
+  STATE.tenantID="DEMO_ICHEF";
+  STATE.pin="0000";
+  STATE.role="SERVEUR";
+  STATE.plan="ESSENTIEL";
+  STATE.settings={currency:"CHF",fiscalCountry:"CH"};
+
+  const rooms=["Salle Principale","Terrasse","Bar"];
+  const tables=[];
+  let n=1;
+  for(let r=0;r<rooms.length;r++){
+    const count=r===0?16:r===1?8:6;
+    for(let i=0;i<count;i++){
+      tables.push({
+        id:"T"+n,label:"T"+n,room:rooms[r],pax:(i%4)+2,
+        l:(i%4)*125+40,t:Math.floor(i/4)*115+40,w:95,h:82
+      });
+      n++;
+    }
+  }
+
+  STATE.activeOrders={
+    ARCHITECTURE:{data:{
+      rooms,tables,zones:[
+        {id:"z1",label:"TERRASSE",room:"Terrasse",l:20,t:20,w:520,h:300},
+        {id:"z2",label:"BAR / LOUNGE",room:"Bar",l:20,t:20,w:520,h:280},
+        {id:"z3",label:"SALLE",room:"Salle Principale",l:20,t:20,w:520,h:420}
+      ]
+    }},
+    SETTINGS_MASTER:{data:{currency:"CHF",fiscalCountry:"CH"}},
+    MENU_MASTER:{data:{
+      "Entrées":[
+        {id:"salade",name:"Salade César",price:14,category:"Entrées",vatRate:8.1},
+        {id:"soupe",name:"Soupe du jour",price:10,category:"Entrées",vatRate:8.1},
+        {id:"saumon",name:"Saumon fumé",price:18,category:"Entrées",vatRate:8.1}
+      ],
+      "Plats":[
+        {id:"entrecote",name:"Entrecôte",price:32,category:"Plats",vatRate:8.1},
+        {id:"perche",name:"Filets de perche",price:28,category:"Plats",vatRate:8.1},
+        {id:"burger",name:"Burger maison",price:22,category:"Plats",vatRate:8.1},
+        {id:"risotto",name:"Risotto",price:24,category:"Plats",vatRate:8.1},
+        {id:"poulet",name:"Poulet rôti",price:26,category:"Plats",vatRate:8.1},
+        {id:"vege",name:"Assiette végétale",price:21,category:"Plats",vatRate:8.1}
+      ],
+      "Desserts":[
+        {id:"fondant",name:"Fondant chocolat",price:11,category:"Desserts",vatRate:8.1},
+        {id:"tarte",name:"Tarte du jour",price:10,category:"Desserts",vatRate:8.1}
+      ]
+    }},
+    MENU_MASTER_BAR:{data:{
+      "Boissons":[
+        {id:"eau",name:"Eau minérale",price:6,category:"Boissons",vatRate:8.1},
+        {id:"vin",name:"Verre de vin",price:9,category:"Boissons",vatRate:8.1},
+        {id:"cocktail",name:"Cocktail maison",price:15,category:"Boissons",vatRate:8.1}
+      ]
+    }},
+    RESERVATIONS_MASTER:{data:[
+      {name:"Mme Martin",tableId:"T4",time:"19:30",pax:4,status:"confirmed"},
+      {name:"M. Dubois",tableId:"T8",time:"20:00",pax:2,status:"confirmed"}
+    ]},
+    T2:{
+      tableId:"T2",status:"sent",pax:2,createdAt:Date.now()-12*60000,items:[
+        {lineId:"d1",productId:"entrecote",n:"Entrecôte",name:"Entrecôte",p:32,price:32,qty:1,category:"Plats",dest:"cuisine",course:"PLATS",seat:1,guestSeat:1,seatNumber:1,guestName:"C1",guest:"C1",cooking:"SAIGNANT",isSent:true,fired:true,sentAt:Date.now()-10*60000},
+        {lineId:"d2",productId:"perche",n:"Filets de perche",name:"Filets de perche",p:28,price:28,qty:1,category:"Plats",dest:"cuisine",course:"PLATS",seat:2,guestSeat:2,seatNumber:2,guestName:"C2",guest:"C2",isSent:true,fired:true,sentAt:Date.now()-10*60000},
+        {lineId:"d3",productId:"eau",n:"Eau minérale",name:"Eau minérale",p:6,price:6,qty:1,category:"Boissons",dest:"bar",course:"BOISSONS",seat:1,guestSeat:1,seatNumber:1,guestName:"C1",guest:"C1",isSent:true,fired:true,ready:true,status:"ready"}
+      ]
+    },
+    T6:{
+      tableId:"T6",status:"sent",pax:4,createdAt:Date.now()-27*60000,items:[
+        {lineId:"x1",name:"Burger maison",price:22,qty:2,category:"Plats",fired:true,sentAt:Date.now()-25*60000},
+        {lineId:"x2",name:"Risotto",price:24,qty:2,category:"Plats",fired:true,sentAt:Date.now()-25*60000}
+      ]
+    }
+  };
+
+  STATE.activeOrders=normalizeServerOrdersMap(STATE.activeOrders);
+  applyDerived();
+  STATE.room="Salle Principale";
+}
+
+function enterDemo(screen="tables"){
+  buildDemoState();
+  $("login").classList.add("hidden");
+  $("app").classList.remove("hidden");
+  $("tools").classList.remove("hidden");
+  $("demoRibbon").classList.remove("hidden");
+  document.body.classList.add("demo-mode");
+  applyDisplay("normal");
+  scheduleRender();
+
+  if(screen==="order"){
+    openOrder("T2");
+  }else if(screen==="summary"){
+    openOrder("T2");
+    openSummary();
+  }else{
+    $("screenLabel").textContent="ÉCRAN 1 · TABLES";
+  }
+}
+
+$("previewBtn").addEventListener("click",()=>enterDemo("tables"));
+
+const demoParams=new URLSearchParams(location.search);
+if(demoParams.get("demo")==="1"){
+  window.addEventListener("DOMContentLoaded",()=>{
+    enterDemo(demoParams.get("screen")||"tables");
+  },{once:true});
+}
+
+/* ---------------- BOOT ---------------- */
+async function bootApp(){
+  applyDisplay(STATE.display);autoDisplay();setConnection(navigator.onLine?"CONNEXION":"HORS LIGNE",navigator.onLine?"warn":"bad");
+  await Promise.allSettled([syncFull("initial"),connectSocket()]);
+  setInterval(()=>{renderStatus();if(STATE.currentTable){$("orderAge").textContent=duration(orderCreated(STATE.currentOrder)||Date.now())}updateToolBadges();autoDisplay()},1000);
+  setInterval(()=>{if(!document.hidden&&!STATE.connected&&navigator.onLine)syncFull("fallback")},12000);
+}
+
+})();
+</script>
+</body>
+</html>
