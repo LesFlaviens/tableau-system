@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
 <meta name="theme-color" content="#ffffff">
-<title>iCHEF OS — V13 · Fond Blanc & Service Rapide Pro</title>
+<title>iCHEF TÉLÉPHONE — SERVER.JS RÉEL OK</title>
 <style>
 :root{
   --bg:#050607;--panel:#0b0e0f;--panel2:#111516;--line:#293033;--line2:#3a4346;
@@ -2861,41 +2861,29 @@ function normalizeServerOrdersMap(activeOrders){
 }
 
 /* ---------------- AUTH / CONNEXION SERVER.JS ---------------- */
+/*
+   IMPORTANT : ce bloc suit exactement les en-têtes autorisés par server.js.
+   Ne pas ajouter X-iCHEF-Terminal : il n'est pas dans allowedHeaders CORS
+   et ferait bloquer les requêtes par le navigateur avant Express.
+*/
 function serverSecurityHeaders(extra={}){
-  const headers={
+  return {
     "Content-Type":"application/json",
     "Accept":"application/json",
     "X-Requested-With":"iCHEF-PWA",
     "X-iCHEF-Device":STATE.deviceId,
-    "X-iCHEF-Terminal":"TELEPHONE",
     ...extra
   };
-  if(STATE.sessionToken)headers.Authorization="Bearer "+STATE.sessionToken;
-  if(STATE.csrfToken)headers["X-CSRF-Token"]=STATE.csrfToken;
-  return headers;
 }
 
 async function serverFetch(path,options={}){
   const cfg={
     cache:"no-store",
-    credentials:"include",
+    credentials:"omit",
     ...options
   };
   cfg.headers=serverSecurityHeaders(options.headers||{});
-
-  try{
-    return await fetch(APP_SERVER_URL+path,cfg);
-  }catch(firstError){
-    /* Compatibilité avec un ancien server.js/CORS qui n'accepte pas les cookies cross-origin. */
-    const fallbackHeaders={
-      "Content-Type":"application/json",
-      "Accept":"application/json",
-      ...(options.headers||{})
-    };
-    if(STATE.sessionToken)fallbackHeaders.Authorization="Bearer "+STATE.sessionToken;
-    if(STATE.csrfToken)fallbackHeaders["X-CSRF-Token"]=STATE.csrfToken;
-    return fetch(APP_SERVER_URL+path,{...options,cache:"no-store",credentials:"omit",headers:fallbackHeaders});
-  }
+  return fetch(APP_SERVER_URL+path,cfg);
 }
 
 /* ---------------- AUTH ---------------- */
@@ -2925,8 +2913,6 @@ async function verifyPin(){
     const j=await r.json().catch(()=>({}));
     if(!r.ok||!j.success)throw new Error(j.error||j.message||"Code refusé");
     STATE.pin=STATE.loginPin;
-    STATE.sessionToken=text(j.sessionToken||j.token||"");
-    STATE.csrfToken=text(j.csrfToken||"");
     if(j.safeTenantID){STATE.tenantID=text(j.safeTenantID);STORAGE.set("ichef_tenant_id",STATE.tenantID)}
     STATE.role=j.role||"";STATE.plan=j.plan||"";STATE.specialite=j.specialite||"";STATE.authenticated=true;
     $("login").classList.add("hidden");$("app").classList.remove("hidden");$("tools").classList.remove("hidden");
@@ -3016,11 +3002,7 @@ async function connectSocket(){
       timeout:4500,
       auth:{
         tenantID:STATE.tenantID,
-        deviceId:STATE.deviceId,
-        terminal:"TELEPHONE",
-        sessionToken:STATE.sessionToken||undefined,
-        csrfToken:STATE.csrfToken||undefined,
-        pin:STATE.pin||undefined
+        deviceId:STATE.deviceId
       }
     });STATE.socket=socket;
     socket.on("connect",()=>{STATE.connected=true;setConnection("TEMPS RÉEL","good");socket.emit("joinTenant",String(STATE.tenantID));retryFailedWrites();if(!STATE.lastServerAt||now()-STATE.lastServerAt>5000)syncFull("reconnect")});
@@ -5052,7 +5034,7 @@ if(demoParams.get("demo")==="1"){
 async function bootApp(){
   applyDisplay(STATE.display);
   autoDisplay();
-  setConnection(navigator.onLine?"CONNEXION":"HORS LIGNE",navigator.onLine?"warn":"bad");
+  setConnection(navigator.onLine?"CONNEXION SERVEUR":"HORS LIGNE",navigator.onLine?"warn":"bad");
 
   /* Lecture HTTP d'abord : server.js reste la source de vérité, même sans Socket.IO. */
   await syncFull("initial");
