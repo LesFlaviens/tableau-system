@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
 <meta name="theme-color" content="#ffffff">
-<title>iCHEF TÉLÉPHONE — IMPRIMANTE RAPIDE MULTI-MARQUES</title>
+<title>iCHEF TÉLÉPHONE — IMPRIMANTES 4 POSTES + CAISSE</title>
 <style>
 :root{
   --bg:#050607;--panel:#0b0e0f;--panel2:#111516;--line:#293033;--line2:#3a4346;
@@ -5327,9 +5327,11 @@ function openPlan(){
 }
 
 
-/* ---------------- IMPRIMANTE RAPIDE / MULTI-MARQUES ---------------- */
-const ICHEF_PRINTER_CONFIG_KEY="ichef_printers_v2";
+/* ---------------- IMPRIMANTES 4 POSTES / MULTI-MARQUES ---------------- */
+const ICHEF_PRINTER_CONFIG_KEY="ichef_printers_v3";
+const ICHEF_PRINTER_V2_KEY="ichef_printers_v2";
 const ICHEF_PRINTER_LEGACY_KEY="ichef_epson_printers_v1";
+const ICHEF_PRINTER_DESTS=["cuisine","bar","patisserie","caisse"];
 
 function defaultPrinterProfile(label,enabled=false){
   return {
@@ -5351,10 +5353,22 @@ function defaultPrinterConfig(){
     enabled:false,
     autoPrint:true,
     timeout:10000,
+    receipt:{
+      autoAfterPayment:true,
+      businessName:"",
+      address:"",
+      phone:"",
+      taxId:"",
+      logoText:"",
+      footer:"Merci de votre visite",
+      showServer:true,
+      showGuests:true
+    },
     printers:{
       cuisine:defaultPrinterProfile("CUISINE",true),
       bar:defaultPrinterProfile("BAR",false),
-      patisserie:defaultPrinterProfile("PÂTISSERIE",false)
+      patisserie:defaultPrinterProfile("PÂTISSERIE",false),
+      caisse:defaultPrinterProfile("CAISSE / TICKET CLIENT",false)
     }
   };
 }
@@ -5370,57 +5384,79 @@ function normalizeBridgeUrl(value){
   return v.replace(/\/$/,"");
 }
 
-function loadPrinterConfig(){
+function normalizePrinterConfig(saved){
   const base=defaultPrinterConfig();
-  try{
-    let raw=localStorage.getItem(ICHEF_PRINTER_CONFIG_KEY);
-    if(!raw){
-      const legacyRaw=localStorage.getItem(ICHEF_PRINTER_LEGACY_KEY);
-      if(legacyRaw){
-        const legacy=JSON.parse(legacyRaw)||{};
-        base.enabled=!!legacy.enabled;
-        base.autoPrint=legacy.autoPrint!==false;
-        base.timeout=Math.max(2000,Math.min(30000,Number(legacy.timeout)||10000));
-        ["cuisine","bar","patisserie"].forEach(dest=>{
-          const old=legacy.printers?.[dest]||{};
-          base.printers[dest]={...base.printers[dest],...old,mode:"epson",enabled:!!old.enabled,label:base.printers[dest].label};
-        });
-        localStorage.setItem(ICHEF_PRINTER_CONFIG_KEY,JSON.stringify(base));
-        return base;
-      }
-      return base;
-    }
-    const saved=JSON.parse(raw)||{};
-    base.enabled=!!saved.enabled;
-    base.autoPrint=saved.autoPrint!==false;
-    base.timeout=Math.max(2000,Math.min(30000,Number(saved.timeout)||10000));
-    ["cuisine","bar","patisserie"].forEach(dest=>{
-      const p=saved.printers?.[dest]||{};
-      base.printers[dest]={
-        ...base.printers[dest],
-        ...p,
-        enabled:!!p.enabled,
-        mode:["epson","bridge","system"].includes(p.mode)?p.mode:"epson",
-        host:normalizePrinterHost(p.host||""),
-        bridgeUrl:normalizeBridgeUrl(p.bridgeUrl||base.printers[dest].bridgeUrl),
-        port:Math.max(1,Math.min(65535,Number(p.port)||9100)),
-        paperWidth:Number(p.paperWidth)===58?58:80,
-        copies:Math.max(1,Math.min(5,Number(p.copies)||1))
-      };
-    });
-  }catch(e){console.warn("[iCHEF] Configuration imprimante illisible",e)}
+  saved=saved&&typeof saved==="object"?saved:{};
+  base.enabled=!!saved.enabled;
+  base.autoPrint=saved.autoPrint!==false;
+  base.timeout=Math.max(2000,Math.min(30000,Number(saved.timeout)||10000));
+  base.receipt={...base.receipt,...(saved.receipt&&typeof saved.receipt==="object"?saved.receipt:{})};
+  base.receipt.autoAfterPayment=base.receipt.autoAfterPayment!==false;
+  base.receipt.showServer=base.receipt.showServer!==false;
+  base.receipt.showGuests=base.receipt.showGuests!==false;
+  ICHEF_PRINTER_DESTS.forEach(dest=>{
+    const p=saved.printers?.[dest]||{};
+    base.printers[dest]={
+      ...base.printers[dest],
+      ...p,
+      enabled:!!p.enabled,
+      mode:["epson","bridge","system"].includes(p.mode)?p.mode:"epson",
+      protocol:text(p.protocol).toLowerCase()==="https"?"https":"http",
+      host:normalizePrinterHost(p.host||""),
+      bridgeUrl:normalizeBridgeUrl(p.bridgeUrl||base.printers[dest].bridgeUrl),
+      port:Math.max(1,Math.min(65535,Number(p.port)||9100)),
+      deviceId:text(p.deviceId||"local_printer")||"local_printer",
+      paperWidth:Number(p.paperWidth)===58?58:80,
+      copies:Math.max(1,Math.min(5,Number(p.copies)||1)),
+      label:base.printers[dest].label
+    };
+  });
   return base;
 }
 
+function loadPrinterConfig(){
+  try{
+    const raw=localStorage.getItem(ICHEF_PRINTER_CONFIG_KEY);
+    if(raw)return normalizePrinterConfig(JSON.parse(raw)||{});
+    const v2=localStorage.getItem(ICHEF_PRINTER_V2_KEY);
+    if(v2){
+      const cfg=normalizePrinterConfig(JSON.parse(v2)||{});
+      localStorage.setItem(ICHEF_PRINTER_CONFIG_KEY,JSON.stringify(cfg));
+      return cfg;
+    }
+    const legacyRaw=localStorage.getItem(ICHEF_PRINTER_LEGACY_KEY);
+    if(legacyRaw){
+      const legacy=JSON.parse(legacyRaw)||{};
+      const migrated=defaultPrinterConfig();
+      migrated.enabled=!!legacy.enabled;
+      migrated.autoPrint=legacy.autoPrint!==false;
+      migrated.timeout=Math.max(2000,Math.min(30000,Number(legacy.timeout)||10000));
+      ["cuisine","bar","patisserie"].forEach(dest=>{
+        const old=legacy.printers?.[dest]||{};
+        migrated.printers[dest]={...migrated.printers[dest],...old,mode:"epson",enabled:!!old.enabled,label:migrated.printers[dest].label};
+      });
+      const cfg=normalizePrinterConfig(migrated);
+      localStorage.setItem(ICHEF_PRINTER_CONFIG_KEY,JSON.stringify(cfg));
+      return cfg;
+    }
+  }catch(e){console.warn("[iCHEF] Configuration imprimante illisible",e)}
+  return defaultPrinterConfig();
+}
+
 function savePrinterConfig(cfg){
-  localStorage.setItem(ICHEF_PRINTER_CONFIG_KEY,JSON.stringify(cfg));
-  return cfg;
+  const normalized=normalizePrinterConfig(cfg);
+  localStorage.setItem(ICHEF_PRINTER_CONFIG_KEY,JSON.stringify(normalized));
+  return normalized;
 }
 
 function printerModeLabel(mode){
   if(mode==="epson")return "EPSON ePOS";
   if(mode==="bridge")return "RÉSEAU / ESC-POS via iCHEF Print Bridge";
   return "IMPRIMANTE SYSTÈME / NAVIGATEUR";
+}
+
+function printerDestLabel(dest){
+  return dest==="bar"?"BAR":dest==="patisserie"?"PÂTISSERIE":dest==="caisse"?"CAISSE / TICKET CLIENT":"CUISINE";
 }
 
 function epsonEndpoint(printer,cfg){
@@ -5495,7 +5531,7 @@ async function postEpson(printer,cfg,soap){
 }
 
 function printerTicketLines(order,dest,items){
-  const dLabel=dest==="bar"?"BAR":dest==="patisserie"?"PÂTISSERIE":"CUISINE";
+  const dLabel=printerDestLabel(dest);
   const lines=[
     {text:`${dLabel} · TABLE ${STATE.currentTable||"TEST"}`,bold:true,width:2,height:2,align:"center"},
     {text:`${num(order?.pax||2)||2} couverts · ${new Date().toLocaleTimeString("fr-FR",{hour:"2-digit",minute:"2-digit"})}`,align:"center"},
@@ -5521,10 +5557,58 @@ function printerTicketLines(order,dest,items){
   return lines;
 }
 
+function receiptReference(order){
+  const existing=text(order?.paymentDraft?.receiptReference||order?.receiptReference);
+  if(existing)return existing;
+  const stamp=Number(order?.paymentDraft?.updatedAt?Date.parse(order.paymentDraft.updatedAt):Date.now())||Date.now();
+  const d=new Date(stamp);
+  const pad=n=>String(n).padStart(2,"0");
+  return `${text(STATE.currentTable||"T")}-${d.getFullYear()}${pad(d.getMonth()+1)}${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`;
+}
+
+function cashReceiptLines(order,options={}){
+  const cfg=loadPrinterConfig();
+  const r=cfg.receipt||{};
+  const fiscal=fiscalBreakdown(order||{});
+  const total=orderTotal(order||{});
+  const payment=text(order?.paymentDraft?.payments?.[0]?.method||order?.paymentMethod||"");
+  const lines=[];
+  const header=text(r.logoText||r.businessName||"iCHEF");
+  lines.push({text:header||"iCHEF",bold:true,width:2,height:2,align:"center"});
+  if(r.businessName && text(r.businessName)!==header)lines.push({text:r.businessName,bold:true,align:"center"});
+  if(r.address)lines.push({text:r.address,align:"center"});
+  if(r.phone)lines.push({text:r.phone,align:"center"});
+  if(r.taxId)lines.push({text:`TVA / ID: ${r.taxId}`,align:"center"});
+  lines.push("------------------------------------------");
+  lines.push({text:`TABLE ${STATE.currentTable||order?.tableId||"—"} · ${new Date().toLocaleString("fr-FR")}`,bold:true});
+  lines.push(`Réf. ${receiptReference(order)}`);
+  if(r.showServer!==false)lines.push(`Serveur: ${STATE.role||order?.updatedBy||"—"}`);
+  if(options.duplicate)lines.push({text:"*** DUPLICATA ***",bold:true,width:2,height:2,align:"center"});
+  lines.push("------------------------------------------");
+  (order?.items||[]).filter(i=>i&&!i.cancelled).forEach(item=>{
+    const qty=itemQty(item),name=itemName(item),price=itemPrice(item)*qty;
+    const seat=itemSeat(item);
+    lines.push({text:`${r.showGuests!==false&&seat?seatLabel(seat)+" · ":""}${qty} x ${name}`,bold:true});
+    lines.push({text:money(price),align:"right"});
+    const obs=text(item.obs||item.observation||item.note);
+    if(obs)lines.push(`  ${obs}`);
+  });
+  lines.push("------------------------------------------");
+  fiscal.rows.forEach(row=>{
+    lines.push(`TVA ${Number(row.rate||0).toFixed(2).replace(".",",")}%  TVA ${money(row.tax)}  TTC ${money(row.gross)}`);
+  });
+  lines.push({text:`TOTAL ${money(total)}`,bold:true,width:2,height:2,align:"right"});
+  if(payment)lines.push({text:`PAIEMENT: ${payment}`,bold:true});
+  lines.push("------------------------------------------");
+  if(r.footer)lines.push({text:r.footer,align:"center"});
+  lines.push({text:"Propulsé par iCHEF",align:"center"});
+  return lines;
+}
+
 function testPrinterLines(dest){
   return [
     {text:"TEST IMPRIMANTE iCHEF",bold:true,width:2,height:2,align:"center"},
-    {text:`POSTE ${dest.toUpperCase()}`,bold:true,align:"center"},
+    {text:`POSTE ${printerDestLabel(dest)}`,bold:true,align:"center"},
     {text:new Date().toLocaleString("fr-FR"),align:"center"},
     "------------------------------------------",
     "Connexion et format du ticket : OK",
@@ -5579,7 +5663,7 @@ async function postPrintBridge(printer,cfg,lines,meta={}){
   }finally{clearTimeout(timer)}
 }
 
-function systemPrintHTML(lines,title,paperWidth=80){
+function systemPrintHTML(lines,title="iCHEF",paperWidth=80){
   const width=Number(paperWidth)===58?58:80;
   const body=lines.map(line=>{
     const o=typeof line==="string"?{text:line}:line||{};
@@ -5619,10 +5703,14 @@ async function printDestination(dest,items,order,options={}){
   if(!cfg.enabled&&!options.force)return {skipped:true,reason:"disabled"};
   const printer=cfg.printers?.[dest];
   if(!printer?.enabled)return {skipped:true,reason:"destination-disabled"};
-  const lines=options.test?testPrinterLines(dest):printerTicketLines(order||{},dest,items||[]);
+  const lines=options.test?testPrinterLines(dest):(dest==="caisse"?cashReceiptLines(order||{},options):printerTicketLines(order||{},dest,items||[]));
   if(printer.mode==="system")return printViaSystem(printer,lines,{dest,test:!!options.test});
   if(printer.mode==="bridge")return postPrintBridge(printer,cfg,lines,{dest,test:!!options.test});
-  return postEpson(printer,cfg,buildEpsonSoap(lines));
+  const soap=buildEpsonSoap(lines);
+  let result=null;
+  const copies=options.test?1:Math.max(1,Math.min(5,Number(printer.copies)||1));
+  for(let i=0;i<copies;i++)result=await postEpson(printer,cfg,soap);
+  return result||{ok:true,mode:"epson"};
 }
 
 async function printNewPrinterJobs(order,stamp){
@@ -5645,6 +5733,20 @@ async function printNewPrinterJobs(order,stamp){
   }
   toast(`🖨️ ${jobs.map(j=>j.dest.toUpperCase()).join(" + ")} imprimé`);
   return {ok:true};
+}
+
+async function printCashReceipt(order,options={}){
+  const cfg=loadPrinterConfig();
+  if(!cfg.enabled){
+    if(options.auto)return {skipped:true,reason:"disabled"};
+    throw new Error("Impression désactivée dans OUTILS → IMPRIMANTES");
+  }
+  if(!cfg.printers?.caisse?.enabled){
+    if(options.auto)return {skipped:true,reason:"cashier-disabled"};
+    throw new Error("Imprimante CAISSE non configurée");
+  }
+  if(options.auto&&cfg.receipt?.autoAfterPayment===false)return {skipped:true,reason:"auto-disabled"};
+  return printDestination("caisse",[],order||STATE.currentOrder||{},options);
 }
 
 /* Compatibilité avec les versions qui appelaient encore la fonction Epson. */
@@ -5701,8 +5803,8 @@ function readPrinterConfigFromSheet(){
   cfg.enabled=!!body.querySelector("[data-printer-master]")?.checked;
   cfg.autoPrint=!!body.querySelector("[data-printer-auto]")?.checked;
   cfg.timeout=Math.max(2000,Math.min(30000,Number(body.querySelector("[data-printer-timeout]")?.value)||10000));
-  ["cuisine","bar","patisserie"].forEach(dest=>{
-    const p=cfg.printers[dest]||defaultPrinterProfile(dest.toUpperCase());
+  ICHEF_PRINTER_DESTS.forEach(dest=>{
+    const p=cfg.printers[dest]||defaultPrinterProfile(printerDestLabel(dest));
     p.enabled=!!body.querySelector(`[data-printer-enabled="${dest}"]`)?.checked;
     p.mode=body.querySelector(`[data-printer-mode="${dest}"]`)?.value||"epson";
     p.protocol=body.querySelector(`[data-printer-protocol="${dest}"]`)?.value||"http";
@@ -5714,6 +5816,18 @@ function readPrinterConfigFromSheet(){
     p.copies=Math.max(1,Math.min(5,Number(body.querySelector(`[data-printer-copies="${dest}"]`)?.value)||1));
     cfg.printers[dest]=p;
   });
+  cfg.receipt={
+    ...(cfg.receipt||{}),
+    autoAfterPayment:!!body.querySelector("[data-receipt-auto]")?.checked,
+    businessName:text(body.querySelector("[data-receipt-business]")?.value||""),
+    logoText:text(body.querySelector("[data-receipt-logo]")?.value||""),
+    address:text(body.querySelector("[data-receipt-address]")?.value||""),
+    phone:text(body.querySelector("[data-receipt-phone]")?.value||""),
+    taxId:text(body.querySelector("[data-receipt-tax]")?.value||""),
+    footer:text(body.querySelector("[data-receipt-footer]")?.value||""),
+    showServer:!!body.querySelector("[data-receipt-server]")?.checked,
+    showGuests:!!body.querySelector("[data-receipt-guests]")?.checked
+  };
   return cfg;
 }
 
@@ -5745,7 +5859,9 @@ async function runPrinterDiagnostic(dest,printTest=true){
   const p=cfg.printers[dest];
   const checks=[];
   checks.push(`✓ Configuration ${p.enabled?"active":"inactive"}`);
+  checks.push(`✓ Poste : ${printerDestLabel(dest)}`);
   checks.push(`✓ Mode : ${printerModeLabel(p.mode)}`);
+  checks.push(`✓ Papier : ${p.paperWidth} mm · ${p.copies} copie(s)`);
   if(p.mode!=="system"){
     if(!p.host)throw new Error("IP / HÔTE manquant");
     checks.push(`✓ Adresse : ${esc(p.host)}${p.mode==="bridge"?":"+p.port:""}`);
@@ -5763,37 +5879,85 @@ async function runPrinterDiagnostic(dest,printTest=true){
 
 function copyPrinterProfile(from,to){
   const cfg=readPrinterConfigFromSheet();
-  cfg.printers[to]={...cfg.printers[from],enabled:true,label:cfg.printers[to]?.label||to.toUpperCase()};
+  cfg.printers[to]={...cfg.printers[from],enabled:true,label:cfg.printers[to]?.label||printerDestLabel(to)};
   savePrinterConfig(cfg);
   openPrinterSetup(to);
 }
 
+function quickPrinterApply(){
+  const body=$("sheetBody");
+  const cfg=readPrinterConfigFromSheet();
+  const dest=body.querySelector("[data-quick-dest]")?.value||"cuisine";
+  const p=cfg.printers[dest]||defaultPrinterProfile(printerDestLabel(dest));
+  p.enabled=true;
+  p.mode=body.querySelector("[data-quick-mode]")?.value||"epson";
+  p.host=normalizePrinterHost(body.querySelector("[data-quick-host]")?.value||"");
+  p.paperWidth=Number(body.querySelector("[data-quick-paper]")?.value)===58?58:80;
+  p.copies=Math.max(1,Math.min(5,Number(body.querySelector("[data-quick-copies]")?.value)||1));
+  if(p.mode==="epson")p.protocol="http";
+  cfg.enabled=true;
+  cfg.printers[dest]=p;
+  savePrinterConfig(cfg);
+  openPrinterSetup(dest);
+  toast(`✓ ${printerDestLabel(dest)} configuré · lance DIAGNOSTIC`);
+}
+
 function openPrinterSetup(focusDest=""){
   const cfg=loadPrinterConfig();
-  openSheet("🖨️ IMPRIMANTE RAPIDE · MULTI-MARQUES",`
+  const r=cfg.receipt||{};
+  openSheet("🖨️ IMPRIMANTES · 4 POSTES",`
     <div class="big-state" style="text-align:left;border-color:var(--gold)">
-      <div style="font-size:14px;font-weight:950;margin-bottom:7px">CONFIGURATION EN 3 ÉTAPES</div>
-      <div class="small" style="font-size:10px;line-height:1.5">1. Choisir le type · 2. Renseigner l'IP si nécessaire · 3. Appuyer sur DIAGNOSTIC. Epson peut fonctionner directement. Les autres imprimantes réseau/ESC-POS passent par iCHEF Print Bridge. Une imprimante déjà installée sur l'appareil peut utiliser le mode SYSTÈME.</div>
+      <div style="font-size:14px;font-weight:950;margin-bottom:7px">⚡ CONFIGURATION RAPIDE</div>
+      <div class="small" style="font-size:10px;line-height:1.5;margin-bottom:9px">Choisis le poste, le type, l'IP si nécessaire et le papier. Ensuite appuie sur APPLIQUER puis DIAGNOSTIC.</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:7px">
+        <select class="field" data-quick-dest><option value="cuisine">CUISINE</option><option value="bar">BAR</option><option value="patisserie">PÂTISSERIE</option><option value="caisse">CAISSE / TICKET CLIENT</option></select>
+        <select class="field" data-quick-mode><option value="epson">EPSON ePOS</option><option value="bridge">AUTRE RÉSEAU / ESC-POS</option><option value="system">IMPRIMANTE SYSTÈME</option></select>
+        <input class="field" data-quick-host placeholder="IP ex. 192.168.1.50">
+        <select class="field" data-quick-paper><option value="80">80 mm</option><option value="58">58 mm</option></select>
+        <input class="field" type="number" min="1" max="5" data-quick-copies value="1" placeholder="Copies">
+        <button class="action-btn green" data-quick-apply>✓ APPLIQUER</button>
+      </div>
     </div>
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:10px">
       <label class="action-btn" style="display:flex;align-items:center;justify-content:center;gap:8px"><input type="checkbox" data-printer-master ${cfg.enabled?"checked":""}> IMPRESSION ACTIVÉE</label>
-      <label class="action-btn" style="display:flex;align-items:center;justify-content:center;gap:8px"><input type="checkbox" data-printer-auto ${cfg.autoPrint?"checked":""}> AUTO APRÈS ENVOYER</label>
+      <label class="action-btn" style="display:flex;align-items:center;justify-content:center;gap:8px"><input type="checkbox" data-printer-auto ${cfg.autoPrint?"checked":""}> AUTO CUISINE/BAR</label>
     </div>
     <div style="display:grid;grid-template-columns:110px 1fr;gap:7px;align-items:center;margin-bottom:10px"><label style="font-size:10px;font-weight:900">TIMEOUT</label><input class="field" type="number" min="2000" max="30000" step="1000" data-printer-timeout value="${cfg.timeout}"></div>
-    <div style="display:grid;grid-template-columns:1fr 1fr;gap:7px;margin-bottom:10px">
-      <button class="action-btn" data-copy-printer="bar">COPIER CUISINE → BAR</button>
-      <button class="action-btn" data-copy-printer="patisserie">COPIER CUISINE → PÂTISSERIE</button>
+    <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:7px;margin-bottom:10px">
+      <button class="action-btn" data-copy-printer="bar">CUISINE → BAR</button>
+      <button class="action-btn" data-copy-printer="patisserie">CUISINE → PÂTISSERIE</button>
+      <button class="action-btn" data-copy-printer="caisse">CUISINE → CAISSE</button>
     </div>
-    ${printerRowHTML("cuisine","CUISINE",cfg)}
-    ${printerRowHTML("bar","BAR",cfg)}
-    ${printerRowHTML("patisserie","PÂTISSERIE",cfg)}
+    ${printerRowHTML("cuisine","🍳 CUISINE",cfg)}
+    ${printerRowHTML("bar","🍸 BAR",cfg)}
+    ${printerRowHTML("patisserie","🍰 PÂTISSERIE",cfg)}
+    ${printerRowHTML("caisse","🧾 CAISSE / TICKET CLIENT",cfg)}
+    <div class="big-state" style="text-align:left;margin-bottom:10px;border-color:var(--gold)">
+      <div style="font-size:14px;font-weight:950;margin-bottom:9px">🧾 PARAMÈTRES DU TICKET CLIENT</div>
+      <div style="display:grid;grid-template-columns:115px 1fr;gap:7px;align-items:center">
+        <label style="font-size:10px;font-weight:900">AUTO PAIEMENT</label><label class="field" style="display:flex;align-items:center;gap:8px"><input type="checkbox" data-receipt-auto ${r.autoAfterPayment!==false?"checked":""}> Imprimer après CARTE / ESPÈCES / AUTRE</label>
+        <label style="font-size:10px">NOM RESTAURANT</label><input class="field" data-receipt-business value="${esc(r.businessName||"")}" placeholder="Nom du restaurant">
+        <label style="font-size:10px">LOGO / TITRE</label><input class="field" data-receipt-logo value="${esc(r.logoText||"")}" placeholder="Texte court imprimé en grand">
+        <label style="font-size:10px">ADRESSE</label><input class="field" data-receipt-address value="${esc(r.address||"")}" placeholder="Adresse">
+        <label style="font-size:10px">TÉLÉPHONE</label><input class="field" data-receipt-phone value="${esc(r.phone||"")}" placeholder="Téléphone">
+        <label style="font-size:10px">TVA / ID</label><input class="field" data-receipt-tax value="${esc(r.taxId||"")}" placeholder="N° TVA / IDE / SIRET selon pays">
+        <label style="font-size:10px">BAS DE TICKET</label><input class="field" data-receipt-footer value="${esc(r.footer||"")}" placeholder="Merci de votre visite">
+        <label style="font-size:10px">SERVEUR</label><label class="field" style="display:flex;align-items:center;gap:8px"><input type="checkbox" data-receipt-server ${r.showServer!==false?"checked":""}> Afficher le serveur</label>
+        <label style="font-size:10px">C1–C9</label><label class="field" style="display:flex;align-items:center;gap:8px"><input type="checkbox" data-receipt-guests ${r.showGuests!==false?"checked":""}> Afficher le convive</label>
+      </div>
+      <div style="margin-top:8px;color:#aab2b5;font-size:9px;line-height:1.4">Le ticket reprend articles, TVA, total et moyen de paiement. Les obligations fiscales et la certification de caisse dépendent du pays et de l'installation.</div>
+    </div>
     <button class="action-btn green" style="width:100%;min-height:58px" data-printer-save>✓ ENREGISTRER TOUTES LES IMPRIMANTES</button>
   `);
   const body=$("sheetBody");
-  ["cuisine","bar","patisserie"].forEach(dest=>{
+  ICHEF_PRINTER_DESTS.forEach(dest=>{
     updatePrinterFields(dest);
     body.querySelector(`[data-printer-mode="${dest}"]`)?.addEventListener("change",()=>updatePrinterFields(dest));
   });
+  body.querySelector("[data-quick-mode]")?.addEventListener("change",e=>{
+    const host=body.querySelector("[data-quick-host]");if(host)host.style.display=e.target.value==="system"?"none":"";
+  });
+  body.querySelector("[data-quick-apply]").onclick=quickPrinterApply;
   body.querySelector("[data-printer-save]").onclick=()=>{
     const next=readPrinterConfigFromSheet();
     savePrinterConfig(next);
@@ -5823,14 +5987,13 @@ function openPrinterSetup(focusDest=""){
   if(focusDest){setTimeout(()=>body.querySelector(`[data-printer-card="${focusDest}"]`)?.scrollIntoView({behavior:"smooth",block:"start"}),100)}
 }
 
-
 function openMore(){
   openSheet("••• OUTILS",`<div class="action-grid">
     <button class="action-btn purple" data-more="reservations">🛎️ RÉSERVATIONS</button>
     <button class="action-btn" data-more="plan">🗺️ PLAN</button>
     <button class="action-btn gold" data-more="summary">📋 RÉSUMÉ / CAISSE</button>
     <button class="action-btn green" data-more="sync">↻ SYNCHRONISER</button>
-    <button class="action-btn gold" data-more="printer">🖨️ IMPRIMANTE RAPIDE</button>
+    <button class="action-btn gold" data-more="printer">🖨️ IMPRIMANTES</button>
     <button class="action-btn red" data-more="logout">🔒 DÉCONNEXION</button>
   </div><div class="big-state" style="margin-top:9px"><div class="small">Terminal : TÉLÉPHONE<br>Tenant : ${esc(STATE.tenantID)}<br>Rôle : ${esc(STATE.role||"—")} · Plan : ${esc(STATE.plan||"—")}</div></div>`);
   $("sheetBody").querySelectorAll("[data-more]").forEach(b=>b.onclick=()=>{
@@ -5852,6 +6015,7 @@ function editNote(){if(!STATE.currentTable)return;const o=ensureOrder(STATE.curr
 function openPayment(){
   if(!STATE.currentTable){toast("Ouvrez d’abord une table",true);return;}
   const o=ensureOrder(STATE.currentTable),total=orderTotal(o),profile=fiscalProfile();
+  const paid=text(o.paymentStatus||o.paymentDraft?.status).toUpperCase()==="PAYE";
   openSheet("💳 CAISSE · TABLE "+STATE.currentTable,`
     <div class="big-state"><div class="big gold">${money(total)}</div><div class="small">Profil fiscal ${esc(profile.label)} · ${esc(profile.currency)}</div></div>
     <div class="action-grid">
@@ -5859,9 +6023,18 @@ function openPayment(){
       <button class="action-btn gold" data-pay="ESPÈCES">💶 ESPÈCES</button>
       <button class="action-btn" data-pay="AUTRE">••• AUTRE</button>
       <button class="action-btn purple" data-pay="">⏳ EN ATTENTE</button>
-    </div>`);
+    </div>
+    <button class="action-btn gold" style="width:100%;margin-top:9px;min-height:56px" data-cash-receipt ${paid?"":"disabled"}>🧾 ${paid?"IMPRIMER / RÉIMPRIMER LE TICKET CLIENT":"TICKET CLIENT DISPONIBLE APRÈS PAIEMENT"}</button>
+    <div style="margin-top:7px;color:#98a1a4;font-size:9px;text-align:center">Imprimante CAISSE configurable dans OUTILS → IMPRIMANTES.</div>`);
   $("sheetBody").querySelectorAll("[data-pay]").forEach(b=>b.onclick=async()=>{
     const ok=await recordPayment(b.dataset.pay||null);if(ok){closeSheet();if(document.body.classList.contains("summary-open"))renderSummary()}
+  });
+  $("sheetBody").querySelector("[data-cash-receipt]")?.addEventListener("click",async()=>{
+    const btn=$("sheetBody")?.querySelector("[data-cash-receipt]");
+    if(!btn)return;const old=btn.textContent;btn.disabled=true;btn.textContent="IMPRESSION…";
+    try{await printCashReceipt(o,{duplicate:true});toast("🧾 Ticket client envoyé à la caisse")}
+    catch(e){toast("Ticket caisse : "+(e?.message||"échec"),true)}
+    finally{setTimeout(()=>{btn.disabled=false;btn.textContent=old},1800)}
   });
 }
 
@@ -6360,6 +6533,18 @@ async function recordPayment(method){
       rows:o.paymentDraft.fiscalRows
     });
     toast(paymentMethod?`Paiement ${paymentMethod} synchronisé`:"Paiement en attente");
+    if(paymentMethod){
+      const pcfg=loadPrinterConfig();
+      if(pcfg.enabled&&pcfg.printers?.caisse?.enabled&&pcfg.receipt?.autoAfterPayment!==false){
+        try{
+          await printCashReceipt(o,{auto:true});
+          toast("🧾 Paiement synchronisé · ticket client imprimé");
+        }catch(e){
+          console.warn("[iCHEF CAISSE] Paiement OK, impression ticket échouée",e);
+          toast("Paiement OK · ticket caisse à réimprimer",true);
+        }
+      }
+    }
   }
 
   return ok;
