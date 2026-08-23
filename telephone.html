@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
 <meta name="theme-color" content="#ffffff">
-<title>iCHEF TÉLÉPHONE — SERVER.JS RÉEL OK</title>
+<title>iCHEF TÉLÉPHONE — CONNEXION CORRIGÉE</title>
 <style>
 :root{
   --bg:#050607;--panel:#0b0e0f;--panel2:#111516;--line:#293033;--line2:#3a4346;
@@ -2551,9 +2551,10 @@ body.order-open #order, .order-main, .menu-side, .ticket-side, #bottomObservatio
    - server.js = source de vérité
    ========================================================= */
 
-/* Détection intelligente : PC ou Téléphone sur le même WiFi */
-const isLocal = location.hostname === "localhost" || location.hostname === "127.0.0.1" || location.hostname.startsWith("192.168.") || location.hostname.startsWith("10.");
-const APP_SERVER_URL = isLocal ? `http://${location.hostname}:10000` : "https://tableau-system.onrender.com";
+/* CONNEXION SERVER.JS — téléphone = serveur Render, localhost = serveur local */
+const APP_SERVER_URL=(location.hostname==="localhost"||location.hostname==="127.0.0.1")
+  ? "http://localhost:10000"
+  : "https://tableau-system.onrender.com";
 
 const $=id=>document.getElementById(id);
 const clone=v=>{try{return structuredClone(v)}catch(_){return JSON.parse(JSON.stringify(v))}};
@@ -3044,6 +3045,147 @@ function normalizeServerOrdersMap(activeOrders){
   return out;
 }
 
+
+/* ---------------- AUTH / CONNEXION SERVER.JS ---------------- */
+/*
+   Compatible avec server_ichef_FINAL.js.
+   Ne pas envoyer X-iCHEF-Terminal comme EN-TÊTE CORS.
+   Le terminal reste uniquement dans le corps JSON des écritures.
+*/
+function serverSecurityHeaders(extra={}){
+  return {
+    "Content-Type":"application/json",
+    "Accept":"application/json",
+    "X-Requested-With":"iCHEF-PWA",
+    "X-iCHEF-Device":STATE.deviceId,
+    ...extra
+  };
+}
+
+async function serverFetch(path,options={}){
+  const cfg={
+    cache:"no-store",
+    credentials:"omit",
+    ...options
+  };
+  cfg.headers=serverSecurityHeaders(options.headers||{});
+  return fetch(APP_SERVER_URL+path,cfg);
+}
+
+/* ---------------- AUTH ---------------- */
+function renderPin(){
+  const box=$("pinDots");
+  if(!box)return;
+  box.innerHTML="";
+  for(let i=0;i<6;i++){
+    const d=document.createElement("i");
+    if(i<STATE.loginPin.length)d.className="on";
+    box.appendChild(d);
+  }
+}
+function loginMessage(m=""){
+  const el=$("loginMsg");
+  if(el)el.textContent=m;
+}
+function syncTenantLoginField(forceShow=false){
+  const input=$("tenantInput"),box=$("tenantBox");
+  if(input&&!input.value&&STATE.tenantID)input.value=STATE.tenantID;
+  if(box&&(forceShow||!STATE.tenantID))box.classList.add("show");
+}
+async function verifyPin(){
+  const typedTenant=text($("tenantInput")?.value);
+  if(typedTenant&&typedTenant!==STATE.tenantID){
+    STATE.tenantID=typedTenant;
+    STORAGE.set("ichef_tenant_id",STATE.tenantID);
+  }
+  if(!STATE.tenantID){
+    STATE.tenantID=typedTenant;
+    if(!STATE.tenantID){
+      loginMessage("Identifiant établissement requis");
+      syncTenantLoginField(true);
+      return;
+    }
+    STORAGE.set("ichef_tenant_id",STATE.tenantID);
+  }
+  if(STATE.loginPin.length<4){loginMessage("Code incomplet");return}
+  loginMessage("Connexion…");
+  try{
+    const r=await serverFetch("/api/verify-pin",{
+      method:"POST",
+      body:JSON.stringify({tenantID:STATE.tenantID,pin:STATE.loginPin,deviceId:STATE.deviceId})
+    });
+    const j=await r.json().catch(()=>({}));
+    if(!r.ok||!j.success)throw new Error(j.error||j.message||"Code refusé");
+    STATE.pin=STATE.loginPin;
+    if(j.safeTenantID){
+      STATE.tenantID=text(j.safeTenantID);
+      STORAGE.set("ichef_tenant_id",STATE.tenantID);
+    }
+    STATE.role=j.role||"";
+    STATE.plan=j.plan||"";
+    STATE.specialite=j.specialite||"";
+    STATE.authenticated=true;
+    $("login")?.classList.add("hidden");
+    $("app")?.classList.remove("hidden");
+    $("tools")?.classList.remove("hidden");
+    loginMessage("");
+    await bootApp();
+  }catch(e){
+    STATE.loginPin="";
+    renderPin();
+    syncTenantLoginField(true);
+    loginMessage(e?.message||"Connexion impossible");
+  }
+}
+
+$("pinPad")?.addEventListener("click",e=>{
+  const b=e.target.closest("button");
+  if(!b)return;
+  if(b.dataset.pin!==undefined){
+    if(STATE.loginPin.length<6)STATE.loginPin+=b.dataset.pin;
+    renderPin();
+    loginMessage("");
+  }
+  if(b.dataset.act==="clear"){STATE.loginPin="";renderPin();loginMessage("")}
+  if(b.dataset.act==="back"){STATE.loginPin=STATE.loginPin.slice(0,-1);renderPin();loginMessage("")}
+});
+$("pinValidate")?.addEventListener("click",verifyPin);
+syncTenantLoginField(false);
+renderPin();
+
+/* ---------------- SERVER API ---------------- */
+async function getState(){
+  const r=await serverFetch("/get-current-state?tenantID="+encodeURIComponent(STATE.tenantID)+"&_t="+Date.now(),{method:"GET"});
+  if(!r.ok){
+    const j=await r.json().catch(()=>({}));
+    throw new Error(j.error||j.message||("Lecture serveur "+r.status));
+  }
+  return r.json();
+}
+async function updateServer(key,data,auditReason="Mise à jour téléphone"){
+  if(STATE.demo)return {success:true,demo:true};
+  if(!STATE.authenticated)throw new Error("Session non authentifiée");
+  const body={
+    tableId:key,
+    order:data,
+    pin:STATE.pin,
+    deviceId:STATE.deviceId,
+    terminal:"TELEPHONE",
+    auditReason
+  };
+  const r=await serverFetch("/update-order?tenantID="+encodeURIComponent(STATE.tenantID),{
+    method:"POST",
+    body:JSON.stringify(body)
+  });
+  const j=await r.json().catch(()=>({}));
+  if(!r.ok)throw new Error(j.error||j.message||("Écriture serveur "+r.status));
+  return j;
+}
+async function optimisticWrite(key,data,reason){
+  const pending=stageLocalValue(key,data,reason);
+  return enqueueVersionedWrite(key,pending);
+}
+
 /* ---------------- REALTIME ---------------- */
 function setConnection(label,kind="warn"){
   $("stLink").textContent=label;$("stLink").className="status-value "+(kind==="good"?"good":kind==="bad"?"bad":"warn");
@@ -3159,32 +3301,6 @@ function applyServerState(serverState,source){
   checkGlobalAlert();
 }
 
-  const openedTable=STATE.currentTable;
-  const rawOpened=openedTable?serverIncoming[openedTable]:null;
-  const hasLocalPending=openedTable?ICHEF_LOCAL_PENDING.has(openedTable):false;
-
-  STATE.activeOrders=preservePendingOverServer(serverIncoming);
-  if(serverState.sasConfig)STATE.sasConfig=serverState.sasConfig;
-
-  applyDerived();
-
-  if(
-    openedTable &&
-    rawOpened &&
-    isArchivedOrder(rawOpened) &&
-    !hasLocalPending
-  ){
-    STATE.currentTable=null;
-    STATE.currentOrder=null;
-    STATE.pendingCookingLine="";
-    hideQuickCooking();
-    document.body.classList.remove("summary-open","order-open");
-    toast("Table fermée sur un autre écran");
-  }
-
-  scheduleRender();
-  checkGlobalAlert();
-}
 window.addEventListener("online",()=>{setConnection("RECONNEXION","warn");connectSocket();retryFailedWrites();syncFull("online")},{passive:true});
 window.addEventListener("offline",()=>{STATE.connected=false;setConnection("HORS LIGNE","bad")},{passive:true});
 document.addEventListener("visibilitychange",()=>{if(!document.hidden&&STATE.authenticated){connectSocket();if(!STATE.lastServerAt||now()-STATE.lastServerAt>10000)syncFull("visible")}});
