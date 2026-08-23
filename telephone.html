@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
 <meta name="theme-color" content="#ffffff">
-<title>iCHEF TÉLÉPHONE — PAGE 3 RÉSUMÉ RECONNECTÉE</title>
+<title>iCHEF TÉLÉPHONE — EPSON TM-m30 PRÊTE</title>
 <style>
 :root{
   --bg:#050607;--panel:#0b0e0f;--panel2:#111516;--line:#293033;--line2:#3a4346;
@@ -4673,6 +4673,11 @@ async function sendKitchen(){
     if(counts.bar)parts.push(`Bar ${counts.bar}`);
     if(counts.patisserie)parts.push(`Pâtisserie ${counts.patisserie}`);
     toast("✓ ENVOYÉ · "+parts.join(" · "));
+    /* Impression Epson optionnelle : ne bloque jamais l'envoi serveur. */
+    printNewEpsonJobs(o,stamp).catch(err=>{
+      console.warn("[iCHEF EPSON] Impression impossible",err);
+      toast("⚠ Commande envoyée · impression Epson à vérifier",true);
+    });
   }
   return ok;
 }
@@ -5321,7 +5326,283 @@ function openPlan(){
   const ts=STATE.tables.filter(t=>t.room===STATE.room),zs=STATE.zones.filter(z=>z.room===STATE.room);let maxX=1000,maxY=800;[...ts,...zs].forEach(x=>{maxX=Math.max(maxX,num(x.l)+num(x.w||100));maxY=Math.max(maxY,num(x.t)+num(x.h||100))});const scale=Math.min(1,520/maxX,430/maxY);openSheet("🗺️ PLAN · "+STATE.room,`<div class="plan-wrap"><div class="plan-canvas" style="width:${maxX}px;height:${maxY}px;transform:scale(${scale})">${zs.map(z=>`<div class="plan-zone" style="left:${num(z.l)}px;top:${num(z.t)}px;width:${num(z.w||400)}px;height:${num(z.h||300)}px">${esc(z.label)}</div>`).join("")}${ts.map(t=>`<button class="plan-table" data-plan-table="${esc(t.label)}" style="left:${num(t.l)}px;top:${num(t.t)}px;width:${num(t.w||80)}px;height:${num(t.h||80)}px">${esc(t.label)}</button>`).join("")}</div></div>`);$("sheetBody").querySelectorAll("[data-plan-table]").forEach(b=>b.onclick=()=>{closeSheet();openOrder(b.dataset.planTable)})
 }
 
-function openMore(){openSheet("••• OUTILS",`<div class="action-grid"><button class="action-btn purple" data-more="reservations">🛎️ RÉSERVATIONS</button><button class="action-btn" data-more="plan">🗺️ PLAN</button><button class="action-btn gold" data-more="summary">📋 RÉSUMÉ / CAISSE</button><button class="action-btn green" data-more="sync">↻ SYNCHRONISER</button><button class="action-btn red" data-more="logout">🔒 DÉCONNEXION</button></div><div class="big-state" style="margin-top:9px"><div class="small">Terminal : TÉLÉPHONE<br>Tenant : ${esc(STATE.tenantID)}<br>Rôle : ${esc(STATE.role||"—")} · Plan : ${esc(STATE.plan||"—")}</div></div>`);$("sheetBody").querySelectorAll("[data-more]").forEach(b=>b.onclick=()=>{const a=b.dataset.more;if(a==="reservations")openReservations();if(a==="plan")openPlan();if(a==="summary"){closeSheet();openSummary()}if(a==="sync"){closeSheet();syncFull("manual")}if(a==="logout"){location.reload()}})}
+
+/* ---------------- EPSON TM-m30 / ePOS-Print ---------------- */
+const ICHEF_PRINTER_CONFIG_KEY="ichef_epson_printers_v1";
+
+function defaultPrinterConfig(){
+  return {
+    enabled:false,
+    autoPrint:true,
+    timeout:10000,
+    printers:{
+      cuisine:{enabled:true,protocol:"http",host:"",deviceId:"local_printer",label:"EPSON CUISINE"},
+      bar:{enabled:false,protocol:"http",host:"",deviceId:"local_printer",label:"EPSON BAR"},
+      patisserie:{enabled:false,protocol:"http",host:"",deviceId:"local_printer",label:"EPSON PÂTISSERIE"}
+    }
+  };
+}
+
+function loadPrinterConfig(){
+  const base=defaultPrinterConfig();
+  try{
+    const raw=localStorage.getItem(ICHEF_PRINTER_CONFIG_KEY);
+    if(!raw)return base;
+    const saved=JSON.parse(raw)||{};
+    base.enabled=!!saved.enabled;
+    base.autoPrint=saved.autoPrint!==false;
+    base.timeout=Math.max(2000,Math.min(30000,Number(saved.timeout)||10000));
+    ["cuisine","bar","patisserie"].forEach(dest=>{
+      const p=saved.printers?.[dest]||{};
+      base.printers[dest]={...base.printers[dest],...p,enabled:!!p.enabled};
+    });
+  }catch(e){console.warn("[iCHEF] Configuration imprimante illisible",e)}
+  return base;
+}
+
+function savePrinterConfig(cfg){
+  localStorage.setItem(ICHEF_PRINTER_CONFIG_KEY,JSON.stringify(cfg));
+  return cfg;
+}
+
+function normalizePrinterHost(value){
+  let v=text(value).replace(/^https?:\/\//i,"").replace(/\/$/,"");
+  return v;
+}
+
+function epsonEndpoint(printer,cfg){
+  const protocol=text(printer.protocol||"http").toLowerCase()==="https"?"https":"http";
+  const host=normalizePrinterHost(printer.host);
+  const device=encodeURIComponent(text(printer.deviceId||"local_printer")||"local_printer");
+  const timeout=Math.max(2000,Math.min(30000,Number(cfg.timeout)||10000));
+  return `${protocol}://${host}/cgi-bin/epos/service.cgi?devid=${device}&timeout=${timeout}`;
+}
+
+function xmlEsc(v){
+  return String(v??"").replace(/[<>&\"']/g,c=>({"<":"&lt;",">":"&gt;","&":"&amp;","\"":"&quot;","'":"&apos;"}[c]));
+}
+
+function eposTextLine(value,opts={}){
+  const attrs=[];
+  if(opts.align)attrs.push(`align="${xmlEsc(opts.align)}"`);
+  if(opts.bold!==undefined)attrs.push(`em="${opts.bold?"true":"false"}"`);
+  if(opts.width)attrs.push(`width="${Number(opts.width)||1}"`);
+  if(opts.height)attrs.push(`height="${Number(opts.height)||1}"`);
+  return `<text ${attrs.join(" ")}>${xmlEsc(String(value??"")+"\\n")}</text>`;
+}
+
+function buildEpsonSoap(lines,options={}){
+  const body=[];
+  body.push('<text lang="fr"/>');
+  if(options.title){
+    body.push('<text align="center"/>');
+    body.push('<text em="true" width="2" height="2"/>');
+    body.push(`<text>${xmlEsc(options.title+"\\n")}</text>`);
+    body.push('<text em="false" width="1" height="1" align="left"/>');
+  }
+  lines.forEach(line=>{
+    if(typeof line==="string")body.push(eposTextLine(line));
+    else if(line&&typeof line==="object")body.push(eposTextLine(line.text||"",line));
+  });
+  body.push('<feed line="2"/>');
+  body.push('<cut type="feed"/>');
+  return `<?xml version="1.0" encoding="utf-8"?><s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/"><s:Body><epos-print xmlns="http://www.epson-pos.com/schemas/2011/03/epos-print">${body.join("")}</epos-print></s:Body></s:Envelope>`;
+}
+
+async function postEpson(printer,cfg,soap){
+  if(!printer||!printer.enabled)throw new Error("Imprimante désactivée");
+  const host=normalizePrinterHost(printer.host);
+  if(!host)throw new Error("Adresse IP Epson manquante");
+  const endpoint=epsonEndpoint(printer,cfg);
+  const controller=new AbortController();
+  const timer=setTimeout(()=>controller.abort(),Math.max(2500,(Number(cfg.timeout)||10000)+1500));
+  try{
+    const response=await fetch(endpoint,{
+      method:"POST",
+      headers:{"Content-Type":"text/xml; charset=utf-8","If-Modified-Since":"Thu, 01 Jan 1970 00:00:00 GMT"},
+      body:soap,
+      cache:"no-store",
+      signal:controller.signal
+    });
+    const result=await response.text();
+    if(!response.ok)throw new Error(`HTTP ${response.status}`);
+    const failed=/success=["']false["']/i.test(result)||/<response[^>]*success=["']false["']/i.test(result);
+    if(failed){
+      const code=(result.match(/code=["']([^"']*)["']/i)||[])[1]||"ERREUR EPSON";
+      throw new Error(code);
+    }
+    return {ok:true,endpoint,result};
+  }catch(err){
+    if(err?.name==="AbortError")throw new Error("Imprimante sans réponse");
+    if(/Failed to fetch|NetworkError|Load failed/i.test(String(err?.message||err))){
+      throw new Error("Epson inaccessible ou navigateur bloque le réseau local");
+    }
+    throw err;
+  }finally{clearTimeout(timer)}
+}
+
+function printerTicketLines(order,dest,items){
+  const dLabel=dest==="bar"?"BAR":dest==="patisserie"?"PÂTISSERIE":"CUISINE";
+  const lines=[
+    {text:`${dLabel} · TABLE ${STATE.currentTable}`,bold:true,width:2,height:2,align:"center"},
+    {text:`${num(order.pax||2)||2} couverts · ${new Date().toLocaleTimeString("fr-FR",{hour:"2-digit",minute:"2-digit"})}`,align:"center"},
+    "------------------------------------------"
+  ];
+  items.forEach(item=>{
+    const seat=itemSeat(item);
+    lines.push({text:`${seat?seatLabel(seat)+" · ":""}${itemQty(item)} x ${itemName(item)}`,bold:true});
+    const cooking=text(item.cooking||item.cuisson);
+    const obs=text(item.obs||item.observation||item.note);
+    const allergy=text(item.allergy||item.allergie||item.allergies);
+    const modifiers=item.modifiers&&typeof item.modifiers==="object"?item.modifiers:{};
+    const rm=Array.isArray(modifiers.remove)?modifiers.remove.filter(Boolean):[];
+    const add=Array.isArray(modifiers.add)?modifiers.add.filter(Boolean):[];
+    if(cooking)lines.push({text:`CUISSON: ${cooking}`,bold:true});
+    if(rm.length)lines.push(`SANS: ${rm.join(", ")}`);
+    if(add.length)lines.push(`PLUS: ${add.join(", ")}`);
+    if(obs)lines.push({text:`OBS: ${obs}`,bold:true});
+    if(allergy)lines.push({text:`*** ALLERGIE: ${allergy} ***`,bold:true,width:2,height:2});
+    lines.push("------------------------------------------");
+  });
+  lines.push({text:`iCHEF · ${STATE.role||"SERVEUR"}`,align:"center"});
+  return lines;
+}
+
+async function printEpsonDestination(dest,items,order,options={}){
+  const cfg=loadPrinterConfig();
+  if(!cfg.enabled&&!options.force) return {skipped:true,reason:"disabled"};
+  const printer=cfg.printers?.[dest];
+  if(!printer?.enabled) return {skipped:true,reason:"destination-disabled"};
+  const lines=options.test
+    ?[
+       {text:"TEST CONNEXION EPSON",bold:true,width:2,height:2,align:"center"},
+       {text:`Poste: ${dest.toUpperCase()}`,align:"center"},
+       {text:`iCHEF · ${new Date().toLocaleString("fr-FR")}`,align:"center"},
+       "",
+       "Si ce ticket sort, la connexion est OK."
+     ]
+    :printerTicketLines(order,dest,items);
+  return postEpson(printer,cfg,buildEpsonSoap(lines));
+}
+
+async function printNewEpsonJobs(order,stamp){
+  const cfg=loadPrinterConfig();
+  if(!cfg.enabled||!cfg.autoPrint)return {skipped:true};
+  const newItems=(order.items||[]).filter(i=>!i.cancelled&&Number(i.sentAt)===Number(stamp));
+  if(!newItems.length)return {skipped:true};
+  const jobs=[];
+  ["cuisine","bar","patisserie"].forEach(dest=>{
+    const items=newItems.filter(i=>normalizeDestination(i.dest||i.destination||i.category||"cuisine")===dest);
+    if(items.length&&cfg.printers?.[dest]?.enabled)jobs.push({dest,items});
+  });
+  if(!jobs.length)return {skipped:true};
+  const results=await Promise.allSettled(jobs.map(j=>printEpsonDestination(j.dest,j.items,order)));
+  const failed=results.map((r,i)=>({r,job:jobs[i]})).filter(x=>x.r.status==="rejected");
+  if(failed.length){
+    console.warn("[iCHEF EPSON] Impression partielle/échouée",failed);
+    toast(`⚠ Commande envoyée · impression ${failed.map(x=>x.job.dest).join("/")} à vérifier`,true);
+    return {ok:false,failed};
+  }
+  toast(`🖨️ Epson · ${jobs.map(j=>j.dest).join(" + ")} imprimé`);
+  return {ok:true};
+}
+
+function printerRowHTML(dest,title,cfg){
+  const p=cfg.printers[dest];
+  return `<div class="big-state" style="text-align:left;margin-bottom:9px">
+    <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
+      <strong style="flex:1;font-size:13px">${title}</strong>
+      <label style="font-size:11px"><input type="checkbox" data-printer-enabled="${dest}" ${p.enabled?"checked":""}> ACTIF</label>
+    </div>
+    <div style="display:grid;grid-template-columns:95px 1fr;gap:7px;align-items:center">
+      <label style="font-size:10px">PROTOCOLE</label>
+      <select class="field" data-printer-protocol="${dest}"><option value="http" ${p.protocol!=="https"?"selected":""}>HTTP</option><option value="https" ${p.protocol==="https"?"selected":""}>HTTPS</option></select>
+      <label style="font-size:10px">IP / HÔTE</label>
+      <input class="field" data-printer-host="${dest}" value="${esc(p.host||"")}" placeholder="ex. 192.168.1.50">
+      <label style="font-size:10px">DEVICE ID</label>
+      <input class="field" data-printer-device="${dest}" value="${esc(p.deviceId||"local_printer")}" placeholder="local_printer">
+    </div>
+    <button class="action-btn" style="width:100%;margin-top:8px" data-printer-test="${dest}">🖨️ TEST ${title}</button>
+  </div>`;
+}
+
+function readPrinterConfigFromSheet(){
+  const cfg=loadPrinterConfig();
+  cfg.enabled=!!$("sheetBody").querySelector("[data-epson-master]")?.checked;
+  cfg.autoPrint=!!$("sheetBody").querySelector("[data-epson-auto]")?.checked;
+  cfg.timeout=Math.max(2000,Math.min(30000,Number($("sheetBody").querySelector("[data-epson-timeout]")?.value)||10000));
+  ["cuisine","bar","patisserie"].forEach(dest=>{
+    const p=cfg.printers[dest];
+    p.enabled=!!$("sheetBody").querySelector(`[data-printer-enabled="${dest}"]`)?.checked;
+    p.protocol=$("sheetBody").querySelector(`[data-printer-protocol="${dest}"]`)?.value||"http";
+    p.host=normalizePrinterHost($("sheetBody").querySelector(`[data-printer-host="${dest}"]`)?.value||"");
+    p.deviceId=text($("sheetBody").querySelector(`[data-printer-device="${dest}"]`)?.value||"local_printer")||"local_printer";
+  });
+  return cfg;
+}
+
+function openPrinterSetup(){
+  const cfg=loadPrinterConfig();
+  openSheet("🖨️ EPSON TM-m30 · CONNEXION",`
+    <div class="big-state" style="text-align:left;border-color:var(--gold)">
+      <div style="font-size:13px;font-weight:950;margin-bottom:7px">CONNEXION PRÉPARÉE ePOS-Print</div>
+      <div class="small" style="font-size:10px;line-height:1.45">Renseignez l'adresse IP locale de l'Epson. ePOS-Print doit être activé dans la configuration réseau de l'imprimante. Si le navigateur bloque HTTP depuis une page HTTPS, il faudra utiliser le Print Bridge local iCHEF.</div>
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:10px">
+      <label class="action-btn" style="display:flex;align-items:center;justify-content:center;gap:8px"><input type="checkbox" data-epson-master ${cfg.enabled?"checked":""}> EPSON ACTIVÉE</label>
+      <label class="action-btn" style="display:flex;align-items:center;justify-content:center;gap:8px"><input type="checkbox" data-epson-auto ${cfg.autoPrint?"checked":""}> AUTO APRÈS ENVOYER</label>
+    </div>
+    <div style="display:grid;grid-template-columns:110px 1fr;gap:7px;align-items:center;margin-bottom:10px"><label style="font-size:10px;font-weight:900">TIMEOUT</label><input class="field" type="number" min="2000" max="30000" step="1000" data-epson-timeout value="${cfg.timeout}"></div>
+    ${printerRowHTML("cuisine","CUISINE",cfg)}
+    ${printerRowHTML("bar","BAR",cfg)}
+    ${printerRowHTML("patisserie","PÂTISSERIE",cfg)}
+    <button class="action-btn green" style="width:100%;min-height:58px" data-epson-save>✓ ENREGISTRER LA CONNEXION</button>
+  `);
+  const body=$("sheetBody");
+  body.querySelector("[data-epson-save]").onclick=()=>{
+    const next=readPrinterConfigFromSheet();
+    savePrinterConfig(next);
+    toast(next.enabled?"✓ Configuration Epson enregistrée":"Configuration Epson enregistrée · impression désactivée");
+  };
+  body.querySelectorAll("[data-printer-test]").forEach(btn=>btn.onclick=async()=>{
+    const dest=btn.dataset.printerTest;
+    const next=readPrinterConfigFromSheet();
+    savePrinterConfig(next);
+    const old=btn.textContent;
+    btn.disabled=true;btn.textContent="CONNEXION…";
+    try{
+      await printEpsonDestination(dest,[],STATE.currentOrder||{}, {force:true,test:true});
+      toast(`✓ Epson ${dest} connectée`);
+      btn.textContent="✓ TEST OK";
+    }catch(e){
+      toast(`Epson ${dest} : ${e?.message||"échec"}`,true);
+      btn.textContent="⚠ ÉCHEC · RÉESSAYER";
+    }finally{
+      setTimeout(()=>{btn.disabled=false;btn.textContent=old},1800);
+    }
+  });
+}
+
+function openMore(){
+  openSheet("••• OUTILS",`<div class="action-grid">
+    <button class="action-btn purple" data-more="reservations">🛎️ RÉSERVATIONS</button>
+    <button class="action-btn" data-more="plan">🗺️ PLAN</button>
+    <button class="action-btn gold" data-more="summary">📋 RÉSUMÉ / CAISSE</button>
+    <button class="action-btn green" data-more="sync">↻ SYNCHRONISER</button>
+    <button class="action-btn gold" data-more="printer">🖨️ EPSON TM-m30</button>
+    <button class="action-btn red" data-more="logout">🔒 DÉCONNEXION</button>
+  </div><div class="big-state" style="margin-top:9px"><div class="small">Terminal : TÉLÉPHONE<br>Tenant : ${esc(STATE.tenantID)}<br>Rôle : ${esc(STATE.role||"—")} · Plan : ${esc(STATE.plan||"—")}</div></div>`);
+  $("sheetBody").querySelectorAll("[data-more]").forEach(b=>b.onclick=()=>{
+    const a=b.dataset.more;
+    if(a==="reservations")openReservations();
+    if(a==="plan")openPlan();
+    if(a==="summary"){closeSheet();openSummary()}
+    if(a==="sync"){closeSheet();syncFull("manual")}
+    if(a==="printer")openPrinterSetup();
+    if(a==="logout")location.reload();
+  });
+}
+
 
 function openOrderMore(){openSheet("TABLE "+STATE.currentTable,`<div class="action-grid"><button class="action-btn green" data-om="send">👨‍🍳 ENVOYER</button><button class="action-btn purple" data-om="who">👥 QUI MANGE ?</button><button class="action-btn gold" data-om="summary">📋 RÉSUMÉ / CAISSE</button><button class="action-btn gold" data-om="payment">💳 PAIEMENT DIRECT</button><button class="action-btn" data-om="note">📝 NOTE</button><button class="action-btn orange" data-om="close">✅ FERMER TABLE</button><button class="action-btn red" data-om="delete">🗑️ SUPPRIMER COMMANDE</button></div>`);$("sheetBody").querySelectorAll("[data-om]").forEach(b=>b.onclick=()=>{const a=b.dataset.om;if(a==="send"){closeSheet();sendKitchen()}if(a==="who"){openWho()}if(a==="summary"){closeSheet();openSummary()}if(a==="payment"){openPayment()}if(a==="note"){editNote()}if(a==="close"){closeTable()}if(a==="delete"){deleteOrder()}})}
 
