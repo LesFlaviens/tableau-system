@@ -2585,6 +2585,7 @@ const STATE={
   tenantID:new URLSearchParams(location.search).get("tenantID")||STORAGE.get("ichef_tenant_id","")||"",
   deviceId:STORAGE.get("ichef_device_id","")||("dev_"+cryptoId()),
   pin:"",role:"",plan:"",specialite:"",authenticated:false,
+  sessionToken:"",csrfToken:"",
   connected:false,socket:null,socketLoading:null,lastServerAt:0,syncing:false,
   activeOrders:{},architecture:{rooms:["Salle Principale"],tables:[],zones:[]},
   rooms:["Salle Principale"],tables:[],zones:[],room:"Salle Principale",
@@ -2859,6 +2860,44 @@ function normalizeServerOrdersMap(activeOrders){
   return out;
 }
 
+/* ---------------- AUTH / CONNEXION SERVER.JS ---------------- */
+function serverSecurityHeaders(extra={}){
+  const headers={
+    "Content-Type":"application/json",
+    "Accept":"application/json",
+    "X-Requested-With":"iCHEF-PWA",
+    "X-iCHEF-Device":STATE.deviceId,
+    "X-iCHEF-Terminal":"TELEPHONE",
+    ...extra
+  };
+  if(STATE.sessionToken)headers.Authorization="Bearer "+STATE.sessionToken;
+  if(STATE.csrfToken)headers["X-CSRF-Token"]=STATE.csrfToken;
+  return headers;
+}
+
+async function serverFetch(path,options={}){
+  const cfg={
+    cache:"no-store",
+    credentials:"include",
+    ...options
+  };
+  cfg.headers=serverSecurityHeaders(options.headers||{});
+
+  try{
+    return await fetch(APP_SERVER_URL+path,cfg);
+  }catch(firstError){
+    /* Compatibilité avec un ancien server.js/CORS qui n'accepte pas les cookies cross-origin. */
+    const fallbackHeaders={
+      "Content-Type":"application/json",
+      "Accept":"application/json",
+      ...(options.headers||{})
+    };
+    if(STATE.sessionToken)fallbackHeaders.Authorization="Bearer "+STATE.sessionToken;
+    if(STATE.csrfToken)fallbackHeaders["X-CSRF-Token"]=STATE.csrfToken;
+    return fetch(APP_SERVER_URL+path,{...options,cache:"no-store",credentials:"omit",headers:fallbackHeaders});
+  }
+}
+
 /* ---------------- AUTH ---------------- */
 function renderPin(){
   const box=$("pinDots");box.innerHTML="";for(let i=0;i<6;i++){const d=document.createElement("i");if(i<STATE.loginPin.length)d.className="on";box.appendChild(d)}
@@ -2879,10 +2918,15 @@ async function verifyPin(){
   if(STATE.loginPin.length<4){loginMessage("Code incomplet");return}
   loginMessage("Connexion…");
   try{
-    const r=await fetch(APP_SERVER_URL+"/api/verify-pin",{method:"POST",cache:"no-store",credentials:"omit",headers:{"Content-Type":"application/json"},body:JSON.stringify({tenantID:STATE.tenantID,pin:STATE.loginPin,deviceId:STATE.deviceId})});
+    const r=await serverFetch("/api/verify-pin",{
+      method:"POST",
+      body:JSON.stringify({tenantID:STATE.tenantID,pin:STATE.loginPin,deviceId:STATE.deviceId})
+    });
     const j=await r.json().catch(()=>({}));
     if(!r.ok||!j.success)throw new Error(j.error||j.message||"Code refusé");
     STATE.pin=STATE.loginPin;
+    STATE.sessionToken=text(j.sessionToken||j.token||"");
+    STATE.csrfToken=text(j.csrfToken||"");
     if(j.safeTenantID){STATE.tenantID=text(j.safeTenantID);STORAGE.set("ichef_tenant_id",STATE.tenantID)}
     STATE.role=j.role||"";STATE.plan=j.plan||"";STATE.specialite=j.specialite||"";STATE.authenticated=true;
     $("login").classList.add("hidden");$("app").classList.remove("hidden");$("tools").classList.remove("hidden");
@@ -2910,15 +2954,31 @@ renderPin();
 
 /* ---------------- SERVER API ---------------- */
 async function getState(){
-  const r=await fetch(APP_SERVER_URL+"/get-current-state?tenantID="+encodeURIComponent(STATE.tenantID)+"&_t="+Date.now(),{cache:"no-store",credentials:"omit"});
-  if(!r.ok)throw new Error("Lecture serveur "+r.status);return r.json();
+  const r=await serverFetch("/get-current-state?tenantID="+encodeURIComponent(STATE.tenantID)+"&_t="+Date.now(),{method:"GET"});
+  if(!r.ok){
+    const j=await r.json().catch(()=>({}));
+    throw new Error(j.error||j.message||("Lecture serveur "+r.status));
+  }
+  return r.json();
 }
 async function updateServer(key,data,auditReason="Mise à jour téléphone"){
   if(STATE.demo)return {success:true,demo:true};
   if(!STATE.authenticated)throw new Error("Session non authentifiée");
-  const body={tableId:key,order:data,pin:STATE.pin};
-  const r=await fetch(APP_SERVER_URL+"/update-order?tenantID="+encodeURIComponent(STATE.tenantID),{method:"POST",cache:"no-store",credentials:"omit",headers:{"Content-Type":"application/json","X-iCHEF-Device":STATE.deviceId,"X-iCHEF-Terminal":"TELEPHONE"},body:JSON.stringify(body)});
-  const j=await r.json().catch(()=>({}));if(!r.ok)throw new Error(j.error||j.message||("Écriture serveur "+r.status));return j;
+  const body={
+    tableId:key,
+    order:data,
+    pin:STATE.pin,
+    deviceId:STATE.deviceId,
+    terminal:"TELEPHONE",
+    auditReason
+  };
+  const r=await serverFetch("/update-order?tenantID="+encodeURIComponent(STATE.tenantID),{
+    method:"POST",
+    body:JSON.stringify(body)
+  });
+  const j=await r.json().catch(()=>({}));
+  if(!r.ok)throw new Error(j.error||j.message||("Écriture serveur "+r.status));
+  return j;
 }
 async function optimisticWrite(key,data,reason){
   const pending=stageLocalValue(key,data,reason);
@@ -2933,7 +2993,15 @@ function setConnection(label,kind="warn"){
 }
 function loadSocket(){
   if(window.io)return Promise.resolve(window.io);if(STATE.socketLoading)return STATE.socketLoading;
-  STATE.socketLoading=new Promise((resolve,reject)=>{const s=document.createElement("script");s.src="https://cdn.socket.io/4.7.2/socket.io.min.js";s.async=true;s.onload=()=>resolve(window.io);s.onerror=()=>reject(new Error("Socket.IO indisponible"));document.head.appendChild(s)});return STATE.socketLoading;
+  STATE.socketLoading=new Promise((resolve,reject)=>{
+    const s=document.createElement("script");
+    s.src="https://cdn.socket.io/4.7.2/socket.io.min.js";
+    s.async=true;
+    s.onload=()=>resolve(window.io);
+    s.onerror=()=>{STATE.socketLoading=null;reject(new Error("Socket.IO indisponible"))};
+    document.head.appendChild(s);
+  });
+  return STATE.socketLoading;
 }
 async function connectSocket(){
   try{await loadSocket();if(STATE.socket)return;
@@ -2946,17 +3014,46 @@ async function connectSocket(){
       reconnectionDelay:350,
       reconnectionDelayMax:2500,
       timeout:4500,
-      auth:{tenantID:STATE.tenantID,deviceId:STATE.deviceId,terminal:"TELEPHONE"}
+      auth:{
+        tenantID:STATE.tenantID,
+        deviceId:STATE.deviceId,
+        terminal:"TELEPHONE",
+        sessionToken:STATE.sessionToken||undefined,
+        csrfToken:STATE.csrfToken||undefined,
+        pin:STATE.pin||undefined
+      }
     });STATE.socket=socket;
     socket.on("connect",()=>{STATE.connected=true;setConnection("TEMPS RÉEL","good");socket.emit("joinTenant",String(STATE.tenantID));retryFailedWrites();if(!STATE.lastServerAt||now()-STATE.lastServerAt>5000)syncFull("reconnect")});
     socket.on("updateState",s=>{STATE.connected=true;STATE.lastServerAt=now();setConnection("TEMPS RÉEL","good");applyServerState(s,"socket")});
     socket.on("disconnect",()=>{STATE.connected=false;setConnection(navigator.onLine?"RECONNEXION":"HORS LIGNE",navigator.onLine?"warn":"bad")});
-    socket.on("connect_error",()=>{STATE.connected=false;setConnection(navigator.onLine?"SYNCHRO":"HORS LIGNE",navigator.onLine?"warn":"bad")});
-  }catch(_){setConnection("SYNCHRO","warn")}
+    socket.on("connect_error",err=>{
+      STATE.connected=false;
+      setConnection(navigator.onLine?"SYNCHRO HTTP":"HORS LIGNE",navigator.onLine?"warn":"bad");
+      console.warn("[iCHEF TELEPHONE] Socket.IO indisponible, synchronisation HTTP conservée",err?.message||err);
+    });
+  }catch(err){
+    STATE.connected=false;
+    STATE.socket=null;
+    STATE.socketLoading=null;
+    setConnection(navigator.onLine?"SYNCHRO HTTP":"HORS LIGNE",navigator.onLine?"warn":"bad");
+    console.warn("[iCHEF TELEPHONE] Socket.IO non chargé, synchronisation HTTP conservée",err?.message||err);
+  }
 }
 async function syncFull(reason="manual"){
-  if(STATE.syncing||!navigator.onLine)return;STATE.syncing=true;
-  try{const s=await getState();STATE.lastServerAt=now();applyServerState(s,reason);if(!STATE.connected)setConnection("SYNCHRO","good")}catch(e){setConnection("HORS LIGNE","bad");toast("Serveur inaccessible",true)}finally{STATE.syncing=false}
+  if(STATE.syncing||!navigator.onLine)return false;
+  STATE.syncing=true;
+  try{
+    const s=await getState();
+    STATE.lastServerAt=now();
+    applyServerState(s,reason);
+    if(!STATE.connected)setConnection("SYNCHRO OK","good");
+    return true;
+  }catch(e){
+    setConnection("HORS LIGNE","bad");
+    console.warn("[iCHEF TELEPHONE] Synchronisation impossible",reason,e?.message||e);
+    if(reason==="initial"||reason==="manual")toast("Serveur inaccessible : "+(e?.message||"erreur réseau"),true);
+    return false;
+  }finally{STATE.syncing=false}
 }
 function applyServerState(serverState,source){
   if(!serverState||typeof serverState!=="object")return;
@@ -4953,10 +5050,31 @@ if(demoParams.get("demo")==="1"){
 
 /* ---------------- BOOT ---------------- */
 async function bootApp(){
-  applyDisplay(STATE.display);autoDisplay();setConnection(navigator.onLine?"CONNEXION":"HORS LIGNE",navigator.onLine?"warn":"bad");
-  await Promise.allSettled([syncFull("initial"),connectSocket()]);
-  setInterval(()=>{renderStatus();if(STATE.currentTable){$("orderAge").textContent=duration(orderCreated(STATE.currentOrder)||Date.now())}updateToolBadges();autoDisplay()},1000);
-  setInterval(()=>{if(!document.hidden&&!STATE.connected&&navigator.onLine)syncFull("fallback")},12000);
+  applyDisplay(STATE.display);
+  autoDisplay();
+  setConnection(navigator.onLine?"CONNEXION":"HORS LIGNE",navigator.onLine?"warn":"bad");
+
+  /* Lecture HTTP d'abord : server.js reste la source de vérité, même sans Socket.IO. */
+  await syncFull("initial");
+  connectSocket();
+
+  setInterval(()=>{
+    renderStatus();
+    if(STATE.currentTable){const age=$("orderAge");if(age)age.textContent=duration(orderCreated(STATE.currentOrder)||Date.now())}
+    updateToolBadges();
+    autoDisplay();
+  },1000);
+
+  /* Garde-fou : une lecture serveur régulière assure la symbiose même si un événement Socket est perdu. */
+  setInterval(()=>{
+    if(document.hidden||!navigator.onLine)return;
+    if(!STATE.lastServerAt||now()-STATE.lastServerAt>7000)syncFull("watchdog");
+  },5000);
+
+  window.addEventListener("online",()=>{setConnection("RECONNEXION","warn");syncFull("online");connectSocket()});
+  window.addEventListener("offline",()=>{STATE.connected=false;setConnection("HORS LIGNE","bad")});
+  window.addEventListener("focus",()=>{if(navigator.onLine)syncFull("focus")});
+  document.addEventListener("visibilitychange",()=>{if(!document.hidden&&navigator.onLine)syncFull("visible")});
 }
 
 })();
