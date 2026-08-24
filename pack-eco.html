@@ -3479,6 +3479,28 @@ body.order-open .ticket-meta {
 @media(max-width:370px){.express-grid-2,.express-plan-actions{grid-template-columns:1fr}.express-badge{font-size:8px!important;padding:3px 5px}}
 </style>
 
+
+<style id="ichef-plan-v20-fix">
+/* V20 — PLAN RESPONSIVE : aucune réduction par transform:scale */
+.plan-visible-wrap{overflow:hidden!important;position:relative!important;background:#f8f8f8!important;background-image:linear-gradient(#e6e6e6 1px,transparent 1px),linear-gradient(90deg,#e6e6e6 1px,transparent 1px)!important;background-size:28px 28px!important}
+.plan-canvas-responsive{position:absolute!important;inset:0!important;width:100%!important;height:100%!important;min-width:0!important;min-height:0!important;transform:none!important;transform-origin:center!important}
+.plan-visible-wrap .plan-zone{position:absolute!important;z-index:1!important;box-sizing:border-box!important;min-width:0!important;min-height:0!important;opacity:.78!important}
+.plan-visible-wrap .plan-table{position:absolute!important;z-index:3!important;min-width:74px!important;min-height:62px!important;padding:7px 5px!important;box-sizing:border-box!important;transform:none!important;white-space:normal!important}
+.plan-visible-wrap .plan-table span{display:block!important;font-size:clamp(17px,4vw,28px)!important;line-height:1!important;font-weight:1000!important}
+.plan-visible-wrap .plan-table small{display:block!important;margin-top:5px!important;font-size:clamp(9px,2vw,13px)!important;line-height:1.15!important;white-space:nowrap!important;overflow:hidden!important;text-overflow:ellipsis!important;max-width:100%!important}
+.plan-layout-line{display:flex;align-items:center;justify-content:space-between;gap:8px;margin:-1px 0 8px;color:#111;font-size:11px;font-weight:950}
+.plan-layout-state{display:inline-flex;align-items:center;min-height:28px;padding:5px 8px;border:2px solid #2dcc70;border-radius:999px;background:#effcf4;color:#146c37;font-size:10px;font-weight:1000}
+.plan-layout-state.auto{border-color:#e2b84e;background:#fff8df;color:#755600}
+.plan-room-label{z-index:6!important}
+@media(max-width:520px){
+  .plan-wrap{height:58dvh!important;min-height:390px!important}
+  .plan-visible-wrap .plan-table{min-width:62px!important;min-height:58px!important;padding:5px 3px!important}
+  .plan-visible-wrap .plan-table span{font-size:18px!important}
+  .plan-visible-wrap .plan-table small{font-size:9px!important}
+  .plan-layout-line{font-size:9px!important}
+  .plan-layout-state{font-size:8px!important}
+}
+</style>
 </head>
 <body>
 <div id="screenLabel">ÉCRAN 1 · TABLES</div>
@@ -5848,54 +5870,115 @@ function openPlan(){
   const rawTables=(STATE.tables||[]).filter(t=>text(t.room)===text(room));
   const rawZones=(STATE.zones||[]).filter(z=>text(z.room)===text(room));
   const hasCoord=v=>v!==undefined&&v!==null&&String(v).trim()!==""&&Number.isFinite(Number(v));
+  const clamp=(v,min,max)=>Math.max(min,Math.min(max,v));
 
-  /* Si l'architecture serveur n'a pas encore de coordonnées, iCHEF crée
-     une disposition visuelle automatique au lieu d'empiler les tables en 0/0. */
-  const cols=4;
-  const tables=rawTables.map((t,i)=>{
-    const autoL=45+(i%cols)*135;
-    const autoT=95+Math.floor(i/cols)*120;
-    return {
+  /*
+     PLAN V20 — rendu responsive anti-écrasement.
+     L'ancien moteur utilisait transform:scale(). Une seule coordonnée serveur
+     disproportionnée pouvait réduire toutes les tables à quelques pixels.
+     Ici, les positions sont converties en pourcentages de la surface visible.
+     Si les coordonnées sont absentes / incohérentes, on passe automatiquement
+     sur une disposition en grille lisible, sans perdre les vraies tables.
+  */
+  const coordTables=rawTables.filter(t=>hasCoord(t.l)&&hasCoord(t.t));
+  const coordZones=rawZones.filter(z=>hasCoord(z.l)&&hasCoord(z.t));
+  let useArchitecture=rawTables.length>0 && coordTables.length>=Math.ceil(rawTables.length*.65);
+
+  let sourceMinX=Infinity,sourceMinY=Infinity,sourceMaxX=-Infinity,sourceMaxY=-Infinity;
+  const includeBounds=(o,table=false)=>{
+    if(!hasCoord(o.l)||!hasCoord(o.t))return;
+    const l=num(o.l),t=num(o.t);
+    const w=hasCoord(o.w)?Math.max(table?45:120,num(o.w)):(table?100:420);
+    const h=hasCoord(o.h)?Math.max(table?45:120,num(o.h)):(table?82:250);
+    sourceMinX=Math.min(sourceMinX,l);sourceMinY=Math.min(sourceMinY,t);
+    sourceMaxX=Math.max(sourceMaxX,l+w);sourceMaxY=Math.max(sourceMaxY,t+h);
+  };
+  coordZones.forEach(z=>includeBounds(z,false));
+  coordTables.forEach(t=>includeBounds(t,true));
+
+  let spanX=sourceMaxX-sourceMinX,spanY=sourceMaxY-sourceMinY;
+  if(!Number.isFinite(spanX)||!Number.isFinite(spanY)||spanX<=0||spanY<=0)useArchitecture=false;
+  /* Coordonnées aberrantes ou très dispersées : mieux vaut un plan auto lisible. */
+  const theoreticalScale=useArchitecture?Math.min(960/Math.max(1,spanX),680/Math.max(1,spanY)):0;
+  if(useArchitecture && (spanX>3200||spanY>2600||theoreticalScale<.32))useArchitecture=false;
+
+  const zoneNames=[...new Set(rawZones.map(z=>text(z.label)).filter(Boolean))];
+  const zoneByLabel=new Map(rawZones.map(z=>[text(z.label),z]));
+  const getTableZoneLabel=t=>text(t.zone||t.zoneLabel||t.serviceZone||t.sector||"");
+
+  let zones=[],tables=[];
+
+  if(useArchitecture){
+    const padX=4,padTop=10,usableW=92,usableH=82;
+    const toX=x=>padX+((x-sourceMinX)/Math.max(1,spanX))*usableW;
+    const toY=y=>padTop+((y-sourceMinY)/Math.max(1,spanY))*usableH;
+    zones=rawZones.map(z=>{
+      const l=hasCoord(z.l)?num(z.l):sourceMinX;
+      const t=hasCoord(z.t)?num(z.t):sourceMinY;
+      const w=hasCoord(z.w)?Math.max(120,num(z.w)):Math.max(220,spanX*.35);
+      const h=hasCoord(z.h)?Math.max(100,num(z.h)):Math.max(180,spanY*.35);
+      return {...z,__left:clamp(toX(l),1,92),__top:clamp(toY(t),7,90),__width:clamp((w/spanX)*usableW,18,72),__height:clamp((h/spanY)*usableH,16,70)};
+    });
+    tables=rawTables.map((t,i)=>{
+      const l=hasCoord(t.l)?num(t.l):sourceMinX+(i%4)*(spanX/5);
+      const tt=hasCoord(t.t)?num(t.t):sourceMinY+Math.floor(i/4)*(spanY/5);
+      const w=hasCoord(t.w)?Math.max(45,num(t.w)):100;
+      const h=hasCoord(t.h)?Math.max(45,num(t.h)):82;
+      return {...t,__left:clamp(toX(l),2,89),__top:clamp(toY(tt),9,86),__width:clamp((w/spanX)*usableW,10,18),__height:clamp((h/spanY)*usableH,10,18),__zone:getTableZoneLabel(t)};
+    });
+  }else{
+    /* Disposition automatique : 4 colonnes, toujours visible, sans scale CSS. */
+    const cols=rawTables.length<=6?3:4;
+    const rows=Math.max(1,Math.ceil(rawTables.length/cols));
+    const cellW=92/cols,cellH=Math.min(20,76/rows);
+    tables=rawTables.map((t,i)=>({
       ...t,
-      __l:hasCoord(t.l)?num(t.l):autoL,
-      __t:hasCoord(t.t)?num(t.t):autoT,
-      __w:hasCoord(t.w)?Math.max(62,num(t.w)):100,
-      __h:hasCoord(t.h)?Math.max(58,num(t.h)):82
-    };
-  });
-  const zones=rawZones.map((z,i)=>({
-    ...z,
-    __l:hasCoord(z.l)?num(z.l):25,
-    __t:hasCoord(z.t)?num(z.t):55+i*285,
-    __w:hasCoord(z.w)?Math.max(220,num(z.w)):540,
-    __h:hasCoord(z.h)?Math.max(180,num(z.h)):260
-  }));
+      __left:4+(i%cols)*cellW+1.2,
+      __top:13+Math.floor(i/cols)*cellH+1.2,
+      __width:Math.max(15,cellW-2.4),
+      __height:Math.max(11,cellH-2.4),
+      __zone:getTableZoneLabel(t)
+    }));
 
-  let maxX=620,maxY=520;
-  tables.forEach(t=>{maxX=Math.max(maxX,t.__l+t.__w+35);maxY=Math.max(maxY,t.__t+t.__h+45)});
-  zones.forEach(z=>{maxX=Math.max(maxX,z.__l+z.__w+35);maxY=Math.max(maxY,z.__t+z.__h+45)});
-  const scale=Math.min(1,540/maxX,560/maxY);
+    /* Zones lisibles en bandeaux de fond. Elles n'écrasent jamais les tables. */
+    const visibleZones=rawZones.length?rawZones:zoneNames.map(label=>({label,room}));
+    if(visibleZones.length){
+      const zh=Math.min(22,74/visibleZones.length);
+      zones=visibleZones.slice(0,6).map((z,i)=>({
+        ...z,
+        __left:2.5,
+        __top:11+i*zh,
+        __width:95,
+        __height:Math.max(12,zh-1)
+      }));
+    }
+  }
+
   const canManage=expressRoleLevel()>=2;
   const roomOptions=(STATE.rooms||[room]).map(r=>`<option value="${esc(r)}" ${text(r)===text(room)?"selected":""}>${esc(r)}</option>`).join("");
   const empty=!tables.length?`<div class="plan-empty-message">AUCUNE TABLE DANS CETTE SALLE<br><small>Utilise + TABLE EXPRESS ou configure l'architecture.</small></div>`:"";
+  const layoutInfo=useArchitecture
+    ?`<span class="plan-layout-state good">✓ PLAN ARCHITECTURAL</span>`
+    :`<span class="plan-layout-state auto">POSITION AUTOMATIQUE · coordonnées à configurer</span>`;
 
-  openSheet("🗺️ PLAN ARCHITECTURAL · "+room,`
+  openSheet("🗺️ PLAN · "+room,`
     <div class="plan-direct-head">
       <label>SALLE
         <select data-plan-room>${roomOptions}</select>
       </label>
       <button class="express-add" data-plan-express-add>＋ TABLE EXPRESS</button>
-      <button data-plan-express-manage ${canManage?"":"disabled"}>${canManage?"GÉRER EXPRESS":"MODE SERVICE"}</button>
+      <button data-plan-express-manage ${canManage?"":"disabled"}>${canManage?"GÉRER EXPRESS":"SERVICE"}</button>
     </div>
+    <div class="plan-layout-line">${layoutInfo}<strong>${tables.length} TABLE${tables.length>1?"S":""}</strong></div>
     <div class="plan-wrap plan-visible-wrap">
       <div class="plan-room-label">${esc(room)}</div>
       ${empty}
-      <div class="plan-canvas" style="width:${maxX}px;height:${maxY}px;transform:scale(${scale})">
-        ${zones.map(z=>`<div class="plan-zone" style="left:${z.__l}px;top:${z.__t}px;width:${z.__w}px;height:${z.__h}px"><strong>${esc(z.label||"ZONE")}</strong>${z.responsible?`<small>${esc(z.responsible)}</small>`:""}</div>`).join("")}
-        ${tables.map(t=>{const ex=isExpressTable(t);const order=getOrder(t.label);const active=(order?.items||[]).some(i=>i&&!i.cancelled&&itemQty(i)>0);return `<button class="plan-table ${ex?"express-table":""} ${active?"plan-table-active":""}" data-plan-table="${esc(t.label)}" style="left:${t.__l}px;top:${t.__t}px;width:${t.__w}px;height:${t.__h}px"><span>${esc(t.label)}</span><small>${num(t.pax||2)||2} cvt</small>${ex?`<b class="plan-express-mark">EXPRESS</b>`:""}</button>`}).join("")}
+      <div class="plan-canvas plan-canvas-responsive">
+        ${zones.map(z=>`<div class="plan-zone" style="left:${z.__left}%;top:${z.__top}%;width:${z.__width}%;height:${z.__height}%"><strong>${esc(z.label||"ZONE")}</strong>${z.responsible?`<small>${esc(z.responsible)}</small>`:""}</div>`).join("")}
+        ${tables.map(t=>{const ex=isExpressTable(t);const order=getOrder(t.label);const active=(order?.items||[]).some(i=>i&&!i.cancelled&&itemQty(i)>0);const zl=text(t.__zone||getTableZoneLabel(t));return `<button class="plan-table ${ex?"express-table":""} ${active?"plan-table-active":""}" data-plan-table="${esc(t.label)}" style="left:${t.__left}%;top:${t.__top}%;width:${t.__width}%;height:${t.__height}%"><span>${esc(t.label)}</span><small>👥 ${num(t.pax||2)||2}${zl?` · ${esc(zl)}`:""}</small>${ex?`<b class="plan-express-mark">EXPRESS</b>`:""}</button>`}).join("")}
       </div>
     </div>
-    <div class="plan-legend"><span>● Libre</span><span>● Commande active</span><span>EXPRESS = table temporaire</span></div>
+    <div class="plan-legend"><span>⬜ Libre</span><span>🟧 Commande active</span><span>🟠 EXPRESS temporaire</span></div>
   `);
 
   const body=$("sheetBody");
