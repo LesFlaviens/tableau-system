@@ -3939,7 +3939,7 @@ body.order-open .ticket-meta {
 
   <!-- Éléments masqués indispensables pour le moteur JavaScript -->
   <div style="display: none;">
-    <button id="paxMinus">−</button><strong id="paxValue">2</strong><button id="paxPlus">+</button>
+    <button id="paxMinus">−</button><strong id="paxValue">0</strong><button id="paxPlus">+</button>
     <span id="activeGuestLabel" aria-hidden="true">C1</span>
     <div id="guestButtons" aria-hidden="true"></div>
     <button id="rushStrip" class="rush0" type="button">
@@ -4913,7 +4913,7 @@ function normalizeReservations(){const r=unwrap(STATE.activeOrders.RESERVATIONS_
 function applyDerived(){STATE.settings=unwrap(STATE.activeOrders.SETTINGS_MASTER)||{};normalizeArchitecture();normalizeMenu();normalizeReservations();if(STATE.currentTable)STATE.currentOrder=getOrder(STATE.currentTable)}
 
 /* ---------------- ORDERS ---------------- */
-const SYSTEM_KEYS=new Set(["ARCHITECTURE","SETTINGS_MASTER","RESERVATIONS_MASTER","MENU_MASTER","MENU_MASTER_BAR","MENU_MASTER_PATISSERIE","STAFF_ACCESS","LOYALTY_MASTER","TIMESHEETS_MASTER","ALERTS_MASTER","FINANCIAL_HISTORY","AUDIT_MASTER"]);
+const SYSTEM_KEYS=new Set(["ARCHITECTURE","TABLE_OCCUPANCY_MASTER","SETTINGS_MASTER","RESERVATIONS_MASTER","MENU_MASTER","MENU_MASTER_BAR","MENU_MASTER_PATISSERIE","STAFF_ACCESS","LOYALTY_MASTER","TIMESHEETS_MASTER","ALERTS_MASTER","FINANCIAL_HISTORY","AUDIT_MASTER"]);
 function isRealOrder(k,o){
   return !SYSTEM_KEYS.has(k) &&
     !String(k).startsWith("FISCAL_") &&
@@ -4939,6 +4939,34 @@ function readPaxSource(source){
   }
   return null;
 }
+function occupiedSeatsForPax(pax){
+  const p=Math.max(0,Math.min(99,Math.trunc(Number(pax)||0)));
+  return Array.from({length:p},(_,i)=>i+1);
+}
+function syncOrderSeatOccupancy(order){
+  if(!order||typeof order!=="object")return order;
+  let pax=readPaxSource(order);
+  if(pax===null){
+    const seats=Array.isArray(order.occupiedSeats)?order.occupiedSeats:[];
+    const maxSeat=seats.reduce((m,s)=>Math.max(m,Number(s)||0),0);
+    pax=Math.max(0,Math.min(99,Math.trunc(maxSeat||0)));
+  }
+  order.pax=pax;
+  order.covers=pax;
+  order.occupiedSeats=occupiedSeatsForPax(pax);
+  order.seatStateVersion=1;
+  return order;
+}
+function serverOccupancyPax(table){
+  const master=unwrap(STATE.activeOrders.TABLE_OCCUPANCY_MASTER)||{};
+  const data=master.data&&typeof master.data==="object"?master.data:master;
+  const row=data?.[table];
+  if(!row||typeof row!=="object")return null;
+  const p=readPaxSource(row);
+  if(p!==null)return p;
+  if(Array.isArray(row.occupiedSeats))return Math.max(0,Math.min(99,row.occupiedSeats.length));
+  return null;
+}
 function tableClientPax(table){
   const o=getOrder(table);
   const orderPax=readPaxSource(o);
@@ -4946,6 +4974,8 @@ function tableClientPax(table){
   const res=findReservation(table);
   const reservationPax=readPaxSource(res);
   if(reservationPax!==null)return reservationPax; // réservation ensuite
+  const dbPax=serverOccupancyPax(table);
+  if(dbPax!==null)return dbPax; // index serveur explicite, y compris 0
   return 0; // table libre = aucun client = aucun point
 }
 function tableStats(table){
@@ -4954,7 +4984,7 @@ function tableStats(table){
   const items=o.items||[];const ready=items.filter(i=>lineReady(i)&&!lineServed(i)).reduce((s,i)=>s+Math.max(1,num(i.qty||i.quantity||1)),0);const waiting=items.some(i=>lineFired(i)&&!lineReady(i));const age=orderCreated(o);let status="active";if(o.alerteRouge||o.alert)status="alert";else if(String(o.status||"").toLowerCase().includes("payment"))status="payment";else if(ready)status="ready";else if(waiting&&age&&now()-age>25*60000)status="late";else if(waiting)status="wait";return{status,pax,ready,age,total:orderTotal(o)}
 }
 function orderTotal(o){return fiscalRound2((o?.items||[]).filter(i=>i&&!i.cancelled).reduce((s,i)=>s+itemPrice(i)*itemQty(i),0))}
-function ensureOrder(table){let o=getOrder(table);if(o)return clone(o);const t=STATE.tables.find(x=>x.label===table);return{tableId:table,status:"open",pax:num(t?.pax||2)||2,createdAt:Date.now(),updatedAt:Date.now(),items:[],source:"TELEPHONE"}}
+function ensureOrder(table){let o=getOrder(table);if(o)return syncOrderSeatOccupancy(clone(o));return{tableId:table,status:"open",pax:0,covers:0,occupiedSeats:[],seatStateVersion:1,createdAt:Date.now(),updatedAt:Date.now(),items:[],source:"TELEPHONE"}}
 function lineKey(i){return text(i.lineId||i.uuid||i.itemId||i.id||i.name)}
 
 async function saveCurrent(order,reason,options={}){
@@ -4970,7 +5000,7 @@ async function saveCurrent(order,reason,options={}){
     return false;
   }
 
-  const o=normalizeCompatOrder(clone(order));
+  const o=syncOrderSeatOccupancy(normalizeCompatOrder(clone(order)));
   o.updatedAt=Date.now();
   STATE.currentOrder=clone(o);
 
@@ -5001,6 +5031,8 @@ function addProduct(product){
   const o=ensureOrder(STATE.currentTable);
   const raw=product.raw||{};
   const seat=Math.max(1,Math.min(9,Number(STATE.activeSeat)||1));
+  if(num(o.pax||0)<seat)o.pax=seat;
+  syncOrderSeatOccupancy(o);
   const guest=seatLabel(seat);
   const dest=normalizeDestination(product.dest||raw.dest||raw.destination||"cuisine");
   const cookingProfile=cookingProfileFor(product);const cookingRequired=(dest==="cuisine"&&cookingProfile.required===true);
@@ -5279,7 +5311,8 @@ function setPax(delta){
   if(!STATE.currentTable)return;
   const o=ensureOrder(STATE.currentTable);
   const before=cloneOrderForUndo(o);
-  o.pax=Math.max(1,Math.min(99,num(o.pax||2)+delta));
+  o.pax=Math.max(0,Math.min(99,num(o.pax||0)+delta));
+  syncOrderSeatOccupancy(o);
   pushUndo("Modification couverts",before);
   saveCurrent(o,"Modification couverts",{delay:140});
   renderGuestButtons();
@@ -5652,7 +5685,7 @@ function renderOrder(){
   STATE.currentOrder=o;
 
   if($("orderName"))$("orderName").textContent="TABLE "+STATE.currentTable;
-  if($("paxValue"))$("paxValue").textContent=num(o.pax||2)||2;
+  if($("paxValue"))$("paxValue").textContent=Math.max(0,num(o.pax||0));
 
   const t=STATE.tables.find(x=>x.label===STATE.currentTable);
   const z=getZone(t);
@@ -5691,7 +5724,7 @@ function renderGuestButtons(){
   if(!el)return;
 
   const o=STATE.currentOrder||ensureOrder(STATE.currentTable);
-  const pax=Math.max(1,num(o.pax||2));
+  const pax=Math.max(0,num(o.pax||0));
   const active=Math.max(1,Math.min(9,Number(STATE.activeSeat)||1));
 
   if($("activeGuestLabel"))$("activeGuestLabel").textContent=`ACTIF : C${active}`;
@@ -5718,6 +5751,7 @@ function setActiveSeat(seat){
   const o=ensureOrder(STATE.currentTable);
   if(num(o.pax||0)<n){
     o.pax=n;
+    syncOrderSeatOccupancy(o);
     saveCurrent(o,`Couverts ajustés automatiquement à ${n}`,{delay:150});
   }
 
@@ -6632,7 +6666,7 @@ function printerTicketLines(order,dest,items){
   const dLabel=printerDestLabel(dest);
   const lines=[
     {text:`${dLabel} · TABLE ${STATE.currentTable||"TEST"}`,bold:true,width:2,height:2,align:"center"},
-    {text:`${num(order?.pax||2)||2} couverts · ${new Date().toLocaleTimeString("fr-FR",{hour:"2-digit",minute:"2-digit"})}`,align:"center"},
+    {text:`${Math.max(0,num(order?.pax||0))} couverts · ${new Date().toLocaleTimeString("fr-FR",{hour:"2-digit",minute:"2-digit"})}`,align:"center"},
     "------------------------------------------"
   ];
   items.forEach(item=>{
@@ -8316,7 +8350,7 @@ function renderSummary(){
   const zone=getZone(table);
   const fiscal=fiscalBreakdown(order);
 
-  $("summaryTable").textContent=`TABLE ${STATE.currentTable} · ${num(order.pax||2)||2} couverts`;
+  $("summaryTable").textContent=`TABLE ${STATE.currentTable} · ${Math.max(0,num(order.pax||0))} couverts`;
   $("summaryZone").textContent=`🍹 ZONE ${text(zone?.label||"SALLE").toUpperCase()}`;
   $("summaryNote").textContent=text(order.note||order.observation||order.observations)
     ?`📝 ${text(order.note||order.observation||order.observations)}`
@@ -8579,7 +8613,7 @@ function openTableDetails(tableId) {
   
   const roomName = t.room || STATE.room;
   const zoneName = z ? z.label : "Aucune zone";
-  const pax = o ? num(o.pax||2) : (t.pax||"LIBRE");
+  const pax = tableClientPax(tableId);
   
   let itemsHtml = '<div class="empty-state" style="font-size: 26px !important; color: #555;">Aucune commande en cours</div>';
   
