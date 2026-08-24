@@ -3865,32 +3865,48 @@ body.order-open .ticket-meta {
             const live = liveSeatStateForElement(table);
             const signature = `${live.label}|${live.capacity}|${live.seats.join(',')}`;
 
-            // IMPORTANT : si 2 PAX restent 2 PAX mais passent de C1/C2 à C3/C4,
-            // la signature change et les points sont redessinés au bon siège.
-            if (table.dataset.drawnSeatSignature === signature &&
-                table.querySelectorAll('.ichef-auto-chair').length === live.seats.length) return;
+            // Si la configuration n'a pas changé, on ne touche pas au DOM
+            if (table.dataset.drawnSeatSignature === signature) return;
 
             table.dataset.drawnSeatSignature = signature;
-            table.querySelectorAll('.ichef-auto-chair').forEach(c => c.remove());
-            if (!live.seats.length) return; // table libre = 0 point
+            
+            // Récupérer les chaises existantes sous forme de Map
+            const existingChairs = new Map();
+            table.querySelectorAll('.ichef-auto-chair').forEach(c => {
+                existingChairs.set(c.dataset.seat, c);
+            });
 
             table.style.overflow = 'visible';
             const isRound = table.classList.contains('round') || table.style.borderRadius === '50%';
+            const currentSeatsSet = new Set(live.seats.map(String));
 
-            live.seats.forEach(seat => {
-                const chair = document.createElement('div');
-                chair.className = 'ichef-auto-chair';
-                chair.dataset.seat = String(seat);
-                chair.setAttribute('aria-label', `${live.label || 'Table'} · C${seat} occupée`);
-                chair.title = `C${seat}`;
-                positionSeatPoint(chair, seat, live.capacity, isRound);
-
-                // C1..C9 reprennent leurs couleurs métier, sans casser les états de table.
-                if (seat >= 1 && seat <= 9) {
-                    chair.style.setProperty('--ichef-seat-color', `var(--c${seat})`);
-                    chair.classList.add('seat-linked');
+            // 1. Supprimer uniquement les chaises qui ne sont plus occupées
+            existingChairs.forEach((chair, seatStr) => {
+                if (!currentSeatsSet.has(seatStr)) {
+                    chair.remove();
                 }
-                table.appendChild(chair);
+            });
+
+            // 2. Mettre à jour ou ajouter les chaises occupées
+            live.seats.forEach(seat => {
+                const seatStr = String(seat);
+                let chair = existingChairs.get(seatStr);
+
+                if (!chair) {
+                    chair = document.createElement('div');
+                    chair.className = 'ichef-auto-chair';
+                    chair.dataset.seat = seatStr;
+                    chair.setAttribute('aria-label', `${live.label || 'Table'} · C${seat} occupée`);
+                    chair.title = `C${seat}`;
+                    if (seat >= 1 && seat <= 9) {
+                        chair.style.setProperty('--ichef-seat-color', `var(--c${seat})`);
+                        chair.classList.add('seat-linked');
+                    }
+                    table.appendChild(chair);
+                }
+                
+                // Repositionnement sans réinsertion DOM
+                positionSeatPoint(chair, seat, live.capacity, isRound);
             });
         });
     }
