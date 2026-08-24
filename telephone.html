@@ -5061,6 +5061,29 @@ function getDeviceFilter() {
   return STATE.deviceFilter;
 }
 
+function renderStatus(){
+  const r=rushSnapshot();
+  const roomEl=$("stRoom"), tablesEl=$("stTables"), rushEl=$("stRush"), clockEl=$("stClock");
+  if(roomEl)roomEl.textContent=STATE.room||"—";
+  if(tablesEl){
+    const filter=(typeof getDeviceFilter==="function")?getDeviceFilter():{type:"all"};
+    let count=(STATE.tables||[]).length;
+    if(filter?.type==="room") count=(STATE.tables||[]).filter(t=>t.room===filter.value).length;
+    else if(filter?.type==="zone") count=(STATE.tables||[]).filter(t=>{
+      const z=(typeof getZone==="function")?getZone(t):null;
+      return (z?.label||t.zone||"Nouvelle Zone")===filter.value;
+    }).length;
+    else if(filter?.type!=="all") count=(STATE.tables||[]).filter(t=>t.room===STATE.room).length;
+    else count=(STATE.tables||[]).filter(t=>t.room===STATE.room).length;
+    tablesEl.textContent=String(count);
+  }
+  if(rushEl){
+    rushEl.textContent=r.label;
+    rushEl.className="status-value "+(r.level<=1?"good":r.level<=3?"gold":r.level===4?"warn":"bad");
+  }
+  if(clockEl)clockEl.textContent=new Date().toLocaleTimeString("fr-FR",{hour:"2-digit",minute:"2-digit"});
+}
+
 function renderRooms(){
   const filter = getDeviceFilter();
   const el=$("rooms");
@@ -5146,6 +5169,75 @@ function renderTables(){
   }).join("");
 }
 
+
+function updateToolBadges(){
+  const r=rushSnapshot(),b=$("toolRush");
+  if(b)b.className="tool rush"+r.level;
+  if($("rushTiny"))$("rushTiny").textContent=r.label;
+  const rc=readyCount();
+  if($("readyTiny"))$("readyTiny").textContent=rc+" prêt"+(rc>1?"s":"");
+}
+
+function renderOrder(){
+  const o=STATE.currentOrder||getOrder(STATE.currentTable)||ensureOrder(STATE.currentTable);
+  STATE.currentOrder=o;
+
+  if($("orderName"))$("orderName").textContent="TABLE "+STATE.currentTable;
+  if($("paxValue"))$("paxValue").textContent=num(o.pax||2)||2;
+
+  const t=STATE.tables.find(x=>x.label===STATE.currentTable);
+  const z=getZone(t);
+
+  if($("zoneValue"))$("zoneValue").textContent=z?.label||t?.zone||"Salle";
+  if($("orderAge"))$("orderAge").textContent=duration(orderCreated(o)||Date.now());
+
+  renderGuestButtons();
+  renderCategories();
+  renderProducts();
+  renderTicket();
+  renderRushStrip();
+  updateUndoButton();
+}
+
+function getZone(table){
+  if(!table)return null;
+  const direct=text(table.zone||table.zoneLabel||table.zoneId||"");
+  if(direct){
+    const byName=(STATE.zones||[]).find(z=>text(z.label||z.name||z.id)===direct);
+    if(byName)return byName;
+  }
+  const cx=num(table.l)+(num(table.w)||80)/2;
+  const cy=num(table.t)+(num(table.h)||100)/2;
+  return (STATE.zones||[]).find(z=>
+    (!z.room||z.room===table.room||z.room===STATE.room) &&
+    cx>=num(z.l) &&
+    cx<=num(z.l)+(num(z.w)||400) &&
+    cy>=num(z.t) &&
+    cy<=num(z.t)+(num(z.h)||300)
+  )||null;
+}
+
+function renderGuestButtons(){
+  const el=$("guestButtons");
+  if(!el)return;
+
+  const o=STATE.currentOrder||ensureOrder(STATE.currentTable);
+  const pax=Math.max(1,num(o.pax||2));
+  const active=Math.max(1,Math.min(9,Number(STATE.activeSeat)||1));
+
+  if($("activeGuestLabel"))$("activeGuestLabel").textContent=`ACTIF : C${active}`;
+
+  el.innerHTML=Array.from({length:9},(_,idx)=>{
+    const seat=idx+1;
+    const extra=seat>pax?" extra":"";
+    return `<button type="button"
+                    class="guest-btn${seat===active?" active":""}${extra}"
+                    data-seat="${seat}"
+                    title="${seat>pax?`C${seat} — augmente automatiquement les couverts`:`Convive C${seat}`}">
+              C${seat}
+            </button>`;
+  }).join("");
+}
 
 function setActiveSeat(seat){
   if(!STATE.currentTable)return;
