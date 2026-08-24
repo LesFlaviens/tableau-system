@@ -4486,11 +4486,22 @@ function tableStats(table){
   const o=getOrder(table);const res=findReservation(table);if(!o){return{status:res?"reserved":"empty",pax:num(res?.pax||res?.covers||0),ready:0,age:0,total:0}}
   const items=o.items||[];const ready=items.filter(i=>lineReady(i)&&!lineServed(i)).reduce((s,i)=>s+Math.max(1,num(i.qty||i.quantity||1)),0);const waiting=items.some(i=>lineFired(i)&&!lineReady(i));const age=orderCreated(o);let status="active";if(o.alerteRouge||o.alert)status="alert";else if(String(o.status||"").toLowerCase().includes("payment"))status="payment";else if(ready)status="ready";else if(waiting&&age&&now()-age>25*60000)status="late";else if(waiting)status="wait";return{status,pax:num(o.pax||o.covers||0),ready,age,total:orderTotal(o)}
 }
-function orderTotal(o){return(o?.items||[]).reduce((s,i)=>s+itemPrice(i)*itemQty(i),0)}
+function orderTotal(o){return fiscalRound2((o?.items||[]).filter(i=>i&&!i.cancelled).reduce((s,i)=>s+itemPrice(i)*itemQty(i),0))}
 function ensureOrder(table){let o=getOrder(table);if(o)return clone(o);const t=STATE.tables.find(x=>x.label===table);return{tableId:table,status:"open",pax:num(t?.pax||2)||2,createdAt:Date.now(),updatedAt:Date.now(),items:[],source:"TELEPHONE"}}
 function lineKey(i){return text(i.lineId||i.uuid||i.itemId||i.id||i.name)}
+
 async function saveCurrent(order,reason,options={}){
   if(!STATE.currentTable)return false;
+
+  /* Une vente payée/scellée n'est plus modifiable directement.
+     Toute correction doit passer par une opération fiscale de correction/annulation. */
+  const existing=getOrder(STATE.currentTable);
+  if(existing && fiscalOrderFinalized(existing) && options.fiscalOverride!==true){
+    STATE.currentOrder=clone(existing);
+    scheduleRender();
+    toast("🔒 Vente fiscalisée : correction/annulation obligatoire",true);
+    return false;
+  }
 
   const o=normalizeCompatOrder(clone(order));
   o.updatedAt=Date.now();
@@ -4545,7 +4556,7 @@ function addProduct(product){
   }else{
     const name=product.name;
     const price=product.price;
-    const tva=product.vatRate??raw.vatRate??raw.tva??raw.taxRate??10;
+    const tva=product.vatRate??raw.vatRate??raw.tva??raw.taxRate??fiscalDefaultVatForProduct(product);
 
     line=normalizeCompatItem({
       id:Date.now()+Math.random(),
@@ -5853,48 +5864,66 @@ function printerTicketLines(order,dest,items){
   return lines;
 }
 
+
 function receiptReference(order){
-  const existing=text(order?.paymentDraft?.receiptReference||order?.receiptReference);
+  const existing=text(
+    order?.paymentDraft?.receiptReference||
+    order?.fiscalReceiptReference||
+    order?.receiptReference
+  );
   if(existing)return existing;
-  const stamp=Number(order?.paymentDraft?.updatedAt?Date.parse(order.paymentDraft.updatedAt):Date.now())||Date.now();
+
+  /* Compatibilité avec les anciennes ventes : référence déterministe,
+     sans modifier un compteur fiscal lors d'une simple lecture/impression. */
+  const stamp=Number(order?.paymentDraft?.updatedAt?Date.parse(order.paymentDraft.updatedAt):(order?.closedAt||order?.updatedAt||Date.now()))||Date.now();
   const d=new Date(stamp);
   const pad=n=>String(n).padStart(2,"0");
-  return `${text(STATE.currentTable||"T")}-${d.getFullYear()}${pad(d.getMonth()+1)}${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`;
+  const dev=text(STATE.deviceId||"TERM").replace(/[^A-Za-z0-9]/g,"").slice(-6).toUpperCase()||"TERM";
+  return `LEGACY-${dev}-${d.getFullYear()}${pad(d.getMonth()+1)}${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`;
 }
 
 function cashReceiptLines(order,options={}){
   const cfg=loadPrinterConfig();
   const r=cfg.receipt||{};
   const fiscal=fiscalBreakdown(order||{});
-  const total=orderTotal(order||{});
+  const total=fiscalRound2(fiscal.gross);
   const payment=text(order?.paymentDraft?.payments?.[0]?.method||order?.paymentMethod||"");
+  const profile=fiscal.profile;
+  const paidAt=order?.paymentDraft?.updatedAt||order?.fiscalFinalizedAt||new Date().toISOString();
+  const fiscalHash=text(order?.paymentDraft?.fiscalHash||order?.fiscalHash||"");
   const lines=[];
   const header=text(r.logoText||r.businessName||"iCHEF");
+
   lines.push({text:header||"iCHEF",bold:true,width:2,height:2,align:"center"});
   if(r.businessName && text(r.businessName)!==header)lines.push({text:r.businessName,bold:true,align:"center"});
   if(r.address)lines.push({text:r.address,align:"center"});
   if(r.phone)lines.push({text:r.phone,align:"center"});
   if(r.taxId)lines.push({text:`TVA / ID: ${r.taxId}`,align:"center"});
+  lines.push({text:`PROFIL FISCAL: ${profile.label} · ${profile.currency}`,bold:true,align:"center"});
   lines.push("------------------------------------------");
-  lines.push({text:`TABLE ${STATE.currentTable||order?.tableId||"—"} · ${new Date().toLocaleString("fr-FR")}`,bold:true});
-  lines.push(`Réf. ${receiptReference(order)}`);
-  if(r.showServer!==false)lines.push(`Serveur: ${STATE.role||order?.updatedBy||"—"}`);
+  lines.push({text:`TABLE ${STATE.currentTable||order?.tableId||"—"} · ${new Date(paidAt).toLocaleString("fr-FR")}`,bold:true});
+  lines.push(`JUSTIFICATIF ${receiptReference(order)}`);
+  lines.push(`CAISSE ${text(STATE.deviceId||"—")}`);
+  if(r.showServer!==false)lines.push(`Opérateur: ${STATE.role||order?.updatedBy||"—"}`);
   if(options.duplicate)lines.push({text:"*** DUPLICATA ***",bold:true,width:2,height:2,align:"center"});
   lines.push("------------------------------------------");
-  (order?.items||[]).filter(i=>i&&!i.cancelled).forEach(item=>{
-    const qty=itemQty(item),name=itemName(item),price=itemPrice(item)*qty;
+
+  (fiscal.lines||[]).forEach(line=>{
+    const item=line.item;
     const seat=itemSeat(item);
-    lines.push({text:`${r.showGuests!==false&&seat?seatLabel(seat)+" · ":""}${qty} x ${name}`,bold:true});
-    lines.push({text:money(price),align:"right"});
-    const obs=text(item.obs||item.observation||item.note);
+    lines.push({text:`${r.showGuests!==false&&seat?seatLabel(seat)+" · ":""}${line.qty} x ${line.label}`,bold:true});
+    lines.push({text:`TTC ${money(line.gross)} · TVA ${Number(line.rate||0).toFixed(2).replace(".",",")}% · HT ${money(line.net)}`,align:"right"});
+    const obs=text(item?.obs||item?.observation||item?.note);
     if(obs)lines.push(`  ${obs}`);
   });
+
   lines.push("------------------------------------------");
   fiscal.rows.forEach(row=>{
-    lines.push(`TVA ${Number(row.rate||0).toFixed(2).replace(".",",")}%  TVA ${money(row.tax)}  TTC ${money(row.gross)}`);
+    lines.push(`TVA ${Number(row.rate||0).toFixed(2).replace(".",",")}%  HT ${money(row.net)}  TVA ${money(row.tax)}  TTC ${money(row.gross)}`);
   });
   lines.push({text:`TOTAL ${money(total)}`,bold:true,width:2,height:2,align:"right"});
   if(payment)lines.push({text:`PAIEMENT: ${payment}`,bold:true});
+  if(fiscalHash)lines.push(`SCELLEMENT SHA-256: ${fiscalHash.slice(0,16).toUpperCase()}…`);
   lines.push("------------------------------------------");
   if(r.footer)lines.push({text:r.footer,align:"center"});
   lines.push({text:"Propulsé par iCHEF",align:"center"});
@@ -6031,6 +6060,7 @@ async function printNewPrinterJobs(order,stamp){
   return {ok:true};
 }
 
+
 async function printCashReceipt(order,options={}){
   const cfg=loadPrinterConfig();
   if(!cfg.enabled){
@@ -6042,7 +6072,20 @@ async function printCashReceipt(order,options={}){
     throw new Error("Imprimante CAISSE non configurée");
   }
   if(options.auto&&cfg.receipt?.autoAfterPayment===false)return {skipped:true,reason:"auto-disabled"};
-  return printDestination("caisse",[],order||STATE.currentOrder||{},options);
+
+  const target=order||STATE.currentOrder||{};
+  if(options.duplicate && !STATE.demo){
+    const trace=await fiscalEvent("DUPLICATE_RECEIPT",{
+      receiptReference:receiptReference(target),
+      fiscalHash:text(target?.paymentDraft?.fiscalHash||target?.fiscalHash||""),
+      tableId:STATE.currentTable||target?.tableId||"",
+      requestedAt:new Date().toISOString(),
+      operator:STATE.role||""
+    });
+    if(!trace?.ok)throw new Error("Traçabilité fiscale du duplicata impossible");
+  }
+
+  return printDestination("caisse",[],target,options);
 }
 
 /* Compatibilité avec les versions qui appelaient encore la fonction Epson. */
@@ -6241,7 +6284,7 @@ function openPrinterSetup(focusDest=""){
         <label style="font-size:10px">SERVEUR</label><label class="field" style="display:flex;align-items:center;gap:8px"><input type="checkbox" data-receipt-server ${r.showServer!==false?"checked":""}> Afficher le serveur</label>
         <label style="font-size:10px">C1–C9</label><label class="field" style="display:flex;align-items:center;gap:8px"><input type="checkbox" data-receipt-guests ${r.showGuests!==false?"checked":""}> Afficher le convive</label>
       </div>
-      <div style="margin-top:8px;color:#aab2b5;font-size:9px;line-height:1.4">Le ticket reprend articles, TVA, total et moyen de paiement. Les obligations fiscales et la certification de caisse dépendent du pays et de l'installation.</div>
+      <div style="margin-top:8px;color:#aab2b5;font-size:9px;line-height:1.4">Le ticket reprend articles, TVA, total, moyen de paiement, référence de justificatif et scellement fiscal. France : certificat ou attestation éditeur requis pour la version utilisée ; Suisse : intégrité, piste d’audit et conservation selon les règles applicables.</div>
     </div>
     <button class="action-btn green" style="width:100%;min-height:58px" data-printer-save>✓ ENREGISTRER TOUTES LES IMPRIMANTES</button>
   `);
@@ -6305,6 +6348,10 @@ function openMore(){
       <button class="action-btn" data-more="printer" style="border: 3px solid #cfd2d5 !important; background: #ffffff !important; color: #111111 !important; min-height: 80px !important; font-size: 22px !important; font-weight: 950 !important;">
         IMPRIMANTES
       </button>
+
+      <button class="action-btn" data-more="fiscal" style="border: 3px solid #9b8f00 !important; background: #fffdf0 !important; color: #111111 !important; min-height: 80px !important; font-size: 22px !important; font-weight: 950 !important;">
+        SÉCURITÉ FISCALE FR / CH
+      </button>
       
       <button class="action-btn" data-more="logout" style="border: 3px solid #ff5368 !important; background: #fff2f4 !important; color: #ff5368 !important; min-height: 80px !important; font-size: 22px !important; font-weight: 950 !important;">
         DÉCONNEXION
@@ -6328,6 +6375,7 @@ function openMore(){
     if(a==="summary"){closeSheet();openSummary()}
     if(a==="sync"){closeSheet();syncFull("manual")}
     if(a==="printer")openPrinterSetup();
+    if(a==="fiscal")openFiscalAudit();
     if(a==="logout")location.reload();
   });
 }
@@ -6363,18 +6411,143 @@ function openPayment(){
   });
 }
 
+
 async function closeTable(){
   if(!STATE.currentTable)return;
-  const reason=prompt("Motif / confirmation de fermeture :","Service terminé");if(reason===null)return;
-  const table=STATE.currentTable,o=ensureOrder(table);o.closedAt=Date.now();o.closedReason=text(reason);o.status="closed";
-  const fiscal=fiscalBreakdown(o),ok=await optimisticWrite(table,o,"Fermeture table téléphone");if(!ok)return;
-  await fiscalEvent("CLOSE_ORDER",{reason:text(reason),total:orderTotal(o),paymentDraft:o.paymentDraft||null,fiscalCountry:fiscal.profile.country,fiscalRows:fiscal.rows.map(r=>({rate:r.rate,gross:r.gross,net:r.net,tax:r.tax}))});
-  await optimisticWrite("FISCAL_ARCHIVE_"+Date.now(),{data:{tableId:table,closedAt:new Date().toISOString(),source:"TELEPHONE",fiscalCountry:fiscal.profile.country,order:clone(o)}},"Archive fiscale table téléphone");
-  await optimisticWrite(table,null,"Retrait table active fermée");
-  closeSheet();closeOrder();toast("Table fermée et archivée");
-}
-async function deleteOrder(){if(!STATE.currentTable)return;const reason=prompt("Motif obligatoire de suppression / annulation :","");if(!text(reason)){toast("Motif obligatoire",true);return}const table=STATE.currentTable,o=ensureOrder(table);await optimisticWrite("FINANCIAL_CANCEL_"+Date.now(),{data:{tableId:table,reason:text(reason),at:new Date().toISOString(),source:"TELEPHONE",order:clone(o)}},"Audit annulation téléphone");const ok=await optimisticWrite(table,null,"Suppression commande téléphone");if(ok){closeSheet();closeOrder();toast("Commande supprimée")}}
 
+  const table=STATE.currentTable;
+  const o=ensureOrder(table);
+  const total=orderTotal(o);
+
+  if(total>0 && !fiscalOrderFinalized(o)){
+    toast("🔒 Fermeture refusée : encaissez ou annulez fiscalement la commande",true);
+    openPayment();
+    return;
+  }
+
+  const reason=prompt("Motif / confirmation de fermeture :","Service terminé");
+  if(reason===null)return;
+
+  o.closedAt=Date.now();
+  o.closedReason=text(reason);
+  o.status="closed";
+
+  const fiscal=fiscalBreakdown(o);
+  const closeTrace=await fiscalEvent("CLOSE_ORDER",{
+    reason:text(reason),
+    receiptReference:receiptReference(o),
+    transaction:fiscalTransactionSnapshot(o),
+    total:fiscal.gross,
+    fiscalCountry:fiscal.profile.country,
+    fiscalRows:fiscal.rows.map(r=>({rate:r.rate,gross:r.gross,net:r.net,tax:r.tax}))
+  });
+  if(!closeTrace?.ok){
+    toast("Fermeture bloquée : journal fiscal non sécurisé",true);
+    return;
+  }
+
+  const archiveCore={
+    schema:"ICHEF-FISCAL-ARCHIVE-1",
+    fiscalVersion:ICHEF_FISCAL_VERSION,
+    tableId:table,
+    closedAt:new Date(o.closedAt).toISOString(),
+    source:"TELEPHONE",
+    fiscalCountry:fiscal.profile.country,
+    receiptReference:receiptReference(o),
+    ledgerEventRef:closeTrace.event.ref,
+    ledgerHash:closeTrace.event.hash,
+    order:clone(o)
+  };
+  const archiveHash=await fiscalSha256Hex(fiscalCanonical(archiveCore));
+  const archiveRef="FISCAL_ARCHIVE_"+Date.now()+"_"+fiscalSafeId(receiptReference(o));
+
+  const archived=await optimisticWrite(archiveRef,{data:{...archiveCore,hashAlgorithm:"SHA-256",archiveHash}},"Archive fiscale scellée téléphone");
+  if(!archived){
+    toast("Fermeture bloquée : archive fiscale non enregistrée",true);
+    return;
+  }
+
+  await optimisticWrite(table,null,"Retrait table active après archive fiscale");
+  await fiscalMaintenance().catch(()=>{});
+  closeSheet();
+  closeOrder();
+  toast("✓ Table fermée · archive fiscale scellée");
+}
+
+async function deleteOrder(){
+  if(!STATE.currentTable)return;
+
+  const reason=prompt("Motif obligatoire de correction / annulation :","");
+  if(!text(reason)){
+    toast("Motif obligatoire",true);
+    return;
+  }
+
+  const table=STATE.currentTable;
+  const o=ensureOrder(table);
+  const fiscal=fiscalBreakdown(o);
+  const paid=fiscalOrderFinalized(o);
+  const type=paid?"CANCEL_PAYMENT":"CANCEL_ORDER";
+  const originalReceipt=receiptReference(o);
+
+  const correctionRows=fiscal.rows.map(r=>({
+    rate:r.rate,
+    gross:fiscalRound2(-r.gross),
+    net:fiscalRound2(-r.net),
+    tax:fiscalRound2(-r.tax)
+  }));
+
+  const trace=await fiscalEvent(type,{
+    reason:text(reason),
+    originalReceiptReference:originalReceipt,
+    correctionMode:"PLUS_MINUS",
+    signedTotal:fiscalRound2(-fiscal.gross),
+    fiscalRows:correctionRows,
+    originalTransaction:fiscalTransactionSnapshot(o)
+  });
+  if(!trace?.ok){
+    toast("Annulation refusée : journal fiscal indisponible",true);
+    return;
+  }
+
+  const cancelledAt=new Date().toISOString();
+  const cancelled={
+    ...clone(o),
+    status:"cancelled",
+    cancelled:true,
+    cancelledAt,
+    cancellationReason:text(reason),
+    fiscalCancellationRef:trace.event.ref,
+    fiscalCancellationHash:trace.event.hash,
+    originalReceiptReference:originalReceipt
+  };
+
+  const archiveCore={
+    schema:"ICHEF-FISCAL-CORRECTION-1",
+    fiscalVersion:ICHEF_FISCAL_VERSION,
+    tableId:table,
+    cancelledAt,
+    source:"TELEPHONE",
+    fiscalCountry:fiscal.profile.country,
+    correctionMode:"PLUS_MINUS",
+    ledgerEventRef:trace.event.ref,
+    ledgerHash:trace.event.hash,
+    order:cancelled
+  };
+  const archiveHash=await fiscalSha256Hex(fiscalCanonical(archiveCore));
+  const archiveRef="FISCAL_ARCHIVE_CANCEL_"+Date.now()+"_"+fiscalSafeId(originalReceipt);
+
+  const archived=await optimisticWrite(archiveRef,{data:{...archiveCore,hashAlgorithm:"SHA-256",archiveHash}},"Archive correction fiscale téléphone");
+  if(!archived){
+    toast("Annulation bloquée : archive fiscale non enregistrée",true);
+    return;
+  }
+
+  await optimisticWrite(table,null,"Retrait commande active après correction fiscale");
+  closeSheet();
+  closeOrder();
+  toast(paid?"✓ Paiement annulé par contre-écriture fiscale":"✓ Commande annulée et archivée");
+}
 
 /* ---------------- CUISSONS ---------------- */
 function cookingOptions(item){
@@ -6636,38 +6809,562 @@ function openAllergyFast(){
   openLineObservation(lineKey(item),true);
 }
 
-/* ---------------- FISCAL FR / CH ---------------- */
-/* ---------------- FISCAL FR / CH ---------------- */
+
+/* ---------------- FISCAL FR / CH — RENFORCEMENT 2026 ---------------- */
+const ICHEF_FISCAL_VERSION="FRCH-2026.08.24-HARDENED";
+const ICHEF_FISCAL_SCHEMA="ICHEF-FISCAL-LEDGER-1";
+const ICHEF_FISCAL_HASH_ALGO="SHA-256";
+
+function fiscalRound2(v){
+  const n=Number(v)||0;
+  return Math.round((n+Number.EPSILON)*100)/100;
+}
+
+function fiscalSafeId(v){
+  return text(v||"").replace(/[^A-Za-z0-9_-]/g,"").slice(0,80)||"NA";
+}
+
 function fiscalProfile(){
   const s=STATE.settings||{};
   let country=text(s.fiscalCountry||s.countryCode||s.country||s.pays||"").toUpperCase();
   const currency=text(s.currency||s.devise||"").toUpperCase();
-  if(!country){if(currency==="CHF")country="CH";else if(currency==="EUR")country="FR"}
+  if(!country){
+    if(currency==="CHF")country="CH";
+    else if(currency==="EUR")country="FR";
+  }
   if(country!=="FR"&&country!=="CH")country="UNSET";
-  return {country,currency:country==="CH"?"CHF":country==="FR"?"EUR":(currency||"EUR"),label:country==="FR"?"FRANCE":country==="CH"?"SUISSE":"À CONFIGURER"};
+  return {
+    country,
+    currency:country==="CH"?"CHF":country==="FR"?"EUR":(currency||"EUR"),
+    label:country==="FR"?"FRANCE":country==="CH"?"SUISSE":"À CONFIGURER"
+  };
 }
-function normalizeTaxRate(value){let rate=Number(value);if(!Number.isFinite(rate))return null;if(rate>0&&rate<1)rate*=100;return Math.round(rate*100)/100}
-function itemVatRate(item){
-  const explicit=normalizeTaxRate(itemVat(item)??item.taxRate??item.tauxTVA);
-  if(explicit!==null)return explicit;
-  const profile=fiscalProfile(),label=(itemName(item)+" "+text(item.category||item.dest)+" "+text(item.course)).toLowerCase();
-  if(profile.country==="FR"){if(/alcool|vin\b|bi[eè]re|champagne|cocktail|spiritueux/.test(label))return 20;return 10}
+
+function fiscalAllowedRates(profile=fiscalProfile()){
+  const base=profile.country==="FR"
+    ?[0,2.1,5.5,10,20]
+    :profile.country==="CH"
+      ?[0,2.6,3.8,8.1]
+      :[0];
+  const extra=Array.isArray(STATE.settings?.allowedVatRates)
+    ?STATE.settings.allowedVatRates.map(normalizeTaxRate).filter(v=>v!==null)
+    :[];
+  return [...new Set([...base,...extra].map(v=>fiscalRound2(v)))].sort((a,b)=>a-b);
+}
+
+function normalizeTaxRate(value){
+  let rate=Number(value);
+  if(!Number.isFinite(rate))return null;
+  if(rate>0&&rate<1)rate*=100;
+  return fiscalRound2(rate);
+}
+
+function fiscalDefaultVatForProduct(product){
+  const profile=fiscalProfile();
+  const label=(text(product?.name||product?.n)+" "+text(product?.category||product?.dest||product?.course)).toLowerCase();
   if(profile.country==="CH")return 8.1;
+  if(profile.country==="FR"){
+    if(/alcool|vin\b|bi[eè]re|champagne|cocktail|spiritueux|digestif|aperitif|apéritif/.test(label))return 20;
+    return 10;
+  }
   return 0;
 }
-function fiscalBreakdown(order){
-  const groups=new Map();let grossTotal=0;
-  (order?.items||[]).forEach(item=>{
-    const qty=itemQty(item),gross=itemPrice(item)*qty,rate=itemVatRate(item);
-    const net=rate>0?gross/(1+rate/100):gross,tax=gross-net;grossTotal+=gross;
-    const key=String(rate),row=groups.get(key)||{rate,gross:0,net:0,tax:0};
-    row.gross+=gross;row.net+=net;row.tax+=tax;groups.set(key,row);
-  });
-  return {profile:fiscalProfile(),gross:grossTotal,rows:[...groups.values()].sort((a,b)=>a.rate-b.rate)};
+
+function itemVatRate(item){
+  const explicit=normalizeTaxRate(itemVat(item)??item?.taxRate??item?.tauxTVA);
+  if(explicit!==null)return explicit;
+  return fiscalDefaultVatForProduct(item||{});
 }
-async function fiscalEvent(type,payload={}){
-  const ref="FISCAL_EVENT_"+Date.now()+"_"+Math.random().toString(36).slice(2,7);
-  return optimisticWrite(ref,{data:{ref,type,tenantID:STATE.tenantID,terminal:"TELEPHONE",deviceId:STATE.deviceId,tableId:STATE.currentTable,country:fiscalProfile().country,createdAt:new Date().toISOString(),payload}},"Journal fiscal téléphone");
+
+function fiscalBreakdown(order){
+  const groups=new Map();
+  const lines=[];
+  let grossTotal=0;
+
+  (order?.items||[])
+    .filter(item=>item&&!item.cancelled)
+    .forEach(item=>{
+      const qty=itemQty(item);
+      const unitGross=fiscalRound2(itemPrice(item));
+      const gross=fiscalRound2(unitGross*qty);
+      const rate=itemVatRate(item);
+      const net=rate>0?fiscalRound2(gross/(1+rate/100)):gross;
+      const tax=fiscalRound2(gross-net);
+
+      grossTotal=fiscalRound2(grossTotal+gross);
+      const key=String(rate);
+      const row=groups.get(key)||{rate,gross:0,net:0,tax:0};
+      row.gross=fiscalRound2(row.gross+gross);
+      row.net=fiscalRound2(row.net+net);
+      row.tax=fiscalRound2(row.tax+tax);
+      groups.set(key,row);
+
+      lines.push({
+        item,
+        lineId:lineKey(item),
+        label:itemName(item),
+        qty,
+        unitGross,
+        gross,
+        net,
+        tax,
+        rate
+      });
+    });
+
+  return {
+    profile:fiscalProfile(),
+    gross:grossTotal,
+    lines,
+    rows:[...groups.values()].sort((a,b)=>a.rate-b.rate)
+  };
+}
+
+function fiscalOrderFinalized(order){
+  return text(order?.paymentStatus||order?.paymentDraft?.status).toUpperCase()==="PAYE"
+    ||text(order?.paymentDraft?.fiscalStatus).toUpperCase()==="SEALED"
+    ||!!order?.fiscalFinalizedAt;
+}
+
+function fiscalValidateOrder(order,{forPayment=false}={}){
+  const profile=fiscalProfile();
+  const errors=[];
+  const warnings=[];
+  const fiscal=fiscalBreakdown(order||{});
+
+  if(profile.country==="UNSET")errors.push("Profil fiscal FR ou CH non configuré");
+  if(forPayment && !fiscal.lines.length)errors.push("Commande vide");
+
+  const allowed=fiscalAllowedRates(profile);
+  fiscal.lines.forEach(line=>{
+    if(!Number.isFinite(line.rate))errors.push(`TVA absente : ${line.label}`);
+    else if(!allowed.some(v=>Math.abs(v-line.rate)<0.001)){
+      errors.push(`Taux TVA ${line.rate}% non autorisé pour ${profile.label} : ${line.label}`);
+    }
+    if(!Number.isFinite(line.unitGross)||line.unitGross<0)errors.push(`Prix invalide : ${line.label}`);
+    if(!Number.isFinite(line.qty)||line.qty<=0)errors.push(`Quantité invalide : ${line.label}`);
+  });
+
+  if(profile.country==="FR"){
+    warnings.push("France : la classification 5,5/10/20 % doit être configurée au niveau de chaque article/service.");
+  }else if(profile.country==="CH"){
+    warnings.push("Suisse : restauration = taux normal 8,1 % ; 2,6 % et 3,8 % seulement lorsque les conditions légales correspondantes sont remplies.");
+  }
+
+  return {ok:errors.length===0,errors,warnings,fiscal,allowed};
+}
+
+function fiscalCanonical(value){
+  if(value===null)return "null";
+  const t=typeof value;
+  if(t==="number")return Number.isFinite(value)?JSON.stringify(value):"null";
+  if(t==="boolean"||t==="string")return JSON.stringify(value);
+  if(Array.isArray(value))return "["+value.map(v=>fiscalCanonical(v===undefined?null:v)).join(",")+"]";
+  if(t==="object"){
+    return "{"+Object.keys(value).filter(k=>value[k]!==undefined&&typeof value[k]!=="function").sort()
+      .map(k=>JSON.stringify(k)+":"+fiscalCanonical(value[k])).join(",")+"}";
+  }
+  return JSON.stringify(String(value));
+}
+
+/* SHA-256 : WebCrypto en priorité, implémentation de secours pour fichier local. */
+function fiscalSha256Fallback(ascii){
+  function rightRotate(value,amount){return (value>>>amount)|(value<<(32-amount))}
+  const mathPow=Math.pow,maxWord=mathPow(2,32),lengthProperty="length";
+  let i,j,result="",words=[],asciiBitLength=ascii[lengthProperty]*8;
+  let hash=fiscalSha256Fallback.h=fiscalSha256Fallback.h||[];
+  let k=fiscalSha256Fallback.k=fiscalSha256Fallback.k||[];
+  let primeCounter=k[lengthProperty],isComposite={};
+  for(let candidate=2;primeCounter<64;candidate++){
+    if(!isComposite[candidate]){
+      for(i=0;i<313;i+=candidate)isComposite[i]=candidate;
+      hash[primeCounter]=(mathPow(candidate,.5)*maxWord)|0;
+      k[primeCounter++]=(mathPow(candidate,1/3)*maxWord)|0;
+    }
+  }
+  ascii=unescape(encodeURIComponent(ascii));
+  ascii+="\x80";
+  while(ascii[lengthProperty]%64-56)ascii+="\x00";
+  for(i=0;i<ascii[lengthProperty];i++){
+    j=ascii.charCodeAt(i);
+    if(j>>8)return "";
+    words[i>>2]|=j<<((3-i)%4)*8;
+  }
+  words[words[lengthProperty]]=((asciiBitLength/maxWord)|0);
+  words[words[lengthProperty]]=asciiBitLength;
+  for(j=0;j<words[lengthProperty];){
+    let w=words.slice(j,j+=16);
+    let oldHash=hash.slice(0);
+    hash=hash.slice(0,8);
+    for(i=0;i<64;i++){
+      let i2=i+j;
+      let w15=w[i-15],w2=w[i-2];
+      let a=hash[0],e=hash[4];
+      let temp1=hash[7]
+        +(rightRotate(e,6)^rightRotate(e,11)^rightRotate(e,25))
+        +((e&hash[5])^((~e)&hash[6]))
+        +k[i]
+        +(w[i]=(i<16)?w[i]:(
+          w[i-16]
+          +(rightRotate(w15,7)^rightRotate(w15,18)^(w15>>>3))
+          +w[i-7]
+          +(rightRotate(w2,17)^rightRotate(w2,19)^(w2>>>10))
+        )|0);
+      let temp2=(rightRotate(a,2)^rightRotate(a,13)^rightRotate(a,22))
+        +((a&hash[1])^(a&hash[2])^(hash[1]&hash[2]));
+      hash=[(temp1+temp2)|0].concat(hash);
+      hash[4]=(hash[4]+temp1)|0;
+      hash.pop();
+    }
+    for(i=0;i<8;i++)hash[i]=(hash[i]+oldHash[i])|0;
+  }
+  for(i=0;i<8;i++){
+    for(j=3;j+1;j--){
+      const b=(hash[i]>>(j*8))&255;
+      result+=((b<16)?"0":"")+b.toString(16);
+    }
+  }
+  return result;
+}
+
+async function fiscalSha256Hex(value){
+  const str=String(value??"");
+  if(globalThis.crypto?.subtle && globalThis.TextEncoder){
+    const bytes=new TextEncoder().encode(str);
+    const digest=await crypto.subtle.digest("SHA-256",bytes);
+    return [...new Uint8Array(digest)].map(b=>b.toString(16).padStart(2,"0")).join("");
+  }
+  return fiscalSha256Fallback(str);
+}
+
+function fiscalLedgerEvents(){
+  return Object.entries(STATE.activeOrders||{})
+    .filter(([k])=>String(k).startsWith("FISCAL_EVENT_"))
+    .map(([key,val])=>{
+      const e=unwrap(val);
+      return e&&typeof e==="object"?{...e,_key:key}:null;
+    })
+    .filter(Boolean);
+}
+
+function fiscalChainId(){
+  const p=fiscalProfile();
+  return `${STATE.tenantID||"TENANT"}|${p.country}|${STATE.deviceId||"DEVICE"}`;
+}
+
+function fiscalChainHeadSync(chainId=fiscalChainId()){
+  const own=fiscalLedgerEvents()
+    .filter(e=>text(e.chainId)===chainId && text(e.hash))
+    .sort((a,b)=>(Number(a.sequence)||0)-(Number(b.sequence)||0)||String(a.createdAt).localeCompare(String(b.createdAt)));
+  const last=own[own.length-1]||null;
+  return {
+    sequence:last?Number(last.sequence)||0:0,
+    hash:last?text(last.hash):"GENESIS",
+    event:last
+  };
+}
+
+async function fiscalVerifyChain(){
+  const events=fiscalLedgerEvents().filter(e=>text(e.hash)&&text(e.chainId));
+  if(!events.length){
+    STATE.fiscalChainState="AUCUN_SCELLE";
+    return {ok:true,state:"AUCUN_SCELLE",count:0};
+  }
+
+  const groups=new Map();
+  events.forEach(e=>{
+    const id=text(e.chainId);
+    if(!groups.has(id))groups.set(id,[]);
+    groups.get(id).push(e);
+  });
+
+  let checked=0;
+  for(const [chainId,list] of groups){
+    list.sort((a,b)=>(Number(a.sequence)||0)-(Number(b.sequence)||0)||String(a.createdAt).localeCompare(String(b.createdAt)));
+    let prev=null;
+    for(const e of list){
+      const stored=text(e.hash);
+      const core={...e};
+      delete core.hash; delete core._key;
+      const recomputed=await fiscalSha256Hex(fiscalCanonical(core));
+      if(recomputed!==stored){
+        STATE.fiscalChainState="ERREUR_HASH";
+        return {ok:false,state:"ERREUR_HASH",event:e.ref||e._key};
+      }
+      if(prev && text(e.prevHash)!==text(prev.hash)){
+        STATE.fiscalChainState="RUPTURE_CHAINE";
+        return {ok:false,state:"RUPTURE_CHAINE",event:e.ref||e._key};
+      }
+      prev=e;
+      checked++;
+    }
+  }
+  STATE.fiscalChainState="OK";
+  return {ok:true,state:"OK",count:checked};
+}
+
+async function fiscalEvent(type,payload={},options={}){
+  const profile=fiscalProfile();
+  if(profile.country==="UNSET" && !STATE.demo){
+    toast("Profil fiscal FR/CH requis",true);
+    return {ok:false,error:"FISCAL_PROFILE_UNSET"};
+  }
+
+  const ref=options.ref||("FISCAL_EVENT_"+Date.now()+"_"+cryptoId().slice(0,10));
+  const existing=unwrap(STATE.activeOrders?.[ref]);
+  if(existing&&text(existing.hash)){
+    return {ok:true,event:existing,existing:true};
+  }
+
+  const chainId=fiscalChainId();
+  const head=fiscalChainHeadSync(chainId);
+  const createdAt=options.createdAt||new Date().toISOString();
+  const core={
+    schema:ICHEF_FISCAL_SCHEMA,
+    fiscalVersion:ICHEF_FISCAL_VERSION,
+    ref,
+    type:text(type).toUpperCase(),
+    tenantID:STATE.tenantID,
+    terminal:"TELEPHONE",
+    deviceId:STATE.deviceId,
+    registerId:STATE.deviceId,
+    operator:STATE.role||"",
+    tableId:STATE.currentTable||payload?.tableId||"",
+    country:profile.country,
+    currency:profile.currency,
+    createdAt,
+    chainId,
+    sequence:head.sequence+1,
+    prevHash:head.hash,
+    hashAlgorithm:ICHEF_FISCAL_HASH_ALGO,
+    payload:clone(payload)
+  };
+  const hash=await fiscalSha256Hex(fiscalCanonical(core));
+  const event={...core,hash};
+  const ok=await optimisticWrite(ref,{data:event},"Journal fiscal chaîné SHA-256");
+  if(ok)STATE.fiscalChainState="OK";
+  return {ok:!!ok,event};
+}
+
+function fiscalNextReceiptReference(){
+  const p=fiscalProfile();
+  const y=new Date().getFullYear();
+  const dev=fiscalSafeId(STATE.deviceId||"TERM").slice(-8).toUpperCase();
+  const key=`ichef_fiscal_receipt_counter_${fiscalSafeId(STATE.tenantID)}_${p.country}_${y}_${dev}`;
+  const current=Math.max(0,Number(STORAGE.get(key,"0"))||0)+1;
+  STORAGE.set(key,String(current));
+  return `${p.country}-${y}-${dev}-${String(current).padStart(8,"0")}`;
+}
+
+function fiscalTransactionSnapshot(order){
+  const fiscal=fiscalBreakdown(order||{});
+  const payment=text(order?.paymentDraft?.payments?.[0]?.method||order?.paymentMethod||"");
+  const receipt=receiptReference(order);
+  const at=order?.paymentDraft?.updatedAt||order?.fiscalFinalizedAt||new Date().toISOString();
+
+  return {
+    schema:"ICHEF-FISCAL-TRANSACTION-1",
+    receiptNumber:receipt,
+    dateTime:at,
+    registerId:STATE.deviceId,
+    terminal:"TELEPHONE",
+    tableId:STATE.currentTable||order?.tableId||"",
+    operator:STATE.role||order?.updatedBy||"",
+    country:fiscal.profile.country,
+    currency:fiscal.profile.currency,
+    totalTTC:fiscalRound2(fiscal.gross),
+    paymentMethod:payment||null,
+    lines:fiscal.lines.map(line=>({
+      lineId:line.lineId,
+      label:line.label,
+      quantity:line.qty,
+      unitPriceTTC:line.unitGross,
+      lineTotalHT:line.net,
+      vatRate:line.rate,
+      vatAmount:line.tax,
+      lineTotalTTC:line.gross
+    })),
+    vatTotals:fiscal.rows.map(r=>({
+      vatRate:r.rate,
+      totalHT:r.net,
+      vatAmount:r.tax,
+      totalTTC:r.gross
+    }))
+  };
+}
+
+function fiscalClosureRef(kind,periodKey,country=fiscalProfile().country){
+  return `FISCAL_EVENT_CLOSURE_${kind}_${country}_${fiscalSafeId(periodKey)}`;
+}
+
+function fiscalPaymentEvents(){
+  return fiscalLedgerEvents().filter(e=>{
+    const t=text(e.type).toUpperCase();
+    return t==="PAYMENT" && text(e.payload?.method);
+  });
+}
+
+function fiscalClosureTotals(startMs,endMs){
+  const rows=new Map();
+  let total=0, count=0, perpetual=0;
+  const payments=fiscalPaymentEvents().sort((a,b)=>Date.parse(a.createdAt)-Date.parse(b.createdAt));
+  payments.forEach(e=>{
+    const ts=Date.parse(e.createdAt);
+    const amount=fiscalRound2(e.payload?.total??e.payload?.transaction?.totalTTC??0);
+    if(ts<endMs)perpetual=fiscalRound2(perpetual+amount);
+    if(ts>=startMs&&ts<endMs){
+      total=fiscalRound2(total+amount); count++;
+      const source=e.payload?.rows||e.payload?.transaction?.vatTotals||[];
+      source.forEach(r=>{
+        const rate=normalizeTaxRate(r.rate??r.vatRate)??0;
+        const cur=rows.get(String(rate))||{rate,gross:0,net:0,tax:0};
+        cur.gross=fiscalRound2(cur.gross+Number(r.gross??r.totalTTC??0));
+        cur.net=fiscalRound2(cur.net+Number(r.net??r.totalHT??0));
+        cur.tax=fiscalRound2(cur.tax+Number(r.tax??r.vatAmount??0));
+        rows.set(String(rate),cur);
+      });
+    }
+  });
+  return {total,count,perpetualTotal:perpetual,rows:[...rows.values()].sort((a,b)=>a.rate-b.rate)};
+}
+
+async function fiscalCreateClosure(kind,start,end,periodKey){
+  const ref=fiscalClosureRef(kind,periodKey);
+  const existing=unwrap(STATE.activeOrders?.[ref]);
+  if(existing&&text(existing.hash))return {ok:true,event:existing,existing:true};
+
+  const totals=fiscalClosureTotals(start.getTime(),end.getTime());
+  return fiscalEvent("CLOSURE_"+kind,{
+    periodKey,
+    periodStart:start.toISOString(),
+    periodEnd:end.toISOString(),
+    transactionCount:totals.count,
+    grandTotal:totals.total,
+    perpetualTotal:totals.perpetualTotal,
+    vatTotals:totals.rows,
+    closureRule:kind==="DAY"?"JOURNALIERE":kind==="MONTH"?"MENSUELLE":"ANNUELLE_EXERCICE"
+  },{ref,createdAt:new Date().toISOString()});
+}
+
+function fiscalLocalDateKey(d){
+  const pad=n=>String(n).padStart(2,"0");
+  return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`;
+}
+
+async function fiscalMaintenance(){
+  if(STATE.demo||!STATE.authenticated)return {ok:true,skipped:true};
+  const p=fiscalProfile();
+  if(p.country==="UNSET")return {ok:false,error:"PROFILE"};
+
+  const now=new Date();
+
+  /* Clôture du jour précédent */
+  const dayEnd=new Date(now.getFullYear(),now.getMonth(),now.getDate(),0,0,0,0);
+  const dayStart=new Date(dayEnd); dayStart.setDate(dayStart.getDate()-1);
+  await fiscalCreateClosure("DAY",dayStart,dayEnd,fiscalLocalDateKey(dayStart));
+
+  /* Clôture du mois précédent */
+  const monthEnd=new Date(now.getFullYear(),now.getMonth(),1,0,0,0,0);
+  const monthStart=new Date(now.getFullYear(),now.getMonth()-1,1,0,0,0,0);
+  const monthKey=`${monthStart.getFullYear()}-${String(monthStart.getMonth()+1).padStart(2,"0")}`;
+  await fiscalCreateClosure("MONTH",monthStart,monthEnd,monthKey);
+
+  /* Clôture de l'exercice annuel précédent */
+  const yearEnd=new Date(now.getFullYear(),0,1,0,0,0,0);
+  const yearStart=new Date(now.getFullYear()-1,0,1,0,0,0,0);
+  await fiscalCreateClosure("YEAR",yearStart,yearEnd,String(yearStart.getFullYear()));
+
+  return fiscalVerifyChain();
+}
+
+async function fiscalExportArchive(){
+  const profile=fiscalProfile();
+  const records=Object.entries(STATE.activeOrders||{})
+    .filter(([k])=>String(k).startsWith("FISCAL_")||String(k).startsWith("FINANCIAL_CANCEL_"))
+    .map(([key,val])=>({key,value:unwrap(val)}))
+    .sort((a,b)=>a.key.localeCompare(b.key));
+
+  const exportCore={
+    schema:"ICHEF-FISCAL-EXPORT-1",
+    fiscalVersion:ICHEF_FISCAL_VERSION,
+    tenantID:STATE.tenantID,
+    country:profile.country,
+    currency:profile.currency,
+    exportedAt:new Date().toISOString(),
+    terminal:"TELEPHONE",
+    registerId:STATE.deviceId,
+    noticeFR:"Archive ouverte JSON UTF-8. Elle contient le journal fiscal, les corrections, les clôtures et les archives disponibles sur ce serveur. Conserver avec le logiciel/notice de lecture et sans altération.",
+    noticeCH:"Archivage électronique: garantir l'authenticité, l'intégrité, la piste d'audit et la lisibilité pendant la durée légale de conservation.",
+    records
+  };
+  const exportHash=await fiscalSha256Hex(fiscalCanonical(exportCore));
+  const payload={...exportCore,hashAlgorithm:"SHA-256",exportHash};
+
+  const blob=new Blob([JSON.stringify(payload,null,2)],{type:"application/json;charset=utf-8"});
+  const url=URL.createObjectURL(blob);
+  const a=document.createElement("a");
+  a.href=url;
+  a.download=`iCHEF_ARCHIVE_FISCALE_${profile.country}_${new Date().toISOString().slice(0,10)}.json`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(()=>URL.revokeObjectURL(url),2000);
+
+  await fiscalEvent("ARCHIVE_EXPORT",{
+    exportHash,
+    recordCount:records.length,
+    format:"JSON UTF-8",
+    exportedAt:payload.exportedAt
+  }).catch(()=>{});
+
+  return payload;
+}
+
+async function openFiscalAudit(){
+  const check=await fiscalVerifyChain().catch(e=>({ok:false,state:e?.message||"ERREUR"}));
+  const p=fiscalProfile();
+  const events=fiscalLedgerEvents();
+  const allowed=fiscalAllowedRates(p);
+  const franceProof=p.country==="FR"
+    ?"⚠ La conformité légale française doit aussi être justifiée par le certificat ou l'attestation éditeur correspondant exactement à la version utilisée."
+    :"Suisse : conserver les pièces et journaux de manière ordonnée, intègre, traçable et lisible pendant la durée légale.";
+
+  openSheet("🔐 SÉCURITÉ FISCALE FR / CH",`
+    <div class="big-state" style="text-align:left">
+      <div class="big ${check.ok?"good":"bad"}">${check.ok?"✓ JOURNAL CONTRÔLÉ":"⚠ CONTRÔLE À VÉRIFIER"}</div>
+      <div class="small" style="font-size:12px;line-height:1.5">
+        Profil : <strong>${esc(p.label)} · ${esc(p.currency)}</strong><br>
+        Version fiscale : <strong>${esc(ICHEF_FISCAL_VERSION)}</strong><br>
+        Chaînage : <strong>${esc(check.state||STATE.fiscalChainState||"—")}</strong><br>
+        Événements fiscaux présents : <strong>${events.length}</strong><br>
+        Taux autorisés : <strong>${allowed.map(v=>String(v).replace(".",",")+" %").join(" · ")}</strong>
+      </div>
+    </div>
+    <div class="list">
+      <div class="list-row"><div class="grow"><div class="title">INALTÉRABILITÉ / INTÉGRITÉ</div><div class="sub">Événements append-only + SHA-256 chaîné par terminal. Les corrections payées sont enregistrées en plus/moins.</div></div></div>
+      <div class="list-row"><div class="grow"><div class="title">CONSERVATION / ARCHIVAGE</div><div class="sub">Archives de commandes + export JSON ouvert + clôtures J/M/A. France : conservation fiscale 6 ans ; Suisse : livres et pièces comptables 10 ans.</div></div></div>
+      <div class="list-row"><div class="grow"><div class="title">PREUVE EXTERNE</div><div class="sub">${esc(franceProof)}</div></div></div>
+    </div>
+    <div class="action-grid" style="margin-top:10px">
+      <button class="action-btn green" data-fiscal-maintenance>✓ VÉRIFIER / CLÔTURER</button>
+      <button class="action-btn gold" data-fiscal-export>⬇ EXPORT ARCHIVE JSON</button>
+    </div>
+  `);
+
+  $("sheetBody")?.querySelector("[data-fiscal-maintenance]")?.addEventListener("click",async e=>{
+    const b=e.currentTarget,before=b.textContent;b.disabled=true;b.textContent="VÉRIFICATION…";
+    try{
+      const r=await fiscalMaintenance();
+      toast(r?.ok?"✓ Fiscal vérifié et clôtures contrôlées":"Fiscal à vérifier",!r?.ok);
+    }catch(err){toast(err?.message||"Erreur fiscale",true)}
+    finally{b.disabled=false;b.textContent=before}
+  });
+  $("sheetBody")?.querySelector("[data-fiscal-export]")?.addEventListener("click",async e=>{
+    const b=e.currentTarget,before=b.textContent;b.disabled=true;b.textContent="EXPORT…";
+    try{await fiscalExportArchive();toast("✓ Archive fiscale JSON générée")}
+    catch(err){toast(err?.message||"Export impossible",true)}
+    finally{b.disabled=false;b.textContent=before}
+  });
 }
 
 /* ---------------- RESUME EXACT ---------------- */
@@ -6784,7 +7481,7 @@ function renderSummary(){
   $("summaryFiscal").innerHTML=`
     <div class="summary-fiscal-top">
       <div class="summary-fiscal-title">🧾 PROFIL FISCAL · ${esc(p.label)}</div>
-      <div class="summary-fiscal-status">${p.country==="UNSET"?"CONFIGURATION REQUISE":"SYNCHRONISÉ SERVEUR ✓"}</div>
+      <div class="summary-fiscal-status">${p.country==="UNSET"?"CONFIGURATION REQUISE":(STATE.fiscalChainState==="ERREUR_HASH"||STATE.fiscalChainState==="RUPTURE_CHAINE"?"⚠ INTÉGRITÉ À VÉRIFIER":"SHA-256 · SERVEUR ✓")}</div>
     </div>
 
     ${fiscal.rows.map(row=>`
@@ -6799,80 +7496,176 @@ function renderSummary(){
     </div>`;
 }
 
+
 async function recordPayment(method){
   if(!STATE.currentTable)return false;
 
-  const o=ensureOrder(STATE.currentTable);
-  const fiscal=fiscalBreakdown(o);
-  const total=orderTotal(o);
+  let o=ensureOrder(STATE.currentTable);
   const paymentMethod=method||null;
 
-  const payments=paymentMethod
-    ? [{method:paymentMethod,amount:total,createdAt:new Date().toISOString(),source:"TELEPHONE"}]
-    : [];
+  /* Une vente déjà payée ne peut pas revenir à "en attente" ni changer de moyen
+     sans correction fiscale. Si le scellement était seulement en attente, on le reprend. */
+  if(fiscalOrderFinalized(o)){
+    const status=text(o?.paymentDraft?.fiscalStatus).toUpperCase();
+    if(status==="PENDING_LEDGER" && paymentMethod){
+      const eventRef=text(o.paymentDraft?.fiscalEventRef);
+      const snapshot=fiscalTransactionSnapshot(o);
+      const trace=await fiscalEvent("PAYMENT",{
+        method:paymentMethod,
+        total:snapshot.totalTTC,
+        remaining:0,
+        receiptReference:snapshot.receiptNumber,
+        transaction:snapshot,
+        rows:snapshot.vatTotals
+      },{ref:eventRef||undefined,createdAt:o.paymentDraft.updatedAt});
+      if(trace?.ok){
+        o.paymentDraft.fiscalStatus="SEALED";
+        o.paymentDraft.fiscalEventRef=trace.event.ref;
+        o.paymentDraft.fiscalHash=trace.event.hash;
+        o.paymentDraft.fiscalSequence=trace.event.sequence;
+        o.fiscalFinalizedAt=o.paymentDraft.updatedAt;
+        o.fiscalReceiptReference=snapshot.receiptNumber;
+        o.fiscalHash=trace.event.hash;
+        const sealed=await optimisticWrite(STATE.currentTable,o,"Reprise scellement fiscal paiement");
+        if(sealed){
+          STATE.currentOrder=clone(o);
+          toast("✓ Paiement fiscal scellé");
+          return true;
+        }
+      }
+      toast("Scellement fiscal encore en attente",true);
+      return false;
+    }
+    toast("🔒 Paiement déjà fiscalisé : utilisez une annulation/correction",true);
+    return false;
+  }
 
-  const remaining=paymentMethod?0:total;
+  if(!paymentMethod){
+    /* Simple état A_PAYER : aucune donnée de règlement n'est validée. */
+    o.paymentDraft={
+      version:2,
+      payments:[],
+      total:orderTotal(o),
+      remaining:orderTotal(o),
+      fidelityDiscountUsed:0,
+      status:"A_PAYER",
+      updatedAt:new Date().toISOString(),
+      updatedBy:STATE.role||"SERVEUR",
+      deviceId:STATE.deviceId,
+      fiscalCountry:fiscalProfile().country,
+      fiscalStatus:"NOT_PAID"
+    };
+    o.paymentStatus="A_PAYER";
+    o.status="pending";
+    return saveCurrent(o,"Paiement en attente",{immediate:true});
+  }
+
+  const validation=fiscalValidateOrder(o,{forPayment:true});
+  if(!validation.ok){
+    toast("Fiscal : "+validation.errors[0],true);
+    return false;
+  }
+
+  const fiscal=validation.fiscal;
+  const total=fiscalRound2(fiscal.gross);
+  const paidAt=new Date().toISOString();
+  const receiptRef=fiscalNextReceiptReference();
+  const eventRef="FISCAL_EVENT_PAYMENT_"+fiscalSafeId(receiptRef);
+
+  const payments=[{
+    method:paymentMethod,
+    amount:total,
+    createdAt:paidAt,
+    source:"TELEPHONE"
+  }];
 
   o.paymentDraft={
-    version:1,
+    version:2,
     payments,
     total,
-    remaining,
+    remaining:0,
     fidelityDiscountUsed:0,
-    status:paymentMethod?"PAYE":"A_PAYER",
-    updatedAt:new Date().toISOString(),
+    status:"PAYE",
+    updatedAt:paidAt,
     updatedBy:STATE.role||"SERVEUR",
     deviceId:STATE.deviceId,
     fiscalCountry:fiscal.profile.country,
-    fiscalRows:fiscal.rows.map(r=>({rate:r.rate,gross:r.gross,net:r.net,tax:r.tax}))
+    fiscalRows:fiscal.rows.map(r=>({rate:r.rate,gross:r.gross,net:r.net,tax:r.tax})),
+    receiptReference:receiptRef,
+    fiscalEventRef:eventRef,
+    fiscalStatus:"PENDING_LEDGER"
   };
 
-  o.paymentStatus=paymentMethod?"PAYE":"A_PAYER";
-  o.status=paymentMethod?"payment":"pending";
+  o.paymentStatus="PAYE";
+  o.status="payment";
+  o.fiscalReceiptReference=receiptRef;
   o.orderMeta={
     ...(o.orderMeta&&typeof o.orderMeta==="object"?o.orderMeta:{}),
-    version:1,
+    version:2,
     origin:o.orderMeta?.origin||"PAD",
     serviceMode:o.orderMeta?.serviceMode||"SERVEUR",
-    paymentStatus:o.paymentStatus,
+    paymentStatus:"PAYE",
     productionStatus:o.orderMeta?.productionStatus||o.productionStatus||"WAITING",
     tableId:STATE.currentTable,
-    updatedAt:new Date().toISOString(),
+    updatedAt:paidAt,
     updatedBy:STATE.role||"SERVEUR",
     deviceId:STATE.deviceId,
-    terminal:"TELEPHONE"
+    terminal:"TELEPHONE",
+    fiscalCountry:fiscal.profile.country,
+    fiscalReceiptReference:receiptRef
   };
 
-  const ok=await saveCurrent(
-    o,
-    paymentMethod?"Paiement téléphone enregistré":"Paiement en attente",
-    {immediate:true}
-  );
+  /* 1. On enregistre d'abord la vente comme PAYE mais "PENDING_LEDGER".
+     Si le réseau fiscal échoue, aucune impression fiscale n'est lancée. */
+  const saved=await saveCurrent(o,"Paiement téléphone enregistré - scellement fiscal en cours",{immediate:true});
+  if(!saved)return false;
 
-  if(ok){
-    await fiscalEvent("PAYMENT",{
-      method:paymentMethod,
-      total,
-      remaining,
-      fiscalCountry:fiscal.profile.country,
-      rows:o.paymentDraft.fiscalRows
-    });
-    toast(paymentMethod?`Paiement ${paymentMethod} synchronisé`:"Paiement en attente");
-    if(paymentMethod){
-      const pcfg=loadPrinterConfig();
-      if(pcfg.enabled&&pcfg.printers?.caisse?.enabled&&pcfg.receipt?.autoAfterPayment!==false){
-        try{
-          await printCashReceipt(o,{auto:true});
-          toast("🧾 Paiement synchronisé · ticket client imprimé");
-        }catch(e){
-          console.warn("[iCHEF CAISSE] Paiement OK, impression ticket échouée",e);
-          toast("Paiement OK · ticket caisse à réimprimer",true);
-        }
-      }
+  const snapshot=fiscalTransactionSnapshot(o);
+  const trace=await fiscalEvent("PAYMENT",{
+    method:paymentMethod,
+    total,
+    remaining:0,
+    receiptReference:receiptRef,
+    transaction:snapshot,
+    rows:snapshot.vatTotals
+  },{ref:eventRef,createdAt:paidAt});
+
+  if(!trace?.ok){
+    toast("Paiement enregistré mais scellement fiscal en attente",true);
+    return false;
+  }
+
+  /* 2. On rattache l'empreinte fiscale au paiement sans modifier les données de vente. */
+  o.paymentDraft.fiscalStatus="SEALED";
+  o.paymentDraft.fiscalEventRef=trace.event.ref;
+  o.paymentDraft.fiscalHash=trace.event.hash;
+  o.paymentDraft.fiscalSequence=trace.event.sequence;
+  o.fiscalFinalizedAt=paidAt;
+  o.fiscalHash=trace.event.hash;
+
+  const sealed=await optimisticWrite(STATE.currentTable,o,"Scellement fiscal paiement SHA-256");
+  if(!sealed){
+    toast("Paiement scellé localement · synchronisation serveur à reprendre",true);
+    return false;
+  }
+  STATE.currentOrder=clone(o);
+
+  await fiscalMaintenance().catch(err=>console.warn("[iCHEF FISCAL] maintenance",err));
+
+  toast(`✓ Paiement ${paymentMethod} fiscalisé · ${receiptRef}`);
+
+  const pcfg=loadPrinterConfig();
+  if(pcfg.enabled&&pcfg.printers?.caisse?.enabled&&pcfg.receipt?.autoAfterPayment!==false){
+    try{
+      await printCashReceipt(o,{auto:true});
+      toast("🧾 Paiement fiscalisé · ticket client imprimé");
+    }catch(e){
+      console.warn("[iCHEF CAISSE] Paiement OK, impression ticket échouée",e);
+      toast("Paiement fiscalisé · ticket caisse à réimprimer",true);
     }
   }
 
-  return ok;
+  return true;
 }
 
 /* ---------------- APERÇU RAPIDE TABLE (APPUI LONG 0.5s) ---------------- */
@@ -7471,6 +8264,10 @@ async function bootApp(){
 
   /* Lecture HTTP d'abord : server.js reste la source de vérité, même sans Socket.IO. */
   await syncFull("initial");
+  await fiscalMaintenance().catch(err=>{
+    console.warn("[iCHEF FISCAL] contrôle initial",err);
+    STATE.fiscalChainState="A_VERIFIER";
+  });
   connectSocket();
 
   setInterval(()=>{
@@ -7494,6 +8291,9 @@ async function bootApp(){
 
 
 
+/* V16 — sécurité fiscale FR/CH renforcée 2026
+   IMPORTANT : le client renforce la traçabilité technique mais ne remplace pas
+   l'attestation/certification légale française ni les contrôles serveur. */
 /* V15 — pont UI Observation bas de page */
 const bottomObservation=document.getElementById("bottomObservation");
 if(bottomObservation)bottomObservation.addEventListener("click",()=>openObservationFast());
