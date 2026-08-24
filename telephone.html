@@ -5052,13 +5052,56 @@ function renderRushStrip(){
   if(level)level.textContent="N"+r.level;
 }
 function renderStatus(){const r=rushSnapshot();$("stRoom").textContent=STATE.room||"—";$("stTables").textContent=STATE.tables.filter(t=>t.room===STATE.room).length;$("stRush").textContent=r.label;$("stRush").className="status-value "+(r.level<=1?"good":r.level<=3?"gold":r.level===4?"warn":"bad");$("stClock").textContent=new Date().toLocaleTimeString("fr-FR",{hour:"2-digit",minute:"2-digit"})}
-function renderRooms(){const el=$("rooms");el.innerHTML=STATE.rooms.map(r=>`<button class="room-btn ${r===STATE.room?"active":""}" data-room="${esc(r)}">${esc(r)}</button>`).join("")}
+function renderRooms(){
+  // Initialisation du filtre s'il n'existe pas encore
+  if (!STATE.deviceFilter) {
+    try { STATE.deviceFilter = JSON.parse(STORAGE.get("ichef_phone_filter", '{"type":"all","value":""}')); } 
+    catch(e){ STATE.deviceFilter = {type:"all", value:""}; }
+  }
+  
+  const el=$("rooms");
+  
+  // Si bloqué sur une ZONE, on affiche juste la zone et on désactive le clic
+  if (STATE.deviceFilter.type === "zone") {
+    el.innerHTML = `<div class="room-btn active" style="flex:1; text-align:center; pointer-events:none; border-color:#dcae39; color:#111;">RESTREINT À LA ZONE : ${esc(STATE.deviceFilter.value)}</div>`;
+    return;
+  }
+  
+  // Si bloqué sur une SALLE, on affiche juste la salle et on désactive le clic
+  if (STATE.deviceFilter.type === "room") {
+    el.innerHTML = `<div class="room-btn active" style="flex:1; text-align:center; pointer-events:none; border-color:#58a9ff; color:#111;">RESTREINT À LA SALLE : ${esc(STATE.deviceFilter.value)}</div>`;
+    return;
+  }
+  
+  // Sinon (Tout le restaurant), on affiche les salles normalement
+  el.innerHTML=STATE.rooms.map(r=>`<button class="room-btn ${r===STATE.room?"active":""}" data-room="${esc(r)}">${esc(r)}</button>`).join("");
+}
+
 function renderTables(){
-  const list=STATE.tables.filter(t=>t.room===STATE.room);
+  if (!STATE.deviceFilter) {
+    try { STATE.deviceFilter = JSON.parse(STORAGE.get("ichef_phone_filter", '{"type":"all","value":""}')); } 
+    catch(e){ STATE.deviceFilter = {type:"all", value:""}; }
+  }
+  
+  let list = STATE.tables;
+  
+  // Application du filtre sur les tables
+  if (STATE.deviceFilter.type === "zone") {
+    list = list.filter(t => {
+      const z = getZone(t);
+      return (z?.label || t.zone || "Nouvelle Zone") === STATE.deviceFilter.value;
+    });
+  } else if (STATE.deviceFilter.type === "room") {
+    list = list.filter(t => t.room === STATE.deviceFilter.value);
+  } else {
+    // Si aucun filtre, on garde la logique de la salle sélectionnée en haut
+    list = list.filter(t => t.room === STATE.room);
+  }
+
   const el=$("tables");
 
   if(!list.length){
-    el.innerHTML='<div class="empty-state">Aucune table dans cette salle.<br>Le plan vient de <b>ARCHITECTURE</b> sur le serveur.</div>';
+    el.innerHTML='<div class="empty-state">Aucune table dans ce secteur.</div>';
     return;
   }
 
@@ -5093,7 +5136,6 @@ function renderTables(){
       ?duration(s.age)
       :(s.status==="reserved"?"RÉSERVÉE":"00:00");
 
-    // NOUVEAU : Si la table est prête, on affiche le gros message par-dessus !
     const readyOverlay = s.ready 
       ? `<div class="table-ready-overlay">🛎️ ${s.ready} PRÊT(S)</div>` 
       : "";
@@ -5108,7 +5150,6 @@ function renderTables(){
     </button>`;
   }).join("");
 }
-
 function updateToolBadges(){const r=rushSnapshot(),b=$("toolRush");b.className="tool rush"+r.level;$("rushTiny").textContent=r.label;$("readyTiny").textContent=readyCount()+" prêt"+(readyCount()>1?"s":"")}
 
 function renderOrder(){
