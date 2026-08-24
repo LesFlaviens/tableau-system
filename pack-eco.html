@@ -4510,6 +4510,7 @@ function applyServerState(serverState,source){
 
   scheduleRender();
   checkGlobalAlert();
+  try{window.dispatchEvent(new CustomEvent("ichef:live-state-updated",{detail:{source:source||"server"}}))}catch(_){}
 }
 
 window.addEventListener("online",()=>{setConnection("RECONNEXION","warn");connectSocket();retryFailedWrites();syncFull("online")},{passive:true});
@@ -4611,9 +4612,11 @@ function isRealOrder(k,o){
 }
 function getOrder(table){const o=STATE.activeOrders[table];return isRealOrder(table,o)?o:null}
 function orderCreated(o){if(!o)return 0;let t=Number(o.createdAt||o.openedAt||o.date||0);if(!t&&Array.isArray(o.items)&&o.items.length)t=Math.min(...o.items.map(i=>Number(i.itemId||i.createdAt||i.sentAt||Date.now())).filter(Number.isFinite));return t||0}
-function lineReady(i){return !!(i&&(i.done===true||i.ready===true||i.isReady===true||i.readyAt||String(i.sequenceStatus||"").toUpperCase()==="READY"||String(i.status||i.productionStatus||"").toLowerCase()==="ready"))}
-function lineServed(i){return !!(i&&(i.served===true||i.isServed===true||i.servedAt||String(i.sequenceStatus||"").toUpperCase()==="SERVED"||String(i.status||"").toLowerCase()==="served"))}
-function lineFired(i){return !!(i&&(i.isSent===true||i.fired===true||i.sent===true||i.sentAt))}
+function productionStateToken(v){return text(v).normalize("NFD").replace(/[\u0300-\u036f]/g,"").replace(/[\s-]+/g,"_").toUpperCase()}
+function lineTaken(i){const st=productionStateToken(i?.status),seq=productionStateToken(i?.sequenceStatus);return !!(i&&(i.pickedByServer===true||i.takenByWaiter===true||i.runnerTaken===true||i.pickedAt||i.pickedAtServer||["PRIS_PAR_SERVEUR","TAKEN_BY_WAITER","RUNNER_TAKEN"].includes(st)||["PRIS_PAR_SERVEUR","TAKEN_BY_WAITER","RUNNER_TAKEN"].includes(seq)))}
+function lineServed(i){const st=productionStateToken(i?.status),seq=productionStateToken(i?.sequenceStatus);return !!(i&&(i.served===true||i.isServed===true||i.servedAt||["SERVI","SERVED"].includes(st)||["SERVI","SERVED"].includes(seq)))}
+function lineReady(i){if(!i||lineServed(i)||lineTaken(i))return false;const st=productionStateToken(i.status||i.productionStatus),seq=productionStateToken(i.sequenceStatus);return !!(i.done===true||i.ready===true||i.isReady===true||i.readyAt||i.productionReadyAt||["READY","PRET_AU_PASS","READY_AT_PASS"].includes(st)||["READY","PRET_AU_PASS","READY_AT_PASS"].includes(seq))}
+function lineFired(i){const st=productionStateToken(i?.status||i?.productionStatus),seq=productionStateToken(i?.sequenceStatus);return !!(i&&(i.isSent===true||i.fired===true||i.sent===true||i.sentAt||["PRODUCTION","READY","PRET_AU_PASS","READY_AT_PASS","SERVED"].includes(seq)||["EN_PREPARATION","PREPARATION","COOKING","READY","PRET_AU_PASS","READY_AT_PASS","SERVI","SERVED"].includes(st)))}
 function tableStats(table){
   const o=getOrder(table);const res=findReservation(table);if(!o){return{status:res?"reserved":"empty",pax:num(res?.pax||res?.covers||0),ready:0,age:0,total:0}}
   const items=o.items||[];const ready=items.filter(i=>lineReady(i)&&!lineServed(i)).reduce((s,i)=>s+Math.max(1,num(i.qty||i.quantity||1)),0);const waiting=items.some(i=>lineFired(i)&&!lineReady(i));const age=orderCreated(o);let status="active";if(o.alerteRouge||o.alert)status="alert";else if(String(o.status||"").toLowerCase().includes("payment"))status="payment";else if(ready)status="ready";else if(waiting&&age&&now()-age>25*60000)status="late";else if(waiting)status="wait";return{status,pax:num(o.pax||o.covers||0),ready,age,total:orderTotal(o)}
@@ -5711,6 +5714,37 @@ function openDisplay(){
     };
   });
 }
+async function requestPlateForActiveSeat(){
+  if(!STATE.currentTable)return false;
+  const seat=Math.max(1,Math.min(9,Number(STATE.activeSeat)||1));
+  const o=ensureOrder(STATE.currentTable);
+  const stamp=Date.now();
+  const lines=(o.items||[]).filter(i=>
+    i && !i.cancelled && itemSeat(i)===seat && lineFired(i) && !lineReady(i) && !lineServed(i)
+  );
+  if(!lines.length){toast(`${seatLabel(seat)} · aucun plat envoyé en attente`,true);return false}
+  const dests=new Set();
+  o.items=(o.items||[]).map(raw=>{
+    const i=normalizeCompatItem(raw);
+    if(!i.cancelled && itemSeat(i)===seat && lineFired(i) && !lineReady(i) && !lineServed(i)){
+      i.plateRequested=true;
+      i.demandePlat=true;
+      i.plateRequestedAt=stamp;
+      i.plateRequestedBy=STATE.role||"SERVEUR";
+      i.serviceRequest="DEMANDE_PLAT";
+      dests.add(normalizeDestination(i.dest||i.destination||i.category||"cuisine"));
+    }
+    return i;
+  });
+  const ok=await saveCurrent(o,`Demande plat ${seatLabel(seat)}`,{immediate:true});
+  if(!ok)return false;
+  for(const dest of dests){
+    try{await productionMessage(dest,"special",`${seatLabel(seat)} · DEMANDE PLAT`)}catch(_){}
+  }
+  toast(`🍽️ ${seatLabel(seat)} · DEMANDE PLAT ENVOYÉE`);
+  return true;
+}
+
 function openKitchen(){
   const ready=[];
 
@@ -5754,6 +5788,10 @@ function openKitchen(){
 
      <!-- Grille de boutons FOND BLANC et TEXTE AGRANDI -->
      <div class="production-dest-grid" style="gap: 12px !important; margin-top: 15px !important;">
+       <button data-request-plate="1" style="grid-column:1/-1;background:#fff7ee!important;color:#7a3f10!important;border:4px solid #ff9a45!important;font-size:22px!important;font-weight:1000!important;min-height:82px!important;">
+         🍽️ DEMANDER LE PLAT · ${seatLabel(Math.max(1,Math.min(9,Number(STATE.activeSeat)||1)))}
+         <span style="display:block;margin-top:5px;font-size:15px;color:#705444">Envoie la demande au(x) poste(s) concerné(s)</span>
+       </button>
        <button class="kitchen" data-prod-dest="cuisine" data-prod-type="special" style="background: #ffffff !important; color: #111111 !important; border: 3px solid #ff9a45 !important; font-size: 18px !important; font-weight: 900 !important; min-height: 90px !important;">
          CUISINE<br><span style="color: #555555; display: block; margin-top: 6px; font-size: 22px;">DEMANDE SPÉCIALE</span>
        </button>
@@ -5776,6 +5814,11 @@ function openKitchen(){
        </button>
      </div>`
   );
+
+  $("sheetBody").querySelector("[data-request-plate]")?.addEventListener("click",async e=>{
+    const b=e.currentTarget,old=b.textContent;b.disabled=true;b.textContent="ENVOI DE LA DEMANDE…";
+    try{const ok=await requestPlateForActiveSeat();if(ok)closeSheet()}finally{b.disabled=false;if(document.body.contains(b))b.textContent=old}
+  });
 
   $("sheetBody").querySelectorAll("[data-open-table]").forEach(b=>{
     b.onclick=()=>{
@@ -8748,8 +8791,8 @@ function buildDemoState(){
     ]},
     T2:{
       tableId:"T2",status:"sent",pax:2,createdAt:Date.now()-12*60000,items:[
-        {lineId:"d1",productId:"entrecote",n:"Entrecôte",name:"Entrecôte",p:32,price:32,qty:1,category:"Plats",dest:"cuisine",course:"PLATS",seat:1,guestSeat:1,seatNumber:1,guestName:"C1",guest:"C1",cooking:"SAIGNANT",isSent:true,fired:true,sentAt:Date.now()-10*60000},
-        {lineId:"d2",productId:"perche",n:"Filets de perche",name:"Filets de perche",p:28,price:28,qty:1,category:"Plats",dest:"cuisine",course:"PLATS",seat:2,guestSeat:2,seatNumber:2,guestName:"C2",guest:"C2",isSent:true,fired:true,sentAt:Date.now()-10*60000},
+        {lineId:"d1",productId:"entrecote",n:"Entrecôte",name:"Entrecôte",p:32,price:32,qty:1,category:"Plats",dest:"cuisine",course:"PLATS",seat:1,guestSeat:1,seatNumber:1,guestName:"C1",guest:"C1",cooking:"SAIGNANT",isSent:true,fired:true,sentAt:Date.now()-10*60000,plateRequested:true,demandePlat:true,plateRequestedAt:Date.now()-2*60000,serviceRequest:"DEMANDE_PLAT"},
+        {lineId:"d2",productId:"perche",n:"Filets de perche",name:"Filets de perche",p:28,price:28,qty:1,category:"Plats",dest:"cuisine",course:"PLATS",seat:2,guestSeat:2,seatNumber:2,guestName:"C2",guest:"C2",isSent:true,fired:true,sentAt:Date.now()-10*60000,status:"EN_PREPARATION",startedAt:Date.now()-6*60000},
         {lineId:"d3",productId:"eau",n:"Eau minérale",name:"Eau minérale",p:6,price:6,qty:1,category:"Boissons",dest:"bar",course:"BOISSONS",seat:1,guestSeat:1,seatNumber:1,guestName:"C1",guest:"C1",isSent:true,fired:true,ready:true,status:"ready"}
       ]
     },
@@ -8862,6 +8905,63 @@ if(bottomObservation)bottomObservation.addEventListener("click",()=>openObservat
 @media(max-width:980px){.archpad-main{grid-template-columns:195px minmax(0,1fr) 245px}.archpad-palette button{font-size:8px}.archpad-right{font-size:9px}}
 </style>
 
+
+<style id="ichef-pad-live-anti-rush-seats-css">
+/* =========================================================
+   PLAN SERVICE LIVE — ANTI-RUSH + QUI MANGE QUOI C1-C9
+   Même palette C1-C9 que la prise de commande.
+   Le statut n'altère jamais la couleur d'identité du convive.
+   ========================================================= */
+.archpad-livebar{
+  min-height:50px;flex:0 0 auto;display:flex;align-items:center;gap:10px;
+  padding:6px 9px;border-bottom:1px solid #273034;background:#090d0e;
+  overflow-x:auto;scrollbar-width:none
+}
+.archpad-livebar::-webkit-scrollbar{display:none}
+.arch-live-rush{
+  flex:0 0 auto;min-width:245px;height:38px;padding:5px 10px;border:2px solid var(--rush-color,#55d987);
+  border-radius:10px;background:color-mix(in srgb,var(--rush-color,#55d987) 12%,#0e1315);
+  display:grid;grid-template-columns:auto 1fr;column-gap:8px;align-items:center;color:#fff
+}
+.arch-live-rush .rush-main{font-size:12px;font-weight:1000;white-space:nowrap;color:var(--rush-color,#55d987)}
+.arch-live-rush .rush-sub{font-size:7px;color:#b8c0c3;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.arch-live-rush .rush-ready{grid-row:1/3;grid-column:2;text-align:right;font-size:10px;font-weight:950;color:#fff;align-self:center}
+.arch-live-legend{display:flex;align-items:center;gap:5px;min-width:max-content}
+.arch-live-legend-label{font-size:8px;color:#8f9a9e;font-weight:950;margin-right:2px;white-space:nowrap}
+.arch-seat-legend{
+  width:25px;height:25px;border:2px solid var(--seat);border-radius:7px;background:#101516;
+  color:var(--seat);display:flex;align-items:center;justify-content:center;font-size:8px;font-weight:1000;text-shadow:none
+}
+.arch-live-status-key{display:flex;align-items:center;gap:6px;margin-left:4px;color:#98a2a6;font-size:7px;white-space:nowrap}
+.arch-live-status-key b{font-weight:1000}.arch-live-status-key .ready{color:#55df8d}.arch-live-status-key .request{color:#ff9a45}.arch-live-status-key .prep{color:#b28cff}
+
+.arch-table.service-live{padding:3px 3px 2px!important;justify-content:flex-start!important;overflow:hidden}
+.arch-table.service-live .tlabel{font-size:13px;line-height:15px;flex:0 0 auto}
+.arch-table-live-head{width:100%;display:flex;justify-content:center;align-items:center;gap:4px;min-height:13px;font-size:6.5px;line-height:1;text-shadow:none;white-space:nowrap}
+.arch-table-live-head .state{font-weight:1000}.arch-table-live-head .clock{color:#fff;font-weight:900}.arch-table-live-head .pax{color:#f4eadc}
+.arch-table.service-live.live-ready{border-color:#45df84;box-shadow:0 0 0 3px rgba(69,223,132,.27),0 4px 8px rgba(0,0,0,.24)}
+.arch-table.service-live.live-request{border-color:#ff9a45;box-shadow:0 0 0 3px rgba(255,154,69,.26),0 4px 8px rgba(0,0,0,.24)}
+.arch-table.service-live.live-prep{border-color:#a785ff;box-shadow:0 0 0 2px rgba(167,133,255,.22),0 4px 8px rgba(0,0,0,.24)}
+.arch-table.service-live.live-late,.arch-table.service-live.live-alert{border-color:#ff5368;box-shadow:0 0 0 3px rgba(255,83,104,.24),0 4px 8px rgba(0,0,0,.24)}
+.arch-table.service-live.live-payment{border-color:#e4e8ea}
+.arch-table.service-live.live-empty{opacity:.88}
+.arch-table.service-live .state.ready{color:#76efa4}.arch-table.service-live .state.request{color:#ffb06b}.arch-table.service-live .state.prep{color:#c8b2ff}.arch-table.service-live .state.late,.arch-table.service-live .state.alert{color:#ff8491}.arch-table.service-live .state.empty{color:#d8dee0}
+.arch-seat-strip{width:100%;margin-top:2px;display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:2px;align-content:center;min-height:0}
+.arch-seat-chip{
+  --seat:#fff;position:relative;min-width:0;height:15px;padding:0 2px;border:2px solid var(--seat);border-radius:5px;
+  background:#0c1011;color:var(--seat);display:flex;align-items:center;justify-content:center;gap:1px;
+  font-size:6.5px;font-weight:1000;line-height:1;text-shadow:none;overflow:hidden
+}
+.arch-seat-chip .seat-code{color:var(--seat)}
+.arch-seat-chip .seat-mark{font-size:7px;font-weight:1000;color:#fff}
+.arch-seat-chip::after{content:"";position:absolute;right:1px;top:1px;width:4px;height:4px;border-radius:50%;background:#778084}
+.arch-seat-chip.seat-ready::after{background:#4de28a}.arch-seat-chip.seat-request::after{background:#ff9a45}.arch-seat-chip.seat-prep::after{background:#a785ff}.arch-seat-chip.seat-sent::after{background:#58a9ff}.arch-seat-chip.seat-draft::after{background:#e2b84e}.arch-seat-chip.seat-served::after{background:#8e999d}.arch-seat-chip.seat-occupied::after{background:#54d889}
+.arch-seat-chip.seat-ready{box-shadow:inset 0 0 0 1px #4de28a}.arch-seat-chip.seat-request{box-shadow:inset 0 0 0 1px #ff9a45}
+.arch-seat-chip.seat-allergy{animation:archSeatAlert 1s infinite}.arch-seat-chip.seat-allergy::before{content:"!";position:absolute;left:1px;top:0;color:#ff5368;font-size:7px}
+@keyframes archSeatAlert{50%{filter:brightness(1.55)}}
+@media(max-width:900px){.archpad-livebar{gap:6px}.arch-live-rush{min-width:210px}.arch-live-status-key{display:none}}
+</style>
+
 <script id="ichef-pad-architect-js">
 /* =========================================================
    iCHEF PAD — ÉDITEUR ARCHITECTURAL PERSONNALISABLE
@@ -8905,6 +9005,42 @@ function roomZones(){return A.zones.filter(z=>aText(z.room||A.rooms[0])===A.room
 function roomElements(){return A.elements.filter(e=>aText(e.room||A.rooms[0])===A.room)}
 function nextArchitectTableLabel(){const used=new Set(A.tables.map(t=>aText(t.label).toUpperCase()));let prefix='T';const candidates=A.tables.map(t=>aText(t.label).match(/^([^0-9]*)(\d+)$/)).filter(Boolean);if(candidates.length){const count={};candidates.forEach(m=>count[m[1]]=(count[m[1]]||0)+1);prefix=Object.entries(count).sort((a,b)=>b[1]-a[1])[0][0]||'T'}for(let n=1;n<10000;n++){const v=prefix+n;if(!used.has(v.toUpperCase()))return v}return 'T'+Date.now().toString().slice(-4)}
 function activeOrder(label){const o=getOrder(label);return !!((o?.items||[]).some(i=>i&&!i.cancelled&&itemQty(i)>0))}
+function planStateToken(v){return aText(v).normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/[\s-]+/g,'_').toUpperCase()}
+function planItemTaken(i){const st=planStateToken(i?.status),seq=planStateToken(i?.sequenceStatus);return !!(i&&(i.pickedByServer===true||i.takenByWaiter===true||i.runnerTaken===true||["PRIS_PAR_SERVEUR","TAKEN_BY_WAITER","RUNNER_TAKEN"].includes(st)||["PRIS_PAR_SERVEUR","TAKEN_BY_WAITER","RUNNER_TAKEN"].includes(seq)))}
+function planItemServed(i){const st=planStateToken(i?.status),seq=planStateToken(i?.sequenceStatus);return !!(i&&(lineServed(i)||planItemTaken(i)||["SERVI","SERVED"].includes(st)||["SERVI","SERVED"].includes(seq)))}
+function planItemReady(i){if(!i||planItemServed(i))return false;const st=planStateToken(i.status),seq=planStateToken(i.sequenceStatus);return !!(lineReady(i)||i.productionReadyAt||["READY","PRET_AU_PASS","READY_AT_PASS"].includes(st)||["READY","PRET_AU_PASS","READY_AT_PASS"].includes(seq))}
+function planItemExplicitPrep(i){if(!i||planItemReady(i)||planItemServed(i))return false;const st=planStateToken(i.status),seq=planStateToken(i.sequenceStatus);return !!(i.startedAt||i.preparationStartedAt||i.inPreparation===true||["EN_PREPARATION","PREPARATION","COOKING","IN_PREPARATION"].includes(st)||["EN_PREPARATION","PREPARATION","COOKING","IN_PREPARATION"].includes(seq))}
+function planItemRequested(i){if(!i||planItemReady(i)||planItemServed(i)||planItemExplicitPrep(i))return false;const st=planStateToken(i.status),seq=planStateToken(i.sequenceStatus),req=planStateToken(i.serviceRequest||i.requestType);return !!(i.plateRequested===true||i.demandePlat===true||i.courseRequested===true||i.requestedByServer===true||["DEMANDE_PLAT","PLATE_REQUESTED","COURSE_REQUESTED"].includes(req)||["DEMANDE_PLAT","PLATE_REQUESTED","COURSE_REQUESTED","REQUESTED"].includes(st)||["DEMANDE_PLAT","PLATE_REQUESTED","COURSE_REQUESTED","REQUESTED"].includes(seq))}
+function planItemPrep(i){if(!i||planItemReady(i)||planItemServed(i)||planItemRequested(i))return false;const st=planStateToken(i.status),seq=planStateToken(i.sequenceStatus);return !!(planItemExplicitPrep(i)||lineFired(i)||["PRODUCTION","SENT","ENVOYE"].includes(st)||["PRODUCTION","SENT","ENVOYE"].includes(seq))}
+function planHasAllergy(i){return !!aText(i?.allergy||i?.allergie||i?.allergies)}
+function planSeatState(order,seat){
+  const items=(order?.items||[]).filter(i=>i&&!i.cancelled&&itemQty(i)>0&&itemSeat(i)===seat);
+  if(!items.length)return {code:'occupied',label:'OCCUPÉ',mark:'•',allergy:false};
+  const allergy=items.some(planHasAllergy);
+  if(items.some(planItemReady))return {code:'ready',label:'PRÊT',mark:'✓',allergy};
+  if(items.some(planItemRequested))return {code:'request',label:'DEMANDE PLAT',mark:'↗',allergy};
+  if(items.some(planItemPrep))return {code:'prep',label:'EN PRÉPA',mark:'…',allergy};
+  if(items.every(planItemServed))return {code:'served',label:'SERVI',mark:'✓',allergy};
+  if(items.some(i=>lineFired(i)))return {code:'sent',label:'ENVOYÉ',mark:'↑',allergy};
+  return {code:'draft',label:'À ENVOYER',mark:'○',allergy};
+}
+function planTableLive(t){
+  const order=getOrder(t.label),base=tableStats(t.label),pax=Math.max(0,Math.min(9,Number(order?.pax||order?.covers||t.pax||0)));
+  if(!order){return {code:base.status==='reserved'?'reserved':'empty',label:base.status==='reserved'?'RÉSERVÉE':'LIBRE',pax:pax||Number(t.pax)||0,time:'',seats:[]}}
+  const seats=[];for(let n=1;n<=Math.max(1,pax);n++)seats.push({seat:n,...planSeatState(order,n)});
+  const all=(order.items||[]).filter(i=>i&&!i.cancelled&&itemQty(i)>0);
+  let code='occupied',label='OCCUPÉE';
+  if(String(order.status||'').toLowerCase().includes('payment')){code='payment';label='PAIEMENT'}
+  else if(order.alerteRouge||order.alert){code='alert';label='URGENT'}
+  else if(all.some(planItemReady)){code='ready';label='PLAT PRÊT'}
+  else if(base.status==='late'){code='late';label='RETARD'}
+  else if(all.some(planItemRequested)){code='request';label='DEMANDE PLAT'}
+  else if(all.some(planItemPrep)){code='prep';label='EN PRÉPARATION'}
+  const age=orderCreated(order);
+  return {code,label,pax:pax||Number(t.pax)||0,time:age?duration(age):'',seats};
+}
+function planSeatStripHTML(live){return (live.seats||[]).slice(0,9).map(x=>`<span class="arch-seat-chip seat-${x.code} ${x.allergy?'seat-allergy':''}" style="--seat:var(--c${x.seat})" title="C${x.seat} · ${esc(x.label)}${x.allergy?' · ALLERGIE':''}"><span class="seat-code">C${x.seat}</span><span class="seat-mark">${esc(x.mark)}</span></span>`).join('')}
+function planRushHTML(){const r=rushSnapshot(),color=r.level<=1?'#55d987':r.level<=3?'#e2b84e':r.level===4?'#ff9a45':'#ff5368';return `<div class="arch-live-rush" style="--rush-color:${color}"><div class="rush-main">⚠ ANTI-RUSH · N${r.level} · ${esc(r.label)}</div><div class="rush-sub">Cuisine ${r.kitchen}% · Bar ${r.bar}% · Pât. ${r.patisserie}%</div><div class="rush-ready">🛎 ${r.ready} PRÊT${r.ready>1?'S':''}</div></div><div class="arch-live-legend"><span class="arch-live-legend-label">QUI MANGE QUOI</span>${[1,2,3,4,5,6,7,8,9].map(n=>`<span class="arch-seat-legend" style="--seat:var(--c${n})">C${n}</span>`).join('')}</div><div class="arch-live-status-key"><b class="ready">✓ PRÊT</b><b class="request">↗ DEMANDE</b><b class="prep">… PRÉPA</b></div>`}
 function colorForZone(z){return aText(z.color||z.colour||'#58a9ff')||'#58a9ff'}
 function zoneKindLabel(k){return ({service:'SERVICE',bathroom:'SALLE DE BAIN',bedroom:'CHAMBRE',office:'BUREAU',terrace:'TERRASSE',kitchen:'CUISINE',spa:'SPA',technical:'TECHNIQUE'})[aText(k)||'service']||aText(k).toUpperCase()}
 function zoneClass(z){const k=aText(z.zoneKind||'service'),shape=aText(z.zoneShape||'rect');return `zone-${k} ${shape==='rounded'?'zone-rounded':shape==='oval'?'zone-oval':''}`}
@@ -8916,7 +9052,7 @@ function elementInner(e){const label=esc(e.label||iconFor(e.type));if(e.type==='
 function canvasHTML(){
  const zones=roomZones().map(z=>{z.__kind='zone';const key=getZoneKey(z),locked=!!z.locked,fill=aClamp(z.fillOpacity||15,3,55),border=['solid','dashed','dotted'].includes(aText(z.borderStyle))?aText(z.borderStyle):'dashed';return `<div class="arch-node arch-zone ${zoneClass(z)} ${locked?'locked':''} ${A.selected===key?'selected':''}" data-arch-key="${esc(key)}" style="${nodeStyle(z)};--zone-color:${esc(colorForZone(z))};--zone-fill:${fill}%;--zone-border:${border}"><span class="zone-label">${esc(z.label||'ZONE')}</span><span class="zone-kind">${esc(zoneKindLabel(z.zoneKind))}</span><span class="zone-meta">${esc(z.responsible||z.responsable||'')} ${z.capacity?'· '+esc(z.capacity)+' places':''}</span>${locked?'<span class="arch-lock-badge">🔒</span>':''}${handles()}</div>`}).join('');
  const els=roomElements().map(e=>{e.__kind='element';const key=getElemKey(e),locked=!!e.locked;return `<div class="arch-node arch-generic ${classFor(e.type)} ${cashPatternClass(e)} ${locked?'locked':''} ${A.selected===key?'selected':''}" data-arch-key="${esc(key)}" style="${nodeStyle(e)}${cashCustomStyle(e)}">${elementInner(e)}${locked?'<span class="arch-lock-badge">🔒</span>':''}${handles()}</div>`}).join('');
- const tables=roomTables().map(t=>{t.__kind='table';const key=getTableKey(t),act=activeOrder(t.label),ex=isExpressTable(t),shape=aText(t.shape||'square'),locked=!!t.locked;return `<button type="button" class="arch-node arch-table ${shape==='round'?'round':''} ${act?'active-order':''} ${ex?'express':''} ${locked?'locked':''} ${A.selected===key?'selected':''}" data-arch-key="${esc(key)}" style="${nodeStyle(t)}"><span class="tlabel">${esc(t.label)}</span><span class="tpax">👥 ${Number(t.pax)||2}${t.zone?' · '+esc(t.zone):''}</span>${locked?'<span class="arch-lock-badge">🔒</span>':''}${handles()}</button>`}).join('');
+ const tables=roomTables().map(t=>{t.__kind='table';const key=getTableKey(t),act=activeOrder(t.label),ex=isExpressTable(t),shape=aText(t.shape||'square'),locked=!!t.locked,service=A.mode==='service',live=planTableLive(t);const liveClass=service?`service-live live-${live.code}`:'';const serviceInner=service?`<span class="tlabel">${esc(t.label)}</span><span class="arch-table-live-head"><span class="state ${esc(live.code)}">${esc(live.label)}</span><span class="pax">👥${live.pax||0}</span>${live.time?`<span class="clock">${esc(live.time)}</span>`:''}</span>${live.seats?.length?`<span class="arch-seat-strip">${planSeatStripHTML(live)}</span>`:''}`:`<span class="tlabel">${esc(t.label)}</span><span class="tpax">👥 ${Number(t.pax)||2}${t.zone?' · '+esc(t.zone):''}</span>`;return `<button type="button" class="arch-node arch-table ${shape==='round'?'round':''} ${act?'active-order':''} ${liveClass} ${ex?'express':''} ${locked?'locked':''} ${A.selected===key?'selected':''}" data-arch-key="${esc(key)}" style="${nodeStyle(t)}">${serviceInner}${locked?'<span class="arch-lock-badge">🔒</span>':''}${handles()}</button>`}).join('');
  return `<div class="archpad-roomtitle">${esc(A.room)}</div>${zones}${els}${tables}`;
 }
 function roomListHTML(){return A.rooms.map(r=>`<button type="button" class="archpad-room ${r===A.room?'active':''}" data-room="${esc(r)}">${esc(r)}<small>${A.tables.filter(t=>aText(t.room||A.rooms[0])===r).length} tables · ${A.zones.filter(z=>aText(z.room||A.rooms[0])===r).length} zones</small></button>`).join('')}
@@ -8939,7 +9075,7 @@ function statsHTML(){const orders=roomTables().filter(t=>activeOrder(t.label)).l
 function pinOverlayHTML(){if(!A.pinOpen)return '';const dots=Array.from({length:6},(_,i)=>`<i class="${i<A.pinValue.length?'on':''}"></i>`).join('');return `<div class="archpad-pin-overlay"><div class="archpad-pin-card"><h3>🔐 MODE ARCHITECTE</h3><p>PIN iCHEF Cloud partagé avec Admin / RH. Autorisé : PIN principal, Gérant, Directeur, Admin / Manager actif.</p><div class="archpad-pin-dots">${dots}</div><div class="archpad-pin-grid">${[1,2,3,4,5,6,7,8,9].map(n=>`<button type="button" data-arch-pin="${n}">${n}</button>`).join('')}<button type="button" class="small" data-arch-pin-clear>EFFACER</button><button type="button" data-arch-pin="0">0</button><button type="button" class="small" data-arch-pin-back>←</button></div><div class="archpad-pin-msg">${esc(A.pinMsg||'')}</div><div class="archpad-pin-actions"><button type="button" data-arch-pin-cancel>Annuler</button><button type="button" class="ok" data-arch-pin-ok>VALIDER</button></div></div></div>`}
 function architectPaletteHTML(){return `<aside class="archpad-left"><div class="archpad-section"><h3>Espaces</h3><div data-room-list>${roomListHTML()}</div><button type="button" class="archpad-add-room" data-add-room>＋ Ajouter un espace</button><div style="display:grid;grid-template-columns:1fr 1fr;gap:5px;margin-top:6px"><button type="button" class="archpad-add-room" data-rename-room>Renommer</button><button type="button" class="archpad-add-room" data-delete-room>Supprimer</button></div></div><div class="archpad-section"><h3>Construction</h3><div class="archpad-palette compact"><button data-add="table"><span>◉</span>Table</button><button data-add="zone"><span>▧</span>Zone service</button><button data-add="wall"><span>━</span>Mur</button><button data-add="door"><span>🚪</span>Porte</button><button data-add="window"><span>▥</span>Fenêtre</button><button data-add="text"><span>T</span>Texte</button></div><div class="archpad-subtitle">Hôtellerie / chambres</div><div class="archpad-palette compact"><button data-add="bathroom_zone"><span>🚿</span>Salle de bain</button><button data-add="bedroom_zone"><span>🛏</span>Zone chambre</button><button data-add="bed_single"><span>🛏</span>Lit simple</button><button data-add="bed_double"><span>🛏</span>Lit double</button><button data-add="desk"><span>▰</span>Bureau</button><button data-add="wardrobe"><span>▥</span>Armoire</button><button data-add="sofa"><span>▰</span>Canapé</button><button data-add="sink"><span>◌</span>Lavabo</button><button data-add="toilet"><span>WC</span>Toilettes</button><button data-add="shower"><span>▧</span>Douche</button></div><div class="archpad-subtitle">Restauration / services</div><div class="archpad-palette compact"><button data-add="bar"><span>🍸</span>Bar</button><button data-add="kitchen"><span>🍳</span>Cuisine</button><button data-add="cash"><span>▣</span>Caisse</button><button data-add="buffet"><span>▤</span>Buffet</button><button data-add="plant"><span>🌿</span>Plante</button><button data-add="pool"><span>≈</span>Piscine</button><button data-add="roomservice"><span>🛎</span>Room Service</button></div></div></aside>`}
 function architectBottomHTML(st){return `<div class="archpad-bottom"><div><h4>ANTI-ERREUR HUMAINE</h4><div class="archpad-errors"><span><i>●</i> commande active protégée</span><span><i>●</i> doublon table contrôlé</span><span><i>●</i> éléments verrouillables</span><span><i>●</i> historique Annuler/Rétablir</span></div></div><div><h4>POINTS DE SERVICE INTERCONNECTÉS</h4><div class="archpad-servicepoints"><div class="archpad-sp"><b>CUISINE</b><span class="connected">● Connecté</span></div><div class="archpad-sp"><b>BAR</b><span class="connected">● Connecté</span></div><div class="archpad-sp"><b>PÂTISSERIE</b><span class="connected">● Connecté</span></div><div class="archpad-sp"><b>ROOM SERVICE</b><span class="connected">● Connecté</span></div><div class="archpad-sp"><b>CAISSE</b><span class="connected">● Connecté</span></div></div></div><div><h4>ÉTAT DU SERVICE</h4><div class="archpad-service-state"><div class="archpad-kpi"><strong>${st.orders}</strong><small>commandes</small></div><div class="archpad-kpi orange"><strong>${st.express}</strong><small>express</small></div><div class="archpad-kpi green"><strong>${st.pax}</strong><small>couverts</small></div></div></div></div>`}
-function fullHTML(){const st=statsHTML(),architect=A.mode==='architect'&&canEdit();const toolbar=architect?`<div class="archpad-toolbar"><button class="archpad-tool active" type="button" data-tool="select">✥ Déplacer</button><button class="archpad-tool" type="button" data-add="zone">▧ Zone</button><button class="archpad-tool" type="button" data-add="wall">▰ Mur</button><button class="archpad-tool" type="button" data-add="door">🚪 Porte</button><button class="archpad-tool" type="button" data-add="table">▣ Table</button><button class="archpad-tool" type="button" data-add="text">T Texte</button><button class="archpad-tool" type="button" data-undo>↶</button><button class="archpad-tool" type="button" data-redo>↷</button><button class="archpad-tool save" type="button" data-save>Enregistrer</button></div>`:`<div class="archpad-service-note"><b>MODE SERVICE</b><span>Plan opérationnel · édition masquée</span></div>`;const sideLeft=architect?architectPaletteHTML():'';const sideRight=architect?`<aside class="archpad-right"><div class="archpad-section"><h3>Propriétés</h3></div><div data-props>${propHTML()}</div></aside>`:'';return `<div class="archpad-top"><div class="archpad-brand"><strong>iCHEF · ARCHITECTURE</strong><small>Plan ultra modulable · Restaurant + Hôtel</small></div><div class="archpad-breadcrumb">Architecture › <b data-crumb>${esc(A.room)}</b></div>${toolbar}<button type="button" class="archpad-close" data-close>×</button></div><div class="archpad-main ${architect?'':'service-layout'}">${sideLeft}<section class="archpad-center"><div class="archpad-canvasbar"><button type="button" class="archpad-room-nav" data-room-prev title="Salle précédente">◀</button><div class="archpad-room-name"><small>PLAN DE SALLE</small><b>${esc(A.room)}</b></div><button type="button" class="archpad-room-nav" data-room-next title="Salle suivante">▶</button><span class="archpad-mode ${architect?'architect':''}" data-mode-label>${architect?'MODE ARCHITECTE':'MODE SERVICE'}</span><button type="button" data-toggle-mode>${architect?'Passer en SERVICE':'🔒 CODE ARCHITECTE'}</button><button type="button" data-express>＋ TABLE EXPRESS</button><span class="grow"></span>${architect?`<button type="button" data-grid>Grille ${A.grid?'ON':'OFF'}</button><button type="button" data-snap>Aimant ${A.snap?'ON':'OFF'}</button>`:''}<select data-zoom><option>75</option><option ${A.zoom===100?'selected':''}>100</option><option>125</option><option>150</option></select></div><div class="archpad-stagewrap"><div class="archpad-stage-shell" data-stage-shell><div class="archpad-stage ${A.grid?'':'no-grid'}" data-stage>${canvasHTML()}</div></div></div><div class="archpad-statusbar"><span><b>${roomTables().length}</b> tables</span><span><b>${roomZones().length}</b> zones/pièces</span><span><b>${roomElements().length}</b> éléments</span><span>Zoom <b data-zoom-label>${A.zoom}%</b></span><span class="save-state" data-arch-save-state></span></div></section>${sideRight}</div>${architect?architectBottomHTML(st):''}<div class="archpad-toast" aria-live="polite"></div>${pinOverlayHTML()}`}
+function fullHTML(){const st=statsHTML(),architect=A.mode==='architect'&&canEdit();const toolbar=architect?`<div class="archpad-toolbar"><button class="archpad-tool active" type="button" data-tool="select">✥ Déplacer</button><button class="archpad-tool" type="button" data-add="zone">▧ Zone</button><button class="archpad-tool" type="button" data-add="wall">▰ Mur</button><button class="archpad-tool" type="button" data-add="door">🚪 Porte</button><button class="archpad-tool" type="button" data-add="table">▣ Table</button><button class="archpad-tool" type="button" data-add="text">T Texte</button><button class="archpad-tool" type="button" data-undo>↶</button><button class="archpad-tool" type="button" data-redo>↷</button><button class="archpad-tool save" type="button" data-save>Enregistrer</button></div>`:`<div class="archpad-service-note"><b>MODE SERVICE</b><span>Plan opérationnel · édition masquée</span></div>`;const sideLeft=architect?architectPaletteHTML():'';const sideRight=architect?`<aside class="archpad-right"><div class="archpad-section"><h3>Propriétés</h3></div><div data-props>${propHTML()}</div></aside>`:'';return `<div class="archpad-top"><div class="archpad-brand"><strong>iCHEF · ARCHITECTURE</strong><small>Plan ultra modulable · Restaurant + Hôtel</small></div><div class="archpad-breadcrumb">Architecture › <b data-crumb>${esc(A.room)}</b></div>${toolbar}<button type="button" class="archpad-close" data-close>×</button></div><div class="archpad-main ${architect?'':'service-layout'}">${sideLeft}<section class="archpad-center"><div class="archpad-canvasbar"><button type="button" class="archpad-room-nav" data-room-prev title="Salle précédente">◀</button><div class="archpad-room-name"><small>PLAN DE SALLE</small><b>${esc(A.room)}</b></div><button type="button" class="archpad-room-nav" data-room-next title="Salle suivante">▶</button><span class="archpad-mode ${architect?'architect':''}" data-mode-label>${architect?'MODE ARCHITECTE':'MODE SERVICE'}</span><button type="button" data-toggle-mode>${architect?'Passer en SERVICE':'🔒 CODE ARCHITECTE'}</button><button type="button" data-express>＋ TABLE EXPRESS</button><span class="grow"></span>${architect?`<button type="button" data-grid>Grille ${A.grid?'ON':'OFF'}</button><button type="button" data-snap>Aimant ${A.snap?'ON':'OFF'}</button>`:''}<select data-zoom><option>75</option><option ${A.zoom===100?'selected':''}>100</option><option>125</option><option>150</option></select></div>${architect?'':`<div class="archpad-livebar" data-livebar>${planRushHTML()}</div>`}<div class="archpad-stagewrap"><div class="archpad-stage-shell" data-stage-shell><div class="archpad-stage ${A.grid?'':'no-grid'}" data-stage>${canvasHTML()}</div></div></div><div class="archpad-statusbar"><span><b>${roomTables().length}</b> tables</span><span><b>${roomZones().length}</b> zones/pièces</span><span><b>${roomElements().length}</b> éléments</span><span>Zoom <b data-zoom-label>${A.zoom}%</b></span><span class="save-state" data-arch-save-state></span></div></section>${sideRight}</div>${architect?architectBottomHTML(st):''}<div class="archpad-toast" aria-live="polite"></div>${pinOverlayHTML()}`}
 function renderCanvas(){normaliseAll();const stage=A.root?.querySelector('[data-stage]');if(stage){stage.innerHTML=canvasHTML();stage.classList.toggle('no-grid',!A.grid)}const props=A.root?.querySelector('[data-props]');if(props)props.innerHTML=propHTML();const crumb=A.root?.querySelector('[data-crumb]');if(crumb)crumb.textContent=A.room;const list=A.root?.querySelector('[data-room-list]');if(list)list.innerHTML=roomListHTML();bindDynamic();updateSaveState()}
 function renderAll(){if(!A.root)return;A.root.innerHTML=fullHTML();bindAll();updateSaveState();applyZoom()}
 function select(key){A.selected=key;renderCanvas()}
@@ -9043,6 +9179,10 @@ function ensureRoot(){let r=document.getElementById('ichefArchPad');if(!r){r=doc
 function openPadArchitectEditor(){closeSheet?.();loadData();normaliseAll();A.archUnlocked=false;A.archRole='';A.archPin='';A.pinOpen=false;A.mode=expressRoleLevel()>=2||STATE.demo?'architect':'service';ensureRoot().classList.add('open');document.body.style.overflow='hidden';renderAll();A.root.focus();if(A.mode==='service')aToast('Mode SERVICE · architecture protégée par PIN')}
 function openPadServiceHome(){closeSheet?.();loadData();normaliseAll();A.archUnlocked=false;A.archRole='';A.archPin='';A.pinOpen=false;A.pinValue='';A.pinMsg='';A.mode='service';ensureRoot().classList.add('open');document.body.style.overflow='hidden';renderAll();A.root.focus();aToast('Touchez une table pour ouvrir la commande')}
 function closePadArchitect(){if(A.dirty&&canEdit()&&!confirm('Quitter sans enregistrer les modifications du plan ?'))return false;A.root?.classList.remove('open');document.body.style.overflow='';A.drag=null;A.selected=null;A.archUnlocked=false;A.archRole='';A.archPin='';A.pinOpen=false;A.pinValue='';A.mode='service';scheduleRender?.();return true}
+function refreshPadServiceLive(){if(!A.root?.classList.contains('open')||A.mode!=='service')return;const stage=A.root.querySelector('[data-stage]');if(stage)stage.innerHTML=canvasHTML();const bar=A.root.querySelector('[data-livebar]');if(bar)bar.innerHTML=planRushHTML()}
+window.addEventListener('ichef:live-state-updated',refreshPadServiceLive);
+const liveClockTimer=setInterval(()=>{if(A.root?.classList.contains('open')&&A.mode==='service')refreshPadServiceLive()},5000);
+window.refreshPadServiceLive=refreshPadServiceLive;
 window.openPadArchitectEditor=openPadArchitectEditor;window.openPadServiceHome=openPadServiceHome;window.closePadArchitect=closePadArchitect;
 const rebind=()=>{const p=document.getElementById('toolDisplay'),h=document.getElementById('btnHeadPlan');if(p){p.onclick=openPadServiceHome;p.title='Plan de salle interactif'}if(h){h.onclick=openPadServiceHome;h.title='Plan de salle interactif'}};
 rebind();
