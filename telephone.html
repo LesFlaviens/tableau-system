@@ -5051,49 +5051,47 @@ function renderRushStrip(){
   }
   if(level)level.textContent="N"+r.level;
 }
-function renderRooms(){
-  // Initialisation du filtre s'il n'existe pas encore
-  if (!STATE.deviceFilter) {
-    try { STATE.deviceFilter = JSON.parse(STORAGE.get("ichef_phone_filter", '{"type":"all","value":""}')); } 
-    catch(e){ STATE.deviceFilter = {type:"all", value:""}; }
+// Nouvelle fonction ultra-sécurisée pour lire la mémoire du filtre
+function getDeviceFilter() {
+  if (STATE.deviceFilter && typeof STATE.deviceFilter === 'object') return STATE.deviceFilter;
+  try {
+    const parsed = JSON.parse(STORAGE.get("ichef_phone_filter", '{"type":"all","value":""}'));
+    STATE.deviceFilter = (parsed && typeof parsed === 'object') ? parsed : {type:"all", value:""};
+  } catch(e) {
+    STATE.deviceFilter = {type:"all", value:""};
   }
-  
+  return STATE.deviceFilter;
+}
+
+function renderRooms(){
+  const filter = getDeviceFilter();
   const el=$("rooms");
   
-  // Si bloqué sur une ZONE, on affiche juste la zone et on désactive le clic
-  if (STATE.deviceFilter.type === "zone") {
-    el.innerHTML = `<div class="room-btn active" style="flex:1; text-align:center; pointer-events:none; border-color:#dcae39; color:#111;">RESTREINT À LA ZONE : ${esc(STATE.deviceFilter.value)}</div>`;
+  if (filter.type === "zone") {
+    el.innerHTML = `<div class="room-btn active" style="flex:1; text-align:center; pointer-events:none; border-color:#dcae39; color:#111;">RESTREINT À LA ZONE : ${esc(filter.value)}</div>`;
     return;
   }
   
-  // Si bloqué sur une SALLE, on affiche juste la salle et on désactive le clic
-  if (STATE.deviceFilter.type === "room") {
-    el.innerHTML = `<div class="room-btn active" style="flex:1; text-align:center; pointer-events:none; border-color:#58a9ff; color:#111;">RESTREINT À LA SALLE : ${esc(STATE.deviceFilter.value)}</div>`;
+  if (filter.type === "room") {
+    el.innerHTML = `<div class="room-btn active" style="flex:1; text-align:center; pointer-events:none; border-color:#58a9ff; color:#111;">RESTREINT À LA SALLE : ${esc(filter.value)}</div>`;
     return;
   }
   
-  // Sinon (Tout le restaurant), on affiche les salles normalement
-  el.innerHTML=STATE.rooms.map(r=>`<button class="room-btn ${r===STATE.room?"active":""}" data-room="${esc(r)}">${esc(r)}</button>`).join("");
+  el.innerHTML=(STATE.rooms||[]).map(r=>`<button class="room-btn ${r===STATE.room?"active":""}" data-room="${esc(r)}">${esc(r)}</button>`).join("");
 }
 
 function renderTables(){
-  if (!STATE.deviceFilter) {
-    try { STATE.deviceFilter = JSON.parse(STORAGE.get("ichef_phone_filter", '{"type":"all","value":""}')); } 
-    catch(e){ STATE.deviceFilter = {type:"all", value:""}; }
-  }
+  const filter = getDeviceFilter();
+  let list = STATE.tables || [];
   
-  let list = STATE.tables;
-  
-  // Application du filtre sur les tables
-  if (STATE.deviceFilter.type === "zone") {
+  if (filter.type === "zone") {
     list = list.filter(t => {
       const z = getZone(t);
-      return (z?.label || t.zone || "Nouvelle Zone") === STATE.deviceFilter.value;
+      return (z?.label || t.zone || "Nouvelle Zone") === filter.value;
     });
-  } else if (STATE.deviceFilter.type === "room") {
-    list = list.filter(t => t.room === STATE.deviceFilter.value);
+  } else if (filter.type === "room") {
+    list = list.filter(t => t.room === filter.value);
   } else {
-    // Si aucun filtre, on garde la logique de la salle sélectionnée en haut
     list = list.filter(t => t.room === STATE.room);
   }
 
@@ -5130,6 +5128,25 @@ function renderTables(){
         const state=ready?" · PRÊT":sent?"":" · À ENVOYER";
         return `<span class="table-preview-line${klass}">• ${q>1?q+"× ":""}${esc(itemName(item))}${state}</span>`;
       }).join("");
+
+    const time=s.age
+      ?duration(s.age)
+      :(s.status==="reserved"?"RÉSERVÉE":"00:00");
+  
+    const readyOverlay = s.ready 
+      ? `<div class="table-ready-overlay">🛎️ ${s.ready} PRÊT(S)</div>` 
+      : "";
+
+    return `<button class="table-card ${s.status}" data-table="${esc(t.label)}">
+      <span class="num">${esc(t.label)}</span>
+      <span class="meta">${esc(meta)}</span>
+      <span class="time">${esc(time)}</span>
+      <span class="table-zone" style="color:${esc(zoneColor)}">${esc(zoneLabel)}</span>
+      ${preview?`<span class="table-preview">${preview}</span>`:""}
+      ${readyOverlay}
+    </button>`;
+  }).join("");
+}
 
     const time=s.age
       ?duration(s.age)
