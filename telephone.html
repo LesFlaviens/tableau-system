@@ -6804,6 +6804,64 @@ async function recordPayment(method){
   return ok;
 }
 
+/* ---------------- APERÇU RAPIDE TABLE (APPUI LONG 0.5s) ---------------- */
+function openTableDetails(tableId) {
+  const t = STATE.tables.find(x => x.label === tableId);
+  if(!t) return;
+  
+  const z = getZone(t);
+  const o = getOrder(tableId);
+  
+  const roomName = t.room || STATE.room;
+  const zoneName = z ? z.label : "Aucune zone";
+  const pax = o ? num(o.pax||2) : (t.pax||"LIBRE");
+  
+  let itemsHtml = '<div class="empty-state" style="font-size: 26px !important; color: #555;">Aucune commande en cours</div>';
+  
+  if(o && o.items && o.items.length) {
+    const groups = summaryGroups(o); 
+    
+    itemsHtml = groups.map(([guest, items]) => {
+      const seat = Number(guest.replace(/\D/g,"")) || 0;
+      const seatLabel = seat ? seatBadgeHTML(seat) : "🍽️ CENTRE";
+      
+      return `
+        <div style="margin-bottom: 25px;">
+          <div style="font-size: 36px !important; font-weight: 1000 !important; color: #111; margin-bottom: 15px;">
+            ${seatLabel}
+          </div>
+          ${items.map(item => {
+            const qty = itemQty(item);
+            const cooking = text(item.cooking) ? ` · <span style="color:#ff5368;">${esc(item.cooking)}</span>` : "";
+            const obs = text(item.obs) ? ` · <span style="color:#dcae39;">${esc(item.obs)}</span>` : "";
+            
+            return `
+              <div style="color: #444444 !important; font-size: 36px !important; font-weight: 900 !important; line-height: 1.3 !important; margin-bottom: 12px; border-left: 6px solid #cfd2d5; padding-left: 15px;">
+                <strong style="color: #111;">x${qty}</strong> ${esc(itemName(item))}${cooking}${obs}
+              </div>`;
+          }).join("")}
+        </div>
+      `;
+    }).join("");
+  }
+
+  openSheet("🔍 APERÇU TABLE " + tableId, `
+    <div class="big-state" style="border: 4px solid #cfd2d5 !important; background: #e9e9e9 !important; border-radius: 16px !important; padding: 25px !important; margin-bottom: 20px;">
+      <div style="color: #111 !important; font-size: 50px !important; font-weight: 1000 !important; letter-spacing: 1px; text-align: center;">
+        TABLE ${esc(tableId)}
+      </div>
+      <div style="color: #444444 !important; font-size: 32px !important; font-weight: 900 !important; text-align: center; margin-top: 20px; line-height: 1.4;">
+        SALLE : ${esc(roomName)}<br>
+        ZONE : <span style="color: #2dcc70;">${esc(zoneName)}</span><br>
+        👥 ${pax} couvert(s)
+      </div>
+    </div>
+    <div style="background: #ffffff; border-radius: 16px; padding: 25px; border: 4px solid #cfd2d5;">
+      ${itemsHtml}
+    </div>
+  `);
+}
+
 /* ---------------- EVENTS ---------------- */
 $("rooms").addEventListener("click",e=>{
   const b=e.target.closest("[data-room]");
@@ -6812,9 +6870,72 @@ $("rooms").addEventListener("click",e=>{
   scheduleRender();
 });
 
-$("tables").addEventListener("click",e=>{
-  const b=e.target.closest("[data-table]");
-  if(b)openOrder(b.dataset.table);
+// --- NOUVELLE GESTION DES TABLES (CLIC NORMAL ET APPUI LONG 0.5s) ---
+let tablePress = { timer: null, button: null, startX: 0, startY: 0, long: false };
+
+function clearTablePress() {
+  if(tablePress.timer) clearTimeout(tablePress.timer);
+  tablePress.timer = null;
+  if(tablePress.button) {
+    tablePress.button.style.transform = "";
+    tablePress.button.style.opacity = "";
+  }
+}
+
+$("tables").addEventListener("pointerdown", e => {
+  const b = e.target.closest("[data-table]");
+  if(!b) return;
+  clearTablePress();
+  tablePress.button = b;
+  tablePress.startX = e.clientX;
+  tablePress.startY = e.clientY;
+  tablePress.long = false;
+  
+  b.style.transform = "scale(0.92)";
+  b.style.opacity = "0.7";
+
+  tablePress.timer = setTimeout(() => {
+    tablePress.timer = null;
+    tablePress.long = true;
+    b.style.transform = "";
+    b.style.opacity = "";
+    
+    if(navigator.vibrate) try{ navigator.vibrate(40); } catch(_){}
+    
+    openTableDetails(b.dataset.table);
+  }, 500); 
+}, {passive: true});
+
+$("tables").addEventListener("pointermove", e => {
+  if(!tablePress.button) return;
+  const dx = Math.abs(e.clientX - tablePress.startX);
+  const dy = Math.abs(e.clientY - tablePress.startY);
+  if(dx > 10 || dy > 10) {
+    clearTablePress();
+    tablePress.button = null;
+  }
+}, {passive: true});
+
+$("tables").addEventListener("pointerup", e => {
+  const b = e.target.closest("[data-table]");
+  if(!b || !tablePress.button) return;
+  
+  const wasLong = tablePress.long;
+  const sameButton = (b === tablePress.button);
+  
+  clearTablePress();
+  tablePress.button = null;
+  tablePress.long = false;
+  
+  if(!sameButton || wasLong) return;
+  
+  openOrder(b.dataset.table);
+}, {passive: true});
+
+$("tables").addEventListener("pointercancel", () => {
+  clearTablePress();
+  tablePress.button = null;
+  tablePress.long = false;
 });
 
 $("categories").addEventListener("click",e=>{
@@ -6951,6 +7072,7 @@ function showFullProductTitle(product){
     </div>
   `);
 }
+
 $("products").addEventListener("pointerdown",e=>{
   const b=e.target.closest("[data-product]");
   if(!b||b.classList.contains("sold"))return;
@@ -7051,9 +7173,9 @@ window.__ICHEF_PHONE_DEBUG__={
 
 
 /* ---------------- SÉPARATEUR MENU / TICKET PAD ---------------- */
-const ORDER_SPLIT_STORAGE_KEY="ichef_order_menu_split_v10"; /* Nouveau nom pour forcer la réinitialisation au centre */
-const ORDER_SPLIT_MIN=15; /* On bloque à 15% pour ne JAMAIS cacher complètement le menu */
-const ORDER_SPLIT_MAX=85; /* On bloque à 85% pour ne JAMAIS cacher le ticket */
+const ORDER_SPLIT_STORAGE_KEY="ichef_order_menu_split_v10"; 
+const ORDER_SPLIT_MIN=15; 
+const ORDER_SPLIT_MAX=85; 
 let orderDividerDragging=false;
 
 function clampOrderSplit(value){
