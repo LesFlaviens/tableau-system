@@ -6408,17 +6408,11 @@ function checkGlobalAlert(){
   // On récupère le numéro de la table concernée
   const tableNum = a.tableId || "INCONNUE";
   
-  // Communication globale : afficher aussi le contenu utile, sans symbole décoratif.
-  const isServiceCommunication = text(a.category)==="SERVICE_GLOBAL_COMMUNICATION";
-  const alertTitle = isServiceCommunication ? `COMMUNICATION · TABLE ${tableNum}` : `ATTENTION TABLE ${tableNum}`;
-  const alertDetail = isServiceCommunication ? text(a.detail||a.message||"") : "";
+  // On remplace le long texte par un message ultra court avec une croix pour fermer
   el.innerHTML = `
-    <div style="display:flex;align-items:flex-start;justify-content:space-between;width:100%;gap:12px;">
-      <div style="min-width:0;">
-        <div style="font-size:30px;font-weight:1000;letter-spacing:1px;">${esc(alertTitle)}</div>
-        ${alertDetail?`<div style="margin-top:5px;font-size:19px;font-weight:850;line-height:1.25;">${esc(alertDetail)}</div>`:""}
-      </div>
-      <button onclick="document.getElementById('server-alert').classList.remove('show')" style="background:transparent;border:none;color:white;font-size:45px;font-weight:bold;cursor:pointer;padding:0 15px;line-height:1;touch-action:manipulation;">×</button>
+    <div style="display: flex; align-items: center; justify-content: space-between; width: 100%;">
+      <span style="font-size: 32px; font-weight: 1000; letter-spacing: 1px;">⚠️ ATTENTION TABLE ${esc(tableNum)}</span>
+      <button onclick="document.getElementById('server-alert').classList.remove('show')" style="background: transparent; border: none; color: white; font-size: 45px; font-weight: bold; cursor: pointer; padding: 0 15px; line-height: 1; touch-action: manipulation;">×</button>
     </div>
   `;
   
@@ -8427,218 +8421,6 @@ function openPrinterSetup(focusDest=""){
   if(focusDest){setTimeout(()=>body.querySelector(`[data-printer-card="${focusDest}"]`)?.scrollIntoView({behavior:"smooth",block:"start"}),100)}
 }
 
-
-/* =========================================================
-   COMMUNICATION SALLE → TOUS LES SERVICES
-   - CLIENT EN PLUS : +1 PAX sur une table existante
-   - TABLE X PERSONNES : ouvre/met à jour la table avec le PAX indiqué
-   - Avec ticket : imprime une fiche de communication sur tous les postes configurés
-   - Sans ticket : alerte temps réel uniquement
-   ========================================================= */
-function serviceCommunicationTables(activeOnly=false){
-  const map=new Map();
-  (STATE.tables||[]).forEach(t=>{
-    const label=text(t?.label||t?.name||t?.id);
-    if(!label)return;
-    const order=getOrder(label);
-    if(activeOnly&&!order)return;
-    map.set(label,{label,room:text(t?.room||""),zone:text(t?.zone||""),order});
-  });
-  Object.entries(STATE.activeOrders||{}).forEach(([label,o])=>{
-    if(!isRealOrder(label,o))return;
-    if(!map.has(label))map.set(label,{label,room:text(o?.room||""),zone:text(o?.zone||""),order:o});
-  });
-  return Array.from(map.values()).sort((a,b)=>a.label.localeCompare(b.label,"fr",{numeric:true,sensitivity:"base"}));
-}
-function serviceCommunicationTableOptions(activeOnly=false){
-  const rows=serviceCommunicationTables(activeOnly);
-  return rows.map(x=>{
-    const where=[x.room,x.zone].filter(Boolean).join(" · ");
-    const pax=x.order?Math.max(1,num(x.order.pax||x.order.covers||1)):0;
-    return `<option value="${esc(x.label)}">${esc(x.label)}${where?" · "+esc(where):""}${pax?" · "+pax+" PAX":""}</option>`;
-  }).join("");
-}
-function serviceCommunicationContext(tableId){
-  const t=(STATE.tables||[]).find(x=>text(x?.label||x?.name||x?.id)===text(tableId));
-  const o=getOrder(tableId);
-  return {
-    room:text(t?.room||o?.room||""),
-    zone:text(t?.zone||o?.zone||""),
-    order:o
-  };
-}
-async function serviceCommunicationSavePax(tableId,newPax,{createIfMissing=false,reason="Communication couverts"}={}){
-  tableId=text(tableId);
-  if(!tableId)throw new Error("Table obligatoire");
-  const existing=getOrder(tableId);
-  if(!existing&&!createIfMissing)throw new Error("Cette table n'a pas encore de commande active");
-  if(existing&&fiscalOrderFinalized(existing))throw new Error("Cette table est déjà fiscalisée");
-  const o=normalizeCompatOrder(clone(existing||ensureOrder(tableId)));
-  o.pax=Math.max(1,Math.min(99,Number(newPax)||1));
-  o.covers=o.pax;
-  o.updatedAt=Date.now();
-  if(!existing){
-    o.status="open";
-    o.walkIn=true;
-    o.source="PAD";
-  }
-  const pending=stageLocalValue(tableId,o,reason);
-  const ok=await enqueueVersionedWrite(tableId,pending);
-  if(STATE.currentTable===tableId)STATE.currentOrder=clone(o);
-  scheduleRender();
-  return {ok:ok!==false,order:o};
-}
-function serviceCommunicationLines(payload,dest){
-  const where=[payload.room,payload.zone].filter(Boolean).join(" · ");
-  const destName=dest==="cuisine"?"CUISINE":dest==="bar"?"BAR":dest==="patisserie"?"PÂTISSERIE":dest==="caisse"?"CAISSE":"SERVICE";
-  return [
-    {text:"ICHEF · COMMUNICATION SERVICE",align:"center",bold:true,width:2,height:2},
-    {text:" ",align:"center"},
-    {text:`POSTE : ${destName}`,align:"center",bold:true},
-    {text:`TABLE ${payload.tableId}`,align:"center",bold:true,width:2,height:2},
-    ...(where?[{text:where,align:"center",bold:true}]:[]),
-    {text:"--------------------------------",align:"center"},
-    {text:payload.title,align:"center",bold:true,width:2,height:2},
-    {text:payload.detail,align:"center",bold:true},
-    {text:"--------------------------------",align:"center"},
-    {text:new Date().toLocaleString("fr-FR"),align:"center"},
-    {text:`Envoyé par ${text(STATE.role||"SERVICE")}`,align:"center"}
-  ];
-}
-async function printRawServiceCommunication(dest,lines){
-  const cfg=loadPrinterConfig();
-  if(!cfg.enabled)return {skipped:true,reason:"disabled"};
-  const printer=cfg.printers?.[dest];
-  if(!printer?.enabled)return {skipped:true,reason:"destination-disabled"};
-  if(printer.mode==="system")return printViaSystem(printer,lines,{dest,communication:true});
-  if(printer.mode==="bridge")return postPrintBridge(printer,cfg,lines,{dest,communication:true});
-  const soap=buildEpsonSoap(lines);
-  let result=null;
-  const copies=Math.max(1,Math.min(5,Number(printer.copies)||1));
-  for(let i=0;i<copies;i++)result=await postEpson(printer,cfg,soap);
-  return result||{ok:true,mode:"epson"};
-}
-async function printServiceCommunicationAll(payload){
-  const dests=["cuisine","bar","patisserie","caisse"];
-  const results=[];
-  for(const dest of dests){
-    try{
-      const r=await printRawServiceCommunication(dest,serviceCommunicationLines(payload,dest));
-      results.push({dest,...(r||{})});
-    }catch(error){
-      console.warn("[iCHEF COMMUNICATION] impression",dest,error);
-      results.push({dest,error:true,message:text(error?.message||error)});
-    }
-  }
-  return results;
-}
-function serviceCommunicationSleep(ms){return new Promise(resolve=>setTimeout(resolve,ms))}
-async function broadcastServiceCommunication(payload){
-  const communicationId=`COMM-${Date.now()}-${Math.random().toString(36).slice(2,7)}`;
-  const destinations=["service","cuisine","bar","patisserie","caisse"];
-  for(const destination of destinations){
-    const data={
-      type:"RING",
-      category:"SERVICE_GLOBAL_COMMUNICATION",
-      destination,
-      destinations,
-      source:"PAD",
-      tableId:payload.tableId,
-      communicationId,
-      communicationType:payload.kind,
-      title:payload.title,
-      detail:payload.detail,
-      pax:payload.pax,
-      previousPax:payload.previousPax,
-      room:payload.room,
-      zone:payload.zone,
-      printRequested:!!payload.printTicket,
-      message:`${payload.title} · TABLE ${payload.tableId} · ${payload.detail}`,
-      createdAt:new Date().toISOString(),
-      deviceId:STATE.deviceId
-    };
-    await optimisticWrite("ALERTS_MASTER",{data},`Communication globale ${payload.kind} vers ${destination}`);
-    await serviceCommunicationSleep(80);
-  }
-  return communicationId;
-}
-async function sendServiceCommunication(payload){
-  await broadcastServiceCommunication(payload);
-  let printResults=[];
-  if(payload.printTicket)printResults=await printServiceCommunicationAll(payload);
-  const printed=printResults.filter(x=>!x.skipped&&!x.error).length;
-  if(payload.printTicket&&printed===0){
-    toast("Communication envoyée · aucune imprimante active",true);
-  }else{
-    toast(payload.printTicket?`Communication envoyée · ${printed} poste(s) imprimé(s)`:"Communication envoyée à tous les services");
-  }
-  closeSheet();
-}
-function openClientPlusCommunication(){
-  const options=serviceCommunicationTableOptions(true);
-  if(!options){toast("Aucune table occupée",true);return}
-  openSheet("CLIENT EN PLUS",`
-    <div class="big-state" style="background:#f4faff!important;border:3px solid #58a9ff!important;color:#111!important">
-      <div class="big" style="color:#111!important">+1 CLIENT</div>
-      <div class="small" style="color:#555!important;font-size:15px!important">Choisissez la table. Le nombre de couverts sera augmenté de 1 et tous les services seront prévenus.</div>
-    </div>
-    <label style="display:block;color:#111;font-weight:950;font-size:16px;margin:10px 0 7px">TABLE</label>
-    <select id="commClientPlusTable" class="field" style="background:#fff!important;color:#111!important;font-size:20px!important;font-weight:950!important;min-height:58px">${options}</select>
-    <div class="action-grid" style="margin-top:16px;gap:10px">
-      <button class="action-btn" data-comm-client-plus="screen" style="background:#fff!important;color:#111!important;border:3px solid #58a9ff!important;font-size:18px!important;min-height:82px!important">ENVOYER<br>SANS TICKET</button>
-      <button class="action-btn" data-comm-client-plus="ticket" style="background:#fffdf0!important;color:#111!important;border:3px solid #d4af37!important;font-size:18px!important;min-height:82px!important">ENVOYER<br>AVEC TICKET</button>
-    </div>
-    <div style="margin-top:12px;color:#555;font-size:14px;line-height:1.4">Destinataires : SERVICE · CUISINE · BAR · PÂTISSERIE · CAISSE</div>
-  `);
-  $("sheetBody").querySelectorAll("[data-comm-client-plus]").forEach(btn=>btn.onclick=async()=>{
-    const tableId=text($("commClientPlusTable")?.value);
-    const existing=getOrder(tableId);
-    if(!existing){toast("Table sans commande active",true);return}
-    const previousPax=Math.max(1,num(existing.pax||existing.covers||1));
-    const newPax=Math.min(99,previousPax+1);
-    const old=btn.textContent;btn.disabled=true;btn.textContent="ENVOI…";
-    try{
-      await serviceCommunicationSavePax(tableId,newPax,{reason:`Client en plus · ${tableId}`});
-      const ctx=serviceCommunicationContext(tableId);
-      await sendServiceCommunication({kind:"CLIENT_PLUS",title:"CLIENT EN PLUS",detail:`${previousPax} → ${newPax} PAX`,tableId,pax:newPax,previousPax,room:ctx.room,zone:ctx.zone,printTicket:btn.dataset.commClientPlus==="ticket"});
-    }catch(error){toast(text(error?.message||"Communication impossible"),true);btn.disabled=false;btn.textContent=old}
-  });
-}
-function openTablePaxCommunication(){
-  const options=serviceCommunicationTableOptions(false);
-  if(!options){toast("Aucune table configurée",true);return}
-  openSheet("TABLE · NOMBRE DE PERSONNES",`
-    <div class="big-state" style="background:#fff7ef!important;border:3px solid #ff9a45!important;color:#111!important">
-      <div class="big" style="color:#111!important">TABLE DE X PERSONNES</div>
-      <div class="small" style="color:#555!important;font-size:15px!important">Indiquez où se trouve la table et combien de personnes arrivent. Tous les services reçoivent l'information.</div>
-    </div>
-    <label style="display:block;color:#111;font-weight:950;font-size:16px;margin:10px 0 7px">TABLE / EMPLACEMENT</label>
-    <select id="commTablePaxTable" class="field" style="background:#fff!important;color:#111!important;font-size:20px!important;font-weight:950!important;min-height:58px">${options}</select>
-    <label style="display:block;color:#111;font-weight:950;font-size:16px;margin:14px 0 7px">NOMBRE DE PERSONNES</label>
-    <input id="commTablePaxValue" class="field" type="number" inputmode="numeric" min="1" max="99" value="2" style="background:#fff!important;color:#111!important;font-size:24px!important;font-weight:1000!important;min-height:62px;text-align:center">
-    <div class="action-grid" style="margin-top:16px;gap:10px">
-      <button class="action-btn" data-comm-table-pax="screen" style="background:#fff!important;color:#111!important;border:3px solid #58a9ff!important;font-size:18px!important;min-height:82px!important">ENVOYER<br>SANS TICKET</button>
-      <button class="action-btn" data-comm-table-pax="ticket" style="background:#fffdf0!important;color:#111!important;border:3px solid #d4af37!important;font-size:18px!important;min-height:82px!important">ENVOYER<br>AVEC TICKET</button>
-    </div>
-    <div style="margin-top:12px;color:#555;font-size:14px;line-height:1.4">Destinataires : SERVICE · CUISINE · BAR · PÂTISSERIE · CAISSE</div>
-  `);
-  const select=$("commTablePaxTable"),input=$("commTablePaxValue");
-  const refresh=()=>{const o=getOrder(text(select?.value));if(o&&input)input.value=Math.max(1,num(o.pax||o.covers||2))};
-  select?.addEventListener("change",refresh);refresh();
-  $("sheetBody").querySelectorAll("[data-comm-table-pax]").forEach(btn=>btn.onclick=async()=>{
-    const tableId=text(select?.value);
-    const pax=Math.max(1,Math.min(99,Number(input?.value)||1));
-    const previous=getOrder(tableId);const previousPax=previous?Math.max(1,num(previous.pax||previous.covers||1)):0;
-    const old=btn.textContent;btn.disabled=true;btn.textContent="ENVOI…";
-    try{
-      await serviceCommunicationSavePax(tableId,pax,{createIfMissing:true,reason:`Table ${pax} personnes · ${tableId}`});
-      const ctx=serviceCommunicationContext(tableId);
-      const where=[ctx.room,ctx.zone].filter(Boolean).join(" · ");
-      await sendServiceCommunication({kind:"TABLE_PAX",title:`TABLE DE ${pax} PERSONNES`,detail:`TABLE ${tableId}${where?" · "+where:""}`,tableId,pax,previousPax,room:ctx.room,zone:ctx.zone,printTicket:btn.dataset.commTablePax==="ticket"});
-    }catch(error){toast(text(error?.message||"Communication impossible"),true);btn.disabled=false;btn.textContent=old}
-  });
-}
-
 function openMore(){
   openSheet("OUTILS",`
     <div class="action-grid" style="gap: 12px !important;">
@@ -8656,14 +8438,6 @@ function openMore(){
 
       <button class="action-btn" data-more="express" style="border: 3px solid #ff9a45 !important; background: #fff7ef !important; color: #7a3708 !important; min-height: 80px !important; font-size: 22px !important; font-weight: 950 !important;">
         ＋ TABLE EXPRESS
-      </button>
-
-      <button class="action-btn" data-more="clientplus" style="border: 3px solid #46a4ff !important; background: #f4faff !important; color: #114f82 !important; min-height: 80px !important; font-size: 22px !important; font-weight: 950 !important;">
-        CLIENT EN PLUS
-      </button>
-
-      <button class="action-btn" data-more="tablepax" style="border: 3px solid #46d66b !important; background: #f3fff6 !important; color: #17612a !important; min-height: 80px !important; font-size: 22px !important; font-weight: 950 !important;">
-        TABLE · NOMBRE DE PERSONNES
       </button>
       
       <button class="action-btn" data-more="summary" style="border: 3px solid #cfd2d5 !important; background: #ffffff !important; color: #111111 !important; min-height: 80px !important; font-size: 22px !important; font-weight: 950 !important;">
@@ -8703,8 +8477,6 @@ function openMore(){
     if(a==="plan")openPlan();
     if(a==="display")openDisplay();
     if(a==="express")openExpressTableCreate();
-    if(a==="clientplus")openClientPlusCommunication();
-    if(a==="tablepax")openTablePaxCommunication();
     if(a==="summary"){closeSheet();openSummary()}
     if(a==="sync"){closeSheet();syncFull("manual")}
     if(a==="printer")openPrinterSetup();
