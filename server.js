@@ -188,8 +188,11 @@ app.use(express.static(__dirname, { // 👈 OUVERTURE CORRECTE ICI
 
 const PORT = process.env.PORT || 10000;
 
-// SÉCURITÉ MAÎTRE DE L'EMPIRE (Super Admin)
-const ADMIN_PASS = process.env.ADMIN_PASS || 'Empire2026';
+const ADMIN_PASS = process.env.ADMIN_PASS;
+
+if (!ADMIN_PASS) {
+    console.warn("⚠️ ADMIN_PASS non configuré dans Render");
+}
 
 
 
