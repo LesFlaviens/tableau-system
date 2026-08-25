@@ -3747,6 +3747,47 @@ body.order-open .ticket-meta {
     height: 100% !important;
 }
 </style>
+
+<style id="ichef-client-count-corner-fix">
+/* iCHEF — compteur clients discret, hors du fond de table */
+.arch-table{overflow:visible !important;}
+.arch-client-count{
+  position:absolute !important;
+  right:-30px !important;
+  bottom:-30px !important;
+  width:28px !important;
+  height:28px !important;
+  display:flex !important;
+  align-items:center !important;
+  justify-content:center !important;
+  border:2px solid #161616 !important;
+  border-radius:7px !important;
+  background:#ffffff !important;
+  color:#111111 !important;
+  font-size:14px !important;
+  line-height:1 !important;
+  font-weight:1000 !important;
+  text-shadow:none !important;
+  box-shadow:0 2px 7px rgba(0,0,0,.22) !important;
+  z-index:180 !important;
+  pointer-events:none !important;
+  font-variant-numeric:tabular-nums;
+}
+.arch-client-count.zero{
+  background:#f3f0e8 !important;
+  color:#716c61 !important;
+  border-color:#9d978a !important;
+  box-shadow:none !important;
+}
+/* Le compteur reste hors du plateau même lorsque la table est sélectionnée. */
+.arch-table.selected .arch-client-count{z-index:190 !important;}
+/* Aucun masque sur le numéro ou le fond de table. */
+.arch-table .tlabel{position:relative;z-index:3;}
+@media(max-width:900px){
+  .arch-client-count{right:-26px !important;bottom:-26px !important;width:25px !important;height:25px !important;font-size:12px !important;border-radius:6px !important;}
+}
+</style>
+
 </head>
 <body>
 <div id="screenLabel">ÉCRAN 1 · TABLES</div>
@@ -9221,9 +9262,11 @@ function planSeatState(order,seat){
   return {code:'draft',label:'À ENVOYER',mark:'○',allergy};
 }
 function planTableLive(t){
-  const order=getOrder(t.label),base=tableStats(t.label),pax=Math.max(0,Math.min(9,Number(order?.pax||order?.covers||t.pax||0)));
-  if(!order){return {code:base.status==='reserved'?'reserved':'empty',label:base.status==='reserved'?'RÉSERVÉE':'LIBRE',pax:pax||Number(t.pax)||0,time:'',seats:[]}}
-  const seats=[];for(let n=1;n<=Math.max(1,pax);n++)seats.push({seat:n,...planSeatState(order,n)});
+  const order=getOrder(t.label),base=tableStats(t.label);
+  /* PAX LIVE uniquement : commande/réservation. Jamais la capacité architecturale. */
+  const pax=Math.max(0,Math.min(99,Number(base?.pax||0)));
+  if(!order){return {code:base.status==='reserved'?'reserved':'empty',label:base.status==='reserved'?'RÉSERVÉE':'LIBRE',pax,time:'',seats:[]}}
+  const seats=[];for(let n=1;n<=Math.min(9,pax);n++)seats.push({seat:n,...planSeatState(order,n)});
   const all=(order.items||[]).filter(i=>i&&!i.cancelled&&itemQty(i)>0);
   let code='occupied',label='OCCUPÉE';
   if(String(order.status||'').toLowerCase().includes('payment')){code='payment';label='PAIEMENT'}
@@ -9248,7 +9291,7 @@ function elementInner(e){const label=esc(e.label||iconFor(e.type));if(e.type==='
 function canvasHTML(){
  const zones=roomZones().map(z=>{z.__kind='zone';const key=getZoneKey(z),locked=!!z.locked,fill=aClamp(z.fillOpacity||15,3,55),border=['solid','dashed','dotted'].includes(aText(z.borderStyle))?aText(z.borderStyle):'dashed';return `<div class="arch-node arch-zone ${zoneClass(z)} ${locked?'locked':''} ${A.selected===key?'selected':''}" data-arch-key="${esc(key)}" style="${nodeStyle(z)};--zone-color:${esc(colorForZone(z))};--zone-fill:${fill}%;--zone-border:${border}"><span class="zone-label">${esc(z.label||'ZONE')}</span><span class="zone-kind">${esc(zoneKindLabel(z.zoneKind))}</span><span class="zone-meta">${esc(z.responsible||z.responsable||'')} ${z.capacity?'· '+esc(z.capacity)+' places':''}</span>${locked?'<span class="arch-lock-badge">🔒</span>':''}${handles()}</div>`}).join('');
  const els=roomElements().map(e=>{e.__kind='element';const key=getElemKey(e),locked=!!e.locked;return `<div class="arch-node arch-generic ${classFor(e.type)} ${cashPatternClass(e)} ${locked?'locked':''} ${A.selected===key?'selected':''}" data-arch-key="${esc(key)}" style="${nodeStyle(e)}${cashCustomStyle(e)}">${elementInner(e)}${locked?'<span class="arch-lock-badge">🔒</span>':''}${handles()}</div>`}).join('');
- const tables=roomTables().map(t=>{t.__kind='table';const key=getTableKey(t),act=activeOrder(t.label),ex=isExpressTable(t),shape=aText(t.shape||'square'),locked=!!t.locked,service=A.mode==='service',live=planTableLive(t);const liveClass=service?`service-live live-${live.code}`:'';const serviceInner=service?`<span class="tlabel">${esc(t.label)}</span><span class="arch-table-live-head"><span class="state ${esc(live.code)}">${esc(live.label)}</span><span class="pax">👥${live.pax||0}</span>${live.time?`<span class="clock">${esc(live.time)}</span>`:''}</span>${live.seats?.length?`<span class="arch-seat-strip">${planSeatStripHTML(live)}</span>`:''}`:`<span class="tlabel">${esc(t.label)}</span><span class="tpax">👥 ${Number(t.pax)||2}${t.zone?' · '+esc(t.zone):''}</span>`;return `<button type="button" class="arch-node arch-table ${shape==='round'?'round':''} ${act?'active-order':''} ${liveClass} ${ex?'express':''} ${locked?'locked':''} ${A.selected===key?'selected':''}" data-arch-key="${esc(key)}" style="${nodeStyle(t)}">${serviceInner}${locked?'<span class="arch-lock-badge">🔒</span>':''}${handles()}</button>`}).join('');
+ const tables=roomTables().map(t=>{t.__kind='table';const key=getTableKey(t),act=activeOrder(t.label),ex=isExpressTable(t),shape=aText(t.shape||'square'),locked=!!t.locked,service=A.mode==='service',live=planTableLive(t);const liveClass=service?`service-live live-${live.code}`:'';const serviceInner=service?`<span class="tlabel">${esc(t.label)}</span><span class="arch-table-live-head"><span class="state ${esc(live.code)}">${esc(live.label)}</span>${live.time?`<span class="clock">${esc(live.time)}</span>`:''}</span>${live.seats?.length?`<span class="arch-seat-strip">${planSeatStripHTML(live)}</span>`:''}`:`<span class="tlabel">${esc(t.label)}</span><span class="tpax">CAP. ${Number(t.pax)||2}${t.zone?' · '+esc(t.zone):''}</span>`;const clientCount=`<span class="arch-client-count ${live.pax>0?'':'zero'}" title="${live.pax} client${live.pax===1?'':'s'}">${live.pax}</span>`;return `<button type="button" class="arch-node arch-table ${shape==='round'?'round':''} ${act?'active-order':''} ${liveClass} ${ex?'express':''} ${locked?'locked':''} ${A.selected===key?'selected':''}" data-arch-key="${esc(key)}" style="${nodeStyle(t)}">${serviceInner}${clientCount}${locked?'<span class="arch-lock-badge">🔒</span>':''}${handles()}</button>`}).join('');
  return `<div class="archpad-roomtitle">${esc(A.room)}</div>${zones}${els}${tables}`;
 }
 function roomListHTML(){return A.rooms.map(r=>`<button type="button" class="archpad-room ${r===A.room?'active':''}" data-room="${esc(r)}">${esc(r)}<small>${A.tables.filter(t=>aText(t.room||A.rooms[0])===r).length} tables · ${A.zones.filter(z=>aText(z.room||A.rooms[0])===r).length} zones</small></button>`).join('')}
