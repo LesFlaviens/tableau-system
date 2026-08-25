@@ -3905,11 +3905,7 @@ body.order-open .ticket-meta {
 (function() {
     function initPinchToZoom() {
         const wrap = document.querySelector('.archpad-stagewrap');
-        const shell = document.querySelector('.archpad-stage-shell');
-        const zoomSelect = document.querySelector('.archpad-canvasbar select');
-        
-        // Si l'interface n'est pas encore chargée, on attend un peu
-        if (!wrap || !shell || !zoomSelect) {
+        if (!wrap) {
             setTimeout(initPinchToZoom, 500);
             return;
         }
@@ -3920,72 +3916,75 @@ body.order-open .ticket-meta {
         // 1. Début du pincement à 2 doigts
         wrap.addEventListener('touchstart', (e) => {
             if (e.touches.length === 2) {
+                const shell = document.querySelector('.archpad-stage-shell');
+                const zoomSelect = document.querySelector('.archpad-canvasbar select');
+                
                 initialDistance = Math.hypot(
                     e.touches[0].clientX - e.touches[1].clientX,
                     e.touches[0].clientY - e.touches[1].clientY
                 );
-                // On récupère le zoom actuel depuis le menu déroulant
-                initialZoomValue = parseInt(zoomSelect.value) || 100;
-                shell.classList.add('is-pinching'); // Coupe l'animation CSS
+                initialZoomValue = zoomSelect ? (parseInt(zoomSelect.value) || 100) : 100;
+                
+                if (shell) shell.classList.add('is-pinching');
             }
         }, { passive: false });
 
-        // 2. Mouvement du pincement
+        // 2. Mouvement des doigts (Pinch)
         wrap.addEventListener('touchmove', (e) => {
             if (e.touches.length === 2) {
-                e.preventDefault(); // Bloque le comportement natif du téléphone
-                
+                e.preventDefault(); 
+                const shell = document.querySelector('.archpad-stage-shell');
+                if (!shell) return;
+
                 const currentDistance = Math.hypot(
                     e.touches[0].clientX - e.touches[1].clientX,
                     e.touches[0].clientY - e.touches[1].clientY
                 );
                 
-                const scale = currentDistance / initialDistance;
-                let newZoom = Math.round(initialZoomValue * scale);
-                
-                // Limites du zoom (20% à 400%)
-                newZoom = Math.max(20, Math.min(400, newZoom));
+                const scaleRatio = currentDistance / initialDistance;
+                let newZoom = Math.round(initialZoomValue * scaleRatio);
+                newZoom = Math.max(20, Math.min(400, newZoom)); // Bloqué entre 20% et 400%
 
-                // Applique visuellement tout de suite
-                shell.style.transform = `scale(${newZoom / 100})`;
-
-                // Met à jour l'étiquette + / - si elle existe
-                const customLabel = document.querySelector('.custom-zoom-label');
-                if(customLabel) customLabel.innerText = newZoom + '%';
+                // Applique visuellement tout de suite (en forçant la priorité)
+                shell.style.setProperty('transform', `scale(${newZoom / 100})`, 'important');
             }
         }, { passive: false });
 
-        // 3. Fin du pincement (on lâche l'écran)
+        // 3. Fin du pincement
         wrap.addEventListener('touchend', (e) => {
-            if (e.touches.length < 2) {
-                shell.classList.remove('is-pinching'); // Réactive l'animation CSS
+            const shell = document.querySelector('.archpad-stage-shell');
+            if (!shell) return;
+
+            if (e.touches.length < 2 && shell.classList.contains('is-pinching')) {
+                shell.classList.remove('is-pinching'); 
                 
-                // On lit la taille exacte qu'on a atteinte
-                const currentTransform = shell.style.transform;
-                const match = currentTransform.match(/scale\(([^)]+)\)/);
-                
+                const match = String(shell.style.transform).match(/scale\(([^)]+)\)/);
                 if (match) {
                     let finalZoom = Math.round(parseFloat(match[1]) * 100);
+                    const zoomSelect = document.querySelector('.archpad-canvasbar select');
                     
-                    // On ajoute cette valeur exacte dans le menu déroulant natif
-                    if (!Array.from(zoomSelect.options).some(o => parseInt(o.value) === finalZoom)) {
-                        let opt = document.createElement('option');
-                        opt.value = finalZoom;
-                        opt.text = finalZoom + '%';
-                        zoomSelect.appendChild(opt);
+                    if (zoomSelect) {
+                        if (!Array.from(zoomSelect.options).some(o => parseInt(o.value) === finalZoom)) {
+                            let opt = document.createElement('option');
+                            opt.value = finalZoom;
+                            opt.text = finalZoom + '%';
+                            zoomSelect.appendChild(opt);
+                        }
+                        zoomSelect.value = finalZoom;
+                        // On valide officiellement la nouvelle taille auprès du système iCHEF
+                        zoomSelect.dispatchEvent(new Event('change', { bubbles: true }));
                     }
-                    
-                    // On force le script d'origine à se synchroniser avec notre nouveau zoom
-                    zoomSelect.value = finalZoom;
-                    zoomSelect.dispatchEvent(new Event('change', { bubbles: true }));
                 }
             }
         });
         
-        // BONUS : Zoom fluide à la molette sur PC (Ctrl + Molette)
+        // 4. Bonus : Zoom fluide à la molette PC (Ctrl + Molette)
         wrap.addEventListener('wheel', (e) => {
             if (e.ctrlKey) {
                 e.preventDefault();
+                const zoomSelect = document.querySelector('.archpad-canvasbar select');
+                if (!zoomSelect) return;
+
                 let currentZoom = parseInt(zoomSelect.value) || 100;
                 let newZoom = currentZoom + (e.deltaY > 0 ? -10 : 10);
                 newZoom = Math.max(20, Math.min(400, newZoom));
@@ -4002,7 +4001,6 @@ body.order-open .ticket-meta {
         }, { passive: false });
     }
 
-    // Lance l'initialisation
     initPinchToZoom();
 })();
 </script>
