@@ -3941,6 +3941,7 @@ const STATE={
   tenantID:new URLSearchParams(location.search).get("tenantID")||STORAGE.get("ichef_tenant_id","")||"",
   deviceId:STORAGE.get("ichef_device_id","")||("dev_"+cryptoId()),
   pin:"",role:"",plan:"",specialite:"",authenticated:false,
+  addons:[],featureRights:{PLAN_INTERACTIF:false},
   sessionToken:"",csrfToken:"",
   connected:false,socket:null,socketLoading:null,lastServerAt:0,syncing:false,
   activeOrders:{},architecture:{rooms:["Salle Principale"],tables:[],zones:[]},
@@ -4433,6 +4434,51 @@ async function serverFetch(path,options={}){
   }
 }
 
+/* ---------------- DROITS DE LICENCE INDÉPENDANTS ---------------- */
+function normalizeEntitlement(value){
+  return String(value??"").trim().toUpperCase();
+}
+
+function hasFeatureRight(right){
+  const wanted=normalizeEntitlement(right);
+  if(!wanted)return false;
+  if(STATE.featureRights && STATE.featureRights[wanted]===true)return true;
+  return Array.isArray(STATE.addons) && STATE.addons.some(x=>normalizeEntitlement(x)===wanted);
+}
+
+async function loadLicenseRights(){
+  STATE.addons=[];
+  STATE.featureRights={PLAN_INTERACTIF:false};
+  if(STATE.demo){
+    STATE.featureRights.PLAN_INTERACTIF=true;
+    return STATE.featureRights;
+  }
+  try{
+    const r=await serverFetch("/api/check-license?tenantID="+encodeURIComponent(STATE.tenantID)+"&_t="+Date.now(),{method:"GET"});
+    const j=await r.json().catch(()=>({}));
+    if(!r.ok||!j.success)throw new Error(j.error||j.message||"Licence indisponible");
+    STATE.addons=Array.isArray(j.addons)?j.addons.slice():[];
+    STATE.featureRights.PLAN_INTERACTIF=STATE.addons.some(x=>normalizeEntitlement(x)==="PLAN_INTERACTIF");
+    return STATE.featureRights;
+  }catch(err){
+    console.warn("[iCHEF] Droits de licence non vérifiés",err);
+    return STATE.featureRights;
+  }
+}
+
+function requireFeatureRight(right,label){
+  if(hasFeatureRight(right))return true;
+  openSheet("ACCÈS RÉSERVÉ",`
+    <div class="big-state" style="background:#fff8e7!important;border:3px solid #d9a629!important;color:#111!important;">
+      <div class="big" style="color:#111!important;font-size:28px!important;">${esc(label||right)}</div>
+      <div class="small" style="color:#555!important;font-size:16px!important;line-height:1.45!important;margin-top:10px!important;">
+        Ce droit n’est pas actif pour cet établissement.<br>
+        Il peut être activé indépendamment, sans souscrire au PAD CENTRAL / pack-eco.html.
+      </div>
+    </div>`);
+  return false;
+}
+
 /* ---------------- AUTH ---------------- */
 function renderPin(){
   const box=$("pinDots");
@@ -4485,6 +4531,7 @@ async function verifyPin(){
     STATE.role=j.role||"";
     STATE.plan=j.plan||"";
     STATE.specialite=j.specialite||"";
+    await loadLicenseRights();
     STATE.authenticated=true;
     $("login")?.classList.add("hidden");
     $("app")?.classList.remove("hidden");
@@ -6002,6 +6049,7 @@ function openReservations(){
 }
 
 function openPlan(){
+  if(!requireFeatureRight("PLAN_INTERACTIF","PLAN INTERACTIF"))return;
   const ts=STATE.tables.filter(t=>t.room===STATE.room),zs=STATE.zones.filter(z=>z.room===STATE.room);let maxX=1000,maxY=800;[...ts,...zs].forEach(x=>{maxX=Math.max(maxX,num(x.l)+num(x.w||100));maxY=Math.max(maxY,num(x.t)+num(x.h||100))});const scale=Math.min(1,520/maxX,430/maxY);openSheet("🗺️ PLAN · "+STATE.room,`<div class="plan-wrap"><div class="plan-canvas" style="width:${maxX}px;height:${maxY}px;transform:scale(${scale})">${zs.map(z=>`<div class="plan-zone" style="left:${num(z.l)}px;top:${num(z.t)}px;width:${num(z.w||400)}px;height:${num(z.h||300)}px">${esc(z.label)}</div>`).join("")}${ts.map(t=>`<button class="plan-table" data-plan-table="${esc(t.label)}" style="left:${num(t.l)}px;top:${num(t.t)}px;width:${num(t.w||80)}px;height:${num(t.h||80)}px">${esc(t.label)}</button>`).join("")}</div></div>`);$("sheetBody").querySelectorAll("[data-plan-table]").forEach(b=>b.onclick=()=>{closeSheet();openOrder(b.dataset.planTable)})
 }
 
@@ -6293,8 +6341,8 @@ function openMore(){
         RÉSERVATIONS
       </button>
       
-      <button class="action-btn" data-more="plan" style="border: 3px solid #cfd2d5 !important; background: #ffffff !important; color: #111111 !important; min-height: 80px !important; font-size: 22px !important; font-weight: 950 !important;">
-        PLAN DE SALLE
+      <button class="action-btn" data-more="plan" style="border: 3px solid ${hasFeatureRight("PLAN_INTERACTIF")?'#2dcc70':'#cfd2d5'} !important; background: ${hasFeatureRight("PLAN_INTERACTIF")?'#effcf4':'#f4f4f4'} !important; color: #111111 !important; min-height: 80px !important; font-size: 22px !important; font-weight: 950 !important;">
+        PLAN INTERACTIF<br><span style="display:block;font-size:13px;margin-top:4px;color:${hasFeatureRight("PLAN_INTERACTIF")?'#198747':'#777'};">${hasFeatureRight("PLAN_INTERACTIF")?'DROIT ACTIF':'DROIT NON ACTIF'}</span>
       </button>
       
       <button class="action-btn" data-more="summary" style="border: 3px solid #cfd2d5 !important; background: #ffffff !important; color: #111111 !important; min-height: 80px !important; font-size: 22px !important; font-weight: 950 !important;">
@@ -7057,8 +7105,8 @@ function openMore(){
         RÉSERVATIONS
       </button>
       
-      <button class="action-btn" data-more="plan" style="border: 3px solid #cfd2d5 !important; background: #ffffff !important; color: #111111 !important; min-height: 80px !important; font-size: 22px !important; font-weight: 950 !important;">
-        PLAN DE SALLE
+      <button class="action-btn" data-more="plan" style="border: 3px solid ${hasFeatureRight("PLAN_INTERACTIF")?'#2dcc70':'#cfd2d5'} !important; background: ${hasFeatureRight("PLAN_INTERACTIF")?'#effcf4':'#f4f4f4'} !important; color: #111111 !important; min-height: 80px !important; font-size: 22px !important; font-weight: 950 !important;">
+        PLAN INTERACTIF<br><span style="display:block;font-size:13px;margin-top:4px;color:${hasFeatureRight("PLAN_INTERACTIF")?'#198747':'#777'};">${hasFeatureRight("PLAN_INTERACTIF")?'DROIT ACTIF':'DROIT NON ACTIF'}</span>
       </button>
       
       <button class="action-btn" data-more="summary" style="border: 3px solid #cfd2d5 !important; background: #ffffff !important; color: #111111 !important; min-height: 80px !important; font-size: 22px !important; font-weight: 950 !important;">
