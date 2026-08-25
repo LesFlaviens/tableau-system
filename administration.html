@@ -430,7 +430,16 @@
                     <option value="QUESTION TECHNIQUE">Question technique / Autre</option>
                 </select>
                 
-                <textarea id="sos-message" placeholder="Décrivez le problème brièvement (optionnel)..." style="width: 100%; padding: 15px; background: var(--bg); border: 1px solid var(--border-strong); color: white; border-radius: 8px; margin-bottom: 25px; min-height: 120px; box-sizing: border-box; resize: none; font-family: 'Inter', sans-serif; font-size: 0.95rem; outline: none;"></textarea>
+                <textarea id="sos-message" placeholder="Décrivez le problème brièvement (optionnel)..." style="width: 100%; padding: 15px; background: var(--bg); border: 1px solid var(--border-strong); color: white; border-radius: 8px; margin-bottom: 15px; min-height: 120px; box-sizing: border-box; resize: none; font-family: 'Inter', sans-serif; font-size: 0.95rem; outline: none;"></textarea>
+
+                <input
+                    id="sos-callback-phone"
+                    type="tel"
+                    inputmode="tel"
+                    autocomplete="tel"
+                    placeholder="Numéro à rappeler (ex. +33 6… / +41 79…)"
+                    style="width:100%; padding:15px; background:var(--bg); border:1px solid var(--border-strong); color:white; border-radius:8px; margin-bottom:25px; box-sizing:border-box; font-family:'Inter',sans-serif; font-size:0.95rem; outline:none;"
+                >
             </div>
             
             <div style="display: flex; gap: 10px; flex-wrap: wrap;">
@@ -440,8 +449,12 @@
                     📧 Email
                 </button>
 
-                <!-- BOUTON APPEL REMPLAÇANT WHATSAPP -->
-                <button id="sos-btn-appel" class="btn-return" onclick="window.location.href='tel:+41 79 703 62 05'" style="flex: 1; min-width: 120px; background: #10b981; border: none; color: white;">
+                <button id="sos-btn-callback" class="btn-return" onclick="window.logicielManager.requestCallback()" style="flex: 1; min-width: 140px; background: #d4af37; border: none; color: #050505;">
+                    📲 Être rappelé
+                </button>
+
+                <!-- APPEL DIRECT SUPPORT -->
+                <button id="sos-btn-appel" class="btn-return" onclick="window.location.href='tel:+41797036205'" style="flex: 1; min-width: 120px; background: #10b981; border: none; color: white;">
                     📞 Appeler
                 </button>
             </div>
@@ -584,7 +597,7 @@
                     const userAddons = data.addons || []; 
 
                     const allModules = [
-                         { id: 'telephone.html', title: '📱PAD POUR LE SERVEUR', subtitle: 'service mobile inclus avec le PAD', price: 0 }
+                         { id: 'telephone.html', title: '📱PAD POUR LE SERVEUR', subtitle: 'service mobile inclus avec le PAD', price: 0 },
                         { id: 'admin.html', title: '⚙️ ADMINISTRATION & CONFIG', subtitle: 'réglages / modules / accès', price: 0 },
                         { id: 'menu-qr.html', title: '📲 QR/NFC — COMMANDE CLIENT', subtitle: 'menu autonome sans application', price: 25 },
                         { id: 'pack-eco.html', title: '🖥️ PAD CENTRAL', subtitle: 'prise de commande / service', price: 19 },
@@ -765,7 +778,11 @@
                     const data = await res.json();
                     if (data.success && data.contact) {
                         if(data.contact.email) document.getElementById('user-email').value = data.contact.email;
-                        if(data.contact.phone) document.getElementById('user-phone').value = data.contact.phone;
+                        if(data.contact.phone) {
+                            document.getElementById('user-phone').value = data.contact.phone;
+                            const callbackPhone = document.getElementById('sos-callback-phone');
+                            if (callbackPhone && !callbackPhone.value) callbackPhone.value = data.contact.phone;
+                        }
                     }
                 } catch(e) {
                     console.warn("API Contacts non configurée ou injoignable.");
@@ -855,6 +872,65 @@
                 }
             },
 
+            requestCallback: async function() {
+                if (this.isDemoMode) {
+                    return alert("🔒 Mode Démo : la demande de rappel est désactivée.");
+                }
+
+                const callbackInput = document.getElementById('sos-callback-phone');
+                const contactInput = document.getElementById('user-phone');
+                const phone = String(
+                    (callbackInput && callbackInput.value) ||
+                    (contactInput && contactInput.value) ||
+                    ""
+                ).trim();
+
+                const digits = phone.replace(/\D/g, "");
+                if (!phone || digits.length < 8 || digits.length > 15) {
+                    if (callbackInput) callbackInput.focus();
+                    return alert("Veuillez saisir un numéro de téléphone valide pour être rappelé.");
+                }
+
+                const btn = document.getElementById('sos-btn-callback');
+                const oldLabel = btn ? btn.textContent : "";
+                if (btn) {
+                    btn.disabled = true;
+                    btn.textContent = "Envoi…";
+                    btn.style.opacity = "0.65";
+                }
+
+                try {
+                    const res = await fetch(`${this.SERVER_URL}/api/twilio/call-me`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            phone: phone,
+                            tenantID: this.tenantID || "",
+                            source: "administration.html"
+                        })
+                    });
+
+                    let data = {};
+                    try { data = await res.json(); } catch (_) {}
+
+                    if (!res.ok || data.success !== true) {
+                        throw new Error(data.error || "La demande n'a pas pu être envoyée.");
+                    }
+
+                    document.getElementById('sos-modal').style.display = 'none';
+                    alert(data.message || "Votre demande a bien été envoyée. Nous vous rappellerons rapidement.");
+                } catch (error) {
+                    console.error("Erreur demande de rappel :", error);
+                    alert("Impossible d'envoyer la demande de rappel pour le moment. Vous pouvez utiliser le bouton Appeler ou Email.");
+                } finally {
+                    if (btn) {
+                        btn.disabled = false;
+                        btn.textContent = oldLabel || "📲 Être rappelé";
+                        btn.style.opacity = "";
+                    }
+                }
+            },
+
             sendSOS: function(methode) {
                 const sosType = document.getElementById('sos-type').value;
                 const sosMessage = document.getElementById('sos-message').value.trim();
@@ -931,11 +1007,13 @@
             .then(data => {
                 const btnSosAppel = document.getElementById('sos-btn-appel');
                 
+                if (!btnSosAppel) return;
+
                 // Si on détecte la France
                 if (data.country_code === 'FR') {
                     btnSosAppel.setAttribute('onclick', "window.location.href='tel:+33641437265'");
                 } 
-                // Si on détecte la Suisse (ou autre)
+                // Si on détecte la Suisse
                 else if (data.country_code === 'CH') {
                     btnSosAppel.setAttribute('onclick', "window.location.href='tel:+41797036205'");
                 }
