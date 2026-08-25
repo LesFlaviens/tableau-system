@@ -6513,6 +6513,232 @@ async function printCashReceipt(order,options={}){
 async function printNewEpsonJobs(order,stamp){return printNewPrinterJobs(order,stamp)}
 async function printEpsonDestination(dest,items,order,options={}){return printDestination(dest,items,order,options)}
 
+/* =========================================================
+   IMPRESSION FISCALE FR / CH — TÉLÉPHONE
+   TICKET + JOUR / MOIS / ANNÉE
+   - lecture du journal fiscal existant
+   - aucune création de vente
+   - aucune modification des écritures fiscales
+   - chaque impression est journalisée dans la chaîne d'audit
+   ========================================================= */
+const ICHEF_FISCAL_PRINT_VERSION="FRCH-PHONE-PRINT-2026.08.25";
+
+function fiscalPrintTimeZone(){
+  return fiscalProfile().country==="CH"?"Europe/Zurich":"Europe/Paris";
+}
+
+function fiscalPeriodKeysForPrint(date=new Date()){
+  let parts={};
+  try{
+    new Intl.DateTimeFormat("en-CA",{timeZone:fiscalPrintTimeZone(),year:"numeric",month:"2-digit",day:"2-digit"})
+      .formatToParts(date).forEach(p=>{if(p.type!=="literal")parts[p.type]=p.value});
+  }catch(_){
+    parts={year:String(date.getFullYear()),month:String(date.getMonth()+1).padStart(2,"0"),day:String(date.getDate()).padStart(2,"0")};
+  }
+  return {day:`${parts.year}-${parts.month}-${parts.day}`,month:`${parts.year}-${parts.month}`,year:String(parts.year)};
+}
+
+function fiscalEventLocalKeys(event){
+  const d=new Date(event?.createdAt||event?.payload?.dateTime||Date.now());
+  return fiscalPeriodKeysForPrint(Number.isNaN(d.getTime())?new Date():d);
+}
+
+function fiscalReportRecordFromEvent(event){
+  const type=text(event?.type).toUpperCase();
+  const p=event?.payload||{};
+  const transaction=p.transaction||p.originalTransaction||{};
+  let amount=0, method="AUTRE", rows=[];
+  if(type==="PAYMENT"){
+    amount=fiscalRound2(p.total??transaction.totalTTC??0);
+    method=text(p.method||transaction.paymentMethod||"AUTRE").toUpperCase();
+    rows=Array.isArray(p.rows)?p.rows:(Array.isArray(transaction.vatTotals)?transaction.vatTotals:[]);
+  }else if(type==="CANCEL_PAYMENT"){
+    amount=fiscalRound2(p.signedTotal??-(Number(transaction.totalTTC)||0));
+    method=text(transaction.paymentMethod||"CORRECTION").toUpperCase();
+    rows=Array.isArray(p.fiscalRows)?p.fiscalRows:[];
+  }else if(type==="CANCEL_ORDER"){
+    amount=0;
+    method="ANNULATION AVANT PAIEMENT";
+    rows=[];
+  }else return null;
+  return {
+    id:text(event?.ref||event?._key||type),
+    type,
+    date:text(event?.createdAt||""),
+    amount,
+    method,
+    rows,
+    correctionOf:text(p.originalReceiptReference||""),
+    reason:text(p.reason||""),
+    country:text(event?.country||fiscalProfile().country),
+    currency:text(event?.currency||fiscalProfile().currency)
+  };
+}
+
+function fiscalLocalPeriodRecords(period,key){
+  return fiscalLedgerEvents()
+    .map(fiscalReportRecordFromEvent)
+    .filter(Boolean)
+    .filter(r=>{
+      const k=fiscalEventLocalKeys({createdAt:r.date});
+      return period==="year"?k.year===key:period==="month"?k.month===key:k.day===key;
+    })
+    .sort((a,b)=>Date.parse(a.date||0)-Date.parse(b.date||0));
+}
+
+function fiscalPrintMoney(value,currency=fiscalProfile().currency){
+  const n=Number(value)||0;
+  try{return new Intl.NumberFormat("fr-FR",{style:"currency",currency:currency==="CHF"?"CHF":"EUR"}).format(n)}
+  catch(_){return `${n.toFixed(2)} ${currency}`}
+}
+
+function fiscalNormalizeVatRow(row){
+  const rate=Number(row?.rate??row?.vatRate??0);
+  return {
+    rate:Number.isFinite(rate)?rate:0,
+    gross:Number(row?.gross??row?.totalTTC??0)||0,
+    net:Number(row?.net??row?.totalHT??0)||0,
+    tax:Number(row?.tax??row?.vatAmount??0)||0
+  };
+}
+
+async function fiscalPrintRawLines(lines,{title="iCHEF FISCAL",auditType="FISCAL_PRINT",auditPayload={}}={}){
+  const profile=fiscalProfile();
+  if(profile.country==="UNSET"&&!STATE.demo)throw new Error("Profil fiscal FR/CH requis");
+  const trace=await fiscalEvent(auditType,{
+    ...auditPayload,
+    printVersion:ICHEF_FISCAL_PRINT_VERSION,
+    printedAt:new Date().toISOString(),
+    printerDestination:"CAISSE",
+    operator:STATE.role||"",
+    deviceId:STATE.deviceId||""
+  }).catch(()=>null);
+  if(!STATE.demo&&!trace?.ok)throw new Error("Journalisation fiscale de l'impression impossible");
+
+  const cfg=loadPrinterConfig();
+  const printer=cfg?.printers?.caisse;
+  if(!cfg?.enabled||!printer?.enabled){
+    return printViaSystem({paperWidth:80},lines,{dest:"fiscal",title});
+  }
+  if(printer.mode==="system")return printViaSystem(printer,lines,{dest:"fiscal",title});
+  if(printer.mode==="bridge")return postPrintBridge(printer,cfg,lines,{dest:"fiscal",test:false});
+  const soap=buildEpsonSoap(lines);
+  const copies=Math.max(1,Math.min(5,Number(printer.copies)||1));
+  let result=null;
+  for(let i=0;i<copies;i++)result=await postEpson(printer,cfg,soap);
+  return result||{ok:true,mode:"epson"};
+}
+
+async function printCurrentFiscalTicket(){
+  if(!STATE.currentTable)throw new Error("Ouvrez une table fiscalisée");
+  const order=STATE.currentOrder||getOrder(STATE.currentTable)||ensureOrder(STATE.currentTable);
+  if(!fiscalOrderFinalized(order))throw new Error("Cette vente n'est pas encore fiscalisée");
+  const ticketNumber=text(order?.fiscalReceiptReference||order?.paymentDraft?.receiptReference||receiptReference(order));
+  const lines=cashReceiptLines(order,{duplicate:true});
+  lines.splice(1,0,{text:"COPIE / JUSTIFICATIF FISCAL",bold:true,align:"center"});
+  await fiscalPrintRawLines(lines,{
+    title:`iCHEF FISCAL ${ticketNumber}`,
+    auditType:"FISCAL_PRINT_TICKET",
+    auditPayload:{ticketNumber,tableId:STATE.currentTable,fiscalHash:text(order?.fiscalHash||order?.paymentDraft?.fiscalHash||"")}
+  });
+  return ticketNumber;
+}
+
+function fiscalReportLines(period,key,records){
+  const profile=fiscalProfile();
+  const cfg=loadPrinterConfig();
+  const receipt=cfg?.receipt||{};
+  const label=period==="day"?"JOURNALIER":period==="month"?"MENSUEL":"ANNUEL";
+  const vat=new Map(),payments=new Map();
+  let total=0,paymentsCount=0,corrections=0,operationalCancels=0;
+
+  records.forEach(r=>{
+    if(r.type==="PAYMENT"){paymentsCount++; total=fiscalRound2(total+r.amount)}
+    else if(r.type==="CANCEL_PAYMENT"){corrections++; total=fiscalRound2(total+r.amount)}
+    else if(r.type==="CANCEL_ORDER"){operationalCancels++}
+    if(r.type!=="CANCEL_ORDER")payments.set(r.method,fiscalRound2((payments.get(r.method)||0)+r.amount));
+    (r.rows||[]).map(fiscalNormalizeVatRow).forEach(v=>{
+      const k=String(v.rate),cur=vat.get(k)||{rate:v.rate,gross:0,net:0,tax:0};
+      cur.gross=fiscalRound2(cur.gross+v.gross);cur.net=fiscalRound2(cur.net+v.net);cur.tax=fiscalRound2(cur.tax+v.tax);vat.set(k,cur);
+    });
+  });
+
+  const lines=[];
+  lines.push({text:text(receipt.businessName||receipt.logoText||"iCHEF"),bold:true,width:2,height:2,align:"center"});
+  if(receipt.address)lines.push({text:receipt.address,align:"center"});
+  if(receipt.taxId)lines.push({text:`TVA / ID: ${receipt.taxId}`,align:"center"});
+  lines.push({text:`RAPPORT FISCAL ${label}`,bold:true,width:2,height:2,align:"center"});
+  lines.push({text:`${profile.label} · ${profile.currency} · ${key}`,bold:true,align:"center"});
+  lines.push(`ÉDITÉ: ${new Date().toLocaleString("fr-FR",{timeZone:fiscalPrintTimeZone()})}`);
+  lines.push(`TERMINAL: ${text(STATE.deviceId||"—")}`);
+  lines.push(`OPÉRATEUR: ${text(STATE.role||"—")}`);
+  lines.push("------------------------------------------");
+  lines.push(`PAIEMENTS: ${paymentsCount}`);
+  lines.push(`CORRECTIONS PAYÉES: ${corrections}`);
+  lines.push(`ANNULATIONS AVANT PAIEMENT: ${operationalCancels}`);
+  lines.push({text:`TOTAL NET TTC: ${fiscalPrintMoney(total,profile.currency)}`,bold:true,width:2,height:2,align:"right"});
+  lines.push("------------------------------------------");
+  lines.push({text:"TVA",bold:true});
+  if(vat.size){
+    [...vat.values()].sort((a,b)=>a.rate-b.rate).forEach(v=>lines.push(`TVA ${v.rate.toFixed(2).replace(".",",")}% · HT ${fiscalPrintMoney(v.net,profile.currency)} · TVA ${fiscalPrintMoney(v.tax,profile.currency)} · TTC ${fiscalPrintMoney(v.gross,profile.currency)}`));
+  }else lines.push("Aucune TVA fiscalisée sur cette période");
+  lines.push("------------------------------------------");
+  lines.push({text:"MOYENS DE PAIEMENT",bold:true});
+  if(payments.size)[...payments.entries()].forEach(([m,v])=>lines.push(`${m}: ${fiscalPrintMoney(v,profile.currency)}`));
+  else lines.push("Aucun paiement");
+  lines.push("------------------------------------------");
+  lines.push({text:"ÉCRITURES",bold:true});
+  records.forEach(r=>{
+    const sign=r.type==="CANCEL_PAYMENT"?"CORRECTION":r.type==="CANCEL_ORDER"?"ANNULATION":"VENTE";
+    lines.push(`${sign} · ${r.id}`);
+    lines.push(`  ${r.date?new Date(r.date).toLocaleString("fr-FR"):"—"} · ${r.method} · ${fiscalPrintMoney(r.amount,profile.currency)}`);
+    if(r.correctionOf)lines.push(`  ORIGINAL: ${r.correctionOf}`);
+    if(r.reason)lines.push(`  MOTIF: ${r.reason}`);
+  });
+  lines.push("------------------------------------------");
+  lines.push({text:"DOCUMENT DE CONTRÔLE — JOURNAL FISCAL iCHEF",bold:true,align:"center"});
+  lines.push({text:"L'impression n'altère aucune écriture fiscale.",align:"center"});
+  return lines;
+}
+
+async function printFiscalReport(period,key=""){
+  const keys=fiscalPeriodKeysForPrint();
+  const resolved=key||(period==="year"?keys.year:period==="month"?keys.month:keys.day);
+  const records=fiscalLocalPeriodRecords(period,resolved);
+  const lines=fiscalReportLines(period,resolved,records);
+  await fiscalPrintRawLines(lines,{
+    title:`iCHEF FISCAL ${period.toUpperCase()} ${resolved}`,
+    auditType:"FISCAL_PRINT_REPORT",
+    auditPayload:{period,key:resolved,recordCount:records.length,totalNet:fiscalRound2(records.reduce((sum,r)=>sum+(r.type==="CANCEL_ORDER"?0:r.amount),0))}
+  });
+  return {period,key:resolved,count:records.length};
+}
+
+async function openFiscalPrintHistory(period="day",key=""){
+  const keys=fiscalPeriodKeysForPrint();
+  const resolved=key||(period==="year"?keys.year:period==="month"?keys.month:keys.day);
+  const rows=fiscalLocalPeriodRecords(period,resolved);
+  const total=fiscalRound2(rows.reduce((sum,r)=>sum+(r.type==="CANCEL_ORDER"?0:r.amount),0));
+  const label=period==="day"?"JOUR":period==="month"?"MOIS":"ANNÉE";
+  openSheet(`HISTORIQUE FISCAL · ${label} ${resolved}`,`
+    <div class="big-state"><div class="big gold">${fiscalPrintMoney(total)}</div><div class="small">${rows.length} écriture(s) · chaîne fiscale locale/serveur synchronisée</div></div>
+    <div class="action-grid" style="margin-bottom:10px">
+      <button class="action-btn ${period==="day"?"gold":""}" data-fprint-period="day">JOUR</button>
+      <button class="action-btn ${period==="month"?"gold":""}" data-fprint-period="month">MOIS</button>
+      <button class="action-btn ${period==="year"?"gold":""}" data-fprint-period="year">ANNÉE</button>
+      <button class="action-btn green" data-fprint-now>IMPRIMER ${label}</button>
+    </div>
+    <div class="list">${rows.map(r=>`<div class="list-row"><div class="grow"><div class="title">${esc(r.type)} · ${esc(r.id)}</div><div class="sub">${esc(r.date)} · ${esc(r.method)}${r.correctionOf?` · original ${esc(r.correctionOf)}`:""}${r.reason?` · ${esc(r.reason)}`:""}</div></div><strong>${esc(fiscalPrintMoney(r.amount,r.currency))}</strong></div>`).join("")||'<div class="empty-state">Aucune écriture fiscale sur cette période.</div>'}</div>
+  `);
+  $("sheetBody")?.querySelectorAll("[data-fprint-period]").forEach(b=>b.addEventListener("click",()=>openFiscalPrintHistory(b.dataset.fprintPeriod,"")));
+  $("sheetBody")?.querySelector("[data-fprint-now]")?.addEventListener("click",async e=>{
+    const b=e.currentTarget,old=b.textContent;b.disabled=true;b.textContent="IMPRESSION…";
+    try{const r=await printFiscalReport(period,resolved);toast(`✓ Rapport fiscal ${r.key} envoyé à l'impression`)}
+    catch(err){toast("Impression fiscale : "+(err?.message||"échec"),true)}
+    finally{b.disabled=false;b.textContent=old}
+  });
+}
+
 function printerModeHelp(mode){
   if(mode==="epson")return "Connexion directe pour Epson compatibles ePOS. Renseigner IP + Device ID.";
   if(mode==="bridge")return "Pour Star, Bixolon, Citizen, Xprinter, imprimantes ESC/POS réseau et autres modèles. Le Print Bridge local iCHEF transmet vers l'IP/port de l'imprimante.";
@@ -6819,6 +7045,10 @@ function openPayment(){
       <button class="action-btn purple" data-pay="">⏳ EN ATTENTE</button>
     </div>
     <button class="action-btn gold" style="width:100%;margin-top:9px;min-height:56px" data-cash-receipt ${paid?"":"disabled"}>🧾 ${paid?"IMPRIMER / RÉIMPRIMER LE TICKET CLIENT":"TICKET CLIENT DISPONIBLE APRÈS PAIEMENT"}</button>
+    <div class="action-grid" style="margin-top:8px">
+      <button class="action-btn green" data-fiscal-ticket-print ${paid?"":"disabled"}>IMPRIMER FISCAL</button>
+      <button class="action-btn" data-fiscal-print-history>HISTORIQUE FISCAL</button>
+    </div>
     <div style="margin-top:7px;color:#98a1a4;font-size:9px;text-align:center">Imprimante CAISSE configurable dans OUTILS → IMPRIMANTES.</div>`);
   $("sheetBody").querySelectorAll("[data-pay]").forEach(b=>b.onclick=async()=>{
     const ok=await recordPayment(b.dataset.pay||null);if(ok){closeSheet();if(document.body.classList.contains("summary-open"))renderSummary()}
@@ -6830,6 +7060,11 @@ function openPayment(){
     catch(e){toast("Ticket caisse : "+(e?.message||"échec"),true)}
     finally{setTimeout(()=>{btn.disabled=false;btn.textContent=old},1800)}
   });
+  $("sheetBody").querySelector("[data-fiscal-ticket-print]")?.addEventListener("click",async()=>{
+    try{const ref=await printCurrentFiscalTicket();toast(`✓ Copie fiscale ${ref} envoyée à l'impression`)}
+    catch(e){toast("Impression fiscale : "+(e?.message||"échec"),true)}
+  });
+  $("sheetBody").querySelector("[data-fiscal-print-history]")?.addEventListener("click",()=>openFiscalPrintHistory("day",""));
 }
 
 
@@ -7769,6 +8004,10 @@ async function openFiscalAudit(){
     <div class="action-grid" style="margin-top:10px">
       <button class="action-btn green" data-fiscal-maintenance>✓ VÉRIFIER / CLÔTURER</button>
       <button class="action-btn gold" data-fiscal-export>⬇ EXPORT ARCHIVE JSON</button>
+      <button class="action-btn" data-fiscal-history-print>HISTORIQUE FISCAL</button>
+      <button class="action-btn green" data-fiscal-print-day>IMPRIMER JOUR</button>
+      <button class="action-btn green" data-fiscal-print-month>IMPRIMER MOIS</button>
+      <button class="action-btn green" data-fiscal-print-year>IMPRIMER ANNÉE</button>
     </div>
   `);
 
@@ -7779,6 +8018,15 @@ async function openFiscalAudit(){
       toast(r?.ok?"✓ Fiscal vérifié et clôtures contrôlées":"Fiscal à vérifier",!r?.ok);
     }catch(err){toast(err?.message||"Erreur fiscale",true)}
     finally{b.disabled=false;b.textContent=before}
+  });
+  $("sheetBody")?.querySelector("[data-fiscal-history-print]")?.addEventListener("click",()=>openFiscalPrintHistory("day",""));
+  [["[data-fiscal-print-day]","day"],["[data-fiscal-print-month]","month"],["[data-fiscal-print-year]","year"]].forEach(([sel,period])=>{
+    $("sheetBody")?.querySelector(sel)?.addEventListener("click",async e=>{
+      const b=e.currentTarget,old=b.textContent;b.disabled=true;b.textContent="IMPRESSION…";
+      try{const r=await printFiscalReport(period);toast(`✓ Rapport fiscal ${r.key} envoyé à l'impression`)}
+      catch(err){toast("Impression fiscale : "+(err?.message||"échec"),true)}
+      finally{b.disabled=false;b.textContent=old}
+    });
   });
   $("sheetBody")?.querySelector("[data-fiscal-export]")?.addEventListener("click",async e=>{
     const b=e.currentTarget,before=b.textContent;b.disabled=true;b.textContent="EXPORT…";
