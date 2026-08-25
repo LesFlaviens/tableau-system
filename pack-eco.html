@@ -9560,11 +9560,110 @@ function openProductSeatPicker(product,sourceButton=null){
   });
 }
 
-function confirmProductSeat(seat){
+async function prepareWritableOrderForProductSelection(){
+  if(!STATE.currentTable)return false;
+
+  const table=STATE.currentTable;
+  const existing=getOrder(table);
+  if(!existing||!fiscalOrderFinalized(existing))return true;
+
+  /*
+     Une vente déjà fiscalisée ne doit jamais être modifiée.
+     Si le client commande encore après paiement, on conserve la vente scellée
+     dans une archive dédiée puis on ouvre automatiquement une NOUVELLE ADDITION
+     sur la même table. Le nouveau plat C1-C9 ira dans cette nouvelle vente.
+  */
+  const archivedAt=new Date().toISOString();
+  const receipt=text(existing.fiscalReceiptReference||existing.paymentDraft?.receiptReference||receiptReference(existing));
+  const archiveCore={
+    schema:"ICHEF-FISCAL-PAID-CONTINUATION-1",
+    type:"PAID_SALE_BEFORE_NEW_ADDITION",
+    tableId:table,
+    archivedAt,
+    receiptReference:receipt||null,
+    order:clone(existing)
+  };
+
+  try{
+    archiveCore.archiveHash=await fiscalSha256Hex(fiscalCanonical(archiveCore));
+  }catch(_){
+    /* Le paiement reste déjà scellé dans le journal fiscal ; ce hash est une protection supplémentaire. */
+  }
+
+  const archiveRef="FISCAL_PAID_CONTINUATION_"+Date.now()+"_"+fiscalSafeId(receipt||table);
+  const archived=await optimisticWrite(
+    archiveRef,
+    {data:archiveCore},
+    "Archive vente fiscalisée avant nouvelle addition"
+  );
+
+  if(!archived){
+    toast("Nouvelle addition impossible : archive fiscale à synchroniser",true);
+    return false;
+  }
+
+  const tableDef=STATE.tables.find(t=>t.label===table);
+  const pax=Math.max(1,num(existing.pax||existing.covers||tableDef?.pax||2)||2);
+  const createdAt=Date.now();
+  const fresh={
+    tableId:table,
+    status:"open",
+    pax,
+    createdAt,
+    updatedAt:createdAt,
+    items:[],
+    source:"TELEPHONE",
+    previousFiscalReceiptReference:receipt||null,
+    continuationOfFiscalSale:receipt||null,
+    orderMeta:{
+      version:2,
+      origin:"PAD",
+      serviceMode:"SERVEUR",
+      paymentStatus:"A_PAYER",
+      productionStatus:"WAITING",
+      tableId:table,
+      updatedAt:new Date(createdAt).toISOString(),
+      updatedBy:STATE.role||"SERVEUR",
+      deviceId:STATE.deviceId,
+      terminal:"TELEPHONE",
+      continuationOfFiscalSale:receipt||null
+    }
+  };
+
+  const opened=await optimisticWrite(
+    table,
+    fresh,
+    "Nouvelle addition après vente fiscalisée"
+  );
+
+  if(!opened){
+    toast("Nouvelle addition à synchroniser",true);
+    return false;
+  }
+
+  STATE.currentOrder=clone(fresh);
+  STATE.lastLineKey="";
+  STATE.pendingCookingLine="";
+  toast("Nouvelle addition ouverte");
+  return true;
+}
+
+async function confirmProductSeat(seat){
   const pending=pendingProductSeatChoice;
   if(!pending||!pending.product)return;
 
   const n=Math.max(1,Math.min(9,Number(seat)||1));
+  const seatBtns=$("sheetBody")?.querySelectorAll("[data-product-seat]")||[];
+  seatBtns.forEach(btn=>btn.disabled=true);
+
+  /* Si une ancienne vente de cette table est déjà fiscalisée, on ouvre
+     automatiquement une nouvelle addition au lieu de bloquer C1-C9. */
+  const writable=await prepareWritableOrderForProductSelection();
+  if(!writable){
+    seatBtns.forEach(btn=>btn.disabled=false);
+    return;
+  }
+
   pendingProductSeatChoice=null;
 
   /* Le C choisi devient aussi le C actif pour les actions suivantes. */
