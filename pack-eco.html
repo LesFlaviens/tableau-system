@@ -10212,7 +10212,103 @@ setTimeout(() => {
     scheduleRender();
 }, 200);
 </script>
+<!-- 1. CORRECTION VISUELLE : TITRE SUR UNE LIGNE SANS CASSER LE C1 -->
+<style id="ticket-une-ligne-flottant">
+/* La colonne de gauche doit pouvoir se réduire */
+body.order-open .ticket-left {
+    min-width: 0 !important;
+    display: block !important;
+}
 
+/* Le conteneur du texte est un bloc classique avec coupe stricte (ellipsis) */
+body.order-open .ticket-name {
+    display: block !important;
+    white-space: nowrap !important;
+    overflow: hidden !important;
+    text-overflow: ellipsis !important;
+    width: 100% !important;
+    line-height: 26px !important; /* Centre parfaitement le texte par rapport au badge */
+    padding-right: 5px !important;
+}
+
+/* Le badge C1 "flotte" à gauche, permettant au texte de s'aligner et de se couper avec les ... */
+body.order-open .ticket-name .seat-badge {
+    float: left !important;
+    margin-right: 8px !important;
+    margin-top: 2px !important;
+}
+
+/* On masque DÉFINITIVEMENT les descriptions inutiles (x1 PLATS) */
+html body.order-open .ticket-row .ticket-meta,
+body.order-open .ticket-name .dest-tag,
+body.order-open .ticket-name .line-state {
+    display: none !important;
+}
+</style>
+
+<!-- 2. FONCTIONNALITÉ : POPUP C1-C9 AU CLIC SUR UN PLAT -->
+<script id="popup-qui-mange-quoi-rapide">
+setTimeout(() => {
+    if(window.mutateLine) {
+        const originalMutateLine = window.mutateLine;
+        
+        // On intercepte le clic sur un plat du ticket
+        window.mutateLine = async function(key, action) {
+            // L'action "obs" était l'action par défaut au clic sur la gauche du ticket
+            if (action === "obs") {
+                const o = STATE.currentOrder || ensureOrder(STATE.currentTable);
+                const item = o.items.find(x => lineKey(x) === key);
+                if (!item) return;
+
+                // On ouvre instantanément la grille C1-C9
+                openSheet("👥 POUR QUI ? · " + esc(itemName(item)), `
+                    <div style="display:grid; grid-template-columns:repeat(3, 1fr); gap:12px; padding: 10px;">
+                        ${Array.from({length: 9}, (_, i) => {
+                            const seat = i + 1;
+                            const isCurrent = itemSeat(item) === seat;
+                            return \`<button class="action-btn \${isCurrent ? 'green' : ''}" 
+                                    style="font-size: 26px !important; min-height: 80px !important; font-weight: 1000 !important; border-width: 3px !important; background: \${isCurrent ? '#eefbf4' : '#ffffff'} !important; color: \${isCurrent ? '#2dcc70' : '#111111'} !important; border-color: \${isCurrent ? '#2dcc70' : '#cfd2d5'} !important;"
+                                    onclick="changeLineSeat('\${esc(key)}', \${seat})">
+                                C\${seat}
+                            </button>\`;
+                        }).join('')}
+                    </div>
+                `);
+                return;
+            }
+            return originalMutateLine(key, action);
+        };
+
+        // Fonction pour valider le changement de siège (C1-C9)
+        window.changeLineSeat = async function(key, newSeat) {
+            const o = ensureOrder(STATE.currentTable);
+            const it = o.items.find(x => lineKey(x) === key);
+            if (!it) return;
+
+            const oldSeat = itemSeat(it);
+            it.guest = "C" + newSeat;
+            it.guestName = "C" + newSeat;
+            it.seat = newSeat;
+            it.guestSeat = newSeat;
+            it.seatNumber = newSeat;
+
+            if (num(o.pax || 0) < newSeat) o.pax = newSeat;
+
+            const wasSent = lineFired(it);
+            await saveCurrent(o, "Attribution convive C" + newSeat, {immediate: wasSent});
+            
+            // Si le plat était déjà en cuisine, on envoie une alerte de changement
+            if(wasSent && oldSeat !== newSeat){
+                try{ await productionAlert(it, "CONVIVE", \`C\${oldSeat||"?"} → C\${newSeat}\`); }catch(e){}
+            }
+
+            closeSheet();
+            renderTicket();
+            toast("👤 C" + newSeat + " assigné");
+        };
+    }
+}, 500);
+</script>
 
   
 </body>
