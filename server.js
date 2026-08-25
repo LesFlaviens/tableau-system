@@ -1377,36 +1377,68 @@ const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
     }
 });
 
-// =========================================================================
-// 📞 DEMANDE DE RAPPEL (VIA GMAIL DIRECT)
-// =========================================================================
+// ==========================================================================
+// 📞 DEMANDE DE RAPPEL — ALERTE PAR EMAIL
+// ==========================================================================
+
 app.post('/api/twilio/call-me', async (req, res) => {
     const { phone } = req.body;
-    
+
+    if (!phone || String(phone).trim().length < 6) {
+        return res.status(400).json({
+            success: false,
+            error: "Numéro de téléphone invalide."
+        });
+    }
+
     try {
+
         const transporter = nodemailer.createTransport({
             service: 'gmail',
             auth: {
-                user: 'flavieniche@gmail.com', // 👈 L'apostrophe est bien fermée ici !
-                pass: 'atebfwhijmgmavcy' // 👈 Ton code Google sans espaces
+                user: process.env.GMAIL_USER,
+                pass: process.env.GMAIL_APP_PASSWORD
             }
         });
 
         const mailOptions = {
-            from: 'flavieniche@gmail.com',
+            from: process.env.GMAIL_USER,
             to: 'iche.flavien@ichef.ch',
-            subject: '🚨 iCHEF OS - RAPPEL URGENT 🚨',
-            text: `Un prospect sur la vitrine demande à être rappelé immédiatement.\n\n📞 Numéro : ${phone}`
+
+            subject: '📞 iCHEF OS — DEMANDE DE RAPPEL',
+
+            text:
+`Un prospect demande à être rappelé.
+
+📞 Numéro : ${String(phone).trim()}
+
+Date : ${new Date().toLocaleString('fr-FR')}
+
+Demande envoyée depuis iCHEF OS.`
         };
 
         await transporter.sendMail(mailOptions);
-        
-        console.log(`✅ Alerte de rappel EMAIL envoyée pour le numéro : ${phone}`);
-        res.json({ success: true, message: "Demande traitée avec succès." });
+
+        console.log(
+            `✅ Demande de rappel reçue : ${String(phone).trim()}`
+        );
+
+        res.json({
+            success: true,
+            message: "Votre demande a bien été envoyée. Nous vous rappellerons rapidement."
+        });
 
     } catch (error) {
-        console.error("❌ Erreur Email Rappel :", error.message);
-        res.status(500).json({ success: false, error: "Erreur serveur email" });
+
+        console.error(
+            "❌ Erreur demande de rappel :",
+            error.message
+        );
+
+        res.status(500).json({
+            success: false,
+            error: "Impossible d'envoyer la demande de rappel."
+        });
     }
 });
 
