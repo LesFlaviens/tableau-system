@@ -3679,17 +3679,8 @@ body.order-open .ticket-meta {
     background-color: transparent !important; 
     border: 2px solid rgba(0, 0, 0, 0.4) !important; 
     z-index: 10 !important; 
-    pointer-events: none !important;
-    transition: none !important;
-    animation: none !important;
-    opacity: 1 !important;
-    visibility: visible !important;
-    will-change: auto !important;
-}
-
-.ichef-auto-chair.seat-linked {
-    border-color: var(--ichef-seat-color, rgba(0,0,0,.45)) !important;
-    box-shadow: 0 0 0 1px rgba(255,255,255,.18), 0 0 8px color-mix(in srgb, var(--ichef-seat-color, #777) 28%, transparent);
+    pointer-events: none !important; 
+    transition: all 0.3s ease;
 }
 .arch-table.service-live .ichef-auto-chair {
     border-color: rgba(255, 255, 255, 0.7) !important;
@@ -3770,152 +3761,96 @@ body.order-open .ticket-meta {
         });
     }
 
-    // --- 2. CHAISES C1..C99 CONNECTÉES À LA SOURCE SERVEUR ---
-    // Un point = UNE chaise occupée précise. Le cache dépend de la liste des sièges,
-    // pas seulement du nombre de PAX : [1,2] -> [3,4] redessine correctement.
-    function tableLabelForElement(table) {
-        let label = table.dataset.table || table.dataset.planTable || '';
-        if (!label && table.dataset.archKey && table.dataset.archKey.startsWith('table:')) {
-            label = table.dataset.archKey.slice(6);
-        }
-        return String(label || '').trim();
-    }
+    // --- 2. SCRIPT DES POINTS AUTOUR DE LA TABLE ---
+    // Source unique : PAX clients réels. Jamais de lecture du numéro de table,
+    // de l'heure, de la zone ou d'un autre texte affiché.
+    function livePaxForElement(table) {
+        let pax = Number(table.dataset.pax);
 
-    function normalizeSeatList(list) {
-        if (!Array.isArray(list)) return [];
-        return [...new Set(list.map(Number)
-            .filter(n => Number.isFinite(n) && n > 0)
-            .map(n => Math.min(99, Math.trunc(n))))]
-            .sort((a,b) => a-b);
-    }
-
-    function liveSeatStateForElement(table) {
-        const label = tableLabelForElement(table);
-        let seats = [];
-        let capacity = 0;
-
-        // Source prioritaire : ordre/réservation/TABLE_OCCUPANCY_MASTER côté moteur principal.
-        // IMPORTANT : [] est une valeur AUTORITAIRE (= table libre / 0 point).
-        // On ne doit jamais retomber sur un ancien data-pax quand le serveur dit 0 chaise.
-        let authoritativeSeats = false;
-        if (label && typeof window.tableOccupiedSeats === 'function') {
-            seats = normalizeSeatList(window.tableOccupiedSeats(label));
-            authoritativeSeats = true;
-        }
-
-        // Compatibilité uniquement avant le chargement du moteur principal.
-        if (!authoritativeSeats) {
-            const pax = Number(table.dataset.pax);
-            if (Number.isFinite(pax) && pax > 0) {
-                seats = Array.from({length:Math.min(99,Math.trunc(pax))}, (_,i)=>i+1);
+        // Sécurité pour anciens nœuds : résolution par l'identifiant de table,
+        // sans jamais parser le texte visible.
+        if (!Number.isFinite(pax)) {
+            let label = table.dataset.table || table.dataset.planTable || '';
+            if (!label && table.dataset.archKey && table.dataset.archKey.startsWith('table:')) {
+                label = table.dataset.archKey.slice(6);
+            }
+            if (label && typeof tableClientPax === 'function') {
+                pax = Number(tableClientPax(label));
             }
         }
 
-        if (label && typeof window.tableSeatCapacity === 'function') {
-            capacity = Number(window.tableSeatCapacity(label)) || 0;
-        }
-        if (!capacity) capacity = Number(table.dataset.capacity) || 0;
-        capacity = Math.max(capacity, seats.length, ...seats, 0);
-        capacity = Math.max(0, Math.min(99, Math.trunc(capacity)));
-
-        return { label, seats, capacity };
-    }
-
-    function rectSeatSlots(capacity) {
-        const cap = Math.max(1, Math.trunc(capacity || 1));
-        let leftCount = cap >= 6 ? 1 : 0;
-        let rightCount = cap >= 6 ? 1 : 0;
-        const rem = cap - leftCount - rightCount;
-        const topCount = Math.ceil(rem / 2);
-        const bottomCount = Math.floor(rem / 2);
-        const slots = [];
-        for (let i=0;i<topCount;i++) slots.push({edge:'top', pos:(i+1)/(topCount+1)});
-        for (let i=0;i<bottomCount;i++) slots.push({edge:'bottom', pos:(i+1)/(bottomCount+1)});
-        for (let i=0;i<leftCount;i++) slots.push({edge:'left', pos:(i+1)/(leftCount+1)});
-        for (let i=0;i<rightCount;i++) slots.push({edge:'right', pos:(i+1)/(rightCount+1)});
-        return slots;
-    }
-
-    function positionSeatPoint(chair, seat, capacity, isRound) {
-        const cap = Math.max(capacity, seat, 1);
-        if (isRound) {
-            // C1 en haut puis sens horaire : position stable pour chaque chaise.
-            const angle = -Math.PI/2 + ((seat-1) / cap) * (2*Math.PI);
-            const radius = 48;
-            chair.style.left = `calc(50% + ${Math.cos(angle)*radius}px - 7px)`;
-            chair.style.top = `calc(50% + ${Math.sin(angle)*radius}px - 7px)`;
-            return;
-        }
-
-        const slots = rectSeatSlots(cap);
-        const slot = slots[Math.max(0, Math.min(slots.length-1, seat-1))] || slots[0];
-        if (slot.edge === 'top') {
-            chair.style.top = '-7px';
-            chair.style.left = `calc(${slot.pos*100}% - 7px)`;
-        } else if (slot.edge === 'bottom') {
-            chair.style.bottom = '-7px';
-            chair.style.left = `calc(${slot.pos*100}% - 7px)`;
-        } else if (slot.edge === 'left') {
-            chair.style.left = '-7px';
-            chair.style.top = `calc(${slot.pos*100}% - 7px)`;
-        } else {
-            chair.style.right = '-7px';
-            chair.style.top = `calc(${slot.pos*100}% - 7px)`;
-        }
+        if (!Number.isFinite(pax)) pax = 0;
+        return Math.max(0, Math.min(99, Math.trunc(pax)));
     }
 
     function renderTableChairs() {
         document.querySelectorAll('.arch-table, .table-card, .plan-table').forEach(table => {
-            const live = liveSeatStateForElement(table);
-            const signature = `${live.label}|${live.capacity}|${live.seats.join(',')}`;
+            const pax = livePaxForElement(table);
 
-            // Si la configuration n'a pas changé, on ne touche pas au DOM
-            if (table.dataset.drawnSeatSignature === signature) return;
+            // 0 client = 0 point, y compris après libération d'une table.
+            if (String(table.dataset.drawnChairs) === String(pax) &&
+                table.querySelectorAll('.ichef-auto-chair').length === pax) return;
 
-            table.dataset.drawnSeatSignature = signature;
-            
-            // Récupérer les chaises existantes sous forme de Map
-            const existingChairs = new Map();
-            table.querySelectorAll('.ichef-auto-chair').forEach(c => {
-                existingChairs.set(c.dataset.seat, c);
-            });
+            table.dataset.drawnChairs = String(pax);
+            table.querySelectorAll('.ichef-auto-chair').forEach(c => c.remove());
+            if (pax === 0) return;
 
             table.style.overflow = 'visible';
+
             const isRound = table.classList.contains('round') || table.style.borderRadius === '50%';
-            const currentSeatsSet = new Set(live.seats.map(String));
+            let topCount = Math.ceil(pax / 2);
+            let bottomCount = Math.floor(pax / 2);
+            let leftCount = 0, rightCount = 0;
 
-            // 1. Supprimer uniquement les chaises qui ne sont plus occupées
-            existingChairs.forEach((chair, seatStr) => {
-                if (!currentSeatsSet.has(seatStr)) {
-                    chair.remove();
+            if (pax >= 6 && !isRound) {
+                leftCount = 1;
+                rightCount = 1;
+                const rem = pax - 2;
+                topCount = Math.ceil(rem / 2);
+                bottomCount = Math.floor(rem / 2);
+            }
+
+            let t = 0, b = 0, l = 0, r = 0;
+
+            for (let i = 0; i < pax; i++) {
+                const chair = document.createElement('div');
+                chair.className = 'ichef-auto-chair';
+                chair.setAttribute('aria-hidden', 'true');
+
+                if (isRound) {
+                    const angle = (i / pax) * (2 * Math.PI);
+                    chair.style.left = '50%';
+                    chair.style.top = '50%';
+                    chair.style.transform = `translate(-50%, -50%) rotate(${angle}rad) translateY(-45px)`;
+                } else if (t < topCount) {
+                    chair.style.top = '-7px';
+                    chair.style.left = `calc(${(t + 1) * (100 / (topCount + 1))}% - 7px)`;
+                    t++;
+                } else if (b < bottomCount) {
+                    chair.style.bottom = '-7px';
+                    chair.style.left = `calc(${(b + 1) * (100 / (bottomCount + 1))}% - 7px)`;
+                    b++;
+                } else if (l < leftCount) {
+                    chair.style.left = '-7px';
+                    chair.style.top = '50%';
+                    chair.style.transform = 'translateY(-50%)';
+                    l++;
+                } else if (r < rightCount) {
+                    chair.style.right = '-7px';
+                    chair.style.top = '50%';
+                    chair.style.transform = 'translateY(-50%)';
+                    r++;
                 }
-            });
 
-            // 2. Mettre à jour ou ajouter les chaises occupées
-            live.seats.forEach(seat => {
-                const seatStr = String(seat);
-                let chair = existingChairs.get(seatStr);
-
-                if (!chair) {
-                    chair = document.createElement('div');
-                    chair.className = 'ichef-auto-chair';
-                    chair.dataset.seat = seatStr;
-                    chair.setAttribute('aria-label', `${live.label || 'Table'} · C${seat} occupée`);
-                    chair.title = `C${seat}`;
-                    if (seat >= 1 && seat <= 9) {
-                        chair.style.setProperty('--ichef-seat-color', `var(--c${seat})`);
-                        chair.classList.add('seat-linked');
-                    }
-                    table.appendChild(chair);
+                if (!table.classList.contains('service-live')) {
+                    const tableBorder = window.getComputedStyle(table).borderColor;
+                    if (tableBorder && tableBorder !== 'rgba(0, 0, 0, 0)') chair.style.borderColor = tableBorder;
                 }
-                
-                // Repositionnement sans réinsertion DOM
-                positionSeatPoint(chair, seat, live.capacity, isRound);
-            });
+                table.appendChild(chair);
+            }
         });
     }
 
-    window.ICHEF_RENDER_LINKED_CHAIRS = renderTableChairs;
     // --- 3. LANCEMENT DES DEUX SCRIPTS ---
     if (document.readyState === 'loading') {
         document.addEventListener('DOMContentLoaded', initZoomButtons);
@@ -3923,128 +3858,11 @@ body.order-open .ticket-meta {
         initZoomButtons();
     }
     renderTableChairs();
-    // V20 anti-clignotement : aucun polling 350 ms.
-    // Les points sont désormais intégrés directement au rendu des tables/plans.
+    setInterval(renderTableChairs, 350);
     window.addEventListener("ichef:live-state-updated", renderTableChairs);
 
 })();
 </script>
-
-<style id="ichef-v20-chaises-stables">
-/* V20 — aucune animation/transition sur les points clients. */
-.ichef-auto-chair{transition:none!important;animation:none!important;opacity:1!important;visibility:visible!important;filter:none!important;}
-.table-card .ichef-auto-chair,.plan-table .ichef-auto-chair,.arch-table .ichef-auto-chair{display:block!important;}
-</style>
-
-<style id="ichef-v21-chairs-realtime">
-/* V21 — chaises = état serveur canonique. Aucun clignotement. */
-.ichef-auto-chair{transition:none!important;animation:none!important}
-</style>
-
-<style id="ichef-cover-counter-pro-v1">
-/* =========================================================
-   COMPTEUR COUVERTS PRO V2 — service + architecte, lecture immédiate serveur
-   Couleur table = état ; pastille = nombre de couverts ; points = sièges.
-   ========================================================= */
-.table-cover-badge{
-  position:absolute !important;
-  top:9px !important;
-  right:7px !important;
-  z-index:45 !important;
-  min-width:54px !important;
-  min-height:48px !important;
-  padding:4px 7px 5px !important;
-  display:flex !important;
-  flex-direction:column !important;
-  align-items:center !important;
-  justify-content:center !important;
-  gap:1px !important;
-  border:2px solid #fff !important;
-  border-radius:11px !important;
-  background:#090b0c !important;
-  color:#fff !important;
-  box-shadow:0 3px 12px rgba(0,0,0,.34) !important;
-  pointer-events:none !important;
-  line-height:1 !important;
-  white-space:nowrap !important;
-}
-.table-cover-badge .cover-count{
-  display:block !important;
-  font-size:24px !important;
-  line-height:.95 !important;
-  font-weight:1000 !important;
-  letter-spacing:-.7px !important;
-  color:inherit !important;
-}
-.table-cover-badge .cover-label{
-  display:block !important;
-  margin-top:2px !important;
-  font-size:7px !important;
-  line-height:1 !important;
-  font-weight:1000 !important;
-  letter-spacing:.55px !important;
-  color:inherit !important;
-  opacity:.92 !important;
-}
-.table-cover-badge.zero{
-  background:#f5f5f5 !important;
-  color:#111 !important;
-  border-color:#111 !important;
-  box-shadow:0 2px 8px rgba(0,0,0,.18) !important;
-}
-/* Carte écran tables : le compteur doit dominer tous les petits indicateurs. */
-.table-card .table-cover-badge{top:12px !important;right:7px !important;}
-.table-card .badge{display:none !important;}
-
-/* Plan simple : version compacte mais toujours très lisible. */
-.plan-table .table-cover-badge{
-  top:5px !important;
-  right:5px !important;
-  min-width:43px !important;
-  min-height:39px !important;
-  padding:3px 5px 4px !important;
-  border-radius:9px !important;
-}
-.plan-table .table-cover-badge .cover-count{font-size:19px !important;}
-.plan-table .table-cover-badge .cover-label{font-size:5.5px !important;letter-spacing:.25px !important;}
-
-/* Plan architectural : compteur fixe et indépendant de la couleur d'état. */
-.arch-table .table-cover-badge{
-  top:5px !important;
-  right:5px !important;
-  min-width:44px !important;
-  min-height:40px !important;
-  padding:3px 5px 4px !important;
-  border-radius:9px !important;
-}
-.arch-table .table-cover-badge .cover-count{font-size:20px !important;}
-.arch-table .table-cover-badge .cover-label{font-size:5.5px !important;letter-spacing:.25px !important;}
-/* En MODE ARCHITECTE, le compteur live reste visible mais se place en bas à droite
-   pour ne pas masquer le nom de la table ni les poignées de sélection. */
-.arch-table:not(.service-live) .table-cover-badge{
-  top:auto !important;
-  right:5px !important;
-  bottom:5px !important;
-  min-width:40px !important;
-  min-height:36px !important;
-  padding:3px 5px !important;
-  z-index:150 !important;
-}
-.arch-table:not(.service-live) .table-cover-badge .cover-count{font-size:18px !important;}
-.arch-table:not(.service-live) .table-cover-badge .cover-label{font-size:5px !important;}
-/* L'ancien petit 👥 PAX au centre n'est plus nécessaire. */
-.arch-table-live-head .pax{display:none !important;}
-
-/* Sur une table vraiment petite, conserver le nombre et masquer seulement le mot. */
-@container (max-width:85px){
-  .table-cover-badge .cover-label{display:none !important;}
-}
-@media(max-width:370px){
-  .table-card .table-cover-badge{min-width:49px !important;min-height:44px !important;}
-  .table-card .table-cover-badge .cover-count{font-size:22px !important;}
-}
-</style>
-
 </head>
 <body>
 <div id="screenLabel">ÉCRAN 1 · TABLES</div>
@@ -4544,12 +4362,6 @@ async function enqueueVersionedWrite(key,pending){
         try{
           await updateServer(key,pending.data,pending.reason);
 
-          /* Ancien ou nouveau server.js : on garde aussi une ligne de base de données
-             dédiée aux chaises. Cette écriture secondaire n'annule jamais la commande. */
-          if(pending.data && typeof pending.data==="object" && Array.isArray(pending.data.items)){
-            await writeCompatOccupancyMaster(key,pending.data).catch(()=>false);
-          }
-
           const latest=ICHEF_LOCAL_PENDING.get(key);
           if(latest && latest.version===pending.version){
             ICHEF_LOCAL_PENDING.delete(key);
@@ -4892,44 +4704,6 @@ async function updateServer(key,data,auditReason="Mise à jour téléphone"){
   if(!r.ok)throw new Error(j.error||j.message||("Écriture serveur "+r.status));
   return j;
 }
-async function writeCompatOccupancyMaster(table,order){
-  /* Compatibilité avec les anciennes versions de server.js : /update-order sait déjà
-     stocker n'importe quelle clé activeOrders. On maintient donc aussi l'index chaises
-     sans exiger une nouvelle route serveur. */
-  if(!table||table==="TABLE_OCCUPANCY_MASTER"||!order||typeof order!=="object"||!Array.isArray(order.items))return false;
-  try{
-    const normalized=syncOrderSeatOccupancy(clone(order));
-    const fresh=await getState();
-    const ao=fresh?.activeOrders&&typeof fresh.activeOrders==="object"?fresh.activeOrders:{};
-    const raw=ao.TABLE_OCCUPANCY_MASTER;
-    const oldData=(raw?.data&&typeof raw.data==="object")?raw.data:{};
-    const data={...oldData};
-    const seats=normalizeOccupiedSeats(normalized.occupiedSeats);
-    const configured=(STATE.tables||[]).find(t=>text(t?.label||t?.name||t?.id)===text(table));
-    const capRaw=Number(configured?.capacity ?? configured?.seats ?? configured?.pax ?? 0);
-    const seatCapacity=Math.max(Number.isFinite(capRaw)?Math.trunc(capRaw):0,seats.length,...seats,0);
-    data[table]={
-      tableId:table,
-      pax:Math.max(0,Number(normalized.pax)||0),
-      covers:Math.max(0,Number(normalized.pax)||0),
-      seatCapacity,
-      occupiedSeats:seats,
-      chairs:Array.from({length:seatCapacity},(_,i)=>({seat:i+1,occupied:seats.includes(i+1)})),
-      source:"order",
-      updatedAt:new Date().toISOString(),
-      seatStateVersion:2
-    };
-    await updateServer("TABLE_OCCUPANCY_MASTER",{
-      data,
-      updatedAt:new Date().toISOString(),
-      version:2
-    },"Synchronisation chaises "+table);
-    return true;
-  }catch(err){
-    console.warn("[iCHEF] index chaises compatible non écrit",table,err?.message||err);
-    return false;
-  }
-}
 async function optimisticWrite(key,data,reason){
   const pending=stageLocalValue(key,data,reason);
   return enqueueVersionedWrite(key,pending);
@@ -5049,11 +4823,6 @@ function applyServerState(serverState,source){
   scheduleRender();
   checkGlobalAlert();
   try{window.dispatchEvent(new CustomEvent("ichef:live-state-updated",{detail:{source:source||"server"}}))}catch(_){}
-  /* Le rendu des tables/chaises est forcé après intégration complète de l'état serveur. */
-  requestAnimationFrame(()=>{
-    try{ if(STATE.currentScreen==="tables") renderTables(); }catch(_){}
-    try{ if(typeof window.refreshPadServiceLive==="function") window.refreshPadServiceLive(); }catch(_){}
-  });
 }
 
 window.addEventListener("online",()=>{setConnection("RECONNEXION","warn");connectSocket();retryFailedWrites();syncFull("online")},{passive:true});
@@ -5174,209 +4943,41 @@ function occupiedSeatsForPax(pax){
   const p=Math.max(0,Math.min(99,Math.trunc(Number(pax)||0)));
   return Array.from({length:p},(_,i)=>i+1);
 }
-function normalizeOccupiedSeats(list){
-  if(!Array.isArray(list))return [];
-  return [...new Set(list.map(Number)
-    .filter(n=>Number.isFinite(n)&&n>0)
-    .map(n=>Math.max(1,Math.min(99,Math.trunc(n)))))]
-    .sort((a,b)=>a-b);
-}
-function fillSeatListToPax(seats,pax){
-  const out=normalizeOccupiedSeats(seats);
-  const target=Math.max(0,Math.min(99,Math.trunc(Number(pax)||0)));
-  for(let n=1;out.length<target&&n<=99;n++)if(!out.includes(n))out.push(n);
-  return out.sort((a,b)=>a-b);
-}
-function itemOccupiedSeats(order){
-  if(!order||typeof order!=="object")return [];
-  return normalizeOccupiedSeats((order.items||[])
-    .filter(i=>i&&!i.cancelled&&itemQty(i)>0)
-    .map(i=>itemSeat(i))
-    .filter(Boolean));
-}
 function syncOrderSeatOccupancy(order){
   if(!order||typeof order!=="object")return order;
-  let declaredPax=readPaxSource(order);
-  if(declaredPax===null)declaredPax=readPaxSource(order.reservation);
-
-  const explicit=normalizeOccupiedSeats(order.occupiedSeats);
-  const itemSeats=itemOccupiedSeats(order);
-
-  // Si PAX est déclaré, il est prioritaire pour permettre 5 -> 2 et 2 -> 0.
-  // Les sièges portant réellement des articles restent néanmoins protégés.
-  let pax=declaredPax===null?Math.max(explicit.length,itemSeats.length):declaredPax;
-  pax=Math.max(pax,itemSeats.length);
-  pax=Math.max(0,Math.min(99,Math.trunc(pax||0)));
-
-  let seats=[];
-  for(const n of itemSeats)if(!seats.includes(n)&&seats.length<pax)seats.push(n);
-  for(const n of explicit)if(!seats.includes(n)&&seats.length<pax)seats.push(n);
-  seats=fillSeatListToPax(seats,pax);
-
+  let pax=readPaxSource(order);
+  if(pax===null){
+    const seats=Array.isArray(order.occupiedSeats)?order.occupiedSeats:[];
+    const maxSeat=seats.reduce((m,s)=>Math.max(m,Number(s)||0),0);
+    pax=Math.max(0,Math.min(99,Math.trunc(maxSeat||0)));
+  }
   order.pax=pax;
   order.covers=pax;
-  order.occupiedSeats=seats;
-  order.seatStateVersion=2;
+  order.occupiedSeats=occupiedSeatsForPax(pax);
+  order.seatStateVersion=1;
   return order;
 }
-function serverOccupancyRow(table){
+function serverOccupancyPax(table){
   const master=unwrap(STATE.activeOrders.TABLE_OCCUPANCY_MASTER)||{};
   const data=master.data&&typeof master.data==="object"?master.data:master;
   const row=data?.[table];
-  return row&&typeof row==="object"?row:null;
-}
-function serverOccupiedSeats(table){
-  const row=serverOccupancyRow(table);
-  if(!row)return null;
-  if(Array.isArray(row.occupiedSeats))return normalizeOccupiedSeats(row.occupiedSeats);
-  const p=readPaxSource(row);
-  return p===null?null:occupiedSeatsForPax(p);
-}
-function reservationOccupiedSeats(table){
-  const res=findReservation(table);
-  const p=readPaxSource(res);
-  return p===null?null:occupiedSeatsForPax(p);
-}
-function localPendingOrderForTable(table){
-  const pending=(typeof ICHEF_LOCAL_PENDING!=="undefined"&&ICHEF_LOCAL_PENDING)?ICHEF_LOCAL_PENDING.get(table):null;
-  if(!pending||!pending.data||typeof pending.data!=="object"||!Array.isArray(pending.data.items))return null;
-  return pending.data;
-}
-function occupancyMasterUpdatedAt(){
-  const raw=STATE.activeOrders.TABLE_OCCUPANCY_MASTER;
-  const stamp=raw?.updatedAt ?? raw?.data?.updatedAt ?? 0;
-  const n=Date.parse(stamp)||Number(stamp)||0;
-  return Number.isFinite(n)?n:0;
-}
-function orderUpdatedAt(order){
-  if(!order||typeof order!=="object")return 0;
-  const raw=order.updatedAt ?? order.modifiedAt ?? order.lastUpdate ?? order.createdAt ?? 0;
-  const n=Date.parse(raw)||Number(raw)||0;
-  return Number.isFinite(n)?n:0;
-}
-function tableOccupiedSeats(table){
-  /* V21 — la modification locale en cours gagne uniquement jusqu'à l'ACK serveur. */
-  const pending=localPendingOrderForTable(table);
-  if(pending){
-    const normalized=syncOrderSeatOccupancy(clone(pending));
-    return normalizeOccupiedSeats(normalized?.occupiedSeats);
-  }
-
-  const order=getOrder(table);
-  const dbSeats=serverOccupiedSeats(table);
-
-  /* Quand TABLE_OCCUPANCY_MASTER existe et est au moins aussi récent que la commande,
-     c'est la source serveur canonique des chaises. Cela permet à un autre PAD/téléphone
-     de déplacer C1/C2 vers C3/C4 sans être masqué par un ancien occupiedSeats local. */
-  if(dbSeats!==null){
-    const masterAt=occupancyMasterUpdatedAt();
-    const orderAt=orderUpdatedAt(order);
-    if(!order)return dbSeats;
-    if(masterAt && (!orderAt || masterAt>=orderAt))return dbSeats;
-  }
-
-  if(order&&typeof order==="object"){
-    const normalized=syncOrderSeatOccupancy(clone(order));
-    return normalizeOccupiedSeats(normalized?.occupiedSeats);
-  }
-
-  const resSeats=reservationOccupiedSeats(table);
-  if(resSeats!==null)return resSeats;
-  if(dbSeats!==null)return dbSeats;
-  return [];
-}
-function serverOccupancyPax(table){
-  const row=serverOccupancyRow(table);
-  if(!row)return null;
+  if(!row||typeof row!=="object")return null;
   const p=readPaxSource(row);
   if(p!==null)return p;
-  if(Array.isArray(row.occupiedSeats))return normalizeOccupiedSeats(row.occupiedSeats).length;
+  if(Array.isArray(row.occupiedSeats))return Math.max(0,Math.min(99,row.occupiedSeats.length));
   return null;
 }
 function tableClientPax(table){
-  const pending=localPendingOrderForTable(table);
-  if(pending){
-    const p=readPaxSource(pending);
-    const normalized=syncOrderSeatOccupancy(clone(pending));
-    const seats=normalizeOccupiedSeats(normalized?.occupiedSeats);
-    return Math.max(p===null?0:p,seats.length);
-  }
-
   const o=getOrder(table);
-  const dbPax=serverOccupancyPax(table);
-  if(dbPax!==null){
-    const masterAt=occupancyMasterUpdatedAt();
-    const orderAt=orderUpdatedAt(o);
-    if(!o)return Math.max(dbPax,tableOccupiedSeats(table).length);
-    if(masterAt && (!orderAt || masterAt>=orderAt))return Math.max(dbPax,tableOccupiedSeats(table).length);
-  }
-
-  if(o&&typeof o==="object"){
-    const p=readPaxSource(o);
-    const seats=tableOccupiedSeats(table);
-    return Math.max(p===null?0:p,seats.length);
-  }
+  const orderPax=readPaxSource(o);
+  if(orderPax!==null)return orderPax; // commande active prioritaire
   const res=findReservation(table);
   const reservationPax=readPaxSource(res);
-  if(reservationPax!==null)return reservationPax;
-  if(dbPax!==null)return dbPax;
-  return 0;
+  if(reservationPax!==null)return reservationPax; // réservation ensuite
+  const dbPax=serverOccupancyPax(table);
+  if(dbPax!==null)return dbPax; // index serveur explicite, y compris 0
+  return 0; // table libre = aucun client = aucun point
 }
-function tableSeatCapacity(table){
-  const t=(STATE.tables||[]).find(x=>text(x?.label||x?.name||x?.id)===text(table));
-  const raw=Number(t?.capacity ?? t?.seats ?? t?.pax ?? 0);
-  const occupied=tableOccupiedSeats(table);
-  const maxSeat=occupied.reduce((m,n)=>Math.max(m,Number(n)||0),0);
-  return Math.max(0,Math.min(99,Math.trunc(Math.max(Number.isFinite(raw)?raw:0,maxSeat,occupied.length))));
-}
-window.tableOccupiedSeats=tableOccupiedSeats;
-window.tableSeatCapacity=tableSeatCapacity;
-window.tableClientPax=tableClientPax;
-
-/* V20 — POINTS CLIENTS STABLES, INTÉGRÉS AU RENDU
-   Le point est présent dans le même HTML que la table : aucun flash entre
-   renderTables()/plan/architecture et un second passage JavaScript. */
-function ichefRectSeatSlots(capacity){
-  const cap=Math.max(1,Math.trunc(Number(capacity)||1));
-  let leftCount=cap>=6?1:0,rightCount=cap>=6?1:0;
-  const rem=cap-leftCount-rightCount;
-  const topCount=Math.ceil(rem/2),bottomCount=Math.floor(rem/2),slots=[];
-  for(let i=0;i<topCount;i++)slots.push({edge:"top",pos:(i+1)/(topCount+1)});
-  for(let i=0;i<bottomCount;i++)slots.push({edge:"bottom",pos:(i+1)/(bottomCount+1)});
-  for(let i=0;i<leftCount;i++)slots.push({edge:"left",pos:(i+1)/(leftCount+1)});
-  for(let i=0;i<rightCount;i++)slots.push({edge:"right",pos:(i+1)/(rightCount+1)});
-  return slots;
-}
-function ichefSeatInlineStyle(seat,capacity,isRound){
-  const n=Math.max(1,Math.trunc(Number(seat)||1));
-  const cap=Math.max(Math.trunc(Number(capacity)||0),n,1);
-  if(isRound){
-    const angle=-Math.PI/2+((n-1)/cap)*(2*Math.PI),radius=48;
-    return `left:calc(50% + ${Math.cos(angle)*radius}px - 7px);top:calc(50% + ${Math.sin(angle)*radius}px - 7px);`;
-  }
-  const slots=ichefRectSeatSlots(cap),slot=slots[Math.max(0,Math.min(slots.length-1,n-1))]||slots[0];
-  if(slot.edge==="top")return `top:-7px;left:calc(${slot.pos*100}% - 7px);`;
-  if(slot.edge==="bottom")return `bottom:-7px;left:calc(${slot.pos*100}% - 7px);`;
-  if(slot.edge==="left")return `left:-7px;top:calc(${slot.pos*100}% - 7px);`;
-  return `right:-7px;top:calc(${slot.pos*100}% - 7px);`;
-}
-function seatPointsHTMLForTable(label,isRound=false){
-  const seats=normalizeOccupiedSeats(tableOccupiedSeats(label));
-  if(!seats.length)return "";
-  const capacity=Math.max(tableSeatCapacity(label),seats.length,...seats,1);
-  return seats.map(seat=>{
-    const color=(seat>=1&&seat<=9)?`--ichef-seat-color:var(--c${seat});`:"";
-    return `<span class="ichef-auto-chair seat-linked" data-seat="${seat}" aria-label="${esc(label)} · C${seat} occupée" title="C${seat}" style="${color}${ichefSeatInlineStyle(seat,capacity,isRound)}"></span>`;
-  }).join("");
-}
-window.ICHEF_SEAT_POINTS_HTML=seatPointsHTMLForTable;
-
-function coverBadgeHTML(pax){
-  const n=Math.max(0,Math.min(99,Math.trunc(Number(pax)||0)));
-  return `<span class="table-cover-badge ${n===0?"zero":"occupied"}" aria-label="${n} couvert${n===1?"":"s"}" title="${n} couvert${n===1?"":"s"}"><span class="cover-count">${n}</span><span class="cover-label">COUVERTS</span></span>`;
-}
-window.ICHEF_COVER_BADGE_HTML=coverBadgeHTML;
-
 function tableStats(table){
   const o=getOrder(table);const res=findReservation(table);const pax=tableClientPax(table);
   if(!o){return{status:res?"reserved":"empty",pax,ready:0,age:0,total:0}}
@@ -6058,8 +5659,7 @@ function renderTables(){
       : "";
 
     const isExpress=!!(t.express||t.temporary||t.isTemporary);
-    return `<button class="table-card ${s.status} ${isExpress?"express-table":""}" data-table="${esc(t.label)}" data-pax="${s.pax}" data-capacity="${tableSeatCapacity(t.label)}">
-      ${coverBadgeHTML(s.pax)}
+    return `<button class="table-card ${s.status} ${isExpress?"express-table":""}" data-table="${esc(t.label)}" data-pax="${s.pax}">
       ${isExpress?`<span class="express-badge">EXPRESS</span>`:""}
       <span class="num">${esc(t.label)}</span>
       <span class="meta">${esc(meta)}</span>
@@ -6067,7 +5667,6 @@ function renderTables(){
       <span class="table-zone" style="color:${esc(zoneColor)}">${esc(zoneLabel)}</span>
       ${preview?`<span class="table-preview">${preview}</span>`:""}
       ${readyOverlay}
-      ${seatPointsHTMLForTable(t.label,false)}
     </button>`;
   }).join("");
 }
@@ -6846,7 +6445,7 @@ function openPlan(){
       ${empty}
       <div class="plan-canvas plan-canvas-responsive">
         ${zones.map(z=>`<div class="plan-zone" style="left:${z.__left}%;top:${z.__top}%;width:${z.__width}%;height:${z.__height}%"><strong>${esc(z.label||"ZONE")}</strong>${z.responsible?`<small>${esc(z.responsible)}</small>`:""}</div>`).join("")}
-        ${tables.map(t=>{const ex=isExpressTable(t);const order=getOrder(t.label);const active=(order?.items||[]).some(i=>i&&!i.cancelled&&itemQty(i)>0);const zl=text(t.__zone||getTableZoneLabel(t));const livePax=tableClientPax(t.label);return `<button class="plan-table ${ex?"express-table":""} ${active?"plan-table-active":""}" data-plan-table="${esc(t.label)}" data-pax="${livePax}" data-capacity="${tableSeatCapacity(t.label)}" style="left:${t.__left}%;top:${t.__top}%;width:${t.__width}%;height:${t.__height}%">${coverBadgeHTML(livePax)}<span>${esc(t.label)}</span><small>${livePax?`👥 ${livePax}`:(findReservation(t.label)?"RÉSERVÉE":"LIBRE")}${zl?` · ${esc(zl)}`:""}</small>${ex?`<b class="plan-express-mark">EXPRESS</b>`:""}${seatPointsHTMLForTable(t.label,false)}</button>`}).join("")}
+        ${tables.map(t=>{const ex=isExpressTable(t);const order=getOrder(t.label);const active=(order?.items||[]).some(i=>i&&!i.cancelled&&itemQty(i)>0);const zl=text(t.__zone||getTableZoneLabel(t));const livePax=tableClientPax(t.label);return `<button class="plan-table ${ex?"express-table":""} ${active?"plan-table-active":""}" data-plan-table="${esc(t.label)}" data-pax="${livePax}" style="left:${t.__left}%;top:${t.__top}%;width:${t.__width}%;height:${t.__height}%"><span>${esc(t.label)}</span><small>${livePax?`👥 ${livePax}`:(findReservation(t.label)?"RÉSERVÉE":"LIBRE")}${zl?` · ${esc(zl)}`:""}</small>${ex?`<b class="plan-express-mark">EXPRESS</b>`:""}</button>`}).join("")}
       </div>
     </div>
     <div class="plan-legend"><span>⬜ Libre</span><span>🟧 Commande active</span><span>🟠 EXPRESS temporaire</span></div>
@@ -9632,15 +9231,6 @@ async function bootApp(){
     if(!STATE.lastServerAt||now()-STATE.lastServerAt>7000)syncFull("watchdog");
   },5000);
 
-  /* V21 — garde-fou chaises : même si Socket.IO reste connecté mais qu'un événement
-     de table est perdu, relire l'état serveur périodiquement maintient PAX/C1..C99 à jour.
-     Aucun redessin 350 ms : seulement une lecture serveur légère toutes les 2,5 s. */
-  setInterval(()=>{
-    if(document.hidden||!navigator.onLine||!STATE.authenticated||STATE.syncing)return;
-    const onTables=STATE.currentScreen==="tables"||document.getElementById("ichefArchPad")?.classList.contains("open");
-    if(onTables)syncFull("chairs-live-watch");
-  },2500);
-
   window.addEventListener("online",()=>{setConnection("RECONNEXION","warn");syncFull("online");connectSocket()});
   window.addEventListener("offline",()=>{STATE.connected=false;setConnection("HORS LIGNE","bad")});
   window.addEventListener("focus",()=>{if(navigator.onLine)syncFull("focus")});
@@ -9801,9 +9391,9 @@ function planSeatState(order,seat){
   return {code:'draft',label:'À ENVOYER',mark:'○',allergy};
 }
 function planTableLive(t){
-  const order=getOrder(t.label),base=tableStats(t.label),occupied=tableOccupiedSeats(t.label),pax=Math.max(0,Math.min(99,tableClientPax(t.label)));
-  if(!order){return {code:base.status==='reserved'?'reserved':'empty',label:base.status==='reserved'?'RÉSERVÉE':'LIBRE',pax,time:'',seats:occupied.slice(0,9).map(n=>({seat:n,code:'occupied',label:'OCCUPÉ',mark:'•',allergy:false}))}}
-  const seats=occupied.slice(0,9).map(n=>({seat:n,...planSeatState(order,n)}));
+  const order=getOrder(t.label),base=tableStats(t.label),pax=Math.max(0,Math.min(99,tableClientPax(t.label)));
+  if(!order){return {code:base.status==='reserved'?'reserved':'empty',label:base.status==='reserved'?'RÉSERVÉE':'LIBRE',pax,time:'',seats:[]}}
+  const seats=[];for(let n=1;n<=Math.min(9,pax);n++)seats.push({seat:n,...planSeatState(order,n)});
   const all=(order.items||[]).filter(i=>i&&!i.cancelled&&itemQty(i)>0);
   let code='occupied',label='OCCUPÉE';
   if(String(order.status||'').toLowerCase().includes('payment')){code='payment';label='PAIEMENT'}
@@ -9828,7 +9418,7 @@ function elementInner(e){const label=esc(e.label||iconFor(e.type));if(e.type==='
 function canvasHTML(){
  const zones=roomZones().map(z=>{z.__kind='zone';const key=getZoneKey(z),locked=!!z.locked,fill=aClamp(z.fillOpacity||15,3,55),border=['solid','dashed','dotted'].includes(aText(z.borderStyle))?aText(z.borderStyle):'dashed';return `<div class="arch-node arch-zone ${zoneClass(z)} ${locked?'locked':''} ${A.selected===key?'selected':''}" data-arch-key="${esc(key)}" style="${nodeStyle(z)};--zone-color:${esc(colorForZone(z))};--zone-fill:${fill}%;--zone-border:${border}"><span class="zone-label">${esc(z.label||'ZONE')}</span><span class="zone-kind">${esc(zoneKindLabel(z.zoneKind))}</span><span class="zone-meta">${esc(z.responsible||z.responsable||'')} ${z.capacity?'· '+esc(z.capacity)+' places':''}</span>${locked?'<span class="arch-lock-badge">🔒</span>':''}${handles()}</div>`}).join('');
  const els=roomElements().map(e=>{e.__kind='element';const key=getElemKey(e),locked=!!e.locked;return `<div class="arch-node arch-generic ${classFor(e.type)} ${cashPatternClass(e)} ${locked?'locked':''} ${A.selected===key?'selected':''}" data-arch-key="${esc(key)}" style="${nodeStyle(e)}${cashCustomStyle(e)}">${elementInner(e)}${locked?'<span class="arch-lock-badge">🔒</span>':''}${handles()}</div>`}).join('');
- const tables=roomTables().map(t=>{t.__kind='table';const key=getTableKey(t),act=activeOrder(t.label),ex=isExpressTable(t),shape=aText(t.shape||'square'),locked=!!t.locked,service=A.mode==='service',live=planTableLive(t);const liveClass=service?`service-live live-${live.code}`:'';const serviceInner=service?`${coverBadgeHTML(live.pax)}<span class="tlabel">${esc(t.label)}</span><span class="arch-table-live-head"><span class="state ${esc(live.code)}">${esc(live.label)}</span>${live.time?`<span class="clock">${esc(live.time)}</span>`:''}</span>${live.seats?.length?`<span class="arch-seat-strip">${planSeatStripHTML(live)}</span>`:''}`:`${coverBadgeHTML(live.pax)}<span class="tlabel">${esc(t.label)}</span><span class="tpax">CAP. ${Number(t.pax)||2}${t.zone?' · '+esc(t.zone):''}</span>`;const seatPoints=(typeof window.ICHEF_SEAT_POINTS_HTML==='function')?window.ICHEF_SEAT_POINTS_HTML(t.label,shape==='round'):'';return `<button type="button" class="arch-node arch-table ${shape==='round'?'round':''} ${act?'active-order':''} ${liveClass} ${ex?'express':''} ${locked?'locked':''} ${A.selected===key?'selected':''}" data-arch-key="${esc(key)}" data-pax="${live.pax}" data-capacity="${tableSeatCapacity(t.label)}" style="${nodeStyle(t)}">${serviceInner}${seatPoints}${locked?'<span class="arch-lock-badge">🔒</span>':''}${handles()}</button>`}).join('');
+ const tables=roomTables().map(t=>{t.__kind='table';const key=getTableKey(t),act=activeOrder(t.label),ex=isExpressTable(t),shape=aText(t.shape||'square'),locked=!!t.locked,service=A.mode==='service',live=planTableLive(t);const liveClass=service?`service-live live-${live.code}`:'';const serviceInner=service?`<span class="tlabel">${esc(t.label)}</span><span class="arch-table-live-head"><span class="state ${esc(live.code)}">${esc(live.label)}</span><span class="pax">👥${live.pax||0}</span>${live.time?`<span class="clock">${esc(live.time)}</span>`:''}</span>${live.seats?.length?`<span class="arch-seat-strip">${planSeatStripHTML(live)}</span>`:''}`:`<span class="tlabel">${esc(t.label)}</span><span class="tpax">CAP. ${Number(t.pax)||2}${t.zone?' · '+esc(t.zone):''}</span>`;return `<button type="button" class="arch-node arch-table ${shape==='round'?'round':''} ${act?'active-order':''} ${liveClass} ${ex?'express':''} ${locked?'locked':''} ${A.selected===key?'selected':''}" data-arch-key="${esc(key)}" data-pax="${live.pax}" style="${nodeStyle(t)}">${serviceInner}${locked?'<span class="arch-lock-badge">🔒</span>':''}${handles()}</button>`}).join('');
  return `<div class="archpad-roomtitle">${esc(A.room)}</div>${zones}${els}${tables}`;
 }
 function roomListHTML(){return A.rooms.map(r=>`<button type="button" class="archpad-room ${r===A.room?'active':''}" data-room="${esc(r)}">${esc(r)}<small>${A.tables.filter(t=>aText(t.room||A.rooms[0])===r).length} tables · ${A.zones.filter(z=>aText(z.room||A.rooms[0])===r).length} zones</small></button>`).join('')}
