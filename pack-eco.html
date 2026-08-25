@@ -3882,30 +3882,128 @@ body.order-open .ticket-meta {
     height: 100% !important;
 }
 </style>
-<style id="fluid-zoom-css">
-/* =========================================================
-   ZOOM FLUIDE ET TACTILE (MODE ARCHITECTE)
-   ========================================================= */
-/* On applique le zoom via une transformation CSS matérielle */
+<style id="zoom-fluide-vrai">
+/* Rend les changements de zoom de l'éditeur existant fluides (boutons et menu) */
 .archpad-stage-shell {
-    transform: scale(var(--fluid-zoom, 1)) !important;
-    transform-origin: top left !important;
-    transition: transform 0.15s ease-out !important; /* Transition douce pour les clics sur + et - */
-    will-change: transform; /* Optimisation matérielle */
+    transition: transform 0.2s cubic-bezier(0.25, 1, 0.5, 1) !important;
+    will-change: transform;
 }
 
-/* Quand on pince avec les doigts, on coupe la transition pour suivre exactement le mouvement */
-.archpad-stage-shell.pinching {
+/* Coupe l'animation quand on pince avec les doigts pour accrocher instantanément au mouvement */
+.archpad-stage-shell.is-pinching {
     transition: none !important;
 }
 
-/* On s'assure que le conteneur permet le défilement et bloque le zoom natif du navigateur */
+/* Bloque le zoom natif du navigateur (iPad/Téléphone) sur la carte */
 .archpad-stagewrap {
-    overflow: auto !important;
-    touch-action: pan-x pan-y !important; /* Autorise le défilement à 1 doigt, bloque le zoom de la page entière */
+    touch-action: pan-x pan-y !important;
 }
 </style>
+<script id="zoom-tactile-script">
+(function() {
+    function initPinchToZoom() {
+        const wrap = document.querySelector('.archpad-stagewrap');
+        const shell = document.querySelector('.archpad-stage-shell');
+        const zoomSelect = document.querySelector('.archpad-canvasbar select');
+        
+        // Si l'interface n'est pas encore chargée, on attend un peu
+        if (!wrap || !shell || !zoomSelect) {
+            setTimeout(initPinchToZoom, 500);
+            return;
+        }
 
+        let initialDistance = 0;
+        let initialZoomValue = 100;
+
+        // 1. Début du pincement à 2 doigts
+        wrap.addEventListener('touchstart', (e) => {
+            if (e.touches.length === 2) {
+                initialDistance = Math.hypot(
+                    e.touches[0].clientX - e.touches[1].clientX,
+                    e.touches[0].clientY - e.touches[1].clientY
+                );
+                // On récupère le zoom actuel depuis le menu déroulant
+                initialZoomValue = parseInt(zoomSelect.value) || 100;
+                shell.classList.add('is-pinching'); // Coupe l'animation CSS
+            }
+        }, { passive: false });
+
+        // 2. Mouvement du pincement
+        wrap.addEventListener('touchmove', (e) => {
+            if (e.touches.length === 2) {
+                e.preventDefault(); // Bloque le comportement natif du téléphone
+                
+                const currentDistance = Math.hypot(
+                    e.touches[0].clientX - e.touches[1].clientX,
+                    e.touches[0].clientY - e.touches[1].clientY
+                );
+                
+                const scale = currentDistance / initialDistance;
+                let newZoom = Math.round(initialZoomValue * scale);
+                
+                // Limites du zoom (20% à 400%)
+                newZoom = Math.max(20, Math.min(400, newZoom));
+
+                // Applique visuellement tout de suite
+                shell.style.transform = `scale(${newZoom / 100})`;
+
+                // Met à jour l'étiquette + / - si elle existe
+                const customLabel = document.querySelector('.custom-zoom-label');
+                if(customLabel) customLabel.innerText = newZoom + '%';
+            }
+        }, { passive: false });
+
+        // 3. Fin du pincement (on lâche l'écran)
+        wrap.addEventListener('touchend', (e) => {
+            if (e.touches.length < 2) {
+                shell.classList.remove('is-pinching'); // Réactive l'animation CSS
+                
+                // On lit la taille exacte qu'on a atteinte
+                const currentTransform = shell.style.transform;
+                const match = currentTransform.match(/scale\(([^)]+)\)/);
+                
+                if (match) {
+                    let finalZoom = Math.round(parseFloat(match[1]) * 100);
+                    
+                    // On ajoute cette valeur exacte dans le menu déroulant natif
+                    if (!Array.from(zoomSelect.options).some(o => parseInt(o.value) === finalZoom)) {
+                        let opt = document.createElement('option');
+                        opt.value = finalZoom;
+                        opt.text = finalZoom + '%';
+                        zoomSelect.appendChild(opt);
+                    }
+                    
+                    // On force le script d'origine à se synchroniser avec notre nouveau zoom
+                    zoomSelect.value = finalZoom;
+                    zoomSelect.dispatchEvent(new Event('change', { bubbles: true }));
+                }
+            }
+        });
+        
+        // BONUS : Zoom fluide à la molette sur PC (Ctrl + Molette)
+        wrap.addEventListener('wheel', (e) => {
+            if (e.ctrlKey) {
+                e.preventDefault();
+                let currentZoom = parseInt(zoomSelect.value) || 100;
+                let newZoom = currentZoom + (e.deltaY > 0 ? -10 : 10);
+                newZoom = Math.max(20, Math.min(400, newZoom));
+                
+                if (!Array.from(zoomSelect.options).some(o => parseInt(o.value) === newZoom)) {
+                    let opt = document.createElement('option');
+                    opt.value = newZoom;
+                    opt.text = newZoom + '%';
+                    zoomSelect.appendChild(opt);
+                }
+                zoomSelect.value = newZoom;
+                zoomSelect.dispatchEvent(new Event('change', { bubbles: true }));
+            }
+        }, { passive: false });
+    }
+
+    // Lance l'initialisation
+    initPinchToZoom();
+})();
+</script>
   
 </head>
 <body>
