@@ -1,5 +1,5 @@
-const CACHE_NAME = 'ichef-cache-v17'; // 💥 Passage en v17 pour forcer la mise à jour !
-const DYNAMIC_CACHE = 'ichef-dynamic-v17';
+const CACHE_NAME = 'ichef-cache-v18'; // On passe en v18 pour être sûr que tout le monde se mette à jour
+const DYNAMIC_CACHE = 'ichef-dynamic-v18';
 
 // ROUTAGE STRICT : Remplacement des "./" par "/" et ajout obligatoire de "/index.html"
 const ASSETS_TO_CACHE = [
@@ -69,27 +69,28 @@ self.addEventListener('fetch', (event) => {
         return; 
     }
 
-    // 3. FICHIERS STATIQUES (Interface, CSS, Images) -> CACHE FIRST
+    // 3. FICHIERS STATIQUES -> NETWORK FIRST (Réseau en priorité, Cache en secours)
+    // C'est LA solution pour que les mises à jour HTML s'appliquent automatiquement !
     event.respondWith(
-        caches.match(event.request).then((cachedResponse) => {
-            if (cachedResponse) {
-                return cachedResponse; // On sert depuis le cache immédiatement
-            }
-            
-            // Si non trouvé en cache, téléchargement réseau + ajout au cache dynamique
-            return fetch(event.request).then((networkResponse) => {
-                // Vérification stricte avant mise en cache
-                if(!networkResponse || networkResponse.status !== 200 || networkResponse.type !== 'basic') {
-                    return networkResponse;
-                }
+        fetch(event.request).then((networkResponse) => {
+            // Si le réseau fonctionne, on met à jour le cache dynamique discrètement avec la nouvelle version
+            if(networkResponse && networkResponse.status === 200 && networkResponse.type === 'basic') {
                 const responseClone = networkResponse.clone();
                 caches.open(DYNAMIC_CACHE).then((cache) => {
                     cache.put(event.request, responseClone);
                 });
-                return networkResponse;
-            }).catch(() => {
+            }
+            return networkResponse; // On renvoie la version toute fraîche
+            
+        }).catch(() => {
+            // 🛡️ HORS-LIGNE : Si le réseau est coupé, on sert ce qu'on a gardé en mémoire !
+            return caches.match(event.request).then((cachedResponse) => {
+                if (cachedResponse) {
+                    return cachedResponse;
+                }
+                
                 // Si pas de réseau et fichier non trouvé dans le cache : retour page connexion
-                if (event.request.headers.get('accept').includes('text/html')) {
+                if (event.request.headers.get('accept') && event.request.headers.get('accept').includes('text/html')) {
                     return caches.match('/connexionpartenaire.html');
                 }
             });
