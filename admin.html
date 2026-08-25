@@ -15,62 +15,171 @@
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 
 <script>
-        // Déclaration globale du cerveau
-        window.tenantID = new URLSearchParams(window.location.search).get('tenantID') || localStorage.getItem('ichef_tenant_id');
-        window.SERVER_URL = (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1" || window.location.protocol === "file:") 
-            ? "http://localhost:10000" : "https://tableau-system.onrender.com";
+    "use strict";
 
-        // 🔒 SÉCURITÉ : Générateur d'empreinte numérique
-        async function getDeviceFingerprint() {
-            let deviceId = localStorage.getItem('ichef_device_id');
-            if (!deviceId) {
-                deviceId = (crypto && crypto.randomUUID)
-                    ? crypto.randomUUID()
-                    : `device_${Date.now()}_${Math.random().toString(36).slice(2)}`;
-                localStorage.setItem('ichef_device_id', deviceId);
-            }
-            return deviceId;
+    if (!["os.ichef.ch", "localhost", "127.0.0.1"].includes(window.location.hostname)) {
+        document.documentElement.innerHTML = "<h1 style='color:red;text-align:center;margin-top:20%;font-family:sans-serif'>Accès iCHEF OS non autorisé</h1>";
+        throw new Error("Domaine non autorisé");
+    }
+
+    const requestedTenantID = new URLSearchParams(location.search).get("tenantID");
+    const storedTenantID = localStorage.getItem("ichef_tenant_id");
+
+    if (requestedTenantID && !/^[A-Za-z0-9_-]{2,80}$/.test(requestedTenantID)) {
+        localStorage.removeItem("ichef_tenant_id");
+        location.replace("connexionpartenaire.html");
+        throw new Error("tenantID invalide");
+    }
+
+    if (requestedTenantID && storedTenantID && requestedTenantID !== storedTenantID) {
+        localStorage.removeItem("EMPIRE_GLOBAL_SYNC");
+        sessionStorage.removeItem("ichef_csrf_token");
+        sessionStorage.removeItem("ichef_session_hint");
+    }
+
+    window.ICHEF_SECURITY = {
+        tenantID: requestedTenantID || storedTenantID,
+        serverURL: (["localhost", "127.0.0.1"].includes(location.hostname) || location.protocol === "file:")
+            ? "http://localhost:10000"
+            : "https://tableau-system.onrender.com",
+        csrfToken: null,
+        accessToken: null,
+        pin: null,
+        sessionId: null,
+        sessionExpiresAt: null,
+        user: null,
+        permissions: [],
+        deviceId: null,
+        ready: false,
+        connectionState: "initializing"
+    };
+
+    function getDeviceFingerprint() {
+        let id = localStorage.getItem("ichef_device_id");
+        if (!id) {
+            const fallback = () => {
+                const bytes = new Uint8Array(24);
+                crypto.getRandomValues(bytes);
+                return "dev_" + Array.from(bytes, b => b.toString(16).padStart(2, "0")).join("");
+            };
+            id = crypto.randomUUID ? crypto.randomUUID() : fallback();
+            localStorage.setItem("ichef_device_id", id);
         }
+        return id;
+    }
 
-        // 🔒 SÉCURITÉ : Validation de licence stricte & ADD-ONS avant affichage du DOM
-        (async function enforceSecurity() {
-            const urlParams = new URLSearchParams(window.location.search);
-            const urlTenantID = urlParams.get('tenantID');
-            const storedTenantID = localStorage.getItem('ichef_tenant_id');
+    function hasPermission(permission) {
+        const permissions = window.ICHEF_SECURITY.permissions || [];
+        return permissions.includes("*") || permissions.includes(permission);
+    }
 
-            if (urlTenantID && storedTenantID && urlTenantID !== storedTenantID) {
-                localStorage.removeItem('EMPIRE_GLOBAL_SYNC');
-                sessionStorage.removeItem('ichef_csrf_token');
-                sessionStorage.removeItem('ichef_session_hint');
+    function redirectToLogin(reason = "SESSION_INVALID") {
+        const sec = window.ICHEF_SECURITY;
+        sec.ready = false;
+        sec.connectionState = "unauthenticated";
+        sec.user = null;
+        sec.permissions = [];
+        sec.csrfToken = null;
+        sessionStorage.removeItem("ichef_csrf_token");
+        sessionStorage.removeItem("ichef_session_hint");
+        localStorage.removeItem("ichef_master_pin");
+        localStorage.removeItem("pin");
+        const tenant = encodeURIComponent(sec.tenantID || "");
+        location.replace(`connexionpartenaire.html?tenantID=${tenant}&reason=${encodeURIComponent(reason)}`);
+    }
+
+async function secureFetch(input, init = {}) {
+        const sec = window.ICHEF_SECURITY;
+        const rawUrl = typeof input === "string" ? input : input.url;
+        const absoluteUrl = rawUrl.startsWith("/") ? `${sec.serverURL}${rawUrl}` : rawUrl;
+        
+        const headers = new Headers(init.headers || {});
+        if (init.body && typeof init.body === "string") {
+            headers.set("Content-Type", "application/json");
+        }
+        if (sec.accessToken) headers.set('Authorization', `Bearer ${sec.accessToken}`);
+        if (sec.csrfToken) headers.set('X-CSRF-Token', sec.csrfToken);
+        if (sec.tenantID) headers.set('X-iCHEF-Tenant', sec.tenantID);
+        if (sec.deviceId) headers.set('X-iCHEF-Device', sec.deviceId);
+        if (sec.pin) headers.set('X-iCHEF-PIN', sec.pin);
+
+        try {
+            const response = await window.fetch(absoluteUrl, {
+                ...init,
+                headers,
+                cache: "no-store"
+            });
+            
+            if (!response.ok) {
+                console.warn(`⚠️ Le serveur a répondu ${response.status} sur ${absoluteUrl}`);
             }
+            return response;
+        } catch (error) {
+            console.error("❌ Erreur de connexion au serveur iCHEF Cloud :", error);
+            throw error;
+        }
+    }
 
-            window.tenantID = urlTenantID || storedTenantID;
-            if (!window.tenantID) {
-                window.location.replace('connexionpartenaire.html');
-                return;
-            }
+    async function auditEvent(action, details = {}) {
+        try {
+            await secureFetch("/api/audit/events", {
+                method: "POST",
+                body: JSON.stringify({
+                    tenantID: window.ICHEF_SECURITY.tenantID,
+                    module: "CONFIGURATION_GENERALE",
+                    action,
+                    details,
+                    page: location.pathname,
+                    clientTime: new Date().toISOString()
+                })
+            });
+        } catch (error) {
+            console.warn("Journalisation indisponible", error);
+        }
+    }
 
-            localStorage.setItem('ichef_tenant_id', window.tenantID);
-
-            try {
-                const deviceId = await getDeviceFingerprint();
-                
-                // 🚨 Session validée localement pour débloquer l'interface !
-                window.ICHEF_SECURITY = {
-                    csrfToken: localStorage.getItem('ichef_csrf_token') || sessionStorage.getItem('ichef_csrf_token') || '',
-                    user: { nom: "Admin", role: "MANAGER" },
-                    permissions: ['*'], // Donne tous les accès d'administration
-                    plan: 'CHEF', // Sera écrasé par la vraie licence dans quelques millisecondes
-                    addons: [],
-                    deviceId: deviceId
-                };
-
-                document.documentElement.style.opacity = '1';
-            } catch (e) {
-                console.error('Erreur d\'initialisation', e);
-                window.location.replace(`connexionpartenaire.html?tenantID=${encodeURIComponent(window.tenantID || '')}`);
-            }
-        })();
+    window.ICHEF_SECURITY_READY = (async function enforceSecurity() {
+        const sec = window.ICHEF_SECURITY;
+        sec.deviceId = getDeviceFingerprint();
+        if (!sec.tenantID) {
+            location.replace('connexionpartenaire.html');
+            return false;
+        }
+        localStorage.setItem('ichef_tenant_id', sec.tenantID);
+        const pin = localStorage.getItem('ichef_master_pin') || localStorage.getItem('pin') || '';
+        if (!/^\d{4,12}$/.test(pin)) {
+            location.replace(`connexionpartenaire.html?tenantID=${encodeURIComponent(sec.tenantID)}&reason=ADMIN_LOGIN_REQUIRED`);
+            return false;
+        }
+        try {
+            const response = await fetch(`${sec.serverURL}/api/verify-pin`, {
+                method:'POST', credentials:'include', cache:'no-store',
+                headers:{'Content-Type':'application/json'},
+                body:JSON.stringify({ tenantID:sec.tenantID, pin, deviceId:sec.deviceId })
+            });
+            const data = await response.json().catch(()=>({}));
+            if (!response.ok || data.success !== true) throw new Error(data.error || 'Accès refusé');
+            const role = String(data.role || data.user?.role || '').toLowerCase();
+            if (!['master','admin','manager','direction'].includes(role)) throw new Error('Profil administrateur requis');
+            sec.pin = pin;
+            sec.accessToken = data.accessToken || null;
+            sec.csrfToken = data.csrfToken || null;
+            sec.sessionId = data.sessionId || null;
+            sec.user = data.user || { name:'Direction', role:data.role || 'MASTER' };
+            sec.permissions = Array.isArray(data.permissions) ? data.permissions : ['*'];
+            sec.ready = true;
+            sec.connectionState = 'online';
+            window.tenantID = sec.tenantID;
+            window.SERVER_URL = sec.serverURL;
+            window.dispatchEvent(new CustomEvent('ichef:security-ready', { detail:{ tenantID:sec.tenantID, user:sec.user, permissions:sec.permissions } }));
+            return sec;
+        } catch (error) {
+            console.error('Erreur de session admin :', error);
+            alert('Accès administration refusé : ' + error.message);
+            redirectToLogin('ADMIN_AUTH_FAILED');
+            return false;
+        }
+    })();
     </script>
     
     <style>
@@ -1080,7 +1189,7 @@
             </button>
             
             <div id="dropdownList" class="dropdown-content-ichef">
-                <a href="caissetactile.html">💻 Caisse Tactile</a>
+                <a href="caisse.html">💻 Caisse Tactile</a>
                 <a href="assistant-ia.html">🤖 Intelligence Artificielle</a>
                 <a href="formation.html">🎓 Centre de Formation</a>
                 <a href="telechargements.html">📥 Exports Légaux</a>
@@ -1675,16 +1784,17 @@
                         </div>
                     </div>
 
-                    <div class="section-card">
-                        <h3 class="section-title">Intégration Bancaire</h3>
+                    <div class="section-card" style="border:1px solid rgba(99,184,255,.35)">
+                        <h3 class="section-title">💳 Paiement en ligne — Stripe Checkout</h3>
                         <div class="toggle-row">
-                            <div class="toggle-info"><strong>Autoriser le paiement Stripe</strong></div>
+                            <div class="toggle-info"><strong>Activer Stripe Checkout</strong><span>Le Pad et la caisse attendent la confirmation Stripe côté serveur avant fiscalisation.</span></div>
                             <label class="switch"><input type="checkbox" id="setting-qr-pay" onchange="markUnsaved()"><span class="slider"></span></label>
                         </div>
-                        <div class="input-group">
-                            <label>Identifiant Stripe (Clé Secrète)</label>
-                            <input type="password" id="resto-stripe" class="input-field" oninput="markUnsaved()">
-                        </div>
+                        <div class="input-group"><label>Route de création Stripe</label><input type="text" id="setting-stripe-create-url" class="input-field" value="/api/payments/stripe/checkout" oninput="markUnsaved()"></div>
+                        <div class="input-group"><label>Route de vérification Stripe</label><input type="text" id="setting-stripe-status-url" class="input-field" value="/api/payments/stripe/status" oninput="markUnsaved()"></div>
+                        <div class="input-group"><label>Lien Stripe de secours (optionnel)</label><input type="url" id="resto-stripe" class="input-field" placeholder="https://buy.stripe.com/..." oninput="markUnsaved()"></div>
+                        <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap"><button type="button" class="btn-sync" onclick="testStripeConnection()">TESTER STRIPE SERVEUR</button><span id="stripe-server-status" style="color:var(--text-muted);font-size:.85rem">Non testé</span></div><div style="margin-top:10px;color:var(--text-muted);font-size:.78rem;line-height:1.45">La clé secrète Stripe n’est jamais enregistrée dans ADMIN. Elle doit être configurée uniquement sur le serveur via <strong>STRIPE_SECRET_KEY</strong> et <strong>STRIPE_WEBHOOK_SECRET</strong>.</div>
+                        <div style="margin-top:14px;background:rgba(16,185,129,.06);border:1px solid rgba(16,185,129,.25);padding:14px;border-radius:10px;color:var(--text-muted);font-size:.83rem;line-height:1.5">🔐 Aucune clé secrète Stripe n’est enregistrée ici. <strong>STRIPE_SECRET_KEY</strong> et <strong>STRIPE_WEBHOOK_SECRET</strong> restent uniquement sur le serveur.</div>
                     </div>
                 </div>
 
@@ -2093,7 +2203,7 @@
         const urlParams = new URLSearchParams(window.location.search);
         let tenantID = window.ICHEF_SECURITY.tenantID;
         
-     const SERVER_URL = window.SERVER_URL
+      const SERVER_URL = window.ICHEF_SECURITY.serverURL;
 
         let systemSettings = {};
         let globalArchitecture = { rooms: ['Salle Principale'], tables: [], zones: [] };
@@ -2370,7 +2480,9 @@
             if(document.getElementById('schedule-days-container')) document.getElementById('schedule-days-container').innerHTML = daysHtml;
             
             if(document.getElementById('resto-stripe') && systemSettings.payment) document.getElementById('resto-stripe').value = systemSettings.payment.stripeLink || "";
-            if(document.getElementById('setting-qr-pay') && systemSettings.payment) document.getElementById('setting-qr-pay').checked = systemSettings.payment.online === true;
+            if(document.getElementById('setting-qr-pay') && systemSettings.payment) document.getElementById('setting-qr-pay').checked = (systemSettings.payment.stripeCheckout?.enabled ?? systemSettings.payment.online) === true;
+            if(document.getElementById('setting-stripe-create-url')) document.getElementById('setting-stripe-create-url').value = systemSettings.payment?.stripeCheckout?.createUrl || '/api/payments/stripe/checkout';
+            if(document.getElementById('setting-stripe-status-url')) document.getElementById('setting-stripe-status-url').value = systemSettings.payment?.stripeCheckout?.statusUrl || '/api/payments/stripe/status';
 
 
             const qrNfcSettings = systemSettings.qrNfc || {};
@@ -2636,10 +2748,11 @@
             } 
         }
 
-function getDeptRefs(department) {
-            if (department === 'bar') return { cats: categoriesBar || [], menu: menuBar || {} };
-            if (department === 'patisserie') return { cats: categoriesPatisserie || [], menu: menuPatisserie || {} };
-            return { cats: categoriesCuisine || [], menu: menuCuisine || {} };
+  function getDeptRefs(department) {
+            // 🔥 CORRECTION : On pointe DIRECTEMENT vers la vraie mémoire, sans créer de brouillons !
+            if (department === 'bar') return { cats: categoriesBar, menu: menuBar };
+            if (department === 'patisserie') return { cats: categoriesPatisserie, menu: menuPatisserie };
+            return { cats: categoriesCuisine, menu: menuCuisine };
         }
 
         function renderMenuList() {
@@ -2650,6 +2763,7 @@ function getDeptRefs(department) {
             let html = '';
             
             const processCat = (catId, catLabel, itemsArray, department) => {
+                // Blindage : on s'assure qu'on lit bien une liste de plats
                 let arr = itemsArray;
                 if (arr && !Array.isArray(arr) && Array.isArray(arr.data)) arr = arr.data;
                 if (!arr || !Array.isArray(arr)) return; 
@@ -2692,6 +2806,7 @@ function getDeptRefs(department) {
                 }
             };
             
+            // Assignations sécurisées
             let catCuisine = categoriesCuisine || [];
             let catBar = categoriesBar || [];
             let catPat = categoriesPatisserie || [];
@@ -2705,6 +2820,7 @@ function getDeptRefs(department) {
                 catBar.forEach(c => processCat(c.id, c.label, menuB[c.id], 'bar')); 
                 catPat.forEach(c => processCat(c.id, c.label, menuP[c.id], 'patisserie'));
                 
+                // 🕵️‍♂️ SÉCURITÉ ANTI-OUBLI : Si des plats sont enregistrés mais ont perdu leur catégorie, on force leur affichage ici !
                 const usedC = new Set(catCuisine.map(c => c.id));
                 Object.keys(menuC).forEach(k => { if (!usedC.has(k)) processCat(k, "Cuisine (Catégorie Orpheline)", menuC[k], 'cuisine'); });
                 
@@ -2725,6 +2841,7 @@ function getDeptRefs(department) {
                     if (dept === 'bar' && menuB[catObj.id]) processCat(catObj.id, catObj.label, menuB[catObj.id], dept); 
                     if (dept === 'patisserie' && menuP[catObj.id]) processCat(catObj.id, catObj.label, menuP[catObj.id], dept);
                 } else {
+                    // Si on cherche une catégorie orpheline via le dropdown
                     if (menuC[filterCat]) processCat(filterCat, filterCat, menuC[filterCat], 'cuisine');
                     if (menuB[filterCat]) processCat(filterCat, filterCat, menuB[filterCat], 'bar');
                     if (menuP[filterCat]) processCat(filterCat, filterCat, menuP[filterCat], 'patisserie');
@@ -2895,248 +3012,141 @@ function getDeptRefs(department) {
     function markUnsaved() { hasUnsavedChanges = true; let s = document.getElementById('sync-status'); if(s) { s.innerHTML = '⚠️ Modifié'; s.style.color = 'var(--gold)'; s.style.borderColor = 'var(--gold)'; } }
     function markSaved() { hasUnsavedChanges = false; let s = document.getElementById('sync-status'); if(s) { s.innerHTML = '<span>● En Direct</span> 🔄'; s.style.color = 'var(--text-main)'; s.style.borderColor = 'var(--border)'; } }
     function showToast(msg) { let t = document.getElementById('toast'); if(!t) { t = document.createElement('div'); t.id = 'toast'; t.className = 'toast'; document.body.appendChild(t); } t.innerText = msg; t.classList.add('show'); setTimeout(() => t.classList.remove('show'), 3000); }
-function closeModals() { 
-            // 🔥 CORRECTION 1 : On supprime le "voile invisible" qui bloque l'écran !
-            document.querySelectorAll('.modal').forEach(m => { 
-                m.classList.remove('show'); 
-                setTimeout(() => {
-                    m.style.display = 'none'; 
-                    m.style.opacity = ''; // Réinitialisation vitale
-                }, 300);
-            }); 
+    function closeModals() { document.querySelectorAll('.modal').forEach(m => { m.style.opacity = '0'; setTimeout(() => { m.classList.remove('show'); m.style.display = 'none'; }, 300); }); }
+    function forceSync() { if(hasUnsavedChanges && !confirm("⚠️ Écraser les modifications ?")) return; fetchStateFromCloud(); }
+    function retourCaisse() { window.location.href = `pack-eco.html?tenantID=${tenantID}`; }
+
+    async function testStripeConnection() {
+        const label = document.getElementById('stripe-server-status');
+        if (label) label.textContent = 'Test en cours…';
+        try {
+            const response = await fetch(`${window.ICHEF_SECURITY.serverURL}/api/payments/stripe/health`, { cache:'no-store' });
+            const data = await response.json().catch(()=>({}));
+            if (!response.ok || data.success !== true) throw new Error(data.error || 'Serveur indisponible');
+            const ok = data.configured === true && data.webhookConfigured === true;
+            if (label) { label.textContent = ok ? '✅ Stripe + webhook configurés' : '⚠️ Configuration serveur incomplète'; label.style.color = ok ? '#10b981' : '#f59e0b'; }
+            return ok;
+        } catch (error) {
+            if (label) { label.textContent = '❌ ' + error.message; label.style.color = '#ef4444'; }
+            return false;
         }
+    }
 
-        function forceSync() { if(hasUnsavedChanges && !confirm("⚠️ Écraser les modifications ?")) return; fetchStateFromCloud(); }
-        function retourCaisse() { window.location.href = `pack-eco.html?tenantID=${tenantID}`; }
+    async function saveAllToCloud() {
+        if (!hasPermission("CONFIG_WRITE")) return alert("Action non autorisée.");
+        await auditEvent("CONFIG_SAVE_REQUESTED");
+        try {
+            let syncBtn = document.getElementById('sync-status'); if(syncBtn) syncBtn.innerHTML = '⏳ Enregistrement...';
+            
+            if(document.getElementById('resto-name')) systemSettings.name = document.getElementById('resto-name').value.trim();
 
-        function saveItem() {
-            let name = document.getElementById('item-name').value.trim(); 
-            let price = parseFloat(document.getElementById('item-price').value); 
-            let newCatId = document.getElementById('item-cat').value; 
-            let isVisible = document.getElementById('item-visible').checked; 
-            let selectedTaxProfile = document.getElementById('item-tax-profile')?.value || "AUTO";
-            
-            let catBar = categoriesBar || [];
-            let catPat = categoriesPatisserie || [];
+            systemSettings.taxConfig = buildTaxConfigFromUI();
+            systemSettings.currency = systemSettings.taxConfig.currency;
+            systemSettings.tva = systemSettings.taxConfig.rates.RESTAURATION;
+            systemSettings.tva2 = systemSettings.taxConfig.rates.ALCOHOL;
+            systemSettings.tvaReduced = systemSettings.taxConfig.rates.REDUCED_TAKEAWAY;
+            systemSettings.tvaLodging = systemSettings.taxConfig.rates.LODGING;
 
-            let newDept = 'cuisine';
-            if (catBar.find(c => c.id === newCatId)) newDept = 'bar';
-            else if (catPat.find(c => c.id === newCatId)) newDept = 'patisserie';
-            
-            let effectiveTaxProfile = document.getElementById('item-tva')?.dataset.effectiveTaxProfile || selectedTaxProfile;
-            if (selectedTaxProfile === "AUTO") {
-                effectiveTaxProfile = inferTaxProfileForItem(name, newCatId, document.getElementById('item-station')?.value || "", newDept === 'bar');
-            }
-            
-            let tvaValue = selectedTaxProfile === "CUSTOM"
-                ? (parseFloat(document.getElementById('item-tva').value) || 0)
-                : getTaxRateForProfile(effectiveTaxProfile);
-                
-            let prepTime = parseInt(document.getElementById('item-prep-time').value) || 10;
-            let station = document.getElementById('item-station').value;
+            if(document.getElementById('setting-service-bar')) systemSettings.serviceAuBar = document.getElementById('setting-service-bar').checked;
 
-            let selectedTags = [];
-            document.querySelectorAll('.item-tag-cb:checked').forEach(cb => selectedTags.push(cb.value));
+            if(!systemSettings.loyalty) systemSettings.loyalty = {};
+            if(document.getElementById('setting-loyalty-active')) systemSettings.loyalty.active = document.getElementById('setting-loyalty-active').checked;
+            if(document.getElementById('setting-loyalty-percent')) systemSettings.loyalty.percent = parseFloat(document.getElementById('setting-loyalty-percent').value) || 5;
 
-            if (!name || isNaN(price) || !newCatId) return alert("Nom et prix invalides."); 
-            
-            let targetRefs = getDeptRefs(newDept);
-            let targetMenu = targetRefs.menu;
-            if (!targetMenu[newCatId]) targetMenu[newCatId] = [];
-            
-            let newItemObj = { 
-                name: name,
-                price: price,
-                stock: document.getElementById('item-stock').value,
-                hidden: !isVisible, 
-                tva: tvaValue,
-                taxProfile: selectedTaxProfile,
-                effectiveTaxProfile: effectiveTaxProfile,
-                taxCountry: getFiscalCountry(),
-                taxSource: "ICHEF_OS_AUTO_TAX",
-                prepTime: prepTime,
-                station: station,
-                tags: selectedTags
+            if(!systemSettings.payment) systemSettings.payment = { online: false, stripeLink: "" };
+            if(document.getElementById('setting-qr-pay')) systemSettings.payment.online = document.getElementById('setting-qr-pay').checked;
+            if(document.getElementById('resto-stripe')) systemSettings.payment.stripeLink = document.getElementById('resto-stripe').value.trim();
+            systemSettings.payment.stripeCheckout = {
+                enabled: document.getElementById('setting-qr-pay')?.checked === true,
+                provider: 'stripe', createUrl: document.getElementById('setting-stripe-create-url')?.value.trim() || '/api/payments/stripe/checkout',
+                statusUrl: document.getElementById('setting-stripe-status-url')?.value.trim() || '/api/payments/stripe/status', confirmationRequired: true, fiscalizeOnlyAfterServerConfirmation: true
             };
 
-            if (currentEditingItem) {
-                newItemObj.id = currentEditingItem.id; 
-                let origRefs = getDeptRefs(currentEditingItem.dept);
-                let origMenu = origRefs.menu;
-                
-                if (origMenu[currentEditingItem.catId]) {
-                    origMenu[currentEditingItem.catId] = origMenu[currentEditingItem.catId].filter(i => String(i.id) !== String(currentEditingItem.id) && i.name !== currentEditingItem.id);
-                }
-                targetMenu[newCatId].push(newItemObj);
-            } else {
-                newItemObj.id = Date.now();
-                targetMenu[newCatId].push(newItemObj);
+            if(!systemSettings.design) systemSettings.design = {};
+            if(document.getElementById('design-bg-color')) systemSettings.design.bgColor = document.getElementById('design-bg-color').value;
+            if(document.getElementById('design-text-color')) systemSettings.design.textColor = document.getElementById('design-text-color').value;
+            if(document.getElementById('design-title-color')) systemSettings.design.titleColor = document.getElementById('design-title-color').value;
+            if(document.getElementById('design-alert-color')) systemSettings.design.btnColor = document.getElementById('design-alert-color').value;
+            if(document.getElementById('design-font')) systemSettings.design.font = document.getElementById('design-font').value;
+            if(document.getElementById('design-title-font')) systemSettings.design.titleFont = document.getElementById('design-title-font').value;
+            if(document.getElementById('design-banner-url')) systemSettings.design.bannerUrl = document.getElementById('design-banner-url').value.trim();
+
+            systemSettings.qrNfc = {
+                active: document.getElementById('setting-qrnfc-active')?.checked !== false,
+                orderEnabled: document.getElementById('setting-qrnfc-order-enabled')?.checked !== false,
+                waiterValidation: document.getElementById('setting-qrnfc-waiter-validation')?.checked === true,
+                showTableZone: document.getElementById('setting-qrnfc-show-table-zone')?.checked !== false,
+                page: document.getElementById('setting-qrnfc-page')?.value.trim() || "menu-qr.html",
+                label: document.getElementById('setting-qrnfc-label')?.value.trim() || "Posez votre téléphone ici",
+                source: "qr_nfc",
+                mode: "commande"
+            };
+
+            systemSettings.cashRegister = {
+                enabled: document.getElementById('setting-cash-register-enabled')?.checked === true,
+                fiscalMode: document.getElementById('setting-fiscal-mode')?.checked === true,
+                backendUrl: document.getElementById('setting-fiscal-backend-url')?.value.trim() || "/api/fiscal/cash-in",
+                separation: {
+                    qrNfc: "commande",
+                    caisse: "encaissement_fiscal"
+                },
+                taxConfig: systemSettings.taxConfig
+            };
+
+            let selectedDays = []; document.querySelectorAll('#schedule-days-container input[type="checkbox"]:checked').forEach(cb => selectedDays.push(parseInt(cb.value)));
+            
+            systemSettings.schedule = { 
+                auto: document.getElementById('setting-auto-schedule')?.checked || false, days: selectedDays,
+                matin: { s: document.getElementById('matin-start')?.value || "", e: document.getElementById('matin-end')?.value || "" },
+                midi: { s: document.getElementById('midi-start')?.value || "", e: document.getElementById('midi-end')?.value || "" },
+                aprem: { s: document.getElementById('aprem-start')?.value || "", e: document.getElementById('aprem-end')?.value || "" },
+                soir: { s: document.getElementById('soir-start')?.value || "", e: document.getElementById('soir-end')?.value || "" }
+            };
+
+            let architectureConsolidee = { ...menuCuisine, ...menuBar, ...menuPatisserie };
+            const reqs = [
+                { tableId: 'MENU_MASTER', order: { data: menuCuisine } }, 
+                { tableId: 'MENU_MASTER_BAR', order: { data: menuBar } },
+                { tableId: 'MENU_MASTER_PATISSERIE', order: { data: menuPatisserie } },
+                { tableId: 'SETTINGS_MASTER', order: { data: systemSettings } }, 
+                { tableId: 'STAFF_ACCESS', order: { data: staffAccess } },
+                { tableId: 'CATEGORIES_CUISINE', order: { data: categoriesCuisine } }, 
+                { tableId: 'CATEGORIES_BAR', order: { data: categoriesBar } },
+                { tableId: 'CATEGORIES_PATISSERIE', order: { data: categoriesPatisserie } },
+                { tableId: 'MENU_ARCHITECTURE', order: { data: architectureConsolidee } },
+                { tableId: 'ARCHITECTURE', order: { data: globalArchitecture } }
+            ];
+            
+            await Promise.all(reqs.map(req => 
+                secureFetch(`${SERVER_URL}/update-order?tenantID=${tenantID}`, { 
+                    method: 'POST', 
+                    headers: {'Content-Type': 'application/json'}, 
+                    body: JSON.stringify({ ...req, pin: window.ICHEF_SECURITY.pin }) 
+                })
+            ));
+
+            markSaved(); showToast("Enregistré avec succès !");
+
+            if (socket && socket.connected) {
+                socket.emit('updateState', {
+                    tenantID: tenantID,
+                    activeOrders: {
+                        'MENU_MASTER': { data: menuCuisine },
+                        'MENU_MASTER_BAR': { data: menuBar },
+                        'MENU_MASTER_PATISSERIE': { data: menuPatisserie },
+                        'CATEGORIES_CUISINE': { data: categoriesCuisine },
+                        'CATEGORIES_BAR': { data: categoriesBar },
+                        'CATEGORIES_PATISSERIE': { data: categoriesPatisserie }
+                    }
+                });
             }
-            
-            currentEditingItem = null; 
-            markUnsaved(); 
-            closeModals(); 
-            renderMenuList(); 
-            if (typeof updateDashboardStats === 'function') updateDashboardStats(); 
-            saveAllToCloud(); 
+
+        } catch(e) { 
+            alert("❌ Erreur : " + e.message); 
+            let syncBtn = document.getElementById('sync-status'); 
+            if(syncBtn) syncBtn.innerHTML = '⚠️ Erreur'; 
         }
-
-        // 🔥 CORRECTION 2 : Un "verrou" pour empêcher de lancer plusieurs sauvegardes en même temps
-        let isSavingToCloud = false; 
-
-        async function saveAllToCloud() {
-            if (!hasPermission("CONFIG_WRITE")) return alert("Action non autorisée.");
-            if (isSavingToCloud) return; // Si ça sauvegarde déjà, on bloque !
-            
-            isSavingToCloud = true;
-            await auditEvent("CONFIG_SAVE_REQUESTED");
-            
-            try {
-                let syncBtn = document.getElementById('sync-status'); if(syncBtn) syncBtn.innerHTML = '⏳ Enregistrement...';
-                
-                if(document.getElementById('resto-name')) systemSettings.name = document.getElementById('resto-name').value.trim();
-
-                systemSettings.taxConfig = buildTaxConfigFromUI();
-                systemSettings.currency = systemSettings.taxConfig.currency;
-                systemSettings.tva = systemSettings.taxConfig.rates.RESTAURATION;
-                systemSettings.tva2 = systemSettings.taxConfig.rates.ALCOHOL;
-                systemSettings.tvaReduced = systemSettings.taxConfig.rates.REDUCED_TAKEAWAY;
-                systemSettings.tvaLodging = systemSettings.taxConfig.rates.LODGING;
-
-                if(document.getElementById('setting-service-bar')) systemSettings.serviceAuBar = document.getElementById('setting-service-bar').checked;
-
-                if(!systemSettings.loyalty) systemSettings.loyalty = {};
-                if(document.getElementById('setting-loyalty-active')) systemSettings.loyalty.active = document.getElementById('setting-loyalty-active').checked;
-                if(document.getElementById('setting-loyalty-percent')) systemSettings.loyalty.percent = parseFloat(document.getElementById('setting-loyalty-percent').value) || 5;
-
-                if(!systemSettings.payment) systemSettings.payment = { online: false, stripeLink: "" };
-                if(document.getElementById('setting-qr-pay')) systemSettings.payment.online = document.getElementById('setting-qr-pay').checked;
-                if(document.getElementById('resto-stripe')) systemSettings.payment.stripeLink = document.getElementById('resto-stripe').value.trim();
-
-                if(!systemSettings.design) systemSettings.design = {};
-                if(document.getElementById('design-bg-color')) systemSettings.design.bgColor = document.getElementById('design-bg-color').value;
-                if(document.getElementById('design-text-color')) systemSettings.design.textColor = document.getElementById('design-text-color').value;
-                if(document.getElementById('design-title-color')) systemSettings.design.titleColor = document.getElementById('design-title-color').value;
-                if(document.getElementById('design-alert-color')) systemSettings.design.btnColor = document.getElementById('design-alert-color').value;
-                if(document.getElementById('design-font')) systemSettings.design.font = document.getElementById('design-font').value;
-                if(document.getElementById('design-title-font')) systemSettings.design.titleFont = document.getElementById('design-title-font').value;
-                if(document.getElementById('design-banner-url')) systemSettings.design.bannerUrl = document.getElementById('design-banner-url').value.trim();
-
-                systemSettings.qrNfc = {
-                    active: document.getElementById('setting-qrnfc-active')?.checked !== false,
-                    orderEnabled: document.getElementById('setting-qrnfc-order-enabled')?.checked !== false,
-                    waiterValidation: document.getElementById('setting-qrnfc-waiter-validation')?.checked === true,
-                    showTableZone: document.getElementById('setting-qrnfc-show-table-zone')?.checked !== false,
-                    page: document.getElementById('setting-qrnfc-page')?.value.trim() || "menu-qr.html",
-                    label: document.getElementById('setting-qrnfc-label')?.value.trim() || "Posez votre téléphone ici",
-                    source: "qr_nfc",
-                    mode: "commande"
-                };
-
-                systemSettings.cashRegister = {
-                    enabled: document.getElementById('setting-cash-register-enabled')?.checked === true,
-                    fiscalMode: document.getElementById('setting-fiscal-mode')?.checked === true,
-                    backendUrl: document.getElementById('setting-fiscal-backend-url')?.value.trim() || "/api/fiscal/cash-in",
-                    separation: {
-                        qrNfc: "commande",
-                        caisse: "encaissement_fiscal"
-                    },
-                    taxConfig: systemSettings.taxConfig
-                };
-
-                let selectedDays = []; document.querySelectorAll('#schedule-days-container input[type="checkbox"]:checked').forEach(cb => selectedDays.push(parseInt(cb.value)));
-                
-                systemSettings.schedule = { 
-                    auto: document.getElementById('setting-auto-schedule')?.checked || false, days: selectedDays,
-                    matin: { s: document.getElementById('matin-start')?.value || "", e: document.getElementById('matin-end')?.value || "" },
-                    midi: { s: document.getElementById('midi-start')?.value || "", e: document.getElementById('midi-end')?.value || "" },
-                    aprem: { s: document.getElementById('aprem-start')?.value || "", e: document.getElementById('aprem-end')?.value || "" },
-                    soir: { s: document.getElementById('soir-start')?.value || "", e: document.getElementById('soir-end')?.value || "" }
-                };
-
-                let architectureConsolidee = { ...menuCuisine, ...menuBar, ...menuPatisserie };
-                const reqs = [
-                    { tableId: 'MENU_MASTER', order: { data: menuCuisine } }, 
-                    { tableId: 'MENU_MASTER_BAR', order: { data: menuBar } },
-                    { tableId: 'MENU_MASTER_PATISSERIE', order: { data: menuPatisserie } },
-                    { tableId: 'SETTINGS_MASTER', order: { data: systemSettings } }, 
-                    { tableId: 'STAFF_ACCESS', order: { data: staffAccess } },
-                    { tableId: 'CATEGORIES_CUISINE', order: { data: categoriesCuisine } }, 
-                    { tableId: 'CATEGORIES_BAR', order: { data: categoriesBar } },
-                    { tableId: 'CATEGORIES_PATISSERIE', order: { data: categoriesPatisserie } },
-                    { tableId: 'MENU_ARCHITECTURE', order: { data: architectureConsolidee } },
-                    { tableId: 'ARCHITECTURE', order: { data: globalArchitecture } }
-                ];
-                
-                // 🔥 CORRECTION 3 : Envoi à la queue-leu-leu (séquentiel) pour ne pas faire planter Render
-                for (let req of reqs) {
-                    await secureFetch(`${SERVER_URL}/update-order?tenantID=${tenantID}`, { 
-                        method: 'POST', 
-                        headers: {'Content-Type': 'application/json'}, 
-                        body: JSON.stringify(req) 
-                    });
-                }
-
-                markSaved(); showToast("Enregistré avec succès !");
-
-                if (socket && socket.connected) {
-                    socket.emit('updateState', {
-                        tenantID: tenantID,
-                        activeOrders: {
-                            'MENU_MASTER': { data: menuCuisine },
-                            'MENU_MASTER_BAR': { data: menuBar },
-                            'MENU_MASTER_PATISSERIE': { data: menuPatisserie },
-                            'CATEGORIES_CUISINE': { data: categoriesCuisine },
-                            'CATEGORIES_BAR': { data: categoriesBar },
-                            'CATEGORIES_PATISSERIE': { data: categoriesPatisserie }
-                        }
-                    });
-                }
-
-            } catch(e) { 
-                alert("❌ Erreur : " + e.message); 
-                let syncBtn = document.getElementById('sync-status'); 
-                if(syncBtn) syncBtn.innerHTML = '⚠️ Erreur'; 
-            } finally {
-                // On libère le verrou quoi qu'il arrive
-                isSavingToCloud = false; 
-            }
-        }
-
-   async function secureFetch(path, options = {}) {
-
-       const p = String(path || '');
-
-       const url = /^https?:\/\//i.test(p) ? p :
-
-           `${SERVER_URL}${p.startsWith('/') ? p : '/' + p}`;
-
-       const headers = new Headers(options.headers || {});
-
-       if (!headers.has('Accept')) headers.set('Accept', 'application/json');
-
-       const token = window.ICHEF_SECURITY?.csrfToken ||
-
-           sessionStorage.getItem('ichef_csrf_token') ||
-
-           localStorage.getItem('ichef_csrf_token') || '';
-
-       if (token && !headers.has('X-CSRF-Token')) headers.set('X-CSRF-Token', token);
-
-       return fetch(url, {
-
-           ...options,
-
-           headers,
-
-           credentials: options.credentials || 'include',
-
-           cache: options.cache || 'no-store'
-
-       });
-
-   }
-
+    } 
 
    async function fetchStateFromCloud(isBackground = false) {
     try {
@@ -4165,7 +4175,7 @@ startAuthenticatedApplication().catch(error => {
                     affichage += `[${new Date(evt.timestamp).toLocaleString("fr-FR")}] `;
                     affichage += `ACTION: ${evt.action} | OPÉRATEUR: ${evt.authorPin}\n`;
                     if(evt.details) affichage += `Détails : ${JSON.stringify(evt.details)}\n`;
-   affichage += `Preuve Hash : ${evt.currentHash}\n`;
+                    affichage += `Preuve Hash : ${evt.currentHash}\n`;
                     affichage += `-------------------------------------------------------\n`;
                 });
 
@@ -4177,8 +4187,7 @@ startAuthenticatedApplication().catch(error => {
             }
         }
 
-        // 🔥 FONCTION IA RÉPARÉE ET COMPLÈTE
-        async function loadAIProfitability() {
+async function loadAIProfitability() {
             try {
                 await window.ICHEF_SECURITY_READY;
                 let response = await secureFetch('/api/ai-profitability', {
@@ -4208,9 +4217,8 @@ startAuthenticatedApplication().catch(error => {
                 console.error("Erreur IA Rentabilité:", e);
                 document.getElementById('ia-rent-advices').innerHTML = `<li class="ia-advice-item"><span style="font-size: 1.2rem;">❌</span><div>L'IA de rentabilité n'a pas pu être contactée.</div></li>`;
             }
-        } // 👈 L'accolade qui sauve tout !
+        }
     </script>
-
     <script>
     // =========================================================
     // DICTÉE VOCALE DES PLATS — aucun changement des connexions
