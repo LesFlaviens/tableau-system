@@ -5859,8 +5859,8 @@ function renderTables(){
     else if (s.status === 'wait') etatLabel = "ATTENTE";
     else if (s.status === 'active') etatLabel = "OCCUPÉE";
 
-    // 2. Formatage des données
-  const paxLabel = s.pax ? `${s.pax} PAX` : (t.pax ? `${t.pax} PAX` : "");
+    // 2. Formatage des données SANS ÉMOJI et AVEC "PAX"
+    const paxLabel = s.pax ? `${s.pax} PAX` : (t.pax ? `${t.pax} PAX` : "");
     const time = s.age ? duration(s.age) : (s.status === "reserved" ? "—" : "00:00");
     const zoneLabel = text(z?.label||t.zone||"Nouvelle Zone");
     const zoneColor = text(z?.color||z?.couleur||(
@@ -5889,8 +5889,83 @@ function renderTables(){
       
       <span class="num">${esc(t.label)}</span>
       <span class="meta state-label" style="font-size:11px; font-weight:950; text-transform:uppercase; margin-top:2px;">${esc(etatLabel)}</span>
-      <span class="time" style="font-size:14px; font-weight:900; margin-top:3px;">⏱ ${esc(time)}</span>
-      ${paxLabel ? `<span class="meta pax" style="font-size:12px; margin-top:3px;">${esc(paxLabel)}</span>` : ""}
+      <span class="time" style="font-size:14px; font-weight:900; margin-top:3px;">${esc(time)}</span>
+      ${paxLabel ? `<span class="meta pax" style="font-size:12px; margin-top:3px; font-weight:900;">${esc(paxLabel)}</span>` : ""}
+      
+      <span class="table-zone" style="color:${esc(zoneColor)}; margin-top:6px;">${esc(zoneLabel)}</span>
+      ${preview?`<span class="table-preview">${preview}</span>`:""}
+      ${readyOverlay}
+    </button>`;
+  }).join("");
+}function renderTables(){
+  const filter = getDeviceFilter();
+  let list = STATE.tables || [];
+  
+  if (filter.type === "zone") {
+    list = list.filter(t => {
+      const z = getZone(t);
+      return (z?.label || t.zone || "Nouvelle Zone") === filter.value;
+    });
+  } else if (filter.type === "room") {
+    list = list.filter(t => t.room === filter.value);
+  } else {
+    list = list.filter(t => t.room === STATE.room);
+  }
+
+  const el=$("tables");
+
+  if(!list.length){
+    el.innerHTML='<div class="empty-state">Aucune table dans ce secteur.</div>';
+    return;
+  }
+
+  el.innerHTML=list.map(t=>{
+    const s=tableStats(t.label);
+    const o=getOrder(t.label);
+    const z=getZone(t);
+    
+    // 1. Définition de l'état en texte clair
+    let etatLabel = "LIBRE";
+    if (s.status === 'reserved') etatLabel = "RÉSERVÉE";
+    else if (s.status === 'payment') etatLabel = "PAIEMENT";
+    else if (s.status === 'alert') etatLabel = "URGENT";
+    else if (s.status === 'late') etatLabel = "RETARD";
+    else if (s.status === 'ready') etatLabel = "PRÊT";
+    else if (s.status === 'wait') etatLabel = "ATTENTE";
+    else if (s.status === 'active') etatLabel = "OCCUPÉE";
+
+    // 2. Formatage des données SANS ÉMOJI et AVEC "PAX"
+    const paxLabel = s.pax ? `${s.pax} PAX` : (t.pax ? `${t.pax} PAX` : "");
+    const time = s.age ? duration(s.age) : (s.status === "reserved" ? "—" : "00:00");
+    const zoneLabel = text(z?.label||t.zone||"Nouvelle Zone");
+    const zoneColor = text(z?.color||z?.couleur||(
+      s.status==="ready"?"#36d98a":
+      s.status==="wait"?"#ff9a43":
+      s.status==="late"||s.status==="alert"?"#ff5368":
+      s.status==="reserved"?"#9b74ff":
+      "#b7bd00"
+    ));
+
+    const preview=(o?.items||[]).filter(Boolean).slice(0,2).map((item)=>{
+      const q=itemQty(item);
+      const ready=lineReady(item);
+      const sent=lineFired(item);
+      const klass=(ready||s.status==="late"||s.status==="alert")?" warn":"";
+      const state=ready?" · PRÊT":sent?"":" · À ENVOYER";
+      return `<span class="table-preview-line${klass}">• ${q>1?q+"× ":""}${esc(itemName(item))}${state}</span>`;
+    }).join("");
+
+    const readyOverlay = s.ready ? `<div class="table-ready-overlay">🛎️ ${s.ready} PRÊT(S)</div>` : "";
+    const isExpress = !!(t.express||t.temporary||t.isTemporary);
+
+    // 3. Ordre d'affichage structurel
+    return `<button class="table-card ${s.status} ${isExpress?"express-table":""}" data-table="${esc(t.label)}">
+      ${isExpress?`<span class="express-badge">EXPRESS</span>`:""}
+      
+      <span class="num">${esc(t.label)}</span>
+      <span class="meta state-label" style="font-size:11px; font-weight:950; text-transform:uppercase; margin-top:2px;">${esc(etatLabel)}</span>
+      <span class="time" style="font-size:14px; font-weight:900; margin-top:3px;">${esc(time)}</span>
+      ${paxLabel ? `<span class="meta pax" style="font-size:12px; margin-top:3px; font-weight:900;">${esc(paxLabel)}</span>` : ""}
       
       <span class="table-zone" style="color:${esc(zoneColor)}; margin-top:6px;">${esc(zoneLabel)}</span>
       ${preview?`<span class="table-preview">${preview}</span>`:""}
@@ -5898,7 +5973,6 @@ function renderTables(){
     </button>`;
   }).join("");
 }
-
 function updateToolBadges(){
   const r=rushSnapshot(),b=$("toolRush");
   if(b)b.className="tool rush"+r.level;
