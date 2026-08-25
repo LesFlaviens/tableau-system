@@ -4267,6 +4267,154 @@ body.order-open .ticket-name .line-state {
   
 
   
+
+<style id="ichef-qui-mange-v20">
+/* =========================================================
+   QUI MANGE QUOI V20 — C1 À C9
+   - choix du convive AVANT l'ajout d'un plat
+   - couleur C1-C9 conservée partout
+   - compte d'articles par convive
+   - réattribution d'une ligne existante
+   ========================================================= */
+.who-active-card{
+  margin:0 0 12px;
+  padding:14px;
+  border:3px solid #111;
+  border-radius:14px;
+  background:#f4f4f4;
+  color:#111;
+}
+.who-active-title{
+  font-size:20px;
+  line-height:1.1;
+  font-weight:1000;
+}
+.who-active-sub{
+  margin-top:6px;
+  color:#4f5558;
+  font-size:13px;
+  line-height:1.25;
+  font-weight:800;
+}
+.who-seat-grid{
+  display:grid;
+  grid-template-columns:repeat(3,minmax(0,1fr));
+  gap:8px;
+  margin:10px 0 14px;
+}
+.who-seat-btn{
+  --seat-color:#111;
+  min-height:68px;
+  position:relative;
+  border:4px solid var(--seat-color);
+  border-radius:13px;
+  background:#fff;
+  color:var(--seat-color);
+  font-size:24px;
+  line-height:1;
+  font-weight:1000;
+  touch-action:manipulation;
+}
+.who-seat-btn small{
+  display:block;
+  margin-top:7px;
+  color:#555;
+  font-size:11px;
+  line-height:1;
+  font-weight:900;
+}
+.who-seat-btn.active{
+  background:var(--seat-color);
+  color:#111;
+  box-shadow:0 0 0 3px rgba(0,0,0,.12);
+}
+.who-seat-btn.active small{color:#111}
+.who-seat-btn.extra::after{
+  content:"+ COUVERT";
+  position:absolute;
+  top:4px;
+  right:5px;
+  padding:2px 4px;
+  border-radius:5px;
+  background:#111;
+  color:#fff;
+  font-size:7px;
+  font-weight:1000;
+}
+.who-seat-btn[data-seat="1"]{--seat-color:var(--c1)}
+.who-seat-btn[data-seat="2"]{--seat-color:var(--c2)}
+.who-seat-btn[data-seat="3"]{--seat-color:var(--c3)}
+.who-seat-btn[data-seat="4"]{--seat-color:var(--c4)}
+.who-seat-btn[data-seat="5"]{--seat-color:var(--c5)}
+.who-seat-btn[data-seat="6"]{--seat-color:var(--c6)}
+.who-seat-btn[data-seat="7"]{--seat-color:var(--c7)}
+.who-seat-btn[data-seat="8"]{--seat-color:var(--c8)}
+.who-seat-btn[data-seat="9"]{--seat-color:var(--c9)}
+
+.who-section-title{
+  margin:12px 0 7px;
+  color:#111;
+  font-size:14px;
+  font-weight:1000;
+  letter-spacing:.3px;
+}
+.who-empty{
+  padding:16px;
+  border:2px dashed #b8bdc0;
+  border-radius:12px;
+  background:#fff;
+  color:#555;
+  text-align:center;
+  font-size:13px;
+  line-height:1.35;
+  font-weight:850;
+}
+.who-line{
+  display:grid;
+  grid-template-columns:minmax(0,1fr) 118px;
+  gap:10px;
+  align-items:center;
+  margin-bottom:7px;
+  padding:10px;
+  border:2px solid #d7dadc;
+  border-radius:12px;
+  background:#fff;
+  color:#111;
+}
+.who-line-name{
+  min-width:0;
+  font-size:15px;
+  line-height:1.2;
+  font-weight:1000;
+}
+.who-line-meta{
+  margin-top:5px;
+  color:#5c6265;
+  font-size:11px;
+  line-height:1.2;
+  font-weight:850;
+}
+.who-line select{
+  width:118px;
+  min-height:48px;
+  border:3px solid #111;
+  border-radius:10px;
+  background:#fff;
+  color:#111;
+  padding:0 8px;
+  font-size:17px;
+  font-weight:1000;
+}
+#btnHeadWho[data-active-seat]{
+  border-width:3px !important;
+  font-weight:1000 !important;
+}
+@media(min-width:720px){
+  .who-seat-grid{grid-template-columns:repeat(9,minmax(0,1fr))}
+  .who-seat-btn{min-height:76px;font-size:22px}
+}
+</style>
+
 </head>
 <body>
 <div id="screenLabel">ÉCRAN 1 · TABLES</div>
@@ -6086,6 +6234,14 @@ function renderGuestButtons(){
   const active=Math.max(1,Math.min(9,Number(STATE.activeSeat)||1));
 
   if($("activeGuestLabel"))$("activeGuestLabel").textContent=`ACTIF : C${active}`;
+  const whoHead=$("btnHeadWho");
+  if(whoHead){
+    whoHead.textContent=`QUI MANGE ? · C${active}`;
+    whoHead.dataset.activeSeat=String(active);
+    whoHead.style.borderColor=`var(--c${active})`;
+    whoHead.style.color="#111";
+    whoHead.style.background="#fff";
+  }
 
   el.innerHTML=Array.from({length:9},(_,idx)=>{
     const seat=idx+1;
@@ -6343,31 +6499,69 @@ function openRush(){
   }
 
   const o=STATE.currentOrder||ensureOrder(STATE.currentTable);
-  if(!o.items.length){
-    toast("Ajoutez d’abord des articles",true);
-    return;
-  }
+  const active=Math.max(1,Math.min(9,Number(STATE.activeSeat)||1));
+  const pax=Math.max(1,Number(o.pax)||1);
+  const items=(o.items||[]).filter(i=>i&&!i.cancelled);
+
+  const seatButtons=Array.from({length:9},(_,idx)=>{
+    const seat=idx+1;
+    const count=items
+      .filter(i=>itemSeat(i)===seat)
+      .reduce((sum,i)=>sum+itemQty(i),0);
+    const activeClass=seat===active?" active":"";
+    const extraClass=seat>pax?" extra":"";
+    return `<button type="button"
+                    class="who-seat-btn${activeClass}${extraClass}"
+                    data-who-seat="${seat}"
+                    data-seat="${seat}"
+                    title="Choisir C${seat} comme convive actif">
+              C${seat}
+              <small>${count} article${count>1?"s":""}</small>
+            </button>`;
+  }).join("");
+
+  const itemRows=items.length
+    ?items.map(i=>{
+      const seat=itemSeat(i)||active;
+      const q=itemQty(i);
+      const sent=lineFired(i);
+      const ready=lineReady(i);
+      const status=ready?"PRÊT":sent?"EN PRODUCTION":"À ENVOYER";
+      return `<div class="who-line">
+        <div>
+          <div class="who-line-name">${seatBadgeHTML(seat)}${q>1?`${q}× `:""}${esc(itemName(i))}</div>
+          <div class="who-line-meta">${esc(destinationLabel(i))}${i.cooking?" · "+esc(i.cooking):""} · ${status}</div>
+        </div>
+        <select data-guest-line="${esc(lineKey(i))}" aria-label="Attribuer ${esc(itemName(i))} à un convive">
+          ${Array.from({length:9},(_,n)=>{
+            const s=n+1;
+            return `<option value="${s}" ${seat===s?"selected":""}>C${s}</option>`;
+          }).join("")}
+        </select>
+      </div>`;
+    }).join("")
+    :`<div class="who-empty">
+        Choisissez d’abord le convive. Les prochains plats touchés seront automatiquement attribués à ce C.
+      </div>`;
 
   openSheet(
-    "👥 QUI MANGE QUOI ? · C1 À C9",
-    `<div class="list">
-      ${o.items.map(i=>{
-        const seat=itemSeat(i);
-        return `<div class="list-row">
-          <div class="grow">
-            <div class="title">${seat?seatBadgeHTML(seat):""}${esc(itemName(i))}</div>
-            <div class="sub">${destinationLabel(i)}${i.cooking?" · "+esc(i.cooking):""}</div>
-          </div>
-          <select class="field" style="width:105px;min-height:42px" data-guest-line="${esc(lineKey(i))}">
-            ${Array.from({length:9},(_,n)=>{
-              const s=n+1;
-              return `<option value="${s}" ${seat===s?"selected":""}>C${s}</option>`;
-            }).join("")}
-          </select>
-        </div>`;
-      }).join("")}
-    </div>`
+    "QUI MANGE QUOI · C1 À C9",
+    `<div class="who-active-card">
+       <div class="who-active-title">CONVIVE ACTIF : ${seatBadgeHTML(active)}</div>
+       <div class="who-active-sub">Tous les prochains plats seront attribués à C${active}. Choisir C4, par exemple, affecte immédiatement les prochains ajouts à C4.</div>
+     </div>
+     <div class="who-seat-grid">${seatButtons}</div>
+     <div class="who-section-title">PLATS DE LA TABLE</div>
+     ${itemRows}`
   );
+
+  $("sheetBody").querySelectorAll("[data-who-seat]").forEach(btn=>{
+    btn.addEventListener("click",()=>{
+      const seat=Math.max(1,Math.min(9,Number(btn.dataset.whoSeat)||1));
+      setActiveSeat(seat);
+      openWho();
+    });
+  });
 
   $("sheetBody").querySelectorAll("[data-guest-line]").forEach(sel=>{
     sel.addEventListener("change",async()=>{
@@ -6387,11 +6581,12 @@ function openRush(){
       if(num(oo.pax||0)<newSeat)oo.pax=newSeat;
 
       const wasSent=lineFired(it);
-      await saveCurrent(
+      const ok=await saveCurrent(
         oo,
         "Attribution convive C"+newSeat,
         {immediate:wasSent}
       );
+      if(!ok)return;
 
       if(wasSent&&oldSeat!==newSeat){
         await productionAlert(it,"CONVIVE",`C${oldSeat||"?"} → C${newSeat}`);
@@ -6400,6 +6595,7 @@ function openRush(){
       STATE.lastLineKey=lineKey(it);
       renderTicket();
       renderGuestButtons();
+      openWho();
     });
   });
 }
@@ -10248,65 +10444,79 @@ body.order-open .ticket-name .line-state {
 
 <!-- 2. FONCTIONNALITÉ : POPUP C1-C9 AU CLIC SUR UN PLAT -->
 <script id="popup-qui-mange-quoi-rapide">
+/* QUI MANGE QUOI V20 — attribution express depuis une ligne du ticket */
 setTimeout(() => {
-    if(window.mutateLine) {
-        const originalMutateLine = window.mutateLine;
-        
-        // On intercepte le clic sur un plat du ticket
-        window.mutateLine = async function(key, action) {
-            // L'action "obs" était l'action par défaut au clic sur la gauche du ticket
-            if (action === "obs") {
-                const o = STATE.currentOrder || ensureOrder(STATE.currentTable);
-                const item = o.items.find(x => lineKey(x) === key);
-                if (!item) return;
+  if (typeof window.mutateLine !== "function") return;
 
-                // On ouvre instantanément la grille C1-C9
-                openSheet("👥 POUR QUI ? · " + esc(itemName(item)), `
-                    <div style="display:grid; grid-template-columns:repeat(3, 1fr); gap:12px; padding: 10px;">
-                        ${Array.from({length: 9}, (_, i) => {
-                            const seat = i + 1;
-                            const isCurrent = itemSeat(item) === seat;
-                            return \`<button class="action-btn \${isCurrent ? 'green' : ''}" 
-                                    style="font-size: 26px !important; min-height: 80px !important; font-weight: 1000 !important; border-width: 3px !important; background: \${isCurrent ? '#eefbf4' : '#ffffff'} !important; color: \${isCurrent ? '#2dcc70' : '#111111'} !important; border-color: \${isCurrent ? '#2dcc70' : '#cfd2d5'} !important;"
-                                    onclick="changeLineSeat('\${esc(key)}', \${seat})">
-                                C\${seat}
-                            </button>\`;
-                        }).join('')}
-                    </div>
-                `);
-                return;
-            }
-            return originalMutateLine(key, action);
-        };
+  const originalMutateLine = window.mutateLine;
 
-        // Fonction pour valider le changement de siège (C1-C9)
-        window.changeLineSeat = async function(key, newSeat) {
-            const o = ensureOrder(STATE.currentTable);
-            const it = o.items.find(x => lineKey(x) === key);
-            if (!it) return;
+  window.mutateLine = async function(key, action) {
+    if (action === "obs") {
+      const o = STATE.currentOrder || ensureOrder(STATE.currentTable);
+      const item = (o.items || []).find(x => lineKey(x) === key);
+      if (!item) return;
 
-            const oldSeat = itemSeat(it);
-            it.guest = "C" + newSeat;
-            it.guestName = "C" + newSeat;
-            it.seat = newSeat;
-            it.guestSeat = newSeat;
-            it.seatNumber = newSeat;
+      const currentSeat = itemSeat(item) || Math.max(1, Math.min(9, Number(STATE.activeSeat) || 1));
 
-            if (num(o.pax || 0) < newSeat) o.pax = newSeat;
+      openSheet("POUR QUI ? · " + esc(itemName(item)), `
+        <div class="who-active-card">
+          <div class="who-active-title">ATTRIBUTION DU PLAT</div>
+          <div class="who-active-sub">Choisissez le convive. Si le plat est déjà envoyé, le changement est transmis au poste concerné.</div>
+        </div>
+        <div class="who-seat-grid">
+          ${Array.from({length:9},(_,idx)=>{
+            const seat=idx+1;
+            const active=seat===currentSeat?" active":"";
+            return `<button type="button"
+                            class="who-seat-btn${active}"
+                            data-line-seat="${seat}"
+                            data-seat="${seat}">
+                      C${seat}
+                    </button>`;
+          }).join("")}
+        </div>
+      `);
 
-            const wasSent = lineFired(it);
-            await saveCurrent(o, "Attribution convive C" + newSeat, {immediate: wasSent});
-            
-            // Si le plat était déjà en cuisine, on envoie une alerte de changement
-            if(wasSent && oldSeat !== newSeat){
-                try{ await productionAlert(it, "CONVIVE", \`C\${oldSeat||"?"} → C\${newSeat}\`); }catch(e){}
-            }
-
-            closeSheet();
-            renderTicket();
-            toast("👤 C" + newSeat + " assigné");
-        };
+      document.querySelectorAll("[data-line-seat]").forEach(btn=>{
+        btn.addEventListener("click",()=>window.changeLineSeat(key,Number(btn.dataset.lineSeat)));
+      });
+      return;
     }
+
+    return originalMutateLine(key, action);
+  };
+
+  window.changeLineSeat = async function(key, newSeat) {
+    const seat=Math.max(1,Math.min(9,Number(newSeat)||1));
+    const o=ensureOrder(STATE.currentTable);
+    const it=(o.items||[]).find(x=>lineKey(x)===key);
+    if(!it)return;
+
+    const oldSeat=itemSeat(it);
+    it.guest=seatLabel(seat);
+    it.guestName=seatLabel(seat);
+    it.seat=seat;
+    it.guestSeat=seat;
+    it.seatNumber=seat;
+
+    if(num(o.pax||0)<seat)o.pax=seat;
+
+    const wasSent=lineFired(it);
+    const ok=await saveCurrent(o,"Attribution convive C"+seat,{immediate:wasSent});
+    if(!ok)return;
+
+    if(wasSent&&oldSeat!==seat){
+      try{
+        await productionAlert(it,"CONVIVE",`C${oldSeat||"?"} → C${seat}`);
+      }catch(_){}
+    }
+
+    STATE.lastLineKey=lineKey(it);
+    closeSheet();
+    renderTicket();
+    renderGuestButtons();
+    toast(`C${seat} assigné`);
+  };
 }, 500);
 </script>
 
