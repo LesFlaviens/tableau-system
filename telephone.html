@@ -3697,6 +3697,58 @@ html.ichef-phone-only-blocked #ichefDeviceBlock{position:fixed;inset:0;z-index:2
 #ichefDeviceBlock strong{color:#e2b84e}
 #ichefDeviceBlock button{width:100%;min-height:58px;border:2px solid #e2b84e;border-radius:14px;background:#e2b84e;color:#050607;font:inherit;font-size:16px;font-weight:1000;cursor:pointer}
 #ichefDeviceBlock .device-block-note{margin-top:14px;color:#7f898c;font-size:12px;line-height:1.35}
+
+/* ===== CUISSON INTÉGRÉE À QUI MANGE ? ===== */
+.integrated-cooking-grid{
+  display:grid;
+  grid-template-columns:repeat(2,minmax(0,1fr));
+  gap:12px;
+  margin-top:18px;
+}
+.integrated-cooking-btn{
+  min-height:78px;
+  padding:12px 10px;
+  border:3px solid #111!important;
+  border-radius:16px;
+  background:#fff!important;
+  color:#111!important;
+  font-size:18px!important;
+  line-height:1.15;
+  font-weight:1000;
+  text-transform:uppercase;
+  touch-action:manipulation;
+}
+.integrated-cooking-btn:active{
+  background:#111!important;
+  color:#fff!important;
+  transform:scale(.98);
+}
+.integrated-cooking-btn:disabled{opacity:.45}
+.integrated-cooking-back{
+  width:100%;
+  min-height:58px;
+  margin-top:14px;
+  border:2px solid #c7c7c7;
+  border-radius:14px;
+  background:#f4f4f4;
+  color:#222;
+  font-size:14px;
+  font-weight:950;
+}
+#sheet.product-cooking-picker-open .sheet-card{
+  width:min(980px,calc(100vw - 20px))!important;
+}
+#sheet.product-cooking-picker-open .sheet-title{
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+}
+@media(min-width:900px){
+  .integrated-cooking-grid{grid-template-columns:repeat(5,minmax(0,1fr))}
+  .integrated-cooking-btn{min-height:92px;font-size:19px!important}
+}
+@media(max-width:480px){
+  .integrated-cooking-grid{gap:8px}
+  .integrated-cooking-btn{min-height:66px;font-size:15px!important}
+}
 </style>
 
 </head>
@@ -4933,25 +4985,26 @@ async function saveCurrent(order,reason,options={}){
   return true;
 }
 
-function addProduct(product){
+function addProduct(product,options={}){
   if(!STATE.currentTable||!product)return;
 
-  if(STATE.pendingCookingLine){
-    toast("🥩 Choisissez d’abord la cuisson du plat en cours",true);
+  if(STATE.pendingCookingLine && options.fromIntegratedCooking!==true){
+    toast("Choisissez d’abord la cuisson du plat en cours",true);
     return;
   }
 
   const before=cloneOrderForUndo(ensureOrder(STATE.currentTable));
   const o=ensureOrder(STATE.currentTable);
   const raw=product.raw||{};
-  const seat=Math.max(1,Math.min(9,Number(STATE.activeSeat)||1));
+  const seat=Math.max(1,Math.min(9,Number(options.seat||STATE.activeSeat)||1));
   const guest=seatLabel(seat);
   const dest=normalizeDestination(product.dest||raw.dest||raw.destination||"cuisine");
   const cookingProfile=cookingProfileFor(product);
-  const cookingRequired=(dest==="cuisine"&&cookingProfile.required===true);
-  const automaticCooking=(dest==="cuisine"&&!cookingRequired)
+  const forcedCooking=text(options.cooking||options.forcedCooking||"");
+  const cookingRequired=(dest==="cuisine"&&cookingProfile.required===true&&!forcedCooking);
+  const automaticCooking=forcedCooking || ((dest==="cuisine"&&!cookingRequired)
     ?text(cookingProfile.defaultCooking||"")
-    :"";
+    :"");
 
   const same=o.items.find(i=>
     !lineFired(i) &&
@@ -5009,7 +5062,8 @@ function addProduct(product){
       cooking:automaticCooking||null,
       cuisson:automaticCooking||null,
       cookingRequired:cookingRequired,
-      cookingAutomatic:!!automaticCooking,
+      cookingAutomatic:!!automaticCooking && !forcedCooking,
+      cookingChosenWithGuest:!!forcedCooking,
       dishFamily:cookingProfile.family,
 
       seat:seat,
@@ -5874,7 +5928,7 @@ function openSheet(title,html){
 }
 function closeSheet(){
   stopLivePlan();
-  $("sheet").classList.remove("open","product-seat-picker-open");
+  $("sheet").classList.remove("open","product-seat-picker-open","product-cooking-picker-open");
 }
 $("sheetClose").onclick=closeSheet;$("sheet").addEventListener("click",e=>{if(e.target===$("sheet"))closeSheet()});
 
@@ -9134,6 +9188,68 @@ async function prepareWritableOrderForProductSelection(){
   return true;
 }
 
+function productCookingPickerHTML(product,seat,profile){
+  const levels=Array.isArray(profile?.levels)?profile.levels:[];
+  return `<div class="who-active-card product-seat-choice-card">
+      <div class="who-active-title">${seatBadgeHTML(seat)} ${esc(product.name)}</div>
+      <div class="who-active-sub">
+        ${esc(profile?.label||"CUISSON")} · Choisissez la cuisson pour ${seatLabel(seat)}.
+        Le plat sera ajouté seulement après ce choix.
+      </div>
+    </div>
+    <div class="integrated-cooking-grid">
+      ${levels.map(level=>`<button type="button" class="integrated-cooking-btn" data-product-cooking="${esc(level)}">${esc(level)}</button>`).join("")}
+    </div>
+    <button type="button" class="integrated-cooking-back" data-back-to-seat>← CHANGER DE CONVIVE</button>`;
+}
+
+function openIntegratedProductCooking(product,seat,sourceButton=null){
+  const profile=cookingProfileFor(product);
+  pendingProductSeatChoice={product,sourceButton,seat};
+  openSheet(
+    `QUI MANGE ? · ${seatLabel(seat)} · CUISSON`,
+    productCookingPickerHTML(product,seat,profile)
+  );
+  $("sheet").classList.add("product-seat-picker-open","product-cooking-picker-open");
+
+  const body=$("sheetBody");
+  body.querySelectorAll("[data-product-cooking]").forEach(btn=>{
+    btn.addEventListener("click",()=>confirmProductCooking(btn.dataset.productCooking));
+  });
+  const back=body.querySelector("[data-back-to-seat]");
+  if(back)back.onclick=()=>openProductSeatPicker(product,sourceButton);
+}
+
+async function confirmProductCooking(level){
+  const pending=pendingProductSeatChoice;
+  if(!pending||!pending.product||!pending.seat)return;
+
+  const cooking=text(level);
+  if(!cooking)return;
+
+  const buttons=$("sheetBody")?.querySelectorAll("[data-product-cooking]")||[];
+  buttons.forEach(btn=>btn.disabled=true);
+
+  const product=pending.product;
+  const sourceButton=pending.sourceButton;
+  const seat=Math.max(1,Math.min(9,Number(pending.seat)||1));
+
+  pendingProductSeatChoice=null;
+  STATE.pendingCookingLine="";
+  setActiveSeat(seat);
+  $("sheet").classList.remove("product-seat-picker-open","product-cooking-picker-open");
+  closeSheet();
+
+  if(sourceButton&&sourceButton.isConnected){
+    sourceButton.classList.add("product-added","fast-flash");
+    setTimeout(()=>sourceButton.classList.remove("product-added","fast-flash"),240);
+  }
+
+  addProduct(product,{seat,cooking,fromIntegratedCooking:true});
+  renderTicket();
+  renderGuestButtons();
+}
+
 async function confirmProductSeat(seat){
   const pending=pendingProductSeatChoice;
   if(!pending||!pending.product)return;
@@ -9150,21 +9266,32 @@ async function confirmProductSeat(seat){
     return;
   }
 
-  pendingProductSeatChoice=null;
-
   /* Le C choisi devient aussi le C actif pour les actions suivantes. */
   setActiveSeat(n);
-  $("sheet").classList.remove("product-seat-picker-open");
-  closeSheet();
 
-  const b=pending.sourceButton;
-  if(b&&b.isConnected){
-    b.classList.add("product-added","fast-flash");
-    setTimeout(()=>b.classList.remove("product-added","fast-flash"),240);
+  const product=pending.product;
+  const sourceButton=pending.sourceButton;
+  const profile=cookingProfileFor(product);
+  const dest=normalizeDestination(product.dest||product.raw?.dest||product.raw?.destination||"cuisine");
+
+  /* IMPORTANT : pour les cuissons obligatoires, on NE FERME PAS QUI MANGE.
+     La même fenêtre passe à l'étape CUISSON et le plat n'est toujours pas ajouté. */
+  if(dest==="cuisine" && profile.required===true && Array.isArray(profile.levels) && profile.levels.length){
+    openIntegratedProductCooking(product,n,sourceButton);
+    return;
   }
 
-  /* IMPORTANT : l'ajout se fait seulement ici, après C1-C9. */
-  addProduct(pending.product);
+  pendingProductSeatChoice=null;
+  $("sheet").classList.remove("product-seat-picker-open","product-cooking-picker-open");
+  closeSheet();
+
+  if(sourceButton&&sourceButton.isConnected){
+    sourceButton.classList.add("product-added","fast-flash");
+    setTimeout(()=>sourceButton.classList.remove("product-added","fast-flash"),240);
+  }
+
+  /* Cuisson automatique (porc / volaille / ragoût / poisson) ou aucun besoin de cuisson. */
+  addProduct(product,{seat});
   renderTicket();
   renderGuestButtons();
 }
