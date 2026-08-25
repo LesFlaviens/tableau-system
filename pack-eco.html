@@ -3679,8 +3679,12 @@ body.order-open .ticket-meta {
     background-color: transparent !important; 
     border: 2px solid rgba(0, 0, 0, 0.4) !important; 
     z-index: 10 !important; 
-    pointer-events: none !important; 
-    transition: all 0.3s ease;
+    pointer-events: none !important;
+    transition: none !important;
+    animation: none !important;
+    opacity: 1 !important;
+    visibility: visible !important;
+    will-change: auto !important;
 }
 
 .ichef-auto-chair.seat-linked {
@@ -3919,11 +3923,18 @@ body.order-open .ticket-meta {
         initZoomButtons();
     }
     renderTableChairs();
-    setInterval(renderTableChairs, 350);
+    // V20 anti-clignotement : aucun polling 350 ms.
+    // Les points sont désormais intégrés directement au rendu des tables/plans.
     window.addEventListener("ichef:live-state-updated", renderTableChairs);
 
 })();
 </script>
+
+<style id="ichef-v20-chaises-stables">
+/* V20 — aucune animation/transition sur les points clients. */
+.ichef-auto-chair{transition:none!important;animation:none!important;opacity:1!important;visibility:visible!important;filter:none!important;}
+.table-card .ichef-auto-chair,.plan-table .ichef-auto-chair,.arch-table .ichef-auto-chair{display:block!important;}
+</style>
 </head>
 <body>
 <div id="screenLabel">ÉCRAN 1 · TABLES</div>
@@ -5111,6 +5122,44 @@ function tableSeatCapacity(table){
 window.tableOccupiedSeats=tableOccupiedSeats;
 window.tableSeatCapacity=tableSeatCapacity;
 window.tableClientPax=tableClientPax;
+
+/* V20 — POINTS CLIENTS STABLES, INTÉGRÉS AU RENDU
+   Le point est présent dans le même HTML que la table : aucun flash entre
+   renderTables()/plan/architecture et un second passage JavaScript. */
+function ichefRectSeatSlots(capacity){
+  const cap=Math.max(1,Math.trunc(Number(capacity)||1));
+  let leftCount=cap>=6?1:0,rightCount=cap>=6?1:0;
+  const rem=cap-leftCount-rightCount;
+  const topCount=Math.ceil(rem/2),bottomCount=Math.floor(rem/2),slots=[];
+  for(let i=0;i<topCount;i++)slots.push({edge:"top",pos:(i+1)/(topCount+1)});
+  for(let i=0;i<bottomCount;i++)slots.push({edge:"bottom",pos:(i+1)/(bottomCount+1)});
+  for(let i=0;i<leftCount;i++)slots.push({edge:"left",pos:(i+1)/(leftCount+1)});
+  for(let i=0;i<rightCount;i++)slots.push({edge:"right",pos:(i+1)/(rightCount+1)});
+  return slots;
+}
+function ichefSeatInlineStyle(seat,capacity,isRound){
+  const n=Math.max(1,Math.trunc(Number(seat)||1));
+  const cap=Math.max(Math.trunc(Number(capacity)||0),n,1);
+  if(isRound){
+    const angle=-Math.PI/2+((n-1)/cap)*(2*Math.PI),radius=48;
+    return `left:calc(50% + ${Math.cos(angle)*radius}px - 7px);top:calc(50% + ${Math.sin(angle)*radius}px - 7px);`;
+  }
+  const slots=ichefRectSeatSlots(cap),slot=slots[Math.max(0,Math.min(slots.length-1,n-1))]||slots[0];
+  if(slot.edge==="top")return `top:-7px;left:calc(${slot.pos*100}% - 7px);`;
+  if(slot.edge==="bottom")return `bottom:-7px;left:calc(${slot.pos*100}% - 7px);`;
+  if(slot.edge==="left")return `left:-7px;top:calc(${slot.pos*100}% - 7px);`;
+  return `right:-7px;top:calc(${slot.pos*100}% - 7px);`;
+}
+function seatPointsHTMLForTable(label,isRound=false){
+  const seats=normalizeOccupiedSeats(tableOccupiedSeats(label));
+  if(!seats.length)return "";
+  const capacity=Math.max(tableSeatCapacity(label),seats.length,...seats,1);
+  return seats.map(seat=>{
+    const color=(seat>=1&&seat<=9)?`--ichef-seat-color:var(--c${seat});`:"";
+    return `<span class="ichef-auto-chair seat-linked" data-seat="${seat}" aria-label="${esc(label)} · C${seat} occupée" title="C${seat}" style="${color}${ichefSeatInlineStyle(seat,capacity,isRound)}"></span>`;
+  }).join("");
+}
+window.ICHEF_SEAT_POINTS_HTML=seatPointsHTMLForTable;
 function tableStats(table){
   const o=getOrder(table);const res=findReservation(table);const pax=tableClientPax(table);
   if(!o){return{status:res?"reserved":"empty",pax,ready:0,age:0,total:0}}
@@ -5800,6 +5849,7 @@ function renderTables(){
       <span class="table-zone" style="color:${esc(zoneColor)}">${esc(zoneLabel)}</span>
       ${preview?`<span class="table-preview">${preview}</span>`:""}
       ${readyOverlay}
+      ${seatPointsHTMLForTable(t.label,false)}
     </button>`;
   }).join("");
 }
@@ -6578,7 +6628,7 @@ function openPlan(){
       ${empty}
       <div class="plan-canvas plan-canvas-responsive">
         ${zones.map(z=>`<div class="plan-zone" style="left:${z.__left}%;top:${z.__top}%;width:${z.__width}%;height:${z.__height}%"><strong>${esc(z.label||"ZONE")}</strong>${z.responsible?`<small>${esc(z.responsible)}</small>`:""}</div>`).join("")}
-        ${tables.map(t=>{const ex=isExpressTable(t);const order=getOrder(t.label);const active=(order?.items||[]).some(i=>i&&!i.cancelled&&itemQty(i)>0);const zl=text(t.__zone||getTableZoneLabel(t));const livePax=tableClientPax(t.label);return `<button class="plan-table ${ex?"express-table":""} ${active?"plan-table-active":""}" data-plan-table="${esc(t.label)}" data-pax="${livePax}" data-capacity="${tableSeatCapacity(t.label)}" style="left:${t.__left}%;top:${t.__top}%;width:${t.__width}%;height:${t.__height}%"><span>${esc(t.label)}</span><small>${livePax?`👥 ${livePax}`:(findReservation(t.label)?"RÉSERVÉE":"LIBRE")}${zl?` · ${esc(zl)}`:""}</small>${ex?`<b class="plan-express-mark">EXPRESS</b>`:""}</button>`}).join("")}
+        ${tables.map(t=>{const ex=isExpressTable(t);const order=getOrder(t.label);const active=(order?.items||[]).some(i=>i&&!i.cancelled&&itemQty(i)>0);const zl=text(t.__zone||getTableZoneLabel(t));const livePax=tableClientPax(t.label);return `<button class="plan-table ${ex?"express-table":""} ${active?"plan-table-active":""}" data-plan-table="${esc(t.label)}" data-pax="${livePax}" data-capacity="${tableSeatCapacity(t.label)}" style="left:${t.__left}%;top:${t.__top}%;width:${t.__width}%;height:${t.__height}%"><span>${esc(t.label)}</span><small>${livePax?`👥 ${livePax}`:(findReservation(t.label)?"RÉSERVÉE":"LIBRE")}${zl?` · ${esc(zl)}`:""}</small>${ex?`<b class="plan-express-mark">EXPRESS</b>`:""}${seatPointsHTMLForTable(t.label,false)}</button>`}).join("")}
       </div>
     </div>
     <div class="plan-legend"><span>⬜ Libre</span><span>🟧 Commande active</span><span>🟠 EXPRESS temporaire</span></div>
@@ -9551,7 +9601,7 @@ function elementInner(e){const label=esc(e.label||iconFor(e.type));if(e.type==='
 function canvasHTML(){
  const zones=roomZones().map(z=>{z.__kind='zone';const key=getZoneKey(z),locked=!!z.locked,fill=aClamp(z.fillOpacity||15,3,55),border=['solid','dashed','dotted'].includes(aText(z.borderStyle))?aText(z.borderStyle):'dashed';return `<div class="arch-node arch-zone ${zoneClass(z)} ${locked?'locked':''} ${A.selected===key?'selected':''}" data-arch-key="${esc(key)}" style="${nodeStyle(z)};--zone-color:${esc(colorForZone(z))};--zone-fill:${fill}%;--zone-border:${border}"><span class="zone-label">${esc(z.label||'ZONE')}</span><span class="zone-kind">${esc(zoneKindLabel(z.zoneKind))}</span><span class="zone-meta">${esc(z.responsible||z.responsable||'')} ${z.capacity?'· '+esc(z.capacity)+' places':''}</span>${locked?'<span class="arch-lock-badge">🔒</span>':''}${handles()}</div>`}).join('');
  const els=roomElements().map(e=>{e.__kind='element';const key=getElemKey(e),locked=!!e.locked;return `<div class="arch-node arch-generic ${classFor(e.type)} ${cashPatternClass(e)} ${locked?'locked':''} ${A.selected===key?'selected':''}" data-arch-key="${esc(key)}" style="${nodeStyle(e)}${cashCustomStyle(e)}">${elementInner(e)}${locked?'<span class="arch-lock-badge">🔒</span>':''}${handles()}</div>`}).join('');
- const tables=roomTables().map(t=>{t.__kind='table';const key=getTableKey(t),act=activeOrder(t.label),ex=isExpressTable(t),shape=aText(t.shape||'square'),locked=!!t.locked,service=A.mode==='service',live=planTableLive(t);const liveClass=service?`service-live live-${live.code}`:'';const serviceInner=service?`<span class="tlabel">${esc(t.label)}</span><span class="arch-table-live-head"><span class="state ${esc(live.code)}">${esc(live.label)}</span><span class="pax">👥${live.pax||0}</span>${live.time?`<span class="clock">${esc(live.time)}</span>`:''}</span>${live.seats?.length?`<span class="arch-seat-strip">${planSeatStripHTML(live)}</span>`:''}`:`<span class="tlabel">${esc(t.label)}</span><span class="tpax">CAP. ${Number(t.pax)||2}${t.zone?' · '+esc(t.zone):''}</span>`;return `<button type="button" class="arch-node arch-table ${shape==='round'?'round':''} ${act?'active-order':''} ${liveClass} ${ex?'express':''} ${locked?'locked':''} ${A.selected===key?'selected':''}" data-arch-key="${esc(key)}" data-pax="${live.pax}" data-capacity="${tableSeatCapacity(t.label)}" style="${nodeStyle(t)}">${serviceInner}${locked?'<span class="arch-lock-badge">🔒</span>':''}${handles()}</button>`}).join('');
+ const tables=roomTables().map(t=>{t.__kind='table';const key=getTableKey(t),act=activeOrder(t.label),ex=isExpressTable(t),shape=aText(t.shape||'square'),locked=!!t.locked,service=A.mode==='service',live=planTableLive(t);const liveClass=service?`service-live live-${live.code}`:'';const serviceInner=service?`<span class="tlabel">${esc(t.label)}</span><span class="arch-table-live-head"><span class="state ${esc(live.code)}">${esc(live.label)}</span><span class="pax">👥${live.pax||0}</span>${live.time?`<span class="clock">${esc(live.time)}</span>`:''}</span>${live.seats?.length?`<span class="arch-seat-strip">${planSeatStripHTML(live)}</span>`:''}`:`<span class="tlabel">${esc(t.label)}</span><span class="tpax">CAP. ${Number(t.pax)||2}${t.zone?' · '+esc(t.zone):''}</span>`;const seatPoints=(service&&typeof window.ICHEF_SEAT_POINTS_HTML==='function')?window.ICHEF_SEAT_POINTS_HTML(t.label,shape==='round'):'';return `<button type="button" class="arch-node arch-table ${shape==='round'?'round':''} ${act?'active-order':''} ${liveClass} ${ex?'express':''} ${locked?'locked':''} ${A.selected===key?'selected':''}" data-arch-key="${esc(key)}" data-pax="${live.pax}" data-capacity="${tableSeatCapacity(t.label)}" style="${nodeStyle(t)}">${serviceInner}${seatPoints}${locked?'<span class="arch-lock-badge">🔒</span>':''}${handles()}</button>`}).join('');
  return `<div class="archpad-roomtitle">${esc(A.room)}</div>${zones}${els}${tables}`;
 }
 function roomListHTML(){return A.rooms.map(r=>`<button type="button" class="archpad-room ${r===A.room?'active':''}" data-room="${esc(r)}">${esc(r)}<small>${A.tables.filter(t=>aText(t.room||A.rooms[0])===r).length} tables · ${A.zones.filter(z=>aText(z.room||A.rooms[0])===r).length} zones</small></button>`).join('')}
