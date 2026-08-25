@@ -7931,170 +7931,287 @@ function openOrderMore(){openSheet("TABLE "+STATE.currentTable,`<div class="acti
 
 function editNote(){if(!STATE.currentTable)return;const o=ensureOrder(STATE.currentTable),n=prompt("Note de service :",o.note||o.observation||"");if(n===null)return;o.note=text(n);saveCurrent(o,"Note de service");closeSheet()}
 
+
+/* =========================================================
+   iCHEF PAIEMENT CENTRALISÉ FR / CH — SERVEUR = SOURCE OFFICIELLE
+   - Admin choisit FR ou CH dans SETTINGS_MASTER.taxConfig
+   - Stripe : Checkout + webhook serveur + vérification avant fiscalisation
+   - Espèces / carte TPE / TWINT / autre : ticket fiscal créé côté serveur
+   - Aucun ticket fiscal n'est créé uniquement dans le navigateur
+   ========================================================= */
+const ICHEF_PAYMENT_SERVER_VERSION="FRCH-STRIPE-2026.08.25";
+let ICHEF_STRIPE_WATCH=null;
+
+function paymentServerHeaders(idempotencyKey=""){
+  const h={
+    "Accept":"application/json",
+    "Content-Type":"application/json",
+    "X-iCHEF-Tenant":STATE.tenantID,
+    "X-iCHEF-PIN":STATE.pin||"",
+    "X-iCHEF-Device":STATE.deviceId||""
+  };
+  if(idempotencyKey)h["Idempotency-Key"]=idempotencyKey;
+  return h;
+}
+
+async function paymentServerRequest(path,{method="GET",body=null,idempotencyKey=""}={}){
+  if(!STATE.authenticated)throw new Error("Session non authentifiée");
+  if(!navigator.onLine)throw new Error("Paiement impossible hors ligne");
+  const options={method,headers:paymentServerHeaders(idempotencyKey)};
+  if(body!==null)options.body=JSON.stringify({
+    ...(body&&typeof body==="object"?body:{}),
+    tenantID:STATE.tenantID,
+    pin:STATE.pin,
+    deviceId:STATE.deviceId
+  });
+  const r=await serverFetch(path,options);
+  const j=await r.json().catch(()=>({}));
+  if(!r.ok||j.success===false)throw new Error(j.error||j.message||(`Serveur paiement ${r.status}`));
+  return j;
+}
+
+function serverPaymentId(prefix="PAY"){
+  const raw=(globalThis.crypto?.randomUUID?.()||(`${Date.now()}_${Math.random().toString(36).slice(2)}`));
+  return `${prefix}_${fiscalSafeId(STATE.tenantID)}_${fiscalSafeId(STATE.currentTable)}_${raw}`.slice(0,160);
+}
+
+function fiscalServerSnapshot(order){
+  const f=fiscalBreakdown(order);
+  const t=STATE.tables.find(x=>x.label===STATE.currentTable);
+  const z=getZone(t);
+  const tax={};
+  f.rows.forEach(r=>{tax[String(r.rate)]=fiscalRound2(r.tax)});
+  return {
+    tableId:STATE.currentTable,
+    zone:text(z?.label||t?.zone||"SALLE"),
+    pax:num(order?.pax||order?.covers||0),
+    total:fiscalRound2(f.gross),
+    totalHT:fiscalRound2(f.rows.reduce((s,r)=>s+r.net,0)),
+    tva:tax,
+    items:(order?.items||[]).filter(i=>i&&!i.cancelled).map(i=>({
+      itemId:lineKey(i),name:itemName(i),qty:itemQty(i),price:itemPrice(i),
+      p:itemPrice(i),vatRate:itemVatRate(i),seat:itemSeat(i),guest:seatLabel(itemSeat(i)||1),
+      cooking:text(i.cooking||i.cuisson),obs:text(i.obs||i.observation||i.note),
+      dest:normalizeDestination(i.dest||i.category||"cuisine")
+    })),
+    waiter:STATE.role||"SERVEUR",
+    source:"PAD_TELEPHONE",
+    createdAt:order?.createdAt||Date.now(),
+    cashedAt:new Date().toISOString()
+  };
+}
+
+function paymentCurrency(){return fiscalProfile().currency==="CHF"?"CHF":"EUR"}
+
+async function fiscalizeWithServer(order,method,details=[],requestId=""){
+  const validation=fiscalValidateOrder(order,{forPayment:true});
+  if(!validation.ok)throw new Error(validation.errors[0]||"Commande fiscale invalide");
+  const snap=fiscalServerSnapshot(order);
+  const id=requestId||serverPaymentId("FISCAL");
+  const payload={
+    paymentRequestId:id,
+    fiscalContext:{country:fiscalProfile().country,currency:paymentCurrency(),source:"PAD_TELEPHONE"},
+    payment:{method,amount:snap.total,currency:paymentCurrency(),details},
+    orderSnapshot:snap
+  };
+  const result=await paymentServerRequest('/api/fiscal/cash-in',{method:'POST',body:payload,idempotencyKey:id});
+  const ticketNumber=text(result.ticketNumber||result.fiscalId);
+  if(!ticketNumber)throw new Error("Numéro de ticket fiscal serveur absent");
+  await paymentServerRequest('/api/orders/close-paid',{method:'POST',body:{tableId:STATE.currentTable,ticketNumber}}).catch(err=>console.warn('[iCHEF] close-paid',err));
+  return {...result,ticketNumber};
+}
+
+function applyServerFiscalResult(order,result,method){
+  const paidAt=new Date().toISOString();
+  const ticketNumber=text(result?.ticketNumber||result?.fiscalId);
+  const ticketHash=text(result?.ticketHash);
+  const total=orderTotal(order);
+  order.status="FISCALIZED";
+  order.fiscalStatus="FISCALIZED";
+  order.paymentStatus="PAID";
+  order.isArchived=true;
+  order.closedAt=paidAt;
+  order.fiscalFinalizedAt=paidAt;
+  order.fiscalReceiptReference=ticketNumber;
+  order.fiscalHash=ticketHash;
+  order.fiscalTicket={ticketNumber,ticketHash,date:paidAt};
+  order.paymentDraft={
+    version:3,status:"PAYE",fiscalStatus:"SERVER_FISCALIZED",total,remaining:0,
+    payments:[{method,amount:total,createdAt:paidAt,source:"SERVER"}],
+    receiptReference:ticketNumber,fiscalHash:ticketHash,updatedAt:paidAt,
+    updatedBy:STATE.role||"SERVEUR",deviceId:STATE.deviceId,fiscalCountry:fiscalProfile().country
+  };
+  STATE.currentOrder=clone(order);
+  if(STATE.currentTable)STATE.activeOrders[STATE.currentTable]=clone(order);
+}
+
+function stripeEnabledForRestaurant(){
+  const p=STATE.settings?.payment?.stripeCheckout;
+  return p?.enabled===true;
+}
+
+async function stripeStatus(paymentRequestId){
+  const q=new URLSearchParams({paymentRequestId,tenantID:STATE.tenantID});
+  const path='/api/payments/stripe/status?'+q.toString();
+  return paymentServerRequest(path,{method:'GET'});
+}
+
+function clearStripeWatch(){
+  if(ICHEF_STRIPE_WATCH){clearInterval(ICHEF_STRIPE_WATCH);ICHEF_STRIPE_WATCH=null;}
+}
+
+async function startStripePayment(order){
+  if(!stripeEnabledForRestaurant())throw new Error("Stripe est désactivé dans ADMIN");
+  const total=orderTotal(order);
+  const paymentRequestId=serverPaymentId("STRIPE");
+  const popup=window.open("about:blank","_blank");
+  if(popup){try{popup.document.write('<title>iCHEF Stripe</title><p style="font-family:sans-serif;padding:30px">Création du paiement sécurisé…</p>')}catch(_){}}
+  const snap=fiscalServerSnapshot(order);
+  let checkout;
+  try{
+    checkout=await paymentServerRequest('/api/payments/stripe/checkout',{
+      method:'POST',idempotencyKey:paymentRequestId,
+      body:{paymentRequestId,tableId:STATE.currentTable,amount:total,currency:paymentCurrency(),orderSnapshot:snap,
+        successUrl:location.href,cancelUrl:location.href}
+    });
+  }catch(err){if(popup&&!popup.closed)popup.close();throw err}
+  if(!checkout.url){if(popup&&!popup.closed)popup.close();throw new Error("Lien Stripe non retourné par le serveur")}
+  if(popup&&!popup.closed)popup.location.href=checkout.url;else window.open(checkout.url,"_blank");
+
+  openSheet("STRIPE · EN ATTENTE",`<div class="big-state"><div class="big gold">${money(total)}</div><div class="small">Le paiement est ouvert dans Stripe. iCHEF attend la confirmation du webhook serveur avant de fiscaliser.</div></div><div id="stripePayState" class="list-row"><div class="grow"><div class="title">STATUT</div><div class="sub">EN ATTENTE DE CONFIRMATION…</div></div></div><button class="action-btn" style="width:100%;margin-top:10px" data-stripe-check>VÉRIFIER MAINTENANT</button>`);
+
+  const check=async()=>{
+    try{
+      const st=await stripeStatus(paymentRequestId);
+      const label=text(st.status).toUpperCase();
+      const sub=$("stripePayState")?.querySelector(".sub");
+      if(sub)sub.textContent=label;
+      if(label==="PAID"){
+        clearStripeWatch();
+        const result=await fiscalizeWithServer(order,"ONLINE",[{method:"STRIPE",provider:"STRIPE",amount:total,paymentRequestId}],serverPaymentId("FISCAL_STRIPE"));
+        applyServerFiscalResult(order,result,"STRIPE");
+        closeSheet();
+        await syncFull("stripe-paid").catch(()=>{});
+        toast(`✓ Stripe confirmé · ticket ${result.ticketNumber}`);
+        const pcfg=loadPrinterConfig();
+        if(pcfg.enabled&&pcfg.printers?.caisse?.enabled&&pcfg.receipt?.autoAfterPayment!==false){try{await printCashReceipt(STATE.currentOrder,{auto:true})}catch(_){} }
+        return true;
+      }
+      if(["EXPIRED","FAILED","CANCELED","CANCELLED","REJECTED"].includes(label)){
+        clearStripeWatch();toast("Paiement Stripe non validé",true);return false;
+      }
+    }catch(err){console.warn('[iCHEF STRIPE] statut',err)}
+    return false;
+  };
+  $("sheetBody")?.querySelector("[data-stripe-check]")?.addEventListener("click",check);
+  clearStripeWatch();
+  ICHEF_STRIPE_WATCH=setInterval(check,2500);
+  setTimeout(clearStripeWatch,10*60*1000);
+  return true;
+}
+
+async function openServerFiscalHistory(){
+  try{
+    const today=new Date().toISOString().slice(0,10);
+    const q=new URLSearchParams({period:"day",key:today,tenantID:STATE.tenantID});
+    const h=await paymentServerRequest('/api/fiscal/history?'+q.toString(),{method:'GET'});
+    openSheet(`HISTORIQUE FISCAL · ${today}`,`<div class="list">${(h.data||[]).map(x=>`<div class="list-row"><div class="grow"><div class="title">${esc(x.id||x.ticketNumber||"TICKET")}</div><div class="sub">${esc(x.date||"")} · ${esc(x.method||"")} · ${esc(x.country||x.fiscalProfile||"")}</div></div><strong>${money(Number(x.total??x.amount)||0)}</strong></div>`).join("")||'<div class="empty-state">Aucun ticket fiscal aujourd’hui.</div>'}</div>`);
+  }catch(err){toast("Historique fiscal : "+err.message,true)}
+}
+
 function openPayment(){
   if(!STATE.currentTable){toast("Ouvrez d’abord une table",true);return;}
   const o=ensureOrder(STATE.currentTable),total=orderTotal(o),profile=fiscalProfile();
-  const paid=text(o.paymentStatus||o.paymentDraft?.status).toUpperCase()==="PAYE";
-  openSheet("💳 CAISSE · TABLE "+STATE.currentTable,`
-    <div class="big-state"><div class="big gold">${money(total)}</div><div class="small">Profil fiscal ${esc(profile.label)} · ${esc(profile.currency)}</div></div>
+  const paid=fiscalOrderFinalized(o);
+  const stripeOn=stripeEnabledForRestaurant();
+  const twint=profile.country==="CH";
+  openSheet("CAISSE · TABLE "+STATE.currentTable,`
+    <div class="big-state"><div class="big gold">${money(total)}</div><div class="small">Profil fiscal ${esc(profile.label)} · ${esc(profile.currency)} · serveur officiel</div></div>
+    ${paid?`<div class="list-row"><div class="grow"><div class="title">VENTE FISCALISÉE</div><div class="sub">Ticket ${esc(o.fiscalTicket?.ticketNumber||o.fiscalReceiptReference||o.paymentDraft?.receiptReference||"—")}</div></div></div>`:""}
     <div class="action-grid">
-      <button class="action-btn green" data-pay="CARTE">💳 CARTE</button>
-      <button class="action-btn gold" data-pay="ESPÈCES">💶 ESPÈCES</button>
-      <button class="action-btn" data-pay="AUTRE">••• AUTRE</button>
-      <button class="action-btn purple" data-pay="">⏳ EN ATTENTE</button>
+      <button class="action-btn green" data-pay="CARTE" ${paid?"disabled":""}>CARTE / TPE</button>
+      <button class="action-btn gold" data-pay="ESPÈCES" ${paid?"disabled":""}>ESPÈCES</button>
+      <button class="action-btn" data-pay="STRIPE" ${paid||!stripeOn?"disabled":""}>STRIPE${stripeOn?"":" · OFF"}</button>
+      ${twint?`<button class="action-btn purple" data-pay="TWINT" ${paid?"disabled":""}>TWINT</button>`:`<button class="action-btn purple" data-pay="AUTRE" ${paid?"disabled":""}>AUTRE</button>`}
+      ${twint?`<button class="action-btn" data-pay="AUTRE" ${paid?"disabled":""}>AUTRE</button>`:""}
+      <button class="action-btn" data-pay="" ${paid?"disabled":""}>EN ATTENTE</button>
     </div>
-    <button class="action-btn gold" style="width:100%;margin-top:9px;min-height:56px" data-cash-receipt ${paid?"":"disabled"}>🧾 ${paid?"IMPRIMER / RÉIMPRIMER LE TICKET CLIENT":"TICKET CLIENT DISPONIBLE APRÈS PAIEMENT"}</button>
-    <div style="margin-top:7px;color:#98a1a4;font-size:9px;text-align:center">Imprimante CAISSE configurable dans OUTILS → IMPRIMANTES.</div>`);
+    <div class="action-grid" style="margin-top:9px">
+      <button class="action-btn gold" data-cash-receipt ${paid?"":"disabled"}>TICKET CLIENT</button>
+      <button class="action-btn" data-fiscal-history>HISTORIQUE FISCAL</button>
+    </div>
+    <div style="margin-top:8px;color:#98a1a4;font-size:9px;text-align:center">Stripe n'est fiscalisé qu'après confirmation serveur du webhook. Les autres moyens créent le ticket fiscal côté serveur avant verrouillage.</div>`);
   $("sheetBody").querySelectorAll("[data-pay]").forEach(b=>b.onclick=async()=>{
-    const ok=await recordPayment(b.dataset.pay||null);if(ok){closeSheet();if(document.body.classList.contains("summary-open"))renderSummary()}
+    const m=b.dataset.pay||null;
+    if(m==="STRIPE"){
+      b.disabled=true;const old=b.textContent;b.textContent="OUVERTURE…";
+      try{await startStripePayment(o)}catch(e){toast(e.message||"Stripe impossible",true);b.disabled=false;b.textContent=old}
+      return;
+    }
+    b.disabled=true;
+    try{const ok=await recordPayment(m);if(ok){closeSheet();if(document.body.classList.contains("summary-open"))renderSummary()}}
+    catch(e){toast(e.message||"Paiement refusé",true)}finally{b.disabled=false}
   });
   $("sheetBody").querySelector("[data-cash-receipt]")?.addEventListener("click",async()=>{
-    const btn=$("sheetBody")?.querySelector("[data-cash-receipt]");
-    if(!btn)return;const old=btn.textContent;btn.disabled=true;btn.textContent="IMPRESSION…";
-    try{await printCashReceipt(o,{duplicate:true});toast("🧾 Ticket client envoyé à la caisse")}
+    const target=STATE.currentOrder||o;
+    try{await printCashReceipt(target,{duplicate:true});toast("Ticket client envoyé à la caisse")}
     catch(e){toast("Ticket caisse : "+(e?.message||"échec"),true)}
-    finally{setTimeout(()=>{btn.disabled=false;btn.textContent=old},1800)}
   });
+  $("sheetBody").querySelector("[data-fiscal-history]")?.addEventListener("click",openServerFiscalHistory);
 }
 
 
 async function closeTable(){
   if(!STATE.currentTable)return;
-
   const table=STATE.currentTable;
-  const o=ensureOrder(table);
+  const o=STATE.currentOrder||getOrder(table)||ensureOrder(table);
   const total=orderTotal(o);
-
   if(total>0 && !fiscalOrderFinalized(o)){
-    toast("🔒 Fermeture refusée : encaissez ou annulez fiscalement la commande",true);
-    openPayment();
-    return;
+    toast("Fermeture refusée : encaissez ou annulez la commande",true);
+    openPayment();return;
   }
-
-  const reason=prompt("Motif / confirmation de fermeture :","Service terminé");
-  if(reason===null)return;
-
-  o.closedAt=Date.now();
-  o.closedReason=text(reason);
-  o.status="closed";
-
-  const fiscal=fiscalBreakdown(o);
-  const closeTrace=await fiscalEvent("CLOSE_ORDER",{
-    reason:text(reason),
-    receiptReference:receiptReference(o),
-    transaction:fiscalTransactionSnapshot(o),
-    total:fiscal.gross,
-    fiscalCountry:fiscal.profile.country,
-    fiscalRows:fiscal.rows.map(r=>({rate:r.rate,gross:r.gross,net:r.net,tax:r.tax}))
-  });
-  if(!closeTrace?.ok){
-    toast("Fermeture bloquée : journal fiscal non sécurisé",true);
-    return;
+  if(fiscalOrderFinalized(o)){
+    const ticketNumber=text(o.fiscalTicket?.ticketNumber||o.fiscalReceiptReference||o.paymentDraft?.receiptReference);
+    if(ticketNumber){
+      try{await paymentServerRequest('/api/orders/close-paid',{method:'POST',body:{tableId:table,ticketNumber}})}
+      catch(err){toast("Fermeture fiscale : "+err.message,true);return;}
+    }
+    closeSheet();closeOrder();await syncFull("close-paid").catch(()=>{});toast("✓ Table clôturée · historique conservé");return;
   }
-
-  const archiveCore={
-    schema:"ICHEF-FISCAL-ARCHIVE-1",
-    fiscalVersion:ICHEF_FISCAL_VERSION,
-    tableId:table,
-    closedAt:new Date(o.closedAt).toISOString(),
-    source:"TELEPHONE",
-    fiscalCountry:fiscal.profile.country,
-    receiptReference:receiptReference(o),
-    ledgerEventRef:closeTrace.event.ref,
-    ledgerHash:closeTrace.event.hash,
-    order:clone(o)
-  };
-  const archiveHash=await fiscalSha256Hex(fiscalCanonical(archiveCore));
-  const archiveRef="FISCAL_ARCHIVE_"+Date.now()+"_"+fiscalSafeId(receiptReference(o));
-
-  const archived=await optimisticWrite(archiveRef,{data:{...archiveCore,hashAlgorithm:"SHA-256",archiveHash}},"Archive fiscale scellée téléphone");
-  if(!archived){
-    toast("Fermeture bloquée : archive fiscale non enregistrée",true);
-    return;
-  }
-
-  await optimisticWrite(table,null,"Retrait table active après archive fiscale");
-  await removeExpressTableAfterService(table).catch(()=>false);
-  await fiscalMaintenance().catch(()=>{});
-  closeSheet();
-  closeOrder();
-  toast("✓ Table fermée · archive fiscale scellée");
+  const reason=prompt("Motif de fermeture d'une table sans vente :","Table vide / service terminé");
+  if(!text(reason))return;
+  const trace=await fiscalEvent("CLOSE_EMPTY_ORDER",{reason:text(reason),tableId:table});
+  if(!trace?.ok){toast("Journal indisponible",true);return;}
+  await optimisticWrite(table,null,"Fermeture table sans vente");
+  closeSheet();closeOrder();toast("✓ Table fermée");
 }
 
 async function deleteOrder(){
   if(!STATE.currentTable)return;
-
   const reason=prompt("Motif obligatoire de correction / annulation :","");
-  if(!text(reason)){
-    toast("Motif obligatoire",true);
-    return;
-  }
-
+  if(!text(reason)||text(reason).length<3){toast("Motif obligatoire",true);return;}
   const table=STATE.currentTable;
-  const o=ensureOrder(table);
+  const o=STATE.currentOrder||getOrder(table)||ensureOrder(table);
+  if(fiscalOrderFinalized(o)){
+    const ticketNumber=text(o.fiscalTicket?.ticketNumber||o.fiscalReceiptReference||o.paymentDraft?.receiptReference);
+    if(!ticketNumber){toast("Ticket fiscal original introuvable",true);return;}
+    const confirmCorrection=confirm(`Créer une contre-écriture fiscale complète pour ${ticketNumber} ?\n\nL'original restera conservé.`);
+    if(!confirmCorrection)return;
+    try{
+      const id=serverPaymentId("CORRECTION");
+      const r=await paymentServerRequest('/api/fiscal/correction',{method:'POST',idempotencyKey:id,body:{ticketNumber,tableId:table,reason:text(reason),mode:"FULL_VOID",correctionRequestId:id}});
+      closeSheet();closeOrder();await syncFull("fiscal-correction").catch(()=>{});
+      toast(`✓ Correction fiscale ${r.correctionTicketNumber||r.ticketNumber||"enregistrée"}`);
+    }catch(err){toast("Correction refusée : "+err.message,true)}
+    return;
+  }
   const fiscal=fiscalBreakdown(o);
-  const paid=fiscalOrderFinalized(o);
-  const type=paid?"CANCEL_PAYMENT":"CANCEL_ORDER";
-  const originalReceipt=receiptReference(o);
-
-  const correctionRows=fiscal.rows.map(r=>({
-    rate:r.rate,
-    gross:fiscalRound2(-r.gross),
-    net:fiscalRound2(-r.net),
-    tax:fiscalRound2(-r.tax)
-  }));
-
-  const trace=await fiscalEvent(type,{
-    reason:text(reason),
-    originalReceiptReference:originalReceipt,
-    correctionMode:"PLUS_MINUS",
-    signedTotal:fiscalRound2(-fiscal.gross),
-    fiscalRows:correctionRows,
-    originalTransaction:fiscalTransactionSnapshot(o)
-  });
-  if(!trace?.ok){
-    toast("Annulation refusée : journal fiscal indisponible",true);
-    return;
-  }
-
-  const cancelledAt=new Date().toISOString();
-  const cancelled={
-    ...clone(o),
-    status:"cancelled",
-    cancelled:true,
-    cancelledAt,
-    cancellationReason:text(reason),
-    fiscalCancellationRef:trace.event.ref,
-    fiscalCancellationHash:trace.event.hash,
-    originalReceiptReference:originalReceipt
-  };
-
-  const archiveCore={
-    schema:"ICHEF-FISCAL-CORRECTION-1",
-    fiscalVersion:ICHEF_FISCAL_VERSION,
-    tableId:table,
-    cancelledAt,
-    source:"TELEPHONE",
-    fiscalCountry:fiscal.profile.country,
-    correctionMode:"PLUS_MINUS",
-    ledgerEventRef:trace.event.ref,
-    ledgerHash:trace.event.hash,
-    order:cancelled
-  };
-  const archiveHash=await fiscalSha256Hex(fiscalCanonical(archiveCore));
-  const archiveRef="FISCAL_ARCHIVE_CANCEL_"+Date.now()+"_"+fiscalSafeId(originalReceipt);
-
-  const archived=await optimisticWrite(archiveRef,{data:{...archiveCore,hashAlgorithm:"SHA-256",archiveHash}},"Archive correction fiscale téléphone");
-  if(!archived){
-    toast("Annulation bloquée : archive fiscale non enregistrée",true);
-    return;
-  }
-
-  await optimisticWrite(table,null,"Retrait commande active après correction fiscale");
-  await removeExpressTableAfterService(table).catch(()=>false);
-  closeSheet();
-  closeOrder();
-  toast(paid?"✓ Paiement annulé par contre-écriture fiscale":"✓ Commande annulée et archivée");
+  const trace=await fiscalEvent("CANCEL_ORDER",{reason:text(reason),signedTotal:fiscalRound2(-fiscal.gross),tableId:table});
+  if(!trace?.ok){toast("Annulation refusée : journal indisponible",true);return;}
+  const cancelled={...clone(o),status:"cancelled",cancelled:true,cancelledAt:new Date().toISOString(),cancellationReason:text(reason)};
+  await optimisticWrite("FISCAL_CANCEL_"+Date.now()+"_"+fiscalSafeId(table),{data:cancelled},"Archive annulation commande");
+  await optimisticWrite(table,null,"Retrait commande annulée");
+  closeSheet();closeOrder();toast("✓ Commande annulée et archivée");
 }
 
 /* ---------------- CUISSONS ---------------- */
@@ -8469,9 +8586,12 @@ function fiscalBreakdown(order){
 }
 
 function fiscalOrderFinalized(order){
-  return text(order?.paymentStatus||order?.paymentDraft?.status).toUpperCase()==="PAYE"
-    ||text(order?.paymentDraft?.fiscalStatus).toUpperCase()==="SEALED"
-    ||!!order?.fiscalFinalizedAt;
+  const tokens=[
+    order?.status,order?.state,order?.paymentStatus,order?.fiscalStatus,
+    order?.paymentDraft?.status,order?.paymentDraft?.fiscalStatus
+  ].map(v=>text(v).normalize("NFD").replace(/[\u0300-\u036f]/g,"").toUpperCase());
+  return tokens.some(v=>["PAYE","PAID","FISCALIZED","FISCALISE","SEALED","SCELLE","CLOSED_PAID"].includes(v))
+    ||!!order?.fiscalFinalizedAt||!!order?.fiscalTicket?.ticketNumber||!!order?.fiscalTicket?.ticketHash;
 }
 
 function fiscalValidateOrder(order,{forPayment=false}={}){
@@ -8896,6 +9016,7 @@ async function openFiscalAudit(){
     <div class="action-grid" style="margin-top:10px">
       <button class="action-btn green" data-fiscal-maintenance>✓ VÉRIFIER / CLÔTURER</button>
       <button class="action-btn gold" data-fiscal-export>⬇ EXPORT ARCHIVE JSON</button>
+      <button class="action-btn" data-fiscal-history-server>HISTORIQUE SERVEUR</button>
     </div>
   `);
 
@@ -8907,6 +9028,7 @@ async function openFiscalAudit(){
     }catch(err){toast(err?.message||"Erreur fiscale",true)}
     finally{b.disabled=false;b.textContent=before}
   });
+  $("sheetBody")?.querySelector("[data-fiscal-history-server]")?.addEventListener("click",openServerFiscalHistory);
   $("sheetBody")?.querySelector("[data-fiscal-export]")?.addEventListener("click",async e=>{
     const b=e.currentTarget,before=b.textContent;b.disabled=true;b.textContent="EXPORT…";
     try{await fiscalExportArchive();toast("✓ Archive fiscale JSON générée")}
@@ -9047,172 +9169,33 @@ function renderSummary(){
 
 async function recordPayment(method){
   if(!STATE.currentTable)return false;
-
-  let o=ensureOrder(STATE.currentTable);
+  const o=ensureOrder(STATE.currentTable);
   const paymentMethod=method||null;
-
-  /* Une vente déjà payée ne peut pas revenir à "en attente" ni changer de moyen
-     sans correction fiscale. Si le scellement était seulement en attente, on le reprend. */
   if(fiscalOrderFinalized(o)){
-    const status=text(o?.paymentDraft?.fiscalStatus).toUpperCase();
-    if(status==="PENDING_LEDGER" && paymentMethod){
-      const eventRef=text(o.paymentDraft?.fiscalEventRef);
-      const snapshot=fiscalTransactionSnapshot(o);
-      const trace=await fiscalEvent("PAYMENT",{
-        method:paymentMethod,
-        total:snapshot.totalTTC,
-        remaining:0,
-        receiptReference:snapshot.receiptNumber,
-        transaction:snapshot,
-        rows:snapshot.vatTotals
-      },{ref:eventRef||undefined,createdAt:o.paymentDraft.updatedAt});
-      if(trace?.ok){
-        o.paymentDraft.fiscalStatus="SEALED";
-        o.paymentDraft.fiscalEventRef=trace.event.ref;
-        o.paymentDraft.fiscalHash=trace.event.hash;
-        o.paymentDraft.fiscalSequence=trace.event.sequence;
-        o.fiscalFinalizedAt=o.paymentDraft.updatedAt;
-        o.fiscalReceiptReference=snapshot.receiptNumber;
-        o.fiscalHash=trace.event.hash;
-        const sealed=await optimisticWrite(STATE.currentTable,o,"Reprise scellement fiscal paiement");
-        if(sealed){
-          STATE.currentOrder=clone(o);
-          toast("✓ Paiement fiscal scellé");
-          return true;
-        }
-      }
-      toast("Scellement fiscal encore en attente",true);
-      return false;
-    }
-    toast("🔒 Paiement déjà fiscalisé : utilisez une annulation/correction",true);
+    toast("Paiement déjà fiscalisé : correction obligatoire pour toute modification",true);
     return false;
   }
-
   if(!paymentMethod){
-    /* Simple état A_PAYER : aucune donnée de règlement n'est validée. */
-    o.paymentDraft={
-      version:2,
-      payments:[],
-      total:orderTotal(o),
-      remaining:orderTotal(o),
-      fidelityDiscountUsed:0,
-      status:"A_PAYER",
-      updatedAt:new Date().toISOString(),
-      updatedBy:STATE.role||"SERVEUR",
-      deviceId:STATE.deviceId,
-      fiscalCountry:fiscalProfile().country,
-      fiscalStatus:"NOT_PAID"
-    };
-    o.paymentStatus="A_PAYER";
-    o.status="pending";
+    o.paymentDraft={version:3,payments:[],total:orderTotal(o),remaining:orderTotal(o),status:"A_PAYER",updatedAt:new Date().toISOString(),updatedBy:STATE.role||"SERVEUR",deviceId:STATE.deviceId,fiscalCountry:fiscalProfile().country,fiscalStatus:"NOT_PAID"};
+    o.paymentStatus="A_PAYER";o.status="pending";
     return saveCurrent(o,"Paiement en attente",{immediate:true});
   }
-
+  if(paymentMethod==="STRIPE")return startStripePayment(o);
   const validation=fiscalValidateOrder(o,{forPayment:true});
-  if(!validation.ok){
-    toast("Fiscal : "+validation.errors[0],true);
-    return false;
-  }
-
-  const fiscal=validation.fiscal;
-  const total=fiscalRound2(fiscal.gross);
-  const paidAt=new Date().toISOString();
-  const receiptRef=fiscalNextReceiptReference();
-  const eventRef="FISCAL_EVENT_PAYMENT_"+fiscalSafeId(receiptRef);
-
-  const payments=[{
-    method:paymentMethod,
-    amount:total,
-    createdAt:paidAt,
-    source:"TELEPHONE"
-  }];
-
-  o.paymentDraft={
-    version:2,
-    payments,
-    total,
-    remaining:0,
-    fidelityDiscountUsed:0,
-    status:"PAYE",
-    updatedAt:paidAt,
-    updatedBy:STATE.role||"SERVEUR",
-    deviceId:STATE.deviceId,
-    fiscalCountry:fiscal.profile.country,
-    fiscalRows:fiscal.rows.map(r=>({rate:r.rate,gross:r.gross,net:r.net,tax:r.tax})),
-    receiptReference:receiptRef,
-    fiscalEventRef:eventRef,
-    fiscalStatus:"PENDING_LEDGER"
-  };
-
-  o.paymentStatus="PAYE";
-  o.status="payment";
-  o.fiscalReceiptReference=receiptRef;
-  o.orderMeta={
-    ...(o.orderMeta&&typeof o.orderMeta==="object"?o.orderMeta:{}),
-    version:2,
-    origin:o.orderMeta?.origin||"PAD",
-    serviceMode:o.orderMeta?.serviceMode||"SERVEUR",
-    paymentStatus:"PAYE",
-    productionStatus:o.orderMeta?.productionStatus||o.productionStatus||"WAITING",
-    tableId:STATE.currentTable,
-    updatedAt:paidAt,
-    updatedBy:STATE.role||"SERVEUR",
-    deviceId:STATE.deviceId,
-    terminal:"TELEPHONE",
-    fiscalCountry:fiscal.profile.country,
-    fiscalReceiptReference:receiptRef
-  };
-
-  /* 1. On enregistre d'abord la vente comme PAYE mais "PENDING_LEDGER".
-     Si le réseau fiscal échoue, aucune impression fiscale n'est lancée. */
-  const saved=await saveCurrent(o,"Paiement téléphone enregistré - scellement fiscal en cours",{immediate:true});
-  if(!saved)return false;
-
-  const snapshot=fiscalTransactionSnapshot(o);
-  const trace=await fiscalEvent("PAYMENT",{
-    method:paymentMethod,
-    total,
-    remaining:0,
-    receiptReference:receiptRef,
-    transaction:snapshot,
-    rows:snapshot.vatTotals
-  },{ref:eventRef,createdAt:paidAt});
-
-  if(!trace?.ok){
-    toast("Paiement enregistré mais scellement fiscal en attente",true);
-    return false;
-  }
-
-  /* 2. On rattache l'empreinte fiscale au paiement sans modifier les données de vente. */
-  o.paymentDraft.fiscalStatus="SEALED";
-  o.paymentDraft.fiscalEventRef=trace.event.ref;
-  o.paymentDraft.fiscalHash=trace.event.hash;
-  o.paymentDraft.fiscalSequence=trace.event.sequence;
-  o.fiscalFinalizedAt=paidAt;
-  o.fiscalHash=trace.event.hash;
-
-  const sealed=await optimisticWrite(STATE.currentTable,o,"Scellement fiscal paiement SHA-256");
-  if(!sealed){
-    toast("Paiement scellé localement · synchronisation serveur à reprendre",true);
-    return false;
-  }
-  STATE.currentOrder=clone(o);
-
-  await fiscalMaintenance().catch(err=>console.warn("[iCHEF FISCAL] maintenance",err));
-
-  toast(`✓ Paiement ${paymentMethod} fiscalisé · ${receiptRef}`);
-
+  if(!validation.ok){toast("Fiscal : "+validation.errors[0],true);return false;}
+  if(!["CARTE","ESPÈCES","TWINT","AUTRE"].includes(paymentMethod))throw new Error("Moyen de paiement inconnu");
+  const ok=confirm(`Confirmer ${money(orderTotal(o))} réglé par ${paymentMethod} ?\n\nLe serveur créera immédiatement le ticket fiscal et verrouillera la vente.`);
+  if(!ok)return false;
+  const details=[{method:paymentMethod,provider:paymentMethod==="CARTE"?"TPE_EXTERNE":paymentMethod,amount:orderTotal(o),confirmedBy:STATE.role||"SERVEUR",confirmedAt:new Date().toISOString()}];
+  const result=await fiscalizeWithServer(o,paymentMethod,details,serverPaymentId("FISCAL"));
+  applyServerFiscalResult(o,result,paymentMethod);
+  await syncFull("payment-fiscalized").catch(()=>{});
+  toast(`✓ ${paymentMethod} fiscalisé · ${result.ticketNumber}`);
   const pcfg=loadPrinterConfig();
   if(pcfg.enabled&&pcfg.printers?.caisse?.enabled&&pcfg.receipt?.autoAfterPayment!==false){
-    try{
-      await printCashReceipt(o,{auto:true});
-      toast("🧾 Paiement fiscalisé · ticket client imprimé");
-    }catch(e){
-      console.warn("[iCHEF CAISSE] Paiement OK, impression ticket échouée",e);
-      toast("Paiement fiscalisé · ticket caisse à réimprimer",true);
-    }
+    try{await printCashReceipt(STATE.currentOrder||o,{auto:true});toast("Ticket client imprimé")}
+    catch(e){console.warn("[iCHEF CAISSE] impression",e);toast("Paiement OK · ticket à réimprimer",true)}
   }
-
   return true;
 }
 
