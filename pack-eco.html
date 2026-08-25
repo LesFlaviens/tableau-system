@@ -9883,6 +9883,80 @@ rebind();
 /* openPlan historique conservé intact : aucun remplacement global. */
 })();
 </script>
+<!-- CORRECTION DÉFINITIVE PAX ET PLAN -->
+<script id="correction-pax-bug">
+// 1. On corrige l'erreur de calcul qui faisait planter le plan
+window.tableClientPax = function(label) {
+    const s = tableStats(label);
+    return s.pax || null;
+};
 
+// 2. On s'assure que l'Écran 1 (les tables) affiche bien "PAX" sans aucun émoji
+setTimeout(() => {
+    window.renderTables = function() {
+      const filter = getDeviceFilter();
+      let list = STATE.tables || [];
+      if (filter.type === "zone") {
+        list = list.filter(t => (getZone(t)?.label || t.zone || "Nouvelle Zone") === filter.value);
+      } else if (filter.type === "room") {
+        list = list.filter(t => t.room === filter.value);
+      } else {
+        list = list.filter(t => t.room === STATE.room);
+      }
+
+      const el = document.getElementById("tables");
+      if(!list.length) { el.innerHTML = '<div class="empty-state">Aucune table.</div>'; return; }
+
+      el.innerHTML = list.map(t => {
+        const s = tableStats(t.label);
+        const o = getOrder(t.label);
+        const z = getZone(t);
+        
+        let etatLabel = "LIBRE";
+        if (s.status === 'reserved') etatLabel = "RÉSERVÉE";
+        else if (s.status === 'payment') etatLabel = "PAIEMENT";
+        else if (s.status === 'alert') etatLabel = "URGENT";
+        else if (s.status === 'late') etatLabel = "RETARD";
+        else if (s.status === 'ready') etatLabel = "PRÊT";
+        else if (s.status === 'wait') etatLabel = "ATTENTE";
+        else if (s.status === 'active') etatLabel = "OCCUPÉE";
+
+        // === TEXTE PAX PROPRE ICI (AUCUN ÉMOJI) ===
+        const livePax = s.pax || (t.pax ? Number(t.pax) : 2) || 2;
+        const paxLabel = livePax + " PAX";
+        
+        const time = s.age ? duration(s.age) : (s.status === "reserved" ? "—" : "00:00");
+        const zoneLabel = text(z?.label||t.zone||"Nouvelle Zone");
+        const zoneColor = text(z?.color||z?.couleur||(s.status==="ready"?"#36d98a":s.status==="wait"?"#ff9a43":s.status==="late"||s.status==="alert"?"#ff5368":s.status==="reserved"?"#9b74ff":"#b7bd00"));
+
+        const preview = (o?.items||[]).filter(Boolean).slice(0,2).map(item => {
+          const q = itemQty(item);
+          const ready = lineReady(item);
+          const sent = lineFired(item);
+          const state = ready ? " · PRÊT" : sent ? "" : " · À ENVOYER";
+          return '<span class="table-preview-line' + (ready||s.status==="late"||s.status==="alert"?" warn":"") + '">• ' + (q>1?q+"× ":"") + esc(itemName(item)) + state + '</span>';
+        }).join("");
+
+        const readyOverlay = s.ready ? '<div class="table-ready-overlay">🛎️ ' + s.ready + ' PRÊT(S)</div>' : "";
+        const isExpress = !!(t.express||t.temporary||t.isTemporary);
+
+        return '<button class="table-card ' + s.status + (isExpress?" express-table":"") + '" data-table="' + esc(t.label) + '">' +
+          (isExpress?'<span class="express-badge">EXPRESS</span>':"") +
+          '<span class="num">' + esc(t.label) + '</span>' +
+          '<span class="meta state-label" style="font-size:11px; font-weight:950; text-transform:uppercase; margin-top:2px;">' + esc(etatLabel) + '</span>' +
+          '<span class="time" style="font-size:14px; font-weight:900; margin-top:3px;">' + esc(time) + '</span>' +
+          '<span class="meta pax" style="font-size:12px; margin-top:3px; font-weight:900;">' + esc(paxLabel) + '</span>' +
+          '<span class="table-zone" style="color:' + esc(zoneColor) + '; margin-top:6px;">' + esc(zoneLabel) + '</span>' +
+          (preview ? '<span class="table-preview">' + preview + '</span>' : "") +
+          readyOverlay +
+        '</button>';
+      }).join("");
+    };
+    
+    // On met à jour l'affichage
+    scheduleRender();
+}, 200);
+</script>
+  
 </body>
 </html>
