@@ -3935,6 +3935,11 @@ body.order-open .ticket-meta {
 .ichef-auto-chair{transition:none!important;animation:none!important;opacity:1!important;visibility:visible!important;filter:none!important;}
 .table-card .ichef-auto-chair,.plan-table .ichef-auto-chair,.arch-table .ichef-auto-chair{display:block!important;}
 </style>
+
+<style id="ichef-v21-chairs-realtime">
+/* V21 — chaises = état serveur canonique. Aucun clignotement. */
+.ichef-auto-chair{transition:none!important;animation:none!important}
+</style>
 </head>
 <body>
 <div id="screenLabel">ÉCRAN 1 · TABLES</div>
@@ -4434,6 +4439,12 @@ async function enqueueVersionedWrite(key,pending){
         try{
           await updateServer(key,pending.data,pending.reason);
 
+          /* Ancien ou nouveau server.js : on garde aussi une ligne de base de données
+             dédiée aux chaises. Cette écriture secondaire n'annule jamais la commande. */
+          if(pending.data && typeof pending.data==="object" && Array.isArray(pending.data.items)){
+            await writeCompatOccupancyMaster(key,pending.data).catch(()=>false);
+          }
+
           const latest=ICHEF_LOCAL_PENDING.get(key);
           if(latest && latest.version===pending.version){
             ICHEF_LOCAL_PENDING.delete(key);
@@ -4776,6 +4787,44 @@ async function updateServer(key,data,auditReason="Mise à jour téléphone"){
   if(!r.ok)throw new Error(j.error||j.message||("Écriture serveur "+r.status));
   return j;
 }
+async function writeCompatOccupancyMaster(table,order){
+  /* Compatibilité avec les anciennes versions de server.js : /update-order sait déjà
+     stocker n'importe quelle clé activeOrders. On maintient donc aussi l'index chaises
+     sans exiger une nouvelle route serveur. */
+  if(!table||table==="TABLE_OCCUPANCY_MASTER"||!order||typeof order!=="object"||!Array.isArray(order.items))return false;
+  try{
+    const normalized=syncOrderSeatOccupancy(clone(order));
+    const fresh=await getState();
+    const ao=fresh?.activeOrders&&typeof fresh.activeOrders==="object"?fresh.activeOrders:{};
+    const raw=ao.TABLE_OCCUPANCY_MASTER;
+    const oldData=(raw?.data&&typeof raw.data==="object")?raw.data:{};
+    const data={...oldData};
+    const seats=normalizeOccupiedSeats(normalized.occupiedSeats);
+    const configured=(STATE.tables||[]).find(t=>text(t?.label||t?.name||t?.id)===text(table));
+    const capRaw=Number(configured?.capacity ?? configured?.seats ?? configured?.pax ?? 0);
+    const seatCapacity=Math.max(Number.isFinite(capRaw)?Math.trunc(capRaw):0,seats.length,...seats,0);
+    data[table]={
+      tableId:table,
+      pax:Math.max(0,Number(normalized.pax)||0),
+      covers:Math.max(0,Number(normalized.pax)||0),
+      seatCapacity,
+      occupiedSeats:seats,
+      chairs:Array.from({length:seatCapacity},(_,i)=>({seat:i+1,occupied:seats.includes(i+1)})),
+      source:"order",
+      updatedAt:new Date().toISOString(),
+      seatStateVersion:2
+    };
+    await updateServer("TABLE_OCCUPANCY_MASTER",{
+      data,
+      updatedAt:new Date().toISOString(),
+      version:2
+    },"Synchronisation chaises "+table);
+    return true;
+  }catch(err){
+    console.warn("[iCHEF] index chaises compatible non écrit",table,err?.message||err);
+    return false;
+  }
+}
 async function optimisticWrite(key,data,reason){
   const pending=stageLocalValue(key,data,reason);
   return enqueueVersionedWrite(key,pending);
@@ -4895,6 +4944,11 @@ function applyServerState(serverState,source){
   scheduleRender();
   checkGlobalAlert();
   try{window.dispatchEvent(new CustomEvent("ichef:live-state-updated",{detail:{source:source||"server"}}))}catch(_){}
+  /* Le rendu des tables/chaises est forcé après intégration complète de l'état serveur. */
+  requestAnimationFrame(()=>{
+    try{ if(STATE.currentScreen==="tables") renderTables(); }catch(_){}
+    try{ if(typeof window.refreshPadServiceLive==="function") window.refreshPadServiceLive(); }catch(_){}
+  });
 }
 
 window.addEventListener("online",()=>{setConnection("RECONNEXION","warn");connectSocket();retryFailedWrites();syncFull("online")},{passive:true});
@@ -5078,15 +5132,51 @@ function reservationOccupiedSeats(table){
   const p=readPaxSource(res);
   return p===null?null:occupiedSeatsForPax(p);
 }
+function localPendingOrderForTable(table){
+  const pending=(typeof ICHEF_LOCAL_PENDING!=="undefined"&&ICHEF_LOCAL_PENDING)?ICHEF_LOCAL_PENDING.get(table):null;
+  if(!pending||!pending.data||typeof pending.data!=="object"||!Array.isArray(pending.data.items))return null;
+  return pending.data;
+}
+function occupancyMasterUpdatedAt(){
+  const raw=STATE.activeOrders.TABLE_OCCUPANCY_MASTER;
+  const stamp=raw?.updatedAt ?? raw?.data?.updatedAt ?? 0;
+  const n=Date.parse(stamp)||Number(stamp)||0;
+  return Number.isFinite(n)?n:0;
+}
+function orderUpdatedAt(order){
+  if(!order||typeof order!=="object")return 0;
+  const raw=order.updatedAt ?? order.modifiedAt ?? order.lastUpdate ?? order.createdAt ?? 0;
+  const n=Date.parse(raw)||Number(raw)||0;
+  return Number.isFinite(n)?n:0;
+}
 function tableOccupiedSeats(table){
-  const o=getOrder(table);
-  if(o&&typeof o==="object"){
-    const normalized=syncOrderSeatOccupancy(clone(o));
+  /* V21 — la modification locale en cours gagne uniquement jusqu'à l'ACK serveur. */
+  const pending=localPendingOrderForTable(table);
+  if(pending){
+    const normalized=syncOrderSeatOccupancy(clone(pending));
     return normalizeOccupiedSeats(normalized?.occupiedSeats);
   }
+
+  const order=getOrder(table);
+  const dbSeats=serverOccupiedSeats(table);
+
+  /* Quand TABLE_OCCUPANCY_MASTER existe et est au moins aussi récent que la commande,
+     c'est la source serveur canonique des chaises. Cela permet à un autre PAD/téléphone
+     de déplacer C1/C2 vers C3/C4 sans être masqué par un ancien occupiedSeats local. */
+  if(dbSeats!==null){
+    const masterAt=occupancyMasterUpdatedAt();
+    const orderAt=orderUpdatedAt(order);
+    if(!order)return dbSeats;
+    if(masterAt && (!orderAt || masterAt>=orderAt))return dbSeats;
+  }
+
+  if(order&&typeof order==="object"){
+    const normalized=syncOrderSeatOccupancy(clone(order));
+    return normalizeOccupiedSeats(normalized?.occupiedSeats);
+  }
+
   const resSeats=reservationOccupiedSeats(table);
   if(resSeats!==null)return resSeats;
-  const dbSeats=serverOccupiedSeats(table);
   if(dbSeats!==null)return dbSeats;
   return [];
 }
@@ -5099,7 +5189,23 @@ function serverOccupancyPax(table){
   return null;
 }
 function tableClientPax(table){
+  const pending=localPendingOrderForTable(table);
+  if(pending){
+    const p=readPaxSource(pending);
+    const normalized=syncOrderSeatOccupancy(clone(pending));
+    const seats=normalizeOccupiedSeats(normalized?.occupiedSeats);
+    return Math.max(p===null?0:p,seats.length);
+  }
+
   const o=getOrder(table);
+  const dbPax=serverOccupancyPax(table);
+  if(dbPax!==null){
+    const masterAt=occupancyMasterUpdatedAt();
+    const orderAt=orderUpdatedAt(o);
+    if(!o)return Math.max(dbPax,tableOccupiedSeats(table).length);
+    if(masterAt && (!orderAt || masterAt>=orderAt))return Math.max(dbPax,tableOccupiedSeats(table).length);
+  }
+
   if(o&&typeof o==="object"){
     const p=readPaxSource(o);
     const seats=tableOccupiedSeats(table);
@@ -5108,7 +5214,6 @@ function tableClientPax(table){
   const res=findReservation(table);
   const reservationPax=readPaxSource(res);
   if(reservationPax!==null)return reservationPax;
-  const dbPax=serverOccupancyPax(table);
   if(dbPax!==null)return dbPax;
   return 0;
 }
@@ -9413,6 +9518,15 @@ async function bootApp(){
     if(document.hidden||!navigator.onLine)return;
     if(!STATE.lastServerAt||now()-STATE.lastServerAt>7000)syncFull("watchdog");
   },5000);
+
+  /* V21 — garde-fou chaises : même si Socket.IO reste connecté mais qu'un événement
+     de table est perdu, relire l'état serveur périodiquement maintient PAX/C1..C99 à jour.
+     Aucun redessin 350 ms : seulement une lecture serveur légère toutes les 2,5 s. */
+  setInterval(()=>{
+    if(document.hidden||!navigator.onLine||!STATE.authenticated||STATE.syncing)return;
+    const onTables=STATE.currentScreen==="tables"||document.getElementById("ichefArchPad")?.classList.contains("open");
+    if(onTables)syncFull("chairs-live-watch");
+  },2500);
 
   window.addEventListener("online",()=>{setConnection("RECONNEXION","warn");syncFull("online");connectSocket()});
   window.addEventListener("offline",()=>{STATE.connected=false;setConnection("HORS LIGNE","bad")});
