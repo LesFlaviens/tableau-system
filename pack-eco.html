@@ -5080,46 +5080,46 @@ function detectDishFamily(productOrItem){
   const hay=name+" "+category;
 
   /* Plats crus : aucune cuisson à demander. */
-  if(/(tartare|carpaccio|ceviche)/.test(hay)) return "CRU";
+  if(/\b(tartare|carpaccio|ceviche)\b/.test(hay)) return "CRU";
 
   /* Ragoûts / mijotés : BIEN CUIT automatique. */
-  if(/(ragout|ragout|bourguignon|daube|civet|blanquette|mijote|mijotee|braise|braisee|pot au feu|navarin|carbonnade|goulash)/.test(hay)){
+  if(/\b(ragout|ragout|bourguignon|daube|civet|blanquette|mijote|mijotee|braise|braisee|pot au feu|navarin|carbonnade|goulash)\b/.test(hay)){
     return "MIJOTE";
   }
 
   /* Poisson : NACRÉ automatique. */
-  if(/(poisson|perche|saumon|thon|cabillaud|dorade|truite|sole|turbot|lotte|merlu|colin|sandre|maquereau|espadon|rouget|bar de mer|loup de mer)/.test(hay)){
+  if(/\b(poisson|perche|saumon|thon|cabillaud|dorade|truite|sole|turbot|lotte|merlu|colin|sandre|maquereau|espadon|rouget|bar de mer|loup de mer)\b/.test(hay)){
     return "POISSON";
   }
 
   /* Viandes blanches / volaille : BIEN CUIT automatique. */
-  if(/(viande blanche|poulet|volaille|dinde|pintade|coquelet|chapon|poularde)/.test(hay)){
+  if(/\b(viande blanche|poulet|volaille|dinde|pintade|coquelet|chapon|poularde)\b/.test(hay)){
     return "VOLAILLE";
   }
 
   /* Porc : BIEN CUIT automatique. */
-  if(/(porc|cochon|jambon|travers|echine|filet mignon|cote de porc|cotes de porc)/.test(hay)){
+  if(/\b(porc|cochon|jambon|travers|echine|filet mignon|cote de porc|cotes de porc)\b/.test(hay)){
     return "PORC";
   }
 
   /* Veau : ROSÉ ou BIEN CUIT. */
-  if(/(veau|escalope de veau|cote de veau|cotes de veau|filet de veau|quasi de veau)/.test(hay)){
+  if(/\b(veau|escalope de veau|cote de veau|cotes de veau|filet de veau|quasi de veau)\b/.test(hay)){
     return "VEAU";
   }
 
   /* Canard : ROSÉ ou BIEN CUIT. */
-  if(/(canard|magret|aiguillette de canard|aiguillettes de canard)/.test(hay)){
+  if(/\b(canard|magret|aiguillette de canard|aiguillettes de canard)\b/.test(hay)){
     return "CANARD";
   }
 
   /* Pâtes / œufs restent optionnels. */
-  if(/(pates|pate|pasta|tagliatelle|spaghetti|linguine|penne|rigatoni|fusilli|ravioli|gnocchi)/.test(hay)){
+  if(/\b(pates|pate|pasta|tagliatelle|spaghetti|linguine|penne|rigatoni|fusilli|ravioli|gnocchi)\b/.test(hay)){
     return "PATES";
   }
-  if(/(oeuf|oeufs|omelette)/.test(hay)) return "OEUF";
+  if(/\b(oeuf|oeufs|omelette)\b/.test(hay)) return "OEUF";
 
   /* Viandes rouges et agneau : échelle complète obligatoire. */
-  if(/(viande rouge|entrecote|steak|steak hache|rumsteck|rumsteak|faux filet|filet de boeuf|filet boeuf|pave de boeuf|onglet|bavette|cote de boeuf|boeuf|burger|hamburger|agneau|gigot|carre d agneau|selle d agneau)/.test(hay)){
+  if(/\b(viande rouge|entrecote|steak|steak hache|rumsteck|rumsteak|faux filet|filet de boeuf|filet boeuf|pave de boeuf|onglet|bavette|cote de boeuf|boeuf|burger|hamburger|agneau|gigot|carre d agneau|selle d agneau)\b/.test(hay)){
     return "VIANDE_ROUGE";
   }
 
@@ -5908,11 +5908,36 @@ async function saveCurrent(order,reason,options={}){
   return true;
 }
 
+function getValidPendingCookingItem(){
+  const key=text(STATE.pendingCookingLine||"");
+  if(!key||!STATE.currentTable)return null;
+
+  const o=STATE.currentOrder||ensureOrder(STATE.currentTable);
+  const item=(o.items||[]).find(i=>lineKey(i)===key);
+
+  /* Nettoyage d'un ancien verrou de cuisson devenu invalide. */
+  if(
+    !item ||
+    item.cancelled ||
+    text(item.cooking||item.cuisson) ||
+    normalizeDestination(item.dest||item.destination||item.category||"cuisine")!=="cuisine" ||
+    cookingProfileFor(item).required!==true
+  ){
+    STATE.pendingCookingLine="";
+    hideQuickCooking();
+    return null;
+  }
+
+  return item;
+}
+
 function addProduct(product,options={}){
   if(!STATE.currentTable||!product)return;
 
-  if(STATE.pendingCookingLine && !options.cooking){
-    toast("Choisissez d’abord la cuisson du plat en cours",true);
+  const pendingCookingItem=getValidPendingCookingItem();
+  if(pendingCookingItem && !text(options.cooking||"")){
+    showQuickCooking(pendingCookingItem);
+    toast(`Cuisson obligatoire · ${seatLabel(itemSeat(pendingCookingItem)||1)}`,true);
     return;
   }
 
@@ -6856,7 +6881,19 @@ function closeSummary(){
 
 /* ---------------- SHEET ---------------- */
 function openSheet(title,html){$("sheetTitle").textContent=title;$("sheetBody").innerHTML=html;$("sheet").classList.add("open")}
-function closeSheet(){$("sheet").classList.remove("open","product-seat-picker-open")}
+function closeSheet(){
+  const sheet=$("sheet");
+  if(!sheet)return;
+  const wasProductFlow=
+    sheet.classList.contains("product-seat-picker-open") ||
+    sheet.classList.contains("product-cooking-picker-open");
+
+  sheet.classList.remove("open","product-seat-picker-open","product-cooking-picker-open");
+
+  if(wasProductFlow && typeof window.ichefCancelPendingProductSelection==="function"){
+    window.ichefCancelPendingProductSelection();
+  }
+}
 $("sheetClose").onclick=closeSheet;$("sheet").addEventListener("click",e=>{if(e.target===$("sheet"))closeSheet()});
 
 function openRush(){
@@ -8871,30 +8908,16 @@ function openLineCooking(key){
   const item=o.items.find(x=>lineKey(x)===key);
   if(!item)return;
 
-  if(needsMeatCookingChoice(itemName(item),item.dest)){
-    showQuickCooking(item);
+  const dest=normalizeDestination(item.dest||item.destination||item.category||"cuisine");
+  const profile=cookingProfileFor(item);
+
+  if(dest!=="cuisine" || !profile.levels.length){
+    toast(`${seatLabel(itemSeat(item)||1)} · aucune cuisson à modifier`,true);
     return;
   }
 
-  const options=cookingOptions(item).filter(Boolean);
-  openSheet(
-    `🌡️ CUISSON · ${seatLabel(itemSeat(item)||1)}`,
-    `<div class="full-title-card">
-       <div class="full-title-name">${esc(itemName(item))}</div>
-       <div class="quick-cook-grid" style="margin-top:12px">
-         ${options.map(level=>`
-           <button class="quick-cook-btn" data-other-cooking="${esc(level)}">${esc(level)}</button>
-         `).join("")}
-       </div>
-     </div>`
-  );
-
-  $("sheetBody").querySelectorAll("[data-other-cooking]").forEach(b=>{
-    b.onclick=async()=>{
-      await applyCookingToLine(key,b.dataset.otherCooking);
-      closeSheet();
-    };
-  });
+  /* Toujours garder C1-C9 attaché à la cuisson de la ligne. */
+  showQuickCooking(item);
 }
 
 function openCooking(){
@@ -8904,22 +8927,28 @@ function openCooking(){
   }
 
   const o=STATE.currentOrder||ensureOrder(STATE.currentTable);
-  const lines=(o.items||[]).filter(i=>!i.cancelled);
+  const lines=(o.items||[]).filter(i=>{
+    if(!i||i.cancelled)return false;
+    const dest=normalizeDestination(i.dest||i.destination||i.category||"cuisine");
+    const profile=cookingProfileFor(i);
+    return dest==="cuisine" && profile.levels.length>0;
+  });
 
   if(!lines.length){
-    toast("Ajoutez d’abord des articles",true);
+    toast("Aucun plat de cette table ne demande de cuisson",true);
     return;
   }
 
   openSheet(
-    "🌡️ CUISSONS · C1 À C9",
+    "CUISSONS · C1 À C9",
     `<div class="list">
       ${lines.map(i=>{
         const seat=itemSeat(i)||1;
+        const profile=cookingProfileFor(i);
         return `<div class="list-row">
           <div class="grow">
             <div class="title">${seatBadgeHTML(seat)}${esc(itemName(i))}</div>
-            <div class="sub">${destinationLabel(i)} · ${i.cooking?`Cuisson : ${esc(i.cooking)}`:"Aucune cuisson"}</div>
+            <div class="sub">${esc(profile.label||"CUISSON")} · ${i.cooking?esc(i.cooking):"À CHOISIR"}</div>
           </div>
           <button class="mini-btn" data-cook-line="${esc(lineKey(i))}">CUISSON</button>
         </div>`;
@@ -8929,8 +8958,9 @@ function openCooking(){
 
   $("sheetBody").querySelectorAll("[data-cook-line]").forEach(b=>{
     b.onclick=()=>{
+      const key=b.dataset.cookLine;
       closeSheet();
-      openLineCooking(b.dataset.cookLine);
+      openLineCooking(key);
     };
   });
 }
@@ -9997,20 +10027,13 @@ $("quickCookCancel").onclick=async()=>{
   hideQuickCooking();
   if(!key)return;
 
-  const o=ensureOrder(STATE.currentTable);
-  const item=o.items.find(i=>lineKey(i)===key);
-  if(!item)return;
-
-  if(lineFired(item)){
-    toast("Plat déjà envoyé : utilisez ANNULER avec motif",true);
-    return;
-  }
-
-  const before=cloneOrderForUndo(o);
-  o.items=o.items.filter(i=>lineKey(i)!==key);
-  pushUndo(`Annulation ajout ${itemName(item)}`,before);
-  await saveCurrent(o,"Annulation plat avant envoi",{delay:100});
-  toast("Plat retiré");
+  /*
+    Le panneau CUISSON sert maintenant à MODIFIER une ligne existante.
+    ANNULER ferme donc le panneau sans supprimer le plat du ticket.
+    Un nouveau plat à cuisson obligatoire n'est créé qu'après le choix
+    C1-C9 + cuisson dans la même fenêtre.
+  */
+  renderTicket();
 };
 
 /* ---------------- PRODUITS : TAP RAPIDE / APPUI 0,6 S ---------------- */
@@ -10079,6 +10102,9 @@ function showFullProductTitle(product){
    Le plat n'entre dans la commande qu'après le choix du convive.
    ========================================================= */
 let pendingProductSeatChoice=null;
+window.ichefCancelPendingProductSelection=function(){
+  pendingProductSeatChoice=null;
+};
 
 function productSeatCounts(){
   const o=STATE.currentOrder||ensureOrder(STATE.currentTable);
@@ -10307,18 +10333,31 @@ async function finalizeProductSeatChoice(seat,cooking=""){
     selectedCooking=text(profile.automatic||"");
   }
 
-  /* Sécurité : une cuisson obligatoire ne peut jamais partir vide. */
+  /* Une cuisson obligatoire doit être choisie AVANT la création de la ligne. */
   if(dest==="cuisine" && profile.required===true && !selectedCooking){
     showProductCookingPicker(pending,n);
     return;
   }
 
+  /* Élimine uniquement un verrou de cuisson devenu obsolète. */
+  getValidPendingCookingItem();
+
+  /* Ajout atomique : produit + C + cuisson. Si l'ajout échoue, la fenêtre reste ouverte. */
+  const line=addProduct(product,{seat:n,cooking:selectedCooking});
+  if(!line){
+    const buttons=$("sheetBody")?.querySelectorAll("button")||[];
+    buttons.forEach(btn=>btn.disabled=false);
+    return;
+  }
+
   pendingProductSeatChoice=null;
 
-  /* Le convive devient actif uniquement une fois le parcours validé. */
-  setActiveSeat(n);
+  /* Le convive devient actif sans provoquer une deuxième écriture concurrente. */
+  STATE.activeSeat=n;
+  ACTIVE_SEAT_BY_TABLE.set(STATE.currentTable,n);
 
-  $("sheet").classList.remove("product-seat-picker-open","product-cooking-picker-open");
+  const sheet=$("sheet");
+  if(sheet)sheet.classList.remove("product-seat-picker-open","product-cooking-picker-open");
   closeSheet();
 
   if(sourceButton&&sourceButton.isConnected){
@@ -10326,8 +10365,6 @@ async function finalizeProductSeatChoice(seat,cooking=""){
     setTimeout(()=>sourceButton.classList.remove("product-added","fast-flash"),240);
   }
 
-  /* Ajout atomique : produit + C + cuisson. */
-  addProduct(product,{seat:n,cooking:selectedCooking});
   renderTicket();
   renderGuestButtons();
 }
@@ -10406,8 +10443,10 @@ $("products").addEventListener("pointerup",e=>{
 
   if(!sameButton||wasLong)return;
 
-  if(STATE.pendingCookingLine){
-    toast("🥩 Choisissez la cuisson avant de continuer",true);
+  const pendingCookingItem=getValidPendingCookingItem();
+  if(pendingCookingItem){
+    showQuickCooking(pendingCookingItem);
+    toast(`Cuisson obligatoire · ${seatLabel(itemSeat(pendingCookingItem)||1)}`,true);
     return;
   }
 
@@ -10816,7 +10855,14 @@ const aClamp=(v,a,b)=>Math.max(a,Math.min(b,Number(v)||0));
 const aId=(p="e")=>p+"_"+Date.now().toString(36)+"_"+Math.random().toString(36).slice(2,7);
 const snap=v=>A.snap?Math.round(v/10)*10:Math.round(v);
 function aToast(msg,bad=false){const el=A.root?.querySelector('.archpad-toast');if(!el)return;el.textContent=msg;el.style.borderColor=bad?'#ff6575':'#55d987';el.classList.add('show');clearTimeout(aToast.t);aToast.t=setTimeout(()=>el.classList.remove('show'),1600)}
-function dataNow(){const raw=architectureServerData();return {rooms:clone(STATE.rooms||raw.rooms||[]),tables:clone(STATE.tables||raw.tables||[]),zones:clone(STATE.zones||raw.zones||[]),elements:clone(Array.isArray(raw.elements)?raw.elements:[])} }
+function dataNow(){
+  const raw=architectureServerData();
+  const rooms=(Array.isArray(raw.rooms)&&raw.rooms.length)?raw.rooms:(STATE.rooms||[]);
+  const tables=(Array.isArray(raw.tables)&&raw.tables.length)?raw.tables:(STATE.tables||[]);
+  const zones=Array.isArray(raw.zones)?raw.zones:(STATE.zones||[]);
+  const elements=Array.isArray(raw.elements)?raw.elements:[];
+  return {rooms:clone(rooms),tables:clone(tables),zones:clone(zones),elements:clone(elements)};
+}
 function loadData(){const d=dataNow();A.rooms=d.rooms.length?d.rooms:['Salle Principale'];A.tables=d.tables;A.zones=d.zones;A.elements=d.elements;A.room=A.rooms.includes(STATE.room)?STATE.room:A.rooms[0];A.selected=null;A.history=[];A.future=[];A.dirty=false}
 function snapshot(){return JSON.stringify({rooms:A.rooms,tables:A.tables,zones:A.zones,elements:A.elements,room:A.room})}
 function pushHistory(){A.history.push(snapshot());if(A.history.length>40)A.history.shift();A.future=[]}
@@ -11014,11 +11060,48 @@ function bindDynamic(){A.root.querySelectorAll('[data-room]').forEach(b=>b.addEv
 function bindAll(){bindDynamic();A.root.querySelector('[data-close]')?.addEventListener('click',closePadArchitect);A.root.querySelector('[data-save]')?.addEventListener('click',saveAll);A.root.querySelector('[data-undo]')?.addEventListener('click',undo);A.root.querySelector('[data-redo]')?.addEventListener('click',redo);A.root.querySelector('[data-add-room]')?.addEventListener('click',addRoom);A.root.querySelector('[data-rename-room]')?.addEventListener('click',renameRoom);A.root.querySelector('[data-delete-room]')?.addEventListener('click',deleteRoom);A.root.querySelectorAll('[data-add]').forEach(b=>b.addEventListener('click',()=>addObject(b.dataset.add)));A.root.querySelector('[data-room-prev]')?.addEventListener('click',previousRoom);A.root.querySelector('[data-room-next]')?.addEventListener('click',nextRoom);A.root.querySelector('[data-toggle-mode]')?.addEventListener('click',toggleMode);A.root.querySelector('[data-express]')?.addEventListener('click',openExpress);A.root.querySelector('[data-grid]')?.addEventListener('click',()=>{A.grid=!A.grid;renderAll()});A.root.querySelector('[data-snap]')?.addEventListener('click',()=>{A.snap=!A.snap;renderAll()});A.root.querySelector('[data-zoom]')?.addEventListener('change',e=>{A.zoom=Number(e.target.value)||100;applyZoom()});A.root.querySelectorAll('[data-arch-pin]').forEach(b=>b.addEventListener('click',()=>{if(A.pinValue.length<6)A.pinValue+=b.dataset.archPin;A.pinMsg='';renderAll()}));A.root.querySelector('[data-arch-pin-back]')?.addEventListener('click',()=>{A.pinValue=A.pinValue.slice(0,-1);A.pinMsg='';renderAll()});A.root.querySelector('[data-arch-pin-clear]')?.addEventListener('click',()=>{A.pinValue='';A.pinMsg='';renderAll()});A.root.querySelector('[data-arch-pin-cancel]')?.addEventListener('click',()=>{A.pinOpen=false;A.pinValue='';A.pinMsg='';renderAll()});A.root.querySelector('[data-arch-pin-ok]')?.addEventListener('click',validateArchitectPin);const st=A.root.querySelector('[data-stage]');st?.addEventListener('pointerdown',pointerDown);st?.addEventListener('pointermove',pointerMove);st?.addEventListener('pointerup',pointerUp);st?.addEventListener('pointercancel',pointerUp);st?.addEventListener('dblclick',e=>{if(A.mode==='architect'&&canEdit()&&!e.target.closest('[data-arch-key]'))addObject('table',{x:e.clientX,y:e.clientY})});A.root.addEventListener('keydown',e=>{if(['INPUT','SELECT','TEXTAREA'].includes(e.target.tagName))return;if(e.key==='Delete'){deleteSelected();e.preventDefault()}if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==='z'){undo();e.preventDefault()}if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==='y'){redo();e.preventDefault()}if(A.pinOpen&&e.key==='Enter'){validateArchitectPin();e.preventDefault()}})}
 function ensureRoot(){let r=document.getElementById('ichefArchPad');if(!r){r=document.createElement('div');r.id='ichefArchPad';r.tabIndex=-1;document.body.appendChild(r)}A.root=r;return r}
 function openPadArchitectEditor(){closeSheet?.();loadData();normaliseAll();A.archUnlocked=false;A.archRole='';A.archPin='';A.pinOpen=false;A.mode=expressRoleLevel()>=2||STATE.demo?'architect':'service';ensureRoot().classList.add('open');document.body.style.overflow='hidden';renderAll();A.root.focus();if(A.mode==='service')aToast('Mode SERVICE · architecture protégée par PIN')}
-function openPadServiceHome(){closeSheet?.();loadData();normaliseAll();A.archUnlocked=false;A.archRole='';A.archPin='';A.pinOpen=false;A.pinValue='';A.pinMsg='';A.mode='service';ensureRoot().classList.add('open');document.body.style.overflow='hidden';renderAll();A.root.focus();aToast('Touchez une table pour ouvrir la commande')}
+async function openPadServiceHome(){
+  closeSheet?.();
+  /* Toujours repartir de la source officielle serveur avant d'afficher le plan. */
+  if(STATE.authenticated && !STATE.demo && navigator.onLine && typeof syncFull==='function'){
+    try{await syncFull('plan-open-live')}catch(err){console.warn('[iCHEF PLAN] synchro ouverture',err)}
+  }
+  try{if(typeof connectSocket==='function')connectSocket()}catch(_){}
+  loadData();
+  normaliseAll();
+  A.archUnlocked=false;A.archRole='';A.archPin='';A.pinOpen=false;A.pinValue='';A.pinMsg='';A.mode='service';
+  ensureRoot().classList.add('open');
+  document.body.style.overflow='hidden';
+  renderAll();
+  A.root.focus();
+  aToast(STATE.connected?'PLAN LIVE · TEMPS RÉEL':'PLAN LIVE · SYNCHRO HTTP');
+}
 function closePadArchitect(){if(A.dirty&&canEdit()&&!confirm('Quitter sans enregistrer les modifications du plan ?'))return false;A.root?.classList.remove('open');document.body.style.overflow='';A.drag=null;A.selected=null;A.archUnlocked=false;A.archRole='';A.archPin='';A.pinOpen=false;A.pinValue='';A.mode='service';scheduleRender?.();return true}
-function refreshPadServiceLive(){if(!A.root?.classList.contains('open')||A.mode!=='service')return;const stage=A.root.querySelector('[data-stage]');if(stage)stage.innerHTML=canvasHTML();const bar=A.root.querySelector('[data-livebar]');if(bar)bar.innerHTML=planRushHTML()}
+function refreshPadServiceLive(){
+  if(!A.root?.classList.contains('open')||A.mode!=='service')return;
+  /* Recharge aussi l'architecture reçue du serveur, pas seulement les états des commandes. */
+  const keepRoom=A.room;
+  const d=dataNow();
+  A.rooms=d.rooms.length?d.rooms:['Salle Principale'];
+  A.tables=d.tables;A.zones=d.zones;A.elements=d.elements;
+  A.room=A.rooms.includes(keepRoom)?keepRoom:(A.rooms.includes(STATE.room)?STATE.room:A.rooms[0]);
+  normaliseAll();
+  const stage=A.root.querySelector('[data-stage]');
+  if(stage){stage.innerHTML=canvasHTML();stage.classList.toggle('no-grid',!A.grid)}
+  const bar=A.root.querySelector('[data-livebar]');
+  if(bar)bar.innerHTML=planRushHTML();
+  const crumb=A.root.querySelector('[data-crumb]');if(crumb)crumb.textContent=A.room;
+  bindDynamic();
+}
 window.addEventListener('ichef:live-state-updated',refreshPadServiceLive);
-const liveClockTimer=setInterval(()=>{if(A.root?.classList.contains('open')&&A.mode==='service')refreshPadServiceLive()},5000);
+const liveClockTimer=setInterval(async()=>{
+  if(!A.root?.classList.contains('open')||A.mode!=='service')return;
+  /* Socket.IO est prioritaire. HTTP devient le filet de sécurité si le temps réel est coupé. */
+  if(!STATE.connected && navigator.onLine && !STATE.syncing && typeof syncFull==='function'){
+    try{await syncFull('plan-live-http')}catch(_){}
+  }
+  refreshPadServiceLive();
+},4000);
 window.refreshPadServiceLive=refreshPadServiceLive;
 window.openPadArchitectEditor=openPadArchitectEditor;window.openPadServiceHome=openPadServiceHome;window.closePadArchitect=closePadArchitect;
 const rebind=()=>{const p=document.getElementById('toolDisplay'),h=document.getElementById('btnHeadPlan');if(p){p.onclick=openPadServiceHome;p.title='Plan de salle interactif'}if(h){h.onclick=openPadServiceHome;h.title='Plan de salle interactif'}};
@@ -11417,5 +11500,40 @@ setTimeout(() => {
 </script>
 
   
+
+<script id="ichef-plan-canonical-live-router">
+/* =========================================================
+   PLAN UNIQUE : l'ancien plan simplifié est neutralisé.
+   Toutes les entrées ouvrent le plan architectural LIVE en mode SERVICE.
+   ========================================================= */
+(function(){
+  async function openCanonicalLivePlan(){
+    if(typeof window.openPadServiceHome!=="function"){
+      console.error("[iCHEF PLAN] moteur architectural indisponible");
+      return;
+    }
+    return window.openPadServiceHome();
+  }
+
+  window.openPlan=openCanonicalLivePlan;
+
+  function bindCanonicalPlanButtons(){
+    const ids=["toolDisplay","btnHeadPlan"];
+    ids.forEach(id=>{
+      const el=document.getElementById(id);
+      if(el){
+        el.onclick=openCanonicalLivePlan;
+        el.title="Plan architectural LIVE synchronisé";
+      }
+    });
+  }
+
+  bindCanonicalPlanButtons();
+  document.addEventListener("DOMContentLoaded",bindCanonicalPlanButtons,{once:true});
+  window.addEventListener("ichef:live-state-updated",()=>{
+    try{window.refreshPadServiceLive?.()}catch(_){}
+  });
+})();
+</script>
 </body>
 </html>
