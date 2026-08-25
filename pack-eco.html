@@ -3905,6 +3905,9 @@ body.order-open .ticket-meta {
   
 <script id="zoom-tactile-script">
 (function() {
+    // Initialise le zoom à 100% au chargement
+    document.documentElement.style.setProperty('--fluid-zoom', '1');
+
     function initPinchToZoom() {
         const wrap = document.querySelector('.archpad-stagewrap');
         if (!wrap) {
@@ -3919,25 +3922,22 @@ body.order-open .ticket-meta {
         wrap.addEventListener('touchstart', (e) => {
             if (e.touches.length === 2) {
                 const shell = document.querySelector('.archpad-stage-shell');
-                const zoomSelect = document.querySelector('.archpad-canvasbar select');
-                
                 initialDistance = Math.hypot(
                     e.touches[0].clientX - e.touches[1].clientX,
                     e.touches[0].clientY - e.touches[1].clientY
                 );
-                initialZoomValue = zoomSelect ? (parseInt(zoomSelect.value) || 100) : 100;
+                // On récupère le zoom actuel depuis la variable globale
+                initialZoomValue = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--fluid-zoom')) * 100 || 100;
                 
                 if (shell) shell.classList.add('is-pinching');
             }
         }, { passive: false });
 
-        // 2. Mouvement des doigts (Pinch)
+        // 2. Mouvement (Pincement)
         wrap.addEventListener('touchmove', (e) => {
             if (e.touches.length === 2) {
-                e.preventDefault(); 
-                const shell = document.querySelector('.archpad-stage-shell');
-                if (!shell) return;
-
+                e.preventDefault(); // Bloque le zoom du navigateur
+                
                 const currentDistance = Math.hypot(
                     e.touches[0].clientX - e.touches[1].clientX,
                     e.touches[0].clientY - e.touches[1].clientY
@@ -3945,62 +3945,67 @@ body.order-open .ticket-meta {
                 
                 const scaleRatio = currentDistance / initialDistance;
                 let newZoom = Math.round(initialZoomValue * scaleRatio);
-                newZoom = Math.max(20, Math.min(400, newZoom)); // Bloqué entre 20% et 400%
+                newZoom = Math.max(20, Math.min(400, newZoom)); // Limité entre 20% et 400%
 
-                // Applique visuellement tout de suite (en forçant la priorité)
-                shell.style.setProperty('transform', `scale(${newZoom / 100})`, 'important');
+                // On applique sur la RACINE de la page pour survivre aux rafraîchissements
+                document.documentElement.style.setProperty('--fluid-zoom', newZoom / 100);
             }
         }, { passive: false });
 
         // 3. Fin du pincement
         wrap.addEventListener('touchend', (e) => {
             const shell = document.querySelector('.archpad-stage-shell');
-            if (!shell) return;
-
-            if (e.touches.length < 2 && shell.classList.contains('is-pinching')) {
+            if (e.touches.length < 2 && shell && shell.classList.contains('is-pinching')) {
                 shell.classList.remove('is-pinching'); 
                 
-                const match = String(shell.style.transform).match(/scale\(([^)]+)\)/);
-                if (match) {
-                    let finalZoom = Math.round(parseFloat(match[1]) * 100);
-                    const zoomSelect = document.querySelector('.archpad-canvasbar select');
-                    
-                    if (zoomSelect) {
-                        if (!Array.from(zoomSelect.options).some(o => parseInt(o.value) === finalZoom)) {
-                            let opt = document.createElement('option');
-                            opt.value = finalZoom;
-                            opt.text = finalZoom + '%';
-                            zoomSelect.appendChild(opt);
-                        }
-                        zoomSelect.value = finalZoom;
-                        // On valide officiellement la nouvelle taille auprès du système iCHEF
-                        zoomSelect.dispatchEvent(new Event('change', { bubbles: true }));
+                const finalZoom = Math.round(parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--fluid-zoom')) * 100) || 100;
+                const zoomSelect = document.querySelector('.archpad-canvasbar select');
+                
+                if (zoomSelect) {
+                    if (!Array.from(zoomSelect.options).some(o => parseInt(o.value) === finalZoom)) {
+                        let opt = document.createElement('option');
+                        opt.value = finalZoom;
+                        opt.text = finalZoom + '%';
+                        zoomSelect.appendChild(opt);
                     }
+                    zoomSelect.value = finalZoom;
                 }
             }
         });
         
-        // 4. Bonus : Zoom fluide à la molette PC (Ctrl + Molette)
+        // 4. Molette PC (Ctrl + Molette)
         wrap.addEventListener('wheel', (e) => {
             if (e.ctrlKey) {
                 e.preventDefault();
-                const zoomSelect = document.querySelector('.archpad-canvasbar select');
-                if (!zoomSelect) return;
-
-                let currentZoom = parseInt(zoomSelect.value) || 100;
+                let currentZoom = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--fluid-zoom')) * 100 || 100;
+                
                 let newZoom = currentZoom + (e.deltaY > 0 ? -10 : 10);
                 newZoom = Math.max(20, Math.min(400, newZoom));
                 
-                if (!Array.from(zoomSelect.options).some(o => parseInt(o.value) === newZoom)) {
-                    let opt = document.createElement('option');
-                    opt.value = newZoom;
-                    opt.text = newZoom + '%';
-                    zoomSelect.appendChild(opt);
+                document.documentElement.style.setProperty('--fluid-zoom', newZoom / 100);
+
+                const zoomSelect = document.querySelector('.archpad-canvasbar select');
+                if (zoomSelect) {
+                    if (!Array.from(zoomSelect.options).some(o => parseInt(o.value) === newZoom)) {
+                        let opt = document.createElement('option');
+                        opt.value = newZoom;
+                        opt.text = newZoom + '%';
+                        zoomSelect.appendChild(opt);
+                    }
+                    zoomSelect.value = newZoom;
                 }
-                zoomSelect.value = newZoom;
-                zoomSelect.dispatchEvent(new Event('change', { bubbles: true }));
             }
         }, { passive: false });
+
+        // 5. Lien direct avec le menu déroulant (pour les clics manuels)
+        document.addEventListener('change', (e) => {
+            if (e.target.tagName === 'SELECT' && e.target.closest('.archpad-canvasbar')) {
+                let val = parseInt(e.target.value);
+                if (!isNaN(val)) {
+                    document.documentElement.style.setProperty('--fluid-zoom', val / 100);
+                }
+            }
+        }, true);
     }
 
     initPinchToZoom();
