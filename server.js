@@ -1823,15 +1823,16 @@ return MENU_SYNC_KEYS[department] ? department : null;
 // ==========================================================
 io.on("connection", (socket) => {
 
-    console.log(`Nouvelle connexion écran détectée : ${socket.id}`);
+    console.log(
+        `Nouvelle connexion écran détectée : ${socket.id}`
+    );
 
-    // ------------------------------------------------------
+    // ======================================================
     // CONNEXION AU RESTAURANT / TENANT
     // Accepte :
     // joinTenant("restaurant-id")
-    // ou
     // joinTenant({ tenantID: "restaurant-id" })
-    // ------------------------------------------------------
+    // ======================================================
     socket.on("joinTenant", async (payload) => {
 
         try {
@@ -1844,6 +1845,7 @@ io.on("connection", (socket) => {
             const safeID = cleanString(rawID);
 
             if (!safeID) {
+
                 console.warn(
                     `Connexion refusée pour ${socket.id} : tenantID manquant`
                 );
@@ -1856,7 +1858,7 @@ io.on("connection", (socket) => {
                 return;
             }
 
-            // Quitte éventuellement l'ancien restaurant
+            // Quitte l'ancien tenant si l'écran change de restaurant
             if (
                 socket.data.tenantID &&
                 socket.data.tenantID !== safeID
@@ -1878,287 +1880,388 @@ io.on("connection", (socket) => {
                 tenantID: safeID
             });
 
-            /*
-             * GARDE ICI LA SUITE DE TON CODE joinTenant
-             * par exemple :
-             * - chargement AppState
-             * - updateState
-             * - synchronisation menus
-             * - etc.
-             */
-     * Envoie immédiatement l’état actuel au nouvel écran.
-     */
-    try {
-        const currentState = await AppState.findOne({
-            tenantID: safeID
-        });
-
-        if (currentState) {
-            socket.emit("updateState", currentState);
-        }
-    } catch (error) {
-        console.error(
-            "Erreur chargement initial Socket.IO :",
-            error.message
-        );
-    }
-});
-
-/*
- * Reçoit les changements de :
- * - admin.html
- * - chef.html
- * - chef-patissier.html
- * - chef-bar.html
- */
-socket.on(
-    "syncMenu",
-    async (payload = {}, callback) => {
-        try {
-            const safeID = cleanString(
-                payload.tenantID ||
-                socket.data.tenantID
-            );
-
-            const department =
-                normalizeMenuDepartment(
-                    payload.department
-                );
-
-            const config = department
-                ? MENU_SYNC_KEYS[department]
-                : null;
-
-            if (!safeID || !config) {
-                const error =
-                    "Restaurant ou département invalide.";
-
-                if (typeof callback === "function") {
-                    callback({
-                        success: false,
-                        error
-                    });
-                }
-
-                return;
-            }
-
-            const menu = payload.menu;
-            const categories = payload.categories;
-
-            if (
-                !menu ||
-                typeof menu !== "object" ||
-                Array.isArray(menu)
-            ) {
-                if (typeof callback === "function") {
-                    callback({
-                        success: false,
-                        error: "Format de carte invalide."
-                    });
-                }
-
-                return;
-            }
-
-            if (!Array.isArray(categories)) {
-                if (typeof callback === "function") {
-                    callback({
-                        success: false,
-                        error:
-                            "Format de catégories invalide."
-                    });
-                }
-
-                return;
-            }
-
-            const updatedAt =
-                new Date().toISOString();
-
-            const source = String(
-                payload.source || "UNKNOWN"
-            ).slice(0, 100);
-
-            /*
-             * Sauvegarde le menu et ses catégories
-             * dans une seule opération MongoDB.
-             */
-            const updateFields = {
-                [`activeOrders.${config.menuKey}`]: {
-                    data: menu,
-                    department,
-                    source,
-                    updatedAt
-                },
-
-                [`activeOrders.${config.categoriesKey}`]: {
-                    data: categories,
-                    department,
-                    source,
-                    updatedAt
-                }
-            };
-
-            /*
-             * Garde temporairement les anciennes clés
-             * pour ne pas casser les anciennes pages.
-             */
-            if (config.legacyMenuKey) {
-                updateFields[
-                    `activeOrders.${config.legacyMenuKey}`
-                ] = {
-                    data: menu,
-                    department,
-                    source,
-                    updatedAt
-                };
-            }
-
-            const newState =
-                await AppState.findOneAndUpdate(
-                    {
-                        tenantID: safeID
-                    },
-                    {
-                        $set: updateFields
-                    },
-                    {
-                        upsert: true,
-                        new: true,
-                        setDefaultsOnInsert: true
-                    }
-                );
-
-            const itemsCount =
-                Object.values(menu).reduce(
-                    (total, items) => {
-                        return total + (
-                            Array.isArray(items)
-                                ? items.length
-                                : 0
-                        );
-                    },
-                    0
-                );
-
-            /*
-             * Trace la modification dans le journal
-             * de sécurité existant.
-             */
-            await scellerOperation(
-                safeID,
-                "UPDATE",
-                `MENU_${department}`,
-                config.menuKey,
-                payload.pin || "SYSTEM",
-                {
-                    source,
-                    updatedAt,
-                    categoriesCount:
-                        categories.length,
-                    itemsCount
-                }
-            );
-
-            /*
-             * Actualise tous les écrans du restaurant :
-             * admin, cuisine, pâtisserie et bar.
-             */
-            io.to(safeID).emit(
-                "updateState",
-                newState
-            );
-
-            io.to(safeID).emit(
-                "menuSynced",
-                {
-                    tenantID: safeID,
-                    department,
-                    menuKey:
-                        config.menuKey,
-                    categoriesKey:
-                        config.categoriesKey,
-                    updatedAt,
-                    source
-                }
-            );
-
-            if (typeof callback === "function") {
-                callback({
-                    success: true,
-                    department,
-                    updatedAt
-                });
-            }
-        } catch (error) {
-            console.error(
-                "❌ Erreur syncMenu :",
-                error
-            );
-
-            if (typeof callback === "function") {
-                callback({
-                    success: false,
-                    error:
-                        "Erreur serveur pendant la synchronisation."
-                });
-            }
-        }
-    }
-);
-
-/*
- * Permet à une page de réclamer l’état complet
- * après une reconnexion Internet.
- */
-socket.on(
-    "requestMenuState",
-    async (payload = {}, callback) => {
-        try {
-            const safeID = cleanString(
-                payload.tenantID ||
-                socket.data.tenantID
-            );
-
-            if (!safeID) {
-                return;
-            }
-
+            // --------------------------------------------------
+            // ENVOIE IMMÉDIATEMENT L'ÉTAT ACTUEL
+            // AU NOUVEL ÉCRAN
+            // --------------------------------------------------
             const currentState =
                 await AppState.findOne({
                     tenantID: safeID
                 });
 
-            if (currentState) {
-                socket.emit(
-                    "updateState",
-                    currentState
-                );
-            }
+            socket.emit(
+                "updateState",
+                currentState || {
+                    tenantID: safeID,
+                    activeOrders: {}
+                }
+            );
 
-            if (typeof callback === "function") {
-                callback({
-                    success: true
-                });
-            }
         } catch (error) {
-            if (typeof callback === "function") {
-                callback({
-                    success: false,
-                    error:
-                        "État des menus indisponible."
-                });
+
+            console.error(
+                "Erreur joinTenant Socket.IO :",
+                error
+            );
+
+            socket.emit("tenant-error", {
+                success: false,
+                error:
+                    "Connexion au restaurant impossible."
+            });
+        }
+    });
+
+
+    // ======================================================
+    // SYNCHRONISATION DES MENUS
+    // admin.html
+    // chef.html
+    // chef-patissier.html
+    // chef-bar.html
+    // ======================================================
+    socket.on(
+        "syncMenu",
+        async (payload = {}, callback) => {
+
+            try {
+
+                const safeID = cleanString(
+                    payload.tenantID ||
+                    socket.data.tenantID
+                );
+
+                const department =
+                    normalizeMenuDepartment(
+                        payload.department
+                    );
+
+                const config =
+                    department
+                        ? MENU_SYNC_KEYS[department]
+                        : null;
+
+                if (!safeID || !config) {
+
+                    const error =
+                        "Restaurant ou département invalide.";
+
+                    if (
+                        typeof callback === "function"
+                    ) {
+                        callback({
+                            success: false,
+                            error
+                        });
+                    }
+
+                    return;
+                }
+
+                // Empêche un socket déjà attaché à un restaurant
+                // de modifier un autre tenant
+                if (
+                    socket.data.tenantID &&
+                    socket.data.tenantID !== safeID
+                ) {
+
+                    if (
+                        typeof callback === "function"
+                    ) {
+                        callback({
+                            success: false,
+                            error:
+                                "Accès à ce restaurant refusé."
+                        });
+                    }
+
+                    return;
+                }
+
+                const menu = payload.menu;
+                const categories =
+                    payload.categories;
+
+                if (
+                    !menu ||
+                    typeof menu !== "object" ||
+                    Array.isArray(menu)
+                ) {
+
+                    if (
+                        typeof callback === "function"
+                    ) {
+                        callback({
+                            success: false,
+                            error:
+                                "Format de carte invalide."
+                        });
+                    }
+
+                    return;
+                }
+
+                if (
+                    !Array.isArray(categories)
+                ) {
+
+                    if (
+                        typeof callback === "function"
+                    ) {
+                        callback({
+                            success: false,
+                            error:
+                                "Format de catégories invalide."
+                        });
+                    }
+
+                    return;
+                }
+
+                const updatedAt =
+                    new Date().toISOString();
+
+                const source =
+                    String(
+                        payload.source ||
+                        "UNKNOWN"
+                    ).slice(0, 100);
+
+                // --------------------------------------------------
+                // SAUVEGARDE MENU + CATÉGORIES
+                // --------------------------------------------------
+                const updateFields = {
+
+                    [`activeOrders.${config.menuKey}`]: {
+                        data: menu,
+                        department,
+                        source,
+                        updatedAt
+                    },
+
+                    [`activeOrders.${config.categoriesKey}`]: {
+                        data: categories,
+                        department,
+                        source,
+                        updatedAt
+                    }
+                };
+
+                // Compatibilité avec les anciennes pages
+                if (config.legacyMenuKey) {
+
+                    updateFields[
+                        `activeOrders.${config.legacyMenuKey}`
+                    ] = {
+                        data: menu,
+                        department,
+                        source,
+                        updatedAt
+                    };
+                }
+
+                const newState =
+                    await AppState.findOneAndUpdate(
+                        {
+                            tenantID: safeID
+                        },
+                        {
+                            $set: updateFields
+                        },
+                        {
+                            upsert: true,
+                            new: true,
+                            setDefaultsOnInsert: true
+                        }
+                    );
+
+                const itemsCount =
+                    Object.values(menu).reduce(
+                        (total, items) => {
+
+                            return total + (
+                                Array.isArray(items)
+                                    ? items.length
+                                    : 0
+                            );
+                        },
+                        0
+                    );
+
+                // --------------------------------------------------
+                // JOURNAL DE SÉCURITÉ / ANTI-FRAUDE
+                // --------------------------------------------------
+                await scellerOperation(
+                    safeID,
+                    "UPDATE",
+                    `MENU_${department}`,
+                    config.menuKey,
+                    payload.pin || "SYSTEM",
+                    {
+                        source,
+                        updatedAt,
+                        categoriesCount:
+                            categories.length,
+                        itemsCount
+                    }
+                );
+
+                // --------------------------------------------------
+                // SYNCHRONISATION TEMPS RÉEL
+                // --------------------------------------------------
+                io.to(safeID).emit(
+                    "updateState",
+                    newState
+                );
+
+                io.to(safeID).emit(
+                    "menuSynced",
+                    {
+                        tenantID: safeID,
+                        department,
+                        menuKey:
+                            config.menuKey,
+                        categoriesKey:
+                            config.categoriesKey,
+                        updatedAt,
+                        source
+                    }
+                );
+
+                if (
+                    typeof callback === "function"
+                ) {
+                    callback({
+                        success: true,
+                        department,
+                        updatedAt
+                    });
+                }
+
+            } catch (error) {
+
+                console.error(
+                    "Erreur syncMenu :",
+                    error
+                );
+
+                if (
+                    typeof callback === "function"
+                ) {
+                    callback({
+                        success: false,
+                        error:
+                            "Erreur serveur pendant la synchronisation."
+                    });
+                }
             }
         }
-    }
-);
+    );
 
-socket.on("disconnect", () => {
-console.log(`Écran déconnecté : ${socket.id}`);
-});
 
-}); // 🔥 FERMETURE DÉFINITIVE DU BLOC DES CONNEXIONS ÉCRANS 🔥
+    // ======================================================
+    // DEMANDE DE RESYNCHRONISATION
+    // après coupure ou reconnexion Internet
+    // ======================================================
+    socket.on(
+        "requestMenuState",
+        async (payload = {}, callback) => {
+
+            try {
+
+                const safeID = cleanString(
+                    payload.tenantID ||
+                    socket.data.tenantID
+                );
+
+                if (!safeID) {
+
+                    if (
+                        typeof callback === "function"
+                    ) {
+                        callback({
+                            success: false,
+                            error:
+                                "Restaurant non identifié."
+                        });
+                    }
+
+                    return;
+                }
+
+                if (
+                    socket.data.tenantID &&
+                    socket.data.tenantID !== safeID
+                ) {
+
+                    if (
+                        typeof callback === "function"
+                    ) {
+                        callback({
+                            success: false,
+                            error:
+                                "Accès à ce restaurant refusé."
+                        });
+                    }
+
+                    return;
+                }
+
+                const currentState =
+                    await AppState.findOne({
+                        tenantID: safeID
+                    });
+
+                socket.emit(
+                    "updateState",
+                    currentState || {
+                        tenantID: safeID,
+                        activeOrders: {}
+                    }
+                );
+
+                if (
+                    typeof callback === "function"
+                ) {
+                    callback({
+                        success: true,
+                        tenantID: safeID
+                    });
+                }
+
+            } catch (error) {
+
+                console.error(
+                    "Erreur requestMenuState :",
+                    error
+                );
+
+                if (
+                    typeof callback === "function"
+                ) {
+                    callback({
+                        success: false,
+                        error:
+                            "État des menus indisponible."
+                    });
+                }
+            }
+        }
+    );
+
+
+    // ======================================================
+    // DÉCONNEXION
+    // ======================================================
+    socket.on("disconnect", (reason) => {
+
+        console.log(
+            `Écran déconnecté : ${socket.id} — ${reason}`
+        );
+
+    });
+
+}); // FIN UNIQUE io.on("connection")
 // =========================================================================
 // 🔄 PONT DE SYNCHRONISATION (COMMANDES & ÉTAT DES TABLES)
 // =========================================================================
