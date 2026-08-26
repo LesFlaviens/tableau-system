@@ -38,6 +38,7 @@ const corsOptions = {
         'Accept',
         'X-CSRF-Token',
         'X-iCHEF-Device',
+        'X-iCHEF-Device-ID',
         'X-iCHEF-Master-Device',
         'X-iCHEF-Tenant',
         'Idempotency-Key',
