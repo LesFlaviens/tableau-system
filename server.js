@@ -1820,7 +1820,7 @@ return MENU_SYNC_KEYS[department] ? department : null;
 }
 // 🔥 LE SEUL ET UNIQUE BLOC io.on('connection') 🔥
 io.on("connection", socket => {
-console.log(\✅ Nouvelle connexion écran détectée : ${socket.id}`);`
+console.log(`✅ Nouvelle connexion écran détectée : ${socket.id}`);
 // CORRECTION CRITIQUE DU BUG [object Object]
 socket.on("joinTenant", async (payload) => {
 
