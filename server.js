@@ -2104,7 +2104,7 @@ socket.on(
 );
 
 socket.on("disconnect", () => {
-console.log(\❌ Écran déconnecté : ${socket.id}`);`
+console.log(`Écran déconnecté : ${socket.id}`);
 });
 
 }); // 🔥 FERMETURE DÉFINITIVE DU BLOC DES CONNEXIONS ÉCRANS 🔥
