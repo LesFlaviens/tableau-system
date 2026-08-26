@@ -631,6 +631,135 @@
             }
         }
 
+
+        /* ===== CORRECTION BUG TICKETS QUI SE CHEVAUCHENT ===== */
+        .board {
+            display: grid !important;
+            grid-template-columns: repeat(auto-fit, minmax(min(100%, 390px), 1fr)) !important;
+            grid-auto-rows: max-content !important;
+            align-content: start !important;
+            align-items: start !important;
+        }
+
+        .ticket {
+            position: relative !important;
+            display: flex !important;
+            flex-direction: column !important;
+            align-self: start !important;
+            height: auto !important;
+            min-height: 0 !important;
+            max-height: none !important;
+            overflow: visible !important;
+            isolation: isolate;
+        }
+
+        .t-header,
+        .t-body,
+        .t-footer,
+        .phase-note,
+        .course-section,
+        .course-title,
+        .course-list,
+        .t-item,
+        .t-name,
+        .modifier-line,
+        .item-subline {
+            position: relative !important;
+            float: none !important;
+            clear: both;
+        }
+
+        .t-header {
+            flex: 0 0 auto !important;
+        }
+
+        .t-body {
+            flex: 0 0 auto !important;
+            display: flex !important;
+            flex-direction: column !important;
+            height: auto !important;
+            min-height: 0 !important;
+            max-height: none !important;
+            overflow: visible !important;
+        }
+
+        .phase-note {
+            display: block !important;
+            flex: 0 0 auto !important;
+            height: auto !important;
+            min-height: 0 !important;
+            white-space: normal !important;
+            overflow-wrap: anywhere;
+        }
+
+        .course-section {
+            display: block !important;
+            flex: 0 0 auto !important;
+            width: 100% !important;
+            height: auto !important;
+            min-height: 0 !important;
+            overflow: hidden !important;
+        }
+
+        .course-list {
+            display: flex !important;
+            flex-direction: column !important;
+            width: 100% !important;
+            height: auto !important;
+            min-height: 0 !important;
+            overflow: visible !important;
+        }
+
+        .t-item {
+            flex: 0 0 auto !important;
+            width: 100% !important;
+            height: auto !important;
+            min-height: 64px !important;
+            overflow: visible !important;
+        }
+
+        .t-name {
+            height: auto !important;
+            min-height: 0 !important;
+            overflow: visible !important;
+            overflow-wrap: anywhere;
+            word-break: normal;
+        }
+
+        .t-footer {
+            flex: 0 0 auto !important;
+            height: auto !important;
+            min-height: 0 !important;
+        }
+
+        /* Les tickets terminés restent lisibles : on atténue seulement la ligne,
+           jamais la hauteur ni la structure. */
+        .t-item.done {
+            opacity: .48;
+        }
+
+        /* Le temps ne doit jamais déborder sur le titre de table. */
+        .t-time {
+            flex: 0 0 auto;
+            max-width: 46%;
+            text-align: right;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        @media (min-width: 1500px) {
+            .board {
+                grid-template-columns: repeat(auto-fit, minmax(420px, 1fr)) !important;
+            }
+        }
+
+        @media (max-width: 900px) {
+            .board {
+                grid-template-columns: 1fr !important;
+                grid-auto-rows: max-content !important;
+            }
+        }
+
 </style>
 </head>
 
@@ -782,11 +911,36 @@
  renderBoard();
  }
 
+ function parseServerTimestamp(value) {
+     if (value == null || value === '') return null;
+
+     // Timestamp numérique en secondes ou millisecondes
+     const numeric = Number(value);
+     if (Number.isFinite(numeric) && numeric > 0) {
+         return numeric < 100000000000 ? numeric * 1000 : numeric;
+     }
+
+     // Date ISO / chaîne MongoDB
+     const parsed = Date.parse(String(value));
+     return Number.isFinite(parsed) ? parsed : null;
+ }
+
  function formatTimeDiff(timestamp) {
- const ts = Number(timestamp || Date.now());
- let diff = Math.floor((Date.now() - ts) / 60000);
- if (diff < 1) return "À l'instant";
- return `${diff} min`;
+     const ts = parseServerTimestamp(timestamp);
+     if (!ts) return "--";
+
+     const nowMs = Date.now();
+     const diffMs = Math.max(0, nowMs - ts);
+     const diff = Math.floor(diffMs / 60000);
+
+     const clock = new Date(ts).toLocaleTimeString('fr-FR', {
+         hour: '2-digit',
+         minute: '2-digit'
+     });
+
+     if (diff < 1) return `${clock} · maintenant`;
+     if (diff <= 360) return `${clock} · ${diff} min`;
+     return `${clock} · ancien`;
  }
 
  /* ===== ANTI-RUSH ===== */
@@ -1212,8 +1366,14 @@
  timeDisplay = `En attente (${minLeft}m)`;
  ticketClass += ' timeshift';
  } else {
- const diffMinutes = Math.floor((Date.now() - Number(firstTimestamp)) / 60000);
- if (diffMinutes >= 15) { ticketClass += ' urgent'; timeClass += ' late'; }
+ const parsedFirstTimestamp = parseServerTimestamp(firstTimestamp);
+ const diffMinutes = parsedFirstTimestamp
+     ? Math.floor(Math.max(0, Date.now() - parsedFirstTimestamp) / 60000)
+     : 0;
+ if (diffMinutes >= 15 && diffMinutes <= 360) {
+     ticketClass += ' urgent';
+     timeClass += ' late';
+ }
  }
 
  const directItems = displayItems.filter(i => itemFlow(i) === 'direct');
