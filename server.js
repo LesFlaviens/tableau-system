@@ -588,69 +588,60 @@ const { tenantID } = req.body;
 // WEBHOOK STRIPE : SÉCURITÉ ANTI-IMPAYÉS & UPSELL
 // ==========================================
 app.post('/webhook', async (req, res) => {
-const sig = req.headers['stripe-signature'];
-let event;
-try {
-event = stripe.webhooks.constructEvent(req.body, sig, process.env.STRIPE_WEBHOOK_SECRET);
-} catch (err) {
-return res.status(400).send(`Webhook Error: ${err.message}`);
-
-if (event.type === 'checkout.session.completed') {
-    const session = event.data.object;
-
-    if (session.metadata && session.metadata.type === 'UPGRADE_SCREENS') {
-        const safeID = cleanString(session.metadata.tenantID);
-        try {
-            const extraScreens = parseInt(session.metadata.extraScreens);
-            await Tenant.updateOne({ tenantID: safeID }, { $inc: { maxScreens: extraScreens } });
-        } catch(e) {}
-    } else {
-        try {
-            const rawTenantID = session.client_reference_id || "client_attente_" + Date.now();
-            const safeID = cleanString(rawTenantID);
-            let planAchete = "BUSINESS";
-            let limitScreens = 5; let limitStaff = 999;
-
-            if (session.metadata && session.metadata.plan) {
-                planAchete = session.metadata.plan.toUpperCase();
-                if (['CHEF_CUISINE', 'CHEF_PATISSERIE', 'CHEF_BAR', 'CHEF', 'PATISSIER', 'BAR'].includes(planAchete)) {
-                    limitScreens = 1; limitStaff = 1;
-                } else if (['BUSINESS', 'RENTABILITE', 'ECO', 'PACK_A'].includes(planAchete)) {
-                    limitScreens = 5; limitStaff = 999;
-                } else if (['EMPIRE', 'BRIGADE', 'BRIGADES', 'PREMIUM'].includes(planAchete)) {
-                    limitScreens = 50; limitStaff = 999;
-                }
-            } else {
-                if (session.amount_total === 1900) { planAchete = "CHEF_CUISINE"; limitScreens = 1; limitStaff = 1; } 
-                else if (session.amount_total === 4500 || session.amount_total === 4900) { planAchete = "PACK_A"; limitScreens = 5; limitStaff = 999; } 
-                else if (session.amount_total >= 9900) { planAchete = "EMPIRE"; limitScreens = 50; limitStaff = 999; }
-            }
-
-            // 🔓 Un achat officiel supprime toute expiration de démo
-            await Tenant.updateOne(
-                { tenantID: safeID },
-                { 
-                    $set: { status: 'ACTIF', config: { stripeCustomerId: session.customer } },
-                    $unset: { demoExpiration: "" },
-                    $setOnInsert: { plan: planAchete, maxScreens: limitScreens, maxStaff: limitStaff, pin: Math.floor(1000 + Math.random() * 9000).toString() }
-                },
-                { upsert: true }
-            );
-        } catch(e) {}
+    const sig = req.headers['stripe-signature'];
+    let event;
+    try {
+        event = stripe.webhooks.constructEvent(req.body, sig, process.env.STRIPE_WEBHOOK_SECRET);
+    } catch (err) {
+        return res.status(400).send(`Webhook Error: ${err.message}`);
     }
-}
-res.json({received: true});
 
+    if (event.type === 'checkout.session.completed') {
+        const session = event.data.object;
+
+        if (session.metadata && session.metadata.type === 'UPGRADE_SCREENS') {
+            const safeID = cleanString(session.metadata.tenantID);
+            try {
+                const extraScreens = parseInt(session.metadata.extraScreens);
+                await Tenant.updateOne({ tenantID: safeID }, { $inc: { maxScreens: extraScreens } });
+            } catch(e) {}
+        } else {
+            try {
+                const rawTenantID = session.client_reference_id || "client_attente_" + Date.now();
+                const safeID = cleanString(rawTenantID);
+                let planAchete = "BUSINESS";
+                let limitScreens = 5; let limitStaff = 999;
+
+                if (session.metadata && session.metadata.plan) {
+                    planAchete = session.metadata.plan.toUpperCase();
+                    if (['CHEF_CUISINE', 'CHEF_PATISSERIE', 'CHEF_BAR', 'CHEF', 'PATISSIER', 'BAR'].includes(planAchete)) {
+                        limitScreens = 1; limitStaff = 1;
+                    } else if (['BUSINESS', 'RENTABILITE', 'ECO', 'PACK_A'].includes(planAchete)) {
+                        limitScreens = 5; limitStaff = 999;
+                    } else if (['EMPIRE', 'BRIGADE', 'BRIGADES', 'PREMIUM'].includes(planAchete)) {
+                        limitScreens = 50; limitStaff = 999;
+                    }
+                } else {
+                    if (session.amount_total === 1900) { planAchete = "CHEF_CUISINE"; limitScreens = 1; limitStaff = 1; } 
+                    else if (session.amount_total === 4500 || session.amount_total === 4900) { planAchete = "PACK_A"; limitScreens = 5; limitStaff = 999; } 
+                    else if (session.amount_total >= 9900) { planAchete = "EMPIRE"; limitScreens = 50; limitStaff = 999; }
+                }
+
+                // 🔓 Un achat officiel supprime toute expiration de démo
+                await Tenant.updateOne(
+                    { tenantID: safeID },
+                    { 
+                        $set: { status: 'ACTIF', config: { stripeCustomerId: session.customer } },
+                        $unset: { demoExpiration: "" },
+                        $setOnInsert: { plan: planAchete, maxScreens: limitScreens, maxStaff: limitStaff, pin: Math.floor(1000 + Math.random() * 9000).toString() }
+                    },
+                    { upsert: true }
+                );
+            } catch(e) {}
+        }
+    }
+    res.json({received: true});
 });
-
-const mongoURI =
-process.env.MONGO_URI ||
-"TON_MONGO_URI";
-
-mongoose.connect(mongoURI)
-.then(() => console.log('✅ Base de donnees iCHEF Online'))
-.catch(err => console.error(err.message));
-
 // ==========================================================
 // 🏢 TENANT / LICENCE
 // ==========================================================
