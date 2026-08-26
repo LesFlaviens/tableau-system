@@ -180,16 +180,6 @@
         .terminal-lock-text { color: var(--text-muted); font-size: .88rem; line-height: 1.6; margin: 0 auto 18px; max-width: 430px; }
         .terminal-lock-actions { display: grid; grid-template-columns: 1fr; gap: 10px; }
         .terminal-lock-actions button { min-height: 48px; }
-        .terminal-auth-form { display:none; margin-top:14px; padding-top:14px; border-top:1px solid var(--border); }
-        .terminal-auth-form.show { display:block; }
-        .terminal-auth-label { display:block; margin-bottom:7px; color:var(--text-muted); font-size:.75rem; font-weight:800; text-transform:uppercase; letter-spacing:.5px; text-align:left; }
-        .terminal-auth-input { width:100%; height:52px; border:1px solid var(--border); border-radius:9px; background:#080808; color:#fff; font-size:1.25rem; text-align:center; letter-spacing:6px; outline:none; }
-        .terminal-auth-input:focus { border-color:var(--gold); box-shadow:0 0 0 2px rgba(212,175,55,.12); }
-        .terminal-auth-submit { width:100%; min-height:50px; margin-top:10px; border:1px solid var(--gold); border-radius:9px; background:var(--gold); color:#000; font-weight:900; cursor:pointer; }
-        .terminal-auth-submit:disabled { opacity:.55; cursor:wait; }
-        .terminal-auth-msg { min-height:22px; margin-top:9px; color:var(--text-muted); font-size:.78rem; line-height:1.4; }
-        .terminal-auth-msg.error { color:var(--danger); }
-        .terminal-auth-msg.ok { color:var(--accent); }
     </style>
 </head>
 
@@ -201,13 +191,8 @@
             <div class="terminal-lock-title" id="terminal-lock-title">Vérification du terminal</div>
             <p class="terminal-lock-text" id="terminal-lock-text">Contrôle du terminal et du réseau de l’établissement...</p>
             <div class="terminal-lock-actions">
-                <button class="library-btn" id="terminal-authorize-btn" type="button">AUTORISER CE TERMINAL</button>
-            </div>
-            <div id="terminal-auth-form" class="terminal-auth-form">
-                <label class="terminal-auth-label" for="terminal-master-pin">PIN RESPONSABLE — autorisation unique du terminal</label>
-                <input id="terminal-master-pin" class="terminal-auth-input" type="password" inputmode="numeric" pattern="[0-9]*" autocomplete="off" maxlength="12" aria-label="PIN responsable">
-                <button id="terminal-auth-submit" class="terminal-auth-submit" type="button">VALIDER ET OUVRIR LE PASS</button>
-                <div id="terminal-auth-msg" class="terminal-auth-msg"></div>
+                <button class="library-btn" id="terminal-chef-btn" type="button">CHEF</button>
+                <button class="library-btn" id="terminal-admin-btn" type="button">ADMINISTRATION</button>
             </div>
         </div>
     </div>
@@ -218,7 +203,7 @@
                 <h1 class="logo">iCHEF.</h1>
                 <span class="badge">Pass Production</span>
 <span id="connection-badge" class="badge" style="border-color:#fbbf24;color:#fbbf24;">● Connexion...</span>
-                <button class="filter-btn" style="padding:4px 8px;font-size:.65rem;" onclick="window.location.href='chef.html?tenantID=' + tenantID">🔙 Labo</button>
+                <button class="filter-btn" style="padding:4px 8px;font-size:.65rem;" onclick="window.location.href='chef.html?tenantID=' + tenantID">CHEF</button>
                 <button class="library-btn" type="button" onclick="openRecipeLibrary()">📚 Cuisine & Pâtisserie</button>
                 <button class="filter-btn" id="btn-admin" type="button" style="border-color:var(--gold);color:var(--gold);">ADMINISTRATION</button>
             </div>
@@ -307,7 +292,7 @@
             const titleEl = document.getElementById('terminal-lock-title');
             const textEl = document.getElementById('terminal-lock-text');
             if (titleEl) titleEl.textContent = title;
-            if (textEl) textEl.textContent = message || 'Ce terminal doit être autorisé dans l’établissement.';
+            if (textEl) textEl.textContent = message || 'Ce terminal n’est pas autorisé pour le Pass Cuisine. Utilisez CHEF ou ADMINISTRATION pour gérer l’accès.';
             if (lock) lock.classList.remove('hidden');
             if (socket) { try { socket.disconnect(); } catch (_) {} socket = null; }
             setConnectionBadge(false, 'Accès bloqué');
@@ -364,78 +349,12 @@
             window.location.href = `admin.html?tenantID=${encodeURIComponent(tenantID || '')}`;
         });
 
-        function showTerminalAuthorizationForm() {
-            const form = document.getElementById('terminal-auth-form');
-            const pinInput = document.getElementById('terminal-master-pin');
-            const msg = document.getElementById('terminal-auth-msg');
-            if (form) form.classList.add('show');
-            if (msg) { msg.textContent = 'Saisissez le PIN principal du responsable. Un PIN staff ne peut pas autoriser un nouvel appareil.'; msg.className = 'terminal-auth-msg'; }
-            setTimeout(() => pinInput?.focus(), 50);
-        }
+        document.getElementById('terminal-chef-btn')?.addEventListener('click', () => {
+            window.location.href = `chef.html?tenantID=${encodeURIComponent(tenantID || '')}`;
+        });
 
-        async function authorizeProductionTerminal() {
-            const pinInput = document.getElementById('terminal-master-pin');
-            const submit = document.getElementById('terminal-auth-submit');
-            const msg = document.getElementById('terminal-auth-msg');
-            const pin = String(pinInput?.value || '').trim();
-
-            if (!tenantID) {
-                if (msg) { msg.textContent = 'Identifiant restaurant manquant.'; msg.className = 'terminal-auth-msg error'; }
-                return;
-            }
-            if (!/^\d{4,12}$/.test(pin)) {
-                if (msg) { msg.textContent = 'PIN responsable invalide.'; msg.className = 'terminal-auth-msg error'; }
-                pinInput?.focus();
-                return;
-            }
-
-            if (submit) submit.disabled = true;
-            if (msg) { msg.textContent = 'Vérification du PIN et autorisation du terminal...'; msg.className = 'terminal-auth-msg'; }
-
-            try {
-                const r = await fetch(`${SERVER_URL}/api/production/authorize-terminal`, {
-                    method:'POST',
-                    headers:{ 'Content-Type':'application/json', 'Accept':'application/json' },
-                    credentials:'include',
-                    cache:'no-store',
-                    body:JSON.stringify({ tenantID, pin, deviceId:DEVICE_ID })
-                });
-                let data = null;
-                try { data = await r.json(); } catch (_) {}
-
-                if (!r.ok || !data?.success) {
-                    throw new Error(data?.error || (r.status === 404
-                        ? 'Route d’autorisation absente du server.js déployé.'
-                        : `Autorisation refusée (${r.status}).`));
-                }
-
-                const role = String(data.role || '').trim().toUpperCase();
-                if (role && !['MASTER','ADMIN','MANAGER','DIRECTION','DIRECTEUR','GERANT','GÉRANT','OWNER','PROPRIETAIRE'].includes(role)) {
-                    throw new Error('Ce profil n’est pas autorisé à enregistrer un terminal de production.');
-                }
-
-                if (pinInput) pinInput.value = '';
-                if (msg) { msg.textContent = 'Terminal autorisé. Ouverture du Pass Cuisine...'; msg.className = 'terminal-auth-msg ok'; }
-
-                const ok = await verifyTerminalAccess();
-                if (!ok) throw new Error('Le terminal a été validé, mais le contrôle terminal/réseau reste refusé.');
-
-                const loaded = await fetchInitialState();
-                if (loaded && terminalAuthorized) startRealtime();
-                const form = document.getElementById('terminal-auth-form');
-                if (form) form.classList.remove('show');
-            } catch (error) {
-                if (msg) { msg.textContent = error?.message || 'Autorisation impossible.'; msg.className = 'terminal-auth-msg error'; }
-                pinInput?.focus();
-            } finally {
-                if (submit) submit.disabled = false;
-            }
-        }
-
-        document.getElementById('terminal-authorize-btn')?.addEventListener('click', showTerminalAuthorizationForm);
-        document.getElementById('terminal-auth-submit')?.addEventListener('click', authorizeProductionTerminal);
-        document.getElementById('terminal-master-pin')?.addEventListener('keydown', (event) => {
-            if (event.key === 'Enter') authorizeProductionTerminal();
+        document.getElementById('terminal-admin-btn')?.addEventListener('click', () => {
+            window.location.href = `admin.html?tenantID=${encodeURIComponent(tenantID || '')}`;
         });
 
         function setStation(station) {
