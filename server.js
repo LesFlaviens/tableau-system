@@ -2192,7 +2192,7 @@ try {
 // 1. Génération d'un tenantID propre et unique (ex: "le-bistrot-9f4a")
 const baseId = nomRestaurant.toLowerCase().trim().replace(/[^a-z0-9]/g, '-');
 const uniqueSuffix = Math.random().toString(36).substring(2, 6);
-const tenantID = \${baseId}-${uniqueSuffix}`;`
+const tenantID = `${baseId}-${uniqueSuffix}`;
     // 2. Génération d'un code PIN maître sécurisé à 4 chiffres
     const pin = Math.floor(1000 + Math.random() * 9000).toString();
 
