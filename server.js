@@ -1561,26 +1561,59 @@ if (!tenantID) return res.status(400).send("ID Restaurant manquant.");
 }
 
 });
+// ==========================================================
+// 🔐 CONNEXION iCHEF — RESTAURATEUR + STAFF
+// ==========================================================
 app.post('/api/verify-pin', async (req, res) => {
-    console.log("VERIFY PIN =", req.body);
-
-    const { tenantID, pin, deviceId } = req.body;
 
     try {
-        console.log("tenantID reçu :", tenantID);
 
-        const tenant = await Tenant.findOne({
-            tenantID: cleanString(tenantID)
+        const tenantID = cleanString(req.body?.tenantID);
+        const pin = String(req.body?.pin || '').trim();
+        const deviceId = String(req.body?.deviceId || '').trim();
+
+        console.log("🔐 LOGIN iCHEF :", {
+            tenantID,
+            pinRecu: pin ? "****" : "VIDE",
+            deviceId
         });
 
-        console.log("Tenant trouvé :", tenant);
+        // ------------------------------------------------------
+        // CONTRÔLES DE BASE
+        // ------------------------------------------------------
+
+        if (!tenantID) {
+            return res.status(400).json({
+                success: false,
+                error: "Identifiant restaurant manquant."
+            });
+        }
+
+        if (!pin) {
+            return res.status(400).json({
+                success: false,
+                error: "Code PIN manquant."
+            });
+        }
+
+        // ------------------------------------------------------
+        // RECHERCHE DU RESTAURANT
+        // ------------------------------------------------------
+
+        const tenant = await Tenant.findOne({
+            tenantID: tenantID
+        });
 
         if (!tenant) {
             return res.status(404).json({
                 success: false,
-                error: "Inconnu."
+                error: "Restaurant inconnu."
             });
         }
+
+        // ------------------------------------------------------
+        // CONTRÔLE LICENCE
+        // ------------------------------------------------------
 
         if (
             tenant.demoExpiration &&
@@ -1588,156 +1621,363 @@ app.post('/api/verify-pin', async (req, res) => {
         ) {
             return res.status(403).json({
                 success: false,
-                error: "Démonstration expirée (limite de 24h atteinte)."
+                error: "Démonstration expirée."
             });
         }
 
         if (tenant.status === 'SUSPENDU') {
             return res.status(403).json({
                 success: false,
-                error: "Licence suspendue ou en attente d'approbation manuelle."
+                error: "Licence suspendue."
             });
         }
 
-        let isValid =
-            String(tenant.pin).trim() ===
-            String(pin).trim();
+        // ======================================================
+        // 1️⃣ CONNEXION CLIENT RESTAURATEUR / PIN MAÎTRE
+        // ======================================================
 
-        let roleAttribue = 'MASTER';
+        const masterPin =
+            String(tenant.pin || '').trim();
 
-        // ==========================================================
-        // 🔐 SI CE N'EST PAS LE PIN MASTER → RECHERCHE PIN STAFF
-        // ==========================================================
-        if (!isValid) {
-            const state = await AppState.findOne({
-                tenantID: tenant.tenantID
-            });
+        let authenticated = false;
 
-            if (
-                state &&
-                state.activeOrders &&
-                state.activeOrders['STAFF_ACCESS']
+        let roleAttribue = null;
+        let userType = null;
+
+        let staffId = null;
+        let staffName = null;
+        let staffData = null;
+
+        if (
+            masterPin &&
+            pin === masterPin
+        ) {
+
+            authenticated = true;
+
+            roleAttribue = 'MASTER';
+
+            userType = 'RESTAURATEUR';
+
+            console.log(
+                `✅ RESTAURATEUR connecté : ${tenant.tenantID}`
+            );
+        }
+
+        // ======================================================
+        // 2️⃣ SI CE N'EST PAS LE RESTAURATEUR
+        //    → RECHERCHE DANS LE STAFF
+        // ======================================================
+
+        if (!authenticated) {
+
+            const state =
+                await AppState.findOne({
+                    tenantID: tenant.tenantID
+                });
+
+            const staffContainer =
+                state?.activeOrders?.STAFF_ACCESS;
+
+            // --------------------------------------------------
+            // COMPATIBILITÉ AVEC PLUSIEURS FORMATS
+            //
+            // STAFF_ACCESS = { data: [...] }
+            // OU
+            // STAFF_ACCESS = [...]
+            // --------------------------------------------------
+
+            let staffList = [];
+
+            if (Array.isArray(staffContainer)) {
+
+                staffList = staffContainer;
+
+            } else if (
+                staffContainer &&
+                Array.isArray(staffContainer.data)
             ) {
-                const staffMember =
-                    (state.activeOrders['STAFF_ACCESS'].data || [])
-                        .find(s =>
-                            String(s.pin).trim() === String(pin).trim() &&
-                            s.active === true
-                        );
 
-                if (staffMember) {
-                    isValid = true;
+                staffList = staffContainer.data;
 
-                    roleAttribue = String(
+            }
+
+            console.log(
+                `👥 Staff trouvé pour ${tenant.tenantID} :`,
+                staffList.length
+            );
+
+            // --------------------------------------------------
+            // RECHERCHE DU PIN STAFF
+            // --------------------------------------------------
+
+            const staffMember =
+                staffList.find(member => {
+
+                    if (!member) return false;
+
+                    const staffPin =
+                        String(
+                            member.pin ??
+                            member.pinCode ??
+                            member.codePin ??
+                            ''
+                        ).trim();
+
+                    if (!staffPin) {
+                        return false;
+                    }
+
+                    if (staffPin !== pin) {
+                        return false;
+                    }
+
+                    // ------------------------------------------
+                    // REFUSE UNIQUEMENT UN STAFF
+                    // EXPLICITEMENT DÉSACTIVÉ
+                    // ------------------------------------------
+
+                    if (member.active === false) {
+                        return false;
+                    }
+
+                    if (member.actif === false) {
+                        return false;
+                    }
+
+                    if (member.enabled === false) {
+                        return false;
+                    }
+
+                    const status =
+                        String(
+                            member.status || ''
+                        )
+                        .trim()
+                        .toLowerCase();
+
+                    if (
+                        [
+                            'inactive',
+                            'inactif',
+                            'disabled',
+                            'desactive',
+                            'désactivé',
+                            'suspendu',
+                            'blocked',
+                            'bloque',
+                            'bloqué'
+                        ].includes(status)
+                    ) {
+                        return false;
+                    }
+
+                    return true;
+                });
+
+            // --------------------------------------------------
+            // STAFF TROUVÉ
+            // --------------------------------------------------
+
+            if (staffMember) {
+
+                authenticated = true;
+
+                userType = 'STAFF';
+
+                staffData = staffMember;
+
+                staffId =
+                    staffMember.id ||
+                    staffMember._id ||
+                    staffMember.staffId ||
+                    null;
+
+                staffName =
+                    staffMember.name ||
+                    staffMember.nom ||
+                    staffMember.prenom ||
+                    staffMember.firstname ||
+                    staffMember.firstName ||
+                    null;
+
+                roleAttribue =
+                    String(
                         staffMember.role ||
                         staffMember.profile ||
+                        staffMember.profil ||
                         staffMember.dept ||
+                        staffMember.department ||
                         'STAFF'
                     )
                     .trim()
                     .toUpperCase();
 
-                    // Les profils de direction sont autorisés
-                    if (
-                        [
-                            'DIRECTION',
-                            'DIRECTEUR',
-                            'GERANT',
-                            'GÉRANT',
-                            'OWNER',
-                            'PROPRIETAIRE'
-                        ].includes(roleAttribue)
-                    ) {
-                        roleAttribue = 'MANAGER';
-                    }
+                // ------------------------------------------------
+                // NORMALISATION DES RÔLES DE DIRECTION
+                // ------------------------------------------------
+
+                if (
+                    [
+                        'DIRECTION',
+                        'DIRECTEUR',
+                        'DIRECTRICE',
+                        'GERANT',
+                        'GÉRANT',
+                        'GERANTE',
+                        'GÉRANTE',
+                        'MANAGER',
+                        'OWNER',
+                        'PROPRIETAIRE',
+                        'PROPRIÉTAIRE'
+                    ].includes(roleAttribue)
+                ) {
+
+                    roleAttribue = 'MANAGER';
                 }
+
+                console.log(
+                    `✅ STAFF connecté : ${staffName || staffId || 'Employé'} — ${roleAttribue}`
+                );
             }
         }
 
-        // ==========================================================
-        // ✅ PIN VALIDE
-        // ==========================================================
-        if (isValid) {
-            const screenLimit =
-                await syncTenantScreenLimit(tenant);
+        // ======================================================
+        // ❌ AUCUN PIN TROUVÉ
+        // ======================================================
 
-            if (!Array.isArray(tenant.registeredDevices)) {
-                tenant.registeredDevices = [];
-            }
+        if (!authenticated) {
 
-            const uniqueDevices = [...new Set(
-                tenant.registeredDevices
-                    .map(value => String(value || '').trim())
-                    .filter(Boolean)
-            )];
+            console.warn(
+                `❌ PIN refusé pour ${tenant.tenantID}`
+            );
 
-            if (
-                uniqueDevices.length !==
-                tenant.registeredDevices.length
-            ) {
-                tenant.registeredDevices = uniqueDevices;
-                await tenant.save();
-            }
-
-            // ======================================================
-            // 🖥️ ENREGISTREMENT DU NOUVEL ÉCRAN
-            // ======================================================
-            if (
-                deviceId &&
-                !tenant.registeredDevices.includes(deviceId)
-            ) {
-                if (
-                    tenant.registeredDevices.length >=
-                    screenLimit
-                ) {
-                    return res.status(403).json({
-                        success: false,
-                        error:
-                            `Limite écrans atteinte ` +
-                            `(${tenant.registeredDevices.length}/${screenLimit}).`,
-                        maxScreens: screenLimit,
-                        registeredScreens:
-                            tenant.registeredDevices.length,
-                        availableScreens: 0
-                    });
-                }
-
-                tenant.registeredDevices.push(deviceId);
-                await tenant.save();
-            }
-
-            return res.json({
-                success: true,
-                plan: tenant.plan,
-                specialite: tenant.specialite,
-                role: roleAttribue,
-                safeTenantID: tenant.tenantID,
-                maxScreens: screenLimit,
-                registeredScreens:
-                    tenant.registeredDevices.length,
-                availableScreens:
-                    Math.max(
-                        0,
-                        screenLimit -
-                        tenant.registeredDevices.length
-                    )
+            return res.status(401).json({
+                success: false,
+                error: "Code PIN incorrect."
             });
         }
 
-        // ==========================================================
-        // ❌ PIN INCORRECT
-        // ==========================================================
-        return res.status(401).json({
-            success: false,
-            error: "Code PIN incorrect."
+        // ======================================================
+        // 🖥️ GESTION DES ÉCRANS
+        // ======================================================
+
+        const screenLimit =
+            await syncTenantScreenLimit(tenant);
+
+        if (!Array.isArray(tenant.registeredDevices)) {
+            tenant.registeredDevices = [];
+        }
+
+        // Supprime les doublons / valeurs vides
+        tenant.registeredDevices =
+            [...new Set(
+                tenant.registeredDevices
+                    .map(value =>
+                        String(value || '').trim()
+                    )
+                    .filter(Boolean)
+            )];
+
+        // ------------------------------------------------------
+        // AJOUT DU DEVICE UNIQUEMENT S'IL EST NOUVEAU
+        // ------------------------------------------------------
+
+        if (
+            deviceId &&
+            !tenant.registeredDevices.includes(deviceId)
+        ) {
+
+            if (
+                tenant.registeredDevices.length >=
+                screenLimit
+            ) {
+
+                return res.status(403).json({
+                    success: false,
+                    error:
+                        `Limite d'écrans atteinte ` +
+                        `(${tenant.registeredDevices.length}/${screenLimit}).`,
+                    maxScreens: screenLimit,
+                    registeredScreens:
+                        tenant.registeredDevices.length,
+                    availableScreens: 0
+                });
+            }
+
+            tenant.registeredDevices.push(deviceId);
+
+            await tenant.save();
+        }
+
+        // ======================================================
+        // ✅ CONNEXION AUTORISÉE
+        // ======================================================
+
+        return res.json({
+
+            success: true,
+
+            authenticated: true,
+
+            // RESTAURATEUR ou STAFF
+            userType: userType,
+
+            // MASTER / MANAGER / SERVEUR / CUISINE / BAR...
+            role: roleAttribue,
+
+            tenantID:
+                tenant.tenantID,
+
+            safeTenantID:
+                tenant.tenantID,
+
+            clientName:
+                tenant.clientName || '',
+
+            plan:
+                tenant.plan,
+
+            specialite:
+                tenant.specialite,
+
+            // Informations staff
+            staffId:
+                staffId,
+
+            staffName:
+                staffName,
+
+            staff:
+                userType === 'STAFF'
+                    ? staffData
+                    : null,
+
+            // Écrans
+            maxScreens:
+                screenLimit,
+
+            registeredScreens:
+                tenant.registeredDevices.length,
+
+            availableScreens:
+                Math.max(
+                    0,
+                    screenLimit -
+                    tenant.registeredDevices.length
+                )
         });
 
     } catch (error) {
-        console.error("Erreur verify-pin :", error);
+
+        console.error(
+            "🚨 ERREUR /api/verify-pin :",
+            error
+        );
 
         return res.status(500).json({
             success: false,
-            error: "Erreur serveur."
+            error: "Erreur serveur pendant la connexion."
         });
     }
 });
