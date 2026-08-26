@@ -1626,12 +1626,26 @@ try {
                         s.active === true
                     );
 
-            if (staffMember) {
-                isValid = true;
-                roleAttribue = staffMember.dept || 'STAFF';
-            }
-        }
+         if (staffMember) {
+    isValid = true;
+
+    roleAttribue = String(
+        staffMember.role ||
+        staffMember.profile ||
+        staffMember.dept ||
+        'STAFF'
+    )
+    .trim()
+    .toUpperCase();
+
+    // Les profils de direction sont autorisés
+    if (
+        ['DIRECTION', 'DIRECTEUR', 'GERANT', 'GÉRANT', 'OWNER', 'PROPRIETAIRE']
+            .includes(roleAttribue)
+    ) {
+        roleAttribue = 'MANAGER';
     }
+}
 
     if (isValid) {
         const screenLimit =
