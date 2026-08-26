@@ -1879,36 +1879,39 @@ app.post('/api/verify-pin', async (req, res) => {
                     .filter(Boolean)
             )];
 
-        // ------------------------------------------------------
-        // AJOUT DU DEVICE UNIQUEMENT S'IL EST NOUVEAU
-        // ------------------------------------------------------
+    // ======================================================
+// 🖥️ ENREGISTREMENT APPAREIL — MODE TEST CONNEXION
+// ======================================================
 
-        if (
-            deviceId &&
-            !tenant.registeredDevices.includes(deviceId)
-        ) {
+if (
+    deviceId &&
+    !tenant.registeredDevices.includes(deviceId)
+) {
 
-            if (
-                tenant.registeredDevices.length >=
-                screenLimit
-            ) {
+    console.log(
+        `🖥️ Nouvel appareil détecté : ${deviceId}`
+    );
 
-                return res.status(403).json({
-                    success: false,
-                    error:
-                        `Limite d'écrans atteinte ` +
-                        `(${tenant.registeredDevices.length}/${screenLimit}).`,
-                    maxScreens: screenLimit,
-                    registeredScreens:
-                        tenant.registeredDevices.length,
-                    availableScreens: 0
-                });
-            }
+    console.log(
+        `🖥️ Écrans actuellement enregistrés : ` +
+        `${tenant.registeredDevices.length}/${screenLimit}`
+    );
 
-            tenant.registeredDevices.push(deviceId);
+    // Pendant le diagnostic, on ne bloque PAS
+    // un PIN valide à cause d'anciens appareils de test.
+    if (tenant.registeredDevices.length < screenLimit) {
 
-            await tenant.save();
-        }
+        tenant.registeredDevices.push(deviceId);
+        await tenant.save();
+
+    } else {
+
+        console.warn(
+            `⚠️ Limite écrans atteinte mais PIN VALIDE — ` +
+            `connexion autorisée temporairement pour diagnostic.`
+        );
+    }
+}
 
         // ======================================================
         // ✅ CONNEXION AUTORISÉE
