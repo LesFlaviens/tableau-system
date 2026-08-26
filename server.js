@@ -1818,23 +1818,74 @@ const department = String(value || "")
 return MENU_SYNC_KEYS[department] ? department : null;
 
 }
-// 🔥 LE SEUL ET UNIQUE BLOC io.on('connection') 🔥
-io.on("connection", socket => {
-console.log(`❌ Écran déconnecté : ${socket.id}`);
-// CORRECTION CRITIQUE DU BUG [object Object]
-socket.on("joinTenant", async (payload) => {
+// ==========================================================
+// SOCKET.IO — CONNEXION UNIQUE DES ÉCRANS
+// ==========================================================
+io.on("connection", (socket) => {
 
-    let rawID = typeof payload === 'object' ? payload.tenantID : payload;
-    const safeID = cleanString(rawID);
+    console.log(`Nouvelle connexion écran détectée : ${socket.id}`);
 
-    if (!safeID) return;
+    // ------------------------------------------------------
+    // CONNEXION AU RESTAURANT / TENANT
+    // Accepte :
+    // joinTenant("restaurant-id")
+    // ou
+    // joinTenant({ tenantID: "restaurant-id" })
+    // ------------------------------------------------------
+    socket.on("joinTenant", async (payload) => {
 
-    socket.join(safeID);
-    socket.data.tenantID = safeID;
+        try {
 
-    console.log(`📡 L'écran ${socket.id} est maintenant synchronisé sur le réseau du restaurant : ${safeID}`);
+            const rawID =
+                payload && typeof payload === "object"
+                    ? payload.tenantID
+                    : payload;
 
-    /*
+            const safeID = cleanString(rawID);
+
+            if (!safeID) {
+                console.warn(
+                    `Connexion refusée pour ${socket.id} : tenantID manquant`
+                );
+
+                socket.emit("tenant-error", {
+                    success: false,
+                    error: "Identifiant restaurant manquant."
+                });
+
+                return;
+            }
+
+            // Quitte éventuellement l'ancien restaurant
+            if (
+                socket.data.tenantID &&
+                socket.data.tenantID !== safeID
+            ) {
+                socket.leave(socket.data.tenantID);
+            }
+
+            // Rejoint le restaurant
+            socket.join(safeID);
+
+            socket.data.tenantID = safeID;
+
+            console.log(
+                `Écran ${socket.id} synchronisé avec le restaurant : ${safeID}`
+            );
+
+            socket.emit("tenant-joined", {
+                success: true,
+                tenantID: safeID
+            });
+
+            /*
+             * GARDE ICI LA SUITE DE TON CODE joinTenant
+             * par exemple :
+             * - chargement AppState
+             * - updateState
+             * - synchronisation menus
+             * - etc.
+             */
      * Envoie immédiatement l’état actuel au nouvel écran.
      */
     try {
