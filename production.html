@@ -886,6 +886,7 @@
                 await fetch(`${SERVER_URL}/api/production/update-order?tenantID=${encodeURIComponent(tenantID)}`, {
                     method: 'POST',
                     headers: {'Content-Type':'application/json','X-iCHEF-Device-ID':DEVICE_ID},
+                    credentials:'include',
                     body: JSON.stringify({ tableId:orderId, order })
                 });
             } catch (e) {
@@ -897,40 +898,26 @@
             if (!activeOrdersData[orderId]) return;
 
             const order = activeOrdersData[orderId];
+            const now = Date.now();
 
-           order.items.forEach((item,index)=>{
-            const dest=String(item.dest||'cuisine').toLowerCase();
-            // 🔥 IGNORER CE QUI EST EN ATTENTE DE SÉQUENCE
-            if(!['cuisine','bar'].includes(dest) || item.done || item.isSent===false || String(item.sequenceStatus || '').toUpperCase()==='WAITING') return;
-            if(String(item.status||'').toUpperCase()==='PRET_AU_PASS') return;
+            (order.items || []).forEach(item => {
+                const sequenceStatus = String(item.sequenceStatus || '').toUpperCase();
+                if (item.isSent === false || sequenceStatus === 'WAITING' || sequenceStatus === 'DRAFT') return;
 
-            const name=String(item.n||item.name||'').trim();
-            if(!name) return;
+                if (item.done === true) {
+                    item.status = 'PRET_AU_PASS';
+                    item.sequenceStatus = 'READY';
+                    item.readyAt = item.readyAt || now;
+                }
+            });
 
-            const key=`${dest}::${normalizeBatchName(name)}`;
-            if(!batches[key]){
-                batches[key]={name,dest,qty:0,tables:[],refs:[],oldestTime:now,urgent:false};
-            }
-
-            const qty=Number(item.qty||1);
-            const t=Number(item.requestedAt||item.itemId||order.time||now);
-            batches[key].qty+=qty;
-            batches[key].tables.push(tableId.replace(/^WEB_/i,''));
-            batches[key].refs.push({tableId,index});
-            batches[key].oldestTime=Math.min(batches[key].oldestTime,t);
-            if(/URGENT/i.test(String(item.obs||''))) batches[key].urgent=true;
-        });
-
-            const stillWaiting = order.items.some(item => {
+            const stillWaiting = (order.items || []).some(item => {
                 const s = String(item.sequenceStatus || '').toUpperCase();
                 return s === 'WAITING' || s === 'DRAFT';
             });
 
-            order.status = stillWaiting
-                ? 'EN PRÉPARATION'
-                : 'PRÊT';
-
-            order.readyAt = Date.now();
+            order.status = stillWaiting ? 'EN PRÉPARATION' : 'PRÊT';
+            order.readyAt = now;
 
             renderBoardIfChanged(true);
 
@@ -939,20 +926,24 @@
                     `${SERVER_URL}/api/production/update-order?tenantID=${encodeURIComponent(tenantID)}`,
                     {
                         method: 'POST',
-                        headers: {'Content-Type':'application/json','X-iCHEF-Device-ID':DEVICE_ID},
-                        body: JSON.stringify({
-                            tableId: orderId,
-                            order
-                        })
+                        headers: {
+                            'Content-Type':'application/json',
+                            'X-iCHEF-Device-ID':DEVICE_ID
+                        },
+                        credentials:'include',
+                        body: JSON.stringify({ tableId: orderId, order })
                     }
                 );
 
                 if (!r.ok) {
-                    throw new Error(`HTTP ${r.status}`);
+                    let data = null;
+                    try { data = await r.json(); } catch (_) {}
+                    throw new Error(data?.error || `HTTP ${r.status}`);
                 }
 
             } catch (e) {
                 console.error('Erreur synchronisation Pass → Pad :', e);
+                setConnectionBadge(false, 'Sync impossible');
             }
         }
 
