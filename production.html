@@ -496,9 +496,13 @@
 
  <script>
  const urlParams = new URLSearchParams(window.location.search);
- const tenantID = urlParams.get('tenantID') || localStorage.getItem('ichef_tenant_id');
- const SERVER_URL = (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1") 
+ const rawTenantID = urlParams.get('tenantID') || localStorage.getItem('ichef_tenant_id') || '';
+ const tenantID = /^[A-Za-z0-9_-]{2,80}$/.test(rawTenantID) ? rawTenantID : '';
+ const SERVER_URL = (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1")
  ? "http://localhost:10000" : "https://tableau-system.onrender.com";
+ const PASS_TERMINAL = 'PASS-CUISINE';
+
+ if (tenantID) localStorage.setItem('ichef_tenant_id', tenantID);
 
  let currentStation = 'all';
  let currentFlowFilter = 'all';
@@ -518,6 +522,34 @@
  };
 
  if (!tenantID) window.location.href = 'connexionpartenaire.html';
+
+ function passHeaders(extra = {}) {
+     return {
+         'Content-Type': 'application/json',
+         'Accept': 'application/json',
+         'X-iCHEF-Tenant': tenantID,
+         'X-iCHEF-Terminal': PASS_TERMINAL,
+         ...extra
+     };
+ }
+
+ async function passFetchState() {
+     const r = await fetch(
+         `${SERVER_URL}/get-current-state?tenantID=${encodeURIComponent(tenantID)}&_t=${Date.now()}`,
+         {
+             cache: 'no-store',
+             credentials: 'omit',
+             headers: {
+                 'Accept': 'application/json',
+                 'X-iCHEF-Tenant': tenantID,
+                 'X-iCHEF-Terminal': PASS_TERMINAL
+             }
+         }
+     );
+     if (!r.ok) throw new Error(`HTTP ${r.status}`);
+     return r.json();
+ }
+
 
  function setStation(station) {
  currentStation = station;
@@ -1044,11 +1076,14 @@
  renderBoardIfChanged(true);
 
  try {
- await fetch(`${SERVER_URL}/update-order?tenantID=${tenantID}`, {
- method: 'POST',
- headers: {'Content-Type':'application/json'},
- body: JSON.stringify({ tableId:orderId, order })
+ const r = await fetch(`${SERVER_URL}/update-order?tenantID=${encodeURIComponent(tenantID)}`, {
+     method: 'POST',
+     cache: 'no-store',
+     credentials: 'omit',
+     headers: passHeaders(),
+     body: JSON.stringify({ tableId: orderId, order })
  });
+ if (!r.ok) throw new Error(`HTTP ${r.status}`);
  } catch (e) {
  console.error("Erreur réseau");
  }
@@ -1067,9 +1102,11 @@
 
  try {
  const r = await fetch(`${SERVER_URL}/update-order?tenantID=${encodeURIComponent(tenantID)}`, {
- method:'POST',
- headers:{'Content-Type':'application/json'},
- body:JSON.stringify({ tableId:orderId, order })
+     method: 'POST',
+     cache: 'no-store',
+     credentials: 'omit',
+     headers: passHeaders(),
+     body: JSON.stringify({ tableId: orderId, order })
  });
  if (!r.ok) throw new Error(`HTTP ${r.status}`);
  } catch (e) {
@@ -1352,11 +1389,25 @@
  }
 
  const socket = io(SERVER_URL, {
- transports:['websocket','polling'],
- reconnection:true,
- reconnectionAttempts:Infinity,
- reconnectionDelay:1000
+     transports: ['websocket', 'polling'],
+     withCredentials: false,
+     upgrade: true,
+     reconnection: true,
+     reconnectionAttempts: Infinity,
+     reconnectionDelay: 350,
+     reconnectionDelayMax: 2500,
+     timeout: 5000,
+     auth: {
+         tenantID,
+         terminal: PASS_TERMINAL
+     }
  });
+
+ let passResyncTimer = null;
+ function schedulePassResync(delay = 120) {
+     clearTimeout(passResyncTimer);
+     passResyncTimer = setTimeout(() => fetchInitialState(), delay);
+ }
 
  function setConnectionBadge(ok, label) {
  const badge = document.getElementById('connection-badge');
@@ -1371,13 +1422,23 @@
  }
 
  socket.on('connect', () => {
- socket.emit('joinTenant', tenantID);
- setConnectionBadge(true, 'Connecté');
- fetchInitialState();
+     socket.emit('joinTenant', { tenantID, terminal: PASS_TERMINAL });
+     setConnectionBadge(true, 'Connecté');
+     schedulePassResync(30);
  });
 
- socket.on('disconnect', () => {
- setConnectionBadge(false, 'Déconnecté');
+ socket.on('tenant-joined', payload => {
+     if (payload?.tenantID && String(payload.tenantID) !== String(tenantID)) return;
+     setConnectionBadge(true, 'Temps réel');
+ });
+
+ socket.on('server-state-changed', () => {
+     schedulePassResync(100);
+ });
+
+ socket.on('disconnect', reason => {
+     setConnectionBadge(false, 'Reconnexion...');
+     console.warn('Pass déconnecté :', reason);
  });
 
  socket.on('connect_error', (err) => {
@@ -1404,32 +1465,31 @@
  });
 
  async function fetchInitialState() {
- try {
- const r = await fetch(
- `${SERVER_URL}/get-current-state?tenantID=${encodeURIComponent(tenantID)}&_t=${Date.now()}`,
- { cache:'no-store' }
- );
-
- if (!r.ok) {
- throw new Error(`HTTP ${r.status}`);
- }
-
- const state = await r.json();
-
- applyState(state);
- setConnectionBadge(true, 'Synchronisé');
-
- } catch (e) {
- console.error('Chargement état Production impossible :', e);
- setConnectionBadge(false, 'Sync impossible');
- }
+     try {
+         const state = await passFetchState();
+         applyState(state);
+         setConnectionBadge(socket.connected, socket.connected ? 'Synchronisé' : 'Serveur OK');
+     } catch (e) {
+         console.error('Chargement état Production impossible :', e);
+         setConnectionBadge(false, 'Sync impossible');
+     }
  }
 
  setInterval(() => {
- // Anti-Rush continue à évoluer en temps réel,
- // mais on ne reconstruit plus tous les tickets toutes les 5 secondes.
- updateAntiRush();
+     // Anti-Rush évolue en temps réel sans reconstruire tous les tickets.
+     updateAntiRush();
  }, 5000);
+
+ // Filet de sécurité si un événement Socket.IO est perdu.
+ setInterval(() => {
+     if (tenantID && (!socket.connected || document.visibilityState === 'visible')) {
+         fetchInitialState();
+     }
+ }, 30000);
+
+ document.addEventListener('visibilitychange', () => {
+     if (document.visibilityState === 'visible') schedulePassResync(50);
+ });
 
  fetchInitialState();
  </script>
