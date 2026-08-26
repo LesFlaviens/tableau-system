@@ -1561,172 +1561,186 @@ if (!tenantID) return res.status(400).send("ID Restaurant manquant.");
 }
 
 });
-// ==========================================
-// API RESTAURANT SYNCHRONISATION
-// ==========================================
-
 app.post('/api/verify-pin', async (req, res) => {
-console.log("VERIFY PIN =", req.body);
+    console.log("VERIFY PIN =", req.body);
 
-const { tenantID, pin, deviceId } = req.body;
+    const { tenantID, pin, deviceId } = req.body;
 
-try {
-    console.log("tenantID reçu :", tenantID);
+    try {
+        console.log("tenantID reçu :", tenantID);
 
-    const tenant = await Tenant.findOne({
-        tenantID: cleanString(tenantID)
-    });
-
-    console.log("Tenant trouvé :", tenant);
-
-    if (!tenant) {
-        return res.status(404).json({
-            success: false,
-            error: "Inconnu."
-        });
-    }
-
-    if (
-        tenant.demoExpiration &&
-        new Date() > new Date(tenant.demoExpiration)
-    ) {
-        return res.status(403).json({
-            success: false,
-            error: "Démonstration expirée (limite de 24h atteinte)."
-        });
-    }
-
-    if (tenant.status === 'SUSPENDU') {
-        return res.status(403).json({
-            success: false,
-            error: "Licence suspendue ou en attente d'approbation manuelle."
-        });
-    }
-
-    let isValid =
-        String(tenant.pin).trim() ===
-        String(pin).trim();
-
-    let roleAttribue = 'MASTER';
-
-    if (!isValid) {
-        const state = await AppState.findOne({
-            tenantID: tenant.tenantID
+        const tenant = await Tenant.findOne({
+            tenantID: cleanString(tenantID)
         });
 
-        if (
-            state &&
-            state.activeOrders &&
-            state.activeOrders['STAFF_ACCESS']
-        ) {
-            const staffMember =
-                (state.activeOrders['STAFF_ACCESS'].data || [])
-                    .find(s =>
-                        String(s.pin).trim() === String(pin).trim() &&
-                        s.active === true
-                    );
+        console.log("Tenant trouvé :", tenant);
 
-         if (staffMember) {
-    isValid = true;
-
-    roleAttribue = String(
-        staffMember.role ||
-        staffMember.profile ||
-        staffMember.dept ||
-        'STAFF'
-    )
-    .trim()
-    .toUpperCase();
-
-    // Les profils de direction sont autorisés
-    if (
-        ['DIRECTION', 'DIRECTEUR', 'GERANT', 'GÉRANT', 'OWNER', 'PROPRIETAIRE']
-            .includes(roleAttribue)
-    ) {
-        roleAttribue = 'MANAGER';
-    }
-}
-
-    if (isValid) {
-        const screenLimit =
-            await syncTenantScreenLimit(tenant);
-
-        if (!Array.isArray(tenant.registeredDevices)) {
-            tenant.registeredDevices = [];
-        }
-
-        const uniqueDevices = [...new Set(
-            tenant.registeredDevices
-                .map(value => String(value || '').trim())
-                .filter(Boolean)
-        )];
-
-        if (
-            uniqueDevices.length !==
-            tenant.registeredDevices.length
-        ) {
-            tenant.registeredDevices = uniqueDevices;
-            await tenant.save();
+        if (!tenant) {
+            return res.status(404).json({
+                success: false,
+                error: "Inconnu."
+            });
         }
 
         if (
-            deviceId &&
-            !tenant.registeredDevices.includes(deviceId)
+            tenant.demoExpiration &&
+            new Date() > new Date(tenant.demoExpiration)
         ) {
+            return res.status(403).json({
+                success: false,
+                error: "Démonstration expirée (limite de 24h atteinte)."
+            });
+        }
+
+        if (tenant.status === 'SUSPENDU') {
+            return res.status(403).json({
+                success: false,
+                error: "Licence suspendue ou en attente d'approbation manuelle."
+            });
+        }
+
+        let isValid =
+            String(tenant.pin).trim() ===
+            String(pin).trim();
+
+        let roleAttribue = 'MASTER';
+
+        // ==========================================================
+        // 🔐 SI CE N'EST PAS LE PIN MASTER → RECHERCHE PIN STAFF
+        // ==========================================================
+        if (!isValid) {
+            const state = await AppState.findOne({
+                tenantID: tenant.tenantID
+            });
+
             if (
-                tenant.registeredDevices.length >=
-                screenLimit
+                state &&
+                state.activeOrders &&
+                state.activeOrders['STAFF_ACCESS']
             ) {
-                return res.status(403).json({
-                    success: false,
-                    error:
-                        `Limite écrans atteinte ` +
-                        `(${tenant.registeredDevices.length}/${screenLimit}).`,
-                    maxScreens: screenLimit,
-                    registeredScreens:
-                        tenant.registeredDevices.length,
-                    availableScreens: 0
-                });
+                const staffMember =
+                    (state.activeOrders['STAFF_ACCESS'].data || [])
+                        .find(s =>
+                            String(s.pin).trim() === String(pin).trim() &&
+                            s.active === true
+                        );
+
+                if (staffMember) {
+                    isValid = true;
+
+                    roleAttribue = String(
+                        staffMember.role ||
+                        staffMember.profile ||
+                        staffMember.dept ||
+                        'STAFF'
+                    )
+                    .trim()
+                    .toUpperCase();
+
+                    // Les profils de direction sont autorisés
+                    if (
+                        [
+                            'DIRECTION',
+                            'DIRECTEUR',
+                            'GERANT',
+                            'GÉRANT',
+                            'OWNER',
+                            'PROPRIETAIRE'
+                        ].includes(roleAttribue)
+                    ) {
+                        roleAttribue = 'MANAGER';
+                    }
+                }
+            }
+        }
+
+        // ==========================================================
+        // ✅ PIN VALIDE
+        // ==========================================================
+        if (isValid) {
+            const screenLimit =
+                await syncTenantScreenLimit(tenant);
+
+            if (!Array.isArray(tenant.registeredDevices)) {
+                tenant.registeredDevices = [];
             }
 
-            tenant.registeredDevices.push(deviceId);
-            await tenant.save();
+            const uniqueDevices = [...new Set(
+                tenant.registeredDevices
+                    .map(value => String(value || '').trim())
+                    .filter(Boolean)
+            )];
+
+            if (
+                uniqueDevices.length !==
+                tenant.registeredDevices.length
+            ) {
+                tenant.registeredDevices = uniqueDevices;
+                await tenant.save();
+            }
+
+            // ======================================================
+            // 🖥️ ENREGISTREMENT DU NOUVEL ÉCRAN
+            // ======================================================
+            if (
+                deviceId &&
+                !tenant.registeredDevices.includes(deviceId)
+            ) {
+                if (
+                    tenant.registeredDevices.length >=
+                    screenLimit
+                ) {
+                    return res.status(403).json({
+                        success: false,
+                        error:
+                            `Limite écrans atteinte ` +
+                            `(${tenant.registeredDevices.length}/${screenLimit}).`,
+                        maxScreens: screenLimit,
+                        registeredScreens:
+                            tenant.registeredDevices.length,
+                        availableScreens: 0
+                    });
+                }
+
+                tenant.registeredDevices.push(deviceId);
+                await tenant.save();
+            }
+
+            return res.json({
+                success: true,
+                plan: tenant.plan,
+                specialite: tenant.specialite,
+                role: roleAttribue,
+                safeTenantID: tenant.tenantID,
+                maxScreens: screenLimit,
+                registeredScreens:
+                    tenant.registeredDevices.length,
+                availableScreens:
+                    Math.max(
+                        0,
+                        screenLimit -
+                        tenant.registeredDevices.length
+                    )
+            });
         }
 
-        return res.json({
-            success: true,
-            plan: tenant.plan,
-            specialite: tenant.specialite,
-            role: roleAttribue,
-            safeTenantID: tenant.tenantID,
-            maxScreens: screenLimit,
-            registeredScreens:
-                tenant.registeredDevices.length,
-            availableScreens:
-                Math.max(
-                    0,
-                    screenLimit -
-                    tenant.registeredDevices.length
-                )
+        // ==========================================================
+        // ❌ PIN INCORRECT
+        // ==========================================================
+        return res.status(401).json({
+            success: false,
+            error: "Code PIN incorrect."
+        });
+
+    } catch (error) {
+        console.error("Erreur verify-pin :", error);
+
+        return res.status(500).json({
+            success: false,
+            error: "Erreur serveur."
         });
     }
-
-    return res.status(401).json({
-        success: false,
-        error: "Code PIN incorrect."
-    });
-
-} catch (error) {
-    console.error("Erreur verify-pin :", error);
-
-    return res.status(500).json({
-        success: false,
-        error: "Erreur serveur."
-    });
-}
-
 });
-
 // ==========================================
 // MASTER CONTROL API (EMPIRE SUPER ADMIN)
 // ==========================================
