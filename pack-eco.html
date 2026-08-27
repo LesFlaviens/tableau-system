@@ -12447,5 +12447,151 @@ setTimeout(() => {
 
 }, 2500);
 </script>
+  <!-- PISTE D'AUDIT COMPLÈTE : AFFICHAGE DE 100% DE L'HISTORIQUE DANS LE RÉSUMÉ -->
+<script id="ichef-audit-complet-resume">
+setTimeout(() => {
+    // 1. On modifie le moteur de groupement pour CONSERVER les plats annulés
+    window.summaryGroups = function(order) {
+      const map = new Map();
+      
+      (order?.items || []).forEach(item => {
+        if (!item) return; // On ne filtre plus !item.cancelled
+        const seat = itemSeat(item);
+        const key = seat ? seatLabel(seat) : "CENTRE";
+        if (!map.has(key)) map.set(key, []);
+        map.get(key).push(item);
+      });
+
+      return [...map.entries()].sort((a, b) => {
+        const na = Number(a[0].replace(/\D/g, "")) || 99;
+        const nb = Number(b[0].replace(/\D/g, "")) || 99;
+        return na - nb;
+      });
+    };
+
+    // 2. On modifie l'affichage du résumé pour identifier clairement les erreurs/annulations
+    window.renderSummary = function() {
+      if(!STATE.currentTable) return;
+
+      const order = STATE.currentOrder || getOrder(STATE.currentTable) || ensureOrder(STATE.currentTable);
+      STATE.currentOrder = order;
+
+      const table = STATE.tables.find(t => t.label === STATE.currentTable);
+      const zone = getZone(table);
+      const fiscal = fiscalBreakdown(order); // Le moteur fiscal ignore déjà automatiquement les annulés pour le total
+
+      const tableEl = document.getElementById("summaryTable");
+      if(tableEl) tableEl.textContent = `TABLE ${STATE.currentTable} · ${num(order.pax||2)||2} couverts`;
+      
+      const zoneEl = document.getElementById("summaryZone");
+      if(zoneEl) zoneEl.textContent = ` ZONE ${text(zone?.label||"SALLE").toUpperCase()}`;
+      
+      const noteEl = document.getElementById("summaryNote");
+      if(noteEl) noteEl.textContent = text(order.note||order.observation||order.observations)
+        ? ` ${text(order.note||order.observation||order.observations)}`
+        : " Résumé exact et piste d'audit complète";
+
+      const totalEl = document.getElementById("summaryTotal");
+      if(totalEl) totalEl.textContent = money(orderTotal(order));
+
+      const groups = summaryGroups(order);
+      const contentEl = document.getElementById("summaryContent");
+
+      if(contentEl) {
+        contentEl.innerHTML = groups.length
+          ? groups.map(([guest, items]) => {
+            const seat = Number(guest.replace(/\D/g,"")) || 0;
+            
+            // On compte les actifs pour le titre du groupe, mais on affiche tout
+            const activeItems = items.filter(i => !i.cancelled && i.sequenceStatus !== "CANCELLED" && i.sequenceStatus !== "CANCELED");
+            const articleCount = activeItems.reduce((sum, item) => sum + itemQty(item), 0);
+            const articleLabel = articleCount > 1 ? "articles facturés" : "article facturé";
+
+            return `<section class="summary-group">
+              <div class="summary-group-title">
+                ${seat ? seatBadgeHTML(seat) : '<span class="seat-badge">CENTRE</span>'}
+                <span class="summary-guest-count">${articleCount} ${articleLabel} (${items.length} opérations)</span>
+              </div>
+              <div class="summary-group-items">
+              ${items.map(item => {
+                const qty = itemQty(item);
+                const isCancelled = item.cancelled || item.sequenceStatus === "CANCELLED" || item.sequenceStatus === "CANCELED";
+                const d = normalizeDestination(item.dest || item.category || "cuisine");
+                const destText = d === "bar" ? " BAR" : d === "patisserie" ? " PÂTISSERIE" : " CUISINE";
+                
+                const description = summaryItemDescription(item);
+                const cooking = text(item.cooking || item.cuisson);
+                const obs = text(item.obs || item.observation || item.note);
+                const allergy = text(item.allergy || item.allergie || item.allergies);
+                const modifiers = item.modifiers && typeof item.modifiers === "object" ? item.modifiers : {};
+                const removeMods = Array.isArray(modifiers.remove) ? modifiers.remove.filter(Boolean) : [];
+                const addMods = Array.isArray(modifiers.add) ? modifiers.add.filter(Boolean) : [];
+
+                let chips = [];
+                
+                // GESTION VISUELLE DE L'ANNULATION
+                if (isCancelled) {
+                    const motif = item.cancelReason || "Erreur de frappe / Annulation";
+                    chips.push(`<span class="summary-chip allergy" style="background:#ff5368; color:#fff; border:none; font-weight:1000;">ANNULÉ : ${esc(motif)}</span>`);
+                    if (obs) chips.push(`<span class="summary-chip obs"> ${esc(obs)}</span>`);
+                } else {
+                    const statusClass = lineReady(item) ? "ready" : lineFired(item) ? "production" : "draft";
+                    const statusText = lineReady(item) ? "● PRÊT" : lineFired(item) ? "● EN PRODUCTION" : "● À ENVOYER";
+                    chips = [
+                      `<span class="summary-chip dest-${d}">${destText}</span>`,
+                      `<span class="summary-chip ${statusClass}">${statusText}</span>`,
+                      cooking ? `<span class="summary-chip cooking"> ${esc(cooking)}</span>` : "",
+                      removeMods.length ? `<span class="summary-chip obs">− ${esc(removeMods.join(", "))}</span>` : "",
+                      addMods.length ? `<span class="summary-chip obs">+ ${esc(addMods.join(", "))}</span>` : "",
+                      obs ? `<span class="summary-chip obs"> ${esc(obs)}</span>` : "",
+                      allergy ? `<span class="summary-chip allergy"> ${esc(allergy)}</span>` : ""
+                    ];
+                }
+
+                // Barrer le prix original et afficher 0,00 si annulé
+                const priceHtml = isCancelled 
+                    ? `<div style="text-decoration:line-through; color:#aab2b5; font-size:14px; margin-bottom:4px;">${money(item.originalPrice || (itemPrice(item)*qty))}</div><div style="color:#ff5368; font-size:18px;">0,00</div>`
+                    : money(itemPrice(item) * qty);
+
+                // Assombrir la ligne complète en cas d'erreur/annulation
+                return `<div class="summary-item" style="background: ${isCancelled ? '#f4f5f7' : '#fff'}; opacity: ${isCancelled ? '0.85' : '1'}; border-left: ${isCancelled ? '4px solid #ff5368' : 'none'};">
+                  <div class="summary-item-qty" style="${isCancelled ? 'color:#888;' : ''}">${qty}x</div>
+                  <div class="summary-item-main">
+                    <div class="summary-item-name" style="${isCancelled ? 'text-decoration:line-through; color:#777;' : ''}" title="${esc(itemName(item))}">${esc(itemName(item))}</div>
+                    ${description ? `<div class="summary-item-description">${esc(description)}</div>` : ""}
+                    <div class="summary-item-tags">${chips.filter(Boolean).join("")}</div>
+                  </div>
+                  <div class="summary-item-price" style="text-align:right;">${priceHtml}</div>
+                </div>`;
+              }).join("")}
+              </div>
+            </section>`;
+          }).join("")
+          : '<div class="empty-state">En attente de saisie…</div>';
+      }
+
+      const p = fiscal.profile;
+      const fiscalEl = document.getElementById("summaryFiscal");
+      if(fiscalEl) {
+          fiscalEl.innerHTML = `
+            <div class="summary-fiscal-top">
+              <div class="summary-fiscal-title"> PROFIL FISCAL · ${esc(p.label)}</div>
+              <div class="summary-fiscal-status">${p.country==="UNSET"?"CONFIGURATION REQUISE":(STATE.fiscalChainState==="ERREUR_HASH"||STATE.fiscalChainState==="RUPTURE_CHAINE"?" INTÉGRITÉ À VÉRIFIER":"SHA-256 · SERVEUR ✓")}</div>
+            </div>
+
+            ${fiscal.rows.map(row => `
+              <div class="summary-tax-row">
+                <span>TVA ${row.rate.toFixed(2).replace(".",",")} %</span>
+                <span>TVA ${money(row.tax)}</span>
+                <strong>TTC ${money(row.gross)}</strong>
+              </div>`).join("") || '<div class="summary-tax-row"><span>Aucune ligne fiscale active</span><span></span><strong>—</strong></div>'}
+
+            <div class="fiscal-warning" style="color:#e2b84e; font-weight:800;">
+              Piste d'audit complète : les articles annulés sont conservés, tracés et justifiés. Le total calculé exclut légalement les opérations annulées.
+            </div>`;
+      }
+    };
+}, 1000);
+</script>
 </body>
 </html>
