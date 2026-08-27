@@ -7745,7 +7745,12 @@ function cashReceiptLines(order,options={}){
   const r=cfg.receipt||{};
   const fiscal=fiscalBreakdown(order||{});
   const total=fiscalRound2(fiscal.gross);
-  const payment=text(order?.paymentDraft?.payments?.[0]?.method||order?.paymentMethod||"");
+  const payment=text(paymentMethodLabel(order)||order?.paymentMethod||"");
+  const payments=paymentEntries(order).map(p=>({
+    method:text(p.method).toUpperCase(),
+    amount:fiscalRound2(Number(p.amount||0)),
+    createdAt:p.createdAt||p.confirmedAt||null
+  }));
   const profile=fiscal.profile;
   const paidAt=order?.paymentDraft?.updatedAt||order?.fiscalFinalizedAt||new Date().toISOString();
   const fiscalHash=text(order?.paymentDraft?.fiscalHash||order?.fiscalHash||"");
@@ -7780,7 +7785,14 @@ function cashReceiptLines(order,options={}){
     lines.push(`TVA ${Number(row.rate||0).toFixed(2).replace(".",",")}%  HT ${money(row.net)}  TVA ${money(row.tax)}  TTC ${money(row.gross)}`);
   });
   lines.push({text:`TOTAL ${money(total)}`,bold:true,width:2,height:2,align:"right"});
-  if(payment)lines.push({text:`PAIEMENT: ${payment}`,bold:true});
+  if(paymentDetails.length){
+    lines.push({text:`PAIEMENT: ${payment||"MULTIPLE"}`,bold:true});
+    paymentDetails.forEach(p=>{
+      lines.push({text:`  ${text(p.method).toUpperCase()} · ${money(Number(p.amount||0))}`,align:"right"});
+    });
+  }else if(payment){
+    lines.push({text:`PAIEMENT: ${payment}`,bold:true});
+  }
   if(fiscalHash)lines.push(`SCELLEMENT SHA-256: ${fiscalHash.slice(0,16).toUpperCase()}…`);
   lines.push("------------------------------------------");
   if(r.footer)lines.push({text:r.footer,align:"center"});
@@ -8888,6 +8900,26 @@ async function savePaymentCurrencyFromPayment(currency){
   return true;
 }
 
+
+function paymentEntries(order){
+  return Array.isArray(order?.paymentDraft?.payments)
+    ? order.paymentDraft.payments.filter(p=>p&&Number(p.amount)>0)
+    : [];
+}
+function paymentPaidAmount(order){
+  return fiscalRound2(paymentEntries(order).reduce((s,p)=>s+Number(p.amount||0),0));
+}
+function paymentRemainingAmount(order,total=orderTotal(order)){
+  return fiscalRound2(Math.max(0,Number(total||0)-paymentPaidAmount(order)));
+}
+function paymentMethodLabel(order){
+  const entries=paymentEntries(order);
+  if(!entries.length)return "";
+  const methods=[...new Set(entries.map(p=>text(p.method).toUpperCase()).filter(Boolean))];
+  return methods.length>1?"MULTIPLE":(methods[0]||"");
+}
+let ICHEF_SPLIT_AMOUNT=0;
+
 function openPayment(force=false){
   /* Un Event transmis par onclick n'est jamais interprété comme force=true. */
   force = force === true;
@@ -8905,6 +8937,8 @@ function openPayment(force=false){
   const table=STATE.currentTable;
   const o=ensureOrder(table);
   const total=orderTotal(o);
+  const paidAlready=paymentPaidAmount(o);
+  const remaining=paymentRemainingAmount(o,total);
   const profile=fiscalProfile();
   const overlay=ensurePaymentOverlay();
   const finalized=fiscalOrderFinalized(o);
@@ -8923,7 +8957,7 @@ function openPayment(force=false){
   }
 
   const draftFiscalStatus=text(o?.paymentDraft?.fiscalStatus||"").toUpperCase();
-  const existingPaymentMethod=text(o?.paymentDraft?.payments?.[0]?.method||o?.paymentMethod||"").toUpperCase();
+  const existingPaymentMethod=text(paymentMethodLabel(o)||o?.paymentMethod||"").toUpperCase();
   const pendingLedger=finalized && draftFiscalStatus==="PENDING_LEDGER";
 
   let validation={ok:true,errors:[]};
@@ -8959,8 +8993,17 @@ function openPayment(force=false){
       </div>
 
       <div class="pay-total">
-        <small>TOTAL À ENCAISSER</small>
+        <small>TOTAL NOTE</small>
         <strong>${money(total)}</strong>
+        ${paidAlready>0?`
+          <div style="margin-top:9px;display:grid;grid-template-columns:1fr 1fr;gap:8px;font-size:12px;font-weight:900;">
+            <div style="padding:8px;border:1px solid #b9bdc2;border-radius:9px;background:#fff;">
+              DÉJÀ PAYÉ<br><strong style="font-size:18px;color:#198754;">${money(paidAlready)}</strong>
+            </div>
+            <div style="padding:8px;border:2px solid #111;border-radius:9px;background:#fff;">
+              RESTE<br><strong style="font-size:18px;color:#111;">${money(remaining)}</strong>
+            </div>
+          </div>`:""}
       </div>
 
       <div class="pay-profile">
@@ -8989,6 +9032,27 @@ function openPayment(force=false){
             <button type="button" class="fiscal-btn" data-fiscal-country="CH">SUISSE</button>
           </div>
         </div>` : ""}
+
+      ${!finalized ? `
+      <div class="fiscal-choose" style="border-color:#111;background:#fff;">
+        <strong>DIVISER LA NOTE</strong>
+        <div style="margin:5px 0 8px;font-size:11px;">Choisissez le montant de CETTE part, puis CARTE / ESPÈCES / AUTRE.</div>
+
+        <div class="fiscal-grid" style="grid-template-columns:repeat(3,1fr);">
+          <button type="button" class="fiscal-btn" data-split-parts="2">2 PARTS</button>
+          <button type="button" class="fiscal-btn" data-split-parts="3">3 PARTS</button>
+          <button type="button" class="fiscal-btn" data-split-parts="4">4 PARTS</button>
+          <button type="button" class="fiscal-btn" data-split-parts="5">5 PARTS</button>
+          <button type="button" class="fiscal-btn" data-split-parts="6">6 PARTS</button>
+          <button type="button" class="fiscal-btn" data-split-all>TOUT LE RESTE</button>
+        </div>
+
+        <label style="display:block;margin-top:9px;font-size:10px;font-weight:900;">MONTANT DE CETTE PART</label>
+        <input id="ichefSplitAmount" type="number" inputmode="decimal" min="0.01" step="0.01"
+          value="${ICHEF_SPLIT_AMOUNT>0?Math.min(ICHEF_SPLIT_AMOUNT,remaining).toFixed(2):remaining.toFixed(2)}"
+          style="width:100%;height:54px;margin-top:5px;border:2px solid #111;border-radius:10px;padding:0 12px;background:#fff;color:#111;font-size:22px;font-weight:1000;text-align:center;">
+        <div style="margin-top:5px;font-size:9px;color:#555;font-weight:800;">Reste actuel : ${money(remaining)}</div>
+      </div>` : ""}
 
       <div class="pay-grid">${paymentButtons}</div>
 
@@ -9020,6 +9084,33 @@ function openPayment(force=false){
     });
   });
 
+  const splitInput=overlay.querySelector("#ichefSplitAmount");
+  if(splitInput){
+    const normalizeSplitInput=()=>{
+      let v=Number(String(splitInput.value||"").replace(",","."));
+      if(!Number.isFinite(v)||v<=0)v=remaining;
+      v=fiscalRound2(Math.min(Math.max(0.01,v),remaining));
+      ICHEF_SPLIT_AMOUNT=v;
+      splitInput.value=v.toFixed(2);
+    };
+    splitInput.addEventListener("change",normalizeSplitInput);
+    splitInput.addEventListener("blur",normalizeSplitInput);
+
+    overlay.querySelectorAll("[data-split-parts]").forEach(b=>{
+      b.addEventListener("click",()=>{
+        const parts=Math.max(2,Math.min(6,Number(b.dataset.splitParts)||2));
+        const amount=fiscalRound2(remaining/parts);
+        ICHEF_SPLIT_AMOUNT=amount;
+        splitInput.value=amount.toFixed(2);
+      });
+    });
+
+    overlay.querySelector("[data-split-all]")?.addEventListener("click",()=>{
+      ICHEF_SPLIT_AMOUNT=0;
+      splitInput.value=remaining.toFixed(2);
+    });
+  }
+
   overlay.querySelectorAll("[data-pay-fixed]").forEach(btn=>{
     btn.addEventListener("click",async e=>{
       e.preventDefault();
@@ -9049,11 +9140,26 @@ function openPayment(force=false){
           if(!check.ok)throw new Error(check.errors.join(" · "));
         }
 
-        const ok=await recordPayment(method);
+        const rawSplit=Number(String(overlay.querySelector("#ichefSplitAmount")?.value||"").replace(",","."));
+        const payAmount=method
+          ?fiscalRound2(Math.min(
+              Number.isFinite(rawSplit)&&rawSplit>0?rawSplit:paymentRemainingAmount(ensureOrder(STATE.currentTable)),
+              paymentRemainingAmount(ensureOrder(STATE.currentTable))
+            ))
+          :null;
+
+        const ok=await recordPayment(method,payAmount);
         if(!ok)throw new Error(ICHEF_PAYMENT_LAST_ERROR||"Le paiement n’a pas pu être finalisé");
 
-        closePaymentOverlay();
-        closeSheet();
+        const refreshed=ensureOrder(STATE.currentTable);
+        if(method && !fiscalOrderFinalized(refreshed) && paymentRemainingAmount(refreshed)>0){
+          toast(`Part encaissée · reste ${money(paymentRemainingAmount(refreshed))}`);
+          openPayment(true);
+        }else{
+          ICHEF_SPLIT_AMOUNT=0;
+          closePaymentOverlay();
+          closeSheet();
+        }
       }catch(err){
         console.error("[iCHEF PAIEMENT]",err);
         const msg="Paiement impossible : "+(err?.message||String(err)||"erreur inconnue");
@@ -9907,7 +10013,8 @@ function fiscalNextReceiptReference(){
 
 function fiscalTransactionSnapshot(order){
   const fiscal=fiscalBreakdown(order||{});
-  const payment=text(order?.paymentDraft?.payments?.[0]?.method||order?.paymentMethod||"");
+  const payment=text(paymentMethodLabel(order)||order?.paymentMethod||"");
+  const paymentDetails=paymentEntries(order);
   const receipt=receiptReference(order);
   const at=order?.paymentDraft?.updatedAt||order?.fiscalFinalizedAt||new Date().toISOString();
 
@@ -9923,6 +10030,7 @@ function fiscalTransactionSnapshot(order){
     currency:fiscal.profile.currency,
     totalTTC:fiscalRound2(fiscal.gross),
     paymentMethod:payment||null,
+    payments,
     lines:fiscal.lines.map(line=>({
       lineId:line.lineId,
       label:line.label,
@@ -10177,11 +10285,16 @@ function summaryDateTime(value){
 function summaryOrderStatus(order){
   if(fiscalOrderFinalized(order))return "PAYÉ / FISCALISÉ";
   const s=text(order?.paymentStatus||order?.paymentDraft?.status||order?.status||"OUVERT").toUpperCase();
+  if(s==="PARTIEL"){
+    return `PAIEMENT PARTIEL · payé ${money(paymentPaidAmount(order))} · reste ${money(paymentRemainingAmount(order))}`;
+  }
   return s||"OUVERT";
 }
 
 function summaryPaymentMethod(order){
-  return text(order?.paymentDraft?.payments?.[0]?.method||order?.paymentMethod||"")||"NON ENCAISSÉ";
+  const entries=paymentEntries(order);
+  if(!entries.length)return text(order?.paymentMethod||"")||"NON ENCAISSÉ";
+  return entries.map(p=>`${text(p.method).toUpperCase()} ${money(Number(p.amount||0))}`).join(" + ");
 }
 
 function summaryAuditEntries(order,tableId){
@@ -10513,14 +10626,14 @@ function renderSummary(){
 }
 
 
-async function recordPayment(method){
+async function recordPayment(method,amountOverride=null){
   ICHEF_PAYMENT_LAST_ERROR="";
   if(!STATE.currentTable)return ichefPaymentFail("Aucune table ouverte");
 
   const table=STATE.currentTable;
   let o=ensureOrder(table);
   const paymentMethod=text(method||"").toUpperCase()||null;
-  const existingMethod=text(o?.paymentDraft?.payments?.[0]?.method||o?.paymentMethod||"").toUpperCase()||null;
+  const existingMethod=text(paymentMethodLabel(o)||o?.paymentMethod||"").toUpperCase()||null;
 
   if(!fiscalOrderFinalized(o) && paymentMethod){
     const serviceGate=servicePaymentState(o);
@@ -10640,20 +10753,88 @@ async function recordPayment(method){
   const fiscal=validation.fiscal;
   const total=fiscalRound2(fiscal.gross);
   const paidAt=new Date().toISOString();
+
+  const previousPayments=paymentEntries(o).map(p=>({...p}));
+  const alreadyPaid=fiscalRound2(previousPayments.reduce((s,p)=>s+Number(p.amount||0),0));
+  const remainingBefore=fiscalRound2(Math.max(0,total-alreadyPaid));
+
+  if(!(remainingBefore>0)){
+    return ichefPaymentFail("Cette note est déjà entièrement réglée");
+  }
+
+  const requested=Number(amountOverride);
+  const paymentAmount=fiscalRound2(
+    Math.min(
+      Number.isFinite(requested)&&requested>0?requested:remainingBefore,
+      remainingBefore
+    )
+  );
+  if(!(paymentAmount>0))return ichefPaymentFail("Montant de cette part invalide");
+
+  const newPayment={
+    method:paymentMethod,
+    amount:paymentAmount,
+    createdAt:paidAt,
+    confirmedBy:STATE.role||"SERVEUR",
+    deviceId:STATE.deviceId,
+    source:"TELEPHONE"
+  };
+  const payments=[...previousPayments,newPayment];
+  const paidTotal=fiscalRound2(payments.reduce((s,p)=>s+Number(p.amount||0),0));
+  const remainingAfter=fiscalRound2(Math.max(0,total-paidTotal));
+
+  /* PAIEMENT PARTIEL :
+     on enregistre la part, mais on NE fiscalise PAS encore la vente complète
+     et on NE ferme PAS la table. */
+  if(remainingAfter>0.009){
+    o.paymentDraft={
+      version:3,
+      payments,
+      total,
+      paid:paidTotal,
+      remaining:remainingAfter,
+      fidelityDiscountUsed:0,
+      status:"PARTIEL",
+      updatedAt:paidAt,
+      updatedBy:STATE.role||"SERVEUR",
+      deviceId:STATE.deviceId,
+      fiscalCountry:fiscal.profile.country,
+      fiscalRows:fiscal.rows.map(r=>({rate:r.rate,gross:r.gross,net:r.net,tax:r.tax})),
+      fiscalStatus:"NOT_PAID"
+    };
+    o.paymentStatus="PARTIEL";
+    o.status="payment-partial";
+    o.orderMeta={
+      ...(o.orderMeta&&typeof o.orderMeta==="object"?o.orderMeta:{}),
+      paymentStatus:"PARTIEL",
+      updatedAt:paidAt,
+      updatedBy:STATE.role||"SERVEUR",
+      deviceId:STATE.deviceId,
+      terminal:"TELEPHONE"
+    };
+
+    const partialSaved=await saveCurrent(
+      o,
+      `Paiement partiel ${paymentMethod} ${paymentAmount.toFixed(2)} · reste ${remainingAfter.toFixed(2)}`,
+      {immediate:true}
+    );
+    if(!partialSaved)return ichefPaymentFail("Le serveur n’a pas enregistré cette part de paiement");
+
+    STATE.currentOrder=clone(o);
+    return true;
+  }
+
+  /* SOLDE FINAL : toutes les parts deviennent un seul règlement fiscal de la vente. */
   const receiptRef=fiscalNextReceiptReference();
   const eventRef="FISCAL_EVENT_PAYMENT_"+fiscalSafeId(receiptRef);
-
-  const payments=[{
-    method:paymentMethod,
-    amount:total,
-    createdAt:paidAt,
-    source:"TELEPHONE"
-  }];
+  const uniqueMethods=[...new Set(payments.map(p=>text(p.method).toUpperCase()).filter(Boolean))];
+  const finalMethod=uniqueMethods.length>1?"MULTIPLE":(uniqueMethods[0]||paymentMethod);
 
   o.paymentDraft={
-    version:2,
+    version:3,
     payments,
     total,
+    paid:total,
     remaining:0,
     fidelityDiscountUsed:0,
     status:"PAYE",
@@ -10668,6 +10849,7 @@ async function recordPayment(method){
   };
 
   o.paymentStatus="PAYE";
+  o.paymentMethod=finalMethod;
   o.status="payment";
   o.fiscalReceiptReference=receiptRef;
   o.orderMeta={
@@ -10676,6 +10858,7 @@ async function recordPayment(method){
     origin:o.orderMeta?.origin||"PAD",
     serviceMode:o.orderMeta?.serviceMode||"SERVEUR",
     paymentStatus:"PAYE",
+    paymentMethod:finalMethod,
     productionStatus:o.orderMeta?.productionStatus||o.productionStatus||"WAITING",
     tableId:table,
     updatedAt:paidAt,
@@ -10694,7 +10877,8 @@ async function recordPayment(method){
         sans créer un second paiement ni changer le moyen de règlement. */
   const snapshot=fiscalTransactionSnapshot(o);
   const trace=await fiscalEvent("PAYMENT",{
-    method:paymentMethod,
+    method:finalMethod,
+    payments:payments.map(p=>({method:p.method,amount:p.amount,createdAt:p.createdAt,confirmedBy:p.confirmedBy||""})),
     total,
     remaining:0,
     receiptReference:receiptRef,
@@ -10721,7 +10905,7 @@ async function recordPayment(method){
   STATE.currentOrder=clone(o);
 
   await fiscalMaintenance().catch(err=>console.warn("[iCHEF FISCAL] maintenance",err));
-  toast(`✓ Paiement ${paymentMethod} fiscalisé · ${receiptRef}`);
+  toast(`✓ Paiement ${finalMethod} fiscalisé · ${receiptRef}`);
 
   const pcfg=loadPrinterConfig();
   if(pcfg.enabled&&pcfg.printers?.caisse?.enabled&&pcfg.receipt?.autoAfterPayment!==false){
