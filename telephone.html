@@ -8518,6 +8518,14 @@ function editNote(){if(!STATE.currentTable)return;const o=ensureOrder(STATE.curr
 
 
 let ICHEF_PAYMENT_OPEN_AT=0;
+let ICHEF_PAYMENT_PROCESSING=false;
+let ICHEF_PAYMENT_LAST_ERROR="";
+
+function ichefPaymentFail(message){
+  ICHEF_PAYMENT_LAST_ERROR=text(message)||"Erreur de paiement";
+  toast(ICHEF_PAYMENT_LAST_ERROR,true);
+  return false;
+}
 
 function ensurePaymentOverlay(){
   let overlay=document.getElementById("ichefPaymentOverlay");
@@ -8561,6 +8569,9 @@ async function saveFiscalProfileFromPayment(country){
 }
 
 function openPayment(force=false){
+  /* Un Event transmis par onclick n'est jamais interprété comme force=true. */
+  force = force === true;
+
   if(!STATE.currentTable){
     toast("Ouvrez d’abord une table",true);
     return;
@@ -8576,15 +8587,35 @@ function openPayment(force=false){
   const total=orderTotal(o);
   const profile=fiscalProfile();
   const overlay=ensurePaymentOverlay();
+  const finalized=fiscalOrderFinalized(o);
+  const draftFiscalStatus=text(o?.paymentDraft?.fiscalStatus||"").toUpperCase();
+  const existingPaymentMethod=text(o?.paymentDraft?.payments?.[0]?.method||o?.paymentMethod||"").toUpperCase();
+  const pendingLedger=finalized && draftFiscalStatus==="PENDING_LEDGER";
 
   let validation={ok:true,errors:[]};
   try{ validation=fiscalValidateOrder(o,{forPayment:true}); }
   catch(err){ validation={ok:false,errors:[err?.message||"Validation fiscale impossible"]}; }
 
-  const needsCountry=profile.country==="UNSET";
-  const validationMessage=!needsCountry&&!validation.ok
+  const needsCountry=profile.country==="UNSET" && !finalized;
+  const validationMessage=!finalized&&!needsCountry&&!validation.ok
     ? "Paiement bloqué : "+validation.errors.join(" · ")
     : "";
+
+  const paymentStatusBlock=finalized ? `
+    <div style="margin:0 0 12px;padding:12px;border:3px solid ${pendingLedger?'#dcae39':'#35a866'};border-radius:14px;background:${pendingLedger?'#fff9df':'#ecfff3'};font-size:14px;font-weight:900;line-height:1.3;">
+      ${pendingLedger
+        ? `PAIEMENT ENREGISTRÉ · SCELLEMENT À TERMINER${existingPaymentMethod?` · ${esc(existingPaymentMethod)}`:""}`
+        : `PAIEMENT DÉJÀ VALIDÉ${existingPaymentMethod?` · ${esc(existingPaymentMethod)}`:""}<br><span style="font-size:12px;font-weight:800;">Appuyez ci-dessous pour terminer et libérer la table.</span>`}
+    </div>` : "";
+
+  const paymentButtons=finalized ? `
+    <button type="button" class="pay-method" data-pay-fixed="${esc(existingPaymentMethod)}" style="grid-column:1/-1;min-height:92px;">
+      ${pendingLedger?"REPRENDRE LE PAIEMENT":"TERMINER · LIBÉRER LA TABLE"}
+    </button>` : `
+    <button type="button" class="pay-method" data-pay-fixed="CARTE" ${needsCountry?"disabled":""}>CARTE</button>
+    <button type="button" class="pay-method" data-pay-fixed="ESPÈCES" ${needsCountry?"disabled":""}>ESPÈCES</button>
+    <button type="button" class="pay-method" data-pay-fixed="AUTRE" ${needsCountry?"disabled":""}>AUTRE</button>
+    <button type="button" class="pay-method" data-pay-fixed="">EN ATTENTE</button>`;
 
   overlay.innerHTML=`
     <div class="pay-card">
@@ -8602,6 +8633,8 @@ function openPayment(force=false){
         ${needsCountry ? "Profil fiscal à choisir" : `Profil ${esc(profile.label)} · ${esc(profile.currency)}`}
       </div>
 
+      ${paymentStatusBlock}
+
       ${needsCountry ? `
         <div class="fiscal-choose">
           <strong>CONFIGURATION CAISSE REQUISE</strong>
@@ -8612,12 +8645,7 @@ function openPayment(force=false){
           </div>
         </div>` : ""}
 
-      <div class="pay-grid">
-        <button type="button" class="pay-method" data-pay-fixed="CARTE" ${needsCountry?"disabled":""}>CARTE</button>
-        <button type="button" class="pay-method" data-pay-fixed="ESPÈCES" ${needsCountry?"disabled":""}>ESPÈCES</button>
-        <button type="button" class="pay-method" data-pay-fixed="AUTRE" ${needsCountry?"disabled":""}>AUTRE</button>
-        <button type="button" class="pay-method" data-pay-fixed="">EN ATTENTE</button>
-      </div>
+      <div class="pay-grid">${paymentButtons}</div>
 
       <div id="ichefPaymentError" class="pay-error ${validationMessage?"show":""}">
         ${esc(validationMessage)}
@@ -8631,6 +8659,7 @@ function openPayment(force=false){
 
   overlay.querySelectorAll("[data-fiscal-country]").forEach(btn=>{
     btn.addEventListener("click",async()=>{
+      if(ICHEF_PAYMENT_PROCESSING)return;
       btn.disabled=true;
       await saveFiscalProfileFromPayment(btn.dataset.fiscalCountry);
       openPayment(true);
@@ -8641,29 +8670,33 @@ function openPayment(force=false){
     btn.addEventListener("click",async e=>{
       e.preventDefault();
       e.stopPropagation();
-      if(btn.disabled||btn.dataset.busy==="1")return;
+      if(btn.disabled||ICHEF_PAYMENT_PROCESSING)return;
 
-      const method=btn.dataset.payFixed||null;
+      ICHEF_PAYMENT_PROCESSING=true;
+      ICHEF_PAYMENT_LAST_ERROR="";
+      const method=text(btn.dataset.payFixed||"").toUpperCase()||null;
       const errorBox=document.getElementById("ichefPaymentError");
       if(errorBox){
         errorBox.textContent="";
         errorBox.classList.remove("show");
       }
 
-      btn.dataset.busy="1";
-      btn.classList.add("busy");
+      const payButtons=[...overlay.querySelectorAll("[data-pay-fixed]")];
+      payButtons.forEach(b=>{b.disabled=true;b.classList.add("busy")});
       const old=btn.textContent;
-      btn.textContent=method?"VALIDATION…":"ENREGISTREMENT…";
+      btn.textContent=finalized
+        ?(pendingLedger?"SCELLEMENT…":"LIBÉRATION…")
+        :(method?"VALIDATION…":"ENREGISTREMENT…");
 
       try{
-        if(method){
+        if(!finalized && method){
           const current=ensureOrder(STATE.currentTable);
           const check=fiscalValidateOrder(current,{forPayment:true});
           if(!check.ok)throw new Error(check.errors.join(" · "));
         }
 
         const ok=await recordPayment(method);
-        if(!ok)throw new Error("Le serveur n’a pas finalisé le paiement");
+        if(!ok)throw new Error(ICHEF_PAYMENT_LAST_ERROR||"Le paiement n’a pas pu être finalisé");
 
         closePaymentOverlay();
         closeSheet();
@@ -8676,9 +8709,14 @@ function openPayment(force=false){
         }
         toast(msg,true);
       }finally{
-        btn.dataset.busy="0";
-        btn.classList.remove("busy");
-        btn.textContent=old;
+        ICHEF_PAYMENT_PROCESSING=false;
+        if(overlay.classList.contains("open")){
+          payButtons.forEach(b=>{
+            b.classList.remove("busy");
+            b.disabled=(fiscalProfile().country==="UNSET" && !fiscalOrderFinalized(ensureOrder(STATE.currentTable)));
+          });
+          btn.textContent=old;
+        }
       }
     },{passive:false});
   });
@@ -9802,47 +9840,75 @@ function renderSummary(){
 
 
 async function recordPayment(method){
-  if(!STATE.currentTable)return false;
+  ICHEF_PAYMENT_LAST_ERROR="";
+  if(!STATE.currentTable)return ichefPaymentFail("Aucune table ouverte");
 
-  let o=ensureOrder(STATE.currentTable);
-  const paymentMethod=method||null;
+  const table=STATE.currentTable;
+  let o=ensureOrder(table);
+  const paymentMethod=text(method||"").toUpperCase()||null;
+  const existingMethod=text(o?.paymentDraft?.payments?.[0]?.method||o?.paymentMethod||"").toUpperCase()||null;
 
-  /* Une vente déjà payée ne peut pas revenir à "en attente" ni changer de moyen
-     sans correction fiscale. Si le scellement était seulement en attente, on le reprend. */
+  /* Si le paiement est déjà enregistré, le bouton PAIEMENT sert à REPRENDRE
+     le scellement ou simplement à terminer la libération de la table.
+     On ne transforme plus un échec d'archive/fermeture en faux échec de paiement. */
   if(fiscalOrderFinalized(o)){
     const status=text(o?.paymentDraft?.fiscalStatus).toUpperCase();
-    if(status==="PENDING_LEDGER" && paymentMethod){
+
+    if(status==="PENDING_LEDGER"){
+      const effectiveMethod=paymentMethod||existingMethod;
+      if(!effectiveMethod)return ichefPaymentFail("Moyen de paiement introuvable pour reprendre le scellement");
+
       const eventRef=text(o.paymentDraft?.fiscalEventRef);
       const snapshot=fiscalTransactionSnapshot(o);
       const trace=await fiscalEvent("PAYMENT",{
-        method:paymentMethod,
+        method:effectiveMethod,
         total:snapshot.totalTTC,
         remaining:0,
         receiptReference:snapshot.receiptNumber,
         transaction:snapshot,
         rows:snapshot.vatTotals
       },{ref:eventRef||undefined,createdAt:o.paymentDraft.updatedAt});
-      if(trace?.ok){
-        o.paymentDraft.fiscalStatus="SEALED";
-        o.paymentDraft.fiscalEventRef=trace.event.ref;
-        o.paymentDraft.fiscalHash=trace.event.hash;
-        o.paymentDraft.fiscalSequence=trace.event.sequence;
-        o.fiscalFinalizedAt=o.paymentDraft.updatedAt;
-        o.fiscalReceiptReference=snapshot.receiptNumber;
-        o.fiscalHash=trace.event.hash;
-        const sealed=await optimisticWrite(STATE.currentTable,o,"Reprise scellement fiscal paiement");
-        if(sealed){
-          STATE.currentOrder=clone(o);
-          toast("✓ Paiement fiscal scellé");
-          const closed=await closeTable({auto:true,reason:"Paiement fiscal terminé"});
-          return closed!==false;
-        }
+
+      if(!trace?.ok)return ichefPaymentFail("Paiement enregistré, mais le scellement fiscal serveur reste à synchroniser");
+
+      o.paymentDraft.fiscalStatus="SEALED";
+      o.paymentDraft.fiscalEventRef=trace.event.ref;
+      o.paymentDraft.fiscalHash=trace.event.hash;
+      o.paymentDraft.fiscalSequence=trace.event.sequence;
+      o.fiscalFinalizedAt=o.paymentDraft.updatedAt;
+      o.fiscalReceiptReference=snapshot.receiptNumber;
+      o.fiscalHash=trace.event.hash;
+
+      const sealed=await optimisticWrite(table,o,"Reprise scellement fiscal paiement");
+      if(!sealed)return ichefPaymentFail("Scellement créé, mais la vente doit encore être resynchronisée avec le serveur");
+
+      STATE.currentOrder=clone(o);
+      toast("✓ Paiement fiscal scellé");
+
+      try{
+        const closed=await closeTable({auto:true,reason:"Paiement fiscal terminé"});
+        if(closed===false)toast("✓ Paiement validé · libération de table à resynchroniser",true);
+      }catch(err){
+        console.warn("[iCHEF PAIEMENT] paiement OK, fermeture différée",err);
+        toast("✓ Paiement validé · fermeture de table à reprendre",true);
       }
-      toast("Scellement fiscal encore en attente",true);
-      return false;
+      return true;
     }
-    toast("🔒 Paiement déjà fiscalisé : utilisez une annulation/correction",true);
-    return false;
+
+    if(paymentMethod && existingMethod && paymentMethod!==existingMethod){
+      return ichefPaymentFail(`Paiement déjà fiscalisé en ${existingMethod} : correction/annulation obligatoire pour changer de moyen`);
+    }
+
+    /* Paiement déjà scellé : on ne bloque plus l'utilisateur.
+       On retente uniquement la fermeture/archivage de la table. */
+    try{
+      const closed=await closeTable({auto:true,reason:"Paiement déjà validé · reprise fermeture"});
+      if(closed===false)toast("✓ Paiement déjà validé · fermeture à resynchroniser",true);
+    }catch(err){
+      console.warn("[iCHEF PAIEMENT] reprise fermeture",err);
+      toast("✓ Paiement déjà validé · fermeture à reprendre",true);
+    }
+    return true;
   }
 
   if(!paymentMethod){
@@ -9862,14 +9928,13 @@ async function recordPayment(method){
     };
     o.paymentStatus="A_PAYER";
     o.status="pending";
-    return saveCurrent(o,"Paiement en attente",{immediate:true});
+    const pendingSaved=await saveCurrent(o,"Paiement en attente",{immediate:true});
+    if(!pendingSaved)return ichefPaymentFail("Impossible d’enregistrer l’état EN ATTENTE sur le serveur");
+    return true;
   }
 
   const validation=fiscalValidateOrder(o,{forPayment:true});
-  if(!validation.ok){
-    toast("Fiscal : "+validation.errors[0],true);
-    return false;
-  }
+  if(!validation.ok)return ichefPaymentFail("Fiscal : "+validation.errors.join(" · "));
 
   const fiscal=validation.fiscal;
   const total=fiscalRound2(fiscal.gross);
@@ -9911,7 +9976,7 @@ async function recordPayment(method){
     serviceMode:o.orderMeta?.serviceMode||"SERVEUR",
     paymentStatus:"PAYE",
     productionStatus:o.orderMeta?.productionStatus||o.productionStatus||"WAITING",
-    tableId:STATE.currentTable,
+    tableId:table,
     updatedAt:paidAt,
     updatedBy:STATE.role||"SERVEUR",
     deviceId:STATE.deviceId,
@@ -9920,11 +9985,12 @@ async function recordPayment(method){
     fiscalReceiptReference:receiptRef
   };
 
-  /* 1. On enregistre d'abord la vente comme PAYE mais "PENDING_LEDGER".
-     Si le réseau fiscal échoue, aucune impression fiscale n'est lancée. */
+  /* 1. Persistance de la vente payée avant le journal fiscal. */
   const saved=await saveCurrent(o,"Paiement téléphone enregistré - scellement fiscal en cours",{immediate:true});
-  if(!saved)return false;
+  if(!saved)return ichefPaymentFail("Le serveur n’a pas enregistré le paiement");
 
+  /* 2. Journal fiscal chaîné. En cas de panne, le même ticket peut être repris
+        sans créer un second paiement ni changer le moyen de règlement. */
   const snapshot=fiscalTransactionSnapshot(o);
   const trace=await fiscalEvent("PAYMENT",{
     method:paymentMethod,
@@ -9936,11 +10002,10 @@ async function recordPayment(method){
   },{ref:eventRef,createdAt:paidAt});
 
   if(!trace?.ok){
-    toast("Paiement enregistré mais scellement fiscal en attente",true);
-    return false;
+    return ichefPaymentFail("Paiement enregistré · scellement fiscal à reprendre quand le serveur répond");
   }
 
-  /* 2. On rattache l'empreinte fiscale au paiement sans modifier les données de vente. */
+  /* 3. Rattachement du scellement fiscal à la vente. */
   o.paymentDraft.fiscalStatus="SEALED";
   o.paymentDraft.fiscalEventRef=trace.event.ref;
   o.paymentDraft.fiscalHash=trace.event.hash;
@@ -9948,15 +10013,13 @@ async function recordPayment(method){
   o.fiscalFinalizedAt=paidAt;
   o.fiscalHash=trace.event.hash;
 
-  const sealed=await optimisticWrite(STATE.currentTable,o,"Scellement fiscal paiement SHA-256");
+  const sealed=await optimisticWrite(table,o,"Scellement fiscal paiement SHA-256");
   if(!sealed){
-    toast("Paiement scellé localement · synchronisation serveur à reprendre",true);
-    return false;
+    return ichefPaymentFail("Paiement fiscal scellé localement · synchronisation serveur à reprendre");
   }
   STATE.currentOrder=clone(o);
 
   await fiscalMaintenance().catch(err=>console.warn("[iCHEF FISCAL] maintenance",err));
-
   toast(`✓ Paiement ${paymentMethod} fiscalisé · ${receiptRef}`);
 
   const pcfg=loadPrinterConfig();
@@ -9970,9 +10033,16 @@ async function recordPayment(method){
     }
   }
 
-  /* Fin normale du cycle restaurant : paiement scellé -> archive -> table libre. */
-  const closed=await closeTable({auto:true,reason:"Paiement terminé"});
-  return closed!==false;
+  /* 4. La fermeture est une étape APRÈS paiement. Si elle échoue, le paiement
+        reste valide et l'utilisateur n'est plus prisonnier de l'écran caisse. */
+  try{
+    const closed=await closeTable({auto:true,reason:"Paiement terminé"});
+    if(closed===false)toast("✓ Paiement validé · libération de table à resynchroniser",true);
+  }catch(err){
+    console.warn("[iCHEF PAIEMENT] paiement OK, fermeture différée",err);
+    toast("✓ Paiement validé · fermeture de table à reprendre",true);
+  }
+  return true;
 }
 
 /* ---------------- APERÇU RAPIDE TABLE (APPUI LONG 0.5s) ---------------- */
