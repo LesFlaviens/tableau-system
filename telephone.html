@@ -11124,6 +11124,86 @@ $("ticket").addEventListener("click",e=>{
   if(b)mutateLine(b.dataset.line,b.dataset.act);
 });
 
+function openSendRecap() {
+  if(!STATE.currentTable) {
+    toast("Ouvrez d’abord une table", true);
+    return;
+  }
+  
+  const o = ensureOrder(STATE.currentTable);
+  const items = (o.items || []).filter(i => !i.cancelled);
+
+  if(items.length === 0) {
+    toast("La commande est vide.", true);
+    return;
+  }
+
+  let html = `<div class="list" style="max-height: 60vh; overflow-y: auto; padding-right: 5px;">`;
+  
+  items.forEach(i => {
+    const seat = itemSeat(i) || 1;
+    const dest = normalizeDestination(i.dest || i.category || "cuisine");
+    const destName = dest === "bar" ? "BAR" : dest === "patisserie" ? "PÂTISSERIE" : "CUISINE";
+    
+    // On récupère le nom et on garde seulement les 4 premiers mots
+    const fullName = itemName(i);
+    const words = fullName.split(' ');
+    const shortName = words.slice(0, 4).join(' ') + (words.length > 4 ? '...' : '');
+    
+    const qty = itemQty(i);
+    const isSent = lineFired(i);
+    
+    // Petit badge pour différencier ce qui est déjà envoyé de ce qui est en attente
+    const statusBadge = isSent 
+        ? `<span style="background:#e9e9e9; color:#555; padding: 3px 8px; border-radius: 6px; font-size: 10px; margin-left: 8px; vertical-align: middle;">DÉJÀ ENVOYÉ</span>` 
+        : `<span style="background:#fff3cd; color:#856404; padding: 3px 8px; border-radius: 6px; font-size: 10px; margin-left: 8px; vertical-align: middle;">À ENVOYER</span>`;
+
+    html += `
+      <div class="list-row" style="background:#fff; border: 2px solid ${isSent ? '#cfd2d5' : '#dcae39'}; padding: 15px; margin-bottom: 8px; border-radius: 12px;">
+        <div class="grow">
+          <div class="title" style="font-size: 20px; font-weight: 900; color: #111;">
+            ${seatBadgeHTML(seat)} ${qty}x ${esc(shortName)} ${statusBadge}
+          </div>
+          <div class="sub" style="font-size: 15px; font-weight: 800; color: #555; margin-top: 8px;">
+            📍 Envoi vers : ${destName}
+          </div>
+        </div>
+      </div>
+    `;
+  });
+  html += `</div>`;
+
+  // Vérifier s'il y a des brouillons à envoyer
+  const hasDrafts = items.some(i => !lineFired(i));
+
+  if (hasDrafts) {
+    html += `
+      <button class="action-btn green" id="btnRecapSend" style="width: 100%; min-height: 70px !important; font-size: 22px !important; font-weight: 1000 !important; margin-top: 15px !important; background: #2dcc70 !important; color: #fff !important; border: 2px solid #198754 !important;">
+        ✓ ENVOYER AUX SERVICES
+      </button>
+    `;
+  } else {
+    html += `
+      <button class="action-btn" onclick="closeSheet()" style="width: 100%; min-height: 70px !important; font-size: 22px !important; font-weight: 1000 !important; margin-top: 15px !important; background: #e9e9e9 !important; color: #111 !important; border: 2px solid #cfd2d5 !important;">
+        FERMER (TOUT EST DÉJÀ ENVOYÉ)
+      </button>
+    `;
+  }
+
+  openSheet("RÉCAPITULATIF DE LA COMMANDE", html);
+
+  // Actionner l'envoi depuis ce panneau
+  const btnSend = document.getElementById("btnRecapSend");
+  if (btnSend) {
+    btnSend.onclick = async () => {
+      btnSend.textContent = "ENVOI EN COURS...";
+      btnSend.disabled = true;
+      await sendKitchen(); // Envoie la commande !
+      closeSheet(); // Ferme le panneau après l'envoi
+    };
+  }
+}
+
 $("btnCloseOrder").onclick=closeOrder;
 $("btnUndoFast").onclick=undoLastAction;
 $("paxMinus").onclick=()=>setPax(-1);
@@ -11149,13 +11229,18 @@ $("btnSend").onclick = async function() {
   }
 };
 $("btnKitchenOrder").onclick=openKitchen;
-$("btnHeadSummary").onclick=openSummary;
+
+// --- MODIFICATIONS ICI : Le bouton résumé ouvre le recap avant envoi ---
+$("btnHeadSummary").onclick=openSendRecap;
+$("btnSummary").onclick=openSendRecap;
+if($("btnSummaryDirect")) $("btnSummaryDirect").onclick=openSendRecap;
+// -----------------------------------------------------------------------
+
 $("btnPaymentDirect").onclick=openPayment;
 $("btnOrderMore").onclick=openOrderMore;
 $("btnObsFast").onclick=openObservationFast;
 $("btnCooking").onclick=openCooking;
 $("btnAllergyFast").onclick=openAllergyFast;
-$("btnSummary").onclick=openSummary;
 $("summaryClose").onclick=closeSummary;
 $("summaryModify").onclick=closeSummary;
 $("summaryKitchen").onclick=async()=>{await sendKitchen();renderSummary()};
@@ -11211,7 +11296,6 @@ $("quickCookCancel").onclick=async()=>{
   await saveCurrent(o,"Annulation plat avant envoi",{delay:100});
   toast("Plat retiré");
 };
-
 /* ---------------- PRODUITS : TAP RAPIDE / APPUI 0,6 S ---------------- */
 const PRODUCT_HOLD_MS=600;
 const PRODUCT_DOUBLE_GUARD_MS=135;
