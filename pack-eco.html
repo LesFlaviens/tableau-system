@@ -12134,6 +12134,184 @@ setTimeout(() => {
         }
     };
 }, 1000);
+  
+</script>
+  <!-- =========================================================
+     CORRECTION : GRILLE "QUI MANGE QUOI" EXACTE SELON LES COUVERTS
+     ========================================================= -->
+<script id="exact-seats-logic">
+setTimeout(() => {
+    // 1. Fonction pour rajouter une chaise à la volée si un client surprise s'ajoute
+    window.addExtraSeatAndRefresh = async function() {
+        if (!STATE.currentTable) return;
+        const o = STATE.currentOrder || ensureOrder(STATE.currentTable);
+        o.pax = Math.max(1, Number(o.pax) || 1) + 1; // On ajoute 1 couvert au ticket
+        
+        if (typeof saveCurrent === 'function') {
+            await saveCurrent(o, "Ajout d'une chaise supplémentaire", {immediate: true});
+        }
+        
+        // On rafraîchit la bonne vue ouverte
+        if (document.getElementById("sheet").classList.contains("product-seat-picker-open")) {
+            if (typeof pendingProductSeatChoice !== "undefined" && pendingProductSeatChoice && pendingProductSeatChoice.product) {
+                openProductSeatPicker(pendingProductSeatChoice.product, pendingProductSeatChoice.sourceButton);
+            }
+        } else {
+            openWho();
+        }
+        if (typeof scheduleRender === 'function') scheduleRender();
+    };
+
+    // 2. Écrase la fenêtre "QUI MANGE QUOI" globale pour le bon nombre de chaises
+    window.openWho = function() {
+        if (!STATE.currentTable) {
+            if(typeof toast === 'function') toast("Ouvrez d’abord une table", true);
+            return;
+        }
+
+        const o = STATE.currentOrder || ensureOrder(STATE.currentTable);
+        // On récupère le nombre EXACT de couverts définis pour cette table
+        const pax = Math.max(1, Number(o.pax) || 1);
+        const active = Math.max(1, Math.min(pax, Number(STATE.activeSeat) || 1));
+        const items = (o.items || []).filter(i => i && !i.cancelled);
+
+        // On génère uniquement les boutons de C1 à C[pax]
+        let seatButtons = Array.from({length: pax}, (_, idx) => {
+            const seat = idx + 1;
+            const count = items.filter(i => itemSeat(i) === seat).reduce((sum, i) => sum + itemQty(i), 0);
+            const activeClass = seat === active ? " active" : "";
+            return `<button type="button" class="who-seat-btn${activeClass}" data-who-seat="${seat}" data-seat="${seat}">
+                      C${seat}
+                      <small>${count} article${count>1?"s":""}</small>
+                    </button>`;
+        }).join("");
+
+        // On rajoute le bouton "+ CHAISE" à la fin
+        seatButtons += `<button type="button" class="who-seat-btn extra" onclick="addExtraSeatAndRefresh()" style="border-color:#b8bcc1; color:#555; background:#e9e9e9;">
+            + CHAISE
+            <small>Ajouter 1 pers.</small>
+        </button>`;
+
+        const itemRows = items.length ? items.map(i => {
+            const seat = itemSeat(i) || active;
+            const q = itemQty(i);
+            const sent = lineFired(i);
+            const ready = lineReady(i);
+            const status = ready ? "PRÊT" : sent ? "EN PRODUCTION" : "À ENVOYER";
+            
+            return `<div class="who-line">
+              <div>
+                <div class="who-line-name">${seatBadgeHTML(seat)}${q>1?`${q}× `:""}${esc(itemName(i))}</div>
+                <div class="who-line-meta">${esc(destinationLabel(i))}${i.cooking?" · "+esc(i.cooking):""} · ${status}</div>
+              </div>
+              <select data-guest-line="${esc(lineKey(i))}" aria-label="Attribuer ${esc(itemName(i))} à un convive">
+                ${Array.from({length: Math.max(pax, seat)}, (_, n) => {
+                  const s = n + 1;
+                  return `<option value="${s}" ${seat === s ? "selected" : ""}>C${s}</option>`;
+                }).join("")}
+              </select>
+            </div>`;
+        }).join("") : `<div class="who-empty">Choisissez d'abord le convive. Les prochains plats touchés seront automatiquement attribués à ce C.</div>`;
+
+        openSheet(
+            "QUI MANGE QUOI · TABLE " + STATE.currentTable,
+            `<div class="who-active-card">
+               <div class="who-active-title">CONVIVE ACTIF : ${seatBadgeHTML(active)}</div>
+               <div class="who-active-sub">Tous les prochains plats seront attribués à C${active}. La table comporte ${pax} chaises.</div>
+             </div>
+             <div class="who-seat-grid">${seatButtons}</div>
+             <div class="who-section-title">PLATS DE LA TABLE</div>
+             ${itemRows}`
+        );
+
+        // Re-bind des événements
+        document.getElementById("sheetBody").querySelectorAll("[data-who-seat]").forEach(btn => {
+            btn.addEventListener("click", () => {
+                const seat = Math.max(1, Number(btn.dataset.whoSeat) || 1);
+                if (typeof setActiveSeat === 'function') setActiveSeat(seat);
+                openWho();
+            });
+        });
+
+        document.getElementById("sheetBody").querySelectorAll("[data-guest-line]").forEach(sel => {
+            sel.addEventListener("change", async () => {
+                const oo = ensureOrder(STATE.currentTable);
+                const it = oo.items.find(x => lineKey(x) === sel.dataset.guestLine);
+                if (!it) return;
+
+                const oldSeat = itemSeat(it);
+                const newSeat = Math.max(1, Number(sel.value) || 1);
+
+                it.guest = seatLabel(newSeat);
+                it.guestName = seatLabel(newSeat);
+                it.seat = newSeat;
+                it.guestSeat = newSeat;
+                it.seatNumber = newSeat;
+
+                const wasSent = lineFired(it);
+                const ok = await saveCurrent(oo, "Attribution convive C" + newSeat, {immediate: wasSent});
+                if (!ok) return;
+
+                if (wasSent && oldSeat !== newSeat) {
+                    if (typeof productionAlert === 'function') await productionAlert(it, "CONVIVE", `C${oldSeat || "?"} → C${newSeat}`);
+                }
+
+                STATE.lastLineKey = lineKey(it);
+                if (typeof renderTicket === 'function') renderTicket();
+                openWho();
+            });
+        });
+    };
+
+    // 3. Écrase la fenêtre d'attribution au TAP PLAT pour afficher le bon nombre de chaises
+    window.openProductSeatPicker = function(product, sourceButton = null) {
+        if(!STATE.currentTable || !product) return;
+        if(typeof pendingProductSeatChoice !== "undefined") {
+            pendingProductSeatChoice = {product, sourceButton};
+        }
+
+        const o = STATE.currentOrder || ensureOrder(STATE.currentTable);
+        const pax = Math.max(1, Number(o.pax) || 1);
+        const active = Math.max(1, Math.min(pax, Number(STATE.activeSeat) || 1));
+        
+        // Calculer les comptes
+        const counts = typeof productSeatCounts === 'function' ? productSeatCounts() : Array(10).fill(0);
+
+        let seatButtons = Array.from({length: pax}, (_, idx) => {
+            const seat = idx + 1;
+            const current = seat === active ? " active" : "";
+            const count = counts[seat] || 0;
+            return `<button type="button" class="who-seat-btn${current}" data-product-seat="${seat}" data-seat="${seat}">
+                      C${seat}
+                      <small>${count} sélection${count > 1 ? "s" : ""}</small>
+                    </button>`;
+        }).join("");
+
+        seatButtons += `<button type="button" class="who-seat-btn extra" onclick="addExtraSeatAndRefresh()" style="border-color:#b8bcc1; color:#555; background:#e9e9e9;">
+            + CHAISE
+            <small>Ajouter 1 pers.</small>
+        </button>`;
+
+        openSheet(
+            "QUI MANGE ? · " + product.name,
+            `<div class="who-active-card product-seat-choice-card">
+               <div class="who-active-title">${esc(product.name)}</div>
+               <div class="who-active-sub">
+                 ${money(product.price)} · La table a ${pax} chaise(s). Touchez le convive pour ajouter le plat.
+               </div>
+             </div>
+             <div class="who-seat-grid product-seat-choice-grid">${seatButtons}</div>`
+        );
+
+        document.getElementById("sheet").classList.add("product-seat-picker-open");
+
+        document.getElementById("sheetBody").querySelectorAll("[data-product-seat]").forEach(btn => {
+            btn.addEventListener("click", () => {
+                if(typeof confirmProductSeat === 'function') confirmProductSeat(Number(btn.dataset.productSeat));
+            });
+        });
+    };
+}, 1000);
 </script>
 </body>
 </html>
