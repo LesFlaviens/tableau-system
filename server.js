@@ -573,6 +573,70 @@ app.post('/api/ai-business-pulse', async (req, res) => {
     }
 });
 
+/// Mémoire vive pour le statut des paiements à table (Stripe Connect)
+const activeStripePayments = new Map();
+
+// ==========================================
+// 💳 PAIEMENT DES COMMANDES (STRIPE CONNECT)
+// ==========================================
+app.post('/api/payments/stripe/checkout', async (req, res) => {
+    try {
+        const { paymentRequestId, tableId, amount, currency, tenantID, successUrl, cancelUrl } = req.body;
+        const safeID = cleanString(tenantID);
+        
+        const tenant = await Tenant.findOne({ tenantID: safeID });
+        if (!tenant) return res.status(404).json({ success: false, error: "Restaurant introuvable" });
+
+        // 🚨 VÉRIFICATION STRIPE CONNECT
+        // L'ID du compte Stripe du restaurant doit être enregistré dans sa configuration
+        const stripeAccountId = tenant.config?.stripeAccountId;
+        if (!stripeAccountId) {
+            return res.status(400).json({ success: false, error: "Le compte Stripe du restaurant n'est pas configuré." });
+        }
+
+        // On enregistre la demande comme "EN ATTENTE"
+        activeStripePayments.set(paymentRequestId, 'PENDING');
+
+        // Création de la session de paiement
+        const session = await stripe.checkout.sessions.create({
+            payment_method_types: ['card'], // Ajoute 'twint' ici si ton compte Stripe est activé pour la Suisse
+            line_items: [{
+                price_data: {
+                    currency: currency || 'chf',
+                    product_data: {
+                        name: `Table ${tableId} - Restaurant ${tenant.clientName || safeID}`,
+                    },
+                    unit_amount: Math.round(amount * 100), // Stripe attend des centimes
+                },
+                quantity: 1,
+            }],
+            mode: 'payment',
+            success_url: successUrl,
+            cancel_url: cancelUrl,
+            client_reference_id: paymentRequestId,
+            metadata: {
+                type: 'ORDER_PAYMENT',
+                tenantID: safeID,
+                tableId: tableId,
+                paymentRequestId: paymentRequestId
+            }
+        }, {
+            stripeAccount: stripeAccountId // 👈 STRIPE CONNECT : Redirige les fonds vers le resto !
+        });
+
+        res.json({ success: true, url: session.url });
+    } catch (error) {
+        console.error("Erreur Stripe Checkout Client:", error);
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+
+app.get('/api/payments/stripe/status', (req, res) => {
+    const { paymentRequestId } = req.query;
+    const status = activeStripePayments.get(paymentRequestId) || 'PENDING';
+    res.json({ success: true, status });
+});
+
 // ==========================================
 // WEBHOOK STRIPE : SÉCURITÉ ANTI-IMPAYÉS & UPSELL 
 // ==========================================
@@ -588,6 +652,15 @@ app.post('/webhook', async (req, res) => {
     if (event.type === 'checkout.session.completed') {
         const session = event.data.object;
 
+        // 👈 NOUVEAU BLOC : Encaissement d'une commande client au restaurant
+        if (session.metadata && session.metadata.type === 'ORDER_PAYMENT') {
+            const reqId = session.metadata.paymentRequestId;
+            activeStripePayments.set(reqId, 'PAID');
+            console.log(`✅ Paiement Stripe Connect validé pour la commande : ${reqId}`);
+            return res.json({received: true});
+        }
+
+        // Bloc existant pour tes abonnements iCHEF
         if (session.metadata && session.metadata.type === 'UPGRADE_SCREENS') {
             const safeID = cleanString(session.metadata.tenantID);
             try {
@@ -639,7 +712,6 @@ const mongoURI =
 mongoose.connect(mongoURI)
     .then(() => console.log('✅ Base de donnees iCHEF Online'))
     .catch(err => console.error(err.message));
-
 
 // ==========================================================
 // 🏢 TENANT / LICENCE
