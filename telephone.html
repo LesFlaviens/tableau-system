@@ -4816,6 +4816,10 @@ async function verifyPin(){
     STORAGE.set("ichef_tenant_id",STATE.tenantID);
   }
   if(STATE.loginPin.length<4){loginMessage("Code incomplet");return}
+  if(STATE.loginBusy)return;
+  STATE.loginBusy=true;
+  const validateBtn=$("pinValidate");
+  if(validateBtn)validateBtn.disabled=true;
   loginMessage("Connexion…");
   try{
     const r=await serverFetch("/api/verify-pin",{
@@ -4832,18 +4836,31 @@ async function verifyPin(){
     STATE.role=j.role||"";
     STATE.plan=j.plan||"";
     STATE.specialite=j.specialite||"";
-    await loadLicenseRights();
     STATE.authenticated=true;
+
+    /* CONNEXION STABLE RAPIDE : le PIN est la seule étape bloquante. */
     $("login")?.classList.add("hidden");
     $("app")?.classList.remove("hidden");
     $("tools")?.classList.remove("hidden");
     loginMessage("");
-    await bootApp();
+    setConnection("CHARGEMENT…","warn");
+
+    /* Ne jamais bloquer l'ouverture sur les tables/menu. */
+    bootApp().catch(err=>{
+      console.warn("[iCHEF TELEPHONE] démarrage",err?.message||err);
+      setConnection(navigator.onLine?"SYNCHRO HTTP":"HORS LIGNE",navigator.onLine?"warn":"bad");
+    });
+
+    /* Licence en différé : aucun impact sur l'entrée dans le service. */
+    setTimeout(()=>loadLicenseRights().catch(()=>{}),500);
   }catch(e){
     STATE.loginPin="";
     renderPin();
     syncTenantLoginField(true);
     loginMessage(e?.message||"Connexion impossible");
+  }finally{
+    STATE.loginBusy=false;
+    if(validateBtn)validateBtn.disabled=false;
   }
 }
 
@@ -10635,11 +10652,11 @@ async function bootApp(){
   autoDisplay();
   setConnection(navigator.onLine?"CONNEXION SERVEUR":"HORS LIGNE",navigator.onLine?"warn":"bad");
 
-  /* Une lecture serveur initiale est nécessaire pour charger tables + menu. */
-  await syncFull("initial");
-
-  /* Le temps réel démarre immédiatement après les données utiles au service. */
+  /* Le temps réel démarre immédiatement après le PIN et ne bloque jamais l'interface. */
   connectSocket();
+
+  /* Une seule lecture HTTP initiale charge tables + menu. Elle se fait après authentification. */
+  await syncFull("initial");
 
   /* PERFORMANCE : les contrôles fiscaux ne doivent jamais bloquer la prise de commande. */
   setTimeout(()=>{
