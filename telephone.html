@@ -5148,7 +5148,29 @@ function tableStats(table){
   return{status,pax:num(o.pax||o.covers||0),ready,age,total:orderTotal(o)}
 }
 function orderTotal(o){return fiscalRound2((o?.items||[]).filter(i=>i&&!i.cancelled).reduce((s,i)=>s+itemPrice(i)*itemQty(i),0))}
-function ensureOrder(table){let o=getOrder(table);if(o)return clone(o);const t=STATE.tables.find(x=>x.label===table);return{tableId:table,status:"open",pax:num(t?.pax||2)||2,createdAt:Date.now(),updatedAt:Date.now(),items:[],source:"TELEPHONE"}}
+function ensureOrder(table){
+  let o=getOrder(table);
+  if(o){
+    o=clone(o);
+    if(!o.serviceId){
+      const created=Number(o.createdAt||o.openedAt||Date.now());
+      o.serviceId=`LEGACY_${table}_${created}`;
+    }
+    return o;
+  }
+  const t=STATE.tables.find(x=>x.label===table);
+  const createdAt=Date.now();
+  return{
+    tableId:table,
+    serviceId:`SVC_${createdAt}_${Math.random().toString(36).slice(2,8)}`,
+    status:"open",
+    pax:num(t?.pax||2)||2,
+    createdAt,
+    updatedAt:createdAt,
+    items:[],
+    source:"TELEPHONE"
+  };
+}
 function lineKey(i){return text(i.lineId||i.uuid||i.itemId||i.id||i.name)}
 
 async function saveCurrent(order,reason,options={}){
@@ -8456,7 +8478,18 @@ async function closeTable(options={}){
     return false;
   }
 
-  const removed=await optimisticWrite(table,null,"Retrait table active après archive fiscale");
+  /* On conserve un TOMBSTONE de fin de service sur la même table.
+     La table est libre dans l'interface (isArchived=true), mais une vieille copie
+     Cuisine/Bar ne peut plus ressusciter cette commande sur le serveur. */
+  const closedOrder={
+    ...o,
+    isArchived:true,
+    status:"CLOSED",
+    closedAt:o.closedAt||Date.now(),
+    serviceId:o.serviceId||`LEGACY_${table}_${Number(o.createdAt||o.openedAt||Date.now())}`,
+    updatedAt:Date.now()
+  };
+  const removed=await optimisticWrite(table,closedOrder,"Fin de service · table libérée");
   if(!removed){
     toast("Paiement validé mais libération de table à resynchroniser",true);
     return false;
