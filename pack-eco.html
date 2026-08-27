@@ -11715,7 +11715,92 @@ setInterval(() => {
   }
 }, 200); // S'exécute 5 fois par seconde
 </script>
-</body>
-</html>
+
+<script id="fix-plat-servi">
+setTimeout(() => {
+  // 1. On intercepte le clic sur le nouveau bouton "SERVI"
+  const originalMutateLine = window.mutateLine;
+  window.mutateLine = async function(key, action) {
+    if (action === "serve") {
+      const o = STATE.currentOrder || (typeof ensureOrder === 'function' ? ensureOrder(STATE.currentTable) : null);
+      if (!o) return;
+      
+      const item = (o.items || []).find(x => (typeof lineKey === 'function' ? lineKey(x) : x.itemId) === key);
+      if (!item) return;
+
+      // On marque le plat comme servi dans la base de données
+      item.served = true;
+      item.status = "SERVED";
+      item.sequenceStatus = "SERVED";
+      item.servedAt = Date.now();
+      
+      // On sauvegarde immédiatement sur le serveur
+      if (typeof saveCurrent === 'function') {
+        const ok = await saveCurrent(o, "Plat apporté au client", {immediate: true});
+        if (ok) {
+          if (typeof toast === 'function') toast("✓ Plat servi");
+          if (typeof renderTicket === 'function') renderTicket();
+          if (typeof scheduleRender === 'function') scheduleRender(); // Met à jour le compteur global en haut de l'écran
+        }
+      }
+      return;
+    }
+    if (originalMutateLine) return originalMutateLine(key, action);
+  };
+
+  // 2. On modifie l'affichage du ticket pour ajouter le bouton et griser le plat une fois servi
+  if (typeof window.renderTicket !== "function") return;
+  const originalRenderTicket = window.renderTicket;
+  
+  window.renderTicket = function() {
+    originalRenderTicket(); 
+
+    const ticket = document.getElementById("ticket");
+    if (!ticket) return;
+
+    const o = STATE.currentOrder || (typeof ensureOrder === 'function' ? ensureOrder(STATE.currentTable) : null);
+    if (!o || !o.items) return;
+
+    const rows = ticket.querySelectorAll('.ticket-row');
+    rows.forEach(row => {
+      const actBtn = row.querySelector('button[data-line]');
+      if (!actBtn) return;
+      
+      const key = actBtn.dataset.line;
+      const item = o.items.find(x => (typeof lineKey === 'function' ? lineKey(x) : x.itemId) === key);
+      if (!item) return;
+
+      // ÉTAPE A : Si le plat est PRÊT, on ajoute le bouton vert "✓ SERVI"
+      if (typeof lineReady === 'function' && lineReady(item) && (!typeof lineServed === 'function' || !lineServed(item))) {
+        const qtybar = row.querySelector('.qtybar');
+        if (qtybar && !qtybar.querySelector('[data-act="serve"]')) {
+          const serveBtn = document.createElement('button');
+          serveBtn.dataset.line = key;
+          serveBtn.dataset.act = "serve";
+          serveBtn.innerHTML = "✓ SERVI";
+          serveBtn.style.cssText = "background:#2dcc70 !important; color:#000 !important; border-color:#2dcc70 !important; width:auto !important; padding:0 12px !important; font-weight:950 !important; margin-right: 5px !important;";
+          
+          // On masque le bouton "ANN." (Annuler) pour faire de la place
+          const annBtn = qtybar.querySelector('[data-act="delete"]');
+          if (annBtn) annBtn.style.display = 'none';
+
+          qtybar.insertBefore(serveBtn, qtybar.firstChild);
+        }
+      }
+      
+      // ÉTAPE B : Si le serveur a cliqué sur "SERVI", on change son badge en gris
+      if (typeof lineServed === 'function' && lineServed(item)) {
+        const stateSpan = row.querySelector('.line-state');
+        if (stateSpan) {
+          stateSpan.textContent = "SERVI";
+          stateSpan.className = "line-state served";
+          stateSpan.style.cssText = "display: inline-block !important; float: right !important; background:#e9e9e9 !important; color:#777 !important; padding:3px 8px !important; border-radius:6px !important; font-size:14px !important; font-weight:900 !important; margin-top:2px !important;";
+        }
+      }
+    });
+  };
+}, 800);
+</script>
+
 </body>
 </html>
