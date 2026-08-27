@@ -6770,116 +6770,20 @@ function openRush(){
     </div>
   `);
   
-}function openWho(){
-  if(!STATE.currentTable){
-    toast("Ouvrez d’abord une table",true);
-    return;
-  }
+function setActiveSeat(seat){
+  if(!STATE.currentTable)return;
 
-  const o=STATE.currentOrder||ensureOrder(STATE.currentTable);
-  const active=Math.max(1,Math.min(9,Number(STATE.activeSeat)||1));
-  const pax=Math.max(1,Number(o.pax)||1);
-  const items=(o.items||[]).filter(i=>i&&!i.cancelled);
+  const o=ensureOrder(STATE.currentTable);
+  const pax=Math.max(1,num(o.pax||2));
+  const n=Math.max(1,Math.min(pax,Number(seat)||1));
 
-  const seatButtons=Array.from({length:9},(_,idx)=>{
-    const seat=idx+1;
-    const count=items
-      .filter(i=>itemSeat(i)===seat)
-      .reduce((sum,i)=>sum+itemQty(i),0);
-    const activeClass=seat===active?" active":"";
-    const extraClass=seat>pax?" extra":"";
-    return `<button type="button"
-                    class="who-seat-btn${activeClass}${extraClass}"
-                    data-who-seat="${seat}"
-                    data-seat="${seat}"
-                    title="Choisir C${seat} comme convive actif">
-              C${seat}
-              <small>${count} article${count>1?"s":""}</small>
-            </button>`;
-  }).join("");
+  STATE.activeSeat=n;
+  ACTIVE_SEAT_BY_TABLE.set(STATE.currentTable,n);
 
-  const itemRows=items.length
-    ?items.map(i=>{
-      const seat=itemSeat(i)||active;
-      const q=itemQty(i);
-      const served=lineServed(i);
-      const sent=lineFired(i);
-      const ready=lineReady(i);
-      const status=served?"SERVI":ready?"PRÊT":sent?"EN PRODUCTION":"À ENVOYER";
-      return `<div class="who-line">
-        <div>
-          <div class="who-line-name">${seatBadgeHTML(seat)}${q>1?`${q}× `:""}${esc(itemName(i))}</div>
-          <div class="who-line-meta">${esc(destinationLabel(i))}${i.cooking?" · "+esc(i.cooking):""} · ${status}</div>
-        </div>
-        <select data-guest-line="${esc(lineKey(i))}" aria-label="Attribuer ${esc(itemName(i))} à un convive">
-          ${Array.from({length:9},(_,n)=>{
-            const s=n+1;
-            return `<option value="${s}" ${seat===s?"selected":""}>C${s}</option>`;
-          }).join("")}
-        </select>
-      </div>`;
-    }).join("")
-    :`<div class="who-empty">
-        Choisissez d’abord le convive. Les prochains plats touchés seront automatiquement attribués à ce C.
-      </div>`;
-
-  openSheet(
-    "QUI MANGE QUOI · C1 À C9",
-    `<div class="who-active-card">
-       <div class="who-active-title">CONVIVE ACTIF : ${seatBadgeHTML(active)}</div>
-       <div class="who-active-sub">Tous les prochains plats seront attribués à C${active}. Choisir C4, par exemple, affecte immédiatement les prochains ajouts à C4.</div>
-     </div>
-     <div class="who-seat-grid">${seatButtons}</div>
-     <div class="who-section-title">PLATS DE LA TABLE</div>
-     ${itemRows}`
-  );
-
-  $("sheetBody").querySelectorAll("[data-who-seat]").forEach(btn=>{
-    btn.addEventListener("click",()=>{
-      const seat=Math.max(1,Math.min(9,Number(btn.dataset.whoSeat)||1));
-      setActiveSeat(seat);
-      openWho();
-    });
-  });
-
-  $("sheetBody").querySelectorAll("[data-guest-line]").forEach(sel=>{
-    sel.addEventListener("change",async()=>{
-      const oo=ensureOrder(STATE.currentTable);
-      const it=oo.items.find(x=>lineKey(x)===sel.dataset.guestLine);
-      if(!it)return;
-
-      const oldSeat=itemSeat(it);
-      const newSeat=Math.max(1,Math.min(9,Number(sel.value)||1));
-
-      it.guest=seatLabel(newSeat);
-      it.guestName=seatLabel(newSeat);
-      it.seat=newSeat;
-      it.guestSeat=newSeat;
-      it.seatNumber=newSeat;
-      it.guestChangedAt=Date.now();
-      it.guestChangedBy=STATE.role||"SERVEUR";
-      it.previousSeat=oldSeat||0;
-
-      if(num(oo.pax||0)<newSeat)oo.pax=newSeat;
-
-      const wasSent=lineFired(it);
-      const ok=await saveCurrent(
-        oo,
-        "Attribution convive C"+newSeat,
-        {immediate:wasSent}
-      );
-      if(!ok)return;
-
-      if(wasSent&&oldSeat!==newSeat){
-        await productionAlert(it,"CONVIVE",`C${oldSeat||"?"} → C${newSeat}`);
-      }
-
-      STATE.lastLineKey=lineKey(it);
-      renderTicket();
-      renderGuestButtons();
-      openWho();
-    });
-  });
+  renderGuestButtons();
+  const hints=document.querySelectorAll("#products .product-hold-hint");
+  hints.forEach(h=>h.textContent=`1 tap = ajouter à C${n} · maintien 0,6 s = nom complet`);
+  toast(`👤 C${n} actif`);
 }
 
 function openDisplay(){
