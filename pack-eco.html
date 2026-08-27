@@ -11695,8 +11695,8 @@ setTimeout(() => {
         
         let changed = false;
         o.items.forEach(item => {
-          // On valide tous les plats "PRÊT" qui n'ont pas encore été servis
-          if (typeof lineReady === 'function' && lineReady(item) && (!typeof lineServed === 'function' || !lineServed(item))) {
+          // On valide tous les plats "PRÊT" qui n'ont pas encore été servis (en ignorant les plats annulés)
+          if (!item.cancelled && typeof lineReady === 'function' && lineReady(item) && (!typeof lineServed === 'function' || !lineServed(item))) {
             item.served = true;
             item.status = "SERVED";
             item.sequenceStatus = "SERVED";
@@ -11706,7 +11706,6 @@ setTimeout(() => {
         });
 
         if (changed && typeof saveCurrent === 'function') {
-          // Effet visuel immédiat pour rassurer le serveur
           badge.textContent = "● SYNCHRONISATION…";
           badge.className = "order-sync-state pending";
           badge.dataset.mode = "sync";
@@ -11715,14 +11714,14 @@ setTimeout(() => {
           if (ok) {
             if (typeof toast === 'function') toast("✓ Tous les plats prêts sont servis");
             if (typeof renderTicket === 'function') renderTicket();
-            if (typeof scheduleRender === 'function') scheduleRender(); // Met à jour les compteurs globaux
+            if (typeof scheduleRender === 'function') scheduleRender();
           }
         }
       }
     });
   }
 
-  // Permet de griser l'étiquette SERVI sur le ticket après le clic global
+  // 3. Gestion de l'affichage du ticket (Servi, Prêt, Annulé)
   if (typeof window.renderTicket === "function") {
     const originalRenderTicket = window.renderTicket;
     window.renderTicket = function() {
@@ -11742,8 +11741,26 @@ setTimeout(() => {
         const key = actBtn.dataset.line;
         const item = o.items.find(x => (typeof lineKey === 'function' ? lineKey(x) : x.itemId) === key);
         if (!item) return;
-        
-        // Si le plat est servi, on change son badge en gris
+
+        // --- CORRECTION DU BUG DES PLATS ANNULÉS ---
+        if (item.cancelled) {
+          const stateSpan = row.querySelector('.line-state');
+          if (stateSpan) {
+            stateSpan.textContent = "ANNULÉ";
+            stateSpan.className = "line-state cancelled"; // Retire la ligne verte
+            stateSpan.style.cssText = "display: inline-block !important; float: right !important; background:#ff5368 !important; color:#fff !important; padding:3px 8px !important; border-radius:6px !important; font-size:14px !important; font-weight:900 !important; margin-top:2px !important;";
+          }
+          // On supprime toute la barre de boutons (Cuisson, Obs, Annuler) pour ne plus pouvoir cliquer
+          const qtybar = row.querySelector('.qtybar');
+          if (qtybar) qtybar.style.display = 'none';
+          
+          // On grise la ligne pour montrer qu'elle est désactivée
+          row.style.opacity = "0.5";
+          return; // On stoppe le traitement ici pour un plat annulé
+        }
+        // ------------------------------------------
+
+        // GESTION DU STATUT GRISÉ "SERVI"
         if (typeof lineServed === 'function' && lineServed(item)) {
           const stateSpan = row.querySelector('.line-state');
           if (stateSpan) {
@@ -11757,20 +11774,19 @@ setTimeout(() => {
   }
 }, 500);
 
-// 3. Boucle de vérification permanente (Statut réseau OU Bouton Tout Servir)
+// 4. Boucle de vérification permanente (Statut réseau OU Bouton Tout Servir)
 setInterval(() => {
   const badge = document.getElementById("orderSyncState");
   if (!badge || !STATE.currentTable || !document.body.classList.contains("order-open")) return;
 
   const table = STATE.currentTable;
   const o = STATE.currentOrder || (typeof getOrder === 'function' ? getOrder(table) : null);
+  // On ignore bien les articles annulés pour le statut "Tout servir"
   const activeItems = (o && Array.isArray(o.items)) ? o.items.filter(i => i && !i.cancelled) : [];
   
-  // Y a-t-il des plats prêts à être servis ?
   const hasReadyItems = activeItems.some(i => typeof lineReady === 'function' && lineReady(i) && (!typeof lineServed === 'function' || !lineServed(i)));
 
   if (hasReadyItems) {
-    // MODE : BOUTON "✓ TOUT SERVIR" PRIORITAIRE
     const newText = "✓ TOUT SERVIR";
     const newClass = "order-sync-state good";
     
@@ -11779,10 +11795,9 @@ setInterval(() => {
       badge.className = newClass;
       badge.dataset.mode = "serve-all";
     }
-    return; // On s'arrête là, on masque le statut réseau pour afficher ce bouton
+    return;
   }
 
-  // MODE : STATUT RÉSEAU NORMAL
   badge.dataset.mode = "sync";
   
   const hasFailed = typeof ICHEF_FAILED_WRITES !== 'undefined' && ICHEF_FAILED_WRITES.has(table);
@@ -11812,6 +11827,19 @@ setInterval(() => {
 }, 200);
 </script>
 
-
+<script id="retour-direct-plan-interactif">
+setTimeout(() => {
+  if (typeof window.closeOrder === "function") {
+    const originalCloseOrder = window.closeOrder;
+    window.closeOrder = function() {
+      originalCloseOrder();
+      if (typeof window.openPadServiceHome === "function") {
+        window.openPadServiceHome();
+      }
+    };
+  }
+}, 800);
+</script>
 </body>
 </html>
+
