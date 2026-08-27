@@ -11628,6 +11628,7 @@ setTimeout(() => {
 })();
 </script>
 
+<!-- CORRECTIONS VISUELLES : BOUTON ENVOYER ET PLATS PRÊTS -->
 <style id="fix-visuels-ticket-video">
 /* 1. Répare le bouton d'envoi pour qu'il prenne toute la largeur sous le total */
 body.order-open .send-btn {
@@ -11667,7 +11668,32 @@ body.order-open .order-sync-state[data-mode="serve-all"]:active {
 }
 </style>
 
+<!-- CORRECTION DÉFINITIVE : BOUTON "TOUT SERVIR", STATUT SERVEUR ET CORRECTION BUG "ANNULÉ" -->
 <script id="correction-serveur-et-tout-servir">
+// 0. Correction profonde : un plat annulé ne doit JAMAIS être considéré comme "PRÊT"
+if (typeof window.lineReady === "function" && !window.lineReady.isPatched) {
+  const originalLineReady = window.lineReady;
+  window.lineReady = function(i) {
+    // Si le plat est annulé localement ou par le serveur, on bloque le statut "PRÊT"
+    if (i && (i.cancelled || i.sequenceStatus === "CANCELLED" || i.sequenceStatus === "CANCELED")) return false;
+    return originalLineReady(i);
+  };
+  window.lineReady.isPatched = true;
+}
+
+// Intercepter l'annulation pour rafraîchir l'écran IMMÉDIATEMENT (évite les clics multiples)
+if (typeof window.cancelSentLine === "function" && !window.cancelSentLine.isPatched) {
+  const originalCancelSentLine = window.cancelSentLine;
+  window.cancelSentLine = async function(item, reason="") {
+    const ok = await originalCancelSentLine(item, reason);
+    if (ok && typeof window.renderTicket === "function") {
+      window.renderTicket(); // Rafraîchit l'interface pour faire disparaître le bouton ANNULER
+    }
+    return ok;
+  };
+  window.cancelSentLine.isPatched = true;
+}
+
 // 1. Nettoyage instantané quand on clique sur une table
 setTimeout(() => {
   const originalOpenOrder = window.openOrder;
@@ -11696,7 +11722,8 @@ setTimeout(() => {
         let changed = false;
         o.items.forEach(item => {
           // On valide tous les plats "PRÊT" qui n'ont pas encore été servis (en ignorant les plats annulés)
-          if (!item.cancelled && typeof lineReady === 'function' && lineReady(item) && (!typeof lineServed === 'function' || !lineServed(item))) {
+          const isCancelled = item.cancelled || item.sequenceStatus === "CANCELLED" || item.sequenceStatus === "CANCELED";
+          if (!isCancelled && typeof lineReady === 'function' && lineReady(item) && (!typeof lineServed === 'function' || !lineServed(item))) {
             item.served = true;
             item.status = "SERVED";
             item.sequenceStatus = "SERVED";
@@ -11743,22 +11770,41 @@ setTimeout(() => {
         if (!item) return;
 
         // --- CORRECTION DU BUG DES PLATS ANNULÉS ---
-        if (item.cancelled) {
+        const isCancelled = item.cancelled || item.sequenceStatus === "CANCELLED" || item.sequenceStatus === "CANCELED";
+        
+        if (isCancelled) {
           const stateSpan = row.querySelector('.line-state');
           if (stateSpan) {
             stateSpan.textContent = "ANNULÉ";
             stateSpan.className = "line-state cancelled"; // Retire la ligne verte
             stateSpan.style.cssText = "display: inline-block !important; float: right !important; background:#ff5368 !important; color:#fff !important; padding:3px 8px !important; border-radius:6px !important; font-size:14px !important; font-weight:900 !important; margin-top:2px !important;";
           }
-          // On supprime toute la barre de boutons (Cuisson, Obs, Annuler) pour ne plus pouvoir cliquer
+          // On supprime TOUTE la barre de boutons (Cuisson, Obs, Annuler) pour ne plus pouvoir cliquer
           const qtybar = row.querySelector('.qtybar');
           if (qtybar) qtybar.style.display = 'none';
           
-          // On grise la ligne pour montrer qu'elle est désactivée
+          // On grise la ligne entière pour montrer qu'elle est désactivée
           row.style.opacity = "0.5";
           return; // On stoppe le traitement ici pour un plat annulé
         }
         // ------------------------------------------
+
+        // GESTION DU BOUTON "SERVI" (Si Prêt)
+        if (typeof lineReady === 'function' && lineReady(item) && (!typeof lineServed === 'function' || !lineServed(item))) {
+          const qtybar = row.querySelector('.qtybar');
+          if (qtybar && !qtybar.querySelector('[data-act="serve"]')) {
+            const serveBtn = document.createElement('button');
+            serveBtn.dataset.line = key;
+            serveBtn.dataset.act = "serve";
+            serveBtn.innerHTML = "✓ SERVI";
+            serveBtn.style.cssText = "background:#2dcc70 !important; color:#000 !important; border-color:#2dcc70 !important; width:auto !important; padding:0 12px !important; font-weight:950 !important; margin-right: 5px !important;";
+            
+            const annBtn = qtybar.querySelector('[data-act="delete"]');
+            if (annBtn) annBtn.style.display = 'none';
+
+            qtybar.insertBefore(serveBtn, qtybar.firstChild);
+          }
+        }
 
         // GESTION DU STATUT GRISÉ "SERVI"
         if (typeof lineServed === 'function' && lineServed(item)) {
@@ -11781,8 +11827,13 @@ setInterval(() => {
 
   const table = STATE.currentTable;
   const o = STATE.currentOrder || (typeof getOrder === 'function' ? getOrder(table) : null);
+  
   // On ignore bien les articles annulés pour le statut "Tout servir"
-  const activeItems = (o && Array.isArray(o.items)) ? o.items.filter(i => i && !i.cancelled) : [];
+  const activeItems = (o && Array.isArray(o.items)) ? o.items.filter(i => {
+      if (!i) return false;
+      const isCancelled = i.cancelled || i.sequenceStatus === "CANCELLED" || i.sequenceStatus === "CANCELED";
+      return !isCancelled;
+  }) : [];
   
   const hasReadyItems = activeItems.some(i => typeof lineReady === 'function' && lineReady(i) && (!typeof lineServed === 'function' || !lineServed(i)));
 
@@ -11827,6 +11878,7 @@ setInterval(() => {
 }, 200);
 </script>
 
+<!-- CORRECTION : RETOUR DIRECT AU PLAN INTERACTIF EN FERMANT UNE TABLE -->
 <script id="retour-direct-plan-interactif">
 setTimeout(() => {
   if (typeof window.closeOrder === "function") {
@@ -11842,4 +11894,5 @@ setTimeout(() => {
 </script>
 </body>
 </html>
+
 
