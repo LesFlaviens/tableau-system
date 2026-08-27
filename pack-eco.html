@@ -12014,19 +12014,31 @@ setInterval(() => {
         closeBtn.id = 'bottomCloseBtn';
         closeBtn.textContent = 'FERMER';
         
-        closeBtn.onclick = () => {
+        closeBtn.onclick = async () => {
             const o = STATE.currentOrder || (typeof ensureOrder === 'function' ? ensureOrder(STATE.currentTable) : null);
+            const total = o && typeof orderTotal === 'function' ? orderTotal(o) : 0;
             
-            // Si la table contient des articles mais que le total est à 0 (tout est annulé)
-            if (o && typeof orderTotal === 'function' && orderTotal(o) === 0 && (o.items || []).length > 0) {
-                if (typeof window.closeTable === "function") {
-                    window.closeTable(); // Propose de libérer définitivement la table
+            // Vérifie si la table est actuellement sauvegardée sur le serveur (affichée OCCUPÉE)
+            const isSaved = STATE.activeOrders && STATE.activeOrders[STATE.currentTable];
+            
+            // Si la table est à 0 CHF (vide ou plats annulés) MAIS qu'elle bloque le plan de salle
+            if (total === 0 && isSaved) {
+                const liberer = confirm("Cette table est vide ou à 0 CHF.\n\nVoulez-vous la LIBÉRER définitivement (elle redeviendra verte) ?\n\n(Cliquez sur Annuler pour juste fermer l'écran)");
+                
+                if (liberer) {
+                    // Supprime la commande fantôme du serveur pour libérer la table
+                    if (typeof window.optimisticWrite === "function") {
+                        await window.optimisticWrite(STATE.currentTable, null, "Libération table vide / Staff");
+                    }
+                    if (typeof toast === "function") toast("✓ Table libérée");
+                    if (typeof window.closeOrder === "function") window.closeOrder();
+                } else {
+                    // On ferme juste l'écran sans libérer la table
+                    if (typeof window.closeOrder === "function") window.closeOrder();
                 }
             } else {
-                // Comportement classique : on ferme juste l'écran
-                if (typeof window.closeOrder === "function") {
-                    window.closeOrder();
-                }
+                // Comportement classique pour une vraie commande payante
+                if (typeof window.closeOrder === "function") window.closeOrder();
             }
         };
         
