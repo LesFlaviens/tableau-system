@@ -12049,54 +12049,68 @@ setInterval(() => {
   <!-- =========================================================
      NOUVELLE LOGIQUE : BOUTON OBSERVATION INTELLIGENT (PLAT / TABLE)
      ========================================================= -->
-<script id="smart-observation-logic">
+<!-- =========================================================
+     NOUVELLE LOGIQUE : BOUTON OBSERVATION INTELLIGENT (INTERCEPTION JS)
+     ========================================================= -->
+<script id="smart-observation-logic-v2">
 setTimeout(() => {
-    const bottomObservation = document.getElementById("bottomObservation");
+    // 1. On sauvegarde l'ancienne fonction d'observation (qui ciblait les plats)
+    const originalOpenObservationFast = window.openObservationFast;
     
-    if (bottomObservation) {
-        // On supprime les anciens écouteurs (clonage du nœud pour être sûr)
-        const newBottomObs = bottomObservation.cloneNode(true);
-        bottomObservation.parentNode.replaceChild(newBottomObs, bottomObservation);
+    // 2. On écrase la fonction globale : le bouton appellera désormais ce nouveau code
+    window.openObservationFast = function() {
+        if (!STATE.currentTable) {
+            if(typeof toast === 'function') toast("Ouvrez d’abord une table", true);
+            return;
+        }
         
-        newBottomObs.addEventListener("click", () => {
-            if (!STATE.currentTable) return;
-            
-            const o = STATE.currentOrder || (typeof ensureOrder === 'function' ? ensureOrder(STATE.currentTable) : null);
-            const hasItems = (o.items || []).filter(i => !i.cancelled && itemQty(i) > 0).length > 0;
+        const o = STATE.currentOrder || (typeof ensureOrder === 'function' ? ensureOrder(STATE.currentTable) : null);
+        
+        // Vérification sécurisée du nombre d'articles
+        let hasItems = false;
+        if (o && o.items && Array.isArray(o.items)) {
+            hasItems = o.items.some(i => !i.cancelled && (i.qty > 0 || i.quantity > 0));
+        }
 
-            // Si la commande est vide, on propose directement de bloquer/annoter la table
-            if (!hasItems) {
-                openTableNote();
-                return;
-            }
+        // Si la commande est complètement vide, on passe directement à la note de la table
+        if (!hasItems) {
+            window.openTableNote();
+            return;
+        }
 
-            // S'il y a des plats, on laisse le choix au serveur
-            if (typeof openSheet === "function") {
-                openSheet("OBSERVATION", `
-                    <div class="action-grid" style="gap: 15px !important;">
-                        <button class="action-btn" onclick="openObservationFast()" style="border: 3px solid #cfd2d5 !important; background: #ffffff !important; color: #111111 !important; min-height: 100px !important; font-size: 20px !important; font-weight: 950 !important;">
-                            SUR UN PLAT<br>
-                            <span style="font-size: 14px !important; color: #555555 !important; font-weight: 800 !important; display: block !important; margin-top: 8px !important;">Sans sel, sauce à part...</span>
-                        </button>
-                        <button class="action-btn" onclick="openTableNote()" style="border: 3px solid #ff9a45 !important; background: #fff7ef !important; color: #7a3708 !important; min-height: 100px !important; font-size: 20px !important; font-weight: 950 !important;">
-                            SUR LA TABLE<br>
-                            <span style="font-size: 14px !important; color: #555555 !important; font-weight: 800 !important; display: block !important; margin-top: 8px !important;">Staff, attente, VIP...</span>
-                        </button>
-                    </div>
-                `);
-            }
-        });
-    }
+        // S'il y a des plats, on affiche le choix
+        if (typeof openSheet === "function") {
+            openSheet("OBSERVATION", `
+                <div class="action-grid" style="gap: 15px !important;">
+                    <button class="action-btn" onclick="triggerOriginalObs()" style="border: 3px solid #cfd2d5 !important; background: #ffffff !important; color: #111111 !important; min-height: 100px !important; font-size: 20px !important; font-weight: 950 !important;">
+                        SUR UN PLAT<br>
+                        <span style="font-size: 14px !important; color: #555555 !important; font-weight: 800 !important; display: block !important; margin-top: 8px !important;">Sans sel, sauce à part...</span>
+                    </button>
+                    <button class="action-btn" onclick="openTableNote()" style="border: 3px solid #ff9a45 !important; background: #fff7ef !important; color: #7a3708 !important; min-height: 100px !important; font-size: 20px !important; font-weight: 950 !important;">
+                        TABLE OCCUPÉE / POURQUOI<br>
+                        <span style="font-size: 14px !important; color: #555555 !important; font-weight: 800 !important; display: block !important; margin-top: 8px !important;">Staff, attente, VIP...</span>
+                    </button>
+                </div>
+            `);
+        }
+    };
 
-    // Fonction d'ouverture du panneau d'occupation de la table
+    // 3. Passerelle pour déclencher l'observation classique sur un plat
+    window.triggerOriginalObs = function() {
+        if (typeof originalOpenObservationFast === "function") {
+            originalOpenObservationFast();
+        }
+    };
+
+    // 4. Interface d'annotation de la table (Pourquoi elle est occupée)
     window.openTableNote = function() {
         const o = STATE.currentOrder || (typeof ensureOrder === 'function' ? ensureOrder(STATE.currentTable) : null);
-        const existing = typeof text === 'function' ? text(o.note || o.observation || "") : (o.note || "");
+        const existing = o ? (o.note || o.observation || "") : "";
 
-        openSheet("INFO TABLE " + STATE.currentTable, `
+        openSheet("POURQUOI CETTE TABLE EST OCCUPÉE ?", `
             <div class="big-state" style="margin-bottom: 15px; border: 4px solid #cfd2d5 !important; border-radius: 16px !important; padding: 20px !important; background: #e9e9e9 !important;">
               <div style="font-size: 18px; font-weight: 900; color: #111; line-height: 1.4;">
-                Indiquez pourquoi cette table est occupée :
+                Indiquez le motif d'occupation (la table apparaîtra en rouge sur le plan) :
               </div>
             </div>
             
@@ -12107,34 +12121,34 @@ setTimeout(() => {
                 <button class="quick-obs-btn" onclick="document.getElementById('tableNoteText').value = 'MÉNAGE'" style="font-size: 18px !important;">MÉNAGE</button>
             </div>
             
-            <textarea id="tableNoteText" class="quick-obs-text" placeholder="Ou tapez une autre raison ici..." style="font-size: 18px !important; min-height: 100px !important;">${typeof esc === 'function' ? esc(existing) : existing}</textarea>
+            <textarea id="tableNoteText" class="quick-obs-text" placeholder="Ou tapez une autre raison ici (VIP, etc.)..." style="font-size: 18px !important; min-height: 100px !important;">${typeof esc==='function'?esc(existing):existing}</textarea>
             
-            <button class="quick-obs-save" onclick="saveTableNote()" style="min-height: 60px !important; font-size: 20px !important; margin-top: 15px !important; background: #111 !important; color: #fff !important; border: 3px solid #111 !important;">✓ ENREGISTRER / OCCUPER</button>
+            <button class="quick-obs-save" onclick="saveTableNote()" style="min-height: 60px !important; font-size: 20px !important; margin-top: 15px !important; background: #111 !important; color: #fff !important; border: 3px solid #111 !important;">✓ OCCUPER LA TABLE</button>
         `);
     };
 
-    // Sauvegarde immédiate sur le serveur pour bloquer la table
+    // 5. Sauvegarde et envoi de l'occupation au serveur
     window.saveTableNote = async function() {
-        const o = typeof ensureOrder === 'function' ? ensureOrder(STATE.currentTable) : null;
+        const o = STATE.currentOrder || (typeof ensureOrder === 'function' ? ensureOrder(STATE.currentTable) : null);
         if (!o) return;
         
         const noteValue = document.getElementById('tableNoteText').value;
-        const safeNote = typeof text === 'function' ? text(noteValue) : noteValue;
+        o.note = noteValue;
+        o.observation = noteValue;
         
-        o.note = safeNote;
-        o.observation = safeNote;
+        // On force le statut "pending" pour s'assurer que la table passe en "Occupée" (rouge) sur le plan
+        o.status = "pending";
 
-        // Force l'envoi immédiat au serveur pour que la table passe en rouge/occupée partout
         if (typeof saveCurrent === 'function') {
-            const ok = await saveCurrent(o, "Information Table : " + safeNote, {immediate: true});
+            const ok = await saveCurrent(o, "Occupation Table : " + noteValue, {immediate: true});
             if (ok) {
                 if (typeof closeSheet === 'function') closeSheet();
-                if (typeof toast === 'function') toast("✓ Table mise à jour");
+                if (typeof toast === 'function') toast("✓ Table marquée comme occupée");
+                if (typeof scheduleRender === 'function') scheduleRender();
             }
         }
     };
-}, 1000);
-  
+}, 1500);
 </script>
 <!-- =========================================================
      CORRECTION : GRILLE "QUI MANGE QUOI" EXACTE SELON LES COUVERTS + TITRE COURT
