@@ -3779,9 +3779,14 @@ body.order-open .categories {
   const isIPhone=/iPhone|iPod/i.test(ua);
   const isOtherPhone=/Windows Phone|IEMobile|Opera Mini/i.test(ua)||( /Mobile/i.test(ua)&&!isIPad&&!/Tablet|Silk|Kindle|PlayBook/i.test(ua)&&!isAndroid );
   const isPhone=isIPhone||isAndroidPhone||isOtherPhone;
-  window.ICHEF_PHONE_ONLY_ALLOWED=!!isPhone;
-  window.ICHEF_PHONE_ONLY_BLOCKED=!isPhone;
-  document.documentElement.classList.add(isPhone?"ichef-phone-only-allowed":"ichef-phone-only-blocked");
+  /* CONNEXION STABLE :
+     le moteur téléphone démarre même si le navigateur est en mode ordinateur
+     ou si son User-Agent n'est pas reconnu comme smartphone. */
+  window.ICHEF_PHONE_DEVICE_DETECTED=!!isPhone;
+  window.ICHEF_PHONE_ONLY_ALLOWED=true;
+  window.ICHEF_PHONE_ONLY_BLOCKED=false;
+  document.documentElement.classList.remove("ichef-phone-only-blocked");
+  document.documentElement.classList.add("ichef-phone-only-allowed");
   window.ichefOpenPadFromBlockedPhoneModule=function(){
     const params=new URLSearchParams(window.location.search);
     const tenant=params.get("tenantID")||localStorage.getItem("ichef_tenant_id")||"";
@@ -4271,9 +4276,35 @@ const STORAGE={
   set(k,v){try{localStorage.setItem(k,String(v))}catch(_){}}
 };
 
+/* Identifiant appareil stable entre les différentes versions du fichier.
+   Évite de créer un nouvel "écran" à chaque nouveau fichier HTML local. */
+function ichefStableDeviceId(){
+  const scr=(typeof screen!=="undefined"&&screen)?screen:{};
+  const raw=[
+    navigator.userAgent||"",
+    navigator.platform||"",
+    navigator.language||"",
+    String(navigator.maxTouchPoints||0),
+    String(scr.width||0),
+    String(scr.height||0),
+    String(scr.colorDepth||0)
+  ].join("|");
+  let h1=2166136261>>>0, h2=0x9e3779b9>>>0;
+  for(let i=0;i<raw.length;i++){
+    const c=raw.charCodeAt(i);
+    h1=Math.imul(h1^c,16777619)>>>0;
+    h2=Math.imul(h2^(c+i),2246822519)>>>0;
+  }
+  return "phone_"+h1.toString(16).padStart(8,"0")+h2.toString(16).padStart(8,"0");
+}
+const ICHEF_DEVICE_ID =
+  location.protocol==="file:"
+    ? ichefStableDeviceId()
+    : (STORAGE.get("ichef_device_id","")||("dev_"+cryptoId()));
+
 const STATE={
   tenantID:new URLSearchParams(location.search).get("tenantID")||STORAGE.get("ichef_tenant_id","")||"",
-  deviceId:STORAGE.get("ichef_device_id","")||("dev_"+cryptoId()),
+  deviceId:ICHEF_DEVICE_ID,
   pin:"",role:"",plan:"",specialite:"",authenticated:false,
   addons:[],featureRights:{PLAN_INTERACTIF:false},
   sessionToken:"",csrfToken:"",
@@ -4952,10 +4983,14 @@ async function verifyPin(){
   try{
     const r=await serverFetch("/api/verify-pin",{
       method:"POST",
-      body:JSON.stringify({tenantID:STATE.tenantID,pin:STATE.loginPin,deviceId:STATE.deviceId})
+      body:JSON.stringify({tenantID:STATE.tenantID,pin:STATE.loginPin,deviceId:STATE.deviceId,terminal:"TELEPHONE"})
     });
     const j=await r.json().catch(()=>({}));
-    if(!r.ok||!j.success)throw new Error(j.error||j.message||"Code refusé");
+    if(!r.ok||!j.success){
+      const base=text(j.error||j.message||"Code refusé");
+      const detail=text(j.detail||"");
+      throw new Error(detail&&detail!==base?`${base} · ${detail}`:base);
+    }
     STATE.pin=STATE.loginPin;
     if(j.safeTenantID){
       STATE.tenantID=text(j.safeTenantID);
@@ -6157,35 +6192,6 @@ function renderTables(){
     </button>`;
   }).join("");
 }
-    const time=s.age
-      ?duration(s.age)
-      :(s.status==="reserved"?"RÉSERVÉE":"00:00");
-  
-    const usedSeats=new Set((o?.items||[]).map(itemSeat).filter(n=>n>=1&&n<=9));
-    const seatNumbers=new Set();
-    const paxCount=Math.max(0,Math.min(9,Number(s.pax||0)));
-    for(let seat=1;seat<=paxCount;seat++)seatNumbers.add(seat);
-    usedSeats.forEach(seat=>seatNumbers.add(seat));
-    const tableSeatStrip=[...seatNumbers].sort((a,b)=>a-b).map(seat=>
-      `<span class="table-seat-mini ${usedSeats.has(seat)?"ordered":"present"}" data-seat="${seat}" title="Convive C${seat}">C${seat}</span>`
-    ).join("");
-
-    const readyOverlay = s.ready 
-      ? `<div class="table-ready-overlay">${s.ready} PRÊT(S)</div>` 
-      : "";
-
-    return `<button class="table-card ${s.status}" data-table="${esc(t.label)}">
-      <span class="num">${esc(t.label)}</span>
-      <span class="time">${esc(time)}</span>
-      ${tableSeatStrip?`<span class="table-seat-strip">${tableSeatStrip}</span>`:""}
-      <span class="meta table-pax-meta">${esc(meta)}</span>
-      <span class="table-zone" style="color:${esc(zoneColor)}">${esc(zoneLabel)}</span>
-      ${preview?`<span class="table-preview">${preview}</span>`:""}
-      ${readyOverlay}
-    </button>`;
-  }).join("");
-}
-
 
 function updateToolBadges(){
   const r=rushSnapshot(),b=$("toolRush");
