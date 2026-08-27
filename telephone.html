@@ -8630,7 +8630,7 @@ function openPayment(force=false){
       </div>
 
       <div class="pay-profile">
-        ${needsCountry ? "Profil fiscal à choisir" : `Profil ${esc(profile.label)} · ${esc(profile.currency)}`}
+        ${needsCountry ? "Profil fiscal à choisir" : `Profil global ${esc(profile.label)} · ${esc(profile.currency)} · appliqué à l’ensemble`}
       </div>
 
       ${paymentStatusBlock}
@@ -9153,10 +9153,22 @@ function fiscalSafeId(v){
   return text(v||"").replace(/[^A-Za-z0-9_-]/g,"").slice(0,80)||"NA";
 }
 
+function fiscalCountryCode(value){
+  const v=text(value||"")
+    .toUpperCase()
+    .normalize("NFD").replace(/[\u0300-\u036f]/g,"")
+    .replace(/[^A-Z]/g,"");
+  if(["FR","FRA","FRANCE","FRENCH"].includes(v))return "FR";
+  if(["CH","CHE","SUISSE","SWITZERLAND","SWISS","SCHWEIZ","SVIZZERA"].includes(v))return "CH";
+  return "";
+}
+
 function fiscalProfile(){
-  const s=STATE.settings||{};
-  let country=text(s.fiscalCountry||s.countryCode||s.country||s.pays||"").toUpperCase();
-  const currency=text(s.currency||s.devise||"").toUpperCase();
+  const s=STATE.settings&&typeof STATE.settings==="object"?STATE.settings:{};
+  const nested=s.fiscal&&typeof s.fiscal==="object"?s.fiscal:{};
+  const rawCountry=s.fiscalCountry||s.countryCode||s.country||s.pays||nested.fiscalCountry||nested.countryCode||nested.country||nested.pays||"";
+  const currency=text(s.currency||s.devise||nested.currency||nested.devise||"").toUpperCase();
+  let country=fiscalCountryCode(rawCountry);
   if(!country){
     if(currency==="CHF")country="CH";
     else if(currency==="EUR")country="FR";
@@ -9199,10 +9211,54 @@ function fiscalDefaultVatForProduct(product){
   return 0;
 }
 
+function fiscalGlobalVatRate(item){
+  const s=STATE.settings&&typeof STATE.settings==="object"?STATE.settings:{};
+  const nested=s.fiscal&&typeof s.fiscal==="object"?s.fiscal:{};
+  const configured=normalizeTaxRate(
+    s.defaultVatRate ?? s.defaultTVA ?? s.vatRate ?? s.tva ?? s.tauxTVA ?? s.restaurantVatRate ??
+    nested.defaultVatRate ?? nested.defaultTVA ?? nested.vatRate ?? nested.tva ?? nested.tauxTVA
+  );
+  const allowed=fiscalAllowedRates();
+  if(configured!==null && allowed.some(v=>Math.abs(v-configured)<0.001))return configured;
+  return fiscalDefaultVatForProduct(item||{});
+}
+
 function itemVatRate(item){
+  const profile=fiscalProfile();
   const explicit=normalizeTaxRate(itemVat(item)??item?.taxRate??item?.tauxTVA);
+  const allowed=fiscalAllowedRates(profile);
+
+  /* Le profil fiscal de l'établissement est la référence.
+     Un ancien article peut encore porter un taux d'un autre pays (ex. 10/20 %
+     après passage en Suisse, ou 8,1 % après passage en France). Dans ce cas,
+     on ne bloque plus la caisse : on applique le taux global/default valide
+     du profil actuel. Un taux explicite déjà valide est toujours conservé. */
+  if(explicit!==null && allowed.some(v=>Math.abs(v-explicit)<0.001))return explicit;
+  if(profile.country!=="UNSET")return fiscalGlobalVatRate(item||{});
   if(explicit!==null)return explicit;
   return fiscalDefaultVatForProduct(item||{});
+}
+
+function fiscalNormalizeOrderForCurrentProfile(order){
+  const o=normalizeCompatOrder(clone(order||{}));
+  const profile=fiscalProfile();
+  if(profile.country==="UNSET")return {order:o,changed:0,details:[]};
+  const allowed=fiscalAllowedRates(profile);
+  const details=[];
+  let changed=0;
+  (o.items||[]).forEach(item=>{
+    if(!item||item.cancelled)return;
+    const before=normalizeTaxRate(itemVat(item)??item?.taxRate??item?.tauxTVA);
+    const effective=itemVatRate(item);
+    const beforeAllowed=before!==null&&allowed.some(v=>Math.abs(v-before)<0.001);
+    if(before===null||!beforeAllowed){
+      item.vatRate=effective;
+      item.tva=effective;
+      changed++;
+      details.push(`${itemName(item)} : ${before===null?"TVA absente":before+"%"} → ${effective}%`);
+    }
+  });
+  return {order:o,changed,details};
 }
 
 function fiscalBreakdown(order){
@@ -9931,6 +9987,22 @@ async function recordPayment(method){
     const pendingSaved=await saveCurrent(o,"Paiement en attente",{immediate:true});
     if(!pendingSaved)return ichefPaymentFail("Impossible d’enregistrer l’état EN ATTENTE sur le serveur");
     return true;
+  }
+
+  /* Avant l'encaissement, harmonise les anciennes lignes avec le profil fiscal
+     global de l'établissement. Cela évite qu'un ancien taux incompatible bloque
+     tout le paiement alors que FR/CH est déjà correctement configuré. */
+  const normalizedFiscal=fiscalNormalizeOrderForCurrentProfile(o);
+  if(normalizedFiscal.changed){
+    o=normalizedFiscal.order;
+    STATE.currentOrder=clone(o);
+    const normalizedSaved=await saveCurrent(
+      o,
+      `Normalisation fiscale globale ${fiscalProfile().country} avant paiement`,
+      {immediate:true}
+    );
+    if(!normalizedSaved)return ichefPaymentFail("Le profil fiscal est correct, mais la mise à jour des anciens taux TVA n'a pas été enregistrée sur le serveur");
+    toast(`✓ Fiscal ${fiscalProfile().label} appliqué à l’ensemble · ${normalizedFiscal.changed} ligne${normalizedFiscal.changed>1?"s":""} harmonisée${normalizedFiscal.changed>1?"s":""}`);
   }
 
   const validation=fiscalValidateOrder(o,{forPayment:true});
