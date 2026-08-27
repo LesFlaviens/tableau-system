@@ -7977,6 +7977,7 @@ function systemPrintHTML(lines,title="iCHEF",paperWidth=80){
   }).join("");
   return `<!doctype html><html><head><meta charset="utf-8"><title>${esc(title)}</title><style>@page{size:${width}mm auto;margin:3mm}html,body{margin:0;padding:0;background:#fff;color:#000;font-family:Arial,sans-serif}.ticket{width:${width-6}mm;margin:0 auto}</style></head><body><div class="ticket">${body}</div>
 <!-- iCHEF FIX 2026-08-25 : affichage PAX du PLAN = CAPACITÉ ARCHITECTURALE de la table (t.pax), jamais PAX clients live. -->
+
 </body></html>`;
 }
 
@@ -11625,6 +11626,40 @@ setTimeout(() => {
     try{window.refreshPadServiceLive?.()}catch(_){}
   });
 })();
+</script>
+  <!-- CORRECTION : AFFICHAGE DU STATUT "SERVEUR À JOUR" DÈS L'OUVERTURE DE LA TABLE -->
+<script id="correction-serveur-a-jour">
+setTimeout(() => {
+  if (typeof window.renderOrder !== "function") return;
+
+  // 1. Surcharge de renderOrder pour évaluer le statut réseau instantanément
+  const originalRenderOrder = window.renderOrder;
+  window.renderOrder = function() {
+    originalRenderOrder();
+
+    if (STATE.currentTable) {
+      if (typeof ICHEF_FAILED_WRITES !== 'undefined' && ICHEF_FAILED_WRITES.has(STATE.currentTable)) {
+        setOrderSyncState("✕ ÉCHEC SYNCHRO", "bad");
+      } else if (typeof ICHEF_LOCAL_PENDING !== 'undefined' && (ICHEF_LOCAL_PENDING.has(STATE.currentTable) || ICHEF_TABLE_WRITE_QUEUES.has(STATE.currentTable))) {
+        setOrderSyncState("● SYNCHRONISATION…", "pending");
+      } else {
+        setOrderSyncState("✓ SERVEUR À JOUR", "good");
+      }
+    }
+  };
+
+  // 2. Maintien du statut à jour lors des réceptions silencieuses du serveur
+  const originalApplyServerState = window.applyServerState;
+  window.applyServerState = function(state, source) {
+    if (originalApplyServerState) originalApplyServerState(state, source);
+    
+    if (STATE.currentScreen === "order" && STATE.currentTable) {
+      if (!ICHEF_LOCAL_PENDING.has(STATE.currentTable) && !ICHEF_FAILED_WRITES.has(STATE.currentTable)) {
+        setOrderSyncState("✓ SERVEUR À JOUR", "good");
+      }
+    }
+  };
+}, 500);
 </script>
 </body>
 </html>
