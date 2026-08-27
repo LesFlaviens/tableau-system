@@ -8578,7 +8578,7 @@ function openMore(){
 }
 
 
-function openOrderMore(){openSheet("TABLE "+STATE.currentTable,`<div class="action-grid"><button class="action-btn green" data-om="send"> ENVOYER</button><button class="action-btn purple" data-om="who"> QUI MANGE ?</button><button class="action-btn gold" data-om="summary"> RÉSUMÉ / CAISSE</button><button class="action-btn gold" data-om="payment"> PAIEMENT DIRECT</button><button class="action-btn" data-om="note"> NOTE</button><button class="action-btn orange" data-om="close"> FERMER TABLE</button><button class="action-btn red" data-om="delete"> SUPPRIMER COMMANDE</button></div>`);$("sheetBody").querySelectorAll("[data-om]").forEach(b=>b.onclick=()=>{const a=b.dataset.om;if(a==="send"){closeSheet();sendKitchen()}if(a==="who"){openWho()}if(a==="summary"){closeSheet();openSummary()}if(a==="payment"){openPayment()}if(a==="note"){editNote()}if(a==="close"){closeTable()}if(a==="delete"){deleteOrder()}})}
+function openOrderMore(){openSheet("TABLE "+STATE.currentTable,`<div class="action-grid"><button class="action-btn green" data-om="send"> ENVOYER</button><button class="action-btn purple" data-om="who"> QUI MANGE ?</button><button class="action-btn gold" data-om="summary"> RÉSUMÉ / CAISSE</button><button class="action-btn gold" data-om="payment"> PAIEMENT DIRECT</button><button class="action-btn" data-om="note"> NOTE</button><button class="action-btn orange" data-om="close"> FERMER TABLE</button><button class="action-btn red" data-om="delete"> SUPPRIMER COMMANDE</button></div>`);$("sheetBody").querySelectorAll("[data-om]").forEach(b=>b.onclick=()=>{const a=b.dataset.om;if(a==="send"){closeSheet();sendKitchen()}if(a==="who"){openWho()}if(a==="summary"){closeSheet();openSummary()}if(a==="payment"){window.openPayment()}if(a==="note"){editNote()}if(a==="close"){closeTable()}if(a==="delete"){deleteOrder()}})}
 
 function editNote(){if(!STATE.currentTable)return;const o=ensureOrder(STATE.currentTable),n=prompt("Note de service :",o.note||o.observation||"");if(n===null)return;o.note=text(n);saveCurrent(o,"Note de service");closeSheet()}
 
@@ -8841,7 +8841,7 @@ async function closeTable(){
   const total=orderTotal(o);
   if(total>0 && !fiscalOrderFinalized(o)){
     toast("Fermeture refusée : encaissez ou annulez la commande",true);
-    openPayment();return;
+    window.openPayment();return;
   }
   if(fiscalOrderFinalized(o)){
     const ticketNumber=text(o.fiscalTicket?.ticketNumber||o.fiscalReceiptReference||o.paymentDraft?.receiptReference);
@@ -10048,9 +10048,9 @@ $("paxPlus").onclick=()=>setPax(1);
 $("btnSend").onclick=sendKitchen;
 $("btnKitchenOrder").onclick=openKitchen;
 $("btnHeadSummary").onclick=openSummary;
-$("btnHeadPayment").onclick=openPayment;
+$("btnHeadPayment").onclick=()=>window.openPayment();
 $("btnSummaryDirect").onclick=openSummary;
-$("btnPaymentDirect").onclick=openPayment;
+$("btnPaymentDirect").onclick=()=>window.openPayment();
 $("btnOrderMore").onclick=openOrderMore;
 $("btnObsFast").onclick=openObservationFast;
 $("btnCooking").onclick=openCooking;
@@ -10059,7 +10059,7 @@ $("btnSummary").onclick=openSummary;
 $("summaryClose").onclick=closeSummary;
 $("summaryModify").onclick=closeSummary;
 $("summaryKitchen").onclick=async()=>{await sendKitchen();renderSummary()};
-$("summaryCash").onclick=openPayment;
+$("summaryCash").onclick=()=>window.openPayment();
 $("toolRush").onclick=openRush;
 $("toolWho").onclick=openWho;
 $("toolDisplay").onclick=openPlan;
@@ -12358,6 +12358,17 @@ setTimeout(() => {
         const paid = typeof fiscalOrderFinalized === 'function' ? fiscalOrderFinalized(o) : false;
         const stripeOn = typeof stripeEnabledForRestaurant === 'function' ? stripeEnabledForRestaurant() : false;
         const twint = profile.country === "CH";
+
+        if (profile.country === "UNSET") {
+            openSheet("CAISSE · TABLE " + STATE.currentTable, `
+                <div class="big-state" style="border-color:#ff9a45;background:#fff7ef;color:#111">
+                    <div class="big" style="color:#b45b10!important;font-size:34px!important">PAIEMENT À CONFIGURER</div>
+                    <div class="small" style="color:#4b3a2d!important;font-size:15px!important;line-height:1.45">Le pays fiscal du restaurant n'est pas défini. Choisissez FR ou CH dans les réglages avant d'encaisser.</div>
+                </div>
+                <button class="action-btn" style="width:100%;min-height:64px;font-size:18px" onclick="closeSheet()">FERMER</button>
+            `);
+            return;
+        }
         
         if (paid) {
             openSheet("CAISSE · TABLE " + STATE.currentTable, `
@@ -12553,11 +12564,24 @@ setTimeout(() => {
                 const ok = await saveCurrent(order, "Paiement partiel : " + method, {immediate: true});
                 if (ok) {
                     if (typeof toast === 'function') toast(`✓ Encaissé : ${amount}. Reste : ${newRemaining}`);
-                    openPayment(); 
+                    window.openPayment(); 
                 }
             }
         }
     };
+
+    // IMPORTANT : les boutons avaient été branchés avant ce moteur de caisse.
+    // On les reconnecte ici au moteur de paiement courant pour éviter une référence obsolète.
+    ["btnHeadPayment","btnPaymentDirect","summaryCash"].forEach(id=>{
+        const btn=document.getElementById(id);
+        if(btn){
+            btn.onclick=(ev)=>{
+                ev?.preventDefault?.();
+                ev?.stopPropagation?.();
+                window.openPayment();
+            };
+        }
+    });
 
 }, 2500);
 </script>
