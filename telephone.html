@@ -4061,6 +4061,32 @@ body.ichef-payment-open #sheet .sheet-card{
 }
 </style>
 
+
+<style id="ichef-service-payment-lock">
+#summary .summary-actions{grid-template-columns:1fr 1fr!important}
+#summaryServiceDone{
+  border:2px solid #111!important;background:#fff!important;color:#111!important;font-weight:1000!important;
+}
+#summaryServiceDone.service-confirmed{
+  border-color:#198754!important;background:#eefbf4!important;color:#146c43!important;
+}
+#summaryServiceDone.service-reconfirm{
+  border-color:#d48b00!important;background:#fff8e5!important;color:#8a5b00!important;
+}
+#summaryCash[disabled]{
+  opacity:1!important;cursor:not-allowed!important;background:#d9dde0!important;color:#6c7378!important;
+  border:2px solid #aeb4b8!important;box-shadow:none!important;
+}
+#summaryCash:not([disabled]){
+  background:linear-gradient(180deg,#e7b331,#ca8e12)!important;color:#fff!important;border:0!important;
+}
+.service-payment-lock-banner{
+  margin:8px 0 12px;padding:12px 14px;border:2px solid #c86b00;border-radius:12px;
+  background:#fff7e7;color:#6b3f00;font-size:12px;line-height:1.35;font-weight:900;
+}
+.service-payment-lock-banner.ok{border-color:#198754;background:#eefbf4;color:#146c43}
+</style>
+
 </head>
 <body>
 
@@ -4215,8 +4241,9 @@ body.ichef-payment-open #sheet .sheet-card{
     </div>
     <div class="summary-actions">
       <button id="summaryModify" type="button">✎ MODIFIER<span class="summary-action-sub">Retour à la commande</span></button>
-      <button id="summaryKitchen" class="kitchen" type="button">👨‍🍳 CUISINE / BAR<span class="summary-action-sub">Envoyer en production</span></button>
-      <button id="summaryCash" class="summary-cash" type="button">💳 OUVRIR LE PAIEMENT<span class="summary-action-sub">Choisir le mode de paiement</span></button>
+      <button id="summaryKitchen" class="kitchen" type="button">CUISINE / BAR<span class="summary-action-sub">Envoyer en production</span></button>
+      <button id="summaryServiceDone" class="summary-service-done" type="button">SERVICE EFFECTUÉ<span class="summary-action-sub">Plats / boissons posés sur table</span></button>
+      <button id="summaryCash" class="summary-cash" type="button">PAIEMENT VERROUILLÉ<span class="summary-action-sub">SERVICE EFFECTUÉ obligatoire</span></button>
     </div>
   </div>
 </div>
@@ -5338,26 +5365,107 @@ function isRealOrder(k,o){
 function getOrder(table){const o=STATE.activeOrders[table];return isRealOrder(table,o)?o:null}
 function orderCreated(o){if(!o)return 0;let t=Number(o.createdAt||o.openedAt||o.date||0);if(!t&&Array.isArray(o.items)&&o.items.length)t=Math.min(...o.items.map(i=>Number(i.itemId||i.createdAt||i.sentAt||Date.now())).filter(Number.isFinite));return t||0}
 function lineServed(i){return !!(i&&(i.served===true||i.isServed===true||i.servedAt||String(i.sequenceStatus||"").toUpperCase()==="SERVED"||String(i.status||"").toLowerCase()==="served"))}
-/* Une ligne SERVIE est terminale : même si le serveur renvoie encore ready/done,
-   elle ne doit jamais redevenir PRÊT. */
-function lineReady(i){return !!(i&&!lineServed(i)&&(i.done===true||i.ready===true||i.isReady===true||i.readyAt||String(i.sequenceStatus||"").toUpperCase()==="READY"||String(i.status||i.productionStatus||"").toLowerCase()==="ready"))}
-function lineFired(i){return !!(i&&(i.isSent===true||i.fired===true||i.sent===true||i.sentAt))}
-/* EN PRÉPARATION = uniquement une ligne envoyée qui n'est ni prête, ni servie, ni annulée. */
-function lineWaiting(i){return !!(i&&!i.cancelled&&!lineServed(i)&&lineFired(i)&&!lineReady(i))}
-function tableStats(table){
-  const o=getOrder(table);const res=findReservation(table);if(!o){return{status:res?"reserved":"empty",pax:num(res?.pax||res?.covers||0),ready:0,age:0,total:0}}
-  const items=o.items||[];
-  const ready=items.filter(i=>lineReady(i)&&!i.cancelled).reduce((s,i)=>s+Math.max(1,num(i.qty||i.quantity||1)),0);
-  const waiting=items.some(lineWaiting);
-  const age=orderCreated(o);
-  let status="active";
-  if(o.alerteRouge||o.alert)status="alert";
-  else if(String(o.status||"").toLowerCase().includes("payment"))status="payment";
-  else if(ready)status="ready";
-  else if(waiting&&age&&now()-age>25*60000)status="late";
-  else if(waiting)status="wait";
-  return{status,pax:num(o.pax||o.covers||0),ready,age,total:orderTotal(o)}
+
+/* =========================================================
+   PROTECTION PAIEMENT — SERVICE EFFECTUÉ OBLIGATOIRE
+   ========================================================= */
+function serviceActiveItems(order){
+  return (order?.items||[]).filter(i=>i&&!i.cancelled&&itemQty(i)>0);
 }
+
+function servicePaymentSignature(order){
+  return serviceActiveItems(order)
+    .map(item=>{
+      const id=lineKey(item);
+      const qty=itemQty(item);
+      const cents=Math.round(itemPrice(item)*100);
+      return `${id}|${qty}|${cents}`;
+    })
+    .sort()
+    .join("||");
+}
+
+function servicePaymentState(order){
+  const active=serviceActiveItems(order);
+  const signature=servicePaymentSignature(order);
+  const confirmation=order?.serviceConfirmation&&typeof order.serviceConfirmation==="object"
+    ?order.serviceConfirmation:{};
+  const confirmed=order?.serviceCompleted===true ||
+    String(confirmation.status||"").toUpperCase()==="COMPLETED";
+  const signatureOk=!!signature && text(confirmation.signature)===signature;
+
+  return {
+    active,
+    count:active.reduce((s,i)=>s+itemQty(i),0),
+    confirmed,
+    signatureOk,
+    ok:active.length>0 && confirmed && signatureOk,
+    completedAt:order?.serviceCompletedAt||confirmation.at||null,
+    completedBy:text(order?.serviceCompletedBy||confirmation.by||"")
+  };
+}
+
+async function confirmServiceCompleted(){
+  if(!STATE.currentTable){
+    toast("Ouvrez d’abord une table",true);
+    return false;
+  }
+
+  const o=ensureOrder(STATE.currentTable);
+  const active=serviceActiveItems(o);
+  if(!active.length){
+    toast("Aucun plat ou boisson à confirmer",true);
+    return false;
+  }
+
+  const at=Date.now();
+  const by=STATE.role||"SERVEUR";
+  const signature=servicePaymentSignature(o);
+
+  /* SERVICE EFFECTUÉ n'altère plus les états Cuisine / PRÊT / SERVI.
+     Il crée seulement une autorisation d'encaissement liée au contenu exact
+     de la table au moment où le serveur confirme que tout est posé. */
+  o.serviceCompleted=true;
+  o.serviceCompletedAt=at;
+  o.serviceCompletedBy=by;
+  o.serviceCompletedDeviceId=STATE.deviceId;
+  o.serviceConfirmation={
+    status:"COMPLETED",
+    at,
+    by,
+    deviceId:STATE.deviceId,
+    terminal:"TELEPHONE",
+    signature,
+    activeLines:active.length,
+    activeQuantity:active.reduce((s,i)=>s+itemQty(i),0)
+  };
+  o.orderMeta={
+    ...(o.orderMeta&&typeof o.orderMeta==="object"?o.orderMeta:{}),
+    serviceCompleted:true,
+    serviceCompletedAt:at,
+    serviceCompletedBy:by,
+    servicePaymentSignature:signature
+  };
+
+  const ok=await saveCurrent(
+    o,
+    "SERVICE EFFECTUÉ · table confirmée · paiement autorisé",
+    {immediate:true}
+  );
+
+  if(!ok){
+    toast("SERVICE EFFECTUÉ non enregistré sur le serveur iCHEF",true);
+    return false;
+  }
+
+  STATE.currentOrder=clone(o);
+  renderTicket();
+  renderSummary();
+  scheduleRender();
+  toast("SERVICE EFFECTUÉ · paiement autorisé");
+  return true;
+}
+
 function orderTotal(o){return fiscalRound2((o?.items||[]).filter(i=>i&&!i.cancelled).reduce((s,i)=>s+itemPrice(i)*itemQty(i),0))}
 function ensureOrder(table){
   let o=getOrder(table);
@@ -8800,6 +8908,20 @@ function openPayment(force=false){
   const profile=fiscalProfile();
   const overlay=ensurePaymentOverlay();
   const finalized=fiscalOrderFinalized(o);
+
+  /* Aucun nouvel encaissement tant que SERVICE EFFECTUÉ n'est pas confirmé. */
+  if(!finalized){
+    const serviceGate=servicePaymentState(o);
+    if(!serviceGate.ok){
+      const reason=!serviceGate.confirmed
+        ?"Le serveur doit cliquer SERVICE EFFECTUÉ quand les plats/boissons sont sur table."
+        :"La table a changé depuis la confirmation : reconfirmez SERVICE EFFECTUÉ.";
+      toast("PAIEMENT BLOQUÉ · "+reason,true);
+      if(document.body.classList.contains("summary-open"))renderSummary();
+      return;
+    }
+  }
+
   const draftFiscalStatus=text(o?.paymentDraft?.fiscalStatus||"").toUpperCase();
   const existingPaymentMethod=text(o?.paymentDraft?.payments?.[0]?.method||o?.paymentMethod||"").toUpperCase();
   const pendingLedger=finalized && draftFiscalStatus==="PENDING_LEDGER";
@@ -10228,6 +10350,15 @@ function renderSummary(){
   const history=summaryAuditEntries(order,STATE.currentTable);
   const activeCount=(order.items||[]).filter(i=>i&&!i.cancelled).reduce((sum,i)=>sum+itemQty(i),0);
   const cancelledCount=cancelled.reduce((sum,i)=>sum+itemQty(i),0);
+  const serviceGate=servicePaymentState(order);
+
+  const serviceBanner=`<div class="service-payment-lock-banner ${serviceGate.ok?"ok":""}">
+    ${serviceGate.ok
+      ?`SERVICE EFFECTUÉ · paiement autorisé${serviceGate.completedBy?` · ${esc(serviceGate.completedBy)}`:""}`
+      :serviceGate.confirmed
+        ?"PAIEMENT BLOQUÉ · la table a changé depuis SERVICE EFFECTUÉ : reconfirmez avant encaissement."
+        :"PAIEMENT BLOQUÉ · quand les plats et boissons sont sur table, le serveur doit cliquer SERVICE EFFECTUÉ."}
+  </div>`;
 
   const orderHeader=`<section class="summary-table-file">
     <div class="summary-file-title">FACTURE / DOSSIER COMPLET DE LA TABLE</div>
@@ -10337,7 +10468,25 @@ function renderSummary(){
     }).join(""):'<div class="summary-history-empty">Aucun historique détaillé disponible pour cette ancienne commande.</div>'}
   </section>`;
 
-  $("summaryContent").innerHTML=orderHeader+activeHTML+cancelledHTML+historyHTML;
+  $("summaryContent").innerHTML=serviceBanner+orderHeader+activeHTML+cancelledHTML+historyHTML;
+
+  const serviceBtn=$("summaryServiceDone");
+  const cashBtn=$("summaryCash");
+  if(serviceBtn){
+    serviceBtn.classList.toggle("service-confirmed",serviceGate.ok);
+    serviceBtn.classList.toggle("service-reconfirm",serviceGate.confirmed&&!serviceGate.ok);
+    serviceBtn.innerHTML=serviceGate.ok
+      ?`SERVICE EFFECTUÉ<span class="summary-action-sub">Confirmé · ${esc(serviceGate.completedBy||"SERVEUR")}</span>`
+      :serviceGate.confirmed
+        ?`RECONFIRMER SERVICE<span class="summary-action-sub">Nouvel article / état modifié</span>`
+        :`SERVICE EFFECTUÉ<span class="summary-action-sub">Plats / boissons posés sur table</span>`;
+  }
+  if(cashBtn){
+    cashBtn.disabled=!serviceGate.ok && !fiscalOrderFinalized(order);
+    cashBtn.innerHTML=(serviceGate.ok||fiscalOrderFinalized(order))
+      ?`OUVRIR LE PAIEMENT<span class="summary-action-sub">Service confirmé</span>`
+      :`PAIEMENT VERROUILLÉ<span class="summary-action-sub">SERVICE EFFECTUÉ obligatoire</span>`;
+  }
 
   $("summaryContent").querySelectorAll("[data-summary-line]").forEach(el=>{
     el.addEventListener("click",()=>openSummaryLineDetail(el.dataset.summaryLine));
@@ -10372,6 +10521,17 @@ async function recordPayment(method){
   let o=ensureOrder(table);
   const paymentMethod=text(method||"").toUpperCase()||null;
   const existingMethod=text(o?.paymentDraft?.payments?.[0]?.method||o?.paymentMethod||"").toUpperCase()||null;
+
+  if(!fiscalOrderFinalized(o) && paymentMethod){
+    const serviceGate=servicePaymentState(o);
+    if(!serviceGate.ok){
+      return ichefPaymentFail(
+        !serviceGate.confirmed
+          ?"PAIEMENT BLOQUÉ : SERVICE EFFECTUÉ doit être confirmé par le serveur."
+          :"PAIEMENT BLOQUÉ : la table a changé depuis SERVICE EFFECTUÉ. Reconfirmez."
+      );
+    }
+  }
 
   /* Si le paiement est déjà enregistré, le bouton PAIEMENT sert à REPRENDRE
      le scellement ou simplement à terminer la libération de la table.
@@ -10832,6 +10992,7 @@ $("btnSummary").onclick=openSummary;
 $("summaryClose").onclick=closeSummary;
 $("summaryModify").onclick=closeSummary;
 $("summaryKitchen").onclick=async()=>{await sendKitchen();renderSummary()};
+$("summaryServiceDone").onclick=confirmServiceCompleted;
 $("summaryCash").onclick=openPayment;
 
 /* PAIEMENT : délégation tactile de secours */
