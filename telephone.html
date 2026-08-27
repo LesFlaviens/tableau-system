@@ -4483,15 +4483,28 @@ async function enqueueVersionedWrite(key,pending){
 
       for(let attempt=0;attempt<3;attempt++){
         try{
-          await updateServer(key,pending.data,pending.reason);
+          const result=await updateServer(key,pending.data,pending.reason);
 
           const latest=ICHEF_LOCAL_PENDING.get(key);
           if(latest && latest.version===pending.version){
             ICHEF_LOCAL_PENDING.delete(key);
             ICHEF_FAILED_WRITES.delete(key);
+
+            /* On adopte la copie confirmée par MongoDB seulement si aucune
+               modification plus récente n'attend encore localement. */
+            if(result?.order!==undefined){
+              if(result.order===null)delete STATE.activeOrders[key];
+              else STATE.activeOrders[key]=clone(result.order);
+
+              if(key===STATE.currentTable && result.order && !isArchivedOrder(result.order)){
+                STATE.currentOrder=clone(result.order);
+              }
+              applyDerived();
+              scheduleRender();
+            }
           }
 
-          setOrderSyncState("✓ SERVEUR À JOUR","good");
+          setOrderSyncState("✓ ENREGISTRÉ","good");
           return true;
         }catch(err){
           lastError=err;
@@ -4889,8 +4902,9 @@ async function getState(){
   return r.json();
 }
 async function updateServer(key,data,auditReason="Mise à jour téléphone"){
-  if(STATE.demo)return {success:true,demo:true};
+  if(STATE.demo)return {success:true,persisted:true,demo:true};
   if(!STATE.authenticated)throw new Error("Session non authentifiée");
+
   const body={
     tableId:key,
     order:data,
@@ -4899,12 +4913,33 @@ async function updateServer(key,data,auditReason="Mise à jour téléphone"){
     terminal:"TELEPHONE",
     auditReason
   };
+
   const r=await serverFetch("/update-order?tenantID="+encodeURIComponent(STATE.tenantID),{
     method:"POST",
     body:JSON.stringify(body)
   });
+
   const j=await r.json().catch(()=>({}));
-  if(!r.ok)throw new Error(j.error||j.message||("Écriture serveur "+r.status));
+
+  if(!r.ok || j.success===false){
+    throw new Error(j.detail||j.error||j.message||("Écriture serveur "+r.status));
+  }
+
+  /* La nouvelle version du serveur confirme explicitement que MongoDB
+     contient réellement la commande avant de répondre success:true. */
+  if(j.persisted===false){
+    throw new Error("Commande reçue mais non enregistrée dans MongoDB");
+  }
+
+  /* Une écriture ignorée car obsolète n'est PAS considérée comme une sauvegarde
+     de notre modification locale. On relit le serveur au lieu d'afficher un faux OK. */
+  if(j.ignoredStale===true){
+    const err=new Error("Version plus récente déjà enregistrée sur le serveur");
+    err.code="ICHEF_STALE_WRITE";
+    err.serverOrder=j.order||null;
+    throw err;
+  }
+
   return j;
 }
 async function optimisticWrite(key,data,reason){
@@ -5303,7 +5338,7 @@ function addProduct(product,options={}){
   pushUndo(`Ajout ${seatLabel(seat)} · ${product.name}`,before);
 
   /* Sauvegarde locale immédiate, écriture réseau coalescée. */
-  saveCurrent(o,"Ajout rapide article téléphone",{delay:180});
+  saveCurrent(o,"Ajout rapide article téléphone",{immediate:true});
 
   if(navigator.vibrate){
     try{navigator.vibrate(12)}catch(_){}
