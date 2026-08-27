@@ -4671,7 +4671,7 @@ function toast(message,bad=false){
 }
 
 function money(v){
-  const cur=text(STATE.settings.currency||STATE.settings.devise||"EUR").toUpperCase();
+  const cur=fiscalProfile().currency;
   try{return new Intl.NumberFormat("fr-FR",{style:"currency",currency:cur==="CHF"?"CHF":"EUR"}).format(num(v))}catch(_){return num(v).toFixed(2)+(cur==="CHF"?" CHF":" €")}
 }
 
@@ -8545,13 +8545,14 @@ function closePaymentOverlay(){
 }
 
 async function saveFiscalProfileFromPayment(country){
-  country=text(country).toUpperCase();
+  country=fiscalCountryCode(country);
   if(country!=="FR"&&country!=="CH")return false;
 
   const settings={...(STATE.settings&&typeof STATE.settings==="object"?STATE.settings:{})};
   settings.fiscalCountry=country;
   settings.countryCode=country;
-  settings.currency=country==="CH"?"CHF":"EUR";
+  /* IMPORTANT : le pays fiscal ne force jamais la devise.
+     EUR / CHF restent un choix séparé du serveur. */
 
   STATE.settings=settings;
   STATE.activeOrders.SETTINGS_MASTER={data:clone(settings)};
@@ -8564,6 +8565,29 @@ async function saveFiscalProfileFromPayment(country){
     );
   }catch(err){
     console.warn("[iCHEF PAIEMENT] configuration fiscale serveur",err);
+  }
+  return true;
+}
+
+async function savePaymentCurrencyFromPayment(currency){
+  currency=text(currency).toUpperCase();
+  if(currency!=="EUR"&&currency!=="CHF")return false;
+
+  const settings={...(STATE.settings&&typeof STATE.settings==="object"?STATE.settings:{})};
+  settings.currency=currency;
+  settings.devise=currency;
+
+  STATE.settings=settings;
+  STATE.activeOrders.SETTINGS_MASTER={data:clone(settings)};
+
+  try{
+    await optimisticWrite(
+      "SETTINGS_MASTER",
+      {data:clone(settings)},
+      "Devise choisie librement depuis la caisse"
+    );
+  }catch(err){
+    console.warn("[iCHEF PAIEMENT] devise serveur",err);
   }
   return true;
 }
@@ -8630,8 +8654,19 @@ function openPayment(force=false){
       </div>
 
       <div class="pay-profile">
-        ${needsCountry ? "Profil fiscal à choisir" : `Profil global ${esc(profile.label)} · ${esc(profile.currency)} · appliqué à l’ensemble`}
+        ${needsCountry ? "Profil fiscal à choisir" : `Profil fiscal global ${esc(profile.label)} · appliqué à l’ensemble`}
       </div>
+
+      ${!finalized ? `
+        <div class="fiscal-choose" style="border-color:#2f73c9;background:#eef6ff;">
+          <strong>DEVISE D’ENCAISSEMENT · CHOIX LIBRE</strong>
+          <div>Le serveur choisit la devise la plus pratique. Le pays fiscal reste indépendant.</div>
+          <div class="fiscal-grid">
+            <button type="button" class="fiscal-btn" data-payment-currency="EUR" style="${profile.currency==="EUR"?"background:#111;color:#fff;border-color:#111;":""}">EUR · €</button>
+            <button type="button" class="fiscal-btn" data-payment-currency="CHF" style="${profile.currency==="CHF"?"background:#111;color:#fff;border-color:#111;":""}">CHF</button>
+          </div>
+        </div>` : `
+        <div class="pay-profile">Devise du paiement : ${esc(profile.currency)}</div>`}
 
       ${paymentStatusBlock}
 
@@ -8640,8 +8675,8 @@ function openPayment(force=false){
           <strong>CONFIGURATION CAISSE REQUISE</strong>
           <div>Choisissez le pays fiscal avant le premier encaissement.</div>
           <div class="fiscal-grid">
-            <button type="button" class="fiscal-btn" data-fiscal-country="FR">FRANCE · EUR</button>
-            <button type="button" class="fiscal-btn" data-fiscal-country="CH">SUISSE · CHF</button>
+            <button type="button" class="fiscal-btn" data-fiscal-country="FR">FRANCE</button>
+            <button type="button" class="fiscal-btn" data-fiscal-country="CH">SUISSE</button>
           </div>
         </div>` : ""}
 
@@ -8662,6 +8697,15 @@ function openPayment(force=false){
       if(ICHEF_PAYMENT_PROCESSING)return;
       btn.disabled=true;
       await saveFiscalProfileFromPayment(btn.dataset.fiscalCountry);
+      openPayment(true);
+    });
+  });
+
+  overlay.querySelectorAll("[data-payment-currency]").forEach(btn=>{
+    btn.addEventListener("click",async()=>{
+      if(ICHEF_PAYMENT_PROCESSING)return;
+      btn.disabled=true;
+      await savePaymentCurrencyFromPayment(btn.dataset.paymentCurrency);
       openPayment(true);
     });
   });
@@ -9167,16 +9211,21 @@ function fiscalProfile(){
   const s=STATE.settings&&typeof STATE.settings==="object"?STATE.settings:{};
   const nested=s.fiscal&&typeof s.fiscal==="object"?s.fiscal:{};
   const rawCountry=s.fiscalCountry||s.countryCode||s.country||s.pays||nested.fiscalCountry||nested.countryCode||nested.country||nested.pays||"";
-  const currency=text(s.currency||s.devise||nested.currency||nested.devise||"").toUpperCase();
   let country=fiscalCountryCode(rawCountry);
-  if(!country){
-    if(currency==="CHF")country="CH";
-    else if(currency==="EUR")country="FR";
-  }
   if(country!=="FR"&&country!=="CH")country="UNSET";
+
+  /* La devise est volontairement indépendante du pays fiscal.
+     Une configuration CH peut encaisser/afficher en EUR et une configuration FR en CHF
+     si le serveur le choisit. Si aucune devise n'a encore été choisie, on conserve
+     seulement un défaut d'affichage compatible avec les anciennes installations. */
+  let currency=text(s.currency||s.devise||nested.currency||nested.devise||"").toUpperCase();
+  if(currency!=="EUR"&&currency!=="CHF"){
+    currency=country==="CH"?"CHF":"EUR";
+  }
+
   return {
     country,
-    currency:country==="CH"?"CHF":country==="FR"?"EUR":(currency||"EUR"),
+    currency,
     label:country==="FR"?"FRANCE":country==="CH"?"SUISSE":"À CONFIGURER"
   };
 }
