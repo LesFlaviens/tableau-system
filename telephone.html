@@ -3918,6 +3918,49 @@ html.ichef-phone-only-blocked #ichefDeviceBlock{position:fixed;inset:0;z-index:2
 .ticket-row.served-line .line-state{color:#5f6b70 !important}
 @keyframes ichefReadyHold09{from{transform:scaleX(0)}to{transform:scaleX(1)}}
 </style>
+
+<style id="ichef-payment-hotfix-v1">
+/* ===== HOTFIX PAIEMENT : ouverture fiable au-dessus de RÉSUMÉ / COMMANDE ===== */
+body.ichef-payment-open #sheet,
+body.ichef-payment-open #sheet.open{
+  display:flex !important;
+  visibility:visible !important;
+  opacity:1 !important;
+  pointer-events:auto !important;
+  z-index:2147483000 !important;
+}
+body.ichef-payment-open #sheet .sheet-card{
+  position:relative !important;
+  z-index:2147483001 !important;
+  pointer-events:auto !important;
+}
+#sheet.ichef-payment-sheet .sheet-card{
+  border:3px solid #e2b84e !important;
+}
+#sheet.ichef-payment-sheet [data-pay]{
+  min-height:72px !important;
+  font-size:18px !important;
+  touch-action:manipulation !important;
+  pointer-events:auto !important;
+}
+#sheet.ichef-payment-sheet [data-pay].payment-busy{
+  opacity:.55 !important;
+  pointer-events:none !important;
+}
+.payment-inline-error{
+  display:none;
+  margin:10px 0 0;
+  padding:11px 12px;
+  border:2px solid #ff6262;
+  border-radius:10px;
+  background:#260b0b;
+  color:#fff;
+  font-size:12px;
+  font-weight:900;
+  line-height:1.3;
+}
+.payment-inline-error.show{display:block !important}
+</style>
 </head>
 <body>
 
@@ -6272,7 +6315,16 @@ function openSheet(title,html){
 }
 function closeSheet(){
   stopLivePlan();
-  $("sheet").classList.remove("open","product-seat-picker-open","product-cooking-picker-open","plan-interactive-open");
+  document.body.classList.remove("ichef-payment-open");
+  const sheet=$("sheet");
+  if(sheet){
+    sheet.classList.remove("open","product-seat-picker-open","product-cooking-picker-open","plan-interactive-open","ichef-payment-sheet");
+    sheet.style.removeProperty("z-index");
+    sheet.style.removeProperty("display");
+    sheet.style.removeProperty("visibility");
+    sheet.style.removeProperty("opacity");
+    sheet.style.removeProperty("pointer-events");
+  }
 }
 $("sheetClose").onclick=closeSheet;$("sheet").addEventListener("click",e=>{if(e.target===$("sheet"))closeSheet()});
 
@@ -8426,40 +8478,131 @@ function openOrderMore(){openSheet("TABLE "+STATE.currentTable,`<div class="acti
 function editNote(){if(!STATE.currentTable)return;const o=ensureOrder(STATE.currentTable),n=prompt("Note de service :",o.note||o.observation||"");if(n===null)return;o.note=text(n);saveCurrent(o,"Note de service");closeSheet()}
 
 function openPayment(){
-  if(!STATE.currentTable){toast("Ouvrez d’abord une table",true);return;}
-  const o=ensureOrder(STATE.currentTable),total=orderTotal(o),profile=fiscalProfile();
+  if(!STATE.currentTable){
+    toast("Ouvrez d’abord une table",true);
+    return;
+  }
+
+  const o=ensureOrder(STATE.currentTable);
+  const total=orderTotal(o);
+  const profile=fiscalProfile();
   const paid=text(o.paymentStatus||o.paymentDraft?.status).toUpperCase()==="PAYE";
-  openSheet("💳 CAISSE · TABLE "+STATE.currentTable,`
-    <div class="big-state"><div class="big gold">${money(total)}</div><div class="small">Profil fiscal ${esc(profile.label)} · ${esc(profile.currency)}</div></div>
-    <div class="action-grid">
-      <button class="action-btn green" data-pay="CARTE">💳 CARTE</button>
-      <button class="action-btn gold" data-pay="ESPÈCES">💶 ESPÈCES</button>
-      <button class="action-btn" data-pay="AUTRE">••• AUTRE</button>
-      <button class="action-btn purple" data-pay="">⏳ EN ATTENTE</button>
+  const validation=fiscalValidateOrder(o,{forPayment:true});
+  const paymentBlocked=!validation.ok;
+  const blockMessage=paymentBlocked
+    ? `Paiement non validable : ${validation.errors.map(esc).join(" · ")}`
+    : "";
+
+  openSheet("CAISSE · TABLE "+STATE.currentTable,`
+    <div class="big-state">
+      <div class="big gold">${money(total)}</div>
+      <div class="small">Profil fiscal ${esc(profile.label)} · ${esc(profile.currency)}</div>
     </div>
-    <button class="action-btn gold" style="width:100%;margin-top:9px;min-height:56px" data-cash-receipt ${paid?"":"disabled"}>🧾 ${paid?"IMPRIMER / RÉIMPRIMER LE TICKET CLIENT":"TICKET CLIENT DISPONIBLE APRÈS PAIEMENT"}</button>
+
+    <div class="action-grid">
+      <button class="action-btn green" type="button" data-pay="CARTE">CARTE</button>
+      <button class="action-btn gold" type="button" data-pay="ESPÈCES">ESPÈCES</button>
+      <button class="action-btn" type="button" data-pay="AUTRE">AUTRE</button>
+      <button class="action-btn purple" type="button" data-pay="">EN ATTENTE</button>
+    </div>
+
+    <div id="paymentInlineError" class="payment-inline-error ${paymentBlocked?"show":""}">${blockMessage}</div>
+
+    <button class="action-btn gold" type="button" style="width:100%;margin-top:9px;min-height:56px" data-cash-receipt ${paid?"":"disabled"}>
+      ${paid?"IMPRIMER / RÉIMPRIMER LE TICKET CLIENT":"TICKET CLIENT DISPONIBLE APRÈS PAIEMENT"}
+    </button>
     <div class="action-grid" style="margin-top:8px">
-      <button class="action-btn green" data-fiscal-ticket-print ${paid?"":"disabled"}>IMPRIMER FISCAL</button>
-      <button class="action-btn" data-fiscal-print-history>HISTORIQUE FISCAL</button>
+      <button class="action-btn green" type="button" data-fiscal-ticket-print ${paid?"":"disabled"}>IMPRIMER FISCAL</button>
+      <button class="action-btn" type="button" data-fiscal-print-history>HISTORIQUE FISCAL</button>
     </div>
     <div style="margin-top:7px;color:#98a1a4;font-size:9px;text-align:center">Imprimante CAISSE configurable dans OUTILS → IMPRIMANTES.</div>`);
-  $("sheetBody").querySelectorAll("[data-pay]").forEach(b=>b.onclick=async()=>{
-    const ok=await recordPayment(b.dataset.pay||null);if(ok){closeSheet();if(document.body.classList.contains("summary-open"))renderSummary()}
+
+  /* Le panneau paiement doit toujours passer devant l'écran 2 ou 3. */
+  document.body.classList.add("ichef-payment-open");
+  const paymentSheet=$("sheet");
+  if(paymentSheet){
+    paymentSheet.classList.add("ichef-payment-sheet","open");
+    paymentSheet.style.setProperty("z-index","2147483000","important");
+    paymentSheet.style.setProperty("display","flex","important");
+    paymentSheet.style.setProperty("visibility","visible","important");
+    paymentSheet.style.setProperty("opacity","1","important");
+    paymentSheet.style.setProperty("pointer-events","auto","important");
+  }
+
+  const showPaymentError=(message)=>{
+    const box=$("paymentInlineError");
+    if(box){
+      box.textContent=message;
+      box.classList.add("show");
+    }
+    toast(message,true);
+  };
+
+  $("sheetBody").querySelectorAll("[data-pay]").forEach(btn=>{
+    btn.addEventListener("click",async e=>{
+      e.preventDefault();
+      e.stopPropagation();
+      if(btn.dataset.busy==="1")return;
+
+      const method=btn.dataset.pay||null;
+      btn.dataset.busy="1";
+      btn.classList.add("payment-busy");
+      const oldText=btn.textContent;
+      btn.textContent=method?"VALIDATION…":"ENREGISTREMENT…";
+
+      try{
+        const ok=await recordPayment(method);
+        if(ok){
+          closeSheet();
+          if(document.body.classList.contains("summary-open"))renderSummary();
+          return;
+        }
+
+        const latest=STATE.currentTable?ensureOrder(STATE.currentTable):o;
+        const latestValidation=method?fiscalValidateOrder(latest,{forPayment:true}):{ok:true,errors:[]};
+        if(method && !latestValidation.ok){
+          showPaymentError("Paiement bloqué : "+latestValidation.errors.join(" · "));
+        }else{
+          showPaymentError("Le paiement n’a pas pu être finalisé. La caisse reste ouverte pour réessayer.");
+        }
+      }catch(err){
+        console.error("[iCHEF PAIEMENT]",err);
+        showPaymentError("Erreur paiement : "+(err?.message||String(err)||"échec"));
+      }finally{
+        btn.dataset.busy="0";
+        btn.classList.remove("payment-busy");
+        btn.textContent=oldText;
+      }
+    },{passive:false});
   });
+
   $("sheetBody").querySelector("[data-cash-receipt]")?.addEventListener("click",async()=>{
     const btn=$("sheetBody")?.querySelector("[data-cash-receipt]");
-    if(!btn)return;const old=btn.textContent;btn.disabled=true;btn.textContent="IMPRESSION…";
-    try{await printCashReceipt(o,{duplicate:true});toast("🧾 Ticket client envoyé à la caisse")}
-    catch(e){toast("Ticket caisse : "+(e?.message||"échec"),true)}
-    finally{setTimeout(()=>{btn.disabled=false;btn.textContent=old},1800)}
+    if(!btn)return;
+    const old=btn.textContent;
+    btn.disabled=true;
+    btn.textContent="IMPRESSION…";
+    try{
+      await printCashReceipt(o,{duplicate:true});
+      toast("Ticket client envoyé à la caisse");
+    }catch(e){
+      showPaymentError("Ticket caisse : "+(e?.message||"échec"));
+    }finally{
+      setTimeout(()=>{btn.disabled=false;btn.textContent=old},1800);
+    }
   });
+
   $("sheetBody").querySelector("[data-fiscal-ticket-print]")?.addEventListener("click",async()=>{
-    try{const ref=await printCurrentFiscalTicket();toast(`✓ Copie fiscale ${ref} envoyée à l'impression`)}
-    catch(e){toast("Impression fiscale : "+(e?.message||"échec"),true)}
+    try{
+      const ref=await printCurrentFiscalTicket();
+      toast(`Copie fiscale ${ref} envoyée à l'impression`);
+    }catch(e){
+      showPaymentError("Impression fiscale : "+(e?.message||"échec"));
+    }
   });
+
   $("sheetBody").querySelector("[data-fiscal-print-history]")?.addEventListener("click",()=>openFiscalPrintHistory("day",""));
 }
-
 
 async function closeTable(options={}){
   if(!STATE.currentTable)return false;
@@ -9999,6 +10142,16 @@ $("summaryClose").onclick=closeSummary;
 $("summaryModify").onclick=closeSummary;
 $("summaryKitchen").onclick=async()=>{await sendKitchen();renderSummary()};
 $("summaryCash").onclick=openPayment;
+
+/* HOTFIX PAIEMENT : délégation de secours. Même si un rendu remplace un bouton,
+   un appui sur n'importe quel accès PAIEMENT ouvre toujours la caisse. */
+document.addEventListener("click",e=>{
+  const trigger=e.target.closest?.("#summaryCash,#btnPaymentDirect,#btnHeadPayment");
+  if(!trigger)return;
+  e.preventDefault();
+  e.stopPropagation();
+  openPayment();
+},true);
 $("toolRush").onclick=openRush;
 $("toolWho").onclick=openWho;
 $("toolDisplay").onclick=openDisplay;
