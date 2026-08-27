@@ -11627,39 +11627,50 @@ setTimeout(() => {
   });
 })();
 </script>
-  <!-- CORRECTION : AFFICHAGE DU STATUT "SERVEUR À JOUR" DÈS L'OUVERTURE DE LA TABLE -->
+<!-- CORRECTION : AFFICHAGE DU STATUT "SERVEUR À JOUR" DÈS L'OUVERTURE DE LA TABLE -->
 <script id="correction-serveur-a-jour">
-setTimeout(() => {
-  if (typeof window.renderOrder !== "function") return;
+setInterval(() => {
+  const badge = document.getElementById("orderSyncState");
+  
+  // Si on n'est pas sur l'écran de commande, on ne fait rien
+  if (!badge || !STATE.currentTable || !document.body.classList.contains("order-open")) return;
 
-  // 1. Surcharge de renderOrder pour évaluer le statut réseau instantanément
-  const originalRenderOrder = window.renderOrder;
-  window.renderOrder = function() {
-    originalRenderOrder();
+  const table = STATE.currentTable;
+  
+  // Vérification de l'état réseau (en cours d'envoi ou échec)
+  const hasFailed = typeof ICHEF_FAILED_WRITES !== 'undefined' && ICHEF_FAILED_WRITES.has(table);
+  const isPending = typeof ICHEF_LOCAL_PENDING !== 'undefined' && ICHEF_LOCAL_PENDING.has(table);
+  const isQueued = typeof ICHEF_TABLE_WRITE_QUEUES !== 'undefined' && ICHEF_TABLE_WRITE_QUEUES.has(table);
 
-    if (STATE.currentTable) {
-      if (typeof ICHEF_FAILED_WRITES !== 'undefined' && ICHEF_FAILED_WRITES.has(STATE.currentTable)) {
-        setOrderSyncState("✕ ÉCHEC SYNCHRO", "bad");
-      } else if (typeof ICHEF_LOCAL_PENDING !== 'undefined' && (ICHEF_LOCAL_PENDING.has(STATE.currentTable) || ICHEF_TABLE_WRITE_QUEUES.has(STATE.currentTable))) {
-        setOrderSyncState("● SYNCHRONISATION…", "pending");
-      } else {
-        setOrderSyncState("✓ SERVEUR À JOUR", "good");
-      }
-    }
-  };
+  // Vérification de la présence d'articles dans la commande
+  const o = STATE.currentOrder || (typeof getOrder === 'function' ? getOrder(table) : null);
+  const activeItems = (o && Array.isArray(o.items)) ? o.items.filter(i => i && !i.cancelled) : [];
+  const hasItems = activeItems.length > 0;
 
-  // 2. Maintien du statut à jour lors des réceptions silencieuses du serveur
-  const originalApplyServerState = window.applyServerState;
-  window.applyServerState = function(state, source) {
-    if (originalApplyServerState) originalApplyServerState(state, source);
-    
-    if (STATE.currentScreen === "order" && STATE.currentTable) {
-      if (!ICHEF_LOCAL_PENDING.has(STATE.currentTable) && !ICHEF_FAILED_WRITES.has(STATE.currentTable)) {
-        setOrderSyncState("✓ SERVEUR À JOUR", "good");
-      }
-    }
-  };
-}, 500);
+  let newText = "";
+  let newClass = "order-sync-state ";
+
+  // Détermination du statut
+  if (hasFailed) {
+    newText = "✕ ÉCHEC SYNCHRO";
+    newClass += "bad"; // Passe en rouge
+  } else if (isPending || isQueued) {
+    newText = "● SYNCHRONISATION…";
+    // Reste gris neutre pendant l'envoi
+  } else if (hasItems) {
+    newText = "✓ SERVEUR À JOUR";
+    newClass += "good"; // Passe en vert uniquement s'il y a des plats sauvegardés
+  } else {
+    newText = "COMMANDE VIDE";
+    // Reste gris si la table vient d'être ouverte et est vide
+  }
+
+  // On applique seulement s'il y a un changement pour éviter les clignotements visuels
+  if (badge.textContent !== newText) {
+    badge.textContent = newText;
+    badge.className = newClass;
+  }
+}, 200); // S'exécute 5 fois par seconde
 </script>
 </body>
 </html>
