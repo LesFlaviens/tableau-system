@@ -10617,278 +10617,567 @@ window.__ICHEF_PHONE_DEBUG__={
 
 
 
-/* ---------------- SÉPARATEUR MENU / TICKET PAD ---------------- */
-const ORDER_SPLIT_STORAGE_KEY="ichef_order_menu_split_v10"; 
-const ORDER_SPLIT_MIN=15; 
-const ORDER_SPLIT_MAX=85; 
-let orderDividerDragging=false;
+<!-- =========================================================
+     FORTERESSE : ÉCRASEMENT MASTER (TITRE COURT, PAIEMENT, CHAISES, OBS)
+     ========================================================= -->
+<script id="ichef-master-overrides">
+setTimeout(() => {
+    
+    // Fonction utilitaire pour couper le texte à 5 mots max
+    window.getShortName = function(fullName) {
+        const words = String(fullName || "").split(/\s+/).filter(Boolean);
+        return words.slice(0, 5).join(" ") + (words.length > 5 ? "..." : "");
+    };
 
-function clampOrderSplit(value){
-  const n=Number(value);
-  if(!Number.isFinite(n))return 52;
-  return Math.max(ORDER_SPLIT_MIN,Math.min(ORDER_SPLIT_MAX,n));
-}
+    /* ===================================================
+       1. LOGIQUE DES CHAISES EXACTES & TITRES COURTS
+       =================================================== */
+    window.addExtraSeatAndRefresh = async function() {
+        if (!STATE.currentTable) return;
+        const o = STATE.currentOrder || ensureOrder(STATE.currentTable);
+        o.pax = Math.max(1, Number(o.pax) || 1) + 1;
+        
+        if (typeof saveCurrent === 'function') {
+            await saveCurrent(o, "Ajout d'une chaise supplémentaire", {immediate: true});
+        }
+        
+        if (document.getElementById("sheet").classList.contains("product-seat-picker-open")) {
+            if (typeof pendingProductSeatChoice !== "undefined" && pendingProductSeatChoice && pendingProductSeatChoice.product) {
+                openProductSeatPicker(pendingProductSeatChoice.product, pendingProductSeatChoice.sourceButton);
+            }
+        } else {
+            openWho();
+        }
+        if (typeof scheduleRender === 'function') scheduleRender();
+    };
 
-function setOrderSplit(value,persist=true){
-  const pct=clampOrderSplit(value);
-  document.documentElement.style.setProperty("--order-menu-split",pct+"%");
-  const divider=$("orderDivider");
-  if(divider){
-    divider.setAttribute("aria-valuemin",String(ORDER_SPLIT_MIN));
-    divider.setAttribute("aria-valuemax",String(ORDER_SPLIT_MAX));
-    divider.setAttribute("aria-valuenow",String(Math.round(pct)));
-    divider.title=`Menu ${Math.round(pct)} % · Ticket ${Math.round(100-pct)} %`;
-  }
-  if(persist){
-    try{STORAGE.set(ORDER_SPLIT_STORAGE_KEY,String(pct))}catch(_){}
-  }
-}
+    window.openWho = function() {
+        if (!STATE.currentTable) {
+            if(typeof toast === 'function') toast("Ouvrez d’abord une table", true);
+            return;
+        }
 
-function orderSplitFromPointer(clientY){
-  const main=document.querySelector(".order-main");
-  if(!main)return 52;
-  const rect=main.getBoundingClientRect();
-  if(rect.height<=0)return 52;
-  return ((clientY-rect.top)/rect.height)*100;
-}
+        const o = STATE.currentOrder || ensureOrder(STATE.currentTable);
+        const pax = Math.max(1, Number(o.pax) || 1);
+        const active = Math.max(1, Math.min(pax, Number(STATE.activeSeat) || 1));
+        const items = (o.items || []).filter(i => i && !i.cancelled);
 
-function stopOrderDividerDrag(){
-  if(!orderDividerDragging)return;
-  orderDividerDragging=false;
-  const divider=$("orderDivider");
-  if(divider)divider.classList.remove("dragging");
-}
+        let seatButtons = Array.from({length: pax}, (_, idx) => {
+            const seat = idx + 1;
+            const count = items.filter(i => itemSeat(i) === seat).reduce((sum, i) => sum + itemQty(i), 0);
+            const activeClass = seat === active ? " active" : "";
+            return `<button type="button" class="who-seat-btn${activeClass}" data-who-seat="${seat}" data-seat="${seat}">
+                      C${seat}
+                      <small>${count} article${count>1?"s":""}</small>
+                    </button>`;
+        }).join("");
 
-(function initOrderDivider(){
-  const divider=$("orderDivider");
-  if(!divider)return;
+        seatButtons += `<button type="button" class="who-seat-btn extra" onclick="addExtraSeatAndRefresh()" style="border-color:#b8bcc1; color:#555; background:#e9e9e9;">
+            + CHAISE
+            <small>Ajouter 1 pers.</small>
+        </button>`;
 
-  let saved=52;
-  try{
-    saved=Number(STORAGE.get(ORDER_SPLIT_STORAGE_KEY,"52"))||52;
-  }catch(_){}
-  setOrderSplit(saved,false);
+        const itemRows = items.length ? items.map(i => {
+            const seat = itemSeat(i) || active;
+            const q = itemQty(i);
+            const sent = lineFired(i);
+            const ready = lineReady(i);
+            const status = ready ? "PRÊT" : sent ? "EN PRODUCTION" : "À ENVOYER";
+            
+            return `<div class="who-line">
+              <div>
+                <div class="who-line-name">${seatBadgeHTML(seat)}${q>1?`${q}× `:""}${esc(window.getShortName(itemName(i)))}</div>
+                <div class="who-line-meta">${esc(destinationLabel(i))}${i.cooking?" · "+esc(i.cooking):""} · ${status}</div>
+              </div>
+              <select data-guest-line="${esc(lineKey(i))}" aria-label="Attribuer ${esc(itemName(i))} à un convive">
+                ${Array.from({length: Math.max(pax, seat)}, (_, n) => {
+                  const s = n + 1;
+                  return `<option value="${s}" ${seat === s ? "selected" : ""}>C${s}</option>`;
+                }).join("")}
+              </select>
+            </div>`;
+        }).join("") : `<div class="who-empty">Choisissez d'abord le convive. Les prochains plats touchés seront automatiquement attribués à ce C.</div>`;
 
-  divider.addEventListener("pointerdown",e=>{
-    orderDividerDragging=true;
-    divider.classList.add("dragging");
-    try{divider.setPointerCapture(e.pointerId)}catch(_){}
-    setOrderSplit(orderSplitFromPointer(e.clientY),false);
-    e.preventDefault();
-  });
+        openSheet(
+            "QUI MANGE QUOI · TABLE " + STATE.currentTable,
+            `<div class="who-active-card">
+               <div class="who-active-title">CONVIVE ACTIF : ${seatBadgeHTML(active)}</div>
+               <div class="who-active-sub">Tous les prochains plats seront attribués à C${active}. La table comporte ${pax} chaises.</div>
+             </div>
+             <div class="who-seat-grid">${seatButtons}</div>
+             <div class="who-section-title">PLATS DE LA TABLE</div>
+             ${itemRows}`
+        );
 
-  divider.addEventListener("pointermove",e=>{
-    if(!orderDividerDragging)return;
-    setOrderSplit(orderSplitFromPointer(e.clientY),false);
-    e.preventDefault();
-  });
+        document.getElementById("sheetBody").querySelectorAll("[data-who-seat]").forEach(btn => {
+            btn.addEventListener("click", () => {
+                const seat = Math.max(1, Number(btn.dataset.whoSeat) || 1);
+                if (typeof setActiveSeat === 'function') setActiveSeat(seat);
+                openWho();
+            });
+        });
 
-  divider.addEventListener("pointerup",e=>{
-    if(!orderDividerDragging)return;
-    setOrderSplit(orderSplitFromPointer(e.clientY),true);
-    stopOrderDividerDrag();
-    try{divider.releasePointerCapture(e.pointerId)}catch(_){}
-    e.preventDefault();
-  });
+        document.getElementById("sheetBody").querySelectorAll("[data-guest-line]").forEach(sel => {
+            sel.addEventListener("change", async () => {
+                const oo = ensureOrder(STATE.currentTable);
+                const it = oo.items.find(x => lineKey(x) === sel.dataset.guestLine);
+                if (!it) return;
 
-  divider.addEventListener("pointercancel",stopOrderDividerDrag);
+                const oldSeat = itemSeat(it);
+                const newSeat = Math.max(1, Number(sel.value) || 1);
 
-  /* Double tap/clic = retour 50/50 */
-  divider.addEventListener("dblclick",()=>{
-    setOrderSplit(52,true);
-    toast("Menu / ticket réinitialisé");
-  });
+                it.guest = seatLabel(newSeat);
+                it.guestName = seatLabel(newSeat);
+                it.seat = newSeat;
+                it.guestSeat = newSeat;
+                it.seatNumber = newSeat;
 
-  /* PAD avec clavier */
-  divider.addEventListener("keydown",e=>{
-    const current=parseFloat(
-      getComputedStyle(document.documentElement)
-        .getPropertyValue("--order-menu-split")
-    )||52;
+                const wasSent = lineFired(it);
+                const ok = await saveCurrent(oo, "Attribution convive C" + newSeat, {immediate: wasSent});
+                if (!ok) return;
 
-    if(e.key==="ArrowUp"){
-      setOrderSplit(current-4,true);
-      e.preventDefault();
-    }
-    if(e.key==="ArrowDown"){
-      setOrderSplit(current+4,true);
-      e.preventDefault();
-    }
-    if(e.key==="Home"){
-      setOrderSplit(ORDER_SPLIT_MIN,true);
-      e.preventDefault();
-    }
-    if(e.key==="End"){
-      setOrderSplit(ORDER_SPLIT_MAX,true);
-      e.preventDefault();
-    }
-  });
-})();
+                if (wasSent && oldSeat !== newSeat) {
+                    if (typeof productionAlert === 'function') await productionAlert(it, "CONVIVE", `C${oldSeat || "?"} → C${newSeat}`);
+                }
 
-/* ---------------- APERÇU V3 : aucune écriture serveur ---------------- */
-function buildDemoState(){
-  STATE.demo=true;
-  STATE.authenticated=true;
-  STATE.tenantID="DEMO_ICHEF";
-  STATE.pin="0000";
-  STATE.role="SERVEUR";
-  STATE.plan="ESSENTIEL";
-  STATE.settings={currency:"CHF",fiscalCountry:"CH"};
+                STATE.lastLineKey = lineKey(it);
+                if (typeof renderTicket === 'function') renderTicket();
+                openWho();
+            });
+        });
+    };
 
-  const rooms=["Salle Principale","Terrasse","Bar"];
-  const tables=[];
-  let n=1;
-  for(let r=0;r<rooms.length;r++){
-    const count=r===0?16:r===1?8:6;
-    for(let i=0;i<count;i++){
-      tables.push({
-        id:"T"+n,label:"T"+n,room:rooms[r],pax:(i%4)+2,
-        l:(i%4)*125+40,t:Math.floor(i/4)*115+40,w:95,h:82
-      });
-      n++;
-    }
-  }
+    window.openProductSeatPicker = function(product, sourceButton = null) {
+        if(!STATE.currentTable || !product) return;
+        if(typeof pendingProductSeatChoice !== "undefined") {
+            pendingProductSeatChoice = {product, sourceButton};
+        }
 
-  STATE.activeOrders={
-    ARCHITECTURE:{data:{
-      rooms,tables,zones:[
-        {id:"z1",label:"TERRASSE",room:"Terrasse",l:20,t:20,w:520,h:300},
-        {id:"z2",label:"BAR / LOUNGE",room:"Bar",l:20,t:20,w:520,h:280},
-        {id:"z3",label:"SALLE",room:"Salle Principale",l:20,t:20,w:520,h:420}
-      ]
-    }},
-    SETTINGS_MASTER:{data:{currency:"CHF",fiscalCountry:"CH"}},
-    MENU_MASTER:{data:{
-      "Entrées":[
-        {id:"salade",name:"Salade César",price:14,category:"Entrées",vatRate:8.1},
-        {id:"soupe",name:"Soupe du jour",price:10,category:"Entrées",vatRate:8.1},
-        {id:"saumon",name:"Saumon fumé",price:18,category:"Entrées",vatRate:8.1}
-      ],
-      "Plats":[
-        {id:"entrecote",name:"Entrecôte",price:32,category:"Plats",vatRate:8.1},
-        {id:"perche",name:"Filets de perche",price:28,category:"Plats",vatRate:8.1},
-        {id:"burger",name:"Burger maison",price:22,category:"Plats",vatRate:8.1},
-        {id:"risotto",name:"Risotto",price:24,category:"Plats",vatRate:8.1},
-        {id:"poulet",name:"Poulet rôti",price:26,category:"Plats",vatRate:8.1},
-        {id:"vege",name:"Assiette végétale",price:21,category:"Plats",vatRate:8.1}
-      ],
-      "Desserts":[
-        {id:"fondant",name:"Fondant chocolat",price:11,category:"Desserts",vatRate:8.1},
-        {id:"tarte",name:"Tarte du jour",price:10,category:"Desserts",vatRate:8.1}
-      ]
-    }},
-    MENU_MASTER_BAR:{data:{
-      "Boissons":[
-        {id:"eau",name:"Eau minérale",price:6,category:"Boissons",vatRate:8.1},
-        {id:"vin",name:"Verre de vin",price:9,category:"Boissons",vatRate:8.1},
-        {id:"cocktail",name:"Cocktail maison",price:15,category:"Boissons",vatRate:8.1}
-      ]
-    }},
-    RESERVATIONS_MASTER:{data:[
-      {name:"Mme Martin",tableId:"T4",time:"19:30",pax:4,status:"confirmed"},
-      {name:"M. Dubois",tableId:"T8",time:"20:00",pax:2,status:"confirmed"}
-    ]},
-    T2:{
-      tableId:"T2",status:"sent",pax:2,createdAt:Date.now()-12*60000,items:[
-        {lineId:"d1",productId:"entrecote",n:"Entrecôte",name:"Entrecôte",p:32,price:32,qty:1,category:"Plats",dest:"cuisine",course:"PLATS",seat:1,guestSeat:1,seatNumber:1,guestName:"C1",guest:"C1",cooking:"SAIGNANT",isSent:true,fired:true,sentAt:Date.now()-10*60000},
-        {lineId:"d2",productId:"perche",n:"Filets de perche",name:"Filets de perche",p:28,price:28,qty:1,category:"Plats",dest:"cuisine",course:"PLATS",seat:2,guestSeat:2,seatNumber:2,guestName:"C2",guest:"C2",isSent:true,fired:true,sentAt:Date.now()-10*60000},
-        {lineId:"d3",productId:"eau",n:"Eau minérale",name:"Eau minérale",p:6,price:6,qty:1,category:"Boissons",dest:"bar",course:"BOISSONS",seat:1,guestSeat:1,seatNumber:1,guestName:"C1",guest:"C1",isSent:true,fired:true,ready:true,status:"ready"}
-      ]
-    },
-    T6:{
-      tableId:"T6",status:"sent",pax:4,createdAt:Date.now()-27*60000,items:[
-        {lineId:"x1",name:"Burger maison",price:22,qty:2,category:"Plats",fired:true,sentAt:Date.now()-25*60000},
-        {lineId:"x2",name:"Risotto",price:24,qty:2,category:"Plats",fired:true,sentAt:Date.now()-25*60000}
-      ]
-    }
-  };
+        const o = STATE.currentOrder || ensureOrder(STATE.currentTable);
+        const pax = Math.max(1, Number(o.pax) || 1);
+        const active = Math.max(1, Math.min(pax, Number(STATE.activeSeat) || 1));
+        const counts = typeof productSeatCounts === 'function' ? productSeatCounts() : Array(10).fill(0);
 
-  STATE.activeOrders=normalizeServerOrdersMap(STATE.activeOrders);
-  applyDerived();
-  STATE.room="Salle Principale";
-}
+        // NOUVEAU : On coupe le nom du produit à 5 mots max
+        const shortName = window.getShortName(product.name);
 
-function enterDemo(screen="tables"){
-  buildDemoState();
-  $("login").classList.add("hidden");
-  $("app").classList.remove("hidden");
-  $("tools").classList.remove("hidden");
-  $("demoRibbon").classList.remove("hidden");
-  document.body.classList.add("demo-mode");
-  applyDisplay("normal");
-  scheduleRender();
+        let seatButtons = Array.from({length: pax}, (_, idx) => {
+            const seat = idx + 1;
+            const current = seat === active ? " active" : "";
+            const count = counts[seat] || 0;
+            return `<button type="button" class="who-seat-btn${current}" data-product-seat="${seat}" data-seat="${seat}">
+                      C${seat}
+                      <small>${count} sélection${count > 1 ? "s" : ""}</small>
+                    </button>`;
+        }).join("");
 
-  if(screen==="order"){
-    openOrder("T2");
-  }else if(screen==="summary"){
-    openOrder("T2");
-    openSummary();
-  }else{
-    $("screenLabel").textContent="ÉCRAN 1 · TABLES";
-  }
-}
+        seatButtons += `<button type="button" class="who-seat-btn extra" onclick="addExtraSeatAndRefresh()" style="border-color:#b8bcc1; color:#555; background:#e9e9e9;">
+            + CHAISE
+            <small>Ajouter 1 pers.</small>
+        </button>`;
 
-$("previewBtn").addEventListener("click",()=>enterDemo("tables"));
+        openSheet(
+            "QUI MANGE ? · " + esc(shortName),
+            `<div class="who-active-card product-seat-choice-card">
+               <div class="who-active-title" style="white-space: normal; line-height: 1.1;">${esc(shortName)}</div>
+               <div class="who-active-sub">
+                 ${typeof money==='function'?money(product.price):product.price} · La table a ${pax} chaise(s). Touchez le convive pour ajouter le plat.
+               </div>
+             </div>
+             <div class="who-seat-grid product-seat-choice-grid">${seatButtons}</div>`
+        );
 
-const demoParams=new URLSearchParams(location.search);
-if(demoParams.get("demo")==="1"){
-  window.addEventListener("DOMContentLoaded",()=>{
-    enterDemo(demoParams.get("screen")||"tables");
-  },{once:true});
-}
+        document.getElementById("sheet").classList.add("product-seat-picker-open");
 
-/* ---------------- BOOT ---------------- */
-async function bootApp(){
-  applyDisplay(STATE.display);
-  autoDisplay();
-  setConnection(navigator.onLine?"CONNEXION SERVEUR":"HORS LIGNE",navigator.onLine?"warn":"bad");
+        document.getElementById("sheetBody").querySelectorAll("[data-product-seat]").forEach(btn => {
+            btn.addEventListener("click", () => {
+                if(typeof confirmProductSeat === 'function') confirmProductSeat(Number(btn.dataset.productSeat));
+            });
+        });
+    };
 
-  /* DÉMARRAGE INSTANTANÉ : On affiche immédiatement l'interface grâce au cache local. */
-  scheduleRender();
+    window.productCookingPickerHTML = function(product, seat, profile){
+        const levels = Array.isArray(profile?.levels) ? profile.levels : [];
+        const shortName = window.getShortName(product.name);
+        
+        return `<div class="who-active-card product-seat-choice-card">
+            <div class="who-active-title" style="white-space: normal; line-height: 1.1;">${seatBadgeHTML(seat)} ${esc(shortName)}</div>
+            <div class="who-active-sub">
+              ${esc(profile?.label||"CUISSON")} · Choisissez la cuisson pour ${seatLabel(seat)}.
+              Le plat sera ajouté seulement après ce choix.
+            </div>
+          </div>
+          <div class="integrated-cooking-grid">
+            ${levels.map(level=>`<button type="button" class="integrated-cooking-btn" data-product-cooking="${esc(level)}">${esc(level)}</button>`).join("")}
+          </div>
+          <button type="button" class="integrated-cooking-back" data-back-to-seat>← CHANGER DE CONVIVE</button>`;
+    };
+      
+    window.openIntegratedProductCooking = function(product,seat,sourceButton=null){
+        const profile = typeof cookingProfileFor === 'function' ? cookingProfileFor(product) : {};
+        if(typeof pendingProductSeatChoice !== "undefined") {
+            pendingProductSeatChoice={product,sourceButton,seat};
+        }
+        
+        openSheet(
+          `QUI MANGE ? · ${seatLabel(seat)} · CUISSON`,
+          window.productCookingPickerHTML(product,seat,profile)
+        );
+        
+        const sheet = document.getElementById("sheet");
+        if(sheet) sheet.classList.add("product-seat-picker-open","product-cooking-picker-open");
 
-  /* Le temps réel démarre en parallèle. */
-  connectSocket();
+        const body = document.getElementById("sheetBody");
+        if(body){
+            body.querySelectorAll("[data-product-cooking]").forEach(btn=>{
+              btn.addEventListener("click",() => {
+                  if(typeof confirmProductCooking === 'function') confirmProductCooking(btn.dataset.productCooking);
+              });
+            });
+            const back=body.querySelector("[data-back-to-seat]");
+            if(back) back.onclick=() => window.openProductSeatPicker(product,sourceButton);
+        }
+    };
 
-  /* Suppression du "await" : la lecture HTTP se fait en tâche de fond sans bloquer l'écran. */
-  syncFull("initial");
+    /* ===================================================
+       2. OBSERVATION INTELLIGENTE (TABLE OU PLAT)
+       =================================================== */
+    const originalOpenObservationFast = window.openObservationFast;
+    
+    window.openObservationFast = function() {
+        if (!STATE.currentTable) {
+            if(typeof toast === 'function') toast("Ouvrez d’abord une table", true);
+            return;
+        }
+        
+        const o = STATE.currentOrder || (typeof ensureOrder === 'function' ? ensureOrder(STATE.currentTable) : null);
+        let hasItems = false;
+        if (o && o.items && Array.isArray(o.items)) {
+            hasItems = o.items.some(i => !i.cancelled && (i.qty > 0 || i.quantity > 0));
+        }
 
-  /* PERFORMANCE : les contrôles fiscaux sont repoussés à 2.5 secondes pour libérer le téléphone au lancement. */
-  setTimeout(()=>{
-    fiscalMaintenance().catch(err=>{
-      console.warn("[iCHEF FISCAL] contrôle différé",err);
-      STATE.fiscalChainState="A_VERIFIER";
-    });
-  },2500);
+        if (!hasItems) {
+            window.openTableNote();
+            return;
+        }
 
-  setInterval(()=>{
-    renderStatus();
-    if(STATE.currentTable){const age=$("orderAge");if(age)age.textContent=duration(orderCreated(STATE.currentOrder)||Date.now())}
-    updateToolBadges();
-    autoDisplay();
-  },1000);
+        if (typeof openSheet === "function") {
+            openSheet("OBSERVATION", `
+                <div class="action-grid" style="gap: 15px !important;">
+                    <button class="action-btn" onclick="triggerOriginalObs()" style="border: 3px solid #cfd2d5 !important; background: #ffffff !important; color: #111111 !important; min-height: 100px !important; font-size: 20px !important; font-weight: 950 !important;">
+                        SUR UN PLAT<br>
+                        <span style="font-size: 14px !important; color: #555555 !important; font-weight: 800 !important; display: block !important; margin-top: 8px !important;">Sans sel, sauce à part...</span>
+                    </button>
+                    <button class="action-btn" onclick="openTableNote()" style="border: 3px solid #ff9a45 !important; background: #fff7ef !important; color: #7a3708 !important; min-height: 100px !important; font-size: 20px !important; font-weight: 950 !important;">
+                        TABLE OCCUPÉE / POURQUOI<br>
+                        <span style="font-size: 14px !important; color: #555555 !important; font-weight: 800 !important; display: block !important; margin-top: 8px !important;">Staff, attente, VIP...</span>
+                    </button>
+                </div>
+            `);
+        }
+    };
 
-  /* Watchdog plus calme : Socket.IO est prioritaire, HTTP ne sert que de garde-fou. */
-  setInterval(()=>{
-    if(document.hidden||!navigator.onLine||STATE.syncing)return;
-    if(!STATE.lastServerAt||now()-STATE.lastServerAt>30000)syncFull("watchdog");
-  },15000);
+    window.triggerOriginalObs = function() {
+        if (typeof originalOpenObservationFast === "function") originalOpenObservationFast();
+    };
 
-  /* Les listeners online/offline/visibility existent déjà plus haut. On évite les doublons. */
-  window.addEventListener("focus",()=>{
-    if(navigator.onLine && (!STATE.lastServerAt||now()-STATE.lastServerAt>20000))syncFull("focus");
-  });
-}
+    window.openTableNote = function() {
+        const o = STATE.currentOrder || (typeof ensureOrder === 'function' ? ensureOrder(STATE.currentTable) : null);
+        const existing = o ? (o.note || o.observation || "") : "";
 
+        openSheet("POURQUOI CETTE TABLE EST OCCUPÉE ?", `
+            <div class="big-state" style="margin-bottom: 15px; border: 4px solid #cfd2d5 !important; border-radius: 16px !important; padding: 20px !important; background: #e9e9e9 !important;">
+              <div style="font-size: 18px; font-weight: 900; color: #111; line-height: 1.4;">
+                Indiquez le motif d'occupation (la table apparaîtra en rouge sur le plan) :
+              </div>
+            </div>
+            
+            <div class="quick-obs-grid" style="margin-bottom: 15px;">
+                <button class="quick-obs-btn" onclick="document.getElementById('tableNoteText').value = 'STAFF'" style="font-size: 18px !important;">STAFF</button>
+                <button class="quick-obs-btn" onclick="document.getElementById('tableNoteText').value = 'RÉSERVÉ'" style="font-size: 18px !important;">RÉSERVÉ</button>
+                <button class="quick-obs-btn" onclick="document.getElementById('tableNoteText').value = 'EN ATTENTE'" style="font-size: 18px !important;">EN ATTENTE</button>
+                <button class="quick-obs-btn" onclick="document.getElementById('tableNoteText').value = 'MÉNAGE'" style="font-size: 18px !important;">MÉNAGE</button>
+            </div>
+            
+            <textarea id="tableNoteText" class="quick-obs-text" placeholder="Ou tapez une autre raison ici (VIP, etc.)..." style="font-size: 18px !important; min-height: 100px !important;">${typeof esc==='function'?esc(existing):existing}</textarea>
+            
+            <button class="quick-obs-save" onclick="saveTableNote()" style="min-height: 60px !important; font-size: 20px !important; margin-top: 15px !important; background: #111 !important; color: #fff !important; border: 3px solid #111 !important;">✓ OCCUPER LA TABLE</button>
+        `);
+    };
 
+    window.saveTableNote = async function() {
+        const o = STATE.currentOrder || (typeof ensureOrder === 'function' ? ensureOrder(STATE.currentTable) : null);
+        if (!o) return;
+        
+        const noteValue = document.getElementById('tableNoteText').value;
+        o.note = noteValue;
+        o.observation = noteValue;
+        o.status = "pending";
 
-/* V16 — sécurité fiscale FR/CH renforcée 2026
-   IMPORTANT : le client renforce la traçabilité technique mais ne remplace pas
-   l'attestation/certification légale française ni les contrôles serveur. */
-/* V15 — pont UI Observation bas de page */
-const bottomObservation=document.getElementById("bottomObservation");
-if(bottomObservation)bottomObservation.addEventListener("click",()=>openObservationFast());
+        if (typeof saveCurrent === 'function') {
+            const ok = await saveCurrent(o, "Occupation Table : " + noteValue, {immediate: true});
+            if (ok) {
+                if (typeof closeSheet === 'function') closeSheet();
+                if (typeof toast === 'function') toast("✓ Table marquée comme occupée");
+                if (typeof scheduleRender === 'function') scheduleRender();
+            }
+        }
+    };
 
-}
+    /* ===================================================
+       3. PAIEMENT DIVISÉ & PAVÉ NUMÉRIQUE
+       =================================================== */
+    window.currentPaymentInput = "0";
+
+    window.updatePaymentDisplay = function() {
+        const el = document.getElementById("paymentAmountDisplay");
+        if (el) el.innerText = window.currentPaymentInput;
+    };
+
+    window.pressNumpad = function(val) {
+        if (window.currentPaymentInput === "0" && val !== ".") {
+            window.currentPaymentInput = val;
+        } else {
+            if (val === "." && window.currentPaymentInput.includes(".")) return;
+            const parts = window.currentPaymentInput.split(".");
+            if (parts[1] && parts[1].length >= 2) return; 
+            window.currentPaymentInput += val;
+        }
+        window.updatePaymentDisplay();
+    };
+
+    window.backspaceNumpad = function() {
+        if (window.currentPaymentInput.length > 1) {
+            window.currentPaymentInput = window.currentPaymentInput.slice(0, -1);
+        } else {
+            window.currentPaymentInput = "0";
+        }
+        window.updatePaymentDisplay();
+    };
+
+    window.setPaymentInput = function(val) {
+        window.currentPaymentInput = (Math.floor(Number(val) * 100) / 100).toFixed(2);
+        window.updatePaymentDisplay();
+    };
+
+    window.openPayment = function() {
+        if(!STATE.currentTable) { 
+            if(typeof toast === 'function') toast("Ouvrez d’abord une table", true); 
+            return; 
+        }
+        
+        const o = STATE.currentOrder || (typeof ensureOrder === 'function' ? ensureOrder(STATE.currentTable) : null);
+        const total = typeof orderTotal === 'function' ? orderTotal(o) : 0;
+        const profile = typeof fiscalProfile === 'function' ? fiscalProfile() : {currency: 'CHF'};
+        
+        const payments = o.paymentDraft?.payments || [];
+        const paidAmount = payments.reduce((sum, p) => sum + (Number(p.amount) || 0), 0);
+        const remaining = Math.max(0, total - paidAmount);
+        
+        const paid = typeof fiscalOrderFinalized === 'function' ? fiscalOrderFinalized(o) : false;
+        const stripeOn = typeof stripeEnabledForRestaurant === 'function' ? stripeEnabledForRestaurant() : false;
+        const twint = profile.country === "CH";
+        
+        if (paid) {
+            openSheet("CAISSE · TABLE " + STATE.currentTable, `
+                <div class="big-state" style="border-color: #2dcc70; background: #eefbf4;">
+                    <div class="big" style="color: #20b75d !important; font-size:45px !important;">${typeof money==='function'?money(total):total}</div>
+                    <div class="small" style="font-weight:900; color: #146c37;">VENTE FISCALISÉE</div>
+                </div>
+                <div class="action-grid" style="margin-top:15px; gap: 10px;">
+                  <button class="action-btn gold" onclick="printCashReceipt(STATE.currentOrder, {duplicate:true}).then(()=>toast('Ticket client envoyé')).catch(e=>toast(e.message,true))" style="min-height:70px; font-size:18px;">TICKET CLIENT</button>
+                  <button class="action-btn green" onclick="printCurrentFiscalTicket().then(ref=>toast('Copie fiscale envoyée')).catch(e=>toast(e.message,true))" style="min-height:70px; font-size:18px;">IMPRIMER FISCAL</button>
+                  <button class="action-btn" onclick="openServerFiscalHistory('day','')" style="grid-column:1/-1; min-height:70px; font-size:18px;">HISTORIQUE FISCAL</button>
+                </div>
+            `);
+            return;
+        }
+
+        window.currentPaymentInput = (Math.round(remaining * 100) / 100).toString();
+
+        const historyHtml = payments.length > 0 ? `
+            <div style="margin-bottom: 15px; padding: 15px; background: #fffdf0; border: 2px solid #dcae39; border-radius: 12px;">
+                <div style="font-size: 14px; font-weight: 900; margin-bottom: 8px; color: #755600;">DÉJÀ PAYÉ : ${typeof money==='function'?money(paidAmount):paidAmount}</div>
+                ${payments.map(p => `
+                    <div style="font-size: 16px; font-weight: 800; display: flex; justify-content: space-between; border-bottom: 1px solid #f1cf70; padding: 5px 0;">
+                        <span>${typeof esc==='function'?esc(p.method):p.method}</span>
+                        <span>${typeof money==='function'?money(p.amount):p.amount}</span>
+                    </div>`).join("")}
+            </div>
+        ` : "";
+
+        openSheet("CAISSE · TABLE " + STATE.currentTable, `
+            <div style="display: flex; gap: 20px; flex-wrap: wrap;">
+                <div style="flex: 1; min-width: 300px;">
+                    <div class="big-state" style="border: 4px solid #111 !important; background: #111 !important; color: #fff !important; border-radius: 16px !important; padding: 25px !important;">
+                        <div style="font-size: 16px; font-weight: 800; color: #aaa;">RESTE À PAYER</div>
+                        <div class="big gold" style="font-size: 55px !important; line-height: 1;">${typeof money==='function'?money(remaining):remaining}</div>
+                        <div class="small" style="color: #888 !important; margin-top: 8px; font-size: 14px;">Total : ${typeof money==='function'?money(total):total}</div>
+                    </div>
+                    
+                    <div style="margin-top: 15px;">${historyHtml}</div>
+                    
+                    <div style="font-size: 14px; font-weight: 900; margin-bottom: 8px; margin-top: 15px;">MONTANT À ENCAISSER MAINTENANT :</div>
+                    
+                    <div style="font-size: 45px; font-weight: 1000; text-align: right; padding: 15px 20px; border: 3px solid #cfd2d5; border-radius: 12px; margin-bottom: 15px; background: #fff; color: #111;">
+                        <span id="paymentAmountDisplay">${window.currentPaymentInput}</span> <span style="font-size:20px; color:#555;">${typeof esc==='function'?esc(profile.currency):'CHF'}</span>
+                    </div>
+                    
+                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 15px;">
+                        <button class="action-btn" onclick="setPaymentInput(${remaining})" style="min-height: 50px !important; font-size: 16px !important; background: #e9e9e9 !important; border: 2px solid #ccc !important;">LE RESTE</button>
+                        <button class="action-btn" onclick="setPaymentInput(${remaining/2})" style="min-height: 50px !important; font-size: 16px !important; background: #e9e9e9 !important; border: 2px solid #ccc !important;">MOITIÉ (÷2)</button>
+                    </div>
+
+                    <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px;">
+                        ${[1, 2, 3, 4, 5, 6, 7, 8, 9].map(n => `<button class="action-btn" onclick="pressNumpad('${n}')" style="min-height: 70px !important; font-size: 30px !important; font-weight: 900 !important; background: #ffffff !important; border: 2px solid #cfd2d5 !important; color: #111 !important;">${n}</button>`).join("")}
+                        <button class="action-btn" onclick="pressNumpad('.')" style="min-height: 70px !important; font-size: 30px !important; font-weight: 900 !important; background: #f4f4f4 !important; border: 2px solid #cfd2d5 !important; color: #111 !important;">.</button>
+                        <button class="action-btn" onclick="pressNumpad('0')" style="min-height: 70px !important; font-size: 30px !important; font-weight: 900 !important; background: #ffffff !important; border: 2px solid #cfd2d5 !important; color: #111 !important;">0</button>
+                        <button class="action-btn" onclick="backspaceNumpad()" style="min-height: 70px !important; font-size: 30px !important; font-weight: 900 !important; background: #ff5368 !important; border: 2px solid #ff5368 !important; color: #fff !important;">⌫</button>
+                    </div>
+                </div>
+
+                <div style="flex: 1; min-width: 250px; display: flex; flex-direction: column; gap: 12px;">
+                    <button class="action-btn green" onclick="processPartialPayment('CARTE')" style="min-height: 90px !important; font-size: 24px !important; font-weight: 1000 !important;">CARTE / TPE</button>
+                    <button class="action-btn gold" onclick="processPartialPayment('ESPÈCES')" style="min-height: 90px !important; font-size: 24px !important; font-weight: 1000 !important;">ESPÈCES</button>
+                    <button class="action-btn" onclick="processPartialPayment('STRIPE')" ${!stripeOn?"disabled":""} style="min-height: 90px !important; font-size: 24px !important; font-weight: 1000 !important; background: #635bff !important; color: #fff !important;">STRIPE${stripeOn?"":" · OFF"}</button>
+                    ${twint?`<button class="action-btn purple" onclick="processPartialPayment('TWINT')" style="min-height: 90px !important; font-size: 24px !important; font-weight: 1000 !important;">TWINT</button>`:`<button class="action-btn purple" onclick="processPartialPayment('AUTRE')" style="min-height: 90px !important; font-size: 24px !important; font-weight: 1000 !important;">AUTRE</button>`}
+                    <button class="action-btn" onclick="processPartialPayment('EN ATTENTE')" style="min-height: 80px !important; font-size: 20px !important; font-weight: 900 !important; background: #fff !important; border-color: #ccc !important; margin-top: auto;">RETOUR / ATTENTE</button>
+                </div>
+            </div>
+        `);
+    };
+
+    window.processPartialPayment = async function(method) {
+        if(!STATE.currentTable) return;
+        const o = typeof ensureOrder === 'function' ? ensureOrder(STATE.currentTable) : STATE.currentOrder;
+        
+        const inputAmount = parseFloat(window.currentPaymentInput);
+        if (isNaN(inputAmount) || inputAmount <= 0) {
+            if(typeof toast === 'function') toast("Veuillez saisir un montant valide", true);
+            return;
+        }
+
+        const total = typeof orderTotal === 'function' ? orderTotal(o) : 0;
+        const payments = o.paymentDraft?.payments || [];
+        const paidAmount = payments.reduce((sum, p) => sum + (Number(p.amount) || 0), 0);
+        const remaining = Math.max(0, total - paidAmount);
+        
+        if (inputAmount > remaining + 0.01) {
+            if(typeof toast === 'function') toast("Le montant dépasse le reste à payer", true);
+            return;
+        }
+
+        if (method === "EN ATTENTE") {
+            if(typeof closeSheet === 'function') closeSheet();
+            return;
+        }
+
+        if (method === "STRIPE") {
+            const stripeOn = typeof stripeEnabledForRestaurant === 'function' ? stripeEnabledForRestaurant() : false;
+            if (!stripeOn) return typeof toast === 'function' ? toast("Stripe désactivé", true) : null;
+            
+            const paymentRequestId = typeof serverPaymentId === 'function' ? serverPaymentId("STRIPE") : "STRIPE_" + Date.now();
+            const popup = window.open("about:blank", "_blank");
+            if(popup) { popup.document.write('<title>iCHEF Stripe</title><p style="font-family:sans-serif;padding:30px;font-size:24px;font-weight:bold;">Création du paiement de '+inputAmount+'...</p>'); }
+            
+            const snap = typeof fiscalServerSnapshot === 'function' ? fiscalServerSnapshot(o) : {};
+            let checkout;
+            try {
+                checkout = await paymentServerRequest('/api/payments/stripe/checkout', {
+                    method: 'POST', idempotencyKey: paymentRequestId,
+                    body: { paymentRequestId, tableId: STATE.currentTable, amount: inputAmount, currency: typeof paymentCurrency === 'function' ? paymentCurrency() : 'CHF', orderSnapshot: snap, successUrl: location.href, cancelUrl: location.href }
+                });
+            } catch(err) { if(popup && !popup.closed) popup.close(); if(typeof toast === 'function') toast(err.message, true); return; }
+            
+            if(popup && !popup.closed) popup.location.href = checkout.url; else window.open(checkout.url, "_blank");
+
+            if (typeof openSheet === 'function') {
+                openSheet("STRIPE · EN ATTENTE", `<div class="big-state"><div class="big gold">${typeof money==='function'?money(inputAmount):inputAmount}</div><div class="small">Le client procède au paiement sur son appareil.</div></div><div id="stripePayState" class="list-row"><div class="grow"><div class="title">STATUT</div><div class="sub">EN ATTENTE DU SERVEUR...</div></div></div><button class="action-btn" style="width:100%;margin-top:10px" data-stripe-check>VÉRIFIER MANUELLEMENT</button>`);
+            }
+            
+            const check = async () => {
+                try {
+                    const st = await stripeStatus(paymentRequestId);
+                    const label = (st.status || "").toUpperCase();
+                    const sub = document.getElementById("stripePayState")?.querySelector(".sub");
+                    if(sub) sub.textContent = label;
+                    if(label === "PAID") {
+                        if(typeof clearStripeWatch === 'function') clearStripeWatch();
+                        await finalizePartialPayment(o, "STRIPE", inputAmount, paymentRequestId);
+                        return true;
+                    }
+                } catch(err) {}
+                return false;
+            };
+            
+            document.getElementById("sheetBody")?.querySelector("[data-stripe-check]")?.addEventListener("click", check);
+            if(typeof clearStripeWatch === 'function') clearStripeWatch();
+            ICHEF_STRIPE_WATCH = setInterval(check, 2500);
+            return;
+        }
+
+        const ok = confirm(`Encaisser ${typeof money==='function'?money(inputAmount):inputAmount} en ${method} ?`);
+        if(!ok) return;
+
+        await finalizePartialPayment(o, method, inputAmount);
+    };
+
+    window.finalizePartialPayment = async function(order, method, amount, paymentRequestId = "") {
+        const total = typeof orderTotal === 'function' ? orderTotal(order) : 0;
+        const nowIso = new Date().toISOString();
+        
+        if (!order.paymentDraft) {
+            order.paymentDraft = { 
+                version: 3, payments: [], total: total, remaining: total, 
+                status: "A_PAYER", updatedAt: nowIso, updatedBy: STATE.role || "SERVEUR", 
+                deviceId: STATE.deviceId, fiscalCountry: typeof fiscalProfile === 'function' ? fiscalProfile().country : "CH", fiscalStatus: "NOT_PAID" 
+            };
+            order.paymentStatus = "A_PAYER";
+            order.status = "pending";
+        }
+
+        order.paymentDraft.payments.push({
+            method, amount, confirmedBy: STATE.role || "SERVEUR", confirmedAt: nowIso, paymentRequestId
+        });
+
+        const newPaidAmount = order.paymentDraft.payments.reduce((sum, p) => sum + (Number(p.amount) || 0), 0);
+        const newRemaining = Math.max(0, total - newPaidAmount);
+        
+        order.paymentDraft.remaining = newRemaining;
+        order.paymentDraft.updatedAt = nowIso;
+
+        if (newRemaining <= 0.01) {
+            try {
+                if (typeof toast === 'function') toast("Génération du ticket fiscal...");
+                const result = await fiscalizeWithServer(order, "MULTIPLE", order.paymentDraft.payments, typeof serverPaymentId === 'function' ? serverPaymentId("FISCAL") : "");
+                if (typeof applyServerFiscalResult === 'function') applyServerFiscalResult(order, result, "MULTIPLE");
+                
+                if (typeof syncFull === 'function') await syncFull("payment-fiscalized").catch(()=>{});
+                if (typeof toast === 'function') toast(`✓ Ticket fiscal généré (N° ${result.ticketNumber})`);
+                
+                const pcfg = typeof loadPrinterConfig === 'function' ? loadPrinterConfig() : {};
+                if(pcfg.enabled && pcfg.printers?.caisse?.enabled && pcfg.receipt?.autoAfterPayment !== false) {
+                    try { if (typeof printCashReceipt === 'function') await printCashReceipt(STATE.currentOrder || order, {auto:true}); } catch(e) {}
+                }
+                
+                if (typeof closeSheet === 'function') closeSheet();
+            } catch(e) {
+                if (typeof toast === 'function') toast(e.message || "Erreur de fiscalisation", true);
+            }
+        } else {
+            order.paymentDraft.status = "PAIEMENT_PARTIEL";
+            order.paymentStatus = "PARTIAL";
+            
+            if (typeof saveCurrent === 'function') {
+                const ok = await saveCurrent(order, "Paiement partiel : " + method, {immediate: true});
+                if (ok) {
+                    if (typeof toast === 'function') toast(`✓ Encaissé : ${amount}. Reste : ${newRemaining}`);
+                    openPayment(); 
+                }
+            }
+        }
+    };
+}, 2500);
 </script>
 </body>
 </html>
