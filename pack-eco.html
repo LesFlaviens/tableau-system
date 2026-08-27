@@ -11653,10 +11653,22 @@ body.order-open .ticket-name .line-state.ready {
     font-weight: 900 !important;
     margin-top: 2px !important;
 }
+
+/* 4. Style cliquable pour le nouveau bouton TOUT SERVIR */
+body.order-open .order-sync-state[data-mode="serve-all"] {
+    cursor: pointer !important;
+    box-shadow: 0 4px 10px rgba(45, 204, 112, 0.4) !important;
+    border: 2px solid #20b75d !important;
+    transition: transform 0.1s;
+}
+body.order-open .order-sync-state[data-mode="serve-all"]:active {
+    transform: scale(0.95) !important;
+    background: #20b75d !important;
+}
 </style>
 
-<script id="correction-serveur-a-jour">
-// 1. Nettoyage instantané quand on clique sur une table (évite l'effet mémoire de l'ancienne table)
+<script id="correction-serveur-et-tout-servir">
+// 1. Nettoyage instantané quand on clique sur une table
 setTimeout(() => {
   const originalOpenOrder = window.openOrder;
   if (originalOpenOrder) {
@@ -11665,142 +11677,141 @@ setTimeout(() => {
       if (badge) {
         badge.textContent = "...";
         badge.className = "order-sync-state";
+        badge.dataset.mode = "sync";
       }
       originalOpenOrder(table);
     };
   }
+
+  // 2. Ajout du clic sur la zone Serveur/Servir (pour le mode TOUT SERVIR)
+  const badge = document.getElementById("orderSyncState");
+  if (badge && !badge.dataset.listenerAdded) {
+    badge.dataset.listenerAdded = "true";
+    badge.addEventListener("click", async () => {
+      // On n'agit que si le bouton est en mode "TOUT SERVIR"
+      if (badge.dataset.mode === "serve-all") {
+        const o = STATE.currentOrder || (typeof ensureOrder === 'function' ? ensureOrder(STATE.currentTable) : null);
+        if (!o || !o.items) return;
+        
+        let changed = false;
+        o.items.forEach(item => {
+          // On valide tous les plats "PRÊT" qui n'ont pas encore été servis
+          if (typeof lineReady === 'function' && lineReady(item) && (!typeof lineServed === 'function' || !lineServed(item))) {
+            item.served = true;
+            item.status = "SERVED";
+            item.sequenceStatus = "SERVED";
+            item.servedAt = Date.now();
+            changed = true;
+          }
+        });
+
+        if (changed && typeof saveCurrent === 'function') {
+          // Effet visuel immédiat pour rassurer le serveur
+          badge.textContent = "● SYNCHRONISATION…";
+          badge.className = "order-sync-state pending";
+          badge.dataset.mode = "sync";
+          
+          const ok = await saveCurrent(o, "Tous les plats prêts ont été servis", {immediate: true});
+          if (ok) {
+            if (typeof toast === 'function') toast("✓ Tous les plats prêts sont servis");
+            if (typeof renderTicket === 'function') renderTicket();
+            if (typeof scheduleRender === 'function') scheduleRender(); // Met à jour les compteurs globaux
+          }
+        }
+      }
+    });
+  }
+
+  // Permet de griser l'étiquette SERVI sur le ticket après le clic global
+  if (typeof window.renderTicket === "function") {
+    const originalRenderTicket = window.renderTicket;
+    window.renderTicket = function() {
+      originalRenderTicket(); 
+
+      const ticket = document.getElementById("ticket");
+      if (!ticket) return;
+
+      const o = STATE.currentOrder || (typeof ensureOrder === 'function' ? ensureOrder(STATE.currentTable) : null);
+      if (!o || !o.items) return;
+
+      const rows = ticket.querySelectorAll('.ticket-row');
+      rows.forEach(row => {
+        const actBtn = row.querySelector('button[data-line]');
+        if (!actBtn) return;
+        
+        const key = actBtn.dataset.line;
+        const item = o.items.find(x => (typeof lineKey === 'function' ? lineKey(x) : x.itemId) === key);
+        if (!item) return;
+        
+        // Si le plat est servi, on change son badge en gris
+        if (typeof lineServed === 'function' && lineServed(item)) {
+          const stateSpan = row.querySelector('.line-state');
+          if (stateSpan) {
+            stateSpan.textContent = "SERVI";
+            stateSpan.className = "line-state served";
+            stateSpan.style.cssText = "display: inline-block !important; float: right !important; background:#e9e9e9 !important; color:#777 !important; padding:3px 8px !important; border-radius:6px !important; font-size:14px !important; font-weight:900 !important; margin-top:2px !important;";
+          }
+        }
+      });
+    };
+  }
 }, 500);
 
-// 2. Boucle de vérification permanente de l'état réseau
+// 3. Boucle de vérification permanente (Statut réseau OU Bouton Tout Servir)
 setInterval(() => {
   const badge = document.getElementById("orderSyncState");
-  
-  // Si on n'est pas sur l'écran de commande, on ne fait rien
   if (!badge || !STATE.currentTable || !document.body.classList.contains("order-open")) return;
 
   const table = STATE.currentTable;
+  const o = STATE.currentOrder || (typeof getOrder === 'function' ? getOrder(table) : null);
+  const activeItems = (o && Array.isArray(o.items)) ? o.items.filter(i => i && !i.cancelled) : [];
   
-  // Vérification de l'état réseau (en cours d'envoi ou échec)
+  // Y a-t-il des plats prêts à être servis ?
+  const hasReadyItems = activeItems.some(i => typeof lineReady === 'function' && lineReady(i) && (!typeof lineServed === 'function' || !lineServed(i)));
+
+  if (hasReadyItems) {
+    // MODE : BOUTON "✓ TOUT SERVIR" PRIORITAIRE
+    const newText = "✓ TOUT SERVIR";
+    const newClass = "order-sync-state good";
+    
+    if (badge.textContent !== newText) {
+      badge.textContent = newText;
+      badge.className = newClass;
+      badge.dataset.mode = "serve-all";
+    }
+    return; // On s'arrête là, on masque le statut réseau pour afficher ce bouton
+  }
+
+  // MODE : STATUT RÉSEAU NORMAL
+  badge.dataset.mode = "sync";
+  
   const hasFailed = typeof ICHEF_FAILED_WRITES !== 'undefined' && ICHEF_FAILED_WRITES.has(table);
   const isPending = typeof ICHEF_LOCAL_PENDING !== 'undefined' && ICHEF_LOCAL_PENDING.has(table);
   const isQueued = typeof ICHEF_TABLE_WRITE_QUEUES !== 'undefined' && ICHEF_TABLE_WRITE_QUEUES.has(table);
-
-  // Vérification de la présence d'articles dans la commande
-  const o = STATE.currentOrder || (typeof getOrder === 'function' ? getOrder(table) : null);
-  const activeItems = (o && Array.isArray(o.items)) ? o.items.filter(i => i && !i.cancelled) : [];
   const hasItems = activeItems.length > 0;
 
   let newText = "";
   let newClass = "order-sync-state ";
 
-  // Détermination du statut
   if (hasFailed) {
     newText = "✕ ÉCHEC SYNCHRO";
-    newClass += "bad"; // Passe en rouge
+    newClass += "bad"; 
   } else if (isPending || isQueued) {
     newText = "● SYNCHRONISATION…";
-    // Reste gris neutre pendant l'envoi
   } else if (hasItems) {
     newText = "✓ SERVEUR À JOUR";
-    newClass += "good"; // Passe en vert uniquement s'il y a des plats sauvegardés
+    newClass += "good"; 
   } else {
     newText = "COMMANDE VIDE";
-    // Reste gris si la table vient d'être ouverte et est vide
   }
 
-  // On applique seulement s'il y a un changement pour éviter les clignotements visuels
   if (badge.textContent !== newText) {
     badge.textContent = newText;
     badge.className = newClass;
   }
-}, 200); // S'exécute 5 fois par seconde
+}, 200);
 </script>
 
-<script id="fix-plat-servi">
-setTimeout(() => {
-  // 1. On intercepte le clic sur le nouveau bouton "SERVI"
-  const originalMutateLine = window.mutateLine;
-  window.mutateLine = async function(key, action) {
-    if (action === "serve") {
-      const o = STATE.currentOrder || (typeof ensureOrder === 'function' ? ensureOrder(STATE.currentTable) : null);
-      if (!o) return;
-      
-      const item = (o.items || []).find(x => (typeof lineKey === 'function' ? lineKey(x) : x.itemId) === key);
-      if (!item) return;
-
-      // On marque le plat comme servi dans la base de données
-      item.served = true;
-      item.status = "SERVED";
-      item.sequenceStatus = "SERVED";
-      item.servedAt = Date.now();
-      
-      // On sauvegarde immédiatement sur le serveur
-      if (typeof saveCurrent === 'function') {
-        const ok = await saveCurrent(o, "Plat apporté au client", {immediate: true});
-        if (ok) {
-          if (typeof toast === 'function') toast("✓ Plat servi");
-          if (typeof renderTicket === 'function') renderTicket();
-          if (typeof scheduleRender === 'function') scheduleRender(); // Met à jour le compteur global en haut de l'écran
-        }
-      }
-      return;
-    }
-    if (originalMutateLine) return originalMutateLine(key, action);
-  };
-
-  // 2. On modifie l'affichage du ticket pour ajouter le bouton et griser le plat une fois servi
-  if (typeof window.renderTicket !== "function") return;
-  const originalRenderTicket = window.renderTicket;
-  
-  window.renderTicket = function() {
-    originalRenderTicket(); 
-
-    const ticket = document.getElementById("ticket");
-    if (!ticket) return;
-
-    const o = STATE.currentOrder || (typeof ensureOrder === 'function' ? ensureOrder(STATE.currentTable) : null);
-    if (!o || !o.items) return;
-
-    const rows = ticket.querySelectorAll('.ticket-row');
-    rows.forEach(row => {
-      const actBtn = row.querySelector('button[data-line]');
-      if (!actBtn) return;
-      
-      const key = actBtn.dataset.line;
-      const item = o.items.find(x => (typeof lineKey === 'function' ? lineKey(x) : x.itemId) === key);
-      if (!item) return;
-
-      // ÉTAPE A : Si le plat est PRÊT, on ajoute le bouton vert "✓ SERVI"
-      if (typeof lineReady === 'function' && lineReady(item) && (!typeof lineServed === 'function' || !lineServed(item))) {
-        const qtybar = row.querySelector('.qtybar');
-        if (qtybar && !qtybar.querySelector('[data-act="serve"]')) {
-          const serveBtn = document.createElement('button');
-          serveBtn.dataset.line = key;
-          serveBtn.dataset.act = "serve";
-          serveBtn.innerHTML = "✓ SERVI";
-          serveBtn.style.cssText = "background:#2dcc70 !important; color:#000 !important; border-color:#2dcc70 !important; width:auto !important; padding:0 12px !important; font-weight:950 !important; margin-right: 5px !important;";
-          
-          // On masque le bouton "ANN." (Annuler) pour faire de la place
-          const annBtn = qtybar.querySelector('[data-act="delete"]');
-          if (annBtn) annBtn.style.display = 'none';
-
-          qtybar.insertBefore(serveBtn, qtybar.firstChild);
-        }
-      }
-      
-      // ÉTAPE B : Si le serveur a cliqué sur "SERVI", on change son badge en gris
-      if (typeof lineServed === 'function' && lineServed(item)) {
-        const stateSpan = row.querySelector('.line-state');
-        if (stateSpan) {
-          stateSpan.textContent = "SERVI";
-          stateSpan.className = "line-state served";
-          stateSpan.style.cssText = "display: inline-block !important; float: right !important; background:#e9e9e9 !important; color:#777 !important; padding:3px 8px !important; border-radius:6px !important; font-size:14px !important; font-weight:900 !important; margin-top:2px !important;";
-        }
-      }
-    });
-  };
-}, 800);
-</script>
 
 </body>
 </html>
