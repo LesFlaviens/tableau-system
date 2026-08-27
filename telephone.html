@@ -5320,6 +5320,8 @@ function addProduct(product,options={}){
       cookingAutomatic:!!automaticCooking && !forcedCooking,
       cookingChosenWithGuest:!!forcedCooking,
       dishFamily:cookingProfile.family,
+      whoEatsLocked:true,
+      whoEatsSelectedAt:Date.now(),
 
       seat:seat,
       guestSeat:seat,
@@ -5510,6 +5512,10 @@ async function sendKitchen(){
       i.seatNumber=seat;
       if(seat&&!i.guestName)i.guestName=seatLabel(seat);
       if(seat&&!i.guest)i.guest=seatLabel(seat);
+      /* Les deux alias sont envoyés pour compatibilité Cuisine / KDS. */
+      if(text(i.cooking)&&!text(i.cuisson))i.cuisson=text(i.cooking);
+      if(text(i.cuisson)&&!text(i.cooking))i.cooking=text(i.cuisson);
+      i.whoEatsLocked=true;
 
       counts[i.dest]=(counts[i.dest]||0)+itemQty(i);
       changed++;
@@ -10389,29 +10395,17 @@ $("products").addEventListener("pointermove",e=>{
 async function handleFastProductTap(product,sourceButton){
   if(!STATE.currentTable||!product)return;
 
-  /* Vente déjà payée : ouvrir proprement une nouvelle addition seulement si nécessaire. */
-  const writable=await prepareWritableOrderForProductSelection();
-  if(!writable)return;
-
-  const seat=Math.max(1,Math.min(9,Number(STATE.activeSeat)||1));
-  const profile=cookingProfileFor(product);
-  const dest=normalizeDestination(product.dest||product.raw?.dest||product.raw?.destination||"cuisine");
-
-  /* Une cuisson obligatoire reste la seule étape supplémentaire. */
-  if(dest==="cuisine" && profile.required===true && Array.isArray(profile.levels) && profile.levels.length){
-    openIntegratedProductCooking(product,seat,sourceButton);
+  /*
+     QUI MANGE QUOI = étape OBLIGATOIRE pour CHAQUE nouveau plat.
+     Aucun article n'est ajouté ici directement, même si un C était déjà actif.
+     Flux strict : PLAT -> C1..C9 -> CUISSON si nécessaire -> AJOUT/ENREGISTREMENT.
+  */
+  if(STATE.pendingCookingLine){
+    toast("Choisissez d’abord la cuisson du plat en cours",true);
     return;
   }
 
-  if(sourceButton&&sourceButton.isConnected){
-    sourceButton.classList.add("product-added","fast-flash");
-    setTimeout(()=>sourceButton.classList.remove("product-added","fast-flash"),240);
-  }
-
-  addProduct(product,{seat});
-  /* Mise à jour locale immédiate : aucune attente du serveur pour voir le ticket. */
-  renderTicket();
-  renderGuestButtons();
+  openProductSeatPicker(product,sourceButton);
 }
 
 $("products").addEventListener("pointerup",e=>{
@@ -10442,7 +10436,7 @@ $("products").addEventListener("pointerup",e=>{
   const p=findProductFromButton(b);
   if(!p)return;
 
-  /* SERVICE RAPIDE : C actif + 1 tap = ajout immédiat. */
+  /* QUI MANGE QUOI : chaque plat doit d’abord recevoir C1 à C9. */
   void handleFastProductTap(p,b);
 },{passive:true});
 
