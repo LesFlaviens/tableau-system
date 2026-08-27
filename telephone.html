@@ -5635,8 +5635,31 @@ function checkGlobalAlert(){
   el.hideTimer = setTimeout(()=>el.classList.remove("show"), 30000);
 }
 /* ---------------- RENDER ---------------- */
-function scheduleRender(){if(STATE.renderPending)return;STATE.renderPending=true;requestAnimationFrame(()=>{STATE.renderPending=false;renderAll()})}
-function renderAll(){renderStatus();renderRooms();renderTables();if(STATE.currentTable)renderOrder();if(document.body.classList.contains("summary-open"))renderSummary();updateToolBadges();renderRushStrip();if(STATE.planViewOpen)renderLivePlan()}
+function scheduleRender(){
+  if(STATE.renderPending)return;
+  STATE.renderPending=true;
+  requestAnimationFrame(()=>{
+    STATE.renderPending=false;
+    renderAll();
+  });
+}
+function renderAll(){
+  renderStatus();
+
+  /* PERFORMANCE TÉLÉPHONE : on ne reconstruit que l'écran réellement visible. */
+  if(document.body.classList.contains("summary-open") || STATE.currentScreen==="summary"){
+    renderSummary();
+  }else if(document.body.classList.contains("order-open") || STATE.currentScreen==="order"){
+    if(STATE.currentTable)renderOrder();
+  }else{
+    renderRooms();
+    renderTables();
+  }
+
+  updateToolBadges();
+  if(STATE.currentScreen==="order")renderRushStrip();
+  if(STATE.planViewOpen)renderLivePlan();
+}
 
 function renderRushStrip(){
   const el=$("rushStrip");
@@ -5882,6 +5905,9 @@ function setActiveSeat(seat){
   }
 
   renderGuestButtons();
+  /* Le menu reste en place pour garder un toucher fluide ; seul le repère actif change. */
+  const hints=document.querySelectorAll("#products .product-hold-hint");
+  hints.forEach(h=>h.textContent=`1 tap = ajouter à C${n} · maintien 0,6 s = nom complet`);
   toast(`👤 C${n} actif`);
 }
 
@@ -5892,10 +5918,21 @@ function renderCategories(){
   ).join("");
 }
 
-function renderProducts(){
-  const arr=STATE.menu.filter(p=>STATE.category==="TOUT"||p.category===STATE.category);
+let ICHEF_PRODUCTS_RENDER_KEY="";
+function renderProducts(force=false){
+  const host=$("products");
+  if(!host)return;
 
-  $("products").innerHTML=arr.length
+  const arr=STATE.menu.filter(p=>STATE.category==="TOUT"||p.category===STATE.category);
+  const key=STATE.category+"|"+arr.map(p=>[
+    p.id,p.name,p.price,p.available!==false,normalizeDestination(p.dest||"cuisine"),cookingProfileFor(p).family
+  ].join("~")).join("||");
+
+  /* Les quantités du ticket ne doivent pas détruire/recréer tout le menu. */
+  if(!force && key===ICHEF_PRODUCTS_RENDER_KEY)return;
+  ICHEF_PRODUCTS_RENDER_KEY=key;
+
+  host.innerHTML=arr.length
     ?arr.map(p=>{
       const d=normalizeDestination(p.dest||"cuisine");
       const family=cookingProfileFor(p).family;
@@ -5905,7 +5942,7 @@ function renderProducts(){
                       data-pname="${esc(p.name)}">
         <span class="pname">${icon} ${esc(p.name)}</span>
         <span class="price">${money(p.price)}</span>
-        <span class="product-hold-hint">Tap = choisir C1–C9 · maintien 0,6 s = nom complet</span>
+        <span class="product-hold-hint">1 tap = ajouter à C${Math.max(1,Math.min(9,Number(STATE.activeSeat)||1))} · maintien 0,6 s = nom complet</span>
       </button>`;
     }).join("")
     :'<div class="empty-state">Menu vide ou non synchronisé.</div>';
@@ -10179,6 +10216,34 @@ $("products").addEventListener("pointermove",e=>{
   }
 },{passive:true});
 
+async function handleFastProductTap(product,sourceButton){
+  if(!STATE.currentTable||!product)return;
+
+  /* Vente déjà payée : ouvrir proprement une nouvelle addition seulement si nécessaire. */
+  const writable=await prepareWritableOrderForProductSelection();
+  if(!writable)return;
+
+  const seat=Math.max(1,Math.min(9,Number(STATE.activeSeat)||1));
+  const profile=cookingProfileFor(product);
+  const dest=normalizeDestination(product.dest||product.raw?.dest||product.raw?.destination||"cuisine");
+
+  /* Une cuisson obligatoire reste la seule étape supplémentaire. */
+  if(dest==="cuisine" && profile.required===true && Array.isArray(profile.levels) && profile.levels.length){
+    openIntegratedProductCooking(product,seat,sourceButton);
+    return;
+  }
+
+  if(sourceButton&&sourceButton.isConnected){
+    sourceButton.classList.add("product-added","fast-flash");
+    setTimeout(()=>sourceButton.classList.remove("product-added","fast-flash"),240);
+  }
+
+  addProduct(product,{seat});
+  /* Mise à jour locale immédiate : aucune attente du serveur pour voir le ticket. */
+  renderTicket();
+  renderGuestButtons();
+}
+
 $("products").addEventListener("pointerup",e=>{
   const b=e.target.closest("[data-product]");
   if(!b||!productPress.button)return;
@@ -10200,18 +10265,15 @@ $("products").addEventListener("pointerup",e=>{
   const key=b.dataset.product+"|"+b.dataset.pname;
   const t=Date.now();
 
-  /* Ignore uniquement les doubles événements fantômes, pas les vrais taps successifs. */
-  if(lastProductTap.key===key && t-lastProductTap.at<PRODUCT_DOUBLE_GUARD_MS){
-    return;
-  }
-
+  /* Anti double-événement fantôme uniquement. */
+  if(lastProductTap.key===key && t-lastProductTap.at<PRODUCT_DOUBLE_GUARD_MS)return;
   lastProductTap={key,at:t};
 
   const p=findProductFromButton(b);
   if(!p)return;
 
-  /* QUI MANGE QUOI : aucun ajout avant le choix C1-C9. */
-  openProductSeatPicker(p,b);
+  /* SERVICE RAPIDE : C actif + 1 tap = ajout immédiat. */
+  void handleFastProductTap(p,b);
 },{passive:true});
 
 $("products").addEventListener("pointercancel",()=>{
@@ -10464,13 +10526,19 @@ async function bootApp(){
   autoDisplay();
   setConnection(navigator.onLine?"CONNEXION SERVEUR":"HORS LIGNE",navigator.onLine?"warn":"bad");
 
-  /* Lecture HTTP d'abord : server.js reste la source de vérité, même sans Socket.IO. */
+  /* Une lecture serveur initiale est nécessaire pour charger tables + menu. */
   await syncFull("initial");
-  await fiscalMaintenance().catch(err=>{
-    console.warn("[iCHEF FISCAL] contrôle initial",err);
-    STATE.fiscalChainState="A_VERIFIER";
-  });
+
+  /* Le temps réel démarre immédiatement après les données utiles au service. */
   connectSocket();
+
+  /* PERFORMANCE : les contrôles fiscaux ne doivent jamais bloquer la prise de commande. */
+  setTimeout(()=>{
+    fiscalMaintenance().catch(err=>{
+      console.warn("[iCHEF FISCAL] contrôle différé",err);
+      STATE.fiscalChainState="A_VERIFIER";
+    });
+  },1800);
 
   setInterval(()=>{
     renderStatus();
@@ -10479,16 +10547,16 @@ async function bootApp(){
     autoDisplay();
   },1000);
 
-  /* Garde-fou : une lecture serveur régulière assure la symbiose même si un événement Socket est perdu. */
+  /* Watchdog plus calme : Socket.IO est prioritaire, HTTP ne sert que de garde-fou. */
   setInterval(()=>{
-    if(document.hidden||!navigator.onLine)return;
-    if(!STATE.lastServerAt||now()-STATE.lastServerAt>7000)syncFull("watchdog");
-  },5000);
+    if(document.hidden||!navigator.onLine||STATE.syncing)return;
+    if(!STATE.lastServerAt||now()-STATE.lastServerAt>30000)syncFull("watchdog");
+  },15000);
 
-  window.addEventListener("online",()=>{setConnection("RECONNEXION","warn");syncFull("online");connectSocket()});
-  window.addEventListener("offline",()=>{STATE.connected=false;setConnection("HORS LIGNE","bad")});
-  window.addEventListener("focus",()=>{if(navigator.onLine)syncFull("focus")});
-  document.addEventListener("visibilitychange",()=>{if(!document.hidden&&navigator.onLine)syncFull("visible")});
+  /* Les listeners online/offline/visibility existent déjà plus haut. On évite les doublons. */
+  window.addEventListener("focus",()=>{
+    if(navigator.onLine && (!STATE.lastServerAt||now()-STATE.lastServerAt>20000))syncFull("focus");
+  });
 }
 
 
