@@ -3876,6 +3876,48 @@ html.ichef-phone-only-blocked #ichefDeviceBlock{position:fixed;inset:0;z-index:2
 }
 </style>
 
+
+<style id="ichef-ready-serve-hold-v1">
+/* Validation salle : maintien 0,9 s sur un plat PRÊT = SERVI. */
+.ticket-row.ready-to-serve{
+  position:relative;
+  border:2px solid #36d98a !important;
+  border-radius:12px;
+  margin:4px 0;
+  padding-left:7px !important;
+  padding-right:7px !important;
+  background:rgba(54,217,138,.08);
+  overflow:hidden;
+  touch-action:manipulation;
+}
+.ticket-row.ready-to-serve::before{
+  content:"MAINTENIR 0,9 s = SERVI";
+  position:absolute;
+  left:8px;
+  bottom:3px;
+  color:#36d98a;
+  font-size:7px;
+  font-weight:1000;
+  letter-spacing:.25px;
+  pointer-events:none;
+}
+.ticket-row.ready-to-serve.ready-hold-active{
+  transform:scale(.985);
+  box-shadow:0 0 0 3px rgba(54,217,138,.18) inset;
+}
+.ticket-row.ready-to-serve.ready-hold-active::after{
+  content:"";
+  position:absolute;
+  left:0;bottom:0;height:5px;width:100%;
+  background:#36d98a;
+  transform-origin:left center;
+  animation:ichefReadyHold09 .9s linear forwards;
+  pointer-events:none;
+}
+.ticket-row.served-line{opacity:.62}
+.ticket-row.served-line .line-state{color:#5f6b70 !important}
+@keyframes ichefReadyHold09{from{transform:scaleX(0)}to{transform:scaleX(1)}}
+</style>
 </head>
 <body>
 
@@ -5985,11 +6027,15 @@ function renderTicket(){
       const q=itemQty(i);
       const seat=itemSeat(i);
       const sent=lineFired(i);
-      const state=lineReady(i)
-        ?'<span class="line-state ready">PRÊT</span>'
-        :sent
-          ?'<span class="line-state sent">ENVOYÉ</span>'
-          :'<span class="line-state">BROUILLON</span>';
+      const servedNow=lineServed(i);
+      const readyNow=lineReady(i)&&!servedNow&&!i.cancelled;
+      const state=servedNow
+        ?'<span class="line-state">SERVI</span>'
+        :readyNow
+          ?'<span class="line-state ready">PRÊT</span>'
+          :sent
+            ?'<span class="line-state sent">ENVOYÉ</span>'
+            :'<span class="line-state">BROUILLON</span>';
 
       const cooking=text(i.cooking)
         ?`<span class="cooking-tag">🌡️ ${esc(i.cooking)}</span>`
@@ -6008,15 +6054,15 @@ function renderTicket(){
           <button data-line="${esc(key)}" data-act="obs" title="Observation">📝</button>
           <button data-line="${esc(key)}" data-act="delete">×</button>`;
 
-      return `<div class="ticket-row ${sent?"sent-lock":""}">
-        <div class="ticket-left" data-line="${esc(key)}" data-act="obs" style="cursor:pointer;" title="Tap pour Observation/Allergie">
+      return `<div class="ticket-row ${sent?"sent-lock":""} ${readyNow?"ready-to-serve":""} ${servedNow?"served-line":""}" data-ready-line="${readyNow?esc(key):""}">
+        <div class="ticket-left" data-line="${esc(key)}" data-act="obs" style="cursor:pointer;" title="${readyNow?"Maintenir 0,9 s pour valider SERVI":"Tap pour Observation/Allergie"}">
           <div class="ticket-name">
             ${seatBadge}${esc(itemName(i))}
             ${destinationTagHTML(i)}
             ${cooking}
             ${state}
           </div>
-          <div class="ticket-meta">x${q} · ${esc(i.course||i.category||"")}</div>
+          <div class="ticket-meta">x${q} · ${esc(i.course||i.category||"")}${readyNow?" · maintien 0,9 s pour valider servi":""}</div>
           ${obs?`<span class="ticket-obs ${critical?"critical":""}">${critical?"🛑 ":"⚠️ "}${esc(obs)}</span>`:""}
         </div>
         <div class="ticket-right">
@@ -9799,7 +9845,70 @@ $("guestButtons").addEventListener("click",e=>{
   setActiveSeat(Number(b.dataset.seat));
 });
 
+/* PRÊT -> SERVI : maintien 0,9 seconde sur la ligne prête. */
+let readyServePress={timer:null,row:null,key:"",x:0,y:0,long:false};
+let readyServeSuppressClickUntil=0;
+
+function clearReadyServePress(){
+  if(readyServePress.timer)clearTimeout(readyServePress.timer);
+  readyServePress.timer=null;
+  if(readyServePress.row)readyServePress.row.classList.remove("ready-hold-active");
+}
+
+$("ticket").addEventListener("pointerdown",e=>{
+  if(e.target.closest("button"))return;
+  const row=e.target.closest(".ticket-row.ready-to-serve");
+  if(!row)return;
+  const key=text(row.dataset.readyLine);
+  if(!key)return;
+
+  clearReadyServePress();
+  readyServePress.row=row;
+  readyServePress.key=key;
+  readyServePress.x=e.clientX;
+  readyServePress.y=e.clientY;
+  readyServePress.long=false;
+  row.classList.add("ready-hold-active");
+
+  readyServePress.timer=setTimeout(async()=>{
+    readyServePress.timer=null;
+    readyServePress.long=true;
+    readyServeSuppressClickUntil=Date.now()+700;
+    row.classList.remove("ready-hold-active");
+    if(navigator.vibrate){try{navigator.vibrate([35,25,60])}catch(_){}}
+    await mutateLine(key,"serve");
+  },900);
+},{passive:true});
+
+$("ticket").addEventListener("pointermove",e=>{
+  if(!readyServePress.row)return;
+  if(Math.abs(e.clientX-readyServePress.x)>12||Math.abs(e.clientY-readyServePress.y)>12){
+    clearReadyServePress();
+    readyServePress.row=null;
+    readyServePress.key="";
+  }
+},{passive:true});
+
+$("ticket").addEventListener("pointerup",()=>{
+  clearReadyServePress();
+  readyServePress.row=null;
+  readyServePress.key="";
+  readyServePress.long=false;
+},{passive:true});
+
+$("ticket").addEventListener("pointercancel",()=>{
+  clearReadyServePress();
+  readyServePress.row=null;
+  readyServePress.key="";
+  readyServePress.long=false;
+});
+
 $("ticket").addEventListener("click",e=>{
+  if(Date.now()<readyServeSuppressClickUntil){
+    e.preventDefault();
+    e.stopPropagation();
+    return;
+  }
   const b=e.target.closest("[data-line]");
   if(b)mutateLine(b.dataset.line,b.dataset.act);
 });
