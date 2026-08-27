@@ -5455,7 +5455,7 @@ function servicePaymentState(order){
   };
 }
 
-async function confirmServiceCompleted(){
+async function confirmServiceCompleted(forceAll = false){
   if(!STATE.currentTable){
     toast("Ouvrez d’abord une table",true);
     return false;
@@ -5463,55 +5463,60 @@ async function confirmServiceCompleted(){
 
   const o=ensureOrder(STATE.currentTable);
   const active=serviceActiveItems(o);
-  if(!active.length){
-    toast("Aucun plat ou boisson à confirmer",true);
+  
+  // Si on force (via le résumé), on prend tout. Sinon, UNIQUEMENT les plats "PRÊT".
+  const itemsToServe = forceAll ? active.filter(i => !lineServed(i)) : active.filter(i => lineReady(i) && !lineServed(i));
+
+  if(!itemsToServe.length){
+    toast(forceAll ? "Aucun plat ou boisson à confirmer" : "Aucun plat n'est prêt en cuisine",true);
     return false;
   }
 
   const at=Date.now();
   const by=STATE.role||"SERVEUR";
 
-  /* Le clic signifie que tous les articles actuellement facturés sont
-     physiquement posés sur la table. Ils passent donc à SERVI. */
-  active.forEach(item=>{
-    if(!lineServed(item)){
-      item.served=true;
-      item.isServed=true;
-      item.servedAt=at;
-      item.servedBy=by;
-      item.sequenceStatus="SERVED";
-      item.status="served";
-      item.productionStatus="served";
-      item.done=false;
-      item.ready=false;
-      item.isReady=false;
-      item.readyAt=null;
-    }
+  itemsToServe.forEach(item=>{
+    item.served=true;
+    item.isServed=true;
+    item.servedAt=at;
+    item.servedBy=by;
+    item.sequenceStatus="SERVED";
+    item.status="served";
+    item.productionStatus="served";
+    item.done=false;
+    item.ready=false;
+    item.isReady=false;
+    item.readyAt=null;
   });
 
-  o.serviceCompleted=true;
-  o.serviceCompletedAt=at;
-  o.serviceCompletedBy=by;
-  o.serviceCompletedDeviceId=STATE.deviceId;
-  o.serviceConfirmation={
-    status:"COMPLETED",
-    at,
-    by,
-    deviceId:STATE.deviceId,
-    terminal:"TELEPHONE",
-    activeLines:active.length,
-    activeQuantity:active.reduce((s,i)=>s+itemQty(i),0)
-  };
-  o.orderMeta={
-    ...(o.orderMeta&&typeof o.orderMeta==="object"?o.orderMeta:{}),
-    serviceCompleted:true,
-    serviceCompletedAt:at,
-    serviceCompletedBy:by
-  };
+  // Vérifie si TOUTE la table a été servie après cette action
+  const allActiveAreServed = active.every(i => lineServed(i) || itemsToServe.includes(i));
+
+  if (allActiveAreServed) {
+    o.serviceCompleted=true;
+    o.serviceCompletedAt=at;
+    o.serviceCompletedBy=by;
+    o.serviceCompletedDeviceId=STATE.deviceId;
+    o.serviceConfirmation={
+      status:"COMPLETED",
+      at,
+      by,
+      deviceId:STATE.deviceId,
+      terminal:"TELEPHONE",
+      activeLines:active.length,
+      activeQuantity:active.reduce((s,i)=>s+itemQty(i),0)
+    };
+    o.orderMeta={
+      ...(o.orderMeta&&typeof o.orderMeta==="object"?o.orderMeta:{}),
+      serviceCompleted:true,
+      serviceCompletedAt:at,
+      serviceCompletedBy:by
+    };
+  }
 
   const ok=await saveCurrent(
     o,
-    "SERVICE EFFECTUÉ · plats et boissons posés sur table · paiement autorisé",
+    "Plats servis" + (allActiveAreServed ? " · complet" : ""),
     {immediate:true}
   );
 
@@ -5524,7 +5529,7 @@ async function confirmServiceCompleted(){
   renderTicket();
   renderSummary();
   scheduleRender();
-  toast("SERVICE EFFECTUÉ · paiement maintenant autorisé");
+  toast(allActiveAreServed ? "SERVICE EFFECTUÉ · paiement autorisé" : "✓ Plats prêts servis");
   return true;
 }
 
