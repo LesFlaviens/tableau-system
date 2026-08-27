@@ -2174,6 +2174,68 @@ async function creerNouveauClient(nomRestaurant, emailContact, planChoisi) {
         return null;
     }
 }
+
+// ==========================================
+// 💳 PAIEMENT DES COMMANDES (STRIPE CONNECT)
+// ==========================================
+
+app.post('/api/payments/stripe/checkout', async (req, res) => {
+    try {
+        const { paymentRequestId, tableId, amount, currency, tenantID, successUrl, cancelUrl } = req.body;
+        const safeID = cleanString(tenantID);
+        
+        const tenant = await Tenant.findOne({ tenantID: safeID });
+        if (!tenant) return res.status(404).json({ success: false, error: "Restaurant introuvable" });
+
+        // 🚨 VÉRIFICATION STRIPE CONNECT
+        const stripeAccountId = tenant.config?.stripeAccountId;
+        if (!stripeAccountId) {
+            return res.status(400).json({ success: false, error: "Le compte Stripe du restaurant n'est pas configuré." });
+        }
+
+        // On enregistre la demande comme "EN ATTENTE"
+        activeStripePayments.set(paymentRequestId, 'PENDING');
+
+        // Création de la session de paiement
+        const session = await stripe.checkout.sessions.create({
+            payment_method_types: ['card', 'twint', 'apple_pay', 'google_pay'],
+            line_items: [{
+                price_data: {
+                    currency: currency || 'chf',
+                    product_data: {
+                        name: `Table ${tableId} - Restaurant ${tenant.clientName}`,
+                    },
+                    unit_amount: Math.round(amount * 100), // Stripe attend des centimes
+                },
+                quantity: 1,
+            }],
+            mode: 'payment',
+            success_url: successUrl,
+            cancel_url: cancelUrl,
+            client_reference_id: paymentRequestId,
+            metadata: {
+                type: 'ORDER_PAYMENT',
+                tenantID: safeID,
+                tableId: tableId,
+                paymentRequestId: paymentRequestId
+            }
+        }, {
+            stripeAccount: stripeAccountId // 👈 STRIPE CONNECT : Redirige les fonds vers le resto !
+        });
+
+        res.json({ success: true, url: session.url });
+    } catch (error) {
+        console.error("Erreur Stripe Checkout Client:", error);
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+
+app.get('/api/payments/stripe/status', (req, res) => {
+    const { paymentRequestId } = req.query;
+    // Retourne 'PENDING', 'PAID', ou 'FAILED' au PAD
+    const status = activeStripePayments.get(paymentRequestId) || 'PENDING';
+    res.json({ success: true, status });
+});
 // =========================================================================
 // ⚙️ ROUTES D'ADMINISTRATION ET DE CONFIGURATION DU RESTAURANT
 // =========================================================================
