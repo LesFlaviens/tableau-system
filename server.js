@@ -708,8 +708,9 @@ siret: { type: String, default: 'NON RENSEIGNÉ' },
         default: []
     },
 
-    config: {
-        stripeCustomerId: String
+config: {
+        stripeCustomerId: String,
+        stripeAccountId: String // 👈 NOUVEAU : L'ID Stripe Connect du restaurant (ex: acct_1N2b...)
     },
 
     demoExpiration: {
