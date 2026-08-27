@@ -938,8 +938,6 @@
      return {
          'Content-Type': 'application/json',
          'Accept': 'application/json',
-         'X-iCHEF-Tenant': tenantID,
-         'X-iCHEF-Terminal': PASS_TERMINAL,
          ...extra
      };
  }
@@ -951,9 +949,7 @@
              cache: 'no-store',
              credentials: 'omit',
              headers: {
-                 'Accept': 'application/json',
-                 'X-iCHEF-Tenant': tenantID,
-                 'X-iCHEF-Terminal': PASS_TERMINAL
+                 'Accept': 'application/json'
              }
          }
      );
@@ -1618,11 +1614,17 @@
      cache: 'no-store',
      credentials: 'omit',
      headers: passHeaders(),
-     body: JSON.stringify({ tableId: orderId, order })
+     body: JSON.stringify({ tableId: orderId, order, terminal: PASS_TERMINAL })
  });
- if (!r.ok) throw new Error(`HTTP ${r.status}`);
+ const reply = await r.json().catch(() => ({}));
+ if (!r.ok || reply.success === false || reply.persisted === false) {
+     throw new Error(reply.error || `HTTP ${r.status}`);
+ }
+ showPassSyncMessage('PRÊT ENREGISTRÉ', true);
+ schedulePassResync(60);
  } catch (e) {
- console.error("Erreur réseau");
+ console.error("Erreur réseau Pass :", e);
+ showPassSyncMessage('ENVOI ÉCHOUÉ', false);
  }
  }
 
@@ -1646,11 +1648,17 @@
      cache: 'no-store',
      credentials: 'omit',
      headers: passHeaders(),
-     body: JSON.stringify({ tableId: orderId, order })
+     body: JSON.stringify({ tableId: orderId, order, terminal: PASS_TERMINAL })
  });
- if (!r.ok) throw new Error(`HTTP ${r.status}`);
+ const reply = await r.json().catch(() => ({}));
+ if (!r.ok || reply.success === false || reply.persisted === false) {
+     throw new Error(reply.error || `HTTP ${r.status}`);
+ }
+ showPassSyncMessage('PRÊT ENVOYÉ AU PAD', true);
+ schedulePassResync(60);
  } catch (e) {
  console.error('Erreur synchronisation Pass vers Pad :', e);
+ showPassSyncMessage('PAD NON MIS À JOUR', false);
  }
  }
 
@@ -1953,6 +1961,14 @@
      passResyncTimer = setTimeout(() => fetchInitialState(), delay);
  }
 
+ function showPassSyncMessage(message, ok = true) {
+     const badge = document.getElementById('connection-badge');
+     if (!badge) return;
+     badge.textContent = `● ${message}`;
+     badge.style.borderColor = ok ? '#10b981' : '#ef4444';
+     badge.style.color = ok ? '#10b981' : '#ef4444';
+ }
+
  function setConnectionBadge(ok, label) {
  const badge = document.getElementById('connection-badge');
  if (!badge) return;
@@ -1966,7 +1982,7 @@
  }
 
  socket.on('connect', () => {
-     socket.emit('joinTenant', { tenantID, terminal: PASS_TERMINAL });
+     socket.emit('joinTenant', tenantID);
      setConnectionBadge(true, 'Connecté');
      schedulePassResync(30);
  });
