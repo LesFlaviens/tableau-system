@@ -935,6 +935,9 @@
  if (!tenantID) window.location.href = 'connexionpartenaire.html';
 
  function passHeaders(extra = {}) {
+     /* Compatible avec le server.js actuellement déployé sur Render.
+        Ne pas envoyer X-iCHEF-Terminal : ce header n'est pas autorisé
+        par son CORS actuel et bloquerait le POST avant /update-order. */
      return {
          'Content-Type': 'application/json',
          'Accept': 'application/json',
@@ -1614,17 +1617,14 @@
      cache: 'no-store',
      credentials: 'omit',
      headers: passHeaders(),
-     body: JSON.stringify({ tableId: orderId, order, terminal: PASS_TERMINAL })
+     body: JSON.stringify({ tableId: orderId, order })
  });
- const reply = await r.json().catch(() => ({}));
- if (!r.ok || reply.success === false || reply.persisted === false) {
-     throw new Error(reply.error || `HTTP ${r.status}`);
- }
- showPassSyncMessage('PRÊT ENREGISTRÉ', true);
- schedulePassResync(60);
+ if (!r.ok) throw new Error(`HTTP ${r.status}`);
+ setConnectionBadge(true, order.items[itemIndex].done ? 'PRÊT enregistré' : 'Production enregistrée');
+ schedulePassResync(80);
  } catch (e) {
- console.error("Erreur réseau Pass :", e);
- showPassSyncMessage('ENVOI ÉCHOUÉ', false);
+ console.error("Erreur réseau", e);
+ setConnectionBadge(false, 'Envoi impossible');
  }
  }
 
@@ -1648,17 +1648,14 @@
      cache: 'no-store',
      credentials: 'omit',
      headers: passHeaders(),
-     body: JSON.stringify({ tableId: orderId, order, terminal: PASS_TERMINAL })
+     body: JSON.stringify({ tableId: orderId, order })
  });
- const reply = await r.json().catch(() => ({}));
- if (!r.ok || reply.success === false || reply.persisted === false) {
-     throw new Error(reply.error || `HTTP ${r.status}`);
- }
- showPassSyncMessage('PRÊT ENVOYÉ AU PAD', true);
- schedulePassResync(60);
+ if (!r.ok) throw new Error(`HTTP ${r.status}`);
+ setConnectionBadge(true, 'PRÊT envoyé au PAD');
+ schedulePassResync(80);
  } catch (e) {
  console.error('Erreur synchronisation Pass vers Pad :', e);
- showPassSyncMessage('PAD NON MIS À JOUR', false);
+ setConnectionBadge(false, 'PAD non mis à jour');
  }
  }
 
@@ -1959,14 +1956,6 @@
  function schedulePassResync(delay = 120) {
      clearTimeout(passResyncTimer);
      passResyncTimer = setTimeout(() => fetchInitialState(), delay);
- }
-
- function showPassSyncMessage(message, ok = true) {
-     const badge = document.getElementById('connection-badge');
-     if (!badge) return;
-     badge.textContent = `● ${message}`;
-     badge.style.borderColor = ok ? '#10b981' : '#ef4444';
-     badge.style.color = ok ? '#10b981' : '#ef4444';
  }
 
  function setConnectionBadge(ok, label) {
