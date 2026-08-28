@@ -3267,9 +3267,257 @@ async function secureFetch(input, init = {}) {
     }
 } // 🔥 VOICI L'ACCOLADE MANQUANTE DE fetchStateFromCloud !
 
-// Fonction de secours pour empêcher les erreurs de références
+// =========================================================
+// CHIFFRE D'AFFAIRES CENTRALISÉ — TOUS LES POSTES
+// Source unique : FINANCIAL_HISTORY du server.js
+// PAD / pack-eco.html / telephone.html / caisse
+// =========================================================
+
+function ichefRevenueDate(tx) {
+    const raw =
+        tx?.serverRecordedAt ||
+        tx?.paidAt ||
+        tx?.date ||
+        tx?.timestamp ||
+        tx?.createdAt ||
+        tx?.time ||
+        tx?.closedAt ||
+        tx?.orderSnapshot?.paidAt ||
+        tx?.orderSnapshot?.paymentDraft?.updatedAt ||
+        null;
+
+    if (!raw) return null;
+    const d = new Date(raw);
+    return Number.isNaN(d.getTime()) ? null : d;
+}
+
+function ichefRevenueAmount(tx) {
+    const value = Number(
+        tx?.totalTTC ??
+        tx?.total ??
+        tx?.amount ??
+        tx?.payment?.amount ??
+        tx?.orderSnapshot?.paymentDraft?.total ??
+        tx?.orderSnapshot?.total ??
+        0
+    );
+    return Number.isFinite(value) ? Math.round(value * 100) / 100 : 0;
+}
+
+function ichefRevenueTicketKey(tx) {
+    return String(
+        tx?.ticketNumber ||
+        tx?.fiscalReceiptReference ||
+        tx?.receiptReference ||
+        tx?.orderSnapshot?.ticketNumber ||
+        tx?.orderSnapshot?.fiscalReceiptReference ||
+        tx?.operationId ||
+        tx?.id ||
+        `${ichefRevenueDate(tx)?.toISOString() || ''}|${tx?.tableId || tx?.table || ''}|${ichefRevenueAmount(tx)}`
+    ).trim();
+}
+
+function ichefRevenueIsSale(tx) {
+    if (!tx || typeof tx !== 'object') return false;
+
+    const type = String(
+        tx?.eventType ||
+        tx?.type ||
+        tx?.subtype ||
+        tx?.status ||
+        ''
+    ).toUpperCase();
+
+    const paymentMethod = String(
+        tx?.paymentMethod ||
+        tx?.payment?.method ||
+        tx?.method ||
+        ''
+    ).toUpperCase();
+
+    if (
+        /Z_CLOSURE|DAILY_CLOSURE|CLOTURE|CLÔTURE|FISCAL_TABLE_SHARE|EXPORT/.test(type) ||
+        /Z_CLOSURE|CLOTURE|CLÔTURE/.test(paymentMethod)
+    ) {
+        return false;
+    }
+
+    const amount = ichefRevenueAmount(tx);
+    if (!Number.isFinite(amount) || amount === 0) return false;
+
+    const orderStatus = String(
+        tx?.orderSnapshot?.paymentStatus ||
+        tx?.orderSnapshot?.paymentDraft?.status ||
+        ''
+    ).toUpperCase();
+
+    return (
+        /SALE_FINALIZED|SALE|PAYMENT|CASH_IN|PAID|PAYE|ENCAISS/.test(type) ||
+        /PAYE|PAID/.test(orderStatus) ||
+        Boolean(tx?.payment || tx?.paymentMethod)
+    );
+}
+
+function ichefRevenueCovers(tx) {
+    const snapshot = tx?.orderSnapshot || {};
+    const candidates = [
+        tx?.covers,
+        tx?.couverts,
+        tx?.guests,
+        tx?.people,
+        tx?.pax,
+        tx?.nbCouverts,
+        snapshot?.covers,
+        snapshot?.couverts,
+        snapshot?.guests,
+        snapshot?.people,
+        snapshot?.pax,
+        snapshot?.nbCouverts,
+        snapshot?.tableStats?.pax
+    ];
+
+    for (const candidate of candidates) {
+        const n = Number(candidate);
+        if (Number.isFinite(n) && n > 0) return n;
+    }
+    return 0;
+}
+
+function ichefRevenueSource(tx) {
+    return String(
+        tx?.source ||
+        tx?.terminalType ||
+        tx?.terminal ||
+        tx?.orderSnapshot?.orderMeta?.terminal ||
+        tx?.orderSnapshot?.orderMeta?.origin ||
+        'POSTE'
+    ).toUpperCase();
+}
+
+function ichefCentralRevenueTransactions() {
+    const history = Array.isArray(archiveCuisine) ? archiveCuisine : [];
+    const unique = new Map();
+
+    history.forEach(tx => {
+        if (!ichefRevenueIsSale(tx)) return;
+
+        const key = ichefRevenueTicketKey(tx);
+        if (!key) return;
+
+        const previous = unique.get(key);
+
+        if (!previous) {
+            unique.set(key, tx);
+            return;
+        }
+
+        const previousDate = ichefRevenueDate(previous)?.getTime() || 0;
+        const currentDate = ichefRevenueDate(tx)?.getTime() || 0;
+
+        if (currentDate >= previousDate) unique.set(key, tx);
+    });
+
+    return Array.from(unique.values());
+}
+
+function ichefRevenueStartOfWeek(date) {
+    const d = new Date(date);
+    const day = (d.getDay() + 6) % 7;
+    d.setDate(d.getDate() - day);
+    d.setHours(0, 0, 0, 0);
+    return d;
+}
+
+function ichefRevenueFormat(amount) {
+    const curr = systemSettings?.currency || '€';
+    return `${Number(amount || 0).toFixed(2)} ${curr}`;
+}
+
 function updateDashboardStats() {
-    console.log("Stats dashboard ok.");
+    const transactions = ichefCentralRevenueTransactions();
+    const now = new Date();
+
+    const startDay = new Date(now);
+    startDay.setHours(0, 0, 0, 0);
+
+    const startWeek = ichefRevenueStartOfWeek(now);
+    const startMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+    const startYear = new Date(now.getFullYear(), 0, 1);
+
+    const sumSince = start => transactions.reduce((sum, tx) => {
+        const d = ichefRevenueDate(tx);
+        if (!d || d < start || d > now) return sum;
+        return sum + ichefRevenueAmount(tx);
+    }, 0);
+
+    const dayCA = sumSince(startDay);
+    const weekCA = sumSince(startWeek);
+    const monthCA = sumSince(startMonth);
+    const yearCA = sumSince(startYear);
+
+    const dayTransactions = transactions.filter(tx => {
+        const d = ichefRevenueDate(tx);
+        return d && d >= startDay && d <= now;
+    });
+
+    const coversToday = dayTransactions.reduce(
+        (sum, tx) => sum + ichefRevenueCovers(tx),
+        0
+    );
+
+    const setText = (id, value) => {
+        const el = document.getElementById(id);
+        if (el) el.textContent = value;
+    };
+
+    setText('dash-ca-live', ichefRevenueFormat(dayCA));
+    setText('dash-couverts', String(Math.round(coversToday)));
+    setText('sales-day', ichefRevenueFormat(dayCA));
+    setText('sales-week', ichefRevenueFormat(weekCA));
+    setText('sales-month', ichefRevenueFormat(monthCA));
+    setText('sales-year', ichefRevenueFormat(yearCA));
+
+    const live = document.getElementById('dash-ca-live');
+    if (live) {
+        const sources = Array.from(new Set(dayTransactions.map(ichefRevenueSource))).filter(Boolean);
+        live.title = sources.length
+            ? `CA serveur consolidé aujourd’hui · ${sources.join(' + ')}`
+            : 'CA serveur consolidé aujourd’hui';
+    }
+}
+
+async function refreshCentralRevenueOnly() {
+    try {
+        const response = await secureFetch(
+            `${SERVER_URL}/get-current-state?tenantID=${encodeURIComponent(tenantID)}&_t=${Date.now()}`,
+            { cache: 'no-store' }
+        );
+
+        if (!response.ok) return;
+
+        const state = await response.json();
+        const node = state?.activeOrders?.FINANCIAL_HISTORY;
+
+        archiveCuisine =
+            Array.isArray(node?.data)
+                ? node.data
+                : Array.isArray(node)
+                    ? node
+                    : [];
+
+        updateDashboardStats();
+        renderFinancialDashboard();
+
+        if (typeof renderHourlySalesDashboard === 'function') {
+            try { renderHourlySalesDashboard(); } catch (_) {}
+        }
+
+        if (typeof renderItemPopularityDashboard === 'function') {
+            try { renderItemPopularityDashboard(false); } catch (_) {}
+        }
+    } catch (error) {
+        console.warn('Synchronisation CA indisponible', error);
+    }
 }
         document.addEventListener('focusin', (e) => { if(e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT' || e.target.tagName === 'TEXTAREA') isTyping = true; });
         document.addEventListener('focusout', () => { isTyping = false; });
@@ -3394,6 +3642,14 @@ async function startAuthenticatedApplication() {
         showToast("📡 Carte mise à jour par le Chef !");
         fetchStateFromCloud(true);
     });
+
+    const refreshRevenueRealtime = () => {
+        refreshCentralRevenueOnly();
+    };
+
+    socket.on('transactionSaved', refreshRevenueRealtime);
+    socket.on('paymentUpdated', refreshRevenueRealtime);
+    socket.on('order-payment-mirrored', refreshRevenueRealtime);
 
     const refreshAuditIfVisible = () => {
         const tab = document.getElementById('tab-audit');
@@ -4426,40 +4682,42 @@ async function loadAIProfitability() {
     // administration.html et admin.html lisent le même contrat serveur.
     // =========================================================
     const ICHEF_CONTRACT_ACCESS_MATRIX = {
-        'PACK_A': ['admin.html','administration.html','portail-staff.html','minipass.html','production.html','caissetactile.html','pack-eco.html','telephone.html','menu-qr.html','haccp.html'],
+        'PACK_A': ['PLAN_INTERACTIF','admin.html','administration.html','portail-staff.html','minipass.html','production.html','caissetactile.html','pack-eco.html','telephone.html','menu-qr.html','haccp.html'],
         'CHEF': ['chef.html','administration.html'],
         'CHEF_CUISINE': ['chef.html','administration.html'],
         'PATISSIER': ['chef-patissier.html','administration.html'],
         'CHEF_PATISSERIE': ['chef-patissier.html','administration.html'],
         'BAR': ['chef-bar.html','administration.html'],
         'CHEF_BAR': ['chef-bar.html','administration.html'],
-        'ICHEF_OS': ['chef.html','portail-staff.html','chef-bar.html','administration.html','admin.html','pack-eco.html','telephone.html','caissetactile.html','minipass.html','production.html','menu-qr.html'],
-        'ECO': ['portail-staff.html','admin.html','pack-eco.html','telephone.html','caissetactile.html','minipass.html','production.html','menu-qr.html','administration.html','haccp.html'],
-        'BUSINESS': ['portail-staff.html','admin.html','pack-eco.html','telephone.html','caissetactile.html','minipass.html','production.html','menu-qr.html','administration.html','haccp.html'],
-        'RENTABILITE': ['portail-staff.html','admin.html','pack-eco.html','telephone.html','caissetactile.html','minipass.html','production.html','menu-qr.html','administration.html','haccp.html'],
-        'EMPIRE': ['portail-staff.html','admin.html','pack-eco.html','telephone.html','caissetactile.html','iCHEF_OS_mobile_service_v3.html','menu-qr.html','chef.html','menu-pure.html','chef-bar.html','menu-bar.html','rh.html','haccp.html','reservation.html','minipass.html','production.html','chef-patissier.html','administration.html'],
-        'BRIGADE': ['portail-staff.html','admin.html','pack-eco.html','telephone.html','caissetactile.html','iCHEF_OS_mobile_service_v3.html','menu-qr.html','chef.html','menu-pure.html','chef-bar.html','menu-bar.html','rh.html','haccp.html','reservation.html','minipass.html','production.html','chef-patissier.html','administration.html'],
-        'BRIGADES': ['admin.html','portail-staff.html','pack-eco.html','telephone.html','iCHEF_OS_mobile_service_v3.html','caissetactile.html','menu-qr.html','chef.html','menu-pure.html','chef-bar.html','menu-bar.html','rh.html','haccp.html','reservation.html','minipass.html','production.html','chef-patissier.html','administration.html'],
-        'PREMIUM': ['admin.html','portail-staff.html','iCHEF_OS_mobile_service_v3.html','pack-eco.html','telephone.html','caissetactile.html','menu-qr.html','chef.html','menu-pure.html','chef-bar.html','menu-bar.html','rh.html','haccp.html','reservation.html','minipass.html','production.html','chef-patissier.html','administration.html']
+        'ICHEF_OS': ['PLAN_INTERACTIF','chef.html','portail-staff.html','chef-bar.html','administration.html','admin.html','pack-eco.html','telephone.html','caissetactile.html','minipass.html','production.html','menu-qr.html'],
+        'ECO': ['PLAN_INTERACTIF','portail-staff.html','admin.html','pack-eco.html','telephone.html','caissetactile.html','minipass.html','production.html','menu-qr.html','administration.html','haccp.html'],
+        'BUSINESS': ['PLAN_INTERACTIF','portail-staff.html','admin.html','pack-eco.html','telephone.html','runner-pass1.html','bar.html','caissetactile.html','minipass.html','production.html','menu-qr.html','administration.html','haccp.html'],
+        'RENTABILITE': ['PLAN_INTERACTIF','portail-staff.html','admin.html','pack-eco.html','telephone.html','runner-pass1.html','bar.html','caissetactile.html','minipass.html','production.html','menu-qr.html','administration.html','haccp.html'],
+        'EMPIRE': ['PLAN_INTERACTIF','portail-staff.html','admin.html','iCHEF_OS_mobile_service_v3.html','pack-eco.html','telephone.html','bar.html','runner-pass1.html','caissetactile.html','menu-qr.html','chef.html','menu-pure.html','chef-bar.html','menu-bar.html','rh.html','haccp.html','reservation.html','minipass.html','production.html','chef-patissier.html','administration.html'],
+        'BRIGADE': ['PLAN_INTERACTIF','portail-staff.html','admin.html','iCHEF_OS_mobile_service_v3.html','pack-eco.html','telephone.html','bar.html','runner-pass1.html','caissetactile.html','menu-qr.html','chef.html','menu-pure.html','chef-bar.html','menu-bar.html','rh.html','haccp.html','reservation.html','minipass.html','production.html','chef-patissier.html','administration.html'],
+        'BRIGADES': ['PLAN_INTERACTIF','admin.html','iCHEF_OS_mobile_service_v3.html','portail-staff.html','pack-eco.html','telephone.html','bar.html','runner-pass1.html','caissetactile.html','menu-qr.html','chef.html','menu-pure.html','chef-bar.html','menu-bar.html','rh.html','haccp.html','reservation.html','minipass.html','production.html','chef-patissier.html','administration.html'],
+        'PREMIUM': ['PLAN_INTERACTIF','admin.html','iCHEF_OS_mobile_service_v3.html','portail-staff.html','pack-eco.html','telephone.html','bar.html','runner-pass1.html','caissetactile.html','menu-qr.html','chef.html','menu-pure.html','chef-bar.html','menu-bar.html','rh.html','haccp.html','reservation.html','minipass.html','production.html','chef-patissier.html','administration.html']
     };
 
     const ICHEF_CONTRACT_MODULE_CATALOG = [
-        { id:'admin.html', title:'Administration & Config' },
-        { id:'menu-qr.html', title:'QR / NFC — Commande client' },
-        { id:'pack-eco.html', title:'PAD Serveur' },
-        { id:'telephone.html', title:'iCHEF Téléphone' },
-        { id:'caissetactile.html', title:'Caisse — Encaissement' },
-        { id:'minipass.html', title:'Pass / Écran d’envoi' },
-        { id:'chef.html', title:'Chef Cuisine' },
-        { id:'chef-patissier.html', title:'Chef Pâtissier' },
-        { id:'chef-bar.html', title:'Chef Bar' },
-        { id:'reservation.html', title:'Réservations' },
-        { id:'haccp.html', title:'HACCP & Hygiène' },
-        { id:'rh.html', title:'Gestion Staff' },
-        { id:'menu-pure.html', title:'Carte Restaurant' },
-        { id:'menu-bar.html', title:'Carte des Boissons' },
-        { id:'portail-staff.html', title:'Portail Staff' },
-        { id:'iCHEF_OS_mobile_service_v3.html', title:'Service Mobile' }
+        { id:'telephone.html', title:'PAD pour le serveur', subtitle:'service mobile inclus avec le PAD' },
+        { id:'admin.html', title:'Administration & Config', subtitle:'réglages / modules / accès' },
+        { id:'menu-qr.html', title:'QR / NFC — Commande client', subtitle:'menu autonome sans application' },
+        { id:'pack-eco.html', title:'PAD central', subtitle:'prise de commande / service' },
+        { id:'caissetactile.html', title:'Caisse — Encaissement', subtitle:'paiement / ticket / clôture' },
+        { id:'minipass.html', title:'Mini Pass / Écran d’envoi', subtitle:'écran de production' },
+        { id:'production.html', title:'Pass Cuisine', subtitle:'passe cuisine' },
+        { id:'bar.html', title:'Pass Bar', subtitle:'passe bar' },
+        { id:'runner-pass1.html', title:'Pass Serveur', subtitle:'passe serveur' },
+        { id:'chef.html', title:'Chef Cuisine', subtitle:'carte / recettes / stocks' },
+        { id:'chef-patissier.html', title:'Chef Pâtissier', subtitle:'pâtisserie / coûts / production' },
+        { id:'chef-bar.html', title:'Chef Bar', subtitle:'mixologie / boissons / stocks' },
+        { id:'reservation.html', title:'Réservations', subtitle:'planning / tables / clients' },
+        { id:'haccp.html', title:'HACCP & Hygiène', subtitle:'contrôles / traçabilité' },
+        { id:'rh.html', title:'Gestion Staff', subtitle:'équipe / accès / rôles' },
+        { id:'menu-pure.html', title:'Carte Restaurant', subtitle:'carte restaurant' },
+        { id:'menu-bar.html', title:'Carte Bar', subtitle:'carte boissons' },
+        { id:'portail-staff.html', title:'Pointeuse', subtitle:'pointage collaborateurs' }
     ];
 
     function ichefContractTenantID(){
@@ -4509,8 +4767,29 @@ async function loadAIProfitability() {
         const plan = String(payload?.plan || '').toUpperCase();
         const addons = Array.isArray(payload?.addons) ? payload.addons.map(String) : [];
         const allowedPages = ICHEF_CONTRACT_ACCESS_MATRIX[plan] || [];
-        const activeModules = ICHEF_CONTRACT_MODULE_CATALOG.filter(mod =>
-            ichefIsContractModuleUnlocked(mod.id, allowedPages, addons)
+
+        let activeModules = [];
+
+        // Priorité : liste exacte calculée par administration.html.
+        if (Array.isArray(payload?.modules) && payload.modules.length) {
+            const known = new Map(ICHEF_CONTRACT_MODULE_CATALOG.map(mod => [mod.id, mod]));
+            activeModules = payload.modules
+                .filter(mod => mod && String(mod.id || '').toLowerCase().endsWith('.html'))
+                .map(mod => ({
+                    ...(known.get(String(mod.id)) || {}),
+                    id: String(mod.id),
+                    title: String(mod.title || known.get(String(mod.id))?.title || mod.id),
+                    subtitle: String(mod.subtitle || known.get(String(mod.id))?.subtitle || '')
+                }));
+        } else {
+            activeModules = ICHEF_CONTRACT_MODULE_CATALOG.filter(mod =>
+                ichefIsContractModuleUnlocked(mod.id, allowedPages, addons)
+            );
+        }
+
+        // Pas de doublons.
+        activeModules = Array.from(
+            new Map(activeModules.map(mod => [mod.id, mod])).values()
         );
 
         if (planBox) {
@@ -4563,10 +4842,23 @@ async function loadAIProfitability() {
                 throw new Error(data.error || 'Licence indisponible');
             }
 
+            let cachedModules = [];
+            try {
+                const oldCache = JSON.parse(localStorage.getItem(cacheKey) || 'null');
+                if (
+                    oldCache &&
+                    String(oldCache.plan || '').toUpperCase() === String(data.plan || '').toUpperCase() &&
+                    Array.isArray(oldCache.modules)
+                ) {
+                    cachedModules = oldCache.modules;
+                }
+            } catch (_) {}
+
             const payload = {
                 plan: String(data.plan || '').toUpperCase(),
                 addons: Array.isArray(data.addons) ? data.addons : [],
                 status: data.status || '',
+                modules: cachedModules,
                 updatedAt: new Date().toISOString()
             };
 
@@ -4582,6 +4874,14 @@ async function loadAIProfitability() {
     }
 
     document.addEventListener('DOMContentLoaded', () => {
+        loadContractMenu(false);
+    });
+
+    window.addEventListener('storage', event => {
+        if (event.key === ichefContractCacheKey()) loadContractMenu(false);
+    });
+
+    window.addEventListener('ichef:contract-updated', () => {
         loadContractMenu(false);
     });
 
