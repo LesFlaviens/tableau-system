@@ -12869,16 +12869,74 @@ window.finalizePartialPayment = async function(order, method, amount, paymentReq
       return true;
     }
 
-    if(typeof toast==='function')toast('Validation serveur du paiement…');
+    if(typeof toast==='function')toast('Validation fiscale serveur du paiement…');
+
+    // IMPORTANT : la vente finale passe par le moteur fiscal officiel iCHEF.
+    // C'est cette route qui alimente FINANCIAL_HISTORY, la caisse tactile et l'admin.
     const operationId=pId('SALE');
-    const ticketNumber=pTicketNumber();
     const publicToken=ticketPref==='qr'?pToken():'';
-    const transaction=await pBuildTransaction(order,planned,ticketPref,operationId,ticketNumber,publicToken);
-    const proof=await pSendTransaction(transaction); // aucune libération avant ce OK serveur
+    const snap=typeof fiscalServerSnapshot==='function'?fiscalServerSnapshot(order):null;
+    if(!snap)throw new Error('Snapshot fiscal indisponible');
+    const finalMethod=pMethodSummary(planned);
+    const profile=typeof fiscalProfile==='function'?fiscalProfile():{country:'CH',currency:'CHF'};
+    const receiptPayload={
+      requested:ticketPref!=='none',
+      preference:ticketPref,
+      delivery:pReceiptLabel(ticketPref),
+      publicToken
+    };
+    const fiscalResult=await paymentServerRequest('/api/fiscal/cash-in',{
+      method:'POST',
+      idempotencyKey:operationId,
+      body:{
+        paymentRequestId:operationId,
+        source:'PAD',terminal:'PAD',terminalType:'PAD',
+        fiscalContext:{country:profile.country,currency:profile.currency,source:'PAD'},
+        payment:{method:finalMethod,amount:snap.total,currency:profile.currency,details:planned},
+        receipt:receiptPayload,
+        orderSnapshot:snap
+      }
+    });
+    const ticketNumber=pText(fiscalResult.ticketNumber||fiscalResult.fiscalId);
+    if(!ticketNumber)throw new Error('Numéro de ticket fiscal serveur absent');
+    const proof=fiscalResult.proof||{
+      operationId,
+      ticketNumber,
+      chainHash:fiscalResult.ticketHash||'',
+      serverTimestamp:fiscalResult.serverTimestamp||new Date().toISOString(),
+      publicReceiptUrl:fiscalResult.publicReceiptUrl||''
+    };
+    const transaction={
+      operationId,id:operationId,type:'SALE',eventType:'SALE_FINALIZED',
+      table:STATE.currentTable,tableId:STATE.currentTable,total:snap.total,amount:snap.total,
+      method:finalMethod,paymentMethod:finalMethod,payments:planned,
+      receipt:{...receiptPayload,publicUrl:proof.publicReceiptUrl||''},
+      orderSnapshot:{...snap,ticketNumber},currency:profile.currency,country:profile.country,
+      chainHash:proof.chainHash||fiscalResult.ticketHash||'',source:'PAD',terminalType:'PAD',
+      actor:{role:STATE.role||'SERVEUR',deviceId:STATE.deviceId||'',terminalType:'PAD'},
+      date:proof.serverTimestamp||new Date().toISOString(),timestamp:proof.serverTimestamp||new Date().toISOString()
+    };
+
+    // La preuve locale n'est créée QU'APRÈS confirmation du serveur.
     pApplyProofToOrder(order,planned,proof,transaction);
+    order.fiscalStatus='FISCALIZED';
+    order.status='FISCALIZED';
+    order.paymentDraft.fiscalStatus='SERVER_FISCALIZED';
     pLocalProofSave(order.paymentProof);
-    await pArchiveAndRelease(order,transaction,proof);
-    if(typeof toast==='function')toast(`✓ Paiement transmis · ${order.paymentProof.ticketNumber}`);
+
+    // Fermeture serveur : si elle échoue, la vente reste malgré tout enregistrée dans FINANCIAL_HISTORY.
+    try{
+      await paymentServerRequest('/api/orders/close-paid',{
+        method:'POST',
+        body:{tableId:STATE.currentTable,ticketNumber,terminal:'PAD'}
+      });
+    }catch(closeErr){
+      console.warn('[iCHEF] paiement enregistré mais fermeture à resynchroniser',closeErr);
+      if(typeof toast==='function')toast(`Paiement ${ticketNumber} enregistré · fermeture à resynchroniser`,true);
+    }
+
+    try{if(typeof syncFull==='function')await syncFull('payment-fiscal-recorded')}catch(_){ }
+    if(typeof toast==='function')toast(`✓ Paiement enregistré · ${ticketNumber}`);
     window._currentTicketPreference='none';
     await pDeliverReceipt(order,ticketPref,proof);
     return true;
