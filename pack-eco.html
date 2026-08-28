@@ -5727,6 +5727,14 @@ async function connectSocket(){
     });STATE.socket=socket;
     socket.on("connect",()=>{STATE.connected=true;setConnection("TEMPS RÉEL","good");socket.emit("joinTenant",String(STATE.tenantID));retryFailedWrites();if(!STATE.lastServerAt||now()-STATE.lastServerAt>5000)syncFull("reconnect")});
     socket.on("updateState",s=>{STATE.connected=true;STATE.lastServerAt=now();setConnection("TEMPS RÉEL","good");applyServerState(s,"socket")});
+    
+    // --- NOUVEAU : Le PAD écoute les paiements et annulations de la caisse ---
+    ['orderUpdated','ordersUpdated','stateUpdated','transactionSaved','paymentUpdated','server-state-changed'].forEach(eventName => {
+        socket.on(eventName, () => {
+            if (typeof syncFull === 'function') syncFull("socket-event");
+        });
+    });
+
     socket.on("disconnect",()=>{STATE.connected=false;setConnection(navigator.onLine?"RECONNEXION":"HORS LIGNE",navigator.onLine?"warn":"bad")});
     socket.on("connect_error",err=>{
       STATE.connected=false;
@@ -5777,18 +5785,16 @@ function applyServerState(serverState,source){
 
   applyDerived();
 
-  if(
-    openedTable &&
-    rawOpened &&
-    isArchivedOrder(rawOpened) &&
-    !hasLocalPending
-  ){
-    STATE.currentTable=null;
-    STATE.currentOrder=null;
-    STATE.pendingCookingLine="";
-    hideQuickCooking();
-    document.body.classList.remove("summary-open","order-open");
-    toast("Table fermée sur un autre écran");
+  // --- NOUVEAU : Fermeture du PAD si la table a été libérée ou payée ---
+  if(openedTable && !hasLocalPending){
+    if(!rawOpened || isArchivedOrder(rawOpened)){
+      STATE.currentTable=null;
+      STATE.currentOrder=null;
+      STATE.pendingCookingLine="";
+      if(typeof hideQuickCooking==='function') hideQuickCooking();
+      document.body.classList.remove("summary-open","order-open");
+      toast("Table encaissée et libérée !");
+    }
   }
 
   scheduleRender();
@@ -5882,7 +5888,6 @@ function normalizeMenu(){
 }
 function normalizeReservations(){const r=unwrap(STATE.activeOrders.RESERVATIONS_MASTER);STATE.reservations=Array.isArray(r)?r:[]}
 function applyDerived(){STATE.settings=unwrap(STATE.activeOrders.SETTINGS_MASTER)||{};normalizeArchitecture();normalizeMenu();normalizeReservations();if(STATE.currentTable)STATE.currentOrder=getOrder(STATE.currentTable)}
-
 /* ---------------- ORDERS ---------------- */
 const SYSTEM_KEYS=new Set(["ARCHITECTURE","SETTINGS_MASTER","RESERVATIONS_MASTER","MENU_MASTER","MENU_MASTER_BAR","MENU_MASTER_PATISSERIE","STAFF_ACCESS","LOYALTY_MASTER","TIMESHEETS_MASTER","ALERTS_MASTER","FINANCIAL_HISTORY","AUDIT_MASTER"]);
 function isRealOrder(k,o){
