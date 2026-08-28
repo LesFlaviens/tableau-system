@@ -12496,7 +12496,7 @@ setTimeout(() => {
         await finalizePartialPayment(o, method, inputAmount);
     };
 
-    window.finalizePartialPayment = async function(order, method, amount, paymentRequestId = "") {
+window.finalizePartialPayment = async function(order, method, amount, paymentRequestId = "") {
         const total = typeof orderTotal === 'function' ? orderTotal(order) : 0;
         const nowIso = new Date().toISOString();
         
@@ -12522,21 +12522,44 @@ setTimeout(() => {
 
         if (newRemaining <= 0.01) {
             try {
-                if (typeof toast === 'function') toast("Génération du ticket fiscal...");
-                const result = await fiscalizeWithServer(order, "MULTIPLE", order.paymentDraft.payments, typeof serverPaymentId === 'function' ? serverPaymentId("FISCAL") : "");
-                if (typeof applyServerFiscalResult === 'function') applyServerFiscalResult(order, result, "MULTIPLE");
+                if (typeof toast === 'function') toast("Validation du paiement...");
+
+                // 1. Marquer la commande comme payée localement
+                order.status = "PAID";
+                order.paymentStatus = "PAID";
+                order.paymentDraft.status = "PAYE";
+                order.isArchived = true;
+                order.closedAt = nowIso;
+
+                // 2. Libérer la table et créer l'archive via la synchro classique iCHEF
+                if (typeof optimisticWrite === 'function') {
+                    await optimisticWrite("ARCHIVE_PAID_" + Date.now() + "_" + STATE.currentTable, {data: order}, "Vente encaissée au PAD");
+                    await optimisticWrite(STATE.currentTable, null, "Table libérée suite au paiement");
+                } else if (typeof saveCurrent === 'function') {
+                    await saveCurrent(order, "Paiement intégral validé", {immediate: true});
+                }
+
+                // 3. Prévenir la caisse principale instantanément
+                if (STATE.socket && STATE.socket.connected) {
+                    STATE.socket.emit('transactionSaved');
+                    STATE.socket.emit('stateUpdated');
+                }
                 
                 if (typeof syncFull === 'function') await syncFull("payment-fiscalized").catch(()=>{});
-                if (typeof toast === 'function') toast(`✓ Ticket fiscal généré (N° ${result.ticketNumber})`);
+                if (typeof toast === 'function') toast(`✓ Paiement validé`);
                 
+                // 4. Lancer l'impression si configurée
                 const pcfg = typeof loadPrinterConfig === 'function' ? loadPrinterConfig() : {};
                 if(pcfg.enabled && pcfg.printers?.caisse?.enabled && pcfg.receipt?.autoAfterPayment !== false) {
                     try { if (typeof printCashReceipt === 'function') await printCashReceipt(STATE.currentOrder || order, {auto:true}); } catch(e) {}
                 }
                 
+                // 5. Fermer les fenêtres
                 if (typeof closeSheet === 'function') closeSheet();
+                if (typeof closeOrder === 'function') closeOrder();
+                
             } catch(e) {
-                if (typeof toast === 'function') toast(e.message || "Erreur de fiscalisation", true);
+                if (typeof toast === 'function') toast(e.message || "Erreur de paiement", true);
             }
         } else {
             order.paymentDraft.status = "PAIEMENT_PARTIEL";
@@ -12546,6 +12569,7 @@ setTimeout(() => {
                 const ok = await saveCurrent(order, "Paiement partiel : " + method, {immediate: true});
                 if (ok) {
                     if (typeof toast === 'function') toast(`✓ Encaissé : ${amount}. Reste : ${newRemaining}`);
+                    if (STATE.socket && STATE.socket.connected) STATE.socket.emit('stateUpdated');
                     window.openPayment(); 
                 }
             }
@@ -12563,8 +12587,5 @@ setTimeout(() => {
             };
         }
     });
-
-}, 2500);
-</script>
 </body>
 </html>
