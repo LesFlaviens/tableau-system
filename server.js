@@ -118,6 +118,328 @@ app.use('/webhook', express.raw({ type: 'application/json' }));
 app.use(express.json({ limit: '100mb' }));
 app.use(express.urlencoded({ extended: true, limit: '100mb' }));
 
+
+// ==========================================================
+// FICHIER FISCAL PERMANENT iCHEF
+// ==========================================================
+
+const fiscalRecordSchema = new mongoose.Schema({
+    tenantID: {
+        type: String,
+        required: true,
+        index: true
+    },
+
+    recordId: {
+        type: String,
+        required: true,
+        index: true
+    },
+
+    type: {
+        type: String,
+        required: true,
+        index: true
+    },
+
+    subtype: {
+        type: String,
+        default: ''
+    },
+
+    tableId: {
+        type: String,
+        default: '',
+        index: true
+    },
+
+    ticketNumber: {
+        type: String,
+        default: '',
+        index: true
+    },
+
+    operationId: {
+        type: String,
+        default: '',
+        index: true
+    },
+
+    status: {
+        type: String,
+        default: ''
+    },
+
+    amount: {
+        type: Number,
+        default: 0
+    },
+
+    currency: {
+        type: String,
+        default: 'CHF'
+    },
+
+    operator: {
+        type: String,
+        default: ''
+    },
+
+    terminal: {
+        type: String,
+        default: ''
+    },
+
+    deviceId: {
+        type: String,
+        default: ''
+    },
+
+    details: {
+        type: Object,
+        default: {}
+    },
+
+    createdAt: {
+        type: Date,
+        default: Date.now,
+        index: true
+    }
+
+}, {
+    minimize: false
+});
+
+fiscalRecordSchema.index(
+    { tenantID: 1, recordId: 1 },
+    { unique: true }
+);
+
+const FiscalRecord =
+    mongoose.models.FiscalRecord ||
+    mongoose.model('FiscalRecord', fiscalRecordSchema);
+
+
+function ichefFiscalId(prefix = 'FISCAL') {
+    return (
+        prefix +
+        '_' +
+        Date.now() +
+        '_' +
+        crypto.randomBytes(8).toString('hex')
+    );
+}
+
+
+async function ichefWriteFiscalRecord(data = {}) {
+
+    const tenantID = cleanString(data.tenantID);
+
+    if (!tenantID) {
+        return null;
+    }
+
+    const recordId =
+        String(
+            data.recordId ||
+            data.operationId ||
+            data.ticketNumber ||
+            ichefFiscalId(data.type || 'EVENT')
+        );
+
+    const record = {
+        tenantID,
+        recordId,
+
+        type:
+            String(data.type || 'EVENT')
+                .trim()
+                .toUpperCase(),
+
+        subtype:
+            String(data.subtype || ''),
+
+        tableId:
+            String(data.tableId || ''),
+
+        ticketNumber:
+            String(data.ticketNumber || ''),
+
+        operationId:
+            String(data.operationId || ''),
+
+        status:
+            String(data.status || ''),
+
+        amount:
+            Number(data.amount || 0),
+
+        currency:
+            String(data.currency || 'CHF')
+                .toUpperCase(),
+
+        operator:
+            String(data.operator || ''),
+
+        terminal:
+            String(data.terminal || ''),
+
+        deviceId:
+            String(data.deviceId || ''),
+
+        details:
+            data.details &&
+            typeof data.details === 'object'
+                ? data.details
+                : {},
+
+        createdAt:
+            data.createdAt
+                ? new Date(data.createdAt)
+                : new Date()
+    };
+
+    try {
+
+        return await FiscalRecord.findOneAndUpdate(
+            {
+                tenantID,
+                recordId
+            },
+            {
+                $setOnInsert: record
+            },
+            {
+                upsert: true,
+                new: true
+            }
+        );
+
+    } catch (error) {
+
+        if (error?.code === 11000) {
+            return FiscalRecord.findOne({
+                tenantID,
+                recordId
+            });
+        }
+
+        console.error(
+            '[iCHEF FiscalRecord]',
+            error
+        );
+
+        return null;
+    }
+}
+
+
+async function ichefFiscalDiagnostic(req, data = {}) {
+
+    try {
+
+        const tenantID =
+            cleanString(
+                data.tenantID ||
+                req?.body?.tenantID ||
+                req?.query?.tenantID ||
+                req?.headers?.['x-ichef-tenant']
+            );
+
+        if (!tenantID) return null;
+
+        return await ichefWriteFiscalRecord({
+
+            tenantID,
+
+            recordId:
+                data.recordId ||
+                ichefFiscalId('DIAG'),
+
+            type:
+                data.type ||
+                'DIAGNOSTIC',
+
+            subtype:
+                data.code ||
+                '',
+
+            tableId:
+                data.tableId ||
+                req?.body?.tableId ||
+                req?.body?.orderSnapshot?.tableId ||
+                '',
+
+            ticketNumber:
+                data.ticketNumber ||
+                '',
+
+            operationId:
+                data.operationId ||
+                req?.body?.paymentRequestId ||
+                req?.headers?.['idempotency-key'] ||
+                '',
+
+            status:
+                data.status ||
+                'INFO',
+
+            operator:
+                data.actor ||
+                req?.body?.operator ||
+                '',
+
+            terminal:
+                data.terminal ||
+                req?.body?.terminal ||
+                '',
+
+            deviceId:
+                req?.body?.deviceId ||
+                req?.headers?.['x-ichef-device'] ||
+                '',
+
+            details: {
+                severity:
+                    data.severity ||
+                    'INFO',
+
+                code:
+                    data.code ||
+                    '',
+
+                message:
+                    data.message ||
+                    '',
+
+                source:
+                    data.source ||
+                    '',
+
+                method:
+                    req?.method ||
+                    '',
+
+                url:
+                    req?.originalUrl ||
+                    req?.url ||
+                    '',
+
+                ...(data.details || {})
+            }
+
+        });
+
+    } catch (error) {
+
+        console.error(
+            '[iCHEF diagnostic]',
+            error
+        );
+
+        return null;
+    }
+}
 // ----------------------------------------------------------
 // 🚀 ANTI-CACHE iCHEF
 // ----------------------------------------------------------
