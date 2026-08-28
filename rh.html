@@ -444,7 +444,7 @@
                 <button class="pay-btn" onclick="openInterface('hr')">📅 MATRICE DES PLANNINGS</button>
                 <button class="pay-btn" onclick="openInterface('requests')">DEMANDES & CONGÉS</button>
                 <button class="pay-btn" onclick="openInterface('logs')">PREUVES DE POINTAGE</button>
-                <button class="pay-btn" onclick="alert('Export Paie : Bientôt disponible')">EXPORT PAIE (COMPTABLE)</button>
+                <button class="pay-btn" onclick="openInterface('timesheets')">FEUILLES D'HEURES</button>
                 
                 <button class="pay-btn" style="border-color:var(--purple); color:var(--purple); background:rgba(168, 85, 247, 0.05); padding:30px; grid-column: span 2; margin-top: 15px;" onclick="openPlanningAssistant()">
                     ASSISTANCE PLANNING
@@ -542,7 +542,7 @@
         <header class="header" style="padding: 20px 30px; margin:0;">
             <h2 style="color:var(--bar); margin:0; font-weight:300; letter-spacing:1px; text-transform:uppercase;">PREUVES DE POINTAGE</h2>
             <div style="display: flex; gap: 10px;">
-                <button class="btn-nav" style="border-color:var(--alert); color:var(--alert);" onclick="clearLogs()">PURGER</button>
+                <button class="btn-nav" onclick="refreshRhStaffFromServer().then(renderLogs)">ACTUALISER</button>
                 <button class="btn-nav" onclick="backToHub()">RETOUR HUB</button>
             </div>
         </header>
@@ -558,6 +558,60 @@
                 </thead>
                 <tbody id="logs-body"></tbody>
             </table>
+        </div>
+    </div>
+
+
+    <div id="timesheets-interface" class="full-interface">
+        <header class="header" style="padding:20px 30px;margin:0;">
+            <div style="display:flex;align-items:center;gap:18px;flex-wrap:wrap;">
+                <h2 style="color:var(--gold);margin:0;font-weight:300;letter-spacing:1px;text-transform:uppercase;">
+                    FEUILLES D'HEURES
+                </h2>
+
+                <input type="month"
+                       id="real-timesheet-month"
+                       class="input-full"
+                       style="width:180px;"
+                       onchange="renderRealTimesheets()">
+            </div>
+
+            <div style="display:flex;gap:10px;flex-wrap:wrap;">
+                <button class="btn-nav" onclick="refreshRhStaffFromServer().then(renderRealTimesheets)">ACTUALISER</button>
+                <button class="btn-nav" onclick="exportPayrollCsv()">EXPORT PAIE CSV</button>
+                <button class="btn-nav" style="border-color:var(--warning);color:var(--warning);" onclick="lockRealTimesheetMonth()">CLÔTURER LE MOIS</button>
+                <button class="btn-nav" onclick="backToHub()">RETOUR HUB</button>
+            </div>
+        </header>
+
+        <div style="padding:20px;display:flex;flex-direction:column;gap:16px;overflow:auto;flex:1;">
+            <div id="real-timesheet-summary" class="rh-detail-grid"></div>
+
+            <div class="rh-section">
+                <div class="rh-section-title">POINTAGE RÉEL → FEUILLE D'HEURES</div>
+                <div style="color:var(--text-muted);font-size:.72rem;line-height:1.5;margin-bottom:12px;">
+                    Chaque ENTRÉE / SORTIE est retranscrite automatiquement. Une entrée sans sortie, une sortie sans entrée ou une durée anormale reste À VÉRIFIER et n'est jamais inventée par iCHEF.
+                </div>
+
+                <div style="overflow:auto;max-height:62vh;">
+                    <table class="data-table">
+                        <thead>
+                            <tr>
+                                <th>COLLABORATEUR</th>
+                                <th>CONTRAT</th>
+                                <th>OBJECTIF AJUSTÉ</th>
+                                <th>PLANIFIÉ</th>
+                                <th>EFFECTUÉ</th>
+                                <th>SOLDE RÉEL</th>
+                                <th>ANOMALIES</th>
+                                <th>STATUT</th>
+                                <th>ACTIONS</th>
+                            </tr>
+                        </thead>
+                        <tbody id="real-timesheet-body"></tbody>
+                    </table>
+                </div>
+            </div>
         </div>
     </div>
 
@@ -1012,6 +1066,7 @@
                                     <th>Planifié</th>
                                     <th>Pointé</th>
                                     <th>Écart</th>
+                                    <th>Contrôle</th>
                                 </tr>
                             </thead>
                             <tbody id="staff-detail-planning-body"></tbody>
@@ -1438,6 +1493,105 @@
             API.update('PUNCHES_MASTER', p);
         }
 
+
+        function getRealTimesheets() {
+            return JSON.parse(
+                localStorage.getItem('ichef_rh_timesheet_real') || '{"months":{}}'
+            );
+        }
+
+        function saveRealTimesheetsLocal(data) {
+            const safe =
+                data && typeof data === 'object'
+                    ? data
+                    : { months: {} };
+
+            localStorage.setItem(
+                'ichef_rh_timesheet_real',
+                JSON.stringify(safe)
+            );
+
+            return safe;
+        }
+
+        function getRealSheetForStaff(staffId, monthStr) {
+            const data =
+                getRealTimesheets();
+
+            return (
+                data?.months?.[monthStr]?.staff?.[String(staffId)] ||
+                null
+            );
+        }
+
+        function getRealDayForStaff(staffId, monthStr, day) {
+            return (
+                getRealSheetForStaff(staffId, monthStr)
+                    ?.days?.[String(day).padStart(2, '0')] ||
+                null
+            );
+        }
+
+        function syncRhOperationalState(state) {
+            if (!state?.activeOrders) return;
+
+            const ao =
+                state.activeOrders;
+
+            if (ao['PUNCHES_MASTER']) {
+                localStorage.setItem(
+                    'empire_hr_punches',
+                    JSON.stringify(
+                        ao['PUNCHES_MASTER'].data || []
+                    )
+                );
+            }
+
+            if (ao['RH_TIMESHEET_REAL']) {
+                saveRealTimesheetsLocal(
+                    ao['RH_TIMESHEET_REAL'].data || {
+                        months: {}
+                    }
+                );
+            }
+
+            if (ao['TIMESHEETS_MASTER']) {
+                localStorage.setItem(
+                    'empire_hr_timesheets',
+                    JSON.stringify(
+                        ao['TIMESHEETS_MASTER'].data || {}
+                    )
+                );
+            }
+
+            if (ao['REQUESTS_MASTER']) {
+                localStorage.setItem(
+                    'empire_hr_requests',
+                    JSON.stringify(
+                        ao['REQUESTS_MASTER'].data || []
+                    )
+                );
+            }
+
+            if (ao['RH_SETTINGS']) {
+                localStorage.setItem(
+                    'ichef_rh_settings',
+                    JSON.stringify(
+                        ao['RH_SETTINGS'].data || {}
+                    )
+                );
+            }
+
+            if (ao['RH_CHANGE_HISTORY']) {
+                localStorage.setItem(
+                    'ichef_rh_change_history',
+                    JSON.stringify(
+                        ao['RH_CHANGE_HISTORY'].data || []
+                    )
+                );
+            }
+        }
+
         function getReqs() { return JSON.parse(localStorage.getItem('empire_hr_requests')) || []; }
         function saveReqs(r) { 
             localStorage.setItem('empire_hr_requests', JSON.stringify(r)); 
@@ -1689,6 +1843,72 @@
         }
 
         function getActualHoursSummary(staffId, monthStr) {
+            const serverSheet =
+                getRealSheetForStaff(
+                    staffId,
+                    monthStr
+                );
+
+            if (serverSheet?.days) {
+                const byDay = {};
+                const pairs = [];
+                let total = 0;
+                let anomalies = 0;
+
+                Object.entries(serverSheet.days)
+                    .forEach(([dayKey, day]) => {
+                        const worked =
+                            Number(
+                                day?.workedHours || 0
+                            );
+
+                        byDay[Number(dayKey)] =
+                            worked;
+
+                        total += worked;
+
+                        anomalies +=
+                            Array.isArray(day?.anomalies)
+                                ? day.anomalies.length
+                                : 0;
+
+                        if (
+                            Array.isArray(day?.sessions)
+                        ) {
+                            day.sessions.forEach(session => {
+                                pairs.push({
+                                    date: day.date,
+                                    hours:
+                                        Number(
+                                            session.hours || 0
+                                        ),
+                                    entry:
+                                        session.entry || null,
+                                    exit:
+                                        session.exit || null
+                                });
+                            });
+                        }
+                    });
+
+                return {
+                    total:
+                        Math.round(total * 100) / 100,
+
+                    pairs,
+                    byDay,
+                    anomalies,
+
+                    sheetStatus:
+                        serverSheet.status ||
+                        'TO_VERIFY',
+
+                    source:
+                        'RH_TIMESHEET_REAL'
+                };
+            }
+
+            // Secours local si le serveur est momentanément indisponible.
             const pairs =
                 getPunchPairsForStaff(
                     staffId,
@@ -1710,7 +1930,10 @@
                     getActualHoursByDay(
                         staffId,
                         monthStr
-                    )
+                    ),
+                anomalies: 0,
+                sheetStatus: 'LOCAL_FALLBACK',
+                source: 'LOCAL_PUNCHES'
             };
         }
 
@@ -1758,6 +1981,7 @@
 
                 if (state?.activeOrders) {
                     syncRhStaffFromState(state);
+                    syncRhOperationalState(state);
 
                     if (state.activeOrders['TIMESHEETS_MASTER']) {
                         localStorage.setItem(
@@ -1844,6 +2068,7 @@
                         if (!state?.activeOrders) return;
 
                         syncRhStaffFromState(state);
+                        syncRhOperationalState(state);
 
                         if (
                             state.activeOrders['TIMESHEETS_MASTER']
@@ -1896,12 +2121,60 @@
                                 )
                             );
                         }
+
+                        if (
+                            document.getElementById('timesheets-interface')?.style.display === 'flex'
+                        ) {
+                            renderRealTimesheets();
+                        }
+
+                        if (
+                            document.getElementById('ia-predictions-modal')?.classList.contains('show')
+                        ) {
+                            schedulePlanningAssistantAutoRefresh();
+                        }
                     }
                 );
 
                 rhSocket.on(
                     'server-state-changed',
                     scheduleRhStaffRefresh
+                );
+
+                rhSocket.on(
+                    'rhPunchSaved',
+                    () => {
+                        scheduleRhStaffRefresh();
+
+                        if (
+                            document.getElementById('ia-predictions-modal')?.classList.contains('show')
+                        ) {
+                            schedulePlanningAssistantAutoRefresh();
+                        }
+                    }
+                );
+
+                rhSocket.on(
+                    'rhTimesheetUpdated',
+                    timesheets => {
+                        if (timesheets) {
+                            saveRealTimesheetsLocal(
+                                timesheets
+                            );
+                        }
+
+                        if (
+                            document.getElementById('timesheets-interface')?.style.display === 'flex'
+                        ) {
+                            renderRealTimesheets();
+                        }
+
+                        if (
+                            document.getElementById('ia-predictions-modal')?.classList.contains('show')
+                        ) {
+                            schedulePlanningAssistantAutoRefresh();
+                        }
+                    }
                 );
 
                 rhSocket.on(
@@ -1935,6 +2208,7 @@
                     if (state.activeOrders['REQUESTS_MASTER']) localStorage.setItem('empire_hr_requests', JSON.stringify(state.activeOrders['REQUESTS_MASTER'].data || []));
                     if (state.activeOrders['RH_SETTINGS']) localStorage.setItem('ichef_rh_settings', JSON.stringify(state.activeOrders['RH_SETTINGS'].data || {}));
                     if (state.activeOrders['RH_CHANGE_HISTORY']) localStorage.setItem('ichef_rh_change_history', JSON.stringify(state.activeOrders['RH_CHANGE_HISTORY'].data || []));
+                    if (state.activeOrders['RH_TIMESHEET_REAL']) localStorage.setItem('ichef_rh_timesheet_real', JSON.stringify(state.activeOrders['RH_TIMESHEET_REAL'].data || { months: {} }));
                     
                     syncRhStaffFromState(
                         state,
@@ -2443,6 +2717,17 @@
             } else if(type === 'requests') {
                 document.getElementById('requests-interface').style.display = 'flex';
                 renderDirectorRequests();
+            } else if(type === 'timesheets') {
+                document.getElementById('timesheets-interface').style.display = 'flex';
+
+                const monthInput = document.getElementById('real-timesheet-month');
+                if (monthInput && !monthInput.value) {
+                    monthInput.value =
+                        document.getElementById('month-selector')?.value ||
+                        new Date().toISOString().slice(0, 7);
+                }
+
+                renderRealTimesheets();
             }
         }
 
@@ -2904,10 +3189,36 @@
             hydrateRhSettingsForm();
 
             modal.style.display = 'flex';
+
             setTimeout(
-                () => modal.classList.add('show'),
+                () => {
+                    modal.classList.add('show');
+
+                    // Analyse automatique dès l'ouverture.
+                    generateIAPrediction();
+                },
                 10
             );
+        }
+
+        let planningAssistantAutoTimer = null;
+
+        function schedulePlanningAssistantAutoRefresh() {
+            clearTimeout(
+                planningAssistantAutoTimer
+            );
+
+            planningAssistantAutoTimer =
+                setTimeout(
+                    () => {
+                        if (
+                            document.getElementById('ia-predictions-modal')?.classList.contains('show')
+                        ) {
+                            generateIAPrediction();
+                        }
+                    },
+                    900
+                );
         }
 
         // Ancien nom conservé pour compatibilité.
@@ -3779,6 +4090,47 @@
                             <td>${row.planned.toFixed(1)} h</td>
                             <td>${row.worked.toFixed(1)} h</td>
                             <td class="${rhBalanceClass(row.difference)}">${formatRhSignedHours(row.difference)}</td>
+                            <td>
+                                ${(() => {
+                                    const realDay =
+                                        getRealDayForStaff(
+                                            staff.id,
+                                            monthStr,
+                                            row.day
+                                        );
+
+                                    const anomalies =
+                                        Array.isArray(realDay?.anomalies)
+                                            ? realDay.anomalies
+                                            : [];
+
+                                    const date =
+                                        `${monthStr}-${String(row.day).padStart(2, '0')}`;
+
+                                    const locked =
+                                        String(
+                                            getRealSheetForStaff(
+                                                staff.id,
+                                                monthStr
+                                            )?.status || ''
+                                        ).toUpperCase() === 'LOCKED';
+
+                                    return `
+                                        <div style="display:flex;flex-direction:column;gap:5px;">
+                                            <span style="color:${anomalies.length ? 'var(--warning)' : 'var(--success)'};font-size:.68rem;font-weight:800;">
+                                                ${anomalies.length ? anomalies.map(a => escapeRhHtml(a.label || a.code || a)).join(' · ') : 'OK'}
+                                            </span>
+                                            ${locked ? '' : `
+                                                <button class="btn-outline"
+                                                        style="padding:5px 7px;font-size:.62rem;"
+                                                        onclick="correctRealTimesheetDay(${JSON.stringify(staff.id)}, '${date}')">
+                                                    CORRIGER
+                                                </button>
+                                            `}
+                                        </div>
+                                    `;
+                                })()}
+                            </td>
                         </tr>
                     `;
                 }).join('');
@@ -4211,42 +4563,195 @@
         }
 
         async function submitPunch() {
-            if(punchPin.length < 4) return;
-            const staff = getDir().find(s => s.pin === punchPin && s.active !== false);
+            if (punchPin.length < 4) return;
 
-            if(!staff) {
-                alert("CODE PIN INVALIDE OU COMPTE DÉSACTIVÉ");
-                punchPin = ""; document.getElementById('punch-display').innerText = ""; return;
-            }
+            const enteredPin =
+                String(
+                    punchPin || ''
+                ).trim();
 
-            const video = document.getElementById('punch-video');
-            const canvas = document.getElementById('punch-canvas');
-            const context = canvas.getContext('2d');
-            canvas.width = 320; canvas.height = 240;
-            context.drawImage(video, 0, 0, canvas.width, canvas.height);
-            
-            let punches = getPunches();
-            let lastPunch = punches.filter(p => p.staffId === staff.id).pop();
-            let punchType = (lastPunch && lastPunch.type === 'ENTRÉE') ? 'SORTIE' : 'ENTRÉE';
-
-            punches.push({ id: Date.now(), staffId: staff.id, staffName: staff.name, dept: staff.dept, type: punchType, timestamp: Date.now(), photo: canvas.toDataURL('image/jpeg', 0.6) });
-            savePunches(punches);
-
-            document.getElementById('punch-success-overlay').style.display = 'flex';
-            
             try {
-                let r = await fetch(`${SERVER_URL_JS}/get-current-state?tenantID=${tenantID_JS}`);
-                let state = await r.json();
-                let staffList = state.activeOrders['STAFF_ACCESS']?.data || [];
-                let empIndex = staffList.findIndex(s => s.pin === punchPin);
-                if(empIndex > -1) {
-                    staffList[empIndex].onDuty = (punchType === 'ENTRÉE');
-                    await fetch(`${SERVER_URL_JS}/update-order?tenantID=${tenantID_JS}`, { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ tableId: 'STAFF_ACCESS', order: { data: staffList } }) });
-                }
-            } catch(e) {}
+                const auth =
+                    await verifyPinWithServer(
+                        enteredPin
+                    );
 
-            broadcastStaffingLevels();
-            setTimeout(cancelPunchClock, 2500);
+                if (!auth?.success) {
+                    alert(
+                        auth?.error ||
+                        "CODE PIN INVALIDE"
+                    );
+                    punchPin = "";
+                    document.getElementById('punch-display').innerText = "";
+                    return;
+                }
+
+                await refreshStaffAccessFromServer();
+
+                const staff =
+                    getDir().find(
+                        s =>
+                            String(s.pin || '').trim() === enteredPin &&
+                            s.active !== false
+                    );
+
+                if (!staff) {
+                    alert(
+                        "Ce code est valide mais aucun profil employé actif correspondant n'est synchronisé."
+                    );
+                    punchPin = "";
+                    document.getElementById('punch-display').innerText = "";
+                    return;
+                }
+
+                const video =
+                    document.getElementById('punch-video');
+
+                const canvas =
+                    document.getElementById('punch-canvas');
+
+                const context =
+                    canvas.getContext('2d');
+
+                canvas.width = 320;
+                canvas.height = 240;
+
+                context.drawImage(
+                    video,
+                    0,
+                    0,
+                    canvas.width,
+                    canvas.height
+                );
+
+                const photo =
+                    canvas.toDataURL(
+                        'image/jpeg',
+                        0.55
+                    );
+
+                const response =
+                    await fetch(
+                        `${SERVER_URL_JS}/api/rh/punch`,
+                        {
+                            method: 'POST',
+                            headers: {
+                                'Content-Type': 'application/json',
+                                'Accept': 'application/json'
+                            },
+                            cache: 'no-store',
+                            body: JSON.stringify({
+                                tenantID:
+                                    tenantID_JS,
+
+                                staffId:
+                                    staff.id,
+
+                                pin:
+                                    enteredPin,
+
+                                deviceId:
+                                    RH_DEVICE_ID,
+
+                                photo
+                            })
+                        }
+                    );
+
+                const data =
+                    await response.json()
+                        .catch(() => ({}));
+
+                if (
+                    !response.ok ||
+                    !data.success
+                ) {
+                    throw new Error(
+                        data.error ||
+                        "Impossible d'enregistrer le pointage."
+                    );
+                }
+
+                if (
+                    Array.isArray(
+                        data.punches
+                    )
+                ) {
+                    localStorage.setItem(
+                        'empire_hr_punches',
+                        JSON.stringify(
+                            data.punches
+                        )
+                    );
+                }
+
+                if (
+                    data.timesheets
+                ) {
+                    saveRealTimesheetsLocal(
+                        data.timesheets
+                    );
+                }
+
+                if (
+                    Array.isArray(
+                        data.staffAccess
+                    )
+                ) {
+                    staffAccess =
+                        data.staffAccess;
+
+                    localStorage.setItem(
+                        'empire_hr_directory',
+                        JSON.stringify(
+                            buildRhDirectoryFromServer(
+                                staffAccess,
+                                getDir()
+                            )
+                        )
+                    );
+                }
+
+                document.getElementById(
+                    'punch-success-overlay'
+                ).style.display = 'flex';
+
+                showToast(
+                    data.punchType === 'ENTRÉE'
+                        ? 'Entrée enregistrée'
+                        : 'Sortie enregistrée'
+                );
+
+                renderLogs();
+
+                if (
+                    document.getElementById('timesheets-interface')?.style.display === 'flex'
+                ) {
+                    renderRealTimesheets();
+                }
+
+                broadcastStaffingLevels();
+
+                setTimeout(
+                    cancelPunchClock,
+                    1700
+                );
+
+            } catch (error) {
+                console.error(
+                    "Erreur pointage :",
+                    error
+                );
+
+                alert(
+                    error?.message ||
+                    "Erreur de synchronisation du pointage."
+                );
+
+            } finally {
+                punchPin = "";
+                document.getElementById('punch-display').innerText = "";
+            }
         }
 
         function renderLogs() {
@@ -4272,7 +4777,555 @@
         }
 
         function clearLogs() {
-            if(confirm("ACTION IRRÉVERSIBLE : Effacer toutes les preuves photo ?")) { savePunches([]); renderLogs(); }
+            alert("Les pointages constituent la source de la feuille d'heures et ne sont plus supprimés depuis cet écran.");
+        }
+
+        function realTimesheetStatusLabel(status) {
+            const map = {
+                TO_VERIFY: 'À VÉRIFIER',
+                VALIDATED: 'VALIDÉE',
+                LOCKED: 'CLÔTURÉE'
+            };
+
+            return map[String(status || '').toUpperCase()] ||
+                String(status || 'À VÉRIFIER');
+        }
+
+        function realTimesheetStatusColor(status) {
+            const s =
+                String(
+                    status || ''
+                ).toUpperCase();
+
+            if (s === 'LOCKED') return 'var(--gold)';
+            if (s === 'VALIDATED') return 'var(--success)';
+            return 'var(--warning)';
+        }
+
+        function countRealSheetAnomalies(sheet) {
+            if (!sheet?.days) return 0;
+
+            return Object.values(sheet.days)
+                .reduce(
+                    (sum, day) =>
+                        sum +
+                        (
+                            Array.isArray(day?.anomalies)
+                                ? day.anomalies.length
+                                : 0
+                        ),
+                    0
+                );
+        }
+
+        function renderRealTimesheets() {
+            const monthStr =
+                document.getElementById('real-timesheet-month')?.value ||
+                document.getElementById('month-selector')?.value ||
+                new Date().toISOString().slice(0, 7);
+
+            const [year, month] =
+                monthStr.split('-').map(Number);
+
+            const daysInMonth =
+                new Date(
+                    year,
+                    month,
+                    0
+                ).getDate();
+
+            const tsMonth =
+                getTs()[monthStr] || {};
+
+            const rows =
+                getDir()
+                    .filter(
+                        s =>
+                            s.active !== false
+                    )
+                    .map(staff => {
+                        const plannedMonth =
+                            tsMonth?.[staff.id] ||
+                            tsMonth?.[String(staff.id)] ||
+                            {};
+
+                        const stats =
+                            getStaffMonthStats(
+                                staff.id,
+                                year,
+                                month,
+                                daysInMonth,
+                                plannedMonth
+                            ) || {};
+
+                        const actual =
+                            getActualHoursSummary(
+                                staff.id,
+                                monthStr
+                            );
+
+                        const sheet =
+                            getRealSheetForStaff(
+                                staff.id,
+                                monthStr
+                            );
+
+                        const balance =
+                            Number(actual.total || 0) -
+                            Number(stats.adjustedTarget || 0);
+
+                        return {
+                            staff,
+                            stats,
+                            actual,
+                            sheet,
+                            balance,
+                            anomalies:
+                                countRealSheetAnomalies(
+                                    sheet
+                                )
+                        };
+                    });
+
+            const totals =
+                rows.reduce(
+                    (acc, row) => {
+                        acc.planned +=
+                            Number(
+                                row.stats.totalDone || 0
+                            );
+
+                        acc.worked +=
+                            Number(
+                                row.actual.total || 0
+                            );
+
+                        acc.balance +=
+                            Number(
+                                row.balance || 0
+                            );
+
+                        acc.anomalies +=
+                            Number(
+                                row.anomalies || 0
+                            );
+
+                        if (
+                            String(
+                                row.sheet?.status || ''
+                            ).toUpperCase() ===
+                            'VALIDATED'
+                        ) {
+                            acc.validated++;
+                        }
+
+                        if (
+                            String(
+                                row.sheet?.status || ''
+                            ).toUpperCase() ===
+                            'LOCKED'
+                        ) {
+                            acc.locked++;
+                        }
+
+                        return acc;
+                    },
+                    {
+                        planned: 0,
+                        worked: 0,
+                        balance: 0,
+                        anomalies: 0,
+                        validated: 0,
+                        locked: 0
+                    }
+                );
+
+            const summary =
+                document.getElementById(
+                    'real-timesheet-summary'
+                );
+
+            if (summary) {
+                summary.innerHTML = [
+                    [
+                        'Planifié',
+                        `${totals.planned.toFixed(1)} h`
+                    ],
+                    [
+                        'Effectué',
+                        `${totals.worked.toFixed(1)} h`
+                    ],
+                    [
+                        'Solde réel',
+                        formatRhSignedHours(
+                            totals.balance
+                        )
+                    ],
+                    [
+                        'Anomalies',
+                        String(
+                            totals.anomalies
+                        )
+                    ],
+                    [
+                        'Feuilles validées',
+                        `${totals.validated}/${rows.length}`
+                    ],
+                    [
+                        'Feuilles clôturées',
+                        `${totals.locked}/${rows.length}`
+                    ]
+                ].map(([label, value]) => `
+                    <div class="rh-detail-stat">
+                        <div class="lbl">${escapeRhHtml(label)}</div>
+                        <div class="val">${escapeRhHtml(value)}</div>
+                    </div>
+                `).join('');
+            }
+
+            const body =
+                document.getElementById(
+                    'real-timesheet-body'
+                );
+
+            if (!body) return;
+
+            if (!rows.length) {
+                body.innerHTML =
+                    '<tr><td colspan="9" style="text-align:center;padding:24px;color:var(--text-muted);">Aucun collaborateur actif.</td></tr>';
+                return;
+            }
+
+            body.innerHTML =
+                rows.map(row => {
+                    const status =
+                        row.sheet?.status ||
+                        'TO_VERIFY';
+
+                    return `
+                        <tr>
+                            <td>
+                                <strong>${escapeRhHtml(row.staff.name)}</strong><br>
+                                <span style="color:var(--text-muted);font-size:.68rem;">${escapeRhHtml(row.staff.role || row.staff.dept || '')}</span>
+                            </td>
+
+                            <td>${Number(row.staff.contract || 0).toFixed(1)} h/sem</td>
+
+                            <td>${Number(row.stats.adjustedTarget || 0).toFixed(1)} h</td>
+
+                            <td>${Number(row.stats.totalDone || 0).toFixed(1)} h</td>
+
+                            <td>${Number(row.actual.total || 0).toFixed(1)} h</td>
+
+                            <td class="${rhBalanceClass(row.balance)}"
+                                style="font-weight:900;">
+                                ${formatRhSignedHours(row.balance)}
+                            </td>
+
+                            <td style="color:${row.anomalies ? 'var(--warning)' : 'var(--success)'};font-weight:800;">
+                                ${row.anomalies}
+                            </td>
+
+                            <td style="color:${realTimesheetStatusColor(status)};font-weight:900;">
+                                ${realTimesheetStatusLabel(status)}
+                            </td>
+
+                            <td>
+                                <div style="display:flex;gap:6px;flex-wrap:wrap;">
+                                    <button class="btn-outline"
+                                            onclick="openStaffDetail(${JSON.stringify(row.staff.id)})">
+                                        DÉTAIL
+                                    </button>
+
+                                    <button class="btn-outline"
+                                            onclick="validateRealTimesheet(${JSON.stringify(row.staff.id)})"
+                                            ${String(status).toUpperCase() === 'LOCKED' ? 'disabled' : ''}>
+                                        VALIDER
+                                    </button>
+                                </div>
+                            </td>
+                        </tr>
+                    `;
+                }).join('');
+        }
+
+        async function correctRealTimesheetDay(staffId, date) {
+            const sheetMonth =
+                String(date || '').slice(0, 7);
+
+            const dayNumber =
+                Number(
+                    String(date || '').slice(8, 10)
+                );
+
+            const current =
+                getRealDayForStaff(
+                    staffId,
+                    sheetMonth,
+                    dayNumber
+                );
+
+            if (
+                String(
+                    getRealSheetForStaff(
+                        staffId,
+                        sheetMonth
+                    )?.status || ''
+                ).toUpperCase() ===
+                'LOCKED'
+            ) {
+                alert(
+                    "Cette feuille d'heures est clôturée."
+                );
+                return;
+            }
+
+            const existing =
+                Number(
+                    current?.workedHours || 0
+                );
+
+            const value =
+                window.prompt(
+                    `Heures réellement travaillées le ${date}`,
+                    existing.toFixed(2)
+                );
+
+            if (value === null) return;
+
+            const workedHours =
+                Number(
+                    String(value)
+                        .replace(',', '.')
+                );
+
+            if (
+                !Number.isFinite(workedHours) ||
+                workedHours < 0 ||
+                workedHours > 24
+            ) {
+                alert(
+                    "Nombre d'heures invalide."
+                );
+                return;
+            }
+
+            const reason =
+                window.prompt(
+                    "Motif obligatoire de la correction"
+                );
+
+            if (
+                !reason ||
+                !reason.trim()
+            ) {
+                alert(
+                    "La correction nécessite un motif."
+                );
+                return;
+            }
+
+            try {
+                const response =
+                    await fetch(
+                        `${SERVER_URL_JS}/api/rh/timesheet/correct`,
+                        {
+                            method: 'POST',
+                            headers: {
+                                'Content-Type': 'application/json',
+                                'Accept': 'application/json'
+                            },
+                            cache: 'no-store',
+                            body: JSON.stringify({
+                                tenantID:
+                                    tenantID_JS,
+
+                                managerPin:
+                                    String(
+                                        currentPin || ''
+                                    ).trim(),
+
+                                staffId,
+                                date,
+                                workedHours,
+                                reason:
+                                    reason.trim()
+                            })
+                        }
+                    );
+
+                const data =
+                    await response.json()
+                        .catch(() => ({}));
+
+                if (
+                    !response.ok ||
+                    !data.success
+                ) {
+                    throw new Error(
+                        data.error ||
+                        "Correction refusée."
+                    );
+                }
+
+                saveRealTimesheetsLocal(
+                    data.timesheets
+                );
+
+                showToast(
+                    "Feuille d'heures corrigée"
+                );
+
+                openStaffDetail(
+                    staffId
+                );
+
+                renderRealTimesheets();
+
+            } catch (error) {
+                alert(
+                    error?.message ||
+                    "Erreur de correction."
+                );
+            }
+        }
+
+        async function validateRealTimesheet(staffId) {
+            const month =
+                document.getElementById('real-timesheet-month')?.value ||
+                document.getElementById('month-selector')?.value;
+
+            if (!month) return;
+
+            try {
+                const response =
+                    await fetch(
+                        `${SERVER_URL_JS}/api/rh/timesheet/status`,
+                        {
+                            method: 'POST',
+                            headers: {
+                                'Content-Type': 'application/json',
+                                'Accept': 'application/json'
+                            },
+                            cache: 'no-store',
+                            body: JSON.stringify({
+                                tenantID:
+                                    tenantID_JS,
+
+                                managerPin:
+                                    String(
+                                        currentPin || ''
+                                    ).trim(),
+
+                                month,
+                                staffId,
+                                action:
+                                    'VALIDATE'
+                            })
+                        }
+                    );
+
+                const data =
+                    await response.json()
+                        .catch(() => ({}));
+
+                if (
+                    !response.ok ||
+                    !data.success
+                ) {
+                    throw new Error(
+                        data.error ||
+                        "Validation refusée."
+                    );
+                }
+
+                saveRealTimesheetsLocal(
+                    data.timesheets
+                );
+
+                renderRealTimesheets();
+
+                showToast(
+                    "Feuille d'heures validée"
+                );
+
+            } catch (error) {
+                alert(
+                    error?.message ||
+                    "Erreur de validation."
+                );
+            }
+        }
+
+        async function lockRealTimesheetMonth() {
+            const month =
+                document.getElementById('real-timesheet-month')?.value;
+
+            if (!month) return;
+
+            if (
+                !confirm(
+                    `Clôturer définitivement les feuilles d'heures de ${month} ? Une réouverture nécessitera une action Direction.`
+                )
+            ) return;
+
+            try {
+                const response =
+                    await fetch(
+                        `${SERVER_URL_JS}/api/rh/timesheet/status`,
+                        {
+                            method: 'POST',
+                            headers: {
+                                'Content-Type': 'application/json',
+                                'Accept': 'application/json'
+                            },
+                            cache: 'no-store',
+                            body: JSON.stringify({
+                                tenantID:
+                                    tenantID_JS,
+
+                                managerPin:
+                                    String(
+                                        currentPin || ''
+                                    ).trim(),
+
+                                month,
+                                action:
+                                    'LOCK_MONTH'
+                            })
+                        }
+                    );
+
+                const data =
+                    await response.json()
+                        .catch(() => ({}));
+
+                if (
+                    !response.ok ||
+                    !data.success
+                ) {
+                    throw new Error(
+                        data.error ||
+                        "Clôture refusée."
+                    );
+                }
+
+                saveRealTimesheetsLocal(
+                    data.timesheets
+                );
+
+                renderRealTimesheets();
+
+                showToast(
+                    "Mois RH clôturé"
+                );
+
+            } catch (error) {
+                alert(
+                    error?.message ||
+                    "Erreur de clôture."
+                );
+            }
         }
 
         function showToast(msg) {
