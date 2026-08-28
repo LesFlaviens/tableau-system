@@ -5727,14 +5727,6 @@ async function connectSocket(){
     });STATE.socket=socket;
     socket.on("connect",()=>{STATE.connected=true;setConnection("TEMPS RÉEL","good");socket.emit("joinTenant",String(STATE.tenantID));retryFailedWrites();if(!STATE.lastServerAt||now()-STATE.lastServerAt>5000)syncFull("reconnect")});
     socket.on("updateState",s=>{STATE.connected=true;STATE.lastServerAt=now();setConnection("TEMPS RÉEL","good");applyServerState(s,"socket")});
-    
-    // --- NOUVEAU : Le PAD écoute les paiements et annulations de la caisse ---
-    ['orderUpdated','ordersUpdated','stateUpdated','transactionSaved','paymentUpdated','server-state-changed'].forEach(eventName => {
-        socket.on(eventName, () => {
-            if (typeof syncFull === 'function') syncFull("socket-event");
-        });
-    });
-
     socket.on("disconnect",()=>{STATE.connected=false;setConnection(navigator.onLine?"RECONNEXION":"HORS LIGNE",navigator.onLine?"warn":"bad")});
     socket.on("connect_error",err=>{
       STATE.connected=false;
@@ -5785,16 +5777,18 @@ function applyServerState(serverState,source){
 
   applyDerived();
 
-  // --- NOUVEAU : Fermeture du PAD si la table a été libérée ou payée ---
-  if(openedTable && !hasLocalPending){
-    if(!rawOpened || isArchivedOrder(rawOpened)){
-      STATE.currentTable=null;
-      STATE.currentOrder=null;
-      STATE.pendingCookingLine="";
-      if(typeof hideQuickCooking==='function') hideQuickCooking();
-      document.body.classList.remove("summary-open","order-open");
-      toast("Table encaissée et libérée !");
-    }
+  if(
+    openedTable &&
+    rawOpened &&
+    isArchivedOrder(rawOpened) &&
+    !hasLocalPending
+  ){
+    STATE.currentTable=null;
+    STATE.currentOrder=null;
+    STATE.pendingCookingLine="";
+    hideQuickCooking();
+    document.body.classList.remove("summary-open","order-open");
+    toast("Table fermée sur un autre écran");
   }
 
   scheduleRender();
@@ -5888,6 +5882,7 @@ function normalizeMenu(){
 }
 function normalizeReservations(){const r=unwrap(STATE.activeOrders.RESERVATIONS_MASTER);STATE.reservations=Array.isArray(r)?r:[]}
 function applyDerived(){STATE.settings=unwrap(STATE.activeOrders.SETTINGS_MASTER)||{};normalizeArchitecture();normalizeMenu();normalizeReservations();if(STATE.currentTable)STATE.currentOrder=getOrder(STATE.currentTable)}
+
 /* ---------------- ORDERS ---------------- */
 const SYSTEM_KEYS=new Set(["ARCHITECTURE","SETTINGS_MASTER","RESERVATIONS_MASTER","MENU_MASTER","MENU_MASTER_BAR","MENU_MASTER_PATISSERIE","STAFF_ACCESS","LOYALTY_MASTER","TIMESHEETS_MASTER","ALERTS_MASTER","FINANCIAL_HISTORY","AUDIT_MASTER"]);
 function isRealOrder(k,o){
@@ -12496,168 +12491,6 @@ setTimeout(() => {
         await finalizePartialPayment(o, method, inputAmount);
     };
 
-window.finalizePartialPayment = async function(order, method, amount, paymentRequestId = "") {
-        const total = typeof orderTotal === 'function' ? orderTotal(order) : 0;
-        const nowIso = new Date().toISOString();
-        
-        if (!order.paymentDraft) {
-            order.paymentDraft = { 
-                version: 3, payments: [], total: total, remaining: total, 
-                status: "A_PAYER", updatedAt: nowIso, updatedBy: STATE.role || "SERVEUR", 
-                deviceId: STATE.deviceId, fiscalCountry: typeof fiscalProfile === 'function' ? fiscalProfile().country : "CH", fiscalStatus: "NOT_PAID" 
-            };
-            order.paymentStatus = "A_PAYER";
-            order.status = "pending";
-        }
-
-        order.paymentDraft.payments.push({
-            method, amount, confirmedBy: STATE.role || "SERVEUR", confirmedAt: nowIso, paymentRequestId
-        });
-
-        const newPaidAmount = order.paymentDraft.payments.reduce((sum, p) => sum + (Number(p.amount) || 0), 0);
-        const newRemaining = Math.max(0, total - newPaidAmount);
-        
-        order.paymentDraft.remaining = newRemaining;
-        order.paymentDraft.updatedAt = nowIso;
-
-        if (newRemaining <= 0.01) {
-            try {
-                if (typeof toast === 'function') toast("Validation du paiement...");
-
-                // 1. Marquer la commande comme payée localement
-                order.status = "PAID";
-                order.paymentStatus = "PAID";
-                order.paymentDraft.status = "PAYE";
-                order.isArchived = true;
-                order.closedAt = nowIso;
-
-                // 2. Libérer la table et créer l'archive via la synchro classique iCHEF
-                if (typeof optimisticWrite === 'function') {
-                    await optimisticWrite("ARCHIVE_PAID_" + Date.now() + "_" + STATE.currentTable, {data: order}, "Vente encaissée au PAD");
-                    await optimisticWrite(STATE.currentTable, null, "Table libérée suite au paiement");
-                } else if (typeof saveCurrent === 'function') {
-                    await saveCurrent(order, "Paiement intégral validé", {immediate: true});
-                }
-
-                // 3. Prévenir la caisse principale instantanément
-                if (STATE.socket && STATE.socket.connected) {
-                    STATE.socket.emit('transactionSaved');
-                    STATE.socket.emit('stateUpdated');
-                }
-                
-                if (typeof syncFull === 'function') await syncFull("payment-fiscalized").catch(()=>{});
-                if (typeof toast === 'function') toast(`✓ Paiement validé`);
-                
-                // 4. Lancer l'impression si configurée
-                const pcfg = typeof loadPrinterConfig === 'function' ? loadPrinterConfig() : {};
-                if(pcfg.enabled && pcfg.printers?.caisse?.enabled && pcfg.receipt?.autoAfterPayment !== false) {
-                    try { if (typeof printCashReceipt === 'function') await printCashReceipt(STATE.currentOrder || order, {auto:true}); } catch(e) {}
-                }
-                
-                // 5. Fermer les fenêtres
-                if (typeof closeSheet === 'function') closeSheet();
-                if (typeof closeOrder === 'function') closeOrder();
-                
-            } catch(e) {
-                if (typeof toast === 'function') toast(e.message || "Erreur de paiement", true);
-            }
-        } else {
-            order.paymentDraft.status = "PAIEMENT_PARTIEL";
-            order.paymentStatus = "PARTIAL";
-            
-            if (typeof saveCurrent === 'function') {
-                const ok = await saveCurrent(order, "Paiement partiel : " + method, {immediate: true});
-                if (ok) {
-                    if (typeof toast === 'function') toast(`✓ Encaissé : ${amount}. Reste : ${newRemaining}`);
-                    if (STATE.socket && STATE.socket.connected) STATE.socket.emit('stateUpdated');
-                    window.openPayment(); 
-                }
-            }
-        }
-    };
-
-// Reconnexion des boutons 
-    ["btnHeadPayment","btnPaymentDirect","summaryCash"].forEach(id=>{
-        const btn=document.getElementById(id);
-        if(btn){
-            btn.onclick=(ev)=>{
-                ev?.preventDefault?.();
-                ev?.stopPropagation?.();
-                window.openPayment();
-            };
-        }
-    });
-</script>
-
-<!-- NOUVEAU FLUX DE PAIEMENT : CHOIX DU TICKET ET SYNCHRONISATION GLOBALE -->
-<script id="ichef-payment-ticket-flow">
-setTimeout(() => {
-    
-    // 1. Interception du clic sur les moyens de paiement pour demander le type de ticket
-    window.processPartialPayment = async function(method) {
-        if(!STATE.currentTable) return;
-        const o = typeof ensureOrder === 'function' ? ensureOrder(STATE.currentTable) : STATE.currentOrder;
-        
-        const inputAmount = parseFloat(window.currentPaymentInput);
-        if (isNaN(inputAmount) || inputAmount <= 0) {
-            if(typeof toast === 'function') toast("Veuillez saisir un montant valide", true);
-            return;
-        }
-
-        const total = typeof orderTotal === 'function' ? orderTotal(o) : 0;
-        const payments = o.paymentDraft?.payments || [];
-        const paidAmount = payments.reduce((sum, p) => sum + (Number(p.amount) || 0), 0);
-        const remaining = Math.max(0, total - paidAmount);
-        
-        if (inputAmount > remaining + 0.01) {
-            if(typeof toast === 'function') toast("Le montant dépasse le reste à payer", true);
-            return;
-        }
-
-        if (method === "EN ATTENTE") {
-            if(typeof closeSheet === 'function') closeSheet();
-            return;
-        }
-
-        if (method === "STRIPE") {
-            const stripeOn = typeof stripeEnabledForRestaurant === 'function' ? stripeEnabledForRestaurant() : false;
-            if (!stripeOn) return typeof toast === 'function' ? toast("Stripe désactivé", true) : null;
-            // La logique Stripe existante est gérée plus haut, on laisse passer
-            return; 
-        }
-
-        // --- NOUVEAU : CHOIX DU TICKET AVANT DE FINALISER ---
-        openSheet("TICKET · " + method, `
-            <div class="big-state" style="border: 4px solid #111 !important; background: #111 !important; color: #fff !important; border-radius: 16px !important; padding: 25px !important; margin-bottom: 20px;">
-                <div style="font-size: 16px; font-weight: 800; color: #aaa;">ENCAISSEMENT : ${method}</div>
-                <div class="big gold" style="font-size: 50px !important; line-height: 1;">${typeof money === 'function' ? money(inputAmount) : inputAmount}</div>
-            </div>
-            
-            <div style="font-size: 18px; font-weight: 900; text-align: center; margin-bottom: 15px; color: #111;">QUE FAIRE DU TICKET ?</div>
-            
-            <div style="display: flex; flex-direction: column; gap: 12px;">
-                <button class="action-btn" onclick="executeFinalPayment('${method}', ${inputAmount}, 'none')" style="min-height: 70px !important; font-size: 22px !important; font-weight: 950 !important; background: #e9e9e9 !important; border: 3px solid #ccc !important; color: #111 !important;">
-                    🚫 SANS TICKET
-                </button>
-                <button class="action-btn" onclick="executeFinalPayment('${method}', ${inputAmount}, 'print')" style="min-height: 70px !important; font-size: 22px !important; font-weight: 950 !important; background: #ffffff !important; border: 3px solid #111 !important; color: #111 !important;">
-                    🖨️ IMPRIMER
-                </button>
-                <button class="action-btn" onclick="executeFinalPayment('${method}', ${inputAmount}, 'qr')" style="min-height: 70px !important; font-size: 22px !important; font-weight: 950 !important; background: #f4faff !important; border: 3px solid #58a9ff !important; color: #13568c !important;">
-                    📱 TICKET QR CODE
-                </button>
-            </div>
-            <button class="action-btn" onclick="window.openPayment()" style="width: 100%; margin-top: 15px; min-height: 60px !important; font-size: 18px !important; background: #fff !important; border: 2px solid #ccc !important;">RETOUR</button>
-        `);
-    };
-
-    // 2. Pont vers la finalisation
-    window.executeFinalPayment = async function(method, amount, ticketPref) {
-        const o = typeof ensureOrder === 'function' ? ensureOrder(STATE.currentTable) : STATE.currentOrder;
-        window._currentTicketPreference = ticketPref; // Mémorisation du choix
-        await finalizePartialPayment(o, method, amount);
-    };
-
-    // 3. Finalisation du paiement, impression/QR Code et diffusion temps réel
     window.finalizePartialPayment = async function(order, method, amount, paymentRequestId = "") {
         const total = typeof orderTotal === 'function' ? orderTotal(order) : 0;
         const nowIso = new Date().toISOString();
@@ -12684,74 +12517,21 @@ setTimeout(() => {
 
         if (newRemaining <= 0.01) {
             try {
-                if (typeof toast === 'function') toast("Validation et scellement du paiement...");
-
-                // 1. Clôture locale
-                order.status = "PAID";
-                order.paymentStatus = "PAID";
-                order.paymentDraft.status = "PAYE";
-                order.isArchived = true;
-                order.closedAt = nowIso;
-
-                // Génération d'une référence ticket robuste si absente
-                if(!order.paymentDraft.receiptReference) {
-                    order.paymentDraft.receiptReference = "TCK-" + Date.now().toString().slice(-6);
-                }
-
-                // 2. Libération et archivage (qui crée la preuve dans le PAD)
-                if (typeof optimisticWrite === 'function') {
-                    await optimisticWrite("ARCHIVE_PAID_" + Date.now() + "_" + STATE.currentTable, {data: order}, "Vente encaissée au PAD");
-                    await optimisticWrite(STATE.currentTable, null, "Table libérée suite au paiement");
-                } else if (typeof saveCurrent === 'function') {
-                    await saveCurrent(order, "Paiement intégral validé", {immediate: true});
-                }
-
-                // 3. SYNCHRONISATION FORTE VERS CAISSE ET ADMIN
-                if (STATE.socket && STATE.socket.connected) {
-                    STATE.socket.emit('orderUpdated', { tableId: STATE.currentTable });
-                    STATE.socket.emit('transactionSaved');
-                    STATE.socket.emit('stateUpdated');
-                }
+                if (typeof toast === 'function') toast("Génération du ticket fiscal...");
+                const result = await fiscalizeWithServer(order, "MULTIPLE", order.paymentDraft.payments, typeof serverPaymentId === 'function' ? serverPaymentId("FISCAL") : "");
+                if (typeof applyServerFiscalResult === 'function') applyServerFiscalResult(order, result, "MULTIPLE");
                 
                 if (typeof syncFull === 'function') await syncFull("payment-fiscalized").catch(()=>{});
-                if (typeof toast === 'function') toast(`✓ Paiement validé et transmis`);
+                if (typeof toast === 'function') toast(`✓ Ticket fiscal généré (N° ${result.ticketNumber})`);
                 
-                // 4. ACTION DU TICKET (Sans / Imprimer / QR Code)
-                const ticketPref = window._currentTicketPreference || 'none';
-                
-                if (ticketPref === 'print') {
-                    const pcfg = typeof loadPrinterConfig === 'function' ? loadPrinterConfig() : {};
-                    if(pcfg.enabled && pcfg.printers?.caisse?.enabled) {
-                        try { if (typeof printCashReceipt === 'function') await printCashReceipt(STATE.currentOrder || order, {auto:true}); } catch(e) {}
-                    } else {
-                        if (typeof toast === 'function') toast("Imprimante non configurée", true);
-                    }
-                    if (typeof closeSheet === 'function') closeSheet();
-                    if (typeof closeOrder === 'function') closeOrder();
-                    
-                } else if (ticketPref === 'qr') {
-                    const ticketNum = order.paymentDraft.receiptReference;
-                    const qrUrl = `https://os.ichef.ch/receipt?id=${ticketNum}&t=${STATE.tenantID}`;
-                    
-                    // Affichage du QR Code sans fermer brutalement
-                    openSheet("TICKET QR CODE", `
-                        <div style="text-align:center; padding: 20px;">
-                            <div style="font-size:18px; font-weight:bold; margin-bottom: 20px;">Faites scanner ce code au client</div>
-                            <img src="https://api.qrserver.com/v1/create-qr-code/?size=250x250&data=${encodeURIComponent(qrUrl)}" style="width:250px; height:250px; border-radius:12px; border:4px solid #111; padding:10px; background:#fff;">
-                            <div style="margin-top:20px; font-size:14px; color:#555;">Ticket N° ${ticketNum}</div>
-                            <button class="action-btn" onclick="closeSheet(); closeOrder();" style="width:100%; margin-top:30px; min-height:60px !important; font-size:20px !important; background:#111 !important; color:#fff !important;">TERMINER</button>
-                        </div>
-                    `);
-                    return; // On bloque ici pour laisser le client scanner
-                    
-                } else {
-                    // SANS TICKET
-                    if (typeof closeSheet === 'function') closeSheet();
-                    if (typeof closeOrder === 'function') closeOrder();
+                const pcfg = typeof loadPrinterConfig === 'function' ? loadPrinterConfig() : {};
+                if(pcfg.enabled && pcfg.printers?.caisse?.enabled && pcfg.receipt?.autoAfterPayment !== false) {
+                    try { if (typeof printCashReceipt === 'function') await printCashReceipt(STATE.currentOrder || order, {auto:true}); } catch(e) {}
                 }
                 
+                if (typeof closeSheet === 'function') closeSheet();
             } catch(e) {
-                if (typeof toast === 'function') toast(e.message || "Erreur de paiement", true);
+                if (typeof toast === 'function') toast(e.message || "Erreur de fiscalisation", true);
             }
         } else {
             order.paymentDraft.status = "PAIEMENT_PARTIEL";
@@ -12761,17 +12541,25 @@ setTimeout(() => {
                 const ok = await saveCurrent(order, "Paiement partiel : " + method, {immediate: true});
                 if (ok) {
                     if (typeof toast === 'function') toast(`✓ Encaissé : ${amount}. Reste : ${newRemaining}`);
-                    if (STATE.socket && STATE.socket.connected) STATE.socket.emit('stateUpdated');
                     window.openPayment(); 
                 }
             }
         }
     };
 
-}, 3000);
-</script>
-</body>
-</html>
+    // Reconnexion des boutons 
+    ["btnHeadPayment","btnPaymentDirect","summaryCash"].forEach(id=>{
+        const btn=document.getElementById(id);
+        if(btn){
+            btn.onclick=(ev)=>{
+                ev?.preventDefault?.();
+                ev?.stopPropagation?.();
+                window.openPayment();
+            };
+        }
+    });
+
+}, 2500);
 </script>
 </body>
 </html>
