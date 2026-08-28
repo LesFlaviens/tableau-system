@@ -5727,6 +5727,14 @@ async function connectSocket(){
     });STATE.socket=socket;
     socket.on("connect",()=>{STATE.connected=true;setConnection("TEMPS RÉEL","good");socket.emit("joinTenant",String(STATE.tenantID));retryFailedWrites();if(!STATE.lastServerAt||now()-STATE.lastServerAt>5000)syncFull("reconnect")});
     socket.on("updateState",s=>{STATE.connected=true;STATE.lastServerAt=now();setConnection("TEMPS RÉEL","good");applyServerState(s,"socket")});
+    
+    // --- NOUVEAU : Le PAD écoute les paiements et annulations de la caisse ---
+    ['orderUpdated','ordersUpdated','stateUpdated','transactionSaved','paymentUpdated','server-state-changed'].forEach(eventName => {
+        socket.on(eventName, () => {
+            if (typeof syncFull === 'function') syncFull("socket-event");
+        });
+    });
+
     socket.on("disconnect",()=>{STATE.connected=false;setConnection(navigator.onLine?"RECONNEXION":"HORS LIGNE",navigator.onLine?"warn":"bad")});
     socket.on("connect_error",err=>{
       STATE.connected=false;
@@ -5777,18 +5785,16 @@ function applyServerState(serverState,source){
 
   applyDerived();
 
-  if(
-    openedTable &&
-    rawOpened &&
-    isArchivedOrder(rawOpened) &&
-    !hasLocalPending
-  ){
-    STATE.currentTable=null;
-    STATE.currentOrder=null;
-    STATE.pendingCookingLine="";
-    hideQuickCooking();
-    document.body.classList.remove("summary-open","order-open");
-    toast("Table fermée sur un autre écran");
+  // --- NOUVEAU : Fermeture du PAD si la table a été libérée ou payée ---
+  if(openedTable && !hasLocalPending){
+    if(!rawOpened || isArchivedOrder(rawOpened)){
+      STATE.currentTable=null;
+      STATE.currentOrder=null;
+      STATE.pendingCookingLine="";
+      if(typeof hideQuickCooking==='function') hideQuickCooking();
+      document.body.classList.remove("summary-open","order-open");
+      toast("Table encaissée et libérée !");
+    }
   }
 
   scheduleRender();
@@ -5882,7 +5888,6 @@ function normalizeMenu(){
 }
 function normalizeReservations(){const r=unwrap(STATE.activeOrders.RESERVATIONS_MASTER);STATE.reservations=Array.isArray(r)?r:[]}
 function applyDerived(){STATE.settings=unwrap(STATE.activeOrders.SETTINGS_MASTER)||{};normalizeArchitecture();normalizeMenu();normalizeReservations();if(STATE.currentTable)STATE.currentOrder=getOrder(STATE.currentTable)}
-
 /* ---------------- ORDERS ---------------- */
 const SYSTEM_KEYS=new Set(["ARCHITECTURE","SETTINGS_MASTER","RESERVATIONS_MASTER","MENU_MASTER","MENU_MASTER_BAR","MENU_MASTER_PATISSERIE","STAFF_ACCESS","LOYALTY_MASTER","TIMESHEETS_MASTER","ALERTS_MASTER","FINANCIAL_HISTORY","AUDIT_MASTER"]);
 function isRealOrder(k,o){
@@ -11872,7 +11877,7 @@ setInterval(() => {
     }
 }, 500);
 </script>
-<<!-- =========================================================
+<!-- =========================================================
      FORTERESSE : ÉCRASEMENT MASTER (PAIEMENT, CHAISES, OBSERVATION, VIANDES)
      ========================================================= -->
 <script id="ichef-master-overrides">
@@ -12491,7 +12496,7 @@ setTimeout(() => {
         await finalizePartialPayment(o, method, inputAmount);
     };
 
-    window.finalizePartialPayment = async function(order, method, amount, paymentRequestId = "") {
+window.finalizePartialPayment = async function(order, method, amount, paymentRequestId = "") {
         const total = typeof orderTotal === 'function' ? orderTotal(order) : 0;
         const nowIso = new Date().toISOString();
         
@@ -12517,21 +12522,44 @@ setTimeout(() => {
 
         if (newRemaining <= 0.01) {
             try {
-                if (typeof toast === 'function') toast("Génération du ticket fiscal...");
-                const result = await fiscalizeWithServer(order, "MULTIPLE", order.paymentDraft.payments, typeof serverPaymentId === 'function' ? serverPaymentId("FISCAL") : "");
-                if (typeof applyServerFiscalResult === 'function') applyServerFiscalResult(order, result, "MULTIPLE");
+                if (typeof toast === 'function') toast("Validation du paiement...");
+
+                // 1. Marquer la commande comme payée localement
+                order.status = "PAID";
+                order.paymentStatus = "PAID";
+                order.paymentDraft.status = "PAYE";
+                order.isArchived = true;
+                order.closedAt = nowIso;
+
+                // 2. Libérer la table et créer l'archive via la synchro classique iCHEF
+                if (typeof optimisticWrite === 'function') {
+                    await optimisticWrite("ARCHIVE_PAID_" + Date.now() + "_" + STATE.currentTable, {data: order}, "Vente encaissée au PAD");
+                    await optimisticWrite(STATE.currentTable, null, "Table libérée suite au paiement");
+                } else if (typeof saveCurrent === 'function') {
+                    await saveCurrent(order, "Paiement intégral validé", {immediate: true});
+                }
+
+                // 3. Prévenir la caisse principale instantanément
+                if (STATE.socket && STATE.socket.connected) {
+                    STATE.socket.emit('transactionSaved');
+                    STATE.socket.emit('stateUpdated');
+                }
                 
                 if (typeof syncFull === 'function') await syncFull("payment-fiscalized").catch(()=>{});
-                if (typeof toast === 'function') toast(`✓ Ticket fiscal généré (N° ${result.ticketNumber})`);
+                if (typeof toast === 'function') toast(`✓ Paiement validé`);
                 
+                // 4. Lancer l'impression si configurée
                 const pcfg = typeof loadPrinterConfig === 'function' ? loadPrinterConfig() : {};
                 if(pcfg.enabled && pcfg.printers?.caisse?.enabled && pcfg.receipt?.autoAfterPayment !== false) {
                     try { if (typeof printCashReceipt === 'function') await printCashReceipt(STATE.currentOrder || order, {auto:true}); } catch(e) {}
                 }
                 
+                // 5. Fermer les fenêtres
                 if (typeof closeSheet === 'function') closeSheet();
+                if (typeof closeOrder === 'function') closeOrder();
+                
             } catch(e) {
-                if (typeof toast === 'function') toast(e.message || "Erreur de fiscalisation", true);
+                if (typeof toast === 'function') toast(e.message || "Erreur de paiement", true);
             }
         } else {
             order.paymentDraft.status = "PAIEMENT_PARTIEL";
@@ -12541,13 +12569,14 @@ setTimeout(() => {
                 const ok = await saveCurrent(order, "Paiement partiel : " + method, {immediate: true});
                 if (ok) {
                     if (typeof toast === 'function') toast(`✓ Encaissé : ${amount}. Reste : ${newRemaining}`);
+                    if (STATE.socket && STATE.socket.connected) STATE.socket.emit('stateUpdated');
                     window.openPayment(); 
                 }
             }
         }
     };
 
-    // Reconnexion des boutons 
+// Reconnexion des boutons 
     ["btnHeadPayment","btnPaymentDirect","summaryCash"].forEach(id=>{
         const btn=document.getElementById(id);
         if(btn){
@@ -12558,8 +12587,317 @@ setTimeout(() => {
             };
         }
     });
+}, 3000);
+</script>
+<!-- FLUX DE PAIEMENT iCHEF — PREUVE SERVEUR + TICKET CLIENT + SYMBIOSE -->
+<script id="ichef-payment-ticket-flow-server-proof">
+(() => {
+  "use strict";
+  setTimeout(() => {
 
-}, 2500);
+  const ICHEF_PAYMENT_PROOF_VERSION = "PAD-PROOF-2026.08.28";
+  let ICHEF_PAYMENT_BUSY = false;
+
+  function pNum(v){ const n=Number(v); return Number.isFinite(n)?n:0; }
+  function pRound(v){ return Math.round((pNum(v)+Number.EPSILON)*100)/100; }
+  function pText(v){ return String(v ?? "").trim(); }
+  function pMoney(v){ return typeof money === "function" ? money(v) : `${pRound(v).toFixed(2)} ${(typeof fiscalProfile==='function'&&fiscalProfile().currency)||'CHF'}`; }
+  function pEsc(v){ return typeof esc === "function" ? esc(v) : pText(v).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#039;"}[c])); }
+  function pId(prefix="PAY"){
+    const raw=globalThis.crypto?.randomUUID?.() || `${Date.now()}_${Math.random().toString(36).slice(2)}`;
+    return `${prefix}_${pText(STATE?.tenantID||'TENANT').replace(/[^A-Za-z0-9_-]/g,'_')}_${pText(STATE?.currentTable||'TABLE').replace(/[^A-Za-z0-9_-]/g,'_')}_${raw}`.slice(0,190);
+  }
+  function pToken(){
+    try{
+      const a=new Uint8Array(32); crypto.getRandomValues(a);
+      return Array.from(a,b=>b.toString(16).padStart(2,"0")).join("");
+    }catch(_){ return `${Date.now().toString(36)}${Math.random().toString(36).slice(2)}${Math.random().toString(36).slice(2)}`; }
+  }
+  async function pSha(value){
+    const bytes=new TextEncoder().encode(typeof value==='string'?value:JSON.stringify(value));
+    const digest=await crypto.subtle.digest('SHA-256',bytes);
+    return Array.from(new Uint8Array(digest),b=>b.toString(16).padStart(2,'0')).join('');
+  }
+  function pTicketNumber(){
+    const d=new Date();
+    const stamp=[d.getFullYear(),String(d.getMonth()+1).padStart(2,'0'),String(d.getDate()).padStart(2,'0'),String(d.getHours()).padStart(2,'0'),String(d.getMinutes()).padStart(2,'0'),String(d.getSeconds()).padStart(2,'0')].join('');
+    return `TCK-${stamp}-${Math.random().toString(36).slice(2,6).toUpperCase()}`;
+  }
+  function pReceiptLabel(pref){ return pref==='print'?'IMPRESSION':pref==='qr'?'QR_CODE':'SANS_TICKET'; }
+  function pLocalProofSave(proof){
+    try{
+      const key=`ICHEF_PAYMENT_PROOFS_${STATE.tenantID||'default'}`;
+      const arr=JSON.parse(localStorage.getItem(key)||'[]');
+      arr.unshift(proof); localStorage.setItem(key,JSON.stringify(arr.slice(0,500)));
+    }catch(_){}
+  }
+  function pCurrentOrder(){ return STATE.currentOrder || (typeof ensureOrder==='function'?ensureOrder(STATE.currentTable):null); }
+  function pPaymentDetails(order){ return Array.isArray(order?.paymentDraft?.payments)?order.paymentDraft.payments:[]; }
+  function pMethodSummary(payments){
+    const methods=[...new Set((payments||[]).map(x=>pText(x.method).toUpperCase()).filter(Boolean))];
+    return methods.length===1?methods[0]:'MULTIPLE';
+  }
+
+  async function pBuildTransaction(order,payments,ticketPref,operationId,ticketNumber,publicToken){
+    const profile=typeof fiscalProfile==='function'?fiscalProfile():{country:'CH',currency:'CHF',label:'CH'};
+    const total=typeof orderTotal==='function'?pRound(orderTotal(order)):pRound(order?.total);
+    const occurredAt=new Date().toISOString();
+    const items=(order?.items||[]).filter(i=>i&&!i.cancelled).map(i=>({
+      name:typeof itemName==='function'?itemName(i):(i.name||i.n||'Article'),
+      n:typeof itemName==='function'?itemName(i):(i.name||i.n||'Article'),
+      quantity:typeof itemQty==='function'?itemQty(i):pNum(i.qty||1),
+      qty:typeof itemQty==='function'?itemQty(i):pNum(i.qty||1),
+      unitPrice:typeof itemPrice==='function'?itemPrice(i):pNum(i.price??i.p),
+      p:typeof itemPrice==='function'?itemPrice(i):pNum(i.price??i.p),
+      seat:typeof itemSeat==='function'?itemSeat(i):pNum(i.seat||i.guestSeat||0),
+      cooking:pText(i.cooking||i.cuisson),
+      observation:pText(i.obs||i.observation||i.note),
+      allergy:pText(i.allergy||i.allergie||i.allergies),
+      destination:typeof normalizeDestination==='function'?normalizeDestination(i.dest||i.destination||i.category||'cuisine'):pText(i.dest||i.destination||'cuisine')
+    }));
+    const method=pMethodSummary(payments);
+    const snapshot={
+      ticketNumber, tableId:STATE.currentTable, total, items, status:'PAID', cashedAt:occurredAt,
+      pax:pNum(order?.pax||order?.covers||0), note:pText(order?.note||order?.observation||''),
+      receiptDelivery:pReceiptLabel(ticketPref)
+    };
+    const hashBase={operationId,tenantID:STATE.tenantID,occurredAt,method,total,payments,snapshot};
+    const chainHash=await pSha(hashBase);
+    return {
+      id:operationId, operationId, eventType:'SALE_FINALIZED', type:'SALE',
+      date:occurredAt, timestamp:occurredAt, tenantID:STATE.tenantID,
+      table:STATE.currentTable, tableId:STATE.currentTable,
+      source:'PAD_SERVEUR', terminalType:'PAD', terminalId:STATE.deviceId||'', deviceId:STATE.deviceId||'',
+      actor:{role:STATE.role||'SERVEUR',deviceId:STATE.deviceId||'',terminalType:'PAD'},
+      waiter:STATE.role||'SERVEUR', method, paymentMethod:method,
+      payments:(payments||[]).map(p=>({
+        method:pText(p.method), amount:pRound(p.amount), confirmedBy:p.confirmedBy||STATE.role||'SERVEUR',
+        confirmedAt:p.confirmedAt||occurredAt, paymentRequestId:p.paymentRequestId||'', receiptPreference:p.receiptPreference||'none'
+      })),
+      payment:{method,amount:total,currency:profile.currency,details:payments},
+      total, amount:total, totalTTC:total, currency:profile.currency, country:profile.country,
+      fiscalProfile:profile.label||profile.country,
+      receipt:{requested:ticketPref!=='none',delivery:pReceiptLabel(ticketPref),preference:ticketPref,publicToken:ticketPref==='qr'?publicToken:''},
+      orderSnapshot:snapshot, items, chainHash, proofVersion:ICHEF_PAYMENT_PROOF_VERSION
+    };
+  }
+
+  async function pSendTransaction(transaction){
+    const response=await fetch(`${APP_SERVER_URL}/api/save-transaction`,{
+      method:'POST', cache:'no-store', credentials:'include',
+      headers:{
+        'Content-Type':'application/json',
+        'Idempotency-Key':transaction.operationId,
+        'X-iCHEF-Tenant':STATE.tenantID||'',
+        'X-iCHEF-Device':STATE.deviceId||''
+      },
+      body:JSON.stringify({tenantID:STATE.tenantID,transaction})
+    });
+    const data=await response.json().catch(()=>({}));
+    if(!response.ok||data.success===false)throw new Error(data.error||`Enregistrement paiement refusé (${response.status})`);
+    return data.proof||{};
+  }
+
+  function pApplyProofToOrder(order,payments,proof,transaction){
+    const total=typeof orderTotal==='function'?pRound(orderTotal(order)):pRound(order?.total);
+    const now=new Date().toISOString();
+    const ticketNumber=proof.ticketNumber||transaction.orderSnapshot.ticketNumber;
+    const hash=proof.chainHash||transaction.chainHash;
+    order.status='PAID'; order.paymentStatus='PAID'; order.fiscalStatus='SERVER_RECORDED';
+    order.isArchived=true; order.closedAt=now; order.fiscalFinalizedAt=now;
+    order.fiscalReceiptReference=ticketNumber; order.fiscalHash=hash;
+    order.fiscalTicket={ticketNumber,ticketHash:hash,date:proof.serverTimestamp||now};
+    order.paymentDraft={
+      version:4,status:'PAYE',fiscalStatus:'SERVER_RECORDED',total,remaining:0,
+      payments:payments.map(p=>({...p})),receiptReference:ticketNumber,fiscalHash:hash,
+      receiptPreference:transaction.receipt.preference,receiptDelivery:transaction.receipt.delivery,
+      publicReceiptUrl:proof.publicReceiptUrl||'',operationId:transaction.operationId,
+      updatedAt:now,updatedBy:STATE.role||'SERVEUR',deviceId:STATE.deviceId||'',fiscalCountry:transaction.country
+    };
+    order.paymentProof={
+      operationId:transaction.operationId,ticketNumber,chainHash:hash,
+      publicReceiptUrl:proof.publicReceiptUrl||'',receiptDelivery:transaction.receipt.delivery,
+      serverTimestamp:proof.serverTimestamp||now,method:transaction.method,total:transaction.total
+    };
+    STATE.currentOrder=order;
+    if(STATE.currentTable)STATE.activeOrders[STATE.currentTable]=order;
+  }
+
+  async function pArchiveAndRelease(order,transaction,proof){
+    if(typeof optimisticWrite==='function'){
+      await optimisticWrite(`ARCHIVE_PAID_${transaction.operationId}`,{data:order,paymentProof:order.paymentProof},'Vente encaissée au PAD · preuve serveur');
+      await optimisticWrite(STATE.currentTable,null,'Table libérée suite au paiement confirmé serveur');
+    }else if(typeof saveCurrent==='function'){
+      await saveCurrent(order,'Paiement intégral validé · preuve serveur',{immediate:true});
+    }
+    try{ if(typeof syncFull==='function') await syncFull('payment-server-proof'); }catch(_){}
+  }
+
+  function pShowReceiptLink(url,ticketNumber){
+    if(!url){ if(typeof toast==='function')toast('Ticket QR indisponible : URL serveur absente',true); return; }
+    openSheet('TICKET QR CODE',`
+      <div style="text-align:center;padding:18px;color:#111;background:#fff;border-radius:14px">
+        <div style="font-size:19px;font-weight:1000;margin-bottom:5px">TICKET ${pEsc(ticketNumber)}</div>
+        <div style="font-size:13px;color:#555;margin-bottom:15px">Le client scanne le QR pour ouvrir son ticket sécurisé.</div>
+        <canvas id="ichefReceiptQr" width="260" height="260" style="width:260px;height:260px;max-width:100%;background:#fff;border:3px solid #111;border-radius:12px;padding:8px"></canvas>
+        <div id="ichefQrFallback" style="display:none;word-break:break-all;margin-top:12px;font-size:11px;color:#555">${pEsc(url)}</div>
+        <button class="action-btn" id="ichefOpenReceiptLink" style="width:100%;margin-top:18px;min-height:58px!important;font-size:17px!important;background:#fff!important;color:#111!important;border:2px solid #111!important">OUVRIR LE TICKET</button>
+        <button class="action-btn" id="ichefFinishReceipt" style="width:100%;margin-top:9px;min-height:58px!important;font-size:17px!important;background:#111!important;color:#fff!important;border:2px solid #111!important">TERMINER</button>
+      </div>`);
+    const openBtn=document.getElementById('ichefOpenReceiptLink'); if(openBtn)openBtn.onclick=()=>window.open(url,'_blank','noopener');
+    const finishBtn=document.getElementById('ichefFinishReceipt'); if(finishBtn)finishBtn.onclick=()=>{closeSheet();if(typeof closeOrder==='function')closeOrder();};
+    const render=()=>{
+      const canvas=document.getElementById('ichefReceiptQr');
+      if(!canvas)return;
+      if(globalThis.QRCode?.toCanvas){
+        globalThis.QRCode.toCanvas(canvas,url,{width:260,margin:1,errorCorrectionLevel:'M'},err=>{if(err)document.getElementById('ichefQrFallback')?.style.setProperty('display','block')});
+      }else document.getElementById('ichefQrFallback')?.style.setProperty('display','block');
+    };
+    if(globalThis.QRCode?.toCanvas){render();return;}
+    const s=document.createElement('script');s.src='https://cdn.jsdelivr.net/npm/qrcode@1.5.4/build/qrcode.min.js';s.async=true;s.onload=render;s.onerror=()=>document.getElementById('ichefQrFallback')?.style.setProperty('display','block');document.head.appendChild(s);
+  }
+
+  async function pDeliverReceipt(order,pref,proof){
+    const ticketNumber=order?.paymentProof?.ticketNumber||proof.ticketNumber||'—';
+    if(pref==='print'){
+      try{
+        if(typeof printCashReceipt!=='function')throw new Error('Module impression indisponible');
+        await printCashReceipt(order,{auto:false});
+        if(typeof toast==='function')toast(`✓ Ticket ${ticketNumber} imprimé`);
+      }catch(e){
+        if(typeof toast==='function')toast(`Paiement OK · impression : ${e?.message||'échec'}`,true);
+      }
+      if(typeof closeSheet==='function')closeSheet(); if(typeof closeOrder==='function')closeOrder();
+      return;
+    }
+    if(pref==='qr'){
+      pShowReceiptLink(proof.publicReceiptUrl||order?.paymentProof?.publicReceiptUrl||'',ticketNumber);
+      return;
+    }
+    if(typeof closeSheet==='function')closeSheet(); if(typeof closeOrder==='function')closeOrder();
+  }
+
+  window.processPartialPayment = async function(method){
+    if(!STATE.currentTable)return;
+    const order=pCurrentOrder(); if(!order)return;
+    const total=typeof orderTotal==='function'?pRound(orderTotal(order)):0;
+    const existing=pPaymentDetails(order);
+    const paid=pRound(existing.reduce((s,p)=>s+pNum(p.amount),0));
+    const remaining=pRound(Math.max(0,total-paid));
+    const inputAmount=pRound(Number(window.currentPaymentInput||remaining));
+    if(method==='EN ATTENTE'){ if(typeof closeSheet==='function')closeSheet(); return; }
+    if(method==='STRIPE'){
+      if(typeof startStripePayment!=='function'){ if(typeof toast==='function')toast('Stripe indisponible sur ce serveur',true); return; }
+      try{await startStripePayment(order)}catch(e){if(typeof toast==='function')toast(e?.message||'Stripe indisponible',true)}
+      return;
+    }
+    if(!['CARTE','ESPÈCES','TWINT','AUTRE'].includes(method)){if(typeof toast==='function')toast('Moyen de paiement inconnu',true);return;}
+    if(!(inputAmount>0)){if(typeof toast==='function')toast('Montant invalide',true);return;}
+    if(inputAmount>remaining+0.01){if(typeof toast==='function')toast('Le montant dépasse le reste à payer',true);return;}
+
+    openSheet(`TICKET · ${method}`,`
+      <div class="big-state" style="border:4px solid #111!important;background:#111!important;color:#fff!important;border-radius:16px!important;padding:25px!important;margin-bottom:20px">
+        <div style="font-size:16px;font-weight:800;color:#aaa">ENCAISSEMENT : ${pEsc(method)}</div>
+        <div class="big gold" style="font-size:50px!important;line-height:1">${pMoney(inputAmount)}</div>
+      </div>
+      <div style="font-size:18px;font-weight:1000;text-align:center;margin-bottom:15px;color:#111">LE CLIENT VEUT-IL UN TICKET ?</div>
+      <div style="display:flex;flex-direction:column;gap:12px">
+        <button class="action-btn" data-ticket-pref="none" style="min-height:78px!important;font-size:24px!important;font-weight:1000!important;background:#e9e9e9!important;border:3px solid #bbb!important;color:#111!important">SANS TICKET</button>
+        <button class="action-btn" data-ticket-with="1" style="min-height:78px!important;font-size:24px!important;font-weight:1000!important;background:#fff!important;border:3px solid #111!important;color:#111!important">AVEC TICKET</button>
+      </div>
+      <button class="action-btn" data-ticket-back style="width:100%;margin-top:15px;min-height:60px!important;font-size:18px!important;background:#fff!important;color:#111!important;border:2px solid #ccc!important">RETOUR</button>`);
+    const noTicket=document.querySelector('[data-ticket-pref="none"]');
+    if(noTicket)noTicket.onclick=()=>window.executeFinalPayment(method,inputAmount,'none');
+    const withTicket=document.querySelector('[data-ticket-with]');
+    if(withTicket)withTicket.onclick=()=>window.openTicketDeliveryChoice(method,inputAmount);
+    const back=document.querySelector('[data-ticket-back]');if(back)back.onclick=()=>window.openPayment();
+  };
+
+  window.openTicketDeliveryChoice=function(method,amount){
+    openSheet(`AVEC TICKET · ${method}`,`
+      <div class="big-state" style="border:4px solid #111!important;background:#111!important;color:#fff!important;border-radius:16px!important;padding:25px!important;margin-bottom:20px">
+        <div style="font-size:16px;font-weight:800;color:#aaa">PAIEMENT : ${pEsc(method)}</div>
+        <div class="big gold" style="font-size:50px!important;line-height:1">${pMoney(amount)}</div>
+      </div>
+      <div style="font-size:18px;font-weight:1000;text-align:center;margin-bottom:15px;color:#111">COMMENT DONNER LE TICKET ?</div>
+      <div style="display:flex;flex-direction:column;gap:12px">
+        <button class="action-btn" data-ticket-delivery="print" style="min-height:78px!important;font-size:24px!important;font-weight:1000!important;background:#fff!important;border:3px solid #111!important;color:#111!important">IMPRIMER</button>
+        <button class="action-btn" data-ticket-delivery="qr" style="min-height:78px!important;font-size:24px!important;font-weight:1000!important;background:#f4faff!important;border:3px solid #58a9ff!important;color:#13568c!important">QR CODE</button>
+      </div>
+      <button class="action-btn" data-delivery-back style="width:100%;margin-top:15px;min-height:60px!important;font-size:18px!important;background:#fff!important;color:#111!important;border:2px solid #ccc!important">RETOUR</button>`);
+    document.querySelectorAll('[data-ticket-delivery]').forEach(btn=>btn.onclick=()=>window.executeFinalPayment(method,pRound(amount),btn.dataset.ticketDelivery));
+    const back=document.querySelector('[data-delivery-back]');if(back)back.onclick=()=>window.processPartialPayment(method);
+  };
+
+  window.executeFinalPayment = async function(method,amount,ticketPref){
+    if(ICHEF_PAYMENT_BUSY){if(typeof toast==='function')toast('Paiement déjà en cours…');return;}
+    ICHEF_PAYMENT_BUSY=true;
+    try{
+      const order=pCurrentOrder(); if(!order)throw new Error('Commande introuvable');
+      await window.finalizePartialPayment(order,method,pRound(amount),pId('PART'));
+    }finally{ICHEF_PAYMENT_BUSY=false;}
+  };
+
+  window.finalizePartialPayment = async function(order,method,amount,paymentRequestId=''){
+    const total=typeof orderTotal==='function'?pRound(orderTotal(order)):0;
+    if(!(total>0))throw new Error('Commande vide');
+    if(!order.paymentDraft){
+      order.paymentDraft={version:4,payments:[],total,remaining:total,status:'A_PAYER',updatedAt:new Date().toISOString(),updatedBy:STATE.role||'SERVEUR',deviceId:STATE.deviceId||'',fiscalCountry:(typeof fiscalProfile==='function'?fiscalProfile().country:'CH'),fiscalStatus:'NOT_PAID'};
+    }
+    const existing=Array.isArray(order.paymentDraft.payments)?order.paymentDraft.payments:[];
+    if(paymentRequestId && existing.some(p=>p.paymentRequestId===paymentRequestId))return false;
+    const already=pRound(existing.reduce((s,p)=>s+pNum(p.amount),0));
+    const remainingBefore=pRound(Math.max(0,total-already));
+    if(!(amount>0)||amount>remainingBefore+0.01)throw new Error('Montant de paiement invalide');
+
+    const ticketPref=window._currentTicketPreference || 'none';
+    const entry={method,amount:pRound(amount),confirmedBy:STATE.role||'SERVEUR',confirmedAt:new Date().toISOString(),paymentRequestId:paymentRequestId||pId('PART'),receiptPreference:ticketPref};
+    const planned=[...existing,entry];
+    const newPaid=pRound(planned.reduce((s,p)=>s+pNum(p.amount),0));
+    const newRemaining=pRound(Math.max(0,total-newPaid));
+
+    if(newRemaining>0.01){
+      order.paymentDraft.payments=planned;order.paymentDraft.remaining=newRemaining;order.paymentDraft.status='PAIEMENT_PARTIEL';order.paymentDraft.updatedAt=new Date().toISOString();
+      order.paymentStatus='PARTIAL';order.status='pending';
+      if(typeof saveCurrent==='function'){
+        const ok=await saveCurrent(order,`Paiement partiel ${method} · ${pMoney(amount)}`,{immediate:true});
+        if(!ok)throw new Error('Enregistrement du paiement partiel impossible');
+      }
+      if(typeof toast==='function')toast(`✓ ${pMoney(amount)} enregistré · reste ${pMoney(newRemaining)}${ticketPref!=='none'?' · ticket émis au solde final':''}`);
+      window._currentTicketPreference='none';
+      window.openPayment();
+      return true;
+    }
+
+    if(typeof toast==='function')toast('Validation serveur du paiement…');
+    const operationId=pId('SALE');
+    const ticketNumber=pTicketNumber();
+    const publicToken=ticketPref==='qr'?pToken():'';
+    const transaction=await pBuildTransaction(order,planned,ticketPref,operationId,ticketNumber,publicToken);
+    const proof=await pSendTransaction(transaction); // aucune libération avant ce OK serveur
+    pApplyProofToOrder(order,planned,proof,transaction);
+    pLocalProofSave(order.paymentProof);
+    await pArchiveAndRelease(order,transaction,proof);
+    if(typeof toast==='function')toast(`✓ Paiement transmis · ${order.paymentProof.ticketNumber}`);
+    window._currentTicketPreference='none';
+    await pDeliverReceipt(order,ticketPref,proof);
+    return true;
+  };
+
+  // Enregistre le choix juste avant finalisation, sans variable globale résiduelle entre deux paiements.
+  const _execute=window.executeFinalPayment;
+  window.executeFinalPayment=async function(method,amount,ticketPref){
+    window._currentTicketPreference=ticketPref||'none';
+    try{return await _execute(method,amount,ticketPref)}finally{if(!ICHEF_PAYMENT_BUSY)window._currentTicketPreference='none'}
+  };
+
+  // Les trois accès existants utilisent toujours le même moteur.
+  ['btnHeadPayment','btnPaymentDirect','summaryCash'].forEach(id=>{
+    const btn=document.getElementById(id);
+    if(btn)btn.onclick=ev=>{ev?.preventDefault?.();ev?.stopPropagation?.();window.openPayment();};
+  });
+  }, 3300);
+})();
 </script>
 </body>
 </html>
