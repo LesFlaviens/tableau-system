@@ -1655,6 +1655,37 @@ app.get('/api/export-preuves-legales', async (req, res) => {
         });
     }
 });
+/ =============================================================
+// QR FISCAL — DOSSIER COMPLET DE TABLE
+// =============================================================
+
+// ICI tu colles d'abord :
+// - fiscalTableShareSchema
+// - FiscalTableShare
+// - sanitizeFiscalSharePayload()
+// - buildFiscalTableSharePage()
+// - handleFiscalTableShare()
+
+async function handleFiscalTableShare(req, res) {
+
+    // tout le contenu de la fonction QR...
+
+}
+
+
+// PUIS SEULEMENT APRÈS LA FONCTION :
+app.post('/api/fiscal/table-dossier/share', handleFiscalTableShare);
+app.post('/api/fiscal/table-dossier-share', handleFiscalTableShare);
+app.post('/api/table-dossier/share', handleFiscalTableShare);
+
+app.get('/api/fiscal/table-dossier/status', (req, res) => {
+    res.set('Cache-Control', 'no-store, max-age=0');
+    res.json({
+        success: true,
+        service: 'iCHEF fiscal table dossier QR'
+    });
+});
+
 // ==========================================
 // 🤖 MOTEURS IA (GEMINI)
 // ==========================================
