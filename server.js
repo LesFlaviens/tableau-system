@@ -21,6 +21,190 @@ const { Server } = require('socket.io');
 
 const app = express();
 const server = http.createServer(app);
+// =========================================================
+// DIFFUSION TEMPS RÉEL DU PAIEMENT
+// TÉLÉPHONE / PAD / CAISSE / ADMIN
+// =========================================================
+
+if (mirroredPaymentTransaction) {
+
+    const realtimePaymentPayload = {
+        tenantID,
+
+        tableId:
+            mirroredPaymentTransaction.tableId ||
+            tableId ||
+            '',
+
+        ticketNumber:
+            mirroredPaymentTransaction.ticketNumber ||
+            '',
+
+        operationId:
+            mirroredPaymentTransaction.operationId ||
+            mirroredPaymentTransaction.id ||
+            '',
+
+        amount:
+            Number(
+                mirroredPaymentTransaction.totalTTC ??
+                mirroredPaymentTransaction.total ??
+                mirroredPaymentTransaction.amount ??
+                0
+            ) || 0,
+
+        currency:
+            mirroredPaymentTransaction.currency ||
+            'CHF',
+
+        paymentMethod:
+            mirroredPaymentTransaction.paymentMethod ||
+            mirroredPaymentTransaction.method ||
+            mirroredPaymentTransaction.payment?.method ||
+            'AUTRE',
+
+        terminalType:
+            mirroredPaymentTransaction.terminalType ||
+            mirroredPaymentTransaction.source ||
+            terminal ||
+            'TELEPHONE',
+
+        deviceId:
+            mirroredPaymentTransaction.deviceId ||
+            deviceId ||
+            '',
+
+        operator:
+            mirroredPaymentTransaction.actor?.actorId ||
+            operator ||
+            'SYSTEM',
+
+        serverRecordedAt:
+            mirroredPaymentTransaction.serverRecordedAt ||
+            new Date().toISOString(),
+
+        transaction:
+            mirroredPaymentTransaction
+    };
+
+
+    // -----------------------------------------------------
+    // 1. NOUVELLE TRANSACTION
+    // Admin + Caisse + PAD
+    // -----------------------------------------------------
+
+    io.to(tenantID).emit(
+        'transactionSaved',
+        realtimePaymentPayload
+    );
+
+
+    // -----------------------------------------------------
+    // 2. PAIEMENT MIS À JOUR
+    // Dashboard chiffre d'affaires
+    // -----------------------------------------------------
+
+    io.to(tenantID).emit(
+        'paymentUpdated',
+        realtimePaymentPayload
+    );
+
+
+    // -----------------------------------------------------
+    // 3. PAIEMENT PROVENANT D'UNE COMMANDE
+    // notamment telephone.html
+    // -----------------------------------------------------
+
+    io.to(tenantID).emit(
+        'order-payment-mirrored',
+        realtimePaymentPayload
+    );
+
+
+    // -----------------------------------------------------
+    // 4. HISTORIQUE COMMUN
+    // Admin + Caisse + Journal
+    // -----------------------------------------------------
+
+    io.to(tenantID).emit(
+        'history-event',
+        {
+            tenantID,
+
+            action:
+                'PAYMENT',
+
+            eventType:
+                'SALE_FINALIZED',
+
+            type:
+                'PAYMENT',
+
+            tableId:
+                realtimePaymentPayload.tableId,
+
+            ticketNumber:
+                realtimePaymentPayload.ticketNumber,
+
+            operationId:
+                realtimePaymentPayload.operationId,
+
+            amount:
+                realtimePaymentPayload.amount,
+
+            currency:
+                realtimePaymentPayload.currency,
+
+            paymentMethod:
+                realtimePaymentPayload.paymentMethod,
+
+            operator:
+                realtimePaymentPayload.operator,
+
+            terminalType:
+                realtimePaymentPayload.terminalType,
+
+            deviceId:
+                realtimePaymentPayload.deviceId,
+
+            timestamp:
+                realtimePaymentPayload.serverRecordedAt,
+
+            transaction:
+                mirroredPaymentTransaction
+        }
+    );
+
+
+    // -----------------------------------------------------
+    // 5. SIGNAL GÉNÉRAL DE CHANGEMENT FINANCIER
+    // -----------------------------------------------------
+
+    io.to(tenantID).emit(
+        'server-state-changed',
+        {
+            tenantID,
+
+            type:
+                'PAYMENT',
+
+            subtype:
+                'ORDER_PAYMENT_MIRROR',
+
+            tableId:
+                realtimePaymentPayload.tableId,
+
+            ticketNumber:
+                realtimePaymentPayload.ticketNumber,
+
+            operationId:
+                realtimePaymentPayload.operationId,
+
+            timestamp:
+                realtimePaymentPayload.serverRecordedAt
+        }
+    );
+}
 // ==========================================================
 // 🌐 CONFIGURATION CORS UNIFIÉE (API + WEBSOCKETS)
 // ==========================================================
