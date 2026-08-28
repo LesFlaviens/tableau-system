@@ -6027,6 +6027,1559 @@ server.listen(
         );
 
         console.log('==========================================');
+        // =============================================================
+// QR FISCAL iCHEF — DOSSIER COMPLET DE TABLE
+// COLLER CE BLOC JUSTE AVANT : // 🤖 MOTEURS IA (GEMINI)
+// =============================================================
+
+const ichefFiscalShareSchema = new mongoose.Schema({
+    token: { type: String, required: true, unique: true, index: true },
+    tenantID: { type: String, required: true, index: true },
+    tableId: { type: String, required: true, index: true },
+    contentHash: { type: String, required: true, index: true },
+    payload: { type: mongoose.Schema.Types.Mixed, required: true },
+    createdAt: { type: Date, default: Date.now },
+    lastAccessAt: { type: Date, default: Date.now },
+    revoked: { type: Boolean, default: false }
+}, { minimize: false });
+
+ichefFiscalShareSchema.index({
+    tenantID: 1,
+    tableId: 1,
+    contentHash: 1
+});
+
+const IchefFiscalTableShare =
+    mongoose.models.IchefFiscalTableShare ||
+    mongoose.model(
+        'IchefFiscalTableShare',
+        ichefFiscalShareSchema
+    );
+
+function ichefFiscalMaskOperator(value) {
+    const txt = String(value ?? '').trim();
+
+    if (!txt) return '';
+
+    if (txt.length <= 2) {
+        return '••';
+    }
+
+    return (
+        '•'.repeat(
+            Math.min(6, txt.length - 2)
+        ) +
+        txt.slice(-2)
+    );
+}
+
+function ichefFiscalSanitize(value) {
+
+    if (Array.isArray(value)) {
+        return value.map(
+            ichefFiscalSanitize
+        );
+    }
+
+    if (
+        value &&
+        typeof value === 'object'
+    ) {
+
+        const out = {};
+
+        for (
+            const [key, child]
+            of Object.entries(value)
+        ) {
+
+            const k =
+                String(key).toLowerCase();
+
+            if ([
+                'masterpin',
+                'sessionpin',
+                'password',
+                'passwordhash',
+                'secret',
+                'authorization',
+                'auth',
+                'apikey',
+                'api_key',
+                'access_token',
+                'refresh_token'
+            ].includes(k)) {
+                continue;
+            }
+
+            if (k === 'pin') {
+                out[key] = '[MASQUÉ]';
+                continue;
+            }
+
+            if (k === 'authorpin') {
+                out[key] =
+                    ichefFiscalMaskOperator(
+                        child
+                    );
+                continue;
+            }
+
+            out[key] =
+                ichefFiscalSanitize(
+                    child
+                );
+        }
+
+        return out;
+    }
+
+    return value;
+}
+
+function ichefFiscalEsc(value) {
+
+    return String(value ?? '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#039;');
+}
+
+function ichefFiscalDate(value) {
+
+    const d =
+        new Date(value || 0);
+
+    return Number.isNaN(
+        d.getTime()
+    )
+        ? 'Date non enregistrée'
+        : d.toLocaleString('fr-FR');
+}
+
+function ichefFiscalRaw(value) {
+
+    return ichefFiscalEsc(
+        JSON.stringify(
+            value ?? null,
+            null,
+            2
+        )
+    );
+}
+
+function ichefFiscalAction(event) {
+
+    const raw =
+        String(
+            event?.action ||
+            event?.eventType ||
+            event?.type ||
+            'ÉVÉNEMENT'
+        ).toUpperCase();
+
+    const labels = {
+        CREATE:
+            'CRÉATION',
+
+        UPDATE:
+            'MISE À JOUR',
+
+        DELETE:
+            'SUPPRESSION',
+
+        DELETE_SOFT:
+            'ANNULATION / ARCHIVAGE',
+
+        SALE_FINALIZED:
+            'VENTE ENCAISSÉE',
+
+        PAYMENT:
+            'PAIEMENT',
+
+        CASH_IN:
+            'PAIEMENT / CASH IN',
+
+        ORDER_CANCELLED:
+            'ANNULATION',
+
+        DAILY_CLOSURE:
+            'CLÔTURE Z'
+    };
+
+    return labels[raw] || raw;
+}
+
+function ichefFiscalReason(event) {
+
+    const d =
+        event?.details || {};
+
+    return (
+        event?.reason ||
+        d?.reason ||
+        d?.motif ||
+        d?.error ||
+        d?.erreur ||
+        d?.message ||
+        ''
+    );
+}
+
+function ichefFiscalOperator(event) {
+
+    return (
+        event?.operator ||
+        event?.operatorName ||
+        event?.actor?.actorId ||
+        event?.authorPin ||
+        'SYSTEM'
+    );
+}
+
+function ichefFiscalTerminal(event) {
+
+    return (
+        event?.terminal ||
+        event?.terminalType ||
+        event?.actor?.terminalType ||
+        event?.terminalId ||
+        event?.actor?.deviceId ||
+        '—'
+    );
+}
+
+function ichefFiscalBuildPage(share) {
+
+    const payload =
+        share?.payload || {};
+
+    const dossier =
+        payload?.dossier ||
+        payload;
+
+    const summary =
+        payload?.resumeTable ||
+        payload?.summary ||
+        dossier?.summary ||
+        {};
+
+    const tableId =
+        payload?.tableId ||
+        dossier?.tableId ||
+        share?.tableId ||
+        '—';
+
+    const currency =
+        dossier?.currency ||
+        summary?.currency ||
+        'CHF';
+
+    const chronologie =
+        Array.isArray(
+            dossier?.chronologie
+        )
+            ? dossier.chronologie
+            : Array.isArray(
+                payload?.timeline
+            )
+                ? payload.timeline
+                : Array.isArray(
+                    payload?.auditEvents
+                )
+                    ? payload.auditEvents
+                    : [];
+
+    const paiements =
+        Array.isArray(
+            dossier?.paiements
+        )
+            ? dossier.paiements
+            : Array.isArray(
+                payload?.payments
+            )
+                ? payload.payments
+                : [];
+
+    const incidents =
+        Array.isArray(
+            dossier
+                ?.erreursCorrectionsAnnulations
+        )
+            ? dossier
+                .erreursCorrectionsAnnulations
+            : Array.isArray(
+                payload?.problems
+            )
+                ? payload.problems
+                : [];
+
+    const total =
+        Number(
+            dossier?.totalEncaisse ??
+            summary?.totalEncaisse ??
+            summary?.totalPaid ??
+            0
+        ) || 0;
+
+    const chronoHtml =
+        chronologie.length
+
+            ? chronologie.map(
+                event => {
+
+                    const hash =
+                        event?.currentHash ||
+                        event?.chainHash ||
+                        '—';
+
+                    const reason =
+                        ichefFiscalReason(
+                            event
+                        );
+
+                    const date =
+                        event?.timestamp ||
+                        event?.date ||
+                        event?.createdAt ||
+                        event?.serverRecordedAt;
+
+                    return `
+                    <article class="entry ${reason ? 'problem' : ''}">
+
+                        <h3>
+                            ${ichefFiscalEsc(
+                                ichefFiscalAction(
+                                    event
+                                )
+                            )}
+                        </h3>
+
+                        <div class="meta">
+                            ${ichefFiscalEsc(
+                                ichefFiscalDate(
+                                    date
+                                )
+                            )}
+                            · Opérateur :
+                            ${ichefFiscalEsc(
+                                ichefFiscalOperator(
+                                    event
+                                )
+                            )}
+                            · Terminal :
+                            ${ichefFiscalEsc(
+                                ichefFiscalTerminal(
+                                    event
+                                )
+                            )}
+                        </div>
+
+                        ${
+                            reason
+                                ? `
+                                <p class="danger">
+                                    <b>Motif / erreur :</b>
+                                    ${ichefFiscalEsc(
+                                        reason
+                                    )}
+                                </p>
+                                `
+                                : ''
+                        }
+
+                        <p class="hash">
+                            Hash :
+                            ${ichefFiscalEsc(
+                                hash
+                            )}
+                        </p>
+
+                        <details>
+
+                            <summary>
+                                Données complètes de l'événement
+                            </summary>
+
+                            <pre>${ichefFiscalRaw(
+                                event
+                            )}</pre>
+
+                        </details>
+
+                    </article>
+                    `;
+                }
+            ).join('')
+
+            : `
+                <p class="empty">
+                    Aucune trace chronologique disponible.
+                </p>
+            `;
+
+    const paymentsHtml =
+        paiements.length
+
+            ? paiements.map(
+                p => {
+
+                    const ticket =
+                        p?.ticketNumber ||
+                        p?.orderSnapshot
+                            ?.ticketNumber ||
+                        p?.snapshot
+                            ?.ticketNumber ||
+                        '—';
+
+                    const amount =
+                        Number(
+                            p?.total ??
+                            p?.totalTTC ??
+                            p?.amount ??
+                            p?.payment?.amount ??
+                            0
+                        ) || 0;
+
+                    const method =
+                        p?.method ||
+                        p?.paymentMethod ||
+                        p?.payment?.method ||
+                        'Non précisé';
+
+                    const date =
+                        p?.serverRecordedAt ||
+                        p?.date ||
+                        p?.timestamp;
+
+                    return `
+                    <article class="entry payment">
+
+                        <h3>
+                            ${ichefFiscalEsc(
+                                ticket
+                            )}
+                            ·
+                            ${amount.toFixed(2)}
+                            ${ichefFiscalEsc(
+                                currency
+                            )}
+                        </h3>
+
+                        <div class="meta">
+
+                            ${ichefFiscalEsc(
+                                ichefFiscalDate(
+                                    date
+                                )
+                            )}
+
+                            ·
+                            ${ichefFiscalEsc(
+                                method
+                            )}
+
+                            · Opérateur :
+                            ${ichefFiscalEsc(
+                                ichefFiscalOperator(
+                                    p
+                                )
+                            )}
+
+                        </div>
+
+                        <details>
+
+                            <summary>
+                                Données complètes du paiement
+                            </summary>
+
+                            <pre>${ichefFiscalRaw(
+                                p
+                            )}</pre>
+
+                        </details>
+
+                    </article>
+                    `;
+                }
+            ).join('')
+
+            : `
+                <p class="empty">
+                    Aucun paiement disponible.
+                </p>
+            `;
+
+    const incidentsHtml =
+        incidents.length
+
+            ? incidents.map(
+                event => `
+
+                <article class="entry problem">
+
+                    <h3>
+                        ${ichefFiscalEsc(
+                            ichefFiscalAction(
+                                event
+                            )
+                        )}
+                    </h3>
+
+                    <div class="meta">
+                        ${ichefFiscalEsc(
+                            ichefFiscalDate(
+                                event?.timestamp ||
+                                event?.date ||
+                                event?.createdAt
+                            )
+                        )}
+                    </div>
+
+                    <p class="danger">
+                        ${ichefFiscalEsc(
+                            ichefFiscalReason(
+                                event
+                            ) ||
+                            'Correction / annulation détectée'
+                        )}
+                    </p>
+
+                    <pre>${ichefFiscalRaw(
+                        event
+                    )}</pre>
+
+                </article>
+                `
+            ).join('')
+
+            : `
+                <p class="ok">
+                    Aucune erreur, correction ou annulation explicite détectée.
+                </p>
+            `;
+
+    const downloadUrl =
+        `/api/fiscal/table-dossier/${encodeURIComponent(
+            share.token
+        )}/download`;
+
+    return `
+<!doctype html>
+
+<html lang="fr">
+
+<head>
+
+<meta charset="utf-8">
+
+<meta
+    name="viewport"
+    content="width=device-width,initial-scale=1"
+>
+
+<title>
+iCHEF · Dossier complet Table
+${ichefFiscalEsc(tableId)}
+</title>
+
+<style>
+
+:root{
+    --bg:#0b1220;
+    --card:#111c2e;
+    --line:#334155;
+    --text:#e5e7eb;
+    --muted:#94a3b8;
+    --blue:#38bdf8;
+    --gold:#d4af37;
+    --green:#10b981;
+    --red:#ef4444;
+}
+
+*{
+    box-sizing:border-box;
+}
+
+body{
+    margin:0;
+    background:var(--bg);
+    color:var(--text);
+    font-family:Arial,Helvetica,sans-serif;
+}
+
+.top{
+    padding:22px 28px;
+    border-bottom:1px solid var(--line);
+    display:flex;
+    justify-content:space-between;
+    gap:20px;
+    align-items:center;
+}
+
+.top h1{
+    margin:0;
+    color:var(--blue);
+    font-size:28px;
+}
+
+.sub{
+    color:var(--muted);
+    margin-top:6px;
+}
+
+.actions{
+    display:flex;
+    gap:10px;
+}
+
+.btn{
+    padding:12px 16px;
+    border:1px solid var(--green);
+    border-radius:9px;
+    color:var(--green);
+    text-decoration:none;
+    background:transparent;
+    font-weight:800;
+    cursor:pointer;
+}
+
+main{
+    max-width:1200px;
+    margin:auto;
+    padding:24px;
+}
+
+.kpis{
+    display:grid;
+    grid-template-columns:
+        repeat(5,1fr);
+    gap:12px;
+    margin-bottom:22px;
+}
+
+.kpi,
+.card,
+.entry{
+    border:1px solid var(--line);
+    background:var(--card);
+    border-radius:12px;
+}
+
+.kpi{
+    padding:15px;
+}
+
+.kpi small{
+    display:block;
+    color:var(--muted);
+    font-weight:800;
+}
+
+.kpi strong{
+    display:block;
+    font-size:20px;
+    margin-top:8px;
+}
+
+.grid{
+    display:grid;
+    grid-template-columns:
+        2fr 1fr;
+    gap:18px;
+}
+
+.card{
+    overflow:hidden;
+    margin-bottom:18px;
+}
+
+.card > h2{
+    margin:0;
+    padding:16px 18px;
+    color:var(--gold);
+    border-bottom:
+        1px solid var(--line);
+}
+
+.body{
+    padding:16px;
+}
+
+.entry{
+    padding:14px;
+    margin-bottom:10px;
+}
+
+.entry h3{
+    margin:0 0 8px;
+}
+
+.meta,
+.hash{
+    color:var(--muted);
+    font-size:13px;
+}
+
+.problem{
+    border-color:
+        rgba(239,68,68,.55);
+}
+
+.payment{
+    border-color:
+        rgba(16,185,129,.55);
+}
+
+.danger{
+    color:#fca5a5;
+}
+
+.ok{
+    color:var(--green);
+    font-weight:800;
+}
+
+.empty{
+    color:var(--muted);
+    font-style:italic;
+}
+
+pre{
+    white-space:pre-wrap;
+    word-break:break-word;
+    background:#070a10;
+    border:1px solid var(--line);
+    border-radius:8px;
+    padding:12px;
+    max-height:520px;
+    overflow:auto;
+    font-size:12px;
+}
+
+details summary{
+    cursor:pointer;
+    font-weight:700;
+}
+
+@media(max-width:850px){
+
+    .kpis{
+        grid-template-columns:
+            repeat(2,1fr);
+    }
+
+    .grid{
+        grid-template-columns:1fr;
+    }
+
+    .top{
+        align-items:flex-start;
+        flex-direction:column;
+    }
+
+    .actions{
+        width:100%;
+    }
+
+    .btn{
+        flex:1;
+        text-align:center;
+    }
+}
+
+@media print{
+
+    body{
+        background:#fff;
+        color:#000;
+    }
+
+    .top{
+        border-bottom:
+            1px solid #aaa;
+    }
+
+    .actions{
+        display:none;
+    }
+
+    main{
+        max-width:none;
+    }
+
+    .kpi,
+    .card,
+    .entry{
+        background:#fff;
+        color:#000;
+        border-color:#bbb;
+        break-inside:avoid;
+    }
+
+    .meta,
+    .hash,
+    .sub{
+        color:#555;
+    }
+
+    pre{
+        background:#fff;
+        color:#000;
+        border-color:#ccc;
+        max-height:none;
+    }
+
+    .grid{
+        display:block;
+    }
+}
+
+</style>
+
+</head>
+
+<body>
+
+<header class="top">
+
+    <div>
+
+        <h1>
+            Dossier complet · Table
+            ${ichefFiscalEsc(tableId)}
+        </h1>
+
+        <div class="sub">
+            Chronologie complète, commandes,
+            erreurs, annulations,
+            paiements, tickets et preuves.
+        </div>
+
+    </div>
+
+    <div class="actions">
+
+        <button
+            class="btn"
+            onclick="window.print()"
+        >
+            IMPRIMER / PDF
+        </button>
+
+        <a
+            class="btn"
+            href="${ichefFiscalEsc(
+                downloadUrl
+            )}"
+        >
+            TÉLÉCHARGER JSON
+        </a>
+
+    </div>
+
+</header>
+
+<main>
+
+    <section class="kpis">
+
+        <div class="kpi">
+            <small>ÉVÉNEMENTS</small>
+            <strong>
+                ${chronologie.length}
+            </strong>
+        </div>
+
+        <div class="kpi">
+            <small>
+                ERREURS / ANNULATIONS
+            </small>
+            <strong>
+                ${incidents.length}
+            </strong>
+        </div>
+
+        <div class="kpi">
+            <small>PAIEMENTS</small>
+            <strong>
+                ${paiements.length}
+            </strong>
+        </div>
+
+        <div class="kpi">
+            <small>
+                TOTAL ENCAISSÉ
+            </small>
+            <strong>
+                ${total.toFixed(2)}
+                ${ichefFiscalEsc(
+                    currency
+                )}
+            </strong>
+        </div>
+
+        <div class="kpi">
+
+            <small>EMPREINTE</small>
+
+            <strong
+                style="
+                    font-size:12px;
+                    word-break:break-all;
+                "
+            >
+                ${ichefFiscalEsc(
+                    share.contentHash
+                )}
+            </strong>
+
+        </div>
+
+    </section>
+
+    <div class="grid">
+
+        <div>
+
+            <section class="card">
+
+                <h2>
+                    Chronologie complète
+                </h2>
+
+                <div class="body">
+                    ${chronoHtml}
+                </div>
+
+            </section>
+
+        </div>
+
+        <aside>
+
+            <section class="card">
+
+                <h2>
+                    Erreurs, corrections
+                    & annulations
+                </h2>
+
+                <div class="body">
+                    ${incidentsHtml}
+                </div>
+
+            </section>
+
+            <section class="card">
+
+                <h2>
+                    Paiements & tickets
+                </h2>
+
+                <div class="body">
+                    ${paymentsHtml}
+                </div>
+
+            </section>
+
+            <section class="card">
+
+                <h2>
+                    Données complètes
+                </h2>
+
+                <div class="body">
+
+                    <details>
+
+                        <summary>
+                            Afficher le dossier technique
+                        </summary>
+
+                        <pre>${ichefFiscalRaw(
+                            payload
+                        )}</pre>
+
+                    </details>
+
+                </div>
+
+            </section>
+
+        </aside>
+
+    </div>
+
+</main>
+
+</body>
+
+</html>
+`;
+}
+
+async function ichefHandleFiscalTableShare(
+    req,
+    res
+) {
+
+    try {
+
+        const {
+            tenantID,
+            masterPin,
+            tableId,
+            dossier
+        } = req.body || {};
+
+        const safeID =
+            cleanString(
+                tenantID
+            );
+
+        const safeTable =
+            String(
+                tableId ||
+                dossier?.tableId ||
+                ''
+            )
+            .trim()
+            .slice(0,120);
+
+        if (
+            !safeID ||
+            !safeTable ||
+            !dossier ||
+            typeof dossier !== 'object'
+        ) {
+
+            return res
+                .status(400)
+                .json({
+                    success:false,
+                    error:
+                        'Dossier de table incomplet.'
+                });
+        }
+
+        const tenant =
+            await Tenant.findOne({
+                tenantID:
+                    safeID
+            });
+
+        if (
+            !tenant ||
+            String(
+                tenant.pin || ''
+            ).trim() !==
+            String(
+                masterPin || ''
+            ).trim()
+        ) {
+
+            return res
+                .status(403)
+                .json({
+                    success:false,
+                    error:
+                        'PIN manager requis pour créer le QR fiscal.'
+                });
+        }
+
+        const publicPayload =
+            ichefFiscalSanitize(
+                dossier
+            );
+
+        const contentHash =
+            crypto
+                .createHash(
+                    'sha256'
+                )
+                .update(
+                    JSON.stringify({
+                        tenantID:
+                            safeID,
+
+                        tableId:
+                            safeTable,
+
+                        dossier:
+                            publicPayload
+                    })
+                )
+                .digest(
+                    'hex'
+                );
+
+        let share =
+            await IchefFiscalTableShare
+                .findOne({
+
+                    tenantID:
+                        safeID,
+
+                    tableId:
+                        safeTable,
+
+                    contentHash,
+
+                    revoked:{
+                        $ne:true
+                    }
+                });
+
+        if (!share) {
+
+            share =
+                await IchefFiscalTableShare
+                    .create({
+
+                        token:
+                            crypto
+                                .randomBytes(24)
+                                .toString(
+                                    'hex'
+                                ),
+
+                        tenantID:
+                            safeID,
+
+                        tableId:
+                            safeTable,
+
+                        contentHash,
+
+                        payload:
+                            publicPayload
+                    });
+
+            await scellerOperation(
+                safeID,
+                'CREATE',
+                'FISCAL_TABLE_SHARE',
+                safeTable,
+                'SYSTEM',
+                {
+
+                    tableId:
+                        safeTable,
+
+                    contentHash,
+
+                    shareTokenHash:
+                        crypto
+                            .createHash(
+                                'sha256'
+                            )
+                            .update(
+                                share.token
+                            )
+                            .digest(
+                                'hex'
+                            )
+                }
+            );
+        }
+
+        const forwardedProto =
+            String(
+                req.headers[
+                    'x-forwarded-proto'
+                ] || ''
+            )
+            .split(',')[0]
+            .trim();
+
+        const forwardedHost =
+            String(
+                req.headers[
+                    'x-forwarded-host'
+                ] || ''
+            )
+            .split(',')[0]
+            .trim();
+
+        const requestBase =
+            forwardedHost
+
+                ? `${forwardedProto || 'https'}://${forwardedHost}`
+
+                : `${req.protocol}://${req.get('host')}`;
+
+        const baseUrl =
+            String(
+                process.env.PUBLIC_BASE_URL ||
+                requestBase ||
+                'https://tableau-system.onrender.com'
+            )
+            .replace(
+                /\/+$/,
+                ''
+            );
+
+        const publicUrl =
+            `${baseUrl}/fiscal/table/${encodeURIComponent(
+                share.token
+            )}`;
+
+        return res.json({
+
+            success:true,
+
+            publicUrl,
+
+            token:
+                share.token,
+
+            contentHash,
+
+            tableId:
+                safeTable
+        });
+
+    } catch(error) {
+
+        console.error(
+            'Erreur création QR dossier fiscal :',
+            error
+        );
+
+        return res
+            .status(500)
+            .json({
+                success:false,
+                error:
+                    'Impossible de créer le lien QR fiscal.'
+            });
+    }
+}
+
+
+// =============================================================
+// ROUTES QR
+// =============================================================
+
+app.post(
+    '/api/fiscal/table-dossier/share',
+    ichefHandleFiscalTableShare
+);
+
+app.post(
+    '/api/fiscal/table-dossier-share',
+    ichefHandleFiscalTableShare
+);
+
+app.post(
+    '/api/table-dossier/share',
+    ichefHandleFiscalTableShare
+);
+
+
+// TEST ROUTE
+app.get(
+    '/api/fiscal/table-dossier/status',
+    (req,res) => {
+
+        res.set(
+            'Cache-Control',
+            'no-store, max-age=0'
+        );
+
+        return res.json({
+
+            success:true,
+
+            service:
+                'iCHEF fiscal table dossier QR',
+
+            version:
+                '2026-08-28-green-qr1'
+        });
+    }
+);
+
+
+// ANCIEN ALIAS
+app.get(
+    '/fiscal/dossier/:token',
+    (req,res) => {
+
+        return res.redirect(
+            302,
+
+            `/fiscal/table/${encodeURIComponent(
+                String(
+                    req.params.token ||
+                    ''
+                )
+            )}`
+        );
+    }
+);
+
+
+// PAGE PUBLIQUE DU QR
+app.get(
+    '/fiscal/table/:token',
+    async(req,res) => {
+
+        try {
+
+            const token =
+                String(
+                    req.params.token ||
+                    ''
+                )
+                .trim();
+
+            if (
+                !/^[a-f0-9]{48}$/i
+                    .test(token)
+            ) {
+
+                return res
+                    .status(404)
+                    .send(
+                        'Dossier fiscal introuvable.'
+                    );
+            }
+
+            const share =
+                await IchefFiscalTableShare
+                    .findOne({
+
+                        token,
+
+                        revoked:{
+                            $ne:true
+                        }
+                    });
+
+            if (!share) {
+
+                return res
+                    .status(404)
+                    .send(
+                        'Dossier fiscal introuvable ou révoqué.'
+                    );
+            }
+
+            share.lastAccessAt =
+                new Date();
+
+            share
+                .save()
+                .catch(
+                    () => {}
+                );
+
+            res.set(
+                'Cache-Control',
+                'no-store, max-age=0'
+            );
+
+            return res
+                .type(
+                    'html'
+                )
+                .send(
+                    ichefFiscalBuildPage(
+                        share
+                    )
+                );
+
+        } catch(error) {
+
+            console.error(
+                'Erreur lecture dossier fiscal QR :',
+                error
+            );
+
+            return res
+                .status(500)
+                .send(
+                    'Erreur lors de l’ouverture du dossier fiscal.'
+                );
+        }
+    }
+);
+
+
+// LECTURE JSON
+app.get(
+    '/api/fiscal/table-dossier/:token',
+    async(req,res) => {
+
+        try {
+
+            const token =
+                String(
+                    req.params.token ||
+                    ''
+                )
+                .trim();
+
+            const share =
+                await IchefFiscalTableShare
+                    .findOne({
+
+                        token,
+
+                        revoked:{
+                            $ne:true
+                        }
+                    })
+                    .lean();
+
+            if (!share) {
+
+                return res
+                    .status(404)
+                    .json({
+                        success:false,
+                        error:
+                            'Dossier introuvable.'
+                    });
+            }
+
+            res.set(
+                'Cache-Control',
+                'no-store, max-age=0'
+            );
+
+            return res.json({
+
+                success:true,
+
+                tableId:
+                    share.tableId,
+
+                contentHash:
+                    share.contentHash,
+
+                createdAt:
+                    share.createdAt,
+
+                dossier:
+                    share.payload
+            });
+
+        } catch(error) {
+
+            return res
+                .status(500)
+                .json({
+                    success:false,
+                    error:
+                        'Erreur de lecture du dossier.'
+                });
+        }
+    }
+);
+
+
+// TÉLÉCHARGEMENT JSON
+app.get(
+    '/api/fiscal/table-dossier/:token/download',
+    async(req,res) => {
+
+        try {
+
+            const token =
+                String(
+                    req.params.token ||
+                    ''
+                )
+                .trim();
+
+            const share =
+                await IchefFiscalTableShare
+                    .findOne({
+
+                        token,
+
+                        revoked:{
+                            $ne:true
+                        }
+                    })
+                    .lean();
+
+            if (!share) {
+
+                return res
+                    .status(404)
+                    .send(
+                        'Dossier introuvable.'
+                    );
+            }
+
+            const filename =
+                `iCHEF_PREUVE_TABLE_${String(
+                    share.tableId ||
+                    'TABLE'
+                )
+                .replace(
+                    /[^a-z0-9_-]/gi,
+                    '_'
+                )}.json`;
+
+            res.set(
+                'Cache-Control',
+                'no-store, max-age=0'
+            );
+
+            res.set(
+                'Content-Type',
+                'application/json; charset=utf-8'
+            );
+
+            res.set(
+                'Content-Disposition',
+                `attachment; filename="${filename}"`
+            );
+
+            return res.send(
+                JSON.stringify(
+                    {
+                        format:
+                            'iCHEF_PUBLIC_TABLE_AUDIT_EXPORT_V1',
+
+                        tenantID:
+                            share.tenantID,
+
+                        tableId:
+                            share.tableId,
+
+                        contentHash:
+                            share.contentHash,
+
+                        createdAt:
+                            share.createdAt,
+
+                        dossier:
+                            share.payload
+                    },
+                    null,
+                    2
+                )
+            );
+
+        } catch(error) {
+
+            return res
+                .status(500)
+                .send(
+                    'Erreur de téléchargement du dossier.'
+                );
+        }
+    }
+);
         console.log('');
     }
 );
