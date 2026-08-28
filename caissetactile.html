@@ -2525,27 +2525,43 @@ body.ichef-fiscal-integrated-open{overflow:hidden!important;}
             const targetAtStart = String(ctx.target || '');
 
             ctx.fiscalSharePromise = (async () => {
-                const response = await fetch(`${SERVER_URL}/api/fiscal/table-dossier/share`, {
-                    method: 'POST',
-                    credentials: 'include',
-                    cache: 'no-store',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        tenantID,
-                        masterPin,
-                        tableId: exportData.tableId,
-                        dossier: exportData
-                    })
-                });
-                const data = await response.json().catch(() => ({}));
-                if (!response.ok || data.success !== true || !data.publicUrl) {
-                    throw new Error(data.error || `Création du lien QR refusée (${response.status}).`);
+                // Compatibilité avec plusieurs versions de server.js. Un 404 signifie
+                // que l'ancien backend est encore en ligne ; on essaie alors les alias.
+                const endpoints = [
+                    '/api/fiscal/table-dossier/share',
+                    '/api/fiscal/table-dossier-share',
+                    '/api/table-dossier/share'
+                ];
+                let lastStatus = 0;
+                let lastData = {};
+                for (const endpoint of endpoints) {
+                    const response = await fetch(`${SERVER_URL}${endpoint}`, {
+                        method: 'POST',
+                        credentials: 'include',
+                        cache: 'no-store',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            tenantID,
+                            masterPin,
+                            tableId: exportData.tableId,
+                            dossier: exportData
+                        })
+                    });
+                    const data = await response.json().catch(() => ({}));
+                    lastStatus = response.status;
+                    lastData = data;
+                    if (response.ok && data.success === true && data.publicUrl) {
+                        if (ICHEF_CURRENT_TABLE_DOSSIER && String(ICHEF_CURRENT_TABLE_DOSSIER.target || '') === targetAtStart) {
+                            ICHEF_CURRENT_TABLE_DOSSIER.fiscalShareUrl = data.publicUrl;
+                            ICHEF_CURRENT_TABLE_DOSSIER.fiscalShareHash = data.contentHash || '';
+                        }
+                        return data.publicUrl;
+                    }
+                    if (response.status !== 404) {
+                        throw new Error(data.error || `Création du lien QR refusée (${response.status}).`);
+                    }
                 }
-                if (ICHEF_CURRENT_TABLE_DOSSIER && String(ICHEF_CURRENT_TABLE_DOSSIER.target || '') === targetAtStart) {
-                    ICHEF_CURRENT_TABLE_DOSSIER.fiscalShareUrl = data.publicUrl;
-                    ICHEF_CURRENT_TABLE_DOSSIER.fiscalShareHash = data.contentHash || '';
-                }
-                return data.publicUrl;
+                throw new Error(lastData.error || `Route QR absente du server.js actuellement déployé (${lastStatus || 404}). Remplacez le fichier Render par le server.js fourni puis redéployez.`);
             })();
 
             try {
@@ -2585,7 +2601,7 @@ body.ichef-fiscal-integrated-open{overflow:hidden!important;}
                 const shareHash = String(ICHEF_CURRENT_TABLE_DOSSIER.fiscalShareHash || '');
                 label.innerHTML = `Table <strong>${escapeHtml(targetAtStart)}</strong> · Ticket <strong>${escapeHtml(fiscal.ticket)}</strong> · Total <strong>${escapeHtml(Number(ICHEF_CURRENT_TABLE_DOSSIER.totalPaid||0).toFixed(2))} ${escapeHtml(getFiscalProfile().currency)}</strong><br>Empreinte : ${escapeHtml(shareHash ? shareHash.slice(-24).toUpperCase() : (fiscal.hash ? fiscal.hash.slice(-24).toUpperCase() : '—'))}<br><strong style="color:var(--success)">QR prêt : le scan ouvre directement le dossier complet iCHEF.</strong>`;
             } catch (error) {
-                box.innerHTML = '<div style="width:170px;height:170px;display:flex;align-items:center;justify-content:center;text-align:center;color:#991b1b;background:#fff3f3;font-size:.7rem;padding:12px;">QR complet indisponible.<br>Vérifiez le server.js.</div>';
+                box.innerHTML = '<div style="width:170px;height:170px;display:flex;align-items:center;justify-content:center;text-align:center;color:#991b1b;background:#fff3f3;font-size:.7rem;padding:12px;">QR complet indisponible.<br>Le backend QR n’est pas encore déployé.</div>';
                 label.innerHTML = `Table <strong>${escapeHtml(targetAtStart)}</strong> · <span style="color:var(--danger)">${escapeHtml(error?.message || 'Impossible de créer le lien QR complet.')}</span><br>Le système ne génère plus de QR texte qui ouvre une recherche Google.`;
             }
         }
