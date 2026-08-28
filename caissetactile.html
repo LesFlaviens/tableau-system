@@ -1576,160 +1576,179 @@ function renderRoomGrid() {
         async function verifyAuditIntegrity() { alert("Chaîne valide. Les hash cryptographiques correspondent."); }
         async function exportAuditProofs() { alert("Le fichier ZIP fiscal complet (Tickets, Manifeste, Hash) a été généré sur le serveur."); }
 
-        // ----------------------------------------------------
-        // MODAL STATISTIQUES (Heatmap & Quadrant)
-        // ----------------------------------------------------
-        function openStatsModal() { 
-            document.getElementById('stats-modal').classList.add('active'); 
-            genererHeatmap(); 
-            
-            updateQuadrantData(); // On charge les vraies données !
-            let dataToDisplay = realQuadrantData.length > 0 ? realQuadrantData : baseQuadrantData;
-            
-            document.querySelectorAll('.quad-sidebar .filter-option').forEach(e => e.classList.remove('active'));
-            const defaultFilter = document.querySelector('.quad-sidebar .filter-option');
-            if (defaultFilter) defaultFilter.classList.add('active');
-            
-            initQuadrant(dataToDisplay); 
-        }
-        function genererHeatmap() {
-            const jours = ["Lun.", "Mar.", "Mer.", "Jeu.", "Ven.", "Sam.", "Dim."];
-            let html = '<div class="hm-header"></div>';
-            jours.forEach(j => { html += `<div class="hm-header">${j}</div>`; });
-            html += `<div class="hm-header">% Total</div>`;
+        const baseQuadrantData = [
+            { nom: "Exemple de Plat très vendu", cat: "PLATS", ventes: 35, marge: 65, color: "#10b981" },
+            { nom: "Exemple de Plat très rentable", cat: "PLATS", ventes: 12, marge: 82, color: "#38bdf8" },
+            { nom: "Exemple d'Entrée populaire", cat: "ENTREES", ventes: 41, marge: 45, color: "#d4af37" },
+            { nom: "Exemple de Plat peu rentable", cat: "PLATS", ventes: 9, marge: 30, color: "#ef4444" }
+        ];
 
-            let totalGlobal = 0; let maxValue = 0; let data = {};
+        let realQuadrantData = [];
+        let quadChart = null;
+
+        // Évaluation automatique du coût de fabrication si non renseigné
+        function estimateCost(name, price) {
+            const txt = String(name || "").toLowerCase();
+            if (/vin|champagne|cocktail|bi[eè]re/.test(txt)) return price * 0.25; 
+            if (/dessert|patisserie|café/.test(txt)) return price * 0.28;
+            if (/plat|burger|viande|poisson/.test(txt)) return price * 0.35; 
+            if (/pizza|pâte|pasta/.test(txt)) return price * 0.20; 
+            return price * 0.30; // 30% de coût matière par défaut
+        }
+
+        // CONNECTÉ EN TEMPS RÉEL AUX VENTES DE LA CAISSE
+        function updateQuadrantData() {
+            const allItems = new Map();
             
-            // Génération des données (Simulation)
-            for(let h=8; h<=23; h++) {
-                data[h] = [];
-                for(let j=0; j<7; j++) {
-                    let val = Math.floor(Math.random() * 50);
-                    if (h >= 12 && h <= 14) val += Math.floor(Math.random() * 200 + 100);
-                    if (h >= 19 && h <= 22) val += Math.floor(Math.random() * 300 + 150);
-                    
-                    // Simulation du nombre de tickets
-                    let tickets = val > 0 ? Math.max(1, Math.floor(val / (25 + Math.random() * 20))) : 0;
-                    
-                    // Simulation HYPER DÉTAILLÉE du panier selon l'heure
-                    let entrees = 0, plats = 0, desserts = 0, alcools = 0, softs = 0, cafes = 0;
-                    
-                    if (val > 0) {
-                        if ((h >= 12 && h <= 14) || (h >= 19 && h <= 22)) {
-                            // Heures de repas : Focus sur Plats, Vins et Entrées
-                            plats = Math.round(val * 0.40);
-                            entrees = Math.round(val * 0.15);
-                            desserts = Math.round(val * 0.10);
-                            alcools = Math.round(val * 0.20);
-                            softs = Math.round(val * 0.10);
-                        } else if (h >= 8 && h <= 11) {
-                            // Matin : Focus Cafés et Viennoiseries (Desserts)
-                            cafes = Math.round(val * 0.50);
-                            desserts = Math.round(val * 0.30); 
-                            softs = Math.round(val * 0.10);
-                            plats = Math.round(val * 0.05);
-                        } else {
-                            // Après-midi / Soirée tardive : Focus Boissons
-                            alcools = Math.round(val * 0.35);
-                            softs = Math.round(val * 0.25);
-                            cafes = Math.round(val * 0.15);
-                            desserts = Math.round(val * 0.15); // Tapas / Goûters
-                        }
-                        
-                        // Ajustement mathématique pour que la somme soit toujours exactement égale à "val"
-                        cafes = val - (entrees + plats + desserts + alcools + softs);
-                        if (cafes < 0) cafes = 0;
+            // 1. Récupération des cartes actives
+            const menuCuisine = currentActiveTables['MENU_MASTER']?.data || currentActiveTables['MENU_CUISINE']?.data || {};
+            const menuBar = currentActiveTables['MENU_MASTER_BAR']?.data || currentActiveTables['MENU_BAR']?.data || {};
+            const menuPatisserie = currentActiveTables['MENU_MASTER_PATISSERIE']?.data || currentActiveTables['MENU_PATISSERIE']?.data || {};
+
+            function processMenu(menuObj, defaultCat) {
+                Object.values(menuObj).forEach(arr => {
+                    if(Array.isArray(arr)) {
+                        arr.forEach(item => {
+                            if(item.name && item.price !== undefined) {
+                                allItems.set(item.name.toLowerCase().trim(), {
+                                    nom: item.name,
+                                    cat: String(item.category || defaultCat).toUpperCase(),
+                                    prix: parseFloat(item.price || 0),
+                                    ventes: 0
+                                });
+                            }
+                        });
                     }
-
-                    data[h].push({ val, tickets, entrees, plats, desserts, alcools, softs, cafes });
-                    totalGlobal += val;
-                    if(val > maxValue) maxValue = val;
-                }
+                });
             }
+            
+            processMenu(menuCuisine, "PLATS");
+            processMenu(menuBar, "BOISSONS");
+            processMenu(menuPatisserie, "DESSERTS");
 
-            // Construction du tableau HTML
-            for(let h=8; h<=23; h++) {
-                let hourTotal = 0;
-                html += `<div class="hm-hour">${h} h</div>`;
-                for(let j=0; j<7; j++) {
-                    let cellData = data[h][j];
-                    let val = cellData.val;
-                    let tickets = cellData.tickets;
-                    hourTotal += val;
-                    
-                    let opacity = val === 0 ? 0.02 : (val / maxValue);
-                    if(opacity > 0.02 && opacity < 0.15) opacity = 0.15;
-                    
-                    let panierMoyen = tickets > 0 ? (val / tickets).toFixed(2) : 0;
-                    
-                    // Infobulle ultra détaillée
-                    let detailHtml = val > 0 
-                        ? `<div style="margin-bottom: 8px;">
-                               <strong style="color:var(--gold); font-size:1.3rem;">${val} €</strong>
-                           </div>
-                           <div style="display: grid; grid-template-columns: 1fr auto; gap: 4px; font-size: 0.75rem; color: #e2e8f0; margin-bottom: 8px;">
-                               <span>🧾 Tickets:</span> <strong>${tickets}</strong>
-                               <span>🛒 Panier moy:</span> <strong>${panierMoyen} €</strong>
-                           </div>
-                           <div style="border-top: 1px dotted #555; padding-top: 8px; font-size: 0.75rem; color: #94a3b8;">
-                               <div style="color: #fff; margin-bottom: 6px; font-weight: bold; font-size: 0.8rem;">Détail des ventes :</div>
-                               
-                               <div style="display: flex; justify-content: space-between; margin-bottom: 3px;">
-                                   <span>🥗 Entrées & Tapas</span> <strong style="color:#fff;">${cellData.entrees} €</strong>
-                               </div>
-                               <div style="display: flex; justify-content: space-between; margin-bottom: 3px;">
-                                   <span>🥩 Plats Principaux</span> <strong style="color:#fff;">${cellData.plats} €</strong>
-                               </div>
-                               <div style="display: flex; justify-content: space-between; margin-bottom: 3px;">
-                                   <span>🍰 Desserts & Fromages</span> <strong style="color:#fff;">${cellData.desserts} €</strong>
-                               </div>
-                               
-                               <div style="height: 1px; background: rgba(255,255,255,0.1); margin: 6px 0;"></div>
-                               
-                               <div style="display: flex; justify-content: space-between; margin-bottom: 3px;">
-                                   <span>🍷 Vins & Alcools</span> <strong style="color:#fff;">${cellData.alcools} €</strong>
-                               </div>
-                               <div style="display: flex; justify-content: space-between; margin-bottom: 3px;">
-                                   <span>🥤 Softs & Eaux</span> <strong style="color:#fff;">${cellData.softs} €</strong>
-                               </div>
-                               <div style="display: flex; justify-content: space-between;">
-                                   <span>☕ Boissons Chaudes</span> <strong style="color:#fff;">${cellData.cafes} €</strong>
-                               </div>
-                           </div>` 
-                        : `<div style="padding: 10px 0;"><strong style="color:var(--text-muted);">Aucune vente</strong></div>`;
-
-                    html += `
-                        <div class="hm-cell" style="background-color: rgba(212, 175, 55, ${opacity});">
-                            <div class="tooltip" style="text-align:left; min-width: 200px; padding: 12px; box-shadow: 0 10px 25px rgba(0,0,0,0.8);">
-                                <div style="border-bottom: 1px solid #444; margin-bottom: 8px; padding-bottom: 6px; font-weight: bold; color: #fff; font-size: 0.85rem;">
-                                    🕒 ${jours[j]} de ${h}h à ${h+1}h
-                                </div>
-                                ${detailHtml}
-                            </div>
-                        </div>`;
+            // 2. Comptage des ventes (Tickets Encaissés + Tables Ouvertes)
+            Object.keys(currentActiveTables).forEach(key => {
+                let itemsToCount = [];
+                if (key.startsWith('FISCAL_EVENT_')) {
+                    const event = currentActiveTables[key];
+                    itemsToCount = event.snapshot?.items || event.transaction?.lines || [];
+                } else if (!key.includes('MASTER') && !key.includes('ARCHIVE') && !key.includes('SETTINGS') && !key.includes('HISTORY') && !key.includes('HACCP') && !key.includes('ARCHITECTURE') && !key.includes('STAFF') && !key.includes('CATEGORIES') && !key.includes('MENU') && !key.includes('FISCAL_') && !key.includes('AUDIT_') && !key.includes('FINANCIAL_')) {
+                    const table = currentActiveTables[key];
+                    if (table && table.items && !table.isArchived) {
+                        itemsToCount = table.items.filter(i => !i.cancelled);
+                    }
                 }
-                html += `<div class="hm-percent">${((hourTotal/totalGlobal)*100).toFixed(1)}%</div>`;
-            }
-            document.getElementById('heatmap-grid-content').innerHTML = html;
+
+                itemsToCount.forEach(i => {
+                    const nom = String(i.name || i.n || i.label || "").toLowerCase().trim();
+                    const qty = Number(i.quantity || i.qty || 1);
+                    if (nom && allItems.has(nom)) {
+                        allItems.get(nom).ventes += qty;
+                    } else if (nom) {
+                        allItems.set(nom, {
+                            nom: i.name || i.n || i.label,
+                            cat: "DIVERS",
+                            prix: parseFloat(i.price || i.p || i.unitPriceTTC || 0),
+                            ventes: qty
+                        });
+                    }
+                });
+            });
+
+            // 3. Calcul de la marge et formatage final pour le graphique
+            realQuadrantData = Array.from(allItems.values())
+                .filter(item => item.ventes > 0) // On masque les articles non vendus
+                .map(item => {
+                    const cout = estimateCost(item.nom, item.prix);
+                    const marge = item.prix - cout;
+                    const pourcentageMarge = item.prix > 0 ? Math.round((marge / item.prix) * 100) : 0;
+                    
+                    let color = "#d4af37"; 
+                    if(item.cat.includes("PLAT")) color = "#10b981"; 
+                    else if(item.cat.includes("ENTREE") || item.cat.includes("TAPAS")) color = "#38bdf8"; 
+                    else if(item.cat.includes("DESSERT")) color = "#a855f7"; 
+                    else if(item.cat.includes("BOISSON") || item.cat.includes("VIN")) color = "#ef4444"; 
+
+                    return {
+                        nom: item.nom,
+                        cat: item.cat,
+                        ventes: item.ventes,
+                        marge: pourcentageMarge,
+                        color: color
+                    };
+                });
         }
-        // Fonction pour afficher/masquer les infos système
-        function toggleSystemInfo() {
-            const container = document.getElementById('system-info-container');
-            const icon = document.getElementById('info-toggle-icon');
-            if (container.style.display === 'none') {
-                container.style.display = 'block';
-                icon.innerText = '▲';
+
+        // Création du visuel de la matrice
+        function initQuadrant(data) {
+            const ctx = document.getElementById('magicChart').getContext('2d');
+            const chartData = data.map(i => ({ x: i.ventes, y: i.marge, raw: i }));
+            if(quadChart) quadChart.destroy();
+            quadChart = new Chart(ctx, {
+                type: 'scatter', 
+                data: { 
+                    datasets: [{ 
+                        data: chartData, 
+                        backgroundColor: data.map(i=>i.color), 
+                        pointRadius: 8, 
+                        hoverRadius: 12,
+                        borderColor: '#fff',
+                        borderWidth: 2
+                    }] 
+                },
+                options: { 
+                    responsive: true, 
+                    maintainAspectRatio: false, 
+                    plugins: { 
+                        legend: { display: false },
+                        tooltip: {
+                            backgroundColor: 'rgba(0,0,0,0.9)',
+                            titleFont: { size: 16 },
+                            bodyFont: { size: 14 },
+                            padding: 12,
+                            callbacks: {
+                                label: function(context) {
+                                    const pt = context.raw.raw;
+                                    return [
+                                        pt.nom,
+                                        '🛒 Quantités vendues : ' + pt.ventes,
+                                        '💰 Marge brute : ' + pt.marge + '%'
+                                    ];
+                                }
+                            }
+                        }
+                    },
+                    scales: {
+                        x: {
+                            title: { display: true, text: 'Popularité (Nombre de ventes)', color: '#94a3b8', font: { size: 14 } },
+                            grid: { color: 'rgba(255,255,255,0.05)' },
+                            ticks: { color: '#94a3b8' },
+                            beginAtZero: true
+                        },
+                        y: {
+                            title: { display: true, text: 'Rentabilité (Marge en %)', color: '#94a3b8', font: { size: 14 } },
+                            grid: { color: 'rgba(255,255,255,0.05)' },
+                            ticks: { color: '#94a3b8' },
+                            min: 0,
+                            max: 100
+                        }
+                    }
+                }
+            });
+        }
+
+        // Filtres interactifs par catégorie
+        function filterQuadrant(cat, el) {
+            document.querySelectorAll('.quad-sidebar .filter-option').forEach(e => e.classList.remove('active'));
+            el.classList.add('active');
+            
+            let dataToFilter = realQuadrantData.length > 0 ? realQuadrantData : baseQuadrantData;
+            
+            if (cat === 'TOUT') {
+                initQuadrant(dataToFilter);
             } else {
-                container.style.display = 'none';
-                icon.innerText = '▼';
+                initQuadrant(dataToFilter.filter(i => String(i.cat).toUpperCase().includes(cat)));
             }
         }
-
-        // Rafraîchissement UI après chargement complet.
-        window.addEventListener('load', () => {
-            updateCashRegisterBadge();
-            updateFiscalProfileUI();
-        });
-    </script>
 </body>
 </html>
