@@ -1751,7 +1751,9 @@ const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
         console.error("🚨 Erreur IA Executive Report:", error);
         res.status(500).json({ success: false, error: "L'analyse IA est momentanément indisponible." });
     }
-});// ==========================================
+});
+
+// ==========================================
 // 🧠 IA DIRECTEUR OPÉRATIONNEL & FINANCIER (VISION 360°)
 // ==========================================
 app.post('/api/ai-executive-report', async (req, res) => {
