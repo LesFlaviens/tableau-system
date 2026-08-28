@@ -815,47 +815,181 @@
         // ==========================================
         // 💾 ACCÈS AUX DONNÉES LOCALES & CLOUD
         // ==========================================
-        function getDir() {
-            let data = JSON.parse(localStorage.getItem('empire_hr_directory')) || [];
-            const serverStaff = Array.isArray(staffAccess) ? staffAccess : [];
+        function normalizeRhDept(value) {
+            const dept = String(value || '').trim().toLowerCase();
 
-            if (serverStaff.length > 0) {
-                serverStaff.forEach(s => {
-                    const serverId = String(s.id ?? '');
-                    const serverName = String(s.name || '').trim().toLowerCase();
+            if (['admin', 'direction', 'manager', 'directeur', 'gerant', 'gérant'].includes(dept)) return 'admin';
+            if (['cuisine', 'kitchen'].includes(dept)) return 'cuisine';
+            if (['patisserie', 'pâtisserie', 'pastry'].includes(dept)) return 'patisserie';
+            if (dept === 'bar') return 'bar';
+            return 'salle';
+        }
 
-                    let idx = data.findIndex(d =>
-                        (serverId && String(d.id ?? '') === serverId) ||
-                        (
-                            serverName &&
-                            String(d.name || '').trim().toLowerCase() === serverName
-                        )
-                    );
+        function buildRhDirectoryFromServer(serverStaff, rhDirectory) {
+            const local = Array.isArray(rhDirectory) ? rhDirectory : [];
+            const remote = Array.isArray(serverStaff) ? serverStaff : [];
 
-                    let mappedDept = 'salle';
-                    if (s.dept === 'admin') mappedDept = 'admin';
-                    else if (s.dept === 'cuisine' || s.dept === 'patisserie') mappedDept = 'cuisine';
-                    else if (s.dept === 'bar') mappedDept = 'bar';
-                    else if (s.dept === 'salle') mappedDept = 'salle';
+            return remote.map((s, index) => {
+                const pin = String(s?.pin || '').trim();
+                const name = String(s?.name || '').trim();
 
-                    const merged = {
-                        ...(idx > -1 ? data[idx] : {}),
-                        id: s.id ?? (idx > -1 ? data[idx].id : Date.now() + Math.random()),
-                        name: s.name || (idx > -1 ? data[idx].name : 'Employé'),
-                        role: s.role || (idx > -1 ? data[idx].role : 'Employé'),
-                        dept: mappedDept,
-                        contract: Number(idx > -1 ? data[idx].contract : 39) || 39,
-                        pin: String(s.pin || '').trim(),
-                        active: s.active !== false,
-                        onDuty: Boolean(s.onDuty)
-                    };
+                const existing = local.find(d =>
+                    (pin && String(d?.pin || '').trim() === pin) ||
+                    (
+                        name &&
+                        String(d?.name || '').trim().toLowerCase() === name.toLowerCase()
+                    ) ||
+                    (
+                        s?.id !== undefined &&
+                        s?.id !== null &&
+                        String(d?.id ?? '') === String(s.id)
+                    )
+                );
 
-                    if (idx > -1) data[idx] = merged;
-                    else data.push(merged);
-                });
+                return {
+                    ...(existing || {}),
+                    id:
+                        s?.id ??
+                        existing?.id ??
+                        `staff_${index}_${name.replace(/\s+/g, '_').toLowerCase()}`,
+
+                    name:
+                        name ||
+                        existing?.name ||
+                        'Employé',
+
+                    role:
+                        String(
+                            s?.role ||
+                            existing?.role ||
+                            s?.dept ||
+                            'Employé'
+                        ),
+
+                    dept:
+                        normalizeRhDept(
+                            s?.dept ||
+                            existing?.dept
+                        ),
+
+                    contract:
+                        Number(
+                            s?.contract ??
+                            existing?.contract ??
+                            39
+                        ) || 39,
+
+                    pin,
+
+                    active:
+                        s?.active !== false,
+
+                    onDuty:
+                        Boolean(s?.onDuty),
+
+                    source:
+                        'STAFF_ACCESS'
+                };
+            });
+        }
+
+        function syncRhStaffFromState(state, options = {}) {
+            const activeOrders = state?.activeOrders || {};
+
+            const remoteStaff =
+                Array.isArray(activeOrders?.STAFF_ACCESS?.data)
+                    ? activeOrders.STAFF_ACCESS.data
+                    : [];
+
+            const serverDirectory =
+                Array.isArray(activeOrders?.DIRECTORY_MASTER?.data)
+                    ? activeOrders.DIRECTORY_MASTER.data
+                    : [];
+
+            staffAccess = remoteStaff.map(s => ({
+                ...s,
+                pin: String(s?.pin || '').trim()
+            }));
+
+            const currentLocal =
+                JSON.parse(
+                    localStorage.getItem('empire_hr_directory') || '[]'
+                );
+
+            const mergedDirectory =
+                buildRhDirectoryFromServer(
+                    staffAccess,
+                    serverDirectory.length
+                        ? serverDirectory
+                        : currentLocal
+                );
+
+            localStorage.setItem(
+                'empire_hr_directory',
+                JSON.stringify(mergedDirectory)
+            );
+
+            const syncCache =
+                JSON.parse(
+                    localStorage.getItem('EMPIRE_GLOBAL_SYNC') ||
+                    '{"activeOrders":{}}'
+                );
+
+            if (!syncCache.activeOrders) {
+                syncCache.activeOrders = {};
             }
 
-            return data;
+            syncCache.activeOrders.STAFF_ACCESS = {
+                data: staffAccess
+            };
+
+            syncCache.activeOrders.DIRECTORY_MASTER = {
+                data: mergedDirectory
+            };
+
+            localStorage.setItem(
+                'EMPIRE_GLOBAL_SYNC',
+                JSON.stringify(syncCache)
+            );
+
+            if (options.render !== false) {
+                updateDashboardStats();
+
+                if (
+                    document.getElementById('hr-interface')?.style.display === 'flex'
+                ) {
+                    renderStaffList();
+                    loadMonthData();
+                }
+
+                if (
+                    document.getElementById('employee-portal')?.style.display === 'flex' &&
+                    loggedInStaffId !== null
+                ) {
+                    renderEmployeePortal();
+                }
+            }
+
+            return mergedDirectory;
+        }
+
+        function getDir() {
+            const local =
+                JSON.parse(
+                    localStorage.getItem('empire_hr_directory') || '[]'
+                );
+
+            if (
+                Array.isArray(staffAccess) &&
+                staffAccess.length
+            ) {
+                return buildRhDirectoryFromServer(
+                    staffAccess,
+                    local
+                );
+            }
+
+            return local;
         }
 
         function saveDir(dir) { 
@@ -881,6 +1015,161 @@
             API.update('REQUESTS_MASTER', r);
         }
 
+        let rhSocket = null;
+        let rhStaffRefreshTimer = null;
+
+        async function refreshRhStaffFromServer() {
+            try {
+                const state = await API.getState();
+
+                if (state?.activeOrders) {
+                    syncRhStaffFromState(state);
+
+                    if (state.activeOrders['TIMESHEETS_MASTER']) {
+                        localStorage.setItem(
+                            'empire_hr_timesheets',
+                            JSON.stringify(
+                                state.activeOrders['TIMESHEETS_MASTER'].data || {}
+                            )
+                        );
+                    }
+
+                    if (state.activeOrders['REQUESTS_MASTER']) {
+                        localStorage.setItem(
+                            'empire_hr_requests',
+                            JSON.stringify(
+                                state.activeOrders['REQUESTS_MASTER'].data || []
+                            )
+                        );
+                        updateReqBadge();
+                    }
+
+                    if (state.activeOrders['PUNCHES_MASTER']) {
+                        localStorage.setItem(
+                            'empire_hr_punches',
+                            JSON.stringify(
+                                state.activeOrders['PUNCHES_MASTER'].data || []
+                            )
+                        );
+                    }
+                }
+
+                return state;
+            } catch (error) {
+                console.warn(
+                    'Actualisation du staff impossible',
+                    error
+                );
+                return null;
+            }
+        }
+
+        function scheduleRhStaffRefresh() {
+            clearTimeout(rhStaffRefreshTimer);
+
+            rhStaffRefreshTimer =
+                setTimeout(
+                    refreshRhStaffFromServer,
+                    250
+                );
+        }
+
+        function connectRhRealtimeSync() {
+            if (rhSocket) return;
+
+            try {
+                rhSocket = io(
+                    SERVER_URL_JS,
+                    {
+                        transports: [
+                            'websocket',
+                            'polling'
+                        ],
+                        reconnection: true,
+                        reconnectionAttempts: Infinity,
+                        reconnectionDelay: 1000
+                    }
+                );
+
+                rhSocket.on(
+                    'connect',
+                    () => {
+                        rhSocket.emit(
+                            'joinTenant',
+                            {
+                                tenantID:
+                                    tenantID_JS
+                            }
+                        );
+                    }
+                );
+
+                rhSocket.on(
+                    'updateState',
+                    state => {
+                        if (!state?.activeOrders) return;
+
+                        syncRhStaffFromState(state);
+
+                        if (
+                            state.activeOrders['TIMESHEETS_MASTER']
+                        ) {
+                            localStorage.setItem(
+                                'empire_hr_timesheets',
+                                JSON.stringify(
+                                    state.activeOrders['TIMESHEETS_MASTER'].data || {}
+                                )
+                            );
+                        }
+
+                        if (
+                            state.activeOrders['REQUESTS_MASTER']
+                        ) {
+                            localStorage.setItem(
+                                'empire_hr_requests',
+                                JSON.stringify(
+                                    state.activeOrders['REQUESTS_MASTER'].data || []
+                                )
+                            );
+                            updateReqBadge();
+                        }
+
+                        if (
+                            state.activeOrders['PUNCHES_MASTER']
+                        ) {
+                            localStorage.setItem(
+                                'empire_hr_punches',
+                                JSON.stringify(
+                                    state.activeOrders['PUNCHES_MASTER'].data || []
+                                )
+                            );
+                        }
+                    }
+                );
+
+                rhSocket.on(
+                    'server-state-changed',
+                    scheduleRhStaffRefresh
+                );
+
+                rhSocket.on(
+                    'connect_error',
+                    error => {
+                        console.warn(
+                            'Synchronisation RH temps réel indisponible',
+                            error?.message || error
+                        );
+                    }
+                );
+
+            } catch (error) {
+                console.warn(
+                    'Impossible de démarrer la synchronisation RH',
+                    error
+                );
+            }
+        }
+
         window.onload = async function() {
             const today = new Date();
             document.getElementById('month-selector').value = `${today.getFullYear()}-${String(today.getMonth()+1).padStart(2, '0')}`;
@@ -893,28 +1182,28 @@
                     if (state.activeOrders['PUNCHES_MASTER']) localStorage.setItem('empire_hr_punches', JSON.stringify(state.activeOrders['PUNCHES_MASTER'].data || []));
                     if (state.activeOrders['REQUESTS_MASTER']) localStorage.setItem('empire_hr_requests', JSON.stringify(state.activeOrders['REQUESTS_MASTER'].data || []));
                     
-                    if (state.activeOrders['STAFF_ACCESS']) {
-                        staffAccess = Array.isArray(state.activeOrders['STAFF_ACCESS'].data)
-                            ? state.activeOrders['STAFF_ACCESS'].data
-                                .filter(s => s && s.active !== false)
-                                .map(s => ({
-                                    ...s,
-                                    pin: String(s.pin || '').trim()
-                                }))
-                            : [];
-
-                        let sysSync = JSON.parse(localStorage.getItem('EMPIRE_GLOBAL_SYNC')) || { activeOrders: {} };
-                        sysSync.activeOrders['STAFF_ACCESS'] = { data: staffAccess };
-                        localStorage.setItem('EMPIRE_GLOBAL_SYNC', JSON.stringify(sysSync));
-                    }
+                    syncRhStaffFromState(
+                        state,
+                        {
+                            render: false
+                        }
+                    );
                 }
                 
                 checkFocusRequest(); // Téléportation
             } catch (e) { console.error("Erreur de synchro au démarrage", e); }
 
-            loadPublicPlanning(); 
+            loadPublicPlanning();
             updateReqBadge();
+            updateDashboardStats();
             broadcastStaffingLevels();
+
+            connectRhRealtimeSync();
+
+            setInterval(
+                refreshRhStaffFromServer,
+                8000
+            );
             
             setInterval(async () => {
                 if(loginMode === 'director') {
@@ -1421,7 +1710,15 @@
                     body: JSON.stringify({ tableId: 'STAFF_ACCESS', order: { data: staffAccessPayload } })
                 });
                 staffAccess = staffAccessPayload;
-            } catch (e) { console.error("Erreur de sync STAFF_ACCESS", e); }
+
+                await refreshRhStaffFromServer();
+
+            } catch (e) {
+                console.error(
+                    "Erreur de sync STAFF_ACCESS",
+                    e
+                );
+            }
         }
 
         function openStaffModal(pin = null) { 
@@ -1636,14 +1933,14 @@ async function generateIAPrediction() {
         }
 
         function renderStaffList() {
-            const dir = getDir().filter(s => s.dept === currentDept);
+            const dir = getDir();
             const container = document.getElementById('staff-list-render');
             let html = '';
             dir.forEach(s => {
                 let statusBadge = s.active === false ? '<span style="color:#ef4444; font-size:0.6rem; float:right;">DÉSACTIVÉ</span>' : '<span style="color:#10b981; font-size:0.6rem; float:right;">ACTIF</span>';
                 html += `<div class="staff-card ${currentStaffId === s.id ? 'active' : ''}" onclick="selectStaff(${s.id})" style="${s.active === false ? 'opacity:0.5;' : ''}">
                     <div class="staff-name">${s.name} ${statusBadge}</div>
-                    <div class="staff-role">${s.role} - ${s.contract}h/sem</div>
+                    <div class="staff-role">${s.role} - ${s.contract}h/sem · ${String(s.dept || '').toUpperCase()}</div>
                     <div style="margin-top:10px; display:flex; gap:5px;">
                         <button onclick="event.stopPropagation(); toggleStaffStatus(${s.id})" style="background:#222; border:none; color:#fff; padding:4px 8px; font-size:0.6rem; border-radius:4px; cursor:pointer;">${s.active === false ? 'RÉACTIVER' : 'DÉSACTIVER'}</button>
                         <button onclick="event.stopPropagation(); openStaffModal('${s.pin}')" style="background:#222; border:none; color:#fff; padding:4px 8px; font-size:0.6rem; border-radius:4px; cursor:pointer;">ÉDITER</button>
@@ -1785,7 +2082,7 @@ async function generateIAPrediction() {
         }
 
         function renderGlobalView(year, month, daysInMonth, tsMonth) {
-            const dir = getDir().filter(s => s.dept === currentDept && s.active !== false);
+            const dir = getDir().filter(s => s.active !== false);
             let headHtml = `<tr><th class="sticky-col">COLLABORATEUR</th>`;
             for(let d=1; d<=daysInMonth; d++) {
                 const dateObj = new Date(year, month-1, d);
@@ -1829,7 +2126,7 @@ async function generateIAPrediction() {
             const [year, month] = monthStr.split('-').map(Number);
             const daysInMonth = new Date(year, month, 0).getDate();
             const ts = getTs();
-            const dir = getDir().filter(s => s.dept === currentDept && s.active !== false);
+            const dir = getDir().filter(s => s.active !== false);
 
             if(!ts[monthStr]) return;
 
