@@ -1391,43 +1391,270 @@ async function scellerOperation(tenantID, action, entityType, entityId, authorPi
 }
 
 app.get('/api/export-preuves-legales', async (req, res) => {
-    const { tenantID, masterPin } = req.query;
+    const { tenantID, masterPin, tableId, ticketNumber } = req.query;
     const safeID = cleanString(tenantID);
-    
+
     try {
+        // =========================================================
+        // 1. SÉCURITÉ
+        // =========================================================
         const tenant = await Tenant.findOne({ tenantID: safeID });
-        if (!tenant || tenant.pin !== masterPin) {
-            return res.status(403).json({ error: "Accès refusé. Empreinte de sécurité invalide." });
+
+        if (!tenant || String(tenant.pin) !== String(masterPin)) {
+            return res.status(403).json({
+                success: false,
+                error: "Accès refusé. Empreinte de sécurité invalide."
+            });
         }
 
-        const logs = await AuditLog.find({ tenantID: safeID }).sort({ timestamp: 1 });
-        
+        // =========================================================
+        // 2. JOURNAL ANTI-FRAUDE COMPLET
+        // =========================================================
+        const logs = await AuditLog
+            .find({ tenantID: safeID })
+            .sort({ timestamp: 1 })
+            .lean();
+
+        // =========================================================
+        // 3. VÉRIFICATION DE LA CHAÎNE CRYPTOGRAPHIQUE
+        // =========================================================
         let isChainValid = true;
         let brokenAtIndex = null;
-        
+
         for (let i = 1; i < logs.length; i++) {
-            if (logs[i].previousHash !== logs[i-1].currentHash) {
+            if (String(logs[i].previousHash) !== String(logs[i - 1].currentHash)) {
                 isChainValid = false;
                 brokenAtIndex = i;
                 break;
             }
         }
 
-        res.json({
-            success: true,
-            certificatLegal: {
-                etablissement: tenant.clientName,
-                dateExtraction: new Date(),
-                integriteGarantie: isChainValid,
-                alerteFalsification: isChainValid ? "Aucune altération détectée" : `ATTENTION: Chaîne brisée à l'index ${brokenAtIndex}`,
-                totalOperations: logs.length
-            },
-            journal: logs
+        // =========================================================
+        // 4. ÉTAT CENTRAL DU RESTAURANT
+        // =========================================================
+        const appState = await AppState
+            .findOne({ tenantID: safeID })
+            .lean();
+
+        const activeOrders = appState?.activeOrders || {};
+
+        // =========================================================
+        // 5. HISTORIQUE FINANCIER / PAIEMENTS
+        // =========================================================
+        let financialHistory = [];
+
+        const financialNode = activeOrders.FINANCIAL_HISTORY;
+
+        if (Array.isArray(financialNode)) {
+            financialHistory = financialNode;
+        } else if (Array.isArray(financialNode?.data)) {
+            financialHistory = financialNode.data;
+        }
+
+        // =========================================================
+        // 6. OUTILS DE RECHERCHE TABLE / TICKET
+        // =========================================================
+        const wantedTable = String(tableId || "").trim();
+        const wantedTicket = String(ticketNumber || "").trim();
+
+        function getEventTable(event) {
+            return String(
+                event?.tableId ||
+                event?.table ||
+                event?.entityId ||
+                event?.details?.tableId ||
+                event?.details?.table ||
+                event?.details?.orderSnapshot?.tableId ||
+                event?.details?.snapshot?.tableId ||
+                event?.details?.transaction?.table ||
+                ""
+            ).trim();
+        }
+
+        function getEventTicket(event) {
+            return String(
+                event?.ticketNumber ||
+                event?.details?.ticketNumber ||
+                event?.details?.orderSnapshot?.ticketNumber ||
+                event?.details?.snapshot?.ticketNumber ||
+                event?.details?.transaction?.ticketNumber ||
+                ""
+            ).trim();
+        }
+
+        function getPaymentTable(payment) {
+            return String(
+                payment?.table ||
+                payment?.tableId ||
+                payment?.orderSnapshot?.tableId ||
+                payment?.snapshot?.tableId ||
+                ""
+            ).trim();
+        }
+
+        function getPaymentTicket(payment) {
+            return String(
+                payment?.ticketNumber ||
+                payment?.orderSnapshot?.ticketNumber ||
+                payment?.snapshot?.ticketNumber ||
+                ""
+            ).trim();
+        }
+
+        // =========================================================
+        // 7. DOSSIER D'UNE TABLE SI TABLEID FOURNI
+        // =========================================================
+        let tableJournal = logs;
+        let tablePayments = financialHistory;
+        let tableSnapshot = null;
+
+        if (wantedTable) {
+            tableJournal = logs.filter(event => {
+                const eventTable = getEventTable(event);
+
+                // Les commandes utilisent souvent entityId = numéro de table
+                return eventTable === wantedTable;
+            });
+
+            tablePayments = financialHistory.filter(payment => {
+                return getPaymentTable(payment) === wantedTable;
+            });
+
+            tableSnapshot = activeOrders[wantedTable] || null;
+        }
+
+        // =========================================================
+        // 8. FILTRE TICKET FACULTATIF
+        // =========================================================
+        if (wantedTicket) {
+            tableJournal = tableJournal.filter(event => {
+                return getEventTicket(event) === wantedTicket;
+            });
+
+            tablePayments = tablePayments.filter(payment => {
+                return getPaymentTicket(payment) === wantedTicket;
+            });
+        }
+
+        // =========================================================
+        // 9. DÉTECTION ERREURS / CORRECTIONS / ANNULATIONS
+        // =========================================================
+        const incidents = tableJournal.filter(event => {
+            const action = String(
+                event?.action ||
+                event?.eventType ||
+                ""
+            ).toUpperCase();
+
+            return (
+                action.includes("ERROR") ||
+                action.includes("ERREUR") ||
+                action.includes("CANCEL") ||
+                action.includes("ANNUL") ||
+                action.includes("DELETE") ||
+                action.includes("CORRECTION") ||
+                action.includes("REFUND") ||
+                action.includes("REMBOURS")
+            );
         });
 
-    } catch (error) { res.status(500).json({ error: "Erreur lors de l'export d'audit." }); }
-});
+        // =========================================================
+        // 10. TOTAL ENCAISSÉ
+        // =========================================================
+        const totalEncaisse = tablePayments.reduce((sum, payment) => {
+            const amount = Number(
+                payment?.total ??
+                payment?.totalTTC ??
+                payment?.amount ??
+                payment?.payment?.amount ??
+                0
+            );
 
+            return sum + (Number.isFinite(amount) ? amount : 0);
+        }, 0);
+
+        // =========================================================
+        // 11. DERNIÈRE CLÔTURE Z
+        // =========================================================
+        const lastClosure = [...logs]
+            .reverse()
+            .find(event => {
+                const action = String(
+                    event?.action ||
+                    event?.eventType ||
+                    ""
+                ).toUpperCase();
+
+                return (
+                    action === "DAILY_CLOSURE" ||
+                    action.includes("CLOTURE") ||
+                    action.includes("CLOSURE")
+                );
+            }) || null;
+
+        // =========================================================
+        // 12. RÉPONSE COMPLÈTE
+        // =========================================================
+        res.set("Cache-Control", "no-store, max-age=0");
+
+        return res.json({
+            success: true,
+
+            certificatLegal: {
+                etablissement: tenant.clientName,
+                tenantID: safeID,
+                dateExtraction: new Date(),
+                integriteGarantie: isChainValid,
+                alerteFalsification: isChainValid
+                    ? "Aucune altération détectée"
+                    : `ATTENTION : chaîne brisée à l'index ${brokenAtIndex}`,
+                totalOperations: logs.length,
+                dernierHash: logs.length
+                    ? logs[logs.length - 1].currentHash
+                    : null,
+                derniereCloture: lastClosure?.timestamp || null
+            },
+
+            // IMPORTANT :
+            // conservé pour ne pas casser ton Journal actuel
+            journal: logs,
+
+            financialHistory,
+
+            // Dossier détaillé demandé par table
+            dossier: {
+                tableId: wantedTable || null,
+                ticketNumber: wantedTicket || null,
+
+                nombreEvenements: tableJournal.length,
+                nombrePaiements: tablePayments.length,
+                nombreIncidents: incidents.length,
+
+                totalEncaisse,
+
+                chronologie: tableJournal,
+                paiements: tablePayments,
+                erreursCorrectionsAnnulations: incidents,
+
+                etatActuelTable: tableSnapshot
+            }
+        });
+
+    } catch (error) {
+        console.error(
+            "❌ Erreur export preuves légales :",
+            error
+        );
+
+        return res.status(500).json({
+            success: false,
+            error: "Erreur lors de l'export d'audit.",
+            details: process.env.NODE_ENV === "development"
+                ? error.message
+                : undefined
+        });
+    }
+});
 // ==========================================
 // 🤖 MOTEURS IA (GEMINI)
 // ==========================================
