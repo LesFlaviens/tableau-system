@@ -40,6 +40,7 @@ const corsOptions = {
         'X-iCHEF-Device',
         'X-iCHEF-Master-Device',
         'X-iCHEF-Tenant',
+        'X-iCHEF-PIN',
         'Idempotency-Key',
         'X-Requested-With'
     ]
