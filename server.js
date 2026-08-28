@@ -2637,7 +2637,7 @@ app.get('/api/payments/stripe/status', (req, res) => {
 // =========================================================================
 
 // 1. ROUTE DE FISCALISATION (Création de l'archive financière)
-app.post('/api/fiscal/cash-in', (req, res) => {
+global.ICHEF_STATES
     const { tenantID, paymentRequestId, orderSnapshot, payment } = req.body;
     
     if (!tenantID || !orderSnapshot || !payment) {
@@ -2753,6 +2753,1409 @@ app.get('/api/fiscal/history', (req, res) => {
     history.sort((a, b) => b.timestamp - a.timestamp);
 
     res.json({ success: true, data: history });
+});
+// ==========================================================
+// ENCAISSEMENT FISCAL OFFICIEL
+// MongoDB = source de vérité
+// ==========================================================
+
+app.post('/api/fiscal/cash-in', async (req, res) => {
+
+    try {
+
+        const tenantID =
+            cleanString(
+                req.body?.tenantID ||
+                req.headers['x-ichef-tenant']
+            );
+
+        const pin =
+            String(
+                req.body?.pin ||
+                req.headers['x-ichef-pin'] ||
+                ''
+            ).trim();
+
+        const paymentRequestId =
+            String(
+                req.body?.paymentRequestId ||
+                req.headers['idempotency-key'] ||
+                ''
+            ).trim();
+
+        const orderSnapshot =
+            req.body?.orderSnapshot || {};
+
+        const payment =
+            req.body?.payment || {};
+
+        const fiscalContext =
+            req.body?.fiscalContext || {};
+
+        const deviceId =
+            String(
+                req.body?.deviceId ||
+                req.headers['x-ichef-device'] ||
+                ''
+            );
+
+        if (!tenantID) {
+            return res.status(400).json({
+                success: false,
+                error: 'Restaurant manquant.'
+            });
+        }
+
+        const tenant =
+            await Tenant.findOne({
+                tenantID
+            });
+
+        if (!tenant) {
+            return res.status(404).json({
+                success: false,
+                error: 'Restaurant introuvable.'
+            });
+        }
+
+        if (
+            pin &&
+            String(tenant.pin || '').trim() !== pin
+        ) {
+
+            const state =
+                await AppState.findOne({
+                    tenantID
+                });
+
+            const staff =
+                Array.isArray(
+                    state?.activeOrders
+                        ?.STAFF_ACCESS?.data
+                )
+                    ? state.activeOrders
+                        .STAFF_ACCESS.data
+                    : [];
+
+            const member =
+                staff.find(s =>
+                    String(s?.pin || '').trim() === pin &&
+                    s?.active !== false
+                );
+
+            if (!member) {
+
+                await ichefFiscalDiagnostic(
+                    req,
+                    {
+                        tenantID,
+                        type: 'PAYMENT_ERROR',
+                        status: 'REFUSED',
+                        severity: 'WARNING',
+                        code: 'PIN_INVALID',
+                        message:
+                            'Paiement refusé : PIN invalide.'
+                    }
+                );
+
+                return res.status(403).json({
+                    success: false,
+                    error:
+                        'PIN invalide.'
+                });
+            }
+        }
+
+        if (
+            !orderSnapshot ||
+            !orderSnapshot.tableId
+        ) {
+            return res.status(400).json({
+                success: false,
+                error:
+                    'Commande ou table manquante.'
+            });
+        }
+
+        const amount =
+            Math.round(
+                Number(
+                    payment.amount ??
+                    orderSnapshot.total ??
+                    0
+                ) * 100
+            ) / 100;
+
+        if (!(amount > 0)) {
+
+            await ichefFiscalDiagnostic(
+                req,
+                {
+                    tenantID,
+                    type: 'PAYMENT_ERROR',
+                    status: 'REFUSED',
+                    severity: 'WARNING',
+                    code: 'INVALID_AMOUNT',
+                    message:
+                        'Montant de paiement invalide.',
+                    tableId:
+                        orderSnapshot.tableId
+                }
+            );
+
+            return res.status(400).json({
+                success: false,
+                error:
+                    'Montant de paiement invalide.'
+            });
+        }
+
+        const method =
+            String(
+                payment.method ||
+                'AUTRE'
+            )
+                .trim()
+                .toUpperCase();
+
+        const allowedMethods =
+            new Set([
+                'CARTE',
+                'CARD',
+                'CB',
+                'ESPÈCES',
+                'ESPECES',
+                'CASH',
+                'TWINT',
+                'AUTRE',
+                'MULTIPLE',
+                'STRIPE'
+            ]);
+
+        if (!allowedMethods.has(method)) {
+
+            return res.status(400).json({
+                success: false,
+                error:
+                    'Moyen de paiement inconnu.'
+            });
+        }
+
+        let state =
+            await AppState.findOne({
+                tenantID
+            });
+
+        if (!state) {
+
+            state =
+                new AppState({
+                    tenantID,
+                    activeOrders: {}
+                });
+        }
+
+        if (!state.activeOrders) {
+            state.activeOrders = {};
+        }
+
+        if (
+            !state.activeOrders
+                .FINANCIAL_HISTORY
+        ) {
+
+            state.activeOrders
+                .FINANCIAL_HISTORY = {
+                    data: []
+                };
+        }
+
+        const history =
+            Array.isArray(
+                state.activeOrders
+                    .FINANCIAL_HISTORY.data
+            )
+                ? state.activeOrders
+                    .FINANCIAL_HISTORY.data
+                : [];
+
+        // ---------------------------------------
+        // ANTI-DOUBLE PAIEMENT / IDEMPOTENCE
+        // ---------------------------------------
+
+        if (paymentRequestId) {
+
+            const previous =
+                history.find(tx =>
+                    String(
+                        tx?.paymentRequestId ||
+                        tx?.operationId ||
+                        ''
+                    ) ===
+                    paymentRequestId
+                );
+
+            if (previous) {
+
+                return res.json({
+                    success: true,
+                    idempotent: true,
+                    duplicate: true,
+
+                    ticketNumber:
+                        previous.ticketNumber,
+
+                    fiscalId:
+                        previous.ticketNumber,
+
+                    ticketHash:
+                        previous.ticketHash ||
+                        '',
+
+                    amount:
+                        previous.amount,
+
+                    payments:
+                        previous.payments ||
+                        [],
+
+                    publicReceiptUrl:
+                        previous.receipt
+                            ?.publicUrl ||
+                        null
+                });
+            }
+        }
+
+        const ticketNumber =
+            'TCK-' +
+            Date.now()
+                .toString()
+                .slice(-10) +
+            '-' +
+            crypto
+                .randomBytes(3)
+                .toString('hex')
+                .toUpperCase();
+
+        const now =
+            new Date().toISOString();
+
+        const payments =
+            Array.isArray(payment.details) &&
+            payment.details.length
+                ? payment.details.map(p => ({
+                    method:
+                        String(
+                            p?.method ||
+                            method
+                        ),
+
+                    amount:
+                        Number(
+                            p?.amount ||
+                            0
+                        ),
+
+                    confirmedBy:
+                        p?.confirmedBy ||
+                        orderSnapshot.waiter ||
+                        'SERVEUR',
+
+                    confirmedAt:
+                        p?.confirmedAt ||
+                        now,
+
+                    paymentRequestId:
+                        p?.paymentRequestId ||
+                        paymentRequestId ||
+                        '',
+
+                    receiptPreference:
+                        p?.receiptPreference ||
+                        req.body
+                            ?.receiptPreference ||
+                        ''
+                }))
+                : [{
+                    method,
+                    amount,
+
+                    confirmedBy:
+                        orderSnapshot.waiter ||
+                        'SERVEUR',
+
+                    confirmedAt:
+                        now,
+
+                    paymentRequestId,
+
+                    receiptPreference:
+                        req.body
+                            ?.receiptPreference ||
+                        ''
+                }];
+
+        const receiptPreference =
+            String(
+                req.body?.receiptPreference ||
+                req.body?.receipt
+                    ?.preference ||
+                ''
+            );
+
+        const receiptToken =
+            String(
+                req.body?.receipt
+                    ?.publicToken ||
+                ''
+            );
+
+        const ticketBase = {
+
+            id:
+                paymentRequestId ||
+                ticketNumber,
+
+            operationId:
+                paymentRequestId ||
+                ticketNumber,
+
+            paymentRequestId,
+
+            ticketNumber,
+
+            type:
+                'SALE',
+
+            status:
+                'PAID',
+
+            tenantID,
+
+            tableId:
+                String(
+                    orderSnapshot.tableId
+                ),
+
+            method,
+
+            payments,
+
+            amount,
+
+            total:
+                Number(
+                    orderSnapshot.total ??
+                    amount
+                ),
+
+            totalHT:
+                Number(
+                    orderSnapshot.totalHT ||
+                    0
+                ),
+
+            currency:
+                String(
+                    payment.currency ||
+                    fiscalContext.currency ||
+                    'CHF'
+                )
+                    .toUpperCase(),
+
+            country:
+                String(
+                    fiscalContext.country ||
+                    ''
+                )
+                    .toUpperCase(),
+
+            tva:
+                orderSnapshot.tva ||
+                {},
+
+            pax:
+                Number(
+                    orderSnapshot.pax ||
+                    0
+                ),
+
+            zone:
+                orderSnapshot.zone ||
+                '',
+
+            waiter:
+                orderSnapshot.waiter ||
+                'SERVEUR',
+
+            deviceId,
+
+            terminal:
+                req.body?.terminal ||
+                'PAD',
+
+            createdAt:
+                now,
+
+            date:
+                now,
+
+            timestamp:
+                Date.now(),
+
+            receipt: {
+                requested:
+                    receiptPreference !==
+                    'none',
+
+                preference:
+                    receiptPreference,
+
+                publicToken:
+                    receiptToken
+            },
+
+            orderSnapshot:
+                JSON.parse(
+                    JSON.stringify(
+                        orderSnapshot
+                    )
+                )
+        };
+
+        const ticketHash =
+            crypto
+                .createHash('sha256')
+                .update(
+                    JSON.stringify(
+                        ticketBase
+                    )
+                )
+                .digest('hex');
+
+        const transaction = {
+            ...ticketBase,
+            ticketHash
+        };
+
+        // ---------------------------------------
+        // URL TICKET CLIENT
+        // ---------------------------------------
+
+        if (
+            transaction.receipt
+                .requested &&
+            receiptToken
+        ) {
+
+            const forwarded =
+                String(
+                    req.headers[
+                        'x-forwarded-proto'
+                    ] || ''
+                )
+                    .split(',')[0]
+                    .trim();
+
+            const protocol =
+                forwarded ||
+                req.protocol ||
+                'https';
+
+            transaction.receipt
+                .publicUrl =
+                `${protocol}://${req.get('host')}` +
+                `/api/public-receipt` +
+                `?tenantID=${encodeURIComponent(tenantID)}` +
+                `&token=${encodeURIComponent(receiptToken)}`;
+        }
+
+        // ---------------------------------------
+        // FINANCIAL_HISTORY
+        // ---------------------------------------
+
+        history.unshift(transaction);
+
+        state.activeOrders
+            .FINANCIAL_HISTORY.data =
+            history.slice(
+                0,
+                20000
+            );
+
+        // ---------------------------------------
+        // TABLE PAYÉE
+        // ---------------------------------------
+
+        const tableId =
+            String(
+                orderSnapshot.tableId
+            );
+
+        const current =
+            state.activeOrders[
+                tableId
+            ] &&
+            typeof state.activeOrders[
+                tableId
+            ] === 'object'
+                ? state.activeOrders[
+                    tableId
+                ]
+                : {};
+
+        state.activeOrders[
+            tableId
+        ] = {
+            ...current,
+
+            ...orderSnapshot,
+
+            status:
+                'FISCALIZED',
+
+            fiscalStatus:
+                'FISCALIZED',
+
+            paymentStatus:
+                'PAID',
+
+            isArchived:
+                true,
+
+            closedAt:
+                now,
+
+            fiscalFinalizedAt:
+                now,
+
+            fiscalReceiptReference:
+                ticketNumber,
+
+            fiscalHash:
+                ticketHash,
+
+            fiscalTicket: {
+                ticketNumber,
+                ticketHash,
+                date: now
+            },
+
+            paymentDraft: {
+                version: 3,
+
+                status:
+                    'PAYE',
+
+                fiscalStatus:
+                    'SERVER_FISCALIZED',
+
+                total:
+                    amount,
+
+                remaining:
+                    0,
+
+                payments,
+
+                receiptReference:
+                    ticketNumber,
+
+                fiscalHash:
+                    ticketHash,
+
+                receiptPreference,
+
+                updatedAt:
+                    now,
+
+                updatedBy:
+                    orderSnapshot.waiter ||
+                    'SERVEUR',
+
+                deviceId,
+
+                fiscalCountry:
+                    String(
+                        fiscalContext.country ||
+                        ''
+                    )
+                        .toUpperCase()
+            }
+        };
+
+        state.markModified(
+            'activeOrders'
+        );
+
+        await state.save();
+
+        // ---------------------------------------
+        // JOURNAL FISCAL PERMANENT
+        // ---------------------------------------
+
+        await ichefWriteFiscalRecord({
+
+            tenantID,
+
+            recordId:
+                paymentRequestId ||
+                ticketNumber,
+
+            operationId:
+                paymentRequestId,
+
+            type:
+                'SALE',
+
+            subtype:
+                'PAYMENT',
+
+            tableId,
+
+            ticketNumber,
+
+            status:
+                'PAID',
+
+            amount,
+
+            currency:
+                transaction.currency,
+
+            operator:
+                orderSnapshot.waiter ||
+                'SERVEUR',
+
+            terminal:
+                req.body?.terminal ||
+                'PAD',
+
+            deviceId,
+
+            createdAt:
+                now,
+
+            details:
+                transaction
+        });
+
+        // ---------------------------------------
+        // SCELLÉ CRYPTO
+        // ---------------------------------------
+
+        await scellerOperation(
+            tenantID,
+            'CASH_IN',
+            'PAIEMENT',
+            ticketNumber,
+            pin ||
+            orderSnapshot.waiter ||
+            'SYSTEM',
+            transaction
+        );
+
+        // ---------------------------------------
+        // TEMPS RÉEL
+        // ---------------------------------------
+
+        const finalState =
+            state.toObject();
+
+        io.to(
+            tenantID
+        ).emit(
+            'transactionSaved',
+            {
+                tenantID,
+                transaction
+            }
+        );
+
+        io.to(
+            tenantID
+        ).emit(
+            'paymentUpdated',
+            {
+                tenantID,
+                transaction
+            }
+        );
+
+        io.to(
+            tenantID
+        ).emit(
+            'updateState',
+            finalState
+        );
+
+        io.to(
+            tenantID
+        ).emit(
+            'server-state-changed',
+            {
+                tenantID,
+                tableId,
+                source:
+                    'fiscal-cash-in',
+                operationId:
+                    paymentRequestId,
+                persisted:
+                    true,
+                timestamp:
+                    now
+            }
+        );
+
+        return res.json({
+
+            success:
+                true,
+
+            ticketNumber,
+
+            fiscalId:
+                ticketNumber,
+
+            ticketHash,
+
+            payments,
+
+            amount,
+
+            operationId:
+                paymentRequestId,
+
+            publicReceiptUrl:
+                transaction.receipt
+                    ?.publicUrl ||
+                null
+        });
+
+    } catch (error) {
+
+        console.error(
+            '[iCHEF fiscal cash-in]',
+            error
+        );
+
+        await ichefFiscalDiagnostic(
+            req,
+            {
+                type:
+                    'PAYMENT_ERROR',
+
+                status:
+                    'ERROR',
+
+                severity:
+                    'CRITICAL',
+
+                code:
+                    'CASH_IN_EXCEPTION',
+
+                message:
+                    error?.message ||
+                    'Erreur encaissement.'
+            }
+        ).catch(() => {});
+
+        return res
+            .status(500)
+            .json({
+                success:
+                    false,
+
+                error:
+                    error?.message ||
+                    'Erreur encaissement.'
+            });
+    }
+});
+// ==========================================================
+// COMPATIBILITÉ TRANSACTIONS / Z / ANCIENS ÉCRANS
+// ==========================================================
+
+app.post('/api/save-transaction', async (req, res) => {
+
+    try {
+
+        const tenantID =
+            cleanString(
+                req.body?.tenantID ||
+                req.headers['x-ichef-tenant']
+            );
+
+        const transaction =
+            req.body?.transaction;
+
+        if (
+            !tenantID ||
+            !transaction ||
+            typeof transaction !==
+                'object'
+        ) {
+            return res.status(400).json({
+                success: false,
+                error:
+                    'Transaction invalide.'
+            });
+        }
+
+        const operationId =
+            String(
+                transaction.operationId ||
+                transaction.id ||
+                req.headers[
+                    'idempotency-key'
+                ] ||
+                ''
+            ).trim();
+
+        if (!operationId) {
+
+            return res.status(400).json({
+                success: false,
+                error:
+                    "Identifiant d'opération manquant."
+            });
+        }
+
+        let state =
+            await AppState.findOne({
+                tenantID
+            });
+
+        if (!state) {
+
+            state =
+                new AppState({
+                    tenantID,
+                    activeOrders: {}
+                });
+        }
+
+        if (!state.activeOrders) {
+            state.activeOrders = {};
+        }
+
+        if (
+            !state.activeOrders
+                .FINANCIAL_HISTORY
+        ) {
+
+            state.activeOrders
+                .FINANCIAL_HISTORY = {
+                    data: []
+                };
+        }
+
+        const history =
+            Array.isArray(
+                state.activeOrders
+                    .FINANCIAL_HISTORY.data
+            )
+                ? state.activeOrders
+                    .FINANCIAL_HISTORY.data
+                : [];
+
+        const existing =
+            history.find(tx =>
+                String(
+                    tx?.operationId ||
+                    tx?.id ||
+                    ''
+                ) === operationId
+            );
+
+        if (existing) {
+
+            return res.json({
+                success: true,
+                duplicate: true,
+                transaction:
+                    existing
+            });
+        }
+
+        const stored =
+            JSON.parse(
+                JSON.stringify(
+                    transaction
+                )
+            );
+
+        stored.operationId =
+            operationId;
+
+        stored.id =
+            stored.id ||
+            operationId;
+
+        stored.serverRecordedAt =
+            new Date().toISOString();
+
+        history.unshift(
+            stored
+        );
+
+        state.activeOrders
+            .FINANCIAL_HISTORY.data =
+            history.slice(
+                0,
+                20000
+            );
+
+        state.markModified(
+            'activeOrders'
+        );
+
+        await state.save();
+
+        await ichefWriteFiscalRecord({
+
+            tenantID,
+
+            recordId:
+                operationId,
+
+            operationId,
+
+            type:
+                stored.type ||
+                'TRANSACTION',
+
+            subtype:
+                stored.subtype ||
+                '',
+
+            tableId:
+                stored.tableId ||
+                stored.orderSnapshot
+                    ?.tableId ||
+                '',
+
+            ticketNumber:
+                stored.ticketNumber ||
+                stored.orderSnapshot
+                    ?.ticketNumber ||
+                '',
+
+            status:
+                stored.status ||
+                '',
+
+            amount:
+                Number(
+                    stored.total ??
+                    stored.amount ??
+                    0
+                ),
+
+            currency:
+                stored.currency ||
+                stored.fiscalProfile
+                    ?.currency ||
+                'CHF',
+
+            operator:
+                stored.actor?.role ||
+                stored.waiter ||
+                '',
+
+            terminal:
+                stored.terminalType ||
+                stored.terminal ||
+                stored.source ||
+                '',
+
+            deviceId:
+                stored.deviceId ||
+                '',
+
+            details:
+                stored
+        });
+
+        await scellerOperation(
+            tenantID,
+            'CREATE',
+            'TRANSACTION',
+            operationId,
+            'SYSTEM',
+            stored
+        );
+
+        const finalState =
+            state.toObject();
+
+        io.to(
+            tenantID
+        ).emit(
+            'transactionSaved',
+            {
+                tenantID,
+                transaction:
+                    stored
+            }
+        );
+
+        io.to(
+            tenantID
+        ).emit(
+            'paymentUpdated',
+            {
+                tenantID,
+                transaction:
+                    stored
+            }
+        );
+
+        io.to(
+            tenantID
+        ).emit(
+            'updateState',
+            finalState
+        );
+
+        io.to(
+            tenantID
+        ).emit(
+            'server-state-changed',
+            {
+                tenantID,
+                type:
+                    'TRANSACTION',
+                operationId
+            }
+        );
+
+        return res.json({
+
+            success:
+                true,
+
+            transaction:
+                stored,
+
+            proof: {
+                operationId,
+
+                ticketNumber:
+                    stored.ticketNumber ||
+                    null,
+
+                chainHash:
+                    stored.chainHash ||
+                    stored.ticketHash ||
+                    null,
+
+                serverTimestamp:
+                    stored.serverRecordedAt
+            }
+        });
+
+    } catch (error) {
+
+        console.error(
+            '[iCHEF save transaction]',
+            error
+        );
+
+        return res.status(500).json({
+            success: false,
+            error:
+                error?.message ||
+                'Erreur transaction.'
+        });
+    }
+});
+// ==========================================================
+// TICKET CLIENT PUBLIC — QR CODE
+// ==========================================================
+
+app.get('/api/public-receipt', async (req, res) => {
+
+    try {
+
+        const tenantID =
+            cleanString(
+                req.query?.tenantID
+            );
+
+        const token =
+            String(
+                req.query?.token ||
+                ''
+            ).trim();
+
+        if (
+            !tenantID ||
+            token.length < 16
+        ) {
+            return res.status(400).send(
+                'Ticket invalide.'
+            );
+        }
+
+        const state =
+            await AppState.findOne({
+                tenantID
+            });
+
+        const history =
+            Array.isArray(
+                state?.activeOrders
+                    ?.FINANCIAL_HISTORY
+                    ?.data
+            )
+                ? state.activeOrders
+                    .FINANCIAL_HISTORY.data
+                : [];
+
+        const tx =
+            history.find(x =>
+                String(
+                    x?.receipt
+                        ?.publicToken ||
+                    ''
+                ) === token
+            );
+
+        if (!tx) {
+
+            return res.status(404).send(
+                'Ticket introuvable.'
+            );
+        }
+
+        const snapshot =
+            tx.orderSnapshot ||
+            {};
+
+        const items =
+            Array.isArray(
+                snapshot.items
+            )
+                ? snapshot.items
+                : [];
+
+        const currency =
+            String(
+                tx.currency ||
+                'CHF'
+            );
+
+        const esc =
+            value =>
+                String(
+                    value ??
+                    ''
+                )
+                    .replace(
+                        /&/g,
+                        '&amp;'
+                    )
+                    .replace(
+                        /</g,
+                        '&lt;'
+                    )
+                    .replace(
+                        />/g,
+                        '&gt;'
+                    )
+                    .replace(
+                        /"/g,
+                        '&quot;'
+                    );
+
+        const lines =
+            items
+                .filter(i =>
+                    !i?.cancelled
+                )
+                .map(i => {
+
+                    const qty =
+                        Number(
+                            i?.qty ??
+                            i?.quantity ??
+                            1
+                        );
+
+                    const price =
+                        Number(
+                            i?.price ??
+                            i?.p ??
+                            0
+                        );
+
+                    return `
+                        <tr>
+                            <td>
+                                ${esc(
+                                    i?.name ||
+                                    i?.n ||
+                                    'Article'
+                                )}
+                                ${qty > 1
+                                    ? ` × ${qty}`
+                                    : ''}
+                            </td>
+                            <td style="text-align:right">
+                                ${(price * qty)
+                                    .toFixed(2)}
+                            </td>
+                        </tr>
+                    `;
+                })
+                .join('');
+
+        res.setHeader(
+            'Cache-Control',
+            'no-store'
+        );
+
+        res.setHeader(
+            'X-Robots-Tag',
+            'noindex,nofollow'
+        );
+
+        res.send(`
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport"
+content="width=device-width,initial-scale=1">
+<title>Ticket ${esc(tx.ticketNumber)}</title>
+
+<style>
+body{
+    margin:0;
+    padding:20px;
+    background:#f2f2f2;
+    font-family:Arial,sans-serif;
+    color:#111;
+}
+.ticket{
+    max-width:420px;
+    margin:auto;
+    background:white;
+    padding:24px;
+    border-radius:12px;
+}
+h1{
+    text-align:center;
+    margin:0 0 5px;
+}
+.meta{
+    text-align:center;
+    color:#555;
+    margin-bottom:20px;
+}
+table{
+    width:100%;
+    border-collapse:collapse;
+}
+td{
+    padding:7px 0;
+    border-bottom:1px solid #ddd;
+}
+.total{
+    margin-top:18px;
+    display:flex;
+    justify-content:space-between;
+    font-size:22px;
+    font-weight:bold;
+}
+.proof{
+    margin-top:20px;
+    font-size:10px;
+    color:#777;
+    word-break:break-all;
+}
+@media print{
+    body{
+        background:white;
+        padding:0;
+    }
+    .ticket{
+        box-shadow:none;
+    }
+}
+</style>
+</head>
+
+<body>
+
+<div class="ticket">
+
+<h1>iCHEF</h1>
+
+<div class="meta">
+Ticket ${esc(tx.ticketNumber || '—')}<br>
+Table ${esc(tx.tableId || '—')}<br>
+${esc(
+    new Date(
+        tx.createdAt ||
+        tx.date ||
+        Date.now()
+    ).toLocaleString('fr-FR')
+)}
+</div>
+
+<table>
+${lines}
+</table>
+
+<div class="total">
+<span>TOTAL</span>
+<span>
+${Number(
+    tx.total ??
+    tx.amount ??
+    0
+).toFixed(2)}
+${esc(currency)}
+</span>
+</div>
+
+<div class="meta">
+Paiement :
+${esc(
+    tx.method ||
+    '—'
+)}
+</div>
+
+<div class="proof">
+Preuve :
+${esc(
+    tx.ticketHash ||
+    tx.chainHash ||
+    '—'
+)}
+</div>
+
+</div>
+
+</body>
+</html>
+        `);
+
+    } catch (error) {
+
+        console.error(
+            '[iCHEF public receipt]',
+            error
+        );
+
+        res.status(500).send(
+            'Ticket indisponible.'
+        );
+    }
 });
 // =========================================================================
 // ⚙️ ROUTES D'ADMINISTRATION ET DE CONFIGURATION DU RESTAURANT
