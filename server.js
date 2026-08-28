@@ -1592,66 +1592,311 @@ app.get('/api/export-preuves-legales', async (req, res) => {
                 );
             }) || null;
 
+                // =========================================================
+        // 12. RÉPONSE COMPLÈTE + DOSSIER FISCAL + QR
         // =========================================================
-        // 12. RÉPONSE COMPLÈTE
-        // =========================================================
-        res.set("Cache-Control", "no-store, max-age=0");
 
+        res.set("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0");
+        res.set("Pragma", "no-cache");
+        res.set("Expires", "0");
+
+        // ---------------------------------------------------------
+        // DERNIER PAIEMENT / TICKET CONNU
+        // ---------------------------------------------------------
+        const lastPayment = tablePayments.length
+            ? [...tablePayments].sort(
+                (a, b) =>
+                    new Date(
+                        b?.serverRecordedAt ||
+                        b?.date ||
+                        b?.timestamp ||
+                        0
+                    ) -
+                    new Date(
+                        a?.serverRecordedAt ||
+                        a?.date ||
+                        a?.timestamp ||
+                        0
+                    )
+            )[0]
+            : null;
+
+        const lastTicketNumber =
+            wantedTicket ||
+            lastPayment?.ticketNumber ||
+            lastPayment?.orderSnapshot?.ticketNumber ||
+            lastPayment?.snapshot?.ticketNumber ||
+            null;
+
+        const lastPaymentHash =
+            lastPayment?.chainHash ||
+            lastPayment?.ticketHash ||
+            lastPayment?.currentHash ||
+            null;
+
+        const currency =
+            lastPayment?.currency ||
+            lastPayment?.payment?.currency ||
+            "CHF";
+
+        // ---------------------------------------------------------
+        // DERNIÈRE OPÉRATION DE LA TABLE
+        // ---------------------------------------------------------
+        const lastTableEvent = tableJournal.length
+            ? tableJournal[tableJournal.length - 1]
+            : null;
+
+        const lastTableHash =
+            lastTableEvent?.currentHash ||
+            lastTableEvent?.chainHash ||
+            lastPaymentHash ||
+            null;
+
+        // ---------------------------------------------------------
+        // HASH GLOBAL DU DOSSIER DE TABLE
+        // Ce hash permet de prouver que le contenu exporté
+        // correspond exactement au dossier consulté.
+        // ---------------------------------------------------------
+        const dossierHash = crypto
+            .createHash("sha256")
+            .update(
+                JSON.stringify({
+                    tenantID: safeID,
+                    tableId: wantedTable || null,
+                    ticketNumber: lastTicketNumber,
+                    totalEncaisse,
+                    chronologie: tableJournal,
+                    paiements: tablePayments,
+                    incidents,
+                    etatActuelTable: tableSnapshot
+                })
+            )
+            .digest("hex");
+
+        // ---------------------------------------------------------
+        // RÉPONSE
+        // ---------------------------------------------------------
         return res.json({
+
             success: true,
 
+            version: "ICHEF-FISCAL-DOSSIER-2026.08",
+
             certificatLegal: {
-                etablissement: tenant.clientName,
-                tenantID: safeID,
-                dateExtraction: new Date(),
-                integriteGarantie: isChainValid,
-                alerteFalsification: isChainValid
-                    ? "Aucune altération détectée"
-                    : `ATTENTION : chaîne brisée à l'index ${brokenAtIndex}`,
-                totalOperations: logs.length,
-                dernierHash: logs.length
-                    ? logs[logs.length - 1].currentHash
-                    : null,
-                derniereCloture: lastClosure?.timestamp || null
+
+                etablissement:
+                    tenant.clientName || safeID,
+
+                tenantID:
+                    safeID,
+
+                dateExtraction:
+                    new Date(),
+
+                integriteGarantie:
+                    isChainValid,
+
+                alerteFalsification:
+                    isChainValid
+                        ? "Aucune altération détectée"
+                        : `ATTENTION : chaîne brisée à l'index ${brokenAtIndex}`,
+
+                totalOperations:
+                    logs.length,
+
+                dernierHash:
+                    logs.length
+                        ? logs[logs.length - 1].currentHash
+                        : null,
+
+                hashDossier:
+                    dossierHash,
+
+                derniereCloture:
+                    lastClosure?.timestamp || null
             },
 
-            // IMPORTANT :
-            // conservé pour ne pas casser ton Journal actuel
-            journal: logs,
 
-            financialHistory,
+            // =====================================================
+            // COMPATIBILITÉ AVEC JOURNAL & PREUVES EXISTANT
+            // NE PAS SUPPRIMER
+            // =====================================================
+            journal:
+                logs,
 
-            // Dossier détaillé demandé par table
+            financialHistory:
+                financialHistory,
+
+
+            // =====================================================
+            // RÉSUMÉ DE LA TABLE
+            // =====================================================
+            resumeTable: {
+
+                tableId:
+                    wantedTable || null,
+
+                ticketNumber:
+                    lastTicketNumber,
+
+                totalEncaisse:
+                    Number(totalEncaisse || 0),
+
+                currency,
+
+                nombreEvenements:
+                    tableJournal.length,
+
+                nombrePaiements:
+                    tablePayments.length,
+
+                nombreIncidents:
+                    incidents.length,
+
+                dernierHash:
+                    lastTableHash,
+
+                hashDossier:
+                    dossierHash,
+
+                derniereOperation:
+                    lastTableEvent?.timestamp ||
+                    lastPayment?.serverRecordedAt ||
+                    lastPayment?.date ||
+                    lastPayment?.timestamp ||
+                    null
+            },
+
+
+            // =====================================================
+            // DOSSIER COMPLET DE TABLE
+            // =====================================================
             dossier: {
-                tableId: wantedTable || null,
-                ticketNumber: wantedTicket || null,
 
-                nombreEvenements: tableJournal.length,
-                nombrePaiements: tablePayments.length,
-                nombreIncidents: incidents.length,
+                tableId:
+                    wantedTable || null,
 
-                totalEncaisse,
+                ticketNumber:
+                    lastTicketNumber,
 
-                chronologie: tableJournal,
-                paiements: tablePayments,
-                erreursCorrectionsAnnulations: incidents,
+                currency,
 
-                etatActuelTable: tableSnapshot
+                nombreEvenements:
+                    tableJournal.length,
+
+                nombrePaiements:
+                    tablePayments.length,
+
+                nombreIncidents:
+                    incidents.length,
+
+                totalEncaisse:
+                    Number(totalEncaisse || 0),
+
+                hashDossier:
+                    dossierHash,
+
+                dernierHash:
+                    lastTableHash,
+
+
+                // ---------------------------------------------
+                // HISTOIRE COMPLÈTE
+                // ---------------------------------------------
+                chronologie:
+                    tableJournal,
+
+
+                // ---------------------------------------------
+                // PAIEMENTS / TICKETS
+                // ---------------------------------------------
+                paiements:
+                    tablePayments,
+
+
+                // ---------------------------------------------
+                // ERREURS / CORRECTIONS / ANNULATIONS
+                // ---------------------------------------------
+                erreursCorrectionsAnnulations:
+                    incidents,
+
+
+                // ---------------------------------------------
+                // DERNIER ÉTAT CONNU DE LA TABLE
+                // ---------------------------------------------
+                etatActuelTable:
+                    tableSnapshot,
+
+
+                // ---------------------------------------------
+                // DERNIER PAIEMENT
+                // ---------------------------------------------
+                dernierPaiement:
+                    lastPayment
+            },
+
+
+            // =====================================================
+            // CONFIGURATION QR FISCAL
+            // Le PAD utilise creationEndpoint pour obtenir
+            // ensuite une vraie URL HTTPS /fiscal/table/TOKEN
+            // =====================================================
+            qrFiscal: {
+
+                enabled: true,
+
+                tableId:
+                    wantedTable || null,
+
+                ticketNumber:
+                    lastTicketNumber,
+
+                hashDossier:
+                    dossierHash,
+
+                dernierHash:
+                    lastTableHash,
+
+                creationEndpoint:
+                    "/api/fiscal/table-dossier/share",
+
+                statusEndpoint:
+                    "/api/fiscal/table-dossier/status",
+
+                publicRoute:
+                    "/fiscal/table/:token",
+
+                downloadRoute:
+                    "/api/fiscal/table-dossier/:token/download",
+
+                message:
+                    "Le QR doit contenir uniquement une URL HTTPS sécurisée vers le dossier fiscal."
             }
+
         });
 
     } catch (error) {
+
         console.error(
             "❌ Erreur export preuves légales :",
             error
         );
 
         return res.status(500).json({
+
             success: false,
-            error: "Erreur lors de l'export d'audit.",
-            details: process.env.NODE_ENV === "development"
-                ? error.message
-                : undefined
+
+            error:
+                "Erreur lors de l'export d'audit.",
+
+            code:
+                "FISCAL_AUDIT_EXPORT_ERROR",
+
+            details:
+                process.env.NODE_ENV === "development"
+                    ? error.message
+                    : undefined
+
         });
     }
 });
