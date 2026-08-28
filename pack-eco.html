@@ -7983,6 +7983,7 @@ function systemPrintHTML(lines,title="iCHEF",paperWidth=80){
   return `<!doctype html><html><head><meta charset="utf-8"><title>${esc(title)}</title><style>@page{size:${width}mm auto;margin:3mm}html,body{margin:0;padding:0;background:#fff;color:#000;font-family:Arial,sans-serif}.ticket{width:${width-6}mm;margin:0 auto}</style></head><body><div class="ticket">${body}</div>
 <!-- iCHEF FIX 2026-08-25 : affichage PAX du PLAN = CAPACITÉ ARCHITECTURALE de la table (t.pax), jamais PAX clients live. -->
 
+
 </body></html>`;
 }
 
@@ -8544,6 +8545,11 @@ function openMore(){
       <button class="action-btn" data-more="fiscal" style="border: 3px solid #9b8f00 !important; background: #fffdf0 !important; color: #111111 !important; min-height: 80px !important; font-size: 22px !important; font-weight: 950 !important;">
         SÉCURITÉ FISCALE FR / CH
       </button>
+
+      <button class="action-btn" data-more="fiscalfile" style="grid-column:1/-1;border:4px solid #111 !important;background:#111 !important;color:#fff !important;min-height:96px !important;font-size:26px !important;font-weight:1000 !important;letter-spacing:.5px !important;">
+        FICHIER FISCAL COMPLET
+        <span style="display:block;margin-top:6px;font-size:14px;font-weight:800;color:#e2b84e">VENTES · COMMANDES · ANNULATIONS · PAIEMENTS · ERREURS · VALIDATIONS · AUDIT</span>
+      </button>
       
       <button class="action-btn" data-more="admin" style="border: 3px solid #d4af37 !important; background: #fff9e8 !important; color: #5c4300 !important; min-height: 80px !important; font-size: 22px !important; font-weight: 950 !important;">
         ADMINISTRATION
@@ -8574,6 +8580,12 @@ function openMore(){
     if(a==="sync"){closeSheet();syncFull("manual")}
     if(a==="printer")openPrinterSetup();
     if(a==="fiscal")openFiscalAudit();
+    if(a==="fiscalfile"){
+      closeSheet();
+      const fiscalUrl=`fichier-fiscal.html?tenantID=${encodeURIComponent(STATE.tenantID||"")}`;
+      const opened=window.open(fiscalUrl,"_blank","noopener");
+      if(!opened)window.location.href=fiscalUrl;
+    }
     if(a==="admin"){
       closeSheet();
       window.location.href=`admin.html?tenantID=${encodeURIComponent(STATE.tenantID||"")}`;
@@ -12765,6 +12777,7 @@ window.finalizePartialPayment = async function(order, method, amount, paymentReq
         await printCashReceipt(order,{auto:false});
         if(typeof toast==='function')toast(`✓ Ticket ${ticketNumber} imprimé`);
       }catch(e){
+        void window.ichefFiscalTrace?.('RECEIPT_PRINT_ERROR','ERROR','ERROR','PRINT_FAILED',e?.message||'Échec impression',{ticketNumber,preference:pref});
         if(typeof toast==='function')toast(`Paiement OK · impression : ${e?.message||'échec'}`,true);
       }
       if(typeof closeSheet==='function')closeSheet(); if(typeof closeOrder==='function')closeOrder();
@@ -12791,9 +12804,9 @@ window.finalizePartialPayment = async function(order, method, amount, paymentReq
       try{await startStripePayment(order)}catch(e){if(typeof toast==='function')toast(e?.message||'Stripe indisponible',true)}
       return;
     }
-    if(!['CARTE','ESPÈCES','TWINT','AUTRE'].includes(method)){if(typeof toast==='function')toast('Moyen de paiement inconnu',true);return;}
-    if(!(inputAmount>0)){if(typeof toast==='function')toast('Montant invalide',true);return;}
-    if(inputAmount>remaining+0.01){if(typeof toast==='function')toast('Le montant dépasse le reste à payer',true);return;}
+    if(!['CARTE','ESPÈCES','TWINT','AUTRE'].includes(method)){void window.ichefFiscalTrace?.('PAYMENT_VALIDATION_ERROR','REFUSED','ERROR','METHOD_INVALID','Moyen de paiement inconnu',{method,inputAmount,remaining});if(typeof toast==='function')toast('Moyen de paiement inconnu',true);return;}
+    if(!(inputAmount>0)){void window.ichefFiscalTrace?.('PAYMENT_VALIDATION_ERROR','REFUSED','ERROR','AMOUNT_INVALID','Montant invalide',{method,inputAmount,remaining});if(typeof toast==='function')toast('Montant invalide',true);return;}
+    if(inputAmount>remaining+0.01){void window.ichefFiscalTrace?.('PAYMENT_VALIDATION_ERROR','REFUSED','ERROR','AMOUNT_OVER_REMAINING','Le montant dépasse le reste à payer',{method,inputAmount,remaining});if(typeof toast==='function')toast('Le montant dépasse le reste à payer',true);return;}
 
     openSheet(`TICKET · ${method}`,`
       <div class="big-state" style="border:4px solid #111!important;background:#111!important;color:#fff!important;border-radius:16px!important;padding:25px!important;margin-bottom:20px">
@@ -12830,11 +12843,18 @@ window.finalizePartialPayment = async function(order, method, amount, paymentReq
   };
 
   window.executeFinalPayment = async function(method,amount,ticketPref){
-    if(ICHEF_PAYMENT_BUSY){if(typeof toast==='function')toast('Paiement déjà en cours…');return;}
+    if(ICHEF_PAYMENT_BUSY){
+      void window.ichefFiscalTrace?.('PAYMENT_VALIDATION_ERROR','REFUSED','WARNING','DOUBLE_CLICK','Paiement déjà en cours',{method,amount,ticketPref});
+      if(typeof toast==='function')toast('Paiement déjà en cours…');return;
+    }
     ICHEF_PAYMENT_BUSY=true;
     try{
       const order=pCurrentOrder(); if(!order)throw new Error('Commande introuvable');
       await window.finalizePartialPayment(order,method,pRound(amount),pId('PART'));
+    }catch(e){
+      await window.ichefFiscalTrace?.('PAYMENT_CLIENT_ERROR','ERROR','ERROR','PAYMENT_FLOW_FAILED',e?.message||'Erreur paiement',{method,amount,ticketPref,tableId:STATE.currentTable||''});
+      if(typeof toast==='function')toast(e?.message||'Erreur paiement',true);
+      return false;
     }finally{ICHEF_PAYMENT_BUSY=false;}
   };
 
@@ -12955,6 +12975,49 @@ window.finalizePartialPayment = async function(order, method, amount, paymentReq
     if(btn)btn.onclick=ev=>{ev?.preventDefault?.();ev?.stopPropagation?.();window.openPayment();};
   });
   }, 3300);
+})();
+</script>
+
+<script id="ichef-fiscal-client-diagnostics">
+(function(){
+  window.ichefFiscalTrace=async function(type,status='INFO',severity='INFO',code='',message='',details={}){
+    try{
+      if(!globalThis.STATE?.authenticated || typeof paymentServerRequest!=='function')return null;
+      return await paymentServerRequest('/api/fiscal/event',{
+        method:'POST',
+        body:{
+          terminal:'PAD',
+          event:{
+            type,status,severity,code,message,
+            category:'CLIENT',
+            tableId:STATE.currentTable||details?.tableId||'',
+            ticketNumber:details?.ticketNumber||'',
+            operationId:details?.operationId||'',
+            terminal:'PAD',
+            deviceId:STATE.deviceId||'',
+            source:'iCHEF_PAD_ORDINATEUR',
+            timestamp:new Date().toISOString(),
+            details
+          }
+        }
+      });
+    }catch(_){return null;}
+  };
+  window.addEventListener('error',function(ev){
+    void window.ichefFiscalTrace?.(
+      'CLIENT_JAVASCRIPT_ERROR','ERROR','ERROR','JS_ERROR',
+      ev?.message||'Erreur JavaScript',
+      {filename:ev?.filename||'',line:ev?.lineno||0,column:ev?.colno||0}
+    );
+  });
+  window.addEventListener('unhandledrejection',function(ev){
+    const reason=ev?.reason;
+    void window.ichefFiscalTrace?.(
+      'CLIENT_PROMISE_ERROR','ERROR','ERROR','UNHANDLED_REJECTION',
+      reason?.message||String(reason||'Promesse rejetée'),
+      {stack:String(reason?.stack||'').slice(0,4000)}
+    );
+  });
 })();
 </script>
 </body>
