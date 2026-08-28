@@ -5168,18 +5168,79 @@ async function getState(){
   }
   return r.json();
 }
+function classifyTelephoneHistoryEvent(reason,data,key){
+  const r=text(reason||"").toLowerCase();
+  if(data===null||data==="DELETE")return "ORDER_ARCHIVED";
+  if(/annul|cancel|supprim/.test(r))return "ORDER_CANCELLED";
+  if(/erreur|correction|corrig|rectif/.test(r))return "ORDER_CORRECTED";
+  if(/paiement|payment|encaiss/.test(r))return "PAYMENT_STATE_CHANGED";
+  if(/servi|served/.test(r))return "ORDER_ITEM_SERVED";
+  if(/pr[eê]t|ready/.test(r))return "ORDER_ITEM_READY";
+  if(/cuisson|cooking/.test(r))return "ORDER_COOKING_UPDATED";
+  if(/allerg/.test(r))return "ORDER_ALLERGY_UPDATED";
+  if(/observ|note/.test(r))return "ORDER_OBSERVATION_UPDATED";
+  if(/convive|c[1-9]/.test(r))return "ORDER_GUEST_UPDATED";
+  if(/production|cuisine|bar|p[aâ]tisserie|envoy/.test(r))return "ORDER_SENT_PRODUCTION";
+  return "ORDER_UPDATED";
+}
+
+async function emitTelephoneFiscalEvent(type,details={}){
+  if(STATE.demo||!STATE.authenticated||!STATE.tenantID||!STATE.pin)return false;
+  try{
+    const event={
+      type:String(type||"TELEPHONE_EVENT").toUpperCase(),
+      module:"TELEPHONE",
+      source:"TELEPHONE_CLIENT",
+      tableId:details.tableId||STATE.currentTable||"",
+      terminal:"TELEPHONE",
+      deviceId:STATE.deviceId||"",
+      operator:STATE.role||"SERVEUR",
+      status:details.status||"INFO",
+      message:details.message||details.reason||"",
+      clientTime:new Date().toISOString(),
+      ...details
+    };
+    const r=await serverFetch("/api/fiscal/event",{
+      method:"POST",
+      body:JSON.stringify({
+        tenantID:STATE.tenantID,
+        pin:STATE.pin,
+        terminal:"TELEPHONE",
+        deviceId:STATE.deviceId,
+        event
+      })
+    });
+    return r.ok;
+  }catch(_){return false}
+}
+
 async function updateServer(key,data,auditReason="Mise à jour téléphone"){
   if(STATE.demo)return {success:true,persisted:true,demo:true};
   if(!STATE.authenticated)throw new Error("Session non authentifiée");
 
+  const eventType=classifyTelephoneHistoryEvent(auditReason,data,key);
   const body={
     tableId:key,
     order:data,
     pin:STATE.pin,
     deviceId:STATE.deviceId,
     terminal:"TELEPHONE",
+    terminalType:"TELEPHONE",
     operator:STATE.role||"SERVEUR",
-    auditReason
+    updatedBy:STATE.role||"SERVEUR",
+    actor:{
+      name:STATE.role||"SERVEUR",
+      actorId:STATE.role||"SERVEUR",
+      terminalType:"TELEPHONE",
+      deviceId:STATE.deviceId
+    },
+    eventType,
+    action:eventType,
+    reason:auditReason,
+    auditReason,
+    clientTime:new Date().toISOString(),
+    snapshot:data,
+    fullOrderSnapshot:data
   };
 
   const r=await serverFetch("/update-order?tenantID="+encodeURIComponent(STATE.tenantID),{
@@ -5214,6 +5275,37 @@ async function optimisticWrite(key,data,reason){
   const pending=stageLocalValue(key,data,reason);
   return enqueueVersionedWrite(key,pending);
 }
+
+/* ---------------- HISTORIQUE ERREURS TÉLÉPHONE ---------------- */
+let ICHEF_LAST_CLIENT_ERROR_FINGERPRINT="";
+function reportTelephoneClientError(kind,message,extra={}){
+  const fingerprint=String(kind)+"|"+String(message).slice(0,240);
+  if(fingerprint===ICHEF_LAST_CLIENT_ERROR_FINGERPRINT)return;
+  ICHEF_LAST_CLIENT_ERROR_FINGERPRINT=fingerprint;
+  setTimeout(()=>{ICHEF_LAST_CLIENT_ERROR_FINGERPRINT=""},1500);
+  emitTelephoneFiscalEvent("JS_ERROR",{
+    status:"ERROR",
+    message:String(message||"Erreur JavaScript téléphone").slice(0,1200),
+    errorKind:kind,
+    tableId:STATE.currentTable||"",
+    url:location.href,
+    ...extra
+  });
+}
+window.addEventListener("error",event=>{
+  reportTelephoneClientError("WINDOW_ERROR",event?.message||"Erreur JavaScript",{
+    filename:event?.filename||"",
+    lineno:event?.lineno||0,
+    colno:event?.colno||0,
+    stack:event?.error?.stack||""
+  });
+});
+window.addEventListener("unhandledrejection",event=>{
+  const reason=event?.reason;
+  reportTelephoneClientError("UNHANDLED_REJECTION",reason?.message||String(reason||"Promise rejetée"),{
+    stack:reason?.stack||""
+  });
+});
 
 /* ---------------- REALTIME ---------------- */
 function setConnection(label,kind="warn"){
@@ -12112,7 +12204,7 @@ const bottomFermer=document.getElementById("bottomFermer");
 if(bottomFermer)bottomFermer.addEventListener("click", closeOrder);
 
 }
-<script id="ichef-vat-auto-correction">
+/* iCHEF VAT AUTO CORRECTION */
 setTimeout(() => {
     if (typeof window.itemVatRate !== 'undefined') {
         window.itemVatRate = function(item) {
