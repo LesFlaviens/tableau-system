@@ -4095,16 +4095,2898 @@ app.post('/api/update-master-pin', async (req, res) => {
     } catch(e) { res.status(500).json({ success: false }); }
 });
 
-// Routes Stripe pour l'achat d'écrans et le portail de facturation
-app.post('/api/stripe/create-screen-upgrade-session', async (req, res) => {
-    res.json({ url: 'https://checkout.stripe.com/' });
+// ==========================================================
+// 📚 iCHEF — FICHIER FISCAL COMPLET
+// Commandes · ventes · paiements · annulations · erreurs
+// validations · audit · historique permanent
+// ==========================================================
+
+app.post('/api/fiscal-file/full', async (req, res) => {
+
+    try {
+
+        res.setHeader(
+            'Cache-Control',
+            'no-store, no-cache, must-revalidate'
+        );
+
+        // ==================================================
+        // 1. IDENTIFICATION
+        // ==================================================
+
+        const tenantID =
+            cleanString(
+                req.body?.tenantID ||
+                req.headers['x-ichef-tenant']
+            );
+
+        const pin =
+            String(
+                req.body?.pin ||
+                req.headers['x-ichef-pin'] ||
+                ''
+            ).trim();
+
+        const deviceId =
+            String(
+                req.body?.deviceId ||
+                req.headers['x-ichef-device'] ||
+                ''
+            ).trim();
+
+        const terminal =
+            String(
+                req.body?.terminal ||
+                'PAD_FISCAL_FILE'
+            ).trim();
+
+
+        if (!tenantID) {
+
+            return res.status(400).json({
+                success: false,
+                error: 'Restaurant manquant.'
+            });
+        }
+
+
+        if (!pin) {
+
+            return res.status(401).json({
+                success: false,
+                error: 'PIN restaurateur requis.'
+            });
+        }
+
+
+        // ==================================================
+        // 2. CONTRÔLE RESTAURATEUR
+        // ==================================================
+
+        const tenant =
+            await Tenant
+                .findOne({
+                    tenantID
+                })
+                .lean();
+
+
+        if (!tenant) {
+
+            return res.status(404).json({
+                success: false,
+                error: 'Restaurant introuvable.'
+            });
+        }
+
+
+        if (
+            String(tenant.pin || '').trim() !==
+            String(pin).trim()
+        ) {
+
+            await ichefFiscalDiagnostic(
+                req,
+                {
+                    tenantID,
+
+                    type:
+                        'FISCAL_ACCESS_ERROR',
+
+                    status:
+                        'REFUSED',
+
+                    severity:
+                        'WARNING',
+
+                    code:
+                        'MASTER_PIN_INVALID',
+
+                    message:
+                        'Tentative refusée d’accès au fichier fiscal.',
+
+                    terminal,
+
+                    details: {
+                        deviceId
+                    }
+                }
+            ).catch(() => {});
+
+
+            return res.status(403).json({
+                success: false,
+                error:
+                    'PIN restaurateur incorrect.'
+            });
+        }
+
+
+        // ==================================================
+        // 3. ÉTAT COMPLET DU RESTAURANT
+        // ==================================================
+
+        const state =
+            await AppState
+                .findOne({
+                    tenantID
+                })
+                .lean();
+
+
+        const activeOrders =
+            state?.activeOrders &&
+            typeof state.activeOrders === 'object'
+                ? state.activeOrders
+                : {};
+
+
+        // ==================================================
+        // 4. HISTORIQUE FINANCIER
+        // ==================================================
+
+        const financialCache =
+            Array.isArray(
+                activeOrders
+                    ?.FINANCIAL_HISTORY
+                    ?.data
+            )
+                ? activeOrders
+                    .FINANCIAL_HISTORY.data
+                : [];
+
+
+        // ==================================================
+        // 5. JOURNAL FISCAL PERMANENT
+        // ==================================================
+
+        const permanentRecords =
+            await FiscalRecord
+                .find({
+                    tenantID
+                })
+                .sort({
+                    createdAt: -1
+                })
+                .lean();
+
+
+        // ==================================================
+        // 6. AUDIT CRYPTOGRAPHIQUE
+        // ==================================================
+
+        const audit =
+            await AuditLog
+                .find({
+                    tenantID
+                })
+                .sort({
+                    timestamp: 1
+                })
+                .lean();
+
+
+        // ==================================================
+        // 7. CONTRÔLE INTÉGRITÉ HASH
+        // ==================================================
+
+        let auditChainValid = true;
+        let brokenAt = null;
+
+
+        for (
+            let i = 0;
+            i < audit.length;
+            i++
+        ) {
+
+            const current =
+                audit[i];
+
+
+            if (i > 0) {
+
+                const previous =
+                    audit[i - 1];
+
+
+                if (
+                    current.previousHash !==
+                    previous.currentHash
+                ) {
+
+                    auditChainValid = false;
+                    brokenAt = i;
+
+                    break;
+                }
+            }
+
+
+            const expectedHash =
+                crypto
+                    .createHash('sha256')
+                    .update(
+                        JSON.stringify({
+
+                            tenantID:
+                                current.tenantID,
+
+                            action:
+                                current.action,
+
+                            entityType:
+                                current.entityType,
+
+                            entityId:
+                                current.entityId,
+
+                            authorPin:
+                                current.authorPin,
+
+                            details:
+                                current.details,
+
+                            previousHash:
+                                current.previousHash
+                        })
+                    )
+                    .digest('hex');
+
+
+            if (
+                expectedHash !==
+                current.currentHash
+            ) {
+
+                auditChainValid = false;
+                brokenAt = i;
+
+                break;
+            }
+        }
+
+
+        // ==================================================
+        // 8. HISTORIQUE FINANCIER CONSOLIDÉ
+        // ==================================================
+
+        const financialMap =
+            new Map();
+
+
+        function financialKey(tx = {}) {
+
+            const strongId =
+                tx.operationId ||
+                tx.paymentRequestId ||
+                tx.ticketNumber ||
+                tx.id ||
+                tx.recordId;
+
+
+            if (strongId) {
+                return String(strongId);
+            }
+
+
+            return crypto
+                .createHash('sha256')
+                .update(
+                    JSON.stringify({
+                        type: tx.type,
+                        tableId: tx.tableId,
+                        amount:
+                            tx.total ??
+                            tx.amount ??
+                            0,
+                        date:
+                            tx.createdAt ||
+                            tx.date ||
+                            tx.timestamp
+                    })
+                )
+                .digest('hex');
+        }
+
+
+        financialCache.forEach(
+            tx => {
+
+                if (!tx) return;
+
+                financialMap.set(
+                    financialKey(tx),
+                    tx
+                );
+            }
+        );
+
+
+        permanentRecords
+            .filter(record => {
+
+                const type =
+                    String(
+                        record.type || ''
+                    ).toUpperCase();
+
+
+                return (
+                    type === 'SALE' ||
+                    type === 'PAYMENT' ||
+                    type === 'TRANSACTION' ||
+                    type === 'CORRECTION' ||
+                    type === 'REFUND' ||
+                    type === 'Z_CAISSE'
+                );
+            })
+            .forEach(record => {
+
+                const details =
+                    record.details &&
+                    typeof record.details ===
+                        'object'
+                        ? record.details
+                        : {};
+
+
+                const transaction = {
+
+                    ...details,
+
+                    recordId:
+                        record.recordId,
+
+                    type:
+                        details.type ||
+                        record.type,
+
+                    subtype:
+                        details.subtype ||
+                        record.subtype,
+
+                    tableId:
+                        details.tableId ||
+                        record.tableId,
+
+                    ticketNumber:
+                        details.ticketNumber ||
+                        record.ticketNumber,
+
+                    operationId:
+                        details.operationId ||
+                        record.operationId,
+
+                    amount:
+                        details.amount ??
+                        record.amount,
+
+                    currency:
+                        details.currency ||
+                        record.currency,
+
+                    status:
+                        details.status ||
+                        record.status,
+
+                    serverRecordedAt:
+                        details.serverRecordedAt ||
+                        record.createdAt
+                };
+
+
+                financialMap.set(
+                    financialKey(transaction),
+                    transaction
+                );
+            });
+
+
+        const financialHistory =
+            Array
+                .from(
+                    financialMap.values()
+                )
+                .sort(
+                    (a, b) => {
+
+                        const da =
+                            new Date(
+                                a.serverRecordedAt ||
+                                a.createdAt ||
+                                a.date ||
+                                a.timestamp ||
+                                0
+                            ).getTime();
+
+
+                        const db =
+                            new Date(
+                                b.serverRecordedAt ||
+                                b.createdAt ||
+                                b.date ||
+                                b.timestamp ||
+                                0
+                            ).getTime();
+
+
+                        return db - da;
+                    }
+                );
+
+
+        // ==================================================
+        // 9. RECONSTRUCTION DE TOUTES LES COMMANDES
+        // ==================================================
+
+        const orderSnapshots = [];
+
+        const orderSeen =
+            new Set();
+
+
+        function addOrderSnapshot(
+            order,
+            meta = {}
+        ) {
+
+            if (
+                !order ||
+                typeof order !== 'object'
+            ) {
+                return;
+            }
+
+
+            const items =
+                Array.isArray(order.items)
+                    ? order.items
+                    : [];
+
+
+            if (
+                !items.length &&
+                !order.total &&
+                !order.paymentDraft
+            ) {
+                return;
+            }
+
+
+            const tableId =
+                String(
+                    meta.tableId ||
+                    order.tableId ||
+                    order.table ||
+                    ''
+                );
+
+
+            const unique =
+                String(
+                    meta.recordId ||
+                    order.operationId ||
+                    order.paymentRequestId ||
+                    order.fiscalReceiptReference ||
+                    order.fiscalTicket
+                        ?.ticketNumber ||
+                    ''
+                ) +
+                '|' +
+                tableId +
+                '|' +
+                String(
+                    meta.createdAt ||
+                    order.closedAt ||
+                    order.updatedAt ||
+                    order.createdAt ||
+                    ''
+                );
+
+
+            if (
+                orderSeen.has(unique)
+            ) {
+                return;
+            }
+
+
+            orderSeen.add(unique);
+
+
+            orderSnapshots.push({
+
+                key:
+                    meta.recordId ||
+                    unique,
+
+                tableId,
+
+                status:
+                    order.status ||
+                    meta.status ||
+                    '',
+
+                total:
+                    Number(
+                        order.total ||
+                        meta.amount ||
+                        0
+                    ),
+
+                itemCount:
+                    items.length,
+
+                createdAt:
+                    order.createdAt ||
+                    meta.createdAt ||
+                    null,
+
+                updatedAt:
+                    order.updatedAt ||
+                    meta.createdAt ||
+                    null,
+
+                closedAt:
+                    order.closedAt ||
+                    order.fiscalFinalizedAt ||
+                    null,
+
+                fiscalReceiptReference:
+                    order.fiscalReceiptReference ||
+                    order.fiscalTicket
+                        ?.ticketNumber ||
+                    meta.ticketNumber ||
+                    '',
+
+                order:
+                    order
+            });
+        }
+
+
+        // --------------------------------------------------
+        // Commandes encore présentes
+        // --------------------------------------------------
+
+        Object.entries(
+            activeOrders
+        ).forEach(
+            ([key, value]) => {
+
+                if (
+                    key ===
+                    'FINANCIAL_HISTORY'
+                ) {
+                    return;
+                }
+
+
+                if (
+                    !value ||
+                    typeof value !== 'object'
+                ) {
+                    return;
+                }
+
+
+                const possibleOrder =
+                    value.data &&
+                    typeof value.data ===
+                        'object' &&
+                    !Array.isArray(
+                        value.data
+                    )
+                        ? value.data
+                        : value;
+
+
+                addOrderSnapshot(
+                    possibleOrder,
+                    {
+                        tableId: key,
+                        recordId:
+                            'LIVE_' + key
+                    }
+                );
+            }
+        );
+
+
+        // --------------------------------------------------
+        // Commandes archivées avec les ventes
+        // --------------------------------------------------
+
+        financialHistory.forEach(
+            tx => {
+
+                const order =
+                    tx.orderSnapshot ||
+                    tx.snapshot ||
+                    tx.order ||
+                    null;
+
+
+                addOrderSnapshot(
+                    order,
+                    {
+                        tableId:
+                            tx.tableId,
+
+                        recordId:
+                            tx.operationId ||
+                            tx.ticketNumber,
+
+                        ticketNumber:
+                            tx.ticketNumber,
+
+                        amount:
+                            tx.total ??
+                            tx.amount,
+
+                        status:
+                            tx.status,
+
+                        createdAt:
+                            tx.serverRecordedAt ||
+                            tx.createdAt ||
+                            tx.date
+                    }
+                );
+            }
+        );
+
+
+        // --------------------------------------------------
+        // Commandes du journal permanent
+        // --------------------------------------------------
+
+        permanentRecords.forEach(
+            record => {
+
+                const details =
+                    record.details || {};
+
+
+                const order =
+                    details.orderSnapshot ||
+                    details.order ||
+                    details.after ||
+                    details.snapshot ||
+                    null;
+
+
+                addOrderSnapshot(
+                    order,
+                    {
+                        tableId:
+                            record.tableId,
+
+                        recordId:
+                            record.recordId,
+
+                        ticketNumber:
+                            record.ticketNumber,
+
+                        amount:
+                            record.amount,
+
+                        status:
+                            record.status,
+
+                        createdAt:
+                            record.createdAt
+                    }
+                );
+            }
+        );
+
+
+        orderSnapshots.sort(
+            (a, b) => {
+
+                const da =
+                    new Date(
+                        a.closedAt ||
+                        a.updatedAt ||
+                        a.createdAt ||
+                        0
+                    ).getTime();
+
+
+                const db =
+                    new Date(
+                        b.closedAt ||
+                        b.updatedAt ||
+                        b.createdAt ||
+                        0
+                    ).getTime();
+
+
+                return db - da;
+            }
+        );
+
+
+        // ==================================================
+        // 10. ANNULATIONS
+        // ==================================================
+
+        const cancelledItems = [];
+
+
+        function scanCancelled(
+            order,
+            tableId = '',
+            source = ''
+        ) {
+
+            if (
+                !order ||
+                typeof order !== 'object'
+            ) {
+                return;
+            }
+
+
+            const items =
+                Array.isArray(order.items)
+                    ? order.items
+                    : [];
+
+
+            items.forEach(
+                item => {
+
+                    const status =
+                        String(
+                            item?.status ||
+                            item?.sequenceStatus ||
+                            ''
+                        )
+                            .toUpperCase();
+
+
+                    const cancelled =
+                        item?.cancelled === true ||
+                        status.includes('CANCEL') ||
+                        status.includes('ANNUL');
+
+
+                    if (!cancelled) {
+                        return;
+                    }
+
+
+                    cancelledItems.push({
+
+                        ...item,
+
+                        tableId:
+                            item.tableId ||
+                            tableId,
+
+                        source,
+
+                        cancelledAt:
+                            item.cancelledAt ||
+                            item.updatedAt ||
+                            order.updatedAt ||
+                            order.closedAt ||
+                            null,
+
+                        cancelReason:
+                            item.cancelReason ||
+                            item.cancellationReason ||
+                            item.reason ||
+                            'Motif non renseigné',
+
+                        cancelledBy:
+                            item.cancelledBy ||
+                            item.updatedBy ||
+                            order.updatedBy ||
+                            ''
+                    });
+                }
+            );
+        }
+
+
+        orderSnapshots.forEach(
+            snapshot =>
+                scanCancelled(
+                    snapshot.order,
+                    snapshot.tableId,
+                    snapshot.key
+                )
+        );
+
+
+        permanentRecords
+            .filter(record => {
+
+                const type =
+                    String(
+                        record.type || ''
+                    ).toUpperCase();
+
+
+                return (
+                    type.includes('CANCEL') ||
+                    type.includes('ANNUL')
+                );
+            })
+            .forEach(
+                record => {
+
+                    cancelledItems.push({
+
+                        ...(record.details || {}),
+
+                        tableId:
+                            record.tableId,
+
+                        recordId:
+                            record.recordId,
+
+                        cancelledAt:
+                            record.createdAt,
+
+                        cancelledBy:
+                            record.operator
+                    });
+                }
+            );
+
+
+        // ==================================================
+        // 11. ERREURS ET VALIDATIONS
+        // ==================================================
+
+        const diagnostics =
+            permanentRecords
+                .filter(record => {
+
+                    const type =
+                        String(
+                            record.type || ''
+                        )
+                            .toUpperCase();
+
+
+                    const severity =
+                        String(
+                            record.details
+                                ?.severity ||
+                            ''
+                        )
+                            .toUpperCase();
+
+
+                    return (
+                        type.includes('ERROR') ||
+                        type.includes('DIAGNOSTIC') ||
+                        type.includes('VALIDATION') ||
+                        type.includes('REFUSED') ||
+                        severity === 'ERROR' ||
+                        severity === 'CRITICAL' ||
+                        severity === 'WARNING'
+                    );
+                })
+                .map(record => ({
+
+                    recordId:
+                        record.recordId,
+
+                    type:
+                        record.type,
+
+                    code:
+                        record.subtype ||
+                        record.details
+                            ?.code ||
+                        '',
+
+                    status:
+                        record.status,
+
+                    severity:
+                        record.details
+                            ?.severity ||
+                        '',
+
+                    message:
+                        record.details
+                            ?.message ||
+                        record.type,
+
+                    tableId:
+                        record.tableId,
+
+                    ticketNumber:
+                        record.ticketNumber,
+
+                    actor:
+                        record.operator,
+
+                    terminal:
+                        record.terminal,
+
+                    deviceId:
+                        record.deviceId,
+
+                    timestamp:
+                        record.createdAt,
+
+                    details:
+                        record.details
+                }));
+
+
+        // ==================================================
+        // 12. ÉVÉNEMENTS FISCAUX BRUTS
+        // ==================================================
+
+        const fiscalEvents =
+            permanentRecords.map(
+                record => ({
+
+                    key:
+                        record.recordId,
+
+                    value: {
+
+                        ...(record.details || {}),
+
+                        recordId:
+                            record.recordId,
+
+                        type:
+                            record.type,
+
+                        subtype:
+                            record.subtype,
+
+                        tableId:
+                            record.tableId,
+
+                        ticketNumber:
+                            record.ticketNumber,
+
+                        operationId:
+                            record.operationId,
+
+                        status:
+                            record.status,
+
+                        amount:
+                            record.amount,
+
+                        currency:
+                            record.currency,
+
+                        operator:
+                            record.operator,
+
+                        terminal:
+                            record.terminal,
+
+                        deviceId:
+                            record.deviceId,
+
+                        createdAt:
+                            record.createdAt
+                    }
+                })
+            );
+
+
+        // ==================================================
+        // 13. MONNAIE
+        // ==================================================
+
+        const currency =
+            String(
+
+                activeOrders
+                    ?.SETTINGS_MASTER
+                    ?.data
+                    ?.currency ||
+
+                activeOrders
+                    ?.FISCAL_CONFIG
+                    ?.data
+                    ?.currency ||
+
+                tenant?.config
+                    ?.currency ||
+
+                'CHF'
+            )
+                .toUpperCase();
+
+
+        // ==================================================
+        // 14. RÉSUMÉ FINANCIER
+        // ==================================================
+
+        let grossSales = 0;
+        let corrections = 0;
+
+        let saleCount = 0;
+        let correctionCount = 0;
+
+
+        financialHistory.forEach(
+            tx => {
+
+                const type =
+                    String(
+                        tx.type ||
+                        ''
+                    )
+                        .toUpperCase();
+
+
+                const amount =
+                    Number(
+                        tx.totalTTC ??
+                        tx.total ??
+                        tx.amount ??
+                        0
+                    );
+
+
+                const isCorrection =
+                    type.includes(
+                        'CORRECTION'
+                    ) ||
+                    type.includes(
+                        'REFUND'
+                    ) ||
+                    amount < 0;
+
+
+                if (isCorrection) {
+
+                    corrections +=
+                        amount > 0
+                            ? -amount
+                            : amount;
+
+                    correctionCount++;
+
+                } else {
+
+                    grossSales +=
+                        amount;
+
+                    saleCount++;
+                }
+            }
+        );
+
+
+        const errorCount =
+            diagnostics.filter(
+                diagnostic => {
+
+                    const severity =
+                        String(
+                            diagnostic.severity ||
+                            ''
+                        )
+                            .toUpperCase();
+
+
+                    const type =
+                        String(
+                            diagnostic.type ||
+                            ''
+                        )
+                            .toUpperCase();
+
+
+                    return (
+                        severity === 'ERROR' ||
+                        severity === 'CRITICAL' ||
+                        type.includes('ERROR')
+                    );
+                }
+            ).length;
+
+
+        const validationCount =
+            Math.max(
+                0,
+                diagnostics.length -
+                errorCount
+            );
+
+
+        // ==================================================
+        // 15. ENREGISTRE LA CONSULTATION DU FICHIER
+        // ==================================================
+
+        await ichefWriteFiscalRecord({
+
+            tenantID,
+
+            type:
+                'FISCAL_FILE_ACCESS',
+
+            subtype:
+                'FULL_READ',
+
+            status:
+                'SUCCESS',
+
+            operator:
+                'RESTAURATEUR',
+
+            terminal,
+
+            deviceId,
+
+            details: {
+
+                extractedAt:
+                    new Date()
+                        .toISOString(),
+
+                financialRecords:
+                    financialHistory.length,
+
+                permanentRecords:
+                    permanentRecords.length,
+
+                auditRecords:
+                    audit.length,
+
+                integrity:
+                    auditChainValid
+            }
+        });
+
+
+        // ==================================================
+        // 16. RÉPONSE FINALE AU PAD
+        // ==================================================
+
+        return res.json({
+
+            success: true,
+
+
+            tenant: {
+
+                tenantID,
+
+                clientName:
+                    tenant.clientName ||
+                    tenantID,
+
+                currency,
+
+                extractedAt:
+                    new Date()
+                        .toISOString()
+            },
+
+
+            summary: {
+
+                grossSales:
+                    Number(
+                        grossSales.toFixed(2)
+                    ),
+
+                corrections:
+                    Number(
+                        corrections.toFixed(2)
+                    ),
+
+                netSales:
+                    Number(
+                        (
+                            grossSales +
+                            corrections
+                        ).toFixed(2)
+                    ),
+
+                saleCount,
+
+                correctionCount,
+
+                orderSnapshotCount:
+                    orderSnapshots.length,
+
+                cancelledItemCount:
+                    cancelledItems.length,
+
+                errorCount,
+
+                validationCount,
+
+                auditOperationCount:
+                    audit.length,
+
+                permanentRecordCount:
+                    permanentRecords.length,
+
+                financialRecordCount:
+                    financialHistory.length
+            },
+
+
+            integrity: {
+
+                auditChainValid,
+
+                auditCount:
+                    audit.length,
+
+                brokenAt,
+
+                lastHash:
+                    audit.length
+                        ? audit[
+                            audit.length - 1
+                        ].currentHash
+                        : 'GENESIS_BLOCK_0000000000000000'
+            },
+
+
+            financialHistory,
+
+            orderSnapshots,
+
+            cancelledItems,
+
+            diagnostics,
+
+            audit,
+
+            fiscalEvents,
+
+            permanentRecords
+        });
+
+
+    } catch (error) {
+
+        console.error(
+            '[iCHEF FICHIER FISCAL COMPLET]',
+            error
+        );
+
+
+        await ichefFiscalDiagnostic(
+            req,
+            {
+
+                type:
+                    'FISCAL_FILE_ERROR',
+
+                status:
+                    'ERROR',
+
+                severity:
+                    'CRITICAL',
+
+                code:
+                    'FULL_FILE_EXCEPTION',
+
+                message:
+                    error?.message ||
+                    'Erreur fichier fiscal.'
+            }
+        ).catch(() => {});
+
+
+        return res
+            .status(500)
+            .json({
+
+                success: false,
+
+                error:
+                    error?.message ||
+                    'Impossible de charger le fichier fiscal.'
+            });
+    }
 });
 
-app.post('/api/stripe/create-customer-portal-session', async (req, res) => {
-    res.json({ url: 'https://billing.stripe.com/' });
+
+// ==========================================================
+// 💳 ROUTES STRIPE
+// Achat d'écrans et portail facturation
+// ==========================================================
+
+app.post(
+    '/api/stripe/create-screen-upgrade-session',
+    async (req, res) => {
+
+        try {
+
+            /*
+             * Ta logique Stripe réelle peut rester ici.
+             * Pour l'instant on conserve le comportement
+             * existant de ton serveur.
+             */
+
+            return res.json({
+                success: true,
+                url:
+                    'https://checkout.stripe.com/'
+            });
+
+        } catch (error) {
+
+            console.error(
+                'Erreur Stripe upgrade écrans :',
+                error
+            );
+
+            return res.status(500).json({
+                success: false,
+                error:
+                    error.message ||
+                    'Erreur Stripe.'
+            });
+        }
+    }
+);
+
+
+app.post(
+    '/api/stripe/create-customer-portal-session',
+    async (req, res) => {
+
+        try {
+
+            /*
+             * Ta logique Stripe Billing réelle
+             * peut rester ici.
+             */
+
+            return res.json({
+                success: true,
+                url:
+                    'https://billing.stripe.com/'
+            });
+
+        } catch (error) {
+
+            console.error(
+                'Erreur Stripe portail client :',
+                error
+            );
+
+            return res.status(500).json({
+                success: false,
+                error:
+                    error.message ||
+                    'Erreur portail Stripe.'
+            });
+        }
+    }
+);
+
+
+// ==========================================================
+// 🚀 DÉMARRAGE DU SERVEUR
+// DOIT ÊTRE LE DERNIER BLOC DU server.js
+// ==========================================================
+
+server.listen(
+    PORT,
+    () => {
+
+        console.log(
+            "✅ L'Empire iCHEF est en ligne."
+        );
+
+        console.log(
+            "✅ Socket.IO activé."
+        );
+
+        console.log(
+            "✅ Moteur fiscal MongoDB activé."
+        );
+
+        console.log(
+            "✅ Fichier fiscal permanent activé."
+        );
+
+        console.log(
+            "✅ Audit cryptographique activé."
+        );
+
+        console.log(
+            "✅ Serveur sécurisé sur le port " +
+            PORT
+        );
+    }
+);// ==========================================================
+// 📚 iCHEF — FICHIER FISCAL COMPLET
+// Commandes · ventes · paiements · annulations · erreurs
+// validations · audit · historique permanent
+// ==========================================================
+
+app.post('/api/fiscal-file/full', async (req, res) => {
+
+    try {
+
+        res.setHeader(
+            'Cache-Control',
+            'no-store, no-cache, must-revalidate'
+        );
+
+        // ==================================================
+        // 1. IDENTIFICATION
+        // ==================================================
+
+        const tenantID =
+            cleanString(
+                req.body?.tenantID ||
+                req.headers['x-ichef-tenant']
+            );
+
+        const pin =
+            String(
+                req.body?.pin ||
+                req.headers['x-ichef-pin'] ||
+                ''
+            ).trim();
+
+        const deviceId =
+            String(
+                req.body?.deviceId ||
+                req.headers['x-ichef-device'] ||
+                ''
+            ).trim();
+
+        const terminal =
+            String(
+                req.body?.terminal ||
+                'PAD_FISCAL_FILE'
+            ).trim();
+
+
+        if (!tenantID) {
+
+            return res.status(400).json({
+                success: false,
+                error: 'Restaurant manquant.'
+            });
+        }
+
+
+        if (!pin) {
+
+            return res.status(401).json({
+                success: false,
+                error: 'PIN restaurateur requis.'
+            });
+        }
+
+
+        // ==================================================
+        // 2. CONTRÔLE RESTAURATEUR
+        // ==================================================
+
+        const tenant =
+            await Tenant
+                .findOne({
+                    tenantID
+                })
+                .lean();
+
+
+        if (!tenant) {
+
+            return res.status(404).json({
+                success: false,
+                error: 'Restaurant introuvable.'
+            });
+        }
+
+
+        if (
+            String(tenant.pin || '').trim() !==
+            String(pin).trim()
+        ) {
+
+            await ichefFiscalDiagnostic(
+                req,
+                {
+                    tenantID,
+
+                    type:
+                        'FISCAL_ACCESS_ERROR',
+
+                    status:
+                        'REFUSED',
+
+                    severity:
+                        'WARNING',
+
+                    code:
+                        'MASTER_PIN_INVALID',
+
+                    message:
+                        'Tentative refusée d’accès au fichier fiscal.',
+
+                    terminal,
+
+                    details: {
+                        deviceId
+                    }
+                }
+            ).catch(() => {});
+
+
+            return res.status(403).json({
+                success: false,
+                error:
+                    'PIN restaurateur incorrect.'
+            });
+        }
+
+
+        // ==================================================
+        // 3. ÉTAT COMPLET DU RESTAURANT
+        // ==================================================
+
+        const state =
+            await AppState
+                .findOne({
+                    tenantID
+                })
+                .lean();
+
+
+        const activeOrders =
+            state?.activeOrders &&
+            typeof state.activeOrders === 'object'
+                ? state.activeOrders
+                : {};
+
+
+        // ==================================================
+        // 4. HISTORIQUE FINANCIER
+        // ==================================================
+
+        const financialCache =
+            Array.isArray(
+                activeOrders
+                    ?.FINANCIAL_HISTORY
+                    ?.data
+            )
+                ? activeOrders
+                    .FINANCIAL_HISTORY.data
+                : [];
+
+
+        // ==================================================
+        // 5. JOURNAL FISCAL PERMANENT
+        // ==================================================
+
+        const permanentRecords =
+            await FiscalRecord
+                .find({
+                    tenantID
+                })
+                .sort({
+                    createdAt: -1
+                })
+                .lean();
+
+
+        // ==================================================
+        // 6. AUDIT CRYPTOGRAPHIQUE
+        // ==================================================
+
+        const audit =
+            await AuditLog
+                .find({
+                    tenantID
+                })
+                .sort({
+                    timestamp: 1
+                })
+                .lean();
+
+
+        // ==================================================
+        // 7. CONTRÔLE INTÉGRITÉ HASH
+        // ==================================================
+
+        let auditChainValid = true;
+        let brokenAt = null;
+
+
+        for (
+            let i = 0;
+            i < audit.length;
+            i++
+        ) {
+
+            const current =
+                audit[i];
+
+
+            if (i > 0) {
+
+                const previous =
+                    audit[i - 1];
+
+
+                if (
+                    current.previousHash !==
+                    previous.currentHash
+                ) {
+
+                    auditChainValid = false;
+                    brokenAt = i;
+
+                    break;
+                }
+            }
+
+
+            const expectedHash =
+                crypto
+                    .createHash('sha256')
+                    .update(
+                        JSON.stringify({
+
+                            tenantID:
+                                current.tenantID,
+
+                            action:
+                                current.action,
+
+                            entityType:
+                                current.entityType,
+
+                            entityId:
+                                current.entityId,
+
+                            authorPin:
+                                current.authorPin,
+
+                            details:
+                                current.details,
+
+                            previousHash:
+                                current.previousHash
+                        })
+                    )
+                    .digest('hex');
+
+
+            if (
+                expectedHash !==
+                current.currentHash
+            ) {
+
+                auditChainValid = false;
+                brokenAt = i;
+
+                break;
+            }
+        }
+
+
+        // ==================================================
+        // 8. HISTORIQUE FINANCIER CONSOLIDÉ
+        // ==================================================
+
+        const financialMap =
+            new Map();
+
+
+        function financialKey(tx = {}) {
+
+            const strongId =
+                tx.operationId ||
+                tx.paymentRequestId ||
+                tx.ticketNumber ||
+                tx.id ||
+                tx.recordId;
+
+
+            if (strongId) {
+                return String(strongId);
+            }
+
+
+            return crypto
+                .createHash('sha256')
+                .update(
+                    JSON.stringify({
+                        type: tx.type,
+                        tableId: tx.tableId,
+                        amount:
+                            tx.total ??
+                            tx.amount ??
+                            0,
+                        date:
+                            tx.createdAt ||
+                            tx.date ||
+                            tx.timestamp
+                    })
+                )
+                .digest('hex');
+        }
+
+
+        financialCache.forEach(
+            tx => {
+
+                if (!tx) return;
+
+                financialMap.set(
+                    financialKey(tx),
+                    tx
+                );
+            }
+        );
+
+
+        permanentRecords
+            .filter(record => {
+
+                const type =
+                    String(
+                        record.type || ''
+                    ).toUpperCase();
+
+
+                return (
+                    type === 'SALE' ||
+                    type === 'PAYMENT' ||
+                    type === 'TRANSACTION' ||
+                    type === 'CORRECTION' ||
+                    type === 'REFUND' ||
+                    type === 'Z_CAISSE'
+                );
+            })
+            .forEach(record => {
+
+                const details =
+                    record.details &&
+                    typeof record.details ===
+                        'object'
+                        ? record.details
+                        : {};
+
+
+                const transaction = {
+
+                    ...details,
+
+                    recordId:
+                        record.recordId,
+
+                    type:
+                        details.type ||
+                        record.type,
+
+                    subtype:
+                        details.subtype ||
+                        record.subtype,
+
+                    tableId:
+                        details.tableId ||
+                        record.tableId,
+
+                    ticketNumber:
+                        details.ticketNumber ||
+                        record.ticketNumber,
+
+                    operationId:
+                        details.operationId ||
+                        record.operationId,
+
+                    amount:
+                        details.amount ??
+                        record.amount,
+
+                    currency:
+                        details.currency ||
+                        record.currency,
+
+                    status:
+                        details.status ||
+                        record.status,
+
+                    serverRecordedAt:
+                        details.serverRecordedAt ||
+                        record.createdAt
+                };
+
+
+                financialMap.set(
+                    financialKey(transaction),
+                    transaction
+                );
+            });
+
+
+        const financialHistory =
+            Array
+                .from(
+                    financialMap.values()
+                )
+                .sort(
+                    (a, b) => {
+
+                        const da =
+                            new Date(
+                                a.serverRecordedAt ||
+                                a.createdAt ||
+                                a.date ||
+                                a.timestamp ||
+                                0
+                            ).getTime();
+
+
+                        const db =
+                            new Date(
+                                b.serverRecordedAt ||
+                                b.createdAt ||
+                                b.date ||
+                                b.timestamp ||
+                                0
+                            ).getTime();
+
+
+                        return db - da;
+                    }
+                );
+
+
+        // ==================================================
+        // 9. RECONSTRUCTION DE TOUTES LES COMMANDES
+        // ==================================================
+
+        const orderSnapshots = [];
+
+        const orderSeen =
+            new Set();
+
+
+        function addOrderSnapshot(
+            order,
+            meta = {}
+        ) {
+
+            if (
+                !order ||
+                typeof order !== 'object'
+            ) {
+                return;
+            }
+
+
+            const items =
+                Array.isArray(order.items)
+                    ? order.items
+                    : [];
+
+
+            if (
+                !items.length &&
+                !order.total &&
+                !order.paymentDraft
+            ) {
+                return;
+            }
+
+
+            const tableId =
+                String(
+                    meta.tableId ||
+                    order.tableId ||
+                    order.table ||
+                    ''
+                );
+
+
+            const unique =
+                String(
+                    meta.recordId ||
+                    order.operationId ||
+                    order.paymentRequestId ||
+                    order.fiscalReceiptReference ||
+                    order.fiscalTicket
+                        ?.ticketNumber ||
+                    ''
+                ) +
+                '|' +
+                tableId +
+                '|' +
+                String(
+                    meta.createdAt ||
+                    order.closedAt ||
+                    order.updatedAt ||
+                    order.createdAt ||
+                    ''
+                );
+
+
+            if (
+                orderSeen.has(unique)
+            ) {
+                return;
+            }
+
+
+            orderSeen.add(unique);
+
+
+            orderSnapshots.push({
+
+                key:
+                    meta.recordId ||
+                    unique,
+
+                tableId,
+
+                status:
+                    order.status ||
+                    meta.status ||
+                    '',
+
+                total:
+                    Number(
+                        order.total ||
+                        meta.amount ||
+                        0
+                    ),
+
+                itemCount:
+                    items.length,
+
+                createdAt:
+                    order.createdAt ||
+                    meta.createdAt ||
+                    null,
+
+                updatedAt:
+                    order.updatedAt ||
+                    meta.createdAt ||
+                    null,
+
+                closedAt:
+                    order.closedAt ||
+                    order.fiscalFinalizedAt ||
+                    null,
+
+                fiscalReceiptReference:
+                    order.fiscalReceiptReference ||
+                    order.fiscalTicket
+                        ?.ticketNumber ||
+                    meta.ticketNumber ||
+                    '',
+
+                order:
+                    order
+            });
+        }
+
+
+        // --------------------------------------------------
+        // Commandes encore présentes
+        // --------------------------------------------------
+
+        Object.entries(
+            activeOrders
+        ).forEach(
+            ([key, value]) => {
+
+                if (
+                    key ===
+                    'FINANCIAL_HISTORY'
+                ) {
+                    return;
+                }
+
+
+                if (
+                    !value ||
+                    typeof value !== 'object'
+                ) {
+                    return;
+                }
+
+
+                const possibleOrder =
+                    value.data &&
+                    typeof value.data ===
+                        'object' &&
+                    !Array.isArray(
+                        value.data
+                    )
+                        ? value.data
+                        : value;
+
+
+                addOrderSnapshot(
+                    possibleOrder,
+                    {
+                        tableId: key,
+                        recordId:
+                            'LIVE_' + key
+                    }
+                );
+            }
+        );
+
+
+        // --------------------------------------------------
+        // Commandes archivées avec les ventes
+        // --------------------------------------------------
+
+        financialHistory.forEach(
+            tx => {
+
+                const order =
+                    tx.orderSnapshot ||
+                    tx.snapshot ||
+                    tx.order ||
+                    null;
+
+
+                addOrderSnapshot(
+                    order,
+                    {
+                        tableId:
+                            tx.tableId,
+
+                        recordId:
+                            tx.operationId ||
+                            tx.ticketNumber,
+
+                        ticketNumber:
+                            tx.ticketNumber,
+
+                        amount:
+                            tx.total ??
+                            tx.amount,
+
+                        status:
+                            tx.status,
+
+                        createdAt:
+                            tx.serverRecordedAt ||
+                            tx.createdAt ||
+                            tx.date
+                    }
+                );
+            }
+        );
+
+
+        // --------------------------------------------------
+        // Commandes du journal permanent
+        // --------------------------------------------------
+
+        permanentRecords.forEach(
+            record => {
+
+                const details =
+                    record.details || {};
+
+
+                const order =
+                    details.orderSnapshot ||
+                    details.order ||
+                    details.after ||
+                    details.snapshot ||
+                    null;
+
+
+                addOrderSnapshot(
+                    order,
+                    {
+                        tableId:
+                            record.tableId,
+
+                        recordId:
+                            record.recordId,
+
+                        ticketNumber:
+                            record.ticketNumber,
+
+                        amount:
+                            record.amount,
+
+                        status:
+                            record.status,
+
+                        createdAt:
+                            record.createdAt
+                    }
+                );
+            }
+        );
+
+
+        orderSnapshots.sort(
+            (a, b) => {
+
+                const da =
+                    new Date(
+                        a.closedAt ||
+                        a.updatedAt ||
+                        a.createdAt ||
+                        0
+                    ).getTime();
+
+
+                const db =
+                    new Date(
+                        b.closedAt ||
+                        b.updatedAt ||
+                        b.createdAt ||
+                        0
+                    ).getTime();
+
+
+                return db - da;
+            }
+        );
+
+
+        // ==================================================
+        // 10. ANNULATIONS
+        // ==================================================
+
+        const cancelledItems = [];
+
+
+        function scanCancelled(
+            order,
+            tableId = '',
+            source = ''
+        ) {
+
+            if (
+                !order ||
+                typeof order !== 'object'
+            ) {
+                return;
+            }
+
+
+            const items =
+                Array.isArray(order.items)
+                    ? order.items
+                    : [];
+
+
+            items.forEach(
+                item => {
+
+                    const status =
+                        String(
+                            item?.status ||
+                            item?.sequenceStatus ||
+                            ''
+                        )
+                            .toUpperCase();
+
+
+                    const cancelled =
+                        item?.cancelled === true ||
+                        status.includes('CANCEL') ||
+                        status.includes('ANNUL');
+
+
+                    if (!cancelled) {
+                        return;
+                    }
+
+
+                    cancelledItems.push({
+
+                        ...item,
+
+                        tableId:
+                            item.tableId ||
+                            tableId,
+
+                        source,
+
+                        cancelledAt:
+                            item.cancelledAt ||
+                            item.updatedAt ||
+                            order.updatedAt ||
+                            order.closedAt ||
+                            null,
+
+                        cancelReason:
+                            item.cancelReason ||
+                            item.cancellationReason ||
+                            item.reason ||
+                            'Motif non renseigné',
+
+                        cancelledBy:
+                            item.cancelledBy ||
+                            item.updatedBy ||
+                            order.updatedBy ||
+                            ''
+                    });
+                }
+            );
+        }
+
+
+        orderSnapshots.forEach(
+            snapshot =>
+                scanCancelled(
+                    snapshot.order,
+                    snapshot.tableId,
+                    snapshot.key
+                )
+        );
+
+
+        permanentRecords
+            .filter(record => {
+
+                const type =
+                    String(
+                        record.type || ''
+                    ).toUpperCase();
+
+
+                return (
+                    type.includes('CANCEL') ||
+                    type.includes('ANNUL')
+                );
+            })
+            .forEach(
+                record => {
+
+                    cancelledItems.push({
+
+                        ...(record.details || {}),
+
+                        tableId:
+                            record.tableId,
+
+                        recordId:
+                            record.recordId,
+
+                        cancelledAt:
+                            record.createdAt,
+
+                        cancelledBy:
+                            record.operator
+                    });
+                }
+            );
+
+
+        // ==================================================
+        // 11. ERREURS ET VALIDATIONS
+        // ==================================================
+
+        const diagnostics =
+            permanentRecords
+                .filter(record => {
+
+                    const type =
+                        String(
+                            record.type || ''
+                        )
+                            .toUpperCase();
+
+
+                    const severity =
+                        String(
+                            record.details
+                                ?.severity ||
+                            ''
+                        )
+                            .toUpperCase();
+
+
+                    return (
+                        type.includes('ERROR') ||
+                        type.includes('DIAGNOSTIC') ||
+                        type.includes('VALIDATION') ||
+                        type.includes('REFUSED') ||
+                        severity === 'ERROR' ||
+                        severity === 'CRITICAL' ||
+                        severity === 'WARNING'
+                    );
+                })
+                .map(record => ({
+
+                    recordId:
+                        record.recordId,
+
+                    type:
+                        record.type,
+
+                    code:
+                        record.subtype ||
+                        record.details
+                            ?.code ||
+                        '',
+
+                    status:
+                        record.status,
+
+                    severity:
+                        record.details
+                            ?.severity ||
+                        '',
+
+                    message:
+                        record.details
+                            ?.message ||
+                        record.type,
+
+                    tableId:
+                        record.tableId,
+
+                    ticketNumber:
+                        record.ticketNumber,
+
+                    actor:
+                        record.operator,
+
+                    terminal:
+                        record.terminal,
+
+                    deviceId:
+                        record.deviceId,
+
+                    timestamp:
+                        record.createdAt,
+
+                    details:
+                        record.details
+                }));
+
+
+        // ==================================================
+        // 12. ÉVÉNEMENTS FISCAUX BRUTS
+        // ==================================================
+
+        const fiscalEvents =
+            permanentRecords.map(
+                record => ({
+
+                    key:
+                        record.recordId,
+
+                    value: {
+
+                        ...(record.details || {}),
+
+                        recordId:
+                            record.recordId,
+
+                        type:
+                            record.type,
+
+                        subtype:
+                            record.subtype,
+
+                        tableId:
+                            record.tableId,
+
+                        ticketNumber:
+                            record.ticketNumber,
+
+                        operationId:
+                            record.operationId,
+
+                        status:
+                            record.status,
+
+                        amount:
+                            record.amount,
+
+                        currency:
+                            record.currency,
+
+                        operator:
+                            record.operator,
+
+                        terminal:
+                            record.terminal,
+
+                        deviceId:
+                            record.deviceId,
+
+                        createdAt:
+                            record.createdAt
+                    }
+                })
+            );
+
+
+        // ==================================================
+        // 13. MONNAIE
+        // ==================================================
+
+        const currency =
+            String(
+
+                activeOrders
+                    ?.SETTINGS_MASTER
+                    ?.data
+                    ?.currency ||
+
+                activeOrders
+                    ?.FISCAL_CONFIG
+                    ?.data
+                    ?.currency ||
+
+                tenant?.config
+                    ?.currency ||
+
+                'CHF'
+            )
+                .toUpperCase();
+
+
+        // ==================================================
+        // 14. RÉSUMÉ FINANCIER
+        // ==================================================
+
+        let grossSales = 0;
+        let corrections = 0;
+
+        let saleCount = 0;
+        let correctionCount = 0;
+
+
+        financialHistory.forEach(
+            tx => {
+
+                const type =
+                    String(
+                        tx.type ||
+                        ''
+                    )
+                        .toUpperCase();
+
+
+                const amount =
+                    Number(
+                        tx.totalTTC ??
+                        tx.total ??
+                        tx.amount ??
+                        0
+                    );
+
+
+                const isCorrection =
+                    type.includes(
+                        'CORRECTION'
+                    ) ||
+                    type.includes(
+                        'REFUND'
+                    ) ||
+                    amount < 0;
+
+
+                if (isCorrection) {
+
+                    corrections +=
+                        amount > 0
+                            ? -amount
+                            : amount;
+
+                    correctionCount++;
+
+                } else {
+
+                    grossSales +=
+                        amount;
+
+                    saleCount++;
+                }
+            }
+        );
+
+
+        const errorCount =
+            diagnostics.filter(
+                diagnostic => {
+
+                    const severity =
+                        String(
+                            diagnostic.severity ||
+                            ''
+                        )
+                            .toUpperCase();
+
+
+                    const type =
+                        String(
+                            diagnostic.type ||
+                            ''
+                        )
+                            .toUpperCase();
+
+
+                    return (
+                        severity === 'ERROR' ||
+                        severity === 'CRITICAL' ||
+                        type.includes('ERROR')
+                    );
+                }
+            ).length;
+
+
+        const validationCount =
+            Math.max(
+                0,
+                diagnostics.length -
+                errorCount
+            );
+
+
+        // ==================================================
+        // 15. ENREGISTRE LA CONSULTATION DU FICHIER
+        // ==================================================
+
+        await ichefWriteFiscalRecord({
+
+            tenantID,
+
+            type:
+                'FISCAL_FILE_ACCESS',
+
+            subtype:
+                'FULL_READ',
+
+            status:
+                'SUCCESS',
+
+            operator:
+                'RESTAURATEUR',
+
+            terminal,
+
+            deviceId,
+
+            details: {
+
+                extractedAt:
+                    new Date()
+                        .toISOString(),
+
+                financialRecords:
+                    financialHistory.length,
+
+                permanentRecords:
+                    permanentRecords.length,
+
+                auditRecords:
+                    audit.length,
+
+                integrity:
+                    auditChainValid
+            }
+        });
+
+
+        // ==================================================
+        // 16. RÉPONSE FINALE AU PAD
+        // ==================================================
+
+        return res.json({
+
+            success: true,
+
+
+            tenant: {
+
+                tenantID,
+
+                clientName:
+                    tenant.clientName ||
+                    tenantID,
+
+                currency,
+
+                extractedAt:
+                    new Date()
+                        .toISOString()
+            },
+
+
+            summary: {
+
+                grossSales:
+                    Number(
+                        grossSales.toFixed(2)
+                    ),
+
+                corrections:
+                    Number(
+                        corrections.toFixed(2)
+                    ),
+
+                netSales:
+                    Number(
+                        (
+                            grossSales +
+                            corrections
+                        ).toFixed(2)
+                    ),
+
+                saleCount,
+
+                correctionCount,
+
+                orderSnapshotCount:
+                    orderSnapshots.length,
+
+                cancelledItemCount:
+                    cancelledItems.length,
+
+                errorCount,
+
+                validationCount,
+
+                auditOperationCount:
+                    audit.length,
+
+                permanentRecordCount:
+                    permanentRecords.length,
+
+                financialRecordCount:
+                    financialHistory.length
+            },
+
+
+            integrity: {
+
+                auditChainValid,
+
+                auditCount:
+                    audit.length,
+
+                brokenAt,
+
+                lastHash:
+                    audit.length
+                        ? audit[
+                            audit.length - 1
+                        ].currentHash
+                        : 'GENESIS_BLOCK_0000000000000000'
+            },
+
+
+            financialHistory,
+
+            orderSnapshots,
+
+            cancelledItems,
+
+            diagnostics,
+
+            audit,
+
+            fiscalEvents,
+
+            permanentRecords
+        });
+
+
+    } catch (error) {
+
+        console.error(
+            '[iCHEF FICHIER FISCAL COMPLET]',
+            error
+        );
+
+
+        await ichefFiscalDiagnostic(
+            req,
+            {
+
+                type:
+                    'FISCAL_FILE_ERROR',
+
+                status:
+                    'ERROR',
+
+                severity:
+                    'CRITICAL',
+
+                code:
+                    'FULL_FILE_EXCEPTION',
+
+                message:
+                    error?.message ||
+                    'Erreur fichier fiscal.'
+            }
+        ).catch(() => {});
+
+
+        return res
+            .status(500)
+            .json({
+
+                success: false,
+
+                error:
+                    error?.message ||
+                    'Impossible de charger le fichier fiscal.'
+            });
+    }
 });
 
-// 🔥 DÉMARRAGE DU SERVEUR (DOIT ÊTRE TOUT SEUL À LA FIN) 🔥
-server.listen(PORT, () => {
-    console.log("✅ L'Empire iCHEF est en ligne, Socket.io activé, sécurisé sur le port " + PORT);
-});
+
+// ==========================================================
+// 💳 ROUTES STRIPE
+// Achat d'écrans et portail de facturation
+// ==========================================================
+
+app.post(
+    '/api/stripe/create-screen-upgrade-session',
+    async (req, res) => {
+
+        try {
+
+            /*
+             * Route conservée pour compatibilité.
+             * La création réelle de session Stripe Checkout
+             * pourra être branchée ici plus tard.
+             */
+
+            return res.json({
+                success: true,
+                url: 'https://checkout.stripe.com/'
+            });
+
+        } catch (error) {
+
+            console.error(
+                '[iCHEF STRIPE] Erreur upgrade écrans :',
+                error
+            );
+
+            return res.status(500).json({
+                success: false,
+                error:
+                    error?.message ||
+                    'Erreur Stripe lors de la création de la session.'
+            });
+        }
+    }
+);
+
+
+// ==========================================================
+// 💳 PORTAIL CLIENT STRIPE
+// ==========================================================
+
+app.post(
+    '/api/stripe/create-customer-portal-session',
+    async (req, res) => {
+
+        try {
+
+            /*
+             * Route conservée pour compatibilité.
+             * La vraie session Stripe Billing Portal
+             * pourra être branchée ici.
+             */
+
+            return res.json({
+                success: true,
+                url: 'https://billing.stripe.com/'
+            });
+
+        } catch (error) {
+
+            console.error(
+                '[iCHEF STRIPE] Erreur portail client :',
+                error
+            );
+
+            return res.status(500).json({
+                success: false,
+                error:
+                    error?.message ||
+                    'Erreur lors de l’ouverture du portail Stripe.'
+            });
+        }
+    }
+);
+
+
+// ==========================================================
+// 🚀 DÉMARRAGE OFFICIEL DU SERVEUR iCHEF
+// IMPORTANT : CE BLOC DOIT ÊTRE LE DERNIER DU server.js
+// ==========================================================
+
+server.listen(
+    PORT,
+    () => {
+
+        console.log('');
+        console.log('==========================================');
+        console.log('✅ iCHEF EMPIRE OS — SERVEUR EN LIGNE');
+        console.log('==========================================');
+
+        console.log(
+            `✅ Port serveur : ${PORT}`
+        );
+
+        console.log(
+            '✅ Socket.IO activé.'
+        );
+
+        console.log(
+            '✅ MongoDB / AppState activé.'
+        );
+
+        console.log(
+            '✅ Moteur fiscal MongoDB activé.'
+        );
+
+        console.log(
+            '✅ FINANCIAL_HISTORY activé.'
+        );
+
+        console.log(
+            '✅ FiscalRecord permanent activé.'
+        );
+
+        console.log(
+            '✅ Fichier Fiscal Complet activé.'
+        );
+
+        console.log(
+            '✅ Audit cryptographique SHA-256 activé.'
+        );
+
+        console.log(
+            '✅ Paiements PAD / Caisse synchronisés.'
+        );
+
+        console.log(
+            '✅ Socket temps réel PAD / Caisse / Cuisine activé.'
+        );
+
+        console.log('==========================================');
+        console.log('');
+    }
+);
