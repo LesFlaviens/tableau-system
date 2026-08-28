@@ -737,2110 +737,124 @@
         let isAnnualView = false; 
         let videoStream = null;
         let staffAccess = [];
+
+        const RH_DEVICE_ID = (() => {
+            const key = 'ichef_rh_device_id';
+            let value = localStorage.getItem(key);
+
+            if (!value) {
+                try {
+                    const bytes = new Uint8Array(16);
+                    crypto.getRandomValues(bytes);
+                    value = 'rh_' + Array.from(bytes, b => b.toString(16).padStart(2, '0')).join('');
+                } catch (_) {
+                    value = 'rh_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2);
+                }
+
+                localStorage.setItem(key, value);
+            }
+
+            return value;
+        })();
+
+        async function refreshStaffAccessFromServer() {
+            const state = await API.getState();
+            const serverStaff = state?.activeOrders?.STAFF_ACCESS?.data;
+
+            staffAccess = Array.isArray(serverStaff)
+                ? serverStaff
+                    .filter(s => s && s.active !== false)
+                    .map(s => ({
+                        ...s,
+                        pin: String(s.pin || '').trim()
+                    }))
+                : [];
+
+            return staffAccess;
+        }
+
+        async function verifyPinWithServer(pin) {
+            const safePin = String(pin || '').trim();
+
+            if (!/^\d{4,12}$/.test(safePin)) {
+                return {
+                    success: false,
+                    error: "Le code PIN doit contenir entre 4 et 12 chiffres."
+                };
+            }
+
+            const response = await fetch(
+                `${SERVER_URL_JS}/api/verify-pin`,
+                {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Accept': 'application/json'
+                    },
+                    cache: 'no-store',
+                    body: JSON.stringify({
+                        tenantID: tenantID_JS,
+                        pin: safePin,
+                        deviceId: RH_DEVICE_ID
+                    })
+                }
+            );
+
+            const data = await response.json().catch(() => ({}));
+
+            if (!response.ok || !data.success) {
+                return {
+                    success: false,
+                    error: data.error || "Code PIN incorrect."
+                };
+            }
+
+            return data;
+        }
         
         // ==========================================
         // 💾 ACCÈS AUX DONNÉES LOCALES & CLOUD
         // ==========================================
-        function getDir() { 
-            let data = JSON.parse(localStorage.getItem('empire_hr_directory')) || []; 
-            let adminStaff = staffAccess;
-            
-            if(adminStaff.length > 0) {
-                adminStaff.forEach(s => {
-                    if(!data.find(d => d.pin === s.pin)) {
-                        let mappedDept = 'salle';
-                        if (s.dept === 'admin') mappedDept = 'admin';
-                        else if (s.dept === 'cuisine' || s.dept === 'patisserie') mappedDept = 'cuisine';
-                        else if (s.dept === 'bar' || s.dept === 'salle') mappedDept = 'salle';
-
-                        data.push({
-                            id: Date.now() + Math.random(),
-                            name: s.name,
-                            role: s.role || (s.dept === 'admin' ? 'Manager' : 'Employé'),
-                            dept: mappedDept,
-                            contract: 39,
-                            pin: s.pin,
-                            active: s.active !== false
-                        });
-                    }
-                });
-            }
-            return data;
-        }
-
-        function saveDir(dir) { 
-            localStorage.setItem('empire_hr_directory', JSON.stringify(dir)); 
-            API.update('DIRECTORY_MASTER', dir);
-        }
-        
-        function getTs() { return JSON.parse(localStorage.getItem('empire_hr_timesheets')) || {}; }
-        function saveTs(ts) { 
-            localStorage.setItem('empire_hr_timesheets', JSON.stringify(ts)); 
-            API.update('TIMESHEETS_MASTER', ts);
-        }
-        
-        function getPunches() { return JSON.parse(localStorage.getItem('empire_hr_punches')) || []; }
-        function savePunches(p) { 
-            localStorage.setItem('empire_hr_punches', JSON.stringify(p)); 
-            API.update('PUNCHES_MASTER', p);
-        }
-
-        function getReqs() { return JSON.parse(localStorage.getItem('empire_hr_requests')) || []; }
-        function saveReqs(r) { 
-            localStorage.setItem('empire_hr_requests', JSON.stringify(r)); 
-            API.update('REQUESTS_MASTER', r);
-        }
-
-        window.onload = async function() {
-            const today = new Date();
-            document.getElementById('month-selector').value = `${today.getFullYear()}-${String(today.getMonth()+1).padStart(2, '0')}`;
-            
-            try {
-                const state = await API.getState();
-                if (state && state.activeOrders) {
-                    if (state.activeOrders['DIRECTORY_MASTER']) localStorage.setItem('empire_hr_directory', JSON.stringify(state.activeOrders['DIRECTORY_MASTER'].data || []));
-                    if (state.activeOrders['TIMESHEETS_MASTER']) localStorage.setItem('empire_hr_timesheets', JSON.stringify(state.activeOrders['TIMESHEETS_MASTER'].data || {}));
-                    if (state.activeOrders['PUNCHES_MASTER']) localStorage.setItem('empire_hr_punches', JSON.stringify(state.activeOrders['PUNCHES_MASTER'].data || []));
-                    if (state.activeOrders['REQUESTS_MASTER']) localStorage.setItem('empire_hr_requests', JSON.stringify(state.activeOrders['REQUESTS_MASTER'].data || []));
-                    
-                    if (state.activeOrders['STAFF_ACCESS']) {
-                        staffAccess = state.activeOrders['STAFF_ACCESS'].data || [];
-                        let sysSync = JSON.parse(localStorage.getItem('EMPIRE_GLOBAL_SYNC')) || { activeOrders: {} };
-                        sysSync.activeOrders['STAFF_ACCESS'] = { data: staffAccess };
-                        localStorage.setItem('EMPIRE_GLOBAL_SYNC', JSON.stringify(sysSync));
-                    }
-                }
-                
-                checkFocusRequest(); // Téléportation
-            } catch (e) { console.error("Erreur de synchro au démarrage", e); }
-
-            loadPublicPlanning(); 
-            updateReqBadge();
-            broadcastStaffingLevels();
-            
-            setInterval(async () => {
-                if(loginMode === 'director') {
-                    try {
-                        const state = await API.getState();
-                        if (state && state.activeOrders && state.activeOrders['REQUESTS_MASTER']) {
-                            localStorage.setItem('empire_hr_requests', JSON.stringify(state.activeOrders['REQUESTS_MASTER'].data || []));
-                            updateReqBadge();
-                            if(document.getElementById('requests-interface').style.display === 'flex') {
-                                renderDirectorRequests();
-                            }
-                        }
-                    } catch(e){}
-                }
-            }, 10000);
-
-            document.getElementById('btn-kiosk').addEventListener('click', () => {
-                const elem = document.documentElement;
-                const btn = document.getElementById('btn-kiosk');
-                if (!document.fullscreenElement) {
-                    if (elem.requestFullscreen) elem.requestFullscreen();
-                    else if (elem.webkitRequestFullscreen) elem.webkitRequestFullscreen(); 
-                    else if (elem.msRequestFullscreen) elem.msRequestFullscreen(); 
-                    btn.innerText = "QUITTER";
-                } else {
-                    if (document.exitFullscreen) document.exitFullscreen();
-                    else if (document.webkitExitFullscreen) document.webkitExitFullscreen();
-                    btn.innerText = "KIOSQUE";
-                }
-            });
-        };
-
-        const daysOfWeek = ["Dim", "Lun", "Mar", "Mer", "Jeu", "Ven", "Sam"];
-        const monthNames = ["Jan", "Fév", "Mar", "Avr", "Mai", "Juin", "Juil", "Aoû", "Sep", "Oct", "Nov", "Déc"];
-
-        // ==========================================
-        // 🔮 TÉLÉPORTATION & DASHBOARD
-        // ==========================================
-        function checkFocusRequest() {
-            let focusPin = localStorage.getItem('ichef_rh_focus');
-            if(focusPin) {
-                localStorage.removeItem('ichef_rh_focus'); 
-                let staffObj = getDir().find(s => s.pin === focusPin);
-                if(staffObj) {
-                    // Simuler la connexion Directeur sur le bon département
-                    currentDept = staffObj.dept;
-                    loginMode = 'director';
-                    document.getElementById('landing-portal').style.display = 'none';
-                    openInterface('hr');
-                    selectStaff(staffObj.id);
-                }
-            }
-        }
-
-        function updateDashboardStats() {
-            const dir = getDir();
-            let actifs = dir.filter(s => s.active !== false).length;
-            let enPoste = dir.filter(s => s.active !== false && s.onDuty).length;
-
-            const totalEl = document.getElementById('stat-total-staff');
-            const activeEl = document.getElementById('stat-active-staff');
-
-            if (totalEl) totalEl.innerText = actifs;
-            if (activeEl) activeEl.innerText = enPoste;
-        }
-
-        // ==========================================
-        // PORTAIL CONNEXION
-        // ==========================================
-        function openDeptSelection() { 
-            loginMode = 'director';
-            document.getElementById('staff-select-container').style.display = 'none';
-            document.getElementById('pin-dept-title').innerText = "CODE REQUIS";
-            document.getElementById('dept-modal').style.display = 'flex'; 
-        }
-        function closeDeptSelection() { document.getElementById('dept-modal').style.display = 'none'; }
-
-        function showPinPad(dept) {
-            currentDept = dept;
-            currentPin = "";
-            document.getElementById('pin-display').innerText = "";
-            document.getElementById('dept-modal').style.display = 'none';
-            document.getElementById('pin-modal').style.display = 'flex';
-            document.getElementById('pin-dept-title').innerText = "ACCÈS " + dept.toUpperCase();
-        }
-
-        function appendPin(n) {
-            if(currentPin.length < 6) {
-                currentPin += n;
-                document.getElementById('pin-display').innerText = '*'.repeat(currentPin.length);
-            }
-        }
-
-        function cancelPin() {
-            document.getElementById('pin-modal').style.display = 'none';
-            document.getElementById('landing-portal').style.display = 'flex';
-        }
-
-        function openStaffPortalLogin() {
-            loginMode = 'staff';
-            currentDept = null;
-            currentPin = "";
-
-            const select = document.getElementById('staff-login-select');
-            const container = document.getElementById('staff-select-container');
-            const pinModal = document.getElementById('pin-modal');
-            const title = document.getElementById('pin-dept-title');
-            const display = document.getElementById('pin-display');
-
-            const staff = getDir()
-                .filter(s => s.active !== false)
-                .sort((a, b) => String(a.name || '').localeCompare(String(b.name || ''), 'fr'));
-
-            if (!staff.length) {
-                alert("Aucun employé actif n'est enregistré.");
-                return;
-            }
-
-            select.innerHTML = staff
-                .map(s => `<option value="${String(s.id)}">${escapeRhHtml(s.name)} — ${escapeRhHtml(s.role || s.dept || 'Employé')}</option>`)
-                .join('');
-
-            container.style.display = 'block';
-            title.innerText = "ACCÈS EMPLOYÉ";
-            display.innerText = "";
-            document.getElementById('dept-modal').style.display = 'none';
-            pinModal.style.display = 'flex';
-        }
-
-        function escapeRhHtml(value) {
-            return String(value ?? '')
-                .replace(/&/g, '&amp;')
-                .replace(/</g, '&lt;')
-                .replace(/>/g, '&gt;')
-                .replace(/"/g, '&quot;')
-                .replace(/'/g, '&#039;');
-        }
-
-        function rhRequestTypeLabel(type) {
-            const labels = {
-                conge: 'Congés payés',
-                recup: 'Récupération',
-                off: 'Jour off / événement familial'
-            };
-            return labels[String(type || '').toLowerCase()] || String(type || 'Demande');
-        }
-
-        function rhRequestStatusLabel(status) {
-            const s = String(status || 'pending').toLowerCase();
-            if (['approved', 'accepte', 'accepté', 'valide', 'validé'].includes(s)) return 'ACCEPTÉE';
-            if (['rejected', 'refuse', 'refusé'].includes(s)) return 'REFUSÉE';
-            return 'EN ATTENTE';
-        }
-
-        function rhRequestStatusClass(status) {
-            const s = String(status || 'pending').toLowerCase();
-            if (['approved', 'accepte', 'accepté', 'valide', 'validé'].includes(s)) return 'status-approved';
-            if (['rejected', 'refuse', 'refusé'].includes(s)) return 'status-rejected';
-            return 'status-pending';
-        }
-
-        function formatRhDate(value) {
-            if (!value) return '-';
-            const d = new Date(value);
-            if (Number.isNaN(d.getTime())) return escapeRhHtml(value);
-            return d.toLocaleDateString('fr-FR');
-        }
-
-        function updateReqBadge() {
-            const reqs = getReqs();
-            const pending = reqs.filter(r => {
-                const s = String(r.status || 'pending').toLowerCase();
-                return !['approved', 'accepte', 'accepté', 'valide', 'validé', 'rejected', 'refuse', 'refusé'].includes(s);
-            }).length;
-
-            const badge = document.getElementById('req-badge');
-            if (badge) badge.innerText = String(pending);
-        }
-
-        function renderEmployeePortal() {
-            const staff = getDir().find(s => String(s.id) === String(loggedInStaffId));
-            if (!staff) {
-                alert("Profil employé introuvable.");
-                fullLogout();
-                return;
-            }
-
-            const nameEl = document.getElementById('emp-name-display');
-            if (nameEl) nameEl.innerText = staff.name || 'Employé';
-
-            const monthStr = document.getElementById('month-selector').value ||
-                `${new Date().getFullYear()}-${String(new Date().getMonth() + 1).padStart(2, '0')}`;
-
-            const [year, month] = monthStr.split('-').map(Number);
-            const daysInMonth = new Date(year, month, 0).getDate();
-            const ts = getTs();
-            const monthData = ts[monthStr]?.[staff.id] || ts[monthStr]?.[String(staff.id)] || {};
-            const stats = getStaffMonthStats(
-                staff.id,
-                year,
-                month,
-                daysInMonth,
-                ts[monthStr] || {}
-            ) || {
-                expected: 0,
-                totalDone: 0,
-                extraHours: 0,
-                countF: 0,
-                countCP: 0,
-                cpRestants: 30,
-                missedHours: 0
-            };
-
-            const put = (id, value) => {
-                const el = document.getElementById(id);
-                if (el) el.innerText = value;
-            };
-
-            put('emp-stat-expected', stats.expected.toFixed(1) + 'h');
-            put('emp-stat-actual', stats.totalDone.toFixed(1) + 'h');
-            put('emp-stat-sup', '+' + stats.extraHours.toFixed(1) + 'h');
-            put('emp-stat-h-due', stats.missedHours.toFixed(1) + 'h');
-            put('emp-stat-ferie', stats.countF + 'j');
-            put('emp-stat-cp', stats.countCP + 'j');
-            put('emp-stat-cp-rest', stats.cpRestants + 'j');
-
-            let planningHtml = '';
-
-            for (let day = 1; day <= daysInMonth; day++) {
-                const p = monthData[day] || {
-                    status: 'off',
-                    s1: '',
-                    s2: '',
-                    pause: 0
-                };
-
-                const date = new Date(year, month - 1, day);
-                const statusLabel = {
-                    present: 'TRAVAIL',
-                    off_soir: 'MATIN SEUL',
-                    off_matin: 'SOIR SEUL',
-                    off: 'REPOS',
-                    conge: 'CONGÉS',
-                    maladie: 'MALADIE',
-                    ferie: 'FÉRIÉ',
-                    recup: 'RÉCUP'
-                }[p.status] || String(p.status || 'REPOS').toUpperCase();
-
-                const hours = [p.s1, p.s2].filter(Boolean).join(' / ') || '-';
-                const total = calculateNet(p);
-
-                planningHtml += `
-                    <tr>
-                        <td>${daysOfWeek[date.getDay()]} ${String(day).padStart(2, '0')}/${String(month).padStart(2, '0')}</td>
-                        <td>${statusLabel}</td>
-                        <td>${escapeRhHtml(hours)}</td>
-                        <td>${total > 0 ? total.toFixed(1) + 'h' : '-'}</td>
-                    </tr>
-                `;
-            }
-
-            const planningBody = document.getElementById('emp-planning-body');
-            if (planningBody) planningBody.innerHTML = planningHtml;
-
-            const requests = getReqs()
-                .filter(r => String(r.staffId) === String(staff.id) || String(r.staffPin || '') === String(staff.pin || ''))
-                .sort((a, b) => Number(b.createdAt || b.timestamp || b.id || 0) - Number(a.createdAt || a.timestamp || a.id || 0));
-
-            const reqBody = document.getElementById('emp-requests-body');
-
-            if (reqBody) {
-                reqBody.innerHTML = requests.length
-                    ? requests.map(r => `
-                        <tr>
-                            <td>${formatRhDate(r.createdAt || r.timestamp || r.id)}</td>
-                            <td>
-                                <strong>${escapeRhHtml(rhRequestTypeLabel(r.type))}</strong><br>
-                                <span style="color:var(--text-muted);">${formatRhDate(r.startDate || r.start)} → ${formatRhDate(r.endDate || r.end)}</span>
-                            </td>
-                            <td>
-                                <span class="status-badge ${rhRequestStatusClass(r.status)}">
-                                    ${rhRequestStatusLabel(r.status)}
-                                </span>
-                            </td>
-                        </tr>
-                    `).join('')
-                    : '<tr><td colspan="3" style="text-align:center;color:var(--text-muted);padding:20px;">Aucune demande.</td></tr>';
-            }
-        }
-
-        function submitEmployeeRequest() {
-            const staff = getDir().find(s => String(s.id) === String(loggedInStaffId));
-            if (!staff) return alert("Profil employé introuvable.");
-
-            const type = document.getElementById('emp-req-type').value;
-            const startDate = document.getElementById('emp-req-start').value;
-            const endDate = document.getElementById('emp-req-end').value;
-            const comment = document.getElementById('emp-req-comment').value.trim();
-
-            if (!startDate || !endDate || !comment) {
-                return alert("La période et le motif sont obligatoires.");
-            }
-
-            if (new Date(endDate) < new Date(startDate)) {
-                return alert("La date de fin doit être postérieure ou égale à la date de début.");
-            }
-
-            const reqs = getReqs();
-
-            reqs.push({
-                id: Date.now(),
-                staffId: staff.id,
-                staffPin: staff.pin,
-                staffName: staff.name,
-                dept: staff.dept,
-                type,
-                startDate,
-                endDate,
-                start: startDate,
-                end: endDate,
-                comment,
-                status: 'pending',
-                createdAt: Date.now()
-            });
-
-            saveReqs(reqs);
-
-            document.getElementById('emp-req-start').value = '';
-            document.getElementById('emp-req-end').value = '';
-            document.getElementById('emp-req-comment').value = '';
-
-            updateReqBadge();
-            renderEmployeePortal();
-            showToast("Demande envoyée à la direction");
-        }
-
-        function submitPin() {
-            let masterPin = localStorage.getItem('ichef_master_pin') || "999999";
-
-            if(loginMode === 'director') {
-                if(currentPin === masterPin || currentPin === "999999" || currentPin === "9999" || currentPin === "7777") {
-                    document.getElementById('pin-modal').style.display = 'none';
-                    document.getElementById('landing-portal').style.display = 'none';
-                    document.getElementById('director-hub').style.display = 'flex';
-                    document.getElementById('hub-dept-display').innerText = currentDept.toUpperCase();
-                    updateDashboardStats();
-                    updateReqBadge();
-                } else {
-                    alert("CODE PIN DIRECTION INCORRECT");
-                    currentPin = "";
-                    document.getElementById('pin-display').innerText = "";
-                }
-            } else if (loginMode === 'staff') {
-                const selectId = document.getElementById('staff-login-select').value;
-                const staff = getDir().find(s => String(s.id) === String(selectId) && s.active !== false);
-                
-                if(staff && staff.pin === currentPin) {
-                    loggedInStaffId = staff.id;
-                    document.getElementById('pin-modal').style.display = 'none';
-                    document.getElementById('landing-portal').style.display = 'none';
-                    document.getElementById('employee-portal').style.display = 'flex';
-                    renderEmployeePortal();
-                } else {
-                    alert("CODE PIN EMPLOYÉ INCORRECT OU COMPTE DÉSACTIVÉ");
-                    currentPin = "";
-                    document.getElementById('pin-display').innerText = "";
-                }
-            }
-        }
-
-        // ==========================================
-        // GESTION VUES
-        // ==========================================
-        function openInterface(type) {
-            document.getElementById('director-hub').style.display = 'none';
-            document.querySelectorAll('.full-interface').forEach(el => el.style.display = 'none');
-            
-            if(type === 'hr') {
-                document.getElementById('hr-interface').style.display = 'flex';
-                currentStaffId = null;
-                isGlobalView = true;
-                isAnnualView = false;
-                refreshViews();
-                toggleViewDisplay();
-            } else if(type === 'logs') {
-                document.getElementById('logs-interface').style.display = 'flex';
-                renderLogs();
-            } else if(type === 'requests') {
-                document.getElementById('requests-interface').style.display = 'flex';
-                renderDirectorRequests();
-            }
-        }
-
-        function backToHub() {
-            document.querySelectorAll('.full-interface').forEach(el => el.style.display = 'none');
-            document.getElementById('director-hub').style.display = 'flex';
-            updateDashboardStats();
-            updateReqBadge();
-        }
-
-        function fullLogout() { window.location.reload(); }
-
-        // ==========================================
-        // GESTION DU STAFF ET CLOUD
-        // ==========================================
-        async function syncStaffAccessToCloud(dirList) {
-            try {
-                let staffAccessPayload = dirList.map(s => ({
-                    id: s.id, name: s.name, role: s.role, dept: s.dept,
-                    pin: s.pin || "0000", active: s.active !== false, onDuty: s.onDuty || false
-                }));
-                
-                await fetch(`${SERVER_URL_JS}/update-order?tenantID=${tenantID_JS}`, {
-                    method: 'POST', headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({ tableId: 'STAFF_ACCESS', order: { data: staffAccessPayload } })
-                });
-                staffAccess = staffAccessPayload;
-            } catch (e) { console.error("Erreur de sync STAFF_ACCESS", e); }
-        }
-
-        function openStaffModal(pin = null) { 
-            document.getElementById('staff-edit-original-pin').value = pin || "";
-            if (pin) { 
-                let s = getDir().find(x => x.pin === pin); 
-                document.getElementById('staff-name').value = s.name; 
-                document.getElementById('staff-title').value = s.role || ""; 
-                document.getElementById('staff-pin').value = s.pin; 
-                document.getElementById('staff-role').value = s.dept; 
-                document.getElementById('staff-active').checked = s.active !== false; 
-            } else { 
-                document.getElementById('staff-name').value = ""; 
-                document.getElementById('staff-title').value = ""; 
-                document.getElementById('staff-pin').value = ""; 
-                document.getElementById('staff-role').value = currentDept || "salle"; 
-                document.getElementById('staff-active').checked = true; 
-            }
-            let modal = document.getElementById('staff-modal'); 
-            modal.style.display = 'flex'; setTimeout(() => modal.classList.add('show'), 10);
-        }
-
-        function closeModals() { 
-            document.querySelectorAll('.modal').forEach(m => {
-                m.style.opacity = '0';
-                setTimeout(() => { m.classList.remove('show'); m.style.display = 'none'; }, 300);
-            });
-        }
-
-        function saveStaff() {
-            let name = document.getElementById('staff-name').value.trim(); 
-            let title = document.getElementById('staff-title').value.trim(); 
-            let pin = document.getElementById('staff-pin').value.trim(); 
-            let origPin = document.getElementById('staff-edit-original-pin').value;
-            
-            if (!name || !title || pin.length < 4) return alert("Le nom, la fonction et un PIN (4 chiffres min) sont obligatoires."); 
-            
-            let dir = getDir();
-            let newStaff = { 
-                id: origPin ? dir.find(s=>s.pin===origPin).id : Date.now() + Math.random(),
-                name: name, pin: pin, role: title, dept: document.getElementById('staff-role').value, 
-                contract: 39, active: document.getElementById('staff-active').checked, onDuty: false 
-            };
-            
-            if (origPin) {
-                let idx = dir.findIndex(s => s.pin === origPin);
-                newStaff.onDuty = dir[idx].onDuty || false; 
-                dir[idx] = newStaff; 
-            } else {
-                dir.push(newStaff);
-            }
-
-            saveDir(dir);
-            syncStaffAccessToCloud(dir); 
-            closeModals(); 
-            refreshViews();
-        }
-
-        function deleteStaff() {
-            let origPin = document.getElementById('staff-edit-original-pin').value;
-            if(!origPin) return closeModals();
-            if(confirm("SUPPRESSION DÉFINITIVE : Supprimer cet employé ?")) {
-                let dir = getDir().filter(s => s.pin !== origPin);
-                saveDir(dir);
-                syncStaffAccessToCloud(dir);
-                if(currentStaffId && currentStaffId === getDir().find(s=>s.pin===origPin)?.id) {
-                    currentStaffId = null; isGlobalView = true; toggleViewDisplay();
-                }
-                closeModals(); refreshViews();
-            }
-        }
-
-        function toggleStaffStatus(id) {
-            let dir = getDir();
-            let idx = dir.findIndex(s => s.id === id);
-            if (idx > -1) {
-                dir[idx].active = !dir[idx].active;
-                if(dir[idx].active === false) dir[idx].onDuty = false;
-                saveDir(dir);
-                syncStaffAccessToCloud(dir);
-                if (currentStaffId === id && dir[idx].active === false) {
-                    currentStaffId = null; isGlobalView = true; toggleViewDisplay();
-                } else refreshViews();
-            }
-        }
-
-        // ==========================================
-        // INTELLIGENCE PREDICTIVE IA
-        // ==========================================
-        function openPredictiveModal() {
-            let modal = document.getElementById('ia-predictions-modal');
-            modal.style.display = 'flex'; setTimeout(() => modal.classList.add('show'), 10); 
-        }
-
-async function generateIAPrediction() {
-    const btn = document.querySelector('#ia-predictions-modal .btn-save-green');
-    btn.innerHTML = "ANALYSE BIG DATA EN COURS...";
-    btn.style.pointerEvents = 'none'; btn.style.opacity = '0.7';
-
-    try {
-        const dir = getDir().filter(s => s.active !== false);
-        document.getElementById('pred-staff-list').innerHTML = dir.map(s => 
-            `<div style="display:flex; justify-content:space-between; padding:8px 12px; background:rgba(255,255,255,0.02); border:1px solid var(--border); border-radius:6px; margin-bottom:5px;">
-                <strong style="color:var(--text-main); font-size:0.9rem;">${s.name}</strong>
-                <span style="color:var(--text-muted); font-size:0.8rem; font-weight:600;">${s.role || s.dept.toUpperCase()}</span>
-            </div>`
-        ).join('');
-
-        // C'est cette ligne qui fait le lien avec le nouveau code ajouté dans server.js
-        const res = await fetch(`${SERVER_URL_JS}/api/predict-hr-schedule`, {
-            method: 'POST', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ tenantID: tenantID_JS, staffList: dir })
-        });
-        
-        const data = await res.json();
-        
-        if (data.success && data.prediction) {
-            const p = data.prediction;
-            document.getElementById('ia-rush-periods').innerHTML = p.rushPeriods.map(r => `<li style="margin-bottom:5px;">${r}</li>`).join('');
-            document.getElementById('ia-dead-periods').innerHTML = p.deadPeriods.map(r => `<li style="margin-bottom:5px;">${r}</li>`).join('');
-            document.getElementById('ia-vacations').innerText = p.vacationSuggestions;
-            document.getElementById('ia-hiring').innerText = p.hiringAdvice;
-            showToast("Analyse prédictive terminée");
-        } else {
-            alert(data.message || data.error || "L'IA a besoin de plus d'historique de service.");
-        }
-    } catch (e) {
-        alert("Erreur de communication avec le moteur IA.");
-    } finally {
-        btn.innerHTML = "RE-CALCULER LA PRÉDICTION";
-        btn.style.pointerEvents = 'auto'; btn.style.opacity = '1';
-    }
-}
-
-        // ==========================================
-        // 🕒 CALCULS DES HEURES ET LISSAGES
-        // ==========================================
-        function parseTime(timeStr) {
-            if(!timeStr || !timeStr.includes(':')) return null;
-            const pts = timeStr.split(':');
-            return parseInt(pts[0]) + (parseInt(pts[1]) / 60);
-        }
-
-        function calculateNet(p) {
-            if(p.status !== 'present' && p.status !== 'off_matin' && p.status !== 'off_soir' && p.status !== 'ferie') return 0;
-            let total = 0;
-            if(p.s1) { let [s, e] = p.s1.split('-'); if(s && e) { s=parseTime(s); e=parseTime(e); if(s!==null&&e!==null) { if(e<s) e+=24; total+=(e-s); } } }
-            if(p.s2) { let [s, e] = p.s2.split('-'); if(s && e) { s=parseTime(s); e=parseTime(e); if(s!==null&&e!==null) { if(e<s) e+=24; total+=(e-s); } } }
-            total -= (parseInt(p.pause) || 0) / 60;
-            return Math.max(0, total);
-        }
-
-        function getStaffMonthStats(staffId, year, month, daysInMonth, monthData) {
-            const staff = getDir().find(s => s.id === staffId);
-            if(!staff) return null;
-            
-            let expected = (staff.contract / 7) * daysInMonth;
-            let totalDone = 0; let countCP = 0, countM = 0, countF = 0, totalRecup = 0;
-
-            for(let d=1; d<=daysInMonth; d++) {
-                if(monthData && monthData[d]) {
-                    let p = monthData[d]; totalDone += calculateNet(p);
-                    if(p.status === 'conge') countCP++;
-                    if(p.status === 'maladie') countM++;
-                    if(p.status === 'ferie') countF++;
-                    if(p.status === 'recup') totalRecup += (staff.contract / 5);
-                }
-            }
-            
-            let extraHours = Math.max(0, totalDone - expected);
-            let missedHours = Math.max(0, expected - totalDone);
-            return { expected, totalDone, extraHours, totalRecup, countCP, countM, countF, missedHours, cpRestants: 30 - countCP };
-        }
-
-        // ==========================================
-        // VUES PLANNING (MENSUEL, ANNUEL, GLOBAL)
-        // ==========================================
-        function changeMonth(offset) {
-            const selector = document.getElementById('month-selector');
-            let [y, m] = selector.value.split('-').map(Number);
-            m += offset; if(m > 12) { m = 1; y++; } if(m < 1) { m = 12; y--; }
-            selector.value = `${y}-${String(m).padStart(2, '0')}`;
-            handleMonthChange();
-        }
-
-        function toggleAnnualView() {
-            if(isGlobalView || !currentStaffId) return;
-            isAnnualView = !isAnnualView;
-            const btn = document.getElementById('btn-annual-toggle');
-            if(isAnnualView) {
-                btn.innerHTML = '📄 VUE MENSUELLE (DÉTAIL)';
-                document.getElementById('table-container-individual').style.display = 'none';
-                document.getElementById('annual-view-container').style.display = 'block';
-                const year = document.getElementById('month-selector').value.split('-')[0];
-                renderAnnualTimesheet(year, currentStaffId);
-            } else {
-                btn.innerHTML = '📅 VUE ANNUELLE (CP)';
-                document.getElementById('table-container-individual').style.display = 'block';
-                document.getElementById('annual-view-container').style.display = 'none';
-                loadMonthData();
-            }
-        }
-
-        function refreshViews() {
-            renderStaffList(); loadMonthData(); loadPublicPlanning();
-        }
-
-        function handleMonthChange() {
-            loadMonthData(); loadPublicPlanning();
-        }
-
-        function renderStaffList() {
-            const dir = getDir().filter(s => s.dept === currentDept);
-            const container = document.getElementById('staff-list-render');
-            let html = '';
-            dir.forEach(s => {
-                let statusBadge = s.active === false ? '<span style="color:#ef4444; font-size:0.6rem; float:right;">DÉSACTIVÉ</span>' : '<span style="color:#10b981; font-size:0.6rem; float:right;">ACTIF</span>';
-                html += `<div class="staff-card ${currentStaffId === s.id ? 'active' : ''}" onclick="selectStaff(${s.id})" style="${s.active === false ? 'opacity:0.5;' : ''}">
-                    <div class="staff-name">${s.name} ${statusBadge}</div>
-                    <div class="staff-role">${s.role} - ${s.contract}h/sem</div>
-                    <div style="margin-top:10px; display:flex; gap:5px;">
-                        <button onclick="event.stopPropagation(); toggleStaffStatus(${s.id})" style="background:#222; border:none; color:#fff; padding:4px 8px; font-size:0.6rem; border-radius:4px; cursor:pointer;">${s.active === false ? 'RÉACTIVER' : 'DÉSACTIVER'}</button>
-                        <button onclick="event.stopPropagation(); openStaffModal('${s.pin}')" style="background:#222; border:none; color:#fff; padding:4px 8px; font-size:0.6rem; border-radius:4px; cursor:pointer;">ÉDITER</button>
-                    </div>
-                </div>`;
-            });
-            container.innerHTML = html || '<div style="color:var(--sub); text-align:center; padding:20px;">Aucun collaborateur dans ce département.</div>';
-            updateDashboardStats();
-        }
-
-        function selectStaff(id) {
-            currentStaffId = id; isGlobalView = false; isAnnualView = false;
-            refreshViews(); toggleViewDisplay();
-        }
-
-        function loadMonthData() {
-            const monthStr = document.getElementById('month-selector').value;
-            const [year, month] = monthStr.split('-').map(Number);
-            const daysInMonth = new Date(year, month, 0).getDate();
-            const tsMonth = getTs()[monthStr] || {};
-
-            if(isGlobalView) renderGlobalView(year, month, daysInMonth, tsMonth);
-            else if(currentStaffId) renderIndividualView(currentStaffId, year, month, daysInMonth, tsMonth);
-        }
-
-        function toggleViewMode() {
-            isGlobalView = !isGlobalView; isAnnualView = false; currentStaffId = null;
-            refreshViews(); toggleViewDisplay();
-        }
-
-        function toggleViewDisplay() {
-            const btn = document.getElementById('btn-toggle-view');
-            const indCont = document.getElementById('table-container-individual');
-            const globCont = document.getElementById('global-view-container');
-            const annCont = document.getElementById('annual-view-container');
-            const empty = document.getElementById('empty-state');
-            const head = document.getElementById('individual-header-controls');
-            const stats = document.getElementById('dashboard-stats-panel');
-
-            if(isGlobalView) {
-                btn.innerHTML = '👤 VUE INDIVIDUELLE';
-                empty.style.display = 'none'; indCont.style.display = 'none'; annCont.style.display = 'none';
-                head.style.display = 'none'; stats.style.display = 'none'; globCont.style.display = 'block';
-            } else if (currentStaffId) {
-                btn.innerHTML = '🌍 VUE GLOBALE MATRICE';
-                empty.style.display = 'none'; globCont.style.display = 'none';
-                annCont.style.display = isAnnualView ? 'block' : 'none';
-                indCont.style.display = isAnnualView ? 'none' : 'block';
-                head.style.display = 'flex'; stats.style.display = 'grid';
-            } else {
-                btn.innerHTML = '🌍 VUE GLOBALE MATRICE';
-                empty.style.display = 'flex'; indCont.style.display = 'none'; annCont.style.display = 'none';
-                globCont.style.display = 'none'; head.style.display = 'none'; stats.style.display = 'none';
-            }
-        }
-
-        function renderIndividualView(staffId, year, month, daysInMonth, tsMonth) {
-            const staff = getDir().find(s => s.id === staffId);
-            if(!staff) return;
-            
-            document.getElementById('individual-title').innerText = `${staff.name} - ${monthNames[month-1]} ${year}`;
-            
-            let stats = getStaffMonthStats(staffId, year, month, daysInMonth, tsMonth) || { expected: 0, totalDone: 0, extraHours: 0, totalRecup: 0, countCP: 0, countM: 0, countF: 0, missedHours: 0, cpRestants: 0 };
-            document.getElementById('stat-expected').innerText = stats.expected.toFixed(1) + 'h';
-            document.getElementById('stat-actual').innerText = stats.totalDone.toFixed(1) + 'h';
-            document.getElementById('stat-sup').innerText = '+' + stats.extraHours.toFixed(1) + 'h';
-            document.getElementById('stat-recup').innerText = stats.totalRecup.toFixed(1) + 'h';
-            document.getElementById('stat-cp').innerText = stats.countCP + 'j';
-            document.getElementById('stat-cp-rest').innerText = stats.cpRestants + 'j';
-            document.getElementById('stat-ferie').innerText = stats.countF + 'j';
-            document.getElementById('stat-maladie').innerText = stats.countM + 'j';
-            document.getElementById('stat-h-due').innerText = stats.missedHours.toFixed(1) + 'h';
-            document.getElementById('stat-off-due').innerText = Math.floor(stats.missedHours / 7) + 'j';
-            if(stats.extraHours > 10) document.getElementById('sup-alert').classList.add('highlight');
-            else document.getElementById('sup-alert').classList.remove('highlight');
-
-            let html = '';
-            for(let d=1; d<=daysInMonth; d++) {
-                const dateObj = new Date(year, month-1, d);
-                const isWeekend = dateObj.getDay() === 0 || dateObj.getDay() === 6;
-                const p = (tsMonth[staffId] && tsMonth[staffId][d]) ? tsMonth[staffId][d] : {status:'off', poste: staff.dept, s1:'', s2:'', pause:0, obs:''};
-                const h = calculateNet(p);
-                let currentPoste = p.poste || staff.dept;
-
-                html += `<tr class="${isWeekend ? 'weekend' : ''}">
-                    <td><div class="day-label">${daysOfWeek[dateObj.getDay()]}</div><div class="date-label">${String(d).padStart(2,'0')}/${String(month).padStart(2,'0')}</div></td>
-                    <td>
-                        <select class="status-sel" onchange="updateData(${staffId}, ${d}, 'status', this.value)">
-                            <option value="present" ${p.status==='present'?'selected':''}>🟢 TRAVAIL</option>
-                            <option value="off_soir" ${p.status==='off_soir'?'selected':''}>☀️ MATIN SEUL</option>
-                            <option value="off_matin" ${p.status==='off_matin'?'selected':''}>🌙 SOIR SEUL</option>
-                            <option value="off" ${p.status==='off'?'selected':''}>✖️ REPOS</option>
-                            <option value="conge" ${p.status==='conge'?'selected':''}>✈️ CONGÉS</option>
-                            <option value="maladie" ${p.status==='maladie'?'selected':''}>🤒 MALADIE</option>
-                            <option value="ferie" ${p.status==='ferie'?'selected':''}>⭐ FÉRIÉ</option>
-                            <option value="recup" ${p.status==='recup'?'selected':''}>⏳ RÉCUP</option>
-                        </select>
-                    </td>
-                    <td>
-                        <select class="status-sel" style="width:110px; border-color:var(--border-strong);" onchange="updateData(${staffId}, ${d}, 'poste', this.value)" ${p.status!=='present'&&p.status!=='off_matin'&&p.status!=='off_soir'&&p.status!=='ferie'?'disabled':''}>
-                            <option value="salle" ${currentPoste==='salle'?'selected':''}>🍷 Salle</option>
-                            <option value="cuisine" ${currentPoste==='cuisine'?'selected':''}>🍳 Cuisine</option>
-                            <option value="patisserie" ${currentPoste==='patisserie'?'selected':''}>🍰 Pâtisserie</option>
-                            <option value="bar" ${currentPoste==='bar'?'selected':''}>🍸 Bar</option>
-                            <option value="admin" ${currentPoste==='admin'?'selected':''}>💼 Admin</option>
-                        </select>
-                    </td>
-                    <td><input type="text" class="shift-inp" value="${p.s1}" placeholder="10:00-15:00" onchange="updateData(${staffId}, ${d}, 's1', this.value)" ${p.status!=='present'&&p.status!=='off_soir'&&p.status!=='ferie'?'disabled':''}></td>
-                    <td><input type="text" class="shift-inp" value="${p.s2}" placeholder="18:00-23:00" onchange="updateData(${staffId}, ${d}, 's2', this.value)" ${p.status!=='present'&&p.status!=='off_matin'&&p.status!=='ferie'?'disabled':''}></td>
-                    <td><input type="number" class="pause-inp" value="${p.pause}" placeholder="30" onchange="updateData(${staffId}, ${d}, 'pause', this.value)" ${p.status!=='present'&&p.status!=='off_matin'&&p.status!=='off_soir'&&p.status!=='ferie'?'disabled':''}></td>
-                    <td style="font-weight:bold; color:var(--hr);">${h > 0 ? h.toFixed(1)+'h' : '-'}</td>
-                    <td><input type="text" class="obs-inp" value="${p.obs}" placeholder="Observation..." onchange="updateData(${staffId}, ${d}, 'obs', this.value)"></td>
-                </tr>`;
-            }
-            document.getElementById('timesheet-body').innerHTML = html;
-        }
-
-        function updateData(staffId, day, key, val) {
-            const monthStr = document.getElementById('month-selector').value;
-            const ts = getTs();
-            const staff = getDir().find(s => s.id === staffId);
-            
-            if(!ts[monthStr]) ts[monthStr] = {};
-            if(!ts[monthStr][staffId]) ts[monthStr][staffId] = {};
-            if(!ts[monthStr][staffId][day]) ts[monthStr][staffId][day] = {status:'off', poste: staff ? staff.dept : 'salle', s1:'', s2:'', pause:0, obs:''};
-            
-            ts[monthStr][staffId][day][key] = val;
-            
-            if(key === 'status') {
-                if(val !== 'present' && val !== 'ferie' && val !== 'off_matin' && val !== 'off_soir') {
-                    ts[monthStr][staffId][day].s1 = ''; ts[monthStr][staffId][day].s2 = ''; ts[monthStr][staffId][day].pause = 0;
-                } else if(val === 'present' || val === 'ferie') {
-                    if(!ts[monthStr][staffId][day].s1) ts[monthStr][staffId][day].s1 = '10:00-14:45';
-                    if(!ts[monthStr][staffId][day].s2) ts[monthStr][staffId][day].s2 = '18:00-22:45';
-                    ts[monthStr][staffId][day].pause = 30;
-                }
-            }
-            saveTs(ts); loadMonthData(); loadPublicPlanning(); broadcastStaffingLevels();
-        }
-
-        function renderGlobalView(year, month, daysInMonth, tsMonth) {
-            const dir = getDir().filter(s => s.dept === currentDept && s.active !== false);
-            let headHtml = `<tr><th class="sticky-col">COLLABORATEUR</th>`;
-            for(let d=1; d<=daysInMonth; d++) {
-                const dateObj = new Date(year, month-1, d);
-                headHtml += `<th><div class="day-label">${daysOfWeek[dateObj.getDay()]}</div><div class="date-label">${d}</div></th>`;
-            }
-            headHtml += `<th>TOTAL</th></tr>`;
-            document.getElementById('global-thead').innerHTML = headHtml;
-
-            let bodyHtml = '';
-            dir.forEach(s => {
-                let totalH = 0;
-                let rowHtml = `<tr><td class="sticky-col" style="font-weight:bold; color:var(--text-main); cursor:pointer;" onclick="selectStaff(${s.id})">${s.name}</td>`;
-                for(let d=1; d<=daysInMonth; d++) {
-                    let p = (tsMonth[s.id] && tsMonth[s.id][d]) ? tsMonth[s.id][d] : {status:'off'};
-                    totalH += calculateNet(p);
-                    rowHtml += `<td>
-                        <select class="status-select-cell" onchange="updateData(${s.id}, ${d}, 'status', this.value)">
-                            <option value="present" ${p.status==='present'?'selected':''}>🟢</option>
-                            <option value="off_soir" ${p.status==='off_soir'?'selected':''}>☀️</option>
-                            <option value="off_matin" ${p.status==='off_matin'?'selected':''}>🌙</option>
-                            <option value="off" ${p.status==='off'?'selected':''}>✖️</option>
-                            <option value="conge" ${p.status==='conge'?'selected':''}>✈️</option>
-                            <option value="maladie" ${p.status==='maladie'?'selected':''}>🤒</option>
-                            <option value="ferie" ${p.status==='ferie'?'selected':''}>⭐</option>
-                            <option value="recup" ${p.status==='recup'?'selected':''}>⏳</option>
-                        </select>
-                    </td>`;
-                }
-                rowHtml += `<td style="font-weight:900; color:var(--hr);">${totalH.toFixed(1)}h</td></tr>`;
-                bodyHtml += rowHtml;
-            });
-            document.getElementById('global-tbody').innerHTML = bodyHtml || '<tr><td colspan="35" style="text-align:center; padding:20px;">Aucun collaborateur actif.</td></tr>';
-        }
-
-        // LISSAGE IA
-        function balanceHoursIA() {
-            if(!currentDept) return alert("Sélectionnez un département.");
-            if(!confirm("⚖️ LISSAGE ABSOLU : L'IA va modifier les horaires pour que chaque employé atteigne EXACTEMENT son contrat.\n\nContinuer ?")) return;
-
-            const monthStr = document.getElementById('month-selector').value;
-            const [year, month] = monthStr.split('-').map(Number);
-            const daysInMonth = new Date(year, month, 0).getDate();
-            const ts = getTs();
-            const dir = getDir().filter(s => s.dept === currentDept && s.active !== false);
-
-            if(!ts[monthStr]) return;
-
-            const formatTime = (decimalHours) => {
-                let h = Math.floor(decimalHours); let m = Math.round((decimalHours - h) * 60);
-                if(m >= 60) { h++; m = 0; } if(h >= 24) { h = h % 24; }
-                return `${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}`;
-            };
-
-            dir.forEach(staff => {
-                for(let iteration = 0; iteration < 10; iteration++) {
-                    let stats = getStaffMonthStats(staff.id, year, month, daysInMonth, ts[monthStr]);
-                    if(!stats) break;
-                    let diff = stats.totalDone - stats.expected;
-                    if(Math.abs(diff) <= 0.1) break; 
-
-                    if(diff > 4.5) {
-                        for(let d=daysInMonth; d>=1; d--) {
-                            let p = ts[monthStr][staff.id][d];
-                            if(p.status === 'present') {
-                                if(diff > 8) { p.status = 'off'; p.s1 = ''; p.s2 = ''; p.pause = 0; p.obs = 'IA: Repos'; break; } 
-                                else { p.status = 'off_matin'; p.s1 = ''; p.s2 = '18:00-22:45'; p.pause = 0; p.obs = 'IA: Matin annulé'; break; }
-                            }
-                        }
-                    } else if (diff < -4.5) {
-                        for(let d=1; d<=daysInMonth; d++) {
-                            let p = ts[monthStr][staff.id][d];
-                            if(p.status === 'off') { p.status = 'present'; p.s1 = '10:00-14:45'; p.s2 = '18:00-22:45'; p.pause = 30; p.obs = 'IA: Service ajouté'; break; }
-                        }
-                    } else {
-                        for(let d=daysInMonth; d>=1; d--) {
-                            let p = ts[monthStr][staff.id][d];
-                            if(p.status === 'present' || p.status === 'off_matin' || p.status === 'off_soir') {
-                                let targetH = calculateNet(p) - diff;
-                                if(targetH > 0 && targetH <= 12) { 
-                                    p.s1 = `${formatTime(10)}-${formatTime(10 + targetH)}`; p.s2 = ''; p.pause = 0; p.obs = 'IA: Lissage'; break; 
-                                }
-                            }
-                        }
-                    }
-                }
-            });
-            saveTs(ts); loadMonthData(); refreshViews(); alert("LISSAGE ZÉRO TERMINÉ !");
-        }
-
-        // ==========================================
-        // CAMERA POINTEUSE
-        // ==========================================
-        function openPunchClock() {
-            document.getElementById('landing-portal').style.display = 'none';
-            document.getElementById('punch-modal').style.display = 'flex';
-            punchPin = "";
-            document.getElementById('punch-display').innerText = "";
-            document.getElementById('punch-success-overlay').style.display = 'none';
-            
-            navigator.mediaDevices.getUserMedia({ video: { facingMode: "user" } })
-            .then(function(stream) {
-                videoStream = stream;
-                document.getElementById('punch-video').srcObject = stream;
-            }).catch(function(err) {
-                console.error("Camera error:", err);
-                alert("Erreur: Accès à la caméra refusé ou introuvable.");
-            });
-        }
-
-        function cancelPunchClock() {
-            if(videoStream) { videoStream.getTracks().forEach(track => track.stop()); videoStream = null; }
-            document.getElementById('punch-modal').style.display = 'none';
-            document.getElementById('landing-portal').style.display = 'flex';
-        }
-
-        function appendPunchPin(n) {
-            if(punchPin.length < 6) {
-                punchPin += n;
-                document.getElementById('punch-display').innerText = '*'.repeat(punchPin.length);
-            }
-        }
-
-        async function submitPunch() {
-            if(punchPin.length < 4) return;
-            const staff = getDir().find(s => s.pin === punchPin && s.active !== false);
-
-            if(!staff) {
-                alert("CODE PIN INVALIDE OU COMPTE DÉSACTIVÉ");
-                punchPin = ""; document.getElementById('punch-display').innerText = ""; return;
-            }
-
-            const video = document.getElementById('punch-video');
-            const canvas = document.getElementById('punch-canvas');
-            const context = canvas.getContext('2d');
-            canvas.width = 320; canvas.height = 240;
-            context.drawImage(video, 0, 0, canvas.width, canvas.height);
-            
-            let punches = getPunches();
-            let lastPunch = punches.filter(p => p.staffId === staff.id).pop();
-            let punchType = (lastPunch && lastPunch.type === 'ENTRÉE') ? 'SORTIE' : 'ENTRÉE';
-
-            punches.push({ id: Date.now(), staffId: staff.id, staffName: staff.name, dept: staff.dept, type: punchType, timestamp: Date.now(), photo: canvas.toDataURL('image/jpeg', 0.6) });
-            savePunches(punches);
-
-            document.getElementById('punch-success-overlay').style.display = 'flex';
-            
-            try {
-                let r = await fetch(`${SERVER_URL_JS}/get-current-state?tenantID=${tenantID_JS}`);
-                let state = await r.json();
-                let staffList = state.activeOrders['STAFF_ACCESS']?.data || [];
-                let empIndex = staffList.findIndex(s => s.pin === punchPin);
-                if(empIndex > -1) {
-                    staffList[empIndex].onDuty = (punchType === 'ENTRÉE');
-                    await fetch(`${SERVER_URL_JS}/update-order?tenantID=${tenantID_JS}`, { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ tableId: 'STAFF_ACCESS', order: { data: staffList } }) });
-                }
-            } catch(e) {}
-
-            broadcastStaffingLevels();
-            setTimeout(cancelPunchClock, 2500);
-        }
-
-        function renderLogs() {
-            const punches = getPunches();
-            punches.sort((a, b) => b.timestamp - a.timestamp);
-            let html = '';
-            if(punches.length === 0) {
-                html = '<tr><td colspan="4" style="text-align:center; padding:20px; color:var(--sub);">Aucun pointage enregistré.</td></tr>';
-            } else {
-                punches.forEach(p => {
-                    const date = new Date(p.timestamp);
-                    const dateStr = `${String(date.getDate()).padStart(2,'0')}/${String(date.getMonth()+1).padStart(2,'0')}/${date.getFullYear()}`;
-                    const timeStr = `${String(date.getHours()).padStart(2,'0')}:${String(date.getMinutes()).padStart(2,'0')}:${String(date.getSeconds()).padStart(2,'0')}`;
-                    html += `<tr>
-                        <td><img src="${p.photo}"></td>
-                        <td style="font-weight:bold; color:var(--text-main); text-transform:uppercase;">${p.staffName}</td>
-                        <td style="font-weight:900; color:${p.type === 'ENTRÉE' ? 'var(--accent)' : 'var(--alert)'};">${p.type}</td>
-                        <td style="color:var(--text-main);">${dateStr} à <span style="font-weight:bold;">${timeStr}</span></td>
-                    </tr>`;
-                });
-            }
-            document.getElementById('logs-body').innerHTML = html;
-        }
-
-        function clearLogs() {
-            if(confirm("ACTION IRRÉVERSIBLE : Effacer toutes les preuves photo ?")) { savePunches([]); renderLogs(); }
-        }
-
-        function showToast(msg) {
-            const t = document.getElementById('toast');
-            if (!t) return;
-
-            t.innerText = msg;
-            t.style.display = 'block';
-
-            requestAnimationFrame(() => {
-                t.classList.add('show');
-            });
-
-            clearTimeout(window.__ichefRhToastTimer);
-
-            window.__ichefRhToastTimer = setTimeout(() => {
-                t.classList.remove('show');
-
-                setTimeout(() => {
-                    t.style.display = 'none';
-                }, 350);
-            }, 2600);
-        }
-
-        // ==========================================
-        // SYNCHRONISATION ANTI-RUSH
-        // ==========================================
-        async function broadcastStaffingLevels() {
-            try {
-                const today = new Date();
-                const monthStr = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}`;
-                let staffing = { cuisine: 0, bar: 0, salle: 0, patisserie: 0, admin: 0, capaciteMaxPlatsParCuistot: 12 };
-
-                getDir().forEach(staff => {
-                    if(staff.active === false) return;
-                    let p = (getTs()[monthStr] && getTs()[monthStr][staff.id] && getTs()[monthStr][staff.id][today.getDate()]) ? getTs()[monthStr][staff.id][today.getDate()] : null;
-                    if (p && (p.status === 'present' || p.status === 'off_soir' || p.status === 'off_matin')) {
-                        let assignedDept = p.poste || staff.dept;
-                        if(staffing[assignedDept] !== undefined) staffing[assignedDept]++;
-                    }
-                });
-                await API.update('RH_MASTER', staffing);
-            } catch (e) { console.error("Erreur broadcast RH", e); }
-        }
-
-        function planningStatusIcon(status) {
-            return {
-                present: '🟢',
-                off_soir: '☀️',
-                off_matin: '🌙',
-                off: '✖️',
-                conge: '✈️',
-                maladie: '🤒',
-                ferie: '⭐',
-                recup: '⏳'
-            }[status] || '✖️';
-        }
-
-        function renderAnnualTimesheet(year, staffId) {
-            const staff = getDir().find(s => String(s.id) === String(staffId));
-            if (!staff) return;
-
-            const maxDays = 31;
-            let head = '<tr><th class="sticky-col">MOIS</th>';
-
-            for (let d = 1; d <= maxDays; d++) {
-                head += `<th>${d}</th>`;
-            }
-
-            head += '<th>CP</th><th>H.</th></tr>';
-            document.getElementById('annual-thead').innerHTML = head;
-
-            const ts = getTs();
-            let body = '';
-
-            for (let month = 1; month <= 12; month++) {
-                const monthStr = `${year}-${String(month).padStart(2, '0')}`;
-                const daysInMonth = new Date(Number(year), month, 0).getDate();
-                const monthData =
-                    ts[monthStr]?.[staff.id] ||
-                    ts[monthStr]?.[String(staff.id)] ||
-                    {};
-
-                let cp = 0;
-                let hours = 0;
-
-                body += `<tr><td class="sticky-col" style="font-weight:800;">${monthNames[month - 1]}</td>`;
-
-                for (let day = 1; day <= maxDays; day++) {
-                    if (day > daysInMonth) {
-                        body += '<td style="opacity:.18;">—</td>';
-                        continue;
-                    }
-
-                    const p = monthData[day] || { status: 'off' };
-                    if (p.status === 'conge') cp++;
-                    hours += calculateNet(p);
-
-                    body += `
-                        <td title="${escapeRhHtml(String(p.status || 'off'))}">
-                            ${planningStatusIcon(p.status)}
-                        </td>
-                    `;
-                }
-
-                body += `<td style="color:var(--cyan);font-weight:800;">${cp}j</td>`;
-                body += `<td style="color:var(--hr);font-weight:800;">${hours.toFixed(1)}h</td>`;
-                body += '</tr>';
-            }
-
-            document.getElementById('annual-tbody').innerHTML = body;
-        }
-
-        function loadPublicPlanning() {
-            const employeePortal = document.getElementById('employee-portal');
-
-            if (
-                employeePortal &&
-                employeePortal.style.display === 'flex' &&
-                loggedInStaffId !== null
-            ) {
-                renderEmployeePortal();
-            }
-        }
-
-        function applyApprovedRequestToPlanning(request) {
-            const staff = getDir().find(
-                s =>
-                    String(s.id) === String(request.staffId) ||
-                    (
-                        request.staffPin &&
-                        String(s.pin) === String(request.staffPin)
-                    )
-            );
-
-            if (!staff) return;
-
-            const startRaw = request.startDate || request.start;
-            const endRaw = request.endDate || request.end || startRaw;
-            if (!startRaw) return;
-
-            const start = new Date(`${startRaw}T12:00:00`);
-            const end = new Date(`${endRaw}T12:00:00`);
-
-            if (
-                Number.isNaN(start.getTime()) ||
-                Number.isNaN(end.getTime())
-            ) return;
-
-            const statusByType = {
-                conge: 'conge',
-                recup: 'recup',
-                off: 'off'
-            };
-
-            const status =
-                statusByType[String(request.type || '').toLowerCase()] ||
-                'off';
-
-            const ts = getTs();
-
-            for (
-                let cursor = new Date(start);
-                cursor <= end;
-                cursor.setDate(cursor.getDate() + 1)
-            ) {
-                const monthStr =
-                    `${cursor.getFullYear()}-${String(cursor.getMonth() + 1).padStart(2, '0')}`;
-
-                const day = cursor.getDate();
-
-                if (!ts[monthStr]) ts[monthStr] = {};
-                if (!ts[monthStr][staff.id]) ts[monthStr][staff.id] = {};
-
-                const old =
-                    ts[monthStr][staff.id][day] ||
-                    {
-                        poste: staff.dept,
-                        s1: '',
-                        s2: '',
-                        pause: 0,
-                        obs: ''
+        function getDir() {
+            let data = JSON.parse(localStorage.getItem('empire_hr_directory')) || [];
+            const serverStaff = Array.isArray(staffAccess) ? staffAccess : [];
+
+            if (serverStaff.length > 0) {
+                serverStaff.forEach(s => {
+                    const serverId = String(s.id ?? '');
+                    const serverName = String(s.name || '').trim().toLowerCase();
+
+                    let idx = data.findIndex(d =>
+                        (serverId && String(d.id ?? '') === serverId) ||
+                        (
+                            serverName &&
+                            String(d.name || '').trim().toLowerCase() === serverName
+                        )
+                    );
+
+                    let mappedDept = 'salle';
+                    if (s.dept === 'admin') mappedDept = 'admin';
+                    else if (s.dept === 'cuisine' || s.dept === 'patisserie') mappedDept = 'cuisine';
+                    else if (s.dept === 'bar') mappedDept = 'bar';
+                    else if (s.dept === 'salle') mappedDept = 'salle';
+
+                    const merged = {
+                        ...(idx > -1 ? data[idx] : {}),
+                        id: s.id ?? (idx > -1 ? data[idx].id : Date.now() + Math.random()),
+                        name: s.name || (idx > -1 ? data[idx].name : 'Employé'),
+                        role: s.role || (idx > -1 ? data[idx].role : 'Employé'),
+                        dept: mappedDept,
+                        contract: Number(idx > -1 ? data[idx].contract : 39) || 39,
+                        pin: String(s.pin || '').trim(),
+                        active: s.active !== false,
+                        onDuty: Boolean(s.onDuty)
                     };
 
-                ts[monthStr][staff.id][day] = {
-                    ...old,
-                    status,
-                    s1: '',
-                    s2: '',
-                    pause: 0,
-                    obs:
-                        `Demande acceptée : ${rhRequestTypeLabel(request.type)}`
-                };
-            }
-
-            saveTs(ts);
-            broadcastStaffingLevels();
-        }
-
-        function setDirectorRequestStatus(requestId, status) {
-            const reqs = getReqs();
-            const index = reqs.findIndex(
-                r => String(r.id) === String(requestId)
-            );
-
-            if (index === -1) return;
-
-            reqs[index].status = status;
-            reqs[index].processedAt = Date.now();
-
-            if (status === 'approved') {
-                applyApprovedRequestToPlanning(reqs[index]);
-            }
-
-            saveReqs(reqs);
-            updateReqBadge();
-            renderDirectorRequests();
-            refreshViews();
-
-            showToast(
-                status === 'approved'
-                    ? "Demande acceptée"
-                    : "Demande refusée"
-            );
-        }
-
-        function renderDirectorRequests() {
-            const body = document.getElementById('requests-dir-body');
-            if (!body) return;
-
-            const reqs = getReqs()
-                .slice()
-                .sort(
-                    (a, b) =>
-                        Number(b.createdAt || b.timestamp || b.id || 0) -
-                        Number(a.createdAt || a.timestamp || a.id || 0)
-                );
-
-            if (!reqs.length) {
-                body.innerHTML =
-                    '<tr><td colspan="7" style="text-align:center;padding:25px;color:var(--text-muted);">Aucune demande enregistrée.</td></tr>';
-                return;
-            }
-
-            body.innerHTML = reqs.map(r => {
-                const status = String(r.status || 'pending').toLowerCase();
-                const pending = ![
-                    'approved',
-                    'accepte',
-                    'accepté',
-                    'valide',
-                    'validé',
-                    'rejected',
-                    'refuse',
-                    'refusé'
-                ].includes(status);
-
-                return `
-                    <tr>
-                        <td>${formatRhDate(r.createdAt || r.timestamp || r.id)}</td>
-                        <td style="font-weight:800;">${escapeRhHtml(r.staffName || 'Employé')}</td>
-                        <td>${escapeRhHtml(rhRequestTypeLabel(r.type))}</td>
-                        <td>${formatRhDate(r.startDate || r.start)} → ${formatRhDate(r.endDate || r.end)}</td>
-                        <td>${escapeRhHtml(r.comment || r.reason || '-')}</td>
-                        <td>
-                            <span class="status-badge ${rhRequestStatusClass(r.status)}">
-                                ${rhRequestStatusLabel(r.status)}
-                            </span>
-                        </td>
-                        <td style="text-align:center;">
-                            ${pending ? `
-                                <div style="display:flex;gap:8px;justify-content:center;flex-wrap:wrap;">
-                                    <button
-                                        class="btn-outline"
-                                        style="border-color:var(--success);color:var(--success);"
-                                        onclick="setDirectorRequestStatus('${String(r.id)}','approved')"
-                                    >ACCEPTER</button>
-                                    <button
-                                        class="btn-outline"
-                                        style="border-color:var(--danger);color:var(--danger);"
-                                        onclick="setDirectorRequestStatus('${String(r.id)}','rejected')"
-                                    >REFUSER</button>
-                                </div>
-                            ` : '-'}
-                        </td>
-                    </tr>
-                `;
-            }).join('');
-        }
-
-    </script>
-</body>
-</html><!DOCTYPE html>
-<html lang="fr">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>Direction & RH - iCHEF</title>
-    
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;800;900&display=swap" rel="stylesheet">
-    <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
-
-    <script>
-        // 🛡️ SÉCURITÉ ET IDENTIFICATION
-        if (window.location.hostname !== "os.ichef.ch" && window.location.hostname !== "localhost" && window.location.hostname !== "127.0.0.1") {
-            document.documentElement.innerHTML = "<h1 style='color:red; text-align:center; margin-top:20%; font-family:sans-serif;'>VIOLATION DE LICENCE iCHEF OS</h1>";
-            throw new Error("Exécution non autorisée.");
-        }
-        document.addEventListener('contextmenu', event => event.preventDefault());
-        document.onkeydown = function(e) {
-            if(e.keyCode == 123) return false; 
-            if(e.ctrlKey && e.shiftKey && e.keyCode == 'I'.charCodeAt(0)) return false; 
-            if(e.ctrlKey && e.shiftKey && e.keyCode == 'J'.charCodeAt(0)) return false; 
-            if(e.ctrlKey && e.keyCode == 'U'.charCodeAt(0)) return false; 
-        }
-
-        const urlParams = new URLSearchParams(window.location.search);
-        let tenantID = urlParams.get('tenantID') || localStorage.getItem('ichef_tenant_id');
-        if(!tenantID) window.location.href = 'connexionpartenaire.html';
-        const SERVER_URL = (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1" || window.location.protocol === "file:") ? "http://localhost:10000" : "https://tableau-system.onrender.com";
-    </script>
-
-    <style>
-        :root {
-            --bg: #050505; --panel: #111111; --border: #222222; --border-strong: #333333;
-            --text-main: #ffffff; --text-muted: #888888; --sub: #777777;
-            --gold: #d4af37; --accent: #38bdf8; --success: #10b981; --warning: #f59e0b;
-            --danger: #ef4444; --alert: #ef4444; --bar: #38bdf8; --orange: #f97316; --purple: #a855f7; --cyan: #06b6d4; --recup: #d4e157;
-            --hr: #3b82f6; --radius: 12px; --blur: blur(20px);
-        }
-
-        * { box-sizing: border-box; }
-        body { font-family: 'Inter', sans-serif; background: var(--bg); color: var(--text-main); margin: 0; min-height: 100vh; overflow-x: hidden; -webkit-tap-highlight-color: transparent;}
-
-        /* --- PORTAIL D'ACCÈS --- */
-        #landing-portal { position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; background: var(--bg); z-index: 1000; display: flex; flex-direction: column; align-items: center; justify-content: center; }
-        .btn-kiosk { position: absolute; top: 20px; right: 20px; background: transparent; border: 1px solid rgba(255,255,255,0.1); color: #888; padding: 8px 12px; border-radius: 4px; font-size: 0.7rem; font-weight: 600; text-transform: uppercase; cursor: pointer; transition: 0.3s; z-index: 9999; }
-        .btn-kiosk:hover { border-color: var(--gold); color: var(--gold); background: rgba(251, 191, 36, 0.1); }
-
-        /* --- INTERFACES GLOBALES --- */
-        .full-interface { display: none; flex-direction: column; height: 100vh; padding: 20px; box-sizing: border-box; background: var(--bg); z-index: 500; position: fixed; top: 0; left: 0; width: 100%; overflow-y: auto;}
-        .header { display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid var(--border); padding-bottom: 20px; margin-bottom: 20px; flex-shrink: 0;}
-        .title { font-size: 1.5rem; font-weight: 900; margin: 0; color: var(--text-main); text-transform: uppercase; letter-spacing: 1px; display: flex; align-items: center; gap: 15px;}
-        .btn-nav { background: transparent; border: 1px solid var(--border); color: var(--text-muted); padding: 8px 16px; border-radius: 6px; font-weight: 600; cursor: pointer; text-transform: uppercase; font-size: 0.8rem; transition: 0.2s;}
-        .btn-nav:hover { color: var(--text-main); border-color: var(--text-main); }
-        .pay-btn { background: transparent; border: 1px solid var(--border); color: var(--text-main); padding: 15px; border-radius: var(--radius); font-weight: 700; cursor: pointer; text-transform: uppercase; letter-spacing: 1px; transition: 0.2s; display: flex; align-items: center; justify-content: center; gap: 10px; width: 100%;}
-        .pay-btn:hover { border-color: var(--gold); color: var(--gold); background: rgba(212, 175, 55, 0.05);}
-        .btn-save-green { background: var(--success); color: #000; border: none; padding: 12px 24px; border-radius: 8px; font-weight: 800; cursor: pointer; text-transform: uppercase;}
-
-        /* --- GRILLES & CARTES --- */
-        .grid-3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px; }
-        .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
-        .stat-card { background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius); padding: 20px; display: flex; flex-direction: column; justify-content: center; align-items: center; text-align: center; }
-        .stat-val { font-size: 2.5rem; font-weight: 900; color: var(--gold); line-height: 1; margin-top: 10px; }
-        .stat-label { font-size: 0.8rem; color: var(--text-muted); text-transform: uppercase; font-weight: 600; letter-spacing: 1px; }
-
-        /* --- DASHBOARD COMPTABLE --- */
-        .dashboard-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(100px, 1fr)); gap: 12px; background: var(--panel); padding: 15px 25px; border-radius: 12px; border: 1px solid var(--border); margin-bottom: 20px;}
-        .stat-box { background: transparent; border: 1px solid var(--border); padding: 15px 10px; border-radius: 8px; text-align: center; display: flex; flex-direction: column; justify-content: center; transition: 0.3s; }
-        .stat-box label { display: block; font-size: 0.6rem; color: var(--sub); text-transform: uppercase; margin-bottom: 8px; font-weight: bold; letter-spacing: 0.5px; }
-        .stat-box span { font-size: 1.4rem; font-weight: 300; }
-        .box-req { border-top: 2px solid #666; } .box-acc { border-top: 2px solid var(--accent); color: var(--accent); } .box-sup { border-top: 2px solid var(--alert); color: var(--alert); } .box-rcr { border-top: 2px solid var(--recup); color: var(--recup); } .box-fer { border-top: 2px solid var(--gold); color: var(--gold); } .box-vac { border-top: 2px solid var(--purple); color: var(--purple); } .box-mal { border-top: 2px solid var(--warning); color: var(--warning); } .box-h-due { border-top: 2px solid var(--alert); color: var(--alert); } .box-off-due { border-top: 2px solid var(--warning); color: var(--warning); } .box-cp-rest { border-top: 2px solid var(--cyan); color: var(--cyan); }
-        .stat-box.highlight { background: rgba(239, 68, 68, 0.05); border-color: var(--alert); }
-
-        /* --- PLANNING & MATRICE --- */
-        .main-container { display: flex; gap: 20px; flex: 1; overflow: hidden; padding: 0; margin-top: 20px;}
-        .staff-sidebar { width: 320px; background: var(--panel); border: 1px solid var(--border); border-radius: 12px; display: flex; flex-direction: column; flex-shrink: 0; }
-        .month-view { flex: 1; background: var(--panel); border: 1px solid var(--border); border-radius: 12px; display: flex; flex-direction: column; overflow: hidden; }
-        .staff-card { background: transparent; border: 1px solid var(--border); padding: 15px; border-radius: 8px; cursor: pointer; margin-bottom: 10px; border-left: 3px solid var(--border); transition: 0.3s; display: flex; flex-direction: column;}
-        .staff-card:hover { border-color: var(--hr); background: rgba(255,255,255,0.02); }
-        .staff-card.active { background: rgba(59, 130, 246, 0.05); border-left-color: var(--hr); border-color: var(--hr); }
-        .staff-name { font-size: 1rem; font-weight: bold; text-transform: uppercase; color: var(--text-main);}
-        .staff-role { font-size: 0.75rem; color: var(--sub); text-transform: uppercase; font-weight: normal; margin-top: 4px;}
-        
-        .table-container { flex: 1; overflow: auto; padding: 0; }
-        table { width: 100%; border-collapse: collapse; }
-        .table-detail th { position: sticky; top: 0; background: rgba(10,10,10,0.95); backdrop-filter: blur(5px); padding: 15px 10px; font-size: 0.7rem; color: var(--sub); text-transform: uppercase; border-bottom: 1px solid var(--border); z-index: 10; letter-spacing: 1px;}
-        .table-detail td { padding: 10px; border-bottom: 1px solid var(--border); text-align: center; vertical-align: middle; font-size: 0.9rem;}
-        .table-detail tr:hover { background: rgba(255, 255, 255, 0.02); }
-        .table-detail tr.weekend { background: rgba(255, 255, 255, 0.01); }
-        .day-label { font-weight: bold; font-size: 0.85rem; text-transform: uppercase; }
-        .date-label { font-size: 0.7rem; color: var(--sub); }
-        .status-sel { background: transparent; color: var(--text-main); border: 1px solid var(--border); padding: 8px; border-radius: 4px; font-weight: 300; font-size: 0.8rem; width: 130px; cursor: pointer; outline:none;}
-        .status-sel option { background: var(--bg); color: var(--text-main); }
-        .shift-inp { background: transparent; border: 1px solid var(--border); color: var(--accent); padding: 8px; text-align: center; border-radius: 4px; font-weight: bold; width: 90px; outline:none;}
-        .pause-inp { background: transparent; border: 1px solid var(--border); color: var(--warning); padding: 8px; text-align: center; border-radius: 4px; font-weight: bold; width: 60px; outline:none;}
-        .obs-inp { background: transparent; border: none; font-weight: 300; font-size: 0.85rem; width: 95%; padding: 8px; color: var(--sub); text-align:center; outline:none;}
-
-        .global-table { min-width: 100%; table-layout: fixed; background: transparent; }
-        .global-table th, .global-table td { border: 1px solid var(--border); text-align: center; padding: 0; height: 50px; }
-        .global-table th { background: rgba(10,10,10,0.95); backdrop-filter: blur(5px); position: sticky; top: 0; z-index: 10; border-bottom: 1px solid var(--border); font-size: 0.75rem; color: var(--sub); font-weight: bold;}
-        .sticky-col { position: sticky; left: 0; z-index: 11; width: 160px; text-align: left; padding-left: 20px; background: var(--bg); border-right: 1px solid var(--border); }
-        .global-table tbody tr:hover, .global-table tbody tr:hover .sticky-col { background-color: rgba(255,255,255,0.02) !important; }
-        .status-select-cell { width: 100%; height: 100%; background: transparent; border: none; font-weight: 900; cursor: pointer; text-align: center; font-size: 1.5rem; appearance: none; -webkit-appearance: none; transition: 0.2s; outline:none; }
-        .status-select-cell:hover { background: rgba(255,255,255,0.05); }
-        .status-select-cell option { background: var(--bg); font-size: 1rem; }
-        .annual-table th, .annual-table td { min-width: 40px; height: 40px; }
-        .annual-table .status-select-cell { font-size: 1.1rem; }
-
-        /* --- DATA TABLES (Logs & Requests) --- */
-        .data-table { width: 100%; border-collapse: collapse; }
-        .data-table th, .data-table td { border-bottom: 1px solid var(--border); padding: 18px 15px; text-align: left; }
-        .data-table th { background: rgba(10,10,10,0.95); position: sticky; top: 0; font-size: 0.75rem; color: var(--sub); text-transform: uppercase; font-weight: bold; letter-spacing: 1px;}
-        .data-table img { width: 60px; height: 60px; object-fit: cover; border-radius: 8px; border: 1px solid var(--border); }
-        .status-badge { padding: 6px 12px; border-radius: 4px; font-weight: bold; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 1px; }
-        .status-pending { background: rgba(245, 158, 11, 0.1); color: var(--warning); border: 1px solid var(--warning); }
-        .status-approved { background: rgba(16, 185, 129, 0.1); color: var(--accent); border: 1px solid var(--accent); }
-        .status-rejected { background: rgba(239, 68, 68, 0.1); color: var(--alert); border: 1px solid var(--alert); }
-
-        /* --- MODALS & TOGGLES --- */
-        .modal { display: none; position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; background: rgba(0, 0, 0, 0.9); z-index: 9999; justify-content: center; align-items: center; backdrop-filter: var(--blur); }
-        .modal.show { display: flex; }
-        .modal-content { background: var(--panel); padding: 30px; border-radius: 16px; border: 1px solid var(--border); width: 500px; max-width: 95%; box-shadow: 0 15px 40px rgba(0,0,0,0.9);}
-        .modal-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; }
-        .modal-header h3 { margin: 0; font-size: 1.3rem; color: var(--text-main); text-transform: uppercase; }
-        .input-group { margin-bottom: 15px; text-align: left; display: flex; flex-direction: column; gap: 8px;}
-        .input-group label { font-size: 0.75rem; color: var(--sub); text-transform: uppercase; font-weight: bold; letter-spacing: 1px;}
-        .input-field { width: 100%; background: rgba(0,0,0,0.5); border: 1px solid var(--border-strong); color: var(--text-main); padding: 12px; border-radius: 6px; font-size: 1rem; box-sizing: border-box; outline: none; transition: 0.3s;}
-        .input-field:focus { border-color: var(--hr); }
-        select.input-field { appearance: none; cursor: pointer; }
-        
-        .toggle-row { display: flex; justify-content: space-between; align-items: center; padding: 15px; background: rgba(255,255,255,0.02); border: 1px solid var(--border); border-radius: 8px; margin-top: 10px;}
-        .toggle-info strong { display: block; font-size: 0.9rem; color: var(--text-main); margin-bottom: 4px; }
-        .toggle-info span { font-size: 0.75rem; color: var(--sub); }
-        .switch { position: relative; display: inline-block; width: 50px; height: 26px; flex-shrink: 0;}
-        .switch input { opacity: 0; width: 0; height: 0; }
-        .slider { position: absolute; cursor: pointer; top: 0; left: 0; right: 0; bottom: 0; background-color: var(--danger); transition: .3s; border-radius: 34px;}
-        .slider:before { position: absolute; content: ""; height: 18px; width: 18px; left: 4px; bottom: 4px; background-color: white; transition: .3s; border-radius: 50%;}
-        input:checked + .slider { background-color: var(--success); }
-        input:checked + .slider:before { transform: translateX(24px); }
-
-        /* --- PIN PAD --- */
-        .pin-pad { display: grid; grid-template-columns: repeat(3, 80px); gap: 15px; margin-top: 30px; justify-content: center; }
-        .pin-btn { background: transparent; border: 1px solid var(--border); color: var(--hr); font-size: 1.5rem; font-weight: 300; width: 80px; height: 80px; border-radius: 50%; cursor: pointer; transition: 0.2s; }
-        .pin-btn:active { background: var(--hr); color: #000; border-color: var(--hr); transform: scale(0.95);}
-        .pin-display { font-size: 2.5rem; letter-spacing: 15px; margin-bottom: 20px; color: var(--hr); min-height: 50px; font-weight: 300; text-align: center;}
-        
-        #punch-video { width: 100%; max-width: 300px; border-radius: 8px; border: 1px solid var(--border); margin-bottom: 15px; background: #000; display: block; margin: 0 auto 15px auto;}
-
-        .toast { position: fixed; bottom: 30px; left: 50%; transform: translateX(-50%) translateY(150px); background: var(--success); color: #000; padding: 12px 24px; border-radius: 30px; font-weight: 800; z-index: 20000; opacity: 0; transition: 0.4s; text-transform: uppercase; font-size: 0.9rem;}
-        .toast.show { transform: translateX(-50%) translateY(0); opacity: 1; }
-
-
-        /* --- CORRECTIONS UI RH --- */
-        .input-full {
-            width: 100%;
-            background: rgba(0,0,0,0.5);
-            border: 1px solid var(--border-strong);
-            color: var(--text-main);
-            padding: 12px;
-            border-radius: 6px;
-            font-size: 1rem;
-            box-sizing: border-box;
-            outline: none;
-        }
-        .input-full:focus { border-color: var(--hr); }
-        .btn-outline {
-            background: transparent;
-            border: 1px solid var(--border-strong);
-            color: var(--text-main);
-            padding: 10px 14px;
-            border-radius: 6px;
-            cursor: pointer;
-            font-weight: 700;
-            text-transform: uppercase;
-        }
-        .month-nav-btn {
-            background: transparent;
-            border: none;
-            color: var(--text-main);
-            min-width: 40px;
-            min-height: 40px;
-            cursor: pointer;
-            font-size: 1rem;
-        }
-        .empty-msg {
-            flex: 1;
-            min-height: 350px;
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            justify-content: center;
-            color: var(--text-muted);
-            text-align: center;
-        }
-        .nav-item {
-            list-style: none;
-            cursor: pointer;
-            padding: 8px 10px;
-            border: 1px solid var(--border);
-            border-radius: 6px;
-        }
-        .portal-card {
-            background: var(--panel);
-            border: 1px solid var(--border);
-            border-radius: 12px;
-            padding: 40px;
-            text-align: center;
-            cursor: pointer;
-            transition: 0.25s;
-        }
-        .portal-card:hover {
-            border-color: var(--gold);
-            transform: translateY(-2px);
-        }
-
-        @media (max-width: 900px) {
-            .grid-3, .grid-2 { grid-template-columns: 1fr; }
-            .main-container { flex-direction: column; overflow: visible; }
-            .staff-sidebar { width: 100%; max-height: 300px; }
-            .month-view { min-height: 500px; }
-            body { overflow-y: auto; height: auto; }
-        }
-    </style>
-</head>
-<body>
-
-    <div id="landing-portal">
-        <button class="btn-kiosk" id="btn-kiosk">KIOSQUE</button>
-        <h1 style="color:var(--text-main); font-size: 2.5rem; letter-spacing: 2px; font-family: 'Playfair Display', serif; margin-bottom: 50px;">iCHEF RH</h1>
-        
-        <div class="grid-2" style="max-width: 800px; width: 90%; gap: 30px;">
-            <div class="portal-card" onclick="openDeptSelection()">
-                <h3 style="color:var(--gold); margin:0; text-transform:uppercase; letter-spacing: 2px;">Direction</h3>
-                <p style="color:var(--sub); font-size: 0.85rem; margin-top:10px;">Accès plannings, matrice et contrats.</p>
-            </div>
-            
-            <div class="portal-card" onclick="openStaffPortalLogin()">
-                <h3 style="color:var(--accent); margin:0; text-transform:uppercase; letter-spacing: 2px;">Employé</h3>
-                <p style="color:var(--sub); font-size: 0.85rem; margin-top:10px;">Espace perso, congés et planning.</p>
-            </div>
-        </div>
-
-        <button class="pay-btn" style="margin-top:40px; width:auto; padding:15px 40px; border-color:var(--hr); color:var(--hr);" onclick="openPunchClock()">
-            POINTEUSE (ENTRÉE/SORTIE)
-        </button>
-    </div>
-
-    <div class="modal" id="dept-modal">
-        <div class="modal-content">
-            <div class="modal-header">
-                <h3 style="color:var(--gold);">Département</h3>
-                <button class="btn-outline" style="border:none;" onclick="closeDeptSelection()">FERMER</button>
-            </div>
-            <div style="display:flex; flex-direction:column; gap:10px;">
-                <button class="pay-btn" onclick="showPinPad('cuisine')">CUISINE / PRODUCTION</button>
-                <button class="pay-btn" onclick="showPinPad('salle')">SALLE / CAISSE</button>
-                <button class="pay-btn" onclick="showPinPad('bar')">BAR / COMPTOIR</button>
-                <button class="pay-btn" onclick="showPinPad('admin')">DIRECTION / MANAGER</button>
-            </div>
-        </div>
-    </div>
-
-    <div class="modal" id="pin-modal">
-        <div class="modal-content" style="background:var(--bg); border:1px solid var(--border); box-shadow:0 20px 50px rgba(0,0,0,0.8);">
-            <h3 id="pin-dept-title" style="color:var(--text-main); font-weight:300; letter-spacing:2px; text-transform:uppercase; margin-top:0;">CODE REQUIS</h3>
-            
-            <div id="staff-select-container" style="display:none; margin-bottom: 20px;">
-                <select id="staff-login-select" class="input-full" style="text-align:center; font-size:1.1rem; color:var(--accent); border-color:var(--accent);"></select>
-            </div>
-
-            <div id="pin-display" class="pin-display"></div>
-            
-            <div class="pin-pad">
-                <button class="pin-btn" onclick="appendPin(1)">1</button><button class="pin-btn" onclick="appendPin(2)">2</button><button class="pin-btn" onclick="appendPin(3)">3</button>
-                <button class="pin-btn" onclick="appendPin(4)">4</button><button class="pin-btn" onclick="appendPin(5)">5</button><button class="pin-btn" onclick="appendPin(6)">6</button>
-                <button class="pin-btn" onclick="appendPin(7)">7</button><button class="pin-btn" onclick="appendPin(8)">8</button><button class="pin-btn" onclick="appendPin(9)">9</button>
-                <button class="pin-btn" onclick="cancelPin()" style="color:var(--alert); border-color:var(--border);">X</button>
-                <button class="pin-btn" onclick="appendPin(0)">0</button>
-                <button class="pin-btn" onclick="submitPin()" style="color:var(--gold); border-color:var(--gold);">OK</button>
-            </div>
-        </div>
-    </div>
-
-    <div class="modal" id="punch-modal">
-        <div class="modal-content" style="max-width: 400px; text-align:center;">
-            <div class="modal-header" style="justify-content: center;">
-                <h3 style="color:var(--hr); font-size:1.5rem; margin:0;">POINTEUSE</h3>
-            </div>
-            
-            <video id="punch-video" autoplay playsinline></video>
-            <canvas id="punch-canvas" style="display:none;"></canvas>
-            
-            <div style="color:var(--sub); font-size:0.8rem; margin-bottom:15px; text-transform:uppercase; letter-spacing:1px;">Souriez et entrez votre code</div>
-            <div id="punch-display" class="pin-display" style="font-size:2rem; min-height:40px; margin-bottom:10px;"></div>
-            
-            <div class="pin-pad" style="margin-top:0; gap:10px; grid-template-columns: repeat(3, 60px);">
-                <button class="pin-btn" style="width:60px; height:60px; font-size:1.2rem;" onclick="appendPunchPin(1)">1</button>
-                <button class="pin-btn" style="width:60px; height:60px; font-size:1.2rem;" onclick="appendPunchPin(2)">2</button>
-                <button class="pin-btn" style="width:60px; height:60px; font-size:1.2rem;" onclick="appendPunchPin(3)">3</button>
-                <button class="pin-btn" style="width:60px; height:60px; font-size:1.2rem;" onclick="appendPunchPin(4)">4</button>
-                <button class="pin-btn" style="width:60px; height:60px; font-size:1.2rem;" onclick="appendPunchPin(5)">5</button>
-                <button class="pin-btn" style="width:60px; height:60px; font-size:1.2rem;" onclick="appendPunchPin(6)">6</button>
-                <button class="pin-btn" style="width:60px; height:60px; font-size:1.2rem;" onclick="appendPunchPin(7)">7</button>
-                <button class="pin-btn" style="width:60px; height:60px; font-size:1.2rem;" onclick="appendPunchPin(8)">8</button>
-                <button class="pin-btn" style="width:60px; height:60px; font-size:1.2rem;" onclick="appendPunchPin(9)">9</button>
-                <button class="pin-btn" style="width:60px; height:60px; font-size:1.2rem; color:var(--alert); border-color:var(--border);" onclick="cancelPunchClock()">X</button>
-                <button class="pin-btn" style="width:60px; height:60px; font-size:1.2rem;" onclick="appendPunchPin(0)">0</button>
-                <button class="pin-btn" style="width:60px; height:60px; font-size:1.2rem; color:var(--gold); border-color:var(--gold);" onclick="submitPunch()">OK</button>
-            </div>
-
-            <div id="punch-success-overlay" style="display:none; position:absolute; top:0; left:0; width:100%; height:100%; background:rgba(16, 185, 129, 0.9); border-radius:16px; flex-direction:column; justify-content:center; align-items:center; z-index:100;">
-                <div style="font-size:4rem; margin-bottom:10px;"></div>
-                <h2 style="color:#000; margin:0; text-transform:uppercase;">POINTAGE ENREGISTRÉ</h2>
-            </div>
-        </div>
-    </div>
-
-    <div class="full-interface" id="director-hub" style="padding: 20px;">
-        <div class="container" style="max-width: 1200px; width: 100%; margin: 0 auto;">
-            <div class="header">
-                <h1 class="title">Direction RH : <span id="hub-dept-display" style="color:var(--gold);"></span></h1>
-                 <li class="nav-item" onclick="window.location.href='rh.html?tenantID=' + tenantID" style="color: var(--warning); font-weight: 600;">ACCUEIL</li>
-                 <li class="nav-item" onclick="window.location.href='admin.html?tenantID=' + tenantID" style="color: var(--warning); font-weight: 600;">ADMINISTRATION</li>
-            </div>
-
-            <div class="grid-3" style="margin-bottom: 25px;">
-                <div class="stat-card">
-                    <div class="stat-label">Effectif Total</div>
-                    <div class="stat-val" id="stat-total-staff">0</div>
-                </div>
-                <div class="stat-card" style="border-color: var(--success); background: rgba(16, 185, 129, 0.05);">
-                    <div class="stat-label" style="color: var(--success);">Actuellement en Poste</div>
-                    <div class="stat-val" style="color: var(--success);" id="stat-active-staff">0</div>
-                </div>
-                <div class="stat-card">
-                    <div class="stat-label">Demandes en attente</div>
-                    <div class="stat-val" style="color: var(--warning);" id="req-badge">0</div>
-                </div>
-            </div>
-
-            <div class="grid-2">
-                <button class="pay-btn" onclick="openInterface('hr')">📅 MATRICE DES PLANNINGS</button>
-                <button class="pay-btn" onclick="openInterface('requests')">DEMANDES & CONGÉS</button>
-                <button class="pay-btn" onclick="openInterface('logs')">PREUVES DE POINTAGE</button>
-                <button class="pay-btn" onclick="alert('Export Paie : Bientôt disponible')">EXPORT PAIE (COMPTABLE)</button>
-                
-                <button class="pay-btn" style="border-color:var(--purple); color:var(--purple); background:rgba(168, 85, 247, 0.05); padding:30px; grid-column: span 2; margin-top: 15px;" onclick="openPredictiveModal()">
-                    INTELLIGENCE PRÉDICTIVE (STAFF & TRAFIC)
-                </button>
-            </div>
-        </div>
-    </div>
-
-    <div id="hr-interface" class="full-interface">
-        <header class="header" style="padding: 20px 30px; margin:0;">
-            <div style="display:flex; align-items:center; gap:20px;">
-                <h2 style="color:var(--gold); margin:0; text-transform:uppercase; letter-spacing:1px; font-weight:300;">📅 PLANNINGS</h2>
-                <div style="display:flex; align-items:center; background:var(--panel); border:1px solid var(--border); border-radius:8px; padding:5px;">
-                    <button class="month-nav-btn" onclick="changeMonth(-1)">◀</button>
-                    <input type="month" id="month-selector" style="background:transparent; border:none; color:var(--gold); font-size:1.1rem; font-weight:bold; outline:none; text-transform:uppercase; text-align:center;" onchange="handleMonthChange()">
-                    <button class="month-nav-btn" onclick="changeMonth(1)">▶</button>
-                </div>
-            </div>
-            <div style="display:flex; gap:10px;">
-                <button class="btn-nav" style="border-color:var(--accent); color:var(--accent);" onclick="balanceHoursIA()">⚖️ LISSAGE AUTO IA</button>
-                <button class="btn-nav" id="btn-toggle-view" onclick="toggleViewMode()">🌍 VUE GLOBALE MATRICE</button>
-                <button class="btn-nav" onclick="backToHub()">RETOUR HUB</button>
-            </div>
-        </header>
-
-        <div class="dashboard-stats" id="dashboard-stats-panel" style="display:none;">
-            <div class="stat-box box-req"><label>Contrat</label><span id="stat-expected">0h</span></div>
-            <div class="stat-box box-acc"><label>Accompli</label><span id="stat-actual">0h</span></div>
-            <div class="stat-box box-sup" id="sup-alert"><label>H. Sup.</label><span id="stat-sup">0h</span></div>
-            <div class="stat-box box-h-due"><label>H. Dues</label><span id="stat-h-due">0h</span></div>
-            <div class="stat-box box-rcr"><label>RCR (Banque)</label><span id="stat-recup">0h</span></div>
-            <div class="stat-box box-off-due"><label>Off Dus</label><span id="stat-off-due">0j</span></div>
-            <div class="stat-box box-cp-rest"><label>CP Restants</label><span id="stat-cp-rest">0j</span></div>
-            <div class="stat-box box-fer"><label>Fériés</label><span id="stat-ferie">0j</span></div>
-            <div class="stat-box box-vac"><label>Vacances</label><span id="stat-cp">0j</span></div>
-            <div class="stat-box box-mal"><label>Maladie</label><span id="stat-maladie">0j</span></div>
-        </div>
-
-        <div class="main-container">
-            <div class="staff-sidebar">
-                <div style="padding:20px; border-bottom:1px solid var(--border);">
-                    <button class="pay-btn" style="margin:0; padding:12px; font-size:0.8rem; border-color:var(--hr); color:var(--hr);" onclick="openStaffModal()">+ NOUVEAU CONTRAT</button>
-                </div>
-                <div id="staff-list-render" style="flex:1; overflow-y:auto; padding:15px; display:flex; flex-direction:column; gap:10px;"></div>
-            </div>
-            
-            <div class="month-view" id="month-view-container">
-                <div id="empty-state" class="empty-msg">
-                    <span style="font-size:3rem; margin-bottom:15px; opacity:0.5;">👤</span>
-                    <h3 style="font-weight:300; letter-spacing:1px; margin:0 0 10px 0;">SÉLECTIONNEZ UN COLLABORATEUR</h3>
-                    <p style="font-size:0.85rem;">Ou basculez en vue Matrice Globale en haut à droite.</p>
-                </div>
-
-                <div id="individual-header-controls" style="display:none; background:transparent; border-bottom:1px solid var(--border); padding:15px 20px; justify-content:space-between; align-items:center;">
-                    <div style="color:var(--text-main); font-weight:300; font-size:1.1rem; text-transform:uppercase; letter-spacing:1px;" id="individual-title"></div>
-                    <button class="btn-nav" id="btn-annual-toggle" style="border-color:var(--cyan); color:var(--cyan);" onclick="toggleAnnualView()">📅 VUE ANNUELLE (CP)</button>
-                </div>
-
-                <div id="table-container-individual" class="table-container" style="display:none;">
-                    <table class="table-detail">
-                        <thead>
-                            <tr>
-                                <th>JOUR / DATE</th>
-                                <th>STATUT RH</th>
-                                <th style="color:var(--gold);">📍 POSTE ASSIGNÉ</th>
-                                <th>MATIN (S1)</th>
-                                <th>SOIR (S2)</th>
-                                <th style="color:var(--warning);">PAUSE (M)</th>
-                                <th style="color:var(--hr);">TOTAL NET</th>
-                                <th>OBSERVATIONS</th>
-                            </tr>
-                        </thead>
-                        <tbody id="timesheet-body"></tbody>
-                    </table>
-                </div>
-
-                <div id="annual-view-container" class="table-container" style="display:none; padding:15px;">
-                    <table class="global-table annual-table">
-                        <thead id="annual-thead"></thead>
-                        <tbody id="annual-tbody"></tbody>
-                    </table>
-                </div>
-
-                <div id="global-view-container" class="table-container" style="display:none;">
-                    <table class="global-table">
-                        <thead id="global-thead"></thead>
-                        <tbody id="global-tbody"></tbody>
-                    </table>
-                </div>
-            </div>
-        </div>
-    </div>
-
-    <div id="logs-interface" class="full-interface">
-        <header class="header" style="padding: 20px 30px; margin:0;">
-            <h2 style="color:var(--bar); margin:0; font-weight:300; letter-spacing:1px; text-transform:uppercase;">PREUVES DE POINTAGE</h2>
-            <div style="display: flex; gap: 10px;">
-                <button class="btn-nav" style="border-color:var(--alert); color:var(--alert);" onclick="clearLogs()">PURGER</button>
-                <button class="btn-nav" onclick="backToHub()">RETOUR HUB</button>
-            </div>
-        </header>
-        <div style="background:var(--panel); border:1px solid var(--border); border-radius:12px; padding:0; flex:1; overflow-y:auto; margin: 20px;">
-            <table class="data-table">
-                <thead>
-                    <tr>
-                        <th style="width: 80px;">PHOTO</th>
-                        <th>EMPLOYÉ</th>
-                        <th>ACTION</th>
-                        <th>DATE & HEURE EXACTE</th>
-                    </tr>
-                </thead>
-                <tbody id="logs-body"></tbody>
-            </table>
-        </div>
-    </div>
-
-    <div id="requests-interface" class="full-interface">
-        <header class="header" style="padding: 20px 30px; margin:0;">
-            <h2 style="color:var(--purple); margin:0; font-weight:300; letter-spacing:1px; text-transform:uppercase;">DEMANDES D'ABSENCES & CONGÉS</h2>
-            <button class="btn-nav" onclick="backToHub()">RETOUR HUB</button>
-        </header>
-        <div style="background:var(--panel); border:1px solid var(--border); border-radius:12px; padding:0; flex:1; overflow-y:auto; margin: 20px;">
-            <table class="data-table">
-                <thead>
-                    <tr>
-                        <th>DATE DE DEMANDE</th>
-                        <th>EMPLOYÉ</th>
-                        <th>TYPE</th>
-                        <th>PÉRIODE</th>
-                        <th>MOTIF / COMMENTAIRE</th>
-                        <th>STATUT</th>
-                        <th style="text-align:center;">ACTIONS</th>
-                    </tr>
-                </thead>
-                <tbody id="requests-dir-body"></tbody>
-            </table>
-        </div>
-    </div>
-
-    <div id="employee-portal" class="full-interface" style="overflow-y: auto;">
-        <header class="header" style="position: sticky; top: 0; z-index: 100; padding: 20px 30px; margin:0; background: rgba(5,5,5,0.9); backdrop-filter: var(--blur);">
-            <div style="display:flex; align-items:center; gap:20px;">
-                <h2 style="color:var(--purple); font-weight:300; letter-spacing:1px; margin:0; text-transform:uppercase;">ESPACE PERSONNEL : <span id="emp-name-display" style="color:var(--text-main); font-weight:bold;"></span></h2>
-            </div>
-            <div style="display:flex; gap:10px;">
-                <button class="btn-nav" style="border-color:var(--bar); color:var(--bar);" onclick="document.getElementById('landing-portal').style.display='flex'; document.getElementById('employee-portal').style.display='none';">📅 VOIR PLANNING ÉQUIPE</button>
-                <button class="btn-nav" onclick="fullLogout()">DÉCONNEXION</button>
-            </div>
-        </header>
-
-        <div style="padding:25px; max-width:1400px; margin:0 auto; width:100%; box-sizing:border-box; display:flex; flex-direction:column; gap:25px;">
-            
-            <div style="background:var(--panel); border:1px solid var(--border); border-radius:12px; padding:20px; box-shadow:0 10px 30px rgba(0,0,0,0.3);">
-                <h3 style="color:var(--text-main); font-weight:300; letter-spacing:1px; margin:0; border-bottom:1px solid var(--border); padding-bottom:10px; margin-bottom:15px;">MES COMPTEURS (CE MOIS)</h3>
-                <div class="dashboard-stats" style="border:none; padding:0; background:transparent; margin:0;">
-                    <div class="stat-box box-req"><label>Contrat</label><span id="emp-stat-expected">0h</span></div>
-                    <div class="stat-box box-acc"><label>Accompli</label><span id="emp-stat-actual">0h</span></div>
-                    <div class="stat-box box-sup"><label>Heures Sup.</label><span id="emp-stat-sup">0h</span></div>
-                    <div class="stat-box box-h-due"><label>H. Dues</label><span id="emp-stat-h-due">0h</span></div>
-                    <div class="stat-box box-fer"><label>Fériés Posés</label><span id="emp-stat-ferie">0j</span></div>
-                    <div class="stat-box box-vac"><label>CP Posés</label><span id="emp-stat-cp">0j</span></div>
-                    <div class="stat-box box-cp-rest"><label>CP Restants</label><span id="emp-stat-cp-rest">0j</span></div>
-                </div>
-            </div>
-
-            <div style="display:flex; gap:25px; align-items:flex-start; flex-wrap:wrap;">
-                
-                <div style="flex:1.5; min-width:400px; background:var(--panel); border:1px solid var(--border); border-radius:12px; display:flex; flex-direction:column; box-shadow:0 10px 30px rgba(0,0,0,0.3); overflow:hidden;">
-                    <h3 style="color:var(--text-main); font-weight:300; letter-spacing:1px; margin:0; padding:20px; border-bottom:1px solid var(--border); background:rgba(0,0,0,0.5);">📅 MON PLANNING</h3>
-                    <div style="max-height:500px; overflow-y:auto;">
-                        <table class="table-detail">
-                            <thead>
-                                <tr>
-                                    <th>DATE</th>
-                                    <th>STATUT</th>
-                                    <th>HORAIRES</th>
-                                    <th>TOTAL</th>
-                                </tr>
-                            </thead>
-                            <tbody id="emp-planning-body"></tbody>
-                        </table>
-                    </div>
-                </div>
-
-                <div style="flex:1; min-width:350px; display:flex; flex-direction:column; gap:25px;">
-                    <div style="background:var(--panel); border:1px solid var(--border); border-radius:12px; padding:25px; box-shadow:0 10px 30px rgba(0,0,0,0.3);">
-                        <h3 style="color:var(--text-main); font-weight:300; letter-spacing:1px; margin:0; border-bottom:1px solid var(--border); padding-bottom:15px; margin-bottom:20px;">NOUVELLE DEMANDE</h3>
-                        <div class="input-group">
-                            <label>Type de demande</label>
-                            <select id="emp-req-type" class="input-full" style="color:var(--purple);">
-                                <option value="conge">Vacances / Congés Payés (CP)</option>
-                                <option value="recup">Récupération Heures Sup. (RCR)</option>
-                                <option value="off">Événement familial / Jour Off</option>
-                            </select>
-                        </div>
-                        <div style="display:flex; gap:15px;">
-                            <div class="input-group" style="flex:1;">
-                                <label>Date début</label>
-                                <input type="date" id="emp-req-start" class="input-full">
-                            </div>
-                            <div class="input-group" style="flex:1;">
-                                <label>Date fin (incluse)</label>
-                                <input type="date" id="emp-req-end" class="input-full">
-                            </div>
-                        </div>
-                        <div class="input-group">
-                            <label>Commentaire / Motif <span style="color:var(--alert);">*Obligatoire</span></label>
-                            <textarea id="emp-req-comment" class="input-full" style="height:80px; resize:none;" placeholder="Précisez obligatoirement le motif..."></textarea>
-                        </div>
-                        <button class="pay-btn" style="border-color:var(--purple); color:var(--purple); background:rgba(168, 85, 247, 0.05); margin:0;" onclick="submitEmployeeRequest()">ENVOYER À LA DIRECTION</button>
-                    </div>
-
-                    <div style="background:var(--panel); border:1px solid var(--border); border-radius:12px; display:flex; flex-direction:column; overflow:hidden; box-shadow:0 10px 30px rgba(0,0,0,0.3);">
-                        <h3 style="color:var(--text-main); font-weight:300; letter-spacing:1px; margin:0; padding:20px; border-bottom:1px solid var(--border); background:rgba(0,0,0,0.5);">MES DEMANDES</h3>
-                        <div style="max-height:250px; overflow-y:auto;">
-                            <table class="data-table" style="border:none;">
-                                <thead style="background:transparent;">
-                                    <tr>
-                                        <th>SOUMIS LE</th>
-                                        <th>TYPE / DATES</th>
-                                        <th>STATUT</th>
-                                    </tr>
-                                </thead>
-                                <tbody id="emp-requests-body"></tbody>
-                            </table>
-                        </div>
-                    </div>
-                </div>
-            </div>
-        </div>
-    </div>
-
-    <div class="modal" id="staff-modal">
-        <div class="modal-content">
-            <div class="header" style="padding-bottom:15px; margin-bottom:20px;">
-                <h3 style="margin:0; font-size:1.4rem;">Fiche Employé</h3>
-                <button class="btn-outline" style="border:none;" onclick="closeModals()">FERMER</button>
-            </div>
-            <div style="display: flex; flex-direction: column; gap: 10px;">
-                <input type="hidden" id="staff-edit-original-pin">
-                
-                <div class="grid-2">
-                    <div class="input-group">
-                        <label>Prénom / Nom</label>
-                        <input type="text" id="staff-name" class="input-full" placeholder="Ex: Jean Dupont">
-                    </div>
-                    <div class="input-group">
-                        <label>Poste / Rang</label>
-                        <input type="text" id="staff-title" class="input-full" placeholder="Ex: Chef de Partie">
-                    </div>
-                </div>
-
-                <div class="grid-2">
-                    <div class="input-group">
-                        <label>Code PIN (Connexion)</label>
-                        <input type="password" id="staff-pin" class="input-full" placeholder="4 chiffres min">
-                    </div>
-                    <div class="input-group">
-                        <label>Département / Droits</label>
-                        <select id="staff-role" class="input-full">
-                            <option value="cuisine">Cuisine / Production</option>
-                            <option value="salle">Salle / Caisse</option>
-                            <option value="bar">Bar / Comptoir</option>
-                            <option value="admin">Direction / Manager</option>
-                        </select>
-                    </div>
-                </div>
-
-                <div class="toggle-row">
-                    <div>
-                        <strong style="color: #fff; font-size: 0.9rem;">Employé Actif</strong>
-                        <div style="font-size: 0.75rem; color: var(--text-muted);">S'il quitte l'entreprise, décochez ceci.</div>
-                    </div>
-                    <label class="switch"><input type="checkbox" id="staff-active" checked><span class="slider"></span></label>
-                </div>
-
-            </div>
-            <div style="display:flex; justify-content:space-between; margin-top:20px; padding-top:15px; border-top:1px solid var(--border);">
-                <button class="btn-outline" style="border-color: var(--danger); color: var(--danger);" onclick="deleteStaff()">Supprimer</button>
-                <div style="display:flex; gap:10px;">
-                    <button class="btn-outline" onclick="closeModals()">Annuler</button>
-                    <button class="btn-save-green" onclick="saveStaff()">ENREGISTRER</button>
-                </div>
-            </div>
-        </div>
-    </div>
-
-    <div class="modal" id="ia-predictions-modal">
-        <div class="modal-content" style="max-width: 1000px; width: 95%;">
-            <div class="header" style="padding-bottom:15px; margin-bottom:20px;">
-                <h3 style="color: var(--purple); display: flex; align-items: center; gap: 10px; margin: 0; text-transform: uppercase;">
-                    INTELLIGENCE PRÉDICTIVE
-                </h3>
-                <button class="btn-outline" style="border:none;" onclick="closeModals()">FERMER</button>
-            </div>
-            
-            <div style="display: flex; gap: 25px; flex-wrap: wrap; background: transparent;">
-                
-                <div style="flex: 1; min-width: 300px; background: rgba(0,0,0,0.5); border: 1px solid var(--border); border-radius: 12px; padding: 20px;">
-                    <h4 style="color: var(--accent); margin-top: 0; text-transform: uppercase; font-size: 0.85rem; letter-spacing: 1px; border-bottom: 1px dashed var(--border); padding-bottom: 10px;">
-                        Brigade Analysée
-                    </h4>
-                    
-                    <button class="btn-save-green" style="width: 100%; margin-bottom: 20px; font-size: 0.9rem;" onclick="generateIAPrediction()">
-                        LANCER L'ANALYSE IA
-                    </button>
-                    
-                    <div id="pred-staff-list" style="display: flex; flex-direction: column; gap: 8px; max-height: 300px; overflow-y: auto;">
-                        <div style="color: var(--text-muted); font-size: 0.85rem; font-style: italic; text-align: center; padding: 20px;">
-                            Cliquez sur le bouton ci-dessus pour que l'IA croise votre effectif actuel avec l'historique du trafic.
-                        </div>
-                    </div>
-                </div>
-
-                <div style="flex: 2; min-width: 400px; display: flex; flex-direction: column; gap: 20px;">
-                    <div style="background: rgba(212, 175, 55, 0.05); border: 1px solid var(--gold); border-radius: 12px; padding: 20px;">
-                        <h4 style="color: var(--gold); margin-top: 0; text-transform: uppercase; font-size: 0.85rem; letter-spacing: 1px; margin-bottom: 10px;">
-                            ZONES DE RUSH (Risque de sous-effectif)
-                        </h4>
-                        <ul id="ia-rush-periods" style="color: var(--text-main); font-size: 0.9rem; margin: 0; padding-left: 20px; line-height: 1.6;">
-                            <li style="color: var(--text-muted); list-style: none; margin-left: -20px;">En attente de l'analyse...</li>
-                        </ul>
-                    </div>
-
-                    <div style="display: flex; gap: 15px;">
-                        <div style="flex: 1; background: rgba(0,0,0,0.5); border: 1px solid var(--border); border-radius: 12px; padding: 20px;">
-                            <h4 style="color: var(--accent); margin-top: 0; text-transform: uppercase; font-size: 0.85rem; letter-spacing: 1px; margin-bottom: 10px;">
-                                PÉRIODES CREUSES
-                            </h4>
-                            <ul id="ia-dead-periods" style="color: var(--text-muted); font-size: 0.85rem; margin: 0; padding-left: 20px; line-height: 1.6;">
-                                <li style="list-style: none; margin-left: -20px;">Repos conseillé...</li>
-                            </ul>
-                        </div>
-                        
-                        <div style="flex: 1; background: rgba(0,0,0,0.5); border: 1px solid var(--border); border-radius: 12px; padding: 20px;">
-                            <h4 style="color: var(--purple); margin-top: 0; text-transform: uppercase; font-size: 0.85rem; letter-spacing: 1px; margin-bottom: 10px;">
-                                SUGGESTION CONGÉS
-                            </h4>
-                            <div id="ia-vacations" style="color: var(--text-muted); font-size: 0.85rem; line-height: 1.5;">
-                                Analyse en cours...
-                            </div>
-                        </div>
-                    </div>
-
-                    <div style="background: rgba(239, 68, 68, 0.05); border: 1px solid var(--alert); border-radius: 12px; padding: 20px;">
-                        <h4 style="color: var(--alert); margin-top: 0; text-transform: uppercase; font-size: 0.85rem; letter-spacing: 1px; margin-bottom: 10px;">
-                            CONSEIL RECRUTEMENT
-                        </h4>
-                        <div id="ia-hiring" style="color: var(--text-main); font-size: 0.95rem; font-weight: bold; line-height: 1.5;">
-                            En attente de l'analyse...
-                        </div>
-                    </div>
-                </div>
-            </div>
-        </div>
-    </div>
-
-    <div id="toast" class="toast" style="display:none;">Action Confirmée</div>
-
-    <script>
-        const urlParamsJS = new URLSearchParams(window.location.search);
-        const tenantID_JS = urlParamsJS.get('tenantID') || localStorage.getItem('ichef_tenant_id') || 'MASTER_STATE';
-        const SERVER_URL_JS = (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1" || window.location.protocol === "file:") 
-    ? "http://localhost:10000" 
-    : "https://tableau-system.onrender.com";
-        
-        const API = {
-            getState: async () => {
-                let r = await fetch(`${SERVER_URL_JS}/get-current-state?tenantID=${tenantID_JS}`);
-                if (!r.ok) throw new Error("Serveur injoignable");
-                return await r.json();
-            },
-            update: async (key, data) => {
-                let payload = { data: data }; 
-                try { 
-                    await fetch(`${SERVER_URL_JS}/update-order?tenantID=${tenantID_JS}`, { 
-                        method: 'POST', 
-                        headers: {'Content-Type': 'application/json'}, 
-                        body: JSON.stringify({ tableId: key, order: data === null ? null : payload }) 
-                    }); 
-                } catch(e) { console.error("Erreur Sync:", e); }
-            }
-        };
-
-        // VARIABLES GLOBALES
-        let currentStaffId = null;
-        let currentDept = null;
-        let currentPin = "";
-        let punchPin = "";
-        let loginMode = ""; 
-        let loggedInStaffId = null; 
-        let isGlobalView = false;
-        let isAnnualView = false; 
-        let videoStream = null;
-        let staffAccess = [];
-        
-        // ==========================================
-        // 💾 ACCÈS AUX DONNÉES LOCALES & CLOUD
-        // ==========================================
-        function getDir() { 
-            let data = JSON.parse(localStorage.getItem('empire_hr_directory')) || []; 
-            let adminStaff = staffAccess;
-            
-            if(adminStaff.length > 0) {
-                adminStaff.forEach(s => {
-                    if(!data.find(d => d.pin === s.pin)) {
-                        let mappedDept = 'salle';
-                        if (s.dept === 'admin') mappedDept = 'admin';
-                        else if (s.dept === 'cuisine' || s.dept === 'patisserie') mappedDept = 'cuisine';
-                        else if (s.dept === 'bar' || s.dept === 'salle') mappedDept = 'salle';
-
-                        data.push({
-                            id: Date.now() + Math.random(),
-                            name: s.name,
-                            role: s.role || (s.dept === 'admin' ? 'Manager' : 'Employé'),
-                            dept: mappedDept,
-                            contract: 39,
-                            pin: s.pin,
-                            active: s.active !== false
-                        });
-                    }
+                    if (idx > -1) data[idx] = merged;
+                    else data.push(merged);
                 });
             }
+
             return data;
         }
 
@@ -2880,7 +894,15 @@ async function generateIAPrediction() {
                     if (state.activeOrders['REQUESTS_MASTER']) localStorage.setItem('empire_hr_requests', JSON.stringify(state.activeOrders['REQUESTS_MASTER'].data || []));
                     
                     if (state.activeOrders['STAFF_ACCESS']) {
-                        staffAccess = state.activeOrders['STAFF_ACCESS'].data || [];
+                        staffAccess = Array.isArray(state.activeOrders['STAFF_ACCESS'].data)
+                            ? state.activeOrders['STAFF_ACCESS'].data
+                                .filter(s => s && s.active !== false)
+                                .map(s => ({
+                                    ...s,
+                                    pin: String(s.pin || '').trim()
+                                }))
+                            : [];
+
                         let sysSync = JSON.parse(localStorage.getItem('EMPIRE_GLOBAL_SYNC')) || { activeOrders: {} };
                         sysSync.activeOrders['STAFF_ACCESS'] = { data: staffAccess };
                         localStorage.setItem('EMPIRE_GLOBAL_SYNC', JSON.stringify(sysSync));
@@ -2991,7 +1013,7 @@ async function generateIAPrediction() {
             document.getElementById('landing-portal').style.display = 'flex';
         }
 
-        function openStaffPortalLogin() {
+        async function openStaffPortalLogin() {
             loginMode = 'staff';
             currentDept = null;
             currentPin = "";
@@ -3002,12 +1024,20 @@ async function generateIAPrediction() {
             const title = document.getElementById('pin-dept-title');
             const display = document.getElementById('pin-display');
 
-            const staff = getDir()
-                .filter(s => s.active !== false)
+            try {
+                await refreshStaffAccessFromServer();
+            } catch (error) {
+                console.error("Impossible de synchroniser les accès employés :", error);
+                alert("Connexion serveur impossible. Les codes RH ne peuvent pas être vérifiés.");
+                return;
+            }
+
+            const staff = staffAccess
+                .filter(s => s.active !== false && /^\d{4,12}$/.test(String(s.pin || '').trim()))
                 .sort((a, b) => String(a.name || '').localeCompare(String(b.name || ''), 'fr'));
 
             if (!staff.length) {
-                alert("Aucun employé actif n'est enregistré.");
+                alert("Aucun employé actif avec un code PIN synchronisé.");
                 return;
             }
 
@@ -3229,36 +1259,110 @@ async function generateIAPrediction() {
             showToast("Demande envoyée à la direction");
         }
 
-        function submitPin() {
-            let masterPin = localStorage.getItem('ichef_master_pin') || "999999";
+        async function submitPin() {
+            const enteredPin = String(currentPin || '').trim();
 
-            if(loginMode === 'director') {
-                if(currentPin === masterPin || currentPin === "999999" || currentPin === "9999" || currentPin === "7777") {
+            if (!enteredPin) return;
+
+            const submitButton = document.querySelector('#pin-modal .pin-btn[onclick="submitPin()"]');
+            if (submitButton) {
+                submitButton.disabled = true;
+                submitButton.style.opacity = '0.55';
+            }
+
+            try {
+                const auth = await verifyPinWithServer(enteredPin);
+
+                if (!auth.success) {
+                    alert(auth.error || "Code PIN incorrect.");
+                    currentPin = "";
+                    document.getElementById('pin-display').innerText = "";
+                    return;
+                }
+
+                const serverRole = String(auth.role || '').trim().toLowerCase();
+
+                if (loginMode === 'director') {
+                    const directionRoles = new Set([
+                        'master',
+                        'admin',
+                        'manager',
+                        'direction',
+                        'directeur',
+                        'gerant',
+                        'gérant'
+                    ]);
+
+                    if (!directionRoles.has(serverRole)) {
+                        alert("Ce code PIN n'a pas les droits Direction.");
+                        currentPin = "";
+                        document.getElementById('pin-display').innerText = "";
+                        return;
+                    }
+
                     document.getElementById('pin-modal').style.display = 'none';
                     document.getElementById('landing-portal').style.display = 'none';
                     document.getElementById('director-hub').style.display = 'flex';
-                    document.getElementById('hub-dept-display').innerText = currentDept.toUpperCase();
+                    document.getElementById('hub-dept-display').innerText =
+                        String(currentDept || 'direction').toUpperCase();
+
+                    try {
+                        await refreshStaffAccessFromServer();
+                    } catch (_) {}
+
                     updateDashboardStats();
                     updateReqBadge();
-                } else {
-                    alert("CODE PIN DIRECTION INCORRECT");
-                    currentPin = "";
-                    document.getElementById('pin-display').innerText = "";
+                    return;
                 }
-            } else if (loginMode === 'staff') {
-                const selectId = document.getElementById('staff-login-select').value;
-                const staff = getDir().find(s => String(s.id) === String(selectId) && s.active !== false);
-                
-                if(staff && staff.pin === currentPin) {
-                    loggedInStaffId = staff.id;
+
+                if (loginMode === 'staff') {
+                    try {
+                        await refreshStaffAccessFromServer();
+                    } catch (error) {
+                        alert("Impossible de synchroniser le compte employé.");
+                        return;
+                    }
+
+                    const selectId = String(
+                        document.getElementById('staff-login-select').value || ''
+                    );
+
+                    const selectedStaff = staffAccess.find(
+                        s =>
+                            String(s.id) === selectId &&
+                            s.active !== false
+                    );
+
+                    if (!selectedStaff) {
+                        alert("Compte employé introuvable ou désactivé.");
+                        currentPin = "";
+                        document.getElementById('pin-display').innerText = "";
+                        return;
+                    }
+
+                    if (String(selectedStaff.pin || '').trim() !== enteredPin) {
+                        alert("Ce code PIN ne correspond pas à l'employé sélectionné.");
+                        currentPin = "";
+                        document.getElementById('pin-display').innerText = "";
+                        return;
+                    }
+
+                    loggedInStaffId = selectedStaff.id;
+
                     document.getElementById('pin-modal').style.display = 'none';
                     document.getElementById('landing-portal').style.display = 'none';
                     document.getElementById('employee-portal').style.display = 'flex';
+
                     renderEmployeePortal();
-                } else {
-                    alert("CODE PIN EMPLOYÉ INCORRECT OU COMPTE DÉSACTIVÉ");
-                    currentPin = "";
-                    document.getElementById('pin-display').innerText = "";
+                }
+
+            } catch (error) {
+                console.error("Erreur authentification RH :", error);
+                alert("Impossible de vérifier le code PIN sur le serveur.");
+            } finally {
+                if (submitButton) {
+                    submitButton.disabled = false;
+                    submitButton.style.opacity = '1';
                 }
             }
         }
@@ -3300,10 +1404,17 @@ async function generateIAPrediction() {
         // ==========================================
         async function syncStaffAccessToCloud(dirList) {
             try {
-                let staffAccessPayload = dirList.map(s => ({
-                    id: s.id, name: s.name, role: s.role, dept: s.dept,
-                    pin: s.pin || "0000", active: s.active !== false, onDuty: s.onDuty || false
-                }));
+                let staffAccessPayload = dirList
+                    .filter(s => /^\d{4,12}$/.test(String(s.pin || '').trim()))
+                    .map(s => ({
+                        id: s.id,
+                        name: s.name,
+                        role: s.role,
+                        dept: s.dept,
+                        pin: String(s.pin).trim(),
+                        active: s.active !== false,
+                        onDuty: s.onDuty || false
+                    }));
                 
                 await fetch(`${SERVER_URL_JS}/update-order?tenantID=${tenantID_JS}`, {
                     method: 'POST', headers: {'Content-Type': 'application/json'},
@@ -3346,7 +1457,9 @@ async function generateIAPrediction() {
             let pin = document.getElementById('staff-pin').value.trim(); 
             let origPin = document.getElementById('staff-edit-original-pin').value;
             
-            if (!name || !title || pin.length < 4) return alert("Le nom, la fonction et un PIN (4 chiffres min) sont obligatoires."); 
+            if (!name || !title || !/^\d{4,12}$/.test(pin)) {
+                return alert("Le nom, la fonction et un PIN de 4 à 12 chiffres sont obligatoires.");
+            } 
             
             let dir = getDir();
             let newStaff = { 
