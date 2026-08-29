@@ -7817,7 +7817,104 @@ app.post(
     }
 );
 
+/* ============================================================
+   iCHEF — POINTEUSE -> ACCÈS SERVICE ON / OFF
+   ENTRÉE = accès PAD / téléphone actif
+   SORTIE = accès PAD / téléphone coupé immédiatement
+   ============================================================ */
 
+io.to(safeID).emit(
+    'staffDutyChanged',
+    {
+        staffId:
+            staff.id,
+
+        staffName:
+            staff.name || '',
+
+        dept:
+            staff.dept || '',
+
+        onDuty:
+            punchType === 'ENTRÉE',
+
+        punchType:
+            punchType,
+
+        timestamp:
+            now
+    }
+);
+
+/* ============================================================
+   TRAÇABILITÉ DU POINTAGE
+   ============================================================ */
+
+try {
+    await scellerOperation(
+        safeID,
+        'CREATE',
+        'RH_PUNCH',
+        punch.id,
+        String(staff.id),
+        {
+            staffId:
+                staff.id,
+
+            staffName:
+                staff.name,
+
+            type:
+                punchType,
+
+            timestamp:
+                now,
+
+            deviceId:
+                punch.deviceId
+        }
+    );
+} catch (_) {}
+
+/* ============================================================
+   SYNCHRONISATION RH TEMPS RÉEL
+   ============================================================ */
+
+io.to(safeID)
+    .emit(
+        'rhPunchSaved',
+        punch
+    );
+
+io.to(safeID)
+    .emit(
+        'rhTimesheetUpdated',
+        timesheets
+    );
+
+io.to(safeID)
+    .emit(
+        'server-state-changed',
+        {
+            source:
+                'RH_PUNCH',
+
+            staffId:
+                staff.id,
+
+            onDuty:
+                punchType === 'ENTRÉE',
+
+            punchType:
+                punchType
+        }
+    );
+
+io.to(safeID)
+    .emit(
+        'updateState',
+        state
+    );
 // ==========================================================
 // 🚀 DÉMARRAGE OFFICIEL DU SERVEUR iCHEF
 // IMPORTANT : CE BLOC DOIT ÊTRE LE DERNIER DU server.js
