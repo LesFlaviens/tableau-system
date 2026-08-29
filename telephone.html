@@ -11718,6 +11718,92 @@ async function prepareWritableOrderForProductSelection(){
   return true;
 }
 
+// ============================================================
+// iCHEF — SÉLECTEUR CONVIVE AVANT AJOUT PRODUIT
+// CORRECTION : cette fonction était appelée mais absente.
+// ============================================================
+function openProductSeatPicker(product,sourceButton=null){
+  if(!STATE.currentTable||!product){
+    toast("Ouvrez une table avant d'ajouter un article",true);
+    return false;
+  }
+
+  const order=STATE.currentOrder||ensureOrder(STATE.currentTable);
+  const pax=Math.max(1,Math.min(9,Number(order.pax)||1));
+  const active=Math.max(1,Math.min(pax,Number(STATE.activeSeat)||1));
+  const counts=productSeatCounts();
+
+  pendingProductSeatChoice={
+    product,
+    sourceButton,
+    seat:null
+  };
+
+  const buttons=Array.from({length:pax},(_,index)=>{
+    const seat=index+1;
+    const count=Number(counts[seat]||0);
+    const selected=seat===active;
+
+    return `
+      <button
+        type="button"
+        class="who-seat-btn${selected?' active':''}"
+        data-product-seat="${seat}"
+        style="
+          border-color:var(--c${seat});
+          color:var(--c${seat});
+          background:${selected?`color-mix(in srgb,var(--c${seat}) 14%,#fff)`:'#fff'};
+        "
+      >
+        C${seat}
+        <small style="display:block;margin-top:5px;color:#666;font-weight:900;">
+          ${count>0?`${count} article${count>1?'s':''}`:'Aucun article'}
+        </small>
+      </button>
+    `;
+  }).join('');
+
+  openSheet(
+    `QUI MANGE ? · ${product.name}`,
+    `
+      <div class="who-active-card product-seat-choice-card">
+        <div class="who-active-title">
+          ${esc(product.name)}
+        </div>
+        <div class="who-active-sub">
+          Choisissez le convive avant d'ajouter ce produit à la commande.
+        </div>
+      </div>
+
+      <div class="who-seat-grid product-seat-choice-grid">
+        ${buttons}
+      </div>
+    `
+  );
+
+  const sheet=$("sheet");
+  if(sheet){
+    sheet.classList.add("product-seat-picker-open");
+    sheet.classList.remove("product-cooking-picker-open");
+  }
+
+  const body=$("sheetBody");
+  if(!body){
+    pendingProductSeatChoice=null;
+    return false;
+  }
+
+  body.querySelectorAll("[data-product-seat]").forEach(btn=>{
+    btn.addEventListener("click",async()=>{
+      if(btn.disabled)return;
+      await confirmProductSeat(Number(btn.dataset.productSeat));
+    });
+  });
+
+  return true;
+}
+
+
 function productCookingPickerHTML(product,seat,profile){
   const levels=Array.isArray(profile?.levels)?profile.levels:[];
   return `<div class="who-active-card product-seat-choice-card">
