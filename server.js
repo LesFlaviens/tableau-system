@@ -2386,6 +2386,183 @@ app.get('/api/export-caisse-csv', async (req, res) => {
         res.status(500).send("Erreur serveur lors de la génération de l'export.");
     }
 });
+
+// ============================================================
+// iCHEF — ACCÈS PAD / TÉLÉPHONE LIÉ À LA POINTEUSE
+// Direction / Gérant / Manager : accès permanent
+// Serveur / Salle : accès uniquement si onDuty === true
+// Cuisine / Bar / Pâtisserie / autres : accès refusé
+// ============================================================
+
+function ichefTerminalAccessKey(value = '') {
+    return String(value || '')
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '')
+        .toUpperCase()
+        .replace(/[\s\-/]+/g, '_');
+}
+
+function ichefTerminalStaffProfile(staff = {}) {
+    return ichefTerminalAccessKey([
+        staff.dept,
+        staff.role,
+        staff.title,
+        staff.fonction,
+        staff.rank
+    ].filter(Boolean).join(' '));
+}
+
+function ichefTerminalStaffIsManager(staff = {}) {
+    const profile = ichefTerminalStaffProfile(staff);
+
+    return /(^|_)(MASTER|SUPER_ADMIN|SUPERADMIN|ADMIN|DIRECTEUR|DIRECTION|GERANT|MANAGER|PROPRIETAIRE|OWNER)(_|$)/
+        .test(profile);
+}
+
+function ichefTerminalStaffIsServer(staff = {}) {
+    const profile = ichefTerminalStaffProfile(staff);
+
+    return /(^|_)(SALLE|SERVEUR|SERVEUSE|WAITER|CHEF_DE_RANG|MAITRE_D_HOTEL)(_|$)/
+        .test(profile);
+}
+
+async function ichefCheckServiceTerminalAccess({
+    tenantID,
+    pin,
+    terminal
+}) {
+
+    const safeID = cleanString(tenantID);
+    const submittedPin = String(pin || '').trim();
+    const terminalKey = ichefTerminalAccessKey(terminal);
+
+    const isServiceTerminal =
+        terminalKey === 'PAD' ||
+        terminalKey === 'TELEPHONE';
+
+    if (!isServiceTerminal) {
+        return {
+            ok: true,
+            bypass: true
+        };
+    }
+
+    if (
+        !safeID ||
+        !/^\d{4,12}$/.test(submittedPin)
+    ) {
+        return {
+            ok: false,
+            status: 401,
+            error: 'Session PAD/Téléphone invalide.'
+        };
+    }
+
+    const tenant =
+        await Tenant.findOne({
+            tenantID: safeID
+        });
+
+    if (!tenant) {
+        return {
+            ok: false,
+            status: 404,
+            error: 'Établissement inconnu.'
+        };
+    }
+
+    // PIN principal = Direction
+    if (
+        String(tenant.pin || '').trim() ===
+        submittedPin
+    ) {
+        return {
+            ok: true,
+            isManager: true,
+            role: 'MASTER',
+            requiresDuty: false,
+            onDuty: true
+        };
+    }
+
+    const state =
+        await AppState.findOne({
+            tenantID: safeID
+        });
+
+    const staffAccess =
+        Array.isArray(
+            state?.activeOrders?.STAFF_ACCESS?.data
+        )
+            ? state.activeOrders.STAFF_ACCESS.data
+            : [];
+
+    const staff =
+        staffAccess.find(s =>
+            String(s?.pin || '').trim() ===
+            submittedPin
+        );
+
+    if (
+        !staff ||
+        staff.active === false
+    ) {
+        return {
+            ok: false,
+            status: 403,
+            error:
+                'Profil collaborateur introuvable ou désactivé.'
+        };
+    }
+
+    // Gérant / Direction / Manager
+    if (
+        ichefTerminalStaffIsManager(staff)
+    ) {
+        return {
+            ok: true,
+            staff,
+            isManager: true,
+            requiresDuty: false,
+            onDuty: staff.onDuty === true
+        };
+    }
+
+    // Seulement Salle / Serveur
+    if (
+        !ichefTerminalStaffIsServer(staff)
+    ) {
+        return {
+            ok: false,
+            status: 403,
+            error:
+                'Accès réservé au Gérant / Direction et aux Serveurs.'
+        };
+    }
+
+    // Serveur doit avoir pointé ENTRÉE
+    if (
+        staff.onDuty !== true
+    ) {
+        return {
+            ok: false,
+            status: 403,
+            error:
+                'Vous devez pointer ENTRÉE avant d’accéder au PAD / téléphone.',
+            staff,
+            requiresDuty: true,
+            onDuty: false
+        };
+    }
+
+    return {
+        ok: true,
+        staff,
+        isManager: false,
+        requiresDuty: true,
+        onDuty: true
+    };
+}
 // ==========================================
 // API RESTAURANT SYNCHRONISATION
 // ==========================================
