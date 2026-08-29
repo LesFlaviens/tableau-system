@@ -2351,6 +2351,7 @@ async function secureFetch(input, init = {}) {
         let staffAccess = []; 
         let archiveCuisine = []; 
         let hasUnsavedChanges = false;
+        let serverRevision = 0;
 
         function toggleMobileMenu() { 
             document.getElementById('sidebar').classList.toggle('open'); 
@@ -2727,7 +2728,18 @@ async function secureFetch(input, init = {}) {
                 emp.onDuty = !emp.onDuty; 
                 renderStaffList(); 
                 renderActiveStaff(); 
-                try { await secureFetch(`${SERVER_URL}/update-order?tenantID=${tenantID}`, { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ tableId: 'STAFF_ACCESS', order: { data: staffAccess } }) }); } catch(e) {}
+                try {
+                    const response = await secureFetch(`${SERVER_URL}/update-order?tenantID=${tenantID}`, {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify({ tableId: 'STAFF_ACCESS', order: { data: staffAccess }, actor: 'ADMIN_DUTY' })
+                    });
+                    await absorbServerRevision(response);
+                    if (!response.ok) throw new Error('Pointage Admin non enregistré.');
+                } catch(e) {
+                    console.error('Erreur toggleDuty :', e);
+                    fetchStateFromCloud(true);
+                }
             }
         }
 
@@ -2920,6 +2932,8 @@ async function secureFetch(input, init = {}) {
             }
         );
 
+        await absorbServerRevision(response);
+
         if (!response || !response.ok) {
 
             let message = "Impossible de synchroniser le collaborateur.";
@@ -3040,6 +3054,8 @@ async function setStaffActive(pin, shouldActivate) {
                 })
             }
         );
+
+        await absorbServerRevision(response);
 
         if (!response || !response.ok) {
             let message = shouldActivate
@@ -3512,6 +3528,22 @@ function updateZoneMode(id, newMode) {
     // --- UTILS & CLOUD ---
     function markUnsaved() { hasUnsavedChanges = true; let s = document.getElementById('sync-status'); if(s) { s.innerHTML = '⚠️ Modifié'; s.style.color = 'var(--gold)'; s.style.borderColor = 'var(--gold)'; } }
     function markSaved() { hasUnsavedChanges = false; let s = document.getElementById('sync-status'); if(s) { s.innerHTML = '<span>● En Direct</span> 🔄'; s.style.color = 'var(--text-main)'; s.style.borderColor = 'var(--border)'; } }
+
+    async function absorbServerRevision(response) {
+        if (!response) return null;
+
+        let payload = null;
+        try {
+            payload = await response.clone().json();
+        } catch (_) {}
+
+        const nextRevision = Number(payload?.revision);
+        if (Number.isFinite(nextRevision)) {
+            serverRevision = Math.max(serverRevision, nextRevision);
+        }
+
+        return payload;
+    }
     function showToast(msg) { let t = document.getElementById('toast'); if(!t) { t = document.createElement('div'); t.id = 'toast'; t.className = 'toast'; document.body.appendChild(t); } t.innerText = msg; t.classList.add('show'); setTimeout(() => t.classList.remove('show'), 3000); }
 
     function openModalSafe(modal) {
@@ -3554,12 +3586,24 @@ function updateZoneMode(id, newMode) {
     function retourCaisse() { window.location.href = `pack-eco.html?tenantID=${tenantID}`; }
 
     async function saveAllToCloud() {
-        if (!hasPermission("CONFIG_WRITE")) return alert("Action non autorisée.");
-        await auditEvent("CONFIG_SAVE_REQUESTED");
+        if (!hasPermission("CONFIG_WRITE")) {
+            return alert("Action non autorisée.");
+        }
+
+        await auditEvent("CONFIG_SAVE_REQUESTED", {
+            expectedRevision: serverRevision
+        });
+
+        const syncBtn = document.getElementById('sync-status');
+
         try {
-            let syncBtn = document.getElementById('sync-status'); if(syncBtn) syncBtn.innerHTML = '⏳ Enregistrement...';
-            
-            if(document.getElementById('resto-name')) systemSettings.name = document.getElementById('resto-name').value.trim();
+            if (syncBtn) {
+                syncBtn.innerHTML = '⏳ Enregistrement sécurisé...';
+            }
+
+            if (document.getElementById('resto-name')) {
+                systemSettings.name = document.getElementById('resto-name').value.trim();
+            }
 
             systemSettings.taxConfig = buildTaxConfigFromUI();
             systemSettings.currency = systemSettings.taxConfig.currency;
@@ -3568,24 +3612,65 @@ function updateZoneMode(id, newMode) {
             systemSettings.tvaReduced = systemSettings.taxConfig.rates.REDUCED_TAKEAWAY;
             systemSettings.tvaLodging = systemSettings.taxConfig.rates.LODGING;
 
-            if(document.getElementById('setting-service-bar')) systemSettings.serviceAuBar = document.getElementById('setting-service-bar').checked;
+            if (document.getElementById('setting-service-bar')) {
+                systemSettings.serviceAuBar = document.getElementById('setting-service-bar').checked;
+            }
 
-            if(!systemSettings.loyalty) systemSettings.loyalty = {};
-            if(document.getElementById('setting-loyalty-active')) systemSettings.loyalty.active = document.getElementById('setting-loyalty-active').checked;
-            if(document.getElementById('setting-loyalty-percent')) systemSettings.loyalty.percent = parseFloat(document.getElementById('setting-loyalty-percent').value) || 5;
+            if (!systemSettings.loyalty) systemSettings.loyalty = {};
 
-            if(!systemSettings.payment) systemSettings.payment = { online: false, stripeLink: "" };
-            if(document.getElementById('setting-qr-pay')) systemSettings.payment.online = document.getElementById('setting-qr-pay').checked;
-            if(document.getElementById('resto-stripe')) systemSettings.payment.stripeLink = document.getElementById('resto-stripe').value.trim();
+            if (document.getElementById('setting-loyalty-active')) {
+                systemSettings.loyalty.active = document.getElementById('setting-loyalty-active').checked;
+            }
 
-            if(!systemSettings.design) systemSettings.design = {};
-            if(document.getElementById('design-bg-color')) systemSettings.design.bgColor = document.getElementById('design-bg-color').value;
-            if(document.getElementById('design-text-color')) systemSettings.design.textColor = document.getElementById('design-text-color').value;
-            if(document.getElementById('design-title-color')) systemSettings.design.titleColor = document.getElementById('design-title-color').value;
-            if(document.getElementById('design-alert-color')) systemSettings.design.btnColor = document.getElementById('design-alert-color').value;
-            if(document.getElementById('design-font')) systemSettings.design.font = document.getElementById('design-font').value;
-            if(document.getElementById('design-title-font')) systemSettings.design.titleFont = document.getElementById('design-title-font').value;
-            if(document.getElementById('design-banner-url')) systemSettings.design.bannerUrl = document.getElementById('design-banner-url').value.trim();
+            if (document.getElementById('setting-loyalty-percent')) {
+                systemSettings.loyalty.percent =
+                    parseFloat(document.getElementById('setting-loyalty-percent').value) || 5;
+            }
+
+            if (!systemSettings.payment) {
+                systemSettings.payment = {
+                    online: false,
+                    stripeLink: ""
+                };
+            }
+
+            if (document.getElementById('setting-qr-pay')) {
+                systemSettings.payment.online = document.getElementById('setting-qr-pay').checked;
+            }
+
+            if (document.getElementById('resto-stripe')) {
+                systemSettings.payment.stripeLink = document.getElementById('resto-stripe').value.trim();
+            }
+
+            if (!systemSettings.design) systemSettings.design = {};
+
+            if (document.getElementById('design-bg-color')) {
+                systemSettings.design.bgColor = document.getElementById('design-bg-color').value;
+            }
+
+            if (document.getElementById('design-text-color')) {
+                systemSettings.design.textColor = document.getElementById('design-text-color').value;
+            }
+
+            if (document.getElementById('design-title-color')) {
+                systemSettings.design.titleColor = document.getElementById('design-title-color').value;
+            }
+
+            if (document.getElementById('design-alert-color')) {
+                systemSettings.design.btnColor = document.getElementById('design-alert-color').value;
+            }
+
+            if (document.getElementById('design-font')) {
+                systemSettings.design.font = document.getElementById('design-font').value;
+            }
+
+            if (document.getElementById('design-title-font')) {
+                systemSettings.design.titleFont = document.getElementById('design-title-font').value;
+            }
+
+            if (document.getElementById('design-banner-url')) {
+                systemSettings.design.bannerUrl = document.getElementById('design-banner-url').value.trim();
+            }
 
             systemSettings.qrNfc = {
                 active: document.getElementById('setting-qrnfc-active')?.checked !== false,
@@ -3609,60 +3694,125 @@ function updateZoneMode(id, newMode) {
                 taxConfig: systemSettings.taxConfig
             };
 
-            let selectedDays = []; document.querySelectorAll('#schedule-days-container input[type="checkbox"]:checked').forEach(cb => selectedDays.push(parseInt(cb.value)));
-            
-            systemSettings.schedule = { 
-                auto: document.getElementById('setting-auto-schedule')?.checked || false, days: selectedDays,
-                matin: { s: document.getElementById('matin-start')?.value || "", e: document.getElementById('matin-end')?.value || "" },
-                midi: { s: document.getElementById('midi-start')?.value || "", e: document.getElementById('midi-end')?.value || "" },
-                aprem: { s: document.getElementById('aprem-start')?.value || "", e: document.getElementById('aprem-end')?.value || "" },
-                soir: { s: document.getElementById('soir-start')?.value || "", e: document.getElementById('soir-end')?.value || "" }
+            const selectedDays = [];
+            document
+                .querySelectorAll('#schedule-days-container input[type="checkbox"]:checked')
+                .forEach(cb => selectedDays.push(parseInt(cb.value)));
+
+            systemSettings.schedule = {
+                auto: document.getElementById('setting-auto-schedule')?.checked || false,
+                days: selectedDays,
+                matin: {
+                    s: document.getElementById('matin-start')?.value || "",
+                    e: document.getElementById('matin-end')?.value || ""
+                },
+                midi: {
+                    s: document.getElementById('midi-start')?.value || "",
+                    e: document.getElementById('midi-end')?.value || ""
+                },
+                aprem: {
+                    s: document.getElementById('aprem-start')?.value || "",
+                    e: document.getElementById('aprem-end')?.value || ""
+                },
+                soir: {
+                    s: document.getElementById('soir-start')?.value || "",
+                    e: document.getElementById('soir-end')?.value || ""
+                }
             };
 
-            let architectureConsolidee = { ...menuCuisine, ...menuBar, ...menuPatisserie };
-            const reqs = [
-                { tableId: 'MENU_MASTER', order: { data: menuCuisine } }, 
-                { tableId: 'MENU_MASTER_BAR', order: { data: menuBar } },
-                { tableId: 'MENU_MASTER_PATISSERIE', order: { data: menuPatisserie } },
-                { tableId: 'SETTINGS_MASTER', order: { data: systemSettings } }, 
-                { tableId: 'STAFF_ACCESS', order: { data: staffAccess } },
-                { tableId: 'CATEGORIES_CUISINE', order: { data: categoriesCuisine } }, 
-                { tableId: 'CATEGORIES_BAR', order: { data: categoriesBar } },
-                { tableId: 'CATEGORIES_PATISSERIE', order: { data: categoriesPatisserie } },
-                { tableId: 'MENU_ARCHITECTURE', order: { data: architectureConsolidee } },
-                { tableId: 'ARCHITECTURE', order: { data: globalArchitecture } }
-            ];
-            
-            await Promise.all(reqs.map(req => 
-                secureFetch(`${SERVER_URL}/update-order?tenantID=${tenantID}`, { 
-                    method: 'POST', 
-                    headers: {'Content-Type': 'application/json'}, 
-                    body: JSON.stringify(req) 
-                })
-            ));
+            const architectureConsolidee = {
+                ...menuCuisine,
+                ...menuBar,
+                ...menuPatisserie
+            };
 
-            markSaved(); showToast("Enregistré avec succès !");
+            // Une seule photographie cohérente de l'Admin.
+            // Le serveur valide TOUT avant d'écrire quoi que ce soit.
+            const snapshot = {
+                MENU_MASTER: menuCuisine,
+                MENU_MASTER_BAR: menuBar,
+                MENU_MASTER_PATISSERIE: menuPatisserie,
+                SETTINGS_MASTER: systemSettings,
+                STAFF_ACCESS: staffAccess,
+                CATEGORIES_CUISINE: categoriesCuisine,
+                CATEGORIES_BAR: categoriesBar,
+                CATEGORIES_PATISSERIE: categoriesPatisserie,
+                MENU_ARCHITECTURE: architectureConsolidee,
+                ARCHITECTURE: globalArchitecture
+            };
 
-            if (socket && socket.connected) {
-                socket.emit('updateState', {
-                    tenantID: tenantID,
-                    activeOrders: {
-                        'MENU_MASTER': { data: menuCuisine },
-                        'MENU_MASTER_BAR': { data: menuBar },
-                        'MENU_MASTER_PATISSERIE': { data: menuPatisserie },
-                        'CATEGORIES_CUISINE': { data: categoriesCuisine },
-                        'CATEGORIES_BAR': { data: categoriesBar },
-                        'CATEGORIES_PATISSERIE': { data: categoriesPatisserie }
-                    }
-                });
+            const response = await secureFetch(
+                `${SERVER_URL}/api/admin/save-configuration`,
+                {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        tenantID,
+                        expectedRevision: serverRevision,
+                        actor:
+                            window.ICHEF_SECURITY?.user?.nom ||
+                            window.ICHEF_SECURITY?.user?.role ||
+                            'ADMIN',
+                        snapshot
+                    })
+                }
+            );
+
+            let result = {};
+
+            try {
+                result = await response.json();
+            } catch (_) {}
+
+            if (response.status === 409) {
+                const latestRevision = Number(result?.currentRevision || serverRevision);
+
+                if (syncBtn) {
+                    syncBtn.innerHTML = '⚠️ Conflit de version';
+                    syncBtn.style.color = '#fff';
+                    syncBtn.style.background = 'var(--danger)';
+                    syncBtn.style.borderColor = 'var(--danger)';
+                }
+
+                alert(
+                    "Une autre modification a été enregistrée depuis un autre écran.\n\n" +
+                    "Votre version n'a PAS écrasé les nouvelles données.\n" +
+                    `Révision serveur actuelle : ${latestRevision}.\n\n` +
+                    "Cliquez sur le bouton de synchronisation pour recharger avant de réessayer."
+                );
+
+                return;
             }
 
-        } catch(e) { 
-            alert("❌ Erreur : " + e.message); 
-            let syncBtn = document.getElementById('sync-status'); 
-            if(syncBtn) syncBtn.innerHTML = '⚠️ Erreur'; 
+            if (!response.ok || result?.success !== true) {
+                throw new Error(
+                    result?.error ||
+                    `Échec de l'enregistrement (HTTP ${response.status}).`
+                );
+            }
+
+            serverRevision = Number(result.revision || serverRevision || 0);
+
+            markSaved();
+            showToast(`Enregistré avec succès — révision ${serverRevision}`);
+
+            // Ne plus émettre manuellement un faux état partiel.
+            // Le serveur a déjà sauvegardé et diffuse lui-même updateState.
+
+        } catch (e) {
+            console.error('Erreur enregistrement configuration :', e);
+
+            alert("Erreur : " + (e?.message || 'Enregistrement impossible.'));
+
+            if (syncBtn) {
+                syncBtn.innerHTML = '⚠️ Erreur';
+                syncBtn.style.color = 'var(--danger)';
+                syncBtn.style.borderColor = 'var(--danger)';
+            }
         }
-    } 
+    }
 
    async function fetchStateFromCloud(isBackground = false) {
     try {
@@ -3671,6 +3821,7 @@ function updateZoneMode(id, newMode) {
 
         let r = await secureFetch(`${SERVER_URL}/get-current-state?tenantID=${tenantID}&_t=${Date.now()}`, { cache: 'no-store' });
         let state = await r.json(); 
+        serverRevision = Number(state?.revision || 0);
         let aO = state.activeOrders || {};
 
         systemSettings = aO['SETTINGS_MASTER']?.data || systemSettings;
@@ -3968,6 +4119,7 @@ async function refreshCentralRevenueOnly() {
         if (!response.ok) return;
 
         const state = await response.json();
+        serverRevision = Math.max(serverRevision, Number(state?.revision || 0));
         const node = state?.activeOrders?.FINANCIAL_HISTORY;
 
         archiveCuisine =
@@ -4498,11 +4650,19 @@ function ichefRhBuildWorkedTimesheets(punches, previous = {}) {
             markUnsaved();
 
             try {
-                await secureFetch(`${SERVER_URL}/update-order?tenantID=${tenantID}`, {
+                const response = await secureFetch(`${SERVER_URL}/update-order?tenantID=${tenantID}`, {
                     method: 'POST',
                     headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({ tableId: 'SETTINGS_MASTER', order: { data: systemSettings } })
+                    body: JSON.stringify({
+                        tableId: 'SETTINGS_MASTER',
+                        order: { data: systemSettings },
+                        actor: 'ADMIN_KILL_SWITCH'
+                    })
                 });
+                await absorbServerRevision(response);
+                if (!response.ok) {
+                    throw new Error('Le serveur a refusé la modification du Kill Switch.');
+                }
                 showToast(isDown ? "Système Opérationnel" : "Système Verrouillé !");
                 markSaved(); 
             } catch(e) {
