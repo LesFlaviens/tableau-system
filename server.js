@@ -2536,6 +2536,336 @@ app.post('/api/verify-pin', async (req, res) => {
         });
     }
 });
+// ============================================================
+// iCHEF RH — SYNCHRONISATION TOTALE POINTEUSE / FEUILLE D'HEURES
+// ============================================================
+
+function ichefRhDateParts(timestamp) {
+    const d = new Date(timestamp);
+
+    if (Number.isNaN(d.getTime())) {
+        return null;
+    }
+
+    const year = d.getFullYear();
+    const month = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
+
+    return {
+        date: `${year}-${month}-${day}`,
+        month: `${year}-${month}`,
+        day
+    };
+}
+
+function ichefRhSafeNumber(value, fallback = 0) {
+    const n = Number(value);
+    return Number.isFinite(n) ? n : fallback;
+}
+
+function ichefRhBuildWorkedTimesheets(punches, previous = {}) {
+    const safePunches =
+        Array.isArray(punches)
+            ? punches
+                .filter(p => p && p.timestamp)
+                .slice()
+                .sort(
+                    (a, b) =>
+                        Number(a.timestamp) -
+                        Number(b.timestamp)
+                )
+            : [];
+
+    const previousMonths =
+        previous?.months &&
+        typeof previous.months === 'object'
+            ? previous.months
+            : {};
+
+    const result = {
+        version: 2,
+        generatedAt:
+            new Date().toISOString(),
+        months: {}
+    };
+
+    const ensureStaffSheet =
+        (parts, punch) => {
+            if (!result.months[parts.month]) {
+                result.months[parts.month] = {
+                    month:
+                        parts.month,
+                    status:
+                        previousMonths?.[parts.month]?.status ||
+                        'TO_VERIFY',
+                    lockedAt:
+                        previousMonths?.[parts.month]?.lockedAt ||
+                        null,
+                    lockedBy:
+                        previousMonths?.[parts.month]?.lockedBy ||
+                        null,
+                    staff: {}
+                };
+            }
+
+            const monthNode =
+                result.months[parts.month];
+
+            const staffKey =
+                String(
+                    punch.staffId
+                );
+
+            if (!monthNode.staff[staffKey]) {
+                const previousStaff =
+                    previousMonths?.[parts.month]
+                        ?.staff?.[staffKey] ||
+                    {};
+
+                monthNode.staff[staffKey] = {
+                    staffId:
+                        punch.staffId,
+                    staffName:
+                        punch.staffName || '',
+                    dept:
+                        punch.dept || '',
+                    status:
+                        previousStaff.status ||
+                        (
+                            monthNode.status === 'LOCKED'
+                                ? 'LOCKED'
+                                : 'TO_VERIFY'
+                        ),
+                    validatedAt:
+                        previousStaff.validatedAt ||
+                        null,
+                    validatedBy:
+                        previousStaff.validatedBy ||
+                        null,
+                    lockedAt:
+                        previousStaff.lockedAt ||
+                        null,
+                    lockedBy:
+                        previousStaff.lockedBy ||
+                        null,
+                    days: {},
+                    totals: {
+                        rawWorkedHours: 0,
+                        workedHours: 0,
+                        anomalyCount: 0,
+                        validatedDays: 0,
+                        daysWithPunches: 0
+                    }
+                };
+            }
+
+            return monthNode.staff[staffKey];
+        };
+
+    const openEntries = new Map();
+
+    for (const punch of safePunches) {
+        const parts =
+            ichefRhDateParts(
+                punch.timestamp
+            );
+
+        if (!parts) continue;
+
+        const staffKey =
+            String(
+                punch.staffId
+            );
+
+        const action =
+            String(
+                punch.type || ''
+            ).toUpperCase();
+
+        const key =
+            `${staffKey}:${parts.month}`;
+
+        if (action === 'ENTRÉE') {
+            if (openEntries.has(staffKey)) {
+                const previousOpen =
+                    openEntries.get(
+                        staffKey
+                    );
+
+                const previousParts =
+                    ichefRhDateParts(
+                        previousOpen.timestamp
+                    );
+
+                if (previousParts) {
+                    const staffSheet =
+                        ensureStaffSheet(
+                            previousParts,
+                            previousOpen
+                        );
+
+                    const dayKey =
+                        previousParts.day;
+
+                    if (!staffSheet.days[dayKey]) {
+                        staffSheet.days[dayKey] = {
+                            date:
+                                previousParts.date,
+                            sessions: [],
+                            punches: [],
+                            rawWorkedHours: 0,
+                            manualWorkedHours: null,
+                            workedHours: 0,
+                            anomalies: [],
+                            status: 'TO_VERIFY',
+                            correction: null
+                        };
+                    }
+
+                    staffSheet.days[dayKey]
+                        .anomalies.push({
+                            code:
+                                'DOUBLE_ENTRY',
+                            label:
+                                'Entrée sans sortie avant nouvelle entrée'
+                        });
+
+                    staffSheet.days[dayKey]
+                        .punches.push(
+                            previousOpen
+                        );
+                }
+            }
+
+            openEntries.set(
+                staffKey,
+                punch
+            );
+
+            continue;
+        }
+
+        if (action === 'SORTIE') {
+            const entry =
+                openEntries.get(
+                    staffKey
+                );
+
+            if (!entry) {
+                const staffSheet =
+                    ensureStaffSheet(
+                        parts,
+                        punch
+                    );
+
+                if (!staffSheet.days[parts.day]) {
+                    staffSheet.days[parts.day] = {
+                        date:
+                            parts.date,
+                        sessions: [],
+                        punches: [],
+                        rawWorkedHours: 0,
+                        manualWorkedHours: null,
+                        workedHours: 0,
+                        anomalies: [],
+                        status: 'TO_VERIFY',
+                        correction: null
+                    };
+                }
+
+                staffSheet.days[parts.day]
+                    .punches.push(
+                        punch
+                    );
+
+                staffSheet.days[parts.day]
+                    .anomalies.push({
+                        code:
+                            'MISSING_ENTRY',
+                        label:
+                            'Sortie sans entrée'
+                    });
+
+                continue;
+            }
+
+            const entryParts =
+                ichefRhDateParts(
+                    entry.timestamp
+                );
+
+            if (!entryParts) {
+                openEntries.delete(
+                    staffKey
+                );
+                continue;
+            }
+
+            const staffSheet =
+                ensureStaffSheet(
+                    entryParts,
+                    entry
+                );
+
+            const dayKey =
+                entryParts.day;
+
+            if (!staffSheet.days[dayKey]) {
+                staffSheet.days[dayKey] = {
+                    date:
+                        entryParts.date,
+                    sessions: [],
+                    punches: [],
+                    rawWorkedHours: 0,
+                    manualWorkedHours: null,
+                    workedHours: 0,
+                    anomalies: [],
+                    status: 'TO_VERIFY',
+                    correction: null
+                };
+            }
+
+            const day =
+                staffSheet.days[dayKey];
+
+            const hours =
+                Math.max(
+                    0,
+                    (
+                        Number(punch.timestamp) -
+                        Number(entry.timestamp)
+                    ) / 3600000
+                );
+
+            const rounded =
+                Math.round(
+                    hours * 100
+                ) / 100;
+
+            day.sessions.push({
+                entry: {
+                    id:
+                        entry.id,
+                    timestamp:
+                        entry.timestamp
+                },
+                exit: {
+                    id:
+                        punch.id,
+                    timestamp:
+                        punch.timestamp
+                },
+                hours:
+                    rounded
+            });
+
+            day.punches.push(
+                entry,
+                punch
+            );
+
+            day.rawWorkedHours +=
+                rounded;
 
 // ==========================================
 // MASTER CONTROL API (EMPIRE SUPER ADMIN)
