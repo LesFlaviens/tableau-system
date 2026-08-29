@@ -5484,512 +5484,1211 @@ async function submitPunch() {
         clearPunchPin();
     }
 }
-        // ==========================================
-        // SYNCHRONISATION ANTI-RUSH
-        // ==========================================
-        async function broadcastStaffingLevels() {
-            try {
-                const today = new Date();
-                const monthStr = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}`;
-                let staffing = { cuisine: 0, bar: 0, salle: 0, patisserie: 0, admin: 0, capaciteMaxPlatsParCuistot: 12 };
+// ============================================================
+// iCHEF RH — PREUVES DE POINTAGE
+// ============================================================
 
-                getDir().forEach(staff => {
-                    if(staff.active === false) return;
-                    let p = (getTs()[monthStr] && getTs()[monthStr][staff.id] && getTs()[monthStr][staff.id][today.getDate()]) ? getTs()[monthStr][staff.id][today.getDate()] : null;
-                    if (p && (p.status === 'present' || p.status === 'off_soir' || p.status === 'off_matin')) {
-                        let assignedDept = p.poste || staff.dept;
-                        if(staffing[assignedDept] !== undefined) staffing[assignedDept]++;
-                    }
-                });
-                await API.update('RH_MASTER', staffing);
-            } catch (e) { console.error("Erreur broadcast RH", e); }
-        }
+function renderLogs() {
 
-        function planningStatusIcon(status) {
-            return rhStatusMeta(status).icon;
-        }
+    const body =
+        document.getElementById(
+            'logs-body'
+        );
 
-        function renderAnnualTimesheet(year, staffId) {
-            const staff = getDir().find(s => String(s.id) === String(staffId));
-            if (!staff) return;
+    if (!body) {
+        return;
+    }
 
-            const maxDays = 31;
-            let head = '<tr><th class="sticky-col">MOIS</th>';
 
-            for (let d = 1; d <= maxDays; d++) {
-                head += `<th>${d}</th>`;
-            }
-
-            head += '<th>CP</th><th>H.</th></tr>';
-            document.getElementById('annual-thead').innerHTML = head;
-
-            const ts = getTs();
-            let body = '';
-
-            for (let month = 1; month <= 12; month++) {
-                const monthStr = `${year}-${String(month).padStart(2, '0')}`;
-                const daysInMonth = new Date(Number(year), month, 0).getDate();
-                const monthData =
-                    ts[monthStr]?.[staff.id] ||
-                    ts[monthStr]?.[String(staff.id)] ||
-                    {};
-
-                let cp = 0;
-                let hours = 0;
-
-                body += `<tr><td class="sticky-col" style="font-weight:800;">${monthNames[month - 1]}</td>`;
-
-                for (let day = 1; day <= maxDays; day++) {
-                    if (day > daysInMonth) {
-                        body += '<td style="opacity:.18;">—</td>';
-                        continue;
-                    }
-
-                    const p = monthData[day] || { status: 'off' };
-                    if (p.status === 'conge') cp++;
-                    hours += calculateNet(p);
-
-                    body += `
-                        <td title="${escapeRhHtml(String(p.status || 'off'))}">
-                            ${planningStatusIcon(p.status)}
-                        </td>
-                    `;
-                }
-
-                body += `<td style="color:var(--cyan);font-weight:800;">${cp}j</td>`;
-                body += `<td style="color:var(--hr);font-weight:800;">${hours.toFixed(1)}h</td>`;
-                body += '</tr>';
-            }
-
-            document.getElementById('annual-tbody').innerHTML = body;
-        }
-
-        function loadPublicPlanning() {
-            const employeePortal = document.getElementById('employee-portal');
-
-            if (
-                employeePortal &&
-                employeePortal.style.display === 'flex' &&
-                loggedInStaffId !== null
-            ) {
-                renderEmployeePortal();
-            }
-        }
-
-        function applyApprovedRequestToPlanning(request) {
-            const staff = getDir().find(
-                s =>
-                    String(s.id) === String(request.staffId) ||
-                    (
-                        request.staffPin &&
-                        String(s.pin) === String(request.staffPin)
+    const punches =
+        getPunches()
+            .slice()
+            .sort(
+                (a, b) =>
+                    Number(
+                        b.timestamp || 0
+                    ) -
+                    Number(
+                        a.timestamp || 0
                     )
             );
 
-            if (!staff) return;
 
-            const startRaw = request.startDate || request.start;
-            const endRaw = request.endDate || request.end || startRaw;
-            if (!startRaw) return;
+    if (!punches.length) {
 
-            const start = new Date(`${startRaw}T12:00:00`);
-            const end = new Date(`${endRaw}T12:00:00`);
+        body.innerHTML =
+            '<tr>' +
+                '<td colspan="4" style="text-align:center;padding:20px;color:var(--sub);">' +
+                    'Aucun pointage enregistré.' +
+                '</td>' +
+            '</tr>';
 
-            if (
-                Number.isNaN(start.getTime()) ||
-                Number.isNaN(end.getTime())
-            ) return;
-
-            const statusByType = {
-                conge: 'conge',
-                recup: 'recup',
-                maladie: 'maladie',
-                accident_travail: 'accident_travail',
-                maternite: 'maternite',
-                paternite: 'paternite',
-                parental: 'parental',
-                enfant_malade: 'enfant_malade',
-                evenement_familial: 'evenement_familial',
-                deces: 'deces',
-                formation: 'formation',
-                sans_solde: 'sans_solde',
-                absence_autorisee: 'absence_autorisee',
-                absence_injustifiee: 'absence_injustifiee',
-                off: 'off'
-            };
-
-            const status =
-                statusByType[String(request.type || '').toLowerCase()] ||
-                'off';
-
-            const ts = getTs();
-
-            for (
-                let cursor = new Date(start);
-                cursor <= end;
-                cursor.setDate(cursor.getDate() + 1)
-            ) {
-                const monthStr =
-                    `${cursor.getFullYear()}-${String(cursor.getMonth() + 1).padStart(2, '0')}`;
-
-                const day = cursor.getDate();
-
-                if (!ts[monthStr]) ts[monthStr] = {};
-                if (!ts[monthStr][staff.id]) ts[monthStr][staff.id] = {};
-
-                const old =
-                    ts[monthStr][staff.id][day] ||
-                    {
-                        poste: staff.dept,
-                        s1: '',
-                        s2: '',
-                        pause: 0,
-                        obs: ''
-                    };
-
-                ts[monthStr][staff.id][day] = {
-                    ...old,
-                    status,
-                    s1: '',
-                    s2: '',
-                    pause: 0,
-                    obs:
-                        `Demande acceptée : ${rhRequestTypeLabel(request.type)}`
-                };
-            }
-
-                      saveTs(ts);
-            broadcastStaffingLevels();
-        }
+        return;
+    }
 
 
-// ============================================================
-// iCHEF RH — NOTIFICATIONS GLOBALES
-// ============================================================
-
-        function showToast(message, isError = false) {
-
-            const toast =
-                document.getElementById('toast');
-
-            // Si le composant n'existe pas,
-            // aucune fonction RH ne doit être bloquée.
-            if (!toast) {
-
-                console.log(
-                    '[iCHEF RH]',
-                    message
-                );
-
-                return;
-            }
-
-            toast.innerText =
-                String(message || '');
-
-            toast.style.display =
-                'block';
-
-            toast.style.background =
-                isError
-                    ? 'var(--danger)'
-                    : 'var(--success)';
-
-            toast.style.color =
-                isError
-                    ? '#ffffff'
-                    : '#000000';
-
-            requestAnimationFrame(() => {
-
-                toast.classList.add(
-                    'show'
-                );
-            });
-
-            if (
-                window.__ichefRhToastTimer
-            ) {
-
-                clearTimeout(
-                    window.__ichefRhToastTimer
-                );
-            }
-
-            window.__ichefRhToastTimer =
-                setTimeout(() => {
-
-                    toast.classList.remove(
-                        'show'
-                    );
-
-                    setTimeout(() => {
-
-                        toast.style.display =
-                            'none';
-
-                    }, 350);
-
-                }, 2600);
-        }
+    let html = '';
 
 
-// ============================================================
-// DIRECTION — TRAITEMENT DES DEMANDES
-// ============================================================
+    punches.forEach(p => {
 
-        function setDirectorRequestStatus(requestId, status) {
-
-            const reqs =
-                getReqs();
-
-            const index =
-                reqs.findIndex(
-                    r =>
-                        String(r.id) ===
-                        String(requestId)
-                );
-
-            if (
-                index === -1
-            ) {
-                return;
-            }
-
-            reqs[index].status =
-                status;
-
-            reqs[index].processedAt =
-                Date.now();
-
-
-            if (
-                status ===
-                'approved'
-            ) {
-
-                applyApprovedRequestToPlanning(
-                    reqs[index]
-                );
-            }
-
-
-            saveReqs(
-                reqs
+        const date =
+            new Date(
+                Number(
+                    p.timestamp || 0
+                )
             );
 
-            updateReqBadge();
 
-            renderDirectorRequests();
+        const validDate =
+            !Number.isNaN(
+                date.getTime()
+            );
 
-            refreshViews();
+
+        const dateStr =
+            validDate
+                ? `${String(date.getDate()).padStart(2, '0')}/${String(date.getMonth() + 1).padStart(2, '0')}/${date.getFullYear()}`
+                : '-';
 
 
-            // Notification non bloquante
-            if (
-                typeof showToast ===
-                'function'
-            ) {
+        const timeStr =
+            validDate
+                ? `${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}:${String(date.getSeconds()).padStart(2, '0')}`
+                : '--:--:--';
 
-                showToast(
-                    status ===
-                        'approved'
-                        ? "Demande acceptée"
-                        : "Demande refusée"
+
+        const type =
+            String(
+                p.type || ''
+            ).toUpperCase();
+
+
+        const staffName =
+            typeof escapeRhHtml === 'function'
+                ? escapeRhHtml(
+                    p.staffName ||
+                    'Collaborateur'
+                )
+                : String(
+                    p.staffName ||
+                    'Collaborateur'
                 );
-            }
-        }
+
+
+        const safeType =
+            typeof escapeRhHtml === 'function'
+                ? escapeRhHtml(
+                    type || '-'
+                )
+                : type;
+
+
+        const photo =
+            (
+                typeof p.photo ===
+                    'string' &&
+                p.photo.startsWith(
+                    'data:image/'
+                )
+            )
+                ? `
+                    <img
+                        src="${p.photo}"
+                        alt="Photo pointage"
+                    >
+                `
+                : `
+                    <span
+                        style="
+                            color:var(--text-muted);
+                            font-size:.7rem;
+                        "
+                    >
+                        AUCUNE PHOTO
+                    </span>
+                `;
+
+
+        html += `
+            <tr>
+
+                <td>
+                    ${photo}
+                </td>
+
+                <td
+                    style="
+                        font-weight:bold;
+                        color:var(--text-main);
+                        text-transform:uppercase;
+                    "
+                >
+                    ${staffName}
+                </td>
+
+                <td
+                    style="
+                        font-weight:900;
+                        color:${
+                            type === 'ENTRÉE'
+                                ? 'var(--success)'
+                                : 'var(--accent)'
+                        };
+                    "
+                >
+                    ${safeType}
+                </td>
+
+                <td
+                    style="
+                        color:var(--text-main);
+                    "
+                >
+                    ${dateStr}
+                    à
+                    <span style="font-weight:bold;">
+                        ${timeStr}
+                    </span>
+                </td>
+
+            </tr>
+        `;
+    });
+
+
+    body.innerHTML =
+        html;
+}
 
 
 // ============================================================
-// DIRECTION — AFFICHAGE DES DEMANDES
+// POINTAGES — PAS DE SUPPRESSION
 // ============================================================
 
-        function renderDirectorRequests() {
+function clearLogs() {
 
-            const body =
-                document.getElementById(
-                    'requests-dir-body'
-                );
-
-            if (!body) {
-                return;
-            }
+    alert(
+        "Les pointages constituent la source de la feuille d'heures et ne sont plus supprimés depuis cet écran."
+    );
+}
 
 
-            const reqs =
-                getReqs()
-                    .slice()
-                    .sort(
-                        (a, b) =>
-                            Number(
-                                b.createdAt ||
-                                b.timestamp ||
-                                b.id ||
-                                0
-                            ) -
-                            Number(
-                                a.createdAt ||
-                                a.timestamp ||
-                                a.id ||
-                                0
-                            )
+// ============================================================
+// FEUILLES D'HEURES — STATUTS
+// ============================================================
+
+function realTimesheetStatusLabel(status) {
+
+    const map = {
+
+        TO_VERIFY:
+            'À VÉRIFIER',
+
+        VALIDATED:
+            'VALIDÉE',
+
+        LOCKED:
+            'CLÔTURÉE'
+    };
+
+
+    return (
+        map[
+            String(
+                status || ''
+            ).toUpperCase()
+        ] ||
+
+        String(
+            status ||
+            'À VÉRIFIER'
+        )
+    );
+}
+
+
+function realTimesheetStatusColor(status) {
+
+    const value =
+        String(
+            status || ''
+        ).toUpperCase();
+
+
+    if (
+        value === 'LOCKED'
+    ) {
+        return 'var(--gold)';
+    }
+
+
+    if (
+        value === 'VALIDATED'
+    ) {
+        return 'var(--success)';
+    }
+
+
+    return 'var(--warning)';
+}
+
+
+function countRealSheetAnomalies(sheet) {
+
+    if (
+        !sheet?.days
+    ) {
+        return 0;
+    }
+
+
+    return Object
+        .values(
+            sheet.days
+        )
+        .reduce(
+            (total, day) =>
+
+                total +
+
+                (
+                    Array.isArray(
+                        day?.anomalies
+                    )
+                        ? day.anomalies.length
+                        : 0
+                ),
+
+            0
+        );
+}
+
+
+// ============================================================
+// FEUILLES D'HEURES RÉELLES
+// ============================================================
+
+function renderRealTimesheets() {
+
+    const monthStr =
+        document.getElementById(
+            'real-timesheet-month'
+        )?.value ||
+
+        document.getElementById(
+            'month-selector'
+        )?.value ||
+
+        new Date()
+            .toISOString()
+            .slice(
+                0,
+                7
+            );
+
+
+    const [
+        year,
+        month
+    ] =
+        monthStr
+            .split('-')
+            .map(Number);
+
+
+    const daysInMonth =
+        new Date(
+            year,
+            month,
+            0
+        ).getDate();
+
+
+    const tsMonth =
+        getTs()[
+            monthStr
+        ] || {};
+
+
+    const rows =
+        getDir()
+            .filter(
+                staff =>
+                    staff.active !== false
+            )
+            .map(staff => {
+
+                const plannedMonth =
+                    tsMonth?.[
+                        staff.id
+                    ] ||
+
+                    tsMonth?.[
+                        String(
+                            staff.id
+                        )
+                    ] ||
+
+                    {};
+
+
+                const stats =
+                    getStaffMonthStats(
+
+                        staff.id,
+
+                        year,
+
+                        month,
+
+                        daysInMonth,
+
+                        plannedMonth
+
+                    ) || {};
+
+
+                const actual =
+                    getActualHoursSummary(
+
+                        staff.id,
+
+                        monthStr
                     );
 
 
-            if (
-                !reqs.length
-            ) {
+                const sheet =
+                    getRealSheetForStaff(
 
-                body.innerHTML =
-                    '<tr><td colspan="7" style="text-align:center;padding:25px;color:var(--text-muted);">Aucune demande enregistrée.</td></tr>';
+                        staff.id,
 
-                return;
+                        monthStr
+                    );
+
+
+                const balance =
+                    Number(
+                        actual.total ||
+                        0
+                    ) -
+
+                    Number(
+                        stats.adjustedTarget ||
+                        0
+                    );
+
+
+                return {
+
+                    staff,
+
+                    stats,
+
+                    actual,
+
+                    sheet,
+
+                    balance,
+
+                    anomalies:
+                        countRealSheetAnomalies(
+                            sheet
+                        )
+                };
+            });
+
+
+    const totals =
+        rows.reduce(
+
+            (
+                acc,
+                row
+            ) => {
+
+                acc.planned +=
+                    Number(
+                        row.stats.totalDone ||
+                        0
+                    );
+
+
+                acc.worked +=
+                    Number(
+                        row.actual.total ||
+                        0
+                    );
+
+
+                acc.balance +=
+                    Number(
+                        row.balance ||
+                        0
+                    );
+
+
+                acc.anomalies +=
+                    Number(
+                        row.anomalies ||
+                        0
+                    );
+
+
+                if (
+                    String(
+                        row.sheet?.status ||
+                        ''
+                    ).toUpperCase() ===
+                    'VALIDATED'
+                ) {
+                    acc.validated++;
+                }
+
+
+                if (
+                    String(
+                        row.sheet?.status ||
+                        ''
+                    ).toUpperCase() ===
+                    'LOCKED'
+                ) {
+                    acc.locked++;
+                }
+
+
+                return acc;
+            },
+
+            {
+
+                planned: 0,
+
+                worked: 0,
+
+                balance: 0,
+
+                anomalies: 0,
+
+                validated: 0,
+
+                locked: 0
             }
+        );
 
 
-            body.innerHTML =
-                reqs
-                    .map(r => {
-
-                        const status =
-                            String(
-                                r.status ||
-                                'pending'
-                            )
-                                .toLowerCase();
+    const summary =
+        document.getElementById(
+            'real-timesheet-summary'
+        );
 
 
-                        const pending =
-                            ![
-                                'approved',
-                                'accepte',
-                                'accepté',
-                                'valide',
-                                'validé',
-                                'rejected',
-                                'refuse',
-                                'refusé'
-                            ].includes(
+    if (summary) {
+
+        summary.innerHTML =
+            [
+
+                [
+                    'Planifié',
+                    `${totals.planned.toFixed(1)} h`
+                ],
+
+                [
+                    'Effectué',
+                    `${totals.worked.toFixed(1)} h`
+                ],
+
+                [
+                    'Solde réel',
+                    formatRhSignedHours(
+                        totals.balance
+                    )
+                ],
+
+                [
+                    'Anomalies',
+                    String(
+                        totals.anomalies
+                    )
+                ],
+
+                [
+                    'Feuilles validées',
+                    `${totals.validated}/${rows.length}`
+                ],
+
+                [
+                    'Feuilles clôturées',
+                    `${totals.locked}/${rows.length}`
+                ]
+
+            ]
+                .map(
+                    ([label, value]) => `
+                        <div class="rh-detail-stat">
+                            <div class="lbl">
+                                ${escapeRhHtml(label)}
+                            </div>
+
+                            <div class="val">
+                                ${escapeRhHtml(value)}
+                            </div>
+                        </div>
+                    `
+                )
+                .join('');
+    }
+
+
+    const body =
+        document.getElementById(
+            'real-timesheet-body'
+        );
+
+
+    if (!body) {
+        return;
+    }
+
+
+    if (!rows.length) {
+
+        body.innerHTML =
+            '<tr>' +
+                '<td colspan="9" style="text-align:center;padding:24px;color:var(--text-muted);">' +
+                    'Aucun collaborateur actif.' +
+                '</td>' +
+            '</tr>';
+
+        return;
+    }
+
+
+    body.innerHTML =
+        rows
+            .map(row => {
+
+                const status =
+                    row.sheet?.status ||
+                    'TO_VERIFY';
+
+
+                return `
+                    <tr>
+
+                        <td>
+                            <strong>
+                                ${escapeRhHtml(
+                                    row.staff.name
+                                )}
+                            </strong>
+
+                            <br>
+
+                            <span
+                                style="
+                                    color:var(--text-muted);
+                                    font-size:.68rem;
+                                "
+                            >
+                                ${escapeRhHtml(
+                                    row.staff.role ||
+                                    row.staff.dept ||
+                                    ''
+                                )}
+                            </span>
+                        </td>
+
+
+                        <td>
+                            ${Number(
+                                row.staff.contract ||
+                                0
+                            ).toFixed(1)} h/sem
+                        </td>
+
+
+                        <td>
+                            ${Number(
+                                row.stats.adjustedTarget ||
+                                0
+                            ).toFixed(1)} h
+                        </td>
+
+
+                        <td>
+                            ${Number(
+                                row.stats.totalDone ||
+                                0
+                            ).toFixed(1)} h
+                        </td>
+
+
+                        <td>
+                            ${Number(
+                                row.actual.total ||
+                                0
+                            ).toFixed(1)} h
+                        </td>
+
+
+                        <td
+                            class="${rhBalanceClass(
+                                row.balance
+                            )}"
+                            style="font-weight:900;"
+                        >
+                            ${formatRhSignedHours(
+                                row.balance
+                            )}
+                        </td>
+
+
+                        <td
+                            style="
+                                color:${
+                                    row.anomalies
+                                        ? 'var(--warning)'
+                                        : 'var(--success)'
+                                };
+                                font-weight:800;
+                            "
+                        >
+                            ${row.anomalies}
+                        </td>
+
+
+                        <td
+                            style="
+                                color:${realTimesheetStatusColor(
+                                    status
+                                )};
+                                font-weight:900;
+                            "
+                        >
+                            ${realTimesheetStatusLabel(
                                 status
-                            );
+                            )}
+                        </td>
 
 
-                        return `
-                            <tr>
+                        <td>
 
-                                <td>
-                                    ${formatRhDate(
-                                        r.createdAt ||
-                                        r.timestamp ||
-                                        r.id
-                                    )}
-                                </td>
+                            <div
+                                style="
+                                    display:flex;
+                                    gap:6px;
+                                    flex-wrap:wrap;
+                                "
+                            >
 
-                                <td style="font-weight:800;">
-                                    ${escapeRhHtml(
-                                        r.staffName ||
-                                        'Employé'
-                                    )}
-                                </td>
+                                <button
+                                    class="btn-outline"
+                                    onclick='openStaffDetail(${JSON.stringify(
+                                        row.staff.id
+                                    )})'
+                                >
+                                    DÉTAIL
+                                </button>
 
-                                <td>
-                                    ${escapeRhHtml(
-                                        rhRequestTypeLabel(
-                                            r.type
-                                        )
-                                    )}
-                                </td>
 
-                                <td>
-                                    ${formatRhDate(
-                                        r.startDate ||
-                                        r.start
-                                    )}
-                                    →
-                                    ${formatRhDate(
-                                        r.endDate ||
-                                        r.end
-                                    )}
-                                </td>
-
-                                <td>
-                                    ${escapeRhHtml(
-                                        r.comment ||
-                                        r.reason ||
-                                        '-'
-                                    )}
-                                </td>
-
-                                <td>
-
-                                    <span
-                                        class="status-badge ${rhRequestStatusClass(
-                                            r.status
-                                        )}"
-                                    >
-                                        ${rhRequestStatusLabel(
-                                            r.status
-                                        )}
-                                    </span>
-
-                                </td>
-
-                                <td style="text-align:center;">
-
+                                <button
+                                    class="btn-outline"
+                                    onclick='validateRealTimesheet(${JSON.stringify(
+                                        row.staff.id
+                                    )})'
                                     ${
-                                        pending
-                                            ? `
-                                                <div
-                                                    style="
-                                                        display:flex;
-                                                        gap:8px;
-                                                        justify-content:center;
-                                                        flex-wrap:wrap;
-                                                    "
-                                                >
-
-                                                    <button
-                                                        class="btn-outline"
-                                                        style="
-                                                            border-color:var(--success);
-                                                            color:var(--success);
-                                                        "
-                                                        onclick="setDirectorRequestStatus(
-                                                            '${String(r.id)}',
-                                                            'approved'
-                                                        )"
-                                                    >
-                                                        ACCEPTER
-                                                    </button>
-
-                                                    <button
-                                                        class="btn-outline"
-                                                        style="
-                                                            border-color:var(--danger);
-                                                            color:var(--danger);
-                                                        "
-                                                        onclick="setDirectorRequestStatus(
-                                                            '${String(r.id)}',
-                                                            'rejected'
-                                                        )"
-                                                    >
-                                                        REFUSER
-                                                    </button>
-
-                                                </div>
-                                            `
-                                            : '-'
+                                        String(
+                                            status
+                                        ).toUpperCase() ===
+                                        'LOCKED'
+                                            ? 'disabled'
+                                            : ''
                                     }
+                                >
+                                    VALIDER
+                                </button>
 
-                                </td>
+                            </div>
 
-                            </tr>
-                        `;
-                    })
-                    .join('');
+                        </td>
+
+                    </tr>
+                `;
+            })
+            .join('');
+}
+
+
+// ============================================================
+// CORRECTION MANUELLE
+// ============================================================
+
+async function correctRealTimesheetDay(
+    staffId,
+    date
+) {
+
+    const sheetMonth =
+        String(
+            date || ''
+        ).slice(
+            0,
+            7
+        );
+
+
+    const dayNumber =
+        Number(
+            String(
+                date || ''
+            ).slice(
+                8,
+                10
+            )
+        );
+
+
+    const current =
+        getRealDayForStaff(
+
+            staffId,
+
+            sheetMonth,
+
+            dayNumber
+        );
+
+
+    if (
+        String(
+            getRealSheetForStaff(
+                staffId,
+                sheetMonth
+            )?.status || ''
+        ).toUpperCase() ===
+        'LOCKED'
+    ) {
+
+        alert(
+            "Cette feuille d'heures est clôturée."
+        );
+
+        return;
+    }
+
+
+    const existing =
+        Number(
+            current?.workedHours ||
+            0
+        );
+
+
+    const value =
+        window.prompt(
+
+            `Heures réellement travaillées le ${date}`,
+
+            existing.toFixed(
+                2
+            )
+        );
+
+
+    if (
+        value === null
+    ) {
+        return;
+    }
+
+
+    const workedHours =
+        Number(
+            String(
+                value
+            ).replace(
+                ',',
+                '.'
+            )
+        );
+
+
+    if (
+        !Number.isFinite(
+            workedHours
+        ) ||
+
+        workedHours < 0 ||
+
+        workedHours > 24
+    ) {
+
+        alert(
+            "Nombre d'heures invalide."
+        );
+
+        return;
+    }
+
+
+    const reason =
+        window.prompt(
+            "Motif obligatoire de la correction"
+        );
+
+
+    if (
+        !reason ||
+        !reason.trim()
+    ) {
+
+        alert(
+            "La correction nécessite un motif."
+        );
+
+        return;
+    }
+
+
+    try {
+
+        const response =
+            await fetch(
+
+                `${SERVER_URL_JS}/api/rh/timesheet/correct`,
+
+                {
+
+                    method:
+                        'POST',
+
+                    headers: {
+
+                        'Content-Type':
+                            'application/json',
+
+                        'Accept':
+                            'application/json'
+                    },
+
+                    cache:
+                        'no-store',
+
+                    body:
+                        JSON.stringify({
+
+                            tenantID:
+                                tenantID_JS,
+
+                            managerPin:
+                                String(
+                                    currentPin || ''
+                                ).trim(),
+
+                            staffId,
+
+                            date,
+
+                            workedHours,
+
+                            reason:
+                                reason.trim()
+                        })
+                }
+            );
+
+
+        const data =
+            await response
+                .json()
+                .catch(
+                    () => ({})
+                );
+
+
+        if (
+            !response.ok ||
+            !data.success
+        ) {
+
+            throw new Error(
+                data.error ||
+                "Correction refusée."
+            );
         }
 
+
+        saveRealTimesheetsLocal(
+            data.timesheets
+        );
+
+
+        if (
+            typeof showToast ===
+            'function'
+        ) {
+
+            showToast(
+                "Feuille d'heures corrigée"
+            );
+        }
+
+
+        openStaffDetail(
+            staffId
+        );
+
+
+        renderRealTimesheets();
+
+
+    } catch (error) {
+
+        alert(
+            error?.message ||
+            "Erreur de correction."
+        );
+    }
+}
+
+
+// ============================================================
+// VALIDATION FEUILLE
+// ============================================================
+
+async function validateRealTimesheet(
+    staffId
+) {
+
+    const month =
+        document.getElementById(
+            'real-timesheet-month'
+        )?.value ||
+
+        document.getElementById(
+            'month-selector'
+        )?.value;
+
+
+    if (!month) {
+        return;
+    }
+
+
+    try {
+
+        const response =
+            await fetch(
+
+                `${SERVER_URL_JS}/api/rh/timesheet/status`,
+
+                {
+
+                    method:
+                        'POST',
+
+                    headers: {
+
+                        'Content-Type':
+                            'application/json',
+
+                        'Accept':
+                            'application/json'
+                    },
+
+                    cache:
+                        'no-store',
+
+                    body:
+                        JSON.stringify({
+
+                            tenantID:
+                                tenantID_JS,
+
+                            managerPin:
+                                String(
+                                    currentPin || ''
+                                ).trim(),
+
+                            month,
+
+                            staffId,
+
+                            action:
+                                'VALIDATE'
+                        })
+                }
+            );
+
+
+        const data =
+            await response
+                .json()
+                .catch(
+                    () => ({})
+                );
+
+
+        if (
+            !response.ok ||
+            !data.success
+        ) {
+
+            throw new Error(
+                data.error ||
+                "Validation refusée."
+            );
+        }
+
+
+        saveRealTimesheetsLocal(
+            data.timesheets
+        );
+
+
+        renderRealTimesheets();
+
+
+        if (
+            typeof showToast ===
+            'function'
+        ) {
+
+            showToast(
+                "Feuille d'heures validée"
+            );
+        }
+
+
+    } catch (error) {
+
+        alert(
+            error?.message ||
+            "Erreur de validation."
+        );
+    }
+}
+
+
+// ============================================================
+// CLÔTURE DU MOIS
+// ============================================================
+
+async function lockRealTimesheetMonth() {
+
+    const month =
+        document.getElementById(
+            'real-timesheet-month'
+        )?.value;
+
+
+    if (!month) {
+        return;
+    }
+
+
+    if (
+        !confirm(
+            `Clôturer définitivement les feuilles d'heures de ${month} ? Une réouverture nécessitera une action Direction.`
+        )
+    ) {
+
+        return;
+    }
+
+
+    try {
+
+        const response =
+            await fetch(
+
+                `${SERVER_URL_JS}/api/rh/timesheet/status`,
+
+                {
+
+                    method:
+                        'POST',
+
+                    headers: {
+
+                        'Content-Type':
+                            'application/json',
+
+                        'Accept':
+                            'application/json'
+                    },
+
+                    cache:
+                        'no-store',
+
+                    body:
+                        JSON.stringify({
+
+                            tenantID:
+                                tenantID_JS,
+
+                            managerPin:
+                                String(
+                                    currentPin || ''
+                                ).trim(),
+
+                            month,
+
+                            action:
+                                'LOCK_MONTH'
+                        })
+                }
+            );
+
+
+        const data =
+            await response
+                .json()
+                .catch(
+                    () => ({})
+                );
+
+
+        if (
+            !response.ok ||
+            !data.success
+        ) {
+
+            throw new Error(
+                data.error ||
+                "Clôture refusée."
+            );
+        }
+
+
+        saveRealTimesheetsLocal(
+            data.timesheets
+        );
+
+
+        renderRealTimesheets();
+
+
+        if (
+            typeof showToast ===
+            'function'
+        ) {
+
+            showToast(
+                "Mois RH clôturé"
+            );
+        }
+
+
+    } catch (error) {
+
+        alert(
+            error?.message ||
+            "Erreur de clôture."
+        );
+    }
+}
     </script>
 </body>
 </html>
