@@ -2664,23 +2664,33 @@ async function secureFetch(input, init = {}) {
         }
 
         function openStaffModal(pin = null) {
-            document.getElementById('staff-edit-original-pin').value = pin || "";
-            if (pin) { 
-                let s = staffAccess.find(x => x.pin === pin); 
-                document.getElementById('staff-name').value = s.name; 
-                document.getElementById('staff-title').value = s.role || ""; 
-                document.getElementById('staff-pin').value = s.pin; 
-                document.getElementById('staff-role').value = s.dept; 
-                document.getElementById('staff-active').checked = s.active !== false; 
-            } else { 
-                document.getElementById('staff-name').value = ""; 
-                document.getElementById('staff-title').value = ""; 
-                document.getElementById('staff-pin').value = ""; 
-                document.getElementById('staff-role').value = "salle"; 
-                document.getElementById('staff-active').checked = true; 
+            const originalPinField = document.getElementById('staff-edit-original-pin');
+            if (originalPinField) originalPinField.value = pin || "";
+
+            if (pin) {
+                const s = staffAccess.find(
+                    x => String(x?.pin || '').trim() === String(pin || '').trim()
+                );
+
+                if (!s) {
+                    alert("Ce collaborateur n'est plus disponible. Actualisez les données puis réessayez.");
+                    return;
+                }
+
+                document.getElementById('staff-name').value = s.name || "";
+                document.getElementById('staff-title').value = s.role || "";
+                document.getElementById('staff-pin').value = String(s.pin || '');
+                document.getElementById('staff-role').value = s.dept || "salle";
+                document.getElementById('staff-active').checked = s.active !== false;
+            } else {
+                document.getElementById('staff-name').value = "";
+                document.getElementById('staff-title').value = "";
+                document.getElementById('staff-pin').value = "";
+                document.getElementById('staff-role').value = "salle";
+                document.getElementById('staff-active').checked = true;
             }
-            let modal = document.getElementById('staff-modal'); 
-            if(modal) { modal.style.display = 'flex'; setTimeout(() => modal.classList.add('show'), 10); }
+
+            openModalSafe(document.getElementById('staff-modal'));
         }
 
        async function saveStaff() {
@@ -3275,10 +3285,7 @@ function updateZoneMode(id, newMode) {
 
             refreshItemTaxUI();
             const modal = document.getElementById('item-modal');
-            if (modal) {
-                modal.style.display = 'flex';
-                setTimeout(() => modal.classList.add('show'), 10);
-            }
+            openModalSafe(modal);
         }
 
       function saveItem() {
@@ -3386,13 +3393,59 @@ function updateZoneMode(id, newMode) {
         if(document.getElementById('admin-finance-list')) document.getElementById('admin-finance-list').innerHTML = html || '<div class="empty-state">Vide</div>';
     }
 
-    function openQRZoom(src, num) { if(document.getElementById('qr-zoom-img')) document.getElementById('qr-zoom-img').src = src.replace('250x250', '500x500'); if(document.getElementById('qr-zoom-title')) document.getElementById('qr-zoom-title').innerText = "TABLE " + num; let modal = document.getElementById('qr-zoom-modal'); if(modal) { modal.style.display = 'flex'; setTimeout(() => modal.classList.add('show'), 10); } }
+    function openQRZoom(src, num) {
+        if (document.getElementById('qr-zoom-img')) {
+            document.getElementById('qr-zoom-img').src = src.replace('250x250', '500x500');
+        }
+        if (document.getElementById('qr-zoom-title')) {
+            document.getElementById('qr-zoom-title').innerText = "TABLE " + num;
+        }
+        openModalSafe(document.getElementById('qr-zoom-modal'));
+    }
 
     // --- UTILS & CLOUD ---
     function markUnsaved() { hasUnsavedChanges = true; let s = document.getElementById('sync-status'); if(s) { s.innerHTML = '⚠️ Modifié'; s.style.color = 'var(--gold)'; s.style.borderColor = 'var(--gold)'; } }
     function markSaved() { hasUnsavedChanges = false; let s = document.getElementById('sync-status'); if(s) { s.innerHTML = '<span>● En Direct</span> 🔄'; s.style.color = 'var(--text-main)'; s.style.borderColor = 'var(--border)'; } }
     function showToast(msg) { let t = document.getElementById('toast'); if(!t) { t = document.createElement('div'); t.id = 'toast'; t.className = 'toast'; document.body.appendChild(t); } t.innerText = msg; t.classList.add('show'); setTimeout(() => t.classList.remove('show'), 3000); }
-    function closeModals() { document.querySelectorAll('.modal').forEach(m => { m.style.opacity = '0'; setTimeout(() => { m.classList.remove('show'); m.style.display = 'none'; }, 300); }); }
+    function openModalSafe(modal) {
+        if (!modal) return;
+
+        if (modal.__ichefCloseTimer) {
+            clearTimeout(modal.__ichefCloseTimer);
+            modal.__ichefCloseTimer = null;
+        }
+
+        modal.style.removeProperty('opacity');
+        modal.style.display = 'flex';
+        modal.classList.remove('show');
+
+        requestAnimationFrame(() => {
+            requestAnimationFrame(() => {
+                modal.classList.add('show');
+            });
+        });
+    }
+
+    function closeModals() {
+        document.querySelectorAll('.modal').forEach(modal => {
+            if (modal.__ichefCloseTimer) {
+                clearTimeout(modal.__ichefCloseTimer);
+            }
+
+            // La classe CSS gère elle-même la transition vers opacity:0.
+            // Ne jamais écrire style.opacity = '0' ici : sinon la prochaine
+            // ouverture reste invisible et bloque les clics.
+            modal.style.removeProperty('opacity');
+            modal.classList.remove('show');
+
+            modal.__ichefCloseTimer = setTimeout(() => {
+                if (!modal.classList.contains('show')) {
+                    modal.style.display = 'none';
+                }
+                modal.__ichefCloseTimer = null;
+            }, 300);
+        });
+    }
     function forceSync() { if(hasUnsavedChanges && !confirm("⚠️ Écraser les modifications ?")) return; fetchStateFromCloud(); }
     function retourCaisse() { window.location.href = `pack-eco.html?tenantID=${tenantID}`; }
 
