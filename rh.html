@@ -1475,6 +1475,7 @@
         let staffAccess = [];
         let punchKioskMode = false;
         let punchClockTimer = null;
+        let punchSubmitInFlight = false;
 
         const RH_DEVICE_ID = (() => {
             const key = 'ichef_rh_device_id';
@@ -5159,56 +5160,77 @@ async function submitPunch() {
     }
 
 
+    // ======================================
+    // ANTI DOUBLE-CLIC / DOUBLE POINTAGE
+    // ======================================
+
+    if (
+        punchSubmitInFlight
+    ) {
+        return;
+    }
+
+    punchSubmitInFlight = true;
+
+
+    let serverConfirmed = false;
+
+
     try {
 
-// ==================================
-// 2. VÉRIFICATION CENTRALE SERVEUR
-// ==================================
+        // ==================================
+        // 2. IDENTIFICATION LOCALE RAPIDE
+        // ==================================
+        // Le STAFF_ACCESS est déjà maintenu à jour
+        // par Socket.IO + rafraîchissement périodique.
+        // Aucun appel /verify-pin n'est nécessaire ici.
 
-const auth =
-    await verifyPinWithServer(
-        enteredPin
-    );
+        let staff =
+            getDir().find(
+                s =>
+                    String(
+                        s.pin || ''
+                    ).trim() ===
+                        enteredPin &&
 
+                    s.active !== false
+            );
 
-if (!auth?.success) {
-
-    alert(
-        auth?.error ||
-        "CODE PIN INVALIDE"
-    );
-
-    clearPunchPin();
-
-    return;
-}
-
-
-// ==================================
-// 3. RECHARGER STAFF_ACCESS
-// Le nouveau PIN Admin est récupéré
-// ==================================
-
-await refreshStaffAccessFromServer();
-
-
-// ==================================
-// 4. TROUVER LE COLLABORATEUR
-// ==================================
-
-const staff =
-    getDir().find(
-        s =>
-            String(
-                s.pin || ''
-            ).trim() ===
-                enteredPin &&
-
-            s.active !== false
-    );
 
         // ==================================
-        // 5. PHOTO POINTEUSE
+        // FALLBACK UNIQUEMENT SI CACHE EN RETARD
+        // ==================================
+        // Exemple : PIN changé dans Admin il y a quelques secondes.
+
+        if (!staff) {
+
+            await refreshRhStaffFromServer();
+
+            staff =
+                getDir().find(
+                    s =>
+                        String(
+                            s.pin || ''
+                        ).trim() ===
+                            enteredPin &&
+
+                        s.active !== false
+                );
+        }
+
+
+        if (!staff) {
+
+            alert(
+                "CODE PIN INVALIDE OU COLLABORATEUR INACTIF"
+            );
+
+            return;
+        }
+
+
+        // ==================================
+        // 3. PHOTO POINTEUSE
         // ==================================
 
         const video =
@@ -5222,7 +5244,10 @@ const staff =
             );
 
 
-        if (!video || !canvas) {
+        if (
+            !video ||
+            !canvas
+        ) {
 
             throw new Error(
                 "Caméra pointeuse indisponible."
@@ -5234,6 +5259,14 @@ const staff =
             canvas.getContext(
                 '2d'
             );
+
+
+        if (!context) {
+
+            throw new Error(
+                "Impossible de capturer la photo de pointage."
+            );
+        }
 
 
         canvas.width = 320;
@@ -5257,8 +5290,10 @@ const staff =
 
 
         // ==================================
-        // 6. POINTAGE CENTRAL SERVEUR
+        // 4. UN SEUL APPEL SERVEUR PRINCIPAL
         // ==================================
+        // /api/rh/punch vérifie à nouveau staffId + PIN.
+        // L'écran vert ne s'affiche qu'après confirmation serveur.
 
         const response =
             await fetch(
@@ -5318,68 +5353,11 @@ const staff =
         }
 
 
-        // ==================================
-        // 7. SYNCHRONISER LES POINTAGES
-        // ==================================
-
-        if (
-            Array.isArray(
-                data.punches
-            )
-        ) {
-
-            localStorage.setItem(
-                'empire_hr_punches',
-                JSON.stringify(
-                    data.punches
-                )
-            );
-        }
+        serverConfirmed = true;
 
 
         // ==================================
-        // 8. SYNCHRONISER FEUILLES D'HEURES
-        // ==================================
-
-        if (
-            data.timesheets
-        ) {
-
-            saveRealTimesheetsLocal(
-                data.timesheets
-            );
-        }
-
-
-        // ==================================
-        // 9. SYNCHRONISER STAFF_ACCESS
-        // ==================================
-
-        if (
-            Array.isArray(
-                data.staffAccess
-            )
-        ) {
-
-            staffAccess =
-                data.staffAccess;
-
-
-            localStorage.setItem(
-                'empire_hr_directory',
-
-                JSON.stringify(
-                    buildRhDirectoryFromServer(
-                        staffAccess,
-                        getDir()
-                    )
-                )
-            );
-        }
-
-
-        // ==================================
-        // 10. CONFIRMATION
+        // 5. CONFIRMATION VISUELLE IMMÉDIATE
         // ==================================
 
         const successOverlay =
@@ -5387,71 +5365,239 @@ const staff =
                 'punch-success-overlay'
             );
 
+
         if (successOverlay) {
-            const isEntry = data.punchType === 'ENTRÉE';
-            successOverlay.style.background = isEntry
-                ? 'rgba(16,185,129,.96)'
-                : 'rgba(56,189,248,.96)';
-            successOverlay.style.display = 'flex';
 
-            const titleEl = document.getElementById('punch-success-title');
-            const nameEl = document.getElementById('punch-success-name');
-            const timeEl = document.getElementById('punch-success-time');
+            const isEntry =
+                data.punchType ===
+                'ENTRÉE';
 
-            if (titleEl) titleEl.innerText = isEntry ? 'ENTRÉE ENREGISTRÉE' : 'SORTIE ENREGISTRÉE';
-            if (nameEl) nameEl.innerText = staff.name || 'Collaborateur';
-            if (timeEl) timeEl.innerText = new Date().toLocaleTimeString('fr-FR', {
-                hour: '2-digit',
-                minute: '2-digit',
-                second: '2-digit'
-            });
+            successOverlay.style.background =
+                isEntry
+                    ? 'rgba(16,185,129,.96)'
+                    : 'rgba(56,189,248,.96)';
+
+            successOverlay.style.display =
+                'flex';
+
+
+            const titleEl =
+                document.getElementById(
+                    'punch-success-title'
+                );
+
+            const nameEl =
+                document.getElementById(
+                    'punch-success-name'
+                );
+
+            const timeEl =
+                document.getElementById(
+                    'punch-success-time'
+                );
+
+
+            if (titleEl) {
+                titleEl.innerText =
+                    isEntry
+                        ? 'ENTRÉE ENREGISTRÉE'
+                        : 'SORTIE ENREGISTRÉE';
+            }
+
+
+            if (nameEl) {
+                nameEl.innerText =
+                    data.punch?.staffName ||
+                    staff.name ||
+                    'Collaborateur';
+            }
+
+
+            if (timeEl) {
+
+                const punchTimestamp =
+                    data.punch?.timestamp ||
+                    Date.now();
+
+                timeEl.innerText =
+                    new Date(
+                        punchTimestamp
+                    ).toLocaleTimeString(
+                        'fr-FR',
+                        {
+                            hour:
+                                '2-digit',
+
+                            minute:
+                                '2-digit',
+
+                            second:
+                                '2-digit'
+                        }
+                    );
+            }
         }
 
 
-        showToast(
-            data.punchType ===
-                'ENTRÉE'
-                ? 'Entrée enregistrée'
-                : 'Sortie enregistrée'
+        clearPunchPin();
+
+
+        if (
+            typeof showToast ===
+            'function'
+        ) {
+
+            showToast(
+                data.punchType ===
+                    'ENTRÉE'
+                    ? 'Entrée enregistrée'
+                    : 'Sortie enregistrée'
+            );
+        }
+
+
+        // ==================================
+        // 6. FERMER APRÈS SUCCÈS
+        // ==================================
+
+        setTimeout(
+            () => {
+
+                const overlay =
+                    document.getElementById(
+                        'punch-success-overlay'
+                    );
+
+                if (
+                    punchKioskMode
+                ) {
+
+                    if (overlay) {
+                        overlay.style.display =
+                            'none';
+                    }
+
+                    clearPunchPin();
+                    updatePunchClockDisplay();
+
+                } else {
+
+                    cancelPunchClock();
+                }
+            },
+            1200
         );
 
 
         // ==================================
-        // 11. ACTUALISER RH
+        // 7. SYNCHRONISATION EN ARRIÈRE-PLAN
         // ==================================
+        // Rien ici ne retarde la confirmation de l'employé.
 
-        renderLogs();
+        setTimeout(
+            () => {
+
+                try {
+
+                    if (
+                        Array.isArray(
+                            data.punches
+                        )
+                    ) {
+
+                        localStorage.setItem(
+                            'empire_hr_punches',
+                            JSON.stringify(
+                                data.punches
+                            )
+                        );
+                    }
 
 
-        if (
-            document.getElementById(
-                'timesheets-interface'
-            )?.style.display ===
-                'flex'
-        ) {
+                    if (
+                        data.timesheets
+                    ) {
 
-            renderRealTimesheets();
-        }
-
-
-        broadcastStaffingLevels();
+                        saveRealTimesheetsLocal(
+                            data.timesheets
+                        );
+                    }
 
 
-        // ==================================
-        // 12. FERMER APRÈS SUCCÈS
-        // ==================================
+                    if (
+                        Array.isArray(
+                            data.staffAccess
+                        )
+                    ) {
 
-        setTimeout(() => {
-            const overlay = document.getElementById('punch-success-overlay');
+                        staffAccess =
+                            data.staffAccess;
 
-            if (punchKioskMode) {
-                if (overlay) overlay.style.display = 'none';
-                clearPunchPin();
-                updatePunchClockDisplay();
-            } else {
-                cancelPunchClock();
-            }
-        }, 1700);
+                        localStorage.setItem(
+                            'empire_hr_directory',
+                            JSON.stringify(
+                                buildRhDirectoryFromServer(
+                                    staffAccess,
+                                    getDir()
+                                )
+                            )
+                        );
+                    }
+
+
+                    if (
+                        document.getElementById(
+                            'logs-interface'
+                        )?.style.display ===
+                            'flex' &&
+                        typeof renderLogs ===
+                            'function'
+                    ) {
+
+                        renderLogs();
+                    }
+
+
+                    if (
+                        document.getElementById(
+                            'timesheets-interface'
+                        )?.style.display ===
+                            'flex' &&
+                        typeof renderRealTimesheets ===
+                            'function'
+                    ) {
+
+                        renderRealTimesheets();
+                    }
+
+
+                    if (
+                        typeof broadcastStaffingLevels ===
+                        'function'
+                    ) {
+
+                        Promise.resolve(
+                            broadcastStaffingLevels()
+                        ).catch(
+                            error =>
+                                console.warn(
+                                    'Synchronisation Anti-Rush différée :',
+                                    error
+                                )
+                        );
+                    }
+
+                } catch (syncError) {
+
+                    console.warn(
+                        '[iCHEF RH] Pointage enregistré, erreur UI secondaire :',
+                        syncError
+                    );
+                }
+
+            },
+            0
+        );
 
 
     } catch (error) {
@@ -5462,14 +5608,25 @@ const staff =
         );
 
 
-        alert(
-            error?.message ||
-            "Erreur de synchronisation du pointage."
-        );
+        if (!serverConfirmed) {
+
+            alert(
+                error?.message ||
+                "Erreur de synchronisation du pointage."
+            );
+
+        } else {
+
+            console.warn(
+                '[iCHEF RH] Le pointage est enregistré malgré une erreur d’affichage secondaire.',
+                error
+            );
+        }
 
 
     } finally {
 
+        punchSubmitInFlight = false;
         clearPunchPin();
     }
 }
