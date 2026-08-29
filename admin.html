@@ -2683,93 +2683,408 @@ async function secureFetch(input, init = {}) {
             if(modal) { modal.style.display = 'flex'; setTimeout(() => modal.classList.add('show'), 10); }
         }
 
-        async function saveStaff() {
-            let name = document.getElementById('staff-name').value.trim(); 
-            let title = document.getElementById('staff-title').value.trim(); 
-            let pin = document.getElementById('staff-pin').value.trim(); 
-            let origPin = document.getElementById('staff-edit-original-pin').value;
-            
-            if (!name || !title || pin.length < 4) return alert("Le nom, le rang et un PIN (4 chiffres min) sont obligatoires."); 
-            
-            let newStaff = { name: name, pin: pin, role: title, dept: document.getElementById('staff-role').value, active: document.getElementById('staff-active').checked, onDuty: false };
-            
-            if (origPin) {
-                let existing = staffAccess.find(s => s.pin === origPin);
-                newStaff.onDuty = existing.onDuty || false; 
-                staffAccess[staffAccess.findIndex(s => s.pin === origPin)] = newStaff; 
-            } else {
-                staffAccess.push(newStaff);
+       async function saveStaff() {
+    const name = document.getElementById('staff-name').value.trim();
+    const title = document.getElementById('staff-title').value.trim();
+    const pin = document.getElementById('staff-pin').value.trim();
+    const origPin = document.getElementById('staff-edit-original-pin').value.trim();
+    const dept = document.getElementById('staff-role').value;
+    const active = document.getElementById('staff-active').checked;
+
+    // =========================================================
+    // 1. VALIDATION
+    // =========================================================
+    if (!name || !title) {
+        return alert("Le nom et le rang sont obligatoires.");
+    }
+
+    if (!/^\d{4,12}$/.test(pin)) {
+        return alert("Le PIN doit contenir entre 4 et 12 chiffres.");
+    }
+
+    if (['0000', '9999', '11111'].includes(pin)) {
+        return alert("Ce PIN de sécurité n'est pas autorisé.");
+    }
+
+    // =========================================================
+    // 2. RETROUVER LE COLLABORATEUR EXISTANT
+    // L'ancien PIN sert uniquement à retrouver la fiche actuelle.
+    // L'identité permanente reste l'ID du collaborateur.
+    // =========================================================
+    const existingIndex = origPin
+        ? staffAccess.findIndex(
+            s => String(s.pin || '').trim() === String(origPin).trim()
+        )
+        : -1;
+
+    const existing = existingIndex >= 0
+        ? staffAccess[existingIndex]
+        : null;
+
+    // Si on est en modification mais que la fiche n'existe plus,
+    // on évite de créer accidentellement un doublon.
+    if (origPin && existingIndex < 0) {
+        alert(
+            "Impossible de retrouver ce collaborateur. " +
+            "Actualisez les données puis réessayez."
+        );
+        return;
+    }
+
+    // =========================================================
+    // 3. VÉRIFIER QUE LE NOUVEAU PIN N'APPARTIENT PAS
+    // À UNE AUTRE PERSONNE
+    // =========================================================
+    const duplicatePin = staffAccess.some((staff, index) => {
+        if (index === existingIndex) return false;
+
+        return (
+            String(staff.pin || '').trim() ===
+            String(pin).trim()
+        );
+    });
+
+    if (duplicatePin) {
+        alert(
+            "Ce PIN est déjà utilisé par un autre collaborateur. " +
+            "Choisissez un autre code."
+        );
+        return;
+    }
+
+    // =========================================================
+    // 4. CONSTRUIRE LA NOUVELLE FICHE
+    // IMPORTANT :
+    // On conserve TOUTES les données existantes.
+    // =========================================================
+    const newStaff = {
+        ...(existing || {}),
+
+        // ID permanent : ne change jamais lorsque le PIN change
+        id:
+            existing?.id ||
+            (
+                'staff_' +
+                Date.now() +
+                '_' +
+                Math.random().toString(36).slice(2, 8)
+            ),
+
+        name: name,
+        pin: pin,
+        role: title,
+        dept: dept,
+        active: active,
+
+        // Conserver l'état de service actuel
+        onDuty:
+            existing?.onDuty === true,
+
+        // Trace de dernière modification
+        updatedAt:
+            new Date().toISOString()
+    };
+
+    // =========================================================
+    // 5. PRÉPARER LA NOUVELLE LISTE
+    // =========================================================
+    const updatedStaffAccess = [...staffAccess];
+
+    if (existingIndex >= 0) {
+
+        // Collaborateur existant :
+        // on remplace sa fiche SANS changer son ID
+        updatedStaffAccess[existingIndex] = newStaff;
+
+    } else {
+
+        // Nouveau collaborateur
+        newStaff.createdAt = newStaff.createdAt || new Date().toISOString();
+
+        updatedStaffAccess.push(newStaff);
+    }
+
+    // =========================================================
+    // 6. SYNCHRONISATION SERVEUR
+    // STAFF_ACCESS devient la source commune
+    // =========================================================
+    try {
+
+        const response = await secureFetch(
+            `${SERVER_URL}/update-order?tenantID=${tenantID}`,
+            {
+                method: 'POST',
+
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+
+                body: JSON.stringify({
+                    tableId: 'STAFF_ACCESS',
+
+                    order: {
+                        data: updatedStaffAccess
+                    }
+                })
             }
+        );
 
-            closeModals(); renderStaffList(); renderActiveStaff(); updateDashboardStats();
-            try { await secureFetch(`${SERVER_URL}/update-order?tenantID=${tenantID}`, { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ tableId: 'STAFF_ACCESS', order: { data: staffAccess } }) }); showToast("Synchronisé !"); } catch(e) {}
+        if (!response || !response.ok) {
+
+            let message = "Impossible de synchroniser le collaborateur.";
+
+            try {
+                const result = await response.json();
+
+                if (result?.error) {
+                    message = result.error;
+                }
+            } catch (e) {}
+
+            throw new Error(message);
         }
 
-        async function deleteStaff(pin) {
-            if (!hasPermission("STAFF_DELETE")) return alert("Permission insuffisante.");
-            const reason = prompt("Motif de désactivation du collaborateur :");
-            if (!reason || reason.trim().length < 3) return;
-            await auditEvent("STAFF_DEACTIVATION_REQUESTED", { reason: reason.trim() }); 
-            if(confirm("Supprimer cet employé ?")) { 
-                staffAccess = staffAccess.filter(s => s.pin !== pin); 
-                renderStaffList(); renderActiveStaff(); updateDashboardStats();
-                try { await secureFetch(`${SERVER_URL}/update-order?tenantID=${tenantID}`, { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ tableId: 'STAFF_ACCESS', order: { data: staffAccess } }) }); } catch(e) {} 
-            } 
+        // =====================================================
+        // 7. METTRE À JOUR LA COPIE LOCALE
+        // SEULEMENT APRÈS VALIDATION DU SERVEUR
+        // =====================================================
+        staffAccess = updatedStaffAccess;
+
+        closeModals();
+        renderStaffList();
+        renderActiveStaff();
+        updateDashboardStats();
+
+        showToast(
+            existing
+                ? "Collaborateur et PIN synchronisés !"
+                : "Collaborateur créé et synchronisé !"
+        );
+
+    } catch (error) {
+
+        console.error(
+            "Erreur synchronisation STAFF_ACCESS :",
+            error
+        );
+
+        alert(
+            "La modification n'a pas été enregistrée sur le serveur.\n\n" +
+            (error?.message || "Erreur de synchronisation.")
+        );
+    }
+}
+
+
+async function deleteStaff(pin) {
+
+    if (!hasPermission("STAFF_DELETE")) {
+        return alert("Permission insuffisante.");
+    }
+
+    const reason = prompt(
+        "Motif de désactivation du collaborateur :"
+    );
+
+    if (!reason || reason.trim().length < 3) {
+        return;
+    }
+
+    await auditEvent(
+        "STAFF_DEACTIVATION_REQUESTED",
+        {
+            reason: reason.trim()
         }
+    );
 
-        function renderZonesList() {
-            let zones = globalArchitecture.zones || [];
+    if (!confirm("Supprimer cet employé ?")) {
+        return;
+    }
 
-            let html = zones.length === 0 
-                ? '<div class="empty-state">Aucune zone dessinée. Dessinez-les depuis le Pad Serveur.</div>' 
-                : zones.map(z => {
-                    let mode = z.payMode || z.mode || 'standard';
+    const updatedStaffAccess = staffAccess.filter(
+        s =>
+            String(s.pin || '').trim() !==
+            String(pin || '').trim()
+    );
 
-                    let badgeColor = mode === 'qr_nfc'
-                        ? 'var(--gold)'
-                        : mode === 'bar'
-                            ? 'var(--accent)'
-                            : 'var(--success)';
+    try {
 
-                    let modeLabel = mode === 'qr_nfc'
-                        ? '📲 QR/NFC — Commande client'
-                        : mode === 'bar'
-                            ? '🍹 Comptoir — Paiement au bar'
-                            : '🍽️ Serveur — Paiement au pad/caisse';
+        const response = await secureFetch(
+            `${SERVER_URL}/update-order?tenantID=${tenantID}`,
+            {
+                method: 'POST',
 
-                    return `
-                        <div class="list-item" style="background: rgba(0,0,0,0.3); border: 1px solid var(--border-strong);">
-                            <div class="list-item-info">
-                                <span class="list-item-title" style="color: var(--text-main); font-size: 1.05rem;">
-                                    🔲 ${z.label || z.name}
-                                </span>
+                headers: {
+                    'Content-Type': 'application/json'
+                },
 
-                                <span style="font-size: 0.75rem; color: ${badgeColor}; font-weight: bold; margin-top: 2px;">
-                                    MODE : ${modeLabel}
-                                </span>
-                            </div>
+                body: JSON.stringify({
+                    tableId: 'STAFF_ACCESS',
 
-                            <div class="list-item-actions">
-                                <select class="input-field" style="padding: 6px 10px; font-size: 0.8rem; width: auto;" onchange="updateZoneMode('${z.id}', this.value)">
-                                    <option value="qr_nfc" ${mode === 'qr_nfc' ? 'selected' : ''}>📲 QR/NFC — Commande</option>
-                                    <option value="standard" ${mode === 'standard' ? 'selected' : ''}>🍽️ Serveur / Pad</option>
-                                    <option value="bar" ${mode === 'bar' ? 'selected' : ''}>🍹 Comptoir / Bar</option>
-                                </select>
-                            </div>
-                        </div>
-                    `;
-                }).join('');
-
-            if (document.getElementById('admin-zones-list')) {
-                document.getElementById('admin-zones-list').innerHTML = html;
+                    order: {
+                        data: updatedStaffAccess
+                    }
+                })
             }
+        );
+
+        if (!response || !response.ok) {
+            throw new Error(
+                "La suppression n'a pas été enregistrée sur le serveur."
+            );
         }
 
-        function updateZoneMode(id, newMode) { 
-            let zone = globalArchitecture.zones.find(z => z.id === id); 
-            if(zone) { zone.payMode = newMode; zone.mode = newMode; markUnsaved(); renderZonesList(); } 
-        }
+        staffAccess = updatedStaffAccess;
 
+        renderStaffList();
+        renderActiveStaff();
+        updateDashboardStats();
+
+        showToast("Collaborateur supprimé et synchronisé !");
+
+    } catch (error) {
+
+        console.error(
+            "Erreur suppression STAFF_ACCESS :",
+            error
+        );
+
+        alert(
+            error?.message ||
+            "Erreur de synchronisation."
+        );
+    }
+}
+
+
+function renderZonesList() {
+
+    let zones = globalArchitecture.zones || [];
+
+    let html = zones.length === 0
+        ? '<div class="empty-state">Aucune zone dessinée. Dessinez-les depuis le Pad Serveur.</div>'
+        : zones.map(z => {
+
+            let mode =
+                z.payMode ||
+                z.mode ||
+                'standard';
+
+            let badgeColor =
+                mode === 'qr_nfc'
+                    ? 'var(--gold)'
+                    : mode === 'bar'
+                        ? 'var(--accent)'
+                        : 'var(--success)';
+
+            let modeLabel =
+                mode === 'qr_nfc'
+                    ? '📲 QR/NFC — Commande client'
+                    : mode === 'bar'
+                        ? '🍹 Comptoir — Paiement au bar'
+                        : '🍽️ Serveur — Paiement au pad/caisse';
+
+            return `
+                <div
+                    class="list-item"
+                    style="
+                        background: rgba(0,0,0,0.3);
+                        border: 1px solid var(--border-strong);
+                    "
+                >
+                    <div class="list-item-info">
+
+                        <span
+                            class="list-item-title"
+                            style="
+                                color: var(--text-main);
+                                font-size: 1.05rem;
+                            "
+                        >
+                            🔲 ${z.label || z.name}
+                        </span>
+
+                        <span
+                            style="
+                                font-size: 0.75rem;
+                                color: ${badgeColor};
+                                font-weight: bold;
+                                margin-top: 2px;
+                            "
+                        >
+                            MODE : ${modeLabel}
+                        </span>
+
+                    </div>
+
+                    <div class="list-item-actions">
+
+                        <select
+                            class="input-field"
+                            style="
+                                padding: 6px 10px;
+                                font-size: 0.8rem;
+                                width: auto;
+                            "
+                            onchange="updateZoneMode('${z.id}', this.value)"
+                        >
+
+                            <option
+                                value="qr_nfc"
+                                ${mode === 'qr_nfc' ? 'selected' : ''}
+                            >
+                                📲 QR/NFC — Commande
+                            </option>
+
+                            <option
+                                value="standard"
+                                ${mode === 'standard' ? 'selected' : ''}
+                            >
+                                🍽️ Serveur / Pad
+                            </option>
+
+                            <option
+                                value="bar"
+                                ${mode === 'bar' ? 'selected' : ''}
+                            >
+                                🍹 Comptoir / Bar
+                            </option>
+
+                        </select>
+
+                    </div>
+                </div>
+            `;
+        }).join('');
+
+    if (
+        document.getElementById(
+            'admin-zones-list'
+        )
+    ) {
+        document.getElementById(
+            'admin-zones-list'
+        ).innerHTML = html;
+    }
+}
+
+
+function updateZoneMode(id, newMode) {
+
+    let zone =
+        globalArchitecture.zones.find(
+            z => z.id === id
+        );
+
+    if (zone) {
+
+        zone.payMode = newMode;
+        zone.mode = newMode;
+
+        markUnsaved();
+        renderZonesList();
+    }
+}
         // --- CATEGORIES & MENU ---
         function updateCategoryDropdowns() {
             const optsC = categoriesCuisine.map(c => `<option value="${c.id}">${c.label}</option>`).join(''); 
