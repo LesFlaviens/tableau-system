@@ -4529,827 +4529,517 @@
             saveTs(ts); loadMonthData(); refreshViews(); alert("LISSAGE ZÉRO TERMINÉ !");
         }
 
-        // ==========================================
-        // CAMERA POINTEUSE
-        // ==========================================
-        function openPunchClock() {
-            document.getElementById('landing-portal').style.display = 'none';
-            document.getElementById('punch-modal').style.display = 'flex';
-            punchPin = "";
-            document.getElementById('punch-display').innerText = "";
-            document.getElementById('punch-success-overlay').style.display = 'none';
-            
-            navigator.mediaDevices.getUserMedia({ video: { facingMode: "user" } })
-            .then(function(stream) {
-                videoStream = stream;
-                document.getElementById('punch-video').srcObject = stream;
-            }).catch(function(err) {
-                console.error("Camera error:", err);
-                alert("Erreur: Accès à la caméra refusé ou introuvable.");
-            });
-        }
+       // ==========================================
+// CAMERA POINTEUSE — PIN CENTRAL iCHEF
+// ==========================================
 
-        function cancelPunchClock() {
-            if(videoStream) { videoStream.getTracks().forEach(track => track.stop()); videoStream = null; }
-            document.getElementById('punch-modal').style.display = 'none';
-            document.getElementById('landing-portal').style.display = 'flex';
-        }
+function openPunchClock() {
 
-        function appendPunchPin(n) {
-            if(punchPin.length < 6) {
-                punchPin += n;
-                document.getElementById('punch-display').innerText = '*'.repeat(punchPin.length);
+    document.getElementById('landing-portal').style.display = 'none';
+    document.getElementById('punch-modal').style.display = 'flex';
+
+    clearPunchPin();
+
+    document.getElementById(
+        'punch-success-overlay'
+    ).style.display = 'none';
+
+    navigator.mediaDevices
+        .getUserMedia({
+            video: {
+                facingMode: "user"
             }
-        }
+        })
+        .then(function(stream) {
 
-        async function submitPunch() {
-            if (punchPin.length < 4) return;
+            videoStream = stream;
 
-            const enteredPin =
-                String(
-                    punchPin || ''
-                ).trim();
-
-            try {
-                const auth =
-                    await verifyPinWithServer(
-                        enteredPin
-                    );
-
-                if (!auth?.success) {
-                    alert(
-                        auth?.error ||
-                        "CODE PIN INVALIDE"
-                    );
-                    punchPin = "";
-                    document.getElementById('punch-display').innerText = "";
-                    return;
-                }
-
-                await refreshStaffAccessFromServer();
-
-                const staff =
-                    getDir().find(
-                        s =>
-                            String(s.pin || '').trim() === enteredPin &&
-                            s.active !== false
-                    );
-
-                if (!staff) {
-                    alert(
-                        "Ce code est valide mais aucun profil employé actif correspondant n'est synchronisé."
-                    );
-                    punchPin = "";
-                    document.getElementById('punch-display').innerText = "";
-                    return;
-                }
-
-                const video =
-                    document.getElementById('punch-video');
-
-                const canvas =
-                    document.getElementById('punch-canvas');
-
-                const context =
-                    canvas.getContext('2d');
-
-                canvas.width = 320;
-                canvas.height = 240;
-
-                context.drawImage(
-                    video,
-                    0,
-                    0,
-                    canvas.width,
-                    canvas.height
-                );
-
-                const photo =
-                    canvas.toDataURL(
-                        'image/jpeg',
-                        0.55
-                    );
-
-                const response =
-                    await fetch(
-                        `${SERVER_URL_JS}/api/rh/punch`,
-                        {
-                            method: 'POST',
-                            headers: {
-                                'Content-Type': 'application/json',
-                                'Accept': 'application/json'
-                            },
-                            cache: 'no-store',
-                            body: JSON.stringify({
-                                tenantID:
-                                    tenantID_JS,
-
-                                staffId:
-                                    staff.id,
-
-                                pin:
-                                    enteredPin,
-
-                                deviceId:
-                                    RH_DEVICE_ID,
-
-                                photo
-                            })
-                        }
-                    );
-
-                const data =
-                    await response.json()
-                        .catch(() => ({}));
-
-                if (
-                    !response.ok ||
-                    !data.success
-                ) {
-                    throw new Error(
-                        data.error ||
-                        "Impossible d'enregistrer le pointage."
-                    );
-                }
-
-                if (
-                    Array.isArray(
-                        data.punches
-                    )
-                ) {
-                    localStorage.setItem(
-                        'empire_hr_punches',
-                        JSON.stringify(
-                            data.punches
-                        )
-                    );
-                }
-
-                if (
-                    data.timesheets
-                ) {
-                    saveRealTimesheetsLocal(
-                        data.timesheets
-                    );
-                }
-
-                if (
-                    Array.isArray(
-                        data.staffAccess
-                    )
-                ) {
-                    staffAccess =
-                        data.staffAccess;
-
-                    localStorage.setItem(
-                        'empire_hr_directory',
-                        JSON.stringify(
-                            buildRhDirectoryFromServer(
-                                staffAccess,
-                                getDir()
-                            )
-                        )
-                    );
-                }
-
+            const video =
                 document.getElementById(
-                    'punch-success-overlay'
-                ).style.display = 'flex';
-
-                showToast(
-                    data.punchType === 'ENTRÉE'
-                        ? 'Entrée enregistrée'
-                        : 'Sortie enregistrée'
+                    'punch-video'
                 );
 
-                renderLogs();
-
-                if (
-                    document.getElementById('timesheets-interface')?.style.display === 'flex'
-                ) {
-                    renderRealTimesheets();
-                }
-
-                broadcastStaffingLevels();
-
-                setTimeout(
-                    cancelPunchClock,
-                    1700
-                );
-
-            } catch (error) {
-                console.error(
-                    "Erreur pointage :",
-                    error
-                );
-
-                alert(
-                    error?.message ||
-                    "Erreur de synchronisation du pointage."
-                );
-
-            } finally {
-                punchPin = "";
-                document.getElementById('punch-display').innerText = "";
+            if (video) {
+                video.srcObject = stream;
             }
+
+        })
+        .catch(function(err) {
+
+            console.error(
+                "Camera error:",
+                err
+            );
+
+            alert(
+                "Erreur : accès à la caméra refusé ou introuvable."
+            );
+        });
+}
+
+
+// ==========================================
+// FERMER LA POINTEUSE
+// ==========================================
+
+function cancelPunchClock() {
+
+    if (videoStream) {
+
+        videoStream
+            .getTracks()
+            .forEach(
+                track => track.stop()
+            );
+
+        videoStream = null;
+    }
+
+    clearPunchPin();
+
+    const modal =
+        document.getElementById(
+            'punch-modal'
+        );
+
+    if (modal) {
+        modal.style.display = 'none';
+    }
+
+    const landing =
+        document.getElementById(
+            'landing-portal'
+        );
+
+    if (landing) {
+        landing.style.display = 'flex';
+    }
+}
+
+
+// ==========================================
+// EFFACER LE PIN
+// ==========================================
+
+function clearPunchPin() {
+
+    punchPin = "";
+
+    const display =
+        document.getElementById(
+            'punch-display'
+        );
+
+    if (display) {
+        display.innerText = "";
+    }
+}
+
+
+// ==========================================
+// EFFACER LE DERNIER CHIFFRE
+// ==========================================
+
+function deleteLastPunchPin() {
+
+    if (!punchPin.length) {
+        return;
+    }
+
+    punchPin =
+        punchPin.slice(
+            0,
+            -1
+        );
+
+    const display =
+        document.getElementById(
+            'punch-display'
+        );
+
+    if (display) {
+
+        display.innerText =
+            '●'.repeat(
+                punchPin.length
+            );
+    }
+}
+
+
+// ==========================================
+// AJOUTER UN CHIFFRE
+// PIN iCHEF : 4 À 12 CHIFFRES
+// ==========================================
+
+function appendPunchPin(n) {
+
+    if (punchPin.length >= 12) {
+        return;
+    }
+
+    const digit =
+        String(n);
+
+    if (!/^\d$/.test(digit)) {
+        return;
+    }
+
+    punchPin += digit;
+
+    const display =
+        document.getElementById(
+            'punch-display'
+        );
+
+    if (display) {
+
+        display.innerText =
+            '●'.repeat(
+                punchPin.length
+            );
+    }
+}
+
+
+// ==========================================
+// ENVOYER LE POINTAGE
+// ==========================================
+
+async function submitPunch() {
+
+    const enteredPin =
+        String(
+            punchPin || ''
+        ).trim();
+
+
+    // ======================================
+    // 1. FORMAT PIN
+    // ======================================
+
+    if (
+        !/^\d{4,12}$/.test(
+            enteredPin
+        )
+    ) {
+
+        alert(
+            "Le code PIN doit contenir entre 4 et 12 chiffres."
+        );
+
+        clearPunchPin();
+
+        return;
+    }
+
+
+    try {
+
+        // ==================================
+        // 2. VÉRIFICATION CENTRALE SERVEUR
+        // ==================================
+
+        const auth =
+            await verifyPinWithServer(
+                enteredPin
+            );
+
+
+        if (!auth?.success) {
+
+            alert(
+                auth?.error ||
+                "CODE PIN INVALIDE"
+            );
+
+            clearPunchPin();
+
+            return;
         }
 
-        function renderLogs() {
-            const punches = getPunches();
-            punches.sort((a, b) => b.timestamp - a.timestamp);
-            let html = '';
-            if(punches.length === 0) {
-                html = '<tr><td colspan="4" style="text-align:center; padding:20px; color:var(--sub);">Aucun pointage enregistré.</td></tr>';
-            } else {
-                punches.forEach(p => {
-                    const date = new Date(p.timestamp);
-                    const dateStr = `${String(date.getDate()).padStart(2,'0')}/${String(date.getMonth()+1).padStart(2,'0')}/${date.getFullYear()}`;
-                    const timeStr = `${String(date.getHours()).padStart(2,'0')}:${String(date.getMinutes()).padStart(2,'0')}:${String(date.getSeconds()).padStart(2,'0')}`;
-                    html += `<tr>
-                        <td><img src="${p.photo}"></td>
-                        <td style="font-weight:bold; color:var(--text-main); text-transform:uppercase;">${p.staffName}</td>
-                        <td style="font-weight:900; color:${p.type === 'ENTRÉE' ? 'var(--accent)' : 'var(--alert)'};">${p.type}</td>
-                        <td style="color:var(--text-main);">${dateStr} à <span style="font-weight:bold;">${timeStr}</span></td>
-                    </tr>`;
-                });
-            }
-            document.getElementById('logs-body').innerHTML = html;
+
+        // ==================================
+        // 3. RECHARGER STAFF_ACCESS
+        // Le nouveau PIN Admin est récupéré
+        // ==================================
+
+        await refreshStaffAccessFromServer();
+
+
+        // ==================================
+        // 4. TROUVER LE COLLABORATEUR
+        // ==================================
+
+        const staff =
+            getDir().find(
+                s =>
+                    String(
+                        s.pin || ''
+                    ).trim() ===
+                        enteredPin &&
+
+                    s.active !== false
+            );
+
+
+        if (!staff) {
+
+            alert(
+                "Ce code est valide mais aucun profil employé actif correspondant n'est synchronisé."
+            );
+
+            clearPunchPin();
+
+            return;
         }
 
-        function clearLogs() {
-            alert("Les pointages constituent la source de la feuille d'heures et ne sont plus supprimés depuis cet écran.");
+
+        // ==================================
+        // 5. PHOTO POINTEUSE
+        // ==================================
+
+        const video =
+            document.getElementById(
+                'punch-video'
+            );
+
+        const canvas =
+            document.getElementById(
+                'punch-canvas'
+            );
+
+
+        if (!video || !canvas) {
+
+            throw new Error(
+                "Caméra pointeuse indisponible."
+            );
         }
 
-        function realTimesheetStatusLabel(status) {
-            const map = {
-                TO_VERIFY: 'À VÉRIFIER',
-                VALIDATED: 'VALIDÉE',
-                LOCKED: 'CLÔTURÉE'
-            };
 
-            return map[String(status || '').toUpperCase()] ||
-                String(status || 'À VÉRIFIER');
-        }
+        const context =
+            canvas.getContext(
+                '2d'
+            );
 
-        function realTimesheetStatusColor(status) {
-            const s =
-                String(
-                    status || ''
-                ).toUpperCase();
 
-            if (s === 'LOCKED') return 'var(--gold)';
-            if (s === 'VALIDATED') return 'var(--success)';
-            return 'var(--warning)';
-        }
+        canvas.width = 320;
+        canvas.height = 240;
 
-        function countRealSheetAnomalies(sheet) {
-            if (!sheet?.days) return 0;
 
-            return Object.values(sheet.days)
-                .reduce(
-                    (sum, day) =>
-                        sum +
-                        (
-                            Array.isArray(day?.anomalies)
-                                ? day.anomalies.length
-                                : 0
-                        ),
-                    0
-                );
-        }
+        context.drawImage(
+            video,
+            0,
+            0,
+            canvas.width,
+            canvas.height
+        );
 
-        function renderRealTimesheets() {
-            const monthStr =
-                document.getElementById('real-timesheet-month')?.value ||
-                document.getElementById('month-selector')?.value ||
-                new Date().toISOString().slice(0, 7);
 
-            const [year, month] =
-                monthStr.split('-').map(Number);
+        const photo =
+            canvas.toDataURL(
+                'image/jpeg',
+                0.55
+            );
 
-            const daysInMonth =
-                new Date(
-                    year,
-                    month,
-                    0
-                ).getDate();
 
-            const tsMonth =
-                getTs()[monthStr] || {};
+        // ==================================
+        // 6. POINTAGE CENTRAL SERVEUR
+        // ==================================
 
-            const rows =
-                getDir()
-                    .filter(
-                        s =>
-                            s.active !== false
-                    )
-                    .map(staff => {
-                        const plannedMonth =
-                            tsMonth?.[staff.id] ||
-                            tsMonth?.[String(staff.id)] ||
-                            {};
+        const response =
+            await fetch(
+                `${SERVER_URL_JS}/api/rh/punch`,
+                {
+                    method:
+                        'POST',
 
-                        const stats =
-                            getStaffMonthStats(
-                                staff.id,
-                                year,
-                                month,
-                                daysInMonth,
-                                plannedMonth
-                            ) || {};
+                    headers: {
+                        'Content-Type':
+                            'application/json',
 
-                        const actual =
-                            getActualHoursSummary(
-                                staff.id,
-                                monthStr
-                            );
-
-                        const sheet =
-                            getRealSheetForStaff(
-                                staff.id,
-                                monthStr
-                            );
-
-                        const balance =
-                            Number(actual.total || 0) -
-                            Number(stats.adjustedTarget || 0);
-
-                        return {
-                            staff,
-                            stats,
-                            actual,
-                            sheet,
-                            balance,
-                            anomalies:
-                                countRealSheetAnomalies(
-                                    sheet
-                                )
-                        };
-                    });
-
-            const totals =
-                rows.reduce(
-                    (acc, row) => {
-                        acc.planned +=
-                            Number(
-                                row.stats.totalDone || 0
-                            );
-
-                        acc.worked +=
-                            Number(
-                                row.actual.total || 0
-                            );
-
-                        acc.balance +=
-                            Number(
-                                row.balance || 0
-                            );
-
-                        acc.anomalies +=
-                            Number(
-                                row.anomalies || 0
-                            );
-
-                        if (
-                            String(
-                                row.sheet?.status || ''
-                            ).toUpperCase() ===
-                            'VALIDATED'
-                        ) {
-                            acc.validated++;
-                        }
-
-                        if (
-                            String(
-                                row.sheet?.status || ''
-                            ).toUpperCase() ===
-                            'LOCKED'
-                        ) {
-                            acc.locked++;
-                        }
-
-                        return acc;
+                        'Accept':
+                            'application/json'
                     },
-                    {
-                        planned: 0,
-                        worked: 0,
-                        balance: 0,
-                        anomalies: 0,
-                        validated: 0,
-                        locked: 0
-                    }
-                );
 
-            const summary =
-                document.getElementById(
-                    'real-timesheet-summary'
-                );
+                    cache:
+                        'no-store',
 
-            if (summary) {
-                summary.innerHTML = [
-                    [
-                        'Planifié',
-                        `${totals.planned.toFixed(1)} h`
-                    ],
-                    [
-                        'Effectué',
-                        `${totals.worked.toFixed(1)} h`
-                    ],
-                    [
-                        'Solde réel',
-                        formatRhSignedHours(
-                            totals.balance
-                        )
-                    ],
-                    [
-                        'Anomalies',
-                        String(
-                            totals.anomalies
-                        )
-                    ],
-                    [
-                        'Feuilles validées',
-                        `${totals.validated}/${rows.length}`
-                    ],
-                    [
-                        'Feuilles clôturées',
-                        `${totals.locked}/${rows.length}`
-                    ]
-                ].map(([label, value]) => `
-                    <div class="rh-detail-stat">
-                        <div class="lbl">${escapeRhHtml(label)}</div>
-                        <div class="val">${escapeRhHtml(value)}</div>
-                    </div>
-                `).join('');
-            }
+                    body:
+                        JSON.stringify({
+                            tenantID:
+                                tenantID_JS,
 
-            const body =
-                document.getElementById(
-                    'real-timesheet-body'
-                );
+                            staffId:
+                                staff.id,
 
-            if (!body) return;
+                            pin:
+                                enteredPin,
 
-            if (!rows.length) {
-                body.innerHTML =
-                    '<tr><td colspan="9" style="text-align:center;padding:24px;color:var(--text-muted);">Aucun collaborateur actif.</td></tr>';
-                return;
-            }
+                            deviceId:
+                                RH_DEVICE_ID,
 
-            body.innerHTML =
-                rows.map(row => {
-                    const status =
-                        row.sheet?.status ||
-                        'TO_VERIFY';
-
-                    return `
-                        <tr>
-                            <td>
-                                <strong>${escapeRhHtml(row.staff.name)}</strong><br>
-                                <span style="color:var(--text-muted);font-size:.68rem;">${escapeRhHtml(row.staff.role || row.staff.dept || '')}</span>
-                            </td>
-
-                            <td>${Number(row.staff.contract || 0).toFixed(1)} h/sem</td>
-
-                            <td>${Number(row.stats.adjustedTarget || 0).toFixed(1)} h</td>
-
-                            <td>${Number(row.stats.totalDone || 0).toFixed(1)} h</td>
-
-                            <td>${Number(row.actual.total || 0).toFixed(1)} h</td>
-
-                            <td class="${rhBalanceClass(row.balance)}"
-                                style="font-weight:900;">
-                                ${formatRhSignedHours(row.balance)}
-                            </td>
-
-                            <td style="color:${row.anomalies ? 'var(--warning)' : 'var(--success)'};font-weight:800;">
-                                ${row.anomalies}
-                            </td>
-
-                            <td style="color:${realTimesheetStatusColor(status)};font-weight:900;">
-                                ${realTimesheetStatusLabel(status)}
-                            </td>
-
-                            <td>
-                                <div style="display:flex;gap:6px;flex-wrap:wrap;">
-                                    <button class="btn-outline"
-                                            onclick="openStaffDetail(${JSON.stringify(row.staff.id)})">
-                                        DÉTAIL
-                                    </button>
-
-                                    <button class="btn-outline"
-                                            onclick="validateRealTimesheet(${JSON.stringify(row.staff.id)})"
-                                            ${String(status).toUpperCase() === 'LOCKED' ? 'disabled' : ''}>
-                                        VALIDER
-                                    </button>
-                                </div>
-                            </td>
-                        </tr>
-                    `;
-                }).join('');
-        }
-
-        async function correctRealTimesheetDay(staffId, date) {
-            const sheetMonth =
-                String(date || '').slice(0, 7);
-
-            const dayNumber =
-                Number(
-                    String(date || '').slice(8, 10)
-                );
-
-            const current =
-                getRealDayForStaff(
-                    staffId,
-                    sheetMonth,
-                    dayNumber
-                );
-
-            if (
-                String(
-                    getRealSheetForStaff(
-                        staffId,
-                        sheetMonth
-                    )?.status || ''
-                ).toUpperCase() ===
-                'LOCKED'
-            ) {
-                alert(
-                    "Cette feuille d'heures est clôturée."
-                );
-                return;
-            }
-
-            const existing =
-                Number(
-                    current?.workedHours || 0
-                );
-
-            const value =
-                window.prompt(
-                    `Heures réellement travaillées le ${date}`,
-                    existing.toFixed(2)
-                );
-
-            if (value === null) return;
-
-            const workedHours =
-                Number(
-                    String(value)
-                        .replace(',', '.')
-                );
-
-            if (
-                !Number.isFinite(workedHours) ||
-                workedHours < 0 ||
-                workedHours > 24
-            ) {
-                alert(
-                    "Nombre d'heures invalide."
-                );
-                return;
-            }
-
-            const reason =
-                window.prompt(
-                    "Motif obligatoire de la correction"
-                );
-
-            if (
-                !reason ||
-                !reason.trim()
-            ) {
-                alert(
-                    "La correction nécessite un motif."
-                );
-                return;
-            }
-
-            try {
-                const response =
-                    await fetch(
-                        `${SERVER_URL_JS}/api/rh/timesheet/correct`,
-                        {
-                            method: 'POST',
-                            headers: {
-                                'Content-Type': 'application/json',
-                                'Accept': 'application/json'
-                            },
-                            cache: 'no-store',
-                            body: JSON.stringify({
-                                tenantID:
-                                    tenantID_JS,
-
-                                managerPin:
-                                    String(
-                                        currentPin || ''
-                                    ).trim(),
-
-                                staffId,
-                                date,
-                                workedHours,
-                                reason:
-                                    reason.trim()
-                            })
-                        }
-                    );
-
-                const data =
-                    await response.json()
-                        .catch(() => ({}));
-
-                if (
-                    !response.ok ||
-                    !data.success
-                ) {
-                    throw new Error(
-                        data.error ||
-                        "Correction refusée."
-                    );
+                            photo
+                        })
                 }
+            );
 
-                saveRealTimesheetsLocal(
-                    data.timesheets
+
+        const data =
+            await response
+                .json()
+                .catch(
+                    () => ({})
                 );
 
-                showToast(
-                    "Feuille d'heures corrigée"
-                );
 
-                openStaffDetail(
-                    staffId
-                );
+        if (
+            !response.ok ||
+            !data.success
+        ) {
 
-                renderRealTimesheets();
-
-            } catch (error) {
-                alert(
-                    error?.message ||
-                    "Erreur de correction."
-                );
-            }
+            throw new Error(
+                data.error ||
+                "Impossible d'enregistrer le pointage."
+            );
         }
 
-        async function validateRealTimesheet(staffId) {
-            const month =
-                document.getElementById('real-timesheet-month')?.value ||
-                document.getElementById('month-selector')?.value;
 
-            if (!month) return;
+        // ==================================
+        // 7. SYNCHRONISER LES POINTAGES
+        // ==================================
 
-            try {
-                const response =
-                    await fetch(
-                        `${SERVER_URL_JS}/api/rh/timesheet/status`,
-                        {
-                            method: 'POST',
-                            headers: {
-                                'Content-Type': 'application/json',
-                                'Accept': 'application/json'
-                            },
-                            cache: 'no-store',
-                            body: JSON.stringify({
-                                tenantID:
-                                    tenantID_JS,
+        if (
+            Array.isArray(
+                data.punches
+            )
+        ) {
 
-                                managerPin:
-                                    String(
-                                        currentPin || ''
-                                    ).trim(),
-
-                                month,
-                                staffId,
-                                action:
-                                    'VALIDATE'
-                            })
-                        }
-                    );
-
-                const data =
-                    await response.json()
-                        .catch(() => ({}));
-
-                if (
-                    !response.ok ||
-                    !data.success
-                ) {
-                    throw new Error(
-                        data.error ||
-                        "Validation refusée."
-                    );
-                }
-
-                saveRealTimesheetsLocal(
-                    data.timesheets
-                );
-
-                renderRealTimesheets();
-
-                showToast(
-                    "Feuille d'heures validée"
-                );
-
-            } catch (error) {
-                alert(
-                    error?.message ||
-                    "Erreur de validation."
-                );
-            }
-        }
-
-        async function lockRealTimesheetMonth() {
-            const month =
-                document.getElementById('real-timesheet-month')?.value;
-
-            if (!month) return;
-
-            if (
-                !confirm(
-                    `Clôturer définitivement les feuilles d'heures de ${month} ? Une réouverture nécessitera une action Direction.`
+            localStorage.setItem(
+                'empire_hr_punches',
+                JSON.stringify(
+                    data.punches
                 )
-            ) return;
-
-            try {
-                const response =
-                    await fetch(
-                        `${SERVER_URL_JS}/api/rh/timesheet/status`,
-                        {
-                            method: 'POST',
-                            headers: {
-                                'Content-Type': 'application/json',
-                                'Accept': 'application/json'
-                            },
-                            cache: 'no-store',
-                            body: JSON.stringify({
-                                tenantID:
-                                    tenantID_JS,
-
-                                managerPin:
-                                    String(
-                                        currentPin || ''
-                                    ).trim(),
-
-                                month,
-                                action:
-                                    'LOCK_MONTH'
-                            })
-                        }
-                    );
-
-                const data =
-                    await response.json()
-                        .catch(() => ({}));
-
-                if (
-                    !response.ok ||
-                    !data.success
-                ) {
-                    throw new Error(
-                        data.error ||
-                        "Clôture refusée."
-                    );
-                }
-
-                saveRealTimesheetsLocal(
-                    data.timesheets
-                );
-
-                renderRealTimesheets();
-
-                showToast(
-                    "Mois RH clôturé"
-                );
-
-            } catch (error) {
-                alert(
-                    error?.message ||
-                    "Erreur de clôture."
-                );
-            }
+            );
         }
 
-        function showToast(msg) {
-            const t = document.getElementById('toast');
-            if (!t) return;
 
-            t.innerText = msg;
-            t.style.display = 'block';
+        // ==================================
+        // 8. SYNCHRONISER FEUILLES D'HEURES
+        // ==================================
 
-            requestAnimationFrame(() => {
-                t.classList.add('show');
-            });
+        if (
+            data.timesheets
+        ) {
 
-            clearTimeout(window.__ichefRhToastTimer);
-
-            window.__ichefRhToastTimer = setTimeout(() => {
-                t.classList.remove('show');
-
-                setTimeout(() => {
-                    t.style.display = 'none';
-                }, 350);
-            }, 2600);
+            saveRealTimesheetsLocal(
+                data.timesheets
+            );
         }
 
+
+        // ==================================
+        // 9. SYNCHRONISER STAFF_ACCESS
+        // ==================================
+
+        if (
+            Array.isArray(
+                data.staffAccess
+            )
+        ) {
+
+            staffAccess =
+                data.staffAccess;
+
+
+            localStorage.setItem(
+                'empire_hr_directory',
+
+                JSON.stringify(
+                    buildRhDirectoryFromServer(
+                        staffAccess,
+                        getDir()
+                    )
+                )
+            );
+        }
+
+
+        // ==================================
+        // 10. CONFIRMATION
+        // ==================================
+
+        const successOverlay =
+            document.getElementById(
+                'punch-success-overlay'
+            );
+
+        if (successOverlay) {
+
+            successOverlay.style.display =
+                'flex';
+        }
+
+
+        showToast(
+            data.punchType ===
+                'ENTRÉE'
+                ? 'Entrée enregistrée'
+                : 'Sortie enregistrée'
+        );
+
+
+        // ==================================
+        // 11. ACTUALISER RH
+        // ==================================
+
+        renderLogs();
+
+
+        if (
+            document.getElementById(
+                'timesheets-interface'
+            )?.style.display ===
+                'flex'
+        ) {
+
+            renderRealTimesheets();
+        }
+
+
+        broadcastStaffingLevels();
+
+
+        // ==================================
+        // 12. FERMER APRÈS SUCCÈS
+        // ==================================
+
+        setTimeout(
+            cancelPunchClock,
+            1700
+        );
+
+
+    } catch (error) {
+
+        console.error(
+            "Erreur pointage :",
+            error
+        );
+
+
+        alert(
+            error?.message ||
+            "Erreur de synchronisation du pointage."
+        );
+
+
+    } finally {
+
+        clearPunchPin();
+    }
+}
         // ==========================================
         // SYNCHRONISATION ANTI-RUSH
         // ==========================================
