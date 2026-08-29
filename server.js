@@ -2542,6 +2542,64 @@ app.post('/api/verify-pin', async (req, res) => {
 // ============================================================
 
 
+// ==========================================
+// TOAST GLOBAL iCHEF RH
+// ==========================================
+
+function showToast(message) {
+
+    const toast =
+        document.getElementById('toast');
+
+    if (!toast) {
+
+        console.log(
+            '[iCHEF RH]',
+            message
+        );
+
+        return;
+    }
+
+    toast.innerText =
+        String(message || '');
+
+    toast.style.display =
+        'block';
+
+    requestAnimationFrame(() => {
+
+        toast.classList.add(
+            'show'
+        );
+    });
+
+    if (
+        window.__ichefRhToastTimer
+    ) {
+
+        clearTimeout(
+            window.__ichefRhToastTimer
+        );
+    }
+
+    window.__ichefRhToastTimer =
+        setTimeout(() => {
+
+            toast.classList.remove(
+                'show'
+            );
+
+            setTimeout(() => {
+
+                toast.style.display =
+                    'none';
+
+            }, 350);
+
+        }, 2600);
+}
+
 // ============================================================
 // SÉCURITÉ PIN
 // ============================================================
