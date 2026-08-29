@@ -1025,6 +1025,7 @@ app.post('/webhook', async (req, res) => {
                 );
             } catch(e) {}
         }
+ }
     }
     res.json({received: true});
 });
