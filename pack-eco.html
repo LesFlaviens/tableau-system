@@ -5613,16 +5613,137 @@ async function padStaffIdentity(pin){
   }
 }
 
-function padStaffCanAccess(staff){
-  if(!staff||staff.active===false)return false;
-  const profile=[
+function padStaffProfile(staff){
+  if(!staff||typeof staff!=="object")return "";
+  return [
     staff.dept,
     staff.role,
     staff.title,
     staff.fonction,
     staff.rank
-  ].filter(Boolean).join(" " );
-  return padManagerAccess(profile)||padServerAccess(profile);
+  ].filter(Boolean).join(" ");
+}
+
+function padStaffCanAccess(staff){
+  if(!staff||staff.active===false)return false;
+  const profile=padStaffProfile(staff);
+  if(padManagerAccess(profile))return true;
+
+  const dept=padAccessKey(staff.dept||"");
+  if(/(^|_)(CUISINE|BAR|PATISSERIE|PÂTISSERIE)(_|$)/.test(dept))return false;
+
+  return padServerAccess(staff.dept||staff.role||profile);
+}
+
+function padStaffRequiresDuty(staff){
+  if(!staff||staff.active===false)return false;
+  const profile=padStaffProfile(staff);
+  return !padManagerAccess(profile)&&padStaffCanAccess(staff);
+}
+
+let ICHEF_PAD_DUTY_LOGOUT_LOCK=false;
+
+function padForceDutyLogout(message="Pointage SORTIE enregistré : accès PAD fermé."){
+  if(ICHEF_PAD_DUTY_LOGOUT_LOCK)return;
+  ICHEF_PAD_DUTY_LOGOUT_LOCK=true;
+
+  try{
+    if(typeof closeSheet==="function")closeSheet();
+  }catch(_){}
+  try{
+    if(typeof closePaymentOverlay==="function")closePaymentOverlay();
+  }catch(_){}
+  try{
+    if(typeof hideQuickCooking==="function")hideQuickCooking();
+  }catch(_){}
+
+  STATE.authenticated=false;
+  STATE.pin="";
+  STATE.loginPin="";
+  STATE.staffId="";
+  STATE.staffName="";
+  STATE.accessMode="";
+  STATE.staffDutyRequired=false;
+  STATE.currentTable=null;
+  STATE.currentOrder=null;
+  STATE.pendingCookingLine="";
+  STATE.connected=false;
+
+  try{
+    if(STATE.socket)STATE.socket.disconnect();
+  }catch(_){}
+  STATE.socket=null;
+  STATE.socketLoading=null;
+
+  document.body.classList.remove("order-open","summary-open","ichef-payment-open");
+  $("app")?.classList.add("hidden");
+  $("tools")?.classList.add("hidden");
+  $("login")?.classList.remove("hidden");
+
+  renderPin();
+  syncTenantLoginField(false);
+  loginMessage(message);
+  try{setConnection("HORS SERVICE","warn")}catch(_){}
+
+  setTimeout(()=>{
+    ICHEF_PAD_DUTY_LOGOUT_LOCK=false;
+  },500);
+}
+
+function padCurrentStaffFromOrders(activeOrders){
+  if(!activeOrders||typeof activeOrders!=="object")return null;
+  const raw=activeOrders.STAFF_ACCESS;
+  const list=Array.isArray(raw?.data)?raw.data:Array.isArray(raw)?raw:[];
+  if(STATE.staffId){
+    const byId=list.find(s=>String(s?.id??"")===String(STATE.staffId));
+    if(byId)return byId;
+  }
+  if(STATE.pin){
+    return list.find(s=>String(s?.pin??"").trim()===String(STATE.pin).trim())||null;
+  }
+  return null;
+}
+
+function padEnforceDutyFromState(serverState){
+  if(!STATE.authenticated||STATE.demo)return true;
+  if(STATE.accessMode==="MANAGER"||padManagerAccess(STATE.role))return true;
+
+  const activeOrders=serverState?.activeOrders;
+  if(!activeOrders||!Object.prototype.hasOwnProperty.call(activeOrders,"STAFF_ACCESS"))return true;
+
+  const staff=padCurrentStaffFromOrders(activeOrders);
+  if(!staff){
+    padForceDutyLogout("Profil collaborateur introuvable : accès PAD fermé.");
+    return false;
+  }
+
+  if(staff.active===false){
+    padForceDutyLogout("Profil désactivé : accès PAD fermé.");
+    return false;
+  }
+
+  if(!padStaffCanAccess(staff)){
+    padForceDutyLogout("Accès PAD réservé au Gérant / Direction et aux Serveurs.");
+    return false;
+  }
+
+  if(padStaffRequiresDuty(staff)&&staff.onDuty!==true){
+    padForceDutyLogout("Pointage SORTIE enregistré : accès PAD fermé.");
+    return false;
+  }
+
+  STATE.staffId=staff.id??STATE.staffId??"";
+  STATE.staffName=staff.name||STATE.staffName||"";
+  return true;
+}
+
+function padHandleDutyChanged(event){
+  if(!STATE.authenticated||STATE.demo)return;
+  if(STATE.accessMode==="MANAGER"||padManagerAccess(STATE.role))return;
+  if(!event||String(event.staffId??"")!==String(STATE.staffId??""))return;
+  if(event.onDuty===false){
+    padForceDutyLogout("Pointage SORTIE enregistré : accès PAD fermé.");
+  }
 }
 
 async function verifyPin(){
@@ -5645,7 +5766,7 @@ async function verifyPin(){
   try{
     const r=await serverFetch("/api/verify-pin",{
       method:"POST",
-      body:JSON.stringify({tenantID:STATE.tenantID,pin:STATE.loginPin,deviceId:STATE.deviceId})
+      body:JSON.stringify({tenantID:STATE.tenantID,pin:STATE.loginPin,deviceId:STATE.deviceId,terminal:"PAD"})
     });
     const j=await r.json().catch(()=>({}));
     if(!r.ok||!j.success)throw new Error(j.error||j.message||"Code refusé");
@@ -5656,24 +5777,40 @@ async function verifyPin(){
     }
 
     const serverRole=text(j.role||"");
-    let padAllowed=padManagerAccess(serverRole)||padServerAccess(serverRole);
     let staff=null;
+    let managerAllowed=j.isManager===true||padManagerAccess(serverRole);
+    let serverAllowed=padServerAccess(serverRole);
 
-    if(!padManagerAccess(serverRole)){
+    if(!managerAllowed||!j.staffId){
       staff=await padStaffIdentity(STATE.loginPin);
-      if(staff?.active===false){
-        throw new Error("Profil désactivé : accès PAD refusé");
-      }
-      if(staff){
-        padAllowed=padAllowed||padStaffCanAccess(staff);
-      }
     }
 
-    if(!padAllowed){
+    if(staff?.active===false){
+      throw new Error("Profil désactivé : accès PAD refusé");
+    }
+
+    if(staff){
+      const profile=padStaffProfile(staff);
+      managerAllowed=padManagerAccess(profile);
+      serverAllowed=!managerAllowed&&padStaffCanAccess(staff);
+    }
+
+    if(!managerAllowed&&!serverAllowed){
       throw new Error("Accès PAD réservé au Gérant / Direction et aux Serveurs");
     }
 
+    const dutyRequired=!managerAllowed&&(j.requiresDuty===true||serverAllowed);
+    const dutyOn=staff?staff.onDuty===true:j.onDuty===true;
+
+    if(dutyRequired&&!dutyOn){
+      throw new Error("Vous devez pointer ENTRÉE avant d'accéder au PAD");
+    }
+
     STATE.pin=STATE.loginPin;
+    STATE.staffId=j.staffId??staff?.id??"";
+    STATE.staffName=j.staffName||staff?.name||"";
+    STATE.accessMode=managerAllowed?"MANAGER":"SERVER";
+    STATE.staffDutyRequired=dutyRequired;
     STATE.role=staff?.role||staff?.dept||serverRole||"SERVEUR";
     STATE.plan=j.plan||"";
     STATE.specialite=j.specialite||"";
@@ -5733,7 +5870,8 @@ async function updateServer(key,data,auditReason="Mise à jour téléphone"){
     order:data,
     pin:STATE.pin,
     deviceId:STATE.deviceId,
-    terminal:"TELEPHONE",
+    terminal:"PAD",
+    terminalType:"PAD",
     auditReason
   };
   const r=await serverFetch("/update-order?tenantID="+encodeURIComponent(STATE.tenantID),{
@@ -5741,7 +5879,12 @@ async function updateServer(key,data,auditReason="Mise à jour téléphone"){
     body:JSON.stringify(body)
   });
   const j=await r.json().catch(()=>({}));
-  if(!r.ok)throw new Error(j.error||j.message||("Écriture serveur "+r.status));
+  if(!r.ok){
+    if(r.status===403&&(j.code==="NOT_ON_DUTY"||j.code==="TERMINAL_ACCESS_DENIED")){
+      padForceDutyLogout(j.error||"Session de service fermée.");
+    }
+    throw new Error(j.error||j.message||("Écriture serveur "+r.status));
+  }
   return j;
 }
 async function optimisticWrite(key,data,reason){
@@ -5796,6 +5939,7 @@ async function connectSocket(){
     });STATE.socket=socket;
     socket.on("connect",()=>{STATE.connected=true;setConnection("TEMPS RÉEL","good");socket.emit("joinTenant",String(STATE.tenantID));retryFailedWrites();if(!STATE.lastServerAt||now()-STATE.lastServerAt>5000)syncFull("reconnect")});
     socket.on("updateState",s=>{STATE.connected=true;STATE.lastServerAt=now();setConnection("TEMPS RÉEL","good");applyServerState(s,"socket")});
+    socket.on("staffDutyChanged",padHandleDutyChanged);
     socket.on("disconnect",()=>{STATE.connected=false;setConnection(navigator.onLine?"RECONNEXION":"HORS LIGNE",navigator.onLine?"warn":"bad")});
     socket.on("connect_error",err=>{
       STATE.connected=false;
@@ -5830,6 +5974,8 @@ async function syncFull(reason="manual"){
 
 function applyServerState(serverState,source){
   if(!serverState||typeof serverState!=="object")return;
+
+  if(!padEnforceDutyFromState(serverState))return;
 
   const serverIncoming=normalizeServerOrdersMap(
     serverState.activeOrders&&typeof serverState.activeOrders==="object"
