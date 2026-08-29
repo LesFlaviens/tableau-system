@@ -2568,18 +2568,20 @@ async function ichefCheckServiceTerminalAccess({
 // ==========================================
 
 app.post('/api/verify-pin', async (req, res) => {
-    console.log("VERIFY PIN =", req.body);
+    const {
+        tenantID,
+        pin,
+        deviceId,
+        terminal
+    } = req.body || {};
 
-    const { tenantID, pin, deviceId } = req.body;
+    const safeID = cleanString(tenantID);
+    const submittedPin = String(pin || '').trim();
 
     try {
-        console.log("tenantID reçu :", tenantID);
-
         const tenant = await Tenant.findOne({
-            tenantID: cleanString(tenantID)
+            tenantID: safeID
         });
-
-        console.log("Tenant trouvé :", tenant);
 
         if (!tenant) {
             return res.status(404).json({
@@ -2605,103 +2607,148 @@ app.post('/api/verify-pin', async (req, res) => {
             });
         }
 
-        let isValid =
-            String(tenant.pin).trim() ===
-            String(pin).trim();
+        const isMaster =
+            String(tenant.pin || '').trim() === submittedPin;
 
-        let roleAttribue = 'MASTER';
+        let state = null;
+        let staffMember = null;
+        let roleAttribue = isMaster ? 'MASTER' : 'STAFF';
 
-        if (!isValid) {
-            const state = await AppState.findOne({
+        if (!isMaster) {
+            state = await AppState.findOne({
                 tenantID: tenant.tenantID
             });
 
-            if (
-                state &&
-                state.activeOrders &&
-                state.activeOrders['STAFF_ACCESS']
-            ) {
-                const staffMember =
-                    (state.activeOrders['STAFF_ACCESS'].data || [])
-                        .find(s =>
-                            String(s.pin).trim() === String(pin).trim() &&
-                            s.active === true
-                        );
+            const staffAccess =
+                Array.isArray(state?.activeOrders?.STAFF_ACCESS?.data)
+                    ? state.activeOrders.STAFF_ACCESS.data
+                    : [];
 
-                if (staffMember) {
-                    isValid = true;
-                    roleAttribue = staffMember.dept || 'STAFF';
-                }
+            staffMember = staffAccess.find(s =>
+                String(s?.pin || '').trim() === submittedPin &&
+                s?.active !== false
+            ) || null;
+
+            if (!staffMember) {
+                return res.status(401).json({
+                    success: false,
+                    error: "Code PIN incorrect."
+                });
             }
+
+            roleAttribue =
+                staffMember.role ||
+                staffMember.dept ||
+                'STAFF';
         }
 
-        if (isValid) {
-            const screenLimit =
-                await syncTenantScreenLimit(tenant);
-
-            if (!Array.isArray(tenant.registeredDevices)) {
-                tenant.registeredDevices = [];
-            }
-
-            const uniqueDevices = [...new Set(
-                tenant.registeredDevices
-                    .map(value => String(value || '').trim())
-                    .filter(Boolean)
-            )];
-
-            if (
-                uniqueDevices.length !==
-                tenant.registeredDevices.length
-            ) {
-                tenant.registeredDevices = uniqueDevices;
-                await tenant.save();
-            }
-
-            if (
-                deviceId &&
-                !tenant.registeredDevices.includes(deviceId)
-            ) {
-                if (
-                    tenant.registeredDevices.length >=
-                    screenLimit
-                ) {
-                    return res.status(403).json({
-                        success: false,
-                        error:
-                            `Limite écrans atteinte ` +
-                            `(${tenant.registeredDevices.length}/${screenLimit}).`,
-                        maxScreens: screenLimit,
-                        registeredScreens:
-                            tenant.registeredDevices.length,
-                        availableScreens: 0
-                    });
-                }
-
-                tenant.registeredDevices.push(deviceId);
-                await tenant.save();
-            }
-
-            return res.json({
-                success: true,
-                plan: tenant.plan,
-                specialite: tenant.specialite,
-                role: roleAttribue,
-                safeTenantID: tenant.tenantID,
-                maxScreens: screenLimit,
-                registeredScreens:
-                    tenant.registeredDevices.length,
-                availableScreens:
-                    Math.max(
-                        0,
-                        screenLimit -
-                        tenant.registeredDevices.length
-                    )
+        const terminalAccess =
+            await ichefCheckServiceTerminalAccess({
+                tenantID: tenant.tenantID,
+                pin: submittedPin,
+                terminal
             });
+
+        if (!terminalAccess.ok) {
+            return res
+                .status(terminalAccess.status || 403)
+                .json({
+                    success: false,
+                    error:
+                        terminalAccess.error ||
+                        'Accès service refusé.',
+                    code:
+                        terminalAccess.requiresDuty === true &&
+                        terminalAccess.onDuty !== true
+                            ? 'NOT_ON_DUTY'
+                            : 'TERMINAL_ACCESS_DENIED',
+                    onDuty:
+                        terminalAccess.onDuty === true,
+                    requiresDuty:
+                        terminalAccess.requiresDuty === true
+                });
         }
 
-        return res.status(401).json({
-            success: false,
-            error: "Code PIN incorrect."
+        const screenLimit =
+            await syncTenantScreenLimit(tenant);
+
+        if (!Array.isArray(tenant.registeredDevices)) {
+            tenant.registeredDevices = [];
+        }
+
+        const uniqueDevices = [...new Set(
+            tenant.registeredDevices
+                .map(value => String(value || '').trim())
+                .filter(Boolean)
+        )];
+
+        if (
+            uniqueDevices.length !==
+            tenant.registeredDevices.length
+        ) {
+            tenant.registeredDevices = uniqueDevices;
+            await tenant.save();
+        }
+
+        if (
+            deviceId &&
+            !tenant.registeredDevices.includes(deviceId)
+        ) {
+            if (
+                tenant.registeredDevices.length >=
+                screenLimit
+            ) {
+                return res.status(403).json({
+                    success: false,
+                    error:
+                        `Limite écrans atteinte ` +
+                        `(${tenant.registeredDevices.length}/${screenLimit}).`,
+                    maxScreens: screenLimit,
+                    registeredScreens:
+                        tenant.registeredDevices.length,
+                    availableScreens: 0
+                });
+            }
+
+            tenant.registeredDevices.push(deviceId);
+            await tenant.save();
+        }
+
+        const resolvedStaff =
+            terminalAccess.staff ||
+            staffMember ||
+            null;
+
+        return res.json({
+            success: true,
+            plan: tenant.plan,
+            specialite: tenant.specialite,
+            role:
+                resolvedStaff?.role ||
+                resolvedStaff?.dept ||
+                roleAttribue,
+            safeTenantID: tenant.tenantID,
+            staffId:
+                resolvedStaff?.id ?? null,
+            staffName:
+                resolvedStaff?.name || '',
+            isManager:
+                isMaster ||
+                terminalAccess.isManager === true,
+            requiresDuty:
+                terminalAccess.requiresDuty === true,
+            onDuty:
+                terminalAccess.onDuty === true ||
+                isMaster,
+            maxScreens: screenLimit,
+            registeredScreens:
+                tenant.registeredDevices.length,
+            availableScreens:
+                Math.max(
+                    0,
+                    screenLimit -
+                    tenant.registeredDevices.length
+                )
         });
 
     } catch (error) {
@@ -4213,6 +4260,38 @@ app.post(
 
 
             // =================================================
+            // ACCÈS SERVICE ON / OFF EN TEMPS RÉEL
+            // =================================================
+
+            io
+                .to(
+                    safeID
+                )
+                .emit(
+                    'staffDutyChanged',
+                    {
+                        staffId:
+                            staff.id,
+
+                        staffName:
+                            staff.name || '',
+
+                        dept:
+                            staff.dept || '',
+
+                        onDuty:
+                            punchType === 'ENTRÉE',
+
+                        punchType:
+                            punchType,
+
+                        timestamp:
+                            now
+                    }
+                );
+
+
+            // =================================================
             // 15. TRACE AUDIT
             // =================================================
 
@@ -4792,34 +4871,109 @@ app.get('/get-current-state', async (req, res) => {
 
 app.post('/update-order', async (req, res) => {
     try {
-        const tenantID = cleanString(req.query.tenantID);
-        const { tableId, order } = req.body;
-        
-        let updateQuery = {};
-        if (order === null) {
-            updateQuery = { $unset: { [`activeOrders.${tableId}`]: "" } };
-        } else {
-            updateQuery = { $set: { [`activeOrders.${tableId}`]: order } };
+        const tenantID =
+            cleanString(
+                req.query.tenantID
+            );
+
+        const {
+            tableId,
+            order,
+            pin,
+            terminal
+        } = req.body || {};
+
+        const terminalAccess =
+            await ichefCheckServiceTerminalAccess({
+                tenantID,
+                pin,
+                terminal
+            });
+
+        if (!terminalAccess.ok) {
+            return res
+                .status(terminalAccess.status || 403)
+                .json({
+                    success: false,
+                    error:
+                        terminalAccess.error ||
+                        'Accès service refusé.',
+                    code:
+                        terminalAccess.requiresDuty === true &&
+                        terminalAccess.onDuty !== true
+                            ? 'NOT_ON_DUTY'
+                            : 'TERMINAL_ACCESS_DENIED',
+                    onDuty:
+                        terminalAccess.onDuty === true,
+                    requiresDuty:
+                        terminalAccess.requiresDuty === true
+                });
         }
 
-        const newState = await AppState.findOneAndUpdate(
-            { tenantID }, 
-            updateQuery, 
-            { upsert: true, new: true }
+        let updateQuery = {};
+
+        if (order === null) {
+            updateQuery = {
+                $unset: {
+                    [`activeOrders.${tableId}`]: ""
+                }
+            };
+        } else {
+            updateQuery = {
+                $set: {
+                    [`activeOrders.${tableId}`]: order
+                }
+            };
+        }
+
+        const newState =
+            await AppState.findOneAndUpdate(
+                { tenantID },
+                updateQuery,
+                {
+                    upsert: true,
+                    new: true
+                }
+            );
+
+        io
+            .to(tenantID)
+            .emit(
+                "updateState",
+                newState
+            );
+
+        io
+            .to(tenantID)
+            .emit(
+                "server-state-changed",
+                {
+                    tableId,
+                    source: "update-order"
+                }
+            );
+
+        return res.json({
+            success: true,
+            persisted: true
+        });
+
+    } catch (e) {
+        console.error(
+            "Erreur /update-order:",
+            e
         );
-        
-        // 1. Diffuse le changement en temps réel (format classique pour KDS/Cuisine)
-        io.to(tenantID).emit("updateState", newState);
 
-        // 2. ⚡ NOUVEAU : Signal de symbiose pour rafraîchir instantanément les autres Pad Serveur
-        io.to(tenantID).emit("server-state-changed", { tableId: tableId, source: "update-order" });
-
-        res.json({ success: true });
-    } catch(e) { 
-        console.error("Erreur /update-order:", e);
-        res.status(500).json({ success: false }); 
+        return res
+            .status(500)
+            .json({
+                success: false,
+                persisted: false,
+                error: "Erreur serveur pendant l'enregistrement de la commande."
+            });
     }
 });
+
 // ==========================================================
 // 📱 RÉINITIALISATION DES APPAREILS / ÉCRANS ENREGISTRÉS
 // ==========================================================
@@ -7817,104 +7971,6 @@ app.post(
     }
 );
 
-/* ============================================================
-   iCHEF — POINTEUSE -> ACCÈS SERVICE ON / OFF
-   ENTRÉE = accès PAD / téléphone actif
-   SORTIE = accès PAD / téléphone coupé immédiatement
-   ============================================================ */
-
-io.to(safeID).emit(
-    'staffDutyChanged',
-    {
-        staffId:
-            staff.id,
-
-        staffName:
-            staff.name || '',
-
-        dept:
-            staff.dept || '',
-
-        onDuty:
-            punchType === 'ENTRÉE',
-
-        punchType:
-            punchType,
-
-        timestamp:
-            now
-    }
-);
-
-/* ============================================================
-   TRAÇABILITÉ DU POINTAGE
-   ============================================================ */
-
-try {
-    await scellerOperation(
-        safeID,
-        'CREATE',
-        'RH_PUNCH',
-        punch.id,
-        String(staff.id),
-        {
-            staffId:
-                staff.id,
-
-            staffName:
-                staff.name,
-
-            type:
-                punchType,
-
-            timestamp:
-                now,
-
-            deviceId:
-                punch.deviceId
-        }
-    );
-} catch (_) {}
-
-/* ============================================================
-   SYNCHRONISATION RH TEMPS RÉEL
-   ============================================================ */
-
-io.to(safeID)
-    .emit(
-        'rhPunchSaved',
-        punch
-    );
-
-io.to(safeID)
-    .emit(
-        'rhTimesheetUpdated',
-        timesheets
-    );
-
-io.to(safeID)
-    .emit(
-        'server-state-changed',
-        {
-            source:
-                'RH_PUNCH',
-
-            staffId:
-                staff.id,
-
-            onDuty:
-                punchType === 'ENTRÉE',
-
-            punchType:
-                punchType
-        }
-    );
-
-io.to(safeID)
-    .emit(
-        'updateState',
-        state
-    );
 // ==========================================================
 // 🚀 DÉMARRAGE OFFICIEL DU SERVEUR iCHEF
 // IMPORTANT : CE BLOC DOIT ÊTRE LE DERNIER DU server.js
