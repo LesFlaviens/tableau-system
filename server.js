@@ -2541,34 +2541,103 @@ app.post('/api/verify-pin', async (req, res) => {
 // iCHEF RH — SYNCHRONISATION TOTALE POINTEUSE / FEUILLE D'HEURES
 // ============================================================
 
-function ichefRhDateParts(timestamp) {
-    const d = new Date(timestamp);
 
-    if (Number.isNaN(d.getTime())) {
+// ============================================================
+// SÉCURITÉ PIN
+// ============================================================
+
+function ichefIsForbiddenDefaultPin(pin) {
+    const safePin =
+        String(pin || '').trim();
+
+    return [
+        '0000',
+        '9999',
+        '11111'
+    ].includes(safePin);
+}
+
+
+// ============================================================
+// OUTILS DATE / NOMBRES
+// ============================================================
+
+function ichefRhDateParts(timestamp) {
+
+    const d =
+        new Date(timestamp);
+
+    if (
+        Number.isNaN(
+            d.getTime()
+        )
+    ) {
         return null;
     }
 
-    const year = d.getFullYear();
-    const month = String(d.getMonth() + 1).padStart(2, '0');
-    const day = String(d.getDate()).padStart(2, '0');
+    const year =
+        d.getFullYear();
+
+    const month =
+        String(
+            d.getMonth() + 1
+        ).padStart(
+            2,
+            '0'
+        );
+
+    const day =
+        String(
+            d.getDate()
+        ).padStart(
+            2,
+            '0'
+        );
 
     return {
-        date: `${year}-${month}-${day}`,
-        month: `${year}-${month}`,
+        date:
+            `${year}-${month}-${day}`,
+
+        month:
+            `${year}-${month}`,
+
         day
     };
 }
 
-function ichefRhSafeNumber(value, fallback = 0) {
-    const n = Number(value);
-    return Number.isFinite(n) ? n : fallback;
+
+function ichefRhSafeNumber(
+    value,
+    fallback = 0
+) {
+
+    const n =
+        Number(value);
+
+    return Number.isFinite(n)
+        ? n
+        : fallback;
 }
 
-function ichefRhBuildWorkedTimesheets(punches, previous = {}) {
+
+// ============================================================
+// CONSTRUCTION DES FEUILLES D'HEURES RÉELLES
+// ============================================================
+
+function ichefRhBuildWorkedTimesheets(
+    punches,
+    previous = {}
+) {
+
     const safePunches =
         Array.isArray(punches)
             ? punches
-                .filter(p => p && p.timestamp)
+                .filter(
+                    p =>
+                        p &&
+                        p.timestamp &&
+                        p.staffId
+                )
                 .slice()
                 .sort(
                     (a, b) =>
@@ -2577,230 +2646,395 @@ function ichefRhBuildWorkedTimesheets(punches, previous = {}) {
                 )
             : [];
 
+
     const previousMonths =
         previous?.months &&
         typeof previous.months === 'object'
             ? previous.months
             : {};
 
+
     const result = {
-        version: 2,
+
+        version: 3,
+
         generatedAt:
             new Date().toISOString(),
+
         months: {}
     };
 
-    const ensureStaffSheet =
-        (parts, punch) => {
-            if (!result.months[parts.month]) {
-                result.months[parts.month] = {
-                    month:
-                        parts.month,
-                    status:
-                        previousMonths?.[parts.month]?.status ||
-                        'TO_VERIFY',
-                    lockedAt:
-                        previousMonths?.[parts.month]?.lockedAt ||
-                        null,
-                    lockedBy:
-                        previousMonths?.[parts.month]?.lockedBy ||
-                        null,
-                    staff: {}
-                };
-            }
 
-            const monthNode =
-                result.months[parts.month];
+    // ========================================================
+    // CRÉER / RETROUVER UNE FEUILLE COLLABORATEUR
+    // ========================================================
 
-            const staffKey =
-                String(
-                    punch.staffId
-                );
+    function ensureStaffSheet(
+        parts,
+        punch
+    ) {
 
-            if (!monthNode.staff[staffKey]) {
-                const previousStaff =
-                    previousMonths?.[parts.month]
-                        ?.staff?.[staffKey] ||
-                    {};
+        if (
+            !result.months[
+                parts.month
+            ]
+        ) {
 
-                monthNode.staff[staffKey] = {
-                    staffId:
-                        punch.staffId,
-                    staffName:
-                        punch.staffName || '',
-                    dept:
-                        punch.dept || '',
-                    status:
-                        previousStaff.status ||
-                        (
-                            monthNode.status === 'LOCKED'
-                                ? 'LOCKED'
-                                : 'TO_VERIFY'
-                        ),
-                    validatedAt:
-                        previousStaff.validatedAt ||
-                        null,
-                    validatedBy:
-                        previousStaff.validatedBy ||
-                        null,
-                    lockedAt:
-                        previousStaff.lockedAt ||
-                        null,
-                    lockedBy:
-                        previousStaff.lockedBy ||
-                        null,
-                    days: {},
-                    totals: {
-                        rawWorkedHours: 0,
-                        workedHours: 0,
-                        anomalyCount: 0,
-                        validatedDays: 0,
-                        daysWithPunches: 0
-                    }
-                };
-            }
+            const previousMonth =
+                previousMonths?.[
+                    parts.month
+                ] || {};
 
-            return monthNode.staff[staffKey];
-        };
 
-    const openEntries = new Map();
+            result.months[
+                parts.month
+            ] = {
 
-    for (const punch of safePunches) {
-        const parts =
-            ichefRhDateParts(
-                punch.timestamp
-            );
+                month:
+                    parts.month,
 
-        if (!parts) continue;
+                status:
+                    previousMonth.status ||
+                    'TO_VERIFY',
+
+                lockedAt:
+                    previousMonth.lockedAt ||
+                    null,
+
+                lockedBy:
+                    previousMonth.lockedBy ||
+                    null,
+
+                staff: {}
+            };
+        }
+
+
+        const monthNode =
+            result.months[
+                parts.month
+            ];
+
 
         const staffKey =
             String(
                 punch.staffId
             );
 
+
+        if (
+            !monthNode.staff[
+                staffKey
+            ]
+        ) {
+
+            const previousStaff =
+                previousMonths?.[
+                    parts.month
+                ]?.staff?.[
+                    staffKey
+                ] || {};
+
+
+            monthNode.staff[
+                staffKey
+            ] = {
+
+                staffId:
+                    punch.staffId,
+
+                staffName:
+                    punch.staffName ||
+                    '',
+
+                dept:
+                    punch.dept ||
+                    '',
+
+                status:
+                    previousStaff.status ||
+                    (
+                        monthNode.status ===
+                        'LOCKED'
+                            ? 'LOCKED'
+                            : 'TO_VERIFY'
+                    ),
+
+                validatedAt:
+                    previousStaff.validatedAt ||
+                    null,
+
+                validatedBy:
+                    previousStaff.validatedBy ||
+                    null,
+
+                lockedAt:
+                    previousStaff.lockedAt ||
+                    null,
+
+                lockedBy:
+                    previousStaff.lockedBy ||
+                    null,
+
+                days: {},
+
+                totals: {
+
+                    rawWorkedHours: 0,
+
+                    workedHours: 0,
+
+                    anomalyCount: 0,
+
+                    validatedDays: 0,
+
+                    daysWithPunches: 0
+                }
+            };
+        }
+
+
+        return monthNode.staff[
+            staffKey
+        ];
+    }
+
+
+    // ========================================================
+    // CRÉER / RETROUVER UNE JOURNÉE
+    // ========================================================
+
+    function ensureDay(
+        staffSheet,
+        parts
+    ) {
+
+        const dayKey =
+            parts.day;
+
+
+        if (
+            !staffSheet.days[
+                dayKey
+            ]
+        ) {
+
+            staffSheet.days[
+                dayKey
+            ] = {
+
+                date:
+                    parts.date,
+
+                sessions: [],
+
+                punches: [],
+
+                rawWorkedHours: 0,
+
+                manualWorkedHours:
+                    null,
+
+                workedHours: 0,
+
+                anomalies: [],
+
+                status:
+                    'TO_VERIFY',
+
+                correction:
+                    null
+            };
+        }
+
+
+        return staffSheet.days[
+            dayKey
+        ];
+    }
+
+
+    // ========================================================
+    // ENTRÉES ACTUELLEMENT OUVERTES
+    // ========================================================
+
+    const openEntries =
+        new Map();
+
+
+    // ========================================================
+    // ANALYSE DES POINTAGES
+    // ========================================================
+
+    for (
+        const punch
+        of safePunches
+    ) {
+
+        const parts =
+            ichefRhDateParts(
+                punch.timestamp
+            );
+
+
+        if (!parts) {
+            continue;
+        }
+
+
+        const staffKey =
+            String(
+                punch.staffId
+            );
+
+
         const action =
             String(
                 punch.type || ''
-            ).toUpperCase();
+            )
+                .trim()
+                .toUpperCase();
 
-        const key =
-            `${staffKey}:${parts.month}`;
 
-        if (action === 'ENTRÉE') {
-            if (openEntries.has(staffKey)) {
+        // ====================================================
+        // ENTRÉE
+        // ====================================================
+
+        if (
+            action ===
+            'ENTRÉE'
+        ) {
+
+            // Une entrée était déjà ouverte
+            if (
+                openEntries.has(
+                    staffKey
+                )
+            ) {
+
                 const previousOpen =
                     openEntries.get(
                         staffKey
                     );
+
 
                 const previousParts =
                     ichefRhDateParts(
                         previousOpen.timestamp
                     );
 
-                if (previousParts) {
+
+                if (
+                    previousParts
+                ) {
+
                     const staffSheet =
                         ensureStaffSheet(
                             previousParts,
                             previousOpen
                         );
 
-                    const dayKey =
-                        previousParts.day;
 
-                    if (!staffSheet.days[dayKey]) {
-                        staffSheet.days[dayKey] = {
-                            date:
-                                previousParts.date,
-                            sessions: [],
-                            punches: [],
-                            rawWorkedHours: 0,
-                            manualWorkedHours: null,
-                            workedHours: 0,
-                            anomalies: [],
-                            status: 'TO_VERIFY',
-                            correction: null
-                        };
-                    }
-
-                    staffSheet.days[dayKey]
-                        .anomalies.push({
-                            code:
-                                'DOUBLE_ENTRY',
-                            label:
-                                'Entrée sans sortie avant nouvelle entrée'
-                        });
-
-                    staffSheet.days[dayKey]
-                        .punches.push(
-                            previousOpen
+                    const day =
+                        ensureDay(
+                            staffSheet,
+                            previousParts
                         );
+
+
+                    day.punches.push(
+                        previousOpen
+                    );
+
+
+                    day.anomalies.push({
+
+                        code:
+                            'DOUBLE_ENTRY',
+
+                        label:
+                            'Entrée sans sortie avant une nouvelle entrée'
+                    });
                 }
             }
+
 
             openEntries.set(
                 staffKey,
                 punch
             );
 
+
             continue;
         }
 
-        if (action === 'SORTIE') {
+
+        // ====================================================
+        // SORTIE
+        // ====================================================
+
+        if (
+            action ===
+            'SORTIE'
+        ) {
+
             const entry =
                 openEntries.get(
                     staffKey
                 );
 
+
+            // Sortie sans entrée
             if (!entry) {
+
                 const staffSheet =
                     ensureStaffSheet(
                         parts,
                         punch
                     );
 
-                if (!staffSheet.days[parts.day]) {
-                    staffSheet.days[parts.day] = {
-                        date:
-                            parts.date,
-                        sessions: [],
-                        punches: [],
-                        rawWorkedHours: 0,
-                        manualWorkedHours: null,
-                        workedHours: 0,
-                        anomalies: [],
-                        status: 'TO_VERIFY',
-                        correction: null
-                    };
-                }
 
-                staffSheet.days[parts.day]
-                    .punches.push(
-                        punch
+                const day =
+                    ensureDay(
+                        staffSheet,
+                        parts
                     );
 
-                staffSheet.days[parts.day]
-                    .anomalies.push({
-                        code:
-                            'MISSING_ENTRY',
-                        label:
-                            'Sortie sans entrée'
-                    });
+
+                day.punches.push(
+                    punch
+                );
+
+
+                day.anomalies.push({
+
+                    code:
+                        'MISSING_ENTRY',
+
+                    label:
+                        'Sortie sans entrée'
+                });
+
 
                 continue;
             }
+
 
             const entryParts =
                 ichefRhDateParts(
                     entry.timestamp
                 );
 
+
             if (!entryParts) {
+
                 openEntries.delete(
                     staffKey
                 );
+
                 continue;
             }
+
 
             const staffSheet =
                 ensureStaffSheet(
@@ -2808,76 +3042,1112 @@ function ichefRhBuildWorkedTimesheets(punches, previous = {}) {
                     entry
                 );
 
-            const dayKey =
-                entryParts.day;
-
-            if (!staffSheet.days[dayKey]) {
-                staffSheet.days[dayKey] = {
-                    date:
-                        entryParts.date,
-                    sessions: [],
-                    punches: [],
-                    rawWorkedHours: 0,
-                    manualWorkedHours: null,
-                    workedHours: 0,
-                    anomalies: [],
-                    status: 'TO_VERIFY',
-                    correction: null
-                };
-            }
 
             const day =
-                staffSheet.days[dayKey];
+                ensureDay(
+                    staffSheet,
+                    entryParts
+                );
+
 
             const hours =
                 Math.max(
                     0,
                     (
-                        Number(punch.timestamp) -
-                        Number(entry.timestamp)
-                    ) / 3600000
+                        Number(
+                            punch.timestamp
+                        ) -
+                        Number(
+                            entry.timestamp
+                        )
+                    ) /
+                    3600000
                 );
+
 
             const rounded =
                 Math.round(
                     hours * 100
-                ) / 100;
+                ) /
+                100;
+
 
             day.sessions.push({
+
                 entry: {
+
                     id:
                         entry.id,
+
                     timestamp:
                         entry.timestamp
                 },
+
                 exit: {
+
                     id:
                         punch.id,
+
                     timestamp:
                         punch.timestamp
                 },
+
                 hours:
                     rounded
             });
+
 
             day.punches.push(
                 entry,
                 punch
             );
 
+
             day.rawWorkedHours +=
                 rounded;
 
-            // PURGE DE L'ENTRÉE TRAITÉE
-            openEntries.delete(staffKey);
+
+            // Service très long
+            if (
+                hours > 16
+            ) {
+
+                day.anomalies.push({
+
+                    code:
+                        'LONG_SHIFT',
+
+                    label:
+                        'Durée de présence supérieure à 16 heures'
+                });
+            }
+
+
+            // Service après minuit
+            if (
+                entryParts.date !==
+                parts.date
+            ) {
+
+                day.anomalies.push({
+
+                    code:
+                        'OVERNIGHT_SHIFT',
+
+                    label:
+                        'Service traversant minuit'
+                });
+            }
+
+
+            openEntries.delete(
+                staffKey
+            );
         }
     }
 
-    // RETOUR DU RÉSULTAT FINAL REQUIS PAR LE MOTEUR
+
+    // ========================================================
+    // ENTRÉES SANS SORTIE
+    // NE JAMAIS INVENTER UNE HEURE DE SORTIE
+    // ========================================================
+
+    for (
+        const [
+            staffKey,
+            entry
+        ]
+        of openEntries.entries()
+    ) {
+
+        const parts =
+            ichefRhDateParts(
+                entry.timestamp
+            );
+
+
+        if (!parts) {
+            continue;
+        }
+
+
+        const staffSheet =
+            ensureStaffSheet(
+                parts,
+                entry
+            );
+
+
+        const day =
+            ensureDay(
+                staffSheet,
+                parts
+            );
+
+
+        if (
+            !day.punches.some(
+                p =>
+                    String(p?.id) ===
+                    String(entry.id)
+            )
+        ) {
+
+            day.punches.push(
+                entry
+            );
+        }
+
+
+        day.anomalies.push({
+
+            code:
+                'MISSING_EXIT',
+
+            label:
+                'Entrée sans sortie'
+        });
+    }
+
+
+    // ========================================================
+    // RÉCUPÉRER LES CORRECTIONS / VALIDATIONS EXISTANTES
+    // ========================================================
+
+    for (
+        const [
+            monthKey,
+            monthNode
+        ]
+        of Object.entries(
+            result.months
+        )
+    ) {
+
+        const previousMonth =
+            previousMonths?.[
+                monthKey
+            ] || {};
+
+
+        monthNode.status =
+            previousMonth.status ||
+            monthNode.status;
+
+
+        monthNode.lockedAt =
+            previousMonth.lockedAt ||
+            monthNode.lockedAt;
+
+
+        monthNode.lockedBy =
+            previousMonth.lockedBy ||
+            monthNode.lockedBy;
+
+
+        for (
+            const [
+                staffKey,
+                staffSheet
+            ]
+            of Object.entries(
+                monthNode.staff
+            )
+        ) {
+
+            const previousStaff =
+                previousMonth
+                    ?.staff?.[
+                        staffKey
+                    ] || {};
+
+
+            staffSheet.status =
+                previousStaff.status ||
+                staffSheet.status;
+
+
+            staffSheet.validatedAt =
+                previousStaff.validatedAt ||
+                null;
+
+
+            staffSheet.validatedBy =
+                previousStaff.validatedBy ||
+                null;
+
+
+            staffSheet.lockedAt =
+                previousStaff.lockedAt ||
+                null;
+
+
+            staffSheet.lockedBy =
+                previousStaff.lockedBy ||
+                null;
+
+
+            staffSheet.totals = {
+
+                rawWorkedHours: 0,
+
+                workedHours: 0,
+
+                anomalyCount: 0,
+
+                validatedDays: 0,
+
+                daysWithPunches: 0
+            };
+
+
+            for (
+                const [
+                    dayKey,
+                    day
+                ]
+                of Object.entries(
+                    staffSheet.days
+                )
+            ) {
+
+                const previousDay =
+                    previousStaff
+                        ?.days?.[
+                            dayKey
+                        ] || {};
+
+
+                // Correction manuelle existante
+                if (
+                    previousDay
+                        .manualWorkedHours !==
+                        undefined &&
+                    previousDay
+                        .manualWorkedHours !==
+                        null
+                ) {
+
+                    day.manualWorkedHours =
+                        ichefRhSafeNumber(
+                            previousDay
+                                .manualWorkedHours
+                        );
+
+
+                    day.correction =
+                        previousDay
+                            .correction ||
+                        null;
+                }
+
+
+                day.rawWorkedHours =
+                    Math.round(
+                        ichefRhSafeNumber(
+                            day.rawWorkedHours
+                        ) *
+                        100
+                    ) /
+                    100;
+
+
+                day.workedHours =
+                    day.manualWorkedHours !==
+                    null
+                        ? day.manualWorkedHours
+                        : day.rawWorkedHours;
+
+
+                if (
+                    staffSheet.status ===
+                    'LOCKED' ||
+                    monthNode.status ===
+                    'LOCKED'
+                ) {
+
+                    day.status =
+                        'LOCKED';
+
+                } else if (
+                    previousDay.status
+                ) {
+
+                    day.status =
+                        previousDay.status;
+                }
+
+
+                staffSheet
+                    .totals
+                    .rawWorkedHours +=
+                    day.rawWorkedHours;
+
+
+                staffSheet
+                    .totals
+                    .workedHours +=
+                    day.workedHours;
+
+
+                staffSheet
+                    .totals
+                    .anomalyCount +=
+                    Array.isArray(
+                        day.anomalies
+                    )
+                        ? day.anomalies.length
+                        : 0;
+
+
+                staffSheet
+                    .totals
+                    .daysWithPunches++;
+
+
+                if (
+                    day.status ===
+                        'VALIDATED' ||
+                    day.status ===
+                        'LOCKED'
+                ) {
+
+                    staffSheet
+                        .totals
+                        .validatedDays++;
+                }
+            }
+
+
+            staffSheet
+                .totals
+                .rawWorkedHours =
+                Math.round(
+                    staffSheet
+                        .totals
+                        .rawWorkedHours *
+                    100
+                ) /
+                100;
+
+
+            staffSheet
+                .totals
+                .workedHours =
+                Math.round(
+                    staffSheet
+                        .totals
+                        .workedHours *
+                    100
+                ) /
+                100;
+        }
+    }
+
+
     return result;
 }
 
 
+// ============================================================
+// DIAGNOSTIC RH
+//
+// Après déploiement tu peux ouvrir :
+// https://tableau-system.onrender.com/api/rh/health
+// ============================================================
+
+app.get(
+    '/api/rh/health',
+    (req, res) => {
+
+        return res.json({
+
+            success: true,
+
+            module:
+                'ICHEF_RH',
+
+            punchRoute:
+                true,
+
+            version:
+                'RH-PUNCH-2026.08.29',
+
+            timestamp:
+                new Date().toISOString()
+        });
+    }
+);
+
+
+// ============================================================
+// POINTEUSE RH
+// POST /api/rh/punch
+// ============================================================
+
+app.post(
+    '/api/rh/punch',
+    async (req, res) => {
+
+        const {
+
+            tenantID,
+
+            staffId,
+
+            pin,
+
+            deviceId,
+
+            photo
+
+        } = req.body || {};
+
+
+        const safeID =
+            cleanString(
+                tenantID
+            );
+
+
+        const submittedPin =
+            String(
+                pin || ''
+            ).trim();
+
+
+        // ====================================================
+        // 1. VALIDATION DE BASE
+        // ====================================================
+
+        if (
+            !safeID ||
+            !staffId ||
+            !/^\d{4,12}$/.test(
+                submittedPin
+            )
+        ) {
+
+            return res
+                .status(400)
+                .json({
+
+                    success: false,
+
+                    error:
+                        "Données de pointage invalides."
+                });
+        }
+
+
+        // ====================================================
+        // 2. REFUSER LES PIN GÉNÉRIQUES
+        // ====================================================
+
+        if (
+            ichefIsForbiddenDefaultPin(
+                submittedPin
+            )
+        ) {
+
+            return res
+                .status(401)
+                .json({
+
+                    success: false,
+
+                    error:
+                        "Ce code PIN de sécurité n'est pas autorisé."
+                });
+        }
+
+
+        try {
+
+            // =================================================
+            // 3. VÉRIFIER LE RESTAURANT
+            // =================================================
+
+            const tenant =
+                await Tenant.findOne({
+
+                    tenantID:
+                        safeID
+                });
+
+
+            if (!tenant) {
+
+                return res
+                    .status(404)
+                    .json({
+
+                        success: false,
+
+                        error:
+                            "Restaurant introuvable."
+                    });
+            }
+
+
+            if (
+                tenant.status ===
+                'SUSPENDU'
+            ) {
+
+                return res
+                    .status(403)
+                    .json({
+
+                        success: false,
+
+                        error:
+                            "Licence suspendue."
+                    });
+            }
+
+
+            // =================================================
+            // 4. CHARGER L'ÉTAT CENTRAL
+            // =================================================
+
+            let state =
+                await AppState.findOne({
+
+                    tenantID:
+                        safeID
+                });
+
+
+            if (!state) {
+
+                state =
+                    new AppState({
+
+                        tenantID:
+                            safeID,
+
+                        activeOrders:
+                            {}
+                    });
+            }
+
+
+            if (
+                !state.activeOrders
+            ) {
+
+                state.activeOrders =
+                    {};
+            }
+
+
+            // =================================================
+            // 5. STAFF_ACCESS = SOURCE UNIQUE
+            // =================================================
+
+            const staffAccess =
+                Array.isArray(
+                    state
+                        .activeOrders
+                        ?.STAFF_ACCESS
+                        ?.data
+                )
+                    ? state
+                        .activeOrders
+                        .STAFF_ACCESS
+                        .data
+                        .slice()
+                    : [];
+
+
+            // =================================================
+            // 6. IDENTIFIER L'EMPLOYÉ PAR ID + PIN
+            // =================================================
+
+            const staff =
+                staffAccess.find(
+                    s =>
+
+                        String(
+                            s?.id || ''
+                        ) ===
+                            String(
+                                staffId
+                            ) &&
+
+                        s?.active !==
+                            false &&
+
+                        String(
+                            s?.pin || ''
+                        ).trim() ===
+                            submittedPin
+                );
+
+
+            if (!staff) {
+
+                return res
+                    .status(403)
+                    .json({
+
+                        success: false,
+
+                        error:
+                            "PIN ou collaborateur incorrect."
+                    });
+            }
+
+
+            // =================================================
+            // 7. CHARGER HISTORIQUE POINTAGES
+            // =================================================
+
+            const punches =
+                Array.isArray(
+                    state
+                        .activeOrders
+                        ?.PUNCHES_MASTER
+                        ?.data
+                )
+                    ? state
+                        .activeOrders
+                        .PUNCHES_MASTER
+                        .data
+                        .slice()
+                    : [];
+
+
+            // =================================================
+            // 8. DERNIER POINTAGE DE CET EMPLOYÉ
+            // =================================================
+
+            const lastStaffPunch =
+                punches
+                    .filter(
+                        p =>
+                            String(
+                                p?.staffId
+                            ) ===
+                            String(
+                                staff.id
+                            )
+                    )
+                    .sort(
+                        (a, b) =>
+                            Number(
+                                a.timestamp || 0
+                            ) -
+                            Number(
+                                b.timestamp || 0
+                            )
+                    )
+                    .pop();
+
+
+            // =================================================
+            // 9. ENTRÉE / SORTIE AUTOMATIQUE
+            // =================================================
+
+            const punchType =
+                lastStaffPunch &&
+                String(
+                    lastStaffPunch.type ||
+                    ''
+                )
+                    .trim()
+                    .toUpperCase() ===
+                    'ENTRÉE'
+
+                    ? 'SORTIE'
+
+                    : 'ENTRÉE';
+
+
+            const now =
+                Date.now();
+
+
+            // =================================================
+            // 10. CRÉER LE POINTAGE
+            // =================================================
+
+            const punch = {
+
+                id:
+                    'rh_' +
+                    safeID +
+                    '_' +
+                    now +
+                    '_' +
+                    Math
+                        .random()
+                        .toString(36)
+                        .slice(2, 9),
+
+                tenantID:
+                    safeID,
+
+                staffId:
+                    staff.id,
+
+                staffName:
+                    staff.name ||
+                    '',
+
+                dept:
+                    staff.dept ||
+                    '',
+
+                role:
+                    staff.role ||
+                    '',
+
+                type:
+                    punchType,
+
+                timestamp:
+                    now,
+
+                serverRecordedAt:
+                    new Date(
+                        now
+                    ).toISOString(),
+
+                deviceId:
+                    String(
+                        deviceId || ''
+                    )
+                        .trim()
+                        .slice(
+                            0,
+                            200
+                        ),
+
+                terminal:
+                    'RH_POINTEUSE',
+
+                photo:
+                    (
+                        typeof photo ===
+                            'string' &&
+                        photo.startsWith(
+                            'data:image/'
+                        )
+                    )
+                        ? photo.slice(
+                            0,
+                            500000
+                        )
+                        : ''
+            };
+
+
+            punches.push(
+                punch
+            );
+
+
+            // =================================================
+            // 11. CONSERVER L'HISTORIQUE
+            // =================================================
+
+            const safePunches =
+                punches.slice(
+                    -50000
+                );
+
+
+            state
+                .activeOrders
+                .PUNCHES_MASTER = {
+
+                    data:
+                        safePunches,
+
+                    updatedAt:
+                        new Date()
+                            .toISOString()
+                };
+
+
+            // =================================================
+            // 12. RECONSTRUIRE FEUILLES D'HEURES
+            // =================================================
+
+            const previousTimesheets =
+                state
+                    .activeOrders
+                    ?.RH_TIMESHEET_REAL
+                    ?.data || {
+
+                        months: {}
+                    };
+
+
+            const timesheets =
+                ichefRhBuildWorkedTimesheets(
+
+                    safePunches,
+
+                    previousTimesheets
+                );
+
+
+            state
+                .activeOrders
+                .RH_TIMESHEET_REAL = {
+
+                    data:
+                        timesheets,
+
+                    updatedAt:
+                        new Date()
+                            .toISOString()
+                };
+
+
+            // =================================================
+            // 13. METTRE À JOUR ONDUTY
+            // =================================================
+
+            const staffIndex =
+                staffAccess.findIndex(
+                    s =>
+                        String(
+                            s?.id
+                        ) ===
+                        String(
+                            staff.id
+                        )
+                );
+
+
+            if (
+                staffIndex >
+                -1
+            ) {
+
+                staffAccess[
+                    staffIndex
+                ] = {
+
+                    ...staffAccess[
+                        staffIndex
+                    ],
+
+                    onDuty:
+                        punchType ===
+                        'ENTRÉE',
+
+                    lastPunchAt:
+                        new Date(
+                            now
+                        ).toISOString(),
+
+                    lastPunchType:
+                        punchType
+                };
+
+
+                state
+                    .activeOrders
+                    .STAFF_ACCESS = {
+
+                        data:
+                            staffAccess,
+
+                        updatedAt:
+                            new Date()
+                                .toISOString()
+                    };
+            }
+
+
+            // =================================================
+            // 14. SAUVEGARDE MONGODB
+            // =================================================
+
+            state.markModified(
+                'activeOrders'
+            );
+
+
+            await state.save();
+
+
+            // =================================================
+            // 15. TRACE AUDIT
+            // =================================================
+
+            try {
+
+                await scellerOperation(
+
+                    safeID,
+
+                    'CREATE',
+
+                    'RH_PUNCH',
+
+                    punch.id,
+
+                    String(
+                        staff.id
+                    ),
+
+                    {
+
+                        staffId:
+                            staff.id,
+
+                        staffName:
+                            staff.name,
+
+                        type:
+                            punchType,
+
+                        timestamp:
+                            now,
+
+                        deviceId:
+                            punch.deviceId
+                    }
+                );
+
+            } catch (
+                auditError
+            ) {
+
+                console.warn(
+                    "Audit RH non bloquant :",
+                    auditError?.message
+                );
+            }
+
+
+            // =================================================
+            // 16. SYNCHRONISATION TEMPS RÉEL
+            // =================================================
+
+            io
+                .to(
+                    safeID
+                )
+                .emit(
+
+                    'rhPunchSaved',
+
+                    punch
+                );
+
+
+            io
+                .to(
+                    safeID
+                )
+                .emit(
+
+                    'rhTimesheetUpdated',
+
+                    timesheets
+                );
+
+
+            io
+                .to(
+                    safeID
+                )
+                .emit(
+
+                    'server-state-changed',
+
+                    {
+
+                        source:
+                            'RH_PUNCH',
+
+                        staffId:
+                            staff.id,
+
+                        punchType:
+                            punchType,
+
+                        timestamp:
+                            now
+                    }
+                );
+
+
+            io
+                .to(
+                    safeID
+                )
+                .emit(
+
+                    'updateState',
+
+                    state
+                );
+
+
+            // =================================================
+            // 17. RÉPONSE POINTEUSE
+            // =================================================
+
+            return res.json({
+
+                success: true,
+
+                punchType,
+
+                punch,
+
+                punches:
+                    safePunches,
+
+                timesheets,
+
+                staffAccess
+            });
+
+
+        } catch (
+            error
+        ) {
+
+            console.error(
+                "Erreur /api/rh/punch :",
+                error
+            );
+
+
+            return res
+                .status(500)
+                .json({
+
+                    success: false,
+
+                    error:
+                        "Erreur serveur pendant le pointage."
+                });
+        }
+    }
+);
+
+
+// ============================================================
+// CONFIRMATION AU DÉMARRAGE DU SERVEUR
+// ============================================================
+
+console.log(
+    "iCHEF RH : route POST /api/rh/punch chargée"
+);
+
+console.log(
+    "iCHEF RH : diagnostic GET /api/rh/health chargé"
+);
 // ==========================================
 // MASTER CONTROL API (EMPIRE SUPER ADMIN)
 // ==========================================
