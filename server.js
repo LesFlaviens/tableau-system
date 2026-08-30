@@ -4578,6 +4578,22 @@ function normalizeMenuDepartment(value) {
 
     return MENU_SYNC_KEYS[department] ? department : null;
 }
+// 🔐 REGISTRE DES ÉCRANS ACTIFS — V20
+// Une seule connexion active par tenant + device + page.
+// Lorsqu'un même écran se reconnecte, l'ancienne Socket est remplacée proprement
+// au lieu de rester empilée dans les logs et dans la room Socket.IO.
+const activeScreenSockets = new Map();
+
+function buildActiveScreenKey(tenantID, deviceId, page) {
+    const tenant = cleanString(tenantID);
+    const device = String(deviceId || '').trim();
+    const screenPage = String(page || '').trim().toUpperCase();
+
+    if (!tenant || !device || !screenPage) return '';
+    return `${tenant}::${device}::${screenPage}`;
+}
+
+// ICHEF SOCKET V20 — SESSION UNIQUE PAR ÉCRAN
 // 🔥 LE SEUL ET UNIQUE BLOC io.on('connection') 🔥
 io.on("connection", socket => {
     const connectedAt = Date.now();
@@ -4604,37 +4620,79 @@ io.on("connection", socket => {
 
     // CORRECTION CRITIQUE DU BUG [object Object]
     socket.on("joinTenant", async (payload) => {
-        
-        let rawID = typeof payload === 'object' ? payload.tenantID : payload;
-        const safeID = cleanString(rawID);
-
-        if (!safeID) return;
-
-        if (!socket.rooms.has(safeID)) {
-            socket.join(safeID);
-        }
-
-        socket.data.tenantID = safeID;
-
         const payloadObject =
             payload && typeof payload === 'object'
                 ? payload
                 : {};
 
-        socket.data.deviceId =
-            String(
-                payloadObject.deviceId ||
-                socket.handshake?.auth?.deviceId ||
-                ''
-            ).trim();
+        // Compatibilité avec toutes les générations de clients iCHEF :
+        // payload objet, ancienne chaîne, auth Socket.IO ou query Socket.IO.
+        const rawID =
+            (typeof payload === 'object' ? payloadObject.tenantID : payload) ||
+            socket.handshake?.auth?.tenantID ||
+            socket.handshake?.query?.tenantID ||
+            '';
 
-        socket.data.page =
-            String(
-                payloadObject.page ||
-                payloadObject.module ||
-                socket.handshake?.auth?.page ||
-                ''
-            ).trim();
+        const safeID = cleanString(rawID);
+        if (!safeID) return;
+
+        const deviceId = String(
+            payloadObject.deviceId ||
+            socket.handshake?.auth?.deviceId ||
+            socket.handshake?.query?.deviceId ||
+            ''
+        ).trim();
+
+        const page = String(
+            payloadObject.page ||
+            payloadObject.module ||
+            socket.handshake?.auth?.page ||
+            socket.handshake?.query?.page ||
+            socket.handshake?.query?.module ||
+            ''
+        ).trim().toUpperCase();
+
+        socket.data.tenantID = safeID;
+        socket.data.deviceId = deviceId;
+        socket.data.page = page;
+
+        // 1 ÉCRAN = 1 SOCKET ACTIVE.
+        // Si une ancienne connexion du même terminal/page existe encore,
+        // la nouvelle la remplace immédiatement.
+        const screenKey = buildActiveScreenKey(safeID, deviceId, page);
+        if (screenKey) {
+            const previousSocketId = activeScreenSockets.get(screenKey);
+
+            if (previousSocketId && previousSocketId !== socket.id) {
+                const previousSocket = io.sockets.sockets.get(previousSocketId);
+
+                if (previousSocket?.connected) {
+                    console.log(
+                        `♻️ Ancienne connexion remplacée : ${previousSocketId}` +
+                        ` -> ${socket.id}` +
+                        ` | tenant=${safeID}` +
+                        ` | device=${deviceId}` +
+                        ` | page=${page}`
+                    );
+
+                    previousSocket.emit('ichef-session-replaced', {
+                        tenantID: safeID,
+                        deviceId,
+                        page,
+                        replacementSocketId: socket.id
+                    });
+
+                    previousSocket.disconnect(true);
+                }
+            }
+
+            activeScreenSockets.set(screenKey, socket.id);
+            socket.data.activeScreenKey = screenKey;
+        }
+
+        if (!socket.rooms.has(safeID)) {
+            socket.join(safeID);
+        }
 
         console.log(
             `📡 L'écran ${socket.id} est synchronisé : ${safeID}` +
@@ -4920,13 +4978,24 @@ io.on("connection", socket => {
 socket.on("disconnect", (reason, details) => {
         const durationMs = Date.now() - connectedAt;
 
+        // Ne supprimer du registre que si cette Socket est encore la connexion
+        // officielle du terminal. Une ancienne Socket remplacée ne doit jamais
+        // effacer la nouvelle connexion qui vient de prendre sa place.
+        const screenKey = socket.data?.activeScreenKey || '';
+        if (screenKey && activeScreenSockets.get(screenKey) === socket.id) {
+            activeScreenSockets.delete(screenKey);
+        }
+
         const detailMessage =
             details?.message ||
             details?.description ||
             '';
 
+        const replaced = reason === 'server namespace disconnect';
+        const logPrefix = replaced ? '♻️ Écran remplacé' : '❌ Écran déconnecté';
+
         console.log(
-            `❌ Écran déconnecté : ${socket.id}` +
+            `${logPrefix} : ${socket.id}` +
             ` | tenant=${socket.data?.tenantID || 'inconnu'}` +
             ` | device=${socket.data?.deviceId || 'non-renseigné'}` +
             ` | page=${socket.data?.page || 'non-renseignée'}` +
@@ -10100,4 +10169,3 @@ server.listen(PORT, () => {
     console.log('✅ Arrêt propre SIGTERM/SIGINT activé.');
     console.log('==========================================');
 });
-
