@@ -2214,6 +2214,9 @@ async function secureFetch(input, init = {}) {
         let staffWriteQueue = Promise.resolve();
         let staffLocalRevision = 0;
         let staffSyncDirty = false;
+        let staffCloudFetchSeq = 0;
+        let staffLastAppliedFetchSeq = 0;
+        const staffPendingPins = new Set();
         let archiveCuisine = []; 
         let hasUnsavedChanges = false;
 
@@ -2684,42 +2687,25 @@ async function secureFetch(input, init = {}) {
                 </span>
             `).join('');
         }
+        function cloneStaffSnapshot(list) {
+            return (Array.isArray(list) ? list : []).map(s => ({ ...s }));
+        }
 
-        async function confirmLatestStaffState(expectedSnapshot, revision) {
-            // Le serveur peut diffuser updateState avant que get-current-state ne reflète
-            // définitivement l'écriture. On confirme donc le dernier pointage avant
-            // d'autoriser une synchro distante à réécrire staffAccess.
-            for (let attempt = 0; attempt < 8; attempt++) {
-                if (revision !== staffLocalRevision) return false;
-
-                try {
-                    const r = await secureFetch(
-                        `${SERVER_URL}/get-current-state?tenantID=${tenantID}&_staffcheck=${Date.now()}`,
-                        { cache: 'no-store' }
-                    );
-                    if (r.ok) {
-                        const state = await r.json();
-                        const remote = state?.activeOrders?.['STAFF_ACCESS']?.data;
-                        if (staffSignature(remote) === staffSignature(expectedSnapshot)) {
-                            return true;
-                        }
-                    }
-                } catch (error) {
-                    console.warn("Vérification brigade différée :", error);
-                }
-
-                await new Promise(resolve => setTimeout(resolve, 300));
-            }
-            return false;
+        async function refreshStaffAfterWrite(revision) {
+            // Une seule lecture finale, APRES la dernière écriture.
+            // Une lecture démarrée pendant un clic ne pourra jamais réécrire un état plus ancien.
+            await new Promise(resolve => setTimeout(resolve, 120));
+            if (revision !== staffLocalRevision || staffSyncDirty) return;
+            await fetchStateFromCloud(true, { staffOnly: true, expectedRevision: revision });
         }
 
         function persistStaffAccess(message = "Brigade synchronisée") {
-            const snapshot = (Array.isArray(staffAccess) ? staffAccess : []).map(s => ({ ...s }));
+            const snapshot = cloneStaffSnapshot(staffAccess);
             const revision = ++staffLocalRevision;
             staffSyncDirty = true;
 
-            // Les écritures sont sérialisées. Ainsi, deux clics rapides sur deux employés
-            // ne peuvent pas arriver au serveur dans le désordre et s'écraser mutuellement.
+            // IMPORTANT : toutes les écritures STAFF_ACCESS passent par UNE file unique.
+            // Cela interdit à deux clics rapides d'arriver au serveur dans le désordre.
             staffWriteQueue = staffWriteQueue
                 .catch(() => {})
                 .then(async () => {
@@ -2728,25 +2714,29 @@ async function secureFetch(input, init = {}) {
                         headers: {'Content-Type': 'application/json'},
                         body: JSON.stringify({
                             tableId: 'STAFF_ACCESS',
-                            order: { data: snapshot }
+                            order: {
+                                data: snapshot,
+                                updatedAt: new Date().toISOString(),
+                                clientRevision: revision
+                            }
                         })
                     });
 
                     if (!response.ok) {
-                        throw new Error(`Synchronisation brigade refusée (${response.status})`);
+                        let detail = '';
+                        try { detail = (await response.json())?.error || ''; } catch (_) {}
+                        throw new Error(detail || `Synchronisation brigade refusée (${response.status})`);
                     }
 
+                    // Seule la DERNIERE écriture peut rendre la synchro propre.
                     if (revision === staffLocalRevision) {
-                        const confirmed = await confirmLatestStaffState(snapshot, revision);
-                        if (revision === staffLocalRevision && confirmed) {
-                            staffSyncDirty = false;
-                        }
+                        staffSyncDirty = false;
+                        showToast(message);
+                        // On ne bloque pas l'interface pendant la lecture de confirmation.
+                        refreshStaffAfterWrite(revision).catch(err =>
+                            console.warn('Confirmation brigade différée :', err)
+                        );
                     }
-
-                    return true;
-                })
-                .then(() => {
-                    if (revision === staffLocalRevision) showToast(message);
                     return true;
                 })
                 .catch(error => {
@@ -2763,18 +2753,23 @@ async function secureFetch(input, init = {}) {
 
         async function toggleDuty(pin) {
             const cleanPin = String(pin || '').trim();
+            if (!cleanPin || staffPendingPins.has(cleanPin)) return;
+            staffPendingPins.add(cleanPin);
+
             const index = staffAccess.findIndex(
                 s => String(s?.pin || '').trim() === cleanPin
             );
 
             if (index < 0) {
                 showToast("Collaborateur introuvable. Actualisez la liste.");
+                staffPendingPins.delete(cleanPin);
                 return;
             }
 
             const current = staffAccess[index];
             if (current.active === false) {
                 showToast("Ce collaborateur est inactif.");
+                staffPendingPins.delete(cleanPin);
                 return;
             }
 
@@ -2794,7 +2789,9 @@ async function secureFetch(input, init = {}) {
                 );
             } catch (error) {
                 // En cas d'échec, on recharge volontairement l'état serveur.
-                await fetchStateFromCloud(false);
+                await fetchStateFromCloud(false, { forceStaff: true });
+            } finally {
+                staffPendingPins.delete(cleanPin);
             }
         }
 
@@ -2842,10 +2839,15 @@ async function secureFetch(input, init = {}) {
             let newStaff = { name: name, pin: pin, role: title, dept: document.getElementById('staff-role').value, active: document.getElementById('staff-active').checked, onDuty: false };
             
             if (origPin) {
-                let existing = staffAccess.find(s => s.pin === origPin);
-                newStaff.onDuty = existing.onDuty || false; 
-                staffAccess[staffAccess.findIndex(s => s.pin === origPin)] = newStaff; 
+                let existing = staffAccess.find(s => String(s.pin || '').trim() === String(origPin).trim());
+                if (!existing) return alert("Collaborateur introuvable. Actualisez la liste.");
+                newStaff.id = existing.id || (`staff_${Date.now()}_${Math.random().toString(36).slice(2,8)}`);
+                newStaff.onDuty = existing.onDuty === true;
+                newStaff.createdAt = existing.createdAt || new Date().toISOString();
+                staffAccess[staffAccess.findIndex(s => String(s.pin || '').trim() === String(origPin).trim())] = { ...existing, ...newStaff, updatedAt: new Date().toISOString() };
             } else {
+                newStaff.id = `staff_${Date.now()}_${Math.random().toString(36).slice(2,8)}`;
+                newStaff.createdAt = new Date().toISOString();
                 staffAccess.push(newStaff);
             }
 
@@ -3261,6 +3263,10 @@ async function secureFetch(input, init = {}) {
         if (!hasPermission("CONFIG_WRITE")) return alert("Action non autorisée.");
         await auditEvent("CONFIG_SAVE_REQUESTED");
         try {
+            // Ne jamais lancer un Enregistrer global pendant qu'un pointage Brigade est encore en transit.
+            if (staffSyncDirty) {
+                try { await staffWriteQueue; } catch (_) {}
+            }
             let syncBtn = document.getElementById('sync-status'); if(syncBtn) syncBtn.innerHTML = ' Enregistrement...';
             
             if(document.getElementById('resto-name')) systemSettings.name = document.getElementById('resto-name').value.trim();
@@ -3367,28 +3373,67 @@ async function secureFetch(input, init = {}) {
             if(syncBtn) syncBtn.innerHTML = ' Erreur'; 
         }
     } 
+   async function fetchStateFromCloud(isBackground = false, options = {}) {
+    const fetchSeq = ++staffCloudFetchSeq;
+    const revisionAtStart = staffLocalRevision;
+    const dirtyAtStart = staffSyncDirty;
+    const preserveStaff = options.preserveStaff === true;
+    const staffOnly = options.staffOnly === true;
+    const forceStaff = options.forceStaff === true;
 
-   async function fetchStateFromCloud(isBackground = false) {
     try {
-        let syncBtn = document.getElementById('sync-status'); 
+        // Une synchro manuelle attend les écritures locales avant de lire le cloud.
+        if (!isBackground && staffSyncDirty) {
+            try { await staffWriteQueue; } catch (_) {}
+        }
+
+        let syncBtn = document.getElementById('sync-status');
         if (syncBtn && !isBackground) syncBtn.innerHTML = ' Sync...';
 
-        let r = await secureFetch(`${SERVER_URL}/get-current-state?tenantID=${tenantID}&_t=${Date.now()}`, { cache: 'no-store' });
-        let state = await r.json(); 
+        let r = await secureFetch(`${SERVER_URL}/get-current-state?tenantID=${tenantID}&_t=${Date.now()}&_seq=${fetchSeq}`, { cache: 'no-store' });
+        if (!r.ok) throw new Error(`Lecture serveur refusée (${r.status})`);
+        let state = await r.json();
         let aO = state.activeOrders || {};
 
+        const remoteStaffAccess = aO['STAFF_ACCESS']?.data;
+
+        // RÈGLE ANTI-RETOUR ARRIÈRE :
+        // une requête démarrée avant/pendant un pointage ne peut JAMAIS appliquer STAFF_ACCESS,
+        // même si sa réponse arrive après la fin du pointage.
+        const staffResponseIsCurrent =
+            fetchSeq >= staffLastAppliedFetchSeq &&
+            revisionAtStart === staffLocalRevision &&
+            dirtyAtStart === false &&
+            staffSyncDirty === false;
+
+        const explicitFinalConfirmation =
+            options.expectedRevision !== undefined &&
+            options.expectedRevision === staffLocalRevision &&
+            staffSyncDirty === false;
+
+        if (!preserveStaff && Array.isArray(remoteStaffAccess) &&
+            (forceStaff || explicitFinalConfirmation || staffResponseIsCurrent)) {
+            staffAccess = cloneStaffSnapshot(remoteStaffAccess);
+            staffLastAppliedFetchSeq = fetchSeq;
+            renderStaffList();
+            renderActiveStaff();
+            if (typeof updateDashboardStats === 'function') updateDashboardStats();
+        }
+
+        if (staffOnly) {
+            if (!isBackground) markSaved();
+            return state;
+        }
+
         systemSettings = aO['SETTINGS_MASTER']?.data || systemSettings;
-        
-        //  RÉCUPÉRATION BLINDÉE DES MENUS ET CATÉGORIES
         menuCuisine = aO['MENU_MASTER']?.data || {};
         menuBar = aO['MENU_MASTER_BAR']?.data || {};
-        menuPatisserie = aO['MENU_MASTER_PATISSERIE']?.data || {}; 
-        
+        menuPatisserie = aO['MENU_MASTER_PATISSERIE']?.data || {};
+
         let catC = aO['CATEGORIES_CUISINE']?.data || [];
         let catB = aO['CATEGORIES_BAR']?.data || [];
-        let catP = aO['CATEGORIES_PATISSERIE']?.data || []; 
+        let catP = aO['CATEGORIES_PATISSERIE']?.data || [];
 
-        //  AUTO-RÉPARATION : On force l'Admin à afficher toutes les catégories
         Object.keys(menuCuisine).forEach(cat => {
             if (!catC.find(c => c.id === cat)) catC.push({ id: cat, label: cat.toUpperCase() });
         });
@@ -3396,20 +3441,13 @@ async function secureFetch(input, init = {}) {
             if (!catB.find(c => c.id === cat)) catB.push({ id: cat, label: cat.toUpperCase() });
         });
         Object.keys(menuPatisserie).forEach(cat => {
-            if (!catP.find(c => c.id === cat)) catP.push({ id: cat, label: cat.toUpperCase() }); 
+            if (!catP.find(c => c.id === cat)) catP.push({ id: cat, label: cat.toUpperCase() });
         });
 
         categoriesCuisine = catC;
         categoriesBar = catB;
-        categoriesPatisserie = catP; 
-        
-        const remoteStaffAccess = aO['STAFF_ACCESS']?.data;
-        // Pendant un pointage local en cours de confirmation, on ne laisse pas
-        // une réponse cloud antérieure remettre les boutons dans l'ancien état.
-        if (!(isBackground && staffSyncDirty)) {
-            staffAccess = Array.isArray(remoteStaffAccess) ? remoteStaffAccess : [];
-        }
-        
+        categoriesPatisserie = catP;
+
         let financialData = aO['FINANCIAL_HISTORY'];
         archiveCuisine = financialData?.data || (Array.isArray(financialData) ? financialData : []);
 
@@ -3420,33 +3458,31 @@ async function secureFetch(input, init = {}) {
             globalArchitecture.zones = archi.zones || [];
         }
 
-        injectSettingsToUI(); 
-        updateCategoryDropdowns(); 
-        renderCategoryModalLists(); 
-        renderMenuList(); 
-        renderStaffList(); 
-        renderActiveStaff(); 
-        
-        // Sécurité anti-crash : on vérifie que la fonction existe
-        if (typeof updateDashboardStats === 'function') {
-            updateDashboardStats(); 
-        }
-        
-        renderFinancialDashboard(); 
+        injectSettingsToUI();
+        updateCategoryDropdowns();
+        renderCategoryModalLists();
+        renderMenuList();
+        renderStaffList();
+        renderActiveStaff();
+
+        if (typeof updateDashboardStats === 'function') updateDashboardStats();
+        renderFinancialDashboard();
         loadAIProfitability();
-        
-        if(!isBackground) markSaved();
-        
-} catch(e) { 
+
+        if (!isBackground) markSaved();
+        return state;
+
+    } catch(e) {
         console.error("Erreur Sync:", e);
-        let syncBtn = document.getElementById('sync-status'); 
-        if(syncBtn) { 
-            syncBtn.innerHTML = ' EN PANNE'; 
-            syncBtn.style.background = 'var(--danger)'; 
-            syncBtn.style.color = '#fff'; 
-        } 
+        let syncBtn = document.getElementById('sync-status');
+        if(syncBtn && !isBackground) {
+            syncBtn.innerHTML = ' EN PANNE';
+            syncBtn.style.background = 'var(--danger)';
+            syncBtn.style.color = '#fff';
+        }
+        throw e;
     }
-} //  VOICI L'ACCOLADE MANQUANTE DE fetchStateFromCloud !
+} // fetchStateFromCloud V2 anti-race
 
 // Fonction de secours pour empêcher les erreurs de références
 function updateDashboardStats() {
@@ -3516,6 +3552,8 @@ document.addEventListener('focusout', () => { isTyping = false; });
 socket = null;
 
 async function startAuthenticatedApplication() {
+    console.info('[iCHEF RH] BRIGADE-SYNC-V2-2026.08.30');
+    document.body.dataset.rhSyncVersion = 'BRIGADE-SYNC-V2-2026.08.30';
     await window.ICHEF_SECURITY_READY;
     tenantID = window.ICHEF_SECURITY.tenantID;
 
@@ -3537,47 +3575,56 @@ async function startAuthenticatedApplication() {
     socket.on('connect', () => {
         window.ICHEF_SECURITY.connectionState = 'online';
         //  On envoie bien l'objet contenant le tenantID pour la radio
-        socket.emit('joinTenant', {
-            tenantID,
-            deviceId: window.ICHEF_SECURITY.deviceId
-        });
+        // Compatible avec les deux générations de server.js :
+        // les anciennes attendent une chaîne, les nouvelles acceptent aussi un objet.
+        socket.emit('joinTenant', String(tenantID));
     });
 
     socket.on('connect_error', (error) => {
         window.ICHEF_SECURITY.connectionState = 'degraded';
         console.error('Connexion temps réel refusée :', error);
     });
-
-    // 3. L'ÉCOUTEUR MAGIQUE (Sans interruption de frappe)
+    // 3. SYNCHRONISATION TEMPS RÉEL — V2 ANTI-OSCILLATION
     socket.on('updateState', (state) => {
         if(!state) return;
-        
-        // Si l'admin est occupé (en train de taper, pop-up ouverte, modif non sauvée)
-        if (hasUnsavedChanges || document.querySelector('.modal.show') || isTyping) {
+
+        // Si une écriture locale Brigade est en cours, on ne touche JAMAIS à STAFF_ACCESS.
+        // Le reste de l'application peut quand même se rafraîchir en arrière-plan.
+        if (staffSyncDirty) {
+            fetchStateFromCloud(true, { preserveStaff: true }).catch(() => {});
+            return;
+        }
+
+        // Le serveur envoie déjà le nouvel état complet : on applique STAFF_ACCESS DIRECTEMENT.
+        // On évite ainsi un deuxième GET concurrent, qui était la cause du va-et-vient
+        // « En service -> Pointer -> En service » visible dans la vidéo.
+        const remoteStaff = state?.activeOrders?.['STAFF_ACCESS']?.data;
+        if (Array.isArray(remoteStaff)) {
+            staffAccess = cloneStaffSnapshot(remoteStaff);
+            renderStaffList();
+            renderActiveStaff();
+            if (typeof updateDashboardStats === 'function') updateDashboardStats();
+        }
+
+        // Pour les menus / architecture / finance, on conserve le rafraîchissement cloud,
+        // mais on lui interdit de réécrire la Brigade.
+        if (!(hasUnsavedChanges || document.querySelector('.modal.show') || isTyping)) {
+            fetchStateFromCloud(true, { preserveStaff: true }).catch(() => {});
+        } else {
             let syncBtn = document.getElementById('sync-status');
-            if(syncBtn) { 
-                syncBtn.innerHTML = ' Modif du Chef (Cliquer)'; 
-                syncBtn.style.color = '#fff'; 
-                syncBtn.style.background = 'var(--accent)'; 
-                syncBtn.style.borderColor = 'var(--accent)'; 
-                syncBtn.onclick = () => { 
-                    fetchStateFromCloud(false); 
-                    // Remet le bouton à son état normal après le clic
+            if(syncBtn) {
+                syncBtn.innerHTML = ' Mise à jour disponible';
+                syncBtn.style.color = '#fff';
+                syncBtn.style.background = 'var(--accent)';
+                syncBtn.style.borderColor = 'var(--accent)';
+                syncBtn.onclick = async () => {
+                    try { await fetchStateFromCloud(false); } catch (_) {}
                     syncBtn.style.background = 'transparent';
                     syncBtn.style.color = 'var(--text-main)';
                     syncBtn.style.borderColor = 'var(--border)';
                 };
             }
-            return; 
         }
-
-        // Si l'admin a les mains libres : mise à jour instantanée en arrière-plan.
-        // Un pointage local en cours reste prioritaire pour éviter le retour visuel
-        // « En service -> Pointer » observé lors de plusieurs clics rapides.
-        if (!staffSyncDirty) {
-            showToast("Mise à jour reçue");
-        }
-        fetchStateFromCloud(true);
     });
 
     const refreshAuditIfVisible = () => {
