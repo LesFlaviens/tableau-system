@@ -1793,15 +1793,18 @@ async function secureFetch(input, init = {}) {
                     </div>
 
 
-                    <div class="section-card" style="border:1px solid var(--accent);background:rgba(56,189,248,.025);">
-                        <div class="section-title">
-                            Zones reliées aux QR/NFC
+                    <div class="section-card" id="qr-nfc-zone-control-card" style="border:1px solid var(--accent);background:rgba(56,189,248,.025);">
+                        <div class="section-title" style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;">
+                            <span>Zones & Mode QR/NFC</span>
+                            <span style="font-size:.72rem;font-weight:900;color:var(--accent);border:1px solid var(--accent);border-radius:999px;padding:5px 9px;">PLAN DU PAD SYNCHRONISÉ</span>
                         </div>
-                        <p style="color:var(--text-muted);font-size:.84rem;margin-top:0;">
-                            Lecture automatique du plan de salle. Les modifications faites sur le PAD apparaissent ici sans intervention.
+                        <p style="color:var(--text-muted);font-size:.84rem;margin-top:0;line-height:1.5;">
+                            Les zones sont créées et dessinées sur le PAD. Ici, choisissez directement comment chaque zone fonctionne :
+                            <strong style="color:var(--gold);">QR/NFC</strong>, <strong>Serveur / Pad</strong> ou <strong style="color:var(--accent);">Comptoir / Bar</strong>.
+                            Les QR de la zone sont recalculés automatiquement.
                         </p>
-                        <div id="qr-nfc-zones-summary" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:10px;">
-                            <div class="empty-state" style="grid-column:1/-1;">Synchronisation des zones...</div>
+                        <div id="admin-zones-list" style="display:flex;flex-direction:column;gap:10px;">
+                            <div class="empty-state">Synchronisation des zones...</div>
                         </div>
                     </div>
                 </div>
@@ -1921,7 +1924,7 @@ async function secureFetch(input, init = {}) {
 
                         <p style="color: var(--text-muted); font-size: 0.9rem; line-height: 1.6; margin-top: 0;">
                             L’encaissement, le ticket fiscal, les clôtures et l’export sont gérés ici.
-                            Toute la configuration QR/NFC est regroupée dans l’écran <strong>QR & NFC</strong>.
+                            Les <strong>modes de zone QR/NFC / Serveur / Comptoir</strong> se règlent désormais uniquement dans l’écran <strong>QR & NFC</strong>.
                         </p>
 
                         <!-- iCHEF V8 : caisse système 100 % automatique.
@@ -1980,19 +1983,6 @@ async function secureFetch(input, init = {}) {
                              Ne pas afficher “certifié” ou “conforme NF525” tant que l’attestation ou la certification officielle n’est pas prête.
                         </div>
                     </div>
-                    <div class="section-card" style="border: 1px solid var(--accent); background: rgba(56, 189, 248, 0.02);">
-                        <h3 class="section-title" style="color: var(--accent); border-bottom-color: rgba(56, 189, 248, 0.2);">
-                             Architecture des Zones (Contrôle Terrain)
-                        </h3>
-                        <p style="color: var(--text-muted); font-size: 0.9rem; margin-bottom: 20px;">
-                            Les zones sont créées et dessinées directement sur le plan de salle (depuis l'écran Pad Serveur > Config > Nouvelle Zone).<br>
-                            Depuis ce panneau, vous pouvez <strong>contrôler et forcer le mode de paiement</strong> de chaque zone.
-                        </p>
-                        <div id="admin-zones-list" style="display: flex; flex-direction: column; gap: 10px;">
-                            <div class="empty-state">Chargement des zones...</div>
-                        </div>
-                    </div>
-
                     <div class="section-card">
                         <h3 class="section-title">Intégration Bancaire</h3>
                         <div class="toggle-row">
@@ -3112,10 +3102,10 @@ async function secureFetch(input, init = {}) {
                             : 'var(--success)';
 
                     let modeLabel = mode === 'qr_nfc'
-                        ? ' QR/NFC — Commande client'
+                        ? 'QR/NFC — Commande client'
                         : mode === 'bar'
-                            ? ' Comptoir — Paiement au bar'
-                            : ' Serveur — Paiement au pad/caisse';
+                            ? 'Comptoir — Paiement au bar'
+                            : 'Serveur — Service au Pad / Caisse';
 
                     return `
                         <div class="list-item" style="background: rgba(0,0,0,0.3); border: 1px solid var(--border-strong);">
@@ -3131,7 +3121,7 @@ async function secureFetch(input, init = {}) {
 
                             <div class="list-item-actions">
                                 <select class="input-field" style="padding: 6px 10px; font-size: 0.8rem; width: auto;" onchange="updateZoneMode('${z.id}', this.value)">
-                                    <option value="qr_nfc" ${mode === 'qr_nfc' ? 'selected' : ''}> QR/NFC — Commande</option>
+                                    <option value="qr_nfc" ${mode === 'qr_nfc' ? 'selected' : ''}>QR/NFC — Commande client</option>
                                     <option value="standard" ${mode === 'standard' ? 'selected' : ''}> Serveur / Pad</option>
                                     <option value="bar" ${mode === 'bar' ? 'selected' : ''}> Comptoir / Bar</option>
                                 </select>
@@ -3145,9 +3135,22 @@ async function secureFetch(input, init = {}) {
             }
         }
 
-        function updateZoneMode(id, newMode) { 
-            let zone = globalArchitecture.zones.find(z => z.id === id); 
-            if(zone) { zone.payMode = newMode; zone.mode = newMode; markUnsaved(); renderZonesList(); } 
+        function updateZoneMode(id, newMode) {
+            let zone = (globalArchitecture.zones || []).find(z => String(z.id) === String(id));
+            if (!zone) return;
+
+            zone.payMode = newMode;
+            zone.mode = newMode;
+            markUnsaved();
+            renderZonesList();
+
+            // Le changement de mode de zone peut modifier le parcours QR/NFC.
+            // Recalcul immédiat des cartes et liens.
+            if (typeof syncQRTables === 'function') {
+                syncQRTables({ reloadIfEmpty: false, silent: true })
+                    .catch(err => console.warn('[iCHEF QR/NFC ZONE]', err));
+            }
+            if (typeof renderQrNfcCentre === 'function') renderQrNfcCentre();
         }
 
         // --- CATEGORIES & MENU ---
@@ -3645,85 +3648,7 @@ async function secureFetch(input, init = {}) {
             statusEl.style.borderColor = connected ? 'var(--success)' : 'var(--gold)';
         }
 
-        renderQrNfcZonesSummary();
-    }
-
-    function renderQrNfcZonesSummary() {
-        const container = document.getElementById('qr-nfc-zones-summary');
-        if (!container) return;
-
-        const zones = Array.isArray(globalArchitecture?.zones)
-            ? globalArchitecture.zones.filter(Boolean)
-            : [];
-        const tables = Array.isArray(globalArchitecture?.tables)
-            ? globalArchitecture.tables.filter(Boolean)
-            : [];
-
-        if (!zones.length) {
-            container.innerHTML =
-                '<div class="empty-state" style="grid-column:1/-1;">Aucune zone définie. Les QR restent générés par table.</div>';
-            return;
-        }
-
-        const labelOfTable = table => String(
-            typeof table === 'object'
-                ? (table?.label ?? table?.name ?? table?.number ?? table?.tableNumber ?? table?.id ?? '')
-                : table
-        ).trim();
-
-        container.innerHTML = zones.map(zone => {
-            const zoneId = String(zone?.id ?? zone?.zoneId ?? '').trim();
-            const zoneName = String(zone?.label ?? zone?.name ?? zoneId ?? 'Zone').trim() || 'Zone';
-            const mode = String(zone?.payMode ?? zone?.mode ?? 'standard').toLowerCase();
-
-            const explicitTables = Array.isArray(zone?.tables)
-                ? zone.tables.map(x => String(
-                    typeof x === 'object'
-                        ? (x?.label ?? x?.name ?? x?.number ?? x?.id ?? '')
-                        : x
-                ).trim()).filter(Boolean)
-                : [];
-
-            const linked = new Set(explicitTables);
-
-            tables.forEach(table => {
-                if (!table || typeof table !== 'object') return;
-                const tableZoneId = String(table?.zoneId ?? table?.zoneID ?? table?.areaId ?? '').trim();
-                const directZone = String(table?.zone ?? table?.zoneName ?? table?.area ?? table?.section ?? '').trim();
-                if (
-                    (zoneId && tableZoneId === zoneId) ||
-                    directZone === zoneName
-                ) {
-                    const label = labelOfTable(table);
-                    if (label) linked.add(label);
-                }
-            });
-
-            const modeLabel =
-                mode === 'qr_nfc'
-                    ? 'QR/NFC prioritaire'
-                    : mode === 'bar'
-                        ? 'Comptoir'
-                        : 'Service standard';
-
-            const modeColor =
-                mode === 'qr_nfc'
-                    ? 'var(--gold)'
-                    : mode === 'bar'
-                        ? 'var(--accent)'
-                        : 'var(--success)';
-
-            return `
-                <div style="padding:13px;border:1px solid var(--border-strong);border-radius:11px;background:rgba(255,255,255,.025);">
-                    <div style="display:flex;justify-content:space-between;gap:8px;align-items:center;">
-                        <strong>${qrEscapeHtml(zoneName)}</strong>
-                        <span style="font-size:.66rem;font-weight:900;color:${modeColor};">${qrEscapeHtml(modeLabel)}</span>
-                    </div>
-                    <div style="margin-top:7px;color:var(--text-muted);font-size:.77rem;">
-                        ${linked.size} table${linked.size > 1 ? 's' : ''} reliée${linked.size > 1 ? 's' : ''}
-                    </div>
-                </div>`;
-        }).join('');
+        if (typeof renderZonesList === 'function') renderZonesList();
     }
 
     async function syncQRTables(options = {}) {
