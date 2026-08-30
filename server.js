@@ -64,13 +64,13 @@ app.use(cors(corsOptions));
 // Application du CORS pour le Temps Réel (Socket.io)
 const io = new Server(server, {
     cors: corsOptions,
-    transports: ['websocket', 'polling'],
+    transports: ['polling', 'websocket'], // Polling activé en fallback critique
     allowUpgrades: true,
 
-    // Tolérance réseau renforcée : évite les coupures sur micro-freezes,
-    // Wi-Fi instable, onglet momentanément ralenti ou proxy Render.
-    pingInterval: 25000,
-    pingTimeout: 70000,
+    // 🔥 VALEURS AJUSTÉES POUR LE LOAD BALANCER RENDER
+    pingInterval: 10000, // Envoie un ping toutes les 10 secondes (au lieu de 25s)
+    pingTimeout: 5000,   // Considère le client déconnecté s'il ne répond pas sous 5 secondes
+
     upgradeTimeout: 30000,
     connectTimeout: 45000,
 
@@ -84,6 +84,15 @@ const io = new Server(server, {
         maxDisconnectionDuration: 2 * 60 * 1000,
         skipMiddlewares: true
     }
+});
+
+// Diagnostic bas niveau Engine.IO.
+io.engine.on('connection_error', (err) => {
+    console.error('[ENGINE.IO] connection_error', {
+        code: err?.code,
+        message: err?.message,
+        context: err?.context
+    });
 });
 
 // Diagnostic bas niveau Engine.IO.
