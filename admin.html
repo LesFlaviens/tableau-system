@@ -1742,7 +1742,7 @@ async function secureFetch(input, init = {}) {
                                 <span>À utiliser uniquement quand le backend caisse est prêt.</span>
                             </div>
                             <label class="switch">
-                                <input type="checkbox" id="setting-cash-register-enabled" onchange="markUnsaved()">
+                                <input type="checkbox" id="setting-cash-register-enabled" onchange="scheduleCashRegisterConfigSync(true)">
                                 <span class="slider"></span>
                             </label>
                         </div>
@@ -1753,14 +1753,24 @@ async function secureFetch(input, init = {}) {
                                 <span>Tickets inaltérables, chaînage, signature, clôtures et export fiscal côté serveur.</span>
                             </div>
                             <label class="switch">
-                                <input type="checkbox" id="setting-fiscal-mode" onchange="markUnsaved()">
+                                <input type="checkbox" id="setting-fiscal-mode" onchange="scheduleCashRegisterConfigSync(true); updateCashRegisterSyncStatus()">
                                 <span class="slider"></span>
                             </label>
                         </div>
 
+                        <div id="cash-register-sync-card" style="margin:16px 0 18px;padding:16px;border:2px solid var(--border-strong);border-radius:12px;background:rgba(255,255,255,.025);line-height:1.5;">
+                            <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;">
+                                <strong style="color:var(--gold);font-size:.88rem;letter-spacing:.5px;">SYNCHRONISATION CAISSE / SYSTÈME</strong>
+                                <span id="cash-register-sync-status" style="font-size:.75rem;font-weight:900;border:1px solid var(--border-strong);border-radius:999px;padding:5px 9px;color:var(--text-muted);">VÉRIFICATION...</span>
+                            </div>
+                            <div id="cash-register-sync-detail" style="margin-top:9px;color:var(--text-muted);font-size:.84rem;">
+                                Configuration centrale SETTINGS_MASTER. Toute modification de ce bloc est transmise au serveur et diffusée aux écrans du restaurant.
+                            </div>
+                        </div>
+
                         <div class="input-group">
                             <label>URL backend caisse fiscale</label>
-                            <input type="text" id="setting-fiscal-backend-url" class="input-field" placeholder="/api/fiscal/cash-in" oninput="markUnsaved()">
+                            <input type="text" id="setting-fiscal-backend-url" class="input-field" placeholder="/api/fiscal/cash-in" oninput="scheduleCashRegisterConfigSync(false)">
                         </div>
 
                         <div style="background: rgba(239, 68, 68, 0.08); border: 1px solid rgba(239, 68, 68, 0.25); padding: 15px; border-radius: 12px; color: var(--text-muted); font-size: 0.85rem; line-height: 1.5;">
@@ -2524,6 +2534,7 @@ async function secureFetch(input, init = {}) {
             if (document.getElementById('setting-fiscal-backend-url')) {
                 document.getElementById('setting-fiscal-backend-url').value = cashRegisterSettings.backendUrl || "/api/fiscal/cash-in";
             }
+            updateCashRegisterSyncStatus();
 
             if (systemSettings.design) {
                 if(document.getElementById('design-bg-color')) document.getElementById('design-bg-color').value = systemSettings.design.bgColor || "#0b0f19";
@@ -3259,6 +3270,226 @@ async function secureFetch(input, init = {}) {
     function forceSync() { if(hasUnsavedChanges && !confirm(" Écraser les modifications ?")) return; fetchStateFromCloud(); }
     function retourCaisse() { window.location.href = `pack-eco.html?tenantID=${tenantID}`; }
 
+    // =========================================================
+    // CAISSE / FISCAL : CONFIGURATION CENTRALE TEMPS RÉEL
+    // =========================================================
+    let cashConfigSyncTimer = null;
+    let cashConfigWriteSeq = 0;
+    let cashConfigLastAppliedSeq = 0;
+    let cashConfigWriteInFlight = false;
+
+    function fiscalRealtimeHealthy() {
+        return navigator.onLine !== false &&
+               window.ICHEF_SECURITY?.connectionState === 'online' &&
+               !!(socket && socket.connected);
+    }
+
+    function normalizeFiscalBackendUrl(value) {
+        const fallback = '/api/fiscal/cash-in';
+        const raw = String(value || '').trim();
+        if (!raw) return fallback;
+
+        // iCHEF fiscal doit rester sur le même backend serveur.
+        if (/^\/api\/[A-Za-z0-9._~!$&'()*+,;=:@%\/-]+(?:\?[A-Za-z0-9._~!$&'()*+,;=:@%\/?-]*)?$/.test(raw)) {
+            return raw;
+        }
+
+        try {
+            const serverOrigin = new URL(SERVER_URL).origin;
+            const url = new URL(raw, SERVER_URL);
+            if (url.origin === serverOrigin && url.pathname.startsWith('/api/')) {
+                return url.pathname + url.search;
+            }
+        } catch (_) {}
+
+        return fallback;
+    }
+
+    function buildCashRegisterConfigFromUI() {
+        const previous = systemSettings.cashRegister || {};
+        const backendUrl = normalizeFiscalBackendUrl(
+            document.getElementById('setting-fiscal-backend-url')?.value
+        );
+
+        const taxConfig = systemSettings.taxConfig ||
+            (typeof buildTaxConfigFromUI === 'function' ? buildTaxConfigFromUI() : {});
+
+        return {
+            ...previous,
+            enabled: document.getElementById('setting-cash-register-enabled')?.checked === true,
+            fiscalMode: document.getElementById('setting-fiscal-mode')?.checked === true,
+            backendUrl,
+            fiscalConnectivity: {
+                continuousServerSyncRequired: true,
+                offlineFiscalizationAllowed: false,
+                auditServerSideRequired: true,
+                realtimeStatus: fiscalRealtimeHealthy() ? 'CONNECTED_SYNCED' : 'SYNC_REQUIRED'
+            },
+            separation: {
+                qrNfc: 'commande',
+                caisse: 'encaissement_fiscal'
+            },
+            taxConfig,
+            source: 'CONFIGURATION_GENERALE',
+            updatedAt: new Date().toISOString()
+        };
+    }
+
+    function injectCashRegisterSettingsToUI(config = systemSettings.cashRegister || {}) {
+        const enabledEl = document.getElementById('setting-cash-register-enabled');
+        const fiscalEl = document.getElementById('setting-fiscal-mode');
+        const urlEl = document.getElementById('setting-fiscal-backend-url');
+
+        if (enabledEl) enabledEl.checked = config.enabled === true;
+        if (fiscalEl) fiscalEl.checked = config.fiscalMode === true;
+        if (urlEl && document.activeElement !== urlEl) {
+            urlEl.value = config.backendUrl || '/api/fiscal/cash-in';
+        }
+        updateCashRegisterSyncStatus();
+    }
+
+    function setCashRegisterSyncBadge(label, color, border, detail) {
+        const badge = document.getElementById('cash-register-sync-status');
+        const card = document.getElementById('cash-register-sync-card');
+        const detailEl = document.getElementById('cash-register-sync-detail');
+        if (badge) {
+            badge.textContent = label;
+            badge.style.color = color;
+            badge.style.borderColor = border;
+        }
+        if (card) card.style.borderColor = border;
+        if (detailEl && detail) detailEl.textContent = detail;
+    }
+
+    function updateCashRegisterSyncStatus(state = '') {
+        const enabled = document.getElementById('setting-cash-register-enabled')?.checked === true;
+        const fiscal = document.getElementById('setting-fiscal-mode')?.checked === true;
+
+        if (state === 'saving' || cashConfigWriteInFlight) {
+            return setCashRegisterSyncBadge(
+                'SYNCHRONISATION...', 'var(--gold)', 'var(--gold)',
+                'Transmission de SETTINGS_MASTER au serveur iCHEF en cours.'
+            );
+        }
+
+        if (state === 'error') {
+            return setCashRegisterSyncBadge(
+                'NON SYNCHRONISÉ', 'var(--danger)', 'var(--danger)',
+                'Le serveur n’a pas confirmé la configuration. Le dernier état serveur reste prioritaire.'
+            );
+        }
+
+        if (!enabled) {
+            return setCashRegisterSyncBadge(
+                'CAISSE DÉSACTIVÉE', 'var(--text-muted)', 'var(--border-strong)',
+                'Le module caisse est désactivé pour ce restaurant.'
+            );
+        }
+
+        if (!fiscalRealtimeHealthy()) {
+            return setCashRegisterSyncBadge(
+                fiscal ? 'FISCAL — CONNEXION REQUISE' : 'CAISSE — HORS LIGNE',
+                'var(--danger)', 'var(--danger)',
+                'Connexion serveur / Socket requise. Aucune opération fiscale hors ligne ne doit être considérée comme synchronisée.'
+            );
+        }
+
+        return setCashRegisterSyncBadge(
+            fiscal ? 'FISCAL CONNECTÉ & SYNCHRONISÉ' : 'CAISSE CONNECTÉE',
+            'var(--success)', 'var(--success)',
+            'Configuration reçue par le serveur et diffusée en temps réel aux écrans du restaurant.'
+        );
+    }
+
+    function scheduleCashRegisterConfigSync(immediate = false) {
+        if (cashConfigSyncTimer) clearTimeout(cashConfigSyncTimer);
+        updateCashRegisterSyncStatus('saving');
+        cashConfigSyncTimer = setTimeout(
+            () => saveCashRegisterConfigRealtime().catch(() => {}),
+            immediate ? 0 : 650
+        );
+    }
+
+    async function saveCashRegisterConfigRealtime() {
+        if (!hasPermission('CONFIG_WRITE')) {
+            updateCashRegisterSyncStatus('error');
+            return alert('Action non autorisée.');
+        }
+
+        const seq = ++cashConfigWriteSeq;
+        const config = buildCashRegisterConfigFromUI();
+        cashConfigWriteInFlight = true;
+        updateCashRegisterSyncStatus('saving');
+
+        // L'URL affichée doit être la version normalisée réellement utilisée.
+        const urlEl = document.getElementById('setting-fiscal-backend-url');
+        if (urlEl) urlEl.value = config.backendUrl;
+
+        try {
+            const response = await secureFetch(
+                `${SERVER_URL}/api/config/cash-register?tenantID=${encodeURIComponent(tenantID)}`,
+                {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({
+                        cashRegister: config,
+                        taxConfig: config.taxConfig,
+                        deviceId: window.ICHEF_SECURITY?.deviceId || '',
+                        operator: window.ICHEF_SECURITY?.user?.nom || 'ADMIN'
+                    })
+                }
+            );
+
+            let data = {};
+            try { data = await response.json(); } catch (_) {}
+
+            // Compatibilité temporaire si le nouveau server.js n'est pas encore déployé.
+            if (response.status === 404) {
+                systemSettings.cashRegister = config;
+                const fallback = await secureFetch(
+                    `${SERVER_URL}/update-order?tenantID=${encodeURIComponent(tenantID)}`,
+                    {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify({
+                            tableId: 'SETTINGS_MASTER',
+                            order: { data: systemSettings }
+                        })
+                    }
+                );
+                if (!fallback.ok) throw new Error(`Synchronisation refusée (${fallback.status})`);
+                data = { success: true, cashRegister: config, fallback: true };
+            } else if (!response.ok || data.success !== true) {
+                throw new Error(data.error || `Synchronisation refusée (${response.status})`);
+            }
+
+            if (seq < cashConfigLastAppliedSeq) return;
+            cashConfigLastAppliedSeq = seq;
+            systemSettings.cashRegister = data.cashRegister || config;
+            injectCashRegisterSettingsToUI(systemSettings.cashRegister);
+            updateCashRegisterSyncStatus('synced');
+
+        } catch (error) {
+            console.error('Erreur synchronisation configuration caisse :', error);
+            updateCashRegisterSyncStatus('error');
+            showToast('Configuration caisse non synchronisée');
+            throw error;
+        } finally {
+            if (seq === cashConfigWriteSeq) {
+                cashConfigWriteInFlight = false;
+                updateCashRegisterSyncStatus();
+            }
+        }
+    }
+
+    window.addEventListener('online', () => {
+        updateCashRegisterSyncStatus();
+        if (document.getElementById('setting-cash-register-enabled')?.checked === true) {
+            scheduleCashRegisterConfigSync(false);
+        }
+    });
+    window.addEventListener('offline', () => updateCashRegisterSyncStatus());
+
     async function saveAllToCloud() {
         if (!hasPermission("CONFIG_WRITE")) return alert("Action non autorisée.");
         await auditEvent("CONFIG_SAVE_REQUESTED");
@@ -3308,16 +3539,7 @@ async function secureFetch(input, init = {}) {
                 mode: "commande"
             };
 
-            systemSettings.cashRegister = {
-                enabled: document.getElementById('setting-cash-register-enabled')?.checked === true,
-                fiscalMode: document.getElementById('setting-fiscal-mode')?.checked === true,
-                backendUrl: document.getElementById('setting-fiscal-backend-url')?.value.trim() || "/api/fiscal/cash-in",
-                separation: {
-                    qrNfc: "commande",
-                    caisse: "encaissement_fiscal"
-                },
-                taxConfig: systemSettings.taxConfig
-            };
+            systemSettings.cashRegister = buildCashRegisterConfigFromUI();
 
             let selectedDays = []; document.querySelectorAll('#schedule-days-container input[type="checkbox"]:checked').forEach(cb => selectedDays.push(parseInt(cb.value)));
             
@@ -3574,6 +3796,7 @@ async function startAuthenticatedApplication() {
 
     socket.on('connect', () => {
         window.ICHEF_SECURITY.connectionState = 'online';
+        updateCashRegisterSyncStatus();
         //  On envoie bien l'objet contenant le tenantID pour la radio
         // Compatible avec les deux générations de server.js :
         // les anciennes attendent une chaîne, les nouvelles acceptent aussi un objet.
@@ -3582,6 +3805,7 @@ async function startAuthenticatedApplication() {
 
     socket.on('connect_error', (error) => {
         window.ICHEF_SECURITY.connectionState = 'degraded';
+        updateCashRegisterSyncStatus();
         console.error('Connexion temps réel refusée :', error);
     });
     // 3. SYNCHRONISATION TEMPS RÉEL — V2 ANTI-OSCILLATION
@@ -3625,6 +3849,17 @@ async function startAuthenticatedApplication() {
                 };
             }
         }
+    });
+
+    socket.on('cashRegisterConfigChanged', (payload) => {
+        if (!payload || String(payload.tenantID || '') !== String(tenantID || '')) return;
+        if (cashConfigWriteInFlight) return;
+
+        if (payload.cashRegister && typeof payload.cashRegister === 'object') {
+            systemSettings.cashRegister = payload.cashRegister;
+            injectCashRegisterSettingsToUI(payload.cashRegister);
+        }
+        updateCashRegisterSyncStatus();
     });
 
     const refreshAuditIfVisible = () => {
