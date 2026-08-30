@@ -1,6 +1,7 @@
 <!DOCTYPE html>
 <html lang="fr">
 <head>
+<!-- ICHEF ADMIN V19 — SOCKET STABLE POLLING→WEBSOCKET -->
 <!-- ICHEF ADMIN FINAL V18.1 — CARTE & CATEGORIES PRO -->
 <!-- ICHEF ADMIN V18 — CARTE & CATEGORIES PRO -->
 <!-- ICHEF ADMIN V17 — MENU PRO ACCORDÉON + RECHERCHE -->
@@ -5655,28 +5656,49 @@ async function startAuthenticatedApplication() {
     await window.ICHEF_SECURITY_READY;
     tenantID = window.ICHEF_SECURITY.tenantID;
 
-    // 1. On charge la base de données au démarrage
-    await fetchStateFromCloud();
-
-    // 2. On allume le talkie-walkie
+    // 1. CONNEXION TEMPS RÉEL EN PREMIER — ne dépend plus du chargement MongoDB
+    // On démarre en polling (plus robuste derrière Render/proxy), puis Socket.IO
+    // améliore automatiquement vers WebSocket lorsque la liaison est stable.
     socket = io(SERVER_URL, {
-        transports: ['websocket', 'polling'],
+        transports: ['polling', 'websocket'],
+        upgrade: true,
+        rememberUpgrade: false,
         withCredentials: true,
         reconnection: true,
         reconnectionAttempts: Infinity,
         reconnectionDelay: 1000,
         reconnectionDelayMax: 5000,
+        randomizationFactor: 0.35,
         timeout: 30000,
+        forceNew: false,
+        multiplex: true,
+        closeOnBeforeunload: false,
         auth: {
             tenantID,
             deviceId: window.ICHEF_SECURITY.deviceId,
             csrfToken: window.ICHEF_SECURITY.csrfToken || ''
         },
-        query: { tenantID }
+        query: {
+            tenantID,
+            deviceId: window.ICHEF_SECURITY.deviceId || '',
+            page: 'CONFIGURATION'
+        }
+    });
+
+    // 2. CHARGEMENT DES DONNÉES EN PARALLÈLE
+    // Une erreur HTTP/MongoDB ne doit JAMAIS empêcher le Socket de rester connecté.
+    fetchStateFromCloud().catch(error => {
+        console.error('[iCHEF CONFIG] Chargement initial des données impossible :', error);
     });
 
     socket.on('connect', () => {
         window.ICHEF_SECURITY.connectionState = 'online';
+        console.info('[iCHEF CONFIG] ✅ Socket connecté', {
+            id: socket.id,
+            transport: socket.io?.engine?.transport?.name || 'inconnu',
+            tenantID: String(tenantID),
+            deviceId: window.ICHEF_SECURITY?.deviceId || ''
+        });
         updateCashRegisterSyncStatus();
         setQrNfcSaveIndicator('checking', 'Connexion Socket établie. Vérification de la persistance...');
         setTimeout(() => {
@@ -5741,8 +5763,16 @@ async function startAuthenticatedApplication() {
         } else {
             setQrNfcSaveIndicator('offline');
         }
-        console.error('Connexion temps réel refusée :', error);
+        console.error('[iCHEF CONFIG] Connexion temps réel refusée :', error?.message || error);
     });
+
+    // Diagnostic de transport : polling reste actif tant que WebSocket n'est pas stable.
+    if (socket.io?.engine) {
+        socket.io.engine.on('upgrade', () => {
+            console.info('[iCHEF CONFIG] ⬆ Transport amélioré :', socket.io.engine.transport.name);
+        });
+    }
+
     // 3. SYNCHRONISATION TEMPS RÉEL — V2 ANTI-OSCILLATION
     socket.on('updateState', (state) => {
         if(!state) return;
