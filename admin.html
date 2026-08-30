@@ -2209,6 +2209,11 @@ async function secureFetch(input, init = {}) {
         let categoriesBar = []; 
         let categoriesPatisserie = []; //  ET CELLE-CI AUSSI !
         let staffAccess = []; 
+        // Synchronisation Brigade : protège les pointages locaux contre un retour
+        // d'un état cloud plus ancien pendant que les écritures sont encore en cours.
+        let staffWriteQueue = Promise.resolve();
+        let staffLocalRevision = 0;
+        let staffSyncDirty = false;
         let archiveCuisine = []; 
         let hasUnsavedChanges = false;
 
@@ -2586,6 +2591,13 @@ async function secureFetch(input, init = {}) {
             const container = document.getElementById('admin-staff-list');
             if (container) container.innerHTML = html;
         }
+
+        function openStaffModal(pin = "") {
+            const modal = document.getElementById('staff-modal');
+            if (!modal) {
+                console.error("Modal staff introuvable");
+                return;
+            }
             // Annule une fermeture précédente encore en attente.
             // Sans cela, un clic rapide sur un autre collaborateur peut
             // rouvrir la fenêtre puis être masqué par l'ancien setTimeout.
@@ -2629,6 +2641,196 @@ async function secureFetch(input, init = {}) {
             });
         }
 
+        function staffSignature(list) {
+            return JSON.stringify(
+                (Array.isArray(list) ? list : []).map(s => ({
+                    name: String(s?.name || ""),
+                    pin: String(s?.pin || ""),
+                    role: String(s?.role || ""),
+                    dept: String(s?.dept || ""),
+                    active: s?.active !== false,
+                    onDuty: s?.onDuty === true
+                }))
+            );
+        }
+
+        function renderActiveStaff() {
+            const box = document.getElementById('active-staff-list');
+            if (!box) return;
+
+            const activeStaff = (Array.isArray(staffAccess) ? staffAccess : [])
+                .filter(s => s && s.active !== false && s.onDuty === true);
+
+            if (!activeStaff.length) {
+                box.innerHTML = '<div class="empty-state" style="width:100%;padding:10px;">La brigade est au repos.</div>';
+                return;
+            }
+
+            box.innerHTML = activeStaff.map(s => `
+                <span style="
+                    display:inline-flex;
+                    align-items:center;
+                    gap:7px;
+                    padding:8px 11px;
+                    border-radius:999px;
+                    border:1px solid rgba(16,185,129,.35);
+                    background:rgba(16,185,129,.08);
+                    color:var(--success);
+                    font-size:.78rem;
+                    font-weight:800;
+                ">
+                    <span style="width:7px;height:7px;border-radius:50%;background:var(--success);"></span>
+                    ${escapeHTML(s.name || 'Sans nom')}
+                </span>
+            `).join('');
+        }
+
+        async function confirmLatestStaffState(expectedSnapshot, revision) {
+            // Le serveur peut diffuser updateState avant que get-current-state ne reflète
+            // définitivement l'écriture. On confirme donc le dernier pointage avant
+            // d'autoriser une synchro distante à réécrire staffAccess.
+            for (let attempt = 0; attempt < 8; attempt++) {
+                if (revision !== staffLocalRevision) return false;
+
+                try {
+                    const r = await secureFetch(
+                        `${SERVER_URL}/get-current-state?tenantID=${tenantID}&_staffcheck=${Date.now()}`,
+                        { cache: 'no-store' }
+                    );
+                    if (r.ok) {
+                        const state = await r.json();
+                        const remote = state?.activeOrders?.['STAFF_ACCESS']?.data;
+                        if (staffSignature(remote) === staffSignature(expectedSnapshot)) {
+                            return true;
+                        }
+                    }
+                } catch (error) {
+                    console.warn("Vérification brigade différée :", error);
+                }
+
+                await new Promise(resolve => setTimeout(resolve, 300));
+            }
+            return false;
+        }
+
+        function persistStaffAccess(message = "Brigade synchronisée") {
+            const snapshot = (Array.isArray(staffAccess) ? staffAccess : []).map(s => ({ ...s }));
+            const revision = ++staffLocalRevision;
+            staffSyncDirty = true;
+
+            // Les écritures sont sérialisées. Ainsi, deux clics rapides sur deux employés
+            // ne peuvent pas arriver au serveur dans le désordre et s'écraser mutuellement.
+            staffWriteQueue = staffWriteQueue
+                .catch(() => {})
+                .then(async () => {
+                    const response = await secureFetch(`${SERVER_URL}/update-order?tenantID=${tenantID}`, {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify({
+                            tableId: 'STAFF_ACCESS',
+                            order: { data: snapshot }
+                        })
+                    });
+
+                    if (!response.ok) {
+                        throw new Error(`Synchronisation brigade refusée (${response.status})`);
+                    }
+
+                    if (revision === staffLocalRevision) {
+                        const confirmed = await confirmLatestStaffState(snapshot, revision);
+                        if (revision === staffLocalRevision && confirmed) {
+                            staffSyncDirty = false;
+                        }
+                    }
+
+                    return true;
+                })
+                .then(() => {
+                    if (revision === staffLocalRevision) showToast(message);
+                    return true;
+                })
+                .catch(error => {
+                    console.error("Erreur synchronisation brigade :", error);
+                    if (revision === staffLocalRevision) {
+                        staffSyncDirty = false;
+                        showToast("Erreur de synchronisation brigade");
+                    }
+                    throw error;
+                });
+
+            return staffWriteQueue;
+        }
+
+        async function toggleDuty(pin) {
+            const cleanPin = String(pin || '').trim();
+            const index = staffAccess.findIndex(
+                s => String(s?.pin || '').trim() === cleanPin
+            );
+
+            if (index < 0) {
+                showToast("Collaborateur introuvable. Actualisez la liste.");
+                return;
+            }
+
+            const current = staffAccess[index];
+            if (current.active === false) {
+                showToast("Ce collaborateur est inactif.");
+                return;
+            }
+
+            const nextOnDuty = current.onDuty !== true;
+            staffAccess[index] = { ...current, onDuty: nextOnDuty };
+
+            // Rendu optimiste immédiat : le clic reste visuellement stable.
+            renderStaffList();
+            renderActiveStaff();
+            updateDashboardStats();
+
+            try {
+                await persistStaffAccess(
+                    nextOnDuty
+                        ? `${current.name || 'Collaborateur'} est en service`
+                        : `${current.name || 'Collaborateur'} a terminé son service`
+                );
+            } catch (error) {
+                // En cas d'échec, on recharge volontairement l'état serveur.
+                await fetchStateFromCloud(false);
+            }
+        }
+
+        async function setStaffActive(pin, active) {
+            const cleanPin = String(pin || '').trim();
+            const index = staffAccess.findIndex(
+                s => String(s?.pin || '').trim() === cleanPin
+            );
+
+            if (index < 0) {
+                showToast("Collaborateur introuvable. Actualisez la liste.");
+                return;
+            }
+
+            const current = staffAccess[index];
+            staffAccess[index] = {
+                ...current,
+                active: active === true,
+                onDuty: active === true ? current.onDuty === true : false
+            };
+
+            renderStaffList();
+            renderActiveStaff();
+            updateDashboardStats();
+
+            try {
+                await persistStaffAccess(
+                    active === true
+                        ? `${current.name || 'Collaborateur'} réactivé`
+                        : `${current.name || 'Collaborateur'} désactivé`
+                );
+            } catch (error) {
+                await fetchStateFromCloud(false);
+            }
+        }
+
         async function saveStaff() {
             let name = document.getElementById('staff-name').value.trim(); 
             let title = document.getElementById('staff-title').value.trim(); 
@@ -2648,7 +2850,11 @@ async function secureFetch(input, init = {}) {
             }
 
             closeModals(); renderStaffList(); renderActiveStaff(); updateDashboardStats();
-            try { await secureFetch(`${SERVER_URL}/update-order?tenantID=${tenantID}`, { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ tableId: 'STAFF_ACCESS', order: { data: staffAccess } }) }); showToast("Synchronisé !"); } catch(e) {}
+            try {
+                await persistStaffAccess("Collaborateur synchronisé");
+            } catch (e) {
+                await fetchStateFromCloud(false);
+            }
         }
 
         async function deleteStaff(pin) {
@@ -2657,9 +2863,13 @@ async function secureFetch(input, init = {}) {
             if (!reason || reason.trim().length < 3) return;
             await auditEvent("STAFF_DEACTIVATION_REQUESTED", { reason: reason.trim() }); 
             if(confirm("Supprimer cet employé ?")) { 
-                staffAccess = staffAccess.filter(s => s.pin !== pin); 
+                staffAccess = staffAccess.filter(s => String(s.pin || '').trim() !== String(pin || '').trim()); 
                 renderStaffList(); renderActiveStaff(); updateDashboardStats();
-                try { await secureFetch(`${SERVER_URL}/update-order?tenantID=${tenantID}`, { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ tableId: 'STAFF_ACCESS', order: { data: staffAccess } }) }); } catch(e) {} 
+                try {
+                    await persistStaffAccess("Collaborateur supprimé");
+                } catch (e) {
+                    await fetchStateFromCloud(false);
+                } 
             } 
         }
 
@@ -3193,7 +3403,12 @@ async function secureFetch(input, init = {}) {
         categoriesBar = catB;
         categoriesPatisserie = catP; 
         
-        staffAccess = aO['STAFF_ACCESS']?.data || [];
+        const remoteStaffAccess = aO['STAFF_ACCESS']?.data;
+        // Pendant un pointage local en cours de confirmation, on ne laisse pas
+        // une réponse cloud antérieure remettre les boutons dans l'ancien état.
+        if (!(isBackground && staffSyncDirty)) {
+            staffAccess = Array.isArray(remoteStaffAccess) ? remoteStaffAccess : [];
+        }
         
         let financialData = aO['FINANCIAL_HISTORY'];
         archiveCuisine = financialData?.data || (Array.isArray(financialData) ? financialData : []);
@@ -3356,8 +3571,12 @@ async function startAuthenticatedApplication() {
             return; 
         }
 
-        // Si l'admin a les mains libres : mise à jour instantanée en arrière-plan !
-        showToast(" Carte mise à jour par le Chef !");
+        // Si l'admin a les mains libres : mise à jour instantanée en arrière-plan.
+        // Un pointage local en cours reste prioritaire pour éviter le retour visuel
+        // « En service -> Pointer » observé lors de plusieurs clics rapides.
+        if (!staffSyncDirty) {
+            showToast("Mise à jour reçue");
+        }
         fetchStateFromCloud(true);
     });
 
