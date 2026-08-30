@@ -1700,7 +1700,7 @@ async function secureFetch(input, init = {}) {
                     <div class="section-card">
                         <div class="section-title">
                             Générateur QR Codes & Programmation NFC 
-                            <button class="btn-sync" onclick="syncQRTables()" style="padding: 8px 16px;"> Générer</button>
+                            <button id="qr-generate-btn" class="btn-sync" onclick="syncQRTables()" style="padding: 8px 16px;"> Générer</button>
                         </div>
                         <div class="input-group">
                             <label>Domaine de votre Menu (Laissez vide pour auto)</label>
@@ -2240,7 +2240,14 @@ async function secureFetch(input, init = {}) {
             document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
             let target = document.getElementById(tabId); 
             if(target) { target.style.display = 'block'; setTimeout(() => target.classList.add('active'), 10); } 
-            if(el) el.classList.add('active'); 
+            if(el) el.classList.add('active');
+            if (tabId === 'tab-design') {
+                setTimeout(() => {
+                    if (typeof syncQRTables === 'function') {
+                        syncQRTables({ reloadIfEmpty: true }).catch(err => console.warn('[iCHEF QR/NFC]', err));
+                    }
+                }, 80);
+            }
             if(window.innerWidth <= 900) toggleMobileMenu(); 
         }
 
@@ -3240,8 +3247,240 @@ async function secureFetch(input, init = {}) {
         if(document.getElementById('admin-finance-list')) document.getElementById('admin-finance-list').innerHTML = html || '<div class="empty-state">Vide</div>';
     }
 
-    function openQRZoom(src, num) { if(document.getElementById('qr-zoom-img')) document.getElementById('qr-zoom-img').src = src.replace('250x250', '500x500'); if(document.getElementById('qr-zoom-title')) document.getElementById('qr-zoom-title').innerText = "TABLE " + num; let modal = document.getElementById('qr-zoom-modal'); if(modal) { modal.style.display = 'flex'; setTimeout(() => modal.classList.add('show'), 10); } }
 
+    // ==============================================================
+    // QR / NFC — GÉNÉRATEUR RELIÉ À L'ARCHITECTURE DU RESTAURANT
+    // ==============================================================
+    function qrEscapeHtml(value) {
+        return String(value ?? '')
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#039;');
+    }
+
+    function getZoneForTable(tableLabel) {
+        try {
+            const tables = Array.isArray(globalArchitecture?.tables) ? globalArchitecture.tables : [];
+            const zones = Array.isArray(globalArchitecture?.zones) ? globalArchitecture.zones : [];
+            const wanted = String(tableLabel ?? '').trim();
+
+            const tableObj = tables.find(t =>
+                String(t?.label ?? t?.name ?? t?.number ?? t?.id ?? '').trim() === wanted
+            );
+
+            if (!tableObj) return 'Salle';
+
+            const directZone = tableObj.zone || tableObj.zoneName || tableObj.area || tableObj.section;
+            if (directZone) return String(directZone);
+
+            const zoneId = tableObj.zoneId || tableObj.zoneID || tableObj.areaId;
+            if (zoneId !== undefined && zoneId !== null && String(zoneId).trim() !== '') {
+                const z = zones.find(zone => String(zone?.id ?? zone?.zoneId ?? '').trim() === String(zoneId).trim());
+                if (z) return String(z.label || z.name || z.id || 'Zone');
+            }
+
+            for (const z of zones) {
+                const zoneTables = Array.isArray(z?.tables)
+                    ? z.tables
+                    : Array.isArray(z?.tableIds)
+                        ? z.tableIds
+                        : [];
+
+                const found = zoneTables.some(x => {
+                    if (x && typeof x === 'object') {
+                        const ref = x.label ?? x.name ?? x.number ?? x.id;
+                        return String(ref ?? '').trim() === wanted ||
+                               String(ref ?? '').trim() === String(tableObj.id ?? '').trim();
+                    }
+                    return String(x ?? '').trim() === wanted ||
+                           String(x ?? '').trim() === String(tableObj.id ?? '').trim();
+                });
+
+                if (found) return String(z.label || z.name || z.id || 'Zone');
+            }
+
+            return String(tableObj.room || tableObj.salle || 'Salle');
+        } catch (e) {
+            console.warn('[iCHEF QR/NFC] zone introuvable', e);
+            return 'Salle';
+        }
+    }
+
+    function buildQrNfcLink(baseUrl, tableLabel) {
+        const zone = getZoneForTable(tableLabel);
+        let url;
+
+        try {
+            url = new URL(baseUrl);
+        } catch (_) {
+            try {
+                url = new URL(baseUrl, window.location.href);
+            } catch (_) {
+                const origin = (window.location.origin && window.location.origin !== 'null')
+                    ? window.location.origin
+                    : 'https://os.ichef.ch';
+                url = new URL(origin + '/menu-qr.html');
+            }
+        }
+
+        url.searchParams.set('tenantID', String(tenantID || ''));
+        url.searchParams.set('table', String(tableLabel));
+        url.searchParams.set('zone', String(zone));
+        url.searchParams.set('source', 'qr_nfc');
+        url.searchParams.set('mode', 'commande');
+
+        return url.toString();
+    }
+
+    async function copyTextToClipboard(text) {
+        try {
+            await navigator.clipboard.writeText(String(text || ''));
+            showToast('Lien NFC copié !');
+        } catch (_) {
+            const temp = document.createElement('textarea');
+            temp.value = String(text || '');
+            temp.style.position = 'fixed';
+            temp.style.opacity = '0';
+            document.body.appendChild(temp);
+            temp.focus();
+            temp.select();
+            document.execCommand('copy');
+            temp.remove();
+            showToast('Lien NFC copié !');
+        }
+    }
+
+    function openQrClientLink(encodedLink) {
+        const link = decodeURIComponent(encodedLink || '');
+        if (link) window.open(link, '_blank', 'noopener,noreferrer');
+    }
+
+    async function syncQRTables(options = {}) {
+        const container = document.getElementById('all-qr-grid');
+        const btn = document.getElementById('qr-generate-btn');
+        if (!container) return;
+
+        const originalButtonText = 'Générer';
+        if (btn) {
+            btn.disabled = true;
+            btn.textContent = 'Génération...';
+        }
+
+        try {
+            let tables = Array.isArray(globalArchitecture?.tables)
+                ? globalArchitecture.tables.filter(Boolean)
+                : [];
+
+            // Si l'écran vient juste de s'ouvrir, réclamer une fois l'architecture au serveur.
+            if (tables.length === 0 && options.reloadIfEmpty !== false && typeof fetchStateFromCloud === 'function') {
+                try {
+                    await fetchStateFromCloud(true, { preserveStaff: true });
+                    tables = Array.isArray(globalArchitecture?.tables)
+                        ? globalArchitecture.tables.filter(Boolean)
+                        : [];
+                } catch (e) {
+                    console.warn('[iCHEF QR/NFC] architecture non rafraîchie', e);
+                }
+            }
+
+            const normalized = [];
+            const seen = new Set();
+
+            for (const table of tables) {
+                const label = String(
+                    typeof table === 'object'
+                        ? (table.label ?? table.name ?? table.number ?? table.tableNumber ?? table.id ?? '')
+                        : table
+                ).trim();
+                if (!label || seen.has(label)) continue;
+                seen.add(label);
+                normalized.push({ label, raw: table });
+            }
+
+            if (normalized.length === 0) {
+                container.innerHTML = `
+                    <div class="empty-state" style="grid-column:1/-1;">
+                        Aucune table reçue depuis ARCHITECTURE.<br>
+                        Créez les tables sur le PAD, puis cliquez sur <strong>Générer</strong>.
+                    </div>`;
+                return;
+            }
+
+            const active = document.getElementById('setting-qrnfc-active')?.checked !== false;
+            const nfcLabel = document.getElementById('setting-qrnfc-label')?.value.trim() || 'Posez votre téléphone ici';
+            const configuredBase = document.getElementById('qr-base-url')?.value.trim() || '';
+            const qrPage = (document.getElementById('setting-qrnfc-page')?.value.trim() || 'menu-qr.html').replace(/^\/+/, '');
+
+            let baseUrl = configuredBase;
+            if (!baseUrl) {
+                const origin = (window.location.origin && window.location.origin !== 'null')
+                    ? window.location.origin.replace(/\/$/, '')
+                    : 'https://os.ichef.ch';
+                baseUrl = `${origin}/${qrPage}`;
+            }
+
+            const cards = normalized.map(({ label }) => {
+                const zone = getZoneForTable(label);
+                const link = buildQrNfcLink(baseUrl, label);
+                const encodedLink = encodeURIComponent(link);
+                const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=500x500&margin=12&data=${encodedLink}&color=000000&bgcolor=ffffff`;
+
+                return `
+                    <div class="ichef-qr-card" style="background:rgba(255,255,255,.045);padding:16px;border-radius:14px;text-align:center;border:1px solid var(--border-strong);opacity:${active ? '1' : '.45'};">
+                        <div style="font-size:1.15rem;font-weight:900;color:var(--gold);">TABLE ${qrEscapeHtml(label)}</div>
+                        <div style="font-size:.76rem;color:var(--text-muted);margin:5px 0 12px;">${qrEscapeHtml(zone)}</div>
+
+                        <img
+                            src="${qrUrl}"
+                            alt="QR table ${qrEscapeHtml(label)}"
+                            loading="eager"
+                            style="width:170px;height:170px;background:#fff;border:6px solid #fff;border-radius:10px;object-fit:contain;cursor:zoom-in;"
+                            onclick="openQRZoom(this.src, '${qrEscapeHtml(label)}')"
+                            onerror="this.style.display='none';this.nextElementSibling.style.display='block';"
+                        >
+                        <div style="display:none;color:var(--danger);font-size:.78rem;padding:20px 6px;">QR indisponible — vérifiez la connexion Internet.</div>
+
+                        <div style="margin-top:12px;background:#090b10;border:1px solid var(--border);border-radius:9px;padding:10px;">
+                            <div style="font-size:.66rem;color:var(--accent);font-weight:900;letter-spacing:.8px;text-transform:uppercase;">Lien NFC</div>
+                            <input type="text" readonly value="${qrEscapeHtml(link)}" style="width:100%;box-sizing:border-box;margin:7px 0;padding:7px;background:transparent;color:#fff;border:1px dashed var(--border-strong);border-radius:5px;font-size:.67rem;text-align:center;">
+                            <div style="display:grid;grid-template-columns:1fr 1fr;gap:7px;">
+                                <button class="btn-outline" type="button" data-qr-copy="${encodedLink}" style="padding:8px;font-size:.72rem;border-color:var(--gold);color:var(--gold);">COPIER NFC</button>
+                                <button class="btn-outline" type="button" data-qr-open="${encodedLink}" style="padding:8px;font-size:.72rem;border-color:var(--accent);color:var(--accent);">TESTER</button>
+                            </div>
+                            <div style="font-size:.7rem;color:var(--text-muted);margin-top:8px;">${qrEscapeHtml(nfcLabel)}</div>
+                        </div>
+                    </div>`;
+            }).join('');
+
+            container.innerHTML = cards;
+
+            container.querySelectorAll('[data-qr-copy]').forEach(el => {
+                el.addEventListener('click', () => copyTextToClipboard(decodeURIComponent(el.dataset.qrCopy || '')));
+            });
+            container.querySelectorAll('[data-qr-open]').forEach(el => {
+                el.addEventListener('click', () => openQrClientLink(el.dataset.qrOpen || ''));
+            });
+
+            if (btn) btn.textContent = `${normalized.length} QR généré${normalized.length > 1 ? 's' : ''}`;
+            showToast(`${normalized.length} QR/NFC généré${normalized.length > 1 ? 's' : ''}`);
+
+        } catch (e) {
+            console.error('Erreur génération QR/NFC :', e);
+            container.innerHTML = `<div class="empty-state" style="grid-column:1/-1;color:var(--danger);">Erreur génération QR/NFC : ${qrEscapeHtml(e?.message || 'erreur inconnue')}</div>`;
+            showToast('Erreur génération QR/NFC');
+        } finally {
+            if (btn) {
+                setTimeout(() => {
+                    btn.disabled = false;
+                    btn.textContent = originalButtonText;
+                }, 1800);
+            }
+        }
+    }
+
+    function openQRZoom(src, num) { if(document.getElementById('qr-zoom-img')) document.getElementById('qr-zoom-img').src = src.replace('250x250', '500x500'); if(document.getElementById('qr-zoom-title')) document.getElementById('qr-zoom-title').innerText = "TABLE " + num; let modal = document.getElementById('qr-zoom-modal'); if(modal) { modal.style.display = 'flex'; setTimeout(() => modal.classList.add('show'), 10); } }
 
     // --- UTILS & CLOUD ---
     function markUnsaved() { hasUnsavedChanges = true; let s = document.getElementById('sync-status'); if(s) { s.innerHTML = ' Modifié'; s.style.color = 'var(--gold)'; s.style.borderColor = 'var(--gold)'; } }
@@ -3691,6 +3930,9 @@ async function secureFetch(input, init = {}) {
         if (typeof updateDashboardStats === 'function') updateDashboardStats();
         renderFinancialDashboard();
         loadAIProfitability();
+        if (typeof syncQRTables === 'function' && document.getElementById('all-qr-grid')) {
+            syncQRTables({ reloadIfEmpty: false }).catch(err => console.warn('[iCHEF QR/NFC]', err));
+        }
 
         if (!isBackground) markSaved();
         return state;
@@ -4891,48 +5133,6 @@ async function loadAIProfitability() {
             }
         }
     }
-        // Sécurité : Ferme le menu si l'utilisateur clique n'importe où ailleurs sur l'écran
-    window.onclick = function(event) {
-        if (!event.target.matches('.drop-btn-ichef')) {
-            var dropdowns = document.getElementsByClassName("dropdown-content-ichef");
-            for (var i = 0; i < dropdowns.length; i++) {
-                var openDropdown = dropdowns[i];
-                if (openDropdown.classList.contains('show-menu')) {
-                    openDropdown.classList.remove('show-menu');
-                }
-            }
-        }
-    }
-
-    // =========================================================
-    //  GÉNÉRATEUR DE QR CODES ET NFC
-    // =========================================================
-    function syncQRTables() {
-        const grid = document.getElementById('all-qr-grid');
-        if (!grid) return;
-
-        let baseUrlInput = document.getElementById('qr-base-url');
-        let baseUrl = baseUrlInput && baseUrlInput.value.trim() !== '' 
-            ? baseUrlInput.value.trim() 
-            : `${window.location.origin}/menu-qr.html?tenantID=${window.tenantID}`;
-
-        let tables = (typeof globalArchitecture !== 'undefined' && globalArchitecture.tables && globalArchitecture.tables.length > 0) 
-                     ? globalArchitecture.tables 
-                     : [{ id: 'generic', name: 'Menu Général', number: '' }];
-
-        grid.innerHTML = tables.map(table => {
-            let tableUrl = table.number ? `${baseUrl}&table=${encodeURIComponent(table.number)}` : baseUrl;
-            let qrSrc = `https://api.qrserver.com/v1/create-qr-code/?size=250x250&data=${encodeURIComponent(tableUrl)}&margin=10`;
-
-            return `
-            <div style="background: var(--panel); border: 1px solid var(--border-strong); border-radius: 12px; padding: 15px; text-align: center;">
-                <h4 style="color: var(--gold);">${table.name || 'Table ' + table.number}</h4>
-                <img src="${qrSrc}" style="width: 150px; background: white; padding: 10px; border-radius: 8px; cursor: pointer;" onclick="openQRZoom('${qrSrc}', '${table.number}')">
-                <div style="font-size: 0.75rem; color: var(--text-muted); margin-top: 10px; word-break: break-all;">${tableUrl}</div>
-            </div>`;
-        }).join('');
-    }
-
 </script>
 </body>
 </html>
