@@ -9582,3 +9582,17 @@ app.get(
         console.log('');
     }
 );
+// ==========================================================
+// 🚀 DÉMARRAGE OFFICIEL DU SERVEUR iCHEF
+// IMPORTANT : CE BLOC DOIT ÊTRE LE DERNIER DU server.js
+// ==========================================================
+
+server.listen(PORT, () => {
+    console.log('');
+    console.log('==========================================');
+    console.log('✅ iCHEF EMPIRE OS — SERVEUR EN LIGNE');
+    console.log('==========================================');
+    console.log(`✅ Port serveur : ${PORT}`);
+    // ... vos autres console.log ...
+    console.log('==========================================');
+});
