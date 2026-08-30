@@ -6098,6 +6098,27 @@ function normalizeMenu(){
 function normalizeReservations(){const r=unwrap(STATE.activeOrders.RESERVATIONS_MASTER);STATE.reservations=Array.isArray(r)?r:[]}
 function applyDerived(){STATE.settings=unwrap(STATE.activeOrders.SETTINGS_MASTER)||{};normalizeArchitecture();normalizeMenu();normalizeReservations();if(STATE.currentTable)STATE.currentOrder=getOrder(STATE.currentTable)}
 
+/* ---------------- CONFIG CAISSE CENTRALE ---------------- */
+function padCashRegisterSettings(){
+  const cash=STATE.settings?.cashRegister;
+  if(cash&&typeof cash==="object"&&!Array.isArray(cash))return cash;
+  /* Compatibilité : avant la première configuration, ne casse pas les anciens restaurants. */
+  return {enabled:true,fiscalMode:true,backendUrl:"/api/fiscal/cash-in"};
+}
+function padCashRegisterEnabled(){return padCashRegisterSettings().enabled!==false}
+function padFiscalModeEnabled(){return padCashRegisterSettings().fiscalMode===true}
+function padFiscalBackendUrl(){
+  const raw=text(padCashRegisterSettings().backendUrl||"/api/fiscal/cash-in");
+  return /^\/api\//.test(raw)?raw:"/api/fiscal/cash-in";
+}
+function padAssertCashRegisterAvailable(){
+  if(!padCashRegisterEnabled())throw new Error("Module caisse désactivé dans Configuration > Architecture & Terrain");
+  if(padFiscalModeEnabled()&&(!navigator.onLine||STATE.connected!==true)){
+    throw new Error("Mode fiscal : connexion serveur et synchronisation temps réel obligatoires");
+  }
+  return true;
+}
+
 /* ---------------- ORDERS ---------------- */
 const SYSTEM_KEYS=new Set(["ARCHITECTURE","SETTINGS_MASTER","RESERVATIONS_MASTER","MENU_MASTER","MENU_MASTER_BAR","MENU_MASTER_PATISSERIE","STAFF_ACCESS","LOYALTY_MASTER","TIMESHEETS_MASTER","ALERTS_MASTER","FINANCIAL_HISTORY","AUDIT_MASTER"]);
 function isRealOrder(k,o){
@@ -8869,6 +8890,7 @@ function fiscalServerSnapshot(order){
 function paymentCurrency(){return fiscalProfile().currency==="CHF"?"CHF":"EUR"}
 
 async function fiscalizeWithServer(order,method,details=[],requestId=""){
+  padAssertCashRegisterAvailable();
   const validation=fiscalValidateOrder(order,{forPayment:true});
   if(!validation.ok)throw new Error(validation.errors[0]||"Commande fiscale invalide");
   const snap=fiscalServerSnapshot(order);
@@ -8879,7 +8901,7 @@ async function fiscalizeWithServer(order,method,details=[],requestId=""){
     payment:{method,amount:snap.total,currency:paymentCurrency(),details},
     orderSnapshot:snap
   };
-  const result=await paymentServerRequest('/api/fiscal/cash-in',{method:'POST',body:payload,idempotencyKey:id});
+  const result=await paymentServerRequest(padFiscalBackendUrl(),{method:'POST',body:payload,idempotencyKey:id});
   const ticketNumber=text(result.ticketNumber||result.fiscalId);
   if(!ticketNumber)throw new Error("Numéro de ticket fiscal serveur absent");
   await paymentServerRequest('/api/orders/close-paid',{method:'POST',body:{tableId:STATE.currentTable,ticketNumber}}).catch(err=>console.warn('[iCHEF] close-paid',err));
