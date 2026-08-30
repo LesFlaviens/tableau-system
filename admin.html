@@ -1861,26 +1861,32 @@ async function secureFetch(input, init = {}) {
                             Caisse = encaissement, ticket fiscal, clôture et export.
                         </p>
 
+                        <!-- iCHEF V8 : caisse système 100 % automatique.
+                             Les inputs restent présents mais invisibles pour conserver
+                             la compatibilité avec le reste du moteur. -->
+                        <input type="checkbox" id="setting-cash-register-enabled" checked hidden>
+                        <input type="checkbox" id="setting-fiscal-mode" checked hidden>
+
                         <div class="toggle-row">
                             <div class="toggle-info">
-                                <strong>Activer le module caisse</strong>
-                                <span>À utiliser uniquement quand le backend caisse est prêt.</span>
+                                <strong>Module caisse</strong>
+                                <span>Activé automatiquement par iCHEF. Aucun réglage manuel nécessaire.</span>
                             </div>
-                            <label class="switch">
-                                <input type="checkbox" id="setting-cash-register-enabled" onchange="scheduleCashRegisterConfigSync(true)">
-                                <span class="slider"></span>
-                            </label>
+                            <span id="cash-auto-module-state"
+                                  style="font-size:.76rem;font-weight:900;border:1px solid var(--success);color:var(--success);border-radius:999px;padding:7px 11px;">
+                                AUTOMATIQUE
+                            </span>
                         </div>
 
                         <div class="toggle-row">
                             <div class="toggle-info">
-                                <strong>Mode fiscal sécurisé</strong>
-                                <span>Tickets inaltérables, chaînage, signature, clôtures et export fiscal côté serveur.</span>
+                                <strong>Mode fiscal sécurisé côté serveur</strong>
+                                <span>Chaînage, preuves, clôtures et export pilotés automatiquement côté serveur.</span>
                             </div>
-                            <label class="switch">
-                                <input type="checkbox" id="setting-fiscal-mode" onchange="scheduleCashRegisterConfigSync(true); updateCashRegisterSyncStatus()">
-                                <span class="slider"></span>
-                            </label>
+                            <span id="cash-auto-fiscal-state"
+                                  style="font-size:.76rem;font-weight:900;border:1px solid var(--success);color:var(--success);border-radius:999px;padding:7px 11px;">
+                                AUTOMATIQUE
+                            </span>
                         </div>
 
                         <div id="cash-register-sync-card" style="margin:16px 0 18px;padding:16px;border:2px solid var(--border-strong);border-radius:12px;background:rgba(255,255,255,.025);line-height:1.5;">
@@ -1889,13 +1895,22 @@ async function secureFetch(input, init = {}) {
                                 <span id="cash-register-sync-status" style="font-size:.75rem;font-weight:900;border:1px solid var(--border-strong);border-radius:999px;padding:5px 9px;color:var(--text-muted);">VÉRIFICATION...</span>
                             </div>
                             <div id="cash-register-sync-detail" style="margin-top:9px;color:var(--text-muted);font-size:.84rem;">
-                                Configuration centrale SETTINGS_MASTER. Toute modification de ce bloc est transmise au serveur et diffusée aux écrans du restaurant.
+                                Configuration automatique centrale. iCHEF verrouille la route fiscale et synchronise l’état avec tous les écrans du restaurant.
                             </div>
                         </div>
 
                         <div class="input-group">
-                            <label>URL backend caisse fiscale</label>
-                            <input type="text" id="setting-fiscal-backend-url" class="input-field" placeholder="/api/fiscal/cash-in" oninput="scheduleCashRegisterConfigSync(false)">
+                            <label>Backend caisse fiscale — automatique</label>
+                            <input type="text"
+                                   id="setting-fiscal-backend-url"
+                                   class="input-field"
+                                   value="/api/fiscal/cash-in"
+                                   readonly
+                                   aria-readonly="true"
+                                   style="opacity:.82;cursor:not-allowed;">
+                            <div style="margin-top:7px;color:var(--text-muted);font-size:.78rem;">
+                                Route système verrouillée : elle ne peut pas être modifiée depuis l’interface.
+                            </div>
                         </div>
 
                         <div style="background: rgba(239, 68, 68, 0.08); border: 1px solid rgba(239, 68, 68, 0.25); padding: 15px; border-radius: 12px; color: var(--text-muted); font-size: 0.85rem; line-height: 1.5;">
@@ -2656,16 +2671,17 @@ async function secureFetch(input, init = {}) {
             }
 
             if (document.getElementById('setting-cash-register-enabled')) {
-                document.getElementById('setting-cash-register-enabled').checked = cashRegisterSettings.enabled === true;
+                document.getElementById('setting-cash-register-enabled').checked = true;
             }
 
             if (document.getElementById('setting-fiscal-mode')) {
-                document.getElementById('setting-fiscal-mode').checked = cashRegisterSettings.fiscalMode === true;
+                document.getElementById('setting-fiscal-mode').checked = true;
             }
 
             if (document.getElementById('setting-fiscal-backend-url')) {
-                document.getElementById('setting-fiscal-backend-url').value = cashRegisterSettings.backendUrl || "/api/fiscal/cash-in";
+                document.getElementById('setting-fiscal-backend-url').value = "/api/fiscal/cash-in";
             }
+            updateAutomaticCashRegisterRows();
             updateCashRegisterSyncStatus();
 
             if (systemSettings.design) {
@@ -3842,18 +3858,20 @@ async function secureFetch(input, init = {}) {
 
     function buildCashRegisterConfigFromUI() {
         const previous = systemSettings.cashRegister || {};
-        const backendUrl = normalizeFiscalBackendUrl(
-            document.getElementById('setting-fiscal-backend-url')?.value
-        );
+
+        // V8 : aucune décision manuelle.
+        // La route fiscale appartient au système iCHEF et reste verrouillée.
+        const backendUrl = '/api/fiscal/cash-in';
 
         const taxConfig = systemSettings.taxConfig ||
             (typeof buildTaxConfigFromUI === 'function' ? buildTaxConfigFromUI() : {});
 
         return {
             ...previous,
-            enabled: document.getElementById('setting-cash-register-enabled')?.checked === true,
-            fiscalMode: document.getElementById('setting-fiscal-mode')?.checked === true,
+            enabled: true,
+            fiscalMode: true,
             backendUrl,
+            automatic: true,
             fiscalConnectivity: {
                 continuousServerSyncRequired: true,
                 offlineFiscalizationAllowed: false,
@@ -3865,7 +3883,7 @@ async function secureFetch(input, init = {}) {
                 caisse: 'encaissement_fiscal'
             },
             taxConfig,
-            source: 'CONFIGURATION_GENERALE',
+            source: 'SYSTEM_AUTO_CONFIGURATION',
             updatedAt: new Date().toISOString()
         };
     }
@@ -3875,12 +3893,39 @@ async function secureFetch(input, init = {}) {
         const fiscalEl = document.getElementById('setting-fiscal-mode');
         const urlEl = document.getElementById('setting-fiscal-backend-url');
 
-        if (enabledEl) enabledEl.checked = config.enabled === true;
-        if (fiscalEl) fiscalEl.checked = config.fiscalMode === true;
-        if (urlEl && document.activeElement !== urlEl) {
-            urlEl.value = config.backendUrl || '/api/fiscal/cash-in';
-        }
+        // Toujours actifs côté configuration système.
+        if (enabledEl) enabledEl.checked = true;
+        if (fiscalEl) fiscalEl.checked = true;
+        if (urlEl) urlEl.value = '/api/fiscal/cash-in';
+
+        updateAutomaticCashRegisterRows();
         updateCashRegisterSyncStatus();
+    }
+
+    function updateAutomaticCashRegisterRows() {
+        const healthy = fiscalRealtimeHealthy();
+
+        const moduleState = document.getElementById('cash-auto-module-state');
+        const fiscalState = document.getElementById('cash-auto-fiscal-state');
+
+        const apply = (el, label, ok) => {
+            if (!el) return;
+            el.textContent = label;
+            el.style.color = ok ? 'var(--success)' : 'var(--gold)';
+            el.style.borderColor = ok ? 'var(--success)' : 'var(--gold)';
+        };
+
+        apply(
+            moduleState,
+            healthy ? 'ACTIF AUTOMATIQUEMENT' : 'EN ATTENTE DU SERVEUR',
+            healthy
+        );
+
+        apply(
+            fiscalState,
+            healthy ? 'SERVEUR SYNCHRONISÉ' : 'CONNEXION REQUISE',
+            healthy
+        );
     }
 
     function setCashRegisterSyncBadge(label, color, border, detail) {
@@ -3897,8 +3942,9 @@ async function secureFetch(input, init = {}) {
     }
 
     function updateCashRegisterSyncStatus(state = '') {
-        const enabled = document.getElementById('setting-cash-register-enabled')?.checked === true;
-        const fiscal = document.getElementById('setting-fiscal-mode')?.checked === true;
+        updateAutomaticCashRegisterRows();
+        const enabled = true;
+        const fiscal = true;
 
         if (state === 'saving' || cashConfigWriteInFlight) {
             return setCashRegisterSyncBadge(
@@ -4019,11 +4065,41 @@ async function secureFetch(input, init = {}) {
 
     window.addEventListener('online', () => {
         updateCashRegisterSyncStatus();
-        if (document.getElementById('setting-cash-register-enabled')?.checked === true) {
-            scheduleCashRegisterConfigSync(false);
-        }
+        scheduleCashRegisterConfigSync(false);
     });
     window.addEventListener('offline', () => updateCashRegisterSyncStatus());
+
+
+    // =========================================================
+    // iCHEF V8 — AUTO-BOOTSTRAP CAISSE / FISCAL
+    // =========================================================
+    let cashAutoBootstrapBusy = false;
+
+    async function ensureAutomaticCashRegisterConfig() {
+        const previous = systemSettings.cashRegister || {};
+        const needsNormalization =
+            previous.enabled !== true ||
+            previous.fiscalMode !== true ||
+            previous.backendUrl !== '/api/fiscal/cash-in' ||
+            previous.automatic !== true;
+
+        // L'interface reste toujours dans son état système, même hors ligne.
+        injectCashRegisterSettingsToUI(previous);
+
+        if (!needsNormalization) return;
+        if (cashAutoBootstrapBusy) return;
+        if (!fiscalRealtimeHealthy()) return;
+        if (!hasPermission('CONFIG_WRITE')) return;
+
+        cashAutoBootstrapBusy = true;
+        try {
+            await saveCashRegisterConfigRealtime();
+        } catch (error) {
+            console.warn('[iCHEF CAISSE AUTO] normalisation différée', error);
+        } finally {
+            cashAutoBootstrapBusy = false;
+        }
+    }
 
     async function saveAllToCloud() {
         if (!hasPermission("CONFIG_WRITE")) return alert("Action non autorisée.");
@@ -4216,6 +4292,9 @@ async function secureFetch(input, init = {}) {
         }
 
         injectSettingsToUI();
+        ensureAutomaticCashRegisterConfig().catch(err =>
+            console.warn('[iCHEF CAISSE AUTO]', err)
+        );
         updateCategoryDropdowns();
         renderCategoryModalLists();
         renderMenuList();
@@ -4340,6 +4419,13 @@ async function startAuthenticatedApplication() {
     socket.on('connect', () => {
         window.ICHEF_SECURITY.connectionState = 'online';
         updateCashRegisterSyncStatus();
+        setTimeout(() => {
+            if (typeof ensureAutomaticCashRegisterConfig === 'function') {
+                ensureAutomaticCashRegisterConfig().catch(err =>
+                    console.warn('[iCHEF CAISSE AUTO]', err)
+                );
+            }
+        }, 250);
         //  On envoie bien l'objet contenant le tenantID pour la radio
         // Compatible avec les deux générations de server.js :
         // les anciennes attendent une chaîne, les nouvelles acceptent aussi un objet.
