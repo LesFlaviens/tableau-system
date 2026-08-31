@@ -1,6 +1,7 @@
 <!doctype html>
 <html lang="fr">
 <head>
+<!-- ICHEF TELEPHONE SYMBIOSE TOTALE V4 — SERVER + PLAN + BFCACHE -->
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
 <meta name="theme-color" content="#ffffff">
@@ -5537,8 +5538,66 @@ function loadSocket(){
   return STATE.socketLoading;
 }
 
+/* =========================================================
+   iCHEF TÉLÉPHONE — SYMBIOSE TOTALE V4
+   - identification explicite tenant / device / page=TELEPHONE
+   - un seul Socket.IO réutilisable
+   - reprise BFCache via pagehide/pageshow
+   - écoute server-state-changed / architecture-changed
+   - HTTP reste le garde-fou si le WebSocket tombe
+   ========================================================= */
+const ICHEF_SOCKET_PAGE="TELEPHONE";
+let ICHEF_SYMBIOSE_SYNC_TIMER=null;
+let ICHEF_BFCACHE_SUSPENDED=false;
+
+function ichefSocketIdentity(){
+  return{
+    tenantID:String(STATE.tenantID||""),
+    deviceId:String(STATE.deviceId||""),
+    page:ICHEF_SOCKET_PAGE
+  };
+}
+
+function joinTelephoneTenant(socket=STATE.socket){
+  if(!socket?.connected||!STATE.tenantID)return false;
+  socket.emit("joinTenant",ichefSocketIdentity());
+  return true;
+}
+
+function scheduleSymbioseSync(reason="server-event",delay=180){
+  if(ICHEF_SYMBIOSE_SYNC_TIMER){
+    clearTimeout(ICHEF_SYMBIOSE_SYNC_TIMER);
+    ICHEF_SYMBIOSE_SYNC_TIMER=null;
+  }
+  ICHEF_SYMBIOSE_SYNC_TIMER=setTimeout(()=>{
+    ICHEF_SYMBIOSE_SYNC_TIMER=null;
+    if(!STATE.authenticated||document.hidden||!navigator.onLine)return;
+
+    /* Si updateState vient juste d'arriver, inutile de refaire un GET immédiat. */
+    if(STATE.lastServerAt&&now()-STATE.lastServerAt<900){
+      scheduleRender();
+      if(STATE.planViewOpen)renderLivePlan();
+      return;
+    }
+    syncFull("symbiose:"+reason);
+  },Math.max(0,Number(delay)||0));
+}
+
 async function connectSocket(){
-  try{await loadSocket();if(STATE.socket)return;
+  try{
+    await loadSocket();
+
+    /* Une instance unique : si elle existe mais est coupée, on la reconnecte. */
+    if(STATE.socket){
+      STATE.socket.auth={...(STATE.socket.auth||{}),...ichefSocketIdentity()};
+      if(!STATE.socket.connected){
+        try{STATE.socket.connect()}catch(_){/* le fallback HTTP reste actif */}
+      }else{
+        joinTelephoneTenant(STATE.socket);
+      }
+      return STATE.socket;
+    }
+
     const socket=window.io(APP_SERVER_URL,{
       withCredentials:false,
       transports:["websocket","polling"],
@@ -5548,26 +5607,62 @@ async function connectSocket(){
       reconnectionDelay:350,
       reconnectionDelayMax:2500,
       timeout:4500,
-      auth:{
-        tenantID:STATE.tenantID,
-        deviceId:STATE.deviceId
-      }
-    });STATE.socket=socket;
-    socket.on("connect",()=>{STATE.connected=true;setConnection("TEMPS RÉEL","good");socket.emit("joinTenant",String(STATE.tenantID));retryFailedWrites();if(!STATE.lastServerAt||now()-STATE.lastServerAt>5000)syncFull("reconnect")});
-    socket.on("updateState",s=>{STATE.connected=true;STATE.lastServerAt=now();setConnection("TEMPS RÉEL","good");applyServerState(s,"socket")});
+      auth:ichefSocketIdentity()
+    });
+
+    STATE.socket=socket;
+
+    socket.on("connect",()=>{
+      STATE.connected=true;
+      ICHEF_BFCACHE_SUSPENDED=false;
+      setConnection("TEMPS RÉEL","good");
+      joinTelephoneTenant(socket);
+      retryFailedWrites();
+      if(!STATE.lastServerAt||now()-STATE.lastServerAt>5000)syncFull("reconnect");
+    });
+
+    socket.on("updateState",s=>{
+      STATE.connected=true;
+      STATE.lastServerAt=now();
+      setConnection("TEMPS RÉEL","good");
+      applyServerState(s,"socket");
+    });
+
+    /* Événements génériques du nouveau server.js : tous les écrans restent en symbiose. */
+    socket.on("server-state-changed",evt=>{
+      scheduleSymbioseSync(text(evt?.source||evt?.tableId||"server-state-changed"),180);
+    });
+
+    socket.on("architecture-changed",evt=>{
+      scheduleSymbioseSync(text(evt?.source||"architecture-changed"),120);
+    });
+
     socket.on("staffDutyChanged",ichefHandleDutyChanged);
-    socket.on("disconnect",()=>{STATE.connected=false;setConnection(navigator.onLine?"RECONNEXION":"HORS LIGNE",navigator.onLine?"warn":"bad")});
+
+    socket.on("disconnect",reason=>{
+      STATE.connected=false;
+      if(ICHEF_BFCACHE_SUSPENDED){
+        setConnection("EN VEILLE","warn");
+        return;
+      }
+      setConnection(navigator.onLine?"RECONNEXION":"HORS LIGNE",navigator.onLine?"warn":"bad");
+      console.info("[iCHEF TELEPHONE] Socket déconnectée :",reason||"raison inconnue");
+    });
+
     socket.on("connect_error",err=>{
       STATE.connected=false;
       setConnection(navigator.onLine?"SYNCHRO HTTP":"HORS LIGNE",navigator.onLine?"warn":"bad");
       console.warn("[iCHEF TELEPHONE] Socket.IO indisponible, synchronisation HTTP conservée",err?.message||err);
     });
+
+    return socket;
   }catch(err){
     STATE.connected=false;
     STATE.socket=null;
     STATE.socketLoading=null;
     setConnection(navigator.onLine?"SYNCHRO HTTP":"HORS LIGNE",navigator.onLine?"warn":"bad");
     console.warn("[iCHEF TELEPHONE] Socket.IO non chargé, synchronisation HTTP conservée",err?.message||err);
+    return null;
   }
 }
 
@@ -5626,9 +5721,54 @@ function applyServerState(serverState,source){
   checkGlobalAlert();
 }
 
-window.addEventListener("online",()=>{setConnection("RECONNEXION","warn");connectSocket();retryFailedWrites();syncFull("online")},{passive:true});
-window.addEventListener("offline",()=>{STATE.connected=false;setConnection("HORS LIGNE","bad")},{passive:true});
-document.addEventListener("visibilitychange",()=>{if(!document.hidden&&STATE.authenticated){connectSocket();if(!STATE.lastServerAt||now()-STATE.lastServerAt>10000)syncFull("visible")}});
+window.addEventListener("online",()=>{
+  setConnection("RECONNEXION","warn");
+  connectSocket();
+  retryFailedWrites();
+  syncFull("online");
+},{passive:true});
+
+window.addEventListener("offline",()=>{
+  STATE.connected=false;
+  setConnection("HORS LIGNE","bad");
+},{passive:true});
+
+document.addEventListener("visibilitychange",()=>{
+  if(!document.hidden&&STATE.authenticated){
+    connectSocket();
+    if(!STATE.lastServerAt||now()-STATE.lastServerAt>10000)syncFull("visible");
+  }
+});
+
+/* BFCache Edge/Chrome : fermeture propre avant mise en cache, reprise propre au retour. */
+window.addEventListener("pagehide",event=>{
+  if(!STATE.authenticated)return;
+  ICHEF_BFCACHE_SUSPENDED=event.persisted===true;
+
+  if(ICHEF_SYMBIOSE_SYNC_TIMER){
+    clearTimeout(ICHEF_SYMBIOSE_SYNC_TIMER);
+    ICHEF_SYMBIOSE_SYNC_TIMER=null;
+  }
+
+  if(STATE.socket?.connected){
+    try{STATE.socket.disconnect()}catch(_){/* aucune écriture ici */}
+  }
+  STATE.connected=false;
+  if(ICHEF_BFCACHE_SUSPENDED)setConnection("EN VEILLE","warn");
+},{passive:true});
+
+window.addEventListener("pageshow",event=>{
+  if(!STATE.authenticated)return;
+  if(event.persisted||ICHEF_BFCACHE_SUSPENDED||!STATE.socket?.connected){
+    ICHEF_BFCACHE_SUSPENDED=false;
+    setConnection(navigator.onLine?"RECONNEXION":"HORS LIGNE",navigator.onLine?"warn":"bad");
+    if(navigator.onLine){
+      connectSocket();
+      retryFailedWrites();
+      setTimeout(()=>syncFull("pageshow"),120);
+    }
+  }
+},{passive:true});
 
 /* ---------------- DATA NORMALIZATION ---------------- */
 function normalizeArchitecture(){
