@@ -1,6 +1,6 @@
 /**
  * ==============================================================
- * 🧠 iCHEF EMPIRE OS — ENGINE SERVER BACKEND (V. FORTERESSE)
+ * 🧠 iCHEF EMPIRE OS — ENGINE SERVER BACKEND (SYMBIOSE TOTALE V2)
  * ==============================================================
  */
 
@@ -12,16 +12,10 @@ const crypto = require('crypto'); // 🛡️ INTÉGRATION SÉCURITÉ CRYPTO (LOI
 const mongoose = require('mongoose');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
 const twilio = require('twilio'); // 📡 INTÉGRATION TWILIO (SMS/WHATSAPP)
-const nodemailer = require('nodemailer');
 
 // 🔥 WEBSOCKETS POUR LE TEMPS RÉEL 🔥
 const http = require('http');
 const { Server } = require('socket.io');
-
-
-const ICHEF_SERVER_VERSION = 'SOCKET-STABLE-V22-CASH-CONFIG-2026.08.31';
-const ICHEF_SOCKET_PING_INTERVAL_MS = 20000;
-const ICHEF_SOCKET_PING_TIMEOUT_MS = 90000;
 
 const app = express();
 const server = http.createServer(app);
@@ -73,10 +67,10 @@ const io = new Server(server, {
 
     // Tolérance réseau renforcée : évite les coupures sur micro-freezes,
     // Wi-Fi instable, onglet momentanément ralenti ou proxy Render.
-    pingInterval: ICHEF_SOCKET_PING_INTERVAL_MS,
-    pingTimeout: ICHEF_SOCKET_PING_TIMEOUT_MS,
-    upgradeTimeout: 45000,
-    connectTimeout: 60000,
+    pingInterval: 25000,
+    pingTimeout: 70000,
+    upgradeTimeout: 30000,
+    connectTimeout: 45000,
 
     // Les états iCHEF peuvent être volumineux.
     maxHttpBufferSize: 20 * 1024 * 1024,
@@ -85,7 +79,7 @@ const io = new Server(server, {
     // Si Socket.IO >= 4.6 : restaure rooms/data et rejoue les paquets manqués
     // après une coupure courte.
     connectionStateRecovery: {
-        maxDisconnectionDuration: 5 * 60 * 1000,
+        maxDisconnectionDuration: 2 * 60 * 1000,
         skipMiddlewares: true
     }
 });
@@ -100,33 +94,100 @@ io.engine.on('connection_error', (err) => {
 });
 
 // ==========================================
-// CONFIGURATION STRIPE iCHEF (Abonnements SaaS & Empreintes)
+// 🔌 MOTEURS EXTERNES iCHEF — VARIABLES RENDER UNIQUEMENT
+// AUCUNE CLÉ PRIVÉE N'EST STOCKÉE DANS LE CODE.
 // ==========================================
-const stripeKey = process.env.STRIPE_SECRET_KEY || 'sk_test_51TN80JQ9Dw3nOfA4I3XTxPl5FR4ddYmU9Jw2pGmfa0eABz2P6wAzK8RMzHw2XilulLXxFmY2oEDgau4TcScOf9WK00ajIEuweB'; 
-const stripe = require('stripe')(stripeKey);
+const ICHEF_ENGINE_ENV = Object.freeze({
+    GEMINI_API_KEY: process.env.GEMINI_API_KEY || '',
+    MONGO_URI: process.env.MONGO_URI || '',
+    STRIPE_PRICE_ID: process.env.STRIPE_PRICE_ID || '',
+    STRIPE_SECRET_KEY: process.env.STRIPE_SECRET_KEY || '',
+    STRIPE_WEBHOOK_SECRET: process.env.STRIPE_WEBHOOK_SECRET || '',
+    TWILIO_ACCOUNT_SID: process.env.TWILIO_ACCOUNT_SID || '',
+    TWILIO_AUTH_TOKEN: process.env.TWILIO_AUTH_TOKEN || '',
+    TWILIO_PHONE_NUMBER: process.env.TWILIO_PHONE_NUMBER || ''
+});
 
-// ==========================================
-// CONFIGURATION TWILIO UNIQUE & GLOBALE
-// ==========================================
-const twilioAccountSid = process.env.TWILIO_ACCOUNT_SID;
-const twilioAuthToken = process.env.TWILIO_AUTH_TOKEN;
-const twilioPhoneNumber = process.env.TWILIO_PHONE_NUMBER;
-const NUMERO_FLAVIEN = '+330641437265'; // Cible des alertes critiques
+const stripe = ICHEF_ENGINE_ENV.STRIPE_SECRET_KEY
+    ? require('stripe')(ICHEF_ENGINE_ENV.STRIPE_SECRET_KEY)
+    : null;
 
-let twilioClient = null;
-
-if (twilioAccountSid && twilioAuthToken) {
+let genAI = null;
+if (ICHEF_ENGINE_ENV.GEMINI_API_KEY) {
     try {
-        twilioClient = twilio(twilioAccountSid, twilioAuthToken);
-        console.log("✅ Module Twilio activé et connecté !");
+        genAI = new GoogleGenerativeAI(ICHEF_ENGINE_ENV.GEMINI_API_KEY);
+        console.log('✅ Gemini configuré.');
     } catch (err) {
-        console.error("❌ Erreur d'initialisation Twilio :", err.message);
+        console.error('❌ Gemini initialisation :', err?.message || err);
     }
 } else {
-    console.warn("⚠️ Twilio DÉSACTIVÉ : Les variables d'environnement (SID ou Token) sont manquantes.");
+    console.warn('⚠️ Gemini désactivé : GEMINI_API_KEY manquante.');
 }
 
+const twilioAccountSid = ICHEF_ENGINE_ENV.TWILIO_ACCOUNT_SID;
+const twilioAuthToken = ICHEF_ENGINE_ENV.TWILIO_AUTH_TOKEN;
+const twilioPhoneNumber = ICHEF_ENGINE_ENV.TWILIO_PHONE_NUMBER;
 
+let twilioClient = null;
+if (twilioAccountSid && twilioAuthToken && twilioPhoneNumber) {
+    try {
+        twilioClient = twilio(twilioAccountSid, twilioAuthToken);
+        console.log('✅ Twilio configuré.');
+    } catch (err) {
+        console.error('❌ Twilio initialisation :', err?.message || err);
+    }
+} else {
+    console.warn('⚠️ Twilio désactivé : SID, TOKEN ou numéro manquant.');
+}
+
+if (stripe) {
+    console.log('✅ Stripe configuré.');
+} else {
+    console.warn('⚠️ Stripe désactivé : STRIPE_SECRET_KEY manquante.');
+}
+
+function requireGemini(res) {
+    if (!genAI) {
+        res.status(503).json({
+            success: false,
+            engine: 'gemini',
+            error: 'Moteur Gemini non configuré sur le serveur.'
+        });
+        return false;
+    }
+    return true;
+}
+
+function requireStripe(res) {
+    if (!stripe) {
+        res.status(503).json({
+            success: false,
+            engine: 'stripe',
+            error: 'Moteur Stripe non configuré sur le serveur.'
+        });
+        return false;
+    }
+    return true;
+}
+
+function requireTwilio(res) {
+    if (!twilioClient || !twilioPhoneNumber) {
+        res.status(503).json({
+            success: false,
+            engine: 'twilio',
+            error: 'Moteur Twilio non configuré sur le serveur.'
+        });
+        return false;
+    }
+    return true;
+}
+
+const GEMINI_MODEL = String(process.env.GEMINI_MODEL || 'gemini-2.0-flash').trim();
+
+function getGeminiModel() {
+    if (!genAI) throw new Error('GEMINI_NOT_CONFIGURED');
+    return genAI.getGenerativeModel({ model: GEMINI_MODEL });
+}
 
 // ==========================================================
 // 🌐 CONFIGURATION HTTP / CORS / CACHE
@@ -537,6 +598,72 @@ const PORT = process.env.PORT || 10000;
 // SÉCURITÉ MAÎTRE DE L'EMPIRE (Super Admin)
 const ADMIN_PASS = process.env.ADMIN_PASS || 'Empire2026';
 
+app.post('/api/system/engines/test', async (req, res) => {
+    const supplied = String(req.headers['x-ichef-admin'] || req.body?.adminPass || '');
+    if (!ADMIN_PASS || supplied !== ADMIN_PASS) {
+        return res.status(403).json({ success: false, error: 'Accès refusé.' });
+    }
+
+    const result = {
+        mongodb: { ok: mongoose.connection.readyState === 1 },
+        socketio: { ok: true },
+        gemini: { ok: false },
+        stripe: { ok: false },
+        twilio: { ok: false }
+    };
+
+    if (genAI) {
+        try {
+            const model = getGeminiModel();
+            const response = await model.generateContent('Réponds uniquement par OK.');
+            const text = String(response?.response?.text?.() || '').trim();
+            result.gemini = { ok: /^OK\b/i.test(text), response: text.slice(0, 20) };
+        } catch (error) {
+            result.gemini = { ok: false, error: error?.message || String(error) };
+        }
+    } else {
+        result.gemini = { ok: false, error: 'Non configuré' };
+    }
+
+    if (stripe) {
+        try {
+            const balance = await stripe.balance.retrieve();
+            result.stripe = {
+                ok: true,
+                livemode: Boolean(balance?.livemode),
+                priceConfigured: Boolean(ICHEF_ENGINE_ENV.STRIPE_PRICE_ID),
+                webhookConfigured: Boolean(ICHEF_ENGINE_ENV.STRIPE_WEBHOOK_SECRET)
+            };
+        } catch (error) {
+            result.stripe = { ok: false, error: error?.message || String(error) };
+        }
+    } else {
+        result.stripe = { ok: false, error: 'Non configuré' };
+    }
+
+    if (twilioClient) {
+        try {
+            const account = await twilioClient.api.accounts(twilioAccountSid).fetch();
+            result.twilio = {
+                ok: Boolean(account?.sid),
+                status: account?.status || 'unknown',
+                phoneConfigured: Boolean(twilioPhoneNumber)
+            };
+        } catch (error) {
+            result.twilio = { ok: false, error: error?.message || String(error) };
+        }
+    } else {
+        result.twilio = { ok: false, error: 'Non configuré' };
+    }
+
+    const allOk = Object.values(result).every(item => item.ok === true);
+    return res.status(allOk ? 200 : 207).json({
+        success: allOk,
+        engines: result,
+        timestamp: new Date().toISOString()
+    });
+});
+
 
 
 // 🚨 SÉCURITÉ STRIPE : On utilise raw() uniquement pour la route webhook
@@ -547,16 +674,54 @@ const cleanString = (str) => String(str || "").trim().toLowerCase();
 // ==========================================================
 // ❤️ SANTÉ DU SERVICE
 // ==========================================================
+function ichefEngineStatus() {
+    return {
+        mongodb: {
+            configured: Boolean(ICHEF_ENGINE_ENV.MONGO_URI),
+            connected: mongoose.connection.readyState === 1,
+            readyState: mongoose.connection.readyState
+        },
+        socketio: {
+            configured: true,
+            connected: true
+        },
+        gemini: {
+            configured: Boolean(ICHEF_ENGINE_ENV.GEMINI_API_KEY),
+            connected: Boolean(genAI),
+            model: GEMINI_MODEL
+        },
+        stripe: {
+            configured: Boolean(ICHEF_ENGINE_ENV.STRIPE_SECRET_KEY),
+            connected: Boolean(stripe),
+            priceConfigured: Boolean(ICHEF_ENGINE_ENV.STRIPE_PRICE_ID),
+            webhookConfigured: Boolean(ICHEF_ENGINE_ENV.STRIPE_WEBHOOK_SECRET)
+        },
+        twilio: {
+            configured: Boolean(
+                ICHEF_ENGINE_ENV.TWILIO_ACCOUNT_SID &&
+                ICHEF_ENGINE_ENV.TWILIO_AUTH_TOKEN &&
+                ICHEF_ENGINE_ENV.TWILIO_PHONE_NUMBER
+            ),
+            connected: Boolean(twilioClient && twilioPhoneNumber)
+        }
+    };
+}
+
+app.get('/api/system/engines', (req, res) => {
+    return res.status(200).json({
+        success: true,
+        service: 'iCHEF',
+        engines: ichefEngineStatus(),
+        timestamp: new Date().toISOString()
+    });
+});
+
 app.get('/healthz', (req, res) => {
     return res.status(200).json({
         ok: true,
         service: 'iCHEF',
-        version: ICHEF_SERVER_VERSION,
         uptimeSeconds: Math.round(process.uptime()),
-        mongoReadyState: mongoose.connection.readyState,
-        socketEngine: true,
-        socketPingIntervalMs: ICHEF_SOCKET_PING_INTERVAL_MS,
-        socketPingTimeoutMs: ICHEF_SOCKET_PING_TIMEOUT_MS,
+        engines: ichefEngineStatus(),
         timestamp: new Date().toISOString()
     });
 });
@@ -637,7 +802,7 @@ app.post('/api/anti-rush-predict', async (req, res) => {
             ]
         }`;
 
-        const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
+        const model = getGeminiModel();
         const result = await model.generateContent(prompt);
         let responseText = result.response.text();
         
@@ -691,7 +856,7 @@ app.post('/api/predict-hr-schedule', async (req, res) => {
             "hiringAdvice": "Explication claire : Faut-il recruter ou l'effectif actuel suffit-il ?"
         }`;
 
-        const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
+        const model = getGeminiModel();
         const result = await model.generateContent(prompt);
         let responseText = result.response.text();
         
@@ -954,6 +1119,7 @@ const activeStripePayments = new Map();
 // 💳 PAIEMENT DES COMMANDES (STRIPE CONNECT)
 // ==========================================
 app.post('/api/payments/stripe/checkout', async (req, res) => {
+    if (!requireStripe(res)) return;
     try {
         const { paymentRequestId, tableId, amount, currency, tenantID, successUrl, cancelUrl } = req.body;
         const safeID = cleanString(tenantID);
@@ -1015,10 +1181,22 @@ app.get('/api/payments/stripe/status', (req, res) => {
 // WEBHOOK STRIPE : SÉCURITÉ ANTI-IMPAYÉS & UPSELL 
 // ==========================================
 app.post('/webhook', async (req, res) => {
+    if (!stripe || !ICHEF_ENGINE_ENV.STRIPE_WEBHOOK_SECRET) {
+        return res.status(503).json({
+            success: false,
+            engine: 'stripe',
+            error: 'Stripe/Webhook non configuré.'
+        });
+    }
+
     const sig = req.headers['stripe-signature'];
     let event;
-    try { 
-        event = stripe.webhooks.constructEvent(req.body, sig, process.env.STRIPE_WEBHOOK_SECRET); 
+    try {
+        event = stripe.webhooks.constructEvent(
+            req.body,
+            sig,
+            ICHEF_ENGINE_ENV.STRIPE_WEBHOOK_SECRET
+        );
     } catch (err) { 
         return res.status(400).send(`Webhook Error: ${err.message}`); 
     }
@@ -1079,23 +1257,23 @@ app.post('/webhook', async (req, res) => {
     res.json({received: true});
 });
 
-let ichefShuttingDown = false;
+const mongoURI = ICHEF_ENGINE_ENV.MONGO_URI;
 
-const mongoURI =
-    process.env.MONGO_URI ||
-    "TON_MONGO_URI";
-
-mongoose.connect(mongoURI, {
-    serverSelectionTimeoutMS: 15000,
-    maxPoolSize: 20,
-    minPoolSize: 1,
-    maxIdleTimeMS: 60000,
-    heartbeatFrequencyMS: 10000
-})
-    .then(() => console.log('✅ Base de données iCHEF Online'))
-    .catch(err => {
-        console.error('❌ MongoDB connexion initiale :', err.message);
-    });
+if (mongoURI) {
+    mongoose.connect(mongoURI, {
+        serverSelectionTimeoutMS: 15000,
+        maxPoolSize: 20,
+        minPoolSize: 1,
+        maxIdleTimeMS: 60000,
+        heartbeatFrequencyMS: 10000
+    })
+        .then(() => console.log('✅ Base de données iCHEF Online'))
+        .catch(err => {
+            console.error('❌ MongoDB connexion initiale :', err.message);
+        });
+} else {
+    console.error('❌ MongoDB désactivé : MONGO_URI manquante.');
+}
 
 mongoose.connection.on('connected', () => {
     console.log('✅ MongoDB connecté.');
@@ -1106,11 +1284,6 @@ mongoose.connection.on('reconnected', () => {
 });
 
 mongoose.connection.on('disconnected', () => {
-    if (ichefShuttingDown) {
-        console.log('✅ MongoDB fermé volontairement pendant l’arrêt iCHEF.');
-        return;
-    }
-
     console.warn('⚠️ MongoDB déconnecté — reconnexion automatique en cours.');
 });
 
@@ -1984,16 +2157,17 @@ app.get('/api/export-preuves-legales', async (req, res) => {
 // ==========================================
 // 🤖 MOTEURS IA (GEMINI)
 // ==========================================
-const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY || 'CLE_MANQUANTE');
+// Gemini est initialisé dans le bloc central ICHEF_ENGINE_ENV.
 
 app.post('/api/scan-invoice', async (req, res) => {
+    if (!requireGemini(res)) return;
     const { imageBase64, mimeType } = req.body;
     if (!imageBase64) return res.status(400).json({ success: false, error: "Aucune image fournie." });
     try {
         const base64Data = imageBase64.includes(',') ? imageBase64.split(',')[1] : imageBase64;
         const imagePart = { inlineData: { data: base64Data, mimeType: mimeType || "image/jpeg" } };
         const prompt = 'Analyse cette image de facture. Extrais les informations. RESPOND ONLY WITH JSON WITHOUT MARKDOWN TEXT: { "fournisseur": "Nom", "adresse": "Adresse", "telephone": "Tel", "email": "Email", "devise": "€", "date": "JJ/MM/AAAA", "totalHT": 0.00, "tva": 0.00, "totalTTC": 0.00, "articles": [{ "nom": "nom", "categorie": "catégorie", "quantite": "qty", "prixUnitaire": 0.00 }] }';
-        const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
+        const model = getGeminiModel();
         const result = await model.generateContent([prompt, imagePart]);
         
         let responseText = result.response.text().trim();
@@ -2006,12 +2180,13 @@ app.post('/api/scan-invoice', async (req, res) => {
 });
 
 app.post('/analyse-ticket', async (req, res) => {
+    if (!requireGemini(res)) return;
     const { image, mimeType } = req.body;
     if (!image) return res.status(400).json({ success: false, error: "Image manquante" });
     try {
         const imagePart = { inlineData: { data: image, mimeType: mimeType || "image/jpeg" } };
         const prompt = 'Analyse cette étiquette de traçabilité. JSON NO MARKDOWN: { "nom": "Nom du produit", "lot": "Numéro", "dlc": "JJ/MM/AAAA" }';
-        const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
+        const model = getGeminiModel();
         const result = await model.generateContent([prompt, imagePart]);
         
         let text = result.response.text().trim();
@@ -2026,6 +2201,7 @@ app.post('/analyse-ticket', async (req, res) => {
 // 🧠 IA DIRECTEUR OPÉRATIONNEL & FINANCIER (VISION 360°)
 // ==========================================
 app.post('/api/ai-executive-report', async (req, res) => {
+    if (!requireGemini(res)) return;
     const { tenantID, currentStock, recentSales, financialStats } = req.body;
     const safeID = cleanString(tenantID);
 
@@ -2052,7 +2228,7 @@ app.post('/api/ai-executive-report', async (req, res) => {
             "analyseMarge": "Explication claire."
         }`;
 
-const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
+const model = getGeminiModel();
         const result = await model.generateContent(prompt);
         let responseText = result.response.text();
         
@@ -2111,7 +2287,7 @@ app.post('/api/voice-assistant', async (req, res) => {
             "actionToTrigger": "NONE" 
         }`;
 
- const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
+ const model = getGeminiModel();
         const result = await model.generateContent(prompt);
         
         let responseText = result.response.text().trim();
@@ -2241,7 +2417,7 @@ app.post('/api/smart-reservation', async (req, res) => {
           "optimisationInfo": "Notes internes pour le manager" 
         }`;
 
-const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
+const model = getGeminiModel();
         const result = await model.generateContent(prompt);
         
         let responseText = result.response.text().trim();
@@ -2273,35 +2449,44 @@ const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
 });
 
 // =========================================================================
-// 📞 DEMANDE DE RAPPEL (VIA GMAIL DIRECT)
+// 📞 DEMANDE DE RAPPEL — TWILIO RÉEL
+// Le navigateur n'a jamais accès au SID, au token ni au numéro Twilio.
 // =========================================================================
 app.post('/api/twilio/call-me', async (req, res) => {
-    const { phone } = req.body;
-    
+    if (!requireTwilio(res)) return;
+
+    const phone = String(req.body?.phone || '').trim();
+    const normalized = phone.replace(/[^+\d]/g, '');
+
+    if (!/^\+\d{8,15}$/.test(normalized)) {
+        return res.status(400).json({
+            success: false,
+            error: 'Numéro invalide. Utiliser le format international, ex. +33...'
+        });
+    }
+
     try {
-        const transporter = nodemailer.createTransport({
-            service: 'gmail',
-            auth: {
-                user: 'flavieniche@gmail.com', // 👈 L'apostrophe est bien fermée ici !
-                pass: 'atebfwhijmgmavcy' // 👈 Ton code Google sans espaces
-            }
+        const message = await twilioClient.messages.create({
+            from: twilioPhoneNumber,
+            to: normalized,
+            body: 'iCHEF : votre demande de rappel a bien été reçue. Notre équipe vous recontactera rapidement.'
         });
 
-        const mailOptions = {
-            from: 'flavieniche@gmail.com',
-            to: 'iche.flavien@ichef.ch',
-            subject: '🚨 iCHEF OS - RAPPEL URGENT 🚨',
-            text: `Un prospect sur la vitrine demande à être rappelé immédiatement.\n\n📞 Numéro : ${phone}`
-        };
+        console.log(`✅ Twilio rappel confirmé : ${message.sid}`);
 
-        await transporter.sendMail(mailOptions);
-        
-        console.log(`✅ Alerte de rappel EMAIL envoyée pour le numéro : ${phone}`);
-        res.json({ success: true, message: "Demande traitée avec succès." });
-
+        return res.json({
+            success: true,
+            engine: 'twilio',
+            messageSid: message.sid,
+            status: message.status || 'queued'
+        });
     } catch (error) {
-        console.error("❌ Erreur Email Rappel :", error.message);
-        res.status(500).json({ success: false, error: "Erreur serveur email" });
+        console.error('❌ Twilio rappel :', error?.message || error);
+        return res.status(502).json({
+            success: false,
+            engine: 'twilio',
+            error: error?.message || 'Erreur Twilio.'
+        });
     }
 });
 
@@ -4592,168 +4777,222 @@ function normalizeMenuDepartment(value) {
 
     return MENU_SYNC_KEYS[department] ? department : null;
 }
-// 🔐 REGISTRE DES ÉCRANS ACTIFS — V20
-// Une seule connexion active par tenant + device + page.
-// Lorsqu'un même écran se reconnecte, l'ancienne Socket est remplacée proprement
-// au lieu de rester empilée dans les logs et dans la room Socket.IO.
-const activeScreenSockets = new Map();
 
-function buildActiveScreenKey(tenantID, deviceId, page) {
-    const tenant = cleanString(tenantID);
-    const device = String(deviceId || '').trim();
-    const screenPage = String(page || '').trim().toUpperCase();
 
-    if (!tenant || !device || !screenPage) return '';
-    return `${tenant}::${device}::${screenPage}`;
+// ================================================================
+// iCHEF — PLAN INTERACTIF / ARCHITECTURE : SYMBIOSE SERVEUR
+// Source de vérité : MongoDB -> activeOrders.ARCHITECTURE.data
+// ================================================================
+const ICHEF_ARCHITECTURE_WRITE_QUEUES = new Map();
+
+function ichefArchitectureData(value) {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
+    if (value.data && typeof value.data === 'object' && !Array.isArray(value.data)) {
+        return value.data;
+    }
+    return value;
 }
 
-function inferIchefPageFromHandshake(socket) {
-    const direct = String(
-        socket?.handshake?.auth?.page ||
-        socket?.handshake?.query?.page ||
-        socket?.handshake?.query?.module ||
-        ''
-    ).trim().toUpperCase();
+function ichefNormalizeArchitecture(value, meta = {}) {
+    const raw = ichefArchitectureData(value);
+    const base = { ...raw };
 
-    if (direct) return direct;
+    const cleanRoom = (v) => String(v ?? '').trim().slice(0, 120);
+    const rooms = Array.isArray(raw.rooms)
+        ? [...new Set(raw.rooms.map(cleanRoom).filter(Boolean))].slice(0, 200)
+        : [];
 
-    const referer = String(
-        socket?.handshake?.headers?.referer ||
-        socket?.handshake?.headers?.referrer ||
-        ''
-    ).trim();
+    if (!rooms.length) rooms.push('Salle Principale');
 
-    if (!referer) return 'LEGACY';
+    const defaultRoom = rooms[0];
 
-    try {
-        const pathname = new URL(referer).pathname.toLowerCase();
+    const tables = Array.isArray(raw.tables)
+        ? raw.tables
+            .filter(v => v && typeof v === 'object' && !Array.isArray(v))
+            .slice(0, 2000)
+            .map((table) => {
+                const next = { ...table };
+                const label = String(
+                    table.label ?? table.name ?? table.id ?? ''
+                ).trim().slice(0, 120);
+                if (label) next.label = label;
+                next.room = cleanRoom(table.room || defaultRoom) || defaultRoom;
+                return next;
+            })
+            .filter(table => String(table.label ?? table.name ?? table.id ?? '').trim())
+        : [];
 
-        const map = [
-            ['admin.html', 'CONFIGURATION'],
-            ['rh.html', 'RH'],
-            ['pad.html', 'PAD'],
-            ['telephone.html', 'TELEPHONE'],
-            ['ordinateur.html', 'ORDINATEUR'],
-            ['caissetactile.html', 'CAISSE_TACTILE'],
-            ['caisse.html', 'CAISSE'],
-            ['chef.html', 'CUISINE'],
-            ['chef-bar.html', 'BAR'],
-            ['chef-patissier.html', 'PATISSERIE'],
-            ['haccp.html', 'HACCP'],
-            ['menu-qr.html', 'MENU_CLIENT']
-        ];
+    const zones = Array.isArray(raw.zones)
+        ? raw.zones
+            .filter(v => v && typeof v === 'object' && !Array.isArray(v))
+            .slice(0, 1000)
+            .map((zone) => {
+                const next = { ...zone };
+                const label = String(
+                    zone.label ?? zone.name ?? zone.id ?? ''
+                ).trim().slice(0, 120);
+                if (label) next.label = label;
+                next.room = cleanRoom(zone.room || defaultRoom) || defaultRoom;
+                return next;
+            })
+        : [];
 
-        for (const [file, label] of map) {
-            if (pathname.includes(file)) return label;
+    return {
+        ...base,
+        rooms,
+        tables,
+        zones,
+        updatedAt: new Date().toISOString(),
+        updatedByDevice: String(meta.deviceId || base.updatedByDevice || '').trim().slice(0, 120),
+        updatedByRole: String(meta.role || base.updatedByRole || '').trim().slice(0, 120),
+        source: String(meta.source || base.source || 'PLAN_INTERACTIF').trim().slice(0, 120)
+    };
+}
+
+function ichefSerializeArchitectureWrite(tenantID, task) {
+    const previous = ICHEF_ARCHITECTURE_WRITE_QUEUES.get(tenantID) || Promise.resolve();
+    const next = previous
+        .catch(() => undefined)
+        .then(task)
+        .finally(() => {
+            if (ICHEF_ARCHITECTURE_WRITE_QUEUES.get(tenantID) === next) {
+                ICHEF_ARCHITECTURE_WRITE_QUEUES.delete(tenantID);
+            }
+        });
+    ICHEF_ARCHITECTURE_WRITE_QUEUES.set(tenantID, next);
+    return next;
+}
+
+async function ichefPersistArchitecture({
+    tenantID,
+    architecture,
+    pin,
+    terminal = 'PAD',
+    deviceId = '',
+    role = '',
+    source = 'PLAN_INTERACTIF'
+}) {
+    const safeID = cleanString(tenantID);
+    if (!safeID) {
+        const err = new Error('Restaurant invalide.');
+        err.status = 400;
+        throw err;
+    }
+
+    const terminalAccess = await ichefCheckServiceTerminalAccess({
+        tenantID: safeID,
+        pin,
+        terminal
+    });
+
+    if (!terminalAccess.ok) {
+        const err = new Error(terminalAccess.error || 'Accès service refusé.');
+        err.status = terminalAccess.status || 403;
+        err.code = terminalAccess.requiresDuty === true && terminalAccess.onDuty !== true
+            ? 'NOT_ON_DUTY'
+            : 'TERMINAL_ACCESS_DENIED';
+        throw err;
+    }
+
+    return ichefSerializeArchitectureWrite(safeID, async () => {
+        const normalized = ichefNormalizeArchitecture(architecture, {
+            deviceId,
+            role,
+            source
+        });
+
+        const nowISO = new Date().toISOString();
+        const state = await AppState.findOneAndUpdate(
+            { tenantID: safeID },
+            {
+                $set: {
+                    'activeOrders.ARCHITECTURE.data': normalized,
+                    'activeOrders.ARCHITECTURE.updatedAt': nowISO,
+                    'activeOrders.ARCHITECTURE.source': String(source || 'PLAN_INTERACTIF').slice(0, 120),
+                    'activeOrders.ARCHITECTURE.updatedByDevice': String(deviceId || '').slice(0, 120),
+                    'activeOrders.ARCHITECTURE.updatedByRole': String(role || '').slice(0, 120)
+                }
+            },
+            { upsert: true, new: true, setDefaultsOnInsert: true }
+        );
+
+        if (!state) {
+            const err = new Error('Architecture non enregistrée.');
+            err.status = 500;
+            throw err;
         }
 
-        const last = pathname.split('/').filter(Boolean).pop() || '';
-        return last
-            ? last.replace(/\.html?$/i, '').replace(/[^a-z0-9_-]+/gi, '_').toUpperCase()
-            : 'LEGACY';
-    } catch (_) {
-        return 'LEGACY';
-    }
-}
+        // Relire MongoDB : l'accusé de réception représente exactement la donnée persistée.
+        const confirmedState = await AppState.findOne({ tenantID: safeID });
+        if (!confirmedState) {
+            const err = new Error('Architecture enregistrée mais relecture impossible.');
+            err.status = 500;
+            throw err;
+        }
 
-function inferIchefDeviceFromHandshake(socket, tenantID, page) {
-    const explicit = String(
-        socket?.handshake?.auth?.deviceId ||
-        socket?.handshake?.query?.deviceId ||
-        socket?.handshake?.headers?.['x-ichef-device'] ||
-        ''
-    ).trim();
+        const confirmedArchitecture =
+            confirmedState?.activeOrders?.ARCHITECTURE?.data || normalized;
 
-    if (explicit) return explicit;
+        io.to(safeID).emit('updateState', confirmedState);
+        io.to(safeID).emit('architecture-changed', {
+            tenantID: safeID,
+            source,
+            updatedAt: nowISO,
+            deviceId: String(deviceId || ''),
+            architecture: confirmedArchitecture
+        });
+        io.to(safeID).emit('server-state-changed', {
+            tableId: 'ARCHITECTURE',
+            source: 'plan-interactif'
+        });
 
-    const forwarded = String(
-        socket?.handshake?.headers?.['x-forwarded-for'] ||
-        socket?.handshake?.address ||
-        ''
-    ).split(',')[0].trim();
+        try {
+            await scellerOperation(
+                safeID,
+                'UPDATE',
+                'ARCHITECTURE',
+                'PLAN_INTERACTIF',
+                pin || 'SYSTEM',
+                {
+                    source,
+                    updatedAt: nowISO,
+                    rooms: Array.isArray(confirmedArchitecture.rooms) ? confirmedArchitecture.rooms.length : 0,
+                    tables: Array.isArray(confirmedArchitecture.tables) ? confirmedArchitecture.tables.length : 0,
+                    zones: Array.isArray(confirmedArchitecture.zones) ? confirmedArchitecture.zones.length : 0
+                }
+            );
+        } catch (auditError) {
+            console.warn('⚠️ Audit architecture non bloquant :', auditError?.message || auditError);
+        }
 
-    const userAgent = String(
-        socket?.handshake?.headers?.['user-agent'] ||
-        ''
-    ).trim();
-
-    const referer = String(
-        socket?.handshake?.headers?.referer ||
-        ''
-    ).trim();
-
-    const fingerprint = [
-        cleanString(tenantID),
-        String(page || 'LEGACY'),
-        forwarded,
-        userAgent,
-        referer
-    ].join('|');
-
-    return 'legacy_' +
-        crypto.createHash('sha256')
-            .update(fingerprint)
-            .digest('hex')
-            .slice(0, 16);
-}
-
-function extractIchefSocketIdentity(socket, payload) {
-    const payloadObject =
-        payload && typeof payload === 'object'
-            ? payload
-            : {};
-
-    const rawTenant =
-        (typeof payload === 'object' ? payloadObject.tenantID : payload) ||
-        socket?.handshake?.auth?.tenantID ||
-        socket?.handshake?.query?.tenantID ||
-        socket?.handshake?.headers?.['x-ichef-tenant'] ||
-        '';
-
-    const tenantID = cleanString(rawTenant);
-
-    let page = String(
-        payloadObject.page ||
-        payloadObject.module ||
-        ''
-    ).trim().toUpperCase();
-
-    if (!page) page = inferIchefPageFromHandshake(socket);
-
-    let deviceId = String(payloadObject.deviceId || '').trim();
-
-    if (!deviceId) {
-        deviceId = inferIchefDeviceFromHandshake(
-            socket,
-            tenantID,
-            page
+        console.log(
+            `🗺️ PLAN INTERACTIF synchronisé : ${safeID}` +
+            ` | salles=${Array.isArray(confirmedArchitecture.rooms) ? confirmedArchitecture.rooms.length : 0}` +
+            ` | tables=${Array.isArray(confirmedArchitecture.tables) ? confirmedArchitecture.tables.length : 0}` +
+            ` | zones=${Array.isArray(confirmedArchitecture.zones) ? confirmedArchitecture.zones.length : 0}` +
+            ` | device=${deviceId || 'non-renseigné'}`
         );
-    }
 
-    return { tenantID, deviceId, page };
+        return {
+            success: true,
+            persisted: true,
+            tenantID: safeID,
+            architecture: confirmedArchitecture,
+            state: confirmedState,
+            serverTime: nowISO
+        };
+    });
 }
 
-// ICHEF SOCKET V20 — SESSION UNIQUE PAR ÉCRAN
 // 🔥 LE SEUL ET UNIQUE BLOC io.on('connection') 🔥
 io.on("connection", socket => {
     const connectedAt = Date.now();
     const currentTransport = () => socket?.conn?.transport?.name || 'unknown';
 
-    const handshakeIdentity = extractIchefSocketIdentity(socket, null);
-
-    if (handshakeIdentity.tenantID) {
-        socket.data.tenantID = handshakeIdentity.tenantID;
-        socket.data.deviceId = handshakeIdentity.deviceId;
-        socket.data.page = handshakeIdentity.page;
-    }
-
     console.log(
         `✅ Nouvelle connexion écran détectée : ${socket.id}` +
         ` | transport=${currentTransport()}` +
-        ` | recovered=${socket.recovered === true}` +
-        ` | tenant=${socket.data?.tenantID || 'en-attente'}` +
-        ` | device=${socket.data?.deviceId || 'en-attente'}` +
-        ` | page=${socket.data?.page || 'en-attente'}`
+        ` | recovered=${socket.recovered === true}`
     );
 
     socket.conn.on('upgrade', transport => {
@@ -4771,60 +5010,37 @@ io.on("connection", socket => {
 
     // CORRECTION CRITIQUE DU BUG [object Object]
     socket.on("joinTenant", async (payload) => {
-        const identity = extractIchefSocketIdentity(socket, payload);
-        const safeID = identity.tenantID;
+        
+        let rawID = typeof payload === 'object' ? payload.tenantID : payload;
+        const safeID = cleanString(rawID);
 
-        if (!safeID) {
-            console.warn(
-                `⚠️ Socket ${socket.id} sans tenantID — joinTenant ignoré.`
-            );
-            return;
-        }
-
-        const deviceId = identity.deviceId;
-        const page = identity.page;
-
-        socket.data.tenantID = safeID;
-        socket.data.deviceId = deviceId;
-        socket.data.page = page;
-
-        // 1 ÉCRAN = 1 SOCKET ACTIVE.
-        // Si une ancienne connexion du même terminal/page existe encore,
-        // la nouvelle la remplace immédiatement.
-        const screenKey = buildActiveScreenKey(safeID, deviceId, page);
-        if (screenKey) {
-            const previousSocketId = activeScreenSockets.get(screenKey);
-
-            if (previousSocketId && previousSocketId !== socket.id) {
-                const previousSocket = io.sockets.sockets.get(previousSocketId);
-
-                if (previousSocket?.connected) {
-                    console.log(
-                        `♻️ Ancienne connexion remplacée : ${previousSocketId}` +
-                        ` -> ${socket.id}` +
-                        ` | tenant=${safeID}` +
-                        ` | device=${deviceId}` +
-                        ` | page=${page}`
-                    );
-
-                    previousSocket.emit('ichef-session-replaced', {
-                        tenantID: safeID,
-                        deviceId,
-                        page,
-                        replacementSocketId: socket.id
-                    });
-
-                    previousSocket.disconnect(true);
-                }
-            }
-
-            activeScreenSockets.set(screenKey, socket.id);
-            socket.data.activeScreenKey = screenKey;
-        }
+        if (!safeID) return;
 
         if (!socket.rooms.has(safeID)) {
             socket.join(safeID);
         }
+
+        socket.data.tenantID = safeID;
+
+        const payloadObject =
+            payload && typeof payload === 'object'
+                ? payload
+                : {};
+
+        socket.data.deviceId =
+            String(
+                payloadObject.deviceId ||
+                socket.handshake?.auth?.deviceId ||
+                ''
+            ).trim();
+
+        socket.data.page =
+            String(
+                payloadObject.page ||
+                payloadObject.module ||
+                socket.handshake?.auth?.page ||
+                ''
+            ).trim();
 
         console.log(
             `📡 L'écran ${socket.id} est synchronisé : ${safeID}` +
@@ -4853,6 +5069,65 @@ io.on("connection", socket => {
                     "Erreur chargement initial Socket.IO :",
                     error.message
                 );
+            }
+        }
+    });
+
+
+
+    // PLAN INTERACTIF : demande ciblée de l'architecture après connexion/reconnexion.
+    socket.on('requestArchitectureState', async (payload = {}, callback) => {
+        try {
+            const safeID = cleanString(payload.tenantID || socket.data.tenantID);
+            if (!safeID) throw new Error('Restaurant invalide.');
+
+            const currentState = await AppState.findOne({ tenantID: safeID });
+            const architecture = currentState?.activeOrders?.ARCHITECTURE?.data || {
+                rooms: ['Salle Principale'],
+                tables: [],
+                zones: []
+            };
+
+            socket.emit('architectureState', {
+                tenantID: safeID,
+                architecture,
+                state: currentState || null,
+                serverTime: new Date().toISOString()
+            });
+
+            if (typeof callback === 'function') {
+                callback({ success: true, architecture });
+            }
+        } catch (error) {
+            if (typeof callback === 'function') {
+                callback({ success: false, error: error?.message || 'Lecture architecture impossible.' });
+            }
+        }
+    });
+
+    // PLAN INTERACTIF : écriture temps réel optionnelle (HTTP reste le fallback canonique).
+    socket.on('syncArchitecture', async (payload = {}, callback) => {
+        try {
+            const result = await ichefPersistArchitecture({
+                tenantID: payload.tenantID || socket.data.tenantID,
+                architecture: payload.architecture || payload.data || {},
+                pin: payload.pin,
+                terminal: payload.terminal || 'PAD',
+                deviceId: payload.deviceId || socket.data.deviceId || '',
+                role: payload.role || '',
+                source: payload.source || socket.data.page || 'PLAN_INTERACTIF_SOCKET'
+            });
+
+            if (typeof callback === 'function') callback(result);
+        } catch (error) {
+            console.error('❌ Erreur syncArchitecture :', error);
+            if (typeof callback === 'function') {
+                callback({
+                    success: false,
+                    persisted: false,
+                    code: error?.code,
+                    error: error?.message || 'Synchronisation architecture impossible.'
+                });
             }
         }
     });
@@ -5110,30 +5385,13 @@ io.on("connection", socket => {
 socket.on("disconnect", (reason, details) => {
         const durationMs = Date.now() - connectedAt;
 
-        // Ne supprimer du registre que si cette Socket est encore la connexion
-        // officielle du terminal. Une ancienne Socket remplacée ne doit jamais
-        // effacer la nouvelle connexion qui vient de prendre sa place.
-        const screenKey = socket.data?.activeScreenKey || '';
-        if (screenKey && activeScreenSockets.get(screenKey) === socket.id) {
-            activeScreenSockets.delete(screenKey);
-        }
-
         const detailMessage =
             details?.message ||
             details?.description ||
             '';
 
-        const replaced = reason === 'server namespace disconnect';
-        const heartbeatTimeout = reason === 'ping timeout';
-
-        const logPrefix = replaced
-            ? '♻️ Écran remplacé'
-            : heartbeatTimeout
-                ? '⚠️ Heartbeat perdu'
-                : '❌ Écran déconnecté';
-
         console.log(
-            `${logPrefix} : ${socket.id}` +
+            `❌ Écran déconnecté : ${socket.id}` +
             ` | tenant=${socket.data?.tenantID || 'inconnu'}` +
             ` | device=${socket.data?.deviceId || 'non-renseigné'}` +
             ` | page=${socket.data?.page || 'non-renseignée'}` +
@@ -5605,326 +5863,61 @@ async function ichefMergeStaffAccessPreservingDuty(tenantID, incomingOrder) {
 }
 
 
-// ==========================================================
-// 💳 CAISSE / FISCAL — CONFIGURATION OFFICIELLE ATOMIQUE
-// ==========================================================
-const ichefCashConfigWriteQueues = new Map();
 
-function ichefSerializeCashConfigWrite(tenantID, task) {
-    const key = String(tenantID || '');
-    const previous =
-        ichefCashConfigWriteQueues.get(key) || Promise.resolve();
-
-    const current =
-        previous
-            .catch(() => undefined)
-            .then(task);
-
-    ichefCashConfigWriteQueues.set(key, current);
-
-    current.finally(() => {
-        if (ichefCashConfigWriteQueues.get(key) === current) {
-            ichefCashConfigWriteQueues.delete(key);
-        }
-    }).catch(() => {});
-
-    return current;
-}
-
-function ichefNormalizeCashRegisterConfig(value = {}) {
-    const source =
-        value && typeof value === 'object' && !Array.isArray(value)
-            ? value
-            : {};
-
-    const taxConfig =
-        source.taxConfig &&
-        typeof source.taxConfig === 'object' &&
-        !Array.isArray(source.taxConfig)
-            ? source.taxConfig
-            : {};
-
-    return {
-        ...source,
-
-        // Ces valeurs appartiennent au système fiscal iCHEF :
-        // l'Admin ne peut pas rediriger l'encaissement vers une autre route.
-        enabled: true,
-        fiscalMode: true,
-        automatic: true,
-        backendUrl: '/api/fiscal/cash-in',
-
-        fiscalConnectivity: {
-            ...(source.fiscalConnectivity || {}),
-            continuousServerSyncRequired: true,
-            offlineFiscalizationAllowed: false,
-            auditServerSideRequired: true
-        },
-
-        separation: {
-            ...(source.separation || {}),
-            qrNfc: 'commande',
-            caisse: 'encaissement_fiscal'
-        },
-
-        taxConfig,
-
-        source:
-            String(source.source || 'SYSTEM_AUTO_CONFIGURATION')
-                .slice(0, 80),
-
-        updatedAt:
-            new Date().toISOString()
-    };
-}
-
-function ichefExtractCashConfig(state) {
-    const activeOrders = state?.activeOrders || {};
-    const settingsNode =
-        activeOrders.SETTINGS_MASTER || { data: {} };
-
-    const data =
-        settingsNode &&
-        settingsNode.data &&
-        typeof settingsNode.data === 'object'
-            ? settingsNode.data
-            : {};
-
-    return {
-        cashRegister:
-            data.cashRegister &&
-            typeof data.cashRegister === 'object'
-                ? data.cashRegister
-                : {},
-
-        taxConfig:
-            data.taxConfig &&
-            typeof data.taxConfig === 'object'
-                ? data.taxConfig
-                : {},
-
-        revision:
-            String(data.cashRegisterServerRevision || ''),
-
-        updatedAt:
-            data.cashRegisterServerUpdatedAt || null
-    };
-}
-
-app.get('/api/config/cash-register', async (req, res) => {
+// ================================================================
+// API DÉDIÉE AU PLAN INTERACTIF
+// ================================================================
+app.get('/api/architecture', async (req, res) => {
     try {
         const tenantID = cleanString(req.query.tenantID);
-
         if (!tenantID) {
-            return res.status(400).json({
-                success: false,
-                persisted: false,
-                error: 'tenantID manquant.'
-            });
+            return res.status(400).json({ success: false, error: 'Restaurant invalide.' });
         }
 
-        const state =
-            await AppState
-                .findOne({ tenantID })
-                .lean();
-
-        const current =
-            ichefExtractCashConfig(state || {});
+        const state = await AppState.findOne({ tenantID });
+        const architecture = state?.activeOrders?.ARCHITECTURE?.data || {
+            rooms: ['Salle Principale'],
+            tables: [],
+            zones: []
+        };
 
         return res.json({
             success: true,
             persisted: true,
             tenantID,
-            ...current
+            architecture,
+            state: state || null,
+            serverTime: new Date().toISOString()
         });
-
     } catch (error) {
-        console.error(
-            '❌ Erreur GET /api/config/cash-register :',
-            error
-        );
-
-        return res.status(500).json({
-            success: false,
-            persisted: false,
-            error:
-                'Impossible de lire la configuration caisse.'
-        });
+        console.error('❌ GET /api/architecture :', error);
+        return res.status(500).json({ success: false, error: 'Lecture du plan interactif impossible.' });
     }
 });
 
-app.post('/api/config/cash-register', async (req, res) => {
-    const tenantID =
-        cleanString(
-            req.query.tenantID ||
-            req.body?.tenantID
-        );
-
-    if (!tenantID) {
-        return res.status(400).json({
-            success: false,
-            persisted: false,
-            error: 'tenantID manquant.'
-        });
-    }
-
+app.post('/api/architecture', async (req, res) => {
     try {
-        const result =
-            await ichefSerializeCashConfigWrite(
-                tenantID,
-                async () => {
-                    const incomingCash =
-                        req.body?.cashRegister &&
-                        typeof req.body.cashRegister === 'object' &&
-                        !Array.isArray(req.body.cashRegister)
-                            ? req.body.cashRegister
-                            : {};
-
-                    const incomingTax =
-                        req.body?.taxConfig &&
-                        typeof req.body.taxConfig === 'object' &&
-                        !Array.isArray(req.body.taxConfig)
-                            ? req.body.taxConfig
-                            : (
-                                incomingCash.taxConfig &&
-                                typeof incomingCash.taxConfig === 'object'
-                                    ? incomingCash.taxConfig
-                                    : {}
-                            );
-
-                    const normalized =
-                        ichefNormalizeCashRegisterConfig({
-                            ...incomingCash,
-                            taxConfig: incomingTax
-                        });
-
-                    const now =
-                        new Date().toISOString();
-
-                    const revision =
-                        `cash_${Date.now()}_${crypto.randomBytes(6).toString('hex')}`;
-
-                    const confirmedState =
-                        await AppState.findOneAndUpdate(
-                            { tenantID },
-                            {
-                                $set: {
-                                    'activeOrders.SETTINGS_MASTER.data.cashRegister':
-                                        normalized,
-
-                                    'activeOrders.SETTINGS_MASTER.data.taxConfig':
-                                        normalized.taxConfig,
-
-                                    'activeOrders.SETTINGS_MASTER.data.cashRegisterServerRevision':
-                                        revision,
-
-                                    'activeOrders.SETTINGS_MASTER.data.cashRegisterServerUpdatedAt':
-                                        now,
-
-                                    'activeOrders.SETTINGS_MASTER.updatedAt':
-                                        now
-                                }
-                            },
-                            {
-                                upsert: true,
-                                new: true,
-                                setDefaultsOnInsert: true
-                            }
-                        ).lean();
-
-                    if (!confirmedState) {
-                        throw new Error(
-                            'État caisse introuvable après sauvegarde.'
-                        );
-                    }
-
-                    const confirmed =
-                        ichefExtractCashConfig(
-                            confirmedState
-                        );
-
-                    if (
-                        String(confirmed.revision || '') !==
-                        revision
-                    ) {
-                        throw new Error(
-                            'Révision caisse non confirmée par MongoDB.'
-                        );
-                    }
-
-                    io.to(tenantID).emit(
-                        'cash-register-config-changed',
-                        {
-                            tenantID,
-                            revision,
-                            cashRegister:
-                                confirmed.cashRegister,
-                            taxConfig:
-                                confirmed.taxConfig,
-                            updatedAt: now
-                        }
-                    );
-
-                    io.to(tenantID).emit(
-                        'server-state-changed',
-                        {
-                            tableId: 'CASH_REGISTER_CONFIG',
-                            source:
-                                'api/config/cash-register',
-                            revision,
-                            updatedAt: now
-                        }
-                    );
-
-                    io.to(tenantID).emit(
-                        'updateState',
-                        confirmedState
-                    );
-
-                    console.log(
-                        `✅ Configuration caisse enregistrée : ${tenantID}` +
-                        ` | revision=${revision}` +
-                        ` | device=${String(req.body?.deviceId || 'non-renseigné').slice(0, 120)}` +
-                        ` | operator=${String(req.body?.operator || 'ADMIN').slice(0, 80)}`
-                    );
-
-                    return {
-                        revision,
-                        confirmed,
-                        updatedAt: now
-                    };
-                }
-            );
-
-        return res.json({
-            success: true,
-            persisted: true,
+        const tenantID = cleanString(req.query.tenantID || req.body?.tenantID);
+        const result = await ichefPersistArchitecture({
             tenantID,
-            revision:
-                result.revision,
-            cashRegister:
-                result.confirmed.cashRegister,
-            taxConfig:
-                result.confirmed.taxConfig,
-            updatedAt:
-                result.updatedAt
+            architecture: req.body?.architecture || req.body?.data || {},
+            pin: req.body?.pin,
+            terminal: req.body?.terminal || 'PAD',
+            deviceId: req.body?.deviceId || '',
+            role: req.body?.role || '',
+            source: req.body?.source || req.body?.auditReason || 'PLAN_INTERACTIF_HTTP'
         });
-
+        return res.json(result);
     } catch (error) {
-        console.error(
-            '❌ Erreur POST /api/config/cash-register :',
-            error
-        );
-
-        return res.status(500).json({
+        console.error('❌ POST /api/architecture :', error);
+        return res.status(error?.status || 500).json({
             success: false,
             persisted: false,
-            error:
-                'Impossible d’enregistrer la configuration caisse.'
+            code: error?.code,
+            error: error?.message || 'Enregistrement du plan interactif impossible.'
         });
     }
 });
-
 
 app.post('/update-order', async (req, res) => {
     try {
@@ -6026,7 +6019,14 @@ app.post('/update-order', async (req, res) => {
 
         return res.json({
             success: true,
-            persisted: true
+            persisted: true,
+            tenantID,
+            tableId,
+            serverTime: new Date().toISOString(),
+            // Accusé de réception canonique : état MongoDB APRÈS écriture.
+            // Le PAD peut ainsi afficher « SERVEUR À JOUR » uniquement
+            // lorsque la persistance a réellement été confirmée.
+            state: newState
         });
 
     } catch (e) {
@@ -8905,82 +8905,107 @@ app.post('/api/fiscal-file/full', async (req, res) => {
 
 
 // ==========================================================
-// 💳 ROUTES STRIPE
-// Achat d'écrans et portail de facturation
+// 💳 ROUTES STRIPE — CHECKOUT + BILLING PORTAL RÉELS
 // ==========================================================
 
-app.post(
-    '/api/stripe/create-screen-upgrade-session',
-    async (req, res) => {
+app.post('/api/stripe/create-screen-upgrade-session', async (req, res) => {
+    if (!requireStripe(res)) return;
 
-        try {
+    try {
+        const tenantID = cleanString(req.body?.tenantID);
+        const extraScreens = Math.max(1, Math.min(50, Number(req.body?.extraScreens || 1)));
 
-            /*
-             * Route conservée pour compatibilité.
-             * La création réelle de session Stripe Checkout
-             * pourra être branchée ici plus tard.
-             */
+        if (!tenantID) {
+            return res.status(400).json({ success: false, error: 'tenantID manquant.' });
+        }
 
-            return res.json({
-                success: true,
-                url: 'https://checkout.stripe.com/'
-            });
-
-        } catch (error) {
-
-            console.error(
-                '[iCHEF STRIPE] Erreur upgrade écrans :',
-                error
-            );
-
-            return res.status(500).json({
+        if (!ICHEF_ENGINE_ENV.STRIPE_PRICE_ID) {
+            return res.status(503).json({
                 success: false,
-                error:
-                    error?.message ||
-                    'Erreur Stripe lors de la création de la session.'
+                engine: 'stripe',
+                error: 'STRIPE_PRICE_ID manquant sur Render.'
             });
         }
+
+        const tenant = await Tenant.findOne({ tenantID });
+        if (!tenant) {
+            return res.status(404).json({ success: false, error: 'Restaurant introuvable.' });
+        }
+
+        const price = await stripe.prices.retrieve(ICHEF_ENGINE_ENV.STRIPE_PRICE_ID);
+        const mode = price?.recurring ? 'subscription' : 'payment';
+        const baseUrl = String(process.env.PUBLIC_BASE_URL || 'https://os.ichef.ch').replace(/\/$/, '');
+
+        const sessionPayload = {
+            mode,
+            line_items: [{
+                price: ICHEF_ENGINE_ENV.STRIPE_PRICE_ID,
+                quantity: extraScreens
+            }],
+            success_url: `${baseUrl}/pack-eco.html?tenantID=${encodeURIComponent(tenantID)}&stripe=success`,
+            cancel_url: `${baseUrl}/pack-eco.html?tenantID=${encodeURIComponent(tenantID)}&stripe=cancel`,
+            client_reference_id: tenantID,
+            metadata: {
+                type: 'UPGRADE_SCREENS',
+                tenantID,
+                extraScreens: String(extraScreens)
+            }
+        };
+
+        if (tenant.config?.stripeCustomerId) {
+            sessionPayload.customer = tenant.config.stripeCustomerId;
+        }
+
+        const session = await stripe.checkout.sessions.create(sessionPayload);
+
+        return res.json({
+            success: true,
+            sessionId: session.id,
+            url: session.url
+        });
+    } catch (error) {
+        console.error('[iCHEF STRIPE] Erreur upgrade écrans :', error);
+        return res.status(500).json({
+            success: false,
+            error: error?.message || 'Erreur Stripe lors de la création de la session.'
+        });
     }
-);
+});
 
+app.post('/api/stripe/create-customer-portal-session', async (req, res) => {
+    if (!requireStripe(res)) return;
 
-// ==========================================================
-// 💳 PORTAIL CLIENT STRIPE
-// ==========================================================
+    try {
+        const tenantID = cleanString(req.body?.tenantID);
+        if (!tenantID) {
+            return res.status(400).json({ success: false, error: 'tenantID manquant.' });
+        }
 
-app.post(
-    '/api/stripe/create-customer-portal-session',
-    async (req, res) => {
+        const tenant = await Tenant.findOne({ tenantID });
+        const customerId = tenant?.config?.stripeCustomerId;
 
-        try {
-
-            /*
-             * Route conservée pour compatibilité.
-             * La vraie session Stripe Billing Portal
-             * pourra être branchée ici.
-             */
-
-            return res.json({
-                success: true,
-                url: 'https://billing.stripe.com/'
-            });
-
-        } catch (error) {
-
-            console.error(
-                '[iCHEF STRIPE] Erreur portail client :',
-                error
-            );
-
-            return res.status(500).json({
+        if (!customerId) {
+            return res.status(400).json({
                 success: false,
-                error:
-                    error?.message ||
-                    'Erreur lors de l’ouverture du portail Stripe.'
+                error: 'Aucun client Stripe enregistré pour ce restaurant.'
             });
         }
+
+        const baseUrl = String(process.env.PUBLIC_BASE_URL || 'https://os.ichef.ch').replace(/\/$/, '');
+        const session = await stripe.billingPortal.sessions.create({
+            customer: customerId,
+            return_url: `${baseUrl}/pack-eco.html?tenantID=${encodeURIComponent(tenantID)}`
+        });
+
+        return res.json({ success: true, url: session.url });
+    } catch (error) {
+        console.error('[iCHEF STRIPE] Erreur portail client :', error);
+        return res.status(500).json({
+            success: false,
+            error: error?.message || 'Erreur lors de l’ouverture du portail Stripe.'
+        });
     }
-);
+});
 
 // =============================================================
 // QR FISCAL iCHEF — DOSSIER COMPLET DE TABLE
@@ -10540,6 +10565,7 @@ app.get(
 // ==========================================================
 // 🛡️ ARRÊT PROPRE / SURVEILLANCE PROCESS
 // ==========================================================
+let ichefShuttingDown = false;
 
 async function ichefGracefulShutdown(signal, exitCode = 0) {
     if (ichefShuttingDown) return;
@@ -10619,16 +10645,14 @@ server.listen(PORT, () => {
     console.log('✅ iCHEF EMPIRE OS — SERVEUR EN LIGNE');
     console.log('==========================================');
     console.log(`✅ Port serveur : ${PORT}`);
-    console.log(`✅ Version serveur : ${ICHEF_SERVER_VERSION}`);
     console.log('✅ Socket.IO activé.');
-    console.log(
-        `✅ Heartbeat Socket.IO : interval=${ICHEF_SOCKET_PING_INTERVAL_MS}ms | timeout=${ICHEF_SOCKET_PING_TIMEOUT_MS}ms`
-    );
-    console.log(
-        `✅ MongoDB état initial : ${mongoose.connection.readyState}`
-    );
+    console.log(`✅ MongoDB : ${ICHEF_ENGINE_ENV.MONGO_URI ? 'CONFIGURÉ' : 'NON CONFIGURÉ'} | état=${mongoose.connection.readyState}`);
+    console.log(`✅ Gemini : ${genAI ? 'CONFIGURÉ' : 'NON CONFIGURÉ'} | modèle=${GEMINI_MODEL}`);
+    console.log(`✅ Stripe : ${stripe ? 'CONFIGURÉ' : 'NON CONFIGURÉ'} | price=${ICHEF_ENGINE_ENV.STRIPE_PRICE_ID ? 'OK' : 'MANQUANT'} | webhook=${ICHEF_ENGINE_ENV.STRIPE_WEBHOOK_SECRET ? 'OK' : 'MANQUANT'}`);
+    console.log(`✅ Twilio : ${twilioClient && twilioPhoneNumber ? 'CONFIGURÉ' : 'NON CONFIGURÉ'}`);
     console.log('✅ QR/NFC synchronisation atomique activée.');
     console.log('✅ Plan interactif protégé des écrasements QR/NFC.');
     console.log('✅ Arrêt propre SIGTERM/SIGINT activé.');
     console.log('==========================================');
 });
+
