@@ -19,6 +19,11 @@ const nodemailer = require('nodemailer');
 const http = require('http');
 const { Server } = require('socket.io');
 
+
+const ICHEF_SERVER_VERSION = 'SOCKET-STABLE-V21-2026.08.31';
+const ICHEF_SOCKET_PING_INTERVAL_MS = 20000;
+const ICHEF_SOCKET_PING_TIMEOUT_MS = 90000;
+
 const app = express();
 const server = http.createServer(app);
 
@@ -64,15 +69,15 @@ app.use(cors(corsOptions));
 // Application du CORS pour le Temps Réel (Socket.io)
 const io = new Server(server, {
     cors: corsOptions,
-    transports: ['polling', 'websocket'], // Polling activé en fallback critique
+    transports: ['websocket', 'polling'],
     allowUpgrades: true,
 
-    // 🔥 VALEURS AJUSTÉES POUR LE LOAD BALANCER RENDER
-    pingInterval: 10000, // Envoie un ping toutes les 10 secondes (au lieu de 25s)
-    pingTimeout: 5000,   // Considère le client déconnecté s'il ne répond pas sous 5 secondes
-
-    upgradeTimeout: 30000,
-    connectTimeout: 45000,
+    // Tolérance réseau renforcée : évite les coupures sur micro-freezes,
+    // Wi-Fi instable, onglet momentanément ralenti ou proxy Render.
+    pingInterval: ICHEF_SOCKET_PING_INTERVAL_MS,
+    pingTimeout: ICHEF_SOCKET_PING_TIMEOUT_MS,
+    upgradeTimeout: 45000,
+    connectTimeout: 60000,
 
     // Les états iCHEF peuvent être volumineux.
     maxHttpBufferSize: 20 * 1024 * 1024,
@@ -81,18 +86,9 @@ const io = new Server(server, {
     // Si Socket.IO >= 4.6 : restaure rooms/data et rejoue les paquets manqués
     // après une coupure courte.
     connectionStateRecovery: {
-        maxDisconnectionDuration: 2 * 60 * 1000,
+        maxDisconnectionDuration: 5 * 60 * 1000,
         skipMiddlewares: true
     }
-});
-
-// Diagnostic bas niveau Engine.IO.
-io.engine.on('connection_error', (err) => {
-    console.error('[ENGINE.IO] connection_error', {
-        code: err?.code,
-        message: err?.message,
-        context: err?.context
-    });
 });
 
 // Diagnostic bas niveau Engine.IO.
@@ -556,9 +552,12 @@ app.get('/healthz', (req, res) => {
     return res.status(200).json({
         ok: true,
         service: 'iCHEF',
+        version: ICHEF_SERVER_VERSION,
         uptimeSeconds: Math.round(process.uptime()),
         mongoReadyState: mongoose.connection.readyState,
         socketEngine: true,
+        socketPingIntervalMs: ICHEF_SOCKET_PING_INTERVAL_MS,
+        socketPingTimeoutMs: ICHEF_SOCKET_PING_TIMEOUT_MS,
         timestamp: new Date().toISOString()
     });
 });
@@ -1081,6 +1080,8 @@ app.post('/webhook', async (req, res) => {
     res.json({received: true});
 });
 
+let ichefShuttingDown = false;
+
 const mongoURI =
     process.env.MONGO_URI ||
     "TON_MONGO_URI";
@@ -1106,6 +1107,11 @@ mongoose.connection.on('reconnected', () => {
 });
 
 mongoose.connection.on('disconnected', () => {
+    if (ichefShuttingDown) {
+        console.log('✅ MongoDB fermé volontairement pendant l’arrêt iCHEF.');
+        return;
+    }
+
     console.warn('⚠️ MongoDB déconnecté — reconnexion automatique en cours.');
 });
 
@@ -4602,16 +4608,153 @@ function buildActiveScreenKey(tenantID, deviceId, page) {
     return `${tenant}::${device}::${screenPage}`;
 }
 
+function inferIchefPageFromHandshake(socket) {
+    const direct = String(
+        socket?.handshake?.auth?.page ||
+        socket?.handshake?.query?.page ||
+        socket?.handshake?.query?.module ||
+        ''
+    ).trim().toUpperCase();
+
+    if (direct) return direct;
+
+    const referer = String(
+        socket?.handshake?.headers?.referer ||
+        socket?.handshake?.headers?.referrer ||
+        ''
+    ).trim();
+
+    if (!referer) return 'LEGACY';
+
+    try {
+        const pathname = new URL(referer).pathname.toLowerCase();
+
+        const map = [
+            ['admin.html', 'CONFIGURATION'],
+            ['rh.html', 'RH'],
+            ['pad.html', 'PAD'],
+            ['telephone.html', 'TELEPHONE'],
+            ['ordinateur.html', 'ORDINATEUR'],
+            ['caissetactile.html', 'CAISSE_TACTILE'],
+            ['caisse.html', 'CAISSE'],
+            ['chef.html', 'CUISINE'],
+            ['chef-bar.html', 'BAR'],
+            ['chef-patissier.html', 'PATISSERIE'],
+            ['haccp.html', 'HACCP'],
+            ['menu-qr.html', 'MENU_CLIENT']
+        ];
+
+        for (const [file, label] of map) {
+            if (pathname.includes(file)) return label;
+        }
+
+        const last = pathname.split('/').filter(Boolean).pop() || '';
+        return last
+            ? last.replace(/\.html?$/i, '').replace(/[^a-z0-9_-]+/gi, '_').toUpperCase()
+            : 'LEGACY';
+    } catch (_) {
+        return 'LEGACY';
+    }
+}
+
+function inferIchefDeviceFromHandshake(socket, tenantID, page) {
+    const explicit = String(
+        socket?.handshake?.auth?.deviceId ||
+        socket?.handshake?.query?.deviceId ||
+        socket?.handshake?.headers?.['x-ichef-device'] ||
+        ''
+    ).trim();
+
+    if (explicit) return explicit;
+
+    const forwarded = String(
+        socket?.handshake?.headers?.['x-forwarded-for'] ||
+        socket?.handshake?.address ||
+        ''
+    ).split(',')[0].trim();
+
+    const userAgent = String(
+        socket?.handshake?.headers?.['user-agent'] ||
+        ''
+    ).trim();
+
+    const referer = String(
+        socket?.handshake?.headers?.referer ||
+        ''
+    ).trim();
+
+    const fingerprint = [
+        cleanString(tenantID),
+        String(page || 'LEGACY'),
+        forwarded,
+        userAgent,
+        referer
+    ].join('|');
+
+    return 'legacy_' +
+        crypto.createHash('sha256')
+            .update(fingerprint)
+            .digest('hex')
+            .slice(0, 16);
+}
+
+function extractIchefSocketIdentity(socket, payload) {
+    const payloadObject =
+        payload && typeof payload === 'object'
+            ? payload
+            : {};
+
+    const rawTenant =
+        (typeof payload === 'object' ? payloadObject.tenantID : payload) ||
+        socket?.handshake?.auth?.tenantID ||
+        socket?.handshake?.query?.tenantID ||
+        socket?.handshake?.headers?.['x-ichef-tenant'] ||
+        '';
+
+    const tenantID = cleanString(rawTenant);
+
+    let page = String(
+        payloadObject.page ||
+        payloadObject.module ||
+        ''
+    ).trim().toUpperCase();
+
+    if (!page) page = inferIchefPageFromHandshake(socket);
+
+    let deviceId = String(payloadObject.deviceId || '').trim();
+
+    if (!deviceId) {
+        deviceId = inferIchefDeviceFromHandshake(
+            socket,
+            tenantID,
+            page
+        );
+    }
+
+    return { tenantID, deviceId, page };
+}
+
 // ICHEF SOCKET V20 — SESSION UNIQUE PAR ÉCRAN
 // 🔥 LE SEUL ET UNIQUE BLOC io.on('connection') 🔥
 io.on("connection", socket => {
     const connectedAt = Date.now();
     const currentTransport = () => socket?.conn?.transport?.name || 'unknown';
 
+    const handshakeIdentity = extractIchefSocketIdentity(socket, null);
+
+    if (handshakeIdentity.tenantID) {
+        socket.data.tenantID = handshakeIdentity.tenantID;
+        socket.data.deviceId = handshakeIdentity.deviceId;
+        socket.data.page = handshakeIdentity.page;
+    }
+
     console.log(
         `✅ Nouvelle connexion écran détectée : ${socket.id}` +
         ` | transport=${currentTransport()}` +
-        ` | recovered=${socket.recovered === true}`
+        ` | recovered=${socket.recovered === true}` +
+        ` | tenant=${socket.data?.tenantID || 'en-attente'}` +
+        ` | device=${socket.data?.deviceId || 'en-attente'}` +
+        ` | page=${socket.data?.page || 'en-attente'}`
     );
 
     socket.conn.on('upgrade', transport => {
@@ -4629,37 +4772,18 @@ io.on("connection", socket => {
 
     // CORRECTION CRITIQUE DU BUG [object Object]
     socket.on("joinTenant", async (payload) => {
-        const payloadObject =
-            payload && typeof payload === 'object'
-                ? payload
-                : {};
+        const identity = extractIchefSocketIdentity(socket, payload);
+        const safeID = identity.tenantID;
 
-        // Compatibilité avec toutes les générations de clients iCHEF :
-        // payload objet, ancienne chaîne, auth Socket.IO ou query Socket.IO.
-        const rawID =
-            (typeof payload === 'object' ? payloadObject.tenantID : payload) ||
-            socket.handshake?.auth?.tenantID ||
-            socket.handshake?.query?.tenantID ||
-            '';
+        if (!safeID) {
+            console.warn(
+                `⚠️ Socket ${socket.id} sans tenantID — joinTenant ignoré.`
+            );
+            return;
+        }
 
-        const safeID = cleanString(rawID);
-        if (!safeID) return;
-
-        const deviceId = String(
-            payloadObject.deviceId ||
-            socket.handshake?.auth?.deviceId ||
-            socket.handshake?.query?.deviceId ||
-            ''
-        ).trim();
-
-        const page = String(
-            payloadObject.page ||
-            payloadObject.module ||
-            socket.handshake?.auth?.page ||
-            socket.handshake?.query?.page ||
-            socket.handshake?.query?.module ||
-            ''
-        ).trim().toUpperCase();
+        const deviceId = identity.deviceId;
+        const page = identity.page;
 
         socket.data.tenantID = safeID;
         socket.data.deviceId = deviceId;
@@ -5001,7 +5125,13 @@ socket.on("disconnect", (reason, details) => {
             '';
 
         const replaced = reason === 'server namespace disconnect';
-        const logPrefix = replaced ? '♻️ Écran remplacé' : '❌ Écran déconnecté';
+        const heartbeatTimeout = reason === 'ping timeout';
+
+        const logPrefix = replaced
+            ? '♻️ Écran remplacé'
+            : heartbeatTimeout
+                ? '⚠️ Heartbeat perdu'
+                : '❌ Écran déconnecté';
 
         console.log(
             `${logPrefix} : ${socket.id}` +
@@ -10089,7 +10219,6 @@ app.get(
 // ==========================================================
 // 🛡️ ARRÊT PROPRE / SURVEILLANCE PROCESS
 // ==========================================================
-let ichefShuttingDown = false;
 
 async function ichefGracefulShutdown(signal, exitCode = 0) {
     if (ichefShuttingDown) return;
@@ -10169,7 +10298,11 @@ server.listen(PORT, () => {
     console.log('✅ iCHEF EMPIRE OS — SERVEUR EN LIGNE');
     console.log('==========================================');
     console.log(`✅ Port serveur : ${PORT}`);
+    console.log(`✅ Version serveur : ${ICHEF_SERVER_VERSION}`);
     console.log('✅ Socket.IO activé.');
+    console.log(
+        `✅ Heartbeat Socket.IO : interval=${ICHEF_SOCKET_PING_INTERVAL_MS}ms | timeout=${ICHEF_SOCKET_PING_TIMEOUT_MS}ms`
+    );
     console.log(
         `✅ MongoDB état initial : ${mongoose.connection.readyState}`
     );
