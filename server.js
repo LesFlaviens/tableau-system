@@ -7068,6 +7068,54 @@ app.get('/api/public-receipt', async (req, res) => {
         res.send(`
 <!doctype html>
 <html lang="fr">
+
+res.send(`
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport"
+content="width=device-width,initial-scale=1">
+<title>Ticket ${esc(tx.ticketNumber)}</title>
+
+<!-- 1. IMPORT DE LA POLICE GOOGLE FONTS -->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;700;900&display=swap" rel="stylesheet">
+
+<style>
+body{
+    margin:0;
+    padding:20px;
+    background:#f2f2f2;
+    /* 2. APPLICATION DE LA POLICE */
+    font-family: 'Inter', Arial, sans-serif;
+    color:#111;
+}
+/* ... suite de votre style ... */res.send(`
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport"
+content="width=device-width,initial-scale=1">
+<title>Ticket ${esc(tx.ticketNumber)}</title>
+
+<!-- 1. IMPORT DE LA POLICE GOOGLE FONTS -->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;700;900&display=swap" rel="stylesheet">
+
+<style>
+body{
+    margin:0;
+    padding:20px;
+    background:#f2f2f2;
+    /* 2. APPLICATION DE LA POLICE */
+    font-family: 'Inter', Arial, sans-serif;
+    color:#111;
+}
+/* ... suite de votre style ... */
 <head>
 <meta charset="utf-8">
 <meta name="viewport"
