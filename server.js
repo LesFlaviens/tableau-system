@@ -19,7 +19,7 @@ const http = require('http');
 const { Server } = require('socket.io');
 
 
-const ICHEF_SERVER_VERSION = 'SOCKET-STABLE-V21-2026.08.31';
+const ICHEF_SERVER_VERSION = 'SOCKET-STABLE-V22-CASH-CONFIG-2026.08.31';
 const ICHEF_SOCKET_PING_INTERVAL_MS = 20000;
 const ICHEF_SOCKET_PING_TIMEOUT_MS = 90000;
 
@@ -5604,6 +5604,328 @@ async function ichefMergeStaffAccessPreservingDuty(tenantID, incomingOrder) {
     };
 }
 
+
+// ==========================================================
+// 💳 CAISSE / FISCAL — CONFIGURATION OFFICIELLE ATOMIQUE
+// ==========================================================
+const ichefCashConfigWriteQueues = new Map();
+
+function ichefSerializeCashConfigWrite(tenantID, task) {
+    const key = String(tenantID || '');
+    const previous =
+        ichefCashConfigWriteQueues.get(key) || Promise.resolve();
+
+    const current =
+        previous
+            .catch(() => undefined)
+            .then(task);
+
+    ichefCashConfigWriteQueues.set(key, current);
+
+    current.finally(() => {
+        if (ichefCashConfigWriteQueues.get(key) === current) {
+            ichefCashConfigWriteQueues.delete(key);
+        }
+    }).catch(() => {});
+
+    return current;
+}
+
+function ichefNormalizeCashRegisterConfig(value = {}) {
+    const source =
+        value && typeof value === 'object' && !Array.isArray(value)
+            ? value
+            : {};
+
+    const taxConfig =
+        source.taxConfig &&
+        typeof source.taxConfig === 'object' &&
+        !Array.isArray(source.taxConfig)
+            ? source.taxConfig
+            : {};
+
+    return {
+        ...source,
+
+        // Ces valeurs appartiennent au système fiscal iCHEF :
+        // l'Admin ne peut pas rediriger l'encaissement vers une autre route.
+        enabled: true,
+        fiscalMode: true,
+        automatic: true,
+        backendUrl: '/api/fiscal/cash-in',
+
+        fiscalConnectivity: {
+            ...(source.fiscalConnectivity || {}),
+            continuousServerSyncRequired: true,
+            offlineFiscalizationAllowed: false,
+            auditServerSideRequired: true
+        },
+
+        separation: {
+            ...(source.separation || {}),
+            qrNfc: 'commande',
+            caisse: 'encaissement_fiscal'
+        },
+
+        taxConfig,
+
+        source:
+            String(source.source || 'SYSTEM_AUTO_CONFIGURATION')
+                .slice(0, 80),
+
+        updatedAt:
+            new Date().toISOString()
+    };
+}
+
+function ichefExtractCashConfig(state) {
+    const activeOrders = state?.activeOrders || {};
+    const settingsNode =
+        activeOrders.SETTINGS_MASTER || { data: {} };
+
+    const data =
+        settingsNode &&
+        settingsNode.data &&
+        typeof settingsNode.data === 'object'
+            ? settingsNode.data
+            : {};
+
+    return {
+        cashRegister:
+            data.cashRegister &&
+            typeof data.cashRegister === 'object'
+                ? data.cashRegister
+                : {},
+
+        taxConfig:
+            data.taxConfig &&
+            typeof data.taxConfig === 'object'
+                ? data.taxConfig
+                : {},
+
+        revision:
+            String(data.cashRegisterServerRevision || ''),
+
+        updatedAt:
+            data.cashRegisterServerUpdatedAt || null
+    };
+}
+
+app.get('/api/config/cash-register', async (req, res) => {
+    try {
+        const tenantID = cleanString(req.query.tenantID);
+
+        if (!tenantID) {
+            return res.status(400).json({
+                success: false,
+                persisted: false,
+                error: 'tenantID manquant.'
+            });
+        }
+
+        const state =
+            await AppState
+                .findOne({ tenantID })
+                .lean();
+
+        const current =
+            ichefExtractCashConfig(state || {});
+
+        return res.json({
+            success: true,
+            persisted: true,
+            tenantID,
+            ...current
+        });
+
+    } catch (error) {
+        console.error(
+            '❌ Erreur GET /api/config/cash-register :',
+            error
+        );
+
+        return res.status(500).json({
+            success: false,
+            persisted: false,
+            error:
+                'Impossible de lire la configuration caisse.'
+        });
+    }
+});
+
+app.post('/api/config/cash-register', async (req, res) => {
+    const tenantID =
+        cleanString(
+            req.query.tenantID ||
+            req.body?.tenantID
+        );
+
+    if (!tenantID) {
+        return res.status(400).json({
+            success: false,
+            persisted: false,
+            error: 'tenantID manquant.'
+        });
+    }
+
+    try {
+        const result =
+            await ichefSerializeCashConfigWrite(
+                tenantID,
+                async () => {
+                    const incomingCash =
+                        req.body?.cashRegister &&
+                        typeof req.body.cashRegister === 'object' &&
+                        !Array.isArray(req.body.cashRegister)
+                            ? req.body.cashRegister
+                            : {};
+
+                    const incomingTax =
+                        req.body?.taxConfig &&
+                        typeof req.body.taxConfig === 'object' &&
+                        !Array.isArray(req.body.taxConfig)
+                            ? req.body.taxConfig
+                            : (
+                                incomingCash.taxConfig &&
+                                typeof incomingCash.taxConfig === 'object'
+                                    ? incomingCash.taxConfig
+                                    : {}
+                            );
+
+                    const normalized =
+                        ichefNormalizeCashRegisterConfig({
+                            ...incomingCash,
+                            taxConfig: incomingTax
+                        });
+
+                    const now =
+                        new Date().toISOString();
+
+                    const revision =
+                        `cash_${Date.now()}_${crypto.randomBytes(6).toString('hex')}`;
+
+                    const confirmedState =
+                        await AppState.findOneAndUpdate(
+                            { tenantID },
+                            {
+                                $set: {
+                                    'activeOrders.SETTINGS_MASTER.data.cashRegister':
+                                        normalized,
+
+                                    'activeOrders.SETTINGS_MASTER.data.taxConfig':
+                                        normalized.taxConfig,
+
+                                    'activeOrders.SETTINGS_MASTER.data.cashRegisterServerRevision':
+                                        revision,
+
+                                    'activeOrders.SETTINGS_MASTER.data.cashRegisterServerUpdatedAt':
+                                        now,
+
+                                    'activeOrders.SETTINGS_MASTER.updatedAt':
+                                        now
+                                }
+                            },
+                            {
+                                upsert: true,
+                                new: true,
+                                setDefaultsOnInsert: true
+                            }
+                        ).lean();
+
+                    if (!confirmedState) {
+                        throw new Error(
+                            'État caisse introuvable après sauvegarde.'
+                        );
+                    }
+
+                    const confirmed =
+                        ichefExtractCashConfig(
+                            confirmedState
+                        );
+
+                    if (
+                        String(confirmed.revision || '') !==
+                        revision
+                    ) {
+                        throw new Error(
+                            'Révision caisse non confirmée par MongoDB.'
+                        );
+                    }
+
+                    io.to(tenantID).emit(
+                        'cash-register-config-changed',
+                        {
+                            tenantID,
+                            revision,
+                            cashRegister:
+                                confirmed.cashRegister,
+                            taxConfig:
+                                confirmed.taxConfig,
+                            updatedAt: now
+                        }
+                    );
+
+                    io.to(tenantID).emit(
+                        'server-state-changed',
+                        {
+                            tableId: 'CASH_REGISTER_CONFIG',
+                            source:
+                                'api/config/cash-register',
+                            revision,
+                            updatedAt: now
+                        }
+                    );
+
+                    io.to(tenantID).emit(
+                        'updateState',
+                        confirmedState
+                    );
+
+                    console.log(
+                        `✅ Configuration caisse enregistrée : ${tenantID}` +
+                        ` | revision=${revision}` +
+                        ` | device=${String(req.body?.deviceId || 'non-renseigné').slice(0, 120)}` +
+                        ` | operator=${String(req.body?.operator || 'ADMIN').slice(0, 80)}`
+                    );
+
+                    return {
+                        revision,
+                        confirmed,
+                        updatedAt: now
+                    };
+                }
+            );
+
+        return res.json({
+            success: true,
+            persisted: true,
+            tenantID,
+            revision:
+                result.revision,
+            cashRegister:
+                result.confirmed.cashRegister,
+            taxConfig:
+                result.confirmed.taxConfig,
+            updatedAt:
+                result.updatedAt
+        });
+
+    } catch (error) {
+        console.error(
+            '❌ Erreur POST /api/config/cash-register :',
+            error
+        );
+
+        return res.status(500).json({
+            success: false,
+            persisted: false,
+            error:
+                'Impossible d’enregistrer la configuration caisse.'
+        });
+    }
+});
+
+
 app.post('/update-order', async (req, res) => {
     try {
         const tenantID =
@@ -7067,54 +7389,6 @@ app.get('/api/public-receipt', async (req, res) => {
         res.send(`
 <!doctype html>
 <html lang="fr">
-
-res.send(`
-<!doctype html>
-<html lang="fr">
-<head>
-<meta charset="utf-8">
-<meta name="viewport"
-content="width=device-width,initial-scale=1">
-<title>Ticket ${esc(tx.ticketNumber)}</title>
-
-<!-- 1. IMPORT DE LA POLICE GOOGLE FONTS -->
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;700;900&display=swap" rel="stylesheet">
-
-<style>
-body{
-    margin:0;
-    padding:20px;
-    background:#f2f2f2;
-    /* 2. APPLICATION DE LA POLICE */
-    font-family: 'Inter', Arial, sans-serif;
-    color:#111;
-}
-/* ... suite de votre style ... */res.send(`
-<!doctype html>
-<html lang="fr">
-<head>
-<meta charset="utf-8">
-<meta name="viewport"
-content="width=device-width,initial-scale=1">
-<title>Ticket ${esc(tx.ticketNumber)}</title>
-
-<!-- 1. IMPORT DE LA POLICE GOOGLE FONTS -->
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;700;900&display=swap" rel="stylesheet">
-
-<style>
-body{
-    margin:0;
-    padding:20px;
-    background:#f2f2f2;
-    /* 2. APPLICATION DE LA POLICE */
-    font-family: 'Inter', Arial, sans-serif;
-    color:#111;
-}
-/* ... suite de votre style ... */
 <head>
 <meta charset="utf-8">
 <meta name="viewport"
