@@ -5514,12 +5514,27 @@ async function enqueueVersionedWrite(key,pending){
 
       for(let attempt=0;attempt<3;attempt++){
         try{
-          await updateServer(key,pending.data,pending.reason);
+          const ack=await updateServer(key,pending.data,pending.reason);
+
+          if(!ack || ack.success!==true || ack.persisted!==true){
+            throw new Error(ack?.error||"Écriture non confirmée par le serveur");
+          }
 
           const latest=ICHEF_LOCAL_PENDING.get(key);
           if(latest && latest.version===pending.version){
             ICHEF_LOCAL_PENDING.delete(key);
             ICHEF_FAILED_WRITES.delete(key);
+          }
+
+          /*
+           * Le serveur renvoie l'état MongoDB APRÈS écriture. On l'applique
+           * immédiatement : le vert signifie donc réellement « persisté ».
+           * Si une version locale plus récente existe déjà,
+           * preservePendingOverServer() la garde prioritaire.
+           */
+          if(ack.state && typeof ack.state==="object"){
+            STATE.lastServerAt=now();
+            applyServerState(ack.state,"write-ack");
           }
 
           setOrderSyncState(" SERVEUR À JOUR","good");
@@ -5931,6 +5946,9 @@ async function updateServer(key,data,auditReason="Mise à jour PAD"){
   });
   const j=await r.json().catch(()=>({}));
   if(!r.ok)throw new Error(j.error||j.message||("Écriture serveur "+r.status));
+  if(j.success!==true||j.persisted!==true){
+    throw new Error(j.error||j.message||"Le serveur n'a pas confirmé la persistance");
+  }
   return j;
 }
 async function optimisticWrite(key,data,reason){
@@ -6016,7 +6034,13 @@ async function connectSocket(){
 
     socket.on("connect",()=>{
       STATE.connected=true;
-      STATE.lastServerAt=now();
+
+      /*
+       * IMPORTANT : lastServerAt représente la dernière DONNÉE réellement
+       * reçue du serveur, pas simplement l'ouverture du WebSocket.
+       * Ainsi le watchdog peut détecter une socket connectée mais muette.
+       */
+      const stateSeenBeforeJoin=Number(STATE.lastServerAt||0);
 
       setConnection("TEMPS RÉEL","good");
       hidePadNetworkOverlay();
@@ -6029,15 +6053,32 @@ async function connectSocket(){
 
       retryFailedWrites();
 
-      if(
-        !STATE.lastServerAt ||
-        now()-STATE.lastServerAt>5000
-      ){
-        syncFull("reconnect");
-      }
+      /*
+       * SYMBIOSE TOTALE : joinTenant envoie normalement updateState.
+       * Si aucun état n'arrive (recovery, proxy, paquet perdu), le PAD
+       * réclame explicitement l'état complet puis utilise HTTP en dernier
+       * recours. MongoDB/server.js reste toujours la source de vérité.
+       */
+      setTimeout(()=>{
+        if(!socket.connected||!STATE.authenticated)return;
+        if(Number(STATE.lastServerAt||0)>stateSeenBeforeJoin)return;
+
+        socket.emit("requestMenuState",{
+          tenantID:STATE.tenantID,
+          deviceId:STATE.deviceId,
+          page:"PAD",
+          source:"PAD_SYMBIOSE_TOTAL"
+        });
+      },350);
+
+      setTimeout(()=>{
+        if(!socket.connected||!STATE.authenticated)return;
+        if(Number(STATE.lastServerAt||0)>stateSeenBeforeJoin)return;
+        syncFull("socket-connect-fallback");
+      },1300);
 
       console.info(
-        "[iCHEF PAD V1] WebSocket connecté",
+        "[iCHEF PAD SYMBIOSE] WebSocket connecté",
         {
           id:socket.id,
           tenantID:STATE.tenantID,
@@ -6056,6 +6097,37 @@ async function connectSocket(){
       applyServerState(s,"socket");
     });
 
+    /*
+     * Pont de cohérence inter-écrans. Le serveur émet ce signal après une
+     * écriture venant d'un PAD, d'admin, d'un KDS ou d'un autre terminal.
+     * updateState arrive normalement juste avant. Si ce paquet n'a pas été
+     * reçu, une relecture HTTP réconcilie automatiquement le PAD.
+     */
+    socket.on("server-state-changed",evt=>{
+      const signalAt=now();
+      setTimeout(()=>{
+        if(!STATE.authenticated||!navigator.onLine)return;
+        if(Number(STATE.lastServerAt||0)>=signalAt-120)return;
+        syncFull("server-state-changed");
+      },420);
+
+      try{
+        window.dispatchEvent(new CustomEvent("ichef:server-state-changed",{detail:evt||{}}));
+      }catch(_){}
+    });
+
+    socket.on("menuSynced",evt=>{
+      try{
+        window.dispatchEvent(new CustomEvent("ichef:menu-synced",{detail:evt||{}}));
+      }catch(_){}
+    });
+
+    socket.on("qr-nfc-config-changed",evt=>{
+      try{
+        window.dispatchEvent(new CustomEvent("ichef:qr-nfc-config-changed",{detail:evt||{}}));
+      }catch(_){}
+    });
+
     socket.on("disconnect",reason=>{
       STATE.connected=false;
 
@@ -6069,7 +6141,7 @@ async function connectSocket(){
       );
 
       console.warn(
-        "[iCHEF PAD V1] Socket déconnecté :",
+        "[iCHEF PAD SYMBIOSE] Socket déconnecté :",
         reason
       );
 
@@ -6093,7 +6165,7 @@ async function connectSocket(){
       );
 
       console.warn(
-        "[iCHEF PAD V1] connect_error :",
+        "[iCHEF PAD SYMBIOSE] connect_error :",
         err?.message||err
       );
     });
@@ -6101,7 +6173,7 @@ async function connectSocket(){
     socket.io.on("reconnect_attempt",attempt=>{
       setConnection("RECONNEXION","warn");
       console.info(
-        "[iCHEF PAD V1] Reconnexion WebSocket",
+        "[iCHEF PAD SYMBIOSE] Reconnexion WebSocket",
         attempt
       );
     });
@@ -6112,7 +6184,7 @@ async function connectSocket(){
       hidePadNetworkOverlay();
 
       console.info(
-        "[iCHEF PAD V1] WebSocket rétabli après",
+        "[iCHEF PAD SYMBIOSE] WebSocket rétabli après",
         attempt,
         "tentative(s)"
       );
@@ -6135,7 +6207,7 @@ async function connectSocket(){
     );
 
     console.warn(
-      "[iCHEF PAD V1] Socket.IO non chargé :",
+      "[iCHEF PAD SYMBIOSE] Socket.IO non chargé :",
       err?.message||err
     );
 
@@ -12103,9 +12175,9 @@ setTimeout(() => {
 </script>
 
 <script id="ichef-pad-v1-marker">
-window.__ICHEF_PAD_VERSION__="PAD-PRINCIPAL-STABLE-V1-2026.08.31";
+window.__ICHEF_PAD_VERSION__="PAD-SYMBIOSE-TOTALE-V2-2026.08.31";
 console.log(
-  "%c iCHEF PAD PRINCIPAL V1 — PIN + WEBSOCKET DIRECT — AUCUN POLLING ",
+  "%c iCHEF PAD SYMBIOSE TOTALE V2 — SERVER + MONGODB + SOCKET + HTTP ",
   "background:#e2b84e;color:#000;font-weight:900;padding:5px 9px;"
 );
 </script>
