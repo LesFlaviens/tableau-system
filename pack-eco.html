@@ -1,3 +1,4 @@
+<!-- ICHEF PACK-ECO — PLAN INTERACTIF SYMBIOSE TOTALE — 2026-08-31 -->
 <!doctype html>
 <html lang="fr">
 <head>
@@ -5,7 +6,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
 <meta name="theme-color" content="#ffffff">
-<title>iCHEF PAD — ARCHITECTURE DE SERVICE INTELLIGENTE</title>
+<title>iCHEF PAD — PLAN INTERACTIF · SYMBIOSE TOTALE</title>
 <style>
 :root{
   --bg:#050607;--panel:#0b0e0f;--panel2:#111516;--line:#293033;--line2:#3a4346;
@@ -5932,15 +5933,37 @@ async function getState(){
 async function updateServer(key,data,auditReason="Mise à jour PAD"){
   if(STATE.demo)return {success:true,demo:true};
   if(!STATE.authenticated)throw new Error("Session non authentifiée");
-  const body={
-    tableId:key,
-    order:data,
-    pin:STATE.pin,
-    deviceId:STATE.deviceId,
-    terminal:"PAD",
-    auditReason
-  };
-  const r=await serverFetch("/update-order?tenantID="+encodeURIComponent(STATE.tenantID),{
+
+  /*
+   * ARCHITECTURE possède maintenant son canal serveur dédié.
+   * Cela évite de traiter le plan interactif comme une simple commande de table
+   * et garantit la symbiose plan <-> server.js <-> MongoDB <-> autres écrans.
+   */
+  const isArchitecture=key==="ARCHITECTURE";
+  const url=isArchitecture
+    ?"/api/architecture?tenantID="+encodeURIComponent(STATE.tenantID)
+    :"/update-order?tenantID="+encodeURIComponent(STATE.tenantID);
+
+  const body=isArchitecture
+    ?{
+        architecture:unwrap(data)||{},
+        pin:STATE.pin,
+        deviceId:STATE.deviceId,
+        terminal:"PAD",
+        role:STATE.role||"",
+        source:"pack-eco.html",
+        auditReason
+      }
+    :{
+        tableId:key,
+        order:data,
+        pin:STATE.pin,
+        deviceId:STATE.deviceId,
+        terminal:"PAD",
+        auditReason
+      };
+
+  const r=await serverFetch(url,{
     method:"POST",
     body:JSON.stringify(body)
   });
@@ -6126,6 +6149,33 @@ async function connectSocket(){
       try{
         window.dispatchEvent(new CustomEvent("ichef:qr-nfc-config-changed",{detail:evt||{}}));
       }catch(_){}
+    });
+
+
+    socket.on("architectureState",evt=>{
+      if(evt?.state&&typeof evt.state==="object"){
+        STATE.lastServerAt=now();
+        applyServerState(evt.state,"architecture-state");
+      }else if(evt?.architecture&&typeof evt.architecture==="object"){
+        STATE.activeOrders.ARCHITECTURE={data:clone(evt.architecture)};
+        applyDerived();
+        scheduleRender();
+      }
+    });
+
+    socket.on("architecture-changed",evt=>{
+      /* updateState est émis en même temps par server.js ; ce paquet sert aussi
+         de filet de sécurité si le navigateur a raté l'état complet. */
+      STATE.lastServerAt=now();
+      if(evt?.architecture&&typeof evt.architecture==="object"){
+        const pending=ICHEF_LOCAL_PENDING.get("ARCHITECTURE");
+        if(!pending){
+          STATE.activeOrders.ARCHITECTURE={data:clone(evt.architecture)};
+          applyDerived();
+          scheduleRender();
+        }
+      }
+      try{window.dispatchEvent(new CustomEvent("ichef:architecture-updated",{detail:evt||{}}))}catch(_){}
     });
 
     socket.on("disconnect",reason=>{
