@@ -3964,7 +3964,12 @@ body.order-open .order-sync-state.bad{background:#fff2f4 !important;}
 
   const KEY='ichef_plan_zoom_pct_v28';
   const MIN=0,MAX=200,STEP=10;
+  /* Pinch volontairement amorti : évite les gros sauts sur tablette. */
+  const PINCH_START_THRESHOLD=18;   // px avant de commencer à zoomer
+  const PINCH_SENSITIVITY=0.28;     // 28 % du mouvement réel des doigts
+  const PINCH_MAX_STEP=3;           // variation max en % par frame
   let pinch=null;
+  let pinchRaf=0;
 
   const clamp=v=>{const n=Number(v);return Math.max(MIN,Math.min(MAX,Math.round(Number.isFinite(n)?n:100)))};
   const root=()=>document.getElementById('ichefArchPad');
@@ -4046,33 +4051,64 @@ body.order-open .order-sync-state.bad{background:#fff2f4 !important;}
     setZoom(currentZoom()+(e.deltaY>0?-STEP:STEP));
   },{passive:false,capture:true});
 
-  /* Pinch tactile à deux doigts. */
+  /* Pinch tactile à deux doigts — version amortie / moins sensible. */
   document.addEventListener('touchstart',e=>{
     if(e.touches.length!==2||!e.target.closest?.('#ichefArchPad .archpad-stagewrap'))return;
     const d=Math.hypot(
       e.touches[0].clientX-e.touches[1].clientX,
       e.touches[0].clientY-e.touches[1].clientY
     );
-    pinch={distance:d,zoom:currentZoom()};
+    pinch={
+      distance:d,
+      lastDistance:d,
+      zoom:currentZoom(),
+      appliedZoom:currentZoom(),
+      active:false,
+      pendingZoom:null
+    };
   },{passive:true,capture:true});
 
   document.addEventListener('touchmove',e=>{
     if(!pinch||e.touches.length!==2||!e.target.closest?.('#ichefArchPad .archpad-stagewrap'))return;
-    e.preventDefault();
     const d=Math.hypot(
       e.touches[0].clientX-e.touches[1].clientX,
       e.touches[0].clientY-e.touches[1].clientY
     );
-    if(pinch.distance>0)setZoom(pinch.zoom*(d/pinch.distance),false);
+    const travelled=Math.abs(d-pinch.distance);
+    if(!pinch.active && travelled<PINCH_START_THRESHOLD)return;
+
+    pinch.active=true;
+    e.preventDefault();
+
+    /* On amortit le rapport au lieu d'appliquer directement d/départ. */
+    const rawRatio=pinch.distance>0?(d/pinch.distance):1;
+    const dampedRatio=1+((rawRatio-1)*PINCH_SENSITIVITY);
+    pinch.pendingZoom=clamp(pinch.zoom*dampedRatio);
+    pinch.lastDistance=d;
+
+    if(!pinchRaf){
+      pinchRaf=requestAnimationFrame(()=>{
+        pinchRaf=0;
+        if(!pinch||pinch.pendingZoom==null)return;
+        const current=Number(pinch.appliedZoom)||currentZoom();
+        const target=Number(pinch.pendingZoom)||current;
+        const delta=Math.max(-PINCH_MAX_STEP,Math.min(PINCH_MAX_STEP,target-current));
+        const next=clamp(current+delta);
+        pinch.appliedZoom=next;
+        setZoom(next,false);
+      });
+    }
   },{passive:false,capture:true});
 
-  document.addEventListener('touchend',e=>{
+  const finishPinch=e=>{
     if(!pinch)return;
-    if(e.touches.length<2){
-      pinch=null;
-      try{localStorage.setItem(KEY,String(currentZoom()))}catch(_){}
-    }
-  },{passive:true,capture:true});
+    if(e.touches && e.touches.length>=2)return;
+    if(pinchRaf){cancelAnimationFrame(pinchRaf);pinchRaf=0}
+    pinch=null;
+    try{localStorage.setItem(KEY,String(currentZoom()))}catch(_){}
+  };
+  document.addEventListener('touchend',finishPinch,{passive:true,capture:true});
+  document.addEventListener('touchcancel',finishPinch,{passive:true,capture:true});
 })();
 </script>
 <style id="taille-zones-x3">
@@ -4933,7 +4969,7 @@ html.ichef-phone-denied body > *:not(#ichefPhoneDenied){
 <style id="ichef-plan-touch-buttons-fix">
 #ichefArchPad button,#ichefArchPad select,#ichefArchPad [data-arch-key]{pointer-events:auto!important;-webkit-tap-highlight-color:transparent}
 #ichefArchPad button{touch-action:manipulation!important}
-#ichefArchPad .service-layout .archpad-stage{touch-action:pan-x pan-y pinch-zoom!important}
+#ichefArchPad .service-layout .archpad-stage{touch-action:pan-x pan-y!important}
 #ichefArchPad .service-layout .arch-table{touch-action:manipulation!important;cursor:pointer!important}
 </style>
 
