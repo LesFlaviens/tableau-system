@@ -13865,5 +13865,89 @@ console.log(
   setTimeout(()=>{bind();requestArchitecture('boot')},500);
 })();
 </script>
+  <!-- CORRECTION BARRE SÉPARATRICE MENU/TICKET (DRAG FLUIDE) -->
+<script id="fix-barre-menu-ticket-drag">
+(function fixOrderDividerRobust() {
+    const oldDivider = document.getElementById("orderDivider");
+    if (!oldDivider) return;
+
+    // 1. Clonage pour purger les anciens écouteurs d'événements capricieux
+    const divider = oldDivider.cloneNode(true);
+    oldDivider.parentNode.replaceChild(divider, oldDivider);
+
+    let isDragging = false;
+    const SPLIT_MIN = 15;
+    const SPLIT_MAX = 85;
+
+    function clampSplit(val) {
+        const n = Number(val);
+        if (!Number.isFinite(n)) return 52;
+        return Math.max(SPLIT_MIN, Math.min(SPLIT_MAX, n));
+    }
+
+    function setSplit(value, persist = false) {
+        const pct = clampSplit(value);
+        // On force la variable CSS à la racine avec !important pour outrepasser toutes les règles
+        document.documentElement.style.setProperty("--order-menu-split", pct + "%", "important");
+        divider.setAttribute("aria-valuenow", String(Math.round(pct)));
+        
+        if (persist) {
+            try { localStorage.setItem("ichef_order_menu_split_v10", String(pct)); } catch(e) {}
+        }
+    }
+
+    function getSplitFromY(clientY) {
+        const main = document.querySelector(".order-main");
+        if (!main) return 52;
+        const rect = main.getBoundingClientRect();
+        if (rect.height <= 0) return 52;
+        return ((clientY - rect.top) / rect.height) * 100;
+    }
+
+    // 2. DÉMARRAGE : Attaché à la barre elle-même
+    divider.addEventListener("pointerdown", e => {
+        isDragging = true;
+        divider.classList.add("dragging");
+        try { divider.setPointerCapture(e.pointerId); } catch(err) {}
+        setSplit(getSplitFromY(e.clientY), false);
+        e.preventDefault();
+    });
+
+    // 3. MOUVEMENT : Attaché à WINDOW pour ne JAMAIS perdre le doigt en cours de glissement
+    window.addEventListener("pointermove", e => {
+        if (!isDragging) return;
+        setSplit(getSplitFromY(e.clientY), false);
+        e.preventDefault();
+    }, { passive: false });
+
+    // 4. FIN : Attaché à WINDOW
+    window.addEventListener("pointerup", e => {
+        if (!isDragging) return;
+        isDragging = false;
+        divider.classList.remove("dragging");
+        try { divider.releasePointerCapture(e.pointerId); } catch(err) {}
+        setSplit(getSplitFromY(e.clientY), true);
+    });
+
+    window.addEventListener("pointercancel", e => {
+        if (!isDragging) return;
+        isDragging = false;
+        divider.classList.remove("dragging");
+        try { divider.releasePointerCapture(e.pointerId); } catch(err) {}
+    });
+
+    // 5. RÉINITIALISATION PAR DOUBLE CLIC
+    divider.addEventListener("dblclick", () => {
+        setSplit(52, true);
+        if (typeof toast === "function") toast("Menu / ticket réinitialisé");
+    });
+
+    // 6. Application au démarrage si une valeur est sauvegardée
+    try {
+        const saved = Number(localStorage.getItem("ichef_order_menu_split_v10"));
+        if (saved) setSplit(saved, false);
+    } catch(e) {}
+})();
+</script>
 </body>
 </html>
