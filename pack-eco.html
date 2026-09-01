@@ -14075,5 +14075,137 @@ console.log(
     };
 })();
 </script>
+  <!-- =========================================================
+     CORRECTION DOCK BAS (3 NIVEAUX) ET MODAL OBSERVATION
+     ========================================================= -->
+<style id="dock-and-modal-fix">
+/* 1. Forcer le dock à s'adapter à la hauteur des 3 rangées (annule la limite de 92px) */
+body.order-open #bottomObservationBar {
+    height: auto !important;
+    min-height: 230px !important; /* Garantit la place pour les 3 rangées */
+    padding-top: 15px !important;
+    padding-bottom: 15px !important;
+    display: flex !important;
+    flex-direction: column !important;
+    justify-content: space-evenly !important;
+}
+
+/* 2. Inverser l'ordre des rangées : OBS/FERMER en haut (1), PAIEMENT (2), SERVICE (3) */
+#bottomObservationBar .order-dock-close {
+    order: 1 !important;
+    margin-bottom: 5px !important;
+}
+#bottomObservationBar .order-dock-payment {
+    order: 2 !important;
+}
+#bottomObservationBar .order-dock-service {
+    order: 3 !important;
+}
+
+/* 3. Styles dédiés pour le nouveau modal */
+.table-status-modal-header {
+    background: #e9e9e9;
+    border-radius: 12px;
+    padding: 15px;
+    margin-bottom: 15px;
+    text-align: center;
+    font-size: 16px;
+    font-weight: 900;
+    color: #111;
+}
+.table-status-modal-textarea {
+    width: 100%;
+    min-height: 80px;
+    font-size: 16px;
+    margin-bottom: 15px;
+    padding: 12px;
+    border: 2px solid #cfd2d5;
+    border-radius: 10px;
+    resize: vertical;
+    outline: none;
+    font-family: inherit;
+}
+.table-status-modal-textarea:focus {
+    border-color: #111;
+}
+</style>
+
+<script id="observation-modal-logic">
+(function initObservationModal() {
+    
+    // 1. Renommer le bouton existant en "OBSERVER" de manière sécurisée
+    const renameInterval = setInterval(() => {
+        const btn = document.getElementById("bottomObservation");
+        if (btn) {
+            btn.textContent = "OBSERVER";
+            clearInterval(renameInterval);
+        }
+    }, 100);
+
+    // 2. Intercepter la fonction appelée par le bouton pour ouvrir le NOUVEAU MODAL
+    window.openObservationFast = function() {
+        if (!STATE.currentTable) {
+            if (typeof toast === "function") toast("Ouvrez d'abord une table", true);
+            return;
+        }
+        
+        const o = STATE.currentOrder || (typeof ensureOrder === "function" ? ensureOrder(STATE.currentTable) : null);
+        if (!o) return;
+        
+        // Récupérer la note actuelle s'il y en a une
+        const currentNote = o.note || o.observation || "";
+        const safeNote = typeof esc === "function" ? esc(currentNote) : currentNote;
+
+        const html = `
+            <div class="table-status-modal-header">
+                Indiquez le motif d'occupation (la table apparaîtra en rouge sur le plan) :
+            </div>
+            <div class="action-grid" style="gap:10px; margin-bottom:15px;">
+                <button class="action-btn" data-status-btn="STAFF" style="background:#fff; color:#111; font-size:16px; font-weight:950; min-height:60px; border:2px solid #cfd2d5;">STAFF</button>
+                <button class="action-btn" data-status-btn="RÉSERVÉ" style="background:#fff; color:#111; font-size:16px; font-weight:950; min-height:60px; border:2px solid #cfd2d5;">RÉSERVÉ</button>
+                <button class="action-btn" data-status-btn="EN ATTENTE" style="background:#fff; color:#111; font-size:16px; font-weight:950; min-height:60px; border:2px solid #cfd2d5;">EN ATTENTE</button>
+                <button class="action-btn" data-status-btn="MÉNAGE" style="background:#fff; color:#111; font-size:16px; font-weight:950; min-height:60px; border:2px solid #cfd2d5;">MÉNAGE</button>
+            </div>
+            <textarea id="tableStatusText" class="table-status-modal-textarea" placeholder="Ou tapez une autre raison ici (VIP, etc.)...">${safeNote}</textarea>
+            <button id="btnSaveTableStatus" class="action-btn" style="background:#111; color:#fff; font-size:18px; font-weight:950; width:100%; min-height:60px; border:none; border-radius:12px;">✓ OCCUPER LA TABLE</button>
+        `;
+
+        if (typeof openSheet === "function") {
+            openSheet("POURQUOI CETTE TABLE EST OCCUPÉE ?", html);
+            
+            const area = document.getElementById("tableStatusText");
+            
+            // Écouteurs sur les 4 boutons de raccourci
+            document.getElementById("sheetBody").querySelectorAll("[data-status-btn]").forEach(b => {
+                b.onclick = () => { area.value = b.dataset.statusBtn; };
+            });
+
+            // Sauvegarde de l'état
+            document.getElementById("btnSaveTableStatus").onclick = async () => {
+                const reason = area.value.trim();
+                if (!reason) {
+                    if (typeof toast === "function") toast("Veuillez indiquer un motif", true);
+                    return;
+                }
+                
+                o.note = reason;
+                o.observation = reason;
+                
+                // Déclencheurs pour afficher la table en URGENCE (Rouge) sur le plan interactif
+                o.alert = true; 
+                o.alerteRouge = true; 
+                
+                if (typeof saveCurrent === "function") {
+                    await saveCurrent(o, "Motif d'occupation : " + reason, { immediate: true });
+                }
+                
+                if (typeof closeSheet === "function") closeSheet();
+                if (typeof toast === "function") toast("Table marquée en occupation / rouge");
+                if (typeof scheduleRender === "function") scheduleRender();
+            };
+        }
+    };
+})();
+</script>
 </body>
 </html>
