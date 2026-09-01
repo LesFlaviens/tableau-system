@@ -6772,26 +6772,26 @@ async function connectSocket(){
     const identity={
       tenantID:String(STATE.tenantID||"").trim(),
       deviceId:String(STATE.deviceId||"").trim(),
-      page:"PAD"
+      page:"PLAN_INTERACTIF"
     };
 
     const socket=window.io(APP_SERVER_URL,{
-      withCredentials:true,
+      withCredentials:false,
 
-      /* Render : WebSocket direct, aucun polling / aucun SID polling. */
-      transports:["websocket"],
-      upgrade:false,
-      rememberUpgrade:true,
+      /* Connexion robuste Render / Edge : handshake HTTP puis upgrade WebSocket. */
+      transports:["polling","websocket"],
+      upgrade:true,
+      rememberUpgrade:false,
 
       reconnection:true,
       reconnectionAttempts:Infinity,
-      reconnectionDelay:1000,
-      reconnectionDelayMax:8000,
+      reconnectionDelay:700,
+      reconnectionDelayMax:5000,
       randomizationFactor:.35,
-      timeout:25000,
+      timeout:20000,
       forceNew:false,
       multiplex:true,
-      closeOnBeforeunload:true,
+      closeOnBeforeunload:false,
 
       auth:identity,
       query:identity
@@ -6809,8 +6809,16 @@ async function connectSocket(){
       socket.emit("joinTenant",{
         tenantID:STATE.tenantID,
         deviceId:STATE.deviceId,
-        page:"PAD"
+        page:"PLAN_INTERACTIF"
       });
+
+      try{
+        socket.emit("requestArchitectureState",{
+          tenantID:STATE.tenantID,
+          deviceId:STATE.deviceId,
+          page:"PLAN_INTERACTIF"
+        });
+      }catch(_){}
 
       retryFailedWrites();
 
@@ -6827,7 +6835,7 @@ async function connectSocket(){
           id:socket.id,
           tenantID:STATE.tenantID,
           deviceId:STATE.deviceId,
-          page:"PAD",
+          page:"PLAN_INTERACTIF",
           transport:socket.io?.engine?.transport?.name||"websocket"
         }
       );
@@ -6841,12 +6849,14 @@ async function connectSocket(){
       applyServerState(s,"socket");
     });
 
-    socket.on("ichef-device-replaced",info=>{
+    const onSessionReplaced=info=>{
       STATE.deviceReplaced=true;
       STATE.connected=false;
       setConnection("AUTRE ONGLET ACTIF","warn");
-      console.info("[iCHEF PAD] Connexion remplacée par un autre onglet/appareil",info||{});
-    });
+      console.info("[iCHEF PLAN] Connexion remplacée par un autre onglet/appareil",info||{});
+    };
+    socket.on("ichef-device-replaced",onSessionReplaced);
+    socket.on("ichef-session-replaced",onSessionReplaced);
 
     socket.on("disconnect",reason=>{
       STATE.connected=false;
@@ -9221,618 +9231,7 @@ function systemPrintHTML(lines,title="iCHEF",paperWidth=80){
   return `<!doctype html><html><head><meta charset="utf-8"><title>${esc(title)}</title><style>@page{size:${width}mm auto;margin:3mm}html,body{margin:0;padding:0;background:#fff;color:#000;font-family:Arial,sans-serif}.ticket{width:${width-6}mm;margin:0 auto}</style></head><body><div class="ticket">${body}</div>
 <!-- iCHEF FIX 2026-08-25 : affichage PAX du PLAN = CAPACITÉ ARCHITECTURALE de la table (t.pax), jamais PAX clients live. -->
 
-<script id="ichef-plan-update-20260901-v26">
-/* =========================================================
-   iCHEF PLAN INTERACTIF V26 — SYMBIOSE PACK-ECO
-   - barre responsive
-   - CLIENT + / TABLE +
-   - C1-C9 dans la cuisson
-   - QUI MANGE QUOI compact
-   - dock 3 niveaux
-   - SERVICE garde la table occupée et remet le chrono à zéro
-   - À PAYER -> caissetactile.html
-   - FERMER -> plan interactif
-   ========================================================= */
 
-function orderCreated(o){if(!o)return 0;let t=Number(o.serviceClockAt||o.serviceStartedAt||o.createdAt||o.openedAt||o.date||0);if(!t&&Array.isArray(o.items)&&o.items.length)t=Math.min(...o.items.map(i=>Number(i.itemId||i.createdAt||i.sentAt||Date.now())).filter(Number.isFinite));return t||0}
-function lineReady(i){return !!(i&&(i.done===true||i.ready===true||i.isReady===true||i.readyAt||String(i.sequenceStatus||"").toUpperCase()==="READY"||String(i.status||i.productionStatus||"").toLowerCase()==="ready"))}
-function lineServed(i){return !!(i&&(i.served===true||i.isServed===true||i.servedAt||String(i.sequenceStatus||"").toUpperCase()==="SERVED"||String(i.status||"").toLowerCase()==="served"))}
-
-
-function renderOrder(){
-  const o=STATE.currentOrder||getOrder(STATE.currentTable)||ensureOrder(STATE.currentTable);
-  STATE.currentOrder=o;
-
-  if($("orderName"))$("orderName").textContent="TABLE "+STATE.currentTable;
-  if($("paxValue"))$("paxValue").textContent=num(o.pax||2)||2;
-
-  const t=STATE.tables.find(x=>x.label===STATE.currentTable);
-  const z=getZone(t);
-
-  const currentZoneLabel=z?.label||t?.zone||"Sans zone";
-  if($("zoneValue"))$("zoneValue").textContent=currentZoneLabel;
-  if($("zoneQuickLabel"))$("zoneQuickLabel").textContent=`ZONE · ${currentZoneLabel}`;
-  if($("orderAge"))$("orderAge").textContent=duration(orderCreated(o)||Date.now());
-
-  renderGuestButtons();
-  renderCategories();
-  renderProducts();
-  renderTicket();
-  renderRushStrip();
-  updateUndoButton();
-}
-
-
-
-function renderGuestButtons(){
-  const el=$("guestButtons");
-  if(!el)return;
-
-  const o=STATE.currentOrder||ensureOrder(STATE.currentTable);
-  const pax=Math.max(1,num(o.pax||2));
-  const active=Math.max(1,Math.min(9,Number(STATE.activeSeat)||1));
-
-  if($("activeGuestLabel"))$("activeGuestLabel").textContent=`ACTIF : C${active}`;
-  if($("btnHeadWho")){
-    const main=$("btnHeadWho").querySelector(".head-main-v20");
-    if(main)main.textContent=`QUI MANGE ? · C${active}`;
-    else $("btnHeadWho").textContent=`QUI MANGE ? · C${active}`;
-  }
-
-  el.innerHTML=Array.from({length:9},(_,idx)=>{
-    const seat=idx+1;
-    const extra=seat>pax?" extra":"";
-    return `<button type="button"
-                    class="guest-btn${seat===active?" active":""}${extra}"
-                    data-seat="${seat}"
-                    title="${seat>pax?`C${seat} — augmente automatiquement les couverts`:`Convive C${seat}`}">
-              C${seat}
-            </button>`;
-  }).join("");
-}
-
-
-
-function renderTicket(){
-  const o=STATE.currentOrder||ensureOrder(STATE.currentTable);
-  const items=(o.items||[]).filter(Boolean);
-
-  const currentTableTotal=orderTotal(o);
-  $("ticketTotal").textContent=money(currentTableTotal);
-  if($("bottomTableTotal"))$("bottomTableTotal").textContent=money(currentTableTotal);
-
-  const serviceBtn=$("btnBottomService");
-  if(serviceBtn){
-    const sentLines=items.filter(i=>i&&!i.cancelled&&lineFired(i));
-    const allSentServed=sentLines.length>0&&sentLines.every(i=>lineServed(i));
-    serviceBtn.textContent=allSentServed?"SERVICE ✓":"SERVICE";
-    serviceBtn.classList.toggle("served-ok",allSentServed);
-  }
-
-  $("ticket").innerHTML=items.length
-    ?items.map(i=>{
-      const key=lineKey(i);
-      const q=itemQty(i);
-      const seat=itemSeat(i);
-      const sent=lineFired(i);
-      const state=lineReady(i)
-        ?'<span class="line-state ready">PRÊT</span>'
-        :sent
-          ?'<span class="line-state sent">ENVOYÉ</span>'
-          :'<span class="line-state">BROUILLON</span>';
-
-      const cooking=text(i.cooking)
-        ?`<span class="cooking-tag">🌡️ ${esc(i.cooking)}</span>`
-        :"";
-
-      const seatBadge=seat?seatBadgeHTML(seat):'<span class="seat-badge">CTR</span>';
-      const obs=text(i.obs);
-      const critical=i.allergyCritical===true||/allerg/i.test(obs);
-
-      const controls=sent
-        ?`<button data-line="${esc(key)}" data-act="obs" title="Observation">📝</button>
-          <button data-line="${esc(key)}" data-act="cooking" title="Cuisson">🌡️</button>
-          <button data-line="${esc(key)}" data-act="delete" title="Annuler au poste" style="width:52px">ANN.</button>`
-        :`<button data-line="${esc(key)}" data-act="minus">−</button>
-          <button data-line="${esc(key)}" data-act="plus">+</button>
-          <button data-line="${esc(key)}" data-act="obs" title="Observation">📝</button>
-          <button data-line="${esc(key)}" data-act="delete">×</button>`;
-
-      return `<div class="ticket-row ${sent?"sent-lock":""}">
-        <div class="ticket-left" data-line="${esc(key)}" data-act="obs" style="cursor:pointer;" title="Tap pour Observation/Allergie">
-          <div class="ticket-name">
-            ${seatBadge}${esc(itemName(i))}
-            ${destinationTagHTML(i)}
-            ${cooking}
-            ${state}
-          </div>
-          <div class="ticket-meta">x${q} · ${esc(i.course||i.category||"")}</div>
-          ${obs?`<span class="ticket-obs ${critical?"critical":""}">${critical?"🛑 ":"⚠️ "}${esc(obs)}</span>`:""}
-        </div>
-        <div class="ticket-right">
-          <div class="ticket-price">${money(itemPrice(i)*q)}</div>
-          <div class="qtybar">${controls}</div>
-        </div>
-      </div>`;
-    }).join("")
-    :'<div class="empty-state">Choisissez C1…C9 puis touchez les produits.<br><b>1 tap = ajout immédiat.</b></div>';
-
-  renderSendButton(o);
-  updateUndoButton();
-}
-
-
-
-function openWho(){
-  if(!STATE.currentTable){
-    toast("Ouvrez d’abord une table",true);
-    return;
-  }
-
-  const o=STATE.currentOrder||ensureOrder(STATE.currentTable);
-  const pax=Math.max(1,Math.min(9,Number(o.pax)||2));
-  const active=Math.max(1,Math.min(9,Number(STATE.activeSeat)||1));
-
-  const compactWhoLabel=value=>{
-    const raw=text(value);
-    return raw.length>44?raw.slice(0,41)+"…":raw;
-  };
-
-  const cards=Array.from({length:9},(_,idx)=>{
-    const seat=idx+1;
-    const lines=(o.items||[]).filter(i=>!i.cancelled&&itemSeat(i)===seat);
-    const qty=lines.reduce((sum,i)=>sum+itemQty(i),0);
-    const preview=lines.slice(0,3).map(i=>{
-      const cook=text(i.cooking||i.cuisson);
-      const label=compactWhoLabel(itemName(i));
-      return `${esc(label)}${cook?` · ${esc(cook)}`:""}`;
-    }).join("<br>");
-    const isExtra=seat>pax;
-    return `<button type="button"
-                    class="who-seat-card${seat===active?" active":""}"
-                    data-who-seat="${seat}"
-                    data-seat="${seat}"
-                    title="${isExtra?`C${seat} — augmente les couverts`:`Convive C${seat}`}">
-              <div class="who-seat-number">C${seat}</div>
-              <div class="who-seat-status">${qty?`${qty} article${qty>1?"s":""}`:"Aucun article"}</div>
-              ${preview?`<div class="who-seat-items">${preview}${lines.length>3?`<br>+ ${lines.length-3} autre(s)`:""}</div>`:""}
-            </button>`;
-  }).join("");
-
-  openSheet(
-    `QUI MANGE QUOI ? · TABLE ${esc(STATE.currentTable)}`,
-    `<div class="who-seat-grid">${cards}</div>
-     <div class="who-seat-hint">Touchez C1…C9 puis choisissez les plats. La cuisson reste liée au même convive.</div>
-     <div class="who-sheet-actions">
-       <button id="whoObservation" type="button">OBSERVATION</button>
-       <button id="whoClosePlan" type="button">FERMER</button>
-     </div>`
-  );
-
-  $("sheet").classList.add("who-sheet");
-
-  $("sheetBody").querySelectorAll("[data-who-seat]").forEach(btn=>{
-    btn.onclick=()=>{
-      const seat=Number(btn.dataset.whoSeat)||1;
-      setActiveSeat(seat);
-      closeSheet();
-      toast(`C${seat} actif · choisissez les articles`);
-    };
-  });
-
-  const obs=$("whoObservation");
-  if(obs)obs.onclick=()=>{
-    closeSheet();
-    openObservationFast();
-  };
-
-  const closePlan=$("whoClosePlan");
-  if(closePlan)closePlan.onclick=()=>{
-    closeSheet();
-    closeOrder();
-    setTimeout(()=>{ if(typeof window.openPadServiceHome==="function") window.openPadServiceHome(); },0);
-  };
-}
-
-
-
-
-function architectureSnapshotForQuickAdd(){
-  const raw=unwrap(STATE.activeOrders.ARCHITECTURE)||{};
-  return {
-    ...clone(raw),
-    rooms:Array.isArray(raw.rooms)?clone(raw.rooms):clone(STATE.rooms||[]),
-    tables:Array.isArray(raw.tables)?clone(raw.tables):clone(STATE.tables||[]),
-    zones:Array.isArray(raw.zones)?clone(raw.zones):clone(STATE.zones||[])
-  };
-}
-
-async function persistQuickArchitecture(architecture,reason){
-  const packet={data:architecture,updatedAt:new Date().toISOString(),source:"TELEPHONE_QUICK_ADD"};
-  const pending=stageLocalValue("ARCHITECTURE",packet,reason);
-  return enqueueVersionedWrite("ARCHITECTURE",pending);
-}
-
-function quickTableZoneLabel(table){
-  const z=getZone(table);
-  return text(z?.label||table?.zone||table?.zoneLabel||"Sans zone");
-}
-
-function openQuickAddClientOrTable(){
-  const current=STATE.tables.find(t=>t.label===STATE.currentTable);
-  const currentZone=current?quickTableZoneLabel(current):"—";
-  openSheet("CLIENT + / TABLE +",`
-    <div class="quick-add-context">TABLE ACTUELLE : <b>${esc(STATE.currentTable||"—")}</b> · ZONE : <b>${esc(currentZone)}</b></div>
-    <div class="quick-add-choice-grid">
-      <button type="button" class="quick-add-choice" data-quick-add="client">CLIENT +<small>Ajouter un convive à une table existante et aller directement sur son C.</small></button>
-      <button type="button" class="quick-add-choice" data-quick-add="table">TABLE +<small>Créer une table de dernière minute et choisir précisément sa zone.</small></button>
-    </div>`);
-  $("sheetBody").querySelector('[data-quick-add="client"]')?.addEventListener("click",openQuickClientTablePicker);
-  $("sheetBody").querySelector('[data-quick-add="table"]')?.addEventListener("click",openQuickZonePicker);
-}
-
-function openQuickClientTablePicker(){
-  const tables=(STATE.tables||[]).slice().sort((a,b)=>text(a.label).localeCompare(text(b.label),"fr",{numeric:true}));
-  if(!tables.length){toast("Aucune table disponible",true);return;}
-  const cards=tables.map(t=>{
-    const st=tableStats(t.label);
-    const zone=quickTableZoneLabel(t);
-    const currentPax=Math.max(0,num(st.pax||getOrder(t.label)?.pax||0));
-    const status=st.status==="empty"?"LIBRE":`${currentPax} CLIENT${currentPax>1?"S":""}`;
-    return `<button type="button" class="quick-target-card" data-client-table="${esc(t.label)}">
-      <div class="qt-main">${esc(t.label)}</div>
-      <div class="qt-sub">${esc(zone)} · ${esc(status)}</div>
-    </button>`;
-  }).join("");
-  openSheet("CLIENT + · CHOISIR LA TABLE",`
-    <div class="quick-add-context">Choisissez la table où arrive le nouveau client.</div>
-    <div class="quick-target-grid">${cards}</div>`);
-  $("sheetBody").querySelectorAll("[data-client-table]").forEach(btn=>{
-    btn.onclick=()=>addClientToChosenTable(btn.dataset.clientTable);
-  });
-}
-
-async function addClientToChosenTable(tableId){
-  const table=text(tableId);
-  if(!table)return;
-  const existing=getOrder(table);
-  if(existing&&fiscalOrderFinalized(existing)){toast("Vente déjà fiscalisée sur cette table",true);return;}
-  const order=existing?clone(existing):ensureOrder(table);
-  const previousPax=existing?Math.max(0,num(existing.pax||existing.covers||0)):0;
-  if(previousPax>=9){toast(`${table} a déjà C1 à C9`,true);return;}
-  const newPax=Math.min(9,previousPax+1);
-  order.pax=newPax;
-  order.covers=newPax;
-  order.status=order.status||"open";
-  order.createdAt=order.createdAt||Date.now();
-  order.updatedAt=Date.now();
-  const normalized=normalizeCompatOrder(clone(order));
-  const pending=stageLocalValue(table,normalized,`CLIENT + sur ${table}`);
-  try{
-    await enqueueVersionedWrite(table,pending);
-    closeSheet();
-    openOrder(table);
-    setActiveSeat(newPax);
-    toast(`CLIENT C${newPax} ajouté · ${table} · ${quickTableZoneLabel(STATE.tables.find(t=>t.label===table))}`);
-  }catch(e){
-    toast("Impossible d’ajouter le client : "+(e?.message||"erreur serveur"),true);
-  }
-}
-
-function openQuickZonePicker(){
-  let zones=(STATE.zones||[]).filter(Boolean);
-  if(!zones.length){
-    zones=(STATE.rooms||[]).map((room,index)=>({id:`room_${index}`,label:room,room}));
-  }
-  const cards=zones.map(z=>{
-    const label=text(z.label||z.name||z.id||"Zone");
-    const room=text(z.room||STATE.room||"Salle");
-    const count=(STATE.tables||[]).filter(t=>quickTableZoneLabel(t)===label||(!t.zone&&t.room===room)).length;
-    return `<button type="button" class="quick-zone-card" data-new-table-zone="${esc(label)}" data-new-table-room="${esc(room)}">
-      <div class="qz-main">${esc(label)}</div>
-      <div class="qz-sub">${esc(room)} · ${count} table${count>1?"s":""}</div>
-    </button>`;
-  }).join("");
-  openSheet("TABLE + · CHOISIR LA ZONE",`
-    <div class="quick-add-context">La nouvelle table sera enregistrée dans le plan interactif et synchronisée avec le serveur.</div>
-    <div class="quick-zone-grid">${cards}</div>`);
-  $("sheetBody").querySelectorAll("[data-new-table-zone]").forEach(btn=>{
-    btn.onclick=()=>createQuickTableInZone(btn.dataset.newTableZone,btn.dataset.newTableRoom);
-  });
-}
-
-function nextQuickTableLabel(tables){
-  let max=0;
-  const used=new Set();
-  (tables||[]).forEach(t=>{
-    const label=text(t.label||t.name||t.id);
-    used.add(label.toUpperCase());
-    const m=label.match(/^(?:T|TABLE\s*)?(\d+)$/i);
-    if(m)max=Math.max(max,Number(m[1])||0);
-  });
-  let n=max+1||1;
-  while(used.has(("T"+n).toUpperCase()))n++;
-  return "T"+n;
-}
-
-async function createQuickTableInZone(zoneLabel,roomLabel){
-  const arch=architectureSnapshotForQuickAdd();
-  const zones=Array.isArray(arch.zones)?arch.zones:[];
-  const tables=Array.isArray(arch.tables)?arch.tables:[];
-  const zone=zones.find(z=>text(z.label||z.name||z.id)===text(zoneLabel));
-  const room=text(zone?.room||roomLabel||STATE.room||(arch.rooms||[])[0]||"Salle Principale");
-  const label=nextQuickTableLabel(tables);
-  const sameZone=tables.filter(t=>text(t.zone||t.zoneLabel)===text(zoneLabel)||(!t.zone&&quickTableZoneLabel(t)===text(zoneLabel)));
-  const idx=sameZone.length;
-  const baseL=num(zone?.l||20),baseT=num(zone?.t||20);
-  const zoneW=Math.max(220,num(zone?.w||520));
-  const columns=Math.max(2,Math.floor((zoneW-30)/110));
-  const l=baseL+20+(idx%columns)*105;
-  const t=baseT+45+Math.floor(idx/columns)*95;
-  const table={
-    id:label,label,room,zone:text(zoneLabel)||"Sans zone",pax:2,
-    l,t,w:90,h:78,
-    createdAt:new Date().toISOString(),source:"TELEPHONE_QUICK_ADD"
-  };
-  tables.push(table);
-  arch.tables=tables;
-  if(!Array.isArray(arch.rooms))arch.rooms=[];
-  if(room&&!arch.rooms.includes(room))arch.rooms.push(room);
-  try{
-    await persistQuickArchitecture(arch,`TABLE + ${label} · ${zoneLabel}`);
-    closeSheet();
-    STATE.room=room||STATE.room;
-    openOrder(label);
-    toast(`${label} créée · ZONE ${zoneLabel}`);
-  }catch(e){
-    toast("Création de table impossible : "+(e?.message||"erreur serveur"),true);
-  }
-}
-
-
-
-async function markTableServed(){
-  if(!STATE.currentTable){toast("Ouvrez d’abord une table",true);return false;}
-
-  const table=STATE.currentTable;
-  const o=ensureOrder(table);
-  const sent=(o.items||[]).filter(i=>i&&!i.cancelled&&lineFired(i));
-
-  if(!sent.length){
-    toast("Aucune commande envoyée à déclarer servie",true);
-    return false;
-  }
-
-  const stamp=Date.now();
-  let changed=0;
-
-  o.items=(o.items||[]).map(raw=>{
-    const i=normalizeCompatItem(raw);
-    if(i.cancelled||!lineFired(i))return i;
-    if(!lineServed(i))changed++;
-    i.served=true;
-    i.isServed=true;
-    i.servedAt=stamp;
-    i.sequenceStatus="SERVED";
-    i.productionStatus="SERVED";
-    i.status="served";
-    return i;
-  });
-
-  /* La table reste OCCUPÉE. Le nouveau chrono démarre à cet instant. */
-  o.status="occupied";
-  o.serviceStatus="SERVED";
-  o.serviceClockAt=stamp;
-  o.lastServedAt=stamp;
-  o.serviceCycle=Math.max(0,Number(o.serviceCycle||0))+1;
-  o.paymentStatus=o.paymentStatus||"A_PAYER";
-  o.orderMeta={
-    ...(o.orderMeta&&typeof o.orderMeta==="object"?o.orderMeta:{}),
-    productionStatus:"SERVED",
-    serviceStatus:"SERVED",
-    serviceClockAt:stamp,
-    tableId:table,
-    updatedAt:new Date(stamp).toISOString(),
-    updatedBy:STATE.role||"SERVEUR",
-    deviceId:STATE.deviceId,
-    terminal:"TELEPHONE"
-  };
-
-  const ok=await saveCurrent(o,"Service confirmé · chrono remis à zéro",{immediate:true});
-  if(ok){
-    STATE.currentOrder=clone(o);
-    renderOrder();
-    scheduleRender();
-    toast(changed?"✓ SERVICE CONFIRMÉ · CHRONO 00:00":"✓ SERVICE · CHRONO RELANCÉ");
-  }
-  return ok;
-}
-
-
-
-async function openCashRegisterPage(){
-  if(!STATE.currentTable){toast("Ouvrez d’abord une table",true);return;}
-
-  const table=STATE.currentTable;
-  const o=ensureOrder(table);
-  const total=orderTotal(o);
-  /* Compatibilité caisse tactile : elle lit aussi le total directement sur la commande. */
-  o.total=total;
-  o.totalTTC=total;
-  o.paymentStatus=o.paymentStatus||"A_PAYER";
-
-  /* La caisse doit lire le dernier état serveur, même si le serveur n'a pas encore reçu
-     la dernière frappe du ticket. */
-  const persisted=await saveCurrent(o,"Passage vers caisse tactile",{immediate:true});
-  if(!persisted&&!STATE.demo){
-    toast("Impossible d’ouvrir la caisse : synchronisation serveur incomplète",true);
-    return;
-  }
-
-  const currency=text(STATE.settings.currency||STATE.settings.devise||"EUR").toUpperCase()==="CHF"?"CHF":"EUR";
-  try{
-    sessionStorage.setItem("ichef_cash_tenant",String(STATE.tenantID||""));
-    sessionStorage.setItem("ichef_cash_table",String(table||""));
-    sessionStorage.setItem("ichef_cash_amount",String(total));
-    sessionStorage.setItem("ichef_cash_currency",currency);
-    sessionStorage.setItem("ichef_cash_return",location.pathname.split("/").pop()||"pack-eco.html");
-  }catch(_){}
-
-  const url=new URL("caissetactile.html",window.location.href);
-  url.searchParams.set("tenantID",String(STATE.tenantID||""));
-  url.searchParams.set("tableId",String(table));
-  url.searchParams.set("amount",String(total));
-  url.searchParams.set("currency",currency);
-  url.searchParams.set("source","PLAN-INTERACTIF");
-  url.searchParams.set("deviceId",String(STATE.deviceId||""));
-  url.searchParams.set("return",location.pathname.split("/").pop()||"pack-eco.html");
-
-  window.location.href=url.href;
-}
-
-
-
-function renderQuickCookingSeats(activeSeat){
-  const host=$("quickCookSeats");
-  if(!host)return;
-  const active=Math.max(1,Math.min(9,Number(activeSeat)||1));
-  host.innerHTML=Array.from({length:9},(_,idx)=>{
-    const seat=idx+1;
-    return `<button type="button"
-                    class="quick-cook-seat-btn${seat===active?" active":""}"
-                    data-quick-seat="${seat}"
-                    data-seat="${seat}"
-                    aria-pressed="${seat===active?"true":"false"}">
-              <span>C${seat}</span>
-            </button>`;
-  }).join("");
-}
-
-function assignPendingCookingSeat(seat){
-  const n=Math.max(1,Math.min(9,Number(seat)||1));
-  if(!STATE.currentTable||!STATE.pendingCookingLine)return false;
-
-  const o=ensureOrder(STATE.currentTable);
-  const item=o.items.find(x=>lineKey(x)===STATE.pendingCookingLine);
-  if(!item)return false;
-
-  item.seat=n;
-  item.guestSeat=n;
-  item.seatNumber=n;
-  item.guestName=`C${n}`;
-  item.guest=`C${n}`;
-  STATE.activeSeat=n;
-  ACTIVE_SEAT_BY_TABLE.set(STATE.currentTable,n);
-
-  if(num(o.pax||0)<n)o.pax=n;
-
-  $("quickCookSeat").className=`seat-badge seat-${n}`;
-  $("quickCookSeat").textContent=seatLabel(n);
-  const profile=cookingProfileFor(item);
-  if($("quickCookModalTitle"))$("quickCookModalTitle").textContent=`${seatLabel(n)} · ${profile.label||"CUISSON"}`;
-
-  renderQuickCookingSeats(n);
-  renderGuestButtons();
-  return true;
-}
-
-function showQuickCooking(item){
-  if(!item)return;
-
-  const seat=itemSeat(item)||STATE.activeSeat||1;
-  const bar=$("quickCookingBar");
-  if(!bar)return;
-
-  const profile=cookingProfileFor(item);
-  const levels=profile.levels.length?profile.levels:ICHEF_COOKING_LEVELS_PHONE;
-
-  STATE.pendingCookingLine=lineKey(item);
-
-  $("quickCookSeat").className=`seat-badge seat-${seat}`;
-  $("quickCookSeat").textContent=seatLabel(seat);
-  if($("quickCookModalTitle"))$("quickCookModalTitle").textContent=`${seatLabel(seat)} · ${profile.label||"CUISSON"}`;
-  $("quickCookName").textContent=itemName(item);
-  renderQuickCookingSeats(seat);
-
-  $("quickCookGrid").innerHTML=levels.map(level=>
-    `<button type="button"
-             class="quick-cook-btn"
-             data-quick-cooking="${esc(level)}">
-       ${esc(level)}
-     </button>`
-  ).join("");
-
-  bar.classList.remove("hidden");
-}
-
-
-
-/* Fermer une commande = retour au vrai plan architectural interactif. */
-function ichefReturnToInteractivePlan(){
-  try{ closeSheet(); }catch(_ ){}
-  try{ closeOrder(); }catch(_ ){}
-  setTimeout(()=>{
-    if(typeof window.openPadServiceHome==="function"){
-      window.openPadServiceHome();
-    }
-  },0);
-}
-
-/* Le closeSheet historique ne connaissait pas la classe who-sheet. */
-if(typeof window.closeSheet==="function"){
-  const __ichefCloseSheetV26=window.closeSheet;
-  window.closeSheet=function(){
-    document.getElementById("sheet")?.classList.remove("who-sheet");
-    return __ichefCloseSheetV26.apply(this,arguments);
-  };
-}
-
-/* Branchements nouveaux / remplacés. */
-if(document.getElementById("btnHeadWho")) document.getElementById("btnHeadWho").onclick=window.openWho||openWho;
-if(document.getElementById("btnAddGuestTable")) document.getElementById("btnAddGuestTable").onclick=window.openQuickAddClientOrTable||openQuickAddClientOrTable;
-if(document.getElementById("btnBottomSummary")) document.getElementById("btnBottomSummary").onclick=window.openSummary||openSummary;
-if(document.getElementById("btnBottomService")) document.getElementById("btnBottomService").onclick=window.markTableServed||markTableServed;
-if(document.getElementById("btnBottomPayment")) document.getElementById("btnBottomPayment").onclick=window.openCashRegisterPage||openCashRegisterPage;
-if(document.getElementById("btnBottomClose")) document.getElementById("btnBottomClose").onclick=ichefReturnToInteractivePlan;
-if(document.getElementById("btnCloseOrder")) document.getElementById("btnCloseOrder").onclick=ichefReturnToInteractivePlan;
-
-document.getElementById("quickCookSeats")?.addEventListener("click",e=>{
-  const b=e.target.closest("[data-quick-seat]");
-  if(!b||!STATE.pendingCookingLine)return;
-  const seat=Number(b.dataset.quickSeat)||1;
-  if(assignPendingCookingSeat(seat)){
-    toast(`C${seat} sélectionné · choisissez la cuisson`);
-  }
-});
-
-document.getElementById("quickCookBack")?.addEventListener("click",async()=>{
-  const key=STATE.pendingCookingLine;
-  STATE.pendingCookingLine="";
-  hideQuickCooking();
-
-  if(key&&STATE.currentTable){
-    const o=ensureOrder(STATE.currentTable);
-    const item=o.items.find(i=>lineKey(i)===key);
-    if(item&&!lineFired(item)&&!text(item.cooking)){
-      o.items=o.items.filter(i=>lineKey(i)!==key);
-      await saveCurrent(o,"Retour convives avant choix cuisson",{delay:80});
-    }
-  }
-  openWho();
-});
-
-/* Le bouton PLAN de la barre inférieure ouvre toujours le plan architectural. */
-const __planTool=document.getElementById("toolDisplay");
-if(__planTool && typeof window.openPadServiceHome==="function"){
-  __planTool.onclick=window.openPadServiceHome;
-  __planTool.title="Plan de salle interactif";
-  const lab=__planTool.querySelector(".tool-label");
-  if(lab)lab.textContent="PLAN";
-}
-
-/* Mise à jour immédiate de la vue après installation du patch. */
-try{ if(typeof scheduleRender==="function") scheduleRender(); }catch(_ ){}
-</script>
 
 </body></html>`;
 }
@@ -12714,6 +12113,619 @@ async function bootApp(){
 const bottomObservation=document.getElementById("bottomObservation");
 if(bottomObservation)bottomObservation.addEventListener("click",()=>openObservationFast());
 
+</script>
+
+<script id="ichef-plan-update-20260901-v26">
+/* =========================================================
+   iCHEF PLAN INTERACTIF V26 — SYMBIOSE PACK-ECO
+   - barre responsive
+   - CLIENT + / TABLE +
+   - C1-C9 dans la cuisson
+   - QUI MANGE QUOI compact
+   - dock 3 niveaux
+   - SERVICE garde la table occupée et remet le chrono à zéro
+   - À PAYER -> caissetactile.html
+   - FERMER -> plan interactif
+   ========================================================= */
+
+function orderCreated(o){if(!o)return 0;let t=Number(o.serviceClockAt||o.serviceStartedAt||o.createdAt||o.openedAt||o.date||0);if(!t&&Array.isArray(o.items)&&o.items.length)t=Math.min(...o.items.map(i=>Number(i.itemId||i.createdAt||i.sentAt||Date.now())).filter(Number.isFinite));return t||0}
+function lineReady(i){return !!(i&&(i.done===true||i.ready===true||i.isReady===true||i.readyAt||String(i.sequenceStatus||"").toUpperCase()==="READY"||String(i.status||i.productionStatus||"").toLowerCase()==="ready"))}
+function lineServed(i){return !!(i&&(i.served===true||i.isServed===true||i.servedAt||String(i.sequenceStatus||"").toUpperCase()==="SERVED"||String(i.status||"").toLowerCase()==="served"))}
+
+
+function renderOrder(){
+  const o=STATE.currentOrder||getOrder(STATE.currentTable)||ensureOrder(STATE.currentTable);
+  STATE.currentOrder=o;
+
+  if($("orderName"))$("orderName").textContent="TABLE "+STATE.currentTable;
+  if($("paxValue"))$("paxValue").textContent=num(o.pax||2)||2;
+
+  const t=STATE.tables.find(x=>x.label===STATE.currentTable);
+  const z=getZone(t);
+
+  const currentZoneLabel=z?.label||t?.zone||"Sans zone";
+  if($("zoneValue"))$("zoneValue").textContent=currentZoneLabel;
+  if($("zoneQuickLabel"))$("zoneQuickLabel").textContent=`ZONE · ${currentZoneLabel}`;
+  if($("orderAge"))$("orderAge").textContent=duration(orderCreated(o)||Date.now());
+
+  renderGuestButtons();
+  renderCategories();
+  renderProducts();
+  renderTicket();
+  renderRushStrip();
+  updateUndoButton();
+}
+
+
+
+function renderGuestButtons(){
+  const el=$("guestButtons");
+  if(!el)return;
+
+  const o=STATE.currentOrder||ensureOrder(STATE.currentTable);
+  const pax=Math.max(1,num(o.pax||2));
+  const active=Math.max(1,Math.min(9,Number(STATE.activeSeat)||1));
+
+  if($("activeGuestLabel"))$("activeGuestLabel").textContent=`ACTIF : C${active}`;
+  if($("btnHeadWho")){
+    const main=$("btnHeadWho").querySelector(".head-main-v20");
+    if(main)main.textContent=`QUI MANGE ? · C${active}`;
+    else $("btnHeadWho").textContent=`QUI MANGE ? · C${active}`;
+  }
+
+  el.innerHTML=Array.from({length:9},(_,idx)=>{
+    const seat=idx+1;
+    const extra=seat>pax?" extra":"";
+    return `<button type="button"
+                    class="guest-btn${seat===active?" active":""}${extra}"
+                    data-seat="${seat}"
+                    title="${seat>pax?`C${seat} — augmente automatiquement les couverts`:`Convive C${seat}`}">
+              C${seat}
+            </button>`;
+  }).join("");
+}
+
+
+
+function renderTicket(){
+  const o=STATE.currentOrder||ensureOrder(STATE.currentTable);
+  const items=(o.items||[]).filter(Boolean);
+
+  const currentTableTotal=orderTotal(o);
+  $("ticketTotal").textContent=money(currentTableTotal);
+  if($("bottomTableTotal"))$("bottomTableTotal").textContent=money(currentTableTotal);
+
+  const serviceBtn=$("btnBottomService");
+  if(serviceBtn){
+    const sentLines=items.filter(i=>i&&!i.cancelled&&lineFired(i));
+    const allSentServed=sentLines.length>0&&sentLines.every(i=>lineServed(i));
+    serviceBtn.textContent=allSentServed?"SERVICE ✓":"SERVICE";
+    serviceBtn.classList.toggle("served-ok",allSentServed);
+  }
+
+  $("ticket").innerHTML=items.length
+    ?items.map(i=>{
+      const key=lineKey(i);
+      const q=itemQty(i);
+      const seat=itemSeat(i);
+      const sent=lineFired(i);
+      const state=lineReady(i)
+        ?'<span class="line-state ready">PRÊT</span>'
+        :sent
+          ?'<span class="line-state sent">ENVOYÉ</span>'
+          :'<span class="line-state">BROUILLON</span>';
+
+      const cooking=text(i.cooking)
+        ?`<span class="cooking-tag">🌡️ ${esc(i.cooking)}</span>`
+        :"";
+
+      const seatBadge=seat?seatBadgeHTML(seat):'<span class="seat-badge">CTR</span>';
+      const obs=text(i.obs);
+      const critical=i.allergyCritical===true||/allerg/i.test(obs);
+
+      const controls=sent
+        ?`<button data-line="${esc(key)}" data-act="obs" title="Observation">📝</button>
+          <button data-line="${esc(key)}" data-act="cooking" title="Cuisson">🌡️</button>
+          <button data-line="${esc(key)}" data-act="delete" title="Annuler au poste" style="width:52px">ANN.</button>`
+        :`<button data-line="${esc(key)}" data-act="minus">−</button>
+          <button data-line="${esc(key)}" data-act="plus">+</button>
+          <button data-line="${esc(key)}" data-act="obs" title="Observation">📝</button>
+          <button data-line="${esc(key)}" data-act="delete">×</button>`;
+
+      return `<div class="ticket-row ${sent?"sent-lock":""}">
+        <div class="ticket-left" data-line="${esc(key)}" data-act="obs" style="cursor:pointer;" title="Tap pour Observation/Allergie">
+          <div class="ticket-name">
+            ${seatBadge}${esc(itemName(i))}
+            ${destinationTagHTML(i)}
+            ${cooking}
+            ${state}
+          </div>
+          <div class="ticket-meta">x${q} · ${esc(i.course||i.category||"")}</div>
+          ${obs?`<span class="ticket-obs ${critical?"critical":""}">${critical?"🛑 ":"⚠️ "}${esc(obs)}</span>`:""}
+        </div>
+        <div class="ticket-right">
+          <div class="ticket-price">${money(itemPrice(i)*q)}</div>
+          <div class="qtybar">${controls}</div>
+        </div>
+      </div>`;
+    }).join("")
+    :'<div class="empty-state">Choisissez C1…C9 puis touchez les produits.<br><b>1 tap = ajout immédiat.</b></div>';
+
+  renderSendButton(o);
+  updateUndoButton();
+}
+
+
+
+function openWho(){
+  if(!STATE.currentTable){
+    toast("Ouvrez d’abord une table",true);
+    return;
+  }
+
+  const o=STATE.currentOrder||ensureOrder(STATE.currentTable);
+  const pax=Math.max(1,Math.min(9,Number(o.pax)||2));
+  const active=Math.max(1,Math.min(9,Number(STATE.activeSeat)||1));
+
+  const compactWhoLabel=value=>{
+    const raw=text(value);
+    return raw.length>44?raw.slice(0,41)+"…":raw;
+  };
+
+  const cards=Array.from({length:9},(_,idx)=>{
+    const seat=idx+1;
+    const lines=(o.items||[]).filter(i=>!i.cancelled&&itemSeat(i)===seat);
+    const qty=lines.reduce((sum,i)=>sum+itemQty(i),0);
+    const preview=lines.slice(0,3).map(i=>{
+      const cook=text(i.cooking||i.cuisson);
+      const label=compactWhoLabel(itemName(i));
+      return `${esc(label)}${cook?` · ${esc(cook)}`:""}`;
+    }).join("<br>");
+    const isExtra=seat>pax;
+    return `<button type="button"
+                    class="who-seat-card${seat===active?" active":""}"
+                    data-who-seat="${seat}"
+                    data-seat="${seat}"
+                    title="${isExtra?`C${seat} — augmente les couverts`:`Convive C${seat}`}">
+              <div class="who-seat-number">C${seat}</div>
+              <div class="who-seat-status">${qty?`${qty} article${qty>1?"s":""}`:"Aucun article"}</div>
+              ${preview?`<div class="who-seat-items">${preview}${lines.length>3?`<br>+ ${lines.length-3} autre(s)`:""}</div>`:""}
+            </button>`;
+  }).join("");
+
+  openSheet(
+    `QUI MANGE QUOI ? · TABLE ${esc(STATE.currentTable)}`,
+    `<div class="who-seat-grid">${cards}</div>
+     <div class="who-seat-hint">Touchez C1…C9 puis choisissez les plats. La cuisson reste liée au même convive.</div>
+     <div class="who-sheet-actions">
+       <button id="whoObservation" type="button">OBSERVATION</button>
+       <button id="whoClosePlan" type="button">FERMER</button>
+     </div>`
+  );
+
+  $("sheet").classList.add("who-sheet");
+
+  $("sheetBody").querySelectorAll("[data-who-seat]").forEach(btn=>{
+    btn.onclick=()=>{
+      const seat=Number(btn.dataset.whoSeat)||1;
+      setActiveSeat(seat);
+      closeSheet();
+      toast(`C${seat} actif · choisissez les articles`);
+    };
+  });
+
+  const obs=$("whoObservation");
+  if(obs)obs.onclick=()=>{
+    closeSheet();
+    openObservationFast();
+  };
+
+  const closePlan=$("whoClosePlan");
+  if(closePlan)closePlan.onclick=()=>{
+    closeSheet();
+    closeOrder();
+    setTimeout(()=>{ if(typeof window.openPadServiceHome==="function") window.openPadServiceHome(); },0);
+  };
+}
+
+
+
+
+function architectureSnapshotForQuickAdd(){
+  const raw=unwrap(STATE.activeOrders.ARCHITECTURE)||{};
+  return {
+    ...clone(raw),
+    rooms:Array.isArray(raw.rooms)?clone(raw.rooms):clone(STATE.rooms||[]),
+    tables:Array.isArray(raw.tables)?clone(raw.tables):clone(STATE.tables||[]),
+    zones:Array.isArray(raw.zones)?clone(raw.zones):clone(STATE.zones||[])
+  };
+}
+
+async function persistQuickArchitecture(architecture,reason){
+  const packet={data:architecture,updatedAt:new Date().toISOString(),source:"TELEPHONE_QUICK_ADD"};
+  const pending=stageLocalValue("ARCHITECTURE",packet,reason);
+  return enqueueVersionedWrite("ARCHITECTURE",pending);
+}
+
+function quickTableZoneLabel(table){
+  const z=getZone(table);
+  return text(z?.label||table?.zone||table?.zoneLabel||"Sans zone");
+}
+
+function openQuickAddClientOrTable(){
+  const current=STATE.tables.find(t=>t.label===STATE.currentTable);
+  const currentZone=current?quickTableZoneLabel(current):"—";
+  openSheet("CLIENT + / TABLE +",`
+    <div class="quick-add-context">TABLE ACTUELLE : <b>${esc(STATE.currentTable||"—")}</b> · ZONE : <b>${esc(currentZone)}</b></div>
+    <div class="quick-add-choice-grid">
+      <button type="button" class="quick-add-choice" data-quick-add="client">CLIENT +<small>Ajouter un convive à une table existante et aller directement sur son C.</small></button>
+      <button type="button" class="quick-add-choice" data-quick-add="table">TABLE +<small>Créer une table de dernière minute et choisir précisément sa zone.</small></button>
+    </div>`);
+  $("sheetBody").querySelector('[data-quick-add="client"]')?.addEventListener("click",openQuickClientTablePicker);
+  $("sheetBody").querySelector('[data-quick-add="table"]')?.addEventListener("click",openQuickZonePicker);
+}
+
+function openQuickClientTablePicker(){
+  const tables=(STATE.tables||[]).slice().sort((a,b)=>text(a.label).localeCompare(text(b.label),"fr",{numeric:true}));
+  if(!tables.length){toast("Aucune table disponible",true);return;}
+  const cards=tables.map(t=>{
+    const st=tableStats(t.label);
+    const zone=quickTableZoneLabel(t);
+    const currentPax=Math.max(0,num(st.pax||getOrder(t.label)?.pax||0));
+    const status=st.status==="empty"?"LIBRE":`${currentPax} CLIENT${currentPax>1?"S":""}`;
+    return `<button type="button" class="quick-target-card" data-client-table="${esc(t.label)}">
+      <div class="qt-main">${esc(t.label)}</div>
+      <div class="qt-sub">${esc(zone)} · ${esc(status)}</div>
+    </button>`;
+  }).join("");
+  openSheet("CLIENT + · CHOISIR LA TABLE",`
+    <div class="quick-add-context">Choisissez la table où arrive le nouveau client.</div>
+    <div class="quick-target-grid">${cards}</div>`);
+  $("sheetBody").querySelectorAll("[data-client-table]").forEach(btn=>{
+    btn.onclick=()=>addClientToChosenTable(btn.dataset.clientTable);
+  });
+}
+
+async function addClientToChosenTable(tableId){
+  const table=text(tableId);
+  if(!table)return;
+  const existing=getOrder(table);
+  if(existing&&fiscalOrderFinalized(existing)){toast("Vente déjà fiscalisée sur cette table",true);return;}
+  const order=existing?clone(existing):ensureOrder(table);
+  const previousPax=existing?Math.max(0,num(existing.pax||existing.covers||0)):0;
+  if(previousPax>=9){toast(`${table} a déjà C1 à C9`,true);return;}
+  const newPax=Math.min(9,previousPax+1);
+  order.pax=newPax;
+  order.covers=newPax;
+  order.status=order.status||"open";
+  order.createdAt=order.createdAt||Date.now();
+  order.updatedAt=Date.now();
+  const normalized=normalizeCompatOrder(clone(order));
+  const pending=stageLocalValue(table,normalized,`CLIENT + sur ${table}`);
+  try{
+    await enqueueVersionedWrite(table,pending);
+    closeSheet();
+    openOrder(table);
+    setActiveSeat(newPax);
+    toast(`CLIENT C${newPax} ajouté · ${table} · ${quickTableZoneLabel(STATE.tables.find(t=>t.label===table))}`);
+  }catch(e){
+    toast("Impossible d’ajouter le client : "+(e?.message||"erreur serveur"),true);
+  }
+}
+
+function openQuickZonePicker(){
+  let zones=(STATE.zones||[]).filter(Boolean);
+  if(!zones.length){
+    zones=(STATE.rooms||[]).map((room,index)=>({id:`room_${index}`,label:room,room}));
+  }
+  const cards=zones.map(z=>{
+    const label=text(z.label||z.name||z.id||"Zone");
+    const room=text(z.room||STATE.room||"Salle");
+    const count=(STATE.tables||[]).filter(t=>quickTableZoneLabel(t)===label||(!t.zone&&t.room===room)).length;
+    return `<button type="button" class="quick-zone-card" data-new-table-zone="${esc(label)}" data-new-table-room="${esc(room)}">
+      <div class="qz-main">${esc(label)}</div>
+      <div class="qz-sub">${esc(room)} · ${count} table${count>1?"s":""}</div>
+    </button>`;
+  }).join("");
+  openSheet("TABLE + · CHOISIR LA ZONE",`
+    <div class="quick-add-context">La nouvelle table sera enregistrée dans le plan interactif et synchronisée avec le serveur.</div>
+    <div class="quick-zone-grid">${cards}</div>`);
+  $("sheetBody").querySelectorAll("[data-new-table-zone]").forEach(btn=>{
+    btn.onclick=()=>createQuickTableInZone(btn.dataset.newTableZone,btn.dataset.newTableRoom);
+  });
+}
+
+function nextQuickTableLabel(tables){
+  let max=0;
+  const used=new Set();
+  (tables||[]).forEach(t=>{
+    const label=text(t.label||t.name||t.id);
+    used.add(label.toUpperCase());
+    const m=label.match(/^(?:T|TABLE\s*)?(\d+)$/i);
+    if(m)max=Math.max(max,Number(m[1])||0);
+  });
+  let n=max+1||1;
+  while(used.has(("T"+n).toUpperCase()))n++;
+  return "T"+n;
+}
+
+async function createQuickTableInZone(zoneLabel,roomLabel){
+  const arch=architectureSnapshotForQuickAdd();
+  const zones=Array.isArray(arch.zones)?arch.zones:[];
+  const tables=Array.isArray(arch.tables)?arch.tables:[];
+  const zone=zones.find(z=>text(z.label||z.name||z.id)===text(zoneLabel));
+  const room=text(zone?.room||roomLabel||STATE.room||(arch.rooms||[])[0]||"Salle Principale");
+  const label=nextQuickTableLabel(tables);
+  const sameZone=tables.filter(t=>text(t.zone||t.zoneLabel)===text(zoneLabel)||(!t.zone&&quickTableZoneLabel(t)===text(zoneLabel)));
+  const idx=sameZone.length;
+  const baseL=num(zone?.l||20),baseT=num(zone?.t||20);
+  const zoneW=Math.max(220,num(zone?.w||520));
+  const columns=Math.max(2,Math.floor((zoneW-30)/110));
+  const l=baseL+20+(idx%columns)*105;
+  const t=baseT+45+Math.floor(idx/columns)*95;
+  const table={
+    id:label,label,room,zone:text(zoneLabel)||"Sans zone",pax:2,
+    l,t,w:90,h:78,
+    createdAt:new Date().toISOString(),source:"TELEPHONE_QUICK_ADD"
+  };
+  tables.push(table);
+  arch.tables=tables;
+  if(!Array.isArray(arch.rooms))arch.rooms=[];
+  if(room&&!arch.rooms.includes(room))arch.rooms.push(room);
+  try{
+    await persistQuickArchitecture(arch,`TABLE + ${label} · ${zoneLabel}`);
+    closeSheet();
+    STATE.room=room||STATE.room;
+    openOrder(label);
+    toast(`${label} créée · ZONE ${zoneLabel}`);
+  }catch(e){
+    toast("Création de table impossible : "+(e?.message||"erreur serveur"),true);
+  }
+}
+
+
+
+async function markTableServed(){
+  if(!STATE.currentTable){toast("Ouvrez d’abord une table",true);return false;}
+
+  const table=STATE.currentTable;
+  const o=ensureOrder(table);
+  const sent=(o.items||[]).filter(i=>i&&!i.cancelled&&lineFired(i));
+
+  if(!sent.length){
+    toast("Aucune commande envoyée à déclarer servie",true);
+    return false;
+  }
+
+  const stamp=Date.now();
+  let changed=0;
+
+  o.items=(o.items||[]).map(raw=>{
+    const i=normalizeCompatItem(raw);
+    if(i.cancelled||!lineFired(i))return i;
+    if(!lineServed(i))changed++;
+    i.served=true;
+    i.isServed=true;
+    i.servedAt=stamp;
+    i.sequenceStatus="SERVED";
+    i.productionStatus="SERVED";
+    i.status="served";
+    return i;
+  });
+
+  /* La table reste OCCUPÉE. Le nouveau chrono démarre à cet instant. */
+  o.status="occupied";
+  o.serviceStatus="SERVED";
+  o.serviceClockAt=stamp;
+  o.lastServedAt=stamp;
+  o.serviceCycle=Math.max(0,Number(o.serviceCycle||0))+1;
+  o.paymentStatus=o.paymentStatus||"A_PAYER";
+  o.orderMeta={
+    ...(o.orderMeta&&typeof o.orderMeta==="object"?o.orderMeta:{}),
+    productionStatus:"SERVED",
+    serviceStatus:"SERVED",
+    serviceClockAt:stamp,
+    tableId:table,
+    updatedAt:new Date(stamp).toISOString(),
+    updatedBy:STATE.role||"SERVEUR",
+    deviceId:STATE.deviceId,
+    terminal:"TELEPHONE"
+  };
+
+  const ok=await saveCurrent(o,"Service confirmé · chrono remis à zéro",{immediate:true});
+  if(ok){
+    STATE.currentOrder=clone(o);
+    renderOrder();
+    scheduleRender();
+    toast(changed?"✓ SERVICE CONFIRMÉ · CHRONO 00:00":"✓ SERVICE · CHRONO RELANCÉ");
+  }
+  return ok;
+}
+
+
+
+async function openCashRegisterPage(){
+  if(!STATE.currentTable){toast("Ouvrez d’abord une table",true);return;}
+
+  const table=STATE.currentTable;
+  const o=ensureOrder(table);
+  const total=orderTotal(o);
+  /* Compatibilité caisse tactile : elle lit aussi le total directement sur la commande. */
+  o.total=total;
+  o.totalTTC=total;
+  o.paymentStatus=o.paymentStatus||"A_PAYER";
+
+  /* La caisse doit lire le dernier état serveur, même si le serveur n'a pas encore reçu
+     la dernière frappe du ticket. */
+  const persisted=await saveCurrent(o,"Passage vers caisse tactile",{immediate:true});
+  if(!persisted&&!STATE.demo){
+    toast("Impossible d’ouvrir la caisse : synchronisation serveur incomplète",true);
+    return;
+  }
+
+  const currency=text(STATE.settings.currency||STATE.settings.devise||"EUR").toUpperCase()==="CHF"?"CHF":"EUR";
+  try{
+    sessionStorage.setItem("ichef_cash_tenant",String(STATE.tenantID||""));
+    sessionStorage.setItem("ichef_cash_table",String(table||""));
+    sessionStorage.setItem("ichef_cash_amount",String(total));
+    sessionStorage.setItem("ichef_cash_currency",currency);
+    sessionStorage.setItem("ichef_cash_return",location.pathname.split("/").pop()||"pack-eco.html");
+  }catch(_){}
+
+  const url=new URL("caissetactile.html",window.location.href);
+  url.searchParams.set("tenantID",String(STATE.tenantID||""));
+  url.searchParams.set("tableId",String(table));
+  url.searchParams.set("amount",String(total));
+  url.searchParams.set("currency",currency);
+  url.searchParams.set("source","PLAN-INTERACTIF");
+  url.searchParams.set("deviceId",String(STATE.deviceId||""));
+  url.searchParams.set("return",location.pathname.split("/").pop()||"pack-eco.html");
+
+  window.location.href=url.href;
+}
+
+
+
+function renderQuickCookingSeats(activeSeat){
+  const host=$("quickCookSeats");
+  if(!host)return;
+  const active=Math.max(1,Math.min(9,Number(activeSeat)||1));
+  host.innerHTML=Array.from({length:9},(_,idx)=>{
+    const seat=idx+1;
+    return `<button type="button"
+                    class="quick-cook-seat-btn${seat===active?" active":""}"
+                    data-quick-seat="${seat}"
+                    data-seat="${seat}"
+                    aria-pressed="${seat===active?"true":"false"}">
+              <span>C${seat}</span>
+            </button>`;
+  }).join("");
+}
+
+function assignPendingCookingSeat(seat){
+  const n=Math.max(1,Math.min(9,Number(seat)||1));
+  if(!STATE.currentTable||!STATE.pendingCookingLine)return false;
+
+  const o=ensureOrder(STATE.currentTable);
+  const item=o.items.find(x=>lineKey(x)===STATE.pendingCookingLine);
+  if(!item)return false;
+
+  item.seat=n;
+  item.guestSeat=n;
+  item.seatNumber=n;
+  item.guestName=`C${n}`;
+  item.guest=`C${n}`;
+  STATE.activeSeat=n;
+  ACTIVE_SEAT_BY_TABLE.set(STATE.currentTable,n);
+
+  if(num(o.pax||0)<n)o.pax=n;
+
+  $("quickCookSeat").className=`seat-badge seat-${n}`;
+  $("quickCookSeat").textContent=seatLabel(n);
+  const profile=cookingProfileFor(item);
+  if($("quickCookModalTitle"))$("quickCookModalTitle").textContent=`${seatLabel(n)} · ${profile.label||"CUISSON"}`;
+
+  renderQuickCookingSeats(n);
+  renderGuestButtons();
+  return true;
+}
+
+function showQuickCooking(item){
+  if(!item)return;
+
+  const seat=itemSeat(item)||STATE.activeSeat||1;
+  const bar=$("quickCookingBar");
+  if(!bar)return;
+
+  const profile=cookingProfileFor(item);
+  const levels=profile.levels.length?profile.levels:ICHEF_COOKING_LEVELS_PHONE;
+
+  STATE.pendingCookingLine=lineKey(item);
+
+  $("quickCookSeat").className=`seat-badge seat-${seat}`;
+  $("quickCookSeat").textContent=seatLabel(seat);
+  if($("quickCookModalTitle"))$("quickCookModalTitle").textContent=`${seatLabel(seat)} · ${profile.label||"CUISSON"}`;
+  $("quickCookName").textContent=itemName(item);
+  renderQuickCookingSeats(seat);
+
+  $("quickCookGrid").innerHTML=levels.map(level=>
+    `<button type="button"
+             class="quick-cook-btn"
+             data-quick-cooking="${esc(level)}">
+       ${esc(level)}
+     </button>`
+  ).join("");
+
+  bar.classList.remove("hidden");
+}
+
+
+
+/* Fermer une commande = retour au vrai plan architectural interactif. */
+function ichefReturnToInteractivePlan(){
+  try{ closeSheet(); }catch(_ ){}
+  try{ closeOrder(); }catch(_ ){}
+  setTimeout(()=>{
+    if(typeof window.openPadServiceHome==="function"){
+      window.openPadServiceHome();
+    }
+  },0);
+}
+
+/* Le closeSheet historique ne connaissait pas la classe who-sheet. */
+if(typeof window.closeSheet==="function"){
+  const __ichefCloseSheetV26=window.closeSheet;
+  window.closeSheet=function(){
+    document.getElementById("sheet")?.classList.remove("who-sheet");
+    return __ichefCloseSheetV26.apply(this,arguments);
+  };
+}
+
+/* Branchements nouveaux / remplacés. */
+if(document.getElementById("btnHeadWho")) document.getElementById("btnHeadWho").onclick=window.openWho||openWho;
+if(document.getElementById("btnAddGuestTable")) document.getElementById("btnAddGuestTable").onclick=window.openQuickAddClientOrTable||openQuickAddClientOrTable;
+if(document.getElementById("btnBottomSummary")) document.getElementById("btnBottomSummary").onclick=window.openSummary||openSummary;
+if(document.getElementById("btnBottomService")) document.getElementById("btnBottomService").onclick=window.markTableServed||markTableServed;
+if(document.getElementById("btnBottomPayment")) document.getElementById("btnBottomPayment").onclick=window.openCashRegisterPage||openCashRegisterPage;
+if(document.getElementById("btnBottomClose")) document.getElementById("btnBottomClose").onclick=ichefReturnToInteractivePlan;
+if(document.getElementById("btnCloseOrder")) document.getElementById("btnCloseOrder").onclick=ichefReturnToInteractivePlan;
+
+document.getElementById("quickCookSeats")?.addEventListener("click",e=>{
+  const b=e.target.closest("[data-quick-seat]");
+  if(!b||!STATE.pendingCookingLine)return;
+  const seat=Number(b.dataset.quickSeat)||1;
+  if(assignPendingCookingSeat(seat)){
+    toast(`C${seat} sélectionné · choisissez la cuisson`);
+  }
+});
+
+document.getElementById("quickCookBack")?.addEventListener("click",async()=>{
+  const key=STATE.pendingCookingLine;
+  STATE.pendingCookingLine="";
+  hideQuickCooking();
+
+  if(key&&STATE.currentTable){
+    const o=ensureOrder(STATE.currentTable);
+    const item=o.items.find(i=>lineKey(i)===key);
+    if(item&&!lineFired(item)&&!text(item.cooking)){
+      o.items=o.items.filter(i=>lineKey(i)!==key);
+      await saveCurrent(o,"Retour convives avant choix cuisson",{delay:80});
+    }
+  }
+  openWho();
+});
+
+/* Le bouton PLAN de la barre inférieure ouvre toujours le plan architectural. */
+const __planTool=document.getElementById("toolDisplay");
+if(__planTool && typeof window.openPadServiceHome==="function"){
+  __planTool.onclick=window.openPadServiceHome;
+  __planTool.title="Plan de salle interactif";
+  const lab=__planTool.querySelector(".tool-label");
+  if(lab)lab.textContent="PLAN";
+}
+
+/* Mise à jour immédiate de la vue après installation du patch. */
+try{ if(typeof scheduleRender==="function") scheduleRender(); }catch(_ ){}
 </script>
 
 
