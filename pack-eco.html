@@ -1,8 +1,8 @@
 <!doctype html>
 <html lang="fr">
-<!-- ICHEF PLAN INTERACTIF V24 — TABLE -> QUI MANGE QUOI -> PRODUITS -> CUISSON SI NÉCESSAIRE -->
+<!-- ICHEF PLAN INTERACTIF V26 — PACK-ECO + PLAN ARCHITECTURAL SYNCHRONISÉS -->
 <head>
-<!-- ICHEF ARCHITECTURE PRO V26 — UNIVERS RESTAURANT / HOTEL / KIOSQUE / PLAGE / MONTAGNE / LAC / YACHT -->
+<!-- ICHEF PLAN SOCKET UNIQUE V25 -->
 <!-- ICHEF PAD PRINCIPAL STABLE V1 — PIN + WS DIRECT + RETOUR ADMIN -->
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
@@ -3948,132 +3948,130 @@ body.order-open .order-sync-state.bad{background:#fff2f4 !important;}
 }
 </style>
 <style id="zoom-fluide-vrai">
-/* Force l'application du zoom via une variable globale protégée */
-.archpad-stage-shell {
-    transform: scale(var(--fluid-zoom, 1)) !important;
-    transform-origin: top left !important;
-    transition: transform 0.15s ease-out !important;
-    will-change: transform;
-}
-
-/* Coupe l'animation pour un pincement aux doigts parfaitement réactif */
-.archpad-stage-shell.is-pinching {
-    transition: none !important;
-}
-
-/* Bloque le zoom natif iOS/Android sur la zone de travail */
-.archpad-stagewrap {
-    touch-action: pan-x pan-y !important;
-    overflow: auto !important;
-}
+/* iCHEF PLAN — ZOOM UNIQUE V27 : pas de double scale */
+.archpad-stage-shell{transform:none!important;transform-origin:top left!important;transition:width .12s ease-out!important;will-change:width}
+.archpad-stagewrap{touch-action:pan-x pan-y!important;overflow:auto!important;overscroll-behavior:contain}
+.archpad-zoom-controls{display:inline-flex;align-items:center;gap:4px;flex:0 0 auto}
+.archpad-zoom-controls button{min-width:34px;height:34px;padding:0 8px;border:1px solid #3b464a;border-radius:7px;background:#13191b;color:#fff;font-size:14px;font-weight:1000;cursor:pointer}
+.archpad-zoom-controls button:active{transform:scale(.96)}
+.archpad-sync-badge{display:inline-flex;align-items:center;justify-content:center;min-width:76px;height:34px;padding:0 9px;border:1px solid #3b464a;border-radius:7px;background:#13191b;color:#73dfa2;font-size:9px;font-weight:950;white-space:nowrap}
+.archpad-sync-badge.syncing{color:#e8c45e}.archpad-sync-badge.offline{color:#ff6b6b}
 </style>
-  
 <script id="zoom-tactile-script">
-(function() {
-    // Initialise le zoom à 100% au chargement
-    document.documentElement.style.setProperty('--fluid-zoom', '1');
+(function(){
+  if(window.__ICHEF_PLAN_ZOOM_V27__)return;
+  window.__ICHEF_PLAN_ZOOM_V27__=true;
 
-    function initPinchToZoom() {
-        const wrap = document.querySelector('.archpad-stagewrap');
-        if (!wrap) {
-            setTimeout(initPinchToZoom, 500);
-            return;
-        }
+  const KEY='ichef_plan_zoom_pct_v27';
+  const MIN=40,MAX=220,STEP=10;
+  let pinch=null;
 
-        let initialDistance = 0;
-        let initialZoomValue = 100;
+  const clamp=v=>Math.max(MIN,Math.min(MAX,Math.round(Number(v)||100)));
+  const root=()=>document.getElementById('ichefArchPad');
+  const select=()=>root()?.querySelector('[data-zoom]')||null;
 
-        // 1. Début du pincement à 2 doigts
-        wrap.addEventListener('touchstart', (e) => {
-            if (e.touches.length === 2) {
-                const shell = document.querySelector('.archpad-stage-shell');
-                initialDistance = Math.hypot(
-                    e.touches[0].clientX - e.touches[1].clientX,
-                    e.touches[0].clientY - e.touches[1].clientY
-                );
-                // On récupère le zoom actuel depuis la variable globale
-                initialZoomValue = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--fluid-zoom')) * 100 || 100;
-                
-                if (shell) shell.classList.add('is-pinching');
-            }
-        }, { passive: false });
+  function ensureOption(sel,pct){
+    if(!sel)return;
+    const value=String(pct);
+    if(!Array.from(sel.options).some(o=>String(o.value||o.textContent).replace(/%/g,'').trim()===value)){
+      const opt=document.createElement('option');
+      opt.value=value;opt.textContent=value+'%';
+      sel.appendChild(opt);
+    }
+  }
 
-        // 2. Mouvement (Pincement)
-        wrap.addEventListener('touchmove', (e) => {
-            if (e.touches.length === 2) {
-                e.preventDefault(); // Bloque le zoom du navigateur
-                
-                const currentDistance = Math.hypot(
-                    e.touches[0].clientX - e.touches[1].clientX,
-                    e.touches[0].clientY - e.touches[1].clientY
-                );
-                
-                const scaleRatio = currentDistance / initialDistance;
-                let newZoom = Math.round(initialZoomValue * scaleRatio);
-                newZoom = Math.max(20, Math.min(400, newZoom)); // Limité entre 20% et 400%
+  function currentZoom(){
+    const sel=select();
+    const raw=sel?.value||root()?.querySelector('[data-zoom-label]')?.textContent||'100';
+    return clamp(parseInt(String(raw).replace(/[^0-9]/g,''),10)||100);
+  }
 
-                // On applique sur la RACINE de la page pour survivre aux rafraîchissements
-                document.documentElement.style.setProperty('--fluid-zoom', newZoom / 100);
-            }
-        }, { passive: false });
+  function setZoom(value,persist=true){
+    const sel=select();
+    if(!sel)return false;
+    const pct=clamp(value);
+    ensureOption(sel,pct);
+    sel.value=String(pct);
+    sel.dispatchEvent(new Event('change',{bubbles:true}));
+    const label=root()?.querySelector('[data-zoom-label]');
+    if(label)label.textContent=pct+'%';
+    if(persist){try{localStorage.setItem(KEY,String(pct))}catch(_){}}
+    return true;
+  }
 
-        // 3. Fin du pincement
-        wrap.addEventListener('touchend', (e) => {
-            const shell = document.querySelector('.archpad-stage-shell');
-            if (e.touches.length < 2 && shell && shell.classList.contains('is-pinching')) {
-                shell.classList.remove('is-pinching'); 
-                
-                const finalZoom = Math.round(parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--fluid-zoom')) * 100) || 100;
-                const zoomSelect = document.querySelector('.archpad-canvasbar select');
-                
-                if (zoomSelect) {
-                    if (!Array.from(zoomSelect.options).some(o => parseInt(o.value) === finalZoom)) {
-                        let opt = document.createElement('option');
-                        opt.value = finalZoom;
-                        opt.text = finalZoom + '%';
-                        zoomSelect.appendChild(opt);
-                    }
-                    zoomSelect.value = finalZoom;
-                }
-            }
-        });
-        
-        // 4. Molette PC (Ctrl + Molette)
-        wrap.addEventListener('wheel', (e) => {
-            if (e.ctrlKey) {
-                e.preventDefault();
-                let currentZoom = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--fluid-zoom')) * 100 || 100;
-                
-                let newZoom = currentZoom + (e.deltaY > 0 ? -10 : 10);
-                newZoom = Math.max(20, Math.min(400, newZoom));
-                
-                document.documentElement.style.setProperty('--fluid-zoom', newZoom / 100);
+  function installControls(){
+    const r=root();
+    const sel=select();
+    const bar=r?.querySelector('.archpad-canvasbar');
+    if(!r||!sel||!bar)return;
 
-                const zoomSelect = document.querySelector('.archpad-canvasbar select');
-                if (zoomSelect) {
-                    if (!Array.from(zoomSelect.options).some(o => parseInt(o.value) === newZoom)) {
-                        let opt = document.createElement('option');
-                        opt.value = newZoom;
-                        opt.text = newZoom + '%';
-                        zoomSelect.appendChild(opt);
-                    }
-                    zoomSelect.value = newZoom;
-                }
-            }
-        }, { passive: false });
-
-        // 5. Lien direct avec le menu déroulant (pour les clics manuels)
-        document.addEventListener('change', (e) => {
-            if (e.target.tagName === 'SELECT' && e.target.closest('.archpad-canvasbar')) {
-                let val = parseInt(e.target.value);
-                if (!isNaN(val)) {
-                    document.documentElement.style.setProperty('--fluid-zoom', val / 100);
-                }
-            }
-        }, true);
+    if(!bar.querySelector('.archpad-zoom-controls')){
+      const group=document.createElement('span');
+      group.className='archpad-zoom-controls';
+      group.innerHTML='<button type="button" data-plan-zoom-out title="Zoom -">−</button><button type="button" data-plan-zoom-100 title="Revenir à 100%">100%</button><button type="button" data-plan-zoom-in title="Zoom +">+</button>';
+      bar.insertBefore(group,sel);
+      group.querySelector('[data-plan-zoom-out]').onclick=()=>setZoom(currentZoom()-STEP);
+      group.querySelector('[data-plan-zoom-100]').onclick=()=>setZoom(100);
+      group.querySelector('[data-plan-zoom-in]').onclick=()=>setZoom(currentZoom()+STEP);
     }
 
-    initPinchToZoom();
+    if(!bar.querySelector('.archpad-sync-badge')){
+      const badge=document.createElement('span');
+      badge.className='archpad-sync-badge';
+      badge.dataset.planSyncBadge='1';
+      badge.textContent='↻ SYNC';
+      badge.title='Synchronisation du plan avec server.js';
+      bar.insertBefore(badge,bar.querySelector('.grow')?.nextSibling||sel);
+    }
+
+    if(!sel.dataset.zoomRestoredV27){
+      sel.dataset.zoomRestoredV27='1';
+      let saved=100;
+      try{saved=clamp(localStorage.getItem(KEY)||100)}catch(_){}
+      setTimeout(()=>setZoom(saved,false),0);
+    }
+  }
+
+  const observer=new MutationObserver(installControls);
+  observer.observe(document.documentElement,{childList:true,subtree:true});
+  document.addEventListener('DOMContentLoaded',installControls,{once:true});
+  setInterval(installControls,1200);
+
+  /* Ctrl/Cmd + molette = zoom. La molette normale garde le défilement du plan. */
+  document.addEventListener('wheel',e=>{
+    if(!(e.ctrlKey||e.metaKey))return;
+    if(!e.target.closest?.('#ichefArchPad .archpad-stagewrap'))return;
+    e.preventDefault();
+    setZoom(currentZoom()+(e.deltaY>0?-STEP:STEP));
+  },{passive:false,capture:true});
+
+  /* Pinch tactile à deux doigts. */
+  document.addEventListener('touchstart',e=>{
+    if(e.touches.length!==2||!e.target.closest?.('#ichefArchPad .archpad-stagewrap'))return;
+    const d=Math.hypot(
+      e.touches[0].clientX-e.touches[1].clientX,
+      e.touches[0].clientY-e.touches[1].clientY
+    );
+    pinch={distance:d,zoom:currentZoom()};
+  },{passive:true,capture:true});
+
+  document.addEventListener('touchmove',e=>{
+    if(!pinch||e.touches.length!==2||!e.target.closest?.('#ichefArchPad .archpad-stagewrap'))return;
+    e.preventDefault();
+    const d=Math.hypot(
+      e.touches[0].clientX-e.touches[1].clientX,
+      e.touches[0].clientY-e.touches[1].clientY
+    );
+    if(pinch.distance>0)setZoom(pinch.zoom*(d/pinch.distance),false);
+  },{passive:false,capture:true});
+
+  document.addEventListener('touchend',e=>{
+    if(!pinch)return;
+    if(e.touches.length<2){
+      pinch=null;
+      try{localStorage.setItem(KEY,String(currentZoom()))}catch(_){}
+    }
+  },{passive:true,capture:true});
 })();
 </script>
 <style id="taille-zones-x3">
@@ -5092,6 +5090,578 @@ html.ichef-phone-denied body > *:not(#ichefPhoneDenied){
 }
 </style>
 
+<style id="ichef-who-cooking-capture-v1">
+/* =========================================================
+   iCHEF — QUI MANGE QUOI + CUISSONS (capture utilisateur)
+   C1-C9 -> article -> cuisson -> ticket du bon convive
+   ========================================================= */
+.who-seat-grid{
+  display:grid;
+  grid-template-columns:repeat(3,minmax(190px,1fr));
+  gap:14px;
+  padding:4px;
+}
+.who-seat-card{
+  min-height:168px;
+  border:6px solid currentColor;
+  border-radius:26px;
+  background:#fff;
+  color:#111;
+  padding:16px 14px;
+  display:flex;
+  flex-direction:column;
+  align-items:center;
+  justify-content:center;
+  gap:8px;
+  cursor:pointer;
+  box-shadow:0 6px 0 #d8dadd;
+  touch-action:manipulation;
+}
+.who-seat-card:active{transform:scale(.985)}
+.who-seat-card.active{box-shadow:0 0 0 5px rgba(0,0,0,.10),0 6px 0 #d8dadd}
+.who-seat-card[data-seat="1"]{color:var(--c1);background:#ffe9eb}
+.who-seat-card[data-seat="2"]{color:var(--c2);background:#f8fbff}
+.who-seat-card[data-seat="3"]{color:var(--c3);background:#f1fff7}
+.who-seat-card[data-seat="4"]{color:var(--c4);background:#faf7ff}
+.who-seat-card[data-seat="5"]{color:var(--c5);background:#fff8f0}
+.who-seat-card[data-seat="6"]{color:var(--c6);background:#f1feff}
+.who-seat-card[data-seat="7"]{color:var(--c7);background:#fff4fa}
+.who-seat-card[data-seat="8"]{color:#b09e00;background:#fffdeb}
+.who-seat-card[data-seat="9"]{color:#6f7a80;background:#f5f7f8}
+.who-seat-number{font-size:58px;line-height:1;font-weight:1000;letter-spacing:-2px}
+.who-seat-status{font-size:18px;font-weight:950;color:#5b5b5b;text-align:center}
+.who-seat-items{width:100%;font-size:12px;line-height:1.25;font-weight:850;color:#333;text-align:center;overflow:hidden}
+.who-seat-hint{margin:14px 4px 0;padding:13px 16px;border:2px solid #d5d8db;border-radius:14px;background:#f6f6f6;color:#222;font-size:14px;font-weight:900;text-align:center}
+
+/* Cuisson plein écran, comme la capture */
+#quickCookingBar{
+  position:fixed!important;
+  inset:10px!important;
+  left:10px!important;right:10px!important;top:10px!important;bottom:10px!important;
+  z-index:30000!important;
+  max-height:none!important;
+  overflow:auto!important;
+  padding:0!important;
+  border:1px solid #cfd2d5!important;
+  border-radius:24px!important;
+  background:#f7f7f7!important;
+  color:#111!important;
+  box-shadow:0 22px 70px rgba(0,0,0,.42)!important;
+}
+.quick-cook-title-row{
+  min-height:76px;
+  display:flex;
+  align-items:center;
+  gap:16px;
+  padding:10px 18px;
+  border-bottom:1px solid #d5d8db;
+  background:#fafafa;
+  position:sticky;
+  top:0;
+  z-index:2;
+}
+#quickCookModalTitle{flex:1;font-size:28px;font-weight:1000;color:#111;letter-spacing:-.5px}
+#quickCookingBar #quickCookCancel{
+  width:64px!important;height:64px!important;flex:0 0 64px!important;
+  border:2px solid #aaa!important;background:#fff!important;color:#111!important;
+  font-size:32px!important;
+}
+.quick-cook-card{
+  margin:18px;
+  padding:30px 28px 26px;
+  border:5px solid #111;
+  border-radius:24px;
+  background:#fff;
+}
+#quickCookingBar .quick-cook-head{
+  display:grid!important;
+  grid-template-columns:auto 1fr!important;
+  gap:18px!important;
+  align-items:center!important;
+  margin:0 0 24px!important;
+}
+#quickCookingBar .quick-cook-head .seat-badge{
+  min-width:106px!important;height:70px!important;border-width:5px!important;
+  font-size:28px!important;background:#fff!important;
+}
+#quickCookingBar .quick-cook-name{font-size:32px!important;color:#111!important;font-weight:1000!important}
+#quickCookingBar .quick-cook-help{font-size:18px!important;color:#555!important;font-weight:850!important;margin-top:6px}
+#quickCookingBar .quick-cook-grid{
+  display:grid!important;
+  grid-template-columns:repeat(5,minmax(0,1fr))!important;
+  gap:16px!important;
+}
+#quickCookingBar .quick-cook-btn{
+  min-height:142px!important;
+  border:5px solid #111!important;
+  border-radius:20px!important;
+  background:#fff!important;
+  color:#111!important;
+  padding:12px!important;
+  font-size:24px!important;
+  line-height:1.12!important;
+  font-weight:1000!important;
+  text-transform:uppercase;
+}
+#quickCookingBar .quick-cook-btn:active{background:#efefef!important;transform:scale(.98)}
+#quickCookBack{
+  width:100%;min-height:82px;margin-top:20px;border:4px solid #777;border-radius:18px;
+  background:#f1f1f1;color:#111;font-size:22px;font-weight:1000;
+}
+@media(max-width:1100px){
+  .who-seat-grid{grid-template-columns:repeat(2,minmax(160px,1fr))}
+  #quickCookingBar .quick-cook-grid{grid-template-columns:repeat(2,minmax(0,1fr))!important}
+  #quickCookingBar .quick-cook-btn{min-height:96px!important;font-size:17px!important}
+  #quickCookModalTitle{font-size:21px}
+  #quickCookingBar .quick-cook-name{font-size:22px!important}
+}
+@media(max-width:560px){
+  .who-seat-grid{grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
+  .who-seat-card{min-height:116px;border-width:4px;border-radius:18px;padding:10px 7px}
+  .who-seat-number{font-size:38px}.who-seat-status{font-size:13px}.who-seat-items{font-size:10px}
+  #quickCookingBar{inset:4px!important;left:4px!important;right:4px!important;top:4px!important;bottom:4px!important;border-radius:16px!important}
+  .quick-cook-title-row{min-height:60px;padding:8px 10px}
+  #quickCookModalTitle{font-size:17px}
+  #quickCookingBar #quickCookCancel{width:48px!important;height:48px!important;flex-basis:48px!important;font-size:25px!important}
+  .quick-cook-card{margin:8px;padding:16px 10px;border-width:4px;border-radius:16px}
+  #quickCookingBar .quick-cook-head .seat-badge{min-width:70px!important;height:52px!important;font-size:20px!important;border-width:4px!important}
+  #quickCookingBar .quick-cook-name{font-size:18px!important}
+  #quickCookingBar .quick-cook-help{font-size:13px!important}
+  #quickCookingBar .quick-cook-grid{gap:8px!important}
+  #quickCookingBar .quick-cook-btn{min-height:82px!important;border-width:4px!important;border-radius:14px!important;font-size:14px!important}
+  #quickCookBack{min-height:58px;font-size:15px;border-width:3px}
+}
+</style>
+
+<style id="ichef-bottom-3levels-v1">
+/* =========================================================
+   iCHEF — COMMANDES : DOCK BAS 3 NIVEAUX
+   N3 : TOTAL TABLE + À PAYER
+   N2 : RÉSUMÉ + SERVICE
+   N1 : OBSERVATION + FERMER -> PLAN TABLES
+   ========================================================= */
+body.order-open #btnHeadSummary,
+body.order-open #btnHeadPayment,
+body.order-open #btnCloseOrder{
+  display:none !important;
+}
+
+/* ENVOYER est désormais dans le RÉSUMÉ : on libère le bas du ticket. */
+body.order-open .ticket-foot{
+  display:none !important;
+}
+
+body.order-open #order{
+  padding-bottom:254px !important;
+}
+
+#bottomObservationBar{
+  position:fixed !important;
+  left:8px !important;
+  right:8px !important;
+  bottom:max(6px,var(--safe-bottom)) !important;
+  z-index:1850 !important;
+  display:none !important;
+  flex-direction:column !important;
+  gap:7px !important;
+  padding:8px !important;
+  background:#f6f7f7 !important;
+  border:1px solid #d8dcde !important;
+  border-radius:16px !important;
+  box-shadow:0 10px 34px rgba(0,0,0,.16) !important;
+}
+body.order-open #bottomObservationBar{display:flex !important;}
+body.summary-open #bottomObservationBar{display:none !important;}
+
+#bottomObservationBar .order-dock-row{
+  display:grid !important;
+  grid-template-columns:1fr 1fr !important;
+  gap:10px !important;
+  width:100% !important;
+}
+
+#bottomObservationBar button,
+#bottomObservationBar .order-total-card{
+  min-height:68px !important;
+  border:3px solid #17191a !important;
+  border-radius:15px !important;
+  font-family:inherit !important;
+  font-size:20px !important;
+  line-height:1 !important;
+  font-weight:1000 !important;
+  letter-spacing:.15px !important;
+  text-transform:uppercase !important;
+}
+
+#bottomObservationBar button{
+  width:100% !important;
+  background:#fff !important;
+  color:#090a0a !important;
+  cursor:pointer !important;
+  touch-action:manipulation !important;
+}
+#bottomObservationBar button:active{transform:scale(.992) !important;}
+
+/* Niveau 3 : argent */
+#bottomObservationBar .order-total-card{
+  display:flex !important;
+  align-items:center !important;
+  justify-content:space-between !important;
+  gap:14px !important;
+  padding:8px 18px !important;
+  background:#fff !important;
+}
+#bottomObservationBar .order-total-label{
+  color:#111 !important;
+  font-size:18px !important;
+  font-weight:1000 !important;
+}
+#bottomTableTotal{
+  color:#d39b13 !important;
+  font-size:32px !important;
+  font-weight:1000 !important;
+  white-space:nowrap !important;
+}
+#btnBottomPayment{
+  background:#111 !important;
+  color:#fff !important;
+  border-color:#111 !important;
+}
+
+/* Niveau 2 : résumé + service */
+#btnBottomSummary{
+  background:#fff !important;
+  color:#111 !important;
+}
+#btnBottomService{
+  background:#e9fbf1 !important;
+  color:#0a8b49 !important;
+  border-color:#23c971 !important;
+}
+#btnBottomService.served-ok{
+  background:#23c971 !important;
+  color:#07140d !important;
+}
+
+/* Niveau 1 : observation + fermer */
+#bottomObservation,
+#btnBottomClose{
+  min-height:68px !important;
+}
+#btnBottomClose{
+  background:#fff !important;
+  color:#111 !important;
+  border-width:4px !important;
+}
+
+/* RÉSUMÉ = validation avant ENVOI. Pas de doublon paiement dans cet écran. */
+#summaryCash{display:none !important;}
+#summary .summary-actions{
+  grid-template-columns:1fr 1.35fr !important;
+}
+#summaryKitchen{
+  background:#e9fbf1 !important;
+  color:#087a40 !important;
+  border-color:#23c971 !important;
+}
+
+@media(max-width:720px){
+  body.order-open #order{padding-bottom:224px !important;}
+  #bottomObservationBar{left:4px !important;right:4px !important;gap:5px !important;padding:5px !important;}
+  #bottomObservationBar .order-dock-row{gap:5px !important;}
+  #bottomObservationBar button,
+  #bottomObservationBar .order-total-card{min-height:58px !important;border-width:2px !important;border-radius:12px !important;font-size:15px !important;}
+  #bottomObservationBar .order-total-card{padding:6px 10px !important;}
+  #bottomObservationBar .order-total-label{font-size:13px !important;}
+  #bottomTableTotal{font-size:22px !important;}
+}
+</style>
+
+<style id="ichef-c1-c9-dans-cuisson-v2">
+/* =========================================================
+   C1-C9 DIRECTEMENT DANS LE CADRE DE CUISSON
+   ========================================================= */
+#quickCookingBar .quick-cook-seats-wrap{
+  margin:14px 0 16px;
+  padding:12px;
+  border:3px solid #171717;
+  border-radius:18px;
+  background:#f4f5f6;
+}
+#quickCookingBar .quick-cook-seats-label{
+  margin:0 0 9px;
+  color:#151515;
+  font-size:14px;
+  line-height:1;
+  font-weight:1000;
+  letter-spacing:.4px;
+  text-transform:uppercase;
+}
+#quickCookingBar .quick-cook-seats{
+  display:grid;
+  grid-template-columns:repeat(9,minmax(0,1fr));
+  gap:7px;
+}
+#quickCookingBar .quick-cook-seat-btn{
+  min-width:0;
+  min-height:62px;
+  padding:6px 2px;
+  border:4px solid currentColor;
+  border-radius:15px;
+  background:#fff;
+  color:#111;
+  font-size:20px;
+  font-weight:1000;
+  line-height:1;
+  cursor:pointer;
+}
+#quickCookingBar .quick-cook-seat-btn[data-seat="1"]{color:var(--c1)}
+#quickCookingBar .quick-cook-seat-btn[data-seat="2"]{color:var(--c2)}
+#quickCookingBar .quick-cook-seat-btn[data-seat="3"]{color:var(--c3)}
+#quickCookingBar .quick-cook-seat-btn[data-seat="4"]{color:var(--c4)}
+#quickCookingBar .quick-cook-seat-btn[data-seat="5"]{color:var(--c5)}
+#quickCookingBar .quick-cook-seat-btn[data-seat="6"]{color:var(--c6)}
+#quickCookingBar .quick-cook-seat-btn[data-seat="7"]{color:var(--c7)}
+#quickCookingBar .quick-cook-seat-btn[data-seat="8"]{color:#b09e00}
+#quickCookingBar .quick-cook-seat-btn[data-seat="9"]{color:#6f7a80}
+#quickCookingBar .quick-cook-seat-btn.active{
+  background:currentColor;
+  box-shadow:0 0 0 3px #111 inset,0 0 0 2px #111;
+}
+#quickCookingBar .quick-cook-seat-btn.active span{color:#fff}
+#quickCookingBar .quick-cook-seat-btn span{color:currentColor}
+
+@media (max-width:900px){
+  #quickCookingBar .quick-cook-seats{grid-template-columns:repeat(5,minmax(0,1fr))}
+  #quickCookingBar .quick-cook-seat-btn{min-height:52px;font-size:17px;border-width:3px}
+}
+@media (max-width:560px){
+  #quickCookingBar .quick-cook-seats{grid-template-columns:repeat(3,minmax(0,1fr))}
+  #quickCookingBar .quick-cook-seat-btn{min-height:48px;font-size:16px}
+}
+</style>
+
+<style id="ichef-v20-responsive-service-bar">
+/* =========================================================
+   V20 — BARRE DE SERVICE RESPONSIVE + CLIENT/TABLE RAPIDE
+   ========================================================= */
+#order .order-head.order-head-v20{
+  width:100%!important;
+  height:auto!important;
+  min-height:72px!important;
+  flex:0 0 auto!important;
+  display:grid!important;
+  grid-template-columns:minmax(120px,1.15fr) minmax(125px,1.05fr) minmax(150px,1.22fr) minmax(95px,.72fr) minmax(88px,.72fr) minmax(108px,.88fr) minmax(88px,.72fr)!important;
+  gap:clamp(5px,.7vw,12px)!important;
+  align-items:stretch!important;
+  padding:clamp(6px,.7vw,10px)!important;
+  overflow:visible!important;
+  background:#e9e9e9!important;
+  border-bottom:2px solid #c9c9c9!important;
+}
+#order .order-title-v20{
+  min-width:0!important;
+  width:auto!important;
+  display:flex!important;
+  align-items:center!important;
+  padding:0 clamp(7px,1vw,16px)!important;
+  color:#090909!important;
+  font-size:clamp(17px,1.55vw,31px)!important;
+  font-weight:950!important;
+  white-space:nowrap!important;
+  overflow:hidden!important;
+  text-overflow:ellipsis!important;
+}
+#order .head-menu-v20{
+  width:100%!important;
+  min-width:0!important;
+  height:auto!important;
+  min-height:54px!important;
+  padding:6px clamp(5px,.7vw,12px)!important;
+  display:flex!important;
+  flex-direction:column!important;
+  align-items:center!important;
+  justify-content:center!important;
+  gap:2px!important;
+  border:1.5px solid #c6c9cc!important;
+  border-radius:12px!important;
+  background:#fff!important;
+  color:#090909!important;
+  overflow:hidden!important;
+}
+#order .head-menu-v20:not(.clock-v20):active{transform:scale(.98)}
+#order .head-menu-v20.add-v20{border-color:#b8a9de!important;background:#fbf9ff!important}
+#order .head-menu-v20.clock-v20{pointer-events:none!important;background:#fff!important}
+#order .head-main-v20{
+  max-width:100%!important;
+  font-size:clamp(10px,1vw,18px)!important;
+  line-height:1.05!important;
+  font-weight:950!important;
+  white-space:nowrap!important;
+  overflow:hidden!important;
+  text-overflow:ellipsis!important;
+}
+#order .head-sub-v20{
+  max-width:100%!important;
+  font-size:clamp(6px,.58vw,10px)!important;
+  line-height:1!important;
+  font-weight:850!important;
+  color:#687076!important;
+  white-space:nowrap!important;
+  overflow:hidden!important;
+  text-overflow:ellipsis!important;
+}
+#order .head-compat-hidden{display:none!important}
+
+.quick-add-choice-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.quick-add-choice{min-height:128px;border:3px solid #111;border-radius:18px;background:#fff;color:#111;font-size:25px;font-weight:950;padding:18px}
+.quick-add-choice small{display:block;margin-top:8px;color:#687076;font-size:13px;font-weight:800;line-height:1.3}
+.quick-target-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}
+.quick-target-card{min-height:92px;border:2px solid #111;border-radius:14px;background:#fff;color:#111;padding:10px;font-weight:950;text-align:center}
+.quick-target-card .qt-main{font-size:22px}.quick-target-card .qt-sub{margin-top:5px;font-size:11px;color:#687076;line-height:1.25}
+.quick-zone-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
+.quick-zone-card{min-height:100px;border:3px solid #111;border-radius:15px;background:#fff;color:#111;padding:12px;font-weight:950;text-align:center}
+.quick-zone-card .qz-main{font-size:20px}.quick-zone-card .qz-sub{margin-top:6px;font-size:11px;color:#687076}
+.quick-add-context{margin-bottom:12px;padding:10px 12px;border:1px solid #cfd3d6;border-radius:12px;background:#f6f7f8;color:#111;font-size:13px;font-weight:850}
+
+@media (max-width:1050px){
+  #order .order-head.order-head-v20{
+    grid-template-columns:repeat(4,minmax(0,1fr))!important;
+  }
+  #order .order-title-v20{justify-content:center!important;min-height:54px!important}
+}
+@media (max-width:620px){
+  #order .order-head.order-head-v20{grid-template-columns:repeat(2,minmax(0,1fr))!important}
+  .quick-target-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .quick-add-choice-grid,.quick-zone-grid{grid-template-columns:1fr}
+}
+</style>
+
+<style id="ichef-who-compact-actions-v21">
+/* =========================================================
+   V21 — QUI MANGE QUOI COMPACT + OBSERVATION / FERMER
+   ========================================================= */
+#sheet.who-sheet{
+  align-items:center !important;
+  justify-content:center !important;
+  padding:clamp(8px,1.4vw,22px) !important;
+}
+#sheet.who-sheet .sheet-card{
+  width:min(1120px,96vw) !important;
+  max-height:min(82dvh,820px) !important;
+  border-radius:22px !important;
+  overflow:hidden !important;
+}
+#sheet.who-sheet .sheet-head{
+  min-height:62px !important;
+  height:62px !important;
+  flex:0 0 62px !important;
+  padding:8px 14px !important;
+}
+#sheet.who-sheet .sheet-title{
+  font-size:clamp(18px,1.55vw,28px) !important;
+  font-weight:1000 !important;
+}
+#sheet.who-sheet .close-btn{
+  width:50px !important;
+  height:50px !important;
+  flex:0 0 50px !important;
+  font-size:25px !important;
+}
+#sheet.who-sheet .sheet-body{
+  padding:12px !important;
+  overflow:auto !important;
+}
+#sheet.who-sheet .who-seat-grid{
+  display:grid !important;
+  grid-template-columns:repeat(5,minmax(0,1fr)) !important;
+  gap:10px !important;
+  padding:2px !important;
+}
+#sheet.who-sheet .who-seat-card{
+  min-height:128px !important;
+  max-height:168px !important;
+  border-width:4px !important;
+  border-radius:18px !important;
+  padding:9px 8px !important;
+  gap:4px !important;
+  box-shadow:0 4px 0 #d8dadd !important;
+}
+#sheet.who-sheet .who-seat-card.active{
+  box-shadow:0 0 0 3px rgba(0,0,0,.12),0 4px 0 #d8dadd !important;
+}
+#sheet.who-sheet .who-seat-number{
+  font-size:clamp(34px,3.1vw,50px) !important;
+  letter-spacing:-1px !important;
+}
+#sheet.who-sheet .who-seat-status{
+  font-size:clamp(11px,.9vw,15px) !important;
+}
+#sheet.who-sheet .who-seat-items{
+  font-size:clamp(9px,.72vw,11px) !important;
+  line-height:1.15 !important;
+  display:-webkit-box !important;
+  -webkit-line-clamp:3 !important;
+  -webkit-box-orient:vertical !important;
+  overflow:hidden !important;
+}
+#sheet.who-sheet .who-seat-hint{
+  margin:9px 2px 0 !important;
+  padding:8px 10px !important;
+  font-size:12px !important;
+  border-radius:10px !important;
+}
+#sheet.who-sheet .who-sheet-actions{
+  position:sticky !important;
+  bottom:0 !important;
+  z-index:5 !important;
+  display:grid !important;
+  grid-template-columns:1fr 1fr !important;
+  gap:10px !important;
+  margin:10px -2px -2px !important;
+  padding:10px 2px 2px !important;
+  background:linear-gradient(to bottom,rgba(255,255,255,.88),#fff 24%) !important;
+}
+#sheet.who-sheet .who-sheet-actions button{
+  min-height:58px !important;
+  border:3px solid #111 !important;
+  border-radius:14px !important;
+  background:#fff !important;
+  color:#111 !important;
+  font-size:clamp(15px,1.25vw,21px) !important;
+  font-weight:1000 !important;
+  text-transform:uppercase !important;
+}
+#sheet.who-sheet #whoClosePlan{
+  border-width:4px !important;
+}
+/* Le bouton QUI MANGE de la barre reste proportionné et moins massif. */
+body.order-open #btnHeadWho{
+  min-height:50px !important;
+  padding:5px clamp(5px,.65vw,10px) !important;
+}
+body.order-open #btnHeadWho .head-main-v20{
+  font-size:clamp(10px,.9vw,16px) !important;
+}
+body.order-open #btnHeadWho .head-sub-v20{
+  font-size:clamp(6px,.52vw,9px) !important;
+}
+@media(max-width:900px){
+  #sheet.who-sheet .who-seat-grid{grid-template-columns:repeat(3,minmax(0,1fr)) !important;}
+  #sheet.who-sheet .who-seat-card{min-height:112px !important;max-height:145px !important;}
+}
+@media(max-width:560px){
+  #sheet.who-sheet{padding:4px !important;}
+  #sheet.who-sheet .sheet-card{width:100% !important;max-height:92dvh !important;border-radius:16px !important;}
+  #sheet.who-sheet .sheet-head{height:56px !important;min-height:56px !important;flex-basis:56px !important;}
+  #sheet.who-sheet .who-seat-grid{grid-template-columns:repeat(2,minmax(0,1fr)) !important;gap:7px !important;}
+  #sheet.who-sheet .who-seat-card{min-height:100px !important;max-height:128px !important;border-width:3px !important;border-radius:14px !important;}
+  #sheet.who-sheet .who-seat-number{font-size:34px !important;}
+  #sheet.who-sheet .who-sheet-actions{gap:7px !important;margin-top:7px !important;padding-top:7px !important;}
+  #sheet.who-sheet .who-sheet-actions button{min-height:52px !important;border-width:2px !important;font-size:14px !important;}
+}
+</style>
+
 </head>
 
 <body>
@@ -5165,46 +5735,53 @@ html.ichef-phone-denied body > *:not(#ichefPhoneDenied){
 
 <div id="order"> 
 
-  <!-- EN-TÊTE DE LA COMMANDE -->
-  <div class="order-head" style="background: #e9e9e9 !important; border-bottom: 2px solid #ccc !important; padding: 8px 12px !important; display: flex !important; flex-wrap: nowrap !important; overflow-x: auto !important; overflow-y: hidden !important; align-items: center !important; gap: 12px !important; scrollbar-width: none !important;">
-    
-    <div id="orderName" class="order-name" style="flex: 0 0 auto !important; margin-right: 5px !important; color: #000 !important;">TABLE —</div>
-    
-    <!-- INFOS (Couverts, Zone, Chrono) -->
-    <div style="display: flex !important; align-items: center !important; gap: 8px !important; flex: 0 0 auto !important;">
-      <button id="btnHeadWho" class="head-btn" style="width: auto !important; padding: 0 15px !important; cursor: pointer !important;"> QUI MANGE ?</button>
-      <button class="head-btn" style="width: auto !important; padding: 0 15px !important; pointer-events: none !important;"> <span id="zoneValue">Salle</span></button>
-      <span class="head-btn" style="width: auto !important; padding: 0 15px !important; display: inline-flex !important; align-items: center !important; justify-content: center !important;"> <span id="orderAge">00:00</span></span>
-      <button id="btnHeadReady" class="head-btn" style="width: auto !important; padding: 0 15px !important; background: #36d98a !important; color: #000 !important; display: none !important; cursor: pointer !important;"> PLATS PRÊTS</button>
-    </div>
-    
-    <!-- Espace flexible qui pousse les boutons à droite -->
-    <div style="flex: 1 1 auto !important; min-width: 10px !important;"></div>
+  <!-- EN-TÊTE DE LA COMMANDE — V20 RESPONSIVE -->
+  <div class="order-head order-head-v20">
+    <div id="orderName" class="order-name order-title-v20">TABLE —</div>
 
-    <!-- ACTIONS (Retour, Demande, Outils, Fermer) -->
-    <div style="display: flex !important; gap: 8px !important; flex: 0 0 auto !important; flex-shrink: 0 !important;">
-      <button id="btnUndoFast" class="head-btn" type="button" title="Annuler la dernière action" style="width: auto !important; padding: 0 15px !important; cursor: pointer !important;" disabled>RETOUR</button>
-      <button id="btnKitchenOrder" class="head-btn" title="Communication Cuisine / Bar" style="width: auto !important; padding: 0 15px !important; cursor: pointer !important;">DEMANDE</button>
-      <button id="btnHeadPlan" class="head-btn" type="button" title="Ouvrir le plan de salle" style="width: auto !important; padding: 0 15px !important; cursor: pointer !important; background:#ffffff !important; color:#000 !important; border:2px solid #111 !important;">PLAN</button>
-      <button id="btnOrderMore" class="head-btn" style="width: auto !important; padding: 0 15px !important; cursor: pointer !important;">OUTILS</button>
-      <button id="btnHeadSummary" class="head-btn" type="button" title="Ouvrir le résumé / caisse" style="width: auto !important; padding: 0 15px !important; cursor: pointer !important; background:#fff !important; color:#000 !important; border:2px solid #111 !important;">RÉSUMÉ</button>
-      <button id="btnHeadPayment" class="head-btn" type="button" title="Ouvrir directement le paiement" style="width: auto !important; padding: 0 15px !important; cursor: pointer !important; background:#111 !important; color:#fff !important; border:2px solid #111 !important;"> PAIEMENT</button>
-      <button id="btnCloseOrder" class="head-btn" style="width: auto !important; padding: 0 15px !important; font-size: 14px !important; cursor: pointer !important;">FERMER</button>
-    </div>
+    <button id="btnHeadWho" class="head-btn head-menu-v20" type="button">
+      <span class="head-main-v20">QUI MANGE ? · C1</span>
+      <span class="head-sub-v20">C1–C9</span>
+    </button>
+
+    <button id="btnAddGuestTable" class="head-btn head-menu-v20 add-v20" type="button">
+      <span class="head-main-v20">CLIENT + / TABLE +</span>
+      <span id="zoneQuickLabel" class="head-sub-v20">ZONE</span>
+    </button>
+
+    <span class="head-btn head-menu-v20 clock-v20" aria-label="Chronomètre de la table">
+      <span class="head-main-v20">⏱ <span id="orderAge">00:00</span></span>
+      <span class="head-sub-v20">SERVICE</span>
+    </span>
+
+    <button id="btnUndoFast" class="head-btn head-menu-v20" type="button" title="Annuler la dernière action" disabled>
+      <span class="head-main-v20">RETOUR</span>
+      <span class="head-sub-v20">ANNULER</span>
+    </button>
+
+    <button id="btnKitchenOrder" class="head-btn head-menu-v20" type="button" title="Communication Cuisine / Bar">
+      <span class="head-main-v20">DEMANDE</span>
+      <span class="head-sub-v20">CUISINE / BAR</span>
+    </button>
+
+    <button id="btnOrderMore" class="head-btn head-menu-v20" type="button">
+      <span class="head-main-v20">OUTILS</span>
+      <span class="head-sub-v20">PLUS</span>
+    </button>
+
+    <!-- Conservés pour compatibilité du moteur ; les actions principales sont maintenant en bas. -->
+    <button id="btnHeadReady" class="head-btn head-compat-hidden" type="button">PLATS PRÊTS</button>
+    <button id="btnHeadSummary" class="head-btn head-compat-hidden" type="button">RÉSUMÉ</button>
+    <button id="btnHeadPayment" class="head-btn head-compat-hidden" type="button">PAIEMENT</button>
+    <button id="btnCloseOrder" class="head-btn head-compat-hidden" type="button">FERMER</button>
   </div>
 
-  <!-- QUI MANGE QUOI — C1 à C9 visibles dès l'ouverture d'une table -->
-  <div id="fastGuestWrap" class="fast-guest-wrap" aria-label="Qui mange quoi">
-    <div class="fast-guest-head">
-      <span>QUI MANGE QUOI · C1 À C9</span>
-      <span id="activeGuestLabel" class="fast-active-guest">ACTIF : C1</span>
-    </div>
-    <div id="guestButtons" class="guest-buttons" aria-label="Choisir le convive actif"></div>
-  </div>
-
-  <!-- Éléments techniques conservés mais invisibles -->
-  <div style="display:none;">
+  <!-- Éléments masqués indispensables pour le moteur JavaScript -->
+  <div style="display: none;">
     <button id="paxMinus">−</button><strong id="paxValue">2</strong><button id="paxPlus">+</button>
+    <span id="activeGuestLabel" aria-hidden="true">C1</span>
+    <span id="zoneValue" aria-hidden="true">Salle</span>
+    <div id="guestButtons" aria-hidden="true"></div>
     <button id="rushStrip" class="rush0" type="button">
       <span class="rush-dot"></span>
       <span class="rush-main">ANTI-RUSH<span class="rush-sub"></span></span>
@@ -5245,15 +5822,29 @@ html.ichef-phone-denied body > *:not(#ichefPhoneDenied){
     </section>
   </div>
 
-  <!-- Bouton Observation en bas -->
-  <div id="bottomObservationBar">
-    <button id="bottomObservation" type="button">OBSERVATION</button>
+  <!-- DOCK BAS 3 NIVEAUX : TOTAL/PAIEMENT · RÉSUMÉ/SERVICE · OBSERVATION/FERMER -->
+  <div id="bottomObservationBar" aria-label="Actions table">
+    <div class="order-dock-row order-dock-payment">
+      <div class="order-total-card">
+        <span class="order-total-label">TOTAL TABLE</span>
+        <strong id="bottomTableTotal">0,00</strong>
+      </div>
+      <button id="btnBottomPayment" type="button">À PAYER</button>
+    </div>
+    <div class="order-dock-row order-dock-service">
+      <button id="btnBottomSummary" type="button">RÉSUMÉ</button>
+      <button id="btnBottomService" type="button">SERVICE</button>
+    </div>
+    <div class="order-dock-row order-dock-close">
+      <button id="bottomObservation" type="button">OBSERVATION</button>
+      <button id="btnBottomClose" type="button">FERMER</button>
+    </div>
   </div>
 
 </div> <!-- FIN DU BLOC ORDER -->
 
 <div id="summary" role="region" aria-label="Écran 3 Résumé et Caisse">
-  <div class="summary-screen-kicker">ÉCRAN 3 · RÉSUMÉ / CAISSE</div>
+  <div class="summary-screen-kicker">RÉSUMÉ DE LA COMMANDE · CONTRÔLE AVANT ENVOI</div>
   <div class="summary-head">
     <div id="summaryTable" class="summary-table">TABLE —</div>
     <button id="summaryClose" class="summary-close" type="button">FERMER </button>
@@ -5268,7 +5859,7 @@ html.ichef-phone-denied body > *:not(#ichefPhoneDenied){
     </div>
     <div class="summary-actions">
       <button id="summaryModify" type="button"> MODIFIER<span class="summary-action-sub">Retour à la commande</span></button>
-      <button id="summaryKitchen" class="kitchen" type="button"> CUISINE / BAR<span class="summary-action-sub">Envoyer en production</span></button>
+      <button id="summaryKitchen" class="kitchen" type="button">ENVOYER<span class="summary-action-sub">Envoyer toute la commande en production</span></button>
       <button id="summaryCash" class="summary-cash" type="button"> OUVRIR LE PAIEMENT<span class="summary-action-sub">Choisir le mode de paiement</span></button>
     </div>
   </div>
@@ -5278,15 +5869,25 @@ html.ichef-phone-denied body > *:not(#ichefPhoneDenied){
      PANNEAU DE CUISSON RAPIDE
      ============================================== -->
 <div id="quickCookingBar" class="hidden">
-  <div class="quick-cook-head">
-    <span id="quickCookSeat" class="seat-badge">C1</span>
-    <div>
-      <div id="quickCookName" class="quick-cook-name">Cuisson</div>
-      <div class="quick-cook-help">Choisir la cuisson</div>
-    </div>
+  <div class="quick-cook-title-row">
+    <div id="quickCookModalTitle">C1 · CUISSON</div>
     <button id="quickCookCancel" class="close-btn" type="button" title="Fermer">×</button>
   </div>
-  <div id="quickCookGrid" class="quick-cook-grid"></div>
+  <div class="quick-cook-card">
+    <div class="quick-cook-head">
+      <span id="quickCookSeat" class="seat-badge">C1</span>
+      <div>
+        <div id="quickCookName" class="quick-cook-name">Cuisson</div>
+        <div class="quick-cook-help">Choisissez d’abord le convive, puis la cuisson.</div>
+      </div>
+    </div>
+    <div class="quick-cook-seats-wrap">
+      <div class="quick-cook-seats-label">QUI MANGE QUOI ?</div>
+      <div id="quickCookSeats" class="quick-cook-seats"></div>
+    </div>
+    <div id="quickCookGrid" class="quick-cook-grid"></div>
+    <button id="quickCookBack" type="button">RETOUR À C1–C9</button>
+  </div>
 </div>
 
 <!-- ==============================================
@@ -5361,7 +5962,7 @@ const STATE={
   deviceId:STORAGE.get("ichef_device_id","")||("dev_"+cryptoId()),
   pin:"",role:"",plan:"",specialite:"",authenticated:false,
   sessionToken:"",csrfToken:"",
-  connected:false,socket:null,socketLoading:null,lastServerAt:0,syncing:false,
+  connected:false,socket:null,socketLoading:null,lastServerAt:0,syncing:false,deviceReplaced:false,
   activeOrders:{},architecture:{rooms:["Salle Principale"],tables:[],zones:[]},
   rooms:["Salle Principale"],tables:[],zones:[],room:"Salle Principale",
   menu:[],categories:[],category:"TOUT",reservations:[],settings:{},
@@ -6148,6 +6749,12 @@ async function connectSocket(){
   try{
     await loadSocket();
 
+    /* Si l'utilisateur revient volontairement sur cet écran, il peut reprendre
+       la connexion active de cet appareil. Un onglet caché ne la vole jamais. */
+    if(!document.hidden && STATE.deviceReplaced){
+      STATE.deviceReplaced=false;
+    }
+
     /* Une seule instance Socket par page PAD. */
     if(STATE.socket){
       if(STATE.socket.connected){
@@ -6233,8 +6840,20 @@ async function connectSocket(){
       applyServerState(s,"socket");
     });
 
+    socket.on("ichef-device-replaced",info=>{
+      STATE.deviceReplaced=true;
+      STATE.connected=false;
+      setConnection("AUTRE ONGLET ACTIF","warn");
+      console.info("[iCHEF PAD] Connexion remplacée par un autre onglet/appareil",info||{});
+    });
+
     socket.on("disconnect",reason=>{
       STATE.connected=false;
+
+      if(STATE.deviceReplaced){
+        setConnection("AUTRE ONGLET ACTIF","warn");
+        return;
+      }
 
       setConnection(
         navigator.onLine
@@ -7956,7 +8575,7 @@ async function removeExpressTableAfterService(label){
 function openExpressTableCreate(){
   if(expressRoleLevel()<1){toast("Droit insuffisant",true);return}
   const rooms=expressAvailableRooms(),initialRoom=rooms.includes(STATE.room)?STATE.room:(rooms[0]||STATE.room||"Salle Principale"),zones=expressAvailableZones(initialRoom),initialZone=text(zones[0]?.label||""),manager=expressRoleLevel()>=2;
-  openSheet("＋ TABLE EXPRESS · SANS RÉSERVATION",`
+  openSheet("➕ 🍽️ TABLE EXPRESS · SANS RÉSERVATION",`
     <div class="express-form">
       <div class="express-card"><strong>CLIENT AU DERNIER MOMENT</strong><small>Table temporaire synchronisée avec l'architecture iCHEF. Elle disparaît après clôture ou annulation du service.</small></div>
       <div class="express-grid-2">
@@ -8086,7 +8705,7 @@ function openPlan(){
       <label>SALLE
         <select data-plan-room>${roomOptions}</select>
       </label>
-      <button class="express-add" data-plan-express-add>＋ TABLE EXPRESS</button>
+      <button class="express-add" data-plan-express-add>➕ 🍽️ TABLE EXPRESS</button>
       <button data-plan-express-manage ${canManage?"":"disabled"}>${canManage?"GÉRER EXPRESS":"SERVICE"}</button>
     </div>
     <div class="plan-layout-line">${layoutInfo}<strong>${tables.length} TABLE${tables.length>1?"S":""}</strong></div>
@@ -8600,6 +9219,620 @@ function systemPrintHTML(lines,title="iCHEF",paperWidth=80){
   }).join("");
   return `<!doctype html><html><head><meta charset="utf-8"><title>${esc(title)}</title><style>@page{size:${width}mm auto;margin:3mm}html,body{margin:0;padding:0;background:#fff;color:#000;font-family:Arial,sans-serif}.ticket{width:${width-6}mm;margin:0 auto}</style></head><body><div class="ticket">${body}</div>
 <!-- iCHEF FIX 2026-08-25 : affichage PAX du PLAN = CAPACITÉ ARCHITECTURALE de la table (t.pax), jamais PAX clients live. -->
+
+<script id="ichef-plan-update-20260901-v26">
+/* =========================================================
+   iCHEF PLAN INTERACTIF V26 — SYMBIOSE PACK-ECO
+   - barre responsive
+   - CLIENT + / TABLE +
+   - C1-C9 dans la cuisson
+   - QUI MANGE QUOI compact
+   - dock 3 niveaux
+   - SERVICE garde la table occupée et remet le chrono à zéro
+   - À PAYER -> caissetactile.html
+   - FERMER -> plan interactif
+   ========================================================= */
+
+function orderCreated(o){if(!o)return 0;let t=Number(o.serviceClockAt||o.serviceStartedAt||o.createdAt||o.openedAt||o.date||0);if(!t&&Array.isArray(o.items)&&o.items.length)t=Math.min(...o.items.map(i=>Number(i.itemId||i.createdAt||i.sentAt||Date.now())).filter(Number.isFinite));return t||0}
+function lineReady(i){return !!(i&&(i.done===true||i.ready===true||i.isReady===true||i.readyAt||String(i.sequenceStatus||"").toUpperCase()==="READY"||String(i.status||i.productionStatus||"").toLowerCase()==="ready"))}
+function lineServed(i){return !!(i&&(i.served===true||i.isServed===true||i.servedAt||String(i.sequenceStatus||"").toUpperCase()==="SERVED"||String(i.status||"").toLowerCase()==="served"))}
+
+
+function renderOrder(){
+  const o=STATE.currentOrder||getOrder(STATE.currentTable)||ensureOrder(STATE.currentTable);
+  STATE.currentOrder=o;
+
+  if($("orderName"))$("orderName").textContent="TABLE "+STATE.currentTable;
+  if($("paxValue"))$("paxValue").textContent=num(o.pax||2)||2;
+
+  const t=STATE.tables.find(x=>x.label===STATE.currentTable);
+  const z=getZone(t);
+
+  const currentZoneLabel=z?.label||t?.zone||"Sans zone";
+  if($("zoneValue"))$("zoneValue").textContent=currentZoneLabel;
+  if($("zoneQuickLabel"))$("zoneQuickLabel").textContent=`ZONE · ${currentZoneLabel}`;
+  if($("orderAge"))$("orderAge").textContent=duration(orderCreated(o)||Date.now());
+
+  renderGuestButtons();
+  renderCategories();
+  renderProducts();
+  renderTicket();
+  renderRushStrip();
+  updateUndoButton();
+}
+
+
+
+function renderGuestButtons(){
+  const el=$("guestButtons");
+  if(!el)return;
+
+  const o=STATE.currentOrder||ensureOrder(STATE.currentTable);
+  const pax=Math.max(1,num(o.pax||2));
+  const active=Math.max(1,Math.min(9,Number(STATE.activeSeat)||1));
+
+  if($("activeGuestLabel"))$("activeGuestLabel").textContent=`ACTIF : C${active}`;
+  if($("btnHeadWho")){
+    const main=$("btnHeadWho").querySelector(".head-main-v20");
+    if(main)main.textContent=`QUI MANGE ? · C${active}`;
+    else $("btnHeadWho").textContent=`QUI MANGE ? · C${active}`;
+  }
+
+  el.innerHTML=Array.from({length:9},(_,idx)=>{
+    const seat=idx+1;
+    const extra=seat>pax?" extra":"";
+    return `<button type="button"
+                    class="guest-btn${seat===active?" active":""}${extra}"
+                    data-seat="${seat}"
+                    title="${seat>pax?`C${seat} — augmente automatiquement les couverts`:`Convive C${seat}`}">
+              C${seat}
+            </button>`;
+  }).join("");
+}
+
+
+
+function renderTicket(){
+  const o=STATE.currentOrder||ensureOrder(STATE.currentTable);
+  const items=(o.items||[]).filter(Boolean);
+
+  const currentTableTotal=orderTotal(o);
+  $("ticketTotal").textContent=money(currentTableTotal);
+  if($("bottomTableTotal"))$("bottomTableTotal").textContent=money(currentTableTotal);
+
+  const serviceBtn=$("btnBottomService");
+  if(serviceBtn){
+    const sentLines=items.filter(i=>i&&!i.cancelled&&lineFired(i));
+    const allSentServed=sentLines.length>0&&sentLines.every(i=>lineServed(i));
+    serviceBtn.textContent=allSentServed?"SERVICE ✓":"SERVICE";
+    serviceBtn.classList.toggle("served-ok",allSentServed);
+  }
+
+  $("ticket").innerHTML=items.length
+    ?items.map(i=>{
+      const key=lineKey(i);
+      const q=itemQty(i);
+      const seat=itemSeat(i);
+      const sent=lineFired(i);
+      const state=lineReady(i)
+        ?'<span class="line-state ready">PRÊT</span>'
+        :sent
+          ?'<span class="line-state sent">ENVOYÉ</span>'
+          :'<span class="line-state">BROUILLON</span>';
+
+      const cooking=text(i.cooking)
+        ?`<span class="cooking-tag">🌡️ ${esc(i.cooking)}</span>`
+        :"";
+
+      const seatBadge=seat?seatBadgeHTML(seat):'<span class="seat-badge">CTR</span>';
+      const obs=text(i.obs);
+      const critical=i.allergyCritical===true||/allerg/i.test(obs);
+
+      const controls=sent
+        ?`<button data-line="${esc(key)}" data-act="obs" title="Observation">📝</button>
+          <button data-line="${esc(key)}" data-act="cooking" title="Cuisson">🌡️</button>
+          <button data-line="${esc(key)}" data-act="delete" title="Annuler au poste" style="width:52px">ANN.</button>`
+        :`<button data-line="${esc(key)}" data-act="minus">−</button>
+          <button data-line="${esc(key)}" data-act="plus">+</button>
+          <button data-line="${esc(key)}" data-act="obs" title="Observation">📝</button>
+          <button data-line="${esc(key)}" data-act="delete">×</button>`;
+
+      return `<div class="ticket-row ${sent?"sent-lock":""}">
+        <div class="ticket-left" data-line="${esc(key)}" data-act="obs" style="cursor:pointer;" title="Tap pour Observation/Allergie">
+          <div class="ticket-name">
+            ${seatBadge}${esc(itemName(i))}
+            ${destinationTagHTML(i)}
+            ${cooking}
+            ${state}
+          </div>
+          <div class="ticket-meta">x${q} · ${esc(i.course||i.category||"")}</div>
+          ${obs?`<span class="ticket-obs ${critical?"critical":""}">${critical?"🛑 ":"⚠️ "}${esc(obs)}</span>`:""}
+        </div>
+        <div class="ticket-right">
+          <div class="ticket-price">${money(itemPrice(i)*q)}</div>
+          <div class="qtybar">${controls}</div>
+        </div>
+      </div>`;
+    }).join("")
+    :'<div class="empty-state">Choisissez C1…C9 puis touchez les produits.<br><b>1 tap = ajout immédiat.</b></div>';
+
+  renderSendButton(o);
+  updateUndoButton();
+}
+
+
+
+function openWho(){
+  if(!STATE.currentTable){
+    toast("Ouvrez d’abord une table",true);
+    return;
+  }
+
+  const o=STATE.currentOrder||ensureOrder(STATE.currentTable);
+  const pax=Math.max(1,Math.min(9,Number(o.pax)||2));
+  const active=Math.max(1,Math.min(9,Number(STATE.activeSeat)||1));
+
+  const compactWhoLabel=value=>{
+    const raw=text(value);
+    return raw.length>44?raw.slice(0,41)+"…":raw;
+  };
+
+  const cards=Array.from({length:9},(_,idx)=>{
+    const seat=idx+1;
+    const lines=(o.items||[]).filter(i=>!i.cancelled&&itemSeat(i)===seat);
+    const qty=lines.reduce((sum,i)=>sum+itemQty(i),0);
+    const preview=lines.slice(0,3).map(i=>{
+      const cook=text(i.cooking||i.cuisson);
+      const label=compactWhoLabel(itemName(i));
+      return `${esc(label)}${cook?` · ${esc(cook)}`:""}`;
+    }).join("<br>");
+    const isExtra=seat>pax;
+    return `<button type="button"
+                    class="who-seat-card${seat===active?" active":""}"
+                    data-who-seat="${seat}"
+                    data-seat="${seat}"
+                    title="${isExtra?`C${seat} — augmente les couverts`:`Convive C${seat}`}">
+              <div class="who-seat-number">C${seat}</div>
+              <div class="who-seat-status">${qty?`${qty} article${qty>1?"s":""}`:"Aucun article"}</div>
+              ${preview?`<div class="who-seat-items">${preview}${lines.length>3?`<br>+ ${lines.length-3} autre(s)`:""}</div>`:""}
+            </button>`;
+  }).join("");
+
+  openSheet(
+    `QUI MANGE QUOI ? · TABLE ${esc(STATE.currentTable)}`,
+    `<div class="who-seat-grid">${cards}</div>
+     <div class="who-seat-hint">Touchez C1…C9 puis choisissez les plats. La cuisson reste liée au même convive.</div>
+     <div class="who-sheet-actions">
+       <button id="whoObservation" type="button">OBSERVATION</button>
+       <button id="whoClosePlan" type="button">FERMER</button>
+     </div>`
+  );
+
+  $("sheet").classList.add("who-sheet");
+
+  $("sheetBody").querySelectorAll("[data-who-seat]").forEach(btn=>{
+    btn.onclick=()=>{
+      const seat=Number(btn.dataset.whoSeat)||1;
+      setActiveSeat(seat);
+      closeSheet();
+      toast(`C${seat} actif · choisissez les articles`);
+    };
+  });
+
+  const obs=$("whoObservation");
+  if(obs)obs.onclick=()=>{
+    closeSheet();
+    openObservationFast();
+  };
+
+  const closePlan=$("whoClosePlan");
+  if(closePlan)closePlan.onclick=()=>{
+    closeSheet();
+    closeOrder();
+    setTimeout(()=>{ if(typeof window.openPadServiceHome==="function") window.openPadServiceHome(); },0);
+  };
+}
+
+
+
+
+function architectureSnapshotForQuickAdd(){
+  const raw=unwrap(STATE.activeOrders.ARCHITECTURE)||{};
+  return {
+    ...clone(raw),
+    rooms:Array.isArray(raw.rooms)?clone(raw.rooms):clone(STATE.rooms||[]),
+    tables:Array.isArray(raw.tables)?clone(raw.tables):clone(STATE.tables||[]),
+    zones:Array.isArray(raw.zones)?clone(raw.zones):clone(STATE.zones||[])
+  };
+}
+
+async function persistQuickArchitecture(architecture,reason){
+  const packet={data:architecture,updatedAt:new Date().toISOString(),source:"TELEPHONE_QUICK_ADD"};
+  const pending=stageLocalValue("ARCHITECTURE",packet,reason);
+  return enqueueVersionedWrite("ARCHITECTURE",pending);
+}
+
+function quickTableZoneLabel(table){
+  const z=getZone(table);
+  return text(z?.label||table?.zone||table?.zoneLabel||"Sans zone");
+}
+
+function openQuickAddClientOrTable(){
+  const current=STATE.tables.find(t=>t.label===STATE.currentTable);
+  const currentZone=current?quickTableZoneLabel(current):"—";
+  openSheet("CLIENT + / TABLE +",`
+    <div class="quick-add-context">TABLE ACTUELLE : <b>${esc(STATE.currentTable||"—")}</b> · ZONE : <b>${esc(currentZone)}</b></div>
+    <div class="quick-add-choice-grid">
+      <button type="button" class="quick-add-choice" data-quick-add="client">CLIENT +<small>Ajouter un convive à une table existante et aller directement sur son C.</small></button>
+      <button type="button" class="quick-add-choice" data-quick-add="table">TABLE +<small>Créer une table de dernière minute et choisir précisément sa zone.</small></button>
+    </div>`);
+  $("sheetBody").querySelector('[data-quick-add="client"]')?.addEventListener("click",openQuickClientTablePicker);
+  $("sheetBody").querySelector('[data-quick-add="table"]')?.addEventListener("click",openQuickZonePicker);
+}
+
+function openQuickClientTablePicker(){
+  const tables=(STATE.tables||[]).slice().sort((a,b)=>text(a.label).localeCompare(text(b.label),"fr",{numeric:true}));
+  if(!tables.length){toast("Aucune table disponible",true);return;}
+  const cards=tables.map(t=>{
+    const st=tableStats(t.label);
+    const zone=quickTableZoneLabel(t);
+    const currentPax=Math.max(0,num(st.pax||getOrder(t.label)?.pax||0));
+    const status=st.status==="empty"?"LIBRE":`${currentPax} CLIENT${currentPax>1?"S":""}`;
+    return `<button type="button" class="quick-target-card" data-client-table="${esc(t.label)}">
+      <div class="qt-main">${esc(t.label)}</div>
+      <div class="qt-sub">${esc(zone)} · ${esc(status)}</div>
+    </button>`;
+  }).join("");
+  openSheet("CLIENT + · CHOISIR LA TABLE",`
+    <div class="quick-add-context">Choisissez la table où arrive le nouveau client.</div>
+    <div class="quick-target-grid">${cards}</div>`);
+  $("sheetBody").querySelectorAll("[data-client-table]").forEach(btn=>{
+    btn.onclick=()=>addClientToChosenTable(btn.dataset.clientTable);
+  });
+}
+
+async function addClientToChosenTable(tableId){
+  const table=text(tableId);
+  if(!table)return;
+  const existing=getOrder(table);
+  if(existing&&fiscalOrderFinalized(existing)){toast("Vente déjà fiscalisée sur cette table",true);return;}
+  const order=existing?clone(existing):ensureOrder(table);
+  const previousPax=existing?Math.max(0,num(existing.pax||existing.covers||0)):0;
+  if(previousPax>=9){toast(`${table} a déjà C1 à C9`,true);return;}
+  const newPax=Math.min(9,previousPax+1);
+  order.pax=newPax;
+  order.covers=newPax;
+  order.status=order.status||"open";
+  order.createdAt=order.createdAt||Date.now();
+  order.updatedAt=Date.now();
+  const normalized=normalizeCompatOrder(clone(order));
+  const pending=stageLocalValue(table,normalized,`CLIENT + sur ${table}`);
+  try{
+    await enqueueVersionedWrite(table,pending);
+    closeSheet();
+    openOrder(table);
+    setActiveSeat(newPax);
+    toast(`CLIENT C${newPax} ajouté · ${table} · ${quickTableZoneLabel(STATE.tables.find(t=>t.label===table))}`);
+  }catch(e){
+    toast("Impossible d’ajouter le client : "+(e?.message||"erreur serveur"),true);
+  }
+}
+
+function openQuickZonePicker(){
+  let zones=(STATE.zones||[]).filter(Boolean);
+  if(!zones.length){
+    zones=(STATE.rooms||[]).map((room,index)=>({id:`room_${index}`,label:room,room}));
+  }
+  const cards=zones.map(z=>{
+    const label=text(z.label||z.name||z.id||"Zone");
+    const room=text(z.room||STATE.room||"Salle");
+    const count=(STATE.tables||[]).filter(t=>quickTableZoneLabel(t)===label||(!t.zone&&t.room===room)).length;
+    return `<button type="button" class="quick-zone-card" data-new-table-zone="${esc(label)}" data-new-table-room="${esc(room)}">
+      <div class="qz-main">${esc(label)}</div>
+      <div class="qz-sub">${esc(room)} · ${count} table${count>1?"s":""}</div>
+    </button>`;
+  }).join("");
+  openSheet("TABLE + · CHOISIR LA ZONE",`
+    <div class="quick-add-context">La nouvelle table sera enregistrée dans le plan interactif et synchronisée avec le serveur.</div>
+    <div class="quick-zone-grid">${cards}</div>`);
+  $("sheetBody").querySelectorAll("[data-new-table-zone]").forEach(btn=>{
+    btn.onclick=()=>createQuickTableInZone(btn.dataset.newTableZone,btn.dataset.newTableRoom);
+  });
+}
+
+function nextQuickTableLabel(tables){
+  let max=0;
+  const used=new Set();
+  (tables||[]).forEach(t=>{
+    const label=text(t.label||t.name||t.id);
+    used.add(label.toUpperCase());
+    const m=label.match(/^(?:T|TABLE\s*)?(\d+)$/i);
+    if(m)max=Math.max(max,Number(m[1])||0);
+  });
+  let n=max+1||1;
+  while(used.has(("T"+n).toUpperCase()))n++;
+  return "T"+n;
+}
+
+async function createQuickTableInZone(zoneLabel,roomLabel){
+  const arch=architectureSnapshotForQuickAdd();
+  const zones=Array.isArray(arch.zones)?arch.zones:[];
+  const tables=Array.isArray(arch.tables)?arch.tables:[];
+  const zone=zones.find(z=>text(z.label||z.name||z.id)===text(zoneLabel));
+  const room=text(zone?.room||roomLabel||STATE.room||(arch.rooms||[])[0]||"Salle Principale");
+  const label=nextQuickTableLabel(tables);
+  const sameZone=tables.filter(t=>text(t.zone||t.zoneLabel)===text(zoneLabel)||(!t.zone&&quickTableZoneLabel(t)===text(zoneLabel)));
+  const idx=sameZone.length;
+  const baseL=num(zone?.l||20),baseT=num(zone?.t||20);
+  const zoneW=Math.max(220,num(zone?.w||520));
+  const columns=Math.max(2,Math.floor((zoneW-30)/110));
+  const l=baseL+20+(idx%columns)*105;
+  const t=baseT+45+Math.floor(idx/columns)*95;
+  const table={
+    id:label,label,room,zone:text(zoneLabel)||"Sans zone",pax:2,
+    l,t,w:90,h:78,
+    createdAt:new Date().toISOString(),source:"TELEPHONE_QUICK_ADD"
+  };
+  tables.push(table);
+  arch.tables=tables;
+  if(!Array.isArray(arch.rooms))arch.rooms=[];
+  if(room&&!arch.rooms.includes(room))arch.rooms.push(room);
+  try{
+    await persistQuickArchitecture(arch,`TABLE + ${label} · ${zoneLabel}`);
+    closeSheet();
+    STATE.room=room||STATE.room;
+    openOrder(label);
+    toast(`${label} créée · ZONE ${zoneLabel}`);
+  }catch(e){
+    toast("Création de table impossible : "+(e?.message||"erreur serveur"),true);
+  }
+}
+
+
+
+async function markTableServed(){
+  if(!STATE.currentTable){toast("Ouvrez d’abord une table",true);return false;}
+
+  const table=STATE.currentTable;
+  const o=ensureOrder(table);
+  const sent=(o.items||[]).filter(i=>i&&!i.cancelled&&lineFired(i));
+
+  if(!sent.length){
+    toast("Aucune commande envoyée à déclarer servie",true);
+    return false;
+  }
+
+  const stamp=Date.now();
+  let changed=0;
+
+  o.items=(o.items||[]).map(raw=>{
+    const i=normalizeCompatItem(raw);
+    if(i.cancelled||!lineFired(i))return i;
+    if(!lineServed(i))changed++;
+    i.served=true;
+    i.isServed=true;
+    i.servedAt=stamp;
+    i.sequenceStatus="SERVED";
+    i.productionStatus="SERVED";
+    i.status="served";
+    return i;
+  });
+
+  /* La table reste OCCUPÉE. Le nouveau chrono démarre à cet instant. */
+  o.status="occupied";
+  o.serviceStatus="SERVED";
+  o.serviceClockAt=stamp;
+  o.lastServedAt=stamp;
+  o.serviceCycle=Math.max(0,Number(o.serviceCycle||0))+1;
+  o.paymentStatus=o.paymentStatus||"A_PAYER";
+  o.orderMeta={
+    ...(o.orderMeta&&typeof o.orderMeta==="object"?o.orderMeta:{}),
+    productionStatus:"SERVED",
+    serviceStatus:"SERVED",
+    serviceClockAt:stamp,
+    tableId:table,
+    updatedAt:new Date(stamp).toISOString(),
+    updatedBy:STATE.role||"SERVEUR",
+    deviceId:STATE.deviceId,
+    terminal:"TELEPHONE"
+  };
+
+  const ok=await saveCurrent(o,"Service confirmé · chrono remis à zéro",{immediate:true});
+  if(ok){
+    STATE.currentOrder=clone(o);
+    renderOrder();
+    scheduleRender();
+    toast(changed?"✓ SERVICE CONFIRMÉ · CHRONO 00:00":"✓ SERVICE · CHRONO RELANCÉ");
+  }
+  return ok;
+}
+
+
+
+async function openCashRegisterPage(){
+  if(!STATE.currentTable){toast("Ouvrez d’abord une table",true);return;}
+
+  const table=STATE.currentTable;
+  const o=ensureOrder(table);
+  const total=orderTotal(o);
+  /* Compatibilité caisse tactile : elle lit aussi le total directement sur la commande. */
+  o.total=total;
+  o.totalTTC=total;
+  o.paymentStatus=o.paymentStatus||"A_PAYER";
+
+  /* La caisse doit lire le dernier état serveur, même si le serveur n'a pas encore reçu
+     la dernière frappe du ticket. */
+  const persisted=await saveCurrent(o,"Passage vers caisse tactile",{immediate:true});
+  if(!persisted&&!STATE.demo){
+    toast("Impossible d’ouvrir la caisse : synchronisation serveur incomplète",true);
+    return;
+  }
+
+  const currency=text(STATE.settings.currency||STATE.settings.devise||"EUR").toUpperCase()==="CHF"?"CHF":"EUR";
+  try{
+    sessionStorage.setItem("ichef_cash_tenant",String(STATE.tenantID||""));
+    sessionStorage.setItem("ichef_cash_table",String(table||""));
+    sessionStorage.setItem("ichef_cash_amount",String(total));
+    sessionStorage.setItem("ichef_cash_currency",currency);
+    sessionStorage.setItem("ichef_cash_return",location.pathname.split("/").pop()||"pack-eco.html");
+  }catch(_){}
+
+  const url=new URL("caissetactile.html",window.location.href);
+  url.searchParams.set("tenantID",String(STATE.tenantID||""));
+  url.searchParams.set("tableId",String(table));
+  url.searchParams.set("amount",String(total));
+  url.searchParams.set("currency",currency);
+  url.searchParams.set("source","PLAN-INTERACTIF");
+  url.searchParams.set("deviceId",String(STATE.deviceId||""));
+  url.searchParams.set("return",location.pathname.split("/").pop()||"pack-eco.html");
+
+  window.location.href=url.href;
+}
+
+
+
+function renderQuickCookingSeats(activeSeat){
+  const host=$("quickCookSeats");
+  if(!host)return;
+  const active=Math.max(1,Math.min(9,Number(activeSeat)||1));
+  host.innerHTML=Array.from({length:9},(_,idx)=>{
+    const seat=idx+1;
+    return `<button type="button"
+                    class="quick-cook-seat-btn${seat===active?" active":""}"
+                    data-quick-seat="${seat}"
+                    data-seat="${seat}"
+                    aria-pressed="${seat===active?"true":"false"}">
+              <span>C${seat}</span>
+            </button>`;
+  }).join("");
+}
+
+function assignPendingCookingSeat(seat){
+  const n=Math.max(1,Math.min(9,Number(seat)||1));
+  if(!STATE.currentTable||!STATE.pendingCookingLine)return false;
+
+  const o=ensureOrder(STATE.currentTable);
+  const item=o.items.find(x=>lineKey(x)===STATE.pendingCookingLine);
+  if(!item)return false;
+
+  item.seat=n;
+  item.guestSeat=n;
+  item.seatNumber=n;
+  item.guestName=`C${n}`;
+  item.guest=`C${n}`;
+  STATE.activeSeat=n;
+  ACTIVE_SEAT_BY_TABLE.set(STATE.currentTable,n);
+
+  if(num(o.pax||0)<n)o.pax=n;
+
+  $("quickCookSeat").className=`seat-badge seat-${n}`;
+  $("quickCookSeat").textContent=seatLabel(n);
+  const profile=cookingProfileFor(item);
+  if($("quickCookModalTitle"))$("quickCookModalTitle").textContent=`${seatLabel(n)} · ${profile.label||"CUISSON"}`;
+
+  renderQuickCookingSeats(n);
+  renderGuestButtons();
+  return true;
+}
+
+function showQuickCooking(item){
+  if(!item)return;
+
+  const seat=itemSeat(item)||STATE.activeSeat||1;
+  const bar=$("quickCookingBar");
+  if(!bar)return;
+
+  const profile=cookingProfileFor(item);
+  const levels=profile.levels.length?profile.levels:ICHEF_COOKING_LEVELS_PHONE;
+
+  STATE.pendingCookingLine=lineKey(item);
+
+  $("quickCookSeat").className=`seat-badge seat-${seat}`;
+  $("quickCookSeat").textContent=seatLabel(seat);
+  if($("quickCookModalTitle"))$("quickCookModalTitle").textContent=`${seatLabel(seat)} · ${profile.label||"CUISSON"}`;
+  $("quickCookName").textContent=itemName(item);
+  renderQuickCookingSeats(seat);
+
+  $("quickCookGrid").innerHTML=levels.map(level=>
+    `<button type="button"
+             class="quick-cook-btn"
+             data-quick-cooking="${esc(level)}">
+       ${esc(level)}
+     </button>`
+  ).join("");
+
+  bar.classList.remove("hidden");
+}
+
+
+
+/* Fermer une commande = retour au vrai plan architectural interactif. */
+function ichefReturnToInteractivePlan(){
+  try{ closeSheet(); }catch(_ ){}
+  try{ closeOrder(); }catch(_ ){}
+  setTimeout(()=>{
+    if(typeof window.openPadServiceHome==="function"){
+      window.openPadServiceHome();
+    }
+  },0);
+}
+
+/* Le closeSheet historique ne connaissait pas la classe who-sheet. */
+if(typeof window.closeSheet==="function"){
+  const __ichefCloseSheetV26=window.closeSheet;
+  window.closeSheet=function(){
+    document.getElementById("sheet")?.classList.remove("who-sheet");
+    return __ichefCloseSheetV26.apply(this,arguments);
+  };
+}
+
+/* Branchements nouveaux / remplacés. */
+if(document.getElementById("btnHeadWho")) document.getElementById("btnHeadWho").onclick=window.openWho||openWho;
+if(document.getElementById("btnAddGuestTable")) document.getElementById("btnAddGuestTable").onclick=window.openQuickAddClientOrTable||openQuickAddClientOrTable;
+if(document.getElementById("btnBottomSummary")) document.getElementById("btnBottomSummary").onclick=window.openSummary||openSummary;
+if(document.getElementById("btnBottomService")) document.getElementById("btnBottomService").onclick=window.markTableServed||markTableServed;
+if(document.getElementById("btnBottomPayment")) document.getElementById("btnBottomPayment").onclick=window.openCashRegisterPage||openCashRegisterPage;
+if(document.getElementById("btnBottomClose")) document.getElementById("btnBottomClose").onclick=ichefReturnToInteractivePlan;
+if(document.getElementById("btnCloseOrder")) document.getElementById("btnCloseOrder").onclick=ichefReturnToInteractivePlan;
+
+document.getElementById("quickCookSeats")?.addEventListener("click",e=>{
+  const b=e.target.closest("[data-quick-seat]");
+  if(!b||!STATE.pendingCookingLine)return;
+  const seat=Number(b.dataset.quickSeat)||1;
+  if(assignPendingCookingSeat(seat)){
+    toast(`C${seat} sélectionné · choisissez la cuisson`);
+  }
+});
+
+document.getElementById("quickCookBack")?.addEventListener("click",async()=>{
+  const key=STATE.pendingCookingLine;
+  STATE.pendingCookingLine="";
+  hideQuickCooking();
+
+  if(key&&STATE.currentTable){
+    const o=ensureOrder(STATE.currentTable);
+    const item=o.items.find(i=>lineKey(i)===key);
+    if(item&&!lineFired(item)&&!text(item.cooking)){
+      o.items=o.items.filter(i=>lineKey(i)!==key);
+      await saveCurrent(o,"Retour convives avant choix cuisson",{delay:80});
+    }
+  }
+  openWho();
+});
+
+/* Le bouton PLAN de la barre inférieure ouvre toujours le plan architectural. */
+const __planTool=document.getElementById("toolDisplay");
+if(__planTool && typeof window.openPadServiceHome==="function"){
+  __planTool.onclick=window.openPadServiceHome;
+  __planTool.title="Plan de salle interactif";
+  const lab=__planTool.querySelector(".tool-label");
+  if(lab)lab.textContent="PLAN";
+}
+
+/* Mise à jour immédiate de la vue après installation du patch. */
+try{ if(typeof scheduleRender==="function") scheduleRender(); }catch(_ ){}
+</script>
+
 </body></html>`;
 }
 
@@ -9143,7 +10376,7 @@ function openMore(){
       </button>
 
       <button class="action-btn" data-more="express" style="border: 3px solid #ff9a45 !important; background: #fff7ef !important; color: #7a3708 !important; min-height: 80px !important; font-size: 22px !important; font-weight: 950 !important;">
-        ＋ TABLE EXPRESS
+        ➕ 🍽️ TABLE EXPRESS
       </button>
       
       <button class="action-btn" data-more="summary" style="border: 3px solid #cfd2d5 !important; background: #ffffff !important; color: #111111 !important; min-height: 80px !important; font-size: 22px !important; font-weight: 950 !important;">
@@ -11503,23 +12736,6 @@ if(bottomObservation)bottomObservation.addEventListener("click",()=>openObservat
 .archpad-palette.compact button{min-height:50px}.archpad-subtitle{margin:10px 0 6px;color:#8e9a9f;font-size:8px;font-weight:1000;text-transform:uppercase;letter-spacing:.7px}
 .archpad-main.service-layout{grid-template-columns:minmax(0,1fr)!important}.archpad-main.service-layout .archpad-center{grid-column:1}.archpad-service-note{display:flex;align-items:center;gap:7px;color:#8b969a;font-size:9px}.archpad-service-note b{color:#71dfa0}.archpad-pin-overlay{position:absolute;inset:0;z-index:500;background:rgba(0,0,0,.78);display:flex;align-items:center;justify-content:center;padding:20px}.archpad-pin-card{width:min(360px,92vw);border:1px solid #4a5559;border-radius:18px;background:#0d1214;padding:18px;box-shadow:0 24px 70px rgba(0,0,0,.65)}.archpad-pin-card h3{margin:0;color:#e7bd54;font-size:18px}.archpad-pin-card p{color:#9aa5a9;font-size:10px;line-height:1.4}.archpad-pin-dots{height:34px;display:flex;gap:8px;justify-content:center;align-items:center}.archpad-pin-dots i{width:12px;height:12px;border:1px solid #687377;border-radius:50%}.archpad-pin-dots i.on{background:#e2b84e;border-color:#e2b84e}.archpad-pin-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:7px}.archpad-pin-grid button{height:48px;border:1px solid #394449;border-radius:10px;background:#131a1c;color:#fff;font-size:17px;font-weight:900}.archpad-pin-grid .small{font-size:9px;color:#aeb7ba}.archpad-pin-msg{min-height:24px;padding-top:7px;color:#ff7b88;font-size:10px;font-weight:850;text-align:center}.archpad-pin-actions{display:grid;grid-template-columns:1fr 1fr;gap:7px;margin-top:7px}.archpad-pin-actions button{height:44px;border:1px solid #3b464a;border-radius:10px;background:#111719;color:#fff;font-weight:900}.archpad-pin-actions .ok{border-color:#e2b84e;color:#e2b84e}
 @media(max-width:980px){.archpad-main{grid-template-columns:195px minmax(0,1fr) 245px}.archpad-palette button{font-size:8px}.archpad-right{font-size:9px}}
-
-/* V26 — Univers proactifs et ludiques */
-.archpad-universe-grid{display:grid;grid-template-columns:1fr 1fr;gap:6px}
-.archpad-universe-btn{min-height:54px!important;border:1px solid #38464b!important;border-radius:11px!important;background:linear-gradient(145deg,#12191b,#0d1214)!important;color:#eef3f5!important;padding:7px!important;text-align:left!important;font-size:8px!important;font-weight:950!important;line-height:1.2!important}
-.archpad-universe-btn b{display:block;color:#e7bd54;font-size:10px;margin-bottom:3px}.archpad-universe-btn small{display:block;color:#8f9b9f;font-size:7px;font-weight:800}
-.archpad-universe-btn:active{transform:scale(.97)}
-.archpad-service-grid{display:grid;grid-template-columns:1fr 1fr;gap:6px}.archpad-service-grid button{min-height:50px;border-color:#2d664a!important;background:rgba(45,102,74,.12)!important}.archpad-service-grid button span{color:#65dfa0}
-.arch-zone.zone-kiosk{background:color-mix(in srgb,#ffbf4d var(--zone-fill,18%),transparent)!important}
-.arch-zone.zone-beach{background:color-mix(in srgb,#51cbe8 var(--zone-fill,18%),transparent)!important}
-.arch-zone.zone-mountain{background:color-mix(in srgb,#7da06b var(--zone-fill,18%),transparent)!important}
-.arch-zone.zone-lake{background:color-mix(in srgb,#4c9fe6 var(--zone-fill,18%),transparent)!important}
-.arch-zone.zone-yacht,.arch-zone.zone-deck{background:color-mix(in srgb,#7286a6 var(--zone-fill,18%),transparent)!important}
-.arch-zone.zone-pool{background:color-mix(in srgb,#41bfd6 var(--zone-fill,20%),transparent)!important}
-.arch-zone.zone-lobby{background:color-mix(in srgb,#d8b56b var(--zone-fill,15%),transparent)!important}
-.arch-zone.zone-roomservice{background:color-mix(in srgb,#b07ee8 var(--zone-fill,16%),transparent)!important}
-.arch-patisserie{background:#8f6a9f;border:3px solid #5e426c;color:#fff;border-radius:12px}
-.archpad-preset-note{margin-top:7px;padding:7px 8px;border:1px dashed #344247;border-radius:8px;color:#8f9a9e;font-size:7px;line-height:1.35}
 </style>
 
 
@@ -11668,10 +12884,10 @@ function planTableLive(t){
 function planSeatStripHTML(live){return (live.seats||[]).slice(0,9).map(x=>`<span class="arch-seat-chip seat-${x.code} ${x.allergy?'seat-allergy':''}" style="--seat:var(--c${x.seat})" title="C${x.seat} · ${esc(x.label)}${x.allergy?' · ALLERGIE':''}"><span class="seat-code">C${x.seat}</span><span class="seat-mark">${esc(x.mark)}</span></span>`).join('')}
 function planRushHTML(){const r=rushSnapshot(),color=r.level<=1?'#55d987':r.level<=3?'#e2b84e':r.level===4?'#ff9a45':'#ff5368';return `<div class="arch-live-rush" style="--rush-color:${color}"><div class="rush-main"> ANTI-RUSH · N${r.level} · ${esc(r.label)}</div><div class="rush-sub">Cuisine ${r.kitchen}% · Bar ${r.bar}% · Pât. ${r.patisserie}%</div><div class="rush-ready"> ${r.ready} PRÊT${r.ready>1?'S':''}</div></div><div class="arch-live-legend"><span class="arch-live-legend-label">QUI MANGE QUOI</span>${[1,2,3,4,5,6,7,8,9].map(n=>`<span class="arch-seat-legend" style="--seat:var(--c${n})">C${n}</span>`).join('')}</div><div class="arch-live-status-key"><b class="ready"> PRÊT</b><b class="request">↑ DEMANDE</b><b class="prep">… PRÉPA</b></div>`}
 function colorForZone(z){return aText(z.color||z.colour||'#58a9ff')||'#58a9ff'}
-function zoneKindLabel(k){return ({service:'SERVICE',bathroom:'SALLE DE BAIN',bedroom:'CHAMBRE',office:'BUREAU',terrace:'TERRASSE',kitchen:'CUISINE',spa:'SPA',technical:'TECHNIQUE',kiosk:'KIOSQUE',beach:'PLAGE',mountain:'MONTAGNE',lake:'LAC',yacht:'YACHT',deck:'PONT / DECK',pool:'PISCINE',lobby:'LOBBY',roomservice:'ROOM SERVICE'})[aText(k)||'service']||aText(k).toUpperCase()}
+function zoneKindLabel(k){return ({service:'SERVICE',bathroom:'SALLE DE BAIN',bedroom:'CHAMBRE',office:'BUREAU',terrace:'TERRASSE',kitchen:'CUISINE',spa:'SPA',technical:'TECHNIQUE'})[aText(k)||'service']||aText(k).toUpperCase()}
 function zoneClass(z){const k=aText(z.zoneKind||'service'),shape=aText(z.zoneShape||'rect');return `zone-${k} ${shape==='rounded'?'zone-rounded':shape==='oval'?'zone-oval':''}`}
-function iconFor(type){return ({wall:'',door:'',window:'▥',bar:'BAR',kitchen:'CUISINE',patisserie:'PÂTISSERIE',cash:'CAISSE',buffet:'BUFFET',text:'TEXTE',plant:'',pool:'PISCINE',roomservice:'ROOM SERVICE',bed_single:'LIT SIMPLE',bed_double:'LIT DOUBLE',desk:'BUREAU',sofa:'CANAPÉ',wardrobe:'ARMOIRE',sink:'LAVABO',toilet:'WC',shower:'DOUCHE'})[type]||type.toUpperCase()}
-function classFor(type){return ({wall:'arch-wall',door:'arch-door',window:'arch-window',bar:'arch-bar',kitchen:'arch-kitchen',patisserie:'arch-patisserie',cash:'arch-cash',buffet:'arch-buffet',text:'arch-text',plant:'arch-plant',pool:'arch-pool',roomservice:'arch-roomservice',bed_single:'arch-bed-single',bed_double:'arch-bed-double',desk:'arch-desk',sofa:'arch-sofa',wardrobe:'arch-wardrobe',sink:'arch-bathfixture',toilet:'arch-bathfixture',shower:'arch-shower'})[type]||''}
+function iconFor(type){return ({wall:'🧱',door:'🚪',window:'🪟',bar:'🍸 BAR',kitchen:'👨‍🍳 CUISINE',cash:'💳 CAISSE',buffet:'🍽️ BUFFET',text:'✏️ TEXTE',plant:'🪴',pool:'🏊 PISCINE',roomservice:'🛎️ ROOM SERVICE',bed_single:'🛏️ LIT SIMPLE',bed_double:'🛏️ LIT DOUBLE',desk:'🖥️ BUREAU',sofa:'🛋️ CANAPÉ',wardrobe:'🚪 ARMOIRE',sink:'🚰 LAVABO',toilet:'🚽 WC',shower:'🚿 DOUCHE'})[type]||type.toUpperCase()}
+function classFor(type){return ({wall:'arch-wall',door:'arch-door',window:'arch-window',bar:'arch-bar',kitchen:'arch-kitchen',cash:'arch-cash',buffet:'arch-buffet',text:'arch-text',plant:'arch-plant',pool:'arch-pool',roomservice:'arch-roomservice',bed_single:'arch-bed-single',bed_double:'arch-bed-double',desk:'arch-desk',sofa:'arch-sofa',wardrobe:'arch-wardrobe',sink:'arch-bathfixture',toilet:'arch-bathfixture',shower:'arch-shower'})[type]||''}
 function nodeStyle(o){const d=defaults(o,o.__kind||'element'),z=Number(o.zIndex)||0;return `left:${d.l/ARCH_W*100}%;top:${d.t/ARCH_H*100}%;width:${d.w/ARCH_W*100}%;height:${d.h/ARCH_H*100}%;transform:rotate(${d.rotation||0}deg);${z?`z-index:${z};`:''}`}
 function handles(){if(A.mode!=='architect'||!canEdit())return '';return '<span class="arch-handle nw" data-resize="nw"></span><span class="arch-handle n" data-resize="n"></span><span class="arch-handle ne" data-resize="ne"></span><span class="arch-handle e" data-resize="e"></span><span class="arch-handle se" data-resize="se"></span><span class="arch-handle s" data-resize="s"></span><span class="arch-handle sw" data-resize="sw"></span><span class="arch-handle w" data-resize="w"></span><button type="button" class="arch-rotate" data-rotate title="Rotation +15°">↻</button>'}
 function elementInner(e){const label=esc(e.label||iconFor(e.type));if(e.type==='wall')return '';if(e.type==='cash')return `<span class="arch-cash-label">${label}</span>`;if(['bed_single','bed_double','desk','sofa','wardrobe','sink','toilet','shower'].includes(e.type))return `<span class="arch-object-label">${label}</span>`;return label}
@@ -11681,13 +12897,14 @@ function canvasHTML(){
  const tables=roomTables().map(t=>{t.__kind='table';const key=getTableKey(t),act=activeOrder(t.label),ex=isExpressTable(t),shape=aText(t.shape||'square'),locked=!!t.locked,service=A.mode==='service',live=planTableLive(t);const liveClass=service?`service-live live-${live.code}`:'';const serviceInner=service?`<span class="tlabel">${esc(t.label)}</span><span class="arch-table-live-head"><span class="state ${esc(live.code)}">${esc(live.label)}</span>${live.time?`<span class="clock">${esc(live.time)}</span>`:''}<span class="pax">${Math.max(1,Number(t.pax)||2)}</span></span>${live.seats?.length?`<span class="arch-seat-strip">${planSeatStripHTML(live)}</span>`:''}`:`<span class="tlabel">${esc(t.label)}</span><span class="tpax">CAP. ${Number(t.pax)||2}${t.zone?' · '+esc(t.zone):''}</span>`;const clientCount=`<span class="arch-client-count ${live.pax>0?'':'zero'}" title="${live.pax} client${live.pax===1?'':'s'}">${live.pax}</span>`;return `<button type="button" class="arch-node arch-table ${shape==='round'?'round':''} ${act?'active-order':''} ${liveClass} ${ex?'express':''} ${locked?'locked':''} ${A.selected===key?'selected':''}" data-arch-key="${esc(key)}" style="${nodeStyle(t)}">${serviceInner}${clientCount}${locked?'<span class="arch-lock-badge"></span>':''}${handles()}</button>`}).join('');
  return `<div class="archpad-roomtitle">${esc(A.room)}</div>${zones}${els}${tables}`;
 }
-function roomListHTML(){return A.rooms.map(r=>`<button type="button" class="archpad-room ${r===A.room?'active':''}" data-room="${esc(r)}">${esc(r)}<small>${A.tables.filter(t=>aText(t.room||A.rooms[0])===r).length} tables · ${A.zones.filter(z=>aText(z.room||A.rooms[0])===r).length} zones</small></button>`).join('')}
+function roomEmoji(name){const n=aText(name).normalize('NFD').replace(/[\u0300-\u036f]/g,'').toUpperCase();if(/HOTEL|CHAMBRE|ROOM/.test(n))return '🏨';if(/TERRASSE|PLAGE/.test(n))return '☀️';if(/BAR/.test(n))return '🍸';if(/PISCINE|POOL/.test(n))return '🏊';if(/CUISINE/.test(n))return '👨‍🍳';if(/BUREAU|REUNION/.test(n))return '🖥️';if(/KIOSQUE/.test(n))return '🏪';if(/YACHT/.test(n))return '🛥️';if(/MONTAGNE|CHALET/.test(n))return '🏔️';if(/LAC/.test(n))return '🏞️';return '🍽️'}
+function roomListHTML(){return A.rooms.map(r=>`<button type="button" class="archpad-room ${r===A.room?'active':''}" data-room="${esc(r)}"><span style="font-size:18px;margin-right:7px">${roomEmoji(r)}</span>${esc(r)}<small>${A.tables.filter(t=>aText(t.room||A.rooms[0])===r).length} tables · ${A.zones.filter(z=>aText(z.room||A.rooms[0])===r).length} zones</small></button>`).join('')}
 function propHTML(){
  const hit=byKey(A.selected);if(!hit?.obj)return '<div class="prop-empty">Sélectionne une table, une zone, un mur ou un équipement.<br><br>En MODE ARCHITECTE : déplacement libre, 8 poignées de redimensionnement, rotation et verrouillage.</div>';
  const {type,obj:o}=hit,d=defaults(o,type);const zoneOpts=roomZones().map(z=>`<option value="${esc(z.label)}" ${aText(o.zone)===aText(z.label)?'selected':''}>${esc(z.label)}</option>`).join('');
  let extra='';
  if(type==='table')extra=`<div class="arch-prop-row"><label>Forme</label><select data-prop="shape"><option value="square" ${aText(o.shape)!=='round'?'selected':''}>Carrée</option><option value="round" ${aText(o.shape)==='round'?'selected':''}>Ronde</option></select></div><div class="arch-prop-row"><label>Couverts</label><input data-prop="pax" type="number" min="1" max="99" value="${Number(o.pax)||2}"></div><div class="arch-prop-row"><label>Zone</label><select data-prop="zone"><option value="">— aucune —</option>${zoneOpts}</select></div>`;
- if(type==='zone')extra=`<div class="arch-prop-row"><label>Type zone</label><select data-prop="zoneKind">${[['service','Service'],['terrace','Terrasse'],['kiosk','Kiosque'],['beach','Plage'],['mountain','Montagne'],['lake','Lac'],['yacht','Yacht'],['deck','Pont / Deck'],['pool','Piscine'],['lobby','Lobby'],['roomservice','Room Service'],['bedroom','Chambre'],['bathroom','Salle de bain'],['office','Bureau'],['kitchen','Cuisine'],['spa','Spa'],['technical','Technique']].map(([v,l])=>`<option value="${v}" ${aText(o.zoneKind||'service')===v?'selected':''}>${l}</option>`).join('')}</select></div><div class="arch-prop-row"><label>Forme</label><select data-prop="zoneShape"><option value="rect" ${aText(o.zoneShape||'rect')==='rect'?'selected':''}>Rectangle</option><option value="rounded" ${aText(o.zoneShape)==='rounded'?'selected':''}>Arrondie</option><option value="oval" ${aText(o.zoneShape)==='oval'?'selected':''}>Ovale</option></select></div><div class="arch-prop-row"><label>Couleur</label><input data-prop="color" type="color" value="${esc(colorForZone(o))}"></div><div class="arch-prop-row"><label>Transparence</label><input data-prop="fillOpacity" type="number" min="3" max="55" value="${aClamp(o.fillOpacity||15,3,55)}"></div><div class="arch-prop-row"><label>Bordure</label><select data-prop="borderStyle"><option value="dashed" ${aText(o.borderStyle||'dashed')==='dashed'?'selected':''}>Pointillés</option><option value="solid" ${aText(o.borderStyle)==='solid'?'selected':''}>Continue</option><option value="dotted" ${aText(o.borderStyle)==='dotted'?'selected':''}>Points</option></select></div><div class="arch-prop-row"><label>Responsable</label><input data-prop="responsible" value="${esc(o.responsible||o.responsable||'')}"></div><div class="arch-prop-row"><label>Service</label><select data-prop="serviceType">${['Dîner','Déjeuner','Petit-déjeuner','Bar','Room Service','Événement','Hébergement','Kiosque','Plage','Montagne','Lac','Yacht','Piscine'].map(v=>`<option ${aText(o.serviceType)===v?'selected':''}>${v}</option>`).join('')}</select></div><div class="arch-prop-row"><label>Capacité</label><input data-prop="capacity" type="number" min="0" value="${Number(o.capacity)||0}"></div><div class="arch-prop-row"><label>Horaires</label><input data-prop="hours" value="${esc(o.hours||'')}"></div>`;
+ if(type==='zone')extra=`<div class="arch-prop-row"><label>Type zone</label><select data-prop="zoneKind">${[['service','Service'],['bathroom','Salle de bain'],['bedroom','Chambre'],['office','Bureau'],['terrace','Terrasse'],['kitchen','Cuisine'],['spa','Spa'],['technical','Technique']].map(([v,l])=>`<option value="${v}" ${aText(o.zoneKind||'service')===v?'selected':''}>${l}</option>`).join('')}</select></div><div class="arch-prop-row"><label>Forme</label><select data-prop="zoneShape"><option value="rect" ${aText(o.zoneShape||'rect')==='rect'?'selected':''}>Rectangle</option><option value="rounded" ${aText(o.zoneShape)==='rounded'?'selected':''}>Arrondie</option><option value="oval" ${aText(o.zoneShape)==='oval'?'selected':''}>Ovale</option></select></div><div class="arch-prop-row"><label>Couleur</label><input data-prop="color" type="color" value="${esc(colorForZone(o))}"></div><div class="arch-prop-row"><label>Transparence</label><input data-prop="fillOpacity" type="number" min="3" max="55" value="${aClamp(o.fillOpacity||15,3,55)}"></div><div class="arch-prop-row"><label>Bordure</label><select data-prop="borderStyle"><option value="dashed" ${aText(o.borderStyle||'dashed')==='dashed'?'selected':''}>Pointillés</option><option value="solid" ${aText(o.borderStyle)==='solid'?'selected':''}>Continue</option><option value="dotted" ${aText(o.borderStyle)==='dotted'?'selected':''}>Points</option></select></div><div class="arch-prop-row"><label>Responsable</label><input data-prop="responsible" value="${esc(o.responsible||o.responsable||'')}"></div><div class="arch-prop-row"><label>Service</label><select data-prop="serviceType">${['Dîner','Déjeuner','Petit-déjeuner','Bar','Room Service','Événement','Hébergement'].map(v=>`<option ${aText(o.serviceType)===v?'selected':''}>${v}</option>`).join('')}</select></div><div class="arch-prop-row"><label>Capacité</label><input data-prop="capacity" type="number" min="0" value="${Number(o.capacity)||0}"></div><div class="arch-prop-row"><label>Horaires</label><input data-prop="hours" value="${esc(o.hours||'')}"></div>`;
  if(type==='element'){
   extra=`<div class="arch-prop-row"><label>Type</label><input value="${esc(o.type||'équipement')}" disabled></div>`;
   if(o.type==='wall')extra+=`<div class="arch-help">Mur ultra modulable : étire-le avec les 8 poignées, tourne-le par pas de 15°, ou saisis exactement largeur / hauteur / rotation ci-dessous.</div>`;
@@ -11698,31 +12915,17 @@ function propHTML(){
  return `<div class="arch-prop-group"><h4>${type==='table'?'TABLE':type==='zone'?'ZONE / PIÈCE':'ÉLÉMENT'} SÉLECTIONNÉ</h4><div class="arch-prop-row"><label>${nameLabel}</label><input data-prop="label" value="${esc(o.label||'')}"></div><div class="arch-prop-row"><label>Verrouillé</label><select data-prop="locked"><option value="false" ${!locked?'selected':''}>Non</option><option value="true" ${locked?'selected':''}>Oui</option></select></div>${extra}</div><div class="arch-prop-group"><h4>POSITION / DIMENSIONS</h4><div class="arch-prop-row"><label>X / Y</label><div style="display:grid;grid-template-columns:1fr 1fr;gap:5px"><input data-prop="l" type="number" value="${Math.round(d.l)}"><input data-prop="t" type="number" value="${Math.round(d.t)}"></div></div><div class="arch-prop-row"><label>Largeur / Haut.</label><div style="display:grid;grid-template-columns:1fr 1fr;gap:5px"><input data-prop="w" type="number" min="16" value="${Math.round(d.w)}"><input data-prop="h" type="number" min="16" value="${Math.round(d.h)}"></div></div><div class="arch-prop-row"><label>Rotation</label><input data-prop="rotation" type="number" min="-360" max="360" value="${Math.round(d.rotation||0)}"></div></div><div class="arch-prop-group"><div class="arch-prop-actions"><button type="button" data-duplicate>Dupliquer</button><button type="button" class="red" data-delete>Supprimer</button></div><div class="arch-help" style="margin-top:8px">Anti-erreur : commande active protégée. Tu peux verrouiller murs, zones et mobilier une fois leur position validée.</div></div>`;
 }
 function statsHTML(){const orders=roomTables().filter(t=>activeOrder(t.label)).length,express=roomTables().filter(isExpressTable).length,pax=roomTables().reduce((s,t)=>s+(activeOrder(t.label)?Number(getOrder(t.label)?.pax||t.pax||0):0),0);return {orders,express,pax}}
-function pinOverlayHTML(){if(!A.pinOpen)return '';const dots=Array.from({length:6},(_,i)=>`<i class="${i<A.pinValue.length?'on':''}"></i>`).join('');return `<div class="archpad-pin-overlay"><div class="archpad-pin-card"><h3> MODE ARCHITECTE</h3><p>PIN iCHEF Cloud partagé avec Admin / RH. Autorisé : PIN principal, Gérant, Directeur, Admin / Manager actif.</p><div class="archpad-pin-dots">${dots}</div><div class="archpad-pin-grid">${[1,2,3,4,5,6,7,8,9].map(n=>`<button type="button" data-arch-pin="${n}">${n}</button>`).join('')}<button type="button" class="small" data-arch-pin-clear>EFFACER</button><button type="button" data-arch-pin="0">0</button><button type="button" class="small" data-arch-pin-back>←</button></div><div class="archpad-pin-msg">${esc(A.pinMsg||'')}</div><div class="archpad-pin-actions"><button type="button" data-arch-pin-cancel>Annuler</button><button type="button" class="ok" data-arch-pin-ok>VALIDER</button></div></div></div>`}
-const ICHEF_ARCH_SPACE_PRESETS={
- restaurant:{label:'Restaurant',room:'RESTAURANT',zones:[{label:'SALLE PRINCIPALE',kind:'service',l:220,t:220,w:1500,h:980,color:'#4cda8a',serviceType:'Dîner',capacity:80},{label:'TERRASSE',kind:'terrace',l:1780,t:220,w:950,h:980,color:'#5dcb8a',serviceType:'Déjeuner',capacity:40}],elements:[{type:'kitchen',label:'CUISINE',l:220,t:1300,w:620,h:360},{type:'bar',label:'BAR',l:900,t:1300,w:460,h:260},{type:'patisserie',label:'PÂTISSERIE',l:1420,t:1300,w:420,h:240},{type:'cash',label:'CAISSE',l:1900,t:1320,w:280,h:180}]},
- hotel:{label:'Hôtel',room:'HÔTEL',zones:[{label:'LOBBY',kind:'lobby',l:180,t:180,w:900,h:650,color:'#d8b56b',serviceType:'Hébergement',capacity:30},{label:'RESTAURANT',kind:'service',l:1140,t:180,w:1100,h:760,color:'#4cda8a',serviceType:'Dîner',capacity:70},{label:'CHAMBRES',kind:'bedroom',l:180,t:920,w:1200,h:760,color:'#a785ff',serviceType:'Hébergement',capacity:20},{label:'ROOM SERVICE',kind:'roomservice',l:1440,t:1020,w:800,h:560,color:'#b07ee8',serviceType:'Room Service',capacity:20}],elements:[{type:'cash',label:'RÉCEPTION / CAISSE',l:420,t:430,w:320,h:160},{type:'kitchen',label:'CUISINE',l:2380,t:220,w:560,h:340},{type:'roomservice',label:'ROOM SERVICE',l:1660,t:1200,w:360,h:180}]},
- kiosk:{label:'Kiosque',room:'KIOSQUE',zones:[{label:'COMMANDE',kind:'kiosk',l:220,t:240,w:680,h:600,color:'#ffbf4d',serviceType:'Kiosque',capacity:12},{label:'RETRAIT',kind:'kiosk',l:960,t:240,w:680,h:600,color:'#f29b38',serviceType:'Kiosque',capacity:12},{label:'TERRASSE',kind:'terrace',l:220,t:920,w:1420,h:700,color:'#55c98a',serviceType:'Déjeuner',capacity:30}],elements:[{type:'cash',label:'CAISSE / BORNE',l:430,t:420,w:260,h:170},{type:'bar',label:'COMPTOIR',l:1050,t:420,w:420,h:220},{type:'buffet',label:'RETRAIT',l:1050,t:690,w:420,h:150}]},
- beach:{label:'Plage',room:'PLAGE',zones:[{label:'PLAGE / TRANSATS',kind:'beach',l:180,t:180,w:1500,h:920,color:'#51cbe8',serviceType:'Plage',capacity:80},{label:'BEACH BAR',kind:'kiosk',l:1740,t:180,w:780,h:600,color:'#ffbf4d',serviceType:'Bar',capacity:35},{label:'TERRASSE',kind:'terrace',l:1740,t:840,w:780,h:520,color:'#4cda8a',serviceType:'Déjeuner',capacity:40}],elements:[{type:'bar',label:'BEACH BAR',l:1900,t:350,w:460,h:240},{type:'cash',label:'CAISSE',l:1910,t:650,w:250,h:160},{type:'roomservice',label:'SERVICE TRANSATS',l:520,t:520,w:360,h:180}]},
- mountain:{label:'Montagne',room:'MONTAGNE',zones:[{label:'SALLE CHALET',kind:'mountain',l:220,t:220,w:1280,h:850,color:'#7da06b',serviceType:'Dîner',capacity:70},{label:'TERRASSE',kind:'terrace',l:1560,t:220,w:900,h:650,color:'#72b37a',serviceType:'Déjeuner',capacity:45},{label:'APRÈS-SKI',kind:'mountain',l:1560,t:930,w:900,h:520,color:'#9d835a',serviceType:'Bar',capacity:50}],elements:[{type:'kitchen',label:'CUISINE',l:300,t:1180,w:560,h:340},{type:'bar',label:'BAR APRÈS-SKI',l:1780,t:1080,w:440,h:230},{type:'cash',label:'CAISSE',l:900,t:1260,w:240,h:160}]},
- lake:{label:'Lac',room:'LAC',zones:[{label:'SALLE',kind:'service',l:220,t:220,w:1000,h:800,color:'#4cda8a',serviceType:'Dîner',capacity:55},{label:'TERRASSE LAC',kind:'lake',l:1280,t:220,w:1100,h:800,color:'#4c9fe6',serviceType:'Déjeuner',capacity:60},{label:'PONTON',kind:'deck',l:1280,t:1080,w:1100,h:420,color:'#7286a6',serviceType:'Bar',capacity:30}],elements:[{type:'bar',label:'BAR',l:350,t:1120,w:420,h:220},{type:'kitchen',label:'CUISINE',l:810,t:1120,w:480,h:300},{type:'cash',label:'CAISSE',l:1840,t:1180,w:260,h:160}]},
- yacht:{label:'Yacht',room:'YACHT',zones:[{label:'PONT SUPÉRIEUR',kind:'deck',l:220,t:180,w:1500,h:650,color:'#7286a6',serviceType:'Yacht',capacity:35},{label:'SALON',kind:'yacht',l:220,t:900,w:950,h:650,color:'#8090ac',serviceType:'Dîner',capacity:24},{label:'CABINES',kind:'bedroom',l:1240,t:900,w:900,h:650,color:'#a785ff',serviceType:'Hébergement',capacity:12}],elements:[{type:'bar',label:'BAR YACHT',l:1280,t:340,w:380,h:210},{type:'kitchen',label:'GALLEY / CUISINE',l:1750,t:340,w:430,h:260},{type:'roomservice',label:'SERVICE CABINES',l:1500,t:1180,w:340,h:170}]},
- roomservice:{label:'Room Service',room:'ROOM SERVICE',zones:[{label:'DISPATCH',kind:'roomservice',l:220,t:220,w:850,h:620,color:'#b07ee8',serviceType:'Room Service',capacity:15},{label:'ÉTAGES / CHAMBRES',kind:'bedroom',l:1140,t:220,w:1250,h:980,color:'#a785ff',serviceType:'Hébergement',capacity:40}],elements:[{type:'kitchen',label:'CUISINE',l:300,t:950,w:500,h:300},{type:'roomservice',label:'DÉPART ROOM SERVICE',l:420,t:500,w:360,h:180},{type:'cash',label:'FACTURATION',l:860,t:980,w:260,h:160}]},
- pool:{label:'Piscine',room:'PISCINE',zones:[{label:'PISCINE',kind:'pool',l:220,t:220,w:1300,h:850,color:'#41bfd6',serviceType:'Piscine',capacity:70},{label:'POOL BAR',kind:'kiosk',l:1580,t:220,w:780,h:600,color:'#ffbf4d',serviceType:'Bar',capacity:35},{label:'TRANSATS',kind:'beach',l:1580,t:880,w:780,h:520,color:'#51cbe8',serviceType:'Piscine',capacity:40}],elements:[{type:'pool',label:'PISCINE',l:450,t:420,w:760,h:400},{type:'bar',label:'POOL BAR',l:1770,t:390,w:420,h:220},{type:'cash',label:'CAISSE',l:1860,t:680,w:240,h:150}]}
-};
-function uniquePresetRoomName(base){let name=aText(base)||'ESPACE',n=2;while(A.rooms.some(r=>aText(r).toUpperCase()===name.toUpperCase()))name=`${aText(base)} ${n++}`;return name}
-function presetElement(raw,room,presetId){const type=aText(raw.type||'text'),e={id:aId(type),type,label:raw.label||iconFor(type),room,l:Number(raw.l)||200,t:Number(raw.t)||200,w:Number(raw.w)||180,h:Number(raw.h)||90,rotation:Number(raw.rotation)||0,locked:false,presetId};if(type==='cash')Object.assign(e,{cashBg:'#d7b04a',cashText:'#17130a',cashPattern:'none',cashPatternColor:'#f7e4a3',cashBorder:'#816417',cashBorderStyle:'solid',cashBorderWidth:3,cashFontSize:18,cashRadius:8});return e}
-function addArchitecturePreset(kind){if(A.mode!=='architect'||!canEdit())return aToast('Mode Architecte réservé Gérant / Directeur',true);const preset=ICHEF_ARCH_SPACE_PRESETS[aText(kind)];if(!preset)return;if(!confirm(`Créer un espace ${preset.label} préconfiguré ?\n\nLes zones et points de service seront ajoutés. Tu pourras tout déplacer, renommer ou supprimer avant ENREGISTRER.`))return;pushHistory();const room=uniquePresetRoomName(preset.room);A.rooms.push(room);A.room=room;STATE.room=room;(preset.zones||[]).forEach(raw=>A.zones.push({id:aId('zone'),label:raw.label,room,l:Number(raw.l)||200,t:Number(raw.t)||200,w:Number(raw.w)||500,h:Number(raw.h)||300,rotation:0,color:raw.color||'#58a9ff',zoneKind:raw.kind||'service',zoneShape:raw.shape||'rect',fillOpacity:Number(raw.fillOpacity)||16,borderStyle:raw.borderStyle||'dashed',responsible:'',serviceType:raw.serviceType||'Dîner',capacity:Number(raw.capacity)||0,active:true,locked:false,presetId:kind}));(preset.elements||[]).forEach(raw=>A.elements.push(presetElement(raw,room,kind)));A.selected=null;markDirty();renderAll();aToast(`${preset.label} ajouté · personnalise puis ENREGISTRER`)}
-function architectPaletteHTML(){return `<aside class="archpad-left"><div class="archpad-section"><h3>Espaces</h3><div data-room-list>${roomListHTML()}</div><button type="button" class="archpad-add-room" data-add-room>＋ Ajouter un espace vide</button><div style="display:grid;grid-template-columns:1fr 1fr;gap:5px;margin-top:6px"><button type="button" class="archpad-add-room" data-rename-room>Renommer</button><button type="button" class="archpad-add-room" data-delete-room>Supprimer</button></div></div><div class="archpad-section"><h3>Univers prêts à personnaliser</h3><div class="archpad-universe-grid"><button class="archpad-universe-btn" data-space-preset="restaurant"><b>RESTAURANT</b><small>Salle · terrasse · cuisine · bar</small></button><button class="archpad-universe-btn" data-space-preset="hotel"><b>HÔTEL</b><small>Lobby · chambres · room service</small></button><button class="archpad-universe-btn" data-space-preset="kiosk"><b>KIOSQUE</b><small>Commande · retrait · comptoir</small></button><button class="archpad-universe-btn" data-space-preset="beach"><b>PLAGE</b><small>Transats · beach bar · terrasse</small></button><button class="archpad-universe-btn" data-space-preset="mountain"><b>MONTAGNE</b><small>Chalet · terrasse · après-ski</small></button><button class="archpad-universe-btn" data-space-preset="lake"><b>LAC</b><small>Terrasse lac · ponton · bar</small></button><button class="archpad-universe-btn" data-space-preset="yacht"><b>YACHT</b><small>Pont · salon · cabines</small></button><button class="archpad-universe-btn" data-space-preset="roomservice"><b>ROOM SERVICE</b><small>Dispatch · étages · chambres</small></button><button class="archpad-universe-btn" data-space-preset="pool"><b>PISCINE</b><small>Pool bar · transats · caisse</small></button></div><div class="archpad-preset-note">1 clic crée un espace prêt à l’emploi. Rien n’est envoyé au serveur avant le bouton ENREGISTRER.</div></div><div class="archpad-section"><h3>Construction</h3><div class="archpad-palette compact"><button data-add="table"><span>◉</span>Table</button><button data-add="zone"><span>▧</span>Zone service</button><button data-add="wall"><span>━</span>Mur</button><button data-add="door"><span></span>Porte</button><button data-add="window"><span>▥</span>Fenêtre</button><button data-add="text"><span>T</span>Texte</button></div><div class="archpad-subtitle">Hôtellerie / chambres</div><div class="archpad-palette compact"><button data-add="bathroom_zone"><span></span>Salle de bain</button><button data-add="bedroom_zone"><span></span>Zone chambre</button><button data-add="bed_single"><span></span>Lit simple</button><button data-add="bed_double"><span></span>Lit double</button><button data-add="desk"><span>▰</span>Bureau</button><button data-add="wardrobe"><span>▥</span>Armoire</button><button data-add="sofa"><span>▰</span>Canapé</button><button data-add="sink"><span>◌</span>Lavabo</button><button data-add="toilet"><span>WC</span>Toilettes</button><button data-add="shower"><span>▧</span>Douche</button></div><div class="archpad-subtitle">Points de service interconnectés</div><div class="archpad-palette compact archpad-service-grid"><button data-add="kitchen"><span>●</span>Cuisine</button><button data-add="bar"><span>●</span>Bar</button><button data-add="patisserie"><span>●</span>Pâtisserie</button><button data-add="roomservice"><span>●</span>Room Service</button><button data-add="cash"><span>●</span>Caisse</button></div><div class="archpad-subtitle">Ambiance / équipements</div><div class="archpad-palette compact"><button data-add="buffet"><span>▤</span>Buffet</button><button data-add="plant"><span></span>Plante</button><button data-add="pool"><span>≈</span>Piscine</button></div></div></aside>`}
-function architectBottomHTML(st){return `<div class="archpad-bottom"><div><h4>ANTI-ERREUR HUMAINE</h4><div class="archpad-errors"><span><i>●</i> commande active protégée</span><span><i>●</i> doublon table contrôlé</span><span><i>●</i> éléments verrouillables</span><span><i>●</i> historique Annuler/Rétablir</span></div></div><div><h4>POINTS DE SERVICE INTERCONNECTÉS</h4><div class="archpad-servicepoints"><div class="archpad-sp"><b>CUISINE</b><span class="connected">● Connecté</span></div><div class="archpad-sp"><b>BAR</b><span class="connected">● Connecté</span></div><div class="archpad-sp"><b>PÂTISSERIE</b><span class="connected">● Connecté</span></div><div class="archpad-sp"><b>ROOM SERVICE</b><span class="connected">● Connecté</span></div><div class="archpad-sp"><b>CAISSE</b><span class="connected">● Connecté</span></div></div></div><div><h4>ÉTAT DU SERVICE</h4><div class="archpad-service-state"><div class="archpad-kpi"><strong>${st.orders}</strong><small>commandes</small></div><div class="archpad-kpi orange"><strong>${st.express}</strong><small>express</small></div><div class="archpad-kpi green"><strong>${st.pax}</strong><small>couverts</small></div></div></div></div>`}
-function fullHTML(){const st=statsHTML(),architect=A.mode==='architect'&&canEdit();const toolbar=architect?`<div class="archpad-toolbar"><button class="archpad-tool active" type="button" data-tool="select"> Déplacer</button><button class="archpad-tool" type="button" data-add="zone">▧ Zone</button><button class="archpad-tool" type="button" data-add="wall">▰ Mur</button><button class="archpad-tool" type="button" data-add="door"> Porte</button><button class="archpad-tool" type="button" data-add="table">▣ Table</button><button class="archpad-tool" type="button" data-add="text">T Texte</button><button class="archpad-tool" type="button" data-undo>↶</button><button class="archpad-tool" type="button" data-redo>↷</button><button class="archpad-tool save" type="button" data-save>Enregistrer</button></div>`:`<div class="archpad-service-note"><b>MODE SERVICE</b><span>Plan opérationnel · édition masquée</span></div>`;const sideLeft=architect?architectPaletteHTML():'';const sideRight=architect?`<aside class="archpad-right"><div class="archpad-section"><h3>Propriétés</h3></div><div data-props>${propHTML()}</div></aside>`:'';return `<div class="archpad-top"><div class="archpad-brand"><strong>iCHEF · ARCHITECTURE</strong><small>Plan ultra modulable · Restaurant + Hôtel</small></div><div class="archpad-breadcrumb">Architecture › <b data-crumb>${esc(A.room)}</b></div>${toolbar}<button type="button" class="archpad-close" data-close>×</button></div><div class="archpad-main ${architect?'':'service-layout'}">${sideLeft}<section class="archpad-center"><div class="archpad-canvasbar"><button type="button" class="archpad-room-nav" data-room-prev title="Salle précédente"></button><div class="archpad-room-name"><small>PLAN DE SALLE</small><b>${esc(A.room)}</b></div><button type="button" class="archpad-room-nav" data-room-next title="Salle suivante"></button><span class="archpad-mode ${architect?'architect':''}" data-mode-label>${architect?'MODE ARCHITECTE':'MODE SERVICE'}</span><button type="button" data-toggle-mode>${architect?'Passer en SERVICE':' CODE ARCHITECTE'}</button><button type="button" data-express>＋ TABLE EXPRESS</button><span class="grow"></span>${architect?`<button type="button" data-grid>Grille ${A.grid?'ON':'OFF'}</button><button type="button" data-snap>Aimant ${A.snap?'ON':'OFF'}</button>`:''}<select data-zoom><option>75</option><option ${A.zoom===100?'selected':''}>100</option><option>125</option><option>150</option></select></div>${architect?'':`<div class="archpad-livebar" data-livebar>${planRushHTML()}</div>`}<div class="archpad-stagewrap"><div class="archpad-stage-shell" data-stage-shell><div class="archpad-stage ${A.grid?'':'no-grid'}" data-stage>${canvasHTML()}</div></div></div><div class="archpad-statusbar"><span><b>${roomTables().length}</b> tables</span><span><b>${roomZones().length}</b> zones/pièces</span><span><b>${roomElements().length}</b> éléments</span><span>Zoom <b data-zoom-label>${A.zoom}%</b></span><span class="save-state" data-arch-save-state></span></div></section>${sideRight}</div>${architect?architectBottomHTML(st):''}<div class="archpad-toast" aria-live="polite"></div>${pinOverlayHTML()}`}
+function pinOverlayHTML(){if(!A.pinOpen)return '';const dots=Array.from({length:6},(_,i)=>`<i class="${i<A.pinValue.length?'on':''}"></i>`).join('');return `<div class="archpad-pin-overlay"><div class="archpad-pin-card"><h3>🛠️ MODE ARCHITECTE</h3><p>PIN iCHEF Cloud partagé avec Admin / RH. Autorisé : PIN principal, Gérant, Directeur, Admin / Manager actif.</p><div class="archpad-pin-dots">${dots}</div><div class="archpad-pin-grid">${[1,2,3,4,5,6,7,8,9].map(n=>`<button type="button" data-arch-pin="${n}">${n}</button>`).join('')}<button type="button" class="small" data-arch-pin-clear>EFFACER</button><button type="button" data-arch-pin="0">0</button><button type="button" class="small" data-arch-pin-back>←</button></div><div class="archpad-pin-msg">${esc(A.pinMsg||'')}</div><div class="archpad-pin-actions"><button type="button" data-arch-pin-cancel>Annuler</button><button type="button" class="ok" data-arch-pin-ok>VALIDER</button></div></div></div>`}
+function architectPaletteHTML(){return `<aside class="archpad-left"><div class="archpad-section"><h3>🗺️ Espaces</h3><div data-room-list>${roomListHTML()}</div><button type="button" class="archpad-add-room" data-add-room>➕ Ajouter un espace</button><div style="display:grid;grid-template-columns:1fr 1fr;gap:5px;margin-top:6px"><button type="button" class="archpad-add-room" data-rename-room>✏️ Renommer</button><button type="button" class="archpad-add-room" data-delete-room>🗑️ Supprimer</button></div></div><div class="archpad-section"><h3>🧱 Construction</h3><div class="archpad-palette compact"><button data-add="table"><span>🍽️</span>Table</button><button data-add="zone"><span>🟩</span>Zone service</button><button data-add="wall"><span>🧱</span>Mur</button><button data-add="door"><span>🚪</span>Porte</button><button data-add="window"><span>🪟</span>Fenêtre</button><button data-add="text"><span>✏️</span>Texte</button></div><div class="archpad-subtitle">🏨 Hôtellerie / chambres</div><div class="archpad-palette compact"><button data-add="bathroom_zone"><span>🛁</span>Salle de bain</button><button data-add="bedroom_zone"><span>🛏️</span>Zone chambre</button><button data-add="bed_single"><span>🛏️</span>Lit simple</button><button data-add="bed_double"><span>🛏️</span>Lit double</button><button data-add="desk"><span>🖥️</span>Bureau</button><button data-add="wardrobe"><span>🚪</span>Armoire</button><button data-add="sofa"><span>🛋️</span>Canapé</button><button data-add="sink"><span>🚰</span>Lavabo</button><button data-add="toilet"><span>🚽</span>Toilettes</button><button data-add="shower"><span>🚿</span>Douche</button></div><div class="archpad-subtitle">🍽️ Restauration / services</div><div class="archpad-palette compact"><button data-add="bar"><span>🍸</span>Bar</button><button data-add="kitchen"><span>👨‍🍳</span>Cuisine</button><button data-add="cash"><span>💳</span>Caisse</button><button data-add="buffet"><span>🍽️</span>Buffet</button><button data-add="plant"><span>🪴</span>Plante</button><button data-add="pool"><span>🏊</span>Piscine</button><button data-add="roomservice"><span>🛎️</span>Room Service</button></div></div></aside>`}
+function architectBottomHTML(st){return `<div class="archpad-bottom"><div><h4>🛡️ ANTI-ERREUR HUMAINE</h4><div class="archpad-errors"><span><i>●</i> commande active protégée</span><span><i>●</i> doublon table contrôlé</span><span><i>●</i> éléments verrouillables</span><span><i>●</i> historique Annuler/Rétablir</span></div></div><div><h4>🔗 POINTS DE SERVICE INTERCONNECTÉS</h4><div class="archpad-servicepoints"><div class="archpad-sp"><b>👨‍🍳 CUISINE</b><span class="connected">● Connecté</span></div><div class="archpad-sp"><b>🍸 BAR</b><span class="connected">● Connecté</span></div><div class="archpad-sp"><b>🍰 PÂTISSERIE</b><span class="connected">● Connecté</span></div><div class="archpad-sp"><b>🛎️ ROOM SERVICE</b><span class="connected">● Connecté</span></div><div class="archpad-sp"><b>💳 CAISSE</b><span class="connected">● Connecté</span></div></div></div><div><h4>📊 ÉTAT DU SERVICE</h4><div class="archpad-service-state"><div class="archpad-kpi"><strong>${st.orders}</strong><small>commandes</small></div><div class="archpad-kpi orange"><strong>${st.express}</strong><small>express</small></div><div class="archpad-kpi green"><strong>${st.pax}</strong><small>couverts</small></div></div></div></div>`}
+function fullHTML(){const st=statsHTML(),architect=A.mode==='architect'&&canEdit();const toolbar=architect?`<div class="archpad-toolbar"><button class="archpad-tool active" type="button" data-tool="select">✋ Déplacer</button><button class="archpad-tool" type="button" data-add="zone">🟩 Zone</button><button class="archpad-tool" type="button" data-add="wall">🧱 Mur</button><button class="archpad-tool" type="button" data-add="door">🚪 Porte</button><button class="archpad-tool" type="button" data-add="table">🍽️ Table</button><button class="archpad-tool" type="button" data-add="text">✏️ Texte</button><button class="archpad-tool" type="button" data-undo>↶</button><button class="archpad-tool" type="button" data-redo>↷</button><button class="archpad-tool save" type="button" data-save>💾 Enregistrer</button></div>`:`<div class="archpad-service-note"><b>🟢 MODE SERVICE</b><span>Plan opérationnel · édition masquée</span></div>`;const sideLeft=architect?architectPaletteHTML():'';const sideRight=architect?`<aside class="archpad-right"><div class="archpad-section"><h3>⚙️ Propriétés</h3></div><div data-props>${propHTML()}</div></aside>`:'';return `<div class="archpad-top"><div class="archpad-brand"><strong>🗺️ iCHEF · ARCHITECTURE</strong><small>🍽️ Plan ultra modulable · Restaurant + Hôtel 🏨</small></div><div class="archpad-breadcrumb">Architecture › <b data-crumb>${esc(A.room)}</b></div>${toolbar}<button type="button" class="archpad-close" data-close>×</button></div><div class="archpad-main ${architect?'':'service-layout'}">${sideLeft}<section class="archpad-center"><div class="archpad-canvasbar"><button type="button" class="archpad-room-nav" data-room-prev title="Salle précédente"></button><div class="archpad-room-name"><small>🗺️ PLAN DE SALLE</small><b>${esc(A.room)}</b></div><button type="button" class="archpad-room-nav" data-room-next title="Salle suivante"></button><span class="archpad-mode ${architect?'architect':''}" data-mode-label>${architect?'🛠️ MODE ARCHITECTE':'🟢 MODE SERVICE'}</span><button type="button" data-toggle-mode>${architect?'▶️ Passer en SERVICE':'🔐 CODE ARCHITECTE'}</button><button type="button" data-express>➕ 🍽️ TABLE EXPRESS</button><span class="grow"></span>${architect?`<button type="button" data-grid>▦ Grille ${A.grid?'ON':'OFF'}</button><button type="button" data-snap>🧲 Aimant ${A.snap?'ON':'OFF'}</button>`:''}<select data-zoom><option>75</option><option ${A.zoom===100?'selected':''}>100</option><option>125</option><option>150</option></select></div>${architect?'':`<div class="archpad-livebar" data-livebar>${planRushHTML()}</div>`}<div class="archpad-stagewrap"><div class="archpad-stage-shell" data-stage-shell><div class="archpad-stage ${A.grid?'':'no-grid'}" data-stage>${canvasHTML()}</div></div></div><div class="archpad-statusbar"><span><b>${roomTables().length}</b> tables</span><span><b>${roomZones().length}</b> zones/pièces</span><span><b>${roomElements().length}</b> éléments</span><span>Zoom <b data-zoom-label>${A.zoom}%</b></span><span class="save-state" data-arch-save-state></span></div></section>${sideRight}</div>${architect?architectBottomHTML(st):''}<div class="archpad-toast" aria-live="polite"></div>${pinOverlayHTML()}`}
 function renderCanvas(){normaliseAll();const stage=A.root?.querySelector('[data-stage]');if(stage){stage.innerHTML=canvasHTML();stage.classList.toggle('no-grid',!A.grid)}const props=A.root?.querySelector('[data-props]');if(props)props.innerHTML=propHTML();const crumb=A.root?.querySelector('[data-crumb]');if(crumb)crumb.textContent=A.room;const list=A.root?.querySelector('[data-room-list]');if(list)list.innerHTML=roomListHTML();bindDynamic();updateSaveState()}
 function renderAll(){if(!A.root)return;A.root.innerHTML=fullHTML();bindAll();updateSaveState();applyZoom()}
 function select(key){A.selected=key;renderCanvas()}
 function current(){return byKey(A.selected)}
 function setObjProp(o,k,v){if(['l','t','w','h','rotation','pax','capacity','fillOpacity','zIndex','cashBorderWidth','cashFontSize','cashRadius'].includes(k))v=Number(v)||0;if(k==='w'||k==='h')v=Math.max(16,v);if(k==='fillOpacity')v=aClamp(v,3,55);if(k==='cashBorderWidth')v=aClamp(v,1,12);if(k==='cashFontSize')v=aClamp(v,8,72);if(k==='cashRadius')v=aClamp(v,0,60);if(k==='locked')v=String(v)==='true';o[k]=v}
 function propChange(e){const k=e.target.dataset.prop;if(!k)return;const hit=current();if(!hit?.obj)return;pushHistory();let v=e.target.value;if(k==='label'&&hit.type==='table'){const nv=aText(v),oldLabel=aText(hit.obj.label);if(!nv)return;if(activeOrder(oldLabel)){aToast('Renommer interdit : commande active',true);renderCanvas();return}if(A.tables.some(t=>t!==hit.obj&&aText(t.label).toUpperCase()===nv.toUpperCase())){aToast('Numéro de table déjà utilisé',true);renderCanvas();return}hit.obj.label=nv;if(!hit.obj.id||aText(hit.obj.id)===oldLabel)hit.obj.id=nv}else setObjProp(hit.obj,k,v);markDirty();renderCanvas()}
-function addObject(type,clientPoint=null){if(A.mode!=='architect'||!canEdit()){aToast('Mode Architecte réservé Gérant / Directeur',true);return}pushHistory();const isZonePreset=['zone','bathroom_zone','bedroom_zone','office_zone'].includes(type),count=type==='table'?roomTables().length:isZonePreset?roomZones().length:roomElements().length;let x=220+(count%5)*105,y=150+Math.floor(count/5)*85;if(clientPoint){const p=pointInStage(clientPoint.x,clientPoint.y);x=p.x;y=p.y}if(type==='table'){const label=nextArchitectTableLabel();const t={id:label,label,room:A.room,pax:2,l:snap(x-50),t:snap(y-40),w:100,h:82,shape:'square',rotation:0,createdByRole:expressRoleLabel(),architectCreated:true};A.tables.push(t);A.selected=getTableKey(t)}else if(isZonePreset){const idx=roomZones().length+1,preset=type==='bathroom_zone'?{kind:'bathroom',label:'SALLE DE BAIN',color:'#55c7d9',w:300,h:240,serviceType:'Hébergement'}:type==='bedroom_zone'?{kind:'bedroom',label:'CHAMBRE',color:'#a785ff',w:500,h:360,serviceType:'Hébergement'}:type==='office_zone'?{kind:'office',label:'BUREAU',color:'#d59b54',w:360,h:260,serviceType:'Hébergement'}:{kind:'service',label:'ZONE '+idx,color:['#4cda8a','#58a9ff','#a785ff','#ffb13b'][idx%4],w:420,h:260,serviceType:'Dîner'};const z={id:aId('zone'),label:preset.label,room:A.room,l:snap(x-preset.w/2),t:snap(y-preset.h/2),w:preset.w,h:preset.h,rotation:0,color:preset.color,zoneKind:preset.kind,zoneShape:'rect',fillOpacity:preset.kind==='bathroom'?20:15,borderStyle:'dashed',responsible:'',serviceType:preset.serviceType,active:true,locked:false};A.zones.push(z);A.selected=getZoneKey(z)}else{const dims={wall:[300,18],door:[90,22],window:[120,18],bar:[220,100],kitchen:[260,150],patisserie:[220,120],cash:[120,80],buffet:[170,70],text:[240,45],plant:[65,65],pool:[320,180],roomservice:[180,80],bed_single:[115,210],bed_double:[195,210],desk:[170,75],sofa:[190,85],wardrobe:[150,65],sink:[85,65],toilet:[70,95],shower:[110,110]}[type]||[150,70];const e={id:aId(type),type,label:iconFor(type),room:A.room,l:snap(x-dims[0]/2),t:snap(y-dims[1]/2),w:dims[0],h:dims[1],rotation:0,locked:false};if(type==='cash')Object.assign(e,{label:'CAISSE',cashBg:'#d7b04a',cashText:'#17130a',cashPattern:'none',cashPatternColor:'#f7e4a3',cashBorder:'#816417',cashBorderStyle:'solid',cashBorderWidth:3,cashFontSize:18,cashRadius:8});A.elements.push(e);A.selected=getElemKey(e)}markDirty();renderCanvas()}
+function addObject(type,clientPoint=null){if(A.mode!=='architect'||!canEdit()){aToast('Mode Architecte réservé Gérant / Directeur',true);return}pushHistory();const isZonePreset=['zone','bathroom_zone','bedroom_zone','office_zone'].includes(type),count=type==='table'?roomTables().length:isZonePreset?roomZones().length:roomElements().length;let x=220+(count%5)*105,y=150+Math.floor(count/5)*85;if(clientPoint){const p=pointInStage(clientPoint.x,clientPoint.y);x=p.x;y=p.y}if(type==='table'){const label=nextArchitectTableLabel();const t={id:label,label,room:A.room,pax:2,l:snap(x-50),t:snap(y-40),w:100,h:82,shape:'square',rotation:0,createdByRole:expressRoleLabel(),architectCreated:true};A.tables.push(t);A.selected=getTableKey(t)}else if(isZonePreset){const idx=roomZones().length+1,preset=type==='bathroom_zone'?{kind:'bathroom',label:'SALLE DE BAIN',color:'#55c7d9',w:300,h:240,serviceType:'Hébergement'}:type==='bedroom_zone'?{kind:'bedroom',label:'CHAMBRE',color:'#a785ff',w:500,h:360,serviceType:'Hébergement'}:type==='office_zone'?{kind:'office',label:'BUREAU',color:'#d59b54',w:360,h:260,serviceType:'Hébergement'}:{kind:'service',label:'ZONE '+idx,color:['#4cda8a','#58a9ff','#a785ff','#ffb13b'][idx%4],w:420,h:260,serviceType:'Dîner'};const z={id:aId('zone'),label:preset.label,room:A.room,l:snap(x-preset.w/2),t:snap(y-preset.h/2),w:preset.w,h:preset.h,rotation:0,color:preset.color,zoneKind:preset.kind,zoneShape:'rect',fillOpacity:preset.kind==='bathroom'?20:15,borderStyle:'dashed',responsible:'',serviceType:preset.serviceType,active:true,locked:false};A.zones.push(z);A.selected=getZoneKey(z)}else{const dims={wall:[300,18],door:[90,22],window:[120,18],bar:[220,100],kitchen:[260,150],cash:[120,80],buffet:[170,70],text:[240,45],plant:[65,65],pool:[320,180],roomservice:[180,80],bed_single:[115,210],bed_double:[195,210],desk:[170,75],sofa:[190,85],wardrobe:[150,65],sink:[85,65],toilet:[70,95],shower:[110,110]}[type]||[150,70];const e={id:aId(type),type,label:iconFor(type),room:A.room,l:snap(x-dims[0]/2),t:snap(y-dims[1]/2),w:dims[0],h:dims[1],rotation:0,locked:false};if(type==='cash')Object.assign(e,{label:'CAISSE',cashBg:'#d7b04a',cashText:'#17130a',cashPattern:'none',cashPatternColor:'#f7e4a3',cashBorder:'#816417',cashBorderStyle:'solid',cashBorderWidth:3,cashFontSize:18,cashRadius:8});A.elements.push(e);A.selected=getElemKey(e)}markDirty();renderCanvas()}
 function duplicateSelected(){const hit=current();if(!hit?.obj||A.mode!=='architect'||!canEdit())return;pushHistory();const c=clone(hit.obj);c.l=Number(c.l||0)+30;c.t=Number(c.t||0)+30;if(hit.type==='table'){c.id=nextArchitectTableLabel();c.label=c.id;c.express=false;c.temporary=false;A.tables.push(c);A.selected=getTableKey(c)}else if(hit.type==='zone'){c.id=aId('zone');c.label=(c.label||'ZONE')+' COPIE';A.zones.push(c);A.selected=getZoneKey(c)}else{c.id=aId(c.type||'e');A.elements.push(c);A.selected=getElemKey(c)}markDirty();renderCanvas()}
 function zoneHasActive(z){return roomTables().some(t=>aText(t.zone)===aText(z.label)&&activeOrder(t.label))}
 function deleteSelected(){const hit=current();if(!hit?.obj||A.mode!=='architect'||!canEdit())return;if(hit.type==='table'&&activeOrder(hit.obj.label)){aToast('Suppression interdite : commande active',true);return}if(hit.type==='zone'&&zoneHasActive(hit.obj)){aToast('Zone protégée : table active',true);return}if(!confirm('Supprimer cet élément du plan ?'))return;pushHistory();if(hit.type==='table')A.tables=A.tables.filter(x=>x!==hit.obj);else if(hit.type==='zone'){A.tables.forEach(t=>{if(aText(t.zone)===aText(hit.obj.label))t.zone=''});A.zones=A.zones.filter(x=>x!==hit.obj)}else A.elements=A.elements.filter(x=>x!==hit.obj);A.selected=null;markDirty();renderCanvas()}
@@ -11735,7 +12938,7 @@ function pointerDown(e){const rot=e.target.closest('[data-rotate]'),handle=e.tar
 function pointerMove(e){if(!A.drag)return;const h=byKey(A.drag.key);if(!h?.obj)return;const p=pointInStage(e.clientX,e.clientY),dx=p.x-A.drag.start.x,dy=p.y-A.drag.start.y,o=A.drag.orig,min=16;if(A.drag.kind==='move'){h.obj.l=snap(aClamp(o.l+dx,0,ARCH_W-o.w));h.obj.t=snap(aClamp(o.t+dy,0,ARCH_H-o.h))}else{const dir=A.drag.dir;let l=o.l,t=o.t,w=o.w,hh=o.h;if(dir.includes('e'))w=o.w+dx;if(dir.includes('s'))hh=o.h+dy;if(dir.includes('w')){l=o.l+dx;w=o.w-dx}if(dir.includes('n')){t=o.t+dy;hh=o.h-dy}if(w<min){if(dir.includes('w'))l=o.l+o.w-min;w=min}if(hh<min){if(dir.includes('n'))t=o.t+o.h-min;hh=min}l=aClamp(snap(l),0,ARCH_W-min);t=aClamp(snap(t),0,ARCH_H-min);w=Math.min(ARCH_W-l,Math.max(min,snap(w)));hh=Math.min(ARCH_H-t,Math.max(min,snap(hh)));h.obj.l=l;h.obj.t=t;h.obj.w=w;h.obj.h=hh}markDirty();const n=A.root.querySelector(`[data-arch-key="${CSS.escape(A.drag.key)}"]`);if(n)n.setAttribute('style',nodeStyle(h.obj)+(h.type==='zone'?`;--zone-color:${colorForZone(h.obj)};--zone-fill:${aClamp(h.obj.fillOpacity||15,3,55)}%;--zone-border:${aText(h.obj.borderStyle||'dashed')}`:h.type==='element'?cashCustomStyle(h.obj):''));e.preventDefault()}
 function pointerUp(){if(A.drag){A.drag=null;renderCanvas()}}
 function applyZoom(){const sh=A.root?.querySelector('[data-stage-shell]');if(!sh)return;A.zoom=aClamp(A.zoom,50,180);sh.style.width=A.zoom+'%';const z=A.root.querySelector('[data-zoom-label]');if(z)z.textContent=A.zoom+'%'}
-async function saveAll(){if(!canEdit())return aToast('Droit manager requis',true);normaliseAll();const payload={rooms:clone(A.rooms),tables:clone(A.tables).map(x=>{const c={...x};delete c.__kind;return c}),zones:clone(A.zones).map(x=>{const c={...x};delete c.__kind;return c}),elements:clone(A.elements).map(x=>{const c={...x};delete c.__kind;return c}),canvas:{width:ARCH_W,height:ARCH_H,version:'ICHEF_ARCHITECTURE_PRO_V26_UNIVERSES'},updatedFrom:'PAD_ARCHITECTURE_PRO_V26',updatedByArchitectRole:A.archRole||expressRoleLabel()};const oldPin=STATE.pin;if(A.archUnlocked&&A.archPin)STATE.pin=A.archPin;try{if(STATE.demo){STATE.activeOrders.ARCHITECTURE={data:architecturePayload(payload)};STATE.tables=clone(payload.tables);STATE.zones=clone(payload.zones);STATE.rooms=clone(payload.rooms);A.dirty=false;updateSaveState();aToast(' Architecture enregistrée en mode démo');return}const ok=await saveArchitecture(payload,'Architecture PAD ultra modulable');if(ok!==false){A.dirty=false;updateSaveState();aToast(' Architecture synchronisée serveur')}else aToast('Synchronisation à vérifier',true)}catch(err){aToast(err?.message||'Enregistrement impossible',true)}finally{STATE.pin=oldPin}}
+async function saveAll(){if(!canEdit())return aToast('Droit manager requis',true);normaliseAll();const payload={rooms:clone(A.rooms),tables:clone(A.tables).map(x=>{const c={...x};delete c.__kind;return c}),zones:clone(A.zones).map(x=>{const c={...x};delete c.__kind;return c}),elements:clone(A.elements).map(x=>{const c={...x};delete c.__kind;return c}),canvas:{width:ARCH_W,height:ARCH_H,version:'ICHEF_ARCHITECTURE_PAD_ULTRA_3_CASH_CUSTOM'},updatedFrom:'PAD_ARCHITECT_ULTRA_CASH_CUSTOM',updatedByArchitectRole:A.archRole||expressRoleLabel()};const oldPin=STATE.pin;if(A.archUnlocked&&A.archPin)STATE.pin=A.archPin;try{if(STATE.demo){STATE.activeOrders.ARCHITECTURE={data:architecturePayload(payload)};STATE.tables=clone(payload.tables);STATE.zones=clone(payload.zones);STATE.rooms=clone(payload.rooms);A.dirty=false;updateSaveState();aToast(' Architecture enregistrée en mode démo');return}const ok=await saveArchitecture(payload,'Architecture PAD ultra modulable');if(ok!==false){A.dirty=false;updateSaveState();aToast(' Architecture synchronisée serveur')}else aToast('Synchronisation à vérifier',true)}catch(err){aToast(err?.message||'Enregistrement impossible',true)}finally{STATE.pin=oldPin}}
 function openExpress(){if(closePadArchitect()!==false)openExpressTableCreate()}
 function architectAccessKey(value){
   return aText(value).normalize('NFD').replace(/[\u0300-\u036f]/g,'').toUpperCase().replace(/[\s-]+/g,'_');
@@ -11814,7 +13017,7 @@ function previousRoom(){adjacentRoom(-1)}
 function nextRoom(){adjacentRoom(1)}
 function toggleMode(){if(A.mode==='architect'){A.mode='service';if(expressRoleLevel()<2){A.archUnlocked=false;A.archRole='';A.archPin=''}renderAll()}else{if(canEdit()){A.mode='architect';renderAll()}else openArchitectPin()}}
 function bindDynamic(){A.root.querySelectorAll('[data-room]').forEach(b=>b.addEventListener('click',()=>switchRoom(b.dataset.room)));A.root.querySelectorAll('[data-prop]').forEach(el=>el.addEventListener('change',propChange));A.root.querySelector('[data-duplicate]')?.addEventListener('click',duplicateSelected);A.root.querySelector('[data-delete]')?.addEventListener('click',deleteSelected)}
-function bindAll(){bindDynamic();A.root.querySelector('[data-close]')?.addEventListener('click',closePadArchitect);A.root.querySelector('[data-save]')?.addEventListener('click',saveAll);A.root.querySelector('[data-undo]')?.addEventListener('click',undo);A.root.querySelector('[data-redo]')?.addEventListener('click',redo);A.root.querySelector('[data-add-room]')?.addEventListener('click',addRoom);A.root.querySelector('[data-rename-room]')?.addEventListener('click',renameRoom);A.root.querySelector('[data-delete-room]')?.addEventListener('click',deleteRoom);A.root.querySelectorAll('[data-add]').forEach(b=>b.addEventListener('click',()=>addObject(b.dataset.add)));A.root.querySelectorAll('[data-space-preset]').forEach(b=>b.addEventListener('click',()=>addArchitecturePreset(b.dataset.spacePreset)));A.root.querySelector('[data-room-prev]')?.addEventListener('click',previousRoom);A.root.querySelector('[data-room-next]')?.addEventListener('click',nextRoom);A.root.querySelector('[data-toggle-mode]')?.addEventListener('click',toggleMode);A.root.querySelector('[data-express]')?.addEventListener('click',openExpress);A.root.querySelector('[data-grid]')?.addEventListener('click',()=>{A.grid=!A.grid;renderAll()});A.root.querySelector('[data-snap]')?.addEventListener('click',()=>{A.snap=!A.snap;renderAll()});A.root.querySelector('[data-zoom]')?.addEventListener('change',e=>{A.zoom=Number(e.target.value)||100;applyZoom()});A.root.querySelectorAll('[data-arch-pin]').forEach(b=>b.addEventListener('click',()=>{if(A.pinValue.length<6)A.pinValue+=b.dataset.archPin;A.pinMsg='';renderAll()}));A.root.querySelector('[data-arch-pin-back]')?.addEventListener('click',()=>{A.pinValue=A.pinValue.slice(0,-1);A.pinMsg='';renderAll()});A.root.querySelector('[data-arch-pin-clear]')?.addEventListener('click',()=>{A.pinValue='';A.pinMsg='';renderAll()});A.root.querySelector('[data-arch-pin-cancel]')?.addEventListener('click',()=>{A.pinOpen=false;A.pinValue='';A.pinMsg='';renderAll()});A.root.querySelector('[data-arch-pin-ok]')?.addEventListener('click',validateArchitectPin);const st=A.root.querySelector('[data-stage]');st?.addEventListener('pointerdown',pointerDown);st?.addEventListener('pointermove',pointerMove);st?.addEventListener('pointerup',pointerUp);st?.addEventListener('pointercancel',pointerUp);st?.addEventListener('dblclick',e=>{if(A.mode==='architect'&&canEdit()&&!e.target.closest('[data-arch-key]'))addObject('table',{x:e.clientX,y:e.clientY})});A.root.addEventListener('keydown',e=>{if(['INPUT','SELECT','TEXTAREA'].includes(e.target.tagName))return;if(e.key==='Delete'){deleteSelected();e.preventDefault()}if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==='z'){undo();e.preventDefault()}if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==='y'){redo();e.preventDefault()}if(A.pinOpen&&e.key==='Enter'){validateArchitectPin();e.preventDefault()}})}
+function bindAll(){bindDynamic();A.root.querySelector('[data-close]')?.addEventListener('click',closePadArchitect);A.root.querySelector('[data-save]')?.addEventListener('click',saveAll);A.root.querySelector('[data-undo]')?.addEventListener('click',undo);A.root.querySelector('[data-redo]')?.addEventListener('click',redo);A.root.querySelector('[data-add-room]')?.addEventListener('click',addRoom);A.root.querySelector('[data-rename-room]')?.addEventListener('click',renameRoom);A.root.querySelector('[data-delete-room]')?.addEventListener('click',deleteRoom);A.root.querySelectorAll('[data-add]').forEach(b=>b.addEventListener('click',()=>addObject(b.dataset.add)));A.root.querySelector('[data-room-prev]')?.addEventListener('click',previousRoom);A.root.querySelector('[data-room-next]')?.addEventListener('click',nextRoom);A.root.querySelector('[data-toggle-mode]')?.addEventListener('click',toggleMode);A.root.querySelector('[data-express]')?.addEventListener('click',openExpress);A.root.querySelector('[data-grid]')?.addEventListener('click',()=>{A.grid=!A.grid;renderAll()});A.root.querySelector('[data-snap]')?.addEventListener('click',()=>{A.snap=!A.snap;renderAll()});A.root.querySelector('[data-zoom]')?.addEventListener('change',e=>{A.zoom=Number(e.target.value)||100;applyZoom()});A.root.querySelectorAll('[data-arch-pin]').forEach(b=>b.addEventListener('click',()=>{if(A.pinValue.length<6)A.pinValue+=b.dataset.archPin;A.pinMsg='';renderAll()}));A.root.querySelector('[data-arch-pin-back]')?.addEventListener('click',()=>{A.pinValue=A.pinValue.slice(0,-1);A.pinMsg='';renderAll()});A.root.querySelector('[data-arch-pin-clear]')?.addEventListener('click',()=>{A.pinValue='';A.pinMsg='';renderAll()});A.root.querySelector('[data-arch-pin-cancel]')?.addEventListener('click',()=>{A.pinOpen=false;A.pinValue='';A.pinMsg='';renderAll()});A.root.querySelector('[data-arch-pin-ok]')?.addEventListener('click',validateArchitectPin);const st=A.root.querySelector('[data-stage]');st?.addEventListener('pointerdown',pointerDown);st?.addEventListener('pointermove',pointerMove);st?.addEventListener('pointerup',pointerUp);st?.addEventListener('pointercancel',pointerUp);st?.addEventListener('dblclick',e=>{if(A.mode==='architect'&&canEdit()&&!e.target.closest('[data-arch-key]'))addObject('table',{x:e.clientX,y:e.clientY})});A.root.addEventListener('keydown',e=>{if(['INPUT','SELECT','TEXTAREA'].includes(e.target.tagName))return;if(e.key==='Delete'){deleteSelected();e.preventDefault()}if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==='z'){undo();e.preventDefault()}if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==='y'){redo();e.preventDefault()}if(A.pinOpen&&e.key==='Enter'){validateArchitectPin();e.preventDefault()}})}
 function installPermanentPlanTouchRouter(){
   const root=A.root;
   if(!root||root.dataset.ichefTouchRouter==='1')return;
@@ -12067,7 +13270,7 @@ window.openPlan = function() {
   openSheet(" PLAN · " + room, `
     <div class="plan-direct-head">
       <label>SALLE<select data-plan-room>${roomOptions}</select></label>
-      <button class="express-add" data-plan-express-add>＋ TABLE EXPRESS</button>
+      <button class="express-add" data-plan-express-add>➕ 🍽️ TABLE EXPRESS</button>
       <button data-plan-express-manage ${canManage ? "" : "disabled"}>${canManage ? "GÉRER EXPRESS" : "SERVICE"}</button>
     </div>
     
@@ -12415,7 +13618,7 @@ console.log(
 
   /* Retour BFCache / changement d'onglet / réseau : toujours relire l'état serveur. */
   window.addEventListener("pageshow",event=>{
-    if(!navigator.onLine) return;
+    if(!navigator.onLine || document.hidden) return;
     try{ if(typeof connectSocket==="function") connectSocket(); }catch(_){}
     reconcile(event.persisted?"pageshow-bfcache":"pageshow",120,true);
   },{passive:true});
@@ -12430,6 +13633,7 @@ console.log(
   },{passive:true});
 
   window.addEventListener("online",()=>{
+    if(document.hidden) return;
     try{ if(typeof connectSocket==="function") connectSocket(); }catch(_){}
     reconcile("network-online",150,true);
   },{passive:true});
@@ -12452,5 +13656,101 @@ console.log(
   },500);
 })();
 </script>
+
+<!-- iCHEF PLAN — SYNCHRONISATION ARCHITECTURE DIRECTE V27 -->
+<script id="ichef-plan-architecture-sync-v27">
+(()=>{
+  if(window.__ICHEF_PLAN_ARCH_SYNC_V27__)return;
+  window.__ICHEF_PLAN_ARCH_SYNC_V27__=true;
+
+  let boundSocket=null;
+  let syncTimer=0;
+
+  function badge(label,kind='live'){
+    const el=document.querySelector('#ichefArchPad [data-plan-sync-badge]');
+    if(!el)return;
+    el.textContent=label;
+    el.classList.toggle('syncing',kind==='syncing');
+    el.classList.toggle('offline',kind==='offline');
+  }
+
+  function identity(){
+    return {
+      tenantID:String(window.STATE?.tenantID||'').trim(),
+      deviceId:String(window.STATE?.deviceId||'').trim(),
+      page:'PLAN_INTERACTIF'
+    };
+  }
+
+  function publishArchitecture(architecture,serverTime){
+    if(!architecture||typeof architecture!=='object'||!window.STATE)return;
+    if(!STATE.activeOrders||typeof STATE.activeOrders!=='object')STATE.activeOrders={};
+    STATE.activeOrders.ARCHITECTURE={
+      ...(STATE.activeOrders.ARCHITECTURE&&typeof STATE.activeOrders.ARCHITECTURE==='object'?STATE.activeOrders.ARCHITECTURE:{}),
+      data:architecture,
+      updatedAt:serverTime||new Date().toISOString()
+    };
+    try{if(typeof applyDerived==='function')applyDerived()}catch(_){}
+    try{if(typeof scheduleRender==='function')scheduleRender()}catch(_){}
+    try{window.dispatchEvent(new CustomEvent('ichef:live-state-updated',{detail:{source:'architectureState'}}))}catch(_){}
+    try{window.refreshPadServiceLive?.()}catch(_){}
+    badge('✓ SYNCHRO','live');
+  }
+
+  function requestArchitecture(reason='manual'){
+    const socket=window.STATE?.socket;
+    if(!navigator.onLine){badge('HORS LIGNE','offline');return}
+    badge('↻ SYNC…','syncing');
+    if(socket?.connected){
+      try{socket.emit('requestArchitectureState',identity())}catch(_){}
+    }
+    clearTimeout(syncTimer);
+    syncTimer=setTimeout(async()=>{
+      try{
+        if(typeof syncFull==='function'&&window.STATE?.authenticated)await syncFull('plan-architecture-'+reason);
+        try{window.refreshPadServiceLive?.()}catch(_){}
+        badge(window.STATE?.connected?'✓ LIVE':'✓ HTTP','live');
+      }catch(_){badge('SYNC ?','offline')}
+    },120);
+  }
+
+  function bind(){
+    const socket=window.STATE?.socket;
+    if(!socket||socket===boundSocket)return;
+    boundSocket=socket;
+
+    socket.on('connect',()=>{
+      badge('✓ LIVE','live');
+      setTimeout(()=>requestArchitecture('connect'),100);
+    });
+
+    socket.on('architecture-changed',()=>requestArchitecture('changed'));
+
+    socket.on('architectureState',packet=>{
+      const architecture=packet?.architecture||packet?.data||null;
+      publishArchitecture(architecture,packet?.serverTime||packet?.updatedAt);
+    });
+
+    socket.on('server-state-changed',evt=>{
+      if(String(evt?.tableId||'').toUpperCase()==='ARCHITECTURE')requestArchitecture('server-state');
+    });
+
+    socket.on('disconnect',()=>badge(navigator.onLine?'RECONNEXION':'HORS LIGNE',navigator.onLine?'syncing':'offline'));
+
+    if(socket.connected)requestArchitecture('bind');
+  }
+
+  setInterval(bind,700);
+  window.addEventListener('online',()=>setTimeout(()=>{bind();requestArchitecture('online')},100),{passive:true});
+  window.addEventListener('focus',()=>{bind();if(navigator.onLine)requestArchitecture('focus')},{passive:true});
+  document.addEventListener('visibilitychange',()=>{
+    if(!document.hidden&&navigator.onLine){bind();requestArchitecture('visible')}
+  });
+
+  window.ICHEF_PLAN_SYNC_NOW=()=>requestArchitecture('manual');
+  setTimeout(()=>{bind();requestArchitecture('boot')},500);
+})();
+</script>
 </body>
 </html>
+      
