@@ -11459,14 +11459,77 @@ rebind();
 .plan-visible-wrap .plan-table.payment { background: #58a9ff !important; color: #ffffff !important; }
 </style>
 
-<script id="correction-pax-plan-live">
+<script id="correction-globale-pax-et-plan">
 // 1. On corrige le calcul des couverts (PAX)
 window.tableClientPax = function(label) {
     const s = tableStats(label);
     return s.pax || null;
 };
 
-// 2. On oblige le Plan Live à cloner à 100% l'aspect de l'Architecte
+// 2. On corrige l'affichage des tables SANS BOUCLE INFINIE
+setTimeout(() => {
+    window.renderTables = function() {
+      const filter = getDeviceFilter();
+      let list = STATE.tables || [];
+      if (filter.type === "zone") {
+        list = list.filter(t => (getZone(t)?.label || t.zone || "Nouvelle Zone") === filter.value);
+      } else if (filter.type === "room") {
+        list = list.filter(t => t.room === filter.value);
+      } else {
+        list = list.filter(t => t.room === STATE.room);
+      }
+
+      const el = document.getElementById("tables");
+      if(!list.length) { el.innerHTML = '<div class="empty-state">Aucune table.</div>'; return; }
+
+      el.innerHTML = list.map(t => {
+        const s = tableStats(t.label);
+        const o = getOrder(t.label);
+        const z = getZone(t);
+        
+        let etatLabel = "LIBRE";
+        if (s.status === 'reserved') etatLabel = "RÉSERVÉE";
+        else if (s.status === 'payment') etatLabel = "PAIEMENT";
+        else if (s.status === 'alert') etatLabel = "URGENT";
+        else if (s.status === 'late') etatLabel = "RETARD";
+        else if (s.status === 'ready') etatLabel = "PRÊT";
+        else if (s.status === 'wait') etatLabel = "ATTENTE";
+        else if (s.status === 'active') etatLabel = "OCCUPÉE";
+
+        const capacityPax = Math.max(1, Number(t.pax ?? t.capacity ?? 2) || 2);
+        const paxLabel = capacityPax + " PAX";
+        
+        const time = s.age ? duration(s.age) : (s.status === "reserved" ? "—" : "00:00");
+        const zoneLabel = text(z?.label||t.zone||"Nouvelle Zone");
+        const zoneColor = text(z?.color||z?.couleur||(s.status==="ready"?"#36d98a":s.status==="wait"?"#ff9a43":s.status==="late"||s.status==="alert"?"#ff5368":s.status==="reserved"?"#9b74ff":"#b7bd00"));
+
+        const preview = (o?.items||[]).filter(Boolean).slice(0,2).map(item => {
+          const q = itemQty(item);
+          const ready = lineReady(item);
+          const sent = lineFired(item);
+          const state = ready ? " · PRÊT" : sent ? "" : " · À ENVOYER";
+          return '<span class="table-preview-line' + (ready||s.status==="late"||s.status==="alert"?" warn":"") + '">• ' + (q>1?q+"× ":"") + esc(itemName(item)) + state + '</span>';
+        }).join("");
+
+        const isExpress = !!(t.express||t.temporary||t.isTemporary);
+
+        return '<button class="table-card ' + s.status + (isExpress?" express-table":"") + '" data-table="' + esc(t.label) + '">' +
+          (isExpress?'<span class="express-badge">EXPRESS</span>':"") +
+          '<span class="num">' + esc(t.label) + '</span>' +
+          '<span class="meta state-label" style="font-size:11px; font-weight:950; text-transform:uppercase; margin-top:2px;">' + esc(etatLabel) + '</span>' +
+          '<span class="time" style="font-size:14px; font-weight:900; margin-top:3px;">' + esc(time) + '</span>' +
+          '<span class="meta pax" style="font-size:12px; margin-top:3px; font-weight:900;">' + esc(paxLabel) + '</span>' +
+          '<span class="table-zone" style="color:' + esc(zoneColor) + '; margin-top:6px;">' + esc(zoneLabel) + '</span>' +
+          (preview ? '<span class="table-preview">' + preview + '</span>' : "") +
+        '</button>';
+      }).join("");
+    };
+    
+    // On met à jour l'affichage UNE SEULE FOIS en dehors de la fonction
+    scheduleRender();
+}, 200);
+
+// 3. On oblige le Plan Live à cloner à 100% l'aspect de l'Architecte
 window.openPlan = function() {
   const room = STATE.room || STATE.rooms?.[0] || "Salle Principale";
   const rawTables = (STATE.tables || []).filter(t => text(t.room) === text(room));
@@ -11490,7 +11553,6 @@ window.openPlan = function() {
   coordZones.forEach(z => includeBounds(z, false));
   coordTables.forEach(t => includeBounds(t, true));
 
-  // On ajoute une petite marge pour respirer
   sourceMinX -= 30; sourceMinY -= 30;
   sourceMaxX += 30; sourceMaxY += 30;
   
@@ -11504,8 +11566,6 @@ window.openPlan = function() {
 
   if(useArchitecture) {
     aspectRatio = spanX / spanY;
-    
-    // CALCUL EXACT DES PROPORTIONS (SANS ÉCRASEMENT)
     const toPctX = x => ((x - sourceMinX) / spanX) * 100;
     const toPctY = y => ((y - sourceMinY) / spanY) * 100;
     const toPctW = w => (w / spanX) * 100;
@@ -11540,8 +11600,6 @@ window.openPlan = function() {
     </div>
     
     <div class="plan-wrap plan-visible-wrap" style="display:flex; justify-content:flex-start; align-items:flex-start; background:#f8f8f8; overflow:auto!important; padding: 20px;">
-      
-      <!-- LE CONTENEUR QUI CONSERVE LE FORMAT EXACT -->
       <div class="plan-canvas plan-canvas-responsive" style="position:relative; width: 100%; min-width: 900px; aspect-ratio: ${aspectRatio}; margin: auto; transform: none !important;">
         ${zones.map(z => `<div class="plan-zone" style="position:absolute; left:${z.__left}%; top:${z.__top}%; width:${z.__width}%; height:${z.__height}%;"><strong>${esc(z.label || "ZONE")}</strong></div>`).join("")}
         
@@ -11563,12 +11621,12 @@ window.openPlan = function() {
           const time = s.age ? duration(s.age) : "00:00";
           const capacityPax = Math.max(1, num(t.pax ?? t.capacity ?? 2) || 2);
           
-          return `<button class="plan-table ${s.status} ${ex ? "express-table" : ""}" data-plan-table="${esc(t.label)}" style="position:absolute; left:${t.__left}%; top:${t.__top}%; width:${t.__width}%; height:${t.__height}%; display:flex; flex-direction:column; align-items:center; justify-content:center; text-align:center; padding: 4px; box-sizing: border-box; min-width: 0 !important; min-height: 0 !important; border-radius: 8px !important;">
-            <span style="font-size:clamp(12px, 2.5vw, 24px); font-weight:1000; line-height:1; margin-bottom: 2px;">${esc(t.label)}</span>
-            <small style="font-size:clamp(7px, 1.2vw, 12px); font-weight:950; text-transform:uppercase; margin-top:2px;">${esc(etatLabel)}</small>
-            ${active ? `<small style="font-size:clamp(8px, 1.4vw, 14px); font-weight:900; margin-top:2px;">${esc(time)}</small>` : ""}
-            <small style="font-size:clamp(8px, 1.4vw, 13px); font-weight:950; margin-top:2px;">${capacityPax} PAX</small>
-          </button>`
+          return \`<button class="plan-table \${s.status} \${ex ? "express-table" : ""}" data-plan-table="\${esc(t.label)}" style="position:absolute; left:\${t.__left}%; top:\${t.__top}%; width:\${t.__width}%; height:\${t.__height}%; display:flex; flex-direction:column; align-items:center; justify-content:center; text-align:center; padding: 4px; box-sizing: border-box; min-width: 0 !important; min-height: 0 !important; border-radius: 8px !important;">
+            <span style="font-size:clamp(12px, 2.5vw, 24px); font-weight:1000; line-height:1; margin-bottom: 2px;">\${esc(t.label)}</span>
+            <small style="font-size:clamp(7px, 1.2vw, 12px); font-weight:950; text-transform:uppercase; margin-top:2px;">\${esc(etatLabel)}</small>
+            \${active ? \`<small style="font-size:clamp(8px, 1.4vw, 14px); font-weight:900; margin-top:2px;">\${esc(time)}</small>\` : ""}
+            <small style="font-size:clamp(8px, 1.4vw, 13px); font-weight:950; margin-top:2px;">\${capacityPax} PAX</small>
+          </button>\`
         }).join("")}
       </div>
     </div>
@@ -11580,68 +11638,7 @@ window.openPlan = function() {
   body.querySelector("[data-plan-express-manage]")?.addEventListener("click", openExpressTableManager);
   body.querySelectorAll("[data-plan-table]").forEach(b => b.onclick = () => { closeSheet(); openOrder(b.dataset.planTable) });
 };
-
-// 3. Application du PAX sur les tables classiques (Écran 1)
-setTimeout(() => {
-    window.renderTables = function() {
-      const filter = getDeviceFilter();
-      let list = STATE.tables || [];
-      if (filter.type === "zone") {
-        list = list.filter(t => (getZone(t)?.label || t.zone || "Nouvelle Zone") === filter.value);
-      } else if (filter.type === "room") {
-        list = list.filter(t => t.room === filter.value);
-      } else {
-        list = list.filter(t => t.room === STATE.room);
-      }
-
-      const el = document.getElementById("tables");
-      if(!list.length) { el.innerHTML = '<div class="empty-state">Aucune table.</div>'; return; }
-
-      el.innerHTML = list.map(t => {
-        const s = tableStats(t.label);
-        const o = getOrder(t.label);
-        const z = getZone(t);
-        
-        let etatLabel = "LIBRE";
-        if (s.status === 'reserved') etatLabel = "RÉSERVÉE";
-        else if (s.status === 'payment') etatLabel = "PAIEMENT";
-        else if (s.status === 'alert') etatLabel = "URGENT";
-        else if (s.status === 'late') etatLabel = "RETARD";
-        else if (s.status === 'ready') etatLabel = "PRÊT";
-        else if (s.status === 'wait') etatLabel = "ATTENTE";
-        else if (s.status === 'active') etatLabel = "OCCUPÉE";
-
-        const capacityPax = Math.max(1, Number(t.pax ?? t.capacity ?? 2) || 2);
-        const paxLabel = capacityPax + " PAX";
-        
-        const time = s.age ? duration(s.age) : "—";
-        const zoneLabel = text(z?.label||t.zone||"Nouvelle Zone");
-        const zoneColor = text(z?.color||z?.couleur||(s.status==="ready"?"#36d98a":s.status==="wait"?"#ff9a43":s.status==="late"||s.status==="alert"?"#ff5368":s.status==="reserved"?"#9b74ff":"#b7bd00"));
-
-        const preview = (o?.items||[]).filter(Boolean).slice(0,2).map(item => {
-          const q = itemQty(item);
-          const ready = lineReady(item);
-          const sent = lineFired(item);
-          const state = ready ? " · PRÊT" : sent ? "" : " · À ENVOYER";
-          return '<span class="table-preview-line' + (ready||s.status==="late"||s.status==="alert"?" warn":"") + '">• ' + (q>1?q+"× ":"") + esc(itemName(item)) + state + '</span>';
-        }).join("");
-
-        const isExpress = !!(t.express||t.temporary||t.isTemporary);
-
-        return '<button class="table-card ' + s.status + (isExpress?" express-table":"") + '" data-table="' + esc(t.label) + '">' +
-          (isExpress?'<span class="express-badge">EXPRESS</span>':"") +
-          '<span class="num">' + esc(t.label) + '</span>' +
-          '<span class="meta state-label" style="font-size:11px; font-weight:950; text-transform:uppercase; margin-top:2px;">' + esc(etatLabel) + '</span>' +
-          '<span class="time" style="font-size:14px; font-weight:900; margin-top:3px;">' + esc(time) + '</span>' +
-          '<span class="meta pax" style="font-size:12px; margin-top:3px; font-weight:900;">' + esc(paxLabel) + '</span>' +
-          '<span class="table-zone" style="color:' + esc(zoneColor) + '; margin-top:6px;">' + esc(zoneLabel) + '</span>' +
-          (preview ? '<span class="table-preview">' + preview + '</span>' : "") +
-        '</button>';
-      }).join("");
-    };
-    scheduleRender();
-}, 200);
-</script>
+</script>>
 <!-- 1. CORRECTION VISUELLE : TITRE SUR UNE LIGNE SANS CASSER LE C1 -->
 <style id="ticket-une-ligne-flottant">
 /* La colonne de gauche doit pouvoir se réduire */
