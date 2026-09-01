@@ -14207,5 +14207,166 @@ body.order-open #bottomObservationBar {
     };
 })();
 </script>
+  <!-- =========================================================
+     RÉACTIVATION DU SYSTÈME "QUI MANGE QUOI ?" AU CLIC PRODUIT
+     ========================================================= -->
+<script id="restore-qui-mange-quoi-popup">
+(function restoreProductSeatPicker() {
+    
+    // 1. RÉTABLIR L'OUVERTURE DE "QUI MANGE QUOI ?" AU CLIC SUR UN PLAT
+    const productsContainer = document.getElementById("products");
+    if (productsContainer) {
+        // Cloner pour détruire l'ancien comportement "ajout rapide"
+        const newProducts = productsContainer.cloneNode(true);
+        productsContainer.parentNode.replaceChild(newProducts, productsContainer);
+
+        newProducts.addEventListener("pointerdown", e => {
+            const b = e.target.closest("[data-product]");
+            if (!b || b.classList.contains("sold")) return;
+            
+            clearProductPress();
+            productPress.button = b;
+            productPress.startX = e.clientX;
+            productPress.startY = e.clientY;
+            productPress.long = false;
+            b.classList.add("longpress-active");
+            
+            productPress.timer = setTimeout(() => {
+                productPress.timer = null;
+                productPress.long = true;
+                b.classList.remove("longpress-active");
+                const p = findProductFromButton(b);
+                if (navigator.vibrate) { try { navigator.vibrate(35); } catch (_) {} }
+                if (typeof showFullProductTitle === "function") showFullProductTitle(p);
+            }, 600);
+        }, { passive: true });
+
+        newProducts.addEventListener("pointermove", e => {
+            if (!productPress.button) return;
+            const dx = Math.abs(e.clientX - productPress.startX);
+            const dy = Math.abs(e.clientY - productPress.startY);
+            if (dx > 10 || dy > 10) {
+                clearProductPress();
+                productPress.button = null;
+            }
+        }, { passive: true });
+
+        newProducts.addEventListener("pointerup", e => {
+            const b = e.target.closest("[data-product]");
+            if (!b || !productPress.button) return;
+
+            const wasLong = productPress.long;
+            const sameButton = b === productPress.button;
+
+            clearProductPress();
+            productPress.button = null;
+            productPress.long = false;
+
+            if (!sameButton || wasLong) return;
+
+            const pendingCookingItem = typeof getValidPendingCookingItem === "function" ? getValidPendingCookingItem() : null;
+            if (pendingCookingItem) {
+                if (typeof showQuickCooking === "function") showQuickCooking(pendingCookingItem);
+                if (typeof toast === "function") toast("Cuisson obligatoire", true);
+                return;
+            }
+
+            const key = b.dataset.product + "|" + b.dataset.pname;
+            const t = Date.now();
+
+            if (lastProductTap.key === key && t - lastProductTap.at < 135) return;
+            lastProductTap = { key, at: t };
+
+            const p = typeof findProductFromButton === "function" ? findProductFromButton(b) : null;
+            if (!p) return;
+
+            // 👉 C'EST ICI QU'ON RÉACTIVE LA FENÊTRE AU LIEU D'AJOUTER DIRECTEMENT
+            if (typeof openProductSeatPicker === "function") {
+                openProductSeatPicker(p, b);
+            }
+        }, { passive: true });
+
+        newProducts.addEventListener("pointercancel", () => {
+            clearProductPress();
+            productPress.button = null;
+            productPress.long = false;
+        });
+    }
+
+    // 2. EMPÊCHER LA FENÊTRE DE S'OUVRIR TOUTE SEULE QUAND ON OUVRE UNE TABLE
+    const tablesContainer = document.getElementById("tables");
+    if (tablesContainer) {
+        const newTables = tablesContainer.cloneNode(true);
+        tablesContainer.parentNode.replaceChild(newTables, tablesContainer);
+
+        let localTablePress = { timer: null, button: null, startX: 0, startY: 0, long: false };
+
+        function clearLocalTablePress() {
+            if (localTablePress.timer) clearTimeout(localTablePress.timer);
+            localTablePress.timer = null;
+            if (localTablePress.button) {
+                localTablePress.button.style.transform = "";
+                localTablePress.button.style.opacity = "";
+            }
+        }
+
+        newTables.addEventListener("pointerdown", e => {
+            const b = e.target.closest("[data-table]");
+            if(!b) return;
+            clearLocalTablePress();
+            localTablePress.button = b;
+            localTablePress.startX = e.clientX;
+            localTablePress.startY = e.clientY;
+            localTablePress.long = false;
+            
+            b.style.transform = "scale(0.92)";
+            b.style.opacity = "0.7";
+
+            localTablePress.timer = setTimeout(() => {
+                localTablePress.timer = null;
+                localTablePress.long = true;
+                b.style.transform = "";
+                b.style.opacity = "";
+                if(navigator.vibrate) try{ navigator.vibrate(40); } catch(_){}
+                if(typeof openTableDetails === "function") openTableDetails(b.dataset.table);
+            }, 500); 
+        }, {passive: true});
+
+        newTables.addEventListener("pointermove", e => {
+            if(!localTablePress.button) return;
+            const dx = Math.abs(e.clientX - localTablePress.startX);
+            const dy = Math.abs(e.clientY - localTablePress.startY);
+            if(dx > 10 || dy > 10) {
+                clearLocalTablePress();
+                localTablePress.button = null;
+            }
+        }, {passive: true});
+
+        newTables.addEventListener("pointerup", e => {
+            const b = e.target.closest("[data-table]");
+            if(!b || !localTablePress.button) return;
+            
+            const wasLong = localTablePress.long;
+            const sameButton = (b === localTablePress.button);
+            
+            clearLocalTablePress();
+            localTablePress.button = null;
+            localTablePress.long = false;
+            
+            if(!sameButton || wasLong) return;
+            
+            // Ouvre la table de façon normale, sans pop-up intempestif
+            if(typeof openOrder === "function") openOrder(b.dataset.table);
+        }, {passive: true});
+
+        newTables.addEventListener("pointercancel", () => {
+            clearLocalTablePress();
+            localTablePress.button = null;
+            localTablePress.long = false;
+        });
+    }
+
+})();
+</script>
 </body>
 </html>
