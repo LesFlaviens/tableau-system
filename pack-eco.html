@@ -4848,7 +4848,7 @@ function addProduct(product){
   }else{
     const name=product.name;
     const price=product.price;
-    const tva=product.vatRate??raw.vatRate??raw.tva??raw.taxRate??fiscalDefaultVatForProduct(product);
+    const tva=fiscalResolvedVatRate(product.vatRate??raw.vatRate??raw.tva??raw.taxRate,product);
 
     line=normalizeCompatItem({
       id:Date.now()+Math.random(),
@@ -6822,7 +6822,7 @@ function openPayment(){
   const o=ensureOrder(STATE.currentTable),total=orderTotal(o),profile=fiscalProfile();
   const paid=text(o.paymentStatus||o.paymentDraft?.status).toUpperCase()==="PAYE";
   openSheet("💳 CAISSE · TABLE "+STATE.currentTable,`
-    <div class="big-state"><div class="big gold">${money(total)}</div><div class="small">Profil fiscal ${esc(profile.label)} · ${esc(profile.currency)}</div></div>
+    <div class="big-state"><div class="big gold">${money(total)}</div><div class="small">Profil fiscal ${esc(profile.label)} · ${esc(profile.currency)} · TVA automatique</div></div>
     <div class="action-grid">
       <button class="action-btn green" data-pay="CARTE">💳 CARTE</button>
       <button class="action-btn gold" data-pay="ESPÈCES">💶 ESPÈCES</button>
@@ -7302,10 +7302,36 @@ function fiscalDefaultVatForProduct(product){
   return 0;
 }
 
+function fiscalResolvedVatRate(value,product){
+  const explicit=normalizeTaxRate(value);
+  const profile=fiscalProfile();
+  const allowed=fiscalAllowedRates(profile);
+  if(explicit!==null && allowed.some(v=>Math.abs(v-explicit)<0.001))return explicit;
+  return fiscalDefaultVatForProduct(product||{});
+}
+
 function itemVatRate(item){
-  const explicit=normalizeTaxRate(itemVat(item)??item?.taxRate??item?.tauxTVA);
-  if(explicit!==null)return explicit;
-  return fiscalDefaultVatForProduct(item||{});
+  return fiscalResolvedVatRate(itemVat(item)??item?.taxRate??item?.tauxTVA,item||{});
+}
+
+function fiscalNormalizeOrderVat(order){
+  if(!order||!Array.isArray(order.items))return order;
+  const profile=fiscalProfile();
+  const allowed=fiscalAllowedRates(profile);
+  order.items.forEach(item=>{
+    if(!item||item.cancelled)return;
+    const previous=normalizeTaxRate(itemVat(item)??item?.taxRate??item?.tauxTVA);
+    const effective=fiscalResolvedVatRate(previous,item);
+    if(previous===null || !allowed.some(v=>Math.abs(v-previous)<0.001)){
+      if(previous!==null && item.previousFiscalVatRate===undefined)item.previousFiscalVatRate=previous;
+      item.vatRate=effective;
+      item.tva=effective;
+      item.taxRate=effective;
+      item.fiscalVatCountry=profile.country;
+      item.fiscalVatAutoAdjusted=true;
+    }
+  });
+  return order;
 }
 
 function fiscalBreakdown(order){
@@ -7991,6 +8017,11 @@ async function recordPayment(method){
     o.status="pending";
     return saveCurrent(o,"Paiement en attente",{immediate:true});
   }
+
+  /* Harmonise automatiquement les anciens taux TVA avec le profil fiscal actif
+     AVANT le scellement. Exemple : une ancienne ligne à 10 % (France) devient
+     8,1 % en profil SUISSE si aucun taux CH valide n'est déjà défini. */
+  fiscalNormalizeOrderVat(o);
 
   const validation=fiscalValidateOrder(o,{forPayment:true});
   if(!validation.ok){
