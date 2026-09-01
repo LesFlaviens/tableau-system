@@ -13945,26 +13945,10 @@ console.log(
 </script>
 
 <!-- =========================================================
-     MODIFICATION DOCK (ORDRE) ET MODAL OBSERVATION/OCCUPATION
+     RÉORGANISATION DU DOCK ET MODAL D'OCCUPATION (VERSION SÉCURISÉE)
      ========================================================= -->
-<style id="reorder-dock-and-modal">
-/* 1. Inverser l'ordre du dock pour placer OBSERVATION et FERMER tout en haut */
-#bottomObservationBar {
-    display: flex !important;
-    flex-direction: column !important;
-}
-/* On force l'ordre d'affichage des 3 rangées */
-#bottomObservationBar .order-dock-close {
-    order: 1 !important; 
-}
-#bottomObservationBar .order-dock-payment {
-    order: 2 !important;
-}
-#bottomObservationBar .order-dock-service {
-    order: 3 !important;
-}
-
-/* 2. Styles dédiés pour le nouveau modal */
+<style id="modal-occupation-style">
+/* Styles dédiés pour le nouveau modal */
 .table-status-modal-header {
     background: #e9e9e9;
     border-radius: 12px;
@@ -13992,30 +13976,44 @@ console.log(
 }
 </style>
 
-<script id="observation-modal-logic">
-(function initObservationModal() {
-    
-    // Remplacer l'ancienne action et le nom du bouton OBSERVATION -> OBSERVER
-    const setupBtn = () => {
-        const btn = document.getElementById("bottomObservation");
-        if (!btn) return;
-        
-        btn.textContent = "OBSERVER";
-        
-        // On clone le bouton pour écraser l'ancien event listener
-        const newBtn = btn.cloneNode(true);
-        btn.parentNode.replaceChild(newBtn, btn);
-        
-        newBtn.addEventListener("click", () => {
-            openTableStatusModal();
-        });
-    };
+<script id="dock-and-modal-logic">
+(function initDockAndModal() {
+    // 1. Déplacer physiquement la rangée et renommer le bouton (méthode 100% fiable)
+    function setupUI() {
+        const bar = document.getElementById("bottomObservationBar");
+        if (!bar) return;
 
-    // Exécuter immédiatement (et au chargement complet par sécurité)
-    setupBtn();
-    window.addEventListener("DOMContentLoaded", setupBtn);
+        // Déplacer la ligne "OBSERVATION / FERMER" tout en haut du dock
+        const closeRow = bar.querySelector(".order-dock-close");
+        if (closeRow && bar.firstChild !== closeRow) {
+            bar.insertBefore(closeRow, bar.firstChild);
+        }
 
-    // Fonction qui génère le modal identique à la capture
+        // Renommer et re-câbler le bouton OBSERVER
+        const obsBtn = document.getElementById("bottomObservation");
+        if (obsBtn && !obsBtn.dataset.modalBinded) {
+            obsBtn.textContent = "OBSERVER";
+            obsBtn.dataset.modalBinded = "1"; // Sécurité pour ne le faire qu'une fois
+            
+            // Purger les anciens événements en le clonant
+            const newBtn = obsBtn.cloneNode(true);
+            obsBtn.parentNode.replaceChild(newBtn, obsBtn);
+            
+            newBtn.addEventListener("click", () => {
+                if (typeof window.openTableStatusModal === "function") {
+                    window.openTableStatusModal();
+                }
+            });
+        }
+    }
+
+    // Lancer la réorganisation immédiatement et après le chargement
+    setupUI();
+    document.addEventListener("DOMContentLoaded", setupUI);
+    // Double vérification si l'interface est générée tardivement
+    setTimeout(setupUI, 500); 
+
+    // 2. Logique de la fenêtre modale (Identique à votre capture 2)
     window.openTableStatusModal = function() {
         if (!STATE.currentTable) {
             if (typeof toast === "function") toast("Ouvrez d'abord une table", true);
@@ -14025,7 +14023,6 @@ console.log(
         const o = STATE.currentOrder || (typeof ensureOrder === "function" ? ensureOrder(STATE.currentTable) : null);
         if (!o) return;
         
-        // Récupérer la note actuelle s'il y en a une
         const currentNote = o.note || o.observation || "";
         const safeNote = typeof esc === "function" ? esc(currentNote) : currentNote;
 
@@ -14048,12 +14045,10 @@ console.log(
             
             const area = document.getElementById("tableStatusText");
             
-            // Écouteurs sur les 4 boutons de raccourci
             document.getElementById("sheetBody").querySelectorAll("[data-status-btn]").forEach(b => {
                 b.onclick = () => { area.value = b.dataset.statusBtn; };
             });
 
-            // Sauvegarde de l'état
             document.getElementById("btnSaveTableStatus").onclick = async () => {
                 const reason = area.value.trim();
                 if (!reason) {
@@ -14064,246 +14059,7 @@ console.log(
                 o.note = reason;
                 o.observation = reason;
                 
-                // Ces déclencheurs feront passer la table au statut d'alerte (Rouge) sur le plan interactif
-                o.alert = true; 
-                o.alerteRouge = true; 
-                
-                if (typeof saveCurrent === "function") {
-                    await saveCurrent(o, "Motif d'occupation : " + reason, { immediate: true });
-                }
-                
-                if (typeof closeSheet === "function") closeSheet();
-                if (typeof toast === "function") toast("Table marquée en occupation / rouge");
-                if (typeof scheduleRender === "function") scheduleRender();
-            };
-        }
-    };
-})();
-</script>
-  <!-- =========================================================
-     MODIFICATION DOCK (ORDRE) ET MODAL OBSERVATION/OCCUPATION
-     ========================================================= -->
-<style id="reorder-dock-and-modal">
-/* 1. Inverser l'ordre du dock pour placer OBSERVATION et FERMER tout en haut */
-#bottomObservationBar {
-    display: flex !important;
-    flex-direction: column !important;
-}
-#bottomObservationBar .order-dock-close {
-    order: -1 !important; /* -1 force cette ligne à s'afficher tout en haut */
-    margin-bottom: 5px !important;
-}
-
-/* 2. Styles dédiés pour le nouveau modal */
-.table-status-modal-header {
-    background: #e9e9e9;
-    border-radius: 12px;
-    padding: 15px;
-    margin-bottom: 15px;
-    text-align: center;
-    font-size: 16px;
-    font-weight: 900;
-    color: #111;
-}
-.table-status-modal-textarea {
-    width: 100%;
-    min-height: 80px;
-    font-size: 16px;
-    margin-bottom: 15px;
-    padding: 12px;
-    border: 2px solid #cfd2d5;
-    border-radius: 10px;
-    resize: vertical;
-    outline: none;
-    font-family: inherit;
-}
-.table-status-modal-textarea:focus {
-    border-color: #111;
-}
-</style>
-
-<script id="observation-modal-logic">
-(function initObservationModal() {
-    
-    // 1. Renommer le bouton existant en "OBSERVER" de manière sécurisée
-    const renameInterval = setInterval(() => {
-        const btn = document.getElementById("bottomObservation");
-        if (btn) {
-            btn.textContent = "OBSERVER";
-            clearInterval(renameInterval);
-        }
-    }, 100);
-
-    // 2. Intercepter la fonction appelée par le bouton (Méthode 100% sans risque de crash)
-    window.openObservationFast = function() {
-        if (!STATE.currentTable) {
-            if (typeof toast === "function") toast("Ouvrez d'abord une table", true);
-            return;
-        }
-        
-        const o = STATE.currentOrder || (typeof ensureOrder === "function" ? ensureOrder(STATE.currentTable) : null);
-        if (!o) return;
-        
-        // Récupérer la note actuelle s'il y en a une
-        const currentNote = o.note || o.observation || "";
-        const safeNote = typeof esc === "function" ? esc(currentNote) : currentNote;
-
-        const html = `
-            <div class="table-status-modal-header">
-                Indiquez le motif d'occupation (la table apparaîtra en rouge sur le plan) :
-            </div>
-            <div class="action-grid" style="gap:10px; margin-bottom:15px;">
-                <button class="action-btn" data-status-btn="STAFF" style="background:#fff; color:#111; font-size:16px; font-weight:950; min-height:60px; border:2px solid #cfd2d5;">STAFF</button>
-                <button class="action-btn" data-status-btn="RÉSERVÉ" style="background:#fff; color:#111; font-size:16px; font-weight:950; min-height:60px; border:2px solid #cfd2d5;">RÉSERVÉ</button>
-                <button class="action-btn" data-status-btn="EN ATTENTE" style="background:#fff; color:#111; font-size:16px; font-weight:950; min-height:60px; border:2px solid #cfd2d5;">EN ATTENTE</button>
-                <button class="action-btn" data-status-btn="MÉNAGE" style="background:#fff; color:#111; font-size:16px; font-weight:950; min-height:60px; border:2px solid #cfd2d5;">MÉNAGE</button>
-            </div>
-            <textarea id="tableStatusText" class="table-status-modal-textarea" placeholder="Ou tapez une autre raison ici (VIP, etc.)...">${safeNote}</textarea>
-            <button id="btnSaveTableStatus" class="action-btn" style="background:#111; color:#fff; font-size:18px; font-weight:950; width:100%; min-height:60px; border:none; border-radius:12px;">✓ OCCUPER LA TABLE</button>
-        `;
-
-        if (typeof openSheet === "function") {
-            openSheet("POURQUOI CETTE TABLE EST OCCUPÉE ?", html);
-            
-            const area = document.getElementById("tableStatusText");
-            
-            // Écouteurs sur les 4 boutons de raccourci
-            document.getElementById("sheetBody").querySelectorAll("[data-status-btn]").forEach(b => {
-                b.onclick = () => { area.value = b.dataset.statusBtn; };
-            });
-
-            // Sauvegarde de l'état
-            document.getElementById("btnSaveTableStatus").onclick = async () => {
-                const reason = area.value.trim();
-                if (!reason) {
-                    if (typeof toast === "function") toast("Veuillez indiquer un motif", true);
-                    return;
-                }
-                
-                o.note = reason;
-                o.observation = reason;
-                
-                // Déclencheurs pour afficher la table en URGENCE (Rouge) sur le plan interactif
-                o.alert = true; 
-                o.alerteRouge = true; 
-                
-                if (typeof saveCurrent === "function") {
-                    await saveCurrent(o, "Motif d'occupation : " + reason, { immediate: true });
-                }
-                
-                if (typeof closeSheet === "function") closeSheet();
-                if (typeof toast === "function") toast("Table marquée en occupation / rouge");
-                if (typeof scheduleRender === "function") scheduleRender();
-            };
-        }
-    };
-})();
-</script>
-  
-  <!-- =========================================================
-     MODIFICATION DOCK (ORDRE) ET MODAL OBSERVATION/OCCUPATION
-     ========================================================= -->
-<style id="reorder-dock-and-modal">
-/* 1. Inverser l'ordre du dock pour placer OBSERVATION et FERMER tout en haut */
-#bottomObservationBar {
-    display: flex !important;
-    flex-direction: column !important;
-}
-#bottomObservationBar .order-dock-close {
-    order: -1 !important; /* -1 force cette ligne à s'afficher tout en haut */
-    margin-bottom: 5px !important;
-}
-
-/* 2. Styles dédiés pour le nouveau modal */
-.table-status-modal-header {
-    background: #e9e9e9;
-    border-radius: 12px;
-    padding: 15px;
-    margin-bottom: 15px;
-    text-align: center;
-    font-size: 16px;
-    font-weight: 900;
-    color: #111;
-}
-.table-status-modal-textarea {
-    width: 100%;
-    min-height: 80px;
-    font-size: 16px;
-    margin-bottom: 15px;
-    padding: 12px;
-    border: 2px solid #cfd2d5;
-    border-radius: 10px;
-    resize: vertical;
-    outline: none;
-    font-family: inherit;
-}
-.table-status-modal-textarea:focus {
-    border-color: #111;
-}
-</style>
-
-<script id="observation-modal-logic">
-(function initObservationModal() {
-    
-    // 1. Renommer le bouton existant en "OBSERVER" de manière sécurisée
-    const renameInterval = setInterval(() => {
-        const btn = document.getElementById("bottomObservation");
-        if (btn) {
-            btn.textContent = "OBSERVER";
-            clearInterval(renameInterval);
-        }
-    }, 100);
-
-    // 2. Intercepter la fonction appelée par le bouton (Méthode 100% sans risque de crash)
-    window.openObservationFast = function() {
-        if (!STATE.currentTable) {
-            if (typeof toast === "function") toast("Ouvrez d'abord une table", true);
-            return;
-        }
-        
-        const o = STATE.currentOrder || (typeof ensureOrder === "function" ? ensureOrder(STATE.currentTable) : null);
-        if (!o) return;
-        
-        // Récupérer la note actuelle s'il y en a une
-        const currentNote = o.note || o.observation || "";
-        const safeNote = typeof esc === "function" ? esc(currentNote) : currentNote;
-
-        const html = `
-            <div class="table-status-modal-header">
-                Indiquez le motif d'occupation (la table apparaîtra en rouge sur le plan) :
-            </div>
-            <div class="action-grid" style="gap:10px; margin-bottom:15px;">
-                <button class="action-btn" data-status-btn="STAFF" style="background:#fff; color:#111; font-size:16px; font-weight:950; min-height:60px; border:2px solid #cfd2d5;">STAFF</button>
-                <button class="action-btn" data-status-btn="RÉSERVÉ" style="background:#fff; color:#111; font-size:16px; font-weight:950; min-height:60px; border:2px solid #cfd2d5;">RÉSERVÉ</button>
-                <button class="action-btn" data-status-btn="EN ATTENTE" style="background:#fff; color:#111; font-size:16px; font-weight:950; min-height:60px; border:2px solid #cfd2d5;">EN ATTENTE</button>
-                <button class="action-btn" data-status-btn="MÉNAGE" style="background:#fff; color:#111; font-size:16px; font-weight:950; min-height:60px; border:2px solid #cfd2d5;">MÉNAGE</button>
-            </div>
-            <textarea id="tableStatusText" class="table-status-modal-textarea" placeholder="Ou tapez une autre raison ici (VIP, etc.)...">${safeNote}</textarea>
-            <button id="btnSaveTableStatus" class="action-btn" style="background:#111; color:#fff; font-size:18px; font-weight:950; width:100%; min-height:60px; border:none; border-radius:12px;">✓ OCCUPER LA TABLE</button>
-        `;
-
-        if (typeof openSheet === "function") {
-            openSheet("POURQUOI CETTE TABLE EST OCCUPÉE ?", html);
-            
-            const area = document.getElementById("tableStatusText");
-            
-            // Écouteurs sur les 4 boutons de raccourci
-            document.getElementById("sheetBody").querySelectorAll("[data-status-btn]").forEach(b => {
-                b.onclick = () => { area.value = b.dataset.statusBtn; };
-            });
-
-            // Sauvegarde de l'état
-            document.getElementById("btnSaveTableStatus").onclick = async () => {
-                const reason = area.value.trim();
-                if (!reason) {
-                    if (typeof toast === "function") toast("Veuillez indiquer un motif", true);
-                    return;
-                }
-                
-                o.note = reason;
-                o.observation = reason;
-                
-                // Déclencheurs pour afficher la table en URGENCE (Rouge) sur le plan interactif
+                // Mettre la table en rouge/alerte
                 o.alert = true; 
                 o.alerteRouge = true; 
                 
