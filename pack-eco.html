@@ -3721,6 +3721,71 @@ body.summary-open #bottomObservationBar{display:none !important;}
 }
 </style>
 
+
+<style id="ichef-c1-c9-dans-cuisson-v2">
+/* =========================================================
+   C1-C9 DIRECTEMENT DANS LE CADRE DE CUISSON
+   ========================================================= */
+#quickCookingBar .quick-cook-seats-wrap{
+  margin:14px 0 16px;
+  padding:12px;
+  border:3px solid #171717;
+  border-radius:18px;
+  background:#f4f5f6;
+}
+#quickCookingBar .quick-cook-seats-label{
+  margin:0 0 9px;
+  color:#151515;
+  font-size:14px;
+  line-height:1;
+  font-weight:1000;
+  letter-spacing:.4px;
+  text-transform:uppercase;
+}
+#quickCookingBar .quick-cook-seats{
+  display:grid;
+  grid-template-columns:repeat(9,minmax(0,1fr));
+  gap:7px;
+}
+#quickCookingBar .quick-cook-seat-btn{
+  min-width:0;
+  min-height:62px;
+  padding:6px 2px;
+  border:4px solid currentColor;
+  border-radius:15px;
+  background:#fff;
+  color:#111;
+  font-size:20px;
+  font-weight:1000;
+  line-height:1;
+  cursor:pointer;
+}
+#quickCookingBar .quick-cook-seat-btn[data-seat="1"]{color:var(--c1)}
+#quickCookingBar .quick-cook-seat-btn[data-seat="2"]{color:var(--c2)}
+#quickCookingBar .quick-cook-seat-btn[data-seat="3"]{color:var(--c3)}
+#quickCookingBar .quick-cook-seat-btn[data-seat="4"]{color:var(--c4)}
+#quickCookingBar .quick-cook-seat-btn[data-seat="5"]{color:var(--c5)}
+#quickCookingBar .quick-cook-seat-btn[data-seat="6"]{color:var(--c6)}
+#quickCookingBar .quick-cook-seat-btn[data-seat="7"]{color:var(--c7)}
+#quickCookingBar .quick-cook-seat-btn[data-seat="8"]{color:#b09e00}
+#quickCookingBar .quick-cook-seat-btn[data-seat="9"]{color:#6f7a80}
+#quickCookingBar .quick-cook-seat-btn.active{
+  background:currentColor;
+  box-shadow:0 0 0 3px #111 inset,0 0 0 2px #111;
+}
+#quickCookingBar .quick-cook-seat-btn.active span{color:#fff}
+#quickCookingBar .quick-cook-seat-btn span{color:currentColor}
+
+@media (max-width:900px){
+  #quickCookingBar .quick-cook-seats{grid-template-columns:repeat(5,minmax(0,1fr))}
+  #quickCookingBar .quick-cook-seat-btn{min-height:52px;font-size:17px;border-width:3px}
+}
+@media (max-width:560px){
+  #quickCookingBar .quick-cook-seats{grid-template-columns:repeat(3,minmax(0,1fr))}
+  #quickCookingBar .quick-cook-seat-btn{min-height:48px;font-size:16px}
+}
+</style>
+
 </head>
 <body>
 <div id="screenLabel">ÉCRAN 1 · TABLES</div>
@@ -3895,8 +3960,12 @@ body.summary-open #bottomObservationBar{display:none !important;}
       <span id="quickCookSeat" class="seat-badge">C1</span>
       <div>
         <div id="quickCookName" class="quick-cook-name">Cuisson</div>
-        <div class="quick-cook-help">Choisissez la cuisson avant l’ajout au ticket.</div>
+        <div class="quick-cook-help">Choisissez d’abord le convive, puis la cuisson.</div>
       </div>
+    </div>
+    <div class="quick-cook-seats-wrap">
+      <div class="quick-cook-seats-label">QUI MANGE QUOI ?</div>
+      <div id="quickCookSeats" class="quick-cook-seats"></div>
     </div>
     <div id="quickCookGrid" class="quick-cook-grid"></div>
     <button id="quickCookBack" type="button">RETOUR À C1–C9</button>
@@ -7258,6 +7327,50 @@ function hideQuickCooking(){
   if(bar)bar.classList.add("hidden");
 }
 
+function renderQuickCookingSeats(activeSeat){
+  const host=$("quickCookSeats");
+  if(!host)return;
+  const active=Math.max(1,Math.min(9,Number(activeSeat)||1));
+  host.innerHTML=Array.from({length:9},(_,idx)=>{
+    const seat=idx+1;
+    return `<button type="button"
+                    class="quick-cook-seat-btn${seat===active?" active":""}"
+                    data-quick-seat="${seat}"
+                    data-seat="${seat}"
+                    aria-pressed="${seat===active?"true":"false"}">
+              <span>C${seat}</span>
+            </button>`;
+  }).join("");
+}
+
+function assignPendingCookingSeat(seat){
+  const n=Math.max(1,Math.min(9,Number(seat)||1));
+  if(!STATE.currentTable||!STATE.pendingCookingLine)return false;
+
+  const o=ensureOrder(STATE.currentTable);
+  const item=o.items.find(x=>lineKey(x)===STATE.pendingCookingLine);
+  if(!item)return false;
+
+  item.seat=n;
+  item.guestSeat=n;
+  item.seatNumber=n;
+  item.guestName=`C${n}`;
+  item.guest=`C${n}`;
+  STATE.activeSeat=n;
+  ACTIVE_SEAT_BY_TABLE.set(STATE.currentTable,n);
+
+  if(num(o.pax||0)<n)o.pax=n;
+
+  $("quickCookSeat").className=`seat-badge seat-${n}`;
+  $("quickCookSeat").textContent=seatLabel(n);
+  const profile=cookingProfileFor(item);
+  if($("quickCookModalTitle"))$("quickCookModalTitle").textContent=`${seatLabel(n)} · ${profile.label||"CUISSON"}`;
+
+  renderQuickCookingSeats(n);
+  renderGuestButtons();
+  return true;
+}
+
 function showQuickCooking(item){
   if(!item)return;
 
@@ -7274,6 +7387,7 @@ function showQuickCooking(item){
   $("quickCookSeat").textContent=seatLabel(seat);
   if($("quickCookModalTitle"))$("quickCookModalTitle").textContent=`${seatLabel(seat)} · ${profile.label||"CUISSON"}`;
   $("quickCookName").textContent=itemName(item);
+  renderQuickCookingSeats(seat);
 
   $("quickCookGrid").innerHTML=levels.map(level=>
     `<button type="button"
@@ -8563,6 +8677,15 @@ $("rushStrip").onclick=openRush;
 $("btnHeadWho").onclick = openWho;
 $("btnHeadReady").onclick = openKitchen;
   
+$("quickCookSeats")?.addEventListener("click",e=>{
+  const b=e.target.closest("[data-quick-seat]");
+  if(!b||!STATE.pendingCookingLine)return;
+  const seat=Number(b.dataset.quickSeat)||1;
+  if(assignPendingCookingSeat(seat)){
+    toast(`${seatLabel(seat)} sélectionné · choisissez la cuisson`);
+  }
+});
+
 $("quickCookGrid").addEventListener("click",async e=>{
   const b=e.target.closest("[data-quick-cooking]");
   if(!b||!STATE.pendingCookingLine)return;
