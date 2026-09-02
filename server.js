@@ -1132,7 +1132,6 @@ app.post('/api/nouvelle-demande-demo', async (req, res) => {
     try {
         const { tenantID, restaurant, phone, email, details } = req.body;
 
-        // 1. Validation basique
         if (!tenantID || !restaurant || !phone || !email) {
             return res.status(400).json({ 
                 success: false, 
@@ -1142,7 +1141,6 @@ app.post('/api/nouvelle-demande-demo', async (req, res) => {
 
         const safeID = cleanString(tenantID);
 
-        // 2. Vérifier si ce tenantID existe déjà (anti-spam)
         const existingTenant = await Tenant.findOne({ tenantID: safeID });
         if (existingTenant) {
              return res.status(409).json({ 
@@ -1151,7 +1149,6 @@ app.post('/api/nouvelle-demande-demo', async (req, res) => {
             });
         }
 
-        // 3. Création du compte "Prospect" (Suspendu en attendant validation)
         await Tenant.create({
             tenantID: safeID,
             clientName: String(restaurant).trim(),
@@ -1167,44 +1164,41 @@ app.post('/api/nouvelle-demande-demo', async (req, res) => {
 
         console.log(`✅ Nouvelle candidature enregistrée en base : ${restaurant} (${safeID})`);
 
-        // 4. 📧 ENVOI DE L'EMAIL DE NOTIFICATION À LA DIRECTION
-        const gmailUser = String(process.env.GMAIL_USER || '').trim();
-        const gmailPassword = String(process.env.GMAIL_APP_PASSWORD || '').trim();
-        const alertRecipient = String(process.env.ICHEF_ALERT_EMAIL || 'iche.flavien@ichef.ch').trim();
+        // 📧 ENVOI DE L'EMAIL SÉCURISÉ (Isolé pour éviter l'erreur 500)
+        try {
+            const gmailUser = String(process.env.GMAIL_USER || '').trim();
+            const gmailPassword = String(process.env.GMAIL_APP_PASSWORD || '').trim();
+            const alertRecipient = String(process.env.ICHEF_ALERT_EMAIL || 'iche.flavien@ichef.ch').trim();
 
-        if (gmailUser && gmailPassword) {
-            const transporter = nodemailer.createTransport({ 
-                service: 'gmail', 
-                auth: { user: gmailUser, pass: gmailPassword } 
-            });
-            
-            await transporter.sendMail({
-                from: gmailUser,
-                to: alertRecipient,
-                subject: `🚨 iCHEF OS - Nouvelle Candidature : ${restaurant}`,
-                html: `
-                    <div style="font-family: Arial, sans-serif; color: #111;">
-                        <h2 style="color: #d4af37;">Nouvelle demande de déploiement iCHEF OS</h2>
-                        <ul style="font-size: 14px; line-height: 1.6;">
-                            <li><b>Établissement :</b> ${restaurant}</li>
-                            <li><b>ID Système (TenantID) :</b> ${safeID}</li>
-                            <li><b>Téléphone :</b> <a href="tel:${phone}">${phone}</a></li>
-                            <li><b>Email client :</b> <a href="mailto:${email}">${email}</a></li>
-                            <li><b>Secteur :</b> ${details?.type || 'Non spécifié'}</li>
-                        </ul>
-                        <p style="font-size: 13px; color: #555; border-top: 1px solid #ddd; padding-top: 10px;">
-                            Le compte a été créé avec le statut <b>SUSPENDU</b>. 
-                            Connectez-vous à la Tour de Contrôle Empire pour auditer et activer ce client.
-                        </p>
-                    </div>
-                `
-            });
-            console.log('📧 Email de notification envoyé avec succès à la direction.');
-        } else {
-            console.warn('⚠️ Échec Email : Variables GMAIL_USER ou GMAIL_APP_PASSWORD non configurées sur le serveur.');
+            if (gmailUser && gmailPassword) {
+                const transporter = nodemailer.createTransport({ 
+                    service: 'gmail', 
+                    auth: { user: gmailUser, pass: gmailPassword } 
+                });
+                
+                await transporter.sendMail({
+                    from: gmailUser,
+                    to: alertRecipient,
+                    subject: `🚨 iCHEF OS - Nouvelle Candidature : ${restaurant}`,
+                    html: `
+                        <div style="font-family: Arial, sans-serif; color: #111;">
+                            <h2 style="color: #d4af37;">Nouvelle demande de déploiement iCHEF OS</h2>
+                            <ul style="font-size: 14px; line-height: 1.6;">
+                                <li><b>Établissement :</b> ${restaurant}</li>
+                                <li><b>ID Système (TenantID) :</b> ${safeID}</li>
+                                <li><b>Téléphone :</b> <a href="tel:${phone}">${phone}</a></li>
+                                <li><b>Email client :</b> <a href="mailto:${email}">${email}</a></li>
+                                <li><b>Secteur :</b> ${details?.type || 'Non spécifié'}</li>
+                            </ul>
+                        </div>
+                    `
+                });
+                console.log('📧 Email de notification envoyé avec succès.');
+            }
+        } catch (emailErr) {
+            console.error('⚠️ Avertissement : Échec de l\'envoi de l\'e-mail (le client est quand même enregistré) :', emailErr.message);
         }
 
-        // 5. Réponse au frontend (Interface utilisateur)
         return res.status(200).json({ 
             success: true, 
             message: "Candidature enregistrée avec succès.",
@@ -1212,7 +1206,7 @@ app.post('/api/nouvelle-demande-demo', async (req, res) => {
         });
 
     } catch (error) {
-        console.error("🚨 Erreur lors de l'enregistrement de la demande de démo :", error);
+        console.error("🚨 Erreur critique /api/nouvelle-demande-demo :", error);
         return res.status(500).json({ 
             success: false, 
             error: "Erreur interne lors du traitement de votre candidature." 
