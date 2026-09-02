@@ -85,31 +85,6 @@ header{
   object-fit:contain;
 }
 .logo-fallback{display:none}
-.currency-switch{
-  display:flex;
-  align-items:center;
-  gap:4px;
-  padding:4px;
-  border:1px solid rgba(216,173,53,.55);
-  border-radius:8px;
-  background:#090a0a;
-}
-.currency-btn{
-  appearance:none;
-  border:0;
-  border-radius:5px;
-  padding:8px 10px;
-  background:transparent;
-  color:#aaa;
-  font-size:10px;
-  font-weight:900;
-  cursor:pointer;
-}
-.currency-btn.active{
-  color:#080808;
-  background:linear-gradient(135deg,#f8d866,#c8961f);
-}
-
 .navlinks{
   display:flex;
   justify-content:center;
@@ -603,7 +578,6 @@ header{
   header{height:auto;padding:10px 0}
   .nav{grid-template-columns:1fr}
   .logo{text-align:center}
-  .currency-switch{justify-content:center;width:max-content;margin:0 auto}
   .navcta{display:grid;grid-template-columns:1fr 1fr}
   .hero h1{font-size:38px}
   .hero-visual{min-height:430px;background-size:cover}
@@ -635,11 +609,7 @@ header{
       <a href="#offres">Tarifs</a>
       <a href="https://ichef.ch/">À propos</a>
     </nav>
-    <div class="currency-switch" aria-label="Choix de la devise">
-      <button class="currency-btn active" id="currencyEUR" type="button" onclick="setCurrency('EUR')">EUR €</button>
-      <button class="currency-btn" id="currencyCHF" type="button" onclick="setCurrency('CHF')">CHF</button>
-    </div>
-    <div class="navcta">
+<div class="navcta">
       <button class="btn btn-outline" onclick="openDemo()">Démonstration</button>
       <button class="btn btn-gold" onclick="openCall()">Contactez-nous</button>
     </div>
@@ -723,7 +693,7 @@ header{
 <section class="section dark" id="offres">
   <div class="wrap">
     <div class="title-line">Nos offres : choisissez votre point de départ</div>
-    <div class="pricing-sub">Toutes nos offres incluent : installation, formation, support et évolutivité. Tarifs affichés en EUR ou CHF selon votre choix.</div>
+    <div class="pricing-sub">Toutes nos offres incluent : installation, formation, support et évolutivité. La devise s’adapte automatiquement à la zone du visiteur.</div>
 
     <div class="price-grid">
       <article class="card">
@@ -853,11 +823,11 @@ header{
 
 <script>
 
-const ICHEF_CURRENCY_KEY = 'ichef_currency';
 
-function setCurrency(currency){
+const ICHEF_CURRENCY_KEY = 'ichef_currency_auto';
+
+function applyCurrency(currency){
   const isCHF = currency === 'CHF';
-  localStorage.setItem(ICHEF_CURRENCY_KEY, currency);
 
   document.querySelectorAll('.js-price').forEach(el=>{
     el.textContent = isCHF ? el.dataset.chf : el.dataset.eur;
@@ -867,29 +837,62 @@ function setCurrency(currency){
     el.textContent = isCHF ? el.dataset.chf : el.dataset.eur;
   });
 
-  const eurBtn = document.getElementById('currencyEUR');
-  const chfBtn = document.getElementById('currencyCHF');
-  if(eurBtn) eurBtn.classList.toggle('active', !isCHF);
-  if(chfBtn) chfBtn.classList.toggle('active', isCHF);
+  document.documentElement.dataset.currency = currency;
 }
 
-function detectInitialCurrency(){
-  const saved = localStorage.getItem(ICHEF_CURRENCY_KEY);
-  if(saved === 'EUR' || saved === 'CHF'){
-    setCurrency(saved);
-    return;
+async function detectCurrencyByZone(){
+  let currency = 'EUR';
+
+  try{
+    // Détection principale par pays du visiteur
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 2500);
+
+    const response = await fetch('https://ipapi.co/json/', {
+      signal: controller.signal,
+      cache: 'no-store'
+    });
+
+    clearTimeout(timeout);
+
+    if(response.ok){
+      const data = await response.json();
+      const country = String(data.country_code || '').toUpperCase();
+
+      // Suisse
+      if(country === 'CH'){
+        currency = 'CHF';
+      } else {
+        // France + zone euro + autres pays : EUR par défaut
+        currency = 'EUR';
+      }
+    } else {
+      throw new Error('Geo lookup unavailable');
+    }
+  }catch(error){
+    // Secours sans service externe : fuseau horaire du navigateur
+    try{
+      const tz = Intl.DateTimeFormat().resolvedOptions().timeZone || '';
+
+      if(
+        tz.includes('Zurich') ||
+        tz.includes('Geneva') ||
+        tz.includes('Bern') ||
+        tz.includes('Switzerland')
+      ){
+        currency = 'CHF';
+      } else {
+        currency = 'EUR';
+      }
+    }catch(e){
+      currency = 'EUR';
+    }
   }
 
-  let currency = 'EUR';
-  try{
-    const tz = Intl.DateTimeFormat().resolvedOptions().timeZone || '';
-    if(tz.includes('Zurich')) currency = 'CHF';
-  }catch(e){}
-
-  setCurrency(currency);
+  applyCurrency(currency);
 }
 
-document.addEventListener('DOMContentLoaded', detectInitialCurrency);
+document.addEventListener('DOMContentLoaded', detectCurrencyByZone);
 
 function openDemo(){document.getElementById('demoModal').classList.add('show')}
 function closeDemo(){document.getElementById('demoModal').classList.remove('show')}
