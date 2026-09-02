@@ -5699,6 +5699,59 @@ body.order-open #btnHeadWho .head-sub-v20{
 }
 </style>
 
+
+<style id="ichef-order-cooking-seat-fix-v29">
+.product-cooking-seat-wrap{
+  margin:0 0 14px;
+  padding:11px;
+  border:3px solid #171717;
+  border-radius:15px;
+  background:#f3f4f5;
+}
+.product-cooking-seat-label{
+  margin:0 0 8px;
+  color:#111;
+  font-size:14px;
+  font-weight:1000;
+}
+.product-cooking-seat-grid{
+  display:grid;
+  grid-template-columns:repeat(9,minmax(0,1fr));
+  gap:6px;
+}
+.product-cooking-seat-btn{
+  min-width:0;
+  min-height:52px;
+  border:3px solid currentColor;
+  border-radius:12px;
+  background:#fff;
+  font-size:16px;
+  font-weight:1000;
+  touch-action:manipulation;
+}
+.product-cooking-seat-btn[data-seat="1"]{color:var(--c1)}
+.product-cooking-seat-btn[data-seat="2"]{color:var(--c2)}
+.product-cooking-seat-btn[data-seat="3"]{color:var(--c3)}
+.product-cooking-seat-btn[data-seat="4"]{color:var(--c4)}
+.product-cooking-seat-btn[data-seat="5"]{color:var(--c5)}
+.product-cooking-seat-btn[data-seat="6"]{color:var(--c6)}
+.product-cooking-seat-btn[data-seat="7"]{color:var(--c7)}
+.product-cooking-seat-btn[data-seat="8"]{color:#9b8b00}
+.product-cooking-seat-btn[data-seat="9"]{color:#69757a}
+.product-cooking-seat-btn.active{
+  background:#111;
+  color:#fff!important;
+  box-shadow:0 0 0 2px currentColor;
+}
+.product-cooking-seat-btn.extra{opacity:.55}
+@media(max-width:760px){
+  .product-cooking-seat-grid{grid-template-columns:repeat(5,minmax(0,1fr))}
+}
+@media(max-width:480px){
+  .product-cooking-seat-grid{grid-template-columns:repeat(3,minmax(0,1fr))}
+}
+</style>
+
 </head>
 
 <body>
@@ -11388,7 +11441,7 @@ $("summaryCash").onclick=openPayment;
 $("toolRush").onclick=openRush;
 $("toolWho").onclick=openWho;
 $("toolDisplay").onclick=openPlan;
-$("btnHeadPlan").onclick=openPlan;
+if($("btnHeadPlan")) $("btnHeadPlan").onclick=openPlan;
 $("toolKitchen").onclick=openKitchen;
 $("toolMore").onclick=openMore;
 $("rushStrip").onclick=openRush;
@@ -11651,6 +11704,20 @@ function showProductCookingPicker(pending,seat){
 
   pendingProductSeatChoice={...pending,seat:n};
 
+  const o=STATE.currentOrder||ensureOrder(STATE.currentTable);
+  const pax=Math.max(1,Math.min(9,Number(o?.pax)||1));
+
+  const seatsHTML=Array.from({length:9},(_,idx)=>{
+    const s=idx+1;
+    return `<button type="button"
+                    class="product-cooking-seat-btn${s===n?" active":""}${s>pax?" extra":""}"
+                    data-cooking-seat="${s}"
+                    data-seat="${s}"
+                    title="Attribuer ce plat à C${s}">
+              C${s}
+            </button>`;
+  }).join("");
+
   openSheet(
     `${seatLabel(n)} · ${profile.label||"CUISSON"}`,
     `<div class="product-cooking-card">
@@ -11658,9 +11725,15 @@ function showProductCookingPicker(pending,seat){
          ${seatBadgeHTML(n)}
          <div>
            <div class="product-cooking-name" title="${esc(product.name)}">${esc(cookingPickerShortName(product.name,4))}</div>
-           <div class="product-cooking-sub">Choisissez la cuisson avant l’ajout au ticket.</div>
+           <div class="product-cooking-sub">Choisissez le convive puis la cuisson.</div>
          </div>
        </div>
+
+       <div class="product-cooking-seat-wrap">
+         <div class="product-cooking-seat-label">QUI MANGE QUOI ?</div>
+         <div class="product-cooking-seat-grid">${seatsHTML}</div>
+       </div>
+
        <div class="product-cooking-grid">
          ${profile.levels.map(level=>`
            <button type="button"
@@ -11670,32 +11743,53 @@ function showProductCookingPicker(pending,seat){
            </button>
          `).join("")}
        </div>
+
        <button type="button" class="product-cooking-back" data-product-cooking-back>
          RETOUR À QUI MANGE QUOI
        </button>
      </div>`
   );
 
-  $("sheet").classList.remove("product-seat-picker-open");
-  $("sheet").classList.add("product-cooking-picker-open");
+  $("sheet")?.classList.remove("product-seat-picker-open");
+  $("sheet")?.classList.add("product-cooking-picker-open");
 
   const body=$("sheetBody");
-  body.querySelectorAll("[data-product-cooking]").forEach(btn=>{
-    btn.addEventListener("click",()=>{
-      const level=btn.dataset.productCooking;
-      body.querySelectorAll("[data-product-cooking]").forEach(x=>x.disabled=true);
-      finalizeProductSeatChoice(n,level);
-    });
+  if(!body)return;
+
+  /* C1-C9 restent dans le même cadre de cuisson. */
+  body.querySelectorAll("[data-cooking-seat]").forEach(btn=>{
+    btn.onclick=()=>{
+      const nextSeat=Math.max(1,Math.min(9,Number(btn.dataset.cookingSeat)||1));
+      pendingProductSeatChoice={...pendingProductSeatChoice,seat:nextSeat};
+
+      /* Si on sélectionne un C supérieur au PAX actuel, il devient un vrai convive. */
+      const current=STATE.currentOrder||ensureOrder(STATE.currentTable);
+      if(Number(current.pax||0)<nextSeat) current.pax=nextSeat;
+
+      showProductCookingPicker(pendingProductSeatChoice,nextSeat);
+    };
   });
 
-  const back=body.querySelector("[data-product-cooking-back]");
-  if(back){
-    back.addEventListener("click",()=>{
-      $("sheet").classList.remove("product-cooking-picker-open");
-      pendingProductSeatChoice=null;
-      openWho();
-    });
-  }
+  body.querySelectorAll("[data-product-cooking]").forEach(btn=>{
+    btn.onclick=()=>{
+      const level=btn.dataset.productCooking||"";
+      const selectedSeat=Math.max(
+        1,
+        Math.min(9,Number(pendingProductSeatChoice?.seat)||n)
+      );
+
+      body.querySelectorAll("[data-product-cooking],[data-cooking-seat]")
+        .forEach(x=>x.disabled=true);
+
+      finalizeProductSeatChoice(selectedSeat,level);
+    };
+  });
+
+  body.querySelector("[data-product-cooking-back]")?.addEventListener("click",()=>{
+    $("sheet")?.classList.remove("product-cooking-picker-open");
+    pendingProductSeatChoice=null;
+    openWho();
+  });
 }
 
 async function finalizeProductSeatChoice(seat,cooking=""){
@@ -14366,315 +14460,6 @@ body.order-open #bottomObservationBar {
         });
     }
 
-})();
-</script>
-
-
-<style id="ichef-qui-mange-cuisson-final-v28-style">
-.product-cooking-seat-wrap{
-  margin:0 0 16px;padding:12px;border:3px solid #171717;border-radius:16px;background:#f3f4f5;
-}
-.product-cooking-seat-label{
-  margin:0 0 9px;color:#111;font-size:14px;line-height:1;font-weight:1000;letter-spacing:.4px;
-}
-.product-cooking-seat-grid{
-  display:grid;grid-template-columns:repeat(9,minmax(0,1fr));gap:7px;
-}
-.product-cooking-seat-btn{
-  min-width:0;min-height:58px;padding:5px 2px;border:4px solid currentColor;border-radius:14px;
-  background:#fff;font-size:18px;line-height:1;font-weight:1000;cursor:pointer;touch-action:manipulation;
-}
-.product-cooking-seat-btn[data-seat="1"]{color:var(--c1)}
-.product-cooking-seat-btn[data-seat="2"]{color:var(--c2)}
-.product-cooking-seat-btn[data-seat="3"]{color:var(--c3)}
-.product-cooking-seat-btn[data-seat="4"]{color:var(--c4)}
-.product-cooking-seat-btn[data-seat="5"]{color:var(--c5)}
-.product-cooking-seat-btn[data-seat="6"]{color:var(--c6)}
-.product-cooking-seat-btn[data-seat="7"]{color:var(--c7)}
-.product-cooking-seat-btn[data-seat="8"]{color:#a99600}
-.product-cooking-seat-btn[data-seat="9"]{color:#6f7a80}
-.product-cooking-seat-btn.active{
-  color:#fff!important;background:#111;box-shadow:0 0 0 2px currentColor,inset 0 0 0 2px #fff;
-}
-.product-cooking-seat-btn.extra{opacity:.55}
-.product-cooking-current{
-  display:flex;align-items:center;gap:10px;margin:0 0 12px;color:#111;font-size:13px;font-weight:900;
-}
-.product-cooking-current strong{font-size:16px}
-@media(max-width:900px){
-  .product-cooking-seat-grid{grid-template-columns:repeat(5,minmax(0,1fr))}
-  .product-cooking-seat-btn{min-height:52px;font-size:16px;border-width:3px}
-}
-@media(max-width:560px){
-  .product-cooking-seat-grid{grid-template-columns:repeat(3,minmax(0,1fr))}
-  .product-cooking-seat-btn{min-height:48px;font-size:15px}
-}
-</style>
-
-<script id="ichef-qui-mange-cuisson-final-v28">
-(()=>{
-  if(window.__ICHEF_WHO_COOKING_FINAL_V28__) return;
-  window.__ICHEF_WHO_COOKING_FINAL_V28__=true;
-
-  function seatButtonsHTML(activeSeat){
-    const o=(typeof STATE!=="undefined" && STATE.currentTable)
-      ? (STATE.currentOrder || ensureOrder(STATE.currentTable))
-      : null;
-    const pax=Math.max(1,Math.min(9,Number(o?.pax)||1));
-    const active=Math.max(1,Math.min(9,Number(activeSeat)||1));
-
-    return Array.from({length:9},(_,idx)=>{
-      const seat=idx+1;
-      return `<button type="button"
-                      class="product-cooking-seat-btn${seat===active?" active":""}${seat>pax?" extra":""}"
-                      data-cooking-seat="${seat}"
-                      data-seat="${seat}"
-                      aria-pressed="${seat===active?"true":"false"}"
-                      title="Attribuer le plat à C${seat}">C${seat}</button>`;
-    }).join("");
-  }
-
-  window.showProductCookingPicker=function(pending,seat){
-    if(!pending||!pending.product)return;
-
-    const product=pending.product;
-    const n=Math.max(1,Math.min(9,Number(seat)||1));
-    const dest=normalizeDestination(product.dest||product.raw?.dest||product.raw?.destination||"cuisine");
-    const profile=cookingProfileFor(product);
-
-    if(dest!=="cuisine" || !profile.required || !profile.levels.length){
-      finalizeProductSeatChoice(n,profile.automatic||"");
-      return;
-    }
-
-    pendingProductSeatChoice={...pending,seat:n};
-
-    openSheet(
-      `${seatLabel(n)} · ${profile.label||"CUISSON"}`,
-      `<div class="product-cooking-card">
-         <div class="product-cooking-head">
-           ${seatBadgeHTML(n)}
-           <div>
-             <div class="product-cooking-name" title="${esc(product.name)}">${esc(cookingPickerShortName(product.name,4))}</div>
-             <div class="product-cooking-sub">Choisissez le convive puis la cuisson. Le plat est ajouté seulement après la cuisson.</div>
-           </div>
-         </div>
-
-         <div class="product-cooking-seat-wrap">
-           <div class="product-cooking-seat-label">QUI MANGE QUOI ?</div>
-           <div class="product-cooking-seat-grid">${seatButtonsHTML(n)}</div>
-         </div>
-
-         <div class="product-cooking-current">
-           <span>Convive sélectionné :</span><strong>${seatLabel(n)}</strong>
-         </div>
-
-         <div class="product-cooking-grid">
-           ${profile.levels.map(level=>`
-             <button type="button" class="product-cooking-btn" data-product-cooking="${esc(level)}">
-               ${esc(level)}
-             </button>`).join("")}
-         </div>
-
-         <button type="button" class="product-cooking-back" data-product-cooking-back>
-           RETOUR À QUI MANGE QUOI
-         </button>
-       </div>`
-    );
-
-    const sheet=$("sheet");
-    sheet?.classList.remove("product-seat-picker-open");
-    sheet?.classList.add("product-cooking-picker-open");
-
-    const body=$("sheetBody");
-    if(!body)return;
-
-    body.querySelectorAll("[data-cooking-seat]").forEach(btn=>{
-      btn.addEventListener("click",()=>{
-        const newSeat=Math.max(1,Math.min(9,Number(btn.dataset.cookingSeat)||1));
-        pendingProductSeatChoice={...pendingProductSeatChoice,seat:newSeat};
-        window.showProductCookingPicker(pendingProductSeatChoice,newSeat);
-      });
-    });
-
-    body.querySelectorAll("[data-product-cooking]").forEach(btn=>{
-      btn.addEventListener("click",()=>{
-        const level=btn.dataset.productCooking||"";
-        const chosenSeat=Math.max(1,Math.min(9,Number(pendingProductSeatChoice?.seat)||n));
-        body.querySelectorAll("button").forEach(x=>x.disabled=true);
-        finalizeProductSeatChoice(chosenSeat,level);
-      });
-    });
-
-    body.querySelector("[data-product-cooking-back]")?.addEventListener("click",()=>{
-      sheet?.classList.remove("product-cooking-picker-open");
-      const sameProduct=pendingProductSeatChoice?.product||product;
-      const sameButton=pendingProductSeatChoice?.sourceButton||pending?.sourceButton||null;
-      pendingProductSeatChoice=null;
-      openProductSeatPicker(sameProduct,sameButton);
-    });
-  };
-
-  if(typeof window.renderGuestButtons==="function"){
-    const originalRenderGuests=window.renderGuestButtons;
-    window.renderGuestButtons=function(){
-      const result=originalRenderGuests.apply(this,arguments);
-      try{
-        const active=Math.max(1,Math.min(9,Number(STATE.activeSeat)||1));
-        const btn=document.getElementById("btnHeadWho");
-        if(btn){
-          btn.innerHTML=
-            `<span class="head-main-v20">QUI MANGE ? · C${active}</span>`+
-            `<span class="head-sub-v20">C1–C9</span>`;
-          btn.dataset.activeSeat=String(active);
-          btn.style.borderColor=`var(--c${active})`;
-        }
-      }catch(_){}
-      return result;
-    };
-  }
-
-  function bindWhoButtons(){
-    const open=()=>{
-      if(typeof window.openWho==="function") return window.openWho();
-      if(typeof openWho==="function") return openWho();
-    };
-    const head=document.getElementById("btnHeadWho");
-    const tool=document.getElementById("toolWho");
-    if(head)head.onclick=open;
-    if(tool)tool.onclick=open;
-    try{window.renderGuestButtons?.()}catch(_){}
-  }
-
-  bindWhoButtons();
-  document.addEventListener("DOMContentLoaded",bindWhoButtons,{once:true});
-  setTimeout(bindWhoButtons,350);
-
-  window.__ICHEF_WHO_COOKING_FLOW__={
-    version:"V28",
-    flow:"QUI MANGE -> C1-C9 -> PLAT -> C1-C9 + CUISSON -> TICKET",
-    redMeatLevels:[
-      "BLEU FROID","BLEU","BLEU CHAUD","ENTRE BLEU ET SAIGNANT","SAIGNANT",
-      "ENTRE SAIGNANT ET À POINT","À POINT","ENTRE À POINT ET BIEN CUIT",
-      "BIEN CUIT","PLUS QUE BIEN CUIT"
-    ]
-  };
-
-  console.info("[iCHEF] QUI MANGE + CUISSON V28 actif");
-})();
-</script>
-<!-- =========================================================
-     CORRECTION : SENSIBILITÉ DU TACTILE SUR LES PLATS (TOUCH FIX)
-     ========================================================= -->
-<style id="fix-tactile-plats">
-/* Empêche le navigateur d'annuler les événements tactiles trop vite */
-.menu-products {
-    touch-action: pan-y !important; /* Autorise le scroll vertical fluide */
-}
-.product {
-    touch-action: manipulation !important; /* Bloque le délai du double-tap */
-    user-select: none !important;
-    -webkit-user-select: none !important;
-}
-</style>
-
-<script id="script-fix-tactile-plats">
-(function fixProductTouchSelection() {
-    const productsContainer = document.getElementById("products");
-    if (!productsContainer) return;
-
-    // Cloner le conteneur pour détruire les anciens écouteurs trop sensibles (10px)
-    const newProducts = productsContainer.cloneNode(true);
-    productsContainer.parentNode.replaceChild(newProducts, productsContainer);
-
-    // On augmente la tolérance de 10 pixels à 40 pixels !
-    // Cela évite que le clic soit annulé si le doigt roule légèrement sur le verre.
-    const MOVE_TOLERANCE = 40;
-
-    newProducts.addEventListener("pointerdown", e => {
-        const b = e.target.closest("[data-product]");
-        if (!b || b.classList.contains("sold")) return;
-
-        if (typeof clearProductPress === "function") clearProductPress();
-        
-        if (typeof productPress !== "undefined") {
-            productPress.button = b;
-            productPress.startX = e.clientX;
-            productPress.startY = e.clientY;
-            productPress.long = false;
-            
-            b.classList.add("longpress-active");
-
-            productPress.timer = setTimeout(() => {
-                productPress.timer = null;
-                productPress.long = true;
-                b.classList.remove("longpress-active");
-
-                const p = typeof findProductFromButton === "function" ? findProductFromButton(b) : null;
-                if (navigator.vibrate) { try { navigator.vibrate(40); } catch (_) {} }
-                if (typeof showFullProductTitle === "function") showFullProductTitle(p);
-            }, 600);
-        }
-    }, { passive: true });
-
-    newProducts.addEventListener("pointermove", e => {
-        if (typeof productPress === "undefined" || !productPress.button) return;
-        
-        const dx = Math.abs(e.clientX - productPress.startX);
-        const dy = Math.abs(e.clientY - productPress.startY);
-        
-        // Si on bouge de plus de 40px, c'est un vrai scroll, on annule le clic
-        if (dx > MOVE_TOLERANCE || dy > MOVE_TOLERANCE) {
-            if (typeof clearProductPress === "function") clearProductPress();
-            productPress.button = null;
-        }
-    }, { passive: true });
-
-    newProducts.addEventListener("pointerup", e => {
-        const b = e.target.closest("[data-product]");
-        if (!b || typeof productPress === "undefined" || !productPress.button) return;
-
-        const wasLong = productPress.long;
-        const sameButton = b === productPress.button;
-
-        if (typeof clearProductPress === "function") clearProductPress();
-        productPress.button = null;
-        productPress.long = false;
-
-        if (!sameButton || wasLong) return;
-
-        // 1. Vérification d'une cuisson obligatoire en attente
-        const pendingCookingItem = typeof getValidPendingCookingItem === "function" ? getValidPendingCookingItem() : null;
-        if (pendingCookingItem) {
-            if (typeof showQuickCooking === "function") showQuickCooking(pendingCookingItem);
-            if (typeof toast === "function") toast("Cuisson obligatoire", true);
-            return;
-        }
-
-        // 2. Anti-rebond (double tap accidentel)
-        const key = b.dataset.product + "|" + b.dataset.pname;
-        const t = Date.now();
-        if (typeof lastProductTap !== "undefined") {
-            if (lastProductTap.key === key && t - lastProductTap.at < 135) return;
-            lastProductTap = { key, at: t };
-        }
-
-        const p = typeof findProductFromButton === "function" ? findProductFromButton(b) : null;
-        if (!p) return;
-
-        // 3. Action de commande : Ouvre la fenêtre d'attribution "QUI MANGE QUOI ?"
-        if (typeof openProductSeatPicker === "function") {
-            openProductSeatPicker(p, b);
-        }
-    }, { passive: true });
-
-    newProducts.addEventListener("pointercancel", () => {
-        if (typeof clearProductPress === "function") clearProductPress();
-        if (typeof productPress !== "undefined") {
-            productPress.button = null;
-            productPress.long = false;
-        }
-    });
 })();
 </script>
 </body>
