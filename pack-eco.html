@@ -14489,5 +14489,186 @@ body.order-open .ticket-right {
     background-color: transparent !important;
 }
 </style>
+  <!-- =========================================================
+     SYSTÈME DE COLONNES RAPIDE (ENTRÉES / PLATS / DESSERTS)
+     ========================================================= -->
+<style id="style-colonnes-services">
+/* Fait glisser le texte dans la bonne colonne selon l'ordre d'envoi */
+.ticket-row[data-course-col="1"] .ticket-left { margin-left: 0%; width: 33%; }
+.ticket-row[data-course-col="2"] .ticket-left { margin-left: 33.33%; width: 33%; }
+.ticket-row[data-course-col="3"] .ticket-left { margin-left: 66.66%; width: 33%; }
+
+/* Bouton d'ordre d'envoi sur le ticket */
+.btn-course-cycle {
+    background: #111 !important;
+    color: #fff !important;
+    font-weight: 1000 !important;
+    border: 2px solid #e2b84e !important;
+}
+</style>
+
+<script id="script-colonnes-services">
+setTimeout(() => {
+    // 1. Fonction pour deviner la colonne automatiquement selon le nom ou la catégorie
+    function guessCourseColumn(item) {
+        if (item.courseIndex) return item.courseIndex; // S'il a déjà été forcé manuellement
+        
+        const cat = (item.category || item.course || item.dest || "").toLowerCase();
+        const name = (item.name || "").toLowerCase();
+        const hay = cat + " " + name;
+
+        if (/(dessert|glace|patisserie|fromage|sucre|café)/.test(hay)) return 3; // Colonne 3
+        if (/(plat|viande|poisson|burger|pates|risotto|suite)/.test(hay)) return 2; // Colonne 2
+        return 1; // Colonne 1 (Entrées / Tapas / Défaut)
+    }
+
+    // 2. Interception du rendu du ticket pour ajouter le bouton et décaler le texte
+    if (typeof window.renderTicket === "function") {
+        const originalRenderTicket = window.renderTicket;
+        window.renderTicket = function() {
+            // Exécute le rendu normal
+            originalRenderTicket.apply(this, arguments);
+
+            // Modifie le HTML généré pour ajouter la notion de colonnes
+            const o = STATE.currentOrder || ensureOrder(STATE.currentTable);
+            if (!o || !o.items) return;
+
+            document.querySelectorAll(".ticket-row").forEach(row => {
+                const leftDiv = row.querySelector(".ticket-left");
+                if (!leftDiv) return;
+                
+                const key = leftDiv.dataset.line;
+                const item = o.items.find(i => lineKey(i) === key);
+                if (!item) return;
+
+                // Calcule la colonne (1, 2 ou 3)
+                const col = guessCourseColumn(item);
+                row.setAttribute("data-course-col", col); // Applique le décalage CSS
+
+                // Ajoute le bouton de sélection rapide dans les contrôles à droite
+                const qtybar = row.querySelector(".qtybar");
+                if (qtybar && !lineFired(item)) { // Uniquement si non envoyé en cuisine
+                    const courseBtn = document.createElement("button");
+                    courseBtn.className = "btn-course-cycle";
+                    courseBtn.title = "Changer l'ordre d'envoi (Entrée / Plat / Dessert)";
+                    courseBtn.dataset.line = key;
+                    courseBtn.dataset.act = "cycle-course";
+                    courseBtn.textContent = col; // Affiche 1, 2 ou 3
+                    
+                    // Insère le bouton juste avant le bouton de suppression (x)
+                    qtybar.insertBefore(courseBtn, qtybar.lastElementChild);
+                }
+            });
+        };
+        // Forcer le re-rendu immédiat
+        if (STATE.currentTable) renderTicket();
+    }
+
+    // 3. Interception du clic pour faire tourner la colonne (1 -> 2 -> 3 -> 1)
+    if (typeof window.mutateLine === "function") {
+        const originalMutateLine2 = window.mutateLine;
+        window.mutateLine = async function(key, action) {
+            if (action === "cycle-course") {
+                const o = STATE.currentOrder || ensureOrder(STATE.currentTable);
+                const item = (o.items || []).find(x => lineKey(x) === key);
+                if (!item) return;
+
+                // Fait tourner la valeur : 1 devient 2, 2 devient 3, 3 redevient 1
+                let currentCol = guessCourseColumn(item);
+                currentCol = currentCol >= 3 ? 1 : currentCol + 1;
+                
+                item.courseIndex = currentCol; // Sauvegarde la modification manuelle
+                
+                if (navigator.vibrate) { try { navigator.vibrate(20); } catch (_) {} }
+                
+                // Sauvegarde silencieuse et met à jour l'affichage
+                if (typeof saveCurrent === "function") saveCurrent(o, "Changement ordre d'envoi");
+                renderTicket();
+                return;
+            }
+            return originalMutateLine2(key, action);
+        };
+    }
+}, 600);
+</script>
+  <!-- =========================================================
+     GESTION DES MENUS / FORMULES (Bannière + Sous-articles)
+     ========================================================= -->
+<style id="style-menus-formules">
+/* 1. La bannière Titre du Menu (Traverse les 3 colonnes) */
+.ticket-row[data-course-col][data-is-menu="true"] .ticket-left { 
+    margin-left: 0% !important; 
+    width: 100% !important; 
+}
+.ticket-row[data-is-menu="true"] {
+    background: linear-gradient(135deg, #1a1c1d, #2a2e30) !important;
+    border-bottom: 2px solid #111 !important;
+    margin-top: 6px !important;
+    border-radius: 8px !important;
+}
+.ticket-row[data-is-menu="true"] .ticket-name {
+    color: #e2b84e !important; /* Texte en Or */
+    font-size: 20px !important;
+}
+.ticket-row[data-is-menu="true"] .ticket-price {
+    color: #e2b84e !important;
+    font-size: 22px !important;
+}
+.ticket-row[data-is-menu="true"] .ticket-meta,
+.ticket-row[data-is-menu="true"] .btn-course-cycle {
+    display: none !important; /* Cache les infos inutiles sur le titre du menu */
+}
+
+/* 2. Les choix du menu (articles à 0€) en retrait dans les colonnes */
+.ticket-row[data-is-menu-choice="true"] .ticket-name::before {
+    content: "↳ "; /* Petite flèche pour relier visuellement au menu */
+    color: #888;
+    font-weight: 900;
+}
+.ticket-row[data-is-menu-choice="true"] .ticket-name {
+    font-size: 15px !important;
+}
+</style>
+
+<script id="script-menus-formules">
+setTimeout(() => {
+    if (typeof window.renderTicket === "function") {
+        const originalRenderTicketMenu = window.renderTicket;
+        window.renderTicket = function() {
+            // Rend le ticket normalement
+            originalRenderTicketMenu.apply(this, arguments);
+
+            const o = STATE.currentOrder || ensureOrder(STATE.currentTable);
+            if (!o || !o.items) return;
+
+            // Analyse chaque ligne pour voir si c'est un menu ou un choix
+            document.querySelectorAll(".ticket-row").forEach(row => {
+                const leftDiv = row.querySelector(".ticket-left");
+                if (!leftDiv) return;
+                
+                const key = leftDiv.dataset.line;
+                const item = o.items.find(i => lineKey(i) === key);
+                if (!item) return;
+
+                const name = (item.name || "").toLowerCase();
+                const price = Number(item.price || item.p || 0);
+
+                // 1. Détecter si c'est un Menu principal (Titre)
+                if (name.includes("menu") || name.includes("formule")) {
+                    row.setAttribute("data-is-menu", "true");
+                }
+                
+                // 2. Détecter si c'est un choix rattaché au menu (prix = 0€ ou commence par ">>")
+                // On exclut l'article s'il s'appelle lui-même "menu" pour ne pas confondre
+                if ((price === 0 || name.startsWith(">>") || name.startsWith("-")) && !name.includes("menu") && !name.includes("formule")) {
+                    row.setAttribute("data-is-menu-choice", "true");
+                }
+            });
+        };
+        // Re-rendu immédiat si une table est ouverte
+        if (STATE.currentTable) renderTicket();
+    }
+}, 850);
+</script>
 </body>
 </html>
