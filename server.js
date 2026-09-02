@@ -5002,14 +5002,26 @@ console.log(
 // MASTER CONTROL API (EMPIRE SUPER ADMIN)
 // ==========================================
 app.post('/api/get-all-tenants-admin', async (req, res) => {
-    if (req.body.masterKey !== ADMIN_PASS) return res.status(401).json({ success: false, error: "Acces Refuse." });
+    // 🚨 1. VÉRIFICATION DE LA CLÉ MASTER SÉCURISÉE VIA VARIABLE D'ENVIRONNEMENT
+    const validKey = process.env.MASTER_KEY || "Empire2026";
+    if (req.body.masterKey !== validKey) {
+        console.warn("⚠️ Tentative d'accès non autorisée à la base Master.");
+        return res.status(401).json({ success: false, error: "Acces Refuse." });
+    }
+
     try {
         const tenantsData = await Tenant.find({});
         const formattedTenants = tenantsData.map(t => ({
-            id: t.tenantID, name: t.clientName || "Sans Nom", 
-            email: t.email || "Non renseigné", phone: t.phone || "Non renseigné",
-            pack: t.plan, specialite: t.specialite, pin: t.pin,
-            maxScreens: t.maxScreens, maxStaff: t.maxStaff,
+            id: t.tenantID, 
+            name: t.clientName || "Sans Nom", 
+            email: t.email || "Non renseigné", 
+            phone: t.phone || "Non renseigné",
+            pack: t.plan, 
+            specialite: t.specialite, 
+            pin: t.pin,
+            addons: t.addons || [], // Récupération des modules cochés
+            maxScreens: t.maxScreens, 
+            maxStaff: t.maxStaff,
             activeScreens: t.registeredDevices ? t.registeredDevices.length : 0, 
             status: t.status
         }));
@@ -5018,7 +5030,13 @@ app.post('/api/get-all-tenants-admin', async (req, res) => {
 });
 
 app.post('/api/admin-action', async (req, res) => {
-    if (req.body.masterKey !== ADMIN_PASS) return res.status(401).json({ success: false, error: "Acces Refuse." });
+    // 🚨 2. VÉRIFICATION DE LA CLÉ POUR BLOQUER LES ATTAQUES DE MODIFICATION
+    const validKey = process.env.MASTER_KEY || "Empire2026";
+    if (req.body.masterKey !== validKey) {
+        console.warn(`⚠️ Action d'administration bloquée (Clé invalide)`);
+        return res.status(401).json({ success: false, error: "Acces Refuse." });
+    }
+
     try {
         const { tenantID, action, newPlan, manualScreens, manualPin, manualMaxStaff, maxScreens, addons } = req.body;
         const safeID = cleanString(tenantID);
@@ -5055,7 +5073,10 @@ app.post('/api/admin-action', async (req, res) => {
         else if (action === 'activate') {
             await Tenant.findOneAndUpdate({ tenantID: safeID }, { status: 'ACTIF', $unset: { demoExpiration: "" } });
         }
-        else if (action === 'delete') { await Tenant.findOneAndDelete({ tenantID: safeID }); await AppState.findOneAndDelete({ tenantID: safeID }); }
+        else if (action === 'delete') { 
+            await Tenant.findOneAndDelete({ tenantID: safeID }); 
+            await AppState.findOneAndDelete({ tenantID: safeID }); 
+        }
         
         res.json({ success: true });
     } catch (err) { res.status(500).json({ success: false, error: err.message }); }
