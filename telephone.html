@@ -8544,7 +8544,19 @@ function systemPrintHTML(lines,title="iCHEF",paperWidth=80){
     const align=o.align?`text-align:${o.align};`:"";
     return `<div style="${size}${weight}${align}white-space:pre-wrap;line-height:1.25">${textValue||"&nbsp;"}</div>`;
   }).join("");
-  return `<!doctype html><html><head><meta charset="utf-8"><title>${esc(title)}</title><style>@page{size:${width}mm auto;margin:3mm}html,body{margin:0;padding:0;background:#fff;color:#000;font-family:Arial,sans-serif}.ticket{width:${width-6}mm;margin:0 auto}</style></head><body><div class="ticket">${body}</div></body></html>`;
+  return `<!doctype html><html><head><meta charset="utf-8"><title>${esc(title)}</title><style>@page{size:${width}mm auto;margin:3mm}html,body{margin:0;padding:0;background:#fff;color:#000;font-family:Arial,sans-serif}.ticket{width:${width-6}mm;margin:0 auto}</style>
+
+<style id="ichef-phone-order-tap-fix-v30">
+#products .product{
+  touch-action:manipulation !important;
+  -webkit-tap-highlight-color:rgba(0,0,0,0) !important;
+}
+#products{
+  touch-action:pan-y !important;
+}
+</style>
+
+</head><body><div class="ticket">${body}</div></body></html>`;
 }
 
 async function printViaSystem(printer,lines,meta={}){
@@ -12254,6 +12266,18 @@ async function confirmProductSeat(seat){
   renderGuestButtons();
 }
 
+/* =========================================================
+   PRISE DE COMMANDE TÉLÉPHONE — TAP FIABLE V30
+   - TAP court : ouvre QUI MANGE ? puis C / cuisson
+   - MAINTIEN 0,6 s : affiche le nom complet sans ajouter
+   - petit mouvement du doigt toléré
+   - CLICK natif utilisé comme validation principale sur mobile
+   ========================================================= */
+
+let productTapHandledAt=0;
+let productTapHandledKey="";
+let productSuppressClickUntil=0;
+
 $("products").addEventListener("pointerdown",e=>{
   const b=e.target.closest("[data-product]");
   if(!b||b.classList.contains("sold"))return;
@@ -12264,12 +12288,14 @@ $("products").addEventListener("pointerdown",e=>{
   productPress.startX=e.clientX;
   productPress.startY=e.clientY;
   productPress.long=false;
+  productPress.pointerType=e.pointerType||"";
 
   b.classList.add("longpress-active");
 
   productPress.timer=setTimeout(()=>{
     productPress.timer=null;
     productPress.long=true;
+    productSuppressClickUntil=Date.now()+700;
     b.classList.remove("longpress-active");
 
     const p=findProductFromButton(b);
@@ -12286,64 +12312,76 @@ $("products").addEventListener("pointermove",e=>{
   const dx=Math.abs(e.clientX-productPress.startX);
   const dy=Math.abs(e.clientY-productPress.startY);
 
-  if(dx>10||dy>10){
+  /* Sur tactile, 10 px était trop sensible.
+     On tolère 28 px ; souris/stylet restent plus précis. */
+  const limit=(e.pointerType==="touch"||productPress.pointerType==="touch")?28:12;
+
+  if(dx>limit||dy>limit){
     clearProductPress();
     productPress.button=null;
+    productPress.long=false;
   }
 },{passive:true});
 
-async function handleFastProductTap(product,sourceButton){
-  if(!STATE.currentTable||!product)return;
-
-  /*
-     QUI MANGE QUOI = étape OBLIGATOIRE pour CHAQUE nouveau plat.
-     Aucun article n'est ajouté ici directement, même si un C était déjà actif.
-     Flux strict : PLAT -> C1..C9 -> CUISSON si nécessaire -> AJOUT/ENREGISTREMENT.
-  */
-  if(STATE.pendingCookingLine){
-    toast("Choisissez d’abord la cuisson du plat en cours",true);
-    return;
-  }
-
-  openProductSeatPicker(product,sourceButton);
-}
-
 $("products").addEventListener("pointerup",e=>{
   const b=e.target.closest("[data-product]");
-  if(!b||!productPress.button)return;
 
-  const wasLong=productPress.long;
-  const sameButton=b===productPress.button;
-
-  clearProductPress();
-  productPress.button=null;
-  productPress.long=false;
-
-  if(!sameButton||wasLong)return;
-
-  if(STATE.pendingCookingLine){
-    toast("🥩 Choisissez la cuisson avant de continuer",true);
-    return;
+  /* pointerup ne passe plus directement la commande.
+     Il termine seulement la détection d'appui long.
+     Le vrai TAP est traité par "click", plus fiable sur smartphone. */
+  if(productPress.timer){
+    clearTimeout(productPress.timer);
+    productPress.timer=null;
   }
 
-  const key=b.dataset.product+"|"+b.dataset.pname;
-  const t=Date.now();
+  if(productPress.button){
+    productPress.button.classList.remove("longpress-active");
+  }
 
-  /* Anti double-événement fantôme uniquement. */
-  if(lastProductTap.key===key && t-lastProductTap.at<PRODUCT_DOUBLE_GUARD_MS)return;
-  lastProductTap={key,at:t};
+  if(productPress.long){
+    productSuppressClickUntil=Date.now()+700;
+  }
 
-  const p=findProductFromButton(b);
-  if(!p)return;
-
-  /* QUI MANGE QUOI : chaque plat doit d’abord recevoir C1 à C9. */
-  void handleFastProductTap(p,b);
+  productPress.button=null;
+  productPress.long=false;
 },{passive:true});
 
 $("products").addEventListener("pointercancel",()=>{
   clearProductPress();
   productPress.button=null;
   productPress.long=false;
+});
+
+/* Validation principale : fonctionne avec doigt, stylet et souris. */
+$("products").addEventListener("click",e=>{
+  const b=e.target.closest("[data-product]");
+  if(!b||b.classList.contains("sold"))return;
+
+  if(Date.now()<productSuppressClickUntil){
+    e.preventDefault();
+    return;
+  }
+
+  if(STATE.pendingCookingLine){
+    toast("Choisissez d’abord la cuisson avant de continuer",true);
+    return;
+  }
+
+  const key=(b.dataset.product||"")+"|"+(b.dataset.pname||"");
+  const t=Date.now();
+
+  /* Anti-double-clic tactile seulement, sans bloquer un vrai deuxième plat. */
+  if(productTapHandledKey===key && t-productTapHandledAt<260)return;
+  productTapHandledKey=key;
+  productTapHandledAt=t;
+
+  const p=findProductFromButton(b);
+  if(!p){
+    toast("Plat introuvable dans le menu",true);
+    return;
+  }
+
+  void handleFastProductTap(p,b);
 });
 
 /* Bouton global "Qui mange ?" : réaffectation complète si besoin. */
